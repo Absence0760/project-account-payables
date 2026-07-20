@@ -24,6 +24,10 @@ import {
  *   5. The AP-side detail endpoint reveals the full proposed value so the
  *      operator can verify the new account before approving; the queue
  *      list masks it.
+ *   6. Creating a brand-new vendor with bank details stages them too — the
+ *      row lands with NO live bank details until a second user approves
+ *      (the fake-new-payee BEC gate, which a single-call create used to
+ *      walk straight through).
  *
  * `POST /api/vendors` (create) is itself dual-control-gated: submitting
  * `bank_details` on a brand-new vendor stages it exactly like `PATCH`/the
@@ -297,6 +301,56 @@ test.describe('/vendors bank-detail change control (BEC defense)', () => {
 			expect(rows[0].status).toBe('pending');
 			const revealed = JSON.stringify(rows[0]);
 			expect(revealed).toContain('99998888');
+		} finally {
+			deleteVendorCascade(vendor.id);
+		}
+	});
+
+	test('creating a vendor with bank details stages them instead of applying', async ({
+		page
+	}) => {
+		// The fake-new-payee BEC bypass: before this gate, one API call could
+		// land an active, payable vendor pointing at an attacker's account with
+		// no second approver. Now create behaves exactly like an update.
+		const resp = await page.request.post(`${API_BASE}/api/vendors`, {
+			headers: H,
+			data: {
+				name: `BEC-Create Co ${Date.now()}`,
+				bank_details: {
+					account_number: '99998888',
+					account_last4: '8888',
+					bank_name: 'Fraudster Bank',
+					country: 'US'
+				}
+			}
+		});
+		expect(resp.status()).toBe(201);
+		const vendor = (await resp.json()) as VendorResp;
+		try {
+			// The row itself carries NO bank details — nothing to pay yet.
+			expect(vendor.bank_details?.account_last4).toBeFalsy();
+			const live = await getVendor(page, vendor.id);
+			expect(live.bank_details?.account_last4).toBeFalsy();
+
+			// They're parked as a pending request awaiting a second approver.
+			const queued = await page.request.get(
+				`${API_BASE}/api/vendors/${vendor.id}/change-requests`,
+				{ headers: H }
+			);
+			expect(queued.status()).toBe(200);
+			const rows = (await queued.json()) as ChangeRequestResp[];
+			expect(rows.length).toBe(1);
+			expect(rows[0].change_type).toBe('bank_details');
+			expect(rows[0].status).toBe('pending');
+
+			// The create audit row records only that bank details were
+			// submitted — never the account number itself.
+			const leaked = tenantPsql(
+				`SELECT count(*) FROM audit_log WHERE entity_id='${vendor.id}' ` +
+					`AND details::text LIKE '%99998888%'`,
+				SLUG
+			).trim();
+			expect(Number(leaked)).toBe(0);
 		} finally {
 			deleteVendorCascade(vendor.id);
 		}
