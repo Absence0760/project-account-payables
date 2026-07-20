@@ -2,8 +2,10 @@ import 'package:flutter/foundation.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
 import 'package:ap_mobile/api/endpoints.dart';
+import 'package:ap_mobile/config.dart';
 import 'package:ap_mobile/models/mfa_challenge.dart';
 import 'package:ap_mobile/models/user.dart';
+import 'package:ap_mobile/services/session.dart';
 
 /// Outcome of [AuthStore.login] / [AuthStore.completeMfa].
 enum LoginOutcome {
@@ -78,11 +80,22 @@ class AuthStore extends ChangeNotifier {
   // boundary.
   bool get canViewWorkflows => isAdmin;
 
+  /// Drop all in-memory state. Called on logout / forced logout through
+  /// `SessionManager.endSession` — this is a process-lifetime singleton, so
+  /// without this a signed-out user would still be `loggedIn` for the next
+  /// account on the device. Tests use it to decouple from run order.
+  void reset() {
+    _user = null;
+    _loading = false;
+    _error = null;
+    notifyListeners();
+  }
+
   Future<bool> init() async {
     await ApiClient().init();
     if (!ApiClient().hasToken) return false;
     try {
-      _user = await AuthApi.me();
+      await _loadUser();
       notifyListeners();
       return true;
     } catch (_) {
@@ -190,12 +203,37 @@ class AuthStore extends ChangeNotifier {
   /// verify paths: persist the JWT to secure storage and load the profile.
   Future<void> _finishAuth(String token) async {
     await ApiClient().setToken(token);
-    _user = await AuthApi.me();
+    await _loadUser();
   }
 
+  /// Load the profile and bind the device's local state (offline cache + store
+  /// singletons) to this `(tenant, user)` BEFORE publishing the user — a
+  /// different session than the cache last saw purges it, and that purge also
+  /// resets the stores. Assigning [_user] afterwards keeps it from being
+  /// cleared by its own sign-in.
+  Future<void> _loadUser() async {
+    final user = await AuthApi.me();
+    final tenantSlug = AppConfig.tenantSlug;
+    if (tenantSlug == null || tenantSlug.isEmpty) {
+      // Tenant unknown (shouldn't happen — login sets it, restore reads it
+      // back). Rather than mint a scope every tenant with this user would
+      // share, leave the cache torn down and inert: the app still works
+      // online, it just can't cache.
+      await SessionManager.endSession();
+    } else {
+      await SessionManager.beginSession(
+        tenantSlug: tenantSlug,
+        userId: user.id,
+      );
+    }
+    _user = user;
+  }
+
+  /// Sign out. The local teardown (offline cache + every store singleton) runs
+  /// inside `ApiClient.clearSession()`, which `AuthApi.logout` calls — the same
+  /// chokepoint a 401-forced logout goes through.
   Future<void> logout() async {
     await AuthApi.logout();
-    _user = null;
     notifyListeners();
   }
 }

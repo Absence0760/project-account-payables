@@ -52,10 +52,11 @@ mobile/
 │   │   ├── biometric_service.dart  # Face ID / fingerprint via local_auth
 │   │   ├── camera_capture.dart     # Image picker (camera/gallery) + file picker (PDF/PNG/JPG/TIFF) + invoice upload
 │   │   ├── file_share.dart         # Swappable share_plus wrapper — writes bytes to a temp file → platform share sheet (bulk export); FileShare.debugOverride for tests
-│   │   ├── offline_store.dart      # SQLite cache for offline viewing
+│   │   ├── offline_store.dart      # SQLite cache for offline viewing — every key namespaced by (tenant, user); inert with no session scope
+│   │   ├── session.dart            # Session lifetime chokepoint — beginSession (scope + purge on change) / endSession (clear cache + reset every store)
 │   │   └── push_service.dart       # Firebase Cloud Messaging + local notifications
 │   ├── stores/
-│   │   ├── auth_store.dart      # Auth state — login, logout, role checks (incl. canBulkEditInvoices + isOrgAdmin gates)
+│   │   ├── auth_store.dart      # Auth state — login, logout, role checks (incl. canBulkEditInvoices + isOrgAdmin gates); binds the session scope on login/restore
 │   │   ├── admin_user_store.dart # Admin user management — users + roles, set-roles / activate-deactivate (admin-only, not offline-cached)
 │   │   ├── org_settings_store.dart # Organization settings — load + save the safe subset (company + invoice defaults; admin-only, not offline-cached)
 │   │   ├── invoice_store.dart   # Invoice list, filter, approve/reject + multi-select bulk delete/status (offline cached)
@@ -121,6 +122,40 @@ mobile/
 - **API client singleton** — `ApiClient()` auto-adds JWT and `X-Tenant-Slug` header
 - **Secure storage** — JWT token persisted in iOS Keychain via `flutter_secure_storage`
 
+### Session lifetime + offline-cache scoping
+
+The store singletons and the SQLite offline cache outlive a session — a phone
+gets handed over, an account gets switched, a token expires — so both are bound
+to the session that produced them. `services/session.dart` is the chokepoint;
+**never clear or scope this state from a screen**.
+
+- **Namespaced keys.** `OfflineStore.put/get` prepend a
+  `<tenant>|<user>|` prefix derived from the installed scope, so a call site
+  never passes one and can't forget one. Different `(tenant, user)` ⇒ different
+  keys ⇒ a session physically cannot read another's rows. With **no** scope
+  installed (signed out) the store is inert: writes are dropped, reads return
+  null — it fails closed to "no cache", never to another session's data.
+- **`SessionManager.beginSession(tenantSlug, userId)`** — called by
+  `AuthStore` on login, on post-MFA verify, and on session restore, BEFORE the
+  user is published. Installs the scope; if it differs from the one the cache
+  was last written under (device reused, crash before logout, or an install
+  upgrading from the pre-scoping schema) it purges every cached row and resets
+  the stores first.
+- **`SessionManager.endSession()`** — called from `ApiClient.clearSession()`,
+  the single place a session ends: explicit logout, a 401 on any request, and a
+  failed session restore all funnel through it. Drops the scope, clears the
+  cache, and resets **every** account-scoped store singleton.
+- **Adding a store?** Add it to `SessionManager.resetStores()`. A store that
+  isn't reset keeps one account's data in memory for the next one;
+  `test/services/session_test.dart` fails if a new file under `lib/stores/`
+  isn't listed (`LocaleStore` is the sole exemption — display language is a
+  device preference, not account data).
+- **Cache DB upgrade path.** `ap_cache.db` is at schema v2; the v1→v2 upgrade
+  deletes every pre-existing row, because rows written before scoping have
+  global keys (`dashboard`, `invoices_all_`, …) with no owner to attribute them
+  to. An install carrying an old cache therefore starts empty rather than
+  serving un-namespaced rows to whoever signs in next.
+
 ## API integration
 
 The mobile app talks to the same FastAPI backend as the web frontend:
@@ -139,7 +174,9 @@ The mobile app talks to the same FastAPI backend as the web frontend:
   web-only (an org-enforced un-enrolled user can still verify by email, with a
   banner pointing them to the web app). Mirrors the web `/login/mfa` flow.
 - Tenant: entered on login screen → sent as `X-Tenant-Slug` header
-- 401 responses auto-clear session and return to login
+- 401 responses auto-clear session and return to login — the teardown is
+  **awaited before the error is thrown**, so an offline-fallback `catch` can't
+  read the cache of the session being torn down
 
 ## Screens → API mappings
 
@@ -238,7 +275,7 @@ everyone else.
 - File upload via file picker — pick a PDF / PNG / JPG / TIFF document on the device (`CameraCapture.pickDocument` → `file_picker`) and upload it through the same `/api/invoices/upload` extraction pipeline as the camera path. The capture screen offers Camera / Gallery / Choose file; PDFs preview as a document card (no inline bitmap), images preview inline
 - File viewer — the invoice detail screen previews the uploaded file (image thumbnail or a PDF card) and opens it full-screen via `InvoiceFileViewer`: images via `Image.network` (auth headers), PDFs fetched as bytes (`ApiClient.getBytes`, so the JWT + tenant headers are attached) and rendered with `pdfx`; loading / error / Retry states
 - Push notifications — Firebase Cloud Messaging (foreground + background), no-op if Firebase not configured
-- Offline mode — SQLite cache for dashboard and invoice list, serves cached data on network failure
+- Offline mode — SQLite cache for dashboard and invoice list, serves cached data on network failure; **scoped to the signed-in `(tenant, user)`** and torn down on logout (see Session lifetime + offline-cache scoping)
 - Biometric login — Face ID / fingerprint / device PIN, toggle in settings, checked on app launch
 
 **Mobile-only features (not on web):**

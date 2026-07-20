@@ -41,7 +41,7 @@ void main() {
   });
 
   setUp(() async {
-    ContractStore.instance.debugReset();
+    ContractStore.instance.reset();
     await OfflineStore.instance.clear();
     ApiClient().debugConfigure();
   });

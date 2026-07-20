@@ -65,7 +65,7 @@ void main() {
   final store = AdminUserStore.instance;
 
   setUp(() {
-    store.debugReset();
+    store.reset();
     ApiClient().debugConfigure();
   });
 

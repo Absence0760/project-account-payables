@@ -30,8 +30,11 @@ class AdminUserStore extends ChangeNotifier {
   List<String> get systemRoleNames =>
       _roles.where((r) => r.isSystem).map((r) => r.name).toList();
 
-  @visibleForTesting
-  void debugReset() {
+  /// Drop all in-memory state. Called on logout / forced logout through
+  /// `SessionManager.endSession` — these are process-lifetime singletons, so
+  /// without this a signed-out user's data would still be in memory for the
+  /// next account on the device. Tests use it to decouple from run order.
+  void reset() {
     _users = [];
     _roles = [];
     _loading = false;

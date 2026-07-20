@@ -49,7 +49,7 @@ void main() {
   final store = OrgSettingsStore.instance;
 
   setUp(() {
-    store.debugReset();
+    store.reset();
     ApiClient().debugConfigure();
   });
 

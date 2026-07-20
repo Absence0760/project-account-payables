@@ -134,12 +134,12 @@ void main() {
   });
 
   setUp(() async {
-    DashboardStore.instance.debugReset();
-    InvoiceStore.instance.debugReset();
-    ContractStore.instance.debugReset();
-    ExceptionStore.instance.debugReset();
-    VendorStore.instance.debugReset();
-    PaymentQueueStore.instance.debugReset();
+    DashboardStore.instance.reset();
+    InvoiceStore.instance.reset();
+    ContractStore.instance.reset();
+    ExceptionStore.instance.reset();
+    VendorStore.instance.reset();
+    PaymentQueueStore.instance.reset();
     await OfflineStore.instance.clear();
     FlutterSecureStorage.setMockInitialValues({});
     ApiClient().debugConfigure();

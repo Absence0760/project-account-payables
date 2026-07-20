@@ -84,7 +84,7 @@ void main() {
   setUpAll(() => OfflineStore.instance.debugUseMemory());
 
   setUp(() async {
-    ExceptionStore.instance.debugReset();
+    ExceptionStore.instance.reset();
     FlutterSecureStorage.setMockInitialValues({});
     ApiClient().debugConfigure();
   });

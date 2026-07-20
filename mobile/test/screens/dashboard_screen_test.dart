@@ -81,7 +81,7 @@ void main() {
   });
 
   setUp(() async {
-    DashboardStore.instance.debugReset();
+    DashboardStore.instance.reset();
     await OfflineStore.instance.clear();
     ApiClient().debugConfigure();
   });

@@ -26,10 +26,11 @@ class NotificationStore extends ChangeNotifier {
   bool get unreadOnly => _unreadOnly;
   bool get fromCache => _fromCache;
 
-  /// Test seam: clear all in-memory state so tests aren't coupled to the order
-  /// they run in (this is a process-lifetime singleton). Not used in production.
-  @visibleForTesting
-  void debugReset() {
+  /// Drop all in-memory state. Called on logout / forced logout through
+  /// `SessionManager.endSession` — these are process-lifetime singletons, so
+  /// without this a signed-out user's data would still be in memory for the
+  /// next account on the device. Tests use it to decouple from run order.
+  void reset() {
     _notifications = [];
     _unread = 0;
     _loading = false;

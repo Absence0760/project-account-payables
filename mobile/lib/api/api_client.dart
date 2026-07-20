@@ -5,6 +5,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
 import 'package:ap_mobile/config.dart';
+import 'package:ap_mobile/services/session.dart';
 
 class ApiException implements Exception {
   final int statusCode;
@@ -63,11 +64,17 @@ class ApiClient {
     await _storage.write(key: _tenantKey, value: slug);
   }
 
+  /// End the session everywhere it exists on the device: credentials, the
+  /// offline SQLite cache, and the store singletons. This is the single exit
+  /// path — explicit logout, a 401 on any request (expired / revoked token),
+  /// and a failed session restore all land here — so no forced-logout route
+  /// can leave one user's financial data readable by the next one.
   Future<void> clearSession() async {
     _token = null;
     _tenantSlug = null;
     AppConfig.tenantSlug = null;
     await _storage.deleteAll();
+    await SessionManager.endSession();
   }
 
   /// Auth + tenant headers for JSON requests.
@@ -234,9 +241,13 @@ class ApiClient {
     }
   }
 
-  Map<String, dynamic> _handleResponse(http.Response response) {
+  /// Forced logout on a 401 is **awaited before the throw** so the local
+  /// teardown (cache + stores) has finished by the time a caller's `catch`
+  /// runs — otherwise an offline-fallback `catch` could still read the cache
+  /// of the session being torn down.
+  Future<Map<String, dynamic>> _handleResponse(http.Response response) async {
     if (response.statusCode == 401) {
-      clearSession();
+      await clearSession();
       throw ApiException(401, 'Unauthorized');
     }
     if (response.statusCode >= 400) {
@@ -246,9 +257,9 @@ class ApiClient {
     return jsonDecode(response.body) as Map<String, dynamic>;
   }
 
-  List<dynamic> _handleListResponse(http.Response response) {
+  Future<List<dynamic>> _handleListResponse(http.Response response) async {
     if (response.statusCode == 401) {
-      clearSession();
+      await clearSession();
       throw ApiException(401, 'Unauthorized');
     }
     if (response.statusCode >= 400) {

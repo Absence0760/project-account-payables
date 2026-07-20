@@ -75,7 +75,7 @@ void main() {
   });
 
   setUp(() async {
-    NotificationStore.instance.debugReset();
+    NotificationStore.instance.reset();
     await OfflineStore.instance.clear();
     ApiClient().debugConfigure();
   });
