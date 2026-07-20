@@ -170,7 +170,7 @@ See [`docs/self-service-signup.md`](../../docs/self-service-signup.md) for the f
 | `GET`    | `/api/invoices/{id}`                | *     | Get single invoice — includes the latest `po_match` JSONB result and any `warnings` |
 | `GET`    | `/api/invoices/{id}/priors`         | *     | Priors metadata from latest extraction (vendor cache + RAG neighbors). See [`ai-extraction.md`](ai-extraction.md). |
 | `GET`    | `/api/invoices/{id}/line-items`     | *     | Get invoice line items |
-| `PUT`    | `/api/invoices/{id}/line-items`     | admin/manager/cfo | Replace all line items |
+| `PUT`    | `/api/invoices/{id}/line-items`     | admin/manager/cfo | Replace all line items. 409 once the invoice is approved (financial freeze). Writes an `invoice.line_items_edited` audit row, re-runs `refresh_warnings`, and reconciles the summed lines against the header money fields — the header `amount` is never recomputed from the lines; a divergence raises an `error` `line_total_mismatch` warning + exception. Returns `{saved, line_items_total, header_amount, reconciles_with_header}` (money as exact decimal strings). See `line-total-reconciliation.md` |
 | `POST`   | `/api/invoices`                     | admin/manager/cfo | Create invoice |
 | `POST`   | `/api/invoices/{id}/file`           | admin/manager/cfo | Attach a source file to a manually-entered invoice that has none yet. 409 if it already has one. |
 | `PUT`    | `/api/invoices/{id}/file`           | admin/manager/cfo | Replace an invoice's existing file. 404 if none to replace, 409 if the invoice is done. |
