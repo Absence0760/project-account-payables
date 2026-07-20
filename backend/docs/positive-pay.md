@@ -119,6 +119,14 @@ Registered formatters:
 Amounts are always derived from the `Decimal` on the item (zero-padded cents in
 fixed-width, plain decimal string in CSV) — never a float.
 
+Positive Pay files are **deliberately excluded** from the platform-wide CSV
+formula-injection guard (`report_export.csv_safe_cell`, CWE-1236): they are
+fixed-format uploads consumed by the bank's machine matching, never opened as a
+spreadsheet workflow, and a `'` prefix on the payee/vendor name would break the
+bank's exact-match comparison and raise a false fraud flag on every cheque. All
+human-facing CSV exports (analytics, audit, report builder, invoice/workflow
+exports) do apply the guard — see `backend/CLAUDE.md` § Security utilities.
+
 ## The pure return classifier
 
 `classify_presented_items` (`services/positive_pay.py`) is **pure**: no DB, no

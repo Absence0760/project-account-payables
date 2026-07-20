@@ -229,6 +229,25 @@ Column order is pinned by `tests/test_report_export.py` — finance
 imports rely on column position; a reorder breaks downstream
 pipelines.
 
+### Formula-injection guard (CWE-1236)
+
+Every CSV export surface runs string cells through the shared
+`report_export.csv_safe_cell` helper: a string whose first character is `=`,
+`+`, `-`, `@`, tab or CR is prefixed with a single quote so Excel /
+LibreOffice treat it as literal text instead of executing it as a formula (a
+vendor name comes from AI extraction, i.e. from the attacker's own invoice
+PDF). Non-string cells and signed numeric strings (`-12.34` —
+Decimal-formatted amounts) pass through untouched, so money columns are
+byte-identical. Applied in the `report_export` exporters (analytics export,
+scheduled reports, expense export), the audit export
+(`/api/audit/export?format=csv`), the report builder
+(`/api/reports/{id}/export?format=csv`), the invoice bulk export
+(`POST /api/invoices/bulk/export`), and the single-invoice workflow export
+(`GET /api/workflow/{id}/export?format=csv`). The **Positive Pay** files are
+deliberately excluded — fixed-format bank-machine uploads where a `'` prefix
+would break the bank's payee exact-match (see `docs/positive-pay.md`).
+Pinned by `tests/test_csv_injection.py` + `tests/test_bulk_export_csv_injection.py`.
+
 **Dispatch is exhaustive by construction**: `export_report`'s branch-per-report
 `if/elif` ends in an `else` that raises rather than falling through to any one
 report's query — every key in `EXPORTERS` must have its own branch above it.

@@ -133,7 +133,10 @@ in `tenant_provisioning`.
 renders:
 
 - **CSV** — a `#`-comment brand-provenance header (`report_export.brand_provenance_header`)
-  followed by a column-positional grid (column labels as the header row).
+  followed by a column-positional grid (column labels as the header row). Data
+  cells pass through the shared `report_export.csv_safe_cell` formula-injection
+  guard (CWE-1236) — dangerous-prefixed strings get a `'` prefix; decimal money
+  strings and non-string cells pass through byte-exact.
 - **PDF** — the branded analytics-report renderer
   (`services/analytics_report_pdf.render_analytics_report_pdf`), the same
   white-label chrome as the analytics export surface.
