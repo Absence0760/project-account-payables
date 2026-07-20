@@ -34,7 +34,7 @@ dependencies = [
     # OIDC ID-token signature + claims verification in services/sso.py.
     # (Successor to authlib.jose, which deprecated that module in favour of
     # joserfc; we use joserfc directly so there's no authlib dependency.)
-    "joserfc>=1.7.3,<2",
+    "joserfc>=1.7.4,<2",
     # SAML 2.0 Service-Provider: assertion XML-DSig verification (services/
     # auth_saml.py). python3-saml verifies in-process via python-xmlsec (no
     # xmlsec1 binary shell-out), keeping the slim-image / local-first story
