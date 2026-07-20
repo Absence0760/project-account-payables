@@ -953,10 +953,23 @@
 
 				{#if activeSummary}
 					<div class="kpi-row">
-						<KpiCard value={formatMoney(activeSummary.total, { currency: activeReport.currency })} label={m('expenses.reports.total')} />
+						<KpiCard value={formatMoney(activeSummary.total, { currency: activeSummary.currency })} label={m('expenses.reports.total')} />
 						<KpiCard value={activeSummary.count} label={m('expenses.reports.expenses')} />
 						<KpiCard value={activeSummary.by_category.length} label={m('expenses.reports.categories')} />
 					</div>
+					<!--
+						The total sums each line's rate-locked conversion into the report
+						currency. Lines with no usable rate are EXCLUDED, so the figure
+						above would silently understate without this notice (issue #157).
+					-->
+					{#if activeSummary.unconverted_count > 0}
+						<div class="unconverted-panel" role="alert">
+							{m('expenses.reports.unconverted', {
+								count: activeSummary.unconverted_count,
+								currency: activeSummary.currency
+							})}
+						</div>
+					{/if}
 				{/if}
 
 				{#if canCreate && activeReport.status === 'draft'}
@@ -1483,6 +1496,17 @@
 	.violation-panel li {
 		margin: 2px 0;
 		color: #e04040;
+	}
+
+	/* Partial-total notice: some lines lack an FX lock and were excluded. */
+	.unconverted-panel {
+		margin-top: 10px;
+		border: 1px solid #c98a00;
+		background: rgba(201, 138, 0, 0.08);
+		border-radius: 8px;
+		padding: 10px 14px;
+		color: var(--text);
+		font-size: 0.85rem;
 	}
 
 	/* --- New-report mini modal --- */

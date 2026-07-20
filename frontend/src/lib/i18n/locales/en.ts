@@ -894,6 +894,7 @@ export const en = {
 	'expenses.reports.total': 'Total',
 	'expenses.reports.expenses': 'Expenses',
 	'expenses.reports.categories': 'Categories',
+	'expenses.reports.unconverted': '{count} expense(s) have no exchange rate into {currency} and are excluded from this total. Re-attach them to lock a rate.',
 	'expenses.reports.attachPlaceholder': 'Expense ID to attach',
 	'expenses.reports.attachAria': 'Expense ID to attach',
 	'expenses.reports.attach': 'Attach',

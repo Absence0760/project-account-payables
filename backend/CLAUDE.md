@@ -47,7 +47,7 @@ Deep-dive docs live in `backend/docs/`:
 | Data enrichment (auto-fill, price variance, vendor scoring) | `docs/data-enrichment.md` |
 | PEPPOL AS4 outbound (e-invoice transmission) | `docs/peppol.md` |
 | Contract management (CLM) | `docs/contracts.md` |
-| Expense management | `docs/expense-management.md` |
+| Expense management (incl. multi-currency locked-FX reports) | `docs/expense-management.md` |
 | Digital signatures on approvals (SOX) | `docs/approval-signatures.md` |
 | Retention policies (SOX records management) | `docs/retention.md` |
 | Privacy — GDPR/CCPA DSAR export + right-to-erasure | `docs/privacy.md` |

@@ -30,8 +30,8 @@ mapped to `varchar` columns (`native_enum=False`). All five live in
 
 | Table | Model | Purpose |
 |-------|-------|---------|
-| `expense_reports` | `ExpenseReport` | A grouping of expenses an employee submits for approval + reimbursement. `report_number`, `title`, `employee_user_id` (control-plane User id, no cross-DB FK), `status` (draft → submitted → pending_approval → approved/rejected → reimbursed/cancelled), `submitted_at`/`approved_at`/`approved_by`, `total_amount` (recomputed from attached expenses), `currency`, `notes`. |
-| `expenses` | `Expense` | A single expense line. `report_id` (nullable — an expense can exist before being grouped), `expense_date`, `merchant`, `category`, `description`, `amount`, `currency`, `gl_account_id` (FK → `gl_accounts`), `receipt_file_key`, `payment_method` (out_of_pocket / corporate_card / virtual_card), `card_transaction_id`, `policy_violations` (JSONB list), `status`, `reimbursable`, `mileage_miles`. |
+| `expense_reports` | `ExpenseReport` | A grouping of expenses an employee submits for approval + reimbursement. `report_number`, `title`, `employee_user_id` (control-plane User id, no cross-DB FK), `status` (draft → submitted → pending_approval → approved/rejected → reimbursed/cancelled), `submitted_at`/`approved_at`/`approved_by`, `total_amount` (recomputed from attached expenses, denominated in `currency`), `currency`, `reporting_currency`/`reporting_amount`/`reporting_fx_rate`/`reporting_fx_locked_at` (the total re-expressed in the org reporting currency, rate locked at submit — what the CFO gate compares), `notes`. |
+| `expenses` | `Expense` | A single expense line. `report_id` (nullable — an expense can exist before being grouped), `expense_date`, `merchant`, `category`, `description`, `amount`, `currency`, `converted_currency`/`converted_amount`/`converted_fx_rate`/`converted_fx_locked_at` (the line re-expressed in the owning report's currency, rate locked on attach/edit), `gl_account_id` (FK → `gl_accounts`), `receipt_file_key`, `payment_method` (out_of_pocket / corporate_card / virtual_card), `card_transaction_id`, `policy_violations` (JSONB list), `status`, `reimbursable`, `mileage_miles`. |
 | `expense_policies` | `ExpensePolicy` | A reimbursement policy. `name`, `active`, `category` (NULL = all), `per_diem_amount`/`per_diem_currency`, `mileage_rate` (per mile), `category_limit`, `requires_preapproval_above`, `requires_receipt_above`, `rules` (JSONB). *Defined in WF1; enforced in WF3.* |
 | `corporate_card_transactions` | `CorporateCardTransaction` | A card transaction feed row reconciled to an expense. `card_ref`, `card_last_four`, `virtual_card_id` (FK → `virtual_cards`), `txn_date`/`posted_date`, `merchant`, `amount`, `currency`, `external_txn_id` (provider id, drives import idempotency), `matched_expense_id`, `reconciliation_status` (unmatched/matched/ignored), `import_batch`, `raw` (JSONB). *Model in WF1; import/reconcile in WF4.* |
 | `expense_preapprovals` | `ExpensePreapproval` | A spend pre-approval raised before an expense is incurred. `requester_user_id`, `title`, `estimated_amount`, `currency`, `category`, `justification`, `status` (pending/approved/rejected), `decided_by`/`decided_at`, `expense_report_id`. *Model in WF1; gating in WF3.* |
@@ -149,7 +149,11 @@ approved `ExpensePreapproval` coverage) from the tenant DB and hands them in:
   `receipt_required` (amount > `requires_receipt_above` and no
   `receipt_file_key` — **blocking**); `preapproval_required` (amount >
   `requires_preapproval_above` with no approved pre-approval covering it —
-  **blocking**); `per_diem_exceeded`. All comparisons are `Decimal`.
+  **blocking**); `per_diem_exceeded`. All comparisons are `Decimal`. The
+  engine compares bare numbers, so the caller only ever hands it a pre-approval
+  **in the same currency as the expense** (`_approved_preapproval_amount`
+  filters on `ExpensePreapproval.currency`) — a €500 EUR pre-approval must not
+  satisfy a $500 USD expense. "Not covered" is the fail-closed answer.
 - `mileage_reimbursement(expense, policies)` → `Decimal`
   (`mileage_miles * mileage_rate` from the first applicable policy with a rate).
 - `evaluate_report(report, expenses, policies, preapproval_amount_by_expense=…)`
@@ -177,10 +181,21 @@ expense_id?}` (advisory, PII-free). `evaluate_expense` is wired into expense
 ### CFO approval threshold
 
 `Organization.settings.expense_approval.cfo_threshold` (a Decimal-as-string,
-default `5000`) gates report approval: a report whose `total_amount` exceeds it
-requires the `cfo` (or `admin`) role. It's read off the injected `Organization`
-row in the approve handler; writing it (if a settings UI is added) uses the
+default `5000`) gates report approval: a report whose total exceeds it requires
+the `cfo` (or `admin`) role. It's read off the injected `Organization` row in
+the approve handler; writing it (if a settings UI is added) uses the
 `flag_modified(org, 'settings')` idiom against the control DB.
+
+The threshold is a **bare number denominated in the org's reporting currency**
+(`currency_conversion.resolve_reporting_currency`), so the comparison uses
+`ExpenseReport.reporting_amount` — the total converted into that currency at a
+rate locked when the report was **submitted** — not the report's own-currency
+`total_amount`. Without that step a 4 900 EUR report slips under a 5 000 USD
+threshold, i.e. filing in a weaker currency dodges CFO review. When the
+reporting figure cannot be established (a foreign-currency report and no usable
+rate) the gate **fails closed**: CFO/admin sign-off is required. The approve
+audit row records `gate_total` + `gate_currency` so the decision is replayable
+without re-deriving a rate. See § Multi-currency reports.
 
 The threshold is parsed through the shared fail-closed helper
 `approval_chain.cfo_gate_applies` (the same one the invoice-approval and
@@ -200,11 +215,69 @@ photographed; no Word). Download reuses the module-level `get_file`.
 
 ### Total recompute
 
-A report's `total_amount` is always derived, never client-supplied: it's a
-Postgres `SUM(amount)` over the report's currently-attached expenses, coerced
-to `Decimal` (`_recompute_report_total`). It fires on attach/detach, on
-creating an expense already pointed at a report, and on an expense amount
-change or report move.
+A report's `total_amount` is always derived, never client-supplied
+(`_recompute_report_total`). It sums each attached line's **rate-locked**
+`converted_amount` — or, for a line already denominated in the report's
+currency, its exact face `amount`. See § Multi-currency reports. It fires on
+attach/detach, on creating an expense already pointed at a report, on an
+expense amount/currency change or report move, on a report currency change,
+and again at submit. Every figure is `Decimal`, quantized to 2 dp
+`ROUND_HALF_UP` — never float.
+
+## Multi-currency reports
+
+An employee on one trip legitimately spends in several currencies, so a report
+is **not** constrained to a single currency. Instead every line is converted,
+and the conversion is **locked** — the same convention the invoice path uses
+(`currency_conversion.materialize_reporting_amount` → `invoices.reporting_*`)
+and the payment path uses (`payments.fx_rate` / `fx_locked_at`). Previously the
+total was a naive `SUM(expenses.amount)` across currencies: $100.00 USD plus
+€200.00 EUR on a USD report reported `300.00 USD`, and that fabricated figure
+fed the CFO gate (issue #157).
+
+`app/services/expense_currency.py` owns both layers:
+
+| Layer | Columns | Target currency | Rate locked |
+|---|---|---|---|
+| Line → report | `expenses.converted_*` | the owning `ExpenseReport.currency` | on create-with-report / amount-or-currency edit / attach / report-currency change |
+| Report → reporting base | `expense_reports.reporting_*` | `resolve_reporting_currency(org.settings)` | at **submit** |
+
+Rules that keep the numbers honest:
+
+- **Locked, never recomputed on read.** No read path calls the FX adapter, so a
+  market move cannot rewrite a submitted report's total. Re-locking happens only
+  on a write that changes what is being converted — and those writes are already
+  refused once the report leaves `draft` (`_require_report_unlocked`, issue #155).
+- **Unconvertible is excluded, not face-valued.** A foreign line with no usable
+  lock contributes nothing to the total and is counted in `unconverted_count`.
+  Attaching a line we cannot convert is refused with **422** (currency codes
+  only in the message — no PII), and **submit** refuses while any unconverted
+  line is attached (legacy rows predating the columns), listing their ids.
+- **Detach clears the lock** — it was an expression in *that* report's currency.
+- **Same currency is a no-op fetch**: rate `1`, no adapter call, exact face value.
+- **Local-first**: the FX provider comes from `Organization.settings.fx` via the
+  existing `fx_adapters` registry, defaulting to the deterministic `mock`
+  adapter — multi-currency reports work with no cloud account.
+
+`GET /api/expense-reports/{id}/summary` exposes `currency`, `total_exact`,
+`unconverted_count`, and a `by_currency[]` breakdown (`original_amount` /
+`report_amount` / `count` / `unconverted_count`) alongside the legacy `total`;
+`by_category` / `by_status` gain `total_exact` + `unconverted_count`.
+`ExpenseResponse` gains `converted_*` and `ExpenseReportResponse` gains
+`total_amount_exact` + `reporting_*`, all as **exact decimal strings** (the
+pre-existing `amount` / `total_amount` floats stay for client back-compat).
+
+### Migration 0076
+
+`backend/alembic/versions/0076_expense_currency_conversion.py` adds the four
+`expenses.converted_*` and four `expense_reports.reporting_*` columns.
+Tenant-DB only (both halves gated on the table existing, so it no-ops on the
+control plane), idempotent `ADD COLUMN IF NOT EXISTS` / `DROP COLUMN IF
+EXISTS`, fanned out by `scripts/migrate_all_tenants.py`. All nullable with **no
+backfill**: a same-currency line falls back to its exact face amount, and
+inventing a rate for a historical foreign line inside a migration would
+fabricate history — it is counted as unconverted and blocks submission until
+re-attached (which locks a real rate).
 
 ## Tests
 
@@ -222,6 +295,22 @@ CFO read access), the CSV export (header + a data row, the `?status=` filter,
 CFO can export), and the bulk GL re-code (sets + one audit row per expense,
 the `null`-clears case, unknown-GL/unknown-expense 404s, and the CFO-denied
 RBAC case).
+
+`backend/tests/test_expense_currency.py` (issue #157) — the multi-currency
+layer. Pure unit cases over `rollup_report_lines` / `report_amount_for_gate` /
+`lock_expense_conversion` (unconverted lines excluded not face-valued, a lock
+into a stale currency ignored, exact `Decimal` + 8-dp rate, PII-free error), and
+`realdb` end-to-end cases: the issue's exact reproduction ($100.00 USD +
+€200.00 EUR on a USD report totals `317.39`, never `300.00`), the summary's
+`by_currency` breakdown, rate stability when the org's FX config is re-pointed
+mid-flight, 422 on an unconvertible attach, submit blocked by a legacy
+unconverted line, re-lock on report-currency change and on a line-currency
+edit, lock cleared on detach, and the CFO gate — not dodgeable by splitting
+across currencies, comparing in the ORG REPORTING currency (a 4 900 EUR report
+is held as USD 5 326.09), failing closed with no reporting figure, honouring
+`settings.reporting_currency`, and unchanged for the single-currency case. Plus
+the currency-matched pre-approval cover check. All deterministic against the
+`mock` FX adapter.
 
 `backend/tests/test_expense_policy.py` (WF3, pure/DB-free) — the policy engine:
 category limits, receipt-required, pre-approval-required (+ coverage), per-diem,

@@ -865,6 +865,7 @@ export const messages = {
 	'expenses.reports.total': '合計',
 	'expenses.reports.expenses': '経費',
 	'expenses.reports.categories': 'カテゴリ',
+	'expenses.reports.unconverted': '{count} 件の経費に {currency} への為替レートがないため、この合計から除外されています。再度添付してレートを確定してください。',
 	'expenses.reports.attachPlaceholder': '添付する経費ID',
 	'expenses.reports.attachAria': '添付する経費ID',
 	'expenses.reports.attach': '添付',

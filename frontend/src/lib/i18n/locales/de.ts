@@ -867,6 +867,7 @@ export const messages = {
 	'expenses.reports.total': 'Gesamt',
 	'expenses.reports.expenses': 'Ausgaben',
 	'expenses.reports.categories': 'Kategorien',
+	'expenses.reports.unconverted': '{count} Ausgabe(n) haben keinen Wechselkurs in {currency} und sind von dieser Summe ausgenommen. Erneut anhängen, um einen Kurs festzuschreiben.',
 	'expenses.reports.attachPlaceholder': 'Anzufügende Ausgaben-ID',
 	'expenses.reports.attachAria': 'Anzufügende Ausgaben-ID',
 	'expenses.reports.attach': 'Anfügen',

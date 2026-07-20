@@ -85,6 +85,13 @@ export interface Expense {
 	description: string | null;
 	amount: number;
 	currency: string;
+	// Rate-locked expression of `amount` in the owning report's currency
+	// (issue #157). Exact decimal STRINGS — never parse into a float for
+	// arithmetic. null when the expense isn't attached to a report.
+	converted_amount: string | null;
+	converted_currency: string | null;
+	converted_fx_rate: string | null;
+	converted_fx_locked_at: string | null;
 	gl_account_id: string | null;
 	receipt_file_key: string | null;
 	receipt_url: string | null;
@@ -115,7 +122,16 @@ export interface ExpenseReport {
 	approved_at: string | null;
 	approved_by: string | null;
 	total_amount: number;
+	// Exact `total_amount` (in `currency`) as a decimal string.
+	total_amount_exact: string;
 	currency: string;
+	// `total_amount` re-expressed in the org reporting currency at the rate
+	// locked on submit — the figure the CFO threshold gate compares. null
+	// before submit or when no rate was available (the gate then requires CFO).
+	reporting_amount: string | null;
+	reporting_currency: string | null;
+	reporting_fx_rate: string | null;
+	reporting_fx_locked_at: string | null;
 	notes: string | null;
 	expenses: Expense[];
 	created_at: string;
@@ -134,14 +150,38 @@ export interface ExpenseSummaryBucket {
 	category?: string | null;
 	status?: string | null;
 	total: number;
+	// Exact `total` as a decimal string.
+	total_exact: string;
+	// Lines with no usable rate lock — EXCLUDED from `total`.
+	unconverted_count: number;
 	count: number;
+}
+
+// Per-currency split of a report's lines. `original_amount` is the face value
+// in that currency; `report_amount` is its rate-locked contribution to the
+// report total. Both exact decimal strings.
+export interface ExpenseCurrencyBucket {
+	currency: string;
+	count: number;
+	original_amount: string;
+	report_amount: string;
+	unconverted_count: number;
 }
 
 export interface ExpenseReportSummary {
 	total: number;
+	// Exact `total`, denominated in `currency` — the report's own currency.
+	// Every figure here is converted at each line's LOCKED rate, never a naive
+	// cross-currency sum (issue #157).
+	total_exact: string;
+	currency: string;
 	count: number;
+	// Non-zero means the displayed totals are partial: some lines have no
+	// usable rate lock and were excluded (they also block submission).
+	unconverted_count: number;
 	by_category: ExpenseSummaryBucket[];
 	by_status: ExpenseSummaryBucket[];
+	by_currency: ExpenseCurrencyBucket[];
 }
 
 // Payload shapes for create / update (request side). Money goes out as a

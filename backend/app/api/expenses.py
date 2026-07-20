@@ -57,11 +57,24 @@ from app.schemas.expense import (
 )
 from app.services.approval_chain import check_segregation
 from app.services.audit_dispatch import dispatch_audit
+from app.services.currency_conversion import resolve_reporting_currency
+from app.services.expense_currency import (
+    ExpenseConversionError,
+    ReportRollup,
+    clear_expense_conversion,
+    clear_report_reporting_amount,
+    lock_expense_conversion,
+    lock_report_reporting_amount,
+    normalize_currency,
+    report_amount_for_gate,
+    rollup_report_lines,
+)
 from app.services.expense_policy import (
     blocking_violations,
     evaluate_expense,
     evaluate_report,
 )
+from app.services.fx_adapters import get_fx_adapter
 from app.services.storage import get_file, upload_expense_receipt
 from app.tenant import (
     apply_entity_scope,
@@ -113,6 +126,14 @@ def _to_response(e: Expense) -> ExpenseResponse:
         description=e.description,
         amount=float(e.amount),
         currency=e.currency,
+        # Rate-locked expression of `amount` in the owning report's currency —
+        # exact decimal strings (the legacy `amount` stays float for back-compat).
+        converted_amount=str(e.converted_amount) if e.converted_amount is not None else None,
+        converted_currency=e.converted_currency,
+        converted_fx_rate=str(e.converted_fx_rate) if e.converted_fx_rate is not None else None,
+        converted_fx_locked_at=(
+            e.converted_fx_locked_at.isoformat() if e.converted_fx_locked_at else None
+        ),
         gl_account_id=str(e.gl_account_id) if e.gl_account_id else None,
         receipt_file_key=e.receipt_file_key,
         receipt_url=_receipt_url(e.receipt_file_key),
@@ -138,7 +159,16 @@ def _report_to_response(r: ExpenseReport) -> ExpenseReportResponse:
         approved_at=r.approved_at.isoformat() if r.approved_at else None,
         approved_by=str(r.approved_by) if r.approved_by else None,
         total_amount=float(r.total_amount),
+        total_amount_exact=str(r.total_amount),
         currency=r.currency,
+        # Total expressed in the org reporting currency at the rate locked on
+        # submit — the figure the CFO threshold gate compares (issue #157).
+        reporting_amount=str(r.reporting_amount) if r.reporting_amount is not None else None,
+        reporting_currency=r.reporting_currency,
+        reporting_fx_rate=str(r.reporting_fx_rate) if r.reporting_fx_rate is not None else None,
+        reporting_fx_locked_at=(
+            r.reporting_fx_locked_at.isoformat() if r.reporting_fx_locked_at else None
+        ),
         notes=r.notes,
         expenses=[_to_response(e) for e in sorted(r.expenses, key=lambda x: x.expense_date)],
         created_at=r.created_at.isoformat() if r.created_at else "",
@@ -212,17 +242,72 @@ def _require_report_unlocked(report: ExpenseReport) -> None:
         )
 
 
-async def _recompute_report_total(db: AsyncSession, report: ExpenseReport) -> None:
+async def _report_rollup(db: AsyncSession, report: ExpenseReport) -> ReportRollup:
+    """Roll the report's attached expenses into its own currency (no FX call).
+
+    Every line contributes its *rate-locked* ``converted_amount`` (or its face
+    ``amount`` when it is already denominated in the report currency). A foreign
+    line with no usable lock contributes NOTHING and is counted as unconverted —
+    silently summing it at face value across currencies was issue #157.
+    """
+    rows = (
+        await db.execute(
+            select(
+                Expense.id,
+                Expense.amount,
+                Expense.currency,
+                Expense.converted_amount,
+                Expense.converted_currency,
+            ).where(Expense.report_id == report.id)
+        )
+    ).all()
+    return rollup_report_lines(
+        [
+            {
+                "id": r.id,
+                "amount": r.amount,
+                "currency": r.currency,
+                "converted_amount": r.converted_amount,
+                "converted_currency": r.converted_currency,
+            }
+            for r in rows
+        ],
+        report_currency=report.currency,
+    )
+
+
+async def _recompute_report_total(db: AsyncSession, report: ExpenseReport) -> ReportRollup:
     """Recompute ``total_amount`` from the report's currently-attached expenses.
 
-    Money stays exact: the SUM runs in Postgres over ``Numeric(15, 2)`` and the
-    result is coerced to ``Decimal`` (never float)."""
-    total = (
-        await db.execute(
-            select(func.coalesce(func.sum(Expense.amount), 0)).where(Expense.report_id == report.id)
+    Money stays exact: every figure is ``Decimal`` (never float), quantized to
+    2 dp. The composition just changed, so any report-level reporting-currency
+    lock is invalidated — ``submit`` re-locks it against the new total.
+    """
+    rollup = await _report_rollup(db, report)
+    report.total_amount = rollup.total
+    clear_report_reporting_amount(report)
+    return rollup
+
+
+def _fx_adapter_for(org: Organization):
+    """FX adapter from the org's config — ``mock`` (deterministic, no network)
+    unless the org names a provider. Local-first: a fresh clone converts
+    multi-currency expense reports with no cloud account."""
+    return get_fx_adapter((org.settings or {}).get("fx"))
+
+
+async def _lock_line_conversion(expense: Expense, report: ExpenseReport, org: Organization) -> None:
+    """Lock ``expense`` into ``report``'s currency, or 422.
+
+    Fail-closed: rather than attaching a line we cannot express in the report's
+    currency (which would understate the total the CFO gate reads), the write is
+    rejected. The message carries only currency codes — no PII."""
+    try:
+        await lock_expense_conversion(
+            expense, target_currency=report.currency, fx_adapter=_fx_adapter_for(org)
         )
-    ).scalar_one()
-    report.total_amount = Decimal(total)
+    except ExpenseConversionError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
 
 
 async def _active_policies(db: AsyncSession) -> list[ExpensePolicy]:
@@ -236,9 +321,18 @@ async def _active_policies(db: AsyncSession) -> list[ExpensePolicy]:
 async def _approved_preapproval_amount(db: AsyncSession, expense: Expense) -> Decimal | None:
     """Largest approved pre-approval estimate covering this expense.
 
-    A pre-approval covers an expense when it's approved and either linked to the
-    expense's report or (loosely) matches its category. Returns the largest
-    matching estimate so the policy engine can compare it against the amount."""
+    A pre-approval covers an expense when it's approved, denominated in the
+    SAME currency, and either linked to the expense's report or (loosely)
+    matching its category. Returns the largest matching estimate so the policy
+    engine can compare it against the amount.
+
+    The currency match is load-bearing (issue #157): the engine compares
+    ``estimated_amount >= expense.amount`` as bare numbers, so without it a
+    €500 EUR pre-approval would silently satisfy the pre-approval requirement
+    for a $500 USD expense. We deliberately do NOT convert here — this is an
+    advisory, best-effort path with no FX budget, and "not covered" is the
+    fail-closed answer (it raises a blocking violation rather than waving the
+    expense through)."""
     if expense.report_id is None and expense.category is None:
         return None
     conditions = []
@@ -253,6 +347,8 @@ async def _approved_preapproval_amount(db: AsyncSession, expense: Expense) -> De
             await db.execute(
                 select(ExpensePreapproval.estimated_amount).where(
                     ExpensePreapproval.status == PreapprovalStatus.approved,
+                    func.upper(func.coalesce(ExpensePreapproval.currency, "USD"))
+                    == normalize_currency(expense.currency),
                     or_(*conditions),
                 )
             )
@@ -319,6 +415,7 @@ async def create_expense(
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK)),
     org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID = Depends(get_write_entity_id),
+    org: Organization = Depends(get_tenant),
 ):
     gl_uuid: uuid.UUID | None = None
     if body.gl_account_id:
@@ -356,6 +453,10 @@ async def create_expense(
     await db.flush()
 
     if report is not None:
+        # Lock the line into the report's currency BEFORE the total recompute —
+        # an unlocked foreign line would be excluded from the total (issue #157).
+        await _lock_line_conversion(expense, report, org)
+        await db.flush()
         await _recompute_report_total(db, report)
 
     await _refresh_policy_violations(db, expense)
@@ -573,6 +674,7 @@ async def update_expense(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK)),
     org_id: uuid.UUID = Depends(get_org_id),
+    org: Organization = Depends(get_tenant),
 ):
     expense = await _get_expense_or_404(db, expense_id)
     payload = body.model_dump(exclude_unset=True)
@@ -611,8 +713,9 @@ async def update_expense(
             setattr(expense, field, payload[field])
             changed.append(field)
 
-    # An amount change ripples into the owning report's total.
-    if "amount" in changed and expense.report_id:
+    # An amount / currency change ripples into the owning report's total — the
+    # locked conversion describes the OLD amount+currency, so it must be re-locked.
+    if ("amount" in changed or "currency" in changed) and expense.report_id:
         affected_reports.add(expense.report_id)
 
     # Any report whose total this edit would move (an amount change or a
@@ -620,6 +723,17 @@ async def update_expense(
     # CFO gate / stale-signs an already-approved report (issue #155).
     for rid in affected_reports:
         _require_report_unlocked(await _get_report_or_404(db, rid))
+
+    # Re-lock (or clear) the line's conversion whenever what it converts, or
+    # what it converts INTO, changed (issue #157). Done before the recompute so
+    # the report total reads the fresh figure.
+    if affected_reports:
+        if expense.report_id:
+            await _lock_line_conversion(
+                expense, await _get_report_or_404(db, expense.report_id), org
+            )
+        else:
+            clear_expense_conversion(expense)
 
     await db.flush()
     for rid in affected_reports:
@@ -768,53 +882,86 @@ async def report_summary(
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK, ROLE_CFO)),
 ):
     """Aggregate the report's attached expenses: grand total + count plus
-    per-category and per-status rollups. The SUMs run in Postgres over the
-    ``Numeric`` column (exact); the response serialises money as ``float`` to
-    match ``ExpenseResponse.amount`` (read-only display rollup)."""
+    per-category, per-status and per-CURRENCY rollups.
+
+    Every figure is expressed in the report's own ``currency`` using each line's
+    rate-locked ``converted_amount`` — never a naive cross-currency ``SUM`` of
+    ``Expense.amount`` (issue #157). A foreign line with no usable lock is
+    excluded and surfaced via ``unconverted_count`` /
+    ``by_currency[].unconverted_count`` so the UI can say "N lines pending
+    conversion" instead of showing a number that quietly mixes dollars and
+    euros. All arithmetic is ``Decimal``; the legacy ``total`` field stays
+    ``float`` for back-compat while the new fields carry exact decimal strings."""
     report = await _get_report_or_404(db, report_id)
-
-    total = (
-        await db.execute(
-            select(func.coalesce(func.sum(Expense.amount), 0)).where(Expense.report_id == report.id)
-        )
-    ).scalar_one()
-    count = (
-        await db.execute(select(func.count(Expense.id)).where(Expense.report_id == report.id))
-    ).scalar_one()
-
-    by_category_rows = (
+    rows = (
         await db.execute(
             select(
+                Expense.id,
+                Expense.amount,
+                Expense.currency,
                 Expense.category,
-                func.count(Expense.id).label("count"),
-                func.coalesce(func.sum(Expense.amount), 0).label("total"),
-            )
-            .where(Expense.report_id == report.id)
-            .group_by(Expense.category)
-        )
-    ).all()
-    by_status_rows = (
-        await db.execute(
-            select(
                 Expense.status,
-                func.count(Expense.id).label("count"),
-                func.coalesce(func.sum(Expense.amount), 0).label("total"),
-            )
-            .where(Expense.report_id == report.id)
-            .group_by(Expense.status)
+                Expense.converted_amount,
+                Expense.converted_currency,
+            ).where(Expense.report_id == report.id)
         )
     ).all()
+
+    def _line(r) -> dict:
+        return {
+            "id": r.id,
+            "amount": r.amount,
+            "currency": r.currency,
+            "converted_amount": r.converted_amount,
+            "converted_currency": r.converted_currency,
+        }
+
+    def _grouped(group_key) -> list[tuple[object, ReportRollup]]:
+        grouped: dict[object, list[dict]] = {}
+        for r in rows:
+            grouped.setdefault(group_key(r), []).append(_line(r))
+        return [
+            (key, rollup_report_lines(items, report_currency=report.currency))
+            for key, items in grouped.items()
+        ]
+
+    overall = rollup_report_lines([_line(r) for r in rows], report_currency=report.currency)
 
     return ExpenseReportSummary(
-        total=float(Decimal(total)),
-        count=int(count or 0),
+        total=float(overall.total),
+        total_exact=str(overall.total),
+        currency=overall.currency,
+        count=overall.count,
+        unconverted_count=overall.unconverted_count,
         by_category=[
-            {"category": cat, "count": int(cnt or 0), "total": float(Decimal(tot))}
-            for cat, cnt, tot in by_category_rows
+            {
+                "category": cat,
+                "count": roll.count,
+                "total": float(roll.total),
+                "total_exact": str(roll.total),
+                "unconverted_count": roll.unconverted_count,
+            }
+            for cat, roll in _grouped(lambda r: r.category)
         ],
         by_status=[
-            {"status": str(st), "count": int(cnt or 0), "total": float(Decimal(tot))}
-            for st, cnt, tot in by_status_rows
+            {
+                "status": str(st),
+                "count": roll.count,
+                "total": float(roll.total),
+                "total_exact": str(roll.total),
+                "unconverted_count": roll.unconverted_count,
+            }
+            for st, roll in _grouped(lambda r: r.status)
+        ],
+        by_currency=[
+            {
+                "currency": b.currency,
+                "count": b.count,
+                "original_amount": str(b.original_amount),
+                "report_amount": str(b.report_amount),
+                "unconverted_count": b.unconverted_count,
+            }
+            for b in overall.by_currency
         ],
     )
 
@@ -826,6 +973,7 @@ async def update_report(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK)),
     org_id: uuid.UUID = Depends(get_org_id),
+    org: Organization = Depends(get_tenant),
 ):
     report = await _get_report_or_404(db, report_id)
     # Report-level fields (currency in particular) reinterpret a locked total —
@@ -837,6 +985,17 @@ async def update_report(
         if field in payload and getattr(report, field) != payload[field]:
             setattr(report, field, payload[field])
             changed.append(field)
+
+    # Changing the report's currency re-denominates every attached line, so each
+    # one gets a fresh lock into the new currency and the total is recomputed
+    # (issue #157). Without this the total would keep summing figures locked
+    # into the OLD currency.
+    if "currency" in changed:
+        for child in report.expenses:
+            await _lock_line_conversion(child, report, org)
+        await db.flush()
+        await _recompute_report_total(db, report)
+
     if changed:
         await dispatch_audit(
             db,
@@ -860,12 +1019,19 @@ async def attach_expenses(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK)),
     org_id: uuid.UUID = Depends(get_org_id),
+    org: Organization = Depends(get_tenant),
 ):
     """Attach (or detach) expenses on a report and recompute its total.
 
     Tenant isolation comes from the per-tenant DB session — each id is looked
     up in this tenant's ``expenses`` table; an unknown / cross-tenant id is a
-    404. Detaching nulls ``report_id`` (the expense outlives the report)."""
+    404. Detaching nulls ``report_id`` (the expense outlives the report).
+
+    A line in a different currency from the report is NOT rejected — one trip
+    legitimately spans currencies — but it is converted at a rate locked onto
+    the row here, so the report's total is a real figure in the report's
+    currency instead of a nonsense cross-currency sum (issue #157). A line we
+    cannot convert is refused (422) rather than attached at face value."""
     report = await _get_report_or_404(db, report_id)
     # The target report's composition can only change while it's a draft.
     _require_draft_report(report)
@@ -882,20 +1048,29 @@ async def attach_expenses(
     # report A to report B leaves A's Numeric total stale (matches the
     # affected-reports handling in update_expense).
     affected_reports: set[uuid.UUID] = set()
+    attached: list[Expense] = []
     for eid in expense_uuids:
         expense = await _get_expense_or_404(db, eid)
         if body.detach:
             if expense.report_id == report.id:
                 expense.report_id = None
+                # The lock is an expression in THIS report's currency; once the
+                # line leaves, it no longer describes anything.
+                clear_expense_conversion(expense)
         else:
             if expense.report_id and expense.report_id != report.id:
                 affected_reports.add(expense.report_id)
             expense.report_id = report.id
+            attached.append(expense)
 
     # Moving an expense off a locked report would silently drop its total —
     # block that too (the source report also loses composition).
     for rid in affected_reports:
         _require_report_unlocked(await _get_report_or_404(db, rid))
+
+    # Lock each newly-attached line into the report's currency before totalling.
+    for expense in attached:
+        await _lock_line_conversion(expense, report, org)
 
     await db.flush()
     await _recompute_report_total(db, report)
@@ -939,6 +1114,7 @@ async def submit_report(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK)),
     org_id: uuid.UUID = Depends(get_org_id),
+    org: Organization = Depends(get_tenant),
 ):
     """Submit a draft report for approval: ``draft → submitted``.
 
@@ -946,12 +1122,34 @@ async def submit_report(
     violation is present (missing required receipt, or a required pre-approval
     that is absent) the submission is rejected with 422 and the violation list,
     and the report does NOT transition. On success the report is stamped
-    ``submitted_at`` and every child expense moves to ``submitted``."""
+    ``submitted_at`` and every child expense moves to ``submitted``.
+
+    Two currency guards run here (issue #157): the total is re-derived and the
+    submission refused if any attached line has no usable conversion into the
+    report's currency (a legacy row predating the locked-FX columns), and the
+    total is then locked into the ORG REPORTING currency so the CFO gate at
+    approval time compares a figure fixed at submission."""
     report = await _get_report_or_404(db, report_id)
     if report.status != ExpenseReportStatus.draft:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Cannot submit a report in '{report.status}' state",
+        )
+
+    # Fail closed on an un-summable line rather than submitting an understated
+    # total into the approval chain.
+    rollup = await _recompute_report_total(db, report)
+    if rollup.unconverted_count:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "message": (
+                    f"{rollup.unconverted_count} expense(s) have no exchange rate locked "
+                    f"into the report currency {rollup.currency} and cannot be totalled. "
+                    "Re-attach them to lock a rate."
+                ),
+                "expense_ids": list(rollup.unconverted_ids),
+            },
         )
 
     policies = await _active_policies(db)
@@ -978,6 +1176,15 @@ async def submit_report(
     for child in report.expenses:
         child.status = ExpenseStatus.submitted
 
+    # Lock the total into the org reporting currency — the figure the CFO gate
+    # reads at approval. Best-effort: an FX outage leaves it NULL and the gate
+    # then fails CLOSED (CFO required), so a failure here never lets a report
+    # through with less scrutiny.
+    reporting_currency = resolve_reporting_currency(org.settings)
+    await lock_report_reporting_amount(
+        report, reporting_currency=reporting_currency, fx_adapter=_fx_adapter_for(org)
+    )
+
     await dispatch_audit(
         db,
         correlation_id=uuid.uuid4(),
@@ -986,7 +1193,15 @@ async def submit_report(
         action="expense_report.submitted",
         entity_type="expense_report",
         entity_id=report.id,
-        details={"total": str(report.total_amount), "expense_count": len(report.expenses)},
+        details={
+            "total": str(report.total_amount),
+            "currency": normalize_currency(report.currency),
+            "reporting_total": (
+                str(report.reporting_amount) if report.reporting_amount is not None else None
+            ),
+            "reporting_currency": report.reporting_currency,
+            "expense_count": len(report.expenses),
+        },
     )
     await db.commit()
     fresh = await _get_report_or_404(db, report.id)
@@ -1031,16 +1246,32 @@ async def approve_report(
 
     expense_cfg = (org.settings or {}).get("expense_approval") or {}
     cfo_threshold_raw = expense_cfg.get("cfo_threshold", _DEFAULT_CFO_THRESHOLD)
-    report_total = Decimal(str(report.total_amount or 0))
-    if cfo_gate_applies(cfo_threshold_raw, report_total):
+
+    # The threshold is a bare number denominated in the ORG REPORTING currency,
+    # so the comparison uses the report total expressed in that currency — the
+    # figure locked at submit — not the report's own-currency total (issue
+    # #157). Without this a 4 900 EUR report slips under a 5 000 USD threshold.
+    # `None` means we could not establish it → fail CLOSED (gate applies).
+    reporting_currency = resolve_reporting_currency(org.settings)
+    gate_total = report_amount_for_gate(report, reporting_currency=reporting_currency)
+    gate_applies = gate_total is None or cfo_gate_applies(cfo_threshold_raw, gate_total)
+    if gate_applies:
         held = {r.name for r in user.roles} if user.roles else set()
         if ROLE_CFO not in held and ROLE_ADMIN not in held:
             threshold_dec = _to_decimal(cfo_threshold_raw)
             limit = f"{threshold_dec}" if threshold_dec is not None else "the configured limit"
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=(f"Report total {report_total} exceeds {limit}. CFO approval required."),
-            )
+            if gate_total is None:
+                detail = (
+                    f"Report total cannot be expressed in {reporting_currency} "
+                    f"(no rate from {normalize_currency(report.currency)}), so it cannot be "
+                    f"cleared against the {limit} limit. CFO approval required."
+                )
+            else:
+                detail = (
+                    f"Report total {gate_total} {reporting_currency} exceeds {limit}. "
+                    "CFO approval required."
+                )
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
 
     report.status = ExpenseReportStatus.approved
     report.approved_at = datetime.now(UTC)
@@ -1056,7 +1287,14 @@ async def approve_report(
         action="expense_report.approved",
         entity_type="expense_report",
         entity_id=report.id,
-        details={"total": str(report.total_amount)},
+        details={
+            "total": str(report.total_amount),
+            "currency": normalize_currency(report.currency),
+            # The exact figure the CFO gate compared, so an auditor can replay
+            # the decision without re-deriving an FX rate.
+            "gate_total": str(gate_total) if gate_total is not None else None,
+            "gate_currency": reporting_currency,
+        },
     )
     await db.commit()
     fresh = await _get_report_or_404(db, report.id)

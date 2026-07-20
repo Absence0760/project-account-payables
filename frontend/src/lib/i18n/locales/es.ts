@@ -867,6 +867,7 @@ export const messages = {
 	'expenses.reports.total': 'Total',
 	'expenses.reports.expenses': 'Gastos',
 	'expenses.reports.categories': 'Categorías',
+	'expenses.reports.unconverted': '{count} gasto(s) no tienen tipo de cambio a {currency} y quedan excluidos de este total. Vuelve a adjuntarlos para fijar un tipo.',
 	'expenses.reports.attachPlaceholder': 'ID de gasto a adjuntar',
 	'expenses.reports.attachAria': 'ID de gasto a adjuntar',
 	'expenses.reports.attach': 'Adjuntar',

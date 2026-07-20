@@ -866,6 +866,7 @@ export const messages = {
 	'expenses.reports.total': 'Total',
 	'expenses.reports.expenses': 'Dépenses',
 	'expenses.reports.categories': 'Catégories',
+	'expenses.reports.unconverted': '{count} dépense(s) n\'ont aucun taux de change vers {currency} et sont exclues de ce total. Rattachez-les pour verrouiller un taux.',
 	'expenses.reports.attachPlaceholder': 'ID de dépense à joindre',
 	'expenses.reports.attachAria': 'ID de dépense à joindre',
 	'expenses.reports.attach': 'Joindre',

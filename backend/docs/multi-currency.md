@@ -10,8 +10,12 @@ This sits **on top of** the payment-level FX machinery — it does not replace i
 |---|---|---|---|
 | **Payment FX** (existing) | `services/international_payments.py`, `services/fx_adapters/` | Locks an FX rate on the `Payment` row at submission; computes **realized** gain/loss (`compute_fx_gain_loss`) when a foreign invoice settles. | At payment submission |
 | **Reporting FX** (this doc) | `services/currency_conversion.py` | Converts each invoice's `amount` into the org reporting currency, materializes the rate on the invoice row, rolls multi-currency volume into one total, computes **unrealized** gain/loss on open invoices. | When the invoice is created / mutated |
+| **Expense FX** | `services/expense_currency.py` | Converts each expense line into its **report's** currency (`expenses.converted_*`) so a report total isn't a cross-currency sum, and the report total into the **org reporting** currency (`expense_reports.reporting_*`) so the CFO threshold compares like with like. | Line: on attach / amount-or-currency edit / report-currency change. Report: at submit |
 
-See `international-payments.md` for the payment side.
+Same three rules across all three layers — **`Decimal` only**, **rate locked and
+persisted on the row**, **never re-fetched at read time**. See
+`international-payments.md` for the payment side and `expense-management.md`
+§ Multi-currency reports for the expense side.
 
 ## Reporting (base) currency
 

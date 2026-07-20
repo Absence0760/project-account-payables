@@ -867,6 +867,7 @@ export const messages = {
 	'expenses.reports.total': 'Total',
 	'expenses.reports.expenses': 'Despesas',
 	'expenses.reports.categories': 'Categorias',
+	'expenses.reports.unconverted': '{count} despesa(s) não têm taxa de câmbio para {currency} e ficam fora deste total. Reanexe-as para travar uma taxa.',
 	'expenses.reports.attachPlaceholder': 'ID da despesa a anexar',
 	'expenses.reports.attachAria': 'ID da despesa a anexar',
 	'expenses.reports.attach': 'Anexar',
