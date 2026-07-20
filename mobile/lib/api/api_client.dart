@@ -27,6 +27,14 @@ class ApiClient {
   static const _tokenKey = 'auth_token';
   static const _tenantKey = 'tenant_slug';
 
+  /// Request timeout applied by [get], [post], [getList], [patch] and
+  /// [delete] (the JSON/no-body calls — [getBytes]/[postBytes] set their own
+  /// longer timeout for file transfers). Overridable only via
+  /// [debugConfigure] so tests can shrink it instead of waiting out the real
+  /// 10s in a hanging-request test.
+  static const _defaultTimeout = Duration(seconds: 10);
+  Duration _timeout = _defaultTimeout;
+
   String? _token;
   String? _tenantSlug;
 
@@ -41,12 +49,15 @@ class ApiClient {
 
   bool get hasToken => _token != null;
 
-  /// Test seam: swap the underlying HTTP client for a fake and reset the
+  /// Test seam: swap the underlying HTTP client for a fake, optionally shrink
+  /// the request [timeout] (defaults back to the real 10s when omitted so
+  /// tests don't leak a short timeout into each other), and reset the
   /// in-memory session so each test starts from a clean singleton. Not used
   /// by production code — guarded by [visibleForTesting].
   @visibleForTesting
-  void debugConfigure({http.Client? client}) {
+  void debugConfigure({http.Client? client, Duration? timeout}) {
     if (client != null) _http = client;
+    _timeout = timeout ?? _defaultTimeout;
     _token = null;
     _tenantSlug = null;
     AppConfig.tenantSlug = null;
@@ -111,7 +122,7 @@ class ApiClient {
     try {
       final response = await _http
           .get(uri, headers: _headers)
-          .timeout(const Duration(seconds: 10));
+          .timeout(_timeout);
       debugPrint('[API] GET $path → ${response.statusCode}');
       return _handleResponse(response);
     } catch (e) {
@@ -124,7 +135,9 @@ class ApiClient {
     String path, [
     Map<String, String>? params,
   ]) async {
-    final response = await _http.get(_uri(path, params), headers: _headers);
+    final response = await _http
+        .get(_uri(path, params), headers: _headers)
+        .timeout(_timeout);
     return _handleListResponse(response);
   }
 
@@ -141,7 +154,7 @@ class ApiClient {
             headers: _headers,
             body: body != null ? jsonEncode(body) : null,
           )
-          .timeout(const Duration(seconds: 10));
+          .timeout(_timeout);
       debugPrint('[API] POST $path → ${response.statusCode}');
       return _handleResponse(response);
     } catch (e) {
@@ -154,11 +167,13 @@ class ApiClient {
     String path, [
     Map<String, dynamic>? body,
   ]) async {
-    final response = await _http.patch(
-      _uri(path),
-      headers: _headers,
-      body: body != null ? jsonEncode(body) : null,
-    );
+    final response = await _http
+        .patch(
+          _uri(path),
+          headers: _headers,
+          body: body != null ? jsonEncode(body) : null,
+        )
+        .timeout(_timeout);
     return _handleResponse(response);
   }
 
@@ -228,7 +243,9 @@ class ApiClient {
   }
 
   Future<void> delete(String path) async {
-    final response = await _http.delete(_uri(path), headers: _headers);
+    final response = await _http
+        .delete(_uri(path), headers: _headers)
+        .timeout(_timeout);
     if (response.statusCode >= 400) {
       throw ApiException(response.statusCode, response.body);
     }
