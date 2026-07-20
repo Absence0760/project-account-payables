@@ -56,6 +56,19 @@ So the invoice can't reach approval without a human seeing that its header and
 its lines disagree — the divergence is loud instead of silent, without the
 engine guessing which of the two numbers is wrong.
 
+### …and it blocks the money
+
+Visibility alone wouldn't be enough: **approval doesn't gate on warning
+severity** (nothing in `services/review.py` or `workflow_engine.py` reads it), so
+a flagged invoice can still be approved. `line_total_mismatch` is therefore in
+`api/payments.PAYMENT_BLOCKING_EXCEPTION_TYPES` alongside `duplicate` and
+`fraud_flag` — an invoice carrying an unresolved one **cannot enter a payment
+run** (409). That is the later, narrower gate: the invoice can still be
+reviewed, corrected and re-run; only the money is stopped. Resolving or
+dismissing the exception is the documented human sign-off that clears it — the
+same escape hatch the other two types have. See `payments.md` § Financial-integrity
+exception gate.
+
 The check lives in `invoice_warnings.refresh_warnings`, the single write
 chokepoint, so it applies to **every** path that touches lines or the header —
 extraction, the header `PATCH`, bulk GL re-code, and the line-items `PUT` —
@@ -121,6 +134,10 @@ Money is an exact decimal string on the wire, never a float.
 - clearing every line is audited too
 - a GL-only re-code (same count, same total) is audited, and re-saving an
   identical payload writes no audit row
+
+`backend/tests/test_payment_run_blocking_exceptions.py` covers the payment-run
+gate: an unresolved `line_total_mismatch` refuses the run (nothing booked), an
+`escalated` one still refuses, and a resolved/dismissed one lets it proceed.
 
 `backend/tests/test_audit_access.py` covers the `_jsonable` list handling the GL
 diff relies on.

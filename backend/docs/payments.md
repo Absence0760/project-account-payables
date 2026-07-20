@@ -586,11 +586,31 @@ gate entirely. A configured-but-unparseable threshold fails **closed** — the r
 is created `requires_cfo_approval=True` and the misconfiguration is logged
 (PII-free) for an admin to correct, rather than silently disabling the control.
 
-Independently, `create_payment_run` refuses any invoice that still carries an
-**unresolved** (`open`/`escalated`) `duplicate` or `fraud_flag` exception — the
-duplicate warning is advisory and doesn't block on its own, so this stops the
-same invoice being approved and paid twice. Resolving or dismissing the
-exception (the human sign-off) makes the invoice payable again.
+### Financial-integrity exception gate
+
+Independently of the CFO threshold, `create_payment_run` refuses any invoice
+that still carries an **unresolved** (`open`/`escalated`) exception of a class
+listed in `payments.PAYMENT_BLOCKING_EXCEPTION_TYPES`:
+
+| Type | What it would let through |
+|------|---------------------------|
+| `duplicate` | the same invoice approved and paid twice |
+| `fraud_flag` | a bank-detail swap, rush payment, statistical anomaly, or an altered / never-issued cheque from a Positive Pay return |
+| `line_total_mismatch` | a header `amount` that openly disagrees with the invoice's own line items — the run pays the header, and the header is never silently recomputed from the lines (see `line-total-reconciliation.md`) |
+
+Each is raised as an `error`-severity advisory flag, and **approval does not gate
+on any of them** — nothing in `services/review.py` or `workflow_engine.py` reads
+warning severity, so all three can be approved straight past. Payment-run
+creation is the gate that stops the money.
+
+Resolving or dismissing the exception is the human sign-off that clears it and
+makes the invoice payable again; `escalated` still blocks, because it means a
+human is still working it. The run is refused as a whole, naming only the
+offending invoices, so the operator drops or clears them rather than guessing.
+
+Coverage: `tests/test_payment_run_blocking_exceptions.py` drives real exception
+rows against a real DB, so the membership of the tuple is pinned in **both**
+directions (a `po_mismatch`, which is advisory here, must not block).
 
 ## Code Structure
 

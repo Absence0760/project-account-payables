@@ -72,6 +72,24 @@ PAYABLE_INVOICE_STATUSES = (
     InvoiceStatus.payment_scheduled.value,
 )
 
+# Exception classes that block an invoice from entering a payment run while
+# UNRESOLVED (`open`/`escalated`). Every one of them is an `error`-severity
+# financial-integrity flag that approval does NOT gate on — nothing in
+# `services/review.py` or `workflow_engine.py` reads warning severity — so
+# without this gate each could be approved straight past and paid:
+#
+#   duplicate            — the same invoice paid a second time
+#   fraud_flag           — bank-detail swap, rush payment, stat anomaly, an
+#                          altered/never-issued cheque from a Positive Pay return
+#   line_total_mismatch  — the header `amount` a run pays openly disagrees with
+#                          the invoice's own line items (the header is never
+#                          silently recomputed from them — see
+#                          `docs/line-total-reconciliation.md`), so paying it
+#                          would pay a total the lines don't support
+#
+# Resolving/dismissing the exception is the human sign-off that clears it.
+PAYMENT_BLOCKING_EXCEPTION_TYPES = ("duplicate", "fraud_flag", "line_total_mismatch")
+
 # Terminal payment states — a payment in one of these no longer represents a
 # LIVE claim on its invoice, so the "one live payment per invoice" idempotency
 # invariant (both the app-level guard and the `uq_payments_one_live_per_invoice`
@@ -852,18 +870,18 @@ async def create_payment_run(
             detail=f"Invoice(s) not approved for payment: {', '.join(not_payable)}",
         )
 
-    # Financial-integrity gate: an invoice carrying an UNRESOLVED `duplicate` or
-    # `fraud_flag` exception must not enter a payment run. Approval status alone
-    # doesn't cover this — the duplicate warning is advisory, so a same-invoice
-    # duplicate could otherwise be approved and paid a second time (a real
-    # double-payment). A human clears the flag by resolving/dismissing the
-    # exception (that IS the sign-off); only `open`/`escalated` block here.
+    # Financial-integrity gate: an invoice carrying an UNRESOLVED exception of a
+    # PAYMENT_BLOCKING_EXCEPTION_TYPES class must not enter a payment run.
+    # Approval status alone doesn't cover any of them — each is raised as an
+    # advisory `error` flag that a reviewer can approve straight past. A human
+    # clears it by resolving/dismissing the exception (that IS the sign-off);
+    # only `open`/`escalated` block here.
     from app.models.exception import Exception as InvoiceException
 
     blocking_res = await db.execute(
         select(InvoiceException.invoice_id).where(
             InvoiceException.invoice_id.in_(invoice_ids),
-            InvoiceException.exception_type.in_(("duplicate", "fraud_flag")),
+            InvoiceException.exception_type.in_(PAYMENT_BLOCKING_EXCEPTION_TYPES),
             InvoiceException.status.notin_(("resolved", "dismissed")),
         )
     )
@@ -875,8 +893,8 @@ async def create_payment_run(
         raise HTTPException(
             status_code=409,
             detail=(
-                "Invoice(s) have an unresolved duplicate/fraud exception and can't be "
-                f"paid until it's cleared: {', '.join(sorted(blocked_numbers))}"
+                "Invoice(s) have an unresolved duplicate/fraud/line-total exception and "
+                f"can't be paid until it's cleared: {', '.join(sorted(blocked_numbers))}"
             ),
         )
 
