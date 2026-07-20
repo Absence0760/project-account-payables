@@ -105,12 +105,18 @@ class MergeDevAdapter(ErpAdapter):
 
     erp_type = "merge_dev"
 
-    def _headers(self) -> dict[str, str]:
-        return {
+    def _headers(self, *, idempotency_key: str | None = None) -> dict[str, str]:
+        headers = {
             "Authorization": f"Bearer {self.config['api_key']}",
             "X-Account-Token": self.config["account_token"],
             "Content-Type": "application/json",
         }
+        if idempotency_key:
+            # Merge's unified API de-dupes a create by this header: a retried
+            # push after a lost response returns the ORIGINAL record instead
+            # of creating a second one (issue #143).
+            headers["X-Idempotency-Key"] = idempotency_key
+        return headers
 
     async def post_invoice(self, payload: InvoicePayload) -> ErpPostResult:
         body = {
@@ -148,7 +154,7 @@ class MergeDevAdapter(ErpAdapter):
             resp = await client.post(
                 f"{_api_base()}/invoices",
                 json=body,
-                headers=self._headers(),
+                headers=self._headers(idempotency_key=payload.correlation_id),
             )
 
         if resp.status_code in (200, 201):

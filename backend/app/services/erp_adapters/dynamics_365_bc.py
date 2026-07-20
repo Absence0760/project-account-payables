@@ -70,12 +70,46 @@ class BusinessCentralAdapter(ErpAdapter):
         company = self.config.get("company_id", "")
         return f"{base}/{env}/api/v2.0/companies({company})/{path}"
 
+    async def _find_by_external_document_number(
+        self, token: str, external_document_number: str
+    ) -> str | None:
+        """Look up an existing purchaseInvoice by externalDocumentNumber — the
+        pre-create idempotency check (issue #143): a retried push after a
+        client-side timeout on the FIRST attempt's response (which may have
+        already succeeded server-side) finds the already-created invoice here
+        instead of blindly POSTing a second one.
+        """
+        headers = {"Authorization": f"Bearer {token}"}
+        filter_expr = f"externalDocumentNumber eq '{external_document_number}'"
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                self._api_url("purchaseInvoices"),
+                params={"$filter": filter_expr},
+                headers=headers,
+            )
+        if resp.status_code != 200:
+            return None
+        values = resp.json().get("value", [])
+        if not values:
+            return None
+        return values[0].get("id")
+
     async def post_invoice(self, payload: InvoicePayload) -> ErpPostResult:
         token = await self._get_token()
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
+
+        existing_id = await self._find_by_external_document_number(token, payload.correlation_id)
+        if existing_id:
+            return ErpPostResult(
+                success=True,
+                erp_document_id=existing_id,
+                erp_document_number=payload.invoice_number,
+                message="Already posted to Business Central (idempotent — "
+                "found by externalDocumentNumber)",
+            )
 
         # Step 1: Create purchase invoice
         body = {
