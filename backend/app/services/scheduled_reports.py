@@ -102,9 +102,7 @@ async def _materialise_rows(
     from datetime import date
     from datetime import datetime as _dt
 
-    from sqlalchemy import func
-
-    from app.models.invoice import Invoice
+    from app.models.invoice import Invoice, InvoiceStatus
     from app.models.payment import Payment
 
     period_start = date.today() - timedelta(days=schedule.period_days)
@@ -114,21 +112,55 @@ async def _materialise_rows(
         return exporter(rows.scalars().all())
 
     if schedule.report_type == "vendor_spend":
+        from app.database import control_session_factory
+        from app.models.organization import Organization
+        from app.services.currency_conversion import (
+            resolve_reporting_currency,
+            vendor_rollup_to_reporting_currency,
+        )
+
+        async with control_session_factory() as ctrl_db:
+            org = (
+                await ctrl_db.execute(
+                    select(Organization).where(Organization.id == schedule.organization_id)
+                )
+            ).scalar_one_or_none()
+        reporting_currency = resolve_reporting_currency(org.settings if org else None)
+
         rows = await db.execute(
             select(
                 Invoice.vendor_name,
-                func.count(Invoice.id).label("invoice_count"),
-                func.coalesce(func.sum(Invoice.amount), 0).label("total"),
-            )
-            .where(
+                Invoice.amount,
+                Invoice.currency,
+                Invoice.reporting_amount,
+                Invoice.reporting_currency,
+            ).where(
                 Invoice.invoice_date >= period_start,
                 Invoice.vendor_name.isnot(None),
                 Invoice.vendor_name != "",
+                # Same population as the CFO concentration tile
+                # (get_cfo_analytics) and its API export — rejected invoices
+                # were never real spend.
+                Invoice.status != InvoiceStatus.rejected.value,
             )
-            .group_by(Invoice.vendor_name)
-            .order_by(func.sum(Invoice.amount).desc())
         )
-        return exporter(rows.all())
+        # Rolled into the org's reporting currency (not a naive SUM across
+        # currencies) — a vendor billing in more than one currency used to
+        # add e.g. USD + EUR as if they were one currency.
+        vendor_entries = vendor_rollup_to_reporting_currency(
+            [
+                {
+                    "vendor": vendor,
+                    "amount": amount,
+                    "currency": currency,
+                    "reporting_amount": rep_amt,
+                    "reporting_currency": rep_cur,
+                }
+                for vendor, amount, currency, rep_amt, rep_cur in rows.all()
+            ],
+            reporting_currency=reporting_currency,
+        )
+        return exporter(vendor_entries)
 
     if schedule.report_type == "payment_register":
         rows = await db.execute(
@@ -181,11 +213,13 @@ async def _materialise_rows(
         today = date.today()
         # Same open-payable population as the AP balance + the API aging export
         # so the emailed snapshot reconciles with them (F-4): approved →
-        # payment_scheduled, not the pre-approval statuses.
+        # payment_scheduled, not the pre-approval statuses. The AP balance has
+        # no due_date filter, so this must not either — an open invoice missing
+        # a due date used to inflate the balance while vanishing from every
+        # bucket.
         aging_rows = await db.execute(
             select(Invoice.due_date, Invoice.amount).where(
                 Invoice.status.in_(OPEN_AP_STATUSES),
-                Invoice.due_date.isnot(None),
             )
         )
         # Five buckets matching the exporter + the dashboard/analytics scheme
@@ -200,8 +234,13 @@ async def _materialise_rows(
             "days_90_plus": _D("0"),
         }
         for due, amt in aging_rows.all():
-            days_past = (today - due).days
             amount = _D(str(amt))
+            # A null due_date can't be judged overdue — bucket as "current" (the
+            # conservative read) rather than dropping it entirely.
+            if due is None:
+                buckets["current"] += amount
+                continue
+            days_past = (today - due).days
             if days_past <= 0:
                 buckets["current"] += amount
             elif days_past <= 30:

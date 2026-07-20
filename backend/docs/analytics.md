@@ -26,10 +26,24 @@ forecast variance). Both are computed by pure functions in
 Existing fields stay: `pipeline`, `vendor_spend`, `aging`,
 `monthly_trend`, `upcoming_payments`, `touchless_rate`, `total_*`.
 
+- `vendor_spend` — top 10 vendors by spend, excluding `rejected` invoices.
+  Rolled up into the org's reporting currency via
+  `currency_conversion.vendor_rollup_to_reporting_currency` — a vendor billing
+  in more than one currency is converted invoice-by-invoice and then summed,
+  not aggregated with a naive cross-currency `SUM(amount)` (that used to add a
+  USD invoice and a EUR invoice as if they were the same currency). Same
+  helper backs the CFO supplier-concentration tile, its drill-through, the
+  `vendor_spend` CSV export, and the scheduled report — see
+  `docs/multi-currency.md` § Per-vendor rollups.
 - `aging` — open-invoice exposure bucketed by **days past the due date**:
   `current` (not yet due), `days_30` (1-30), `days_60` (31-60), `days_90`
   (61-90), `days_90_plus` (90+). The same five buckets back the
-  `aging_snapshot` CSV export.
+  `aging_snapshot` CSV export and the emailed scheduled report. Covers the
+  SAME population as the CFO `accounts_payable_balance` (F-4) — which has no
+  `due_date` filter — so an open invoice with a null `due_date` buckets as
+  `current` (unknowable, so not overdue) rather than being silently dropped;
+  otherwise the bands stop summing to the balance the moment one open invoice
+  is missing a due date.
 - `touchless_rate` — straight-through-processing rate: invoices that cleared
   review without manual rework (reached `approved` or beyond) over every
   invoice that has finished review (those same states **plus** `rejected`).
@@ -72,7 +86,7 @@ Response:
   in `analytics.value_received_goods`; SQL fan-out in
   `api/analytics._received_amount`.)
 - `working_capital_impact_5_days` — `avg_daily_outflow × 5`
-- `supplier_concentration.{top_10_share_pct, top_50_share_pct, largest_vendor, largest_vendor_share_pct, flagged}` — `flagged=true` iff the largest vendor exceeds 25% (configurable)
+- `supplier_concentration.{top_10_share_pct, top_50_share_pct, largest_vendor, largest_vendor_share_pct, flagged}` — `flagged=true` iff the largest vendor exceeds 25% (configurable). Excludes `rejected` invoices (never real spend) — the SAME population its drill-through and the `vendor_spend` export/scheduled report use, so clicking from the tile into either agrees with the number the CFO started from. Also the SAME reporting-currency rollup as the dashboard's `vendor_spend` (see above) — a vendor's multi-currency invoices are converted before summing, never naively added across currencies
 - `fraud_rate_trend` — exceptions / invoices × 100 per month
 - `rebate_yield.{yield_pct, annualised_rebates, ...}`
 
@@ -215,7 +229,7 @@ returning "no threshold" rather than raising.
 | `{report}` | Columns |
 |---|---|
 | `invoice_register` | invoice_id, invoice_number, vendor_name, amount, currency, status, invoice_date, due_date, created_at, po_number |
-| `vendor_spend` | vendor_name, invoice_count, total_amount |
+| `vendor_spend` | vendor_name, invoice_count, total_amount, currencies |
 | `payment_register` | payment_id, invoice_id, invoice_number, vendor_name, amount, currency, method, status, provider, reference, submitted_at, completed_at |
 | `aging_snapshot` | as_of_date, current, days_30, days_60, days_90, days_90_plus, total |
 | `cashflow_forecast` | period, period_start, period_end, scheduled_amount, committed_amount, pending_amount, discount_eligible_amount, count |
@@ -224,6 +238,11 @@ returning "no threshold" rather than raising.
 `cashflow_forecast` is forward-looking — it takes `granularity` +
 `horizon_days` (not `period_days`) and runs the same forecast query as the
 JSON endpoint.
+
+`vendor_spend`'s `total_amount` is the org's reporting-currency rollup (see
+above), not a raw `SUM(amount)` — `currencies` lists every distinct original
+invoice currency that rolled into the total, so a mixed-currency vendor's row
+is auditable (e.g. `"EUR, USD"`) rather than looking like a same-currency sum.
 
 Column order is pinned by `tests/test_report_export.py` — finance
 imports rely on column position; a reorder breaks downstream

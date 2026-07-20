@@ -48,6 +48,8 @@ async def _enforce_approval_thresholds(
     db: AsyncSession,
     invoice: Invoice,
     actor_roles: set[str],
+    *,
+    org_settings: dict | None = None,
 ) -> None:
     """Check approval thresholds from the workflow snapshot. Raises on violation."""
     from fastapi import HTTPException, status
@@ -64,6 +66,38 @@ async def _enforce_approval_thresholds(
     # invoice amount can misjudge a boundary amount against the CFO/max gate.
     amount = Decimal(str(invoice.amount or 0))
 
+    # Structuring guard: a same-vendor rolling-window aggregate that can push
+    # the effective amount over the max/CFO gate even though THIS invoice
+    # alone doesn't cross it — closes the "split one big payable into several
+    # small ones, each under threshold, with distinct invoice numbers so the
+    # exact-match duplicate check never fires" bypass. See services/structuring.py.
+    aggregate_amount = amount
+    recent_spend = Decimal(0)
+    vendor_id = getattr(invoice, "vendor_id", None)
+    structuring_window_days = 0
+    if vendor_id is not None:
+        from app.services.structuring import get_structuring_config, vendor_recent_spend
+
+        s_cfg = get_structuring_config(org_settings)
+        if s_cfg["enabled"]:
+            structuring_window_days = s_cfg["window_days"]
+            recent_spend = await vendor_recent_spend(
+                db,
+                vendor_id=vendor_id,
+                exclude_invoice_id=invoice.id,
+                window_days=structuring_window_days,
+            )
+            aggregate_amount = amount + recent_spend
+
+    def _structuring_note(threshold_dec: Decimal) -> str:
+        if recent_spend <= 0 or amount > threshold_dec:
+            return ""
+        return (
+            f" This invoice alone is under the threshold, but combined with "
+            f"${recent_spend:,.2f} in other recent invoices from this vendor "
+            f"(last {structuring_window_days} days) it totals ${aggregate_amount:,.2f}."
+        )
+
     # Hard reject if over max. Coerce the threshold to Decimal ONCE and both
     # compare AND format against that Decimal — the JSONB config value may be a
     # string (a hand-edited / imported steps_config), which the comparison
@@ -73,11 +107,12 @@ async def _enforce_approval_thresholds(
     max_amount = config.get("max_invoice_amount")
     if max_amount is not None:
         max_amount_dec = Decimal(str(max_amount))
-        if amount > max_amount_dec:
+        if aggregate_amount > max_amount_dec:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=(
                     f"Invoice amount ${amount:,.2f} exceeds maximum allowed ${max_amount_dec:,.2f}."
+                    + _structuring_note(max_amount_dec)
                 ),
             )
 
@@ -89,12 +124,20 @@ async def _enforce_approval_thresholds(
     from app.services.approval_chain import _to_decimal, cfo_gate_applies
 
     cfo_threshold = config.get("require_cfo_above")
-    if cfo_gate_applies(cfo_threshold, amount) and "cfo" not in actor_roles:
+    # The gate reads `aggregate_amount`, not `amount`, so the structuring bypass
+    # (split one payable into several under-threshold invoices from the same
+    # vendor) can't walk under it either.
+    if cfo_gate_applies(cfo_threshold, aggregate_amount) and "cfo" not in actor_roles:
         threshold_dec = _to_decimal(cfo_threshold)
         limit = f"${threshold_dec:,.2f}" if threshold_dec is not None else "the configured limit"
+        # A malformed threshold has no Decimal to measure the aggregate against,
+        # so the note is omitted — the gate itself still fires (fail-closed).
+        note = _structuring_note(threshold_dec) if threshold_dec is not None else ""
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=(f"Invoice amount ${amount:,.2f} exceeds {limit}. CFO approval required."),
+            detail=(
+                f"Invoice amount ${amount:,.2f} exceeds {limit}. CFO approval required." + note
+            ),
         )
 
 
@@ -178,7 +221,7 @@ async def approve_invoice(
             _log.warning("refresh_warnings after corrections failed for %s: %s", invoice.id, exc)
 
     # Threshold enforcement — runs against the now-corrected invoice amount.
-    await _enforce_approval_thresholds(db, invoice, actor_roles or set())
+    await _enforce_approval_thresholds(db, invoice, actor_roles or set(), org_settings=org_settings)
 
     # Upsert the RAG embedding using the invoice's NOW-correct fields.
     # Best-effort: failures (S3 unavailable, no text layer, embedding API

@@ -276,6 +276,56 @@ async def test_accept_specific_tier(realdb):
 
 
 @pytest.mark.asyncio
+async def test_accept_refuses_a_tier_whose_window_has_closed(realdb):
+    """Reproduces issue #124's exact repro: an offer opened 20 days ago with
+    a 5-day/3% and 10-day/2% sliding scale, still within its own valid_until
+    (+10 days out). Both tiers' real deadlines (measured from when the offer
+    was extended) are long past. Before the fix this returned 200 with the
+    3% tier — every tier looked perpetually achievable because the deadline
+    was measured from "today" instead of from the offer's start."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+
+    offer_id = uuid.uuid4()
+    async with mk() as s:
+        s.add(
+            DiscountOffer(
+                id=offer_id,
+                organization_id=org_id,
+                scope=OFFER_SCOPE_VENDOR,
+                vendor_id=vendor_id,
+                source="supplier",
+                status=OFFER_STATUS_OFFERED,
+                tiers=_TIERS,
+                base_amount=Decimal("10000.00"),
+                currency="USD",
+                valid_from=date.today() - timedelta(days=20),
+                valid_until=date.today() + timedelta(days=10),
+            )
+        )
+        await s.commit()
+
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        resp = await client.post(f"/api/portal/discount-offers/{offer_id}/accept", json={})
+    assert resp.status_code == 409, resp.text
+
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        # Naming the (long-closed) 5-day tier explicitly must not bypass the
+        # window check either.
+        resp2 = await client.post(
+            f"/api/portal/discount-offers/{offer_id}/accept", json={"tier_days": 5}
+        )
+    assert resp2.status_code == 422, resp2.text
+
+    async with mk() as s:
+        offer = (
+            await s.execute(select(DiscountOffer).where(DiscountOffer.id == offer_id))
+        ).scalar_one()
+        assert offer.status == OFFER_STATUS_OFFERED  # untouched — never accepted
+
+
+@pytest.mark.asyncio
 async def test_double_accept_is_safe_409(realdb):
     org_id = realdb.info(TENANT).org_id
     mk = realdb.sessionmaker(TENANT)

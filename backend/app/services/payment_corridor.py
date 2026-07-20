@@ -78,6 +78,15 @@ class CorridorChoice:
     notes: str = ""
 
 
+# Methods that ONLY ever arrive as an explicit choice — nothing defaults to
+# them, so seeing one really does mean the caller (AP user or vendor
+# preference) asked for it. Contrast the plain domestic/generic methods
+# (ach/wire/rtp/check/virtual_card), which `create_payment_run` defaults
+# every line item to regardless of the invoice's actual currency/country —
+# a truthy `requested_method` of one of those can NOT be trusted as "the user
+# explicitly chose this" the way an explicit international method can.
+_EXPLICIT_INTERNATIONAL_METHODS = frozenset({"sepa", "international_wire", "international_ach"})
+
 # Fee anchors — order-of-magnitude estimates, not contracts. Used to
 # render a "≈ $X" badge on the payment screen so the AP team can pick.
 # Real fees come from the processor on settlement.
@@ -99,11 +108,16 @@ def pick_corridor(
     """Return the right CorridorChoice for the given destination.
 
     Resolution order:
-      1. If caller explicitly asked for a method (UI override or
-         vendor preference), honor it — set requires_fx /
-         requires_swift / requires_iban flags from the corridor's
-         shape so validation downstream can still refuse the payment
-         if the vendor's bank row is incomplete.
+      1. If caller explicitly asked for a method AND it's trustworthy as a
+         real choice — an explicit international method (sepa /
+         international_wire / international_ach), or ANY method for a
+         genuinely domestic destination — honor it: set requires_fx /
+         requires_swift / requires_iban flags from the corridor's shape so
+         validation downstream can still refuse the payment if the vendor's
+         bank row is incomplete. A plain domestic-looking method
+         (ach/wire/rtp/check) for a destination that actually needs
+         international routing is `create_payment_run`'s blanket default,
+         not a real choice, and falls through to auto-selection instead.
       2. Same currency, US destination → ACH.
       3. Same currency, SEPA destination → SEPA Credit Transfer.
       4. Same currency, anywhere else → international wire (SWIFT).
@@ -113,8 +127,23 @@ def pick_corridor(
     tgt = target_currency.upper()
     country = (target_country or "").upper() or None
     requires_fx = src != tgt
+    is_domestic_us = not requires_fx and tgt == "USD" and (country is None or country == "US")
 
-    if requested_method:
+    # Only honor `requested_method` as a real override when it's either an
+    # EXPLICIT international method (nothing defaults to those) or the
+    # destination is genuinely domestic (so a plain "ach"/"wire" default is
+    # correct anyway). A truthy domestic-looking method for a destination
+    # that actually needs international routing — cross-currency, or a
+    # foreign country even at the same currency — is `create_payment_run`'s
+    # blanket "ach" default, NOT a real choice; honoring it as one used to
+    # send a domestic rail + foreign currency to the processor and fail
+    # there instead of routing correctly. Fall through to auto-selection
+    # below exactly as if no method had been requested.
+    honor_override = bool(requested_method) and (
+        requested_method.lower() in _EXPLICIT_INTERNATIONAL_METHODS or is_domestic_us
+    )
+
+    if honor_override:
         # Caller is overriding — derive only the requirement flags
         # from the corridor's shape. Fee is a best-effort lookup.
         method = requested_method.lower()
