@@ -664,6 +664,16 @@ input[type='week']:hover::-webkit-calendar-picker-indicator {
 	font-size: 0.78rem;
 	color: var(--text-muted);
 }
+/* Secondary qualifier under a KPI label (e.g. money the headline figure
+   deliberately excludes). Smaller + dimmer than .kpi-label so the primary
+   value keeps visual priority; the wording, not the styling, carries the
+   meaning (WCAG 1.4.1 — never colour alone). */
+.kpi-sub {
+	font-size: 0.72rem;
+	line-height: 1.35;
+	color: var(--text-muted);
+	opacity: 0.85;
+}
 .kpi.highlight-green {
 	border-color: rgba(31, 168, 106, 0.3);
 	background: rgba(31, 168, 106, 0.04);

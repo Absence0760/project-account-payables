@@ -36,6 +36,7 @@ from app.schemas.portal import (
     PortalMFAChallengeVerifyRequest,
     PortalMFADisableRequest,
     PortalMFAEmailChallengeRequest,
+    PortalMFAStepUpRequest,
     PortalMFAVerifyRequest,
     PortalTokenResponse,
 )
@@ -47,6 +48,14 @@ def mfa_on(monkeypatch):
     """Flip the platform MFA master switch on for the duration of a test."""
     monkeypatch.setattr(settings, "mfa_enabled", True)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _no_audit_dispatch(monkeypatch):
+    """A failed portal step-up now writes a PII-free audit row. These are unit
+    tests against a mocked tenant session, so stub the dispatcher —
+    `test_portal_step_up_failure_is_audited` asserts on it explicitly."""
+    monkeypatch.setattr("app.api.portal_auth.dispatch_auth_audit", AsyncMock())
 
 
 def _mock_db(*, vendor_user=None, vendor=None):
@@ -78,6 +87,7 @@ def _vendor_user(**overrides):
     base = dict(
         id=uuid.uuid4(),
         vendor_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
         email="supplier@vendor.com",
         full_name="Supplier Rep",
         hashed_password=None,
@@ -105,29 +115,34 @@ async def test_enroll_then_verify_activates_mfa(mfa_on):
     vu = _vendor_user()
     db = _mock_db(vendor_user=None, vendor=_vendor())
 
-    enroll = await portal_mfa_enroll(vu=vu, db=db)
+    enroll = await portal_mfa_enroll(vu=vu)
     assert enroll.secret  # plaintext secret returned during enrollment
     assert enroll.provisioning_uri.startswith("otpauth://")
     assert enroll.qr_code_data_url.startswith("data:image/png;base64,")
-    # Secret stored, but NOT yet active.
-    assert vu.mfa_secret == enroll.secret
+    # The candidate waits in Redis — nothing is written to the account yet.
+    assert vu.mfa_secret is None
     assert vu.mfa_enabled is False
+    assert await mfa.read_pending_vendor_totp_secret(vu.id) == enroll.secret
 
-    code = pyotp.TOTP(vu.mfa_secret).now()
+    code = pyotp.TOTP(enroll.secret).now()
     me = await portal_mfa_verify(body=PortalMFAVerifyRequest(code=code), vu=vu, db=db)
+    assert vu.mfa_secret == enroll.secret  # promoted only now
     assert vu.mfa_enabled is True
     assert vu.mfa_enrolled_at is not None
     assert me.mfa_enabled is True
+    assert await mfa.read_pending_vendor_totp_secret(vu.id) is None
 
 
 @pytest.mark.asyncio
 async def test_verify_wrong_code_rejected(mfa_on):
-    vu = _vendor_user(mfa_secret=pyotp.random_base32())
+    vu = _vendor_user()
+    await mfa.stash_pending_vendor_totp_secret(vu.id, pyotp.random_base32())
     db = _mock_db()
     with pytest.raises(HTTPException) as exc:
         await portal_mfa_verify(body=PortalMFAVerifyRequest(code="000000"), vu=vu, db=db)
     assert exc.value.status_code == 401
     assert vu.mfa_enabled is False
+    assert vu.mfa_secret is None
 
 
 @pytest.mark.asyncio
@@ -137,6 +152,88 @@ async def test_verify_without_enrollment_400(mfa_on):
     with pytest.raises(HTTPException) as exc:
         await portal_mfa_verify(body=PortalMFAVerifyRequest(code="123456"), vu=vu, db=db)
     assert exc.value.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Re-enrollment step-up — the supplier-portal half of the fix for the
+# "MFA silently disabled via re-enrollment" hole.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_enroll_over_a_live_factor_without_step_up_is_refused(mfa_on):
+    """The portal twin of the employee regression: a caller holding only a
+    stolen vendor access token used to be able to POST /portal/auth/mfa/enroll
+    and, purely as a side effect of starting an enrollment they never finish,
+    leave the supplier's account with `mfa_enabled=False`. Refused now, with
+    the live factor untouched."""
+    secret = pyotp.random_base32()
+    vu = _vendor_user(mfa_secret=secret, mfa_enabled=True)
+
+    with pytest.raises(HTTPException) as exc:
+        await portal_mfa_enroll(vu=vu)
+
+    assert exc.value.status_code == 400
+    assert vu.mfa_enabled is True, "a session-only caller must not strip the live factor"
+    assert vu.mfa_secret == secret
+    assert await mfa.read_pending_vendor_totp_secret(vu.id) is None
+
+
+@pytest.mark.asyncio
+async def test_enroll_over_a_live_factor_accepts_a_current_code(mfa_on):
+    """A code from the CURRENT authenticator satisfies the step-up — and even
+    then the live factor survives until the new one verifies."""
+    secret = pyotp.random_base32()
+    vu = _vendor_user(mfa_secret=secret, mfa_enabled=True)
+
+    enroll = await portal_mfa_enroll(
+        body=PortalMFAStepUpRequest(code=pyotp.TOTP(secret).now()), vu=vu
+    )
+
+    assert enroll.secret != secret
+    assert vu.mfa_secret == secret, "live factor must survive enroll-start"
+    assert vu.mfa_enabled is True
+
+
+@pytest.mark.asyncio
+async def test_enroll_over_a_live_factor_accepts_the_portal_password(mfa_on, monkeypatch):
+    """Password re-entry is the other accepted step-up, matching the employee
+    surface and `/mfa/disable`."""
+    secret = pyotp.random_base32()
+    vu = _vendor_user(mfa_secret=secret, mfa_enabled=True, hashed_password="hash")
+    monkeypatch.setattr("app.services.mfa.pwd_context.verify", lambda *_a, **_k: True)
+
+    enroll = await portal_mfa_enroll(body=PortalMFAStepUpRequest(password="correct"), vu=vu)
+
+    assert enroll.secret != secret
+    assert vu.mfa_secret == secret
+
+
+@pytest.mark.asyncio
+async def test_enroll_over_a_live_factor_rejects_a_wrong_password(mfa_on, monkeypatch):
+    """A wrong step-up credential is no better than none."""
+    secret = pyotp.random_base32()
+    vu = _vendor_user(mfa_secret=secret, mfa_enabled=True, hashed_password="hash")
+    monkeypatch.setattr("app.services.mfa.pwd_context.verify", lambda *_a, **_k: False)
+
+    with pytest.raises(HTTPException) as exc:
+        await portal_mfa_enroll(body=PortalMFAStepUpRequest(password="guess"), vu=vu)
+
+    assert exc.value.status_code == 400
+    assert vu.mfa_enabled is True
+    assert vu.mfa_secret == secret
+
+
+@pytest.mark.asyncio
+async def test_first_time_portal_enroll_needs_no_step_up(mfa_on):
+    """Onboarding must stay frictionless — a vendor with no factor yet has
+    nothing to protect."""
+    vu = _vendor_user()
+
+    enroll = await portal_mfa_enroll(vu=vu)
+
+    assert enroll.secret
+    assert vu.mfa_secret is None
 
 
 # ---------------------------------------------------------------------------
@@ -469,3 +566,48 @@ async def test_challenge_endpoint_rejects_employee_challenge_token(mfa_on, monke
             db=db,
         )
     assert exc.value.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Step-up hardening — a credential check on a credential-management endpoint
+# is a password oracle unless throttled, and a silent one unless audited.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_portal_step_up_failure_is_audited(mfa_on, monkeypatch):
+    """A wrong credential against a factor change leaves a PII-free trail."""
+    audit = AsyncMock()
+    monkeypatch.setattr("app.api.portal_auth.dispatch_auth_audit", audit)
+    secret = pyotp.random_base32()
+    vu = _vendor_user(mfa_secret=secret, mfa_enabled=True, hashed_password="hash")
+    monkeypatch.setattr("app.services.mfa.pwd_context.verify", lambda *_a, **_k: False)
+
+    with pytest.raises(HTTPException):
+        await portal_mfa_enroll(body=PortalMFAStepUpRequest(password="guess"), vu=vu)
+
+    audit.assert_awaited_once()
+    kwargs = audit.await_args.kwargs
+    assert kwargs["action"] == "portal.mfa.step_up.failure"
+    assert kwargs["details"] == {"operation": "totp_enroll"}
+    assert "guess" not in repr(kwargs), "the submitted credential must never be audited"
+
+
+@pytest.mark.asyncio
+async def test_portal_step_up_is_rate_limited_per_account(mfa_on):
+    """Per-VENDOR-USER, not per-IP: the attacker already holds their token."""
+    from app.api.portal_auth import STEP_UP_RATE_LIMIT_PER_MINUTE
+
+    secret = pyotp.random_base32()
+    vu = _vendor_user(mfa_secret=secret, mfa_enabled=True)
+    statuses = []
+
+    for _ in range(STEP_UP_RATE_LIMIT_PER_MINUTE + 2):
+        try:
+            await portal_mfa_enroll(body=PortalMFAStepUpRequest(code="000000"), vu=vu)
+        except HTTPException as exc:
+            statuses.append(exc.status_code)
+
+    assert 429 in statuses, f"expected a 429 once over the cap, got {statuses}"
+    assert vu.mfa_enabled is True
+    assert vu.mfa_secret == secret

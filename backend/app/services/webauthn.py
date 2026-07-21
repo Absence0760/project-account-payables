@@ -57,6 +57,24 @@ from app.redis import get_redis
 # versa. Keyed by user id — one outstanding challenge per user per ceremony.
 _REG_CHALLENGE_PREFIX = "webauthn:reg_challenge:"
 _AUTH_CHALLENGE_PREFIX = "webauthn:auth_challenge:"
+# Step-up assertions get their OWN namespace, further partitioned by the
+# operation being authorized — see `_assertion_challenge_key`.
+_STEP_UP_CHALLENGE_PREFIX = "webauthn:stepup_challenge:"
+
+# The two things an assertion (``navigator.credentials.get()``) can be for.
+# `clientDataJSON.type` is `"webauthn.get"` for BOTH — the authenticator has no
+# idea what the RP intends to do with the signature — so the *challenge itself*
+# is the only thing that can bind an assertion to its purpose. That makes the
+# Redis namespace a security boundary, not bookkeeping: a login challenge and a
+# step-up challenge are minted into different, single-use slots, and each verify
+# path reads only its own slot. An assertion signed over a step-up challenge
+# therefore cannot satisfy `/mfa/passkey/authenticate/verify` (which looks for a
+# login challenge and finds a different value), and a login assertion cannot
+# satisfy a step-up. Step-up slots additionally carry the operation, so an
+# assertion obtained to authorize "register a passkey" can't be redirected into
+# "delete a passkey".
+ASSERTION_PURPOSE_LOGIN = "login"
+ASSERTION_PURPOSE_STEP_UP = "step_up"
 
 
 class WebAuthnError(Exception):
@@ -85,6 +103,26 @@ def _verify_origin_ok(seen_origin: str) -> bool:
 
 def _redis_key(prefix: str, user_id: uuid.UUID) -> str:
     return f"{prefix}{user_id}"
+
+
+def _assertion_challenge_key(user_id: uuid.UUID, *, purpose: str, operation: str | None) -> str:
+    """Redis slot an assertion challenge lives in.
+
+    Login keeps the historical key (`webauthn:auth_challenge:<user_id>`).
+    Step-up gets a distinct prefix plus the operation, so each (user, purpose,
+    operation) triple has its own single-use slot and none of them can be
+    consumed by another path. `operation` is mandatory for a step-up — a
+    step-up challenge with no operation would be replayable across every
+    factor-management endpoint, which is exactly what this partitioning exists
+    to prevent.
+    """
+    if purpose == ASSERTION_PURPOSE_LOGIN:
+        return _redis_key(_AUTH_CHALLENGE_PREFIX, user_id)
+    if purpose != ASSERTION_PURPOSE_STEP_UP:
+        raise WebAuthnError("Unknown assertion purpose")
+    if not operation:
+        raise WebAuthnError("Step-up assertion requires an operation")
+    return f"{_STEP_UP_CHALLENGE_PREFIX}{operation}:{user_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -189,13 +227,19 @@ async def begin_authentication(
     *,
     user_id: uuid.UUID,
     credentials: list[dict],
+    purpose: str,
+    operation: str | None = None,
 ) -> str:
     """Mint authentication options for ``navigator.credentials.get()``.
 
     ``credentials`` is the list of the user's registered passkeys as
     ``{credential_id, transports}`` dicts. They become the ``allowCredentials``
     list so the browser surfaces the right authenticator. The challenge is
-    stashed in Redis keyed to the user.
+    stashed in Redis keyed to the user AND to what the assertion will be allowed
+    to authorize (``purpose`` / ``operation`` — see
+    ``_assertion_challenge_key``). ``purpose`` has no default on purpose: an
+    assertion that is valid for two things at once is a real vulnerability, so
+    every caller has to say which one it wants.
     """
     allow = []
     for c in credentials:
@@ -219,7 +263,7 @@ async def begin_authentication(
     )
     r = await get_redis()
     await r.setex(
-        _redis_key(_AUTH_CHALLENGE_PREFIX, user_id),
+        _assertion_challenge_key(user_id, purpose=purpose, operation=operation),
         settings.webauthn_challenge_ttl_seconds,
         bytes_to_base64url(options.challenge),
     )
@@ -232,16 +276,23 @@ async def finish_authentication(
     credential_json: str,
     stored_public_key: str,
     stored_sign_count: int,
+    purpose: str,
+    operation: str | None = None,
 ) -> int:
     """Verify the browser's ``get()`` response. Returns the new signature
     counter to persist on success; raises ``WebAuthnError`` otherwise. The
     challenge is consumed single-use.
 
+    ``purpose`` / ``operation`` must match the ones the challenge was minted
+    under — they select the Redis slot, so an assertion produced for a different
+    purpose simply doesn't match the value stored here and fails like any other
+    bad signature.
+
     The caller resolves which ``WebAuthnCredential`` row to pass in by matching
     the response's credential id (``extract_credential_id``) before calling this.
     """
     r = await get_redis()
-    key = _redis_key(_AUTH_CHALLENGE_PREFIX, user_id)
+    key = _assertion_challenge_key(user_id, purpose=purpose, operation=operation)
     stored = await r.get(key)
     await r.delete(key)
     if not stored:

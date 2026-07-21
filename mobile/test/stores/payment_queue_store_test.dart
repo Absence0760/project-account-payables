@@ -43,7 +43,7 @@ void main() {
   });
 
   setUp(() async {
-    PaymentQueueStore.instance.debugReset();
+    PaymentQueueStore.instance.reset();
     await OfflineStore.instance.clear();
     ApiClient().debugConfigure();
   });

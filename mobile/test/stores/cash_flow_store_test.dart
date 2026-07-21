@@ -92,7 +92,7 @@ void main() {
   final store = CashFlowStore.instance;
 
   setUp(() {
-    store.debugReset();
+    store.reset();
     ApiClient().debugConfigure();
   });
 

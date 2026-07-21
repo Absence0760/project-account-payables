@@ -2,6 +2,13 @@
 
 Lithic offers interchange sharing from day one with simple API integration.
 Docs: https://docs.lithic.com
+
+Idempotency: `POST /v1/cards` honours the `Idempotency-Key` header (one of the
+two endpoints Lithic supports it on today), and the key **must be a valid
+UUID**. We send the caller-supplied `VirtualCardPayload.idempotency_key` — a
+deterministic UUID5 minted by `card_issuance.build_card_idempotency_key` — so a
+retry after a client-side timeout returns the card Lithic already created
+instead of provisioning a second live one.
 """
 
 import httpx
@@ -36,11 +43,14 @@ class LithicAdapter(CardAdapter):
             return LITHIC_SANDBOX_BASE
         return LITHIC_API_BASE
 
-    def _headers(self) -> dict[str, str]:
-        return {
+    def _headers(self, idempotency_key: str | None = None) -> dict[str, str]:
+        headers = {
             "Authorization": f"api-key {self.config['api_key']}",
             "Content-Type": "application/json",
         }
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
+        return headers
 
     async def create_card(self, payload: VirtualCardPayload) -> CardResult:
         body = {
@@ -60,7 +70,10 @@ class LithicAdapter(CardAdapter):
             resp = await client.post(
                 f"{self._base_url()}/cards",
                 json=body,
-                headers=self._headers(),
+                # Idempotency-Key is what makes a retry safe: Lithic replays the
+                # original response for a repeated key instead of minting a
+                # second live card (30-day key retention).
+                headers=self._headers(payload.idempotency_key),
             )
 
         if resp.status_code in (200, 201):

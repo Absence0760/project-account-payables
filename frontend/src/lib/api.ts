@@ -264,7 +264,14 @@ export const api = {
 	post: <T>(path: string, body: unknown) => request<T>(path, { method: 'POST', body: JSON.stringify(body) }),
 	patch: <T>(path: string, body: unknown) => request<T>(path, { method: 'PATCH', body: JSON.stringify(body) }),
 	put: <T>(path: string, body: unknown) => request<T>(path, { method: 'PUT', body: JSON.stringify(body) }),
-	delete: (path: string) => request<void>(path, { method: 'DELETE' }),
+	// `body` is optional — most DELETEs don't carry one, but a few need
+	// credentials in the body rather than the URL (e.g. the passkey-delete
+	// step-up password, which must never land in a query string / access log).
+	delete: (path: string, body?: unknown) =>
+		request<void>(path, {
+			method: 'DELETE',
+			...(body === undefined ? {} : { body: JSON.stringify(body) })
+		}),
 	upload: <T>(
 		path: string,
 		file: File,

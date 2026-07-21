@@ -206,10 +206,14 @@
 		}
 	}
 
+	// Only this memo's own vendor's invoices are valid targets. An invoice with
+	// no resolved `vendor_id` is NOT a wildcard — its vendor can't be proven, so
+	// the backend refuses the apply (409) and offering it here would only invite
+	// the error. Resolve the invoice's vendor first (re-save it on the invoice).
 	let invoicesForVendor = $derived.by(() => {
 		const memo = memos.find((m) => m.id === applyTargetId);
-		if (!memo) return invoices;
-		return invoices.filter((i) => !i.vendor_id || i.vendor_id === memo.vendor_id);
+		if (!memo) return [];
+		return invoices.filter((i) => i.vendor_id === memo.vendor_id);
 	});
 </script>
 
@@ -328,9 +332,12 @@
 				{/each}
 			</select>
 		</label>
+		{#if invoicesForVendor.length === 0}
+			<p class="modal-hint warn">{m('creditMemos.applyModal.noEligible')}</p>
+		{/if}
 		<div class="modal-footer">
 			<button type="button" class="btn-cancel" onclick={() => (applyTargetId = null)}>{m('common.cancel')}</button>
-			<button type="submit" class="btn-primary" disabled={applying}>{applying ? m('creditMemos.applyModal.applying') : m('creditMemos.applyModal.apply')}</button>
+			<button type="submit" class="btn-primary" disabled={applying || invoicesForVendor.length === 0}>{applying ? m('creditMemos.applyModal.applying') : m('creditMemos.applyModal.apply')}</button>
 		</div>
 	</form>
 </Modal>
@@ -340,6 +347,12 @@
 	tr.applied td,
 	tr.void td {
 		opacity: 0.6;
+	}
+	/* Explains an empty apply-target list — the memo's vendor has no invoice
+	   whose vendor link is resolved and matching, so there is nothing to credit. */
+	.modal-hint.warn {
+		color: #d4940a;
+		margin: -6px 0 0;
 	}
 	.badge {
 		display: inline-block;

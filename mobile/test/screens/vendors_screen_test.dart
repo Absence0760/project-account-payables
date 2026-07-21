@@ -68,7 +68,7 @@ void main() {
   });
 
   setUp(() async {
-    VendorStore.instance.debugReset();
+    VendorStore.instance.reset();
     await OfflineStore.instance.clear();
     FlutterSecureStorage.setMockInitialValues({});
     ApiClient().debugConfigure();

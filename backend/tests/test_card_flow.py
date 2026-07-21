@@ -57,6 +57,20 @@ def _invoice(**overrides):
     return SimpleNamespace(**base)
 
 
+def _db(existing_cards: int = 0):
+    """Minimal AsyncSession stand-in.
+
+    `issue_card_for_invoice` reads one thing off the session: how many
+    VirtualCard rows the invoice already has (the re-issue discriminator in the
+    provider idempotency key).
+    """
+    result = MagicMock()
+    result.scalar_one = MagicMock(return_value=existing_cards)
+    db = MagicMock()
+    db.execute = AsyncMock(return_value=result)
+    return db
+
+
 def _app_settings():
     """Minimal app_settings-like object; not actually exercised once we
     short-circuit on cards_not_enabled."""
@@ -86,6 +100,7 @@ async def test_issue_card_short_circuits_when_cards_not_enabled():
 
     with patch("app.services.card_adapters.get_card_adapter") as mk_adapter:
         result = await issue_card_for_invoice(
+            db=_db(),
             invoice=inv,
             organization_id=uuid.uuid4(),
             org_settings=org_settings,
@@ -107,6 +122,7 @@ async def test_issue_card_short_circuits_when_cards_disabled_explicitly():
 
     with patch("app.services.card_adapters.get_card_adapter") as mk_adapter:
         result = await issue_card_for_invoice(
+            db=_db(),
             invoice=inv,
             organization_id=uuid.uuid4(),
             org_settings=org_settings,
@@ -139,6 +155,7 @@ async def test_issue_card_returns_adapter_error_when_adapter_raises():
 
     with patch("app.services.card_adapters.get_card_adapter", return_value=adapter):
         result = await issue_card_for_invoice(
+            db=_db(),
             invoice=inv,
             organization_id=uuid.uuid4(),
             org_settings=org_settings,
@@ -179,6 +196,7 @@ async def test_issue_card_propagates_adapter_failure_reason():
 
     with patch("app.services.card_adapters.get_card_adapter", return_value=adapter):
         result = await issue_card_for_invoice(
+            db=_db(),
             invoice=inv,
             organization_id=uuid.uuid4(),
             org_settings=org_settings,
@@ -206,6 +224,7 @@ async def test_issue_card_uses_generic_failure_when_adapter_omits_reason():
 
     with patch("app.services.card_adapters.get_card_adapter", return_value=adapter):
         result = await issue_card_for_invoice(
+            db=_db(),
             invoice=inv,
             organization_id=uuid.uuid4(),
             org_settings=org_settings,
@@ -247,6 +266,7 @@ async def test_issue_card_builds_virtual_card_row_on_success():
 
     with patch("app.services.card_adapters.get_card_adapter", return_value=adapter):
         result = await issue_card_for_invoice(
+            db=_db(),
             invoice=inv,
             organization_id=org_id,
             org_settings=org_settings,
@@ -296,6 +316,7 @@ async def test_issue_card_defaults_expiry_to_30_days_when_unset():
 
     with patch("app.services.card_adapters.get_card_adapter", return_value=adapter):
         result = await issue_card_for_invoice(
+            db=_db(),
             invoice=inv,
             organization_id=uuid.uuid4(),
             org_settings=org_settings,
@@ -466,6 +487,7 @@ async def test_issue_card_payload_carries_expiry_for_byok_override():
 
     with patch("app.services.card_adapters.get_card_adapter", return_value=adapter):
         result = await issue_card_for_invoice(
+            db=_db(),
             invoice=inv,
             organization_id=uuid.uuid4(),
             org_settings=org_settings,

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { ExpensePolicy, ExpensePolicyCreate } from '$lib/types/expense';
 	import { auth } from '$lib/stores/auth.svelte';
+	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
@@ -25,6 +26,10 @@
 	let name = $state(policy?.name ?? '');
 	let active = $state(policy?.active ?? true);
 	let category = $state(policy?.category ?? '');
+	// The unit every money threshold below is denominated in. Blank = "the org's
+	// reporting currency", which the backend resolves at evaluation time — the
+	// meaning a bare threshold number always implicitly had.
+	let threshold_currency = $state(policy?.threshold_currency ?? '');
 	let category_limit = $state<number | null>(policy?.category_limit ?? null);
 	let requires_receipt_above = $state<number | null>(policy?.requires_receipt_above ?? null);
 	let requires_preapproval_above = $state<number | null>(
@@ -53,6 +58,7 @@
 				name: name.trim(),
 				active,
 				category: category.trim() || null,
+				threshold_currency: threshold_currency.trim().toUpperCase() || null,
 				category_limit,
 				requires_receipt_above,
 				requires_preapproval_above,
@@ -93,6 +99,19 @@
 					placeholder={m('policyModal.field.categoryPlaceholder')}
 					disabled={!canEdit}
 				/>
+			</label>
+			<label>
+				<span>{m('policyModal.field.thresholdCurrency')}</span>
+				<input
+					type="text"
+					maxlength="3"
+					bind:value={threshold_currency}
+					placeholder={m('policyModal.field.thresholdCurrencyPlaceholder', {
+						currency: orgCurrency.currency
+					})}
+					disabled={!canEdit}
+				/>
+				<small>{m('policyModal.field.thresholdCurrencyHint')}</small>
 			</label>
 			<label>
 				<span>{m('policyModal.field.categoryLimit')}</span>
@@ -204,5 +223,10 @@
 	.form-grid input:disabled {
 		opacity: 0.7;
 		cursor: not-allowed;
+	}
+
+	.form-grid small {
+		font-size: 0.72rem;
+		color: var(--text-muted);
 	}
 </style>

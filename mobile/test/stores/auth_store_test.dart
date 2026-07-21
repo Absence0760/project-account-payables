@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/services/offline_store.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
 
 http.Response _json(Object body, [int status = 200]) => http.Response(
@@ -263,6 +264,69 @@ void main() {
 
       expect(ok, isTrue);
       expect(hit, isTrue);
+    });
+  });
+
+  group('init (session restore)', () {
+    // Restoring a session must distinguish "the token was rejected" from
+    // "the network is down". Only the former may tear the session down —
+    // tearing down on a transport failure would wipe the offline cache at
+    // exactly the moment offline mode is supposed to serve it (issue #176).
+    setUp(() {
+      FlutterSecureStorage.setMockInitialValues({
+        'auth_token': 'stored-token',
+        'tenant_slug': 'acme',
+      });
+      OfflineStore.instance.debugUseMemory(
+        tenantSlug: 'acme',
+        userId: 'user-a',
+      );
+    });
+
+    test('restores the user when the stored token is still good', () async {
+      ApiClient().debugConfigure(client: _happyClient(['admin']));
+
+      final restored = await store.init();
+
+      expect(restored, isTrue);
+      expect(store.user?.email, 'demo@acme.com');
+      expect(OfflineStore.instance.hasScope, isTrue);
+    });
+
+    test('a 401 tears the session down', () async {
+      await OfflineStore.instance.put('dashboard', {'total_invoices': 7});
+      ApiClient().debugConfigure(
+        client: MockClient((req) async => http.Response('nope', 401)),
+      );
+
+      final restored = await store.init();
+
+      expect(restored, isFalse);
+      expect(ApiClient().hasToken, isFalse);
+      expect(store.loggedIn, isFalse);
+      expect(OfflineStore.instance.hasScope, isFalse);
+    });
+
+    test('a transport failure keeps the token AND the offline cache', () async {
+      await OfflineStore.instance.put('dashboard', {'total_invoices': 7});
+      ApiClient().debugConfigure(
+        client: MockClient((req) async => throw Exception('offline')),
+      );
+
+      final restored = await store.init();
+
+      expect(restored, isFalse);
+      expect(
+        ApiClient().hasToken,
+        isTrue,
+        reason: 'being offline says nothing about the token',
+      );
+      final cached = await OfflineStore.instance.get('dashboard');
+      expect(
+        (cached as Map)['total_invoices'],
+        7,
+        reason: 'a network blip must not destroy the offline cache',
+      );
     });
   });
 }

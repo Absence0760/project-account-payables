@@ -31,6 +31,7 @@ never carry the raw tax_id (only verdict + matched-list), so we assert the
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import select
@@ -472,3 +473,351 @@ async def test_vendor_counts_respect_search(realdb, mk):
     body = resp.json()
     assert body["by_status"] == {"unverified": 1}
     assert body["total"] == 1
+
+
+# ===========================================================================
+# Entity scoping — `match_vendor` must not reach across subsidiaries.
+#
+# `vendors` carries a nullable `entity_id` (EntityMixin), so before this was
+# scoped an invoice under subsidiary A could be linked to subsidiary B's
+# vendor row. That link is load-bearing for money: the credit-memo guard
+# compares `invoice.vendor_id`, so a cross-entity mislink lets one
+# subsidiary's credit apply against another's payable.
+#
+# The rule (see `vendor_matching._candidate_query`): candidates are the
+# invoice's own entity ∪ rows with a NULL `entity_id` (unstamped/legacy —
+# excluding them would silently mint a duplicate vendor rather than fail).
+# ===========================================================================
+
+
+async def _second_entity_id(session, org_id: uuid.UUID) -> uuid.UUID:
+    """Create (once) a non-default second subsidiary in this tenant."""
+    from app.models.entity import Entity
+
+    existing = (
+        await session.execute(select(Entity.id).where(Entity.slug == "sub-b"))
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+    ent = Entity(name="Subsidiary B", slug="sub-b", organization_id=org_id, is_default=False)
+    session.add(ent)
+    await session.flush()
+    return ent.id
+
+
+@pytest.mark.asyncio
+async def test_match_vendor_does_not_cross_entities_on_tax_id(realdb, mk):
+    """A vendor belonging to subsidiary B must NOT be returned for an
+    entity-A match, even on the highest-trust key (exact tax_id)."""
+    org_id = realdb.info(TENANT).org_id
+    async with mk() as s:
+        entity_a = await _default_entity_id(s)
+        entity_b = await _second_entity_id(s, org_id)
+        s.add(
+            Vendor(
+                name="Cross Entity Supplier",
+                tax_id="77-7777777",
+                organization_id=org_id,
+                entity_id=entity_b,
+                status="active",
+                source="manual",
+            )
+        )
+        await s.commit()
+
+        vendor, conf = await match_vendor(
+            s,
+            vendor_name="Cross Entity Supplier",
+            vendor_tax_id="77-7777777",
+            entity_id=entity_a,
+        )
+    assert vendor is None, "entity-B vendor must not match an entity-A invoice"
+    assert conf == 0.0
+
+
+@pytest.mark.asyncio
+async def test_match_vendor_does_not_cross_entities_on_exact_name(realdb, mk):
+    """Same rule on the exact-name leg — a partial fix that scoped only the
+    tax_id lookup would leave this door open."""
+    org_id = realdb.info(TENANT).org_id
+    async with mk() as s:
+        entity_a = await _default_entity_id(s)
+        entity_b = await _second_entity_id(s, org_id)
+        s.add(
+            Vendor(
+                name="Nameonly Crossentity Supplier",
+                organization_id=org_id,
+                entity_id=entity_b,
+                status="active",
+                source="manual",
+            )
+        )
+        await s.commit()
+
+        vendor, conf = await match_vendor(
+            s, vendor_name="Nameonly Crossentity Supplier", entity_id=entity_a
+        )
+    assert vendor is None
+    assert conf == 0.0
+
+
+@pytest.mark.asyncio
+async def test_match_vendor_does_not_cross_entities_on_fuzzy(realdb, mk):
+    """And on the fuzzy leg — the third door."""
+    org_id = realdb.info(TENANT).org_id
+    async with mk() as s:
+        entity_a = await _default_entity_id(s)
+        entity_b = await _second_entity_id(s, org_id)
+        s.add(
+            Vendor(
+                name="Fuzzycross Industries Inc",
+                organization_id=org_id,
+                entity_id=entity_b,
+                status="active",
+                source="manual",
+            )
+        )
+        await s.commit()
+
+        vendor, conf = await match_vendor(
+            s, vendor_name="Fuzzycross Industries", entity_id=entity_a
+        )
+    assert vendor is None
+    assert conf == 0.0
+
+
+@pytest.mark.asyncio
+async def test_match_vendor_matches_own_entity(realdb, mk):
+    """The control for the three tests above: the SAME lookups still match a
+    vendor that does belong to the invoice's entity. Without this, a test
+    suite that only asserts non-matching would pass on a matcher that matches
+    nothing at all."""
+    org_id = realdb.info(TENANT).org_id
+    async with mk() as s:
+        entity_a = await _default_entity_id(s)
+        await _second_entity_id(s, org_id)
+        s.add(
+            Vendor(
+                name="Ownentity Supplier",
+                tax_id="66-6666666",
+                organization_id=org_id,
+                entity_id=entity_a,
+                status="active",
+                source="manual",
+            )
+        )
+        await s.commit()
+
+        by_tax, tax_conf = await match_vendor(
+            s, vendor_name="Whatever", vendor_tax_id="66-6666666", entity_id=entity_a
+        )
+        by_name, name_conf = await match_vendor(
+            s, vendor_name="Ownentity Supplier", entity_id=entity_a
+        )
+    assert by_tax is not None and tax_conf == 1.0
+    assert by_name is not None and name_conf == 0.98
+
+
+@pytest.mark.asyncio
+async def test_match_vendor_matches_unstamped_null_entity_vendor(realdb, mk):
+    """A vendor with a NULL `entity_id` — pre-multi-entity or created from an
+    entity-less invoice — must stay matchable from any entity. Dropping these
+    would not fail loudly; it would duplicate the supplier (splitting spend
+    rollups and creating a second, independently editable bank-detail row)."""
+    org_id = realdb.info(TENANT).org_id
+    async with mk() as s:
+        entity_a = await _default_entity_id(s)
+        s.add(
+            Vendor(
+                name="Unstamped Legacy Supplier",
+                tax_id="44-4444444",
+                organization_id=org_id,
+                entity_id=None,
+                status="active",
+                source="manual",
+            )
+        )
+        await s.commit()
+
+        by_tax, tax_conf = await match_vendor(
+            s, vendor_name="Anything", vendor_tax_id="44-4444444", entity_id=entity_a
+        )
+        by_name, name_conf = await match_vendor(
+            s, vendor_name="Unstamped Legacy Supplier", entity_id=entity_a
+        )
+        by_fuzzy, fuzzy_conf = await match_vendor(
+            s, vendor_name="Unstamped Legacy Supplier Inc", entity_id=entity_a
+        )
+    assert by_tax is not None and tax_conf == 1.0
+    assert by_name is not None and name_conf == 0.98
+    assert by_fuzzy is not None and fuzzy_conf >= 0.6
+
+
+@pytest.mark.asyncio
+async def test_match_vendor_prefers_own_entity_over_unstamped_duplicate(realdb, mk):
+    """When the same supplier exists both unstamped (NULL) and under the
+    invoice's own entity, the entity's own row wins — and a duplicated tax_id
+    resolves to one row instead of raising MultipleResultsFound (which would
+    turn invoice creation into a 500)."""
+    org_id = realdb.info(TENANT).org_id
+    async with mk() as s:
+        entity_a = await _default_entity_id(s)
+        s.add(
+            Vendor(
+                name="Dupetax Supplier Legacy",
+                tax_id="33-3333333",
+                organization_id=org_id,
+                entity_id=None,
+                status="active",
+                source="manual",
+            )
+        )
+        await s.flush()
+        owned = Vendor(
+            name="Dupetax Supplier Owned",
+            tax_id="33-3333333",
+            organization_id=org_id,
+            entity_id=entity_a,
+            status="active",
+            source="manual",
+        )
+        s.add(owned)
+        await s.commit()
+        owned_id = owned.id
+
+        vendor, conf = await match_vendor(
+            s, vendor_name="Dupetax Supplier", vendor_tax_id="33-3333333", entity_id=entity_a
+        )
+    assert vendor is not None and conf == 1.0
+    assert vendor.id == owned_id, "the invoice's own entity must outrank an unstamped row"
+
+
+@pytest.mark.asyncio
+async def test_match_vendor_unscoped_call_is_unchanged(realdb, mk):
+    """`entity_id=None` — an unstamped invoice, or a caller with no entity in
+    hand — is a passthrough that still searches the whole tenant. This is the
+    pre-multi-entity contract and the reason single-entity tenants see no
+    behaviour change."""
+    org_id = realdb.info(TENANT).org_id
+    async with mk() as s:
+        entity_b = await _second_entity_id(s, org_id)
+        s.add(
+            Vendor(
+                name="Unscoped Reachable Supplier",
+                organization_id=org_id,
+                entity_id=entity_b,
+                status="active",
+                source="manual",
+            )
+        )
+        await s.commit()
+
+        vendor, conf = await match_vendor(s, vendor_name="Unscoped Reachable Supplier")
+    assert vendor is not None
+    assert conf == 0.98
+
+
+@pytest.mark.asyncio
+async def test_match_vendor_single_entity_tenant_behaviour_unchanged(realdb, mk):
+    """The overwhelmingly common case: one (default) entity. Every vendor sits
+    under it, so scoping to `default ∪ NULL` admits the whole table and the
+    full ladder — tax_id, exact name, fuzzy, and the inactive filter — behaves
+    exactly as it did before scoping."""
+    org_id = realdb.info(TENANT).org_id
+    async with mk() as s:
+        entity_a = await _default_entity_id(s)
+        s.add_all(
+            [
+                Vendor(
+                    name="Singleent Taxkey Supplier",
+                    tax_id="22-2222222",
+                    organization_id=org_id,
+                    entity_id=entity_a,
+                    status="active",
+                    source="manual",
+                ),
+                Vendor(
+                    name="Singleent Fuzzy Industries Inc",
+                    organization_id=org_id,
+                    entity_id=entity_a,
+                    status="active",
+                    source="manual",
+                ),
+                Vendor(
+                    name="Singleent Dead Supplier",
+                    organization_id=org_id,
+                    entity_id=entity_a,
+                    status="inactive",
+                    source="manual",
+                ),
+            ]
+        )
+        await s.commit()
+
+        by_tax, tax_conf = await match_vendor(
+            s, vendor_name="Unrelated", vendor_tax_id="22-2222222", entity_id=entity_a
+        )
+        by_name, name_conf = await match_vendor(
+            s, vendor_name="singleent taxkey supplier", entity_id=entity_a
+        )
+        by_fuzzy, fuzzy_conf = await match_vendor(
+            s, vendor_name="Singleent Fuzzy Industries", entity_id=entity_a
+        )
+        dead, dead_conf = await match_vendor(
+            s, vendor_name="Singleent Dead Supplier", entity_id=entity_a
+        )
+    assert by_tax is not None and tax_conf == 1.0
+    assert by_name is not None and name_conf == 0.98
+    assert by_fuzzy is not None and by_fuzzy.name == "Singleent Fuzzy Industries Inc"
+    assert fuzzy_conf >= 0.6
+    assert dead is None and dead_conf == 0.0, "inactive filter must still apply"
+
+
+@pytest.mark.asyncio
+async def test_match_and_link_vendor_uses_the_invoices_entity(realdb, mk):
+    """End of the chain: `match_and_link_vendor` derives the entity from the
+    invoice, so no call site has to know about it. An entity-B invoice must
+    NOT be linked to an entity-A vendor — it gets its own unverified row,
+    stamped with entity B.
+
+    This is also what makes an inter-company *mirror* payable correct: the
+    mirror sits under the counterparty entity, so it matches against the
+    counterparty's vendors with no call-site changes.
+    """
+    from app.models.invoice import Invoice
+    from app.services.vendor_matching import match_and_link_vendor
+
+    org_id = realdb.info(TENANT).org_id
+    async with mk() as s:
+        entity_a = await _default_entity_id(s)
+        entity_b = await _second_entity_id(s, org_id)
+        a_vendor = Vendor(
+            name="Shared Name Supplier",
+            organization_id=org_id,
+            entity_id=entity_a,
+            status="active",
+            source="manual",
+        )
+        s.add(a_vendor)
+        await s.flush()
+        a_vendor_id = a_vendor.id
+
+        invoice = Invoice(
+            organization_id=org_id,
+            entity_id=entity_b,
+            invoice_number="ENT-SCOPE-1",
+            vendor_name="Shared Name Supplier",
+            amount=Decimal("100.00"),
+            currency="USD",
+            status="new",
+        )
+        s.add(invoice)
+        await s.flush()
+
+        vendor, action = await match_and_link_vendor(s, invoice, org_id, source="manual")
+        await s.commit()
+
+        assert action == "created", "must not link across entities"
+        assert vendor.id != a_vendor_id
+        assert vendor.entity_id == entity_b
+        assert invoice.vendor_id == vendor.id

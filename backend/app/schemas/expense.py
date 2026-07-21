@@ -13,7 +13,7 @@ endpoints are wired in WF1.
 from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.api.pagination import PageMeta
 from app.models.expense import (
@@ -75,6 +75,13 @@ class ExpenseResponse(BaseModel):
     description: str | None
     amount: float
     currency: str
+    # Rate-locked expression of `amount` in the owning report's currency (issue
+    # #157). Exact decimal strings — new money fields never serialise as float;
+    # `amount` above stays float only for back-compat. NULL when unattached.
+    converted_amount: str | None = None
+    converted_currency: str | None = None
+    converted_fx_rate: str | None = None
+    converted_fx_locked_at: str | None = None
     gl_account_id: str | None
     receipt_file_key: str | None
     receipt_url: str | None
@@ -136,14 +143,23 @@ class ExpenseBulkGlCode(BaseModel):
 
 
 class ExpenseReportSummary(BaseModel):
-    """Aggregate rollup of a report's attached expenses. Money is serialised as
-    ``float`` to match ``ExpenseResponse.amount`` — the exact value stays in the
-    DB ``Numeric``; this is a read-only display rollup."""
+    """Aggregate rollup of a report's attached expenses, expressed in the
+    report's own ``currency`` via each line's rate-locked conversion — never a
+    naive cross-currency sum (issue #157).
+
+    ``total`` stays ``float`` for back-compat with the existing client; the
+    exact value is in ``total_exact``. ``unconverted_count`` counts lines with
+    no usable rate lock: they are EXCLUDED from the totals (they also block
+    submission), so a non-zero value means the displayed figure is partial."""
 
     total: float
+    total_exact: str = "0.00"
+    currency: str = "USD"
     count: int
+    unconverted_count: int = 0
     by_category: list[dict]
     by_status: list[dict]
+    by_currency: list[dict] = Field(default_factory=list)
 
 
 class ExpenseReportResponse(BaseModel):
@@ -156,7 +172,17 @@ class ExpenseReportResponse(BaseModel):
     approved_at: str | None
     approved_by: str | None
     total_amount: float
+    # Exact `total_amount`, in the report's own `currency`.
+    total_amount_exact: str = "0.00"
     currency: str
+    # `total_amount` re-expressed in the ORG REPORTING currency at the rate
+    # locked on submit — the figure the CFO threshold gate compares (issue
+    # #157). NULL before submit, or when no rate was available (the gate then
+    # fails closed and requires CFO sign-off).
+    reporting_amount: str | None = None
+    reporting_currency: str | None = None
+    reporting_fx_rate: str | None = None
+    reporting_fx_locked_at: str | None = None
     notes: str | None
     expenses: list[ExpenseResponse] = Field(default_factory=list)
     created_at: str
@@ -177,6 +203,9 @@ class ExpensePolicyBase(BaseModel):
     name: str = Field(..., max_length=255)
     active: bool = True
     category: str | None = Field(default=None, max_length=100)
+    # The currency every money threshold on this policy is denominated in.
+    # None = "the org's reporting currency", resolved at evaluation time.
+    threshold_currency: str | None = None
     per_diem_amount: Decimal | None = None
     per_diem_currency: str = Field(default="USD", max_length=3)
     mileage_rate: Decimal | None = None
@@ -184,6 +213,20 @@ class ExpensePolicyBase(BaseModel):
     requires_preapproval_above: Decimal | None = None
     requires_receipt_above: Decimal | None = None
     rules: dict | None = None
+
+    @field_validator("threshold_currency")
+    @classmethod
+    def _normalize_threshold_currency(cls, v: str | None) -> str | None:
+        """Uppercase + shape-check the ISO 4217 code (3 letters). Blank → None
+        ("unset" = fall back to the org's reporting currency)."""
+        if v is None:
+            return None
+        code = v.strip().upper()
+        if not code:
+            return None
+        if not code.isalpha() or len(code) != 3:
+            raise ValueError("threshold_currency must be a 3-letter ISO 4217 code")
+        return code
 
 
 class ExpensePolicyCreate(ExpensePolicyBase):
@@ -196,6 +239,7 @@ class ExpensePolicyUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=255)
     active: bool | None = None
     category: str | None = Field(default=None, max_length=100)
+    threshold_currency: str | None = None
     per_diem_amount: Decimal | None = None
     per_diem_currency: str | None = Field(default=None, max_length=3)
     mileage_rate: Decimal | None = None
@@ -204,12 +248,27 @@ class ExpensePolicyUpdate(BaseModel):
     requires_receipt_above: Decimal | None = None
     rules: dict | None = None
 
+    @field_validator("threshold_currency")
+    @classmethod
+    def _normalize_threshold_currency(cls, v: str | None) -> str | None:
+        """Uppercase + shape-check the ISO 4217 code (3 letters). Blank → None
+        ("unset" = fall back to the org's reporting currency)."""
+        if v is None:
+            return None
+        code = v.strip().upper()
+        if not code:
+            return None
+        if not code.isalpha() or len(code) != 3:
+            raise ValueError("threshold_currency must be a 3-letter ISO 4217 code")
+        return code
+
 
 class ExpensePolicyResponse(BaseModel):
     id: str
     name: str
     active: bool
     category: str | None
+    threshold_currency: str | None
     per_diem_amount: float | None
     per_diem_currency: str
     mileage_rate: float | None

@@ -39,7 +39,7 @@ void main() {
   });
 
   setUp(() async {
-    VendorStore.instance.debugReset();
+    VendorStore.instance.reset();
     await OfflineStore.instance.clear();
     ApiClient().debugConfigure();
   });

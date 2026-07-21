@@ -28,9 +28,19 @@ FX call, no extra validation.
 returns a frozen `CorridorChoice`. Resolution order:
 
 1. Explicit `requested_method` from the caller (UI override / vendor
-   preference). Requirement flags (`requires_swift`, `requires_iban`,
-   `requires_fx`) are still derived from the corridor shape so
-   validation isn't skipped.
+   preference) — but ONLY when it's trustworthy as a real choice: an
+   explicit international method (`sepa` / `international_wire` /
+   `international_ach`, nothing defaults to those) or ANY method for a
+   genuinely domestic (same-currency, US) destination. `create_payment_run`
+   defaults every line item's method to `"ach"` regardless of the invoice's
+   actual currency/country, and the frontend does the same — a plain
+   domestic-looking method (`ach`/`wire`/`rtp`/`check`) for a destination
+   that actually needs international routing is that blanket default, not a
+   real override, and falls through to auto-selection below instead
+   (otherwise a cross-border payment shipped out on a domestic rail + a
+   foreign currency and failed at the processor — issue #123). Requirement
+   flags (`requires_swift`, `requires_iban`, `requires_fx`) are still derived
+   from the corridor shape so validation isn't skipped.
 2. Cross-currency → `international_wire`, FX leg required, SWIFT
    required, IBAN required iff destination is in the SEPA zone.
 3. Same-currency USD to the US → `ach`.

@@ -369,6 +369,36 @@ def test_totp_claim_key_is_keyed_hmac_not_bare_hash():
     assert key == expected, "claim key must be a keyed HMAC-SHA256 of secret:code"
 
 
+async def test_step_up_verified_rejects_a_wrong_totp_code():
+    """`step_up_verified` gates every factor change (enroll-over-live, disable,
+    passkey add/remove). A WRONG authenticator code must fail it — otherwise a
+    stolen session could strip or swap the second factor. Regression guard for
+    the async `verify_totp` call: an un-awaited coroutine is always truthy, so a
+    sync call would accept ANY code as a valid step-up (a real bypass)."""
+    import pyotp
+
+    from app.services import mfa
+
+    secret = mfa.generate_totp_secret()
+    # A correct current code satisfies the step-up.
+    assert (
+        await mfa.step_up_verified(
+            hashed_password=None,
+            mfa_secret=secret,
+            password=None,
+            code=pyotp.TOTP(secret).now(),
+        )
+        is True
+    )
+    # A wrong code must NOT — and neither should a bare presence of a code.
+    assert (
+        await mfa.step_up_verified(
+            hashed_password=None, mfa_secret=secret, password=None, code="000000"
+        )
+        is False
+    )
+
+
 # ---------------------------------------------------------------------------
 # Org-required MFA — login handler refuses to mint an access token
 # ---------------------------------------------------------------------------

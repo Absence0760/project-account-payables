@@ -174,6 +174,23 @@ class Invoice(Base, EntityMixin, TimestampMixin):
             unique=True,
             postgresql_where=text("recurring_template_id IS NOT NULL"),
         ),
+        # Idempotency backstop for inter-company routing
+        # (POST /api/invoices/{id}/route-intercompany). The origin ↔ mirror link
+        # is a 1:1 pairing, so an invoice may be named as the mirror-partner of
+        # at most ONE other invoice. Two concurrent routing calls on the same
+        # origin would each INSERT a mirror carrying
+        # `intercompany_mirror_id = <origin id>`; this index makes the second
+        # one impossible to persist (IntegrityError → clean 409) so a duplicate
+        # live payable — a double liability — can never reach the books. The
+        # app-level FOR UPDATE row lock in the routing endpoint stays as the
+        # fast path. Partial predicate keeps it from ever constraining the
+        # (overwhelming majority of) ordinary invoices, whose column is NULL.
+        Index(
+            "uq_invoice_intercompany_mirror",
+            "intercompany_mirror_id",
+            unique=True,
+            postgresql_where=text("intercompany_mirror_id IS NOT NULL"),
+        ),
         # invoice_warnings.refresh_warnings runs on EVERY invoice save and issues
         # several vendor-scoped "last N approved invoices" lookups (bank-change
         # detection, stat-anomaly history, price-variance history) filtered by

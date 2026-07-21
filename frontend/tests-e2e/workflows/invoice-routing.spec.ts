@@ -65,6 +65,11 @@ function hardDeleteInvoice(id: string): void {
 		`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${id}')`
 	);
 	tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${id}'`);
+	// Manual create now auto-links a vendor (`match_and_link_vendor`), and an
+	// unverified auto-minted vendor raises an `unverified_vendor` exception on
+	// the invoice — which `exceptions.invoice_id` FK-references, so it must be
+	// cleared before the invoice delete or the DELETE fails.
+	tenantPsql(`DELETE FROM exceptions WHERE invoice_id='${id}'`);
 	// audit_log is append-only (DB trigger, migration 0022 + seed) — never DELETE;
 	// orphan rows for the removed invoice are harmless (no FK back to invoices).
 	tenantPsql(`DELETE FROM invoices WHERE id='${id}'`);

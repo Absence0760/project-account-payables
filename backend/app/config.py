@@ -406,6 +406,12 @@ class Settings(BaseSettings):
     # required. The user trades it for a real access token by completing the
     # TOTP / email challenge. Five minutes is enough to find your phone.
     mfa_challenge_ttl_seconds: int = 300
+    # Lifetime of a *pending* (not-yet-verified) TOTP enrollment secret. The
+    # candidate secret lives in Redis — never on the account row — so starting
+    # an enrollment can't disturb the second factor already in force. Fifteen
+    # minutes covers "install an authenticator app, scan, type the code";
+    # past it the user simply restarts enrollment.
+    mfa_enroll_pending_ttl_seconds: int = 900
 
     # WebAuthn / passkeys (an ADDITIONAL MFA factor — separate code path from
     # TOTP, gated by the same `mfa_enabled` master switch above).

@@ -124,11 +124,27 @@ def tier_percent(tier: dict) -> Decimal:
 
 
 def select_tier(tiers: list[dict], tier_days: int) -> dict | None:
-    """Return the tier whose ``days`` equals ``tier_days``, else ``None``."""
+    """Return the tier whose ``days`` equals ``tier_days``, else ``None``.
+
+    No date check — see ``select_tier_for_date`` for the window-enforced
+    counterpart callers accepting a caller-chosen tier should use instead.
+    """
     for t in tiers:
         if int(t["days"]) == int(tier_days):
             return t
     return None
+
+
+def _tier_achievable(tier: dict, as_of: date, valid_until: date | None, ref: date) -> bool:
+    """True when ``tier``'s window is still open ``as_of`` a given date.
+
+    The offer as a whole is dead once ``valid_until`` has passed, regardless
+    of any individual tier's own (possibly later-looking) deadline.
+    """
+    if valid_until is not None and as_of > valid_until:
+        return False
+    deadline = _add_days(ref, int(tier["days"]))
+    return as_of <= deadline
 
 
 def best_tier_for_date(
@@ -157,14 +173,39 @@ def best_tier_for_date(
     best: dict | None = None
     best_pct: Decimal | None = None
     for t in tiers:
-        days = int(t["days"])
-        deadline = _add_days(ref, days)
-        if as_of > deadline:
+        if not _tier_achievable(t, as_of, valid_until, ref):
             continue  # this rung's window has already closed
         pct = tier_percent(t)
         if best_pct is None or pct > best_pct:
             best, best_pct = t, pct
     return best
+
+
+def select_tier_for_date(
+    tiers: list[dict],
+    tier_days: int,
+    as_of: date,
+    valid_until: date | None,
+    *,
+    reference_date: date | None = None,
+) -> dict | None:
+    """The explicit-choice counterpart to ``best_tier_for_date``: return the
+    tier matching ``tier_days``, but ONLY if its window is still open ``as_of``
+    (measured from ``reference_date``, same semantics as ``best_tier_for_date``)
+    and the offer itself hasn't passed ``valid_until``.
+
+    ``select_tier`` alone has no date check at all — a caller requesting a
+    specific tier BY NAME must not be able to claim a rung whose deadline (or
+    the whole offer's ``valid_until``) has already passed just because they
+    named it explicitly instead of letting the best-tier picker find it.
+    """
+    tier = select_tier(tiers, tier_days)
+    if tier is None:
+        return None
+    ref = reference_date if reference_date is not None else as_of
+    if not _tier_achievable(tier, as_of, valid_until, ref):
+        return None
+    return tier
 
 
 def _add_days(d: date, days: int):

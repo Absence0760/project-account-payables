@@ -222,7 +222,7 @@ async def test_provision_requires_auth(realdb):
 async def test_provision_slug_collision_is_409(realdb):
     """Provisioning a slug already taken (an existing tenant) is a clean 409 —
     no half-created tenant, no 500."""
-    # "pytesta" is a seeded tenant — its slug is taken.
+    # Tenant A is seeded by the harness — its slug is taken.
     taken = realdb.info("a").slug
     async with realdb.client(key="a", role="admin") as c:
         resp = await c.post(

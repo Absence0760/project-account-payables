@@ -177,9 +177,17 @@ async def test_card_issuance_logger_does_not_log_pan_on_adapter_failure(caplog):
         nium_sandbox=True,
     )
 
+    # AsyncSession stand-in: issuance reads the invoice's existing card count
+    # to derive the provider idempotency key's re-issue discriminator.
+    count_result = MagicMock()
+    count_result.scalar_one = MagicMock(return_value=0)
+    db = MagicMock()
+    db.execute = AsyncMock(return_value=count_result)
+
     caplog.set_level(logging.WARNING)
     with patch("app.services.card_adapters.get_card_adapter", return_value=adapter):
         result = await issue_card_for_invoice(
+            db=db,
             invoice=invoice,
             organization_id=uuid.uuid4(),
             org_settings={"cards": {"enabled": True, "program_type": "platform", "region": "US"}},

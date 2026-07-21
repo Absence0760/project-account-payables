@@ -13,10 +13,22 @@ export interface Vendor1099Row {
 	/** ISO date (YYYY-MM-DD) the W-9 was received, or null. */
 	w9_received_date: string | null;
 	w9_on_file: boolean;
-	/** Year-to-date completed payments — string-Decimal. */
+	/**
+	 * Year-to-date **reportable** completed payments — string-Decimal. Card-rail
+	 * payments are excluded: the card settlement entity files those on a 1099-K,
+	 * so counting them here would over-report the vendor. This is the figure that
+	 * lands in the 1099 box amount.
+	 */
 	ytd_paid: string;
 	over_threshold: boolean;
+	/** Count of the reportable (non-card) payments behind `ytd_paid`. */
 	payment_count: number;
+	/**
+	 * Card-rail total deliberately EXCLUDED from `ytd_paid` — string-Decimal.
+	 * Surfaced so an operator can reconcile against the processor's 1099-K.
+	 */
+	card_paid: string;
+	card_payment_count: number;
 }
 
 export interface Report1099 {
@@ -37,6 +49,13 @@ export interface Report1099 {
 	total_reportable: string;
 	/** @deprecated Back-compat alias of `total_reportable` (same value). */
 	total_reportable_usd: string;
+	/**
+	 * Card-rail spend for the year across EVERY vendor row (not just the
+	 * eligible-over-threshold ones `total_reportable` covers) — the money the
+	 * 1099 leaves out because the card processor reports it on a 1099-K.
+	 * string-Decimal.
+	 */
+	total_card_excluded: string;
 	/** ISO date the report was generated. */
 	generated_at: string;
 	rows: Vendor1099Row[];

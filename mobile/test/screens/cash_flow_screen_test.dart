@@ -91,7 +91,7 @@ Future<void> _pumpUntil(
 
 void main() {
   setUp(() {
-    CashFlowStore.instance.debugReset();
+    CashFlowStore.instance.reset();
     ApiClient().debugConfigure();
   });
 

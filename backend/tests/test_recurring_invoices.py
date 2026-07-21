@@ -502,3 +502,83 @@ async def test_variance_hook_flags_over_tolerance_arrived_invoice(realdb):
         await s.commit()
 
     assert any(w["type"] == "recurring_variance" for w in warnings)
+
+
+async def test_generate_one_survives_a_racing_generation_for_the_same_period(realdb):
+    """The `(template, period)` savepoint is the RACE backstop — the route's own
+    pre-check means the sequential retry never reaches it, so this drives
+    `generate_one` directly with the slot claimed underneath it.
+
+    It regressed on the same SQLAlchemy trap as the card-issuance savepoint:
+    `db.add(invoice)` sat BEFORE the `begin_nested()` block, and
+    `SessionTransaction._take_snapshot` flushes when that boundary opens — so
+    the INSERT went out before the SAVEPOINT existed. The IntegrityError still
+    reached the `except`, but the transaction was already poisoned, so the
+    recovery SELECT raised PendingRollbackError. In the background sweep that
+    aborted the whole tenant tick, discarding every sibling template it had
+    already generated.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id, name="Race Towers")
+    run_on = date.today().replace(day=1)
+
+    async with mk() as s:
+        tpl = RecurringInvoiceTemplate(
+            organization_id=org_id,
+            entity_id=await _default_entity_id(s),
+            name="Race Towers — monthly",
+            vendor_id=uuid.UUID(vendor_id),
+            vendor_name="Race Towers",
+            amount=Decimal("1000.00"),
+            currency="USD",
+            cadence=CADENCE_MONTHLY,
+            day_of_period=1,
+            start_date=run_on,
+            status=STATUS_ACTIVE,
+            gl_account="6000",
+        )
+        s.add(tpl)
+        await s.commit()
+        tpl_id = tpl.id
+
+    # A competing writer claims the period first, on its own connection.
+    winner_mk = realdb.sessionmaker("a")
+    async with winner_mk() as other:
+        tpl_other = (
+            await other.execute(
+                select(RecurringInvoiceTemplate).where(RecurringInvoiceTemplate.id == tpl_id)
+            )
+        ).scalar_one()
+        winner = await svc.generate_one(other, tpl_other, run_on=run_on)
+        await other.commit()
+        winner_id = winner.id
+
+    async with mk() as db:
+        tpl_ours = (
+            await db.execute(
+                select(RecurringInvoiceTemplate).where(RecurringInvoiceTemplate.id == tpl_id)
+            )
+        ).scalar_one()
+        got = await svc.generate_one(db, tpl_ours, run_on=run_on)
+        # Converged on the winner's invoice, and the session is still usable —
+        # the sweep can go on to its next template and commit.
+        assert got is not None
+        assert got.id == winner_id
+        await db.commit()
+
+    period_key = svc.period_key_for(CADENCE_MONTHLY, run_on)
+    async with mk() as s:
+        rows = (
+            (
+                await s.execute(
+                    select(Invoice).where(
+                        Invoice.recurring_template_id == tpl_id,
+                        Invoice.recurring_period_key == period_key,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1

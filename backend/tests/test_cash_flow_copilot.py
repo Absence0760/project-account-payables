@@ -4,7 +4,7 @@ Exercises the four finance-leader-only planning tools (`get_cashflow_forecast`,
 `get_cash_position`, `run_payment_whatif`, `optimize_discount_capture`), the
 orchestrator's per-tool role gate + copilot kill-switch in ``run_tool``, and the
 `/api/cash-flow/copilot` façade's RBAC + 404 kill-switch, against the live
-``ap_pytesta`` / ``ap_pytestb`` test tenants (the shared ``realdb`` harness in
+per-process test tenant pair (the shared ``realdb`` harness in
 ``conftest.py``).
 
 The load-bearing invariants proven here (per ``docs/cash-flow-copilot.md`` §10):

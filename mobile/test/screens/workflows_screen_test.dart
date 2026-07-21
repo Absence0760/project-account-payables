@@ -51,7 +51,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() {
-    WorkflowStore.instance.debugReset();
+    WorkflowStore.instance.reset();
     ApiClient().debugConfigure();
   });
 

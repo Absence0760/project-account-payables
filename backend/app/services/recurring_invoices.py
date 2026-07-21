@@ -303,11 +303,18 @@ async def generate_one(
         recurring_template_id=template.id,
         recurring_period_key=period_key,
     )
-    db.add(invoice)
     try:
         # Savepoint so a unique-violation rolls back ONLY this generation — the
         # surrounding sweep keeps every sibling template it already generated.
+        # `db.add` MUST be INSIDE the block: `SessionTransaction._take_snapshot`
+        # flushes the session when a `begin_nested()` boundary opens, so a row
+        # added first is INSERTed before the SAVEPOINT exists — the
+        # IntegrityError then escapes the block and leaves the transaction
+        # needing a rollback, so the recovery SELECT below raises
+        # PendingRollbackError and takes the whole sweep tick down with it.
+        # Same trap as `card_issuance.persist_card`; see that docstring.
         async with db.begin_nested():
+            db.add(invoice)
             await db.flush()
     except IntegrityError:
         # The (template, period) slot was already claimed (concurrent sweep or a

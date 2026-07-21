@@ -404,8 +404,15 @@ async def test_create_with_invoice_currency_mismatch_409(realdb):
     assert "currency" in resp.json()["detail"].lower()
 
 
-async def test_apply_invoice_without_vendor_allowed(realdb):
-    # When the invoice has no vendor_id, the vendor-match guard is skipped.
+async def test_apply_invoice_without_vendor_refused(realdb):
+    """An invoice with no resolved vendor cannot be credited — fail-closed.
+
+    A NULL ``vendor_id`` does not mean "any vendor"; it means the invoice's
+    vendor cannot be established, so there is nothing to prove the memo's
+    vendor against. The old guard (``if invoice.vendor_id and ...``) skipped
+    entirely on NULL, which let one vendor's credit reduce another vendor's
+    balance on every invoice created without extraction.
+    """
     mk = realdb.sessionmaker("a")
     org_id = realdb.info("a").org_id
     vendor_id = await _add_vendor(mk, org_id)
@@ -417,8 +424,186 @@ async def test_apply_invoice_without_vendor_allowed(realdb):
             f"/api/credit-memos/{memo_id}/apply",
             json={"invoice_id": invoice_id},
         )
-    assert resp.status_code == 200
+    assert resp.status_code == 409, resp.text
+    assert "no linked vendor" in resp.json()["detail"]
+
+    # The memo stayed open — nothing was credited.
+    async with mk() as s:
+        memo = (await s.execute(select(CreditMemo))).scalar_one()
+        assert memo.status == "open"
+        assert memo.invoice_id is None
+
+
+async def test_apply_manually_created_invoice_of_other_vendor_refused(realdb):
+    """Issue #138, verbatim: vendor A's memo against a MANUALLY-entered
+    vendor-B invoice must be refused.
+
+    ``POST /api/invoices`` is the no-OCR manual-entry path; it used to leave
+    ``vendor_id`` NULL, so the vendor guard never fired and the credit landed
+    on the wrong vendor's balance. The invoice now resolves its vendor link on
+    create, so the mismatch is caught.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_a = await _add_vendor(mk, org_id, name="Vendor Alpha")
+    await _add_vendor(mk, org_id, name="Vendor Beta")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        created = await c.post(
+            "/api/invoices",
+            json={
+                "vendor": "Vendor Beta",
+                "invoice_number": "INV-MANUAL-138",
+                "amount": "500.00",
+                "currency": "USD",
+            },
+        )
+        assert created.status_code == 201, created.text
+        # Manual entry resolves the vendor link — that is what makes the guard
+        # able to fire at all.
+        assert created.json()["vendor_id"] is not None
+        invoice_id = created.json()["id"]
+
+        memo_id = await _create_open_memo(c, vendor_a, number="CM-138")
+        resp = await c.post(
+            f"/api/credit-memos/{memo_id}/apply",
+            json={"invoice_id": invoice_id},
+        )
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == "Credit memo vendor does not match invoice vendor"
+
+    async with mk() as s:
+        memo = (await s.execute(select(CreditMemo))).scalar_one()
+        assert memo.status == "open"
+
+
+async def test_apply_manually_created_invoice_same_vendor_allowed(realdb):
+    """The other half: the memo's OWN vendor's manually-keyed invoice still
+    takes the credit — the fix closes the hole without stranding the flow."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id, name="Vendor Alpha")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        created = await c.post(
+            "/api/invoices",
+            json={
+                "vendor": "Vendor Alpha",
+                "invoice_number": "INV-MANUAL-OK",
+                "amount": "500.00",
+                "currency": "USD",
+            },
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["vendor_id"] == vendor_id
+        invoice_id = created.json()["id"]
+
+        memo_id = await _create_open_memo(c, vendor_id, number="CM-OK")
+        resp = await c.post(
+            f"/api/credit-memos/{memo_id}/apply",
+            json={"invoice_id": invoice_id},
+        )
+    assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "applied"
+
+
+async def test_create_applied_memo_against_unlinked_invoice_refused(realdb):
+    """The create-with-invoice_id path applies a credit too, so it carries the
+    same fail-closed guard — an unlinked invoice is refused there as well."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id)
+    invoice_id = await _add_invoice(mk, org_id, vendor_id=None, number="INV-CR-NOVEN")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/credit-memos",
+            json={
+                "memo_number": "CM-CR-NOVEN",
+                "vendor_id": vendor_id,
+                "amount": "50.00",
+                "invoice_id": invoice_id,
+            },
+        )
+    assert resp.status_code == 409, resp.text
+    assert "no linked vendor" in resp.json()["detail"]
+
+    # Nothing was persisted — the guard runs before the memo row is added.
+    async with mk() as s:
+        assert (await s.execute(select(func.count()).select_from(CreditMemo))).scalar_one() == 0
+
+
+async def test_resaving_vendor_resolves_a_legacy_unlinked_invoice(realdb):
+    """No backfill migration: an invoice that predates the create-time vendor
+    resolution is un-creditable until a human re-saves its vendor, which
+    re-runs the matcher and links it. That is the supported recovery path."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id, name="Acme Supplies")
+    # Legacy shape: vendor_name set, vendor_id NULL.
+    invoice_id = await _add_invoice(mk, org_id, vendor_id=None, number="INV-LEGACY")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        memo_id = await _create_open_memo(c, vendor_id, number="CM-LEGACY")
+        blocked = await c.post(
+            f"/api/credit-memos/{memo_id}/apply", json={"invoice_id": invoice_id}
+        )
+        assert blocked.status_code == 409, blocked.text
+
+        # Re-save the vendor name — unchanged text, but the link was missing,
+        # so the matcher runs and resolves it.
+        patched = await c.patch(f"/api/invoices/{invoice_id}", json={"vendor": "Acme Supplies"})
+        assert patched.status_code == 200, patched.text
+        assert patched.json()["vendor_id"] == vendor_id
+
+        allowed = await c.post(
+            f"/api/credit-memos/{memo_id}/apply", json={"invoice_id": invoice_id}
+        )
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["status"] == "applied"
+
+
+async def test_clearing_the_vendor_name_clears_the_link_and_blocks_the_credit(realdb):
+    """Blanking the vendor name must drop the link, not orphan it.
+
+    ``match_and_link_vendor`` no-ops on an empty name, so without an explicit
+    clear a nameless invoice would keep pointing at its old vendor — a link
+    nothing visible corroborates, which the credit guard would still accept."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id, name="Acme Supplies")
+    invoice_id = await _add_invoice(mk, org_id, vendor_id=vendor_id, number="INV-CLEARED")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        memo_id = await _create_open_memo(c, vendor_id, number="CM-CLEARED")
+        patched = await c.patch(f"/api/invoices/{invoice_id}", json={"vendor": ""})
+        assert patched.status_code == 200, patched.text
+        assert patched.json()["vendor_id"] is None
+
+        resp = await c.post(f"/api/credit-memos/{memo_id}/apply", json={"invoice_id": invoice_id})
+    assert resp.status_code == 409, resp.text
+    assert "no linked vendor" in resp.json()["detail"]
+
+
+async def test_renaming_the_vendor_relinks_and_blocks_the_stale_memo(realdb):
+    """A rename must move the LINK too. Otherwise vendor A's memo would still
+    apply to an invoice that now names vendor B (the guard compares
+    ``vendor_id``, not the free-text name)."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_a = await _add_vendor(mk, org_id, name="Vendor Alpha")
+    vendor_b = await _add_vendor(mk, org_id, name="Vendor Beta")
+    invoice_id = await _add_invoice(mk, org_id, vendor_id=vendor_a, number="INV-RENAME")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        memo_id = await _create_open_memo(c, vendor_a, number="CM-RENAME")
+        patched = await c.patch(f"/api/invoices/{invoice_id}", json={"vendor": "Vendor Beta"})
+        assert patched.status_code == 200, patched.text
+        assert patched.json()["vendor_id"] == vendor_b
+
+        resp = await c.post(f"/api/credit-memos/{memo_id}/apply", json={"invoice_id": invoice_id})
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == "Credit memo vendor does not match invoice vendor"
 
 
 # ---------------------------------------------------------------------------
