@@ -51,6 +51,7 @@ from app.models.workflow import (
     WorkflowInstance,
     WorkflowStep,
 )
+from app.services.billing.plan_catalog import ensure_plan_catalog, ensure_subscription
 from app.services.tenant_provisioning import CONTROL_TABLES
 from app.utils.passwords import pwd_context
 
@@ -378,8 +379,16 @@ async def seed_control_plane():
         session.add(UserRole(user_id=tech_admin.id, role_id=admin_role.id))
         session.add(UserRole(user_id=tech_clerk.id, role_id=ap_clerk_role.id))
 
+        # Baseline billing (issue #180) — without a live Subscription every
+        # entitlement-gated feature (the public Developer API) 402s forever
+        # and POST /api/billing/change-plan 404s with no plan to upgrade
+        # FROM. Demo tenants land on "free" like any real signup.
+        await ensure_plan_catalog(session)
+        await ensure_subscription(session, organization_id=ACME_ORG_ID, plan_code="free")
+        await ensure_subscription(session, organization_id=TECH_ORG_ID, plan_code="free")
+
         await session.commit()
-        print("  Seeded 2 orgs, 6 users, 4 roles")
+        print("  Seeded 2 orgs, 6 users, 4 roles, 2 subscriptions")
 
 
 # Per-status workflow progress: (completed step types, the one active/incomplete
@@ -1744,6 +1753,13 @@ async def seed_e2e_control_plane(roles: dict[str, "Role"]) -> list[tuple[str, uu
                 session.add(u)
                 await session.flush()
                 session.add(UserRole(user_id=u.id, role_id=role_row.id))
+
+        # Baseline billing (issue #180) for every e2e tenant — including ones
+        # that already existed from a prior (pre-fix) seed run and hit the
+        # `continue` above, so a re-seed backfills them too.
+        await ensure_plan_catalog(session)
+        for _db_name, e2e_org_id, _label in created:
+            await ensure_subscription(session, organization_id=e2e_org_id, plan_code="free")
 
         await session.commit()
 

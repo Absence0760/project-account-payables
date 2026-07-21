@@ -16,7 +16,13 @@ async def main():
     parser = argparse.ArgumentParser(description="Provision a new tenant")
     parser.add_argument("--name", required=True, help="Organization name")
     parser.add_argument("--slug", required=True, help="URL slug (e.g., 'acme')")
-    parser.add_argument("--plan", default="pro", help="Plan tier (default: pro)")
+    parser.add_argument(
+        "--plan",
+        default="free",
+        help="Organization.plan display label (default: free). Cosmetic only — "
+        "every new tenant is bound to the real 'free' billing Subscription "
+        "regardless of this value; upgrade via POST /api/billing/change-plan.",
+    )
     parser.add_argument("--admin-email", required=True, help="Admin user email")
     parser.add_argument("--admin-password", required=True, help="Admin user password")
     parser.add_argument(

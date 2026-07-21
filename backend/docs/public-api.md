@@ -113,8 +113,18 @@ DB), so a cross-tenant id is simply "not found", never leaked.
 
 ## `/api/v1` read surface
 
-All routes are behind `require_api_scope("read")` (→ `get_api_key_principal`) and
-read through `get_api_key_db` (the tenant session resolved from the key).
+All routes are behind `require_api_scope("read")` (→ `get_api_key_principal`)
+**and** `require_api_entitlement("public_api")` — the public API is a
+paid-plan feature, 402 without it — and read through `get_api_key_db` (the
+tenant session resolved from the key).
+
+**Local dev:** a freshly provisioned org (including the two demo tenants,
+`scripts/seed.py`) starts on the `free` plan, which does not grant
+`public_api` — so `/api/v1` 402s out of the box, by design. Unlock it locally
+with no cloud account by upgrading via `POST /api/billing/change-plan
+{"plan_code": "growth"}` (the `mock` billing adapter handles this with no
+Stripe key). See `docs/billing.md` § Default plan catalog + baseline
+Subscription and § Entitlement gating.
 
 | Method | Path | Returns |
 |--------|------|---------|

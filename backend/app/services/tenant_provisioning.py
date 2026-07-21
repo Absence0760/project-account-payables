@@ -22,6 +22,7 @@ from app.database import _make_tenant_url, control_session_factory
 from app.models import Base
 from app.models.organization import Organization
 from app.models.user import Role, User, UserRole
+from app.services.billing.plan_catalog import ensure_plan_catalog, ensure_subscription
 from app.utils.passwords import pwd_context
 
 logger = logging.getLogger(__name__)
@@ -270,6 +271,18 @@ async def _provision_into(
 
         if admin_role is not None:
             session.add(UserRole(user_id=user_id, role_id=admin_role.id))
+
+        # Baseline billing so this org isn't permanently locked out of every
+        # entitlement-gated feature (issue #180) and can actually use
+        # POST /api/billing/change-plan later — that endpoint 404s "no live
+        # subscription" without a starting row to change FROM. Every new org
+        # starts on the real "free" plan/subscription regardless of what the
+        # `plan` param above says — `plan` is a free-text legacy display
+        # string on `Organization.plan` (callers have long passed values like
+        # "pro" that were never a real billing tier), not a `Plan.code`;
+        # upgrading to a paid, entitled tier is what change-plan is for.
+        await ensure_plan_catalog(session)
+        await ensure_subscription(session, organization_id=org_id, plan_code="free")
 
         await session.commit()
         logger.info("Provisioned org %s (%s) + admin user %s", slug, org_id, admin_email)
