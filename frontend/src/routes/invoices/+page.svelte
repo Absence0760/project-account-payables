@@ -19,6 +19,7 @@
 	import Money from '$lib/components/ui/Money.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { workflowStore } from '$lib/stores/workflows.svelte';
+	import { getTenantSlug } from '$lib/tenant';
 	import { m } from '$lib/i18n/store.svelte';
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
@@ -336,7 +337,7 @@
 				headers: {
 					'Content-Type': 'application/json',
 					...(token ? { Authorization: `Bearer ${token}` } : {}),
-					'X-Tenant-Slug': document.location.hostname.split('.')[0],
+					'X-Tenant-Slug': getTenantSlug() ?? '',
 				},
 				body: JSON.stringify({ ids: [...selected], format }),
 			});

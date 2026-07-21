@@ -7,6 +7,7 @@
 	import { auth } from '$lib/stores/auth.svelte';
 	import { adminStore } from '$lib/stores/admin.svelte';
 	import { api } from '$lib/api';
+	import { getTenantSlug } from '$lib/tenant';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
@@ -549,7 +550,7 @@
 				const res = await fetch(`${base}${url}`, {
 					headers: {
 						...(token ? { Authorization: `Bearer ${token}` } : {}),
-						'X-Tenant-Slug': document.location.hostname.split('.')[0],
+						'X-Tenant-Slug': getTenantSlug() ?? '',
 					},
 				});
 				if (!res.ok) throw new Error(`Export failed: ${res.status}`);
