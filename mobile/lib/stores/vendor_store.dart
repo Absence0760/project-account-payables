@@ -3,7 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:ap_mobile/api/endpoints.dart';
 import 'package:ap_mobile/models/vendor.dart';
 import 'package:ap_mobile/services/offline_store.dart';
-import 'package:ap_mobile/stores/sequenced_fetch.dart';
+import 'package:ap_mobile/utils/sequenced_fetch.dart';
 
 /// Vendor list + verify/reject/ERP-sync actions. Mirrors [ContractStore]:
 /// in-memory singleton, offline-cached list, action methods refetch on success.
