@@ -65,9 +65,11 @@ class SessionManager {
 
   /// Drop the in-memory state of every account-scoped store singleton.
   ///
-  /// Every `ChangeNotifier` store under `lib/stores/` except `LocaleStore`
-  /// (device preference) belongs here — `test/services/session_test.dart`
-  /// fails if a new store is added without being listed.
+  /// Every `ChangeNotifier` store singleton under `lib/stores/` belongs here —
+  /// `test/services/session_test.dart` fails if a new one is added without
+  /// being listed. Its only exemptions are `LocaleStore` (a device preference,
+  /// not account data) and `sequenced_fetch.dart` (the `SequencedFetch` mixin,
+  /// not a store singleton).
   static void resetStores() {
     AdminUserStore.instance.reset();
     AuthStore.instance.reset();

@@ -154,8 +154,10 @@ to the session that produced them. `services/session.dart` is the chokepoint;
 - **Adding a store?** Add it to `SessionManager.resetStores()`. A store that
   isn't reset keeps one account's data in memory for the next one;
   `test/services/session_test.dart` fails if a new file under `lib/stores/`
-  isn't listed (`LocaleStore` is the sole exemption — display language is a
-  device preference, not account data).
+  isn't listed. The only exemptions are `LocaleStore` (display language is a
+  device preference, not account data) and `sequenced_fetch.dart` (the
+  `SequencedFetch` mixin — a per-store request-sequence helper, not an
+  account-scoped store singleton).
 - **Cache DB upgrade path.** `ap_cache.db` is at schema v2; the v1→v2 upgrade
   deletes every pre-existing row, because rows written before scoping have
   global keys (`dashboard`, `invoices_all_`, …) with no owner to attribute them
