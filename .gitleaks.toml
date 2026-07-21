@@ -53,3 +53,9 @@ regexes = [
     '''Right-Password-\d+''',
     '''Test-?Password-?\d*''',
 ]
+
+# Historical findings the regexes above don't cleanly cover (a specific
+# commit's exact patch, rather than a reusable literal pattern) are
+# allowlisted by fingerprint in the repo-root `.gitleaksignore` file, not
+# here — gitleaks' TOML schema has no config-level `fingerprints` field;
+# that's a `.gitleaksignore`-only mechanism (see that file's header).
