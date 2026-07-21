@@ -16,7 +16,7 @@
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
-	import { formatMoney } from '$lib/utils/money';
+	import { formatMoney, sumMoney } from '$lib/utils/money';
 	import { formatDate } from '$lib/utils/time';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
@@ -119,16 +119,22 @@
 		queue.length > 0 && queue.every(q => selectedQueue.has(q.id))
 	);
 
-	// Money arrives as string-Decimal — coerce with Number() before summing so
-	// `+` stays arithmetic (string `+` would concatenate into "0.100.20").
+	// Money arrives as string-Decimal. Summing via `Number(a) + Number(b)`
+	// coerces each amount to a binary float before adding, which can drift
+	// off the exact cent value (the classic 0.1 + 0.2 rounding bug) even
+	// though every individual amount is exact — so this uses the
+	// decimal-safe `sumMoney` (exact BigInt-scaled integer summation,
+	// converted back to a float once at the end) instead of a float reduce.
 	let selectedTotal = $derived(
-		queue.filter(q => selectedQueue.has(q.id)).reduce((sum, q) => sum + Number(q.amount), 0)
+		sumMoney(queue.filter(q => selectedQueue.has(q.id)).map(q => q.amount))
 	);
 
 	let selectedSavings = $derived(
-		queue
-			.filter(q => selectedQueue.has(q.id) && q.discount_eligible && q.discount_amount)
-			.reduce((sum, q) => sum + Number(q.discount_amount ?? 0), 0)
+		sumMoney(
+			queue
+				.filter(q => selectedQueue.has(q.id) && q.discount_eligible && q.discount_amount)
+				.map(q => q.discount_amount)
+		)
 	);
 
 	function toggleQueueSelect(id: string) {
