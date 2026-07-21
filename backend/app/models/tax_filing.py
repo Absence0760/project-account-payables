@@ -8,6 +8,14 @@ instead of re-filing with the partner. Filing a 1099 is effectively a
 money-/compliance-moving write (a duplicate IRS filing is a real problem), so
 it needs the same idempotency discipline as the payment path.
 
+The row is inserted (status=``pending``) and flushed to CLAIM the idempotency
+slot *before* the partner call — a concurrent duplicate submit hits the
+unique constraint immediately instead of both requests reaching the partner.
+``pending`` is only ever transient: the endpoint either overwrites it with the
+real outcome (``accepted``/``rejected``/``partial``) once the partner
+responds, or deletes the row if the partner call itself fails (so a
+legitimate retry isn't permanently blocked).
+
 Tenant-scoped table. Carries NO recipient TIN — only counts, the confirmation
 number, and the redacted per-form result list (vendor_id + accepted +
 reason_code) in ``result``. A TIN never enters this table.
