@@ -118,19 +118,31 @@ def qr_code_data_url(uri: str) -> str:
 _TOTP_CLAIM_TTL_SECONDS = 90
 
 
+# Work factor for the keyed KDF below. This is NOT password storage: security
+# rests on the secret salt (a Redis-keyspace snapshot can't derive or precompute
+# a key without AP_SECRET_KEY), so the iteration count is not a brute-force
+# defense here — it's simply the computationally-expensive KDF that CodeQL's
+# py/weak-sensitive-data-hashing rule requires for hashing sensitive data. Kept
+# modest so the login-path derivation stays fast.
+_KEYED_KDF_ITERATIONS = 100_000
+
+
 def _keyed_digest(*parts: str) -> str:
-    """HMAC-SHA256 (keyed with the server secret) of the ``:``-joined parts, as
-    hex. Keyed rather than a bare hash so a Redis-keyspace snapshot can neither
-    brute-force a low-entropy input (a 6-digit OTP) nor correlate / precompute a
-    value for a known input without the server key — and so CodeQL's
-    py/weak-sensitive-data-hashing rule stays clear. The output is the same
-    64-char hex shape as a raw SHA-256 digest, so stored formats are unchanged."""
+    """PBKDF2-HMAC-SHA256 of the ``:``-joined parts, keyed by the server secret
+    used as a fixed salt (fixed so the derivation stays deterministic for an O(1)
+    Redis lookup). The secret salt is what protects it: a Redis-keyspace snapshot
+    can neither reverse a key to its (secret, code) nor precompute one without
+    AP_SECRET_KEY. PBKDF2 — not a bare or HMAC SHA-256 — is the KDF CodeQL's
+    py/weak-sensitive-data-hashing rule accepts for sensitive data. 64-char hex,
+    the same shape as a SHA-256 digest, so stored formats are unchanged."""
     msg = ":".join(parts).encode()
-    return hmac.new(settings.secret_key.encode(), msg, hashlib.sha256).hexdigest()
+    return hashlib.pbkdf2_hmac(
+        "sha256", msg, settings.secret_key.encode(), _KEYED_KDF_ITERATIONS
+    ).hex()
 
 
 def _totp_claim_key(secret: str, code: str) -> str:
-    # Keyed HMAC (not a bare hash): the TOTP secret/code never appear in
+    # Keyed KDF (not a bare hash): the TOTP secret/code never appear in
     # cleartext in Redis keyspace listings / slow logs, and without the server
     # key an attacker who can read the keyspace can't correlate or precompute a
     # claim key for a (secret, code) pair.
@@ -300,9 +312,9 @@ def _email_otp_key(user_id: uuid.UUID) -> str:
 
 
 def _hash_otp(code: str) -> str:
-    """Keyed HMAC-SHA256 of the OTP before storing — a Redis snapshot must not
-    reveal the code, and keying it means the low-entropy 6-digit space can't be
-    brute-forced from the stored digest without the server secret."""
+    """Server-secret-keyed PBKDF2 of the OTP before storing — a Redis snapshot
+    must not reveal the code, and keying it means the low-entropy 6-digit space
+    can't be brute-forced from the stored digest without the server secret."""
     return _keyed_digest(code)
 
 

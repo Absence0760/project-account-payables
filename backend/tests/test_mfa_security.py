@@ -114,12 +114,12 @@ async def test_email_otp_reissue_invalidates_previous_code(fake_redis):
 
 
 @pytest.mark.asyncio
-async def test_email_otp_stored_value_is_a_keyed_hmac_not_plaintext_or_bare_hash(fake_redis):
+async def test_email_otp_stored_value_is_a_keyed_kdf_not_plaintext_or_bare_hash(fake_redis):
     """A snapshot of Redis must not yield a usable code. The stored value must be
-    a 64-char hex digest, never the plaintext — and it must be the KEYED HMAC,
-    not a bare SHA-256 of the code. A bare hash of a 6-digit code is trivially
-    brute-forced offline from the stored digest; keying it with the server
-    secret closes that."""
+    a 64-char hex digest, never the plaintext — and it must be the KEYED KDF, not
+    a bare SHA-256 of the code. A bare hash of a 6-digit code is trivially
+    brute-forced offline from the stored digest; keying it with the server secret
+    (server-secret-keyed PBKDF2) closes that."""
     import hashlib
 
     from app.services import mfa
@@ -133,7 +133,7 @@ async def test_email_otp_stored_value_is_a_keyed_hmac_not_plaintext_or_bare_hash
     assert len(stored) == 64, f"expected 64-char hex digest; got {len(stored)} chars"
     assert all(c in "0123456789abcdef" for c in stored), "stored value must be hex"
     bare = hashlib.sha256(plaintext.encode("utf-8")).hexdigest()
-    assert stored != bare, "stored digest must be a keyed HMAC, not a bare SHA-256 of the code"
+    assert stored != bare, "stored digest must be a keyed KDF, not a bare SHA-256 of the code"
 
 
 @pytest.mark.asyncio
@@ -340,15 +340,13 @@ async def test_totp_rejects_obviously_wrong_codes():
         assert await mfa.verify_totp(secret, bad) is False, f"unexpectedly accepted: {bad!r}"
 
 
-def test_totp_claim_key_is_keyed_hmac_not_bare_hash():
-    """The single-use TOTP claim key must be a KEYED HMAC of the
-    (secret, code) pair, not a bare SHA-256. A bare hash lets anyone who
-    can read the Redis keyspace precompute / correlate a claim key for a
-    known (secret, code) pair, and trips CodeQL's
-    py/weak-sensitive-data-hashing rule. Regression guard for the fix
-    that keyed this derivation with the server secret."""
+def test_totp_claim_key_is_a_keyed_kdf_not_bare_hash():
+    """The single-use TOTP claim key must be a KEYED KDF of the (secret, code)
+    pair, not a bare SHA-256. A bare hash lets anyone who can read the Redis
+    keyspace precompute / correlate a claim key for a known (secret, code) pair,
+    and trips CodeQL's py/weak-sensitive-data-hashing rule. Regression guard for
+    the fix that derives this key through the server-secret-keyed PBKDF2."""
     import hashlib
-    import hmac as _hmac
 
     from app.config import settings
     from app.services import mfa
@@ -357,16 +355,22 @@ def test_totp_claim_key_is_keyed_hmac_not_bare_hash():
     code = "000000"
     key = mfa._totp_claim_key(secret, code)
 
+    # Not a bare (reversible/precomputable) SHA-256 of secret:code.
     bare = "mfa:totp_used:" + hashlib.sha256(f"{secret}:{code}".encode()).hexdigest()
     assert key != bare, "claim key must not be a bare SHA-256 of secret:code"
 
+    # It is the server-secret-keyed PBKDF2 derivation, deterministic for lookups.
     expected = (
         "mfa:totp_used:"
-        + _hmac.new(
-            settings.secret_key.encode(), f"{secret}:{code}".encode(), hashlib.sha256
-        ).hexdigest()
+        + hashlib.pbkdf2_hmac(
+            "sha256",
+            f"{secret}:{code}".encode(),
+            settings.secret_key.encode(),
+            mfa._KEYED_KDF_ITERATIONS,
+        ).hex()
     )
-    assert key == expected, "claim key must be a keyed HMAC-SHA256 of secret:code"
+    assert key == expected, "claim key must be the server-keyed PBKDF2 of secret:code"
+    assert key == mfa._totp_claim_key(secret, code), "derivation must be deterministic"
 
 
 async def test_step_up_verified_rejects_a_wrong_totp_code():
