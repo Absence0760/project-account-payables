@@ -230,6 +230,10 @@ async def get_dashboard(
             .limit(10)
         )
     )
+    # Materialize once — the list AND its total are both derived from these
+    # same rows, so the total covers exactly the population the client
+    # renders (no separate query, no drift between count and total).
+    _upcoming_rows_all = upcoming_rows.all()
     upcoming = [
         {
             "id": str(r[0]),
@@ -239,8 +243,13 @@ async def get_dashboard(
             "due_date": r[4].isoformat() if r[4] else None,
             "is_overdue": r[4] < today if r[4] else False,
         }
-        for r in upcoming_rows.all()
+        for r in _upcoming_rows_all
     ]
+    # Sum in Decimal (each r[3] is already a Decimal off the Numeric column),
+    # then convert once at the response boundary — never fold the per-item
+    # floats above, which is exactly the client-side bug this mirrors
+    # (mobile issue #189: summing already-lossy floats accumulates drift).
+    upcoming_total_amount = float(sum((r[3] for r in _upcoming_rows_all), Decimal("0")))
 
     # Touchless rate — share of invoices that cleared review straight through
     # (reached approved-or-beyond) out of every invoice that has finished the
@@ -474,6 +483,7 @@ async def get_dashboard(
         "aging": aging,
         "monthly_trend": monthly_trend,
         "upcoming_payments": upcoming,
+        "upcoming_total_amount": upcoming_total_amount,
         "processing_time": {
             "avg_upload_to_approval_days": float(pt.avg_upload_to_approval_days),
             "median_upload_to_approval_days": float(pt.median_upload_to_approval_days),

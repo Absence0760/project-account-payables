@@ -206,7 +206,11 @@ everyone else.
 
 **Done:**
 - Login with tenant selection
-- Dashboard (KPIs, aging buckets, top vendors)
+- Dashboard (KPIs, aging buckets, top vendors). The upcoming-payments total
+  (`DashboardData.upcoming.totalAmount`) reads the backend's server-computed
+  `upcoming_total_amount` field directly — it is never folded from the
+  `upcoming_payments` list on-device, mirroring the payment-queue and
+  cash-flow "server-supplied total, never client float math" invariant
 - Invoice list with search + status filter chips
 - Advanced search — `AdvancedSearchSheet` (app-bar `tune` action; a dot badge marks an active advanced filter) filters the list by vendor, PO number, amount range and due-date range via `InvoiceStore.setFilters` → `GET /api/invoices` (`vendor` / `po_number` / `amount_min` / `amount_max` / `due_date_from` / `due_date_to`). Seeded from the live filters; validates min ≤ max + plain-decimal amounts; Apply / Clear / dismiss. The advanced filters compose with the quick status chips + search box (all carried into the same request + offline cache key)
 - Invoice detail with approve/reject

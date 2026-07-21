@@ -35,6 +35,11 @@ Existing fields stay: `pipeline`, `vendor_spend`, `aging`,
   invoice that has finished review (those same states **plus** `rejected`).
   The numerator is a strict subset of the denominator, so the value is always
   in `[0, 100]` — it can never go negative.
+- `upcoming_total_amount` — server-computed total across the same rows behind
+  `upcoming_payments` (summed in `Decimal`, converted to `float` exactly once
+  at the response boundary). Callers (the mobile dashboard) must read this
+  field directly rather than folding `upcoming_payments[].amount` themselves —
+  summing already-serialized floats client-side accumulates rounding drift.
 
 New keys added in a prior iteration:
 
