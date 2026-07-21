@@ -293,8 +293,9 @@ the new one. **Positive** = extra charge (upgrade), **negative** = credit
 
 `change_plan(control_db, org=…, new_plan_code=…, actor_id=…, change_at=None)`:
 
-1. resolve the org's live subscription + current plan (`get_active_subscription`);
-   **404** (no enumeration) when there's no live subscription;
+1. resolve the org's live subscription + current plan **row-locked**
+   (`_get_active_subscription_for_update`, `SELECT ... FOR UPDATE`, `change_plan`-only —
+   see § Concurrency below); **404** (no enumeration) when there's no live subscription;
 2. resolve the target `Plan` by `code` (active only); **404** when unknown;
 3. **idempotent no-op** when the target equals the current plan — `changed=False`,
    zero proration, no mutation, no provider call, **no audit row** (mirrors the
@@ -318,6 +319,28 @@ Endpoint `POST /api/billing/change-plan` (JWT + `require_roles(admin, cfo)` —
 matches the read endpoint) takes `{"plan_code": "..."}` and returns
 `{changed, old_plan_code, new_plan_code, proration: {amount, unused_days, period_days}}`
 with `amount` an exact decimal string.
+
+### Concurrency
+
+`change_plan` is a classic read-modify-write: read the current plan, prorate
+off it, then repoint `plan_id`. Two concurrent *different* plan changes for the
+same org (e.g. one request A→B, another A→C) both reading the plain
+`get_active_subscription` result would both baseline off `A` — a lost update
+where the loser's proration is computed against a stale plan and both land a
+`billing.plan_changed` audit row for what should be one coherent change.
+
+The fix locks the subscription row before prorating (`_get_active_subscription_for_update`,
+`SELECT ... FOR UPDATE`, mirroring `workflow_engine.get_invoice_for_update`) — a
+second concurrent call for the same org blocks behind the first's commit, then
+re-reads the *already-updated* subscription as its own "current" baseline, so its
+proration and `from_plan` reflect the actual prior state at the time it acquired
+the lock, not the value both calls originally read. This locked lookup is
+`change_plan`-only; the read-only entitlement-check dependencies and
+`GET /api/billing/subscription` keep using the unlocked `get_active_subscription`
+(no mutation, no need to pay the lock-contention cost). Proven by a real-Postgres
+concurrency test (`tests/test_billing_concurrency.py`), the same pattern as
+`tests/test_payment_concurrency.py` — a single mocked session can't model two
+connections contending for a row lock.
 
 ## Entitlement gating (`services/billing/entitlements.py` + `api/deps.py`)
 

@@ -3,12 +3,18 @@
 Changing the plan behind an org's live ``Subscription`` part-way through a
 billing period:
 
-  1. Resolve the org's live subscription + current plan (`get_active_subscription`).
+  1. Resolve the org's live subscription + current plan **row-locked**
+     (`_get_active_subscription_for_update`, ``SELECT ... FOR UPDATE``). A
+     second concurrent ``change_plan`` call for the same org blocks behind
+     this one's commit and then re-reads the already-updated subscription as
+     its own baseline, instead of racing off the same stale "current" plan
+     (see `docs/billing.md` § Concurrency).
   2. **Idempotent no-op** when the target plan equals the current plan — returns
      a zero proration, mutates nothing, writes no audit row (mirrors
      `transition_invoice` / `apply_billing_event`'s no-op rule). A retry of the
      same change therefore can't double-charge.
-  3. Compute the prorated adjustment (`compute_proration`, pure Decimal).
+  3. Compute the prorated adjustment (`compute_proration`, pure Decimal) off the
+     locked baseline.
   4. Resolve-or-create the provider customer + the NEW plan's price
      (`provision_org_billing`) so the live adapter has what it needs.
   5. Repoint the subscription at the new plan, persist, and write an append-only
@@ -37,11 +43,61 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.billing import Plan, Subscription
 from app.models.organization import Organization
 from app.services.audit_dispatch import dispatch_auth_audit
-from app.services.billing.entitlements import get_active_subscription
 from app.services.billing.proration import ProrationResult, compute_proration
 from app.services.billing.provisioning import provision_org_billing
 
 logger = logging.getLogger(__name__)
+
+
+async def _get_active_subscription_for_update(
+    db: AsyncSession, organization_id
+) -> tuple[Subscription, Plan] | None:
+    """Row-locked variant of ``entitlements.get_active_subscription``, for
+    ``change_plan``'s read-modify-write ONLY.
+
+    Plain read-only callers (the entitlement-check dependencies, the
+    subscription-summary endpoint) keep using the unlocked
+    ``get_active_subscription`` — they never mutate, so taking a row lock
+    there would only add contention with no correctness benefit. This variant
+    exists so a second concurrent plan change for the same org blocks on the
+    ``FOR UPDATE`` until the first commits, then observes the first change's
+    result as its own "current" baseline instead of a stale pre-change read.
+
+    Deliberately **two separate queries**, not one ``SELECT ... FOR UPDATE``
+    join across ``Subscription`` and ``Plan``: Postgres's lock-wait recheck
+    (EvalPlanQual) re-fetches the latest version of the LOCKED row but reuses
+    the join partner from the ORIGINAL scan. Since a plan change rewrites
+    ``Subscription.plan_id`` — the very column the join keys on — a second
+    waiter's joined query would recheck the new ``plan_id`` against the OLD
+    (pre-change) ``Plan`` row, the join predicate would fail, and the query
+    would come back with no row at all, even though the subscription plainly
+    exists (confirmed with a two-connection repro against a real Postgres:
+    the joined-``FOR UPDATE`` form drops the row after the first racer
+    commits; splitting the lock from the ``Plan`` lookup does not). Locking
+    only ``Subscription`` and then issuing a fresh, unlocked ``Plan`` lookup
+    keyed off the just-locked (and therefore current) ``plan_id`` sidesteps
+    the pitfall entirely.
+    """
+    subscription = (
+        await db.execute(
+            select(Subscription)
+            .where(
+                Subscription.organization_id == organization_id,
+                Subscription.status != "canceled",
+            )
+            .order_by(Subscription.created_at.desc())
+            .limit(1)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if subscription is None:
+        return None
+    plan = (
+        await db.execute(select(Plan).where(Plan.id == subscription.plan_id))
+    ).scalar_one_or_none()
+    if plan is None:
+        return None
+    return subscription, plan
 
 
 class PlanChangeError(RuntimeError):
@@ -73,7 +129,7 @@ async def change_plan(
     """
     now = change_at or datetime.now(UTC)
 
-    active = await get_active_subscription(control_db, org.id)
+    active = await _get_active_subscription_for_update(control_db, org.id)
     if active is None:
         raise PlanChangeError("no_live_subscription")
     subscription, current_plan = active
