@@ -333,6 +333,35 @@ async def test_totp_rejects_obviously_wrong_codes():
         assert await mfa.verify_totp(secret, bad) is False, f"unexpectedly accepted: {bad!r}"
 
 
+def test_totp_claim_key_is_keyed_hmac_not_bare_hash():
+    """The single-use TOTP claim key must be a KEYED HMAC of the
+    (secret, code) pair, not a bare SHA-256. A bare hash lets anyone who
+    can read the Redis keyspace precompute / correlate a claim key for a
+    known (secret, code) pair, and trips CodeQL's
+    py/weak-sensitive-data-hashing rule. Regression guard for the fix
+    that keyed this derivation with the server secret."""
+    import hashlib
+    import hmac as _hmac
+
+    from app.config import settings
+    from app.services import mfa
+
+    secret = mfa.generate_totp_secret()
+    code = "000000"
+    key = mfa._totp_claim_key(secret, code)
+
+    bare = "mfa:totp_used:" + hashlib.sha256(f"{secret}:{code}".encode()).hexdigest()
+    assert key != bare, "claim key must not be a bare SHA-256 of secret:code"
+
+    expected = (
+        "mfa:totp_used:"
+        + _hmac.new(
+            settings.secret_key.encode(), f"{secret}:{code}".encode(), hashlib.sha256
+        ).hexdigest()
+    )
+    assert key == expected, "claim key must be a keyed HMAC-SHA256 of secret:code"
+
+
 # ---------------------------------------------------------------------------
 # Org-required MFA — login handler refuses to mint an access token
 # ---------------------------------------------------------------------------

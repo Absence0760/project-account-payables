@@ -109,10 +109,17 @@ _TOTP_CLAIM_TTL_SECONDS = 90
 
 
 def _totp_claim_key(secret: str, code: str) -> str:
-    # Hash rather than store the secret/code in the Redis key verbatim — the
-    # secret is a long-lived credential and shouldn't appear in cleartext in
-    # Redis keyspace listings / slow logs.
-    digest = hashlib.sha256(f"{secret}:{code}".encode()).hexdigest()
+    # Derive the Redis claim key with a keyed HMAC (server secret), not a bare
+    # hash of the credential. The TOTP secret/code never appear in cleartext in
+    # Redis keyspace listings / slow logs, AND — because the key material is
+    # secret — an attacker who can read the keyspace can't correlate or
+    # precompute a claim key for a (secret, code) pair. A bare SHA-256 of the
+    # secret would also trip CodeQL's py/weak-sensitive-data-hashing rule.
+    digest = hmac.new(
+        settings.secret_key.encode(),
+        f"{secret}:{code}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
     return f"mfa:totp_used:{digest}"
 
 
