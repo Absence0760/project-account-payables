@@ -265,6 +265,7 @@ def test_authentication_round_trip(fake_redis):  # noqa: ARG001
             credentials=[
                 {"credential_id": fields["credential_id"], "transports": fields["transports"]}
             ],
+            purpose=webauthn.ASSERTION_PURPOSE_LOGIN,
         )
     )
     response = auth.get(_challenge_from_options(options_json))
@@ -274,6 +275,7 @@ def test_authentication_round_trip(fake_redis):  # noqa: ARG001
             credential_json=response,
             stored_public_key=fields["public_key"],
             stored_sign_count=fields["sign_count"],
+            purpose=webauthn.ASSERTION_PURPOSE_LOGIN,
         )
     )
     # Software authenticator bumps its counter on get(); new count must advance
@@ -290,6 +292,7 @@ def test_authentication_rejects_counter_regression(fake_redis):  # noqa: ARG001
         webauthn.begin_authentication(
             user_id=user_id,
             credentials=[{"credential_id": fields["credential_id"], "transports": None}],
+            purpose=webauthn.ASSERTION_PURPOSE_LOGIN,
         )
     )
     response = auth.get(_challenge_from_options(options_json))
@@ -301,6 +304,7 @@ def test_authentication_rejects_counter_regression(fake_redis):  # noqa: ARG001
                 credential_json=response,
                 stored_public_key=fields["public_key"],
                 stored_sign_count=99,
+                purpose=webauthn.ASSERTION_PURPOSE_LOGIN,
             )
         )
 
@@ -316,6 +320,7 @@ def test_authentication_rejects_wrong_key(fake_redis):  # noqa: ARG001
         webauthn.begin_authentication(
             user_id=user_id,
             credentials=[{"credential_id": fields["credential_id"], "transports": None}],
+            purpose=webauthn.ASSERTION_PURPOSE_LOGIN,
         )
     )
     response = auth.get(_challenge_from_options(options_json))
@@ -326,6 +331,7 @@ def test_authentication_rejects_wrong_key(fake_redis):  # noqa: ARG001
                 credential_json=response,
                 stored_public_key=other_fields["public_key"],  # wrong key
                 stored_sign_count=0,
+                purpose=webauthn.ASSERTION_PURPOSE_LOGIN,
             )
         )
 
@@ -344,6 +350,7 @@ def test_authentication_missing_challenge(fake_redis):  # noqa: ARG001
                 credential_json=response,
                 stored_public_key=fields["public_key"],
                 stored_sign_count=0,
+                purpose=webauthn.ASSERTION_PURPOSE_LOGIN,
             )
         )
 

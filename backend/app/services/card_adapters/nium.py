@@ -2,6 +2,15 @@
 
 Nium offers global card issuance with interchange sharing.
 Docs: https://docs.nium.com
+
+Idempotency: Nium supports it on every POST API, and the key travels in the
+`x-request-id` header (NOT `Idempotency-Key` — that is Lithic's convention).
+We send the caller-supplied `VirtualCardPayload.idempotency_key` on card
+creation so a retry after a client-side timeout resolves to the card Nium
+already issued rather than issuing a second live one. Nium purges keys after
+24 hours, so the guarantee covers the retry window that matters (a re-issue
+weeks later legitimately gets a fresh key — see
+`card_issuance.build_card_idempotency_key`).
 """
 
 import httpx
@@ -75,17 +84,22 @@ class NiumAdapter(CardAdapter):
         self._access_token = resp.json()["token"]
         return self._access_token
 
-    async def _headers(self) -> dict[str, str]:
+    async def _headers(self, idempotency_key: str | None = None) -> dict[str, str]:
         token = await self._get_token()
-        return {
+        headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
+        if idempotency_key:
+            # Nium's idempotency channel is `x-request-id` (docs: Developers →
+            # Nium API → Idempotency). Same key on a retry → same card back.
+            headers["x-request-id"] = idempotency_key
+        return headers
 
     async def create_card(self, payload: VirtualCardPayload) -> CardResult:
         customer = self.config["customer_hash_id"]
         wallet = self.config["wallet_hash_id"]
-        headers = await self._headers()
+        headers = await self._headers(payload.idempotency_key)
 
         body = {
             "cardType": "VCN",

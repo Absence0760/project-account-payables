@@ -12,11 +12,13 @@ raises. Callers are responsible for awaiting `db.flush` / `db.commit`.
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invoice import Invoice
@@ -24,6 +26,162 @@ from app.models.vendor import Vendor
 from app.models.virtual_card import VirtualCard
 
 logger = logging.getLogger(__name__)
+
+# Fixed namespace for card-issuance idempotency keys. Constant by design: the
+# key must reproduce byte-for-byte across retries, processes and deploys, so it
+# can never be a fresh uuid4 nor derive from anything transient.
+CARD_IDEMPOTENCY_NAMESPACE = uuid.UUID("2b0a6d5e-1f43-4a7c-9d1e-6c4b8f2a3d90")
+
+
+def build_card_idempotency_key(
+    *,
+    invoice_id,
+    correlation_id=None,
+    reissue_seq: int = 0,
+) -> str:
+    """Deterministic provider idempotency key for ONE logical card issuance.
+
+    Card issuance mints a real, spendable card, so it needs the same
+    idempotency discipline as a payment (project invariant: *idempotency on
+    writes that move money*). The DB index
+    ``uq_virtual_cards_one_live_per_invoice`` only catches duplicates that made
+    it into OUR database — if httpx times out *after* Lithic/Nium provisioned
+    the card, no row is written, and an unkeyed retry mints a SECOND live card
+    while the first is orphaned and ungoverned. A stable key closes that hole:
+    the provider replays the original response instead of issuing again.
+
+    Stability inputs, all durable:
+
+    - ``correlation_id`` (falling back to ``invoice_id`` when an invoice
+      predates correlation ids) — anchors the key to the payable, not to the
+      attempt. Never a fresh uuid4.
+    - ``reissue_seq`` — how many ``VirtualCard`` rows the invoice already has.
+      A timed-out attempt persists nothing, so a retry recomputes the SAME
+      sequence and therefore the same key. A deliberate cancel-then-reissue
+      *does* leave a row behind, so it advances the sequence and gets a fresh
+      key — without this, the provider would replay the original (now closed)
+      card inside its key-retention window and the vendor would receive a dead
+      card.
+
+    Returned as a UUID string because that is the strictest provider
+    requirement (Lithic rejects a non-UUID ``Idempotency-Key``); Nium's
+    ``x-request-id`` accepts it happily.
+    """
+    anchor = str(correlation_id) if correlation_id else str(invoice_id)
+    return str(uuid.uuid5(CARD_IDEMPOTENCY_NAMESPACE, f"virtual_card:{anchor}:{reissue_seq}"))
+
+
+async def _reissue_sequence(db: AsyncSession, invoice_id) -> int:
+    """Count of cards already persisted for this invoice (incl. cancelled).
+
+    See ``build_card_idempotency_key`` for why this is the right
+    discriminator. Deliberately NOT wrapped in a swallow-and-continue: if this
+    read fails the session is already broken, and minting a provider card on a
+    transaction that cannot persist the resulting row is precisely the orphan
+    this whole change exists to prevent. Fail before the money moves.
+    """
+    result = await db.execute(
+        select(func.count()).select_from(VirtualCard).where(VirtualCard.invoice_id == invoice_id)
+    )
+    return int(result.scalar_one() or 0)
+
+
+# Statuses meaning the card has been presented to the network — funds are
+# committed or already moved. `POST /api/cards/{id}/cancel` refuses these (you
+# cannot un-spend a card), so a spent card occupies its invoice's live-card slot
+# permanently. Mirrors the spend split in `api/cards.py`'s dashboard queries.
+CARD_SPENT_STATUSES = frozenset({"charged", "completed"})
+
+
+async def find_live_card_for_invoice(db: AsyncSession, invoice_id) -> VirtualCard | None:
+    """The card currently occupying this invoice's live-card slot, if any.
+
+    The predicate is deliberately IDENTICAL to
+    ``uq_virtual_cards_one_live_per_invoice`` (``status <> 'cancelled'``),
+    because this is the pre-check FOR that index. Narrowing it — e.g. to exclude
+    spent cards — would make the pre-check miss a row the index still counts, so
+    the caller would go on to mint a real provider card that the index then
+    refuses to persist: an orphaned, spendable card. Whether the occupying card
+    is a valid settlement target is a SEPARATE question — see
+    ``card_settlement_block``.
+
+    Used as the cheap pre-check before the provider call, and again after a lost
+    insert race to find the card the winner persisted.
+    """
+    result = await db.execute(
+        select(VirtualCard)
+        .where(VirtualCard.invoice_id == invoice_id, VirtualCard.status != "cancelled")
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+def card_settlement_block(card: VirtualCard, amount) -> str | None:
+    """Why ``card`` cannot settle a payment of ``amount`` — ``None`` if it can.
+
+    Only asked of a card this payment did NOT mint. Converging a payment onto a
+    pre-existing card marks it ``completed``, i.e. asserts the money moved, so
+    the assertion has to be true:
+
+    - **Already spent.** ``amount_limit`` is the card's authorization ceiling and
+      is NOT reduced by spend (a charge only sets ``amount_charged``), so a limit
+      check alone happily "settles" a payment against a card whose funds already
+      moved under a *different* payment. That is reachable without any race:
+      mint → vendor redeems → AP voids that payment → the invoice returns to the
+      payable pool → the next run rediscovers the same spent card.
+    - **Limit too small.** A live, unspent card that cannot cover this payable is
+      not what settles it.
+
+    Returned strings are ``Payment.failure_reason`` values — operator-facing,
+    PII-free (no PAN, no last four).
+    """
+    if card.status in CARD_SPENT_STATUSES:
+        return "card_already_charged"
+    if card.amount_limit is None or card.amount_limit < amount:
+        return "card_already_issued_insufficient_limit"
+    return None
+
+
+async def persist_card(db: AsyncSession, card: VirtualCard) -> bool:
+    """Add + flush ONE freshly-minted card inside a SAVEPOINT.
+
+    Returns True when the row landed, False when the invoice's live-card slot
+    was claimed by a concurrent writer between the caller's pre-check and this
+    flush (``uq_virtual_cards_one_live_per_invoice``).
+
+    The savepoint is what makes the loser recoverable. A bare ``db.flush()``
+    that trips the index leaves the *enclosing* transaction in a needs-rollback
+    state, so every subsequent statement on that session — the caller's audit
+    row, its ``commit()`` — raises ``PendingRollbackError`` instead. On the
+    payment-run path that unwound the whole dispatch loop and stranded the run
+    in ``executing``; on the batch path it discarded the sibling cards already
+    minted at the provider. Rolling back to the savepoint keeps the outer
+    transaction healthy and turns a benign duplicate into a value the caller
+    can branch on.
+
+    ``db.add`` MUST happen INSIDE the savepoint block, never before it.
+    ``SessionTransaction._take_snapshot`` flushes the session when a
+    ``begin_nested()`` boundary opens, so a row added first is written by
+    ``begin_nested()`` itself — *before* the SAVEPOINT exists — and its
+    IntegrityError escapes the very block meant to contain it. That ordering
+    trap is the reason this lives in one helper instead of being inlined at
+    each call site.
+
+    No explicit ``expunge`` is needed on the losing row: rolling back to the
+    savepoint runs ``SessionTransaction._restore_snapshot``, which expunges
+    ``session._new`` to transient — so a later ``flush``/``commit`` on this
+    session cannot re-attempt the insert that just failed. (Asserted by the
+    regression tests, which commit after a lost race and check exactly one row
+    survives.) ``recurring_invoices.generate_one`` relies on the same behaviour;
+    the two savepoints are deliberately identical in shape.
+    """
+    try:
+        async with db.begin_nested():
+            db.add(card)
+            await db.flush()
+    except IntegrityError:
+        return False
+    return True
 
 
 @dataclass
@@ -112,6 +270,7 @@ def _resolve_card_config(org_settings: dict, app_settings) -> dict | None:
 
 async def issue_card_for_invoice(
     *,
+    db: AsyncSession,
     invoice: Invoice,
     organization_id,
     org_settings: dict,
@@ -121,6 +280,13 @@ async def issue_card_for_invoice(
 ) -> CardIssueResult:
     """Mint one card via the org's configured adapter and persist the
     VirtualCard row. Returns the row (uncommitted — caller flushes).
+
+    Every provider call carries a deterministic idempotency key
+    (`build_card_idempotency_key`), so a retry of the same logical issuance —
+    after a client-side timeout, a double-click, a re-run of a payment run —
+    resolves to the card the provider already made rather than minting a second
+    live one. `db` is required for that: the key's re-issue discriminator is
+    read from the invoice's existing card rows.
 
     Returns success=False with a populated failure_reason when:
       - The org hasn't enabled cards (`cards.enabled` falsy)
@@ -151,6 +317,11 @@ async def issue_card_for_invoice(
         currency=invoice.currency or "USD",
         description=invoice.description,
         expiry_days=expiry_days,
+        idempotency_key=build_card_idempotency_key(
+            invoice_id=invoice.id,
+            correlation_id=invoice.correlation_id,
+            reissue_seq=await _reissue_sequence(db, invoice.id),
+        ),
     )
 
     try:
@@ -197,6 +368,45 @@ async def issue_card_for_invoice(
         entity_id=getattr(invoice, "entity_id", None),
     )
     return CardIssueResult(card=card, success=True)
+
+
+async def cancel_card_at_provider(
+    *,
+    card: VirtualCard,
+    org_settings: dict,
+    app_settings,
+) -> str:
+    """Close ``card`` at its provider. Returns an outcome tag; never raises.
+
+    Provider-side only — the caller owns the DB row and the audit trail, and
+    must only mark the row cancelled on ``"cancelled"``. That ordering is the
+    fail-safe one: "dead at the provider, maybe stale in the DB" is recoverable,
+    "cancelled in our DB but still chargeable at the provider" is not.
+
+    Outcomes: ``cancelled`` | ``cards_not_configured`` | ``card_cancel_rejected``
+    | ``card_cancel_error:<ExceptionType>``.
+    """
+    config = _resolve_card_config(org_settings, app_settings)
+    if config is None:
+        return "cards_not_configured"
+
+    import app.services.card_adapters.lithic  # noqa: F401
+    import app.services.card_adapters.mock_adapter  # noqa: F401
+    import app.services.card_adapters.nium  # noqa: F401
+    from app.services.card_adapters import get_card_adapter
+
+    try:
+        confirmed = await get_card_adapter(config).cancel_card(card.provider_card_id)
+    except Exception as exc:  # noqa: BLE001
+        # PII guard: the exception TYPE only — a card-provider error string can
+        # embed a partial PAN or a merchant token.
+        logger.warning(
+            "[card_issuance] provider cancel raised for card %s: %s",
+            card.id,
+            exc.__class__.__name__,
+        )
+        return f"card_cancel_error:{exc.__class__.__name__}"
+    return "cancelled" if confirmed else "card_cancel_rejected"
 
 
 async def notify_vendor_of_card(

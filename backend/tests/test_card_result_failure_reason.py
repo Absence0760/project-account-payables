@@ -22,6 +22,20 @@ import pytest
 from app.services.card_adapters.base import CardResult
 
 
+def _db(existing_cards: int = 0):
+    """Minimal AsyncSession stand-in.
+
+    `issue_card_for_invoice` reads one thing off the session: how many
+    VirtualCard rows the invoice already has (the re-issue discriminator in the
+    provider idempotency key).
+    """
+    result = MagicMock()
+    result.scalar_one = MagicMock(return_value=existing_cards)
+    db = MagicMock()
+    db.execute = AsyncMock(return_value=result)
+    return db
+
+
 def test_card_result_has_failure_reason_field_defaulting_none():
     # A success result never sets it — must default to None, not raise.
     ok = CardResult(success=True, provider_card_id="card_x", last_four="4242")
@@ -67,6 +81,7 @@ async def test_issue_card_forwards_failure_reason_from_a_real_cardresult():
 
     with patch("app.services.card_adapters.get_card_adapter", return_value=adapter):
         result = await issue_card_for_invoice(
+            db=_db(),
             invoice=invoice,
             organization_id=uuid.uuid4(),
             org_settings={"cards": {"enabled": True, "program_type": "platform", "region": "US"}},

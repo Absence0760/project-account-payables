@@ -136,6 +136,12 @@ class InvoiceResponse(BaseModel):
     id: str
     correlation_id: str
     vendor: str
+    # Resolved link to the `vendors` row this invoice belongs to. NULL when the
+    # vendor could not be established. Not PII (an opaque id) and load-bearing
+    # for the UI: the credit-memo apply picker filters on it so a memo is only
+    # ever offered against its own vendor's invoices — the same rule the backend
+    # enforces fail-closed in app/api/credit_memos.py.
+    vendor_id: str | None = None
     invoice_number: str
     amount: MoneyAmount
     currency: str
@@ -197,6 +203,7 @@ class InvoiceResponse(BaseModel):
             id=str(inv.id),
             correlation_id=str(inv.correlation_id),
             vendor=inv.vendor_name,
+            vendor_id=str(inv.vendor_id) if inv.vendor_id else None,
             invoice_number=inv.invoice_number,
             amount=inv.amount,
             currency=inv.currency,

@@ -52,6 +52,20 @@ function toNumber(amount: number | string | null | undefined): number | null {
 }
 
 /**
+ * Is this a strictly-positive amount?
+ *
+ * A *predicate*, not arithmetic — it never feeds a rendered figure, so
+ * there is no rounding to get wrong. Use it to decide whether a
+ * string-Decimal from the API is worth showing at all (e.g. the 1099
+ * report's card-excluded total, which is only meaningful when non-zero);
+ * never to add, subtract or compare two amounts against each other.
+ */
+export function isPositiveAmount(amount: number | string | null | undefined): boolean {
+	const n = toNumber(amount);
+	return n !== null && n > 0;
+}
+
+/**
  * Format an amount as locale-aware currency.
  *
  * @returns the formatted string, or `placeholder` (default `—`) when the

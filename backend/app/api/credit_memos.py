@@ -32,6 +32,36 @@ from app.tenant import apply_entity_scope, get_entity_id, get_tenant_db
 
 router = APIRouter(prefix="/credit-memos", tags=["credit-memos"])
 
+# Shared by both application paths (create-with-invoice_id and /apply) so the
+# two can't drift. Neither names the vendor — an authenticated AP user already
+# knows the invoice, and the detail only has to say what to fix.
+_VENDOR_MISMATCH_DETAIL = "Credit memo vendor does not match invoice vendor"
+_VENDOR_UNRESOLVED_DETAIL = (
+    "The invoice has no linked vendor, so the credit memo's vendor cannot be "
+    "verified. Resolve the invoice's vendor first (re-save its vendor on the "
+    "invoice), then apply the credit."
+)
+
+
+def _assert_vendor_matches(invoice: Invoice, vendor_id: uuid.UUID) -> None:
+    """Refuse to credit an invoice unless its vendor PROVABLY matches the memo's.
+
+    Fail-closed on a NULL ``Invoice.vendor_id``. A missing link does not mean
+    "any vendor" — it means the invoice's vendor cannot be established, and a
+    credit applied there reduces a balance nobody can attribute. Treating NULL
+    as permissive (the old ``if invoice.vendor_id and …`` shape) let one
+    vendor's credit memo be applied against another vendor's invoice for every
+    invoice created without extraction.
+
+    ``create_invoice`` and the vendor-name path of ``update_invoice`` now
+    resolve the link, so new invoices satisfy this; a pre-existing unlinked
+    invoice is resolved by re-saving its vendor name.
+    """
+    if invoice.vendor_id is None:
+        raise HTTPException(status_code=409, detail=_VENDOR_UNRESOLVED_DETAIL)
+    if invoice.vendor_id != vendor_id:
+        raise HTTPException(status_code=409, detail=_VENDOR_MISMATCH_DETAIL)
+
 
 def _to_response(
     memo: CreditMemo,
@@ -123,11 +153,7 @@ async def create_credit_memo(
             raise HTTPException(status_code=404, detail="Invoice not found")
         # Same guards as the /apply path — a credit applied at creation time must
         # match the invoice's vendor and stay within its remaining balance.
-        if invoice.vendor_id and invoice.vendor_id != vendor_uuid:
-            raise HTTPException(
-                status_code=409,
-                detail="Credit memo vendor does not match invoice vendor",
-            )
+        _assert_vendor_matches(invoice, vendor_uuid)
         # Same currency guard as the /apply path — the remaining-balance math
         # below subtracts the memo amount from the invoice amount directly, so a
         # EUR memo created against a USD invoice would silently mix currencies
@@ -224,11 +250,7 @@ async def apply_credit_memo(
     invoice = inv_result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    if invoice.vendor_id and invoice.vendor_id != memo.vendor_id:
-        raise HTTPException(
-            status_code=409,
-            detail="Credit memo vendor does not match invoice vendor",
-        )
+    _assert_vendor_matches(invoice, memo.vendor_id)
     # Currencies must match — the remaining-balance arithmetic below subtracts
     # the memo amount from the invoice amount directly, so applying a EUR memo to
     # a USD invoice would silently mix currencies and corrupt the balance.

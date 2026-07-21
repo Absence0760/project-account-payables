@@ -110,7 +110,20 @@ the sweep). Each tick:
    PII).
 
 The generation is **idempotent on `(template, period_key)`** via the DB unique
-index above, so a concurrent or retried tick is safe.
+index above, so a concurrent or retried tick is safe. `generate_one` inserts
+inside a SAVEPOINT (`begin_nested`) and, on the resulting `IntegrityError`,
+returns the invoice the winner already generated — the savepoint is what keeps
+the losing INSERT from poisoning the sweep's tenant transaction and taking every
+sibling template generated earlier in that tick down with it.
+
+The `db.add` sits **inside** the `begin_nested()` block, not before it:
+`SessionTransaction._take_snapshot` flushes the session when that boundary
+opens, so a row added first is INSERTed *before* the SAVEPOINT exists and its
+`IntegrityError` escapes the block meant to contain it. Same trap documented at
+`card_issuance.persist_card` — see `virtual-cards.md` § *Persisting the row*.
+(`POST /recurring/{id}/generate-now` also pre-checks the period, so the
+sequential retry short-circuits before ever reaching the savepoint; the
+savepoint is purely the concurrency backstop.)
 
 **The sweep never moves money.** It only creates an `Invoice` in the queue; the
 CFO-gated payment run is what funds it, exactly as for a manually-uploaded bill.

@@ -97,6 +97,24 @@ _FEE_INTL_WIRE = Decimal("0.0250")  # SWIFT correspondent banks add up
 _FEE_RTP = Decimal("0.0020")
 _FEE_INTL_ACH = Decimal("0.0080")  # NACHA Global ACH — between SEPA and wire
 
+# Every `Payment.method` value an explicit caller override can select, mapped
+# to its fee anchor. Public because it is the authoritative list of rails this
+# selector can stamp onto a Payment row — `services/payment_methods` classifies
+# each of them for IRS 1099 reporting and its drift guard reads these keys, so
+# a new rail added here can't silently ship without a tax treatment.
+# `wire` is listed at its domestic anchor; `pick_corridor` re-prices it at the
+# international anchor when the corridor needs an FX leg.
+CORRIDOR_OVERRIDE_FEES: dict[str, Decimal] = {
+    "ach": _FEE_ACH,
+    "wire": _FEE_DOMESTIC_WIRE,
+    "rtp": _FEE_RTP,
+    "sepa": _FEE_SEPA,
+    "international_ach": _FEE_INTL_ACH,
+    "international_wire": _FEE_INTL_WIRE,
+    "check": Decimal("0"),
+    "virtual_card": Decimal("0"),
+}
+
 
 def pick_corridor(
     *,
@@ -147,16 +165,9 @@ def pick_corridor(
         # Caller is overriding — derive only the requirement flags
         # from the corridor's shape. Fee is a best-effort lookup.
         method = requested_method.lower()
-        fee = {
-            "ach": _FEE_ACH,
-            "wire": _FEE_DOMESTIC_WIRE if not requires_fx else _FEE_INTL_WIRE,
-            "rtp": _FEE_RTP,
-            "sepa": _FEE_SEPA,
-            "international_ach": _FEE_INTL_ACH,
-            "international_wire": _FEE_INTL_WIRE,
-            "check": Decimal("0"),
-            "virtual_card": Decimal("0"),
-        }.get(method, _FEE_INTL_WIRE)
+        fee = CORRIDOR_OVERRIDE_FEES.get(method, _FEE_INTL_WIRE)
+        if method == "wire" and requires_fx:
+            fee = _FEE_INTL_WIRE
         return CorridorChoice(
             method=method,
             expected_fee_pct=fee,

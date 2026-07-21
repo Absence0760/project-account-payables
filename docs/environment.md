@@ -42,6 +42,7 @@ Note: The frontend also reads the tenant slug from the browser subdomain at runt
 | `AP_MFA_ISSUER`       | `Account Payables`                                                       | Label shown in TOTP authenticator apps |
 | `AP_MFA_EMAIL_OTP_TTL_SECONDS` | `360`                                                           | Lifetime of email-OTP backup codes |
 | `AP_MFA_CHALLENGE_TTL_SECONDS` | `300`                                                           | Lifetime of the post-password "still need MFA" challenge token |
+| `AP_MFA_ENROLL_PENDING_TTL_SECONDS` | `900`                                                      | Lifetime of a pending (started-but-unverified) TOTP enrollment secret. The candidate lives in Redis, never on the account row, so starting an enrollment can't disturb the factor already in force |
 | `AP_ACCESS_TOKEN_EXPIRE_MINUTES` | `30`                                                          | JWT lifetime in minutes |
 | `AP_MAX_CONCURRENT_SESSIONS` | `5`                                                                | Concurrent sessions per user. When a user logs in with this many already active, the oldest JTI is evicted to the blocklist. `0` disables the cap. |
 | `AP_REDIS_URL`        | `redis://localhost:6379`                                                 | Redis connection — required at runtime (auth blocklist + active-session tracking, MFA, SSO state, rate limit) |

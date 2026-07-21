@@ -464,6 +464,13 @@
 	}
 
 	// ========================== Policies tab ==========================
+	// A policy's thresholds are denominated in its own threshold_currency; an
+	// unset one means the org's reporting currency (what the backend engine
+	// falls back to), so the table must never render them in a different unit.
+	function policyCurrency(p: ExpensePolicy): string {
+		return p.threshold_currency ?? orgCurrency.currency;
+	}
+
 	let policies = $state<ExpensePolicy[]>([]);
 	let policiesLoading = $state(false);
 	let showPolicyCreate = $state(false);
@@ -953,10 +960,23 @@
 
 				{#if activeSummary}
 					<div class="kpi-row">
-						<KpiCard value={formatMoney(activeSummary.total, { currency: activeReport.currency })} label={m('expenses.reports.total')} />
+						<KpiCard value={formatMoney(activeSummary.total, { currency: activeSummary.currency })} label={m('expenses.reports.total')} />
 						<KpiCard value={activeSummary.count} label={m('expenses.reports.expenses')} />
 						<KpiCard value={activeSummary.by_category.length} label={m('expenses.reports.categories')} />
 					</div>
+					<!--
+						The total sums each line's rate-locked conversion into the report
+						currency. Lines with no usable rate are EXCLUDED, so the figure
+						above would silently understate without this notice (issue #157).
+					-->
+					{#if activeSummary.unconverted_count > 0}
+						<div class="unconverted-panel" role="alert">
+							{m('expenses.reports.unconverted', {
+								count: activeSummary.unconverted_count,
+								currency: activeSummary.currency
+							})}
+						</div>
+					{/if}
 				{/if}
 
 				{#if canCreate && activeReport.status === 'draft'}
@@ -1044,6 +1064,7 @@
 			columns={[
 				{ label: m('expenses.policies.col.name') },
 				{ label: m('expenses.policies.col.category') },
+				{ label: m('expenses.policies.col.currency') },
 				{ label: m('expenses.policies.col.limit'), class: 'right' },
 				{ label: m('expenses.policies.col.receiptAbove'), class: 'right' },
 				{ label: m('expenses.policies.col.preapprAbove'), class: 'right' },
@@ -1062,9 +1083,10 @@
 							</RowLink>
 						</td>
 						<td>{p.category ?? m('expenses.policies.categoryAll')}</td>
-						<td class="right mono">{p.category_limit != null ? formatMoney(p.category_limit, { currency: orgCurrency.currency }) : '—'}</td>
-						<td class="right mono">{p.requires_receipt_above != null ? formatMoney(p.requires_receipt_above, { currency: orgCurrency.currency }) : '—'}</td>
-						<td class="right mono">{p.requires_preapproval_above != null ? formatMoney(p.requires_preapproval_above, { currency: orgCurrency.currency }) : '—'}</td>
+						<td>{policyCurrency(p)}</td>
+						<td class="right mono">{p.category_limit != null ? formatMoney(p.category_limit, { currency: policyCurrency(p) }) : '—'}</td>
+						<td class="right mono">{p.requires_receipt_above != null ? formatMoney(p.requires_receipt_above, { currency: policyCurrency(p) }) : '—'}</td>
+						<td class="right mono">{p.requires_preapproval_above != null ? formatMoney(p.requires_preapproval_above, { currency: policyCurrency(p) }) : '—'}</td>
 						<td><span class="badge {p.active ? 'approved' : 'cancelled'}">{p.active ? m('expenses.policies.active') : m('expenses.policies.inactive')}</span></td>
 						<td class="actions">
 							{#if canManagePolicies}
@@ -1483,6 +1505,17 @@
 	.violation-panel li {
 		margin: 2px 0;
 		color: #e04040;
+	}
+
+	/* Partial-total notice: some lines lack an FX lock and were excluded. */
+	.unconverted-panel {
+		margin-top: 10px;
+		border: 1px solid #c98a00;
+		background: rgba(201, 138, 0, 0.08);
+		border-radius: 8px;
+		padding: 10px 14px;
+		color: var(--text);
+		font-size: 0.85rem;
 	}
 
 	/* --- New-report mini modal --- */

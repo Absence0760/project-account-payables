@@ -27,11 +27,13 @@ from app.schemas.portal import (
     PortalMFADisableRequest,
     PortalMFAEmailChallengeRequest,
     PortalMFAEnrollStartResponse,
+    PortalMFAStepUpRequest,
     PortalMFAVerifyRequest,
     PortalTokenResponse,
     PortalUpdateProfileRequest,
 )
 from app.services import mfa
+from app.services.audit_dispatch import dispatch_auth_audit
 from app.services.email_adapters import EmailMessage, get_email_adapter, is_supported_locale
 from app.services.rate_limit import check_rate_limit
 from app.tenant import get_tenant_db
@@ -304,21 +306,87 @@ async def portal_mfa_challenge(
     )
 
 
+# Mirrors `api/auth.STEP_UP_RATE_LIMIT_PER_MINUTE` — a credential-management
+# endpoint that checks a password is a password oracle unless it is throttled,
+# and a silent one unless it is audited. Keyed on the vendor USER, not the
+# client IP: the attacker already holds their token and can rotate IPs.
+STEP_UP_RATE_LIMIT_PER_MINUTE = 5
+
+
+async def _audit_portal_step_up_failure(vu: VendorUser, *, operation: str) -> None:
+    """Record a failed re-authentication against a vendor's factor change.
+
+    PII-free — `operation` is a fixed literal, the submitted credential never
+    enters the trail. Skipped for a legacy row with no `organization_id` (the
+    audit dispatcher resolves the tenant DB from it); `dispatch_auth_audit`
+    swallows its own failures, so this never breaks the request either way.
+    """
+    if not vu.organization_id:
+        return
+    await dispatch_auth_audit(
+        organization_id=vu.organization_id,
+        actor_id=vu.id,
+        action="portal.mfa.step_up.failure",
+        entity_id=vu.id,
+        details={"operation": operation},
+    )
+
+
+async def _require_portal_mfa_step_up(
+    vu: VendorUser, body: PortalMFAStepUpRequest | None, *, operation: str
+) -> None:
+    """Gate any change to a vendor user's *existing* second factor.
+
+    Same rule as the employee surface (`api/auth._require_mfa_step_up`): a
+    first enrollment is frictionless, but once a factor is live, replacing it
+    needs the portal password or a code from the current authenticator. A
+    stolen portal session must not be able to strip or hijack MFA. Throttled
+    per-account and audited on failure, like the employee twin.
+    """
+    if not (vu.mfa_enabled and vu.mfa_secret):
+        return
+    await check_rate_limit(
+        "portal_auth_mfa_step_up",
+        limit=STEP_UP_RATE_LIMIT_PER_MINUTE,
+        window_seconds=60,
+        subject=str(vu.id),
+    )
+    if mfa.step_up_verified(
+        hashed_password=vu.hashed_password,
+        mfa_secret=vu.mfa_secret,
+        password=body.password if body else None,
+        code=body.code if body else None,
+    ):
+        return
+    await _audit_portal_step_up_failure(vu, operation=operation)
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Confirm your password or a current authenticator code to change "
+            "your two-factor settings."
+        ),
+    )
+
+
 @router.post("/mfa/enroll", response_model=PortalMFAEnrollStartResponse)
 async def portal_mfa_enroll(
+    body: PortalMFAStepUpRequest | None = None,
     vu: VendorUser = Depends(get_current_vendor_user),
-    db: AsyncSession = Depends(get_tenant_db),
 ):
-    """Start TOTP enrollment — mint (or re-issue) the secret + QR. The secret is
-    held pending until `/mfa/verify` confirms the vendor can produce a code."""
+    """Start TOTP enrollment — mint a candidate secret + QR.
+
+    The candidate waits in Redis (`services/mfa`), NOT on the vendor-user row:
+    a factor already in force survives the whole ceremony and is only replaced
+    once `/mfa/verify` proves the vendor holds the new one. Re-enrolling over a
+    live factor also requires a step-up.
+    """
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled on this deployment")
 
+    await _require_portal_mfa_step_up(vu, body, operation="totp_enroll")
+
     secret = mfa.generate_totp_secret()
-    vu.mfa_secret = secret
-    vu.mfa_enabled = False  # not active until verified
-    vu.mfa_enrolled_at = None
-    await db.commit()
+    await mfa.stash_pending_vendor_totp_secret(vu.id, secret)
 
     uri = mfa.provisioning_uri(secret, account_label=vu.email)
     return PortalMFAEnrollStartResponse(
@@ -334,17 +402,26 @@ async def portal_mfa_verify(
     vu: VendorUser = Depends(get_current_vendor_user),
     db: AsyncSession = Depends(get_tenant_db),
 ):
-    """Confirm the vendor can produce a valid code, then flip MFA on."""
+    """Confirm the vendor can produce a code for the *pending* secret, then
+    make it the account's factor.
+
+    The only place a TOTP secret is written to `vendor_users`. Until it
+    succeeds the previous factor stays live, so an abandoned enrollment can't
+    leave the portal account single-factor.
+    """
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled on this deployment")
-    if not vu.mfa_secret:
+    pending = await mfa.read_pending_vendor_totp_secret(vu.id)
+    if not pending:
         raise HTTPException(status_code=400, detail="Start enrollment first")
-    if not mfa.verify_totp(vu.mfa_secret, body.code):
+    if not mfa.verify_totp(pending, body.code):
         raise HTTPException(status_code=401, detail="Invalid code")
 
+    vu.mfa_secret = pending
     vu.mfa_enabled = True
     vu.mfa_enrolled_at = datetime.now(UTC)
     await db.commit()
+    await mfa.clear_pending_vendor_totp_secret(vu.id)
 
     vendor = (
         await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))
@@ -368,16 +445,27 @@ async def portal_mfa_disable(
     db: AsyncSession = Depends(get_tenant_db),
 ):
     """Turn off TOTP for this vendor account. Requires a valid current code —
-    a stolen session shouldn't be able to silently strip MFA off."""
+    a stolen session shouldn't be able to silently strip MFA off. Throttled +
+    audited on failure like the enroll step-up."""
     if not vu.mfa_enabled or not vu.mfa_secret:
         raise HTTPException(status_code=400, detail="MFA is not enabled")
+    await check_rate_limit(
+        "portal_auth_mfa_step_up",
+        limit=STEP_UP_RATE_LIMIT_PER_MINUTE,
+        window_seconds=60,
+        subject=str(vu.id),
+    )
     if not mfa.verify_totp(vu.mfa_secret, body.code):
+        await _audit_portal_step_up_failure(vu, operation="totp_disable")
         raise HTTPException(status_code=401, detail="Invalid code")
 
     vu.mfa_secret = None
     vu.mfa_enabled = False
     vu.mfa_enrolled_at = None
     await db.commit()
+    # Drop any half-finished enrollment so a candidate minted before the
+    # disable can't be promoted by a later verify call.
+    await mfa.clear_pending_vendor_totp_secret(vu.id)
 
     vendor = (
         await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))

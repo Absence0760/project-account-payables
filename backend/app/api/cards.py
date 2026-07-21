@@ -335,7 +335,7 @@ async def generate_cards(
     from app.api.payments import PAYABLE_INVOICE_STATUSES
     from app.config import settings as app_settings
     from app.services.audit_dispatch import dispatch_audit
-    from app.services.card_issuance import issue_card_for_invoice
+    from app.services.card_issuance import issue_card_for_invoice, persist_card
     from app.services.compliance import check_payment_compliance
 
     # Load invoices — only ones that have cleared AP approval are eligible.
@@ -397,6 +397,7 @@ async def generate_cards(
             continue  # blocked/held vendor — skip, don't block the batch
 
         issue = await issue_card_for_invoice(
+            db=db,
             invoice=inv,
             organization_id=org_id,
             org_settings=org.settings or {},
@@ -406,14 +407,11 @@ async def generate_cards(
             continue  # skip failed cards, don't block the batch
 
         card = issue.card
-        db.add(card)
-        # Flush inside a savepoint so a concurrent duplicate (caught by the
-        # partial unique index) skips just that card instead of aborting the
-        # whole batch and orphaning the other freshly-minted provider cards.
-        try:
-            async with db.begin_nested():
-                await db.flush()
-        except IntegrityError:
+        # Savepoint-guarded flush (shared with the payment-run card leg) so a
+        # concurrent duplicate caught by the partial unique index skips just
+        # that card instead of aborting the whole batch and orphaning the other
+        # freshly-minted provider cards.
+        if not await persist_card(db, card):
             already_carded.add(inv.id)
             continue
 

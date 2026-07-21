@@ -369,6 +369,14 @@ test.describe('discounting money path (API)', () => {
 			cleanupOffer(offerB.id);
 			cleanupInvoice(invA);
 			cleanupInvoice(invB);
+			// Creating the invoices under this throwaway entity auto-minted a
+			// vendor scoped to it (`match_and_link_vendor` can't see the default-
+			// entity vendor from another subsidiary, so it creates one stamped
+			// with this entity_id). `vendors.entity_id` FK-references the entity,
+			// so those rows must be removed before the entity delete. The invoices
+			// above were rebound to the real vendor and are already gone, so
+			// nothing else references these rows.
+			tenantPsql(`DELETE FROM vendors WHERE entity_id='${entityId}'`);
 			tenantPsql(`DELETE FROM entities WHERE id='${entityId}'`);
 		}
 	});

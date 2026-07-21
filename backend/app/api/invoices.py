@@ -12,6 +12,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -62,7 +63,7 @@ from app.services.audit_access import build_field_diff
 from app.services.audit_dispatch import dispatch_audit
 from app.services.csv_import import import_invoices_csv
 from app.services.gl_recode import RecodeFilter, bulk_recode_gl
-from app.services.invoice_warnings import refresh_warnings
+from app.services.invoice_warnings import reconcile_line_totals, refresh_warnings
 from app.services.report_export import csv_safe_cell
 from app.services.storage import delete_file, get_file, upload_chat_file, upload_invoice_file
 from app.services.supplier_chat import (
@@ -75,7 +76,12 @@ from app.services.supplier_chat import (
     notify_ap_mentions,
     notify_supplier_of_ap_message,
 )
-from app.services.workflow_engine import create_workflow_instance, transition_invoice
+from app.services.vendor_matching import match_and_link_vendor
+from app.services.workflow_engine import (
+    create_workflow_instance,
+    get_invoice_for_update,
+    transition_invoice,
+)
 from app.tenant import (
     apply_entity_scope,
     get_entity_id,
@@ -618,21 +624,72 @@ class _LineItemInput(BaseModel):
     gl_account: str | None = None
 
 
+# Column order shared by the before/after line-item snapshots the line-items PUT
+# diffs. Keep the DB SELECT and the in-memory tuple build in this exact order.
+_LINE_SNAPSHOT_FIELDS = (
+    "line_number",
+    "item_code",
+    "description",
+    "quantity",
+    "unit_price",
+    "tax",
+    "total",
+    "gl_account",
+)
+_LINE_TOTAL_IDX = _LINE_SNAPSHOT_FIELDS.index("total")
+_LINE_GL_IDX = _LINE_SNAPSHOT_FIELDS.index("gl_account")
+
+
+def _canonical_lines(rows) -> list[tuple[str, ...]]:
+    """Normalize line-item snapshot rows into sorted, comparable string tuples.
+
+    The two sides come from different places — one from Postgres (`Numeric`
+    scale applied: `Decimal("1.0000")`), one straight off the request body
+    (`Decimal("1")`) — so a raw tuple comparison would report a change that
+    didn't happen. Decimals are compared by VALUE via `normalize()`; NULL gets a
+    sentinel so it can't collide with an empty string. Stringifying also makes
+    the sort total (raw tuples mixing `None` and `str` raise `TypeError`).
+    """
+
+    def _val(v) -> str:
+        if v is None:
+            return "\x00"
+        if isinstance(v, Decimal):
+            return format(v.normalize(), "f")
+        return str(v)
+
+    return sorted(tuple(_val(v) for v in row) for row in rows)
+
+
 @router.put("/{invoice_id}/line-items")
 async def save_invoice_line_items(
     invoice_id: uuid.UUID,
     body: list[_LineItemInput],
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
-    """Replace all line items for an invoice."""
+    """Replace all line items for an invoice.
+
+    Line items are financial content, so this carries the same discipline as the
+    header ``PATCH``: an append-only audit row, a re-derivation of the invoice's
+    warnings, and an explicit reconciliation of the summed lines against the
+    header money fields.
+
+    The header ``amount`` is deliberately **not** recomputed from the lines — see
+    ``invoice_warnings.reconcile_line_totals`` for why (line ``total`` is
+    tax-inclusive on one ingest path and tax-exclusive on another, and lines are
+    often partial, so an overwrite would move money with no approval behind it).
+    A sum that reconciles under neither convention raises an ``error`` warning
+    plus a ``line_total_mismatch`` exception, so the divergence reaches a human
+    before the invoice can be approved and paid. The response reports the
+    outcome so the editor sees it immediately.
+    """
     from app.models.invoice import InvoiceLineItem
 
-    # Verify invoice exists
-    result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
-    invoice = result.scalar_one_or_none()
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
+    # Row-lock the invoice: the delete-and-reinsert below is not atomic on its
+    # own, and the status guard right after must not be read from a stale row.
+    invoice = await get_invoice_for_update(db, invoice_id)
     # Line items are financial content — frozen once the invoice is approved
     # (the approved amount was signed off; payment reads it). Re-coding lines
     # after sign-off requires reject → re-approve. See _FINANCIALLY_LOCKED_STATUSES.
@@ -642,14 +699,39 @@ async def save_invoice_line_items(
             detail="Cannot edit line items once the invoice is approved",
         )
 
+    # Snapshot the outgoing lines. The audit row reports counts + exact Decimal
+    # totals + GL codes (never a float; never the free-form line text), but the
+    # change DETECTION compares every column — a re-code that swaps a GL account
+    # without moving the count or the total is still a change the trail must
+    # record.
+    before_rows = [
+        tuple(r)
+        for r in (
+            await db.execute(
+                select(*(getattr(InvoiceLineItem, f) for f in _LINE_SNAPSHOT_FIELDS)).where(
+                    InvoiceLineItem.invoice_id == invoice_id
+                )
+            )
+        ).all()
+    ]
+    before_totals = [r[_LINE_TOTAL_IDX] for r in before_rows if r[_LINE_TOTAL_IDX] is not None]
+    before = {
+        "line_item_count": len(before_rows),
+        "line_items_total": sum(before_totals, Decimal("0")) if before_totals else None,
+        "gl_accounts": sorted({r[_LINE_GL_IDX] for r in before_rows if r[_LINE_GL_IDX]}),
+    }
+
     # Delete existing line items
     await db.execute(sa_delete(InvoiceLineItem).where(InvoiceLineItem.invoice_id == invoice_id))
 
     # Insert new line items
+    new_total: Decimal | None = None
+    after_rows: list[tuple] = []
     for i, item in enumerate(body):
+        line_number = item.line_number if item.line_number is not None else i + 1
         li = InvoiceLineItem(
             invoice_id=invoice_id,
-            line_number=item.line_number if item.line_number is not None else i + 1,
+            line_number=line_number,
             item_code=item.item_code,
             description=item.description,
             quantity=item.quantity,
@@ -659,9 +741,65 @@ async def save_invoice_line_items(
             gl_account=item.gl_account,
         )
         db.add(li)
+        after_rows.append(
+            (
+                line_number,
+                item.item_code,
+                item.description,
+                item.quantity,
+                item.unit_price,
+                item.tax,
+                item.total,
+                item.gl_account,
+            )
+        )
+        if item.total is not None:
+            new_total = item.total if new_total is None else new_total + item.total
+    await db.flush()
+
+    after = {
+        "line_item_count": len(body),
+        "line_items_total": new_total,
+        "gl_accounts": sorted({r[_LINE_GL_IDX] for r in after_rows if r[_LINE_GL_IDX]}),
+    }
+
+    # Re-derive every warning this invoice owns. The lines feed PO-match
+    # variance, price variance and the new line-total reconciliation, all of
+    # which were computed against the PREVIOUS lines until now.
+    await refresh_warnings(db, invoice, org_settings=org.settings)
+    mismatch = reconcile_line_totals(invoice, new_total) if new_total is not None else None
+
+    # SOX change history: the lines moved, so the trail must say so. PII-free —
+    # counts, exact string-Decimal money and GL codes only (the same shape
+    # `bulk_recode_gl` records). Written whenever ANY column moved, even when
+    # the count and the total are unchanged.
+    if _canonical_lines(before_rows) != _canonical_lines(after_rows):
+        field_diff = build_field_diff(
+            before, after, ["line_item_count", "line_items_total", "gl_accounts"]
+        )
+        await dispatch_audit(
+            db,
+            correlation_id=invoice.correlation_id,
+            organization_id=invoice.organization_id,
+            actor_id=user.id,
+            action="invoice.line_items_edited",
+            entity_type="invoice",
+            entity_id=invoice.id,
+            details={
+                "changes": field_diff,
+                "header_amount": str(invoice.amount),
+                "reconciles_with_header": mismatch is None,
+            },
+        )
 
     await db.commit()
-    return {"saved": len(body)}
+    return {
+        "saved": len(body),
+        # Exact decimal strings — never float (project invariant: money is exact).
+        "line_items_total": str(new_total) if new_total is not None else None,
+        "header_amount": str(invoice.amount),
+        "reconciles_with_header": mismatch is None,
+    }
 
 
 @router.post("", response_model=InvoiceResponse, status_code=status.HTTP_201_CREATED)
@@ -709,6 +847,15 @@ async def create_invoice(
     )
     db.add(invoice)
     await db.flush()
+    # Resolve the vendor LINK, not just the typed-in name. Manual entry runs no
+    # extraction, so nothing else would ever populate `vendor_id` — and an
+    # invoice with a NULL `vendor_id` is an invoice whose vendor cannot be
+    # proven, which is exactly what the credit-memo vendor guard needs to
+    # compare against (see app/api/credit_memos.py). Same matcher the extraction
+    # pipeline uses, so a manual entry and an extracted one land on the same
+    # vendor row; an unmatched name creates an `unverified` vendor stamped
+    # `source="manual"` for an AP steward to confirm.
+    await match_and_link_vendor(db, invoice, org_id, source="manual")
     # Snapshot the active workflow definition onto this invoice so any
     # later config edits don't retroactively change its routing.
     await create_workflow_instance(db, invoice)
@@ -936,9 +1083,35 @@ async def update_invoice(
     before = {field: getattr(invoice, field, None) for field in update_data}
     for field, value in update_data.items():
         setattr(invoice, field, value)
-    after = {field: getattr(invoice, field, None) for field in update_data}
 
-    field_diff = build_field_diff(before, after, list(update_data.keys()))
+    # Re-resolve the vendor LINK whenever the vendor name is (re)saved and the
+    # link is stale or absent. `vendor_id` — not `vendor_name` — is what the
+    # credit-memo vendor guard compares against, so a rename that left the old
+    # link in place would let vendor A's credit apply to what is now vendor B's
+    # invoice, and an invoice that never got a link at all (manual entry keyed
+    # in before create_invoice resolved one) could never be credited. Re-saving
+    # the vendor name is therefore also the supported, audited way to resolve a
+    # legacy unlinked invoice — no backfill migration guesses at it.
+    #
+    # Clearing the name clears the LINK too. `match_and_link_vendor` no-ops on a
+    # blank name, which would otherwise leave a nameless invoice still pointing
+    # at the previous vendor — a link nothing visible corroborates, yet one the
+    # credit guard would happily accept. Blank name → no provable vendor → NULL,
+    # i.e. un-creditable until someone names the vendor again.
+    diff_fields = list(update_data.keys())
+    if "vendor_name" in update_data and (
+        before.get("vendor_name") != invoice.vendor_name or invoice.vendor_id is None
+    ):
+        before["vendor_id"] = invoice.vendor_id
+        if (invoice.vendor_name or "").strip():
+            await match_and_link_vendor(db, invoice, org.id, source="manual")
+        else:
+            invoice.vendor_id = None
+        diff_fields.append("vendor_id")
+
+    after = {field: getattr(invoice, field, None) for field in diff_fields}
+
+    field_diff = build_field_diff(before, after, diff_fields)
     if field_diff:
         await dispatch_audit(
             db,
@@ -1063,19 +1236,26 @@ async def route_intercompany(
     Sets the named counterparty entity on this invoice, then routes it: a mirror
     payable Invoice is created under the counterparty entity, linked back to this
     one. Idempotent at the boundary — calling twice returns the same mirror and
-    never creates a second (the routing service dedupes on
-    ``intercompany_mirror_id``). Returns the mirror invoice.
+    never creates a second. Idempotency is enforced at *three* layers, because a
+    duplicate live payable is a double liability:
+
+      1. the origin row is taken ``FOR UPDATE`` here, so two concurrent callers
+         serialize and the loser re-reads the (now-set) ``intercompany_mirror_id``;
+      2. the routing service short-circuits on that column;
+      3. the partial unique index ``uq_invoice_intercompany_mirror`` makes a
+         second mirror impossible to persist even if a future caller bypasses
+         the lock — the losing INSERT surfaces here as a clean 409.
+
+    Returns the mirror invoice.
     """
     from app.services.intercompany import route_intercompany_invoice
 
-    result = await db.execute(
-        select(Invoice)
-        .options(selectinload(Invoice.extraction_results))
-        .where(Invoice.id == invoice_id)
-    )
-    invoice = result.scalar_one_or_none()
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
+    # Row-lock the origin BEFORE the dedupe check. Without the lock two
+    # concurrent calls both observed `intercompany_mirror_id IS NULL` and each
+    # created a live mirror payable under the counterparty entity — the orphan
+    # could then be approved and paid on its own. `get_invoice_for_update`
+    # eager-loads extraction_results, same as the plain select did.
+    invoice = await get_invoice_for_update(db, invoice_id)
 
     try:
         counterparty_uuid = uuid.UUID(body.counterparty_entity_id)
@@ -1091,12 +1271,27 @@ async def route_intercompany(
     if exists is None:
         raise HTTPException(status_code=404, detail="Unknown counterparty entity for this tenant")
 
-    invoice.counterparty_entity_id = counterparty_uuid
+    # Only stamp the counterparty when this invoice has NOT been routed yet.
+    # Once the mirror exists the pairing is settled: re-pointing the origin at a
+    # different entity here would leave it claiming a counterparty its mirror
+    # doesn't sit under, with no second mirror ever generated. Re-routing is a
+    # reject-and-re-route operation, not a silent field edit.
+    if invoice.intercompany_mirror_id is None:
+        invoice.counterparty_entity_id = counterparty_uuid
     try:
         mirror = await route_intercompany_invoice(db, invoice, actor_id=user.id)
     except ValueError as exc:
         # Self-billing or a missing counterparty — a client error, PII-free.
         raise HTTPException(status_code=400, detail=str(exc))
+    except IntegrityError:
+        # The uq_invoice_intercompany_mirror backstop fired: another writer
+        # already generated this origin's mirror. Nothing was persisted — roll
+        # back and report the conflict. PII-free.
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="This invoice has already been routed inter-company",
+        )
     await db.flush()
 
     # Re-fetch the mirror with extraction_results eager-loaded so

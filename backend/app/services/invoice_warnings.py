@@ -35,6 +35,7 @@ DEFAULT_FRAUD_RULES: dict = {
     "new_vendor_large_enabled": True,
     "personal_email_enabled": True,
     "price_variance_enabled": True,  # per-vendor line-item price deviation
+    "line_total_mismatch_enabled": True,  # summed line totals vs the header amount
     "llm_anomaly_enabled": False,  # opt-in: costs an LLM call per invoice
     # Structuring guard: aggregates a vendor's OTHER recent invoices so the
     # approval max/CFO gate can escalate on the SUM even when no single
@@ -459,6 +460,15 @@ async def refresh_warnings(
     if cfg["price_variance_enabled"] and invoice.vendor_id and _status_str(invoice.status) != "new":
         await _refresh_price_variance(db, invoice, warnings, org_settings)
 
+    # Line-total reconciliation — the summed line items must reconcile with the
+    # header money fields under one of the two standard conventions. Runs in
+    # EVERY status (unlike the checks above): a manually-entered draft can carry
+    # lines from its first save, and the header amount is what a payment run
+    # pays, so a header that disagrees with its own lines must never be silent.
+    # No-ops when the invoice has no line totals at all.
+    if cfg["line_total_mismatch_enabled"]:
+        await _refresh_line_total_reconciliation(db, invoice, warnings, org_settings)
+
     # Reporting-currency conversion — lock the invoice's amount into the org's
     # reporting (base) currency so multi-currency analytics roll up correctly.
     # The rate is snapshotted on the row (see currency_conversion) and never
@@ -535,6 +545,138 @@ def _price_variance_settings(org_settings: dict | None) -> dict:
             except (TypeError, ValueError, ArithmeticError):
                 pass
     return out
+
+
+# ---------------------------------------------------------------------------
+# Line-total reconciliation
+#
+# `Invoice.amount` is the number a payment run pays. `InvoiceLineItem.total` is
+# what the reviewer edits in the invoice modal. Nothing used to tie the two
+# together, so correcting a line left the header at its old value: the payment
+# paid the stale header, PO-match variance had been computed against a total the
+# lines no longer supported, and no trace of the divergence existed anywhere.
+#
+# We deliberately do NOT recompute `amount` from the lines. Line `total`
+# semantics are not uniform across the ingest paths — the vision-adapter prompt
+# and the mock adapter emit a TAX-INCLUSIVE line total, while `e_invoice.mapper`
+# maps the same column onto UBL `LineExtensionAmount`, which is tax-EXCLUSIVE —
+# and lines are frequently partial (a reviewer keys in only the disputed line).
+# Silently overwriting the header from a sum under either misreading would move
+# money with no approval behind it, which is exactly what the post-approval
+# financial freeze exists to prevent. Nor do we hard-reject a mismatch: header
+# `tax_amount` / `shipping_amount` / `discount_amount` are separate columns, so
+# `sum(lines) != amount` is the normal shape of a perfectly valid invoice.
+#
+# Instead we reconcile explicitly and make any genuine divergence loud: a sum is
+# accepted when it matches EITHER standard convention, and anything else raises
+# an `error`-severity warning plus a de-duped `line_total_mismatch` exception
+# into the queue, so the invoice cannot reach approval without a human seeing
+# that its header and its lines disagree.
+# ---------------------------------------------------------------------------
+
+# One cent. Line and header money columns are all Numeric(15, 2), so a sum of
+# them is exact; this only absorbs rounding in the derived net-of-tax figure.
+LINE_TOTAL_TOLERANCE = Decimal("0.01")
+
+
+def _dec(value) -> Decimal:
+    """Coerce a possibly-NULL money column to an exact Decimal. Never float."""
+    return Decimal(str(value)) if value is not None else Decimal("0")
+
+
+def reconcile_line_totals(invoice: Invoice, line_total: Decimal) -> dict | None:
+    """Pure: does ``line_total`` reconcile with the invoice's header money?
+
+    Returns ``None`` when it reconciles, else a PII-free payload describing the
+    divergence (exact decimal strings, never float).
+
+    A sum reconciles when it matches, within ``LINE_TOTAL_TOLERANCE``, any of:
+
+    * ``amount``  — lines carry tax (the vision adapters' convention);
+    * ``subtotal`` — lines are net of tax and the header states the subtotal;
+    * ``amount - tax_amount - shipping_amount + discount_amount`` — lines are net
+      of tax and the subtotal is absent, so it is derived from the header.
+    """
+    amount = _dec(invoice.amount)
+    candidates: dict[str, Decimal] = {"amount": amount}
+    if invoice.subtotal is not None:
+        candidates["subtotal"] = _dec(invoice.subtotal)
+    candidates["net_of_header_adjustments"] = (
+        amount
+        - _dec(invoice.tax_amount)
+        - _dec(invoice.shipping_amount)
+        + _dec(invoice.discount_amount)
+    )
+
+    if any(abs(line_total - expected) <= LINE_TOTAL_TOLERANCE for expected in candidates.values()):
+        return None
+
+    # Report the divergence against the header amount — the figure a payment run
+    # actually pays, and so the one a reviewer needs to see.
+    return {
+        "line_items_total": str(line_total),
+        "header_amount": str(amount),
+        "difference": str(line_total - amount),
+        "currency": invoice.currency,
+    }
+
+
+async def _refresh_line_total_reconciliation(
+    db: AsyncSession,
+    invoice: Invoice,
+    warnings: list[dict],
+    org_settings: dict | None,
+) -> None:
+    """Append a ``line_total_mismatch`` warning + exception when the summed line
+    items don't reconcile with the header money fields.
+
+    Best-effort: any failure here is swallowed (logged, PII-free) — reconciling
+    must never break saving an invoice. Mutates ``warnings`` in place.
+    """
+    try:
+        from app.models.invoice import InvoiceLineItem
+
+        # Sum in the DB so a large invoice doesn't materialise every row. NULL
+        # totals are excluded by SUM; a set of lines with no totals at all
+        # yields NULL and is treated as "nothing to reconcile against".
+        line_total = (
+            await db.execute(
+                select(func.sum(InvoiceLineItem.total)).where(
+                    InvoiceLineItem.invoice_id == invoice.id,
+                    InvoiceLineItem.total.isnot(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if line_total is None:
+            return
+
+        mismatch = reconcile_line_totals(invoice, _dec(line_total))
+        if mismatch is None:
+            return
+
+        msg = (
+            f"Line items total {mismatch['line_items_total']} "
+            f"{mismatch['currency']} but the invoice amount is "
+            f"{mismatch['header_amount']} {mismatch['currency']}"
+        )
+        warnings.append(
+            {
+                "type": "line_total_mismatch",
+                "severity": "error",
+                "message": msg,
+                **mismatch,
+            }
+        )
+        await _ensure_exception(
+            db,
+            invoice,
+            "line_total_mismatch",
+            "error",
+            msg,
+            org_settings=org_settings,
+        )
+    except Exception:  # noqa: BLE001 — best-effort; never break the save path
+        logger.warning("line-total reconciliation failed for invoice; skipped")
 
 
 async def _refresh_price_variance(

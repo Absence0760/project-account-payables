@@ -9,6 +9,24 @@ export interface Passkey {
 	last_used_at: string | null;
 }
 
+/** The factor-management actions a step-up can authorize. The server binds an
+ * assertion to exactly one of these, so the value here is load-bearing — it
+ * must match the operation of the call the proof is then sent with. */
+export type StepUpOperation =
+	| 'totp_enroll'
+	| 'totp_disable'
+	| 'passkey_register'
+	| 'passkey_delete';
+
+/** Re-proof of account control, sent with any change to an existing second
+ * factor. Any ONE of the three satisfies the server: the account password, a
+ * code from the current authenticator, or a passkey assertion. */
+export interface StepUpProof {
+	password?: string;
+	code?: string;
+	assertion?: unknown;
+}
+
 interface User {
 	id: string;
 	email: string;
@@ -102,8 +120,36 @@ function createAuthStore() {
 		return api.get<Passkey[]>('/api/auth/mfa/passkey');
 	}
 
-	async function registerPasskey(name: string): Promise<Passkey> {
-		const start = await api.post<{ options: any }>('/api/auth/mfa/passkey/register', {});
+	/**
+	 * Re-prove account control with a passkey the account already has, so it
+	 * can change its factors. This is the ONLY step-up an SSO-only account can
+	 * offer — it has no password to re-type and no authenticator code.
+	 *
+	 * Deliberately the same browser code as the passkey LOGIN ceremony
+	 * (`performAuthentication`); only the challenge differs. The server mints
+	 * that challenge bound to `operation`, so the returned proof authorizes
+	 * that action and nothing else — pass it to the matching call.
+	 */
+	async function passkeyStepUp(operation: StepUpOperation): Promise<StepUpProof> {
+		const start = await api.post<{ options: any }>('/api/auth/mfa/step-up/passkey', {
+			operation,
+		});
+		return { assertion: await performAuthentication(start.options) };
+	}
+
+	/**
+	 * Register a passkey. `stepUp` re-proves control of the account — the
+	 * backend requires it whenever a second factor is ALREADY in force, so a
+	 * stolen session can't quietly bind an attacker's authenticator. The
+	 * account password, a code from the current authenticator, or an assertion
+	 * from `passkeyStepUp('passkey_register')` all work; omit it for the first
+	 * factor on an account that has none.
+	 */
+	async function registerPasskey(
+		name: string,
+		stepUp: StepUpProof = {},
+	): Promise<Passkey> {
+		const start = await api.post<{ options: any }>('/api/auth/mfa/passkey/register', stepUp);
 		const credential = await performRegistration(start.options);
 		const saved = await api.post<Passkey>('/api/auth/mfa/passkey/register/verify', {
 			credential,
@@ -114,8 +160,15 @@ function createAuthStore() {
 		return saved;
 	}
 
-	async function deletePasskey(id: string): Promise<void> {
-		await api.delete(`/api/auth/mfa/passkey/${id}`);
+	/**
+	 * Remove a passkey. Deleting a factor is a step-up operation for the same
+	 * reason adding one is — a stolen session must not be able to strip the
+	 * account's second factor — so the backend always requires `stepUp` here
+	 * (the passkey being deleted is itself a live factor). Credentials go in
+	 * the request BODY, never the URL.
+	 */
+	async function deletePasskey(id: string, stepUp: StepUpProof = {}): Promise<void> {
+		await api.delete(`/api/auth/mfa/passkey/${id}`, stepUp);
 		await fetchUser();
 	}
 
@@ -174,6 +227,7 @@ function createAuthStore() {
 		requestEmailMfa,
 		completePasskey,
 		listPasskeys,
+		passkeyStepUp,
 		registerPasskey,
 		deletePasskey,
 		logout,

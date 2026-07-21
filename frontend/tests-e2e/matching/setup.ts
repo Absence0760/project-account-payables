@@ -119,9 +119,19 @@ export async function createMatchedInvoice(
 	// vendor_id isn't exposed on the API either (the per-vendor rule + vendor-
 	// scoped PO lookup need it). Both are the legitimate tenantPsql use case —
 	// state the API can't build, same as the PO/GR seeds above.
-	const sets = ["status = 'pending'"];
-	if (opts.vendorId) sets.push(`vendor_id = '${opts.vendorId}'`);
-	sql(`update invoices set ${sets.join(', ')} where id = '${invoiceId}';`);
+	//
+	// vendor_id is now pinned EXPLICITLY (to the caller's vendor, or NULL). The
+	// create endpoint auto-links a vendor from the typed name
+	// (`match_and_link_vendor`, source="manual"), so a manual invoice no longer
+	// lands vendor-less: it would carry an auto-minted vendor whose id the
+	// vendor-scoped matcher (`po_matching` filters `PurchaseOrder.vendor_id ==
+	// invoice.vendor_id`) then uses to reject a PO seeded without a vendor —
+	// turning every match into `no_po`. These specs isolate the amount / qty /
+	// inspection matching, so NULL matches a vendor-agnostic PO; the vendor
+	// scoping itself is covered by rules-and-isolation (explicit vendorId) and
+	// backend test_po_matching_algorithm.py.
+	const vendorSet = opts.vendorId ? `vendor_id = '${opts.vendorId}'` : 'vendor_id = NULL';
+	sql(`update invoices set status = 'pending', ${vendorSet} where id = '${invoiceId}';`);
 
 	const poMatch = await recompute(page, invoiceId);
 	return { invoiceId, poMatch };

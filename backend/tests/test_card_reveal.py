@@ -31,11 +31,25 @@ def _card(**overrides):
     return SimpleNamespace(**base)
 
 
-def _result_for(scalar=None):
-    """Build the SQLAlchemy result object .execute() should return."""
+def _result_for(scalar=None, row=None):
+    """Build the SQLAlchemy result object .execute() should return.
+
+    ``scalar`` feeds ``scalar_one_or_none`` (the atomic claim's RETURNING
+    card_id, and the card lookup); ``row`` feeds ``one_or_none`` (the
+    ``(expires_at, used_at)`` tuple the failure classifier reads).
+    """
     r = MagicMock()
     r.scalar_one_or_none = MagicMock(return_value=scalar)
+    r.one_or_none = MagicMock(return_value=row)
     return r
+
+
+def _sql(db, index: int) -> str:
+    """Compiled SQL of the index-th statement passed to db.execute."""
+    from sqlalchemy.dialects import postgresql
+
+    stmt = db.execute.await_args_list[index].args[0]
+    return str(stmt.compile(dialect=postgresql.dialect()))
 
 
 @pytest.mark.asyncio
@@ -67,7 +81,8 @@ async def test_consume_returns_invalid_for_unknown_token():
     from app.services.card_reveal import consume_reveal_token
 
     db = AsyncMock()
-    db.execute = AsyncMock(return_value=_result_for(scalar=None))
+    # Claim matches nothing; the classifier finds no row at all.
+    db.execute = AsyncMock(side_effect=[_result_for(scalar=None), _result_for(row=None)])
 
     card, error = await consume_reveal_token(db, "nope")
     assert card is None
@@ -78,15 +93,13 @@ async def test_consume_returns_invalid_for_unknown_token():
 async def test_consume_returns_expired_when_past_expires_at():
     from app.services.card_reveal import consume_reveal_token
 
-    row = SimpleNamespace(
-        token_hash="x",
-        card_id=uuid.uuid4(),
-        organization_id=uuid.uuid4(),
-        expires_at=datetime.now(UTC) - timedelta(seconds=1),
-        used_at=None,
-    )
     db = AsyncMock()
-    db.execute = AsyncMock(return_value=_result_for(scalar=row))
+    db.execute = AsyncMock(
+        side_effect=[
+            _result_for(scalar=None),
+            _result_for(row=(datetime.now(UTC) - timedelta(seconds=1), None)),
+        ]
+    )
 
     card, error = await consume_reveal_token(db, "anything")
     assert card is None
@@ -97,15 +110,15 @@ async def test_consume_returns_expired_when_past_expires_at():
 async def test_consume_returns_used_when_already_consumed():
     from app.services.card_reveal import consume_reveal_token
 
-    row = SimpleNamespace(
-        token_hash="x",
-        card_id=uuid.uuid4(),
-        organization_id=uuid.uuid4(),
-        expires_at=datetime.now(UTC) + timedelta(days=1),
-        used_at=datetime.now(UTC) - timedelta(hours=1),
-    )
     db = AsyncMock()
-    db.execute = AsyncMock(return_value=_result_for(scalar=row))
+    db.execute = AsyncMock(
+        side_effect=[
+            _result_for(scalar=None),
+            _result_for(
+                row=(datetime.now(UTC) + timedelta(days=1), datetime.now(UTC) - timedelta(hours=1))
+            ),
+        ]
+    )
 
     card, error = await consume_reveal_token(db, "anything")
     assert card is None
@@ -113,58 +126,52 @@ async def test_consume_returns_used_when_already_consumed():
 
 
 @pytest.mark.asyncio
-async def test_consume_returns_card_and_marks_used_on_first_call():
+async def test_consume_claims_atomically_and_returns_the_card():
+    """The claim is ONE `UPDATE … WHERE used_at IS NULL … RETURNING card_id`,
+    not a read-then-write pair — that single statement is what makes two
+    simultaneous reveals of the same token impossible."""
     from app.services.card_reveal import consume_reveal_token
 
-    row = SimpleNamespace(
-        token_hash="x",
-        card_id=uuid.uuid4(),
-        organization_id=uuid.uuid4(),
-        expires_at=datetime.now(UTC) + timedelta(days=1),
-        used_at=None,
-    )
-    card_obj = _card(id=row.card_id)
-
+    card_obj = _card()
     db = AsyncMock()
-    # First execute: token lookup. Second execute: card lookup.
-    db.execute = AsyncMock(side_effect=[_result_for(scalar=row), _result_for(scalar=card_obj)])
+    # First execute: the atomic claim (RETURNING card_id). Second: card lookup.
+    db.execute = AsyncMock(
+        side_effect=[_result_for(scalar=card_obj.id), _result_for(scalar=card_obj)]
+    )
 
     card, error = await consume_reveal_token(db, "anything")
     assert error is None
     assert card is card_obj
-    # Single-use semantics: row.used_at flips to a recent timestamp.
-    assert row.used_at is not None
-    assert (datetime.now(UTC) - row.used_at) < timedelta(seconds=5)
+
+    claim_sql = _sql(db, 0)
+    assert claim_sql.startswith("UPDATE card_reveal_tokens SET used_at=")
+    # The single-use guard lives in the UPDATE's own predicate, evaluated by
+    # Postgres under the row lock — never in Python after a plain SELECT.
+    assert "card_reveal_tokens.used_at IS NULL" in claim_sql
+    assert "card_reveal_tokens.expires_at >" in claim_sql
+    assert "RETURNING card_reveal_tokens.card_id" in claim_sql
 
 
 @pytest.mark.asyncio
-async def test_consume_refuses_card_belonging_to_another_org():
-    """Defense-in-depth org binding: the token row resolves (its own
-    organization_id matches the caller's), but the card it points at carries a
-    DIFFERENT organization_id. The reveal must be refused as opaque `invalid`
-    and the token must NOT be marked used (nothing burned on a rejected reveal)."""
+async def test_claim_binds_the_card_org_inside_the_update_predicate():
+    """The defense-in-depth card/org cross-check is part of the claim's WHERE
+    (an EXISTS on virtual_cards), so a mismatched card means the UPDATE matches
+    no row and `used_at` is never stamped — nothing burns on a rejected reveal.
+    (Behaviour is asserted end-to-end against Postgres further down.)"""
     from app.services.card_reveal import consume_reveal_token
 
-    org_a = uuid.uuid4()
-    org_b = uuid.uuid4()
-    row = SimpleNamespace(
-        token_hash="x",
-        card_id=uuid.uuid4(),
-        organization_id=org_a,
-        expires_at=datetime.now(UTC) + timedelta(days=1),
-        used_at=None,
-    )
-    # Card lives in a different org than the token/caller.
-    card_obj = _card(id=row.card_id, organization_id=org_b)
-
     db = AsyncMock()
-    db.execute = AsyncMock(side_effect=[_result_for(scalar=row), _result_for(scalar=card_obj)])
+    db.execute = AsyncMock(side_effect=[_result_for(scalar=None), _result_for(row=None)])
 
-    card, error = await consume_reveal_token(db, "anything", organization_id=org_a)
+    card, error = await consume_reveal_token(db, "anything", organization_id=uuid.uuid4())
     assert card is None
     assert error == "invalid"
-    # The single-use token stays unburned on a rejected cross-org reveal.
-    assert row.used_at is None
+
+    claim_sql = _sql(db, 0)
+    assert "EXISTS (SELECT virtual_cards.id" in claim_sql
+    assert "virtual_cards.id = card_reveal_tokens.card_id" in claim_sql
+    assert "virtual_cards.organization_id" in claim_sql
+    assert "card_reveal_tokens.organization_id" in claim_sql
 
 
 @pytest.mark.asyncio
@@ -196,11 +203,13 @@ async def test_consume_scopes_token_lookup_to_the_org(realdb):
 
 @pytest.mark.asyncio
 async def test_reveal_token_not_burned_when_session_rolled_back(realdb):
-    """The handler's outage path rolls back instead of committing so a transient
-    provider failure doesn't permanently kill the single-use link. Simulate that
-    at the service layer: consume (flips used_at in-session) then ROLL BACK — a
-    fresh reveal afterwards must still succeed, because used_at was never
-    persisted."""
+    """Rolling the claiming transaction back releases the claim: `used_at` was
+    never committed, so the link is consumable again.
+
+    This is why `api/portal.py::reveal_card` COMMITS the claim before it calls
+    the card provider — an uncommitted claim is only as durable as the request
+    that holds it, and a commit that fails after the PAN has gone out on the
+    wire would silently revive a link that was already revealed."""
     from app.services.card_reveal import consume_reveal_token
 
     mk = realdb.sessionmaker("a")
@@ -283,6 +292,105 @@ async def test_reveal_token_single_use_survives_commit(realdb):
         await s.commit()
     assert card2 is None
     assert error2 == "used"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_reveals_claim_the_token_exactly_once(realdb):
+    """THE single-use guarantee, under concurrency.
+
+    Four simultaneous reveals of the same plaintext token, each on its own
+    connection. Exactly one may come back with the card (and therefore go on to
+    fetch the live PAN/CVV); the rest must be told the link is spent. A plain
+    `SELECT` + Python-side `used_at is None` check lets every one of them
+    through — they all read before any of them writes.
+    """
+    import asyncio
+
+    from app.services.card_reveal import consume_reveal_token
+
+    mk = realdb.sessionmaker("a")
+    org_a = realdb.info("a").org_id
+    card_id, token = await _seed_card_with_token(mk, org_a)
+
+    async def attempt():
+        async with mk() as s:
+            card, error = await consume_reveal_token(s, token, organization_id=org_a)
+            # Commit whatever the claim decided — a winner burns the token, a
+            # loser committing an empty transaction changes nothing.
+            await s.commit()
+            return (card.id if card is not None else None), error
+
+    results = await asyncio.gather(*(attempt() for _ in range(4)))
+
+    winners = [r for r in results if r[1] is None]
+    assert len(winners) == 1, f"expected exactly one reveal, got {results}"
+    assert winners[0][0] == card_id
+    # Every loser is told the link is spent — never handed the card.
+    assert [r[1] for r in results if r[1] is not None] == ["used"] * 3
+    assert all(r[0] is None for r in results if r[1] is not None)
+
+
+@pytest.mark.asyncio
+async def test_consume_refuses_a_card_in_another_org_without_burning(realdb):
+    """Defense-in-depth org binding, end-to-end: the token row carries the
+    caller's org but the card it points at carries a different one. The reveal
+    is refused as the opaque `invalid`, and — because the card cross-check is
+    part of the claim's own WHERE — `used_at` is never stamped."""
+    from decimal import Decimal
+
+    from sqlalchemy import select, update
+
+    from app.models.invoice import Invoice
+    from app.models.virtual_card import CardRevealToken, VirtualCard
+    from app.services.card_reveal import _hash, consume_reveal_token, mint_reveal_token
+
+    mk = realdb.sessionmaker("a")
+    org_a = realdb.info("a").org_id
+    other_org = uuid.uuid4()
+
+    async with mk() as s:
+        invoice = Invoice(
+            organization_id=org_a,
+            invoice_number="INV-CARD-XORG",
+            vendor_name="Acme",
+            amount=Decimal("100.00"),
+        )
+        s.add(invoice)
+        await s.flush()
+        # Card stamped with a DIFFERENT org than the token below.
+        card = VirtualCard(
+            organization_id=other_org,
+            invoice_id=invoice.id,
+            card_provider="mock",
+            provider_card_id="mock_card_xorg",
+            amount_limit=Decimal("100.00"),
+            last_four="9999",
+        )
+        s.add(card)
+        await s.flush()
+        token = await mint_reveal_token(s, card)
+        await s.flush()
+        # Token row belongs to the caller's org; the card it points at does not.
+        await s.execute(
+            update(CardRevealToken)
+            .where(CardRevealToken.token_hash == _hash(token))
+            .values(organization_id=org_a)
+        )
+        await s.commit()
+
+    async with mk() as s:
+        card_out, error = await consume_reveal_token(s, token, organization_id=org_a)
+        await s.commit()
+    assert card_out is None
+    assert error == "invalid"
+
+    async with mk() as s:
+        used_at = (
+            await s.execute(
+                select(CardRevealToken.used_at).where(CardRevealToken.token_hash == _hash(token))
+            )
+        ).scalar_one()
+    assert used_at is None, "a rejected cross-org reveal must not burn the token"
 
 
 @pytest.mark.asyncio

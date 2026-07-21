@@ -5,13 +5,16 @@ against a mocked session. This file covers the ``GET /portal/cards/{token}``
 *handler* — the glue the service tests never reach:
 
   * consume-reason -> HTTP-status mapping (invalid 404, expired 410, used 410)
-  * the append-only audit row written on a successful reveal
+  * the append-only audit row written when the single-use token is consumed
     (``card.revealed_via_token``, actor_id=None) — a regression that drops
     the dispatch would otherwise be invisible
+  * **the claim is committed BEFORE the outbound provider call** — the
+    ordering that keeps a slow / failing / crashing provider round-trip from
+    leaving a link that has already been revealed re-usable
   * PII suppression on the two degraded paths (org disabled cards after
-    issuance; adapter outage) — pan/cvv must come back None, no audit/PAN
-    leak, AND the single-use token must NOT be burned (the session is rolled
-    back, not committed) so the vendor's link survives a transient outage
+    issuance; adapter outage) — pan/cvv must come back None and no PAN leaks;
+    the token stays spent on both (fail-closed by design: a link that survives
+    a failed reveal is indistinguishable from a twice-revealable link)
   * the resolved tenant's org id is threaded into consume_reveal_token as the
     defense-in-depth binding (token + card must both belong to the tenant)
 
@@ -66,7 +69,14 @@ def _patched(
     details=None,
     adapter_raises=False,
 ):
-    """Patch every collaborator reveal_card imports inside its body."""
+    """Patch every collaborator reveal_card imports inside its body.
+
+    Every side-effecting collaborator appends to a shared ``calls`` log so tests
+    can assert the *order* of the claim-commit vs the provider round-trip, not
+    just that both happened.
+    """
+    calls: list[str] = []
+
     # Build the tenant session explicitly (only execute/commit/rollback are
     # used) so a bare AsyncMock doesn't auto-spawn unawaited child coroutines at
     # GC time.
@@ -74,22 +84,25 @@ def _patched(
     vendor_result = MagicMock()
     vendor_result.scalar_one_or_none = MagicMock(return_value=None)
     db.execute = AsyncMock(return_value=vendor_result)
-    db.commit = AsyncMock()
-    db.rollback = AsyncMock()
+    db.commit = AsyncMock(side_effect=lambda: calls.append("commit"))
+    db.rollback = AsyncMock(side_effect=lambda: calls.append("rollback"))
 
-    dispatch_audit = AsyncMock()
+    dispatch_audit = AsyncMock(side_effect=lambda *a, **kw: calls.append("audit"))
     # The resolved tenant Organization — reveal_card reads `tenant.settings`
     # directly (no control-plane session) and passes `tenant.id` to
     # consume_reveal_token as the defense-in-depth org binding.
     tenant = SimpleNamespace(id=uuid.uuid4(), settings={"cards": {"enabled": True}})
 
-    adapter = MagicMock()
-    if adapter_raises:
-        adapter.get_card_details = AsyncMock(side_effect=RuntimeError("provider down"))
-    else:
-        adapter.get_card_details = AsyncMock(return_value=details)
+    def _provider(_card_id):
+        calls.append("provider")
+        if adapter_raises:
+            raise RuntimeError("provider down")
+        return details
 
-    consume = AsyncMock(return_value=consume_return)
+    adapter = MagicMock()
+    adapter.get_card_details = AsyncMock(side_effect=_provider)
+
+    consume = AsyncMock(side_effect=lambda *a, **kw: (calls.append("consume"), consume_return)[1])
     with (
         patch("app.services.card_reveal.consume_reveal_token", consume),
         patch("app.services.card_issuance._resolve_card_config", MagicMock(return_value=config)),
@@ -97,7 +110,12 @@ def _patched(
         patch("app.services.audit_dispatch.dispatch_audit", dispatch_audit),
     ):
         yield SimpleNamespace(
-            db=db, tenant=tenant, dispatch_audit=dispatch_audit, adapter=adapter, consume=consume
+            db=db,
+            tenant=tenant,
+            dispatch_audit=dispatch_audit,
+            adapter=adapter,
+            consume=consume,
+            calls=calls,
         )
 
 
@@ -161,10 +179,33 @@ async def test_reveal_success_returns_pan_and_writes_audit():
     h.db.commit.assert_awaited_once()
     # The tenant's org id is threaded into consume as the defense-in-depth bind.
     assert h.consume.await_args.kwargs["organization_id"] == h.tenant.id
+    # The claim (+ its audit row) is DURABLE before the provider is called: a
+    # provider round-trip that hangs, fails, or takes the process down with it
+    # can no longer leave a token that has already been revealed re-usable.
+    assert h.calls == ["consume", "audit", "commit", "provider"]
+
+
+async def test_reveal_commits_the_claim_before_calling_the_provider():
+    """Ordering pin, stated on its own so it can't be diluted into the
+    success-path assertions: the single-use claim must be committed BEFORE the
+    outbound provider call, never after."""
+    from app.services.card_adapters.base import CardDetails
+
+    details = CardDetails(
+        card_number="4111111111114321", exp_month=12, exp_year=2030, cvv="123", last_four="4321"
+    )
+    with _patched(
+        consume_return=(_card(), None), config={"provider": "mock"}, details=details
+    ) as h:
+        await reveal_card(token="tok", tenant=h.tenant, db=h.db)
+
+    assert h.calls.index("commit") < h.calls.index("provider")
+    # And the claim is never handed back afterwards.
+    h.db.rollback.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
-# degraded paths — PII suppressed, token still consumed, no audit/PAN leak
+# degraded paths — PII suppressed, token stays spent, no PAN leak
 # ---------------------------------------------------------------------------
 
 
@@ -178,12 +219,12 @@ async def test_reveal_suppresses_pan_when_cards_disabled():
     assert body["cvv"] is None
     assert body["warning"]
     assert body["last_four"] == "4321"
-    # Degraded path must not emit a reveal audit row, and must NOT burn the
-    # single-use token — the session is rolled back (used_at stays NULL), never
-    # committed, so the vendor can retry if cards are re-enabled.
-    h.dispatch_audit.assert_not_awaited()
-    h.db.commit.assert_not_awaited()
-    h.db.rollback.assert_awaited_once()
+    # The claim was already committed, and stays committed: we never un-burn a
+    # consumed link. The vendor asks AP for a new one.
+    h.db.commit.assert_awaited_once()
+    h.db.rollback.assert_not_awaited()
+    # No provider call at all on this path.
+    assert "provider" not in h.calls
 
 
 async def test_reveal_suppresses_pan_on_adapter_outage():
@@ -198,8 +239,9 @@ async def test_reveal_suppresses_pan_on_adapter_outage():
     assert body["pan"] is None
     assert body["cvv"] is None
     assert body["warning"]
-    h.dispatch_audit.assert_not_awaited()
-    # Transient provider outage must NOT consume the single-use token: the
-    # handler rolls back (used_at stays NULL) so the link survives the outage.
-    h.db.commit.assert_not_awaited()
-    h.db.rollback.assert_awaited_once()
+    # Fail-closed: the token was consumed and committed before the provider was
+    # ever called, so an outage cannot revive the link. Reviving it would be
+    # indistinguishable from allowing a second reveal — and we cannot tell from
+    # here whether the provider had already emitted the PAN.
+    assert h.calls == ["consume", "audit", "commit", "provider"]
+    h.db.rollback.assert_not_awaited()

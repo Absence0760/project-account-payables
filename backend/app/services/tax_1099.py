@@ -24,12 +24,13 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import extract, func, select
+from sqlalchemy import case, extract, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invoice import Invoice
 from app.models.payment import Payment
 from app.models.vendor import Vendor
+from app.services.payment_methods import card_payment_method_clause
 
 # IRS 1099-NEC / 1099-MISC reporting threshold for the 2024+ tax years.
 # Lowered from $600 to $5000 for 1099-K specifically, but 1099-NEC
@@ -46,12 +47,21 @@ class VendorReportRow:
     is_1099_eligible: bool
     w9_received_date: date | None
     w9_on_file: bool
+    # REPORTABLE year-to-date paid — card-rail payments are excluded (they are
+    # the card settlement entity's 1099-K, not our 1099). This is the figure
+    # that lands in the 1099 box amount.
     ytd_paid: Decimal
     over_threshold: bool
     payment_count: int
     # True once a TIN match has stamped ``Vendor.tin_verified_at``. Defaulted
     # so older call sites that build rows by hand keep working.
     tin_verified: bool = False
+    # The card-rail total deliberately EXCLUDED from ``ytd_paid``, surfaced so
+    # an operator can reconcile against the processor's 1099-K instead of the
+    # money silently vanishing from the report. Defaulted for the same reason
+    # as ``tin_verified``.
+    card_paid: Decimal = Decimal("0")
+    card_payment_count: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -68,7 +78,18 @@ class VendorReportRow:
             "over_threshold": self.over_threshold,
             "payment_count": self.payment_count,
             "tin_verified": self.tin_verified,
+            "card_paid": str(self.card_paid),
+            "card_payment_count": self.card_payment_count,
         }
+
+
+def _total_card_excluded(rows: list[VendorReportRow]) -> str:
+    """Card-rail spend for the year across EVERY vendor row — the money the
+    1099 deliberately leaves out because the card settlement entity reports it
+    on a 1099-K. Spans all vendors (not just the eligible-over-threshold ones
+    ``total_reportable`` covers) because it exists to be reconciled against the
+    processor's own filing, which knows nothing about our eligibility flags."""
+    return str(sum((r.card_paid for r in rows), Decimal("0")))
 
 
 @dataclass
@@ -102,6 +123,7 @@ class Report1099:
             # existing API consumers don't break. Prefer ``total_reportable`` +
             # ``currency``.
             "total_reportable_usd": total_reportable,
+            "total_card_excluded": _total_card_excluded(self.rows),
         }
 
     def to_dict(self) -> dict:
@@ -125,12 +147,24 @@ async def build_1099_report(
     on a 1099. ``completed_at`` is preferred over the invoice date
     because the IRS reports payments in the year they were actually made.
 
+    **Card-rail payments are excluded from ``ytd_paid``** and totalled
+    separately on ``card_paid``: the card settlement entity reports those on a
+    Form 1099-K, so putting them in our 1099 box amount over-reports the
+    vendor and double-counts the same dollar. The classification lives in
+    ``services/payment_methods`` — see that module for the rail-by-rail
+    treatment and the drift guard.
+
     ``reporting_currency`` is the org's reporting (home) currency, resolved by
     the caller via ``currency_conversion.resolve_reporting_currency``. It only
     LABELS the totals — ``Payment.amount`` is already home-currency, so no FX
     conversion happens here.
     """
-    # Join payment → invoice (for vendor_id) → vendor. Aggregate by vendor.
+    # Conditional aggregation splits the joined payments in one pass. ``case``
+    # with no ``else_`` yields NULL on the other branch, which ``sum``/``count``
+    # skip — so the Decimal("0") coalesce fallback (never int 0, which can
+    # promote the aggregate off Numeric and mis-classify a vendor sitting
+    # exactly at the $600 threshold) still governs the empty case.
+    is_card = card_payment_method_clause(Payment.method)
     q = (
         select(
             Vendor.id.label("vendor_id"),
@@ -141,11 +175,14 @@ async def build_1099_report(
             Vendor.w9_received_date.label("w9_received_date"),
             Vendor.w9_file_key.label("w9_file_key"),
             Vendor.tin_verified_at.label("tin_verified_at"),
-            # Decimal("0") fallback (not int 0): with an int the zero-payments
-            # case can promote the aggregate away from Numeric, and a vendor at
-            # exactly the $600 filing threshold could be mis-classified.
-            func.coalesce(func.sum(Payment.amount), Decimal("0")).label("ytd_paid"),
-            func.count(Payment.id).label("payment_count"),
+            func.coalesce(func.sum(case((~is_card, Payment.amount))), Decimal("0")).label(
+                "ytd_paid"
+            ),
+            func.count(case((~is_card, Payment.id))).label("payment_count"),
+            func.coalesce(func.sum(case((is_card, Payment.amount))), Decimal("0")).label(
+                "card_paid"
+            ),
+            func.count(case((is_card, Payment.id))).label("card_payment_count"),
         )
         .select_from(Vendor)
         .outerjoin(Invoice, Invoice.vendor_id == Vendor.id)
@@ -185,6 +222,8 @@ async def build_1099_report(
                 over_threshold=ytd >= THRESHOLD_USD,
                 payment_count=int(row.payment_count or 0),
                 tin_verified=row.tin_verified_at is not None,
+                card_paid=Decimal(row.card_paid or Decimal("0")),
+                card_payment_count=int(row.card_payment_count or 0),
             )
         )
 
@@ -247,6 +286,7 @@ class Dashboard1099:
             "total_reportable": total_reportable,
             # Back-compat alias — see ``Report1099.summary``.
             "total_reportable_usd": total_reportable,
+            "total_card_excluded": _total_card_excluded(self.rows),
         }
 
     def to_dict(self) -> dict:

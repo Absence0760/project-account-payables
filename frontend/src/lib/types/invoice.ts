@@ -136,6 +136,13 @@ export interface Invoice {
 	id: string;
 	correlation_id: string;
 	vendor: string;
+	/**
+	 * Resolved link to the vendor record. `null` when the invoice's vendor could
+	 * not be established — such an invoice can NOT take a credit memo (the
+	 * backend refuses it fail-closed), so any vendor-scoped picker must exclude
+	 * it rather than treat it as a wildcard.
+	 */
+	vendor_id: string | null;
 	invoice_number: string;
 	amount: number;
 	currency: string;

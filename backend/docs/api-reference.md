@@ -82,9 +82,12 @@ TOTP-based two-factor with email-OTP backup. Master switch `AP_MFA_ENABLED` (def
 |--------|-----------------------------------|-------|-------------|
 | `POST` | `/api/auth/mfa/challenge/email`   | (challenge token) | Body `{challenge_token}`. Generates + emails a 6-digit OTP. Returns 204. |
 | `POST` | `/api/auth/mfa/verify`            | (challenge token) | Body `{challenge_token, code, method}` (`method` ∈ `totp`/`email`). Returns `TokenResponse`. |
-| `POST` | `/api/auth/mfa/enroll`            | * | Mints a TOTP secret + QR. Returns `{secret, provisioning_uri, qr_code_data_url}`. |
-| `POST` | `/api/auth/mfa/enroll/verify`     | * | Body `{code}`. Confirms enrollment, flips `mfa_enabled` true. |
-| `POST` | `/api/auth/mfa/disable`           | * | Body `{password}`. Re-confirms password, turns MFA off. Blocked when org enforces MFA. |
+| `POST` | `/api/auth/mfa/enroll`            | * | Optional body `{password?, code?, assertion?}`. Mints a CANDIDATE TOTP secret + QR (parked in Redis, not on the account). Returns `{secret, provisioning_uri, qr_code_data_url}`. 400 without a valid step-up when the account already has a live factor. |
+| `POST` | `/api/auth/mfa/enroll/verify`     | * | Body `{code}`. Promotes the pending candidate onto the account and flips `mfa_enabled` true — the only writer of `mfa_secret`. |
+| `POST` | `/api/auth/mfa/disable`           | * | Optional body `{password?, code?, assertion?}` — the same three-proof step-up as every other factor change (an SSO-only account has no password, so its passkey assertion is the proof). Turns MFA off. Blocked when org enforces MFA. |
+| `POST` | `/api/auth/mfa/passkey/register`  | * | Optional body `{password?, code?, assertion?}`. Mints WebAuthn registration options. 400 without a valid step-up when a factor is already live (TOTP or an existing passkey). |
+| `DELETE` | `/api/auth/mfa/passkey/{id}`    | * | Body `{password?, code?, assertion?}` — step-up ALWAYS required (the passkey is itself a live factor). Opaque 404 for an id that isn't the caller's. Blocked when it's the last factor under org enforcement. |
+| `POST` | `/api/auth/mfa/step-up/passkey`   | * | Body `{operation}` (`totp_enroll`\|`totp_disable`\|`passkey_register`\|`passkey_delete`). Mints WebAuthn assertion options for a factor-management step-up; the signed response goes back as `assertion` on the matching call. Challenge is single-use and bound to (user, step-up, operation), so it can't be replayed as a login or against a different operation. 400 when the account has no registered passkey. |
 
 The challenge endpoints don't take a JWT — they're authenticated by the short-lived challenge token returned from `/api/auth/login`.
 
@@ -167,7 +170,7 @@ See [`docs/self-service-signup.md`](../../docs/self-service-signup.md) for the f
 | `GET`    | `/api/invoices/{id}`                | *     | Get single invoice — includes the latest `po_match` JSONB result and any `warnings` |
 | `GET`    | `/api/invoices/{id}/priors`         | *     | Priors metadata from latest extraction (vendor cache + RAG neighbors). See [`ai-extraction.md`](ai-extraction.md). |
 | `GET`    | `/api/invoices/{id}/line-items`     | *     | Get invoice line items |
-| `PUT`    | `/api/invoices/{id}/line-items`     | admin/manager/cfo | Replace all line items |
+| `PUT`    | `/api/invoices/{id}/line-items`     | admin/manager/cfo | Replace all line items. 409 once the invoice is approved (financial freeze). Writes an `invoice.line_items_edited` audit row, re-runs `refresh_warnings`, and reconciles the summed lines against the header money fields — the header `amount` is never recomputed from the lines; a divergence raises an `error` `line_total_mismatch` warning + exception. Returns `{saved, line_items_total, header_amount, reconciles_with_header}` (money as exact decimal strings). See `line-total-reconciliation.md` |
 | `POST`   | `/api/invoices`                     | admin/manager/cfo | Create invoice |
 | `POST`   | `/api/invoices/{id}/file`           | admin/manager/cfo | Attach a source file to a manually-entered invoice that has none yet. 409 if it already has one. |
 | `PUT`    | `/api/invoices/{id}/file`           | admin/manager/cfo | Replace an invoice's existing file. 404 if none to replace, 409 if the invoice is done. |
@@ -379,10 +382,43 @@ Used by 3-way matching. `admin` / `ap_manager` / `ap_clerk`.
 
 | Method | Path                              | Roles | Description |
 |--------|-----------------------------------|-------|-------------|
-| `GET`  | `/api/credit-memos`                | *     | List credit memos (paginated) |
-| `POST` | `/api/credit-memos`                | admin, ap_manager, ap_clerk | Create a credit memo against a vendor / original invoice |
-| `PATCH`| `/api/credit-memos/{id}`           | admin, ap_manager, ap_clerk | Update memo (amount, status) |
-| `POST` | `/api/credit-memos/{id}/apply`     | admin, ap_manager, ap_clerk | Apply an open credit memo against a payable |
+| `GET`  | `/api/credit-memos`                | admin, ap_manager, ap_clerk, cfo | List credit memos (paginated, entity-scoped, `?status=`) |
+| `POST` | `/api/credit-memos`                | admin, ap_manager | Create a credit memo. With no `invoice_id` it lands `open`; with one it is applied on the spot and runs the same guards as `/apply` |
+| `POST` | `/api/credit-memos/{id}/apply`     | admin, ap_manager | Apply an `open` credit memo against a payable |
+| `POST` | `/api/credit-memos/{id}/void`      | admin, ap_manager | Void an `open` memo (409 once `applied` — applied memos are immutable for audit) |
+
+### Applying a credit — the guards
+
+Both application paths (`POST /api/credit-memos` with an `invoice_id`, and
+`POST /api/credit-memos/{id}/apply`) row-lock the target invoice and then
+enforce, in order, three 409s:
+
+1. **Vendor must match, and must be PROVEN to match** — the memo's `vendor_id`
+   has to equal the invoice's `vendor_id`. A NULL `Invoice.vendor_id` is
+   **refused**, not waved through: an unlinked invoice is one whose vendor
+   cannot be established, and crediting it would reduce a balance nobody can
+   attribute. (This is fail-closed by design. The guard used to skip entirely
+   on NULL, which let one vendor's memo be applied to another vendor's invoice
+   for any invoice created without extraction — see
+   `_assert_vendor_matches` in `app/api/credit_memos.py`.)
+2. **Currency must match** — the remaining-balance math subtracts the amounts
+   directly, so a EUR memo on a USD invoice would corrupt it.
+3. **No over-application** — the sum of `applied` memos on an invoice may never
+   exceed the invoice amount (a credit past the balance would mint a negative
+   payable).
+
+**Where the vendor link comes from.** `Invoice.vendor_id` is resolved by
+`services/vendor_matching.match_and_link_vendor` — on the AI-extraction path, on
+manual entry (`POST /api/invoices`), and again on `PATCH /api/invoices/{id}`
+whenever the vendor name is (re)saved and the link is stale or missing.
+Re-saving an invoice's vendor is therefore the supported way to resolve an
+invoice that predates create-time resolution and so still carries a NULL link;
+there is deliberately **no** backfill migration, because guessing a historical
+invoice's vendor is exactly the mis-attribution the guard exists to prevent.
+Clearing the vendor name on a `PATCH` clears the link too — a nameless invoice
+must not keep pointing at a vendor nothing visible corroborates.
+`GET /api/invoices` and `GET /api/invoices/{id}` expose the resolved
+`vendor_id` so the UI can offer only eligible targets.
 
 ## Tax / 1099
 

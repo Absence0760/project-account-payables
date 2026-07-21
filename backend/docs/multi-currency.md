@@ -10,8 +10,22 @@ This sits **on top of** the payment-level FX machinery — it does not replace i
 |---|---|---|---|
 | **Payment FX** (existing) | `services/international_payments.py`, `services/fx_adapters/` | Locks an FX rate on the `Payment` row at submission; computes **realized** gain/loss (`compute_fx_gain_loss`) when a foreign invoice settles. | At payment submission |
 | **Reporting FX** (this doc) | `services/currency_conversion.py` | Converts each invoice's `amount` into the org reporting currency, materializes the rate on the invoice row, rolls multi-currency volume into one total, computes **unrealized** gain/loss on open invoices. | When the invoice is created / mutated |
+| **Expense FX** | `services/expense_currency.py` | Converts each expense line into its **report's** currency (`expenses.converted_*`) so a report total isn't a cross-currency sum, and the report total into the **org reporting** currency (`expense_reports.reporting_*`) so the CFO threshold compares like with like. | Line: on attach / amount-or-currency edit / report-currency change. Report: at submit |
+| **Expense-policy thresholds** | `services/expense_policy.py` | Compares an expense against a policy's money thresholds **in the policy's `threshold_currency`**, so a €200 expense isn't judged against a USD 100 limit as bare numbers. | Never — it locks nothing. It **reuses** the line's existing lock (row above) and fails closed when none bridges the two currencies. |
 
-See `international-payments.md` for the payment side.
+Same three rules across every layer that locks a rate — **`Decimal` only**,
+**rate locked and persisted on the row**, **never re-fetched at read time**. See
+`international-payments.md` for the payment side and `expense-management.md`
+§ Multi-currency reports for the expense side.
+
+The fourth row is the exception that proves the rule: an expense **policy** is a
+standing rule, not a transaction, so there is no honest moment at which to lock
+a rate onto it (one locked when the rule was written would be stale for every
+expense it ever judges). It therefore locks nothing and never calls an FX
+provider — it re-expresses the expense using the conversion a write path already
+locked onto the row, and when nothing bridges the two currencies it treats the
+threshold as **breached** rather than guessing. Details + the per-threshold
+fail-closed table: `expense-management.md` § Threshold currency.
 
 ## Reporting (base) currency
 
@@ -151,9 +165,12 @@ rollups work with no cloud account (local-first).
 ## Tests
 
 `tests/test_currency_conversion.py` (service: resolution, conversion, rate
-locking/idempotency, rollup, per-vendor rollup, unrealized gain/loss) and
+locking/idempotency, rollup, per-vendor rollup, unrealized gain/loss),
 `tests/test_dashboard_aggregations.py` (the wired-up dashboard reporting
-rollup). `tests/test_analytics_rejected_exclusion.py` has realdb end-to-end
+rollup), `tests/test_analytics_rejected_exclusion.py` (realdb end-to-end
 coverage for the per-vendor rollup agreeing across the dashboard and CFO
-concentration tile for a vendor billing in more than one currency. All
-deterministic against the mock FX adapter.
+concentration tile for a vendor billing in more than one currency),
+`tests/test_expense_currency.py` (the expense line/report layers), and
+`tests/test_expense_policy.py` + `tests/test_expense_approval.py` (the
+policy-threshold layer, incl. the fail-closed cases). All deterministic against
+the mock FX adapter.
