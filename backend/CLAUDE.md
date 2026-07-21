@@ -103,7 +103,7 @@ Pinned-Dependencies supply-chain check. Two locks, both regenerated from
 | Lock | Scope | Consumed by |
 |------|-------|-------------|
 | `requirements-dev.lock` | base + `[dev]` extra + pip | `ci.yml` — `pip install --require-hashes …` then `pip install -e . --no-deps` |
-| `requirements.lock` | base runtime only (no extras) | `backend/Dockerfile` — `uv pip install --system --require-hashes …` (app runs from source, no editable install) |
+| `requirements.lock` | base runtime only (no extras) | `backend/Dockerfile` — `uv pip install --system --no-cache --require-hashes …` (app runs from source, no editable install) |
 
 Regenerate **both** whenever you change `pyproject.toml` dependencies (or
 the pinned pip version in `requirements-dev.in`):
@@ -117,8 +117,50 @@ uv pip compile pyproject.toml \
 ```
 
 `uv` not installed? `pipx run uv pip compile …` works ephemerally. Commit
-the regenerated locks in the same change as the `pyproject.toml` edit, or
-the `--require-hashes` installs (CI + image build) fail.
+the regenerated locks in the same change as the `pyproject.toml` edit.
+
+**A stale lock does not fail the install** — that's the trap. The lock is
+internally consistent, so `--require-hashes` succeeds and CI stays green
+while the image installs whatever the lock says, ignoring the floor you
+just raised in `pyproject.toml`. This is not hypothetical: five merged
+Dependabot PRs (#111, #113, #114, #115, #117) raised `uvicorn`, `boto3`,
+`pgvector`, `joserfc` and `ruff` in `pyproject.toml`, and the image kept
+shipping every pre-bump version — including the security-motivated ones —
+until it was caught.
+
+Dependabot cannot close this itself. Its pip-compile support only pairs an
+`.in` file with a lockfile ending in `.txt`; these locks are compiled from
+`pyproject.toml` under a `.lock` name, so Dependabot updates the manifest
+and never touches them. (`tools/fake-erp` uses the `.in`/`.txt` pair
+precisely so Dependabot *can* maintain it there.)
+
+`tests/test_dependency_lock_sync.py` is the guard: it checks each declared
+requirement against the version its lock pins, so a manifest bump without a
+regenerated lock fails loudly. It compares constraints to pins — it never
+re-resolves and never hits the network, so it can't go red just because a
+new release appeared on PyPI overnight.
+
+### `.dockerignore` — what does NOT enter the image
+
+`backend/Dockerfile` ends in `COPY . .`, so `backend/.dockerignore` is the
+only thing standing between your working tree and a shipped layer. It
+excludes, in order of how much they matter:
+
+1. **`.env` / `.env.*`** (except the committed `.env.development`) and
+   `*.sops` — a gitignored local `.env` holds real credentials, and an
+   image layer is readable by anyone who can pull it.
+2. **`.venv`** — the local dev virtualenv. Copied in, it lands at
+   `/app/.venv` as a second Python install on whatever versions that
+   laptop had; Trivy then reports CVEs against packages the image never
+   runs (this is exactly how a stale `pip` showed up in a scan).
+3. Tool caches, `tests/`, `docs/`, egg-info — pure layer weight.
+
+Excluding the venv and the uv download cache took the image from **1.26 GB
+to 649 MB**. If you add something the running container genuinely needs,
+check it isn't caught by a pattern there — `app/`, `alembic/`,
+`alembic.ini`, `main.py`, `pyproject.toml`, `requirements.lock` and
+`scripts/` are the deliberate keeps (`deploy/deploy.sh` and
+`deploy/add-tenant.sh` run `scripts/*.py` inside this image).
 
 ## CI test sharding
 

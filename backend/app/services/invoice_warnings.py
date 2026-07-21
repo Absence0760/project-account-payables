@@ -37,6 +37,13 @@ DEFAULT_FRAUD_RULES: dict = {
     "price_variance_enabled": True,  # per-vendor line-item price deviation
     "line_total_mismatch_enabled": True,  # summed line totals vs the header amount
     "llm_anomaly_enabled": False,  # opt-in: costs an LLM call per invoice
+    # Structuring guard: aggregates a vendor's OTHER recent invoices so the
+    # approval max/CFO gate can escalate on the SUM even when no single
+    # invoice crosses it alone (splitting one payable into several small
+    # ones). Enforced in services.structuring / services.review, not this
+    # module — listed here so every fraud-rule knob lives in one place.
+    "structuring_enabled": True,
+    "structuring_window_days": 7,
     # Threshold knobs. Whatever the org sets here drives the warning.
     "round_amount_min": "1000",  # amounts >= this AND an even multiple of 100 flag
     "rush_payment_max_days": 3,  # due_date within N days of invoice_date

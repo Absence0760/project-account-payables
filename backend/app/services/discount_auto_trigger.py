@@ -47,7 +47,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
@@ -61,6 +61,7 @@ from app.models.invoice import Invoice
 from app.models.organization import Organization
 from app.models.payment import PaymentSchedule
 from app.services.audit_dispatch import dispatch_audit
+from app.services.discount_offers import best_tier_for_date, expire_if_past
 from app.services.discount_roi import compute_roi, days_between
 
 logger = logging.getLogger(__name__)
@@ -78,33 +79,19 @@ class AutoTriggerResult:
     failures: int = 0
 
 
-def _best_tier(tiers: list) -> dict | None:
-    """Pick the highest-percent tier from an offer's JSONB tier list.
-
-    Tiers are ``{"days": int, "percent": "3.00"}`` with Decimal-string percents.
-    Returns ``None`` for an empty/malformed tier list.
-    """
-    best: dict | None = None
-    best_pct = Decimal("-1")
-    for tier in tiers or []:
-        try:
-            pct = Decimal(str(tier["percent"]))
-            days = int(tier["days"])
-        except (KeyError, TypeError, ValueError, ArithmeticError):
-            continue
-        if pct > best_pct:
-            best_pct = pct
-            best = {"days": days, "percent": str(pct)}
-    return best
-
-
 def _tier_deadline(offer: DiscountOffer, tier: dict, ref_today: date) -> date:
     """Latest date we can pay and still earn ``tier`` — the discount deadline.
 
-    ``ref_today + tier.days``, capped at the offer's ``valid_until`` when set
-    (you can never capture after the offer expires).
+    Measured from the offer's ``valid_from`` (when the offer was actually
+    extended) — falling back to ``ref_today`` only when ``valid_from`` is
+    unset — plus ``tier.days``, capped at the offer's ``valid_until`` when set
+    (you can never capture after the offer expires). Using ``ref_today``
+    (today) as the reference regardless of when the offer opened used to make
+    every tier's deadline a ROLLING "N days from now" — a tier that should
+    have expired 15 days ago instead looked achievable forever.
     """
-    deadline = ref_today + timedelta(days=int(tier["days"]))
+    reference = offer.valid_from or ref_today
+    deadline = reference + timedelta(days=int(tier["days"]))
     if offer.valid_until is not None and deadline > offer.valid_until:
         return offer.valid_until
     return deadline
@@ -207,25 +194,39 @@ async def _sweep_tenant(
             candidates = (
                 (
                     await db.execute(
-                        select(DiscountOffer).where(
-                            DiscountOffer.status == OFFER_STATUS_OFFERED,
-                            or_(
-                                DiscountOffer.valid_until.is_(None),
-                                DiscountOffer.valid_until >= ref_today,
-                            ),
-                        )
+                        select(DiscountOffer).where(DiscountOffer.status == OFFER_STATUS_OFFERED)
                     )
                 )
                 .scalars()
                 .all()
             )
+            # NOT pre-filtered to valid_until >= ref_today: an `offered` row
+            # past its own valid_until must still surface here so the
+            # expire_if_past check below can actually flip it — previously
+            # excluded entirely, which is exactly why an offer never
+            # auto-expired anywhere (issue #124).
 
             # Resolve cost of capital once per distinct org (a tenant DB is one
             # org today, but the resolver contract is per-org).
             coc_cache: dict[uuid.UUID, Decimal] = {}
             accepted = 0
             for offer in candidates:
-                tier = _best_tier(offer.tiers)
+                # An offer whose valid_until has passed never auto-expired
+                # anywhere else — expire_if_past was never invoked by any
+                # sweep. Piggyback on this one (already running periodically)
+                # rather than standing up a separate background loop.
+                if expire_if_past(offer, as_of=ref_today):
+                    continue
+
+                # Date-window-enforced pick — the SAME rule the acceptance
+                # endpoints use, measured from when the offer was actually
+                # extended (offer.valid_from), not from today. Without this,
+                # every tier's deadline looked like "N days from now" and the
+                # sweep always auto-accepted the highest-percent tier
+                # regardless of how long the offer had been open.
+                tier = best_tier_for_date(
+                    offer.tiers or [], ref_today, offer.valid_until, reference_date=offer.valid_from
+                )
                 if tier is None:
                     continue
 

@@ -98,6 +98,34 @@ Surfaced in:
 - **`GET /api/analytics/cfo`** → `reporting_spend` block (same shape, scoped to
   the period window) plus `unrealized_fx` (below).
 
+### Per-vendor rollups
+
+Grouping spend **by vendor** (rather than one org-wide total) needs a second
+helper: `currency_conversion.vendor_rollup_to_reporting_currency(rows,
+reporting_currency=...)`. It groups currency-tagged rows by `vendor` first,
+then runs `rollup_to_reporting_currency` **within each vendor's own rows**
+before summing — a vendor that billed in both USD and EUR is converted
+invoice-by-invoice and then added, never combined with a naive cross-currency
+`SUM(amount)` (a vendor with a $1000 USD invoice and a €1000 invoice used to
+report "$2000" — the face-value sum — instead of the correctly-converted
+total). Returns a list of `VendorSpendEntry(vendor, amount, invoice_count,
+currencies)` sorted by `amount` descending; `currencies` lists every distinct
+original invoice currency that rolled into that vendor's total, so a
+mixed-currency row stays auditable.
+
+Surfaced everywhere a per-vendor spend total appears — all four now share this
+one helper so they can never disagree with each other:
+
+- **`GET /api/dashboard`** → `vendor_spend` (top 10)
+- **`GET /api/analytics/cfo`** → `supplier_concentration` (top 50 feed the
+  concentration math)
+- **`GET /api/analytics/drill/spend_concentration`** → per-vendor drill-through
+  rows (limited to `?limit=` **after** the per-vendor rollup, not at the SQL
+  row level — limiting first would cut off a vendor's rows before they're
+  fully summed)
+- **`vendor_spend` CSV export / scheduled report** → `total_amount` +
+  `currencies` columns (see `docs/analytics.md` § CSV export)
+
 ## Unrealized FX gain/loss
 
 `currency_conversion.compute_unrealized_fx_gain_loss(open_invoices, ...)` marks
@@ -137,9 +165,12 @@ rollups work with no cloud account (local-first).
 ## Tests
 
 `tests/test_currency_conversion.py` (service: resolution, conversion, rate
-locking/idempotency, rollup, unrealized gain/loss),
+locking/idempotency, rollup, per-vendor rollup, unrealized gain/loss),
 `tests/test_dashboard_aggregations.py` (the wired-up dashboard reporting
-rollup), `tests/test_expense_currency.py` (the expense line/report layers), and
+rollup), `tests/test_analytics_rejected_exclusion.py` (realdb end-to-end
+coverage for the per-vendor rollup agreeing across the dashboard and CFO
+concentration tile for a vendor billing in more than one currency),
+`tests/test_expense_currency.py` (the expense line/report layers), and
 `tests/test_expense_policy.py` + `tests/test_expense_approval.py` (the
 policy-threshold layer, incl. the fail-closed cases). All deterministic against
 the mock FX adapter.

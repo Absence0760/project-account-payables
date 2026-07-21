@@ -51,6 +51,7 @@ from app.services.currency_conversion import (
     resolve_reporting_currency,
     rollup_from_grouped_rows,
     rollup_to_reporting_currency,
+    vendor_rollup_to_reporting_currency,
 )
 from app.services.fx_adapters.mock_adapter import MockFXAdapter
 
@@ -391,6 +392,61 @@ def test_rollup_from_grouped_matches_row_path():
 def test_rollup_from_grouped_empty_is_zero_snapshot():
     grouped = rollup_from_grouped_rows([], reporting_currency="EUR")
     assert grouped == rollup_to_reporting_currency([], reporting_currency="EUR")
+
+
+# ---------------------------------------------------------------------------
+# vendor_rollup_to_reporting_currency — issue #127: a vendor billing in more
+# than one currency was previously summed with a naive SQL SUM(amount),
+# silently adding face values across currencies (e.g. 1000 USD + 1000 EUR =
+# "2000"). Each vendor's rows must instead be converted into the reporting
+# currency before summing.
+# ---------------------------------------------------------------------------
+
+
+def _vs_row(amount, currency, vendor="Acme Co", rep_amt=None, rep_cur=None):
+    return {
+        "vendor": vendor,
+        "amount": Decimal(amount),
+        "currency": currency,
+        "reporting_amount": Decimal(rep_amt) if rep_amt is not None else None,
+        "reporting_currency": rep_cur,
+    }
+
+
+def test_vendor_rollup_converts_mixed_currency_invoices_for_same_vendor():
+    # Acme billed once in USD and once in EUR (locked to a real USD rate) —
+    # the naive bug would report 1000.00 + 1000.00 = 2000.00 regardless of
+    # the EUR row's true USD value.
+    rows = [
+        _vs_row("1000.00", "USD"),
+        _vs_row("1000.00", "EUR", rep_amt="1086.96", rep_cur="USD"),
+    ]
+    entries = vendor_rollup_to_reporting_currency(rows, reporting_currency="USD")
+    assert len(entries) == 1
+    acme = entries[0]
+    assert acme.vendor == "Acme Co"
+    # Correctly converted total, not the naive face-value sum of 2000.00.
+    assert acme.amount == Decimal("2086.96")
+    assert acme.invoice_count == 2
+    assert acme.currencies == ["EUR", "USD"]
+
+
+def test_vendor_rollup_keeps_vendors_separate_and_sorts_by_amount_desc():
+    rows = [
+        _vs_row("500.00", "USD", vendor="Small Vendor"),
+        _vs_row("1000.00", "USD", vendor="Big Vendor"),
+        _vs_row("250.00", "USD", vendor="Big Vendor"),
+    ]
+    entries = vendor_rollup_to_reporting_currency(rows, reporting_currency="USD")
+    assert [e.vendor for e in entries] == ["Big Vendor", "Small Vendor"]
+    big = next(e for e in entries if e.vendor == "Big Vendor")
+    assert big.amount == Decimal("1250.00")
+    assert big.invoice_count == 2
+    assert big.currencies == ["USD"]
+
+
+def test_vendor_rollup_empty_is_empty_list():
+    assert vendor_rollup_to_reporting_currency([], reporting_currency="USD") == []
 
 
 # ---------------------------------------------------------------------------

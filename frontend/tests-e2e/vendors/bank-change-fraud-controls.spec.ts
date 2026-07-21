@@ -24,11 +24,24 @@ import {
  *   5. The AP-side detail endpoint reveals the full proposed value so the
  *      operator can verify the new account before approving; the queue
  *      list masks it.
+ *   6. Creating a brand-new vendor with bank details stages them too — the
+ *      row lands with NO live bank details until a second user approves
+ *      (the fake-new-payee BEC gate, which a single-call create used to
+ *      walk straight through).
  *
- * Setup uses direct DB inserts to simulate a supplier-portal submission
- * (the portal-user auth handshake is heavyweight and covered by backend
- * pytest); every mutation we assert (approve / reject) is driven through
- * the real AP API so the staged-approval contract is exercised end-to-end.
+ * `POST /api/vendors` (create) is itself dual-control-gated: submitting
+ * `bank_details` on a brand-new vendor stages it exactly like `PATCH`/the
+ * dedicated bank-change endpoint does, rather than applying it inline
+ * (closes the fake-new-payee BEC bypass a single-call create used to
+ * allow). So the "already-onboarded vendor with an original account on
+ * file" baseline these tests need is itself setup, not the mutation under
+ * test — it's created via the API with no `bank_details` (so create has
+ * nothing to stage), then given its original account with a direct DB
+ * write. Setup uses direct DB inserts throughout to simulate a
+ * supplier-portal submission (the portal-user auth handshake is heavyweight
+ * and covered by backend pytest); every mutation we assert (approve /
+ * reject) is driven through the real AP API so the staged-approval
+ * contract is exercised end-to-end.
  */
 
 interface VendorResp {
@@ -67,6 +80,12 @@ function slugFromPage(page: import('@playwright/test').Page): string {
 	return host.split('.')[0];
 }
 
+/** Create an already-onboarded vendor with an original account on file.
+ *  `POST /api/vendors` stages any submitted `bank_details` for approval
+ *  rather than applying them (the same dual-control gate as `PATCH`), so
+ *  this baseline is set up in two steps: create with no `bank_details` (a
+ *  create with nothing to stage), then write the "original" account
+ *  straight into the row via DB — setup, not the mutation under test. */
 async function createVendor(
 	page: import('@playwright/test').Page,
 	name: string,
@@ -74,10 +93,13 @@ async function createVendor(
 ): Promise<VendorResp> {
 	const resp = await page.request.post(`${API_BASE}/api/vendors`, {
 		headers: H,
-		data: { name, bank_details: bank }
+		data: { name }
 	});
 	expect(resp.status(), `create vendor ${name}`).toBe(201);
-	return (await resp.json()) as VendorResp;
+	const vendor = (await resp.json()) as VendorResp;
+	const json = JSON.stringify(bank).replace(/'/g, "''");
+	tenantPsql(`UPDATE vendors SET bank_details='${json}'::jsonb WHERE id='${vendor.id}'`, SLUG);
+	return getVendor(page, vendor.id);
 }
 
 async function getVendor(
@@ -279,6 +301,56 @@ test.describe('/vendors bank-detail change control (BEC defense)', () => {
 			expect(rows[0].status).toBe('pending');
 			const revealed = JSON.stringify(rows[0]);
 			expect(revealed).toContain('99998888');
+		} finally {
+			deleteVendorCascade(vendor.id);
+		}
+	});
+
+	test('creating a vendor with bank details stages them instead of applying', async ({
+		page
+	}) => {
+		// The fake-new-payee BEC bypass: before this gate, one API call could
+		// land an active, payable vendor pointing at an attacker's account with
+		// no second approver. Now create behaves exactly like an update.
+		const resp = await page.request.post(`${API_BASE}/api/vendors`, {
+			headers: H,
+			data: {
+				name: `BEC-Create Co ${Date.now()}`,
+				bank_details: {
+					account_number: '99998888',
+					account_last4: '8888',
+					bank_name: 'Fraudster Bank',
+					country: 'US'
+				}
+			}
+		});
+		expect(resp.status()).toBe(201);
+		const vendor = (await resp.json()) as VendorResp;
+		try {
+			// The row itself carries NO bank details — nothing to pay yet.
+			expect(vendor.bank_details?.account_last4).toBeFalsy();
+			const live = await getVendor(page, vendor.id);
+			expect(live.bank_details?.account_last4).toBeFalsy();
+
+			// They're parked as a pending request awaiting a second approver.
+			const queued = await page.request.get(
+				`${API_BASE}/api/vendors/${vendor.id}/change-requests`,
+				{ headers: H }
+			);
+			expect(queued.status()).toBe(200);
+			const rows = (await queued.json()) as ChangeRequestResp[];
+			expect(rows.length).toBe(1);
+			expect(rows[0].change_type).toBe('bank_details');
+			expect(rows[0].status).toBe('pending');
+
+			// The create audit row records only that bank details were
+			// submitted — never the account number itself.
+			const leaked = tenantPsql(
+				`SELECT count(*) FROM audit_log WHERE entity_id='${vendor.id}' ` +
+					`AND details::text LIKE '%99998888%'`,
+				SLUG
+			).trim();
+			expect(Number(leaked)).toBe(0);
 		} finally {
 			deleteVendorCascade(vendor.id);
 		}

@@ -293,6 +293,58 @@ def rollup_to_reporting_currency(
     )
 
 
+@dataclass(frozen=True)
+class VendorSpendEntry:
+    """One vendor's total spend, converted into the reporting currency."""
+
+    vendor: str
+    amount: Decimal  # in reporting currency
+    invoice_count: int
+    currencies: list[str]  # every distinct original currency this vendor billed in
+
+
+def vendor_rollup_to_reporting_currency(
+    rows: list[dict],
+    *,
+    reporting_currency: str,
+) -> list[VendorSpendEntry]:
+    """Per-vendor spend, each vendor's amounts converted into one reporting
+    currency before being added together — the per-vendor counterpart to
+    `rollup_to_reporting_currency`.
+
+    Every per-vendor breakdown (CFO concentration tile, its drill-through,
+    the `vendor_spend` CSV export, the emailed scheduled report) used to do a
+    naive `SUM(Invoice.amount)` grouped by vendor — adding USD + EUR + GBP as
+    if they were one currency the moment a vendor (or the tenant as a whole)
+    billed in more than one. This groups the SAME per-invoice rows
+    `rollup_to_reporting_currency` takes (``{"amount", "currency",
+    "reporting_amount", "reporting_currency"}``, plus a ``"vendor"`` key) by
+    vendor and rolls each vendor's rows into the reporting currency, so a
+    multi-currency vendor's total is a real converted figure, not mixed
+    arithmetic.
+
+    Returns entries sorted by (converted) amount descending — ready to feed
+    straight into `analytics.compute_supplier_concentration` or a CSV writer.
+    """
+    by_vendor: dict[str, list[dict]] = {}
+    for r in rows:
+        by_vendor.setdefault(r["vendor"], []).append(r)
+
+    entries = []
+    for vendor, vendor_rows in by_vendor.items():
+        rollup = rollup_to_reporting_currency(vendor_rows, reporting_currency=reporting_currency)
+        entries.append(
+            VendorSpendEntry(
+                vendor=vendor,
+                amount=rollup.total_reporting_amount,
+                invoice_count=rollup.total_count,
+                currencies=sorted({e.currency for e in rollup.by_currency}),
+            )
+        )
+    entries.sort(key=lambda e: e.amount, reverse=True)
+    return entries
+
+
 def rollup_from_grouped_rows(
     groups: list[dict],
     *,
