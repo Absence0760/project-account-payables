@@ -348,6 +348,73 @@ async def test_weak_dominance_escalates_under_balanced_resolves_under_aggressive
         assert d.confidence == Decimal("0.8000")
 
 
+async def test_org_looser_sample_threshold_evaluate_and_apply_agree(realdb):
+    """An org that configures a looser ``autofill_min_sample`` than the platform
+    default (``vendor_enrichment.MIN_SAMPLE == 3``) must get a CONSISTENT decision
+    from evaluate and apply, not a bug where evaluate (real org_settings) says
+    auto-resolve but apply (re-deriving with the platform defaults instead of the
+    org's actual setting) disagrees and forces a spurious escalation.
+
+    Two approved historical invoices, both coded 6000 (100% dominance, sample=2):
+    under the platform default MIN_SAMPLE=3 there is NO suggestion at all (sample
+    too small) — so if apply ever re-derives with the defaults instead of the
+    org's real ``autofill_min_sample: 2``, ``_dominant_gl`` returns None, apply
+    raises ``NotApprovable``, and the coordinator downgrades a would-be
+    auto-resolution to an escalation. With org_settings correctly threaded through
+    (stashed from evaluate and reused in apply), both stages agree and the
+    invoice auto-resolves end-to-end."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+
+    inv_id, corr, exc_id = await _seed_gl_case(
+        mk,
+        org_id,
+        history_gls=["6000", "6000"],  # sample=2 < platform MIN_SAMPLE (3)
+        draft_gl=None,
+        number="INV-GL-ORGTHRESH",
+    )
+
+    org_settings = {
+        "exception_agents": {"autonomy_level": "aggressive"},
+        "enrichment": {"autofill_min_sample": 2},
+    }
+    async with mk() as s:
+        exc = await s.get(APException, exc_id)
+        result = await run_agent(
+            s,
+            exception=exc,
+            actor_id=actor_id,
+            org_settings=org_settings,
+            actor_roles={"ap_manager"},
+        )
+        # Would previously come back ESCALATED (apply's stale-default
+        # re-derivation disagreeing with evaluate's org-aware one).
+        assert result.decision.action_taken == ACTION_AUTO_RESOLVED
+
+    async with mk() as s:
+        inv = await s.get(Invoice, inv_id)
+        assert inv.gl_account == "6000"
+        assert inv.status == InvoiceStatus.approved
+
+        exc = await s.get(APException, exc_id)
+        assert exc.status == "resolved"
+
+        d = (
+            await s.execute(select(AgentDecision).where(AgentDecision.invoice_id == inv_id))
+        ).scalar_one()
+        assert d.action_taken == ACTION_AUTO_RESOLVED
+        assert d.agent_type == "gl_coding_v1"
+        assert d.changes["gl_account"]["new"] == "6000"
+
+        audits = (
+            (await s.execute(select(AuditLog).where(AuditLog.correlation_id == corr)))
+            .scalars()
+            .all()
+        )
+        assert "invoice.approved" in {a.action for a in audits}
+
+
 async def test_other_required_field_missing_escalates(realdb):
     """A confident GL suggestion exists, but the invoice ALSO has a zero amount —
     a GL fix alone wouldn't make it payable, so the resolver escalates."""

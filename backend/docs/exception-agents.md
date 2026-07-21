@@ -355,6 +355,12 @@ delegate's `agent_type` so the `AgentDecision` records the real resolver.
   **It never touches `amount`** — GL recode only; it never moves money. Writes the
   two audit rows (`invoice.approved` with the field diff + the `AgentDecision`,
   the latter recording `changes={"gl_account": {...}, "cost_center": {...}}`).
+  The re-derivation under the lock reuses the SAME `autofill_min_confidence` /
+  `autofill_min_sample` thresholds `evaluate` resolved from the org's real
+  `settings.enrichment` (stashed on the resolver instance, mirroring
+  `multi_po_split`'s `_tolerance_pct` stash) — `apply` never falls back to the
+  platform defaults, so an org's looser/stricter override can't make `evaluate`
+  and `apply` disagree and force a spurious escalation.
 
 ## No-LLM-key fail-soft
 
