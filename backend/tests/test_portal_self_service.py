@@ -380,6 +380,54 @@ async def test_remittance_download_for_own_payment(realdb):
 
 
 @pytest.mark.asyncio
+async def test_remittance_filename_survives_quote_in_reference(realdb):
+    """Issue #188: a payment `reference` (processor-supplied, not a validated
+    identifier) carrying a `"` must not break the Content-Disposition
+    header's quoted-string syntax."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    inv_id = uuid.uuid4()
+    pay_id = uuid.uuid4()
+    async with mk() as s:
+        s.add(
+            Invoice(
+                id=inv_id,
+                invoice_number="INV-REM-2",
+                vendor_name="Acme Supply",
+                vendor_id=vendor_id,
+                amount=Decimal("321.00"),
+                currency="USD",
+                status=InvoiceStatus.paid,
+                organization_id=org_id,
+            )
+        )
+        run = PaymentRun(organization_id=org_id, status="completed", total_amount=Decimal("321.00"))
+        s.add(run)
+        await s.flush()
+        s.add(
+            Payment(
+                id=pay_id,
+                payment_run_id=run.id,
+                invoice_id=inv_id,
+                amount=Decimal("321.00"),
+                method="ach",
+                status="completed",
+                reference='REM-REF"2"',
+                completed_at=datetime.now(UTC),
+            )
+        )
+        await s.commit()
+
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        resp = await client.get(f"/api/portal/payments/{pay_id}/remittance")
+    assert resp.status_code == 200, resp.text
+    disposition = resp.headers["content-disposition"]
+    assert disposition.count('"') == 2
+    assert "filename*=UTF-8''" in disposition
+
+
+@pytest.mark.asyncio
 async def test_remittance_foreign_payment_404(realdb):
     org_id = realdb.info(TENANT).org_id
     mk = realdb.sessionmaker(TENANT)
