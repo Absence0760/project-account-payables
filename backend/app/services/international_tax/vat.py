@@ -40,8 +40,10 @@ class VATComputation:
     - ``vat_amount`` — VAT on the supply at that rate.
     - ``vat_payable`` — cash VAT actually owed to the supplier (0 under
       reverse charge).
-    - ``reportable_vat`` — VAT to declare on the return (equals
-      ``vat_amount`` under reverse charge; the buyer self-accounts).
+    - ``reportable_vat`` — VAT to declare on the return. Under reverse
+      charge this is computed at the BUYER's own domestic rate (the buyer
+      self-accounts at its own country's rate, not the supplier's); outside
+      reverse charge it equals ``vat_amount``.
     - ``gross_amount`` — net + cash VAT payable.
     - ``reverse_charge`` — True when the EU B2B mechanism applied.
     """
@@ -65,6 +67,7 @@ def compute_vat(
     supplier_country: str,
     buyer_country: str | None = None,
     buyer_vat_registered: bool = False,
+    buyer_rate: Decimal | None = None,
     currency: str = "",
 ) -> VATComputation:
     """Compute VAT on a supply.
@@ -73,6 +76,18 @@ def compute_vat(
     *supplier's* jurisdiction. Reverse charge applies when supplier and
     buyer are *different* EU member states and the buyer is VAT-registered;
     in that case the supplier charges no VAT and the buyer self-accounts.
+
+    ``buyer_rate`` is the percent resolved by the tax-rate adapter for the
+    *buyer's* jurisdiction. It only matters when reverse charge applies: the
+    buyer self-accounts for VAT on its own return at its OWN country's rate,
+    not the supplier's — so ``reportable_vat`` is computed from
+    ``buyer_rate`` (not ``vat_amount``, which stays the supplier-rate
+    reference figure and is unaffected by this parameter). If reverse charge
+    applies but no ``buyer_rate`` is supplied (a caller that hasn't resolved
+    one — this function is pure and may be called from other contexts),
+    ``reportable_vat`` falls back to the supplier-rate ``vat_amount`` as a
+    best-effort default; callers that care about buyer-side reporting
+    accuracy should always resolve and pass ``buyer_rate``.
 
     Raises if the supplier country's regime isn't VAT — callers should route
     GST jurisdictions through ``gst.compute_gst`` instead.
@@ -97,9 +112,16 @@ def compute_vat(
 
     if reverse_charge:
         # Supplier invoices without VAT; buyer self-accounts. No cash VAT,
-        # but the VAT is still reportable on the buyer's return.
+        # but the VAT is still reportable on the buyer's return — at the
+        # BUYER's own domestic rate, not the supplier's.
         vat_payable = Decimal("0.00")
-        reportable_vat = vat_amount
+        if buyer_rate is not None:
+            reportable_vat = _round_money(net * Decimal(buyer_rate) / Decimal("100"))
+        else:
+            # No buyer rate resolved — fall back to the supplier-rate figure.
+            # Imprecise, but keeps this pure function total for callers that
+            # haven't resolved a buyer rate.
+            reportable_vat = vat_amount
         gross = _round_money(net)
         notes = (
             "EU reverse charge: supplier charges no VAT; buyer self-accounts "

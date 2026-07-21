@@ -1,0 +1,21 @@
+# gitleaks exact-finding suppressions, keyed by fingerprint
+# (<commit>:<file>:<rule-id>:<line>, from `gitleaks detect -v`'s "Fingerprint:"
+# field or the JSON/SARIF report's "Fingerprint" key).
+#
+# Use this file — NOT a .gitleaks.toml `[[allowlists]]` regex/paths entry —
+# for a known false positive tied to one SPECIFIC historical commit's patch.
+# gitleaks scans every commit in the scanned range individually, so a literal
+# fixed in a later commit is still flagged at the earlier commit that
+# introduced it; rewriting already-pushed branch history to scrub it is the
+# destructive alternative. A reusable literal pattern that could appear in
+# many files/commits still belongs in .gitleaks.toml's regexes list.
+#
+# Both entries below are the same synthetic test password in
+# backend/tests/test_admin_user_management.py (issue #160 test coverage):
+# the original literal ("Str0ngEnoughPass", commit e528965c) and its
+# replacement ("StrongPass123", commit 89aa901a) — the replacement still
+# trips generic-api-key on entropy even though it matches the `StrongPass\d+`
+# regex allowlist by content, because that regex is matched against the
+# TOML-configured allowlist's own logic, not gitleaks' fingerprint check.
+e528965cee45f3b60a1d922de2db051ada7245e3:backend/tests/test_admin_user_management.py:generic-api-key:145
+89aa901aa6fdb7c0ae07a1d3ac698d534cd83c55:backend/tests/test_admin_user_management.py:generic-api-key:147

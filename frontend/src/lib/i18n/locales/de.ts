@@ -81,7 +81,7 @@ export const messages = {
 	// Dashboard
 	'dashboard.title': 'Übersicht',
 	'dashboard.kpi.invoices': 'Rechnungen',
-	'dashboard.kpi.totalAmount': 'Gesamtbetrag',
+	'dashboard.kpi.totalAmount': 'Gesamtbetrag (alle Rechnungen)',
 	'dashboard.kpi.paid': 'Bezahlt',
 	'dashboard.kpi.pending': 'Ausstehend',
 	'dashboard.kpi.touchlessRate': 'Automatisierungsquote',

@@ -184,6 +184,36 @@ def test_approval_step_schema_defaults_segregation_on():
     assert cfg.require_segregation is True
 
 
+def test_approval_level_config_rejects_zero_required_approvals():
+    """A level requiring 0 approvals is nonsensical — it would be satisfied
+
+    with no actual approver action. `required_approvals` must be >= 1,
+    matching the floor already enforced on the sibling `escalation_hours`
+    field."""
+    from pydantic import ValidationError
+
+    from app.schemas.workflow import ApprovalLevelConfig
+
+    with pytest.raises(ValidationError):
+        ApprovalLevelConfig(required_approvals=0)
+
+
+def test_approval_level_config_rejects_negative_required_approvals():
+    from pydantic import ValidationError
+
+    from app.schemas.workflow import ApprovalLevelConfig
+
+    with pytest.raises(ValidationError):
+        ApprovalLevelConfig(required_approvals=-1)
+
+
+def test_approval_level_config_accepts_positive_required_approvals():
+    from app.schemas.workflow import ApprovalLevelConfig
+
+    cfg = ApprovalLevelConfig(required_approvals=2)
+    assert cfg.required_approvals == 2
+
+
 # ---------------------------------------------------------------------------
 # resolve_assignee
 # ---------------------------------------------------------------------------

@@ -25,6 +25,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -328,14 +329,22 @@ async def file_1099_batch(
     submit with the same key returns the previously stored confirmation
     instead of re-filing (filing a duplicate with the IRS is a real
     problem). Only 1099-eligible vendors over the $600 threshold are filed.
+
+    Claims the idempotency slot BEFORE calling the partner: a placeholder
+    ``pending`` row is inserted and flushed first, so a concurrent duplicate
+    submit (same key) hits the unique constraint immediately and never
+    reaches the partner a second time — mirroring the payment-run "claim the
+    slot, then act" pattern (``api/payments.py::execute_payment_run``) and the
+    PEPPOL inbound claim-before-upload ordering (``services/peppol_receive.py``).
     """
     if body.form_type not in {FORM_NEC, FORM_MISC}:
         raise HTTPException(status_code=400, detail="Unsupported form type")
 
     idempotency_key = body.idempotency_key or f"{org_id}:{body.year}:{body.form_type}"
 
-    # Idempotency at the data layer: if we already filed this key, return the
-    # stored result without calling the partner again.
+    # Fast-path (advisory): if we already filed this key, return the stored
+    # result without calling the partner again. The flush below is the
+    # authoritative guarantee for the concurrent race this check can miss.
     existing = await db.execute(
         select(Tax1099Filing).where(
             Tax1099Filing.organization_id == org_id,
@@ -345,6 +354,46 @@ async def file_1099_batch(
     prior = existing.scalar_one_or_none()
     if prior is not None:
         return _filing_response(prior, already_filed=True)
+
+    adapter = get_tax_filing_adapter(_filing_config(org))
+
+    # Claim the idempotency slot now, before any partner call. status="pending"
+    # is a transient marker overwritten with the real outcome once the
+    # partner responds (or the row is deleted below if the partner call
+    # fails, so a legitimate retry isn't permanently blocked).
+    filing = Tax1099Filing(
+        organization_id=org_id,
+        tax_year=body.year,
+        provider=adapter.provider_name,
+        idempotency_key=idempotency_key,
+        status="pending",
+        submitted_by=user.id,
+    )
+    db.add(filing)
+    try:
+        await db.flush()
+    except IntegrityError:
+        # Lost the race to a concurrent identical submit — the winner already
+        # claimed (or has since completed) this idempotency key. Roll back our
+        # half-inserted row; never reach the partner a second time.
+        await db.rollback()
+        winner = (
+            await db.execute(
+                select(Tax1099Filing).where(
+                    Tax1099Filing.organization_id == org_id,
+                    Tax1099Filing.idempotency_key == idempotency_key,
+                )
+            )
+        ).scalar_one_or_none()
+        if winner is not None:
+            return _filing_response(winner, already_filed=True)
+        # The racer's own claim vanished (its submit failed and released the
+        # slot) between our IntegrityError and this re-read. Surface a clean
+        # 409 rather than silently retrying into another race.
+        raise HTTPException(
+            status_code=409,
+            detail="A concurrent 1099 filing submission is in progress for this key",
+        ) from None
 
     report = await build_1099_report(db, org_id, body.year)
     filable = [r for r in report.rows if r.is_1099_eligible and r.over_threshold]
@@ -361,27 +410,26 @@ async def file_1099_batch(
         for r in filable
     ]
 
-    adapter = get_tax_filing_adapter(_filing_config(org))
-    result = await adapter.submit_batch(
-        tax_year=body.year,
-        forms=forms,
-        idempotency_key=idempotency_key,
-    )
+    try:
+        result = await adapter.submit_batch(
+            tax_year=body.year,
+            forms=forms,
+            idempotency_key=idempotency_key,
+        )
+    except Exception:
+        # The partner call failed after we claimed the slot. Release the
+        # reservation so a legitimate retry (same idempotency key) isn't
+        # permanently blocked by our own placeholder row.
+        await db.delete(filing)
+        await db.commit()
+        raise
 
-    filing = Tax1099Filing(
-        organization_id=org_id,
-        tax_year=body.year,
-        provider=result.provider,
-        idempotency_key=idempotency_key,
-        status=result.status,
-        confirmation_number=result.confirmation_number,
-        submitted_count=result.submitted_count,
-        accepted_count=result.accepted_count,
-        rejected_count=result.rejected_count,
-        submitted_by=user.id,
-        result={"forms": result.to_dict()["forms"]},
-    )
-    db.add(filing)
+    filing.status = result.status
+    filing.confirmation_number = result.confirmation_number
+    filing.submitted_count = result.submitted_count
+    filing.accepted_count = result.accepted_count
+    filing.rejected_count = result.rejected_count
+    filing.result = {"forms": result.to_dict()["forms"]}
     await db.commit()
     await db.refresh(filing)
     return _filing_response(filing, already_filed=False)

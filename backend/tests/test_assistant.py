@@ -498,6 +498,73 @@ async def test_usage_endpoint_reflects_recorded_tokens(realdb):
         await _clear_usage(realdb, "a")
 
 
+async def test_assert_within_budget_releases_lock_before_the_model_call(realdb):
+    """Issue #147: ``assert_within_budget`` used to hold its ``FOR UPDATE``
+    row lock until the control-plane transaction committed at request end —
+    i.e. across the ENTIRE model call / SSE stream that followed — so a
+    second turn for the same org couldn't even pass its own budget check
+    until the first turn's full response had finished and committed. That
+    serializes an org to one in-flight assistant turn at a time.
+
+    The fix commits right after the check, releasing the lock immediately.
+    Proven here with two real Postgres sessions (a single mock session can't
+    model two connections contending for a row lock): turn A's simulated
+    model call is slow (0.6s) and runs AFTER its budget check; turn B's
+    budget check — running concurrently — must not be blocked behind it.
+    """
+    import asyncio
+    import time
+
+    from app.models.organization import Organization
+    from app.services.assistant import usage as usage_service
+
+    await _clear_usage(realdb, "a")
+    await _set_org_budget(realdb, "a", 1_000_000)  # high enough neither turn trips it
+    ctrl_mk = realdb.control_sessionmaker()
+    info = realdb.info("a")
+
+    # `SELECT ... FOR UPDATE` only contends when a row already exists to lock
+    # — seed one first so both turns' checks hit the SAME existing row (the
+    # steady-state case; a brand new org's very first-ever turn has nothing
+    # to lock yet, which would make this test pass regardless of the fix).
+    async with ctrl_mk() as seed_db:
+        seed_org = await seed_db.get(Organization, info.org_id)
+        await usage_service.record(seed_db, seed_org, 0, 0)
+        await seed_db.commit()
+
+    checked_at: dict[str, float] = {}
+
+    async def _simulated_turn(label: str, model_call_seconds: float) -> None:
+        async with ctrl_mk() as db:
+            org = await db.get(Organization, info.org_id)
+            await usage_service.assert_within_budget(db, org)
+            checked_at[label] = time.monotonic()
+            # Stand-in for the model call / SSE stream that runs AFTER the
+            # budget gate and BEFORE usage is recorded.
+            await asyncio.sleep(model_call_seconds)
+            await usage_service.record(db, org, 10, 10)
+            await db.commit()
+
+    t0 = time.monotonic()
+    try:
+        await asyncio.gather(
+            _simulated_turn("slow_turn", 0.6),
+            _simulated_turn("fast_turn", 0.0),
+        )
+    finally:
+        await _clear_org_budget(realdb, "a")
+        await _clear_usage(realdb, "a")
+
+    # Both checks must land promptly — neither should have waited on the
+    # other's post-check "model call". A row lock held across the model call
+    # would delay whichever check lost the race by ~0.6s.
+    slowest_check = max(checked_at.values()) - t0
+    assert slowest_check < 0.3, (
+        f"a budget check took {slowest_check:.2f}s to return — looks like it "
+        "blocked on the other turn's row lock across its simulated model call"
+    )
+
+
 # ===========================================================================
 # Layer 2 — audit: every tool call logs a PII-safe row
 # ===========================================================================

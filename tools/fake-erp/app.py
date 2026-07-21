@@ -14,6 +14,7 @@ resettable via POST /__reset. No external deps beyond fastapi + uvicorn.
 from __future__ import annotations
 
 import copy
+import re
 from typing import Any
 from urllib.parse import parse_qs
 
@@ -35,6 +36,11 @@ def _fresh_state() -> dict[str, Any]:
         "netsuite_bills": {},  # id -> record dict ({"status": {"refName": ...}, ...})
         "d365_invoices": {},  # id -> record dict ({"status": "Draft"/"Open", ...})
         "counters": {"merge": 0, "netsuite": 1000, "d365": 0},
+        # Idempotency-Key -> the original create response body, so a retried
+        # POST /invoices with the same key returns the SAME record instead of
+        # creating a second one (mirrors Merge.dev's real documented
+        # idempotency-key mechanism; issue #143).
+        "merge_idempotency": {},
     }
 
 
@@ -272,6 +278,15 @@ async def merge_create_invoice(request: Request) -> JSONResponse:
     model = body.get("model")
     if not isinstance(model, dict):
         raise ProviderError(400, {"model": ["This field is required."]})
+
+    # Idempotency-Key: a retried create with the SAME key returns the
+    # original response instead of creating a second invoice (issue #143).
+    idem_key = request.headers.get("x-idempotency-key")
+    if idem_key:
+        cached = STATE["merge_idempotency"].get(idem_key)
+        if cached is not None:
+            return JSONResponse(cached, status_code=200)
+
     STATE["counters"]["merge"] += 1
     n = STATE["counters"]["merge"]
     record = {
@@ -292,7 +307,10 @@ async def merge_create_invoice(request: Request) -> JSONResponse:
         "line_items": model.get("line_items", []),
     }
     STATE["merge_invoices"][record["id"]] = record
-    return JSONResponse({"model": copy.deepcopy(record)}, status_code=201)
+    response_body = {"model": copy.deepcopy(record)}
+    if idem_key:
+        STATE["merge_idempotency"][idem_key] = copy.deepcopy(response_body)
+    return JSONResponse(response_body, status_code=201)
 
 
 @merge.get("/invoices/{invoice_id}")
@@ -366,6 +384,37 @@ async def netsuite_list_vendors(request: Request, limit: int = 1000) -> dict:
         "items": items,
         "offset": 0,
         "totalResults": 2,
+    }
+
+
+_NETSUITE_EXTERNAL_ID_Q = re.compile(r'externalId\s+IS\s+"([^"]*)"', re.IGNORECASE)
+
+
+@netsuite.get("/vendorBill")
+async def netsuite_list_vendor_bills(request: Request, q: str | None = None) -> dict:
+    """Collection query — only supports the ``externalId IS "..."`` shape our
+    own adapter sends. Backs the pre-create idempotency lookup (issue #143):
+    NetSuite enforces externalId uniqueness per record type, so a retried push
+    after a lost response finds the already-created bill here instead of
+    creating a second one via POST."""
+    _require_netsuite_auth(request)
+    items: list[dict] = []
+    if q:
+        match = _NETSUITE_EXTERNAL_ID_Q.match(q.strip())
+        if match:
+            external_id = match.group(1)
+            items = [
+                {"links": [], "id": doc_id}
+                for doc_id, rec in STATE["netsuite_bills"].items()
+                if rec.get("externalId") == external_id
+            ]
+    return {
+        "links": [],
+        "count": len(items),
+        "hasMore": False,
+        "items": items,
+        "offset": 0,
+        "totalResults": len(items),
     }
 
 
@@ -468,6 +517,31 @@ async def d365_list_vendors(request: Request, environment: str, company_id: str)
             {"id": "d365-vendor-1", "number": "V0001", "displayName": "Fake ERP Vendor A"},
         ]
     }
+
+
+_D365_EXTERNAL_DOC_FILTER = re.compile(r"externalDocumentNumber\s+eq\s+'([^']*)'", re.IGNORECASE)
+
+
+@d365.get("/{environment}/api/v2.0/companies({company_id})/purchaseInvoices")
+async def d365_list_purchase_invoices(
+    request: Request, environment: str, company_id: str
+) -> dict:
+    """Collection query — only supports the ``externalDocumentNumber eq '...'``
+    ``$filter`` shape our own adapter sends. Backs the pre-create idempotency
+    lookup (issue #143): a retried push after a lost response finds the
+    already-created invoice here instead of creating a second one via POST."""
+    _require_d365_auth(request)
+    filter_expr = request.query_params.get("$filter", "")
+    values: list[dict] = []
+    match = _D365_EXTERNAL_DOC_FILTER.match(filter_expr.strip())
+    if match:
+        external_doc_number = match.group(1)
+        values = [
+            rec
+            for rec in STATE["d365_invoices"].values()
+            if rec.get("externalDocumentNumber") == external_doc_number
+        ]
+    return {"value": [copy.deepcopy(v) for v in values]}
 
 
 @d365.post("/{environment}/api/v2.0/companies({company_id})/purchaseInvoices")

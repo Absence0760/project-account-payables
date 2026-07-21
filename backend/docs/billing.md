@@ -43,6 +43,38 @@ fans out to per-tenant DBs. The two tables are in `CONTROL_TABLES`
 prices are stored as decimal **strings** in JSONB and parsed back to `Decimal` —
 never float, anywhere.
 
+### Default plan catalog + baseline Subscription (`services/billing/plan_catalog.py`)
+
+Every org needs a live `Subscription` for two reasons: `get_entitlements`
+fail-closes to `{}` without one (so the public API is unreachable — see
+[Entitlement gating](#entitlement-gating-servicesbillingentitlementspy--apidepspy)
+below), and `change_plan` 404s with `no_live_subscription` when there's no
+starting row to move FROM (so an org could never even upgrade). Before this,
+nothing in the app ever created a `Plan` or `Subscription` row outside of
+tests — every org was permanently un-entitled with no way out.
+
+`ensure_plan_catalog(session)` idempotently creates the three stable-`code`
+plans (`free` / `growth` / `scale`) if missing — never touches a plan that
+already exists, so an operator's price/entitlement edits survive a re-run.
+`ensure_subscription(session, organization_id=..., plan_code=...)` binds an org
+to a plan if it has no live subscription yet (no-ops otherwise — never creates
+a second live row, mirroring `uq_subscription_one_live_per_org`); returns
+`None` for an unknown `plan_code` instead of raising, mirroring the
+skip-silently pattern `tenant_provisioning._provision_into` already uses for
+its admin-role lookup.
+
+Wired at every tenant's creation: `tenant_provisioning._provision_into` (CLI
+`create_tenant.py` + self-service signup's `/complete`, and the partner
+new-child-tenant provisioning path — all three route through
+`provision_tenant`) binds every new org to the real **`free`** plan regardless
+of the cosmetic `Organization.plan` display string those callers pass (that
+field predates this billing model and has long carried values like `"pro"`
+that were never a real `Plan.code`). `scripts/seed.py` does the same for the
+two demo tenants (and every `e2e<N>` Playwright worker tenant) so local dev
+and CI both start with a real, working billing baseline. `free` grants no
+entitlements by design — `public_api` is a paid-tier feature; an org reaches
+it via `POST /api/billing/change-plan` to `growth` or `scale`.
+
 **One live subscription per org** is enforced by a partial unique index
 `uq_subscription_one_live_per_org ON subscriptions (organization_id) WHERE
 status <> 'canceled'` (a canceled row is kept for history). Migration
@@ -261,8 +293,9 @@ the new one. **Positive** = extra charge (upgrade), **negative** = credit
 
 `change_plan(control_db, org=…, new_plan_code=…, actor_id=…, change_at=None)`:
 
-1. resolve the org's live subscription + current plan (`get_active_subscription`);
-   **404** (no enumeration) when there's no live subscription;
+1. resolve the org's live subscription + current plan **row-locked**
+   (`_get_active_subscription_for_update`, `SELECT ... FOR UPDATE`, `change_plan`-only —
+   see § Concurrency below); **404** (no enumeration) when there's no live subscription;
 2. resolve the target `Plan` by `code` (active only); **404** when unknown;
 3. **idempotent no-op** when the target equals the current plan — `changed=False`,
    zero proration, no mutation, no provider call, **no audit row** (mirrors the
@@ -286,6 +319,28 @@ Endpoint `POST /api/billing/change-plan` (JWT + `require_roles(admin, cfo)` —
 matches the read endpoint) takes `{"plan_code": "..."}` and returns
 `{changed, old_plan_code, new_plan_code, proration: {amount, unused_days, period_days}}`
 with `amount` an exact decimal string.
+
+### Concurrency
+
+`change_plan` is a classic read-modify-write: read the current plan, prorate
+off it, then repoint `plan_id`. Two concurrent *different* plan changes for the
+same org (e.g. one request A→B, another A→C) both reading the plain
+`get_active_subscription` result would both baseline off `A` — a lost update
+where the loser's proration is computed against a stale plan and both land a
+`billing.plan_changed` audit row for what should be one coherent change.
+
+The fix locks the subscription row before prorating (`_get_active_subscription_for_update`,
+`SELECT ... FOR UPDATE`, mirroring `workflow_engine.get_invoice_for_update`) — a
+second concurrent call for the same org blocks behind the first's commit, then
+re-reads the *already-updated* subscription as its own "current" baseline, so its
+proration and `from_plan` reflect the actual prior state at the time it acquired
+the lock, not the value both calls originally read. This locked lookup is
+`change_plan`-only; the read-only entitlement-check dependencies and
+`GET /api/billing/subscription` keep using the unlocked `get_active_subscription`
+(no mutation, no need to pay the lock-contention cost). Proven by a real-Postgres
+concurrency test (`tests/test_billing_concurrency.py`), the same pattern as
+`tests/test_payment_concurrency.py` — a single mocked session can't model two
+connections contending for a row lock.
 
 ## Entitlement gating (`services/billing/entitlements.py` + `api/deps.py`)
 

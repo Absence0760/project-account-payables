@@ -658,12 +658,34 @@ Each ERP has different field names for the same concepts. The adapter handles ma
 | Auth failure (401/403) | Log error, mark as `failed`, surface in UI for admin to fix credentials |
 | Validation error (400/422) | Store ERP error message in audit log details, mark as `failed` |
 | Timeout | Retry with exponential backoff (max 3 attempts), then mark as `failed` |
-| Duplicate (409) | Check if already posted (idempotency via `correlation_id`), update status if so |
+| Duplicate (409 / DUP_ENTITY) | Already handled BEFORE the create call — see § Idempotency below |
 | Rate limit (429) | Retry after `Retry-After` header delay |
 | Server error (500) | Retry with backoff, then mark as `failed` |
 | Network error | Retry with backoff, then mark as `failed` |
 
 All failures are logged in the audit trail with the raw error response for debugging.
+
+## Idempotency (retry-safe pushes)
+
+`_call_erp`'s 3-attempt retry loop (`services/erp.py`) means a client-side
+timeout AFTER the ERP already accepted the create can otherwise retry into a
+**second** vendor bill for the same invoice. Every real adapter's
+`post_invoice` is idempotent on `payload.correlation_id` (the stable per-invoice
+key already threaded through `_build_payload`), via whichever mechanism the
+target ERP actually supports:
+
+| Adapter | Mechanism |
+|---|---|
+| `merge_dev` | `X-Idempotency-Key: <correlation_id>` header on `POST /invoices` — Merge's unified API returns the ORIGINAL response for a repeated key instead of creating a second invoice. |
+| `netsuite` | Pre-create lookup: `GET /vendorBill?q=externalId IS "<correlation_id>"` (NetSuite enforces `externalId` uniqueness per record type). A match short-circuits `post_invoice` to a success referencing the existing bill; only a miss proceeds to `POST /vendorBill`. |
+| `dynamics_365_bc` | Pre-create lookup: `GET purchaseInvoices?$filter=externalDocumentNumber eq '<correlation_id>'`. Same short-circuit shape as NetSuite. |
+
+The local `fake-erp` mock implements the matching server-side behavior (a
+merge-idempotency-key cache; `q=`/`$filter=` collection queries filtered by
+`externalId`/`externalDocumentNumber`) so this is exercised end-to-end by
+`pnpm test:erp` without a live ERP account. Unit-level coverage (mocked HTTP,
+no fake-erp container needed) lives in
+`backend/tests/test_erp_adapter_idempotency.py`.
 
 ## Retry Logic
 

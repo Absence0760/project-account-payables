@@ -92,13 +92,17 @@ class DashboardData {
   });
 
   factory DashboardData.fromJson(Map<String, dynamic> json) {
-    // upcoming_payments is a list of invoices from the API
+    // upcoming_payments is a list of invoices from the API. The total is
+    // NOT folded from that list on-device (summing already-lossy per-item
+    // floats client-side can produce visible rounding artifacts, e.g. a
+    // total ending in `.99999`, and drifts further as more amounts
+    // accumulate) — it's a separate server-computed aggregate
+    // (`upcoming_total_amount`, summed in Decimal on the backend and
+    // converted to float exactly once), mirroring the payment-queue and
+    // cash-flow surfaces' "server-supplied total, never client float math"
+    // convention.
     final upcomingRaw = json['upcoming_payments'];
     final upcomingList = upcomingRaw is List ? upcomingRaw : [];
-    final upcomingTotal = upcomingList.fold<double>(
-      0,
-      (sum, item) => sum + ((item['amount'] as num?)?.toDouble() ?? 0),
-    );
 
     return DashboardData(
       totalInvoices: json['total_invoices'] as int? ?? 0,
@@ -119,7 +123,7 @@ class DashboardData {
           [],
       upcoming: UpcomingPayments(
         count: upcomingList.length,
-        totalAmount: upcomingTotal,
+        totalAmount: (json['upcoming_total_amount'] as num?)?.toDouble() ?? 0,
       ),
     );
   }

@@ -882,6 +882,76 @@ async def test_suggestions_scoped_to_organization(realdb):
         assert row.status == "open"
 
 
+async def test_suggestions_scoped_to_entity(realdb):
+    """A WorkflowSuggestion row belonging to a DIFFERENT entity within the
+    SAME org must not be marked stale by another entity's recompute, nor
+    returned in that entity's listing (issue #144). The stale-marking query
+    and the read-back both used to filter only on organization_id, so
+    selecting entity A's (empty) view flipped entity B's still-valid open
+    suggestion to stale (a cross-entity write) and could return entity B's
+    rows in entity A's response (a cross-entity read leak)."""
+    from sqlalchemy import select
+
+    from app.models.adaptive_suggestion import WorkflowSuggestion
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    async with realdb.client(key="a", role="admin") as client:
+        entity_a = (
+            await client.post("/api/entities", json={"name": "Entity A", "slug": "entity-a"})
+        ).json()["id"]
+        entity_b = (
+            await client.post("/api/entities", json={"name": "Entity B", "slug": "entity-b"})
+        ).json()["id"]
+
+        # Plant an open suggestion under entity B directly.
+        foreign_id = uuid.uuid4()
+        async with mk() as s:
+            s.add(
+                WorkflowSuggestion(
+                    id=foreign_id,
+                    organization_id=org_id,
+                    entity_id=uuid.UUID(entity_b),
+                    kind="auto_approve_threshold",
+                    dedupe_key="auto_approve_threshold:ENTITY_B",
+                    vendor_name="Entity B Vendor",
+                    title="Entity B suggestion",
+                    rationale="should never surface to entity A, nor be staled by it",
+                    payload={"vendor_id": None},
+                    confidence_pct=Decimal("90"),
+                    status="open",
+                )
+            )
+            await s.commit()
+
+        # Recompute (write-on-GET) scoped to entity A — entity A has zero
+        # decision history, so every fresh_key is empty; a correctly-scoped
+        # sweep touches nothing under entity A and returns nothing.
+        listed = (
+            await client.get(
+                "/api/adaptive/suggestions?status=all", headers={"X-Entity-ID": entity_a}
+            )
+        ).json()["suggestions"]
+        assert all(s_["id"] != str(foreign_id) for s_ in listed)
+
+    # Entity B's row is untouched — still "open", not flipped to "stale".
+    async with mk() as s:
+        row = (
+            await s.execute(select(WorkflowSuggestion).where(WorkflowSuggestion.id == foreign_id))
+        ).scalar_one()
+        assert row.status == "open"
+
+    # And it IS visible when actually scoped to entity B.
+    async with realdb.client(key="a", role="admin") as client:
+        listed_b = (
+            await client.get(
+                "/api/adaptive/suggestions?status=all", headers={"X-Entity-ID": entity_b}
+            )
+        ).json()["suggestions"]
+        assert any(s_["id"] == str(foreign_id) for s_ in listed_b)
+
+
 async def test_routing_suggestion_endpoint(realdb):
     mk = realdb.sessionmaker("a")
     org_id = realdb.info("a").org_id

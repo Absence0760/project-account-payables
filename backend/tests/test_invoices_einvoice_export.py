@@ -84,6 +84,53 @@ async def test_export_happy_path_each_role(realdb):
         assert doc.seller.name == "Vendor SARL"
 
 
+async def test_export_filename_survives_quote_in_invoice_number(realdb):
+    """`invoice_number` is AI-extracted / user-entered, not a strictly
+    validated identifier — it can contain a `"`. A naive
+    `f'attachment; filename="{name}"'` breaks the header's quoted-string
+    syntax in that case (#188). The `filename="..."` fallback must not carry
+    an unescaped embedded quote, and the RFC 5987 `filename*=` form must
+    still carry the real, percent-encoded invoice number."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    inv_id = await _add_invoice(mk, org_id, number='INV-123"456')
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.get(f"/api/invoices/{inv_id}/einvoice")
+    assert resp.status_code == 200, resp.text
+
+    disposition = resp.headers["content-disposition"]
+    # Exactly two double quotes — the open/close of filename="...". A third
+    # (from the invoice number) would corrupt the quoted-string syntax.
+    assert disposition.count('"') == 2
+    filename_param = disposition.split('filename="', 1)[1].split('"', 1)[0]
+    assert '"' not in filename_param
+    # The percent-encoded RFC 5987 form still carries the real characters,
+    # so a client that understands it saves the file under the true name.
+    assert "filename*=UTF-8''" in disposition
+    assert "einvoice-INV-123%22456.xml" in disposition
+
+
+async def test_export_filename_strips_control_char_from_invoice_number(realdb):
+    """A stray control character in `invoice_number` must not leak into the
+    Content-Disposition filename fallback unescaped. Uses a tab (one of the
+    few control characters XML 1.0 permits in element text — the UBL body
+    itself embeds `invoice_number` verbatim) so this test isolates the
+    header-safety bug from XML-generation validity, which is unaffected here."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    inv_id = await _add_invoice(mk, org_id, number="INV-CTRL\t-1")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.get(f"/api/invoices/{inv_id}/einvoice")
+    assert resp.status_code == 200, resp.text
+
+    disposition = resp.headers["content-disposition"]
+    filename_param = disposition.split('filename="', 1)[1].split('"', 1)[0]
+    assert "\t" not in filename_param
+    assert "filename*=UTF-8''" in disposition
+
+
 async def test_export_unknown_invoice_404(realdb):
     async with realdb.client(key="a", role="ap_manager") as c:
         resp = await c.get(f"/api/invoices/{uuid.uuid4()}/einvoice")

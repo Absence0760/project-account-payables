@@ -82,6 +82,69 @@ async def test_list_workflows_requires_auth(realdb):
 
 
 # ---------------------------------------------------------------------------
+# Multi-entity scoping (issue #145) — GET /workflows
+# ---------------------------------------------------------------------------
+
+
+async def test_list_workflows_scopes_by_entity(realdb):
+    """POST /api/workflows doesn't (yet) resolve entity_id on create, so this
+    inserts the two definitions directly via ORM — mirrors the entity-scoping
+    fix being about the LIST query, not workflow creation."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    async with realdb.client(key="a", role="admin") as c:
+        r = await c.post("/api/entities", json={"name": "US Inc", "slug": "us"})
+        assert r.status_code == 201, r.text
+        us = r.json()["id"]
+        default_id = next(e["id"] for e in (await c.get("/api/entities")).json() if e["is_default"])
+
+    async with mk() as s:
+        s.add(
+            WorkflowDefinition(
+                name="US Workflow",
+                steps_config={"steps": []},
+                is_active=False,
+                is_default=False,
+                organization_id=org_id,
+                entity_id=uuid.UUID(us),
+            )
+        )
+        s.add(
+            WorkflowDefinition(
+                name="Default-entity Workflow",
+                steps_config={"steps": []},
+                is_active=False,
+                is_default=False,
+                organization_id=org_id,
+                entity_id=uuid.UUID(default_id),
+            )
+        )
+        await s.commit()
+
+    async with realdb.client(key="a", role="admin") as c:
+        # Scoped to US -> only the US workflow (no auto-create, since the
+        # scoped total is already 1).
+        scoped_us = await c.get("/api/workflows", headers={"X-Entity-ID": us})
+        assert scoped_us.status_code == 200
+        assert scoped_us.json()["total"] == 1
+        assert {i["name"] for i in scoped_us.json()["items"]} == {"US Workflow"}
+
+        # Scoped to the default entity -> only the default-entity workflow.
+        scoped_def = await c.get("/api/workflows", headers={"X-Entity-ID": default_id})
+        assert scoped_def.json()["total"] == 1
+        assert {i["name"] for i in scoped_def.json()["items"]} == {"Default-entity Workflow"}
+
+        # Consolidated (no header) -> both.
+        allv = await c.get("/api/workflows")
+        assert allv.json()["total"] == 2
+        assert {i["name"] for i in allv.json()["items"]} == {
+            "US Workflow",
+            "Default-entity Workflow",
+        }
+
+
+# ---------------------------------------------------------------------------
 # create
 # ---------------------------------------------------------------------------
 

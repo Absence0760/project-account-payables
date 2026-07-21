@@ -19,9 +19,11 @@
 	import Money from '$lib/components/ui/Money.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { workflowStore } from '$lib/stores/workflows.svelte';
+	import { getTenantSlug } from '$lib/tenant';
 	import { m } from '$lib/i18n/store.svelte';
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
+	import { untrack } from 'svelte';
 
 	let search = $state('');
 	let activeStatuses = $state<InvoiceStatus[]>([]);
@@ -93,7 +95,16 @@
 	function buildParams(): Record<string, string> {
 		const params: Record<string, string> = {};
 		if (activeStatuses.length > 0) params.status = activeStatuses.join(',');
-		if (search.trim()) params.search = search.trim();
+		// `untrack`: `buildParams()` is also called from the status/advanced-filter
+		// `$effect` below. A plain read of `search` here would make THAT effect
+		// depend on `search` too (Svelte tracks reads transitively through called
+		// functions), so every keystroke would re-fire it — an immediate,
+		// un-debounced fetch racing the dedicated debounce timer further down.
+		// `untrack` still reads the current value (the request still carries the
+		// live search term); it just stops that read from registering as a
+		// dependency of whichever effect happens to be calling this.
+		const currentSearch = untrack(() => search);
+		if (currentSearch.trim()) params.search = currentSearch.trim();
 		const af = advancedFilters;
 		if (af.vendor) params.vendor = af.vendor;
 		if (af.invoice_number) params.invoice_number = af.invoice_number;
@@ -326,7 +337,7 @@
 				headers: {
 					'Content-Type': 'application/json',
 					...(token ? { Authorization: `Bearer ${token}` } : {}),
-					'X-Tenant-Slug': document.location.hostname.split('.')[0],
+					'X-Tenant-Slug': getTenantSlug() ?? '',
 				},
 				body: JSON.stringify({ ids: [...selected], format }),
 			});

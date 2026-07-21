@@ -277,9 +277,15 @@ class GLCodingResolver(ExceptionResolver):
         )
 
         # Stash the derived values so apply enacts EXACTLY what evaluate decided
-        # (and re-derives under the lock for idempotency / race-safety).
+        # (and re-derives under the lock for idempotency / race-safety). This
+        # includes the resolved thresholds themselves — org_settings isn't passed
+        # to `apply` (mirrors `multi_po_split`'s `_tolerance_pct` stash), so
+        # re-resolving there with the platform defaults would silently drop a
+        # looser/stricter org override and could disagree with this decision.
         self._gl_value = gl.value
         self._cc_value = cc_suggestion.value if cc_suggestion is not None else None
+        self._min_conf = min_conf
+        self._min_sample = min_sample
         return AgentEvaluation(
             recommended_action=ACTION_AUTO_RESOLVED,
             confidence=confidence,
@@ -313,9 +319,14 @@ class GLCodingResolver(ExceptionResolver):
         # to escalation if the confident suggestion no longer holds.
         if locked.vendor_id is None or not _other_required_fields_present(locked):
             raise _NotApprovable(locked.status)
-        min_conf, min_sample = _autofill_thresholds(None)
-        # org_settings isn't threaded into apply (mirrors missing_po); use the
-        # value evaluate stashed, but re-verify it is still the dominant GL.
+        # Reuse the thresholds `evaluate` resolved from the REAL org_settings
+        # (stashed above) — falling back to the platform defaults only if they
+        # were somehow never stashed (e.g. a direct `apply` call bypassing
+        # `evaluate`). Re-verify the suggestion still holds under the lock.
+        min_conf = getattr(self, "_min_conf", None)
+        min_sample = getattr(self, "_min_sample", None)
+        if min_conf is None or min_sample is None:
+            min_conf, min_sample = _autofill_thresholds(None)
         gl_value = getattr(self, "_gl_value", None)
         if gl_value is None:
             raise _NotApprovable(locked.status)

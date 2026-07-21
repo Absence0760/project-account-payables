@@ -92,6 +92,7 @@ from app.services.workflow_engine import (
     transition_invoice,
 )
 from app.tenant import get_tenant, get_tenant_db
+from app.utils.http import content_disposition_attachment
 
 logger = logging.getLogger(__name__)
 
@@ -291,7 +292,7 @@ async def get_my_invoice_einvoice(
     return Response(
         content=xml_bytes,
         media_type="application/xml",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": content_disposition_attachment(filename)},
     )
 
 
@@ -798,7 +799,7 @@ async def get_my_payment_remittance(
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": content_disposition_attachment(filename)},
     )
 
 

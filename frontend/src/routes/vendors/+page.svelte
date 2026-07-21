@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { appendUnique } from '$lib/utils/pagination';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
+	import { untrack } from 'svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import RowLink from '$lib/components/ui/RowLink.svelte';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
@@ -114,34 +116,63 @@
 		ai_extracted: 'AI Extracted',
 	};
 
-	$effect(() => {
-		fetchVendors();
-	});
+	// Debounce timer for search input — mirrors the /invoices and /payments
+	// convention (300ms).
+	let searchTimer: ReturnType<typeof setTimeout>;
+	function debouncedFetch() {
+		clearTimeout(searchTimer);
+		searchTimer = setTimeout(() => fetchVendors(), 300);
+	}
 
+	// Fetch on mount and whenever the status filter chip changes (a chip click
+	// is a discrete action, so it fetches immediately — no debounce). This is
+	// the ONLY effect that unconditionally calls fetchVendors(); a second
+	// effect doing the same on mount used to double-fetch on load.
 	$effect(() => {
-		search;
 		statusFilter;
 		fetchVendors();
 	});
 
+	// Re-fetch on search input (debounced).
+	$effect(() => {
+		search;
+		debouncedFetch();
+	});
+
+	// Sequences fetchVendors calls (fetch and load-more alike — one shared
+	// counter, latest-issued wins) so a slow response for an earlier
+	// search/filter can't land after a faster later one and clobber the list.
+	const fetchSequence = createRequestSequencer();
+
 	async function fetchVendors(opts: { append?: boolean; nextPage?: number } = {}) {
+		const token = fetchSequence.start();
 		try {
 			const nextPage = opts.nextPage ?? 1;
 			const params = new URLSearchParams({
 				page: String(nextPage),
 				page_size: String(PAGE_SIZE)
 			});
-			if (search.trim()) params.set('search', search.trim());
+			// `untrack`: this function is also called from the statusFilter
+			// `$effect` above. A plain read of `search` here would make THAT
+			// effect depend on `search` too (Svelte tracks reads transitively
+			// through called functions), so every keystroke would re-fire it —
+			// an immediate, un-debounced fetch racing the dedicated debounce
+			// timer. `untrack` still reads the current value (the request still
+			// carries the live search term); it just stops that read from
+			// registering as a dependency of whichever effect calls this.
+			const currentSearch = untrack(() => search);
+			if (currentSearch.trim()) params.set('search', currentSearch.trim());
 			if (statusFilter !== 'all') params.set('status', statusFilter);
 			const data = await api.get<{ items: Vendor[]; total: number }>(
 				`/api/vendors?${params}`
 			);
+			if (!fetchSequence.isLatest(token)) return; // superseded by a newer fetch
 			vendors = opts.append ? appendUnique(vendors, data.items) : data.items;
 			total = data.total;
 			page = nextPage;
 			if (!opts.append) fetchCounts();
 		} catch {
-			toast('Failed to load vendors', 'error');
+			if (fetchSequence.isLatest(token)) toast('Failed to load vendors', 'error');
 		}
 	}
 

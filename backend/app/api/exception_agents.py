@@ -18,7 +18,7 @@ from app.schemas.exception_agent import (
     AgentStatsResponse,
 )
 from app.services.exception_agents import ExceptionNotActionable, run_agent
-from app.tenant import get_tenant, get_tenant_db
+from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
 
 router = APIRouter(prefix="/exceptions", tags=["exception-agents"])
 
@@ -45,9 +45,11 @@ async def list_agent_decisions(
     action_taken: str | None = None,
     pagination: PaginationParams = Depends(pagination_params),
     db: AsyncSession = Depends(get_tenant_db),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
 ):
     q = select(AgentDecision)
+    q = apply_entity_scope(q, AgentDecision, entity_id)
     if exception_type:
         q = q.where(AgentDecision.exception_type == exception_type)
     if action_taken:
@@ -65,15 +67,14 @@ async def list_agent_decisions(
 @router.get("/agent-stats", response_model=AgentStatsResponse)
 async def agent_stats(
     db: AsyncSession = Depends(get_tenant_db),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
 ):
-    rows = (
-        await db.execute(
-            select(AgentDecision.action_taken, func.count(AgentDecision.id)).group_by(
-                AgentDecision.action_taken
-            )
-        )
-    ).all()
+    q = select(AgentDecision.action_taken, func.count(AgentDecision.id)).group_by(
+        AgentDecision.action_taken
+    )
+    q = apply_entity_scope(q, AgentDecision, entity_id)
+    rows = (await db.execute(q)).all()
     counts = {a: c for a, c in rows}
     total = sum(counts.values())
     auto = counts.get("auto_resolved", 0)

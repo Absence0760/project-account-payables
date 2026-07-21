@@ -270,9 +270,42 @@ void main() {
     await _pumpUntil(tester, find.text('No invoices found'));
 
     await tester.enterText(find.byType(SearchBar), 'acme');
+    // The search box debounces 300ms before firing (issue #182) — a short
+    // pump must NOT have triggered the store yet.
     await tester.pump(const Duration(milliseconds: 50));
+    expect(lastSearch, isNull);
 
+    await tester.pump(const Duration(milliseconds: 300));
     expect(lastSearch, 'acme');
+  });
+
+  testWidgets('rapid keystrokes only fire one debounced request',
+      (tester) async {
+    var searchRequests = 0;
+    ApiClient().debugConfigure(
+      client: MockClient((req) async {
+        if (req.url.queryParameters.containsKey('search')) searchRequests++;
+        return _list([]);
+      }),
+    );
+
+    await tester.pumpWidget(_localized(const InvoicesScreen()));
+    await _pumpUntil(tester, find.text('No invoices found'));
+
+    // Each keystroke restarts the debounce timer — none of these should reach
+    // the store on their own.
+    await tester.enterText(find.byType(SearchBar), 'a');
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.enterText(find.byType(SearchBar), 'ac');
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.enterText(find.byType(SearchBar), 'acm');
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(searchRequests, 0,
+        reason: 'still typing — the debounce timer keeps restarting');
+
+    // Let the last keystroke's debounce elapse — exactly one request fires.
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(searchRequests, 1);
   });
 
   testWidgets('serves cached rows when the network fails after a prior load',

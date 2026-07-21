@@ -405,8 +405,20 @@ def advance_approval_chain(
 
 def apply_escalation(instance: WorkflowInstance, *, now: datetime | None = None) -> bool:
     """If the current level has been stale longer than its escalation_hours,
-    append `escalation_to_user_ids` to the level's approver_ids list (deduped)
-    and record an escalation event. Returns True if the instance was mutated.
+    unblock it with `escalation_to_user_ids` and record an escalation event.
+    Returns True if the instance was mutated.
+
+    `any` mode: the escalation targets are ADDED to `approver_ids` — a new
+    eligible approver who can independently clear the level's `required`
+    count, unaffected by whether the original approvers ever act.
+
+    `all` mode: every id in `approver_ids` must approve, so simply appending
+    would make an already-stuck level need MORE sign-offs than before —
+    the opposite of "unblock" (issue #128). Instead, every approver who
+    hasn't yet approved is SUBSTITUTED with the escalation targets (approvers
+    who already signed off are kept — their approval still counts); the
+    level's requirement shrinks to "already-approved + escalation targets"
+    rather than growing to "everyone, plus the escalation targets too".
 
     Idempotent — once a level is escalated to a given user set, re-running
     is a no-op."""
@@ -446,7 +458,17 @@ def apply_escalation(instance: WorkflowInstance, *, now: datetime | None = None)
     if not new_targets:
         return False  # already escalated to these users — idempotent
 
-    level["approver_ids"] = list(existing | set(new_targets))
+    if level.get("parallel_mode") == "all":
+        # Substitute every NOT-YET-APPROVED approver with the escalation
+        # targets, rather than appending on top of the existing requirement.
+        # An 'all' level needing {A, B} must not become {A, B, C} (harder to
+        # clear if B is genuinely unavailable) — it becomes {A, C} once A has
+        # already approved, so C alone can now clear the level.
+        approved_ids = {a["user_id"] for a in level.get("approvals", [])}
+        kept = [uid for uid in level.get("approver_ids", []) if uid in approved_ids]
+        level["approver_ids"] = kept + [uid for uid in new_targets if uid not in kept]
+    else:
+        level["approver_ids"] = list(existing | set(new_targets))
     level.setdefault("escalations", []).append(
         {
             "at": now.isoformat(),

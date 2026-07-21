@@ -404,11 +404,16 @@ two experiments split independently). The **chosen variant's config is frozen
 onto the snapshot** — so in-flight invoices keep their variant for life, exactly
 like any other workflow snapshot. The assignment is recorded on the experiment's
 `assignments` map and a PII-free `invoice.experiment_assigned` audit row is
-written. The whole hook is **best-effort**: its caller swallows exceptions, so a
-routing failure falls back to the live definition's config and never breaks
-invoice creation. At most one experiment is honoured per invoice (the
-most-recently-started match) — running two over one definition is a config
-mistake, not a compounded split.
+written. Candidate experiments are fetched `WITH FOR UPDATE` before the
+`assignments` dict is read-modified-written — two invoices created concurrently
+under the same running experiment would otherwise race a lost update (both read
+the same dict, both add their own entry, the second full-dict write clobbers the
+first); the row lock serializes them so the second caller's write always
+includes the first's entry (issue #149). The whole hook is **best-effort**: its
+caller swallows exceptions, so a routing failure falls back to the live
+definition's config and never breaks invoice creation. At most one experiment is
+honoured per invoice (the most-recently-started match) — running two over one
+definition is a config mistake, not a compounded split.
 
 ### Results / readout — `GET /api/experiments/{id}/results`
 

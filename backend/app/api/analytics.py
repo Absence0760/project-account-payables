@@ -505,6 +505,12 @@ async def get_cfo_analytics(
         return apply_entity_scope(q, model, entity_id)
 
     # ----- Total spend in window + accounts-payable balance -----
+    # `total_spend` is a DIFFERENT population from the web dashboard's
+    # "Total Amount" KPI (`GET /api/dashboard`'s `total_amount` — every
+    # invoice, any status, no date bound): this figure is windowed to the
+    # trailing `period_days` and excludes only `rejected`. Don't treat the two
+    # as interchangeable in a UI or export — see backend/docs/analytics.md and
+    # `tests/test_analytics_rejected_exclusion.py`.
     total_spend_q = await db.execute(
         _inv(
             select(func.coalesce(func.sum(Invoice.amount), 0)).where(

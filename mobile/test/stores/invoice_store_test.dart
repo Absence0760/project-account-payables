@@ -174,6 +174,50 @@ void main() {
       expect(params['due_date_to'], '2026-03-15');
     });
 
+    test(
+        'a slow stale search response landing after a faster later one is '
+        'discarded (issue #182 request-sequencing guard)', () async {
+      // Simulate: user types "a" (server artificially slow to respond), then
+      // quickly types "ac" (normal-speed response). The "a" request's result
+      // must not clobber the list after "ac"'s response has already landed —
+      // that's the exact stale-response race the bug report describes.
+      final firstRequestStarted = Completer<void>();
+      final releaseFirstResponse = Completer<void>();
+
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          final search = req.url.queryParameters['search'];
+          if (search == 'a') {
+            firstRequestStarted.complete();
+            // Held open until after the second ("ac") request completes.
+            await releaseFirstResponse.future;
+            return _list([_invoiceJson('stale', vendor: 'Stale Corp')]);
+          }
+          return _list([_invoiceJson('fresh', vendor: 'Fresh Corp')]);
+        }),
+      );
+
+      // Mirrors the search box's real call pattern: fire-and-forget.
+      store.setSearch('a');
+      await firstRequestStarted.future;
+
+      store.setSearch('ac');
+      await _waitUntil(() => store.invoices.any((i) => i.id == 'fresh'));
+
+      expect(store.invoices, hasLength(1));
+      expect(store.invoices.first.id, 'fresh');
+
+      // Now release the stale first response — the guard must discard it
+      // rather than let it overwrite the already-current "fresh" result.
+      releaseFirstResponse.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(store.invoices, hasLength(1));
+      expect(store.invoices.first.id, 'fresh',
+          reason: 'the earlier, slower response must not clobber the later, '
+              'faster one that already landed');
+    });
+
     test('setFilters with empty omits all advanced params', () async {
       final sent = Completer<Map<String, String>>();
       ApiClient().debugConfigure(
@@ -583,4 +627,13 @@ void main() {
       expect(store.error, isNotNull);
     });
   });
+}
+
+/// Polls [cond] until it's true (or a bounded number of iterations elapse) —
+/// used where a fire-and-forget store call (mirroring the real screen's
+/// unawaited `setSearch`) needs a deterministic point to assert from.
+Future<void> _waitUntil(bool Function() cond, {int maxIterations = 100}) async {
+  for (var i = 0; i < maxIterations && !cond(); i++) {
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
 }

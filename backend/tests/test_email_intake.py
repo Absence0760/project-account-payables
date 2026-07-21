@@ -256,6 +256,139 @@ async def test_inbound_webhook_returns_ack_not_500_on_processing_exception():
     assert json.loads(response.body) == {"status": "received"}
 
 
+# ---------------------------------------------------------------------------
+# Body size cap (memory-exhaustion DoS guard, GitHub issue #142)
+#
+# `inbound_webhook` used to `await request.body()` before any signature
+# check, with no size cap — an unauthenticated attacker could POST a
+# multi-gigabyte body and have it buffered fully into memory before the HMAC
+# check ever ran. The guard bounds the body in two phases, mirroring
+# `peppol_inbound_webhook`: reject on a declared Content-Length over the cap
+# BEFORE reading the body at all, then re-check the actual read length in
+# case the header lied or was absent (e.g. chunked transfer). Placed in the
+# pre-signature block, so rejections return the plain 204 (not the opaque
+# 200 ack reserved for post-signature outcomes).
+# ---------------------------------------------------------------------------
+
+
+async def test_inbound_webhook_content_length_over_cap_rejects_before_body_read():
+    """A declared Content-Length over the cap must reject WITHOUT ever
+    awaiting `request.body()`."""
+    from unittest.mock import AsyncMock
+
+    from app.api.email_intake import inbound_webhook
+    from app.config import settings
+
+    request = SimpleNamespace(
+        headers={"content-length": "999999"},
+        body=AsyncMock(return_value=b"{}"),
+    )
+
+    with (
+        patch("app.api.email_intake.get_parser", return_value=lambda b, h: {"x": 1}),
+        patch.object(settings, "email_intake_max_bytes", 1024),
+    ):
+        response = await inbound_webhook(provider="ses", request=request, ctrl_db=None)
+
+    assert response.status_code == 204
+    request.body.assert_not_awaited()
+
+
+async def test_inbound_webhook_content_length_malformed_rejects_before_body_read():
+    """A non-integer Content-Length header must also reject before reading."""
+    from unittest.mock import AsyncMock
+
+    from app.api.email_intake import inbound_webhook
+    from app.config import settings
+
+    request = SimpleNamespace(
+        headers={"content-length": "not-a-number"},
+        body=AsyncMock(return_value=b"{}"),
+    )
+
+    with (
+        patch("app.api.email_intake.get_parser", return_value=lambda b, h: {"x": 1}),
+        patch.object(settings, "email_intake_max_bytes", 1024),
+    ):
+        response = await inbound_webhook(provider="ses", request=request, ctrl_db=None)
+
+    assert response.status_code == 204
+    request.body.assert_not_awaited()
+
+
+async def test_inbound_webhook_oversized_body_without_content_length_rejects_after_read():
+    """Simulates chunked transfer (no Content-Length header): the body is
+    read once, then rejected by the post-read length check."""
+    from unittest.mock import AsyncMock
+
+    from app.api.email_intake import inbound_webhook
+    from app.config import settings
+
+    big_body = b"x" * 2048
+    request = SimpleNamespace(
+        headers={},
+        body=AsyncMock(return_value=big_body),
+    )
+
+    with (
+        patch("app.api.email_intake.get_parser", return_value=lambda b, h: {"x": 1}),
+        patch.object(settings, "email_intake_max_bytes", 1024),
+    ):
+        response = await inbound_webhook(provider="ses", request=request, ctrl_db=None)
+
+    assert response.status_code == 204
+    request.body.assert_awaited_once()
+
+
+async def test_inbound_webhook_content_length_understates_actual_size_still_rejects():
+    """A Content-Length header that lies (understates the real body) must
+    still be caught by the post-read re-check, not trusted blindly."""
+    from unittest.mock import AsyncMock
+
+    from app.api.email_intake import inbound_webhook
+    from app.config import settings
+
+    big_body = b"x" * 2048
+    request = SimpleNamespace(
+        headers={"content-length": "10"},
+        body=AsyncMock(return_value=big_body),
+    )
+
+    with (
+        patch("app.api.email_intake.get_parser", return_value=lambda b, h: {"x": 1}),
+        patch.object(settings, "email_intake_max_bytes", 1024),
+    ):
+        response = await inbound_webhook(provider="ses", request=request, ctrl_db=None)
+
+    assert response.status_code == 204
+    request.body.assert_awaited_once()
+
+
+async def test_inbound_webhook_normal_signed_request_under_cap_still_succeeds():
+    """Regression guard: the new size-cap check must not break the existing
+    valid-signature path (default cap is a few MB; this body is tiny)."""
+    from unittest.mock import AsyncMock
+
+    from app.api.email_intake import inbound_webhook
+    from app.services.email_intake import IntakeResult
+
+    request = SimpleNamespace(
+        headers={"X-Signature": "sig", "content-length": "2"},
+        body=AsyncMock(return_value=b"{}"),
+    )
+    hit = IntakeResult(tenant_slug="acme", invoices_created=[uuid.uuid4()])
+
+    with (
+        patch("app.api.email_intake.get_parser", return_value=lambda b, h: {"x": 1}),
+        patch("app.api.email_intake.verify_signature", return_value=True),
+        patch("app.api.email_intake.process_inbound_email", AsyncMock(return_value=hit)),
+    ):
+        response = await inbound_webhook(provider="ses", request=request, ctrl_db=None)
+
+    assert response.status_code == 200
+    assert json.loads(response.body) == {"status": "received"}
+
+
 def test_verify_signature_accepts_valid_signature():
     from app.services import email_intake
 

@@ -122,6 +122,44 @@ void main() {
 
       expect(await sent.future, 'acme');
     });
+
+    test(
+        'a slow stale search response landing after a faster later one is '
+        'discarded (issue #182 request-sequencing guard)', () async {
+      // Same race as InvoiceStore's regression test: an early, slow response
+      // must not clobber a later, faster one that already landed.
+      final firstRequestStarted = Completer<void>();
+      final releaseFirstResponse = Completer<void>();
+
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          final search = req.url.queryParameters['search'];
+          if (search == 'a') {
+            firstRequestStarted.complete();
+            await releaseFirstResponse.future;
+            return _list([_vendorJson('stale')]);
+          }
+          return _list([_vendorJson('fresh')]);
+        }),
+      );
+
+      store.setSearch('a');
+      await firstRequestStarted.future;
+
+      store.setSearch('ac');
+      await _waitUntil(() => store.vendors.any((v) => v.id == 'fresh'));
+
+      expect(store.vendors, hasLength(1));
+      expect(store.vendors.first.id, 'fresh');
+
+      releaseFirstResponse.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(store.vendors, hasLength(1));
+      expect(store.vendors.first.id, 'fresh',
+          reason: 'the earlier, slower response must not clobber the later, '
+              'faster one that already landed');
+    });
   });
 
   group('actions', () {
@@ -223,4 +261,13 @@ void main() {
       expect(store.error, isNotNull);
     });
   });
+}
+
+/// Polls [cond] until it's true (or a bounded number of iterations elapse) —
+/// used where a fire-and-forget store call (mirroring the real screen's
+/// unawaited `setSearch`) needs a deterministic point to assert from.
+Future<void> _waitUntil(bool Function() cond, {int maxIterations = 100}) async {
+  for (var i = 0; i < maxIterations && !cond(); i++) {
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
 }

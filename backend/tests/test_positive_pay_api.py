@@ -67,13 +67,22 @@ async def _clear_settings(realdb, org_id):
         await s.commit()
 
 
-async def _add_vendor(mk, org_id, *, name="Globex Industrial", bank_details=None, status="active"):
+async def _add_vendor(
+    mk,
+    org_id,
+    *,
+    name="Globex Industrial",
+    bank_details=None,
+    status="active",
+    payments_blocked=False,
+):
     async with mk() as s:
         v = Vendor(
             organization_id=org_id,
             name=name,
             status=status,
             bank_details=bank_details,
+            payments_blocked=payments_blocked,
             entity_id=await _default_entity_id(s),
         )
         s.add(v)
@@ -376,6 +385,42 @@ async def test_generate_ach_authorization(realdb):
     assert "No-Bank Vendor" not in text
 
 
+async def test_generate_ach_authorization_excludes_payments_blocked_vendor(realdb):
+    """A sanctions-blocked vendor (``payments_blocked=True``) must never land on the
+    ACH-authorization allowlist handed to the bank, even when its general ``status``
+    is still ``active`` — the two flags are independent (#184)."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _add_vendor(
+        mk,
+        org_id,
+        name="Blocked ACH Vendor",
+        bank_details={"routing_number": "021000021", "account_number": "444555666"},
+        status="active",
+        payments_blocked=True,
+    )
+    await _add_vendor(
+        mk,
+        org_id,
+        name="Clean ACH Vendor",
+        bank_details={"routing_number": "021000021", "account_number": "111222333"},
+        status="active",
+        payments_blocked=False,
+    )
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post("/api/positive-pay/ach-authorization", json={"bank_format": "csv"})
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["item_count"] == 1
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        dl = await c.get(f"/api/positive-pay/{body['id']}/download")
+    text = dl.content.decode("utf-8")
+    assert "Clean ACH Vendor" in text
+    assert "Blocked ACH Vendor" not in text
+
+
 # ---------------------------------------------------------------------------
 # process return → fraud_flag Exception + dedupe + unmatched
 # ---------------------------------------------------------------------------
@@ -505,6 +550,82 @@ async def test_process_return_raises_fraud_including_standalone_not_on_file(real
                 )
             ).scalar()
             assert total_fraud == 2
+    finally:
+        await _clear_settings(realdb, org_id)
+
+
+async def test_process_return_classifies_against_persisted_snapshot_not_live_status(realdb):
+    """Issue #178: a cheque issued (and appears on the file sent to the bank),
+    then later VOIDED in the app, must still classify against what the bank
+    was actually told — not a live re-derivation that excludes voided
+    payments. Presenting it back with an altered amount must land as an
+    invoice-linked `amount_mismatch`, never a standalone `not_on_file` (the
+    bug: process_return re-derived the issued set live, dropped the voided
+    payment out of it, and orphaned the presentment from its invoice)."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _set_check_account(realdb, org_id)
+    try:
+        vendor_id = await _add_vendor(mk, org_id)
+        invoice_id = await _add_invoice(
+            mk, org_id, vendor_id=vendor_id, invoice_number="INV-VOID", amount="500.00"
+        )
+        run_id = await _add_check_run(
+            mk, org_id, invoice_id=invoice_id, check_number="CHK7001", amount="500.00"
+        )
+
+        async with realdb.client(key="a", role="ap_manager") as c:
+            file_id = (
+                await c.post(f"/api/positive-pay/payment-runs/{run_id}/check-issue", json={})
+            ).json()["id"]
+
+        # Void the payment AFTER the file was generated and sent to the bank —
+        # the persisted issued_map snapshot must still reflect it was issued.
+        async with mk() as s:
+            pay = (
+                await s.execute(select(Payment).where(Payment.payment_run_id == uuid.UUID(run_id)))
+            ).scalar_one()
+            pay.status = "voided"
+            await s.commit()
+
+        async with realdb.client(key="a", role="ap_manager") as c:
+            resp = await c.post(
+                f"/api/positive-pay/{file_id}/process-return",
+                json={"presented_items": [{"check_number": "CHK7001", "amount": "900.00"}]},
+            )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        # Correctly recognized as an ALTERED issued cheque, not a never-issued one.
+        assert body["amount_mismatches"] == 1
+        assert body["not_on_file"] == 0
+        assert body["exceptions_created"] == 1
+
+        async with mk() as s:
+            # The fraud_flag must be linked to the ORIGINAL invoice, not standalone.
+            linked = (
+                (
+                    await s.execute(
+                        select(APException).where(
+                            APException.invoice_id == uuid.UUID(invoice_id),
+                            APException.exception_type == "fraud_flag",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert len(linked) == 1
+
+            standalone_count = (
+                await s.execute(
+                    select(func.count()).where(
+                        APException.invoice_id.is_(None),
+                        APException.exception_type == "fraud_flag",
+                        APException.organization_id == org_id,
+                    )
+                )
+            ).scalar()
+            assert standalone_count == 0
     finally:
         await _clear_settings(realdb, org_id)
 

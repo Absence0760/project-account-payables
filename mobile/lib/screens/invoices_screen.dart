@@ -9,6 +9,7 @@ import 'package:ap_mobile/services/file_share.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
 import 'package:ap_mobile/utils/a11y.dart';
+import 'package:ap_mobile/utils/debouncer.dart';
 import 'package:ap_mobile/widgets/advanced_search_sheet.dart';
 import 'package:ap_mobile/widgets/bulk_action_bar.dart';
 import 'package:ap_mobile/widgets/invoice_list_tile.dart';
@@ -33,6 +34,7 @@ class InvoicesScreen extends StatefulWidget {
 
 class _InvoicesScreenState extends State<InvoicesScreen> {
   final _searchController = TextEditingController();
+  final _searchDebouncer = Debouncer();
   bool _busy = false;
 
   bool get _canBulk => AuthStore.instance.canBulkEditInvoices;
@@ -52,6 +54,7 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
     if (InvoiceStore.instance.selectionMode) {
       InvoiceStore.instance.exitSelectionMode();
     }
+    _searchDebouncer.cancel();
     _searchController.dispose();
     super.dispose();
   }
@@ -210,8 +213,8 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
             controller: _searchController,
             hintText: l.invoicesSearchHint,
             leading: const Icon(Icons.search, size: 20),
-            onChanged: (q) => InvoiceStore.instance.setSearch(
-              q.isEmpty ? null : q,
+            onChanged: (q) => _searchDebouncer.run(
+              () => InvoiceStore.instance.setSearch(q.isEmpty ? null : q),
             ),
             elevation: WidgetStateProperty.all(0),
           ),

@@ -56,7 +56,7 @@ from app.services.workflow_experiments import (
     VARIANT_B,
     compute_experiment_results,
 )
-from app.tenant import get_entity_id, get_tenant_db
+from app.tenant import apply_entity_scope, get_entity_id, get_tenant_db
 
 router = APIRouter(prefix="/experiments", tags=["workflow-experiments"])
 
@@ -134,6 +134,7 @@ async def list_experiments(
     user: User = Depends(require_roles(*_READ_ROLES)),
 ):
     q = select(WorkflowExperiment).where(WorkflowExperiment.organization_id == user.organization_id)
+    q = apply_entity_scope(q, WorkflowExperiment, entity_id)
     if status:
         q = q.where(WorkflowExperiment.status == status)
     q = q.order_by(WorkflowExperiment.created_at.desc())

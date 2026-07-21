@@ -84,7 +84,37 @@ class NetSuiteAdapter(ErpAdapter):
         ]
         return ", ".join(parts)
 
+    async def _find_by_external_id(self, external_id: str) -> str | None:
+        """Look up an existing vendorBill by externalId.
+
+        NetSuite enforces externalId uniqueness per record type, so this is
+        the pre-create idempotency check (issue #143): a retried push after a
+        client-side timeout on the FIRST attempt's response (which may have
+        already succeeded server-side) finds the already-created bill here
+        instead of blindly POSTing a second one.
+        """
+        q = f'externalId IS "{external_id}"'
+        url = f"{self._base_url()}/vendorBill?q={quote(q, safe='')}"
+        headers = {"Authorization": self._auth_header("GET", url)}
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(url, headers=headers)
+        if resp.status_code != 200:
+            return None
+        items = resp.json().get("items", [])
+        if not items:
+            return None
+        return items[0].get("id")
+
     async def post_invoice(self, payload: InvoicePayload) -> ErpPostResult:
+        existing_id = await self._find_by_external_id(payload.correlation_id)
+        if existing_id:
+            return ErpPostResult(
+                success=True,
+                erp_document_id=existing_id,
+                erp_document_number=payload.invoice_number,
+                message="Already posted to NetSuite (idempotent — found by externalId)",
+            )
+
         url = f"{self._base_url()}/vendorBill"
 
         body = {

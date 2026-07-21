@@ -261,7 +261,13 @@ void main() {
     // for the next one — so adding a store must mean wiring it in here.
     // Asserts the actual `X.instance.reset();` CALL, not merely an import: a
     // store imported for some other reason must not satisfy this guard.
-    const deviceScoped = {'locale_store.dart'};
+    //
+    // Exempt: files under lib/stores/ that are NOT account-scoped store
+    // singletons — `locale_store.dart` is a device preference (display
+    // language), and `sequenced_fetch.dart` is the `SequencedFetch` mixin (a
+    // per-store request-sequence helper: no `.instance`, no account data to
+    // clear — the store it's mixed into is what resets).
+    const exempt = {'locale_store.dart', 'sequenced_fetch.dart'};
     final session = File('lib/services/session.dart').readAsStringSync();
     final body = session.substring(session.indexOf('static void resetStores()'));
 
@@ -275,7 +281,7 @@ void main() {
         .listSync()
         .whereType<File>()
         .map((f) => f.uri.pathSegments.last)
-        .where((name) => name.endsWith('.dart') && !deviceScoped.contains(name))
+        .where((name) => name.endsWith('.dart') && !exempt.contains(name))
         .where((name) => !body.contains('${className(name)}.instance.reset();'))
         .toList();
 

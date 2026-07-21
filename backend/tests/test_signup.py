@@ -29,6 +29,7 @@ from unittest.mock import AsyncMock
 import pytest_asyncio
 from sqlalchemy import delete, select
 
+from app.models.billing import Subscription
 from app.models.organization import Organization
 from app.models.signup import EmailVerification
 
@@ -56,6 +57,22 @@ async def cleanup_signup(realdb):
             await s.execute(
                 delete(EmailVerification).where(EmailVerification.slug.in_(created_slugs))
             )
+            org_ids = (
+                (
+                    await s.execute(
+                        select(Organization.id).where(Organization.slug.in_(created_slugs))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if org_ids:
+                # provision_tenant now binds every org to a baseline "free"
+                # Subscription (issue #180) — drop it before the org, or the
+                # FK to organizations blocks the delete.
+                await s.execute(
+                    delete(Subscription).where(Subscription.organization_id.in_(org_ids))
+                )
             await s.execute(delete(Organization).where(Organization.slug.in_(created_slugs)))
         await s.commit()
 

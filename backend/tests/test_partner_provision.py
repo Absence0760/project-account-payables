@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import settings
 from app.database import _make_tenant_url
+from app.models.billing import Subscription
 from app.models.organization import Organization
 from app.models.user import User, UserRole
 from app.models.workflow import AuditLog
@@ -61,6 +62,10 @@ async def _drop_provisioned(realdb, slug: str) -> None:
             if user_ids:
                 await s.execute(delete(UserRole).where(UserRole.user_id.in_(user_ids)))
                 await s.execute(delete(User).where(User.id.in_(user_ids)))
+            # provision_tenant now binds every org to a baseline "free"
+            # Subscription (issue #180) — drop it before the org, or the FK
+            # to organizations blocks the delete.
+            await s.execute(delete(Subscription).where(Subscription.organization_id == org.id))
             await s.execute(delete(Organization).where(Organization.id == org.id))
             await s.commit()
 

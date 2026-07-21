@@ -144,6 +144,31 @@ async def _default_entity_id(s):
     ).scalar_one()
 
 
+async def _add_many_invoices(mk, org_id, *, count, amount="10.00", prefix="Bulk"):
+    """Bulk-create `count` invoices with distinct vendor names (one commit) so
+    a group-by-vendor report produces `count` distinct rows — used to exercise
+    the export row cap without one commit per row."""
+    async with mk() as s:
+        entity_id = await _default_entity_id(s)
+        s.add_all(
+            [
+                Invoice(
+                    organization_id=org_id,
+                    entity_id=entity_id,
+                    invoice_number=f"{prefix}-{i:05d}",
+                    vendor_name=f"{prefix}Vendor{i:05d}",
+                    amount=Decimal(amount),
+                    currency="USD",
+                    invoice_date=_TODAY,
+                    due_date=_TODAY + timedelta(days=30),
+                    status=InvoiceStatus.approved,
+                )
+                for i in range(count)
+            ]
+        )
+        await s.commit()
+
+
 async def _add_invoice(mk, org_id, *, vendor_name, amount, status=InvoiceStatus.approved, num=None):
     async with mk() as s:
         inv = Invoice(
@@ -383,8 +408,39 @@ async def test_export_csv_and_pdf(realdb):
         assert body.lstrip().startswith("#")
         assert "ExportCo" in body
         assert "123.45" in body
+        # Under the 1000-row export cap: no spurious truncation note.
+        assert "truncated" not in body.lower()
 
         pdf_resp = await c.get(f"/api/reports/{report_id}/export?format=pdf")
         assert pdf_resp.status_code == 200, pdf_resp.text
         assert pdf_resp.headers["content-type"] == "application/pdf"
+        assert pdf_resp.content[:4] == b"%PDF"
+
+
+async def test_export_over_cap_surfaces_truncation_note(realdb):
+    """A report matching more rows than the 1000-row export cap must say so in
+    the file itself — a CFO exporting a large dataset should never get a
+    quietly incomplete CSV/PDF. Regression test for issue #131 part 1."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _add_many_invoices(mk, org_id, count=1001, prefix="Cap")
+
+    save_body = {
+        "name": "Over-cap report",
+        "data_source": "invoices",
+        "dimensions": [{"key": "vendor_name"}],
+        "measures": [{"key": "amount", "agg": "sum"}],
+    }
+    async with realdb.client(key="a", role="cfo") as c:
+        created = await c.post("/api/reports", json=save_body)
+        report_id = created.json()["id"]
+
+        csv_resp = await c.get(f"/api/reports/{report_id}/export?format=csv")
+        assert csv_resp.status_code == 200, csv_resp.text
+        body = csv_resp.text
+        assert "truncated at 1000 rows" in body.lower()
+        assert "1001" in body  # the true matching-row count, not just the cap
+
+        pdf_resp = await c.get(f"/api/reports/{report_id}/export?format=pdf")
+        assert pdf_resp.status_code == 200, pdf_resp.text
         assert pdf_resp.content[:4] == b"%PDF"

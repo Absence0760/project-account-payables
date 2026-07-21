@@ -2,13 +2,14 @@ import 'package:flutter/foundation.dart';
 
 import 'package:ap_mobile/api/endpoints.dart';
 import 'package:ap_mobile/models/admin_user.dart';
+import 'package:ap_mobile/utils/sequenced_fetch.dart';
 
 /// Admin user-management state — the org's users + the available roles, plus
 /// role-assignment and activate/deactivate mutators. Admin-only (mirrors the
 /// backend `require_roles(ROLE_ADMIN)` on `/api/admin/*`). Not offline-cached:
 /// a privileged control-plane read where stale data would be misleading
 /// (mirrors `CashFlowStore`).
-class AdminUserStore extends ChangeNotifier {
+class AdminUserStore extends ChangeNotifier with SequencedFetch {
   static final AdminUserStore instance = AdminUserStore._();
   AdminUserStore._();
 
@@ -40,6 +41,7 @@ class AdminUserStore extends ChangeNotifier {
     _loading = false;
     _error = null;
     _searchQuery = null;
+    debugResetSequence();
   }
 
   void setSearch(String? query) {
@@ -48,6 +50,9 @@ class AdminUserStore extends ChangeNotifier {
   }
 
   Future<void> fetch() async {
+    // See SequencedFetch — discards a response superseded by a newer fetch()
+    // (e.g. a stale search result resolving after a later keystroke's).
+    final token = nextRequestToken();
     _loading = true;
     _error = null;
     notifyListeners();
@@ -59,11 +64,13 @@ class AdminUserStore extends ChangeNotifier {
         AdminApi.listUsers(search: _searchQuery),
         AdminApi.listRoles(),
       ]);
+      if (!isCurrentRequest(token)) return;
       _users = results[0] as List<AdminUser>;
       _roles = results[1] as List<AdminRole>;
       _loading = false;
       notifyListeners();
     } catch (e) {
+      if (!isCurrentRequest(token)) return;
       _users = [];
       _loading = false;
       _error = e.toString();

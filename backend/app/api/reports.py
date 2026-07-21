@@ -70,6 +70,15 @@ _WRITE_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)
 # download — the operator wants the whole result set, but bounded).
 _EXPORT_MAX_ROWS = 1000
 
+# Surfaced in the export itself (CSV trailing row / PDF footer note) whenever
+# the result set has more matching rows than the cap returned — otherwise a
+# CFO exporting a large dataset gets a quietly incomplete file with no way to
+# know rows are missing. See backend/docs/report-builder.md § Export.
+_EXPORT_TRUNCATION_NOTE = (
+    "Results truncated at {cap} rows (showing {shown} of {total} matching rows) — "
+    "refine your filters or export in batches."
+)
+
 
 def _validate_spec_or_422(spec: ReportSpec) -> None:
     """Compile the spec against the catalog purely to validate it (no DB).
@@ -339,6 +348,19 @@ async def export_report(
     keys = [c["key"] for c in columns]
     data_rows = [["" if r.get(k) is None else str(r.get(k)) for k in keys] for r in result["rows"]]
 
+    # `total_rows` is the full matching-row count (only capped by the spec's
+    # own `limit`, if any); `rows` is bounded by `_EXPORT_MAX_ROWS`. When the
+    # export cap actually cut the result short, surface it in the file itself
+    # instead of shipping a silently-incomplete export.
+    truncated = result["total_rows"] > len(data_rows)
+    truncation_note = (
+        _EXPORT_TRUNCATION_NOTE.format(
+            cap=_EXPORT_MAX_ROWS, shown=len(data_rows), total=result["total_rows"]
+        )
+        if truncated
+        else None
+    )
+
     brand = get_brand_context(org.settings if org else None)
     generated_at = datetime.now(UTC)
     safe_name = row.name.replace(" ", "_").replace("/", "_") or "report"
@@ -357,6 +379,7 @@ async def export_report(
             header=header,
             rows=data_rows,
             brand=brand,
+            note=truncation_note,
         )
         pdf_bytes = render_analytics_report_pdf(ctx)
         filename = f"{safe_name}_{date.today().isoformat()}.pdf"
@@ -366,12 +389,16 @@ async def export_report(
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
-    # CSV: brand provenance comment block, then the data grid.
+    # CSV: brand provenance comment block, then the data grid, then (when
+    # truncated) a clearly-marked trailing note row so the file itself says
+    # it's incomplete instead of quietly ending at the cap.
     buf = io.StringIO()
     writer = safe_csv_writer(buf)
     writer.writerow(header)
     for r in data_rows:
         writer.writerow(r)
+    if truncation_note:
+        writer.writerow([f"NOTE: {truncation_note}"])
     branded_csv = (
         brand_provenance_header(
             brand,

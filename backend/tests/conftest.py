@@ -159,6 +159,10 @@ def _autouse_fake_redis(monkeypatch):
     # exercise the real blocklist install their own fake_redis, which overrides
     # this (test-requested fixtures run after autouse ones).
     monkeypatch.setattr("app.redis.get_redis", _get_redis)
+    # verify_totp's single-use claim (issue #162) is the same class of hazard —
+    # stub it here too so any test exercising the real MFA verify path doesn't
+    # bind a module-level Redis connection to its event loop.
+    monkeypatch.setattr("app.services.mfa.get_redis", _get_redis)
     return fake
 
 

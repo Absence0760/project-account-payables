@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import ROLE_ADMIN, get_org_id, require_roles
+from app.config import settings
 from app.database import get_control_db
 from app.models.organization import Organization
 from app.models.user import User
@@ -85,7 +86,29 @@ async def inbound_webhook(
         logger.warning("Email intake: unknown provider %s", provider)
         return Response(status_code=204)
 
+    # Bound the body BEFORE buffering it. A POST would otherwise be read fully
+    # into memory before the signature check ever runs (memory-exhaustion DoS
+    # on a public, unauthenticated route). Reject on the declared
+    # Content-Length when present, and re-check the actual read in case the
+    # header lied / was absent (chunked). Email payloads (incl. base64
+    # attachments) can legitimately run larger than other webhooks; cap
+    # defaults to a few MB.
+    max_bytes = settings.email_intake_max_bytes
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > max_bytes:
+                logger.warning("Email intake rejected: body exceeds size cap provider=%s", provider)
+                return Response(status_code=204)
+        except ValueError:
+            logger.warning("Email intake rejected: invalid content-length provider=%s", provider)
+            return Response(status_code=204)
+
     body = await request.body()
+    if len(body) > max_bytes:
+        logger.warning("Email intake rejected: body exceeds size cap provider=%s", provider)
+        return Response(status_code=204)
+
     signature = (
         request.headers.get("X-Signature")
         or request.headers.get("X-Webhook-Signature")

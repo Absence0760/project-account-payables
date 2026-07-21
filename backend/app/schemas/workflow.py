@@ -44,7 +44,7 @@ class ApprovalLevelConfig(BaseModel):
     min_amount: Decimal | None = None
     max_amount: Decimal | None = None
     approver_ids: list[str] = []
-    required_approvals: int = 1
+    required_approvals: int = Field(default=1, ge=1)
     name: str = ""
     # Optional dept/GL/vendor filter — level only applies when every rule
     # evaluates True against the invoice. Empty list = no filter.

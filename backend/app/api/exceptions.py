@@ -27,6 +27,8 @@ EXCEPTION_TYPE_LABELS = {
     "review_rejected": "Rejected",
     "amount_exceeded": "Amount Exceeded",
     "missing_data": "Missing Data",
+    "quality_hold": "Quality Hold",
+    "contract_noncompliant": "Contract Non-Compliant",
     "erp_reconciliation": "ERP Reconciliation",
 }
 

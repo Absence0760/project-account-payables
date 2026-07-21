@@ -148,6 +148,58 @@ def test_metrics_tie():
     assert res.winner == "tie"
 
 
+def test_metrics_zero_approvals_does_not_win_on_fabricated_zero_time():
+    # Issue #146: B rejects all 10 assigned invoices (0 approvals, so its
+    # median_time_to_approval_days defaults to a fabricated 0.0). A approves
+    # all 10 in 3.0 days. Time-to-approval is lower-is-better, so a naive
+    # comparison would crown B despite it approving nothing. A must win.
+    rows_a = [_row("approved", ttd=Decimal("3")) for _ in range(10)]
+    rows_b = [_row("rejected") for _ in range(10)]
+    res = compute_experiment_results(
+        rows_a, rows_b, primary_metric="time_to_approval_days", min_sample_per_variant=10
+    )
+    assert res.variant_b.approved_count == 0
+    assert res.variant_b.median_time_to_approval_days == Decimal("0.0")
+    assert res.enough_data is True
+    assert res.winner == VARIANT_A
+    assert "0 invoices" in res.rationale
+
+
+def test_metrics_both_zero_approvals_no_winner_called():
+    # Both variants reject 100% of their assigned invoices — each clears the
+    # completed-count sample threshold via rejections alone, but neither has a
+    # real time-to-approval sample. No winner should be fabricated.
+    rows_a = [_row("rejected") for _ in range(10)]
+    rows_b = [_row("rejected") for _ in range(10)]
+    res = compute_experiment_results(
+        rows_a, rows_b, primary_metric="time_to_approval_days", min_sample_per_variant=10
+    )
+    assert res.variant_a.approved_count == 0
+    assert res.variant_b.approved_count == 0
+    assert res.winner is None
+    assert res.rationale
+    assert "approved" in res.rationale.lower()
+
+
+def test_metrics_zero_approvals_special_case_does_not_affect_other_metrics():
+    # A non-default primary_metric (touchless_rate_pct) must be completely
+    # unaffected by the time-to-approval zero-approval special case, even when
+    # one variant has 0 approved invoices.
+    rows_a = [_row("rejected") for _ in range(10)]
+    rows_b = [_row("approved", auto=True, unmodified=True, ttd=Decimal("2")) for _ in range(10)]
+    res = compute_experiment_results(
+        rows_a, rows_b, primary_metric="touchless_rate_pct", min_sample_per_variant=10
+    )
+    assert res.variant_a.approved_count == 0
+    # touchless_rate_pct is over completed invoices; A's rejections give it a
+    # real (zero) rate here — not a fabricated one — so the plain comparison
+    # applies and B (100% touchless) wins normally.
+    assert res.enough_data is True
+    assert res.winner == VARIANT_B
+    assert res.variant_a.touchless_rate_pct == Decimal("0.0")
+    assert res.variant_b.touchless_rate_pct == Decimal("100.0")
+
+
 # ---------------------------------------------------------------------------
 # Variant-config shape validation (pure schema — no DB)
 # ---------------------------------------------------------------------------
@@ -447,4 +499,135 @@ async def test_scoped_to_organization(realdb):
         assert (await other.get(f"/api/experiments/{eid}/results")).status_code == 404
         assert eid not in {
             e["id"] for e in (await other.get("/api/experiments")).json()["experiments"]
+        }
+
+
+# ---------------------------------------------------------------------------
+# Multi-entity scoping (issue #145) — GET /experiments
+# ---------------------------------------------------------------------------
+
+
+async def test_concurrent_assignment_does_not_lose_an_entry(realdb):
+    """Issue #149 — lost-update race on WorkflowExperiment.assignments.
+
+    Two invoices created concurrently under the same running experiment used
+    to race an unlocked read-modify-write of the whole `assignments` JSONB
+    dict: both readers see the same base dict, each adds its own entry, and
+    the second writer's full-dict write clobbers the first — silently
+    dropping an invoice from the experiment's results readout. A mocked
+    session can't reproduce this (a single MagicMock can't model two real
+    connections contending for a row lock), so this drives two genuinely
+    independent ``realdb`` sessions at once via ``asyncio.gather``.
+
+    ``dispatch_audit`` is patched to sleep briefly right where the real
+    function is called — after `maybe_assign_experiment_variant` has read and
+    locally mutated the assignments dict, before either racer commits — so
+    both racers are provably in-flight at the same time; the row lock (not
+    timing) is what has to serialize them. Both invoice ids must survive.
+    """
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    from sqlalchemy import select
+
+    from app.models.invoice import Invoice, InvoiceStatus
+    from app.models.workflow import WorkflowDefinition
+    from app.models.workflow_experiment import WorkflowExperiment
+    from app.services.workflow_experiments_runtime import maybe_assign_experiment_variant
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    defn_id, _ = await _seed_definition(mk, org_id)
+
+    async with realdb.client(key="a", role="admin") as client:
+        r = await client.post("/api/experiments", json=_payload(defn_id))
+        assert r.status_code == 201, r.text
+        eid = r.json()["id"]
+        await client.post(f"/api/experiments/{eid}/start")
+
+    inv_a_id = uuid.uuid4()
+    inv_b_id = uuid.uuid4()
+
+    async def _slow_audit(*args, **kwargs):
+        await asyncio.sleep(0.1)
+
+    async def _assign_one(inv_id: uuid.UUID):
+        session_mk = realdb.sessionmaker("a")
+        async with session_mk() as s:
+            defn = (
+                await s.execute(select(WorkflowDefinition).where(WorkflowDefinition.id == defn_id))
+            ).scalar_one()
+            inv = Invoice(
+                id=inv_id,
+                organization_id=org_id,
+                invoice_number=f"RACE-{inv_id.hex[:8]}",
+                vendor_name="V",
+                amount=Decimal("500"),
+                status=InvoiceStatus.new,
+            )
+            s.add(inv)
+            await s.flush()
+            await maybe_assign_experiment_variant(s, inv, defn)
+            await s.commit()
+
+    with patch(
+        "app.services.workflow_experiments_runtime.dispatch_audit",
+        new_callable=AsyncMock,
+        side_effect=_slow_audit,
+    ):
+        await asyncio.gather(_assign_one(inv_a_id), _assign_one(inv_b_id))
+
+    async with mk() as s:
+        exp = (
+            await s.execute(
+                select(WorkflowExperiment).where(WorkflowExperiment.id == uuid.UUID(eid))
+            )
+        ).scalar_one()
+        assert str(inv_a_id) in exp.assignments, "invoice A's assignment was lost"
+        assert str(inv_b_id) in exp.assignments, "invoice B's assignment was lost"
+
+
+async def test_list_experiments_scopes_by_entity(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    defn_id, _ = await _seed_definition(mk, org_id)
+
+    async with realdb.client(key="a", role="admin") as c:
+        r = await c.post("/api/entities", json={"name": "US Inc", "slug": "us"})
+        assert r.status_code == 201, r.text
+        us = r.json()["id"]
+        default_id = next(e["id"] for e in (await c.get("/api/entities")).json() if e["is_default"])
+
+        # One experiment explicitly created under US, one explicitly under the
+        # default entity (create_experiment stores the RAW X-Entity-ID header
+        # value — an absent header persists entity_id=NULL, the consolidated
+        # sentinel, not the default entity's id — so both rows here pass an
+        # explicit header to land under a concrete entity_id).
+        r_us = await c.post(
+            "/api/experiments",
+            json=_payload(defn_id) | {"name": "US experiment"},
+            headers={"X-Entity-ID": us},
+        )
+        assert r_us.status_code == 201, r_us.text
+        r_def = await c.post(
+            "/api/experiments",
+            json=_payload(defn_id) | {"name": "Default experiment"},
+            headers={"X-Entity-ID": default_id},
+        )
+        assert r_def.status_code == 201, r_def.text
+
+        # Scoped to US -> only the US experiment.
+        scoped_us = await c.get("/api/experiments", headers={"X-Entity-ID": us})
+        names_us = {e["name"] for e in scoped_us.json()["experiments"]}
+        assert names_us == {"US experiment"}
+
+        # Scoped to the default entity -> only the default experiment.
+        scoped_def = await c.get("/api/experiments", headers={"X-Entity-ID": default_id})
+        assert {e["name"] for e in scoped_def.json()["experiments"]} == {"Default experiment"}
+
+        # No header -> consolidated (both).
+        allv = await c.get("/api/experiments")
+        assert {e["name"] for e in allv.json()["experiments"]} == {
+            "US experiment",
+            "Default experiment",
         }

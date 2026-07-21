@@ -61,7 +61,7 @@ from app.schemas.invoice import (
 from app.services import audit_summary
 from app.services.audit_access import build_field_diff
 from app.services.audit_dispatch import dispatch_audit
-from app.services.csv_import import import_invoices_csv
+from app.services.csv_import import MAX_CSV_IMPORT_SIZE, import_invoices_csv
 from app.services.gl_recode import RecodeFilter, bulk_recode_gl
 from app.services.invoice_warnings import reconcile_line_totals, refresh_warnings
 from app.services.report_export import csv_safe_cell
@@ -89,6 +89,7 @@ from app.tenant import (
     get_tenant_db,
     get_write_entity_id,
 )
+from app.utils.http import content_disposition_attachment
 
 IMMUTABLE_STATUSES = {
     DBInvoiceStatus.sending_to_erp,
@@ -456,7 +457,7 @@ async def export_einvoice(
     return Response(
         content=xml_bytes,
         media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": content_disposition_attachment(filename)},
     )
 
 
@@ -1685,6 +1686,11 @@ async def import_invoices_from_csv(
     ``backend/docs/csv-import.md`` for the column list and template.
     """
     raw = await file.read()
+    if len(raw) > MAX_CSV_IMPORT_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"CSV exceeds maximum size of {MAX_CSV_IMPORT_SIZE // (1024 * 1024)} MB",
+        )
     try:
         csv_text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:

@@ -457,6 +457,64 @@ async def test_import_vendors_endpoint_rejects_non_utf8(realdb):
 
 
 # ---------------------------------------------------------------------------
+# Oversized upload guard (issue #181) — memory-exhaustion DoS via a
+# multi-gigabyte "CSV". Rejected with 413 before the body is decoded/parsed.
+# ---------------------------------------------------------------------------
+
+
+async def test_import_vendors_endpoint_rejects_oversized_file(realdb):
+    from app.services.csv_import import MAX_CSV_IMPORT_SIZE
+
+    # One byte over the cap; padding bytes never form valid CSV rows, so a
+    # 200 here would prove the oversized body slipped through to the parser.
+    oversized = b"name,code\n" + b"A" * (MAX_CSV_IMPORT_SIZE + 1)
+    file = {"file": ("vendors.csv", oversized, "text/csv")}
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post("/api/vendors/import-csv", files=file)
+    assert resp.status_code == 413
+
+    from sqlalchemy import func, select
+
+    from app.models.vendor import Vendor
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        count = (await s.execute(select(func.count()).select_from(Vendor))).scalar_one()
+    assert count == 0  # nothing was parsed or persisted
+
+
+async def test_import_invoices_endpoint_accepts_normal_upload(realdb):
+    csv_bytes = (
+        b"invoice_number,vendor_name,amount,invoice_date,status\n"
+        b"INV-900,Acme,123.45,2026-01-15,done\n"
+    )
+    file = {"file": ("invoices.csv", csv_bytes, "text/csv")}
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post("/api/invoices/import-csv", files=file)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["imported"] == 1
+
+
+async def test_import_invoices_endpoint_rejects_oversized_file(realdb):
+    from app.services.csv_import import MAX_CSV_IMPORT_SIZE
+
+    oversized = b"invoice_number,vendor_name,amount\n" + b"A" * (MAX_CSV_IMPORT_SIZE + 1)
+    file = {"file": ("invoices.csv", oversized, "text/csv")}
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post("/api/invoices/import-csv", files=file)
+    assert resp.status_code == 413
+
+    from sqlalchemy import func, select
+
+    from app.models.invoice import Invoice
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        count = (await s.execute(select(func.count()).select_from(Invoice))).scalar_one()
+    assert count == 0  # nothing was parsed or persisted
+
+
+# ---------------------------------------------------------------------------
 # Corporate-card import — raw JSONB must not persist a full PAN (issue #173)
 # ---------------------------------------------------------------------------
 

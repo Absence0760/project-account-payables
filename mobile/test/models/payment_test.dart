@@ -78,6 +78,7 @@ void main() {
           {'amount': 250},
           {'amount': 250},
         ],
+        'upcoming_total_amount': 500,
       });
 
       expect(data.totalInvoices, 12);
@@ -96,7 +97,9 @@ void main() {
       expect(data.trends, hasLength(1));
       expect(data.trends.first.month, '2026-01');
 
-      // upcoming is summarized from the list of upcoming invoices
+      // count comes from the list length; totalAmount is a separate
+      // server-computed aggregate (upcoming_total_amount) — never folded
+      // from the list on-device.
       expect(data.upcoming.count, 2);
       expect(data.upcoming.totalAmount, 500.0);
     });
@@ -135,6 +138,53 @@ void main() {
       });
       expect(data.topVendors.first.vendorName, 'Beta');
       expect(data.topVendors.first.totalAmount, 42.0);
+    });
+  });
+
+  group('upcoming.totalAmount is server-supplied, never folded on-device', () {
+    // Regression for #189: the model used to `.fold<double>` the per-item
+    // `amount` values in `upcoming_payments` itself, which can accumulate
+    // classic binary-float drift (e.g. 0.1 + 0.2 == 0.30000000000000004).
+    // It must now read the backend's own Decimal-summed
+    // `upcoming_total_amount` verbatim and ignore whatever the list folds to.
+    test('reads upcoming_total_amount verbatim instead of summing the list', () {
+      final data = DashboardData.fromJson({
+        'upcoming_payments': [
+          {'amount': 0.1},
+          {'amount': 0.2},
+        ],
+        // Deliberately NOT 0.1 + 0.2 folded as double (0.30000000000000004) —
+        // a clean, exact server total. If the model ever regresses to
+        // folding the list client-side, this assertion fails.
+        'upcoming_total_amount': 0.3,
+      });
+      expect(data.upcoming.count, 2);
+      expect(data.upcoming.totalAmount, 0.3);
+    });
+
+    test('a naive client-side fold of the same list would have drifted', () {
+      // Documents *why* the above matters: proves 0.1 + 0.2 really does
+      // drift under double arithmetic, so the fixed assertion isn't
+      // trivially true regardless of which path the code takes.
+      final naiveFold = [0.1, 0.2].fold<double>(0, (sum, v) => sum + v);
+      expect(naiveFold, isNot(0.3));
+      expect(naiveFold, 0.30000000000000004);
+    });
+
+    test('defaults to 0 when upcoming_total_amount is absent', () {
+      final data = DashboardData.fromJson({
+        'upcoming_payments': [
+          {'amount': 100},
+        ],
+      });
+      expect(data.upcoming.totalAmount, 0);
+    });
+
+    test('accepts an integer upcoming_total_amount', () {
+      final data = DashboardData.fromJson({
+        'upcoming_total_amount': 500,
+      });
+      expect(data.upcoming.totalAmount, 500.0);
     });
   });
 }

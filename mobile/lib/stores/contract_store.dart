@@ -3,8 +3,9 @@ import 'package:flutter/foundation.dart';
 import 'package:ap_mobile/api/endpoints.dart';
 import 'package:ap_mobile/models/contract.dart';
 import 'package:ap_mobile/services/offline_store.dart';
+import 'package:ap_mobile/utils/sequenced_fetch.dart';
 
-class ContractStore extends ChangeNotifier {
+class ContractStore extends ChangeNotifier with SequencedFetch {
   static final ContractStore instance = ContractStore._();
   ContractStore._();
 
@@ -32,6 +33,7 @@ class ContractStore extends ChangeNotifier {
     _statusFilter = null;
     _searchQuery = null;
     _fromCache = false;
+    debugResetSequence();
   }
 
   void setStatusFilter(String? status) {
@@ -45,6 +47,8 @@ class ContractStore extends ChangeNotifier {
   }
 
   Future<void> fetch() async {
+    // See SequencedFetch — discards a response superseded by a newer fetch().
+    final token = nextRequestToken();
     _loading = true;
     _error = null;
     notifyListeners();
@@ -53,10 +57,12 @@ class ContractStore extends ChangeNotifier {
         'contracts_${_statusFilter ?? 'all'}_${_searchQuery ?? ''}';
 
     try {
-      _contracts = await ContractApi.list(
+      final result = await ContractApi.list(
         status: _statusFilter,
         search: _searchQuery,
       );
+      if (!isCurrentRequest(token)) return;
+      _contracts = result;
       _fromCache = false;
       _loading = false;
 
@@ -68,10 +74,12 @@ class ContractStore extends ChangeNotifier {
 
       notifyListeners();
     } catch (e) {
+      if (!isCurrentRequest(token)) return;
       // Try cache on failure
       try {
         final cached = await OfflineStore.instance.get(cacheKey);
         if (cached != null) {
+          if (!isCurrentRequest(token)) return;
           _contracts = (cached as List)
               .map((j) => Contract.fromJson(j as Map<String, dynamic>))
               .toList();
@@ -81,6 +89,7 @@ class ContractStore extends ChangeNotifier {
           return;
         }
       } catch (_) {}
+      if (!isCurrentRequest(token)) return;
       // No cache to fall back on — make sure we don't keep claiming the
       // (now absent) data came from cache.
       _fromCache = false;

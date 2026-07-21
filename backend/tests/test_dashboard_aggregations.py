@@ -234,6 +234,36 @@ async def test_upcoming_payments_flag_overdue_only_when_due_date_before_today():
     assert flags == {"INV-1": True, "INV-2": False, "INV-3": False}
 
 
+@pytest.mark.asyncio
+async def test_upcoming_total_amount_sums_in_decimal_not_accumulated_float():
+    """`upcoming_total_amount` is a server-computed aggregate the mobile
+    dashboard consumes directly instead of folding the per-row floats itself
+    (mobile issue #189). Regression case: three amounts whose classic binary
+    float representations don't add up cleanly (0.1 + 0.2 style drift) must
+    still sum to an exact total when accumulated in Decimal and converted to
+    float exactly once, rather than accumulated as float across N adds."""
+    import uuid
+
+    today = date.today()
+    upcoming_rows = [
+        (uuid.uuid4(), "INV-1", "Acme", Decimal("10.10"), today),
+        (uuid.uuid4(), "INV-2", "Bravo", Decimal("20.20"), today),
+        (uuid.uuid4(), "INV-3", "Charlie", Decimal("30.30"), today),
+    ]
+    db = _mk_db(*_full_results(upcoming=upcoming_rows))
+    result = await get_dashboard(db=db, org=_org(), user=_user())
+    assert result["upcoming_total_amount"] == 60.6
+    # Exact to the cent — no float-accumulation artifact like 60.599999999999994.
+    assert round(result["upcoming_total_amount"], 2) == result["upcoming_total_amount"]
+
+
+@pytest.mark.asyncio
+async def test_upcoming_total_amount_is_zero_when_no_upcoming_invoices():
+    db = _mk_db(*_full_results())
+    result = await get_dashboard(db=db, org=_org(), user=_user())
+    assert result["upcoming_total_amount"] == 0.0
+
+
 # ---------------------------------------------------------------------------
 # Money sums — every aggregate must be float for JSON serialization,
 # but the underlying SUM must NOT have been coerced through float

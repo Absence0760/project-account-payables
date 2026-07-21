@@ -438,3 +438,92 @@ async def test_sync_erp_backfills_missing_expected_delivery_date_on_existing_po(
             await s.execute(select(PurchaseOrder).where(PurchaseOrder.po_number == "PO-2024-201"))
         ).scalar_one()
     assert filled.expected_delivery_date == date(2024, 7, 1)
+
+
+# ---------------------------------------------------------------------------
+# sync-erp — total/status refresh on an already-known PO (#148)
+# ---------------------------------------------------------------------------
+
+
+async def test_sync_erp_refreshes_stale_total_and_status_on_existing_po(realdb):
+    """A PO amended (amount changed) or cancelled in the real ERP after we
+    first synced it must have its ``total``/``status`` refreshed on the next
+    sync — otherwise 3-way match keeps running invoice variance checks
+    against a stale amount forever. The mock ERP's PO-2024-200 is
+    total=2500.00/status=open; pre-seed a stale copy and confirm the re-sync
+    corrects both fields and reports it as ``updated`` (not ``skipped``)."""
+    from datetime import date
+
+    org_id = realdb.info("a").org_id
+    await _set_org_erp(org_id, {"type": "mock", "integration_method": "direct"})
+
+    # Pre-seed PO-2024-200 as if it was amended down and later closed in our
+    # DB before the ERP's amendment/cancellation caught up — a stale total and
+    # a stale status, distinct from the mock ERP's current 2500.00/open.
+    # Also carries its own expected_delivery_date so this test isolates the
+    # total/status refresh from the separate delivery-date backfill path.
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        po = PurchaseOrder(
+            po_number="PO-2024-200",
+            total=Decimal("999.00"),
+            status="closed",
+            expected_delivery_date=date(2024, 6, 15),
+            organization_id=org_id,
+        )
+        s.add(po)
+        await s.commit()
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post("/api/purchase-orders/sync-erp")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["updated"] >= 1
+    assert body["created"] == 2  # the other two mock POs are still new
+
+    async with mk() as s:
+        refreshed = (
+            await s.execute(select(PurchaseOrder).where(PurchaseOrder.po_number == "PO-2024-200"))
+        ).scalar_one()
+    assert refreshed.total == Decimal("2500.00")
+    assert refreshed.status == "open"
+    # The already-present delivery date is untouched by the total/status
+    # refresh — same precedence rule as the dedicated backfill test above.
+    assert refreshed.expected_delivery_date == date(2024, 6, 15)
+
+
+async def test_sync_erp_refreshes_total_status_and_backfills_delivery_date_together(realdb):
+    """The three existing-PO refresh paths (total, status, delivery-date
+    backfill) are independent branches in the same loop iteration — prove
+    they all fire together in one sync call, not just in isolation."""
+    from datetime import date
+
+    org_id = realdb.info("a").org_id
+    await _set_org_erp(org_id, {"type": "mock", "integration_method": "direct"})
+
+    # PO-2024-201 in the mock ERP is total=15000.00/status=open with a
+    # promised delivery date of 2024-07-01. Pre-seed a stale total, a stale
+    # status, AND no delivery date at all.
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        po = PurchaseOrder(
+            po_number="PO-2024-201",
+            total=Decimal("500.00"),
+            status="cancelled",
+            organization_id=org_id,
+        )
+        s.add(po)
+        await s.commit()
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post("/api/purchase-orders/sync-erp")
+    assert resp.status_code == 200
+    assert resp.json()["updated"] >= 1
+
+    async with mk() as s:
+        refreshed = (
+            await s.execute(select(PurchaseOrder).where(PurchaseOrder.po_number == "PO-2024-201"))
+        ).scalar_one()
+    assert refreshed.total == Decimal("15000.00")
+    assert refreshed.status == "open"
+    assert refreshed.expected_delivery_date == date(2024, 7, 1)

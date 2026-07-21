@@ -36,6 +36,7 @@ Map<String, dynamic> _dashboardJson({
   List<Map<String, dynamic>>? vendorSpend,
   Map<String, dynamic>? aging,
   List<Map<String, dynamic>>? upcomingPayments,
+  num upcomingTotalAmount = 3000,
 }) =>
     {
       'total_invoices': totalInvoices,
@@ -59,6 +60,9 @@ Map<String, dynamic> _dashboardJson({
             {'amount': 1000},
             {'amount': 2000},
           ],
+      // Server-computed aggregate (see models/payment.dart) — the screen
+      // never folds upcoming_payments' amounts itself.
+      'upcoming_total_amount': upcomingTotalAmount,
     };
 
 /// Pumps bounded fixed frames until [finder] appears or we run out of

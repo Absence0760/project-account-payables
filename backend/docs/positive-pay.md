@@ -53,7 +53,7 @@ exact: `total_amount` is `Numeric(18, 2)` — never float.
 | `file_key` | varchar(512) | MinIO key of the rendered file (the file holding the full account numbers). |
 | `account_last4` | varchar(4) | Masked originating / cheque account — **never** the full number. |
 | `generated_by` | uuid | The actor who generated the file (plain UUID, no cross-DB FK). |
-| `meta` | jsonb (MutableDict) | Free-form bag — holds the `issued_map` (check# → invoice id, for return processing) and, after a return, `return_summary` + `return_history`. **No PII.** |
+| `meta` | jsonb (MutableDict) | Free-form bag — holds the `issued_map` (`{normalized_check_number: {"invoice_id": ..., "amount": "..."}}`, the POINT-IN-TIME snapshot of what was actually sent to the bank at generation — return processing classifies against this, never a live re-query of the run's current payment statuses, so an issued-then-voided cheque still classifies correctly instead of `not_on_file`) and, after a return, `return_summary` + `return_history`. **No PII.** |
 | `entity_id` | uuid FK → entities | From `EntityMixin` (multi-entity). |
 | `created_at` / `updated_at` | timestamptz | From `TimestampMixin`. |
 
@@ -154,12 +154,15 @@ number.
 
 - **`build_check_issue_items(db, *, run, entity_id, account_number="")`** —
   selects the run's cheque payments (`method == "check"`, excluding `failed` /
-  `cancelled` / `voided`), joins `Invoice` for the payee name, and projects each
-  into a `CheckIssueItem`. `check_number` is the Payment's `reference`;
-  `issue_date` is the run's `executed_at` date (or today). Returns
-  `(items, total_amount, mapping)` where `mapping` is `[(normalized_check#,
-  invoice_id)]` — so the return processor can map a presented cheque back to its
-  invoice to raise a fraud Exception.
+  `cancelled` / `voided` **at the time it's called**), joins `Invoice` for the
+  payee name, and projects each into a `CheckIssueItem`. `check_number` is the
+  Payment's `reference`; `issue_date` is the run's `executed_at` date (or
+  today). Returns `(items, total_amount, mapping)` where `mapping` is
+  `[(normalized_check#, invoice_id, amount)]`. Called **only at file
+  generation**; the result is persisted onto `meta["issued_map"]` so return
+  processing never calls this again (see § Return handling — a second live call
+  at return time would reflect a payment's CURRENT status, not what was
+  actually on the file already sent to the bank).
 - **`build_ach_authorization_items(db, *, org_id, entity_id)`** — selects
   `active` vendors whose `bank_details` carry both a routing and an account
   number, and projects each into an `AchAuthorizationItem`. Vendors without ACH
@@ -214,8 +217,14 @@ number):
 
 ## Return handling — both fraud signals become `fraud_flag` Exceptions
 
-`POST .../process-return` rebuilds the issued cheque list from the file's
-payment run, classifies each presented item, and raises a deduped `fraud_flag`
+`POST .../process-return` classifies each presented item against the
+POINT-IN-TIME `meta["issued_map"]` snapshot persisted on the file at
+generation — what was actually sent to the bank — **never** a live re-query of
+the run's current payment statuses (issue #178: a cheque issued, then later
+voided in the app, must still classify against what the bank was told, or its
+presentment is mislabeled `not_on_file` and orphaned from its invoice — the
+exact altered/fraud case Positive Pay exists to catch). It raises a deduped
+`fraud_flag`
 Exception for **every** fraud signal (`exception_type="fraud_flag"`,
 `severity="error"`, `status="open"`, description `"Positive Pay return: check
 <num> <reason>"` — no account numbers):

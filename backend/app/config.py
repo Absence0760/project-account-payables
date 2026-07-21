@@ -590,6 +590,21 @@ class Settings(BaseSettings):
     # memory-exhaustion attempt (204, no parse) without truncating real invoices.
     peppol_inbound_max_bytes: int = 4 * 1024 * 1024
 
+    # ERP status-callback webhook (`POST /api/erp/webhook/{erp_type}`, public,
+    # HMAC-gated). Hard cap on the body the route buffers before JSON-parsing —
+    # a signed-but-oversized POST would otherwise be read fully into memory
+    # before the signature check ever runs (memory-exhaustion DoS on a public
+    # route). ERP status payloads are small JSON; a few-MB ceiling never
+    # truncates a real one.
+    erp_webhook_max_bytes: int = 4 * 1024 * 1024
+
+    # Email-intake inbound webhook (`POST /api/email-intake/inbound/{provider}`,
+    # public, HMAC-gated). Same memory-exhaustion guard as the ERP webhook above
+    # — email provider payloads (incl. base64 attachments) can legitimately run
+    # larger, but a few-MB ceiling still rejects an unbounded POST before it's
+    # buffered / parsed.
+    email_intake_max_bytes: int = 4 * 1024 * 1024
+
     # Punch-out catalogs (live cXML/OCI round-trips). Local-first: the in-process
     # `mock` adapter is the default so `pnpm dev` runs the whole punch-out flow
     # (setup → start URL → returned cart → convert-to-requisition) without an

@@ -66,3 +66,9 @@ regexes = [
     '''2f8c1f3e-4a6b-4c2d-9e1f-7b3a5c9d0e11''',
     '''9a1d0c77-1111-4222-8333-444455556666''',
 ]
+
+# Historical findings the regexes above don't cleanly cover (a specific
+# commit's exact patch, rather than a reusable literal pattern) are
+# allowlisted by fingerprint in the repo-root `.gitleaksignore` file, not
+# here — gitleaks' TOML schema has no config-level `fingerprints` field;
+# that's a `.gitleaksignore`-only mechanism (see that file's header).

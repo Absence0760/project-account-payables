@@ -1,6 +1,7 @@
 import type { Invoice } from '$lib/types/invoice';
 import { api } from '$lib/api';
 import { appendUnique } from '$lib/utils/pagination';
+import { createRequestSequencer } from '$lib/utils/requestSequence';
 
 interface InvoiceListResponse {
 	items: Invoice[];
@@ -17,7 +18,14 @@ function createInvoiceStore() {
 	let statusCounts = $state<Record<string, number>>({});
 	let lastParams = $state<Record<string, string>>({});
 
+	// Sequences `fetch`/`loadMore` calls (they share one counter — whichever
+	// was issued last wins) so a slow response for an earlier search/filter
+	// can't land after a faster later one and clobber the list with stale
+	// results.
+	const fetchSequence = createRequestSequencer();
+
 	async function fetch(params?: Record<string, string>) { // noqa: raw-fetch-in-component — store method name; routes through api.get
+		const token = fetchSequence.start();
 		loading = true;
 		try {
 			const merged = { ...(params ?? {}) };
@@ -25,16 +33,18 @@ function createInvoiceStore() {
 			if (!merged.page_size) merged.page_size = '20';
 			const query = '?' + new URLSearchParams(merged).toString();
 			const res = await api.get<InvoiceListResponse>(`/api/invoices${query}`);
+			if (!fetchSequence.isLatest(token)) return; // superseded by a newer fetch/loadMore
 			invoices = res.items;
 			total = res.total;
 			page = res.page;
 			lastParams = params ?? {};
 		} finally {
-			loading = false;
+			if (fetchSequence.isLatest(token)) loading = false;
 		}
 	}
 
 	async function loadMore() {
+		const token = fetchSequence.start();
 		loading = true;
 		try {
 			const merged = { ...lastParams };
@@ -42,11 +52,12 @@ function createInvoiceStore() {
 			merged.page_size = String(20);
 			const query = '?' + new URLSearchParams(merged).toString();
 			const res = await api.get<InvoiceListResponse>(`/api/invoices${query}`);
+			if (!fetchSequence.isLatest(token)) return; // superseded by a newer fetch/loadMore
 			invoices = appendUnique(invoices, res.items);
 			total = res.total;
 			page = res.page;
 		} finally {
-			loading = false;
+			if (fetchSequence.isLatest(token)) loading = false;
 		}
 	}
 

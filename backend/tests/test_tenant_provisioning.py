@@ -29,6 +29,7 @@ from sqlalchemy import func, select
 
 from app.config import settings
 from app.models import Base
+from app.models.billing import Subscription
 from app.models.organization import Organization
 from app.models.user import Role, User, UserRole
 from app.services.tenant_provisioning import (
@@ -291,6 +292,13 @@ async def _cleanup_org(slug: str) -> None:
                 for u in users:
                     await s.execute(UserRole.__table__.delete().where(UserRole.user_id == u.id))
                     await s.delete(u)
+                # provision_tenant now binds every org to a baseline "free"
+                # Subscription (issue #180) — drop it before the org, or the
+                # FK to organizations blocks the delete. The shared Plan
+                # catalog rows are process-wide and outlive this cleanup.
+                await s.execute(
+                    Subscription.__table__.delete().where(Subscription.organization_id == org.id)
+                )
                 await s.delete(org)
                 await s.commit()
     finally:
@@ -387,6 +395,23 @@ async def test_provision_tenant_creates_org_user_and_tenant_tables(
                     )
                 ).scalar_one()
                 assert ur_count == 1
+
+                # Issue #180: provisioning must bind a live "free" Subscription
+                # so the org isn't locked out of GET /api/billing/subscription
+                # and change-plan (which 404s "no live subscription" without a
+                # starting row) forever.
+                from app.models.billing import Plan, Subscription
+
+                sub = (
+                    await s.execute(
+                        select(Subscription).where(
+                            Subscription.organization_id == result.organization_id
+                        )
+                    )
+                ).scalar_one()
+                assert sub.status == "active"
+                plan = (await s.execute(select(Plan).where(Plan.id == sub.plan_id))).scalar_one()
+                assert plan.code == "free"
         finally:
             await engine.dispose()
 
@@ -539,6 +564,75 @@ async def test_provision_tenant_duplicate_slug_raises_and_keeps_one_org(
                     await s.execute(select(Organization).where(Organization.slug == slug))
                 ).scalar_one()
                 assert org.name == "First Co"
+        finally:
+            await engine.dispose()
+    finally:
+        await _cleanup_org(slug)
+
+
+async def test_provision_tenant_org_can_upgrade_out_of_free(
+    realdb, throwaway_slug, _provision_on_test_loop
+):
+    """Issue #180: before the baseline Subscription, `change_plan` 404'd with
+    "no live subscription" for EVERY org, since none ever had a starting
+    subscription to move from — an admin could never upgrade at all, and
+    `public_api` (the only entitlement gated in the app) was permanently
+    unreachable. Prove a freshly provisioned org starts un-entitled (free
+    grants nothing) but CAN move to a paid plan and gain the entitlement.
+    """
+    from app.models.billing import Plan, Subscription
+    from app.services.billing.entitlements import get_entitlements
+    from app.services.billing.plan_change import change_plan
+
+    slug = throwaway_slug
+    try:
+        result = await provision_tenant(
+            company_name="Upgrade Co",
+            slug=slug,
+            admin_email=f"admin@{slug}.test",
+            admin_name="Upgrade Admin",
+            admin_password="Sup3rSecret!pw",
+        )
+
+        engine, mk = await _control_mk()
+        try:
+            async with mk() as s:
+                org = (
+                    await s.execute(
+                        select(Organization).where(Organization.id == result.organization_id)
+                    )
+                ).scalar_one()
+
+                # Free grants nothing — the public API stays gated by default.
+                entitlements = await get_entitlements(s, org.id)
+                assert entitlements == {}
+
+                # The upgrade that used to 404 now succeeds.
+                change_result = await change_plan(
+                    s, org=org, new_plan_code="growth", actor_id=result.user_id
+                )
+                await s.commit()
+                assert change_result.changed is True
+                assert change_result.new_plan_code == "growth"
+
+                entitlements_after = await get_entitlements(s, org.id)
+                assert entitlements_after.get("public_api") is True
+
+                # Still exactly one live subscription — the plan was moved in
+                # place, not duplicated.
+                live_count = (
+                    await s.execute(
+                        select(func.count())
+                        .select_from(Subscription)
+                        .where(
+                            Subscription.organization_id == org.id,
+                            Subscription.status != "canceled",
+                        )
+                    )
+                ).scalar_one()
+                assert live_count == 1
+                plan = (await s.execute(select(Plan).where(Plan.code == "growth"))).scalar_one()
+                assert plan.entitlements.get("public_api") is True
         finally:
             await engine.dispose()
     finally:

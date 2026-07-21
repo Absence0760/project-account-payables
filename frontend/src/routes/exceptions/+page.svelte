@@ -96,6 +96,7 @@
 		missing_data: '#d4940a',
 		quality_hold: '#f06464',
 		erp_reconciliation: '#f06464',
+		contract_noncompliant: '#f06464',
 	};
 
 	const SEVERITY_COLORS: Record<string, string> = {

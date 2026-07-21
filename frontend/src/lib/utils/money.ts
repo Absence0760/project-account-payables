@@ -109,3 +109,49 @@ export function formatMoney(
 		}).format(n);
 	}
 }
+
+/**
+ * Sum exact Decimal-string money amounts without introducing float
+ * rounding artifacts (the classic `0.1 + 0.2` class of bug).
+ *
+ * Money arrives from the API as Decimal strings (e.g. "10.10"). Reducing
+ * with `sum + Number(amount)` coerces each one to a binary float before
+ * adding, so a running total can drift off the exact cent value even
+ * though every individual amount is exact. This instead parses each
+ * amount's sign/integer/fraction textually, scales every value to the
+ * widest fraction length seen (via `BigInt`, so scaling never touches a
+ * float), sums as exact integers, and only converts back to `number`
+ * once at the very end — a single, lossless-for-display conversion
+ * rather than one per addend.
+ *
+ * Null/undefined/empty/non-numeric entries are skipped (treated as 0),
+ * mirroring the `Number(x ?? 0)` call sites this replaces. Returns `0`
+ * for an empty or all-skipped input.
+ */
+export function sumMoney(amounts: Iterable<number | string | null | undefined>): number {
+	let maxScale = 0;
+	const parsed: { negative: boolean; digits: string; scale: number }[] = [];
+
+	for (const raw of amounts) {
+		if (raw === null || raw === undefined || raw === '') continue;
+		const str = typeof raw === 'number' ? String(raw) : raw.trim();
+		if (str === '') continue;
+		const match = /^(-)?(\d+)(?:\.(\d+))?$/.exec(str);
+		if (!match) continue; // not a plain decimal string — skip rather than throw on a display path
+		const [, sign, intPart, fracPart = ''] = match;
+		if (fracPart.length > maxScale) maxScale = fracPart.length;
+		parsed.push({ negative: sign === '-', digits: intPart + fracPart, scale: fracPart.length });
+	}
+
+	if (parsed.length === 0) return 0;
+
+	let totalScaled = 0n;
+	for (const { negative, digits, scale } of parsed) {
+		const scaledDigits = digits + '0'.repeat(maxScale - scale);
+		const value = BigInt(scaledDigits);
+		totalScaled += negative ? -value : value;
+	}
+
+	const divisor = 10 ** maxScale;
+	return Number(totalScaled) / divisor;
+}

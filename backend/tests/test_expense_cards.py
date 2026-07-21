@@ -66,6 +66,25 @@ async def test_import_csv_creates_rows(realdb):
         assert by_ext["ext-1"].organization_id == org_id
 
 
+async def test_import_csv_rejects_oversized_file(realdb):
+    """Issue #181: a multi-gigabyte "CSV" must be rejected with 413 before
+    it's ever parsed — mirrors the vendors/invoices import guard."""
+    from app.services.csv_import import MAX_CSV_IMPORT_SIZE
+
+    mk = realdb.sessionmaker("a")
+    oversized = _HEADER.encode() + b"\n" + b"A" * (MAX_CSV_IMPORT_SIZE + 1)
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/corporate-card-transactions/import-csv",
+            files={"file": ("cards.csv", oversized, "text/csv")},
+        )
+    assert resp.status_code == 413
+
+    async with mk() as s:
+        rows = (await s.execute(select(CorporateCardTransaction))).scalars().all()
+        assert rows == []  # nothing was parsed or persisted
+
+
 async def test_import_csv_dedupes_on_reimport(realdb):
     mk = realdb.sessionmaker("a")
     csv_bytes = _csv(

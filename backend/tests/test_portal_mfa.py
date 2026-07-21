@@ -259,7 +259,8 @@ async def test_login_challenges_when_mfa_enrolled(mfa_on, monkeypatch):
     # TOTP primary + the email-OTP backup factor are both offered.
     assert res.methods == ["totp", "email"]
     # The challenge token must carry the vendor-challenge typ, NOT an access token.
-    assert mfa.decode_vendor_challenge_token(res.mfa_challenge_token) == vu.id
+    claims = await mfa.decode_vendor_challenge_token(res.mfa_challenge_token)
+    assert claims.subject_id == vu.id
 
 
 @pytest.mark.asyncio
@@ -534,18 +535,20 @@ def test_vendor_challenge_token_distinct_typ():
     assert decode_token(tok)["typ"] == "vendor_mfa_challenge"
 
 
-def test_employee_challenge_token_not_accepted_as_vendor_challenge():
+@pytest.mark.asyncio
+async def test_employee_challenge_token_not_accepted_as_vendor_challenge():
     """An employee MFA challenge token must NOT decode as a vendor challenge."""
     employee_challenge = mfa.create_challenge_token(uuid.uuid4())
     with pytest.raises(ValueError):
-        mfa.decode_vendor_challenge_token(employee_challenge)
+        await mfa.decode_vendor_challenge_token(employee_challenge)
 
 
-def test_vendor_access_token_not_accepted_as_challenge():
+@pytest.mark.asyncio
+async def test_vendor_access_token_not_accepted_as_challenge():
     """A full vendor access token must NOT decode as a vendor MFA challenge."""
     access = create_vendor_access_token(uuid.uuid4(), uuid.uuid4())
     with pytest.raises(ValueError):
-        mfa.decode_vendor_challenge_token(access)
+        await mfa.decode_vendor_challenge_token(access)
 
 
 @pytest.mark.asyncio

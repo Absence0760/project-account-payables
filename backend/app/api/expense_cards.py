@@ -55,7 +55,7 @@ from app.schemas.expense import (
     CorporateCardTransactionResponse,
 )
 from app.services.audit_dispatch import dispatch_audit
-from app.services.csv_import import import_corporate_card_csv
+from app.services.csv_import import MAX_CSV_IMPORT_SIZE, import_corporate_card_csv
 from app.services.expense_card_reconciliation import suggest_matches, sync_virtual_cards
 from app.tenant import (
     apply_entity_scope,
@@ -229,6 +229,11 @@ async def import_card_csv(
     ``external_txn_id`` rows (already imported, or repeated in-file) are skipped.
     All rows in this upload share one ``import_batch`` stamp."""
     raw = await file.read()
+    if len(raw) > MAX_CSV_IMPORT_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"CSV exceeds maximum size of {MAX_CSV_IMPORT_SIZE // (1024 * 1024)} MB",
+        )
     try:
         csv_text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:

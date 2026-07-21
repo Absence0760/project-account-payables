@@ -154,8 +154,10 @@ to the session that produced them. `services/session.dart` is the chokepoint;
 - **Adding a store?** Add it to `SessionManager.resetStores()`. A store that
   isn't reset keeps one account's data in memory for the next one;
   `test/services/session_test.dart` fails if a new file under `lib/stores/`
-  isn't listed (`LocaleStore` is the sole exemption — display language is a
-  device preference, not account data).
+  isn't listed. The only exemptions are `LocaleStore` (display language is a
+  device preference, not account data) and `sequenced_fetch.dart` (the
+  `SequencedFetch` mixin — a per-store request-sequence helper, not an
+  account-scoped store singleton).
 - **Cache DB upgrade path.** `ap_cache.db` is at schema v2; the v1→v2 upgrade
   deletes every pre-existing row, because rows written before scoping have
   global keys (`dashboard`, `invoices_all_`, …) with no owner to attribute them
@@ -257,7 +259,11 @@ everyone else.
 
 **Done:**
 - Login with tenant selection
-- Dashboard (KPIs, aging buckets, top vendors)
+- Dashboard (KPIs, aging buckets, top vendors). The upcoming-payments total
+  (`DashboardData.upcoming.totalAmount`) reads the backend's server-computed
+  `upcoming_total_amount` field directly — it is never folded from the
+  `upcoming_payments` list on-device, mirroring the payment-queue and
+  cash-flow "server-supplied total, never client float math" invariant
 - Invoice list with search + status filter chips
 - Advanced search — `AdvancedSearchSheet` (app-bar `tune` action; a dot badge marks an active advanced filter) filters the list by vendor, PO number, amount range and due-date range via `InvoiceStore.setFilters` → `GET /api/invoices` (`vendor` / `po_number` / `amount_min` / `amount_max` / `due_date_from` / `due_date_to`). Seeded from the live filters; validates min ≤ max + plain-decimal amounts; Apply / Clear / dismiss. The advanced filters compose with the quick status chips + search box (all carried into the same request + offline cache key)
 - Invoice detail with approve/reject

@@ -12,6 +12,20 @@ Every tick:
   4. Stamp ``renewal_alert_sent_at = now()`` so the alert never re-fires for
      this term. ``POST /api/contracts/{id}/renew`` clears it, re-arming the
      alert for the new end date.
+  5. Separately, find ``active`` contracts whose ``end_date`` has actually
+     PASSED (not just approaching) and transition them to ``expired``,
+     writing a ``contract.expired`` audit row. This is the only runtime path
+     that ever sets ``ContractStatus.expired`` — without it a contract past
+     its term stays ``active`` forever, spend-to-contract / renewal reporting
+     treats it as still live, and the ``expired -> ...`` transition branches
+     in ``api/contracts.py`` (``activate``/``terminate``) can never fire.
+
+Idempotency (expiry pass)
+--------------------------
+Only ``active`` contracts are matched, and expiring one moves it out of
+``active``. So a re-run never double-expires or double-audits — the status
+guard is the dedupe, exactly like the ``renewal_alert_sent_at`` marker above
+and the ``offered`` status guard in ``discount_auto_trigger``.
 
 Mirrors the ``audit_log_shipper`` pattern: long-lived asyncio task started in
 ``main.lifespan``, fresh per-tenant engine, one tenant's failure logged but
@@ -35,6 +49,7 @@ from app.models.contract import Contract, ContractStatus
 from app.models.notification import EVENT_CONTRACT_RENEWAL_DUE
 from app.models.organization import Organization
 from app.models.vendor import Vendor
+from app.services.audit_dispatch import dispatch_audit
 from app.services.notification_dispatch import notify_event, resolve_role_user_ids
 from app.services.notification_templates import render_contract_renewal
 
@@ -47,6 +62,7 @@ class RenewalResult:
 
     tenants_scanned: int = 0
     alerts_sent: int = 0
+    contracts_expired: int = 0
     failures: int = 0
 
 
@@ -62,7 +78,9 @@ async def notify_renewals_once(*, today: date | None = None) -> RenewalResult:
     for _org_id, db_name in tenants:
         result.tenants_scanned += 1
         try:
-            result.alerts_sent += await _sweep_tenant(db_name, ref_today)
+            sent, expired = await _sweep_tenant(db_name, ref_today)
+            result.alerts_sent += sent
+            result.contracts_expired += expired
         except Exception as exc:  # noqa: BLE001 — one tenant must not halt the sweep
             # Log the class, not the message (PII-out-of-logs invariant).
             logger.warning(
@@ -70,18 +88,22 @@ async def notify_renewals_once(*, today: date | None = None) -> RenewalResult:
             )
             result.failures += 1
 
-    if result.alerts_sent or result.failures:
+    if result.alerts_sent or result.contracts_expired or result.failures:
         logger.info(
-            "[contract-renewal] swept %d tenant(s); alerts=%d failed_sweeps=%d",
+            "[contract-renewal] swept %d tenant(s); alerts=%d expired=%d failed_sweeps=%d",
             result.tenants_scanned,
             result.alerts_sent,
+            result.contracts_expired,
             result.failures,
         )
     return result
 
 
-async def _sweep_tenant(db_name: str, ref_today: date) -> int:
-    """Notify due renewals for one tenant. Returns the count of alerts sent."""
+async def _sweep_tenant(db_name: str, ref_today: date) -> tuple[int, int]:
+    """Notify due renewals + expire over-term contracts for one tenant.
+
+    Returns ``(alerts_sent, contracts_expired)``.
+    """
     # Coarse pre-filter by the platform-max lead window, then refine per
     # contract by its own renewal_notice_days. Keeps the fetched set small
     # without baking a per-row interval into SQL.
@@ -145,8 +167,45 @@ async def _sweep_tenant(db_name: str, ref_today: date) -> int:
                 contract.renewal_alert_sent_at = datetime.now(UTC)
                 sent += 1
 
+            # End-of-term expiry: an `active` contract whose end_date has
+            # actually passed (not just approaching) moves to `expired`. This
+            # is the only runtime path that ever sets `ContractStatus.expired`
+            # — see the module docstring. Re-querying `active` here (rather
+            # than reusing `candidates`) keeps this pass correct even though
+            # the two conditions overlap; the status guard means a contract
+            # already flipped to `expired` never matches again, so a repeat
+            # sweep is a no-op (idempotent, no double audit row).
+            overdue = (
+                (
+                    await db.execute(
+                        select(Contract).where(
+                            Contract.status == ContractStatus.active,
+                            Contract.end_date.is_not(None),
+                            Contract.end_date < ref_today,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+            expired = 0
+            for contract in overdue:
+                contract.status = ContractStatus.expired
+                await dispatch_audit(
+                    db,
+                    correlation_id=uuid.uuid4(),
+                    organization_id=contract.organization_id,
+                    actor_id=None,  # system actor
+                    action="contract.expired",
+                    entity_type="contract",
+                    entity_id=contract.id,
+                    details={"contract_number": contract.contract_number},
+                )
+                expired += 1
+
             await db.commit()
-            return sent
+            return sent, expired
     finally:
         await engine.dispose()
 

@@ -499,3 +499,125 @@ async def test_concurrent_agent_runs_serialize_on_exception_lock(realdb):
         # Exception ended 'resolved' (the loser did NOT clobber it to escalated).
         exc = await s.get(APException, exc_id)
         assert exc.status == "resolved"
+
+
+# ---------------------------------------------------------------------------
+# Multi-entity scoping (issue #145) — GET /agent-decisions + /agent-stats
+# ---------------------------------------------------------------------------
+
+
+async def _seed_agent_decision(
+    mk, org_id, *, entity_id, number: str, action_taken: str = ACTION_AUTO_RESOLVED
+) -> uuid.UUID:
+    """Insert an Invoice + open->resolved Exception + AgentDecision directly,
+    bypassing the coordinator (there's no simple "create a decision" endpoint —
+    decisions are a byproduct of ``run_agent``). Returns the AgentDecision id."""
+    async with mk() as s:
+        inv = Invoice(
+            organization_id=org_id,
+            invoice_number=number,
+            vendor_name="Acme",
+            amount=Decimal("1.00"),
+            entity_id=entity_id,
+        )
+        s.add(inv)
+        await s.commit()
+        await s.refresh(inv)
+
+        exc = APException(
+            invoice_id=inv.id,
+            exception_type="po_mismatch",
+            status="resolved",
+            organization_id=org_id,
+            entity_id=entity_id,
+        )
+        s.add(exc)
+        await s.commit()
+        await s.refresh(exc)
+
+        decision = AgentDecision(
+            exception_id=exc.id,
+            invoice_id=inv.id,
+            exception_type="po_mismatch",
+            action_taken=action_taken,
+            confidence=Decimal("0.9500"),
+            autonomy_level="balanced",
+            agent_type="amount_mismatch_v1",
+            organization_id=org_id,
+            entity_id=entity_id,
+        )
+        s.add(decision)
+        await s.commit()
+        await s.refresh(decision)
+        return decision.id
+
+
+async def test_agent_decisions_list_scopes_by_entity(realdb):
+    async with realdb.client(key="a", role="admin") as c:
+        r = await c.post("/api/entities", json={"name": "US Inc", "slug": "us"})
+        assert r.status_code == 201, r.text
+        us = r.json()["id"]
+        default_id = next(e["id"] for e in (await c.get("/api/entities")).json() if e["is_default"])
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    # Two decisions under US, one under the default entity.
+    await _seed_agent_decision(mk, org_id, entity_id=uuid.UUID(us), number="AD-US-1")
+    await _seed_agent_decision(mk, org_id, entity_id=uuid.UUID(us), number="AD-US-2")
+    await _seed_agent_decision(mk, org_id, entity_id=uuid.UUID(default_id), number="AD-DEF-1")
+
+    async with realdb.client(key="a", role="admin") as c:
+        scoped_us = await c.get("/api/exceptions/agent-decisions", headers={"X-Entity-ID": us})
+        assert scoped_us.status_code == 200
+        assert scoped_us.json()["total"] == 2
+        invoice_ids_us = {d["invoice_id"] for d in scoped_us.json()["items"]}
+
+        scoped_def = await c.get(
+            "/api/exceptions/agent-decisions", headers={"X-Entity-ID": default_id}
+        )
+        assert scoped_def.status_code == 200
+        assert scoped_def.json()["total"] == 1
+        invoice_ids_def = {d["invoice_id"] for d in scoped_def.json()["items"]}
+
+        # No overlap between the two entity-scoped views.
+        assert invoice_ids_us.isdisjoint(invoice_ids_def)
+
+        # Consolidated (no header) sees all three.
+        allv = await c.get("/api/exceptions/agent-decisions")
+        assert allv.json()["total"] == 3
+
+
+async def test_agent_stats_scopes_by_entity(realdb):
+    async with realdb.client(key="a", role="admin") as c:
+        r = await c.post("/api/entities", json={"name": "US Inc", "slug": "us"})
+        assert r.status_code == 201, r.text
+        us = r.json()["id"]
+        default_id = next(e["id"] for e in (await c.get("/api/entities")).json() if e["is_default"])
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    # US: 2 auto_resolved + 1 escalated (total 3). Default: 1 auto_resolved (total 1).
+    await _seed_agent_decision(mk, org_id, entity_id=uuid.UUID(us), number="AS-US-1")
+    await _seed_agent_decision(mk, org_id, entity_id=uuid.UUID(us), number="AS-US-2")
+    await _seed_agent_decision(
+        mk, org_id, entity_id=uuid.UUID(us), number="AS-US-3", action_taken=ACTION_ESCALATED
+    )
+    await _seed_agent_decision(mk, org_id, entity_id=uuid.UUID(default_id), number="AS-DEF-1")
+
+    async with realdb.client(key="a", role="admin") as c:
+        stats_us = (await c.get("/api/exceptions/agent-stats", headers={"X-Entity-ID": us})).json()
+        assert stats_us["total_decisions"] == 3
+        assert stats_us["auto_resolved"] == 2
+        assert stats_us["escalated"] == 1
+
+        stats_def = (
+            await c.get("/api/exceptions/agent-stats", headers={"X-Entity-ID": default_id})
+        ).json()
+        assert stats_def["total_decisions"] == 1
+        assert stats_def["auto_resolved"] == 1
+        assert stats_def["escalated"] == 0
+
+        stats_all = (await c.get("/api/exceptions/agent-stats")).json()
+        assert stats_all["total_decisions"] == 4

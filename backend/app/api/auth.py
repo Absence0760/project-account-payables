@@ -307,11 +307,11 @@ async def request_email_otp(
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled")
     try:
-        user_id = mfa.decode_challenge_token(body.challenge_token)
+        claims = await mfa.decode_challenge_token(body.challenge_token)
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
-    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    user = (await db.execute(select(User).where(User.id == claims.subject_id))).scalar_one_or_none()
     if not user:
         # Don't leak which UUIDs exist — return 204 anyway.
         return
@@ -336,18 +336,18 @@ async def verify_mfa(
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled")
     try:
-        user_id = mfa.decode_challenge_token(body.challenge_token)
+        claims = await mfa.decode_challenge_token(body.challenge_token)
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
-    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    user = (await db.execute(select(User).where(User.id == claims.subject_id))).scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="Invalid challenge")
 
     if body.method == "totp":
         if not user.mfa_enabled or not user.mfa_secret:
             raise HTTPException(status_code=400, detail="TOTP not enrolled for this account")
-        if not mfa.verify_totp(user.mfa_secret, body.code):
+        if not await mfa.verify_totp(user.mfa_secret, body.code):
             await dispatch_auth_audit(
                 organization_id=user.organization_id,
                 actor_id=user.id,
@@ -366,6 +366,11 @@ async def verify_mfa(
                 details={"method": "email", "ip": ip},
             )
             raise HTTPException(status_code=401, detail="Invalid or expired code")
+
+    # Single-use: burn the challenge token now that the factor is verified so
+    # it can't be replayed to mint a second session from one password check
+    # (issue #162).
+    await mfa.consume_challenge_token(claims.jti)
 
     token, jti = create_access_token_with_jti(user.id, user.organization_id)
     await register_session(user.id, jti)
@@ -462,7 +467,7 @@ async def _step_up_satisfied(
     satisfy any step-up (different Redis namespace entirely). See
     `services/webauthn._assertion_challenge_key`.
     """
-    if mfa.step_up_verified(
+    if await mfa.step_up_verified(
         hashed_password=user.hashed_password,
         mfa_secret=user.mfa_secret,
         password=body.password if body else None,
@@ -575,7 +580,7 @@ async def enroll_mfa_verify(
     pending = await mfa.read_pending_totp_secret(user.id)
     if not pending:
         raise HTTPException(status_code=400, detail="Start enrollment first")
-    if not mfa.verify_totp(pending, body.code):
+    if not await mfa.verify_totp(pending, body.code):
         raise HTTPException(status_code=401, detail="Invalid code")
 
     user.mfa_secret = pending
@@ -790,16 +795,16 @@ async def passkey_authenticate_start(
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled")
     try:
-        user_id = mfa.decode_challenge_token(body.challenge_token)
+        claims = await mfa.decode_challenge_token(body.challenge_token)
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
-    creds = await _user_passkeys(db, user_id)
+    creds = await _user_passkeys(db, claims.subject_id)
     if not creds:
         # No passkeys registered — opaque error (don't enumerate factors).
         raise HTTPException(status_code=400, detail="No passkey registered")
     options_json = await webauthn.begin_authentication(
-        user_id=user_id,
+        user_id=claims.subject_id,
         credentials=[{"credential_id": c.credential_id, "transports": c.transports} for c in creds],
         purpose=webauthn.ASSERTION_PURPOSE_LOGIN,
     )
@@ -868,11 +873,11 @@ async def passkey_authenticate_finish(
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled")
     try:
-        user_id = mfa.decode_challenge_token(body.challenge_token)
+        claims = await mfa.decode_challenge_token(body.challenge_token)
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
-    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    user = (await db.execute(select(User).where(User.id == claims.subject_id))).scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="Invalid challenge")
 
@@ -882,7 +887,7 @@ async def passkey_authenticate_finish(
         # therefore cannot mint an access token here.
         await _verify_presented_assertion(
             db,
-            user_id,
+            claims.subject_id,
             json.dumps(body.credential),
             purpose=webauthn.ASSERTION_PURPOSE_LOGIN,
         )
@@ -897,6 +902,10 @@ async def passkey_authenticate_finish(
         raise HTTPException(status_code=401, detail="Invalid passkey") from exc
 
     await db.commit()
+
+    # Single-use: burn the challenge token now that the passkey factor is
+    # verified so it can't be replayed to mint a second session (issue #162).
+    await mfa.consume_challenge_token(claims.jti)
 
     token, jti = create_access_token_with_jti(user.id, user.organization_id)
     await register_session(user.id, jti)

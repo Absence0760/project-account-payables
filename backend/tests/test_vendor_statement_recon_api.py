@@ -172,6 +172,79 @@ async def test_create_amount_mismatch_line(realdb):
     assert body["summary"]["amount_mismatch_count"] == 1
 
 
+async def test_create_fully_matched_run_is_resolved_immediately(realdb):
+    """Issue #185: a statement that reconciles cleanly (every line `matched`,
+    nothing actionable) has no `resolve_line` call ahead of it — the run must
+    get its final status at creation, not sit `open` forever."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id)
+    await _add_invoice(mk, org_id, vendor_id=vendor_id, invoice_number="CLEAN-1", amount="100.00")
+    await _add_invoice(mk, org_id, vendor_id=vendor_id, invoice_number="CLEAN-2", amount="200.00")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/vendor-statements",
+            json={
+                "vendor_id": vendor_id,
+                "statement_date": _TODAY.isoformat(),
+                "lines": [_line("CLEAN-1", "100.00"), _line("CLEAN-2", "200.00")],
+            },
+        )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert {ln["classification"] for ln in body["lines"]} == {"matched"}
+    assert body["summary"]["matched_count"] == 2
+    assert body["status"] == "resolved"
+
+    # And it's actually persisted that way, not just in the response shape.
+    async with mk() as s:
+        run = (
+            await s.execute(
+                select(VendorStatementReconciliation).where(
+                    VendorStatementReconciliation.id == uuid.UUID(body["id"])
+                )
+            )
+        ).scalar_one()
+        assert run.status == "resolved"
+
+
+async def test_create_run_with_actionable_line_stays_open_until_resolved(realdb):
+    """Regression: a run with at least one actionable (non-matched) line must
+    still start `open`, and only flip to `resolved` once a human clears the
+    last actionable line via `resolve_line` — the create-time recompute must
+    not short-circuit that existing behavior."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id)
+    await _add_invoice(mk, org_id, vendor_id=vendor_id, invoice_number="MIX-1", amount="100.00")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        create_resp = await c.post(
+            "/api/vendor-statements",
+            json={
+                "vendor_id": vendor_id,
+                "statement_date": _TODAY.isoformat(),
+                # MIX-1 matches; MIX-2 has no corresponding invoice → actionable.
+                "lines": [_line("MIX-1", "100.00"), _line("MIX-2", "50.00")],
+            },
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        detail = create_resp.json()
+        assert detail["status"] == "open"
+
+        actionable = next(
+            ln for ln in detail["lines"] if ln["classification"] == "missing_on_our_side"
+        )
+        resolved = (
+            await c.post(
+                f"/api/vendor-statements/{detail['id']}/lines/{actionable['id']}/resolve",
+                json={"resolution_status": "resolved", "resolution_note": "created the invoice"},
+            )
+        ).json()
+    assert resolved["status"] == "resolved"
+
+
 async def test_create_404_unknown_vendor(realdb):
     async with realdb.client(key="a", role="ap_manager") as c:
         resp = await c.post(

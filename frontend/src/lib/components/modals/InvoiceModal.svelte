@@ -2,10 +2,12 @@
 	import { focusTrap } from '$lib/actions/focusTrap';
 	import type { Invoice, AuditSummary } from '$lib/types/invoice';
 	import { INVOICE_STATUSES, STATUS_LABELS } from '$lib/types/invoice';
+	import { formatMoney } from '$lib/utils/money';
 	import { invoiceStore } from '$lib/stores/invoices.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { adminStore } from '$lib/stores/admin.svelte';
 	import { api } from '$lib/api';
+	import { getTenantSlug } from '$lib/tenant';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
@@ -548,7 +550,7 @@
 				const res = await fetch(`${base}${url}`, {
 					headers: {
 						...(token ? { Authorization: `Bearer ${token}` } : {}),
-						'X-Tenant-Slug': document.location.hostname.split('.')[0],
+						'X-Tenant-Slug': getTenantSlug() ?? '',
 					},
 				});
 				if (!res.ok) throw new Error(`Export failed: ${res.status}`);
@@ -1374,7 +1376,7 @@
 									{#if pm.po_total !== null}
 										<div>
 											<span class="po-match-label">{m('invoices.modal.poMatch.poTotal')}</span>
-											<span class="po-match-value mono">${pm.po_total.toFixed(2)}</span>
+											<span class="po-match-value mono">{formatMoney(pm.po_total, { currency: invoice.currency })}</span>
 										</div>
 									{/if}
 									{#if pm.amount_variance !== 0}
@@ -1385,7 +1387,7 @@
 												class:variance-pos={pm.amount_variance > 0}
 												class:variance-neg={pm.amount_variance < 0}
 											>
-												{pm.amount_variance > 0 ? '+' : ''}${pm.amount_variance.toFixed(2)}
+												{pm.amount_variance > 0 ? '+' : ''}{formatMoney(pm.amount_variance, { currency: invoice.currency })}
 												({pm.amount_variance_pct > 0 ? '+' : ''}{pm.amount_variance_pct.toFixed(1)}%)
 											</span>
 										</div>
@@ -1538,7 +1540,7 @@
 															<td>{Math.round(n.similarity * 100)}%</td>
 															<td>{n.vendor_name ?? '—'}</td>
 															<td>{n.invoice_number ?? '—'}</td>
-															<td>{n.amount ?? '—'}</td>
+															<td>{formatMoney(n.amount, { currency: invoice.currency })}</td>
 														</tr>
 													{/each}
 												</tbody>

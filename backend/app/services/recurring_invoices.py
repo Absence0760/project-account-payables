@@ -175,10 +175,20 @@ def current_due_run_on(
     how far the cursor has since advanced.
 
     Before ``start_date`` the schedule hasn't begun, so the first occurrence
-    (``start_date``'s ``day_of_period``) is returned as the floor.
+    (``start_date``'s ``day_of_period``, or the FOLLOWING period's if
+    ``day_of_period`` falls earlier in the month than ``start_date`` itself)
+    is returned as the floor.
     """
     months = _months_per_period(cadence)
     first = date(start_date.year, start_date.month, day_of_period)
+    if first < start_date:
+        # day_of_period lands earlier in the month than start_date, so this
+        # period's occurrence is actually BEFORE the schedule begins — advance
+        # to the next period, matching compute_next_run_on's walk-forward
+        # anchor (issue #179). Without this, generate-now could target a
+        # pre-start-dated period the background sweep would never reach.
+        first = _add_months(first, months)
+        first = date(first.year, first.month, day_of_period)
     ceiling = max(today, start_date)
     candidate = first
     if candidate > ceiling:
@@ -482,15 +492,31 @@ async def _sweep_tenant(db_name: str, today: date) -> int:
                 run_on = template.next_run_on
                 if run_on is None:
                     continue
-                invoice = await generate_one(db, template, run_on=run_on, actor_id=None)
-                # Only count a genuinely new invoice (idempotent no-op returns
-                # the pre-existing row but the cursor still needs to advance so
-                # the next tick doesn't re-pick the same template forever).
-                if invoice is not None:
-                    generated += 1
-                # Defensive: if the cursor didn't advance (e.g. idempotent
-                # no-op for an already-generated period), force it forward one
-                # period so a stuck `next_run_on <= today` can't loop the sweep.
+                # generate_one() returns the SAME non-None Invoice whether it
+                # just created one or hit the (template, period_key)
+                # idempotency guard and returned the pre-existing row — so
+                # "invoice is not None" alone can't tell a real create from a
+                # no-op. Pre-check the period ourselves and only call
+                # generate_one (and count it) when the period genuinely has
+                # no invoice yet; an already-generated period is a no-op that
+                # must NOT inflate the `generated` metric/log.
+                period_key = period_key_for(template.cadence, run_on)
+                already_generated = (
+                    await db.execute(
+                        select(Invoice.id).where(
+                            Invoice.recurring_template_id == template.id,
+                            Invoice.recurring_period_key == period_key,
+                        )
+                    )
+                ).scalar_one_or_none() is not None
+                if not already_generated:
+                    invoice = await generate_one(db, template, run_on=run_on, actor_id=None)
+                    if invoice is not None:
+                        generated += 1
+                # Defensive: if the cursor didn't advance (e.g. the
+                # already-generated no-op above, or the missing amount/vendor
+                # guard inside generate_one), force it forward one period so a
+                # stuck `next_run_on <= today` can't loop the sweep forever.
                 if template.next_run_on is not None and template.next_run_on <= run_on:
                     months = _months_per_period(template.cadence)
                     template.next_run_on = compute_next_run_on(

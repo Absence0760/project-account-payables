@@ -35,6 +35,17 @@ Existing fields stay: `pipeline`, `vendor_spend`, `aging`,
   helper backs the CFO supplier-concentration tile, its drill-through, the
   `vendor_spend` CSV export, and the scheduled report — see
   `docs/multi-currency.md` § Per-vendor rollups.
+- `total_amount` — the "Total Amount" KPI on the web dashboard (`routes/+page.svelte`).
+  A **naive sum across every invoice in the tenant, regardless of status or
+  date** — no filter at all. This is a different population from the CFO
+  `total_spend` below (windowed + excludes rejected), even though both read
+  like "how much have we spent": a rejected invoice, or one still sitting at
+  `new`, counts toward this figure but not toward `total_spend`, and this
+  figure has no date bound while `total_spend` is windowed to `period_days`.
+  The web label spells this out (`Total Amount (All Invoices)`) precisely so
+  the two aren't misread as the same number. See
+  `tests/test_analytics_rejected_exclusion.py` for a regression test pinning
+  the contrast.
 - `aging` — open-invoice exposure bucketed by **days past the due date**:
   `current` (not yet due), `days_30` (1-30), `days_60` (31-60), `days_90`
   (61-90), `days_90_plus` (90+). The same five buckets back the
@@ -49,6 +60,11 @@ Existing fields stay: `pipeline`, `vendor_spend`, `aging`,
   invoice that has finished review (those same states **plus** `rejected`).
   The numerator is a strict subset of the denominator, so the value is always
   in `[0, 100]` — it can never go negative.
+- `upcoming_total_amount` — server-computed total across the same rows behind
+  `upcoming_payments` (summed in `Decimal`, converted to `float` exactly once
+  at the response boundary). Callers (the mobile dashboard) must read this
+  field directly rather than folding `upcoming_payments[].amount` themselves —
+  summing already-serialized floats client-side accumulates rounding drift.
 
 New keys added in a prior iteration:
 
@@ -72,7 +88,11 @@ New keys added in a prior iteration:
 Query params: `period_days` (default 365, range 30–730).
 
 Response:
-- `total_spend`, `accounts_payable_balance`, `avg_daily_outflow`
+- `total_spend` — invoices dated within the trailing `period_days` window,
+  excluding `rejected`. **Not the same population as the dashboard's
+  `total_amount`** ("Total Amount (All Invoices)") — see that field's
+  description above before wiring a UI that shows both side by side.
+- `accounts_payable_balance`, `avg_daily_outflow`
 - `dpo_current` + `dpo_trend` (last 6 months)
 - `cash_conversion_cycle` (NULL when DSO/DIO not available — the
   AP-only product can't compute it)

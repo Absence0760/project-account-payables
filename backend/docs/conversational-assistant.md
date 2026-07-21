@@ -142,16 +142,22 @@ cap without fanning a sum across every tenant DB on each call.
 
 - **Enforcement** — `usage.assert_within_budget` at the **top of `run_turn`**,
   before any adapter/model/tool work. It takes a **`SELECT … FOR UPDATE`** on
-  the `(org, period)` meter row so concurrent turns for the same org serialize
-  on it — without the lock two simultaneous `/chat` requests both read
-  `used < budget` and both run, overshooting the cap (a check-then-act race).
-  The lock is held until the control transaction commits at request end. Budget
-  `0` disables the cap (matching the `AP_MAX_CONCURRENT_SESSIONS=0` convention).
-  Per-org override in `Organization.settings.assistant.monthly_token_budget`
-  beats the platform default. (A single turn is still bounded by
-  `max_tokens × AP_ASSISTANT_MAX_TOOL_HOPS`, so post-hoc counting can overshoot
-  by at most one turn's worth — the lock removes the *unbounded* concurrent
-  overshoot.)
+  the `(org, period)` meter row to make the read atomic, then **commits
+  immediately** — the lock is held only for that one quick round-trip, never
+  across the model call / SSE stream that follows. An earlier version held the
+  lock until the control transaction committed at request end, which
+  serialized an org to **one in-flight `/chat` turn at a time** (every other
+  concurrent turn blocked on the same row until the first turn's entire
+  response finished streaming). Committing right after the check trades
+  perfect serialization for a small, bounded race: two turns whose checks land
+  within the same short window can both read `used < budget` and both proceed,
+  so the cap can be overshot by at most a handful of concurrent turns' worth of
+  tokens before the next check catches it — an acceptable trade for a soft
+  usage-shaping guardrail (not a money invariant). Budget `0` disables the cap
+  (matching the `AP_MAX_CONCURRENT_SESSIONS=0` convention). Per-org override in
+  `Organization.settings.assistant.monthly_token_budget` beats the platform
+  default. (A single turn is still bounded by `max_tokens ×
+  AP_ASSISTANT_MAX_TOOL_HOPS`, bounding how large that overshoot can get.)
 - **Refusal contract** — `AssistantBudgetExceeded` → **HTTP 429** with
   `{"detail": "...", "code": "assistant_budget_exceeded", "used", "budget",
   "period"}`. No tool runs, no model call, nothing persisted.

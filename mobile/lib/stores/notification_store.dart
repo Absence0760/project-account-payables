@@ -3,12 +3,13 @@ import 'package:flutter/foundation.dart';
 import 'package:ap_mobile/api/endpoints.dart';
 import 'package:ap_mobile/models/notification.dart';
 import 'package:ap_mobile/services/offline_store.dart';
+import 'package:ap_mobile/utils/sequenced_fetch.dart';
 
 /// In-app notification center state. Mirrors [ExceptionStore]: a process-lifetime
 /// `ChangeNotifier` singleton over `GET /api/notifications` + mark-read /
 /// read-all, with an offline-cached list and a separately-tracked unread count
 /// (the badge) so the app-bar bell can render without forcing a full fetch.
-class NotificationStore extends ChangeNotifier {
+class NotificationStore extends ChangeNotifier with SequencedFetch {
   static final NotificationStore instance = NotificationStore._();
   NotificationStore._();
 
@@ -37,6 +38,7 @@ class NotificationStore extends ChangeNotifier {
     _error = null;
     _unreadOnly = false;
     _fromCache = false;
+    debugResetSequence();
   }
 
   void setUnreadOnly(bool value) {
@@ -56,6 +58,9 @@ class NotificationStore extends ChangeNotifier {
   }
 
   Future<void> fetch() async {
+    // See SequencedFetch — discards a response superseded by a newer fetch()
+    // (e.g. a rapid All/Unread filter toggle racing itself).
+    final token = nextRequestToken();
     _loading = true;
     _error = null;
     notifyListeners();
@@ -64,6 +69,7 @@ class NotificationStore extends ChangeNotifier {
 
     try {
       final pageData = await NotificationApi.list(unreadOnly: _unreadOnly);
+      if (!isCurrentRequest(token)) return;
       _notifications = pageData.items;
       _unread = pageData.unread;
       _fromCache = false;
@@ -76,10 +82,12 @@ class NotificationStore extends ChangeNotifier {
 
       notifyListeners();
     } catch (e) {
+      if (!isCurrentRequest(token)) return;
       // Try cache on failure (offline mode — same pattern as ExceptionStore).
       try {
         final cached = await OfflineStore.instance.get(cacheKey);
         if (cached != null) {
+          if (!isCurrentRequest(token)) return;
           _notifications = (cached as List)
               .map((j) => AppNotification.fromJson(j as Map<String, dynamic>))
               .toList();
@@ -90,6 +98,7 @@ class NotificationStore extends ChangeNotifier {
           return;
         }
       } catch (_) {}
+      if (!isCurrentRequest(token)) return;
       _fromCache = false;
       _loading = false;
       _error = e.toString();

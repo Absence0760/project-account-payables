@@ -66,6 +66,11 @@ class AnalyticsReportContext:
     # Resolved tenant brand for the header. Defaults to the platform brand so a
     # call site that doesn't pass one still renders.
     brand: BrandContext = field(default_factory=lambda: get_brand_context(None))
+    # Optional footer note — e.g. the report-builder export's row-cap
+    # truncation notice ("Results truncated at 1000 rows — ..."). Rendered
+    # below the table when set; omitted entirely otherwise, so every existing
+    # caller that doesn't pass one renders byte-for-byte the same as before.
+    note: str | None = None
 
 
 def render_analytics_report_pdf(ctx: AnalyticsReportContext) -> bytes:
@@ -159,6 +164,16 @@ def render_analytics_report_pdf(ctx: AnalyticsReportContext) -> bytes:
         )
     )
     story.append(table)
+
+    if ctx.note:
+        h_note = ParagraphStyle(
+            "note",
+            parent=body,
+            fontSize=8.5,
+            textColor=colors.HexColor("#b45309"),
+            spaceBefore=8,
+        )
+        story.append(Paragraph(f"<b>Note:</b> {_escape(ctx.note)}", h_note))
 
     doc.build(story)
     return buf.getvalue()

@@ -134,6 +134,26 @@ async def test_owning_vendor_gets_its_own_document():
 
 
 @pytest.mark.asyncio
+async def test_export_filename_survives_quote_in_invoice_number():
+    """Issue #188: invoice_number is AI-extracted / user-entered, not a
+    validated identifier — a stray `"` must not break the Content-Disposition
+    header's quoted-string syntax."""
+    vendor_id = uuid.uuid4()
+    invoice = _invoice(vendor_id)
+    invoice.invoice_number = 'INV-PORTAL-1"2"'
+    db = _scoped_db_returning(invoice)
+    ctrl = _ctrl_db_returning_org()
+    vu = SimpleNamespace(id=uuid.uuid4(), vendor_id=vendor_id)
+
+    resp = await get_my_invoice_einvoice(invoice_id=invoice.id, db=db, ctrl_db=ctrl, vu=vu)
+    disposition = resp.headers["content-disposition"]
+    # Exactly the two quotes that wrap the sanitized filename= fallback — none
+    # from the invoice number itself leaking through unescaped.
+    assert disposition.count('"') == 2
+    assert "filename*=UTF-8''" in disposition
+
+
+@pytest.mark.asyncio
 async def test_export_does_not_raise_on_tax_warning():
     """Even if the document carries a tax soft-warning, the supplier still gets
     the UBL (no 422)."""

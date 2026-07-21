@@ -203,11 +203,14 @@ async def match_invoice_to_po(
         # GRs for the PO. Only when the PO has line items and at least one GR
         # carries received lines (an empty GR header has nothing to verify).
         if po.line_items and any(g.line_items for g in grs):
-            po_qty_total = sum(float(li.quantity or 0) for li in po.line_items)
-            gr_qty_total = sum(float(li.quantity_received or 0) for g in grs for li in g.line_items)
+            po_qty_total = sum((_to_decimal(li.quantity) for li in po.line_items), Decimal("0"))
+            gr_qty_total = sum(
+                (_to_decimal(li.quantity_received) for g in grs for li in g.line_items),
+                Decimal("0"),
+            )
 
             if po_qty_total > 0 and gr_qty_total < po_qty_total:
-                pct_received = (gr_qty_total / po_qty_total) * 100
+                pct_received = (gr_qty_total / po_qty_total) * Decimal(100)
                 result.issues.append(
                     f"Partial receipt: {pct_received:.0f}% of ordered quantity received"
                 )

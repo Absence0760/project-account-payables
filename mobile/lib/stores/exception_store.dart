@@ -3,8 +3,9 @@ import 'package:flutter/foundation.dart';
 import 'package:ap_mobile/api/endpoints.dart';
 import 'package:ap_mobile/models/exception.dart';
 import 'package:ap_mobile/services/offline_store.dart';
+import 'package:ap_mobile/utils/sequenced_fetch.dart';
 
-class ExceptionStore extends ChangeNotifier {
+class ExceptionStore extends ChangeNotifier with SequencedFetch {
   static final ExceptionStore instance = ExceptionStore._();
   ExceptionStore._();
 
@@ -42,6 +43,7 @@ class ExceptionStore extends ChangeNotifier {
     _fromCache = false;
     _selectionMode = false;
     _selectedIds.clear();
+    debugResetSequence();
   }
 
   // ----- Selection mutators (mirror InvoiceStore) -----
@@ -72,6 +74,9 @@ class ExceptionStore extends ChangeNotifier {
   }
 
   Future<void> fetch() async {
+    // See SequencedFetch — discards a response superseded by a newer fetch()
+    // (e.g. rapid status-filter chip taps racing each other).
+    final token = nextRequestToken();
     _loading = true;
     _error = null;
     notifyListeners();
@@ -79,7 +84,9 @@ class ExceptionStore extends ChangeNotifier {
     final cacheKey = 'exceptions_${_statusFilter ?? 'all'}';
 
     try {
-      _exceptions = await ExceptionApi.list(status: _statusFilter);
+      final result = await ExceptionApi.list(status: _statusFilter);
+      if (!isCurrentRequest(token)) return;
+      _exceptions = result;
       _fromCache = false;
       _loading = false;
 
@@ -91,10 +98,12 @@ class ExceptionStore extends ChangeNotifier {
 
       notifyListeners();
     } catch (e) {
+      if (!isCurrentRequest(token)) return;
       // Try cache on failure.
       try {
         final cached = await OfflineStore.instance.get(cacheKey);
         if (cached != null) {
+          if (!isCurrentRequest(token)) return;
           _exceptions = (cached as List)
               .map((j) => ApException.fromJson(j as Map<String, dynamic>))
               .toList();
@@ -104,6 +113,7 @@ class ExceptionStore extends ChangeNotifier {
           return;
         }
       } catch (_) {}
+      if (!isCurrentRequest(token)) return;
       // No cache to fall back on — make sure we don't keep claiming the
       // (now absent) data came from cache.
       _fromCache = false;
