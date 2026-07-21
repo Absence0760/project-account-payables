@@ -21,7 +21,7 @@ draft → active → expired
 |--------|---------|
 | `draft` | Created, not yet signed/in-force. Deletable. Can spawn a PO. |
 | `active` | Signed and in force. Spend is tracked + compliance-checked; renewal sweep watches its `end_date`. |
-| `expired` | Past `end_date` (set by renewal/admin flows). Can be re-activated or renewed. |
+| `expired` | Past `end_date`. Set by the renewal sweep's end-of-term expiry pass (see below) — never by `PATCH` or an admin flow. Can be re-activated (`activate`) or renewed (`renew`). |
 | `terminated` | Ended early. Not deletable. |
 | `cancelled` | Voided from `draft`/`active`. Deletable. |
 
@@ -135,8 +135,18 @@ engine, one tenant's failure logged but never halts the sweep). Each tick:
    the `contract_renewal_due` event (`entity_type="contract"`).
 4. Stamp `renewal_alert_sent_at = now()` so the alert never re-fires for this
    term. `POST /{id}/renew` clears it, re-arming the alert for the new
-   `end_date`. (When there's no one to notify, the row is still stamped so it
-   isn't re-scanned every tick.)
+   `end_date`. (When there's no one to notify yet — no AP manager, no owner —
+   the row is deliberately left **unstamped** so a later sweep, once the org
+   has a recipient, still fires the alert instead of silently dropping it;
+   re-scanning a recipient-less contract every tick is cheap.)
+5. Separately (same tick), find `active` contracts whose `end_date` has
+   actually **passed** (not just approaching) and transition them to
+   `expired`, writing a `contract.expired` audit row
+   (`entity_type="contract"`). This is the only runtime path that ever sets
+   `ContractStatus.expired` — without it an over-term contract stays `active`
+   forever and the `expired → …` branches of `activate`/`terminate` can never
+   fire. Idempotent: only `active` contracts match, and expiring one moves it
+   out of `active`, so a repeat sweep never double-expires or double-audits.
 
 Disabled by default. Env vars:
 

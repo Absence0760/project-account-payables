@@ -623,6 +623,127 @@ async def test_renewal_alert_sweep(realdb):
     assert after == before
 
 
+async def test_renewal_sweep_expires_overdue_contracts(realdb):
+    """Issue #186 — ``expired`` was never set at runtime. The renewal sweep's
+    end-of-term expiry pass must transition an over-term ``active`` contract
+    to ``expired`` (audited, idempotent) while leaving a still-current, a
+    ``terminated``, and a ``cancelled`` contract untouched."""
+    from datetime import date, timedelta
+
+    from app.models.contract import ContractStatus
+    from app.services.contract_renewal import notify_renewals_once
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id)
+    today = date.today()
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        # Active, end_date in the past -> should expire.
+        overdue_id = (
+            await _create_contract(
+                c,
+                vendor_id,
+                contract_number="OVERDUE-001",
+                end_date=(today - timedelta(days=5)).isoformat(),
+            )
+        ).json()["id"]
+        await c.post(f"/api/contracts/{overdue_id}/activate")
+
+        # Active, end_date still in the future -> must stay active.
+        future_id = (
+            await _create_contract(
+                c,
+                vendor_id,
+                contract_number="FUTURE-001",
+                end_date=(today + timedelta(days=30)).isoformat(),
+            )
+        ).json()["id"]
+        await c.post(f"/api/contracts/{future_id}/activate")
+
+        # Already terminated, end_date in the past -> must stay terminated,
+        # never get swept into `expired`.
+        terminated_id = (
+            await _create_contract(
+                c,
+                vendor_id,
+                contract_number="TERMINATED-001",
+                end_date=(today - timedelta(days=5)).isoformat(),
+            )
+        ).json()["id"]
+        await c.post(f"/api/contracts/{terminated_id}/activate")
+        await c.post(f"/api/contracts/{terminated_id}/terminate")
+
+        # Already cancelled, end_date in the past -> must stay cancelled.
+        cancelled_id = (
+            await _create_contract(
+                c,
+                vendor_id,
+                contract_number="CANCELLED-001",
+                end_date=(today - timedelta(days=5)).isoformat(),
+            )
+        ).json()["id"]
+        await c.post(f"/api/contracts/{cancelled_id}/cancel")
+
+    result = await notify_renewals_once(today=today)
+    assert result.contracts_expired >= 1
+
+    async with mk() as s:
+        overdue = (
+            await s.execute(select(Contract).where(Contract.id == uuid.UUID(overdue_id)))
+        ).scalar_one()
+        assert overdue.status == ContractStatus.expired
+
+        future = (
+            await s.execute(select(Contract).where(Contract.id == uuid.UUID(future_id)))
+        ).scalar_one()
+        assert future.status == ContractStatus.active
+
+        terminated = (
+            await s.execute(select(Contract).where(Contract.id == uuid.UUID(terminated_id)))
+        ).scalar_one()
+        assert terminated.status == ContractStatus.terminated
+
+        cancelled = (
+            await s.execute(select(Contract).where(Contract.id == uuid.UUID(cancelled_id)))
+        ).scalar_one()
+        assert cancelled.status == ContractStatus.cancelled
+
+        expired_actions = (
+            (
+                await s.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "contract.expired",
+                        AuditLog.entity_id == uuid.UUID(overdue_id),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(expired_actions) == 1
+
+    # Idempotent: a second sweep on an already-expired contract is a no-op —
+    # no re-expiry, no second audit row.
+    result2 = await notify_renewals_once(today=today)
+    assert result2.contracts_expired == 0
+
+    async with mk() as s:
+        expired_actions_after = (
+            (
+                await s.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "contract.expired",
+                        AuditLog.entity_id == uuid.UUID(overdue_id),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(expired_actions_after) == 1
+
+
 async def test_run_renewal_loop_failure_logs_exception_class_not_message(caplog):
     """The contract-renewal background loop's top-level catch must log only
     the exception CLASS, never the raw message — an org/tenant-DB error
