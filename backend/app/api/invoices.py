@@ -83,6 +83,7 @@ from app.tenant import (
     get_tenant_db,
     get_write_entity_id,
 )
+from app.utils.http import content_disposition_attachment
 
 IMMUTABLE_STATUSES = {
     DBInvoiceStatus.sending_to_erp,
@@ -450,7 +451,7 @@ async def export_einvoice(
     return Response(
         content=xml_bytes,
         media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": content_disposition_attachment(filename)},
     )
 
 
