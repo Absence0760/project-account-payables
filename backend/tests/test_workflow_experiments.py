@@ -507,6 +507,86 @@ async def test_scoped_to_organization(realdb):
 # ---------------------------------------------------------------------------
 
 
+async def test_concurrent_assignment_does_not_lose_an_entry(realdb):
+    """Issue #149 — lost-update race on WorkflowExperiment.assignments.
+
+    Two invoices created concurrently under the same running experiment used
+    to race an unlocked read-modify-write of the whole `assignments` JSONB
+    dict: both readers see the same base dict, each adds its own entry, and
+    the second writer's full-dict write clobbers the first — silently
+    dropping an invoice from the experiment's results readout. A mocked
+    session can't reproduce this (a single MagicMock can't model two real
+    connections contending for a row lock), so this drives two genuinely
+    independent ``realdb`` sessions at once via ``asyncio.gather``.
+
+    ``dispatch_audit`` is patched to sleep briefly right where the real
+    function is called — after `maybe_assign_experiment_variant` has read and
+    locally mutated the assignments dict, before either racer commits — so
+    both racers are provably in-flight at the same time; the row lock (not
+    timing) is what has to serialize them. Both invoice ids must survive.
+    """
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    from sqlalchemy import select
+
+    from app.models.invoice import Invoice, InvoiceStatus
+    from app.models.workflow import WorkflowDefinition
+    from app.models.workflow_experiment import WorkflowExperiment
+    from app.services.workflow_experiments_runtime import maybe_assign_experiment_variant
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    defn_id, _ = await _seed_definition(mk, org_id)
+
+    async with realdb.client(key="a", role="admin") as client:
+        r = await client.post("/api/experiments", json=_payload(defn_id))
+        assert r.status_code == 201, r.text
+        eid = r.json()["id"]
+        await client.post(f"/api/experiments/{eid}/start")
+
+    inv_a_id = uuid.uuid4()
+    inv_b_id = uuid.uuid4()
+
+    async def _slow_audit(*args, **kwargs):
+        await asyncio.sleep(0.1)
+
+    async def _assign_one(inv_id: uuid.UUID):
+        session_mk = realdb.sessionmaker("a")
+        async with session_mk() as s:
+            defn = (
+                await s.execute(select(WorkflowDefinition).where(WorkflowDefinition.id == defn_id))
+            ).scalar_one()
+            inv = Invoice(
+                id=inv_id,
+                organization_id=org_id,
+                invoice_number=f"RACE-{inv_id.hex[:8]}",
+                vendor_name="V",
+                amount=Decimal("500"),
+                status=InvoiceStatus.new,
+            )
+            s.add(inv)
+            await s.flush()
+            await maybe_assign_experiment_variant(s, inv, defn)
+            await s.commit()
+
+    with patch(
+        "app.services.workflow_experiments_runtime.dispatch_audit",
+        new_callable=AsyncMock,
+        side_effect=_slow_audit,
+    ):
+        await asyncio.gather(_assign_one(inv_a_id), _assign_one(inv_b_id))
+
+    async with mk() as s:
+        exp = (
+            await s.execute(
+                select(WorkflowExperiment).where(WorkflowExperiment.id == uuid.UUID(eid))
+            )
+        ).scalar_one()
+        assert str(inv_a_id) in exp.assignments, "invoice A's assignment was lost"
+        assert str(inv_b_id) in exp.assignments, "invoice B's assignment was lost"
+
+
 async def test_list_experiments_scopes_by_entity(realdb):
     mk = realdb.sessionmaker("a")
     org_id = realdb.info("a").org_id

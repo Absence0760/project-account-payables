@@ -51,6 +51,14 @@ async def maybe_assign_experiment_variant(
     mistake, not a supported split, so we deterministically pick one rather than
     compound the snapshots.
     """
+    # Row-lock every candidate experiment (mirrors workflow_engine's
+    # get_invoice_for_update): two invoices created concurrently under the same
+    # running experiment would otherwise both read the same `assignments` dict,
+    # each add their own entry locally, and the second writer's full-dict write
+    # would clobber the first — silently dropping an assignment from the
+    # results readout. FOR UPDATE serializes the second caller behind the
+    # first's commit, so it re-reads the already-updated dict before adding its
+    # own entry.
     q = (
         select(WorkflowExperiment)
         .where(
@@ -59,6 +67,7 @@ async def maybe_assign_experiment_variant(
             WorkflowExperiment.status == "running",
         )
         .order_by(WorkflowExperiment.started_at.desc().nullslast())
+        .with_for_update()
     )
     experiments = (await db.execute(q)).scalars().all()
     # Filter to experiments whose entity scope is compatible with the invoice:
