@@ -129,8 +129,8 @@ in `tenant_provisioning`.
 
 ## Export
 
-`GET /{id}/export?format=csv|pdf` runs the saved spec (bounded to 1000 rows) and
-renders:
+`GET /{id}/export?format=csv|pdf` runs the saved spec **bounded to
+`_EXPORT_MAX_ROWS` = 1000 rows** (`app/api/reports.py`) and renders:
 
 - **CSV** — a `#`-comment brand-provenance header (`report_export.brand_provenance_header`)
   followed by a column-positional grid (column labels as the header row). Data
@@ -142,3 +142,24 @@ renders:
   white-label chrome as the analytics export surface.
 
 Both reuse the shared helpers so the brand treatment matches every other export.
+
+### Row-cap truncation is surfaced in the file, not silent
+
+`run_report`'s `total_rows` is the full matching-row count (only capped by the
+spec's own `limit`, if the saved definition set one); `rows` is bounded by
+`_EXPORT_MAX_ROWS`. When a report matches more rows than the export cap
+returns, `export_report` treats that as `total_rows > len(rows)` and marks the
+export truncated — the file itself says so instead of quietly ending at row
+1000:
+
+- **CSV** — one extra trailing row after the data grid: `NOTE: Results
+  truncated at 1000 rows (showing 1000 of <total> matching rows) — refine your
+  filters or export in batches.` (written through the same `safe_csv_writer`
+  as every other row).
+- **PDF** — the same note rendered as a footer line below the table
+  (`AnalyticsReportContext.note`, `analytics_report_pdf.render_analytics_report_pdf`).
+
+A result that fits within the cap gets no note at all — the indicator only
+ever appears when rows were actually cut. There's no server-side pagination on
+the *export* itself; a report exceeding the cap should be refined (narrower
+filters / date range) or exported in batches via saved variants.
