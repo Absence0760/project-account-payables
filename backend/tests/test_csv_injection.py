@@ -137,7 +137,11 @@ def test_invoice_register_escapes_malicious_vendor_and_keeps_amount_exact():
 
 def test_vendor_spend_escapes_vendor_name_only():
     rows = _read(export_vendor_spend([("+malicious()", 3, Decimal("-99.50"))]))
-    assert rows[1] == ["'+malicious()", "3", "-99.50"]
+    # Trailing "" is the `currencies` column: a positional 3-tuple caller
+    # carries no currency info, so it exports blank by design (the real caller
+    # is `vendor_rollup_to_reporting_currency`, which supplies it).
+    assert rows[0] == ["vendor_name", "invoice_count", "total_amount", "currencies"]
+    assert rows[1] == ["'+malicious()", "3", "-99.50", ""]
 
 
 # ---------------------------------------------------------------------------

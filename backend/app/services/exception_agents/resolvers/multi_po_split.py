@@ -241,6 +241,8 @@ async def _candidate_pos(
             vendor_name=invoice.vendor_name,
             vendor_tax_id=invoice.vendor_tax_id,
             vendor_address=invoice.vendor_address,
+            # Same-subsidiary only — see `missing_po._candidate_pos`.
+            entity_id=invoice.entity_id,
         )
         if vendor is None or confidence < Decimal("0.8"):
             return []

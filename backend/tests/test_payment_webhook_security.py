@@ -56,6 +56,11 @@ def _tenant_session_factory(payment):
     db = AsyncMock()
     db.execute = AsyncMock(return_value=result)
     db.commit = AsyncMock()
+    # `AsyncSession.add` is SYNCHRONOUS. AsyncMock auto-specs every attribute as
+    # async, so leaving it makes `db.add(...)` (audit.py, on the settle path)
+    # return a coroutine nobody awaits — a RuntimeWarning that masks nothing but
+    # obscures real ones.
+    db.add = MagicMock()
     factory = MagicMock()
     factory.return_value.__aenter__ = AsyncMock(return_value=db)
     factory.return_value.__aexit__ = AsyncMock(return_value=False)

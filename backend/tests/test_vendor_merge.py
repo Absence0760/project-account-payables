@@ -22,6 +22,7 @@ from app.models.credit_memo import CreditMemo
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.procurement import PurchaseOrder
 from app.models.vendor import Vendor
+from app.models.vendor_priors import VendorExtractionPrior
 from app.models.workflow import AuditLog
 
 
@@ -103,6 +104,33 @@ async def _seed_credit_memo(mk, org_id, vendor_id, *, entity_id):
         await s.commit()
         await s.refresh(cm)
         return cm.id
+
+
+async def _seed_prior(mk, vendor_id, *, field_name, value, correction_count=1):
+    async with mk() as s:
+        p = VendorExtractionPrior(
+            vendor_id=vendor_id,
+            field_name=field_name,
+            value=value,
+            correction_count=correction_count,
+        )
+        s.add(p)
+        await s.commit()
+        await s.refresh(p)
+        return p.id
+
+
+async def _priors_of(mk, vendor_id):
+    """{field_name: value} for one vendor's surviving extraction priors."""
+    async with mk() as s:
+        rows = (
+            await s.execute(
+                select(VendorExtractionPrior.field_name, VendorExtractionPrior.value).where(
+                    VendorExtractionPrior.vendor_id == vendor_id
+                )
+            )
+        ).all()
+    return {r.field_name: r.value for r in rows}
 
 
 async def _audit_merge_rows(mk, canonical_id):
@@ -388,3 +416,88 @@ async def test_merge_contract_fk_reassigned(realdb):
     assert r.json()["reassigned"]["contracts"] == 1
     async with mk() as s:
         assert (await s.get(Contract, cid)).vendor_id == canonical
+
+
+async def test_merge_collapses_priors_colliding_across_duplicates(realdb):
+    """Two duplicates each holding a prior for the SAME field the canonical
+    lacks must NOT blow the merge up on ``uq_vendor_priors_vendor_field``.
+
+    The pre-fix code only deduped duplicates against the *canonical's* fields,
+    so the second `terms` row reassigned collided with the first → IntegrityError
+    → the whole merge 500'd and rolled back.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    canonical = await _seed_vendor(mk, org_id, name="PriorCo")
+    dup1 = await _seed_vendor(mk, org_id, name="PriorCo Ltd")
+    dup2 = await _seed_vendor(mk, org_id, name="Prior Co.")
+
+    # Canonical holds NO prior for `terms` — the natural "pick the cleanest
+    # record" choice. Both duplicates do; dup2's is the better-evidenced one.
+    await _seed_prior(mk, dup1, field_name="terms", value="net_15", correction_count=2)
+    await _seed_prior(mk, dup2, field_name="terms", value="net_30", correction_count=7)
+    # A field only one duplicate has still moves across untouched.
+    await _seed_prior(mk, dup1, field_name="cost_center", value="CC-100")
+
+    body = {"canonical_vendor_id": str(canonical), "duplicate_vendor_ids": [str(dup1), str(dup2)]}
+    async with realdb.client(key="a", role="ap_manager") as client:
+        r = await client.post("/api/enrichment/vendors/consolidation/merge", json=body)
+    assert r.status_code == 200, r.text
+    data = r.json()
+
+    # Exactly one `terms` prior survives — the most-corrected one — plus the
+    # uncontested `cost_center`.
+    assert await _priors_of(mk, canonical) == {"terms": "net_30", "cost_center": "CC-100"}
+    assert await _priors_of(mk, dup1) == {}
+    assert await _priors_of(mk, dup2) == {}
+    assert data["reassigned"]["vendor_extraction_priors:dropped"] == 1
+    assert data["reassigned"]["vendor_extraction_priors"] == 2
+
+
+async def test_merge_canonical_prior_wins_over_duplicate(realdb):
+    """Where the canonical already holds the field, its own value survives."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    canonical = await _seed_vendor(mk, org_id, name="KeepMineCo")
+    dup = await _seed_vendor(mk, org_id, name="KeepMineCo Dup")
+    await _seed_prior(mk, canonical, field_name="currency", value="USD", correction_count=1)
+    # Better-evidenced, but the canonical is the surviving vendor — it still loses.
+    await _seed_prior(mk, dup, field_name="currency", value="EUR", correction_count=9)
+
+    body = {"canonical_vendor_id": str(canonical), "duplicate_vendor_ids": [str(dup)]}
+    async with realdb.client(key="a", role="ap_manager") as client:
+        r = await client.post("/api/enrichment/vendors/consolidation/merge", json=body)
+    assert r.status_code == 200, r.text
+
+    assert await _priors_of(mk, canonical) == {"currency": "USD"}
+    assert await _priors_of(mk, dup) == {}
+    assert r.json()["reassigned"]["vendor_extraction_priors:dropped"] == 1
+    assert "vendor_extraction_priors" not in r.json()["reassigned"]
+
+
+async def test_merge_prior_collapse_is_idempotent(realdb):
+    """Re-running a completed merge collapses nothing further and keeps the
+    same winner — the tie-break is deterministic, not arbitrary."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    canonical = await _seed_vendor(mk, org_id, name="IdemPriorCo")
+    dup1 = await _seed_vendor(mk, org_id, name="IdemPriorCo A")
+    dup2 = await _seed_vendor(mk, org_id, name="IdemPriorCo B")
+    await _seed_prior(mk, dup1, field_name="tax_rate", value="0.20", correction_count=3)
+    await _seed_prior(mk, dup2, field_name="tax_rate", value="0.15", correction_count=1)
+
+    body = {"canonical_vendor_id": str(canonical), "duplicate_vendor_ids": [str(dup1), str(dup2)]}
+    async with realdb.client(key="a", role="ap_manager") as client:
+        r1 = await client.post("/api/enrichment/vendors/consolidation/merge", json=body)
+        assert r1.status_code == 200, r1.text
+        assert await _priors_of(mk, canonical) == {"tax_rate": "0.20"}
+
+        r2 = await client.post("/api/enrichment/vendors/consolidation/merge", json=body)
+    assert r2.status_code == 200, r2.text
+    # Nothing left to drop or move, and the surviving prior is unchanged.
+    assert r2.json()["reassigned"] == {}
+    assert r2.json()["total_reassigned"] == 0
+    assert await _priors_of(mk, canonical) == {"tax_rate": "0.20"}

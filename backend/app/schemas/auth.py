@@ -56,15 +56,44 @@ class MFAEnrollStartResponse(BaseModel):
     qr_code_data_url: str
 
 
+class MFAStepUpRequest(BaseModel):
+    """Optional re-authentication sent when *changing* an account's second
+    factor (starting a fresh TOTP enrollment, registering or deleting a
+    passkey, disabling TOTP).
+
+    Every field is optional because first-time enrollment stays frictionless:
+    an account with no factor yet has nothing to protect. Once a factor IS in
+    force, one of the three must be supplied and check out — the account
+    password, a code from the currently enrolled authenticator, or a WebAuthn
+    `assertion` from an already-registered passkey. Otherwise a stolen access
+    token alone would be enough to swap the second factor.
+
+    `assertion` is the browser's `navigator.credentials.get()` response for a
+    challenge minted by `POST /auth/mfa/step-up/passkey` for this exact
+    operation. It is the only proof a passwordless SSO-only account can offer.
+    """
+
+    password: str | None = Field(default=None, min_length=1)
+    code: str | None = Field(default=None, min_length=6, max_length=8)
+    assertion: dict | None = Field(default=None)
+
+
 class MFAEnrollVerifyRequest(BaseModel):
     code: str = Field(..., min_length=6, max_length=8)
 
 
-class MFADisableRequest(BaseModel):
-    """Disabling MFA requires re-confirming the password — defense against
-    a stolen-session takeover that turns off MFA without anyone noticing."""
+class MFADisableRequest(MFAStepUpRequest):
+    """Disabling MFA is a factor change like any other, so it takes the same
+    step-up proofs — password, a code from the current authenticator, or a
+    passkey assertion. Defense against a stolen-session takeover that turns off
+    MFA without anyone noticing.
 
-    password: str = Field(..., min_length=1)
+    Kept as its own name (rather than reusing `MFAStepUpRequest` directly) so
+    the route reads intelligibly and the OpenAPI schema stays descriptive; it
+    adds no fields. Password is optional here for the same reason it is on the
+    parent: an SSO-only account has none, and its passkey assertion is the
+    proof instead.
+    """
 
 
 class MFAVerifyRequest(BaseModel):
@@ -118,6 +147,29 @@ class WebAuthnAuthStartResponse(BaseModel):
 class WebAuthnAuthFinishRequest(BaseModel):
     challenge_token: str = Field(..., min_length=1)
     credential: dict
+
+
+# The closed set of factor-management operations a step-up can authorize. A
+# step-up assertion is bound to exactly one of these (it selects the Redis
+# challenge slot), so an assertion obtained for one can't be replayed against
+# another. Keep in lockstep with the `operation=` literals passed to
+# `api/auth._require_mfa_step_up`.
+STEP_UP_OPERATIONS = ("totp_enroll", "totp_disable", "passkey_register", "passkey_delete")
+
+
+class WebAuthnStepUpStartRequest(BaseModel):
+    """Begin a passkey STEP-UP challenge (authenticated — the caller already
+    holds an access token; this re-proves they hold the authenticator too).
+
+    `operation` names what the resulting assertion will be allowed to
+    authorize. It is part of the challenge's identity, not a hint: the server
+    stashes the challenge under it and the mutating endpoint looks it up under
+    its own operation, so a mismatch fails.
+    """
+
+    operation: str = Field(
+        ..., pattern="^(totp_enroll|totp_disable|passkey_register|passkey_delete)$"
+    )
 
 
 class MFAEmailChallengeRequest(BaseModel):

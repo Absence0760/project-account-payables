@@ -476,3 +476,127 @@ async def test_rejected_report_expenses_can_be_re_reported(realdb):
         assert resp.status_code == 200, resp.text
         moved = (await c.get(f"/api/expense-reports/{new_rid}")).json()
     assert moved["total_amount"] == 100.0
+
+
+# ---------------------------------------------------------------------------
+# Threshold currency — the unit a policy's money thresholds are read in
+# ---------------------------------------------------------------------------
+
+
+async def test_threshold_currency_round_trips_and_normalizes(realdb):
+    async with realdb.client(key="a", role="ap_manager") as c:
+        created = await c.post(
+            "/api/expense-policies",
+            json={
+                "name": "EUR travel policy",
+                "threshold_currency": "eur",
+                "category_limit": "100.00",
+                "per_diem_amount": "60.00",
+            },
+        )
+        assert created.status_code == 201, created.text
+        pid = created.json()["id"]
+        assert created.json()["threshold_currency"] == "EUR"
+        # The legacy per-diem-only field follows, so it can't contradict.
+        assert created.json()["per_diem_currency"] == "EUR"
+
+        assert (await c.get(f"/api/expense-policies/{pid}")).json()["threshold_currency"] == "EUR"
+
+        patched = await c.patch(f"/api/expense-policies/{pid}", json={"threshold_currency": "gbp"})
+        assert patched.status_code == 200, patched.text
+        assert patched.json()["threshold_currency"] == "GBP"
+        assert patched.json()["per_diem_currency"] == "GBP"
+
+        bad = await c.post(
+            "/api/expense-policies",
+            json={"name": "bad", "threshold_currency": "EUROS"},
+        )
+        assert bad.status_code == 422
+
+
+async def test_policy_omitting_the_currency_leaves_it_unset(realdb):
+    """NULL is a defined state — "the org's reporting currency" — not a hole the
+    API silently fills with USD."""
+    async with realdb.client(key="a", role="ap_manager") as c:
+        created = await c.post(
+            "/api/expense-policies",
+            json={"name": "Legacy shape", "category_limit": "100.00"},
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["threshold_currency"] is None
+
+
+async def test_foreign_expense_is_not_judged_against_the_threshold_as_bare_numbers(realdb):
+    """End-to-end shape of the defect on the real write path.
+
+    ¥10 000 JPY is ~$65 — comfortably under a USD 5 000 receipt threshold — but
+    the old engine compared "10000 > 5000" and demanded a receipt. With the
+    threshold's currency declared and no rate on the row the comparison cannot
+    be made, so the rule fails CLOSED (still flagged) — and the payload says so
+    honestly instead of asserting a comparison that never happened."""
+    async with realdb.client(key="a", role="ap_manager") as c:
+        await _make_policy(
+            c,
+            name="USD receipt policy",
+            category="travel",
+            threshold_currency="USD",
+            requires_receipt_above="5000.00",
+            category_limit="1000.00",
+        )
+        created = await c.post(
+            "/api/expenses",
+            json={
+                "expense_date": "2026-06-01",
+                "category": "travel",
+                "amount": "10000.00",
+                "currency": "JPY",
+            },
+        )
+        assert created.status_code == 201, created.text
+        violations = created.json()["policy_violations"] or []
+        by_code = {v["code"]: v for v in violations}
+        assert set(by_code) == {"receipt_required", "category_limit"}
+        for v in by_code.values():
+            assert v["comparison"] == "unresolved"
+            assert v["currency"] == "USD"
+            assert v["expense_currency"] == "JPY"
+
+
+async def test_foreign_expense_locked_into_the_threshold_currency_compares_converted(realdb):
+    """Once the line is attached to a USD report a rate is locked, and the
+    engine then compares the CONVERTED figure: ¥10 000 → ~$65, under both a USD
+    5 000 receipt threshold and a USD 1 000 category limit → clean."""
+    async with realdb.client(key="a", role="ap_manager") as c:
+        await _make_policy(
+            c,
+            name="USD receipt policy",
+            category="travel",
+            threshold_currency="USD",
+            requires_receipt_above="5000.00",
+            category_limit="1000.00",
+        )
+        eid = (
+            await c.post(
+                "/api/expenses",
+                json={
+                    "expense_date": "2026-06-01",
+                    "category": "travel",
+                    "amount": "10000.00",
+                    "currency": "JPY",
+                },
+            )
+        ).json()["id"]
+        rid = (
+            await c.post(
+                "/api/expense-reports",
+                json={"report_number": f"R-{uuid.uuid4().hex[:8]}", "currency": "USD"},
+            )
+        ).json()["id"]
+        attached = await c.post(f"/api/expense-reports/{rid}/expenses", json={"expense_ids": [eid]})
+        assert attached.status_code == 200, attached.text
+
+        # The attach locked the rate; re-evaluating (a no-op PATCH touches the
+        # policy refresh) must now see a real, converted comparison.
+        patched = await c.patch(f"/api/expenses/{eid}", json={"description": "hotel"})
+        assert patched.status_code == 200, patched.text
+        assert not (patched.json()["policy_violations"] or [])

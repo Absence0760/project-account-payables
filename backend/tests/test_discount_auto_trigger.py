@@ -3,17 +3,22 @@
 Two layers, mirroring ``test_approval_escalation`` + ``test_contract_renewal``:
 
   * Pure / mocked orchestration — the multi-tenant fan-out, per-tenant failure
-    isolation, the ``_best_tier`` helper, and the cost-of-capital resolver. No
-    live DB.
+    isolation, and the cost-of-capital resolver. No live DB.
   * Real-Postgres mutation — drives ``_sweep_tenant`` against a seeded tenant to
     prove the worthwhile→accept transition, the threshold gate, the
-    money-path boundary (no Payment row), idempotency, and the audit write.
+    money-path boundary (no Payment row), idempotency, the audit write, the
+    date-window enforcement, and the ``expire_if_past`` wiring (issue #124).
+
+Tier selection itself (``best_tier_for_date`` — highest-percent among tiers
+still achievable, malformed-rung tolerance) is pinned in
+``test_discount_offers.py``; this file only proves the sweep threads the
+right reference date through it.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -23,44 +28,14 @@ from app.config import settings
 from app.models.discount import (
     OFFER_STATUS_ACCEPTED,
     OFFER_STATUS_DECLINED,
+    OFFER_STATUS_EXPIRED,
     OFFER_STATUS_OFFERED,
     DiscountOffer,
 )
 from app.services import discount_auto_trigger
-from app.services.discount_auto_trigger import (
-    _best_tier,
-    run_auto_trigger_once,
-)
+from app.services.discount_auto_trigger import run_auto_trigger_once
 
 _TODAY = date(2026, 1, 1)
-
-
-# ---------------------------------------------------------------------------
-# _best_tier — pure
-# ---------------------------------------------------------------------------
-
-
-def test_best_tier_picks_highest_percent():
-    tiers = [
-        {"days": 5, "percent": "3.00"},
-        {"days": 10, "percent": "2.00"},
-        {"days": 15, "percent": "1.00"},
-    ]
-    assert _best_tier(tiers) == {"days": 5, "percent": "3.00"}
-
-
-def test_best_tier_empty_or_none():
-    assert _best_tier([]) is None
-    assert _best_tier(None) is None
-
-
-def test_best_tier_skips_malformed_rungs():
-    tiers = [
-        {"days": 5},  # missing percent
-        {"percent": "notanumber", "days": 3},
-        {"days": 10, "percent": "2.00"},
-    ]
-    assert _best_tier(tiers) == {"days": 10, "percent": "2.00"}
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +92,15 @@ async def test_run_once_continues_after_one_tenant_fails():
 # ---------------------------------------------------------------------------
 
 
-def _make_offer(org_id, *, tiers, base="10000.00", valid_until=None, status=OFFER_STATUS_OFFERED):
+def _make_offer(
+    org_id,
+    *,
+    tiers,
+    base="10000.00",
+    valid_until=None,
+    valid_from=None,
+    status=OFFER_STATUS_OFFERED,
+):
     return DiscountOffer(
         id=uuid.uuid4(),
         organization_id=org_id,
@@ -130,6 +113,7 @@ def _make_offer(org_id, *, tiers, base="10000.00", valid_until=None, status=OFFE
         base_amount=Decimal(base),
         currency="USD",
         valid_until=valid_until,
+        valid_from=valid_from,
     )
 
 
@@ -217,7 +201,11 @@ async def test_sweep_skips_below_threshold(realdb):
 
 
 @pytest.mark.asyncio
-async def test_sweep_ignores_non_offered_and_expired(realdb):
+async def test_sweep_ignores_declined_and_expires_past_valid_until(realdb):
+    """A declined offer is untouched. An `offered` offer whose `valid_until`
+    has already passed used to sit there forever (`expire_if_past` was never
+    invoked by any sweep — issue #124) — the sweep must now flip it to
+    `expired` instead of leaving it `offered`."""
     mk = realdb.sessionmaker("a")
     info = realdb.info("a")
     db_name = info.db_name
@@ -252,7 +240,43 @@ async def test_sweep_ignores_non_offered_and_expired(realdb):
             await db.execute(select(DiscountOffer).where(DiscountOffer.id == expired_id))
         ).scalar_one()
         assert d.status == OFFER_STATUS_DECLINED
-        assert e.status == OFFER_STATUS_OFFERED  # expired-but-offered stays offered
+        assert e.status == OFFER_STATUS_EXPIRED
+
+
+@pytest.mark.asyncio
+async def test_sweep_does_not_auto_accept_a_tier_whose_window_has_closed(realdb):
+    """Reproduces the issue's exact failure scenario: an offer opened 20 days
+    ago with a 5-day/3% and 10-day/2% sliding scale, still within its own
+    `valid_until` (+10 days out). Both tiers' REAL deadlines (measured from
+    `valid_from`) are long past — the sweep must not auto-accept using
+    today-as-reference, which would make every tier look perpetually
+    achievable."""
+    mk = realdb.sessionmaker("a")
+    info = realdb.info("a")
+    db_name = info.db_name
+
+    offer = _make_offer(
+        info.org_id,
+        tiers=[{"days": 5, "percent": "3.00"}, {"days": 10, "percent": "2.00"}],
+        valid_from=_TODAY - timedelta(days=20),
+        valid_until=_TODAY + timedelta(days=10),
+    )
+    async with mk() as db:
+        db.add(offer)
+        await db.commit()
+        offer_id = offer.id
+
+    captured = await discount_auto_trigger._sweep_tenant(db_name, _TODAY, _resolver_const)
+    assert captured == 0
+
+    from sqlalchemy import select
+
+    async with mk() as db:
+        row = (
+            await db.execute(select(DiscountOffer).where(DiscountOffer.id == offer_id))
+        ).scalar_one()
+        assert row.status == OFFER_STATUS_OFFERED  # not auto-accepted; not expired either
+        assert row.accepted_tier is None
 
 
 @pytest.mark.asyncio

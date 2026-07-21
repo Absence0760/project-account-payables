@@ -387,6 +387,16 @@ If the supplier portal is implemented, vendors can:
 
 - Full card numbers are only shown on explicit request (with audit log entry)
 - Card details are never stored in our database — retrieved from provider on demand
+- **The vendor-facing PAN reveal is single-use under concurrency.**
+  `GET /portal/cards/{token}` (public-by-design — the emailed token is the
+  credential) claims the `card_reveal_tokens` row with one atomic
+  `UPDATE … SET used_at = now() WHERE token_hash = … AND used_at IS NULL …
+  RETURNING card_id`, so simultaneous requests carrying the same token cannot
+  both pass the single-use check, and the claim is **committed before** the
+  outbound provider call — a slow, failing, or crashing provider round-trip can
+  never leave an already-revealed link re-usable. Fail-closed: a degraded reveal
+  still spends the link. Full semantics in
+  [supplier-portal.md](supplier-portal.md) § Single-use virtual-card reveal.
 - Cards have strict spending limits matching invoice amounts
 - Cards auto-expire after configurable period (default: 30 days)
 - Declined charges trigger alerts
@@ -423,9 +433,109 @@ float.
 | Action | When | `details` |
 |---|---|---|
 | `card.details_viewed` | PAN reveal (`GET /{id}/details`) | `last_four` |
+| `card.revealed_via_token` | vendor-facing single-use PAN reveal (`GET /portal/cards/{token}`) — written when the token is **claimed**, committed before the provider is called, `actor_id=None` (no internal user) | `last_four` |
 | `card.cancelled` | manual cancel (`POST /{id}/cancel`) | `last_four`, `from`, `to` |
 | `card.charged` | authorization webhook applies a charge | `last_four`, `from`, `to`, `amount_charged` (string Decimal) |
 | `card.settled` | settlement webhook completes + accrues the rebate | `last_four`, `from`, `to`, `rebate_amount`, `rebate_rate` (string Decimals), `rebate_created` (bool — `false` if the one-per-card unique index skipped a duplicate) |
+
+### Issue — idempotent at the provider, not just in our DB
+
+A virtual card is spendable money, so issuance carries the money invariant
+*idempotency on writes that move money* — and it needs **two** layers, because
+they cover different failures:
+
+| Layer | Mechanism | Catches |
+|---|---|---|
+| Ours | partial unique index `uq_virtual_cards_one_live_per_invoice` (migration `0067`) + a pre-check on **both** issuance entry points | a duplicate that reached our database |
+| Provider's | a stable idempotency key on the create call | a card the provider made that **never** reached our database |
+
+Both entry points — `POST /api/cards/generate` and the `virtual_card` leg of
+`execute_payment_run` — pre-check for an existing live card
+(`card_issuance.find_live_card_for_invoice`) before calling the provider, and
+insert through `card_issuance.persist_card`, which flushes inside a SAVEPOINT so
+a racer that claims the slot in between is a recoverable `False` rather than a
+poisoned transaction. See *Persisting the row* below.
+
+The provider layer is the one that matters for the nastiest case: `httpx` times
+out *after* Lithic/Nium already provisioned the card. We hold no
+`provider_card_id`, so the live card is orphaned and ungoverned — and the DB
+index can't see it, because no row was ever written. An unkeyed retry then mints
+a **second** live card. With a key, the provider replays the original response
+and the retry converges on the card that already exists.
+
+The two providers do **not** share a convention, so each adapter sends the key
+on its own channel:
+
+| Provider | Channel | Constraints |
+|---|---|---|
+| Lithic | `Idempotency-Key` header on `POST /v1/cards` | must be a valid **UUID**; keys retained 30 days |
+| Nium | `x-request-id` header on the card-create POST | ≤255 chars; keys purged after 24 hours |
+| mock | honours the key by deriving the card id from it (and echoes it on `raw_response`) | local-first: the retry path is exercisable with no provider account |
+
+The key itself is minted by `services/card_issuance.py::build_card_idempotency_key`
+— pure, deterministic, **never** a fresh `uuid4`:
+
+```
+uuid5(CARD_IDEMPOTENCY_NAMESPACE, f"virtual_card:{correlation_id or invoice_id}:{reissue_seq}")
+```
+
+- `correlation_id` (falling back to `invoice_id` for rows that predate it)
+  anchors the key to the *payable*, so every attempt at the same issuance
+  computes the same value.
+- `reissue_seq` is how many `VirtualCard` rows the invoice already has — read
+  from the tenant DB, which is why `issue_card_for_invoice` now takes `db`. A
+  timed-out attempt persists nothing, so a retry recomputes the same sequence
+  and therefore the same key. A deliberate **cancel-then-reissue** does leave a
+  row behind, so it advances the sequence and gets a fresh key — without that,
+  the provider would replay the original (now closed) card inside its retention
+  window and the vendor would receive a dead card.
+
+`VirtualCardPayload.idempotency_key` is `None`-able; an adapter given `None`
+sends no key at all rather than inventing an unstable one (a per-attempt key
+would give false confidence while still double-issuing).
+
+#### Persisting the row — `persist_card`, and the `begin_nested` ordering trap
+
+Every card insert goes through `card_issuance.persist_card(db, card)`, which
+returns `True` when the row landed and `False` when a concurrent writer already
+claimed the invoice's live-card slot. Both issuance entry points share it, so
+the recovery semantics can't drift apart.
+
+The reason it is a helper and not five inlined lines is a genuine SQLAlchemy
+trap. `SessionTransaction._take_snapshot` **flushes the session** when a
+`begin_nested()` boundary opens. So this:
+
+```python
+db.add(card)                 # WRONG — pending
+try:
+    async with db.begin_nested():   # ← flushes `card` HERE, before the SAVEPOINT
+        await db.flush()
+except IntegrityError:
+    ...
+```
+
+issues the INSERT *before* the SAVEPOINT exists. The `IntegrityError` escapes
+the block that was supposed to contain it, and — worse than an obvious crash —
+it leaves the enclosing transaction in a needs-rollback state, so the *next*
+statement on that session raises `PendingRollbackError` somewhere unrelated. The
+`add` must be **inside** the block:
+
+```python
+try:
+    async with db.begin_nested():
+        db.add(card)
+        await db.flush()
+except IntegrityError:
+    ...
+```
+
+No explicit `expunge` of the loser's row is needed: rolling back to the savepoint
+runs `SessionTransaction._restore_snapshot`, which expunges `session._new` to
+transient, so a later `flush`/`commit` cannot re-attempt the failed insert.
+(`recurring_invoices.generate_one` relies on the same behaviour — the two
+savepoints are deliberately identical in shape.) Regression coverage:
+`tests/test_payment_card_duplicate_recovery.py` (both entry points, against a
+real Postgres so the partial index actually fires).
 
 ### Cancel (`POST /{id}/cancel`) — provider-first + idempotent
 
@@ -445,6 +555,41 @@ otherwise stay `False` (fail-safe). This cleanly resolves the retry case where a
 first cancel closed the card at the provider but the DB write failed and AP
 retries — the second attempt confirms and marks the row cancelled instead of
 erroring.
+
+A **charged / completed** card cannot be cancelled (`409`) — the funds have
+moved and no provider can un-spend them. That is the single most important
+consequence of this endpoint's contract, because it means a spent card occupies
+its invoice's live-card slot *permanently* (the partial index counts every
+non-`cancelled` row). See "Settling against an existing card" below.
+
+**Voiding a card payment cancels the card too.** `POST /api/payments/{id}/void`
+calls the shared provider-side primitive `card_issuance.cancel_card_at_provider`
+(same provider-first ordering) so a void actually stops the money instead of
+only moving our books — a live card left behind is still bearer-spendable with
+no payment naming it. Unlike this endpoint it is *best-effort*: a card-provider
+outage is recorded as the `card_outcome` on the `payment.voided` audit row
+rather than raised, because a provider outage must not block the accounting
+void. See `payments.md` § Voiding a card payment cancels the card.
+
+#### Settling against an existing card
+
+`card_settlement_block(card, amount)` decides whether a payment may converge
+onto a card it did **not** mint, and is deliberately separate from
+`find_live_card_for_invoice`:
+
+- `find_live_card_for_invoice` answers *"what occupies the slot?"* and must use
+  exactly the index's predicate (`status <> 'cancelled'`). Narrowing it would
+  make the pre-check miss a row the index still counts, so the caller would mint
+  a provider card the index then refuses to persist — an orphaned spendable card.
+- `card_settlement_block` answers *"can that card be what settles this
+  payment?"* — `None` if yes, else a `Payment.failure_reason`. It rejects a
+  card in `CARD_SPENT_STATUSES` (`charged`/`completed`) and one whose
+  `amount_limit` cannot cover the payable.
+
+The spend check is the load-bearing one: `amount_limit` is the authorization
+ceiling and is **not** reduced by spend (a charge only sets `amount_charged`),
+so a limit-only guard would mark a payment `completed` against a card whose
+money already moved under a different, voided payment.
 
 ### Webhook handler (`POST /cards/webhook/{provider}`)
 

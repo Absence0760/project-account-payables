@@ -94,7 +94,8 @@ async def test_slug_check_available(realdb):
 
 
 async def test_slug_check_taken_returns_unavailable(realdb):
-    # The seeded test tenant "pytesta" already owns its slug.
+    # The harness's tenant A already owns its slug (name varies with the
+    # process's realdb slot — see tests/conftest.py).
     taken = realdb.info("a").slug
     async with realdb.client(key="a", role=None) as c:
         resp = await c.get("/api/signup/slug-check", params={"slug": taken})

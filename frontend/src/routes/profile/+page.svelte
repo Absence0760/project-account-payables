@@ -116,7 +116,12 @@
 	async function startEnroll() {
 		loading = true;
 		try {
-			enrollment = await api.post<EnrollResponse>('/api/auth/mfa/enroll', {});
+			// Adding TOTP to an account that already has a passkey is a factor
+			// change, so the server wants a step-up. This card has no password
+			// field (and an SSO-only account has no password anyway), so the
+			// passkey the account already holds is the proof.
+			const proof = hasPasskey ? await auth.passkeyStepUp('totp_enroll') : {};
+			enrollment = await api.post<EnrollResponse>('/api/auth/mfa/enroll', proof);
 			verifyCode = '';
 		} catch (err) {
 			toast(err instanceof Error ? err.message : 'Failed to start enrollment', 'error');
@@ -141,10 +146,16 @@
 		}
 	}
 
-	async function disable() {
+	/** Turning MFA off with a passkey rather than the password — the only route
+	 * open to an SSO-only account, which has no password to re-type. */
+	async function disableWithPasskey() {
+		await disable(await auth.passkeyStepUp('totp_disable'));
+	}
+
+	async function disable(proof: StepUpProof = { password: disablePassword }) {
 		loading = true;
 		try {
-			await api.post('/api/auth/mfa/disable', { password: disablePassword });
+			await api.post('/api/auth/mfa/disable', proof);
 			await auth.fetchUser();
 			disablePassword = '';
 			toast('Two-factor authentication disabled', 'success');
@@ -162,10 +173,11 @@
 
 	// --- Passkeys (WebAuthn) — an additional MFA factor ----------------------
 	import { isWebAuthnSupported } from '$lib/webauthn';
-	import type { Passkey } from '$lib/stores/auth.svelte';
+	import type { Passkey, StepUpProof } from '$lib/stores/auth.svelte';
 
 	let passkeys = $state<Passkey[] | null>(null);
 	let passkeyName = $state('');
+	let passkeyPassword = $state('');
 	let registeringPasskey = $state(false);
 	let passkeysLoaded = $state(false);
 	const webAuthnOk = isWebAuthnSupported();
@@ -186,11 +198,37 @@
 		}
 	}
 
+	// Adding a factor to an account that ALREADY has one is a step-up
+	// operation server-side — otherwise a stolen session could bind an
+	// attacker's authenticator. Mirror that here so the form asks for the
+	// password only when it's actually required.
+	const needsPasskeyStepUp = $derived(
+		Boolean(auth.user?.mfa_enabled) || (passkeys?.length ?? 0) > 0,
+	);
+	// A registered passkey is itself a step-up credential. That matters most for
+	// an SSO-only account: no password, no authenticator code, so without this
+	// its passkey is the only thing it can be challenged on — and factor
+	// management would otherwise be closed to it entirely.
+	const hasPasskey = $derived((passkeys?.length ?? 0) > 0 && webAuthnOk);
+	const canStepUp = $derived(!needsPasskeyStepUp || Boolean(passkeyPassword) || hasPasskey);
+
+	/** Whichever proof the user has actually offered. A typed password wins (it
+	 * needs no device interaction); otherwise fall back to the passkey prompt. */
+	async function passkeyCardProof(
+		operation: 'passkey_register' | 'passkey_delete',
+	): Promise<StepUpProof> {
+		if (!needsPasskeyStepUp) return {};
+		if (passkeyPassword) return { password: passkeyPassword };
+		return auth.passkeyStepUp(operation);
+	}
+
 	async function addPasskey() {
 		registeringPasskey = true;
 		try {
-			await auth.registerPasskey(passkeyName.trim() || 'Passkey');
+			const proof = await passkeyCardProof('passkey_register');
+			await auth.registerPasskey(passkeyName.trim() || 'Passkey', proof);
 			passkeyName = '';
+			passkeyPassword = '';
 			await loadPasskeys();
 			toast('Passkey added', 'success');
 		} catch (err) {
@@ -203,7 +241,10 @@
 
 	async function removePasskey(id: string) {
 		try {
-			await auth.deletePasskey(id);
+			// Removing a passkey always needs the step-up — the passkey itself is
+			// a live factor, so the backend refuses a bare-session delete.
+			await auth.deletePasskey(id, await passkeyCardProof('passkey_delete'));
+			passkeyPassword = '';
 			await loadPasskeys();
 			toast('Passkey removed', 'success');
 		} catch (err) {
@@ -356,12 +397,27 @@
 							<input
 								type="password"
 								bind:value={disablePassword}
-								required
 								autocomplete="current-password"
 							/>
 						</label>
 						<div class="actions">
-							<button type="submit" class="danger" disabled={loading || !disablePassword}>
+							{#if hasPasskey}
+								<!-- An SSO-only account has no password to type; its
+								     registered passkey is the proof instead. -->
+								<button
+									type="button"
+									class="secondary"
+									disabled={loading}
+									onclick={disableWithPasskey}
+								>
+									Confirm with a passkey
+								</button>
+							{/if}
+							<button
+								type="submit"
+								class="danger"
+								disabled={loading || !disablePassword}
+							>
 								{loading ? 'Disabling...' : 'Disable two-factor'}
 							</button>
 						</div>
@@ -427,6 +483,27 @@
 			{#if !webAuthnOk}
 				<div class="status disabled">This browser doesn't support passkeys.</div>
 			{:else}
+				{#if needsPasskeyStepUp}
+					<!-- One field for both operations: the backend requires a step-up
+					     to add a factor to an account that already has one, and always
+					     requires one to remove a passkey. -->
+					<label>
+						<span>Confirm your password to add or remove a passkey</span>
+						<input
+							type="password"
+							bind:value={passkeyPassword}
+							autocomplete="current-password"
+						/>
+					</label>
+					{#if hasPasskey}
+						<p class="hint">
+							Leave this blank to confirm with one of your existing passkeys
+							instead — the only option if you sign in with SSO and have no
+							password.
+						</p>
+					{/if}
+				{/if}
+
 				{#if passkeys && passkeys.length > 0}
 					<ul class="passkey-list">
 						{#each passkeys as pk (pk.id)}
@@ -444,6 +521,7 @@
 								<button
 									type="button"
 									class="danger small"
+									disabled={!canStepUp}
 									onclick={() => removePasskey(pk.id)}
 								>
 									Remove
@@ -471,7 +549,10 @@
 						/>
 					</label>
 					<div class="actions">
-						<button type="submit" disabled={registeringPasskey}>
+						<button
+							type="submit"
+							disabled={registeringPasskey || !canStepUp}
+						>
 							{registeringPasskey ? 'Waiting for passkey…' : 'Add a passkey'}
 						</button>
 					</div>

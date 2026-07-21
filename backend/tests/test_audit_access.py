@@ -192,3 +192,20 @@ async def test_audit_trail_view_is_itself_audited(realdb):
             .all()
         )
     assert rows, "viewing the audit trail must itself be audited"
+
+
+def test_field_diff_keeps_list_values_as_real_lists():
+    """A list-valued field (e.g. the GL codes on a line-item edit) must land in
+    the JSONB as a list, not as the opaque repr `"['6100']"` — and its Decimal
+    members must still serialise exactly."""
+    from decimal import Decimal
+
+    from app.services.audit_access import build_field_diff
+
+    diff = build_field_diff(
+        {"gl_accounts": ["6100"], "totals": [Decimal("10.50")]},
+        {"gl_accounts": ["6200", "6300"], "totals": [Decimal("11.50")]},
+        ["gl_accounts", "totals"],
+    )
+    assert diff["gl_accounts"] == {"old": ["6100"], "new": ["6200", "6300"]}
+    assert diff["totals"] == {"old": ["10.50"], "new": ["11.50"]}

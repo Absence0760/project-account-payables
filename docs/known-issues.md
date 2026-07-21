@@ -173,3 +173,51 @@ enabled before suites that depend on it run.
 
 **Trigger to revisit:** the next local flake that traces to workflow state, or
 any plan to run multiple suite directories in one CI shard sequentially.
+
+---
+
+## A dev backend on the same Postgres mutates the pytest tenant DBs mid-test
+
+**Discovered:** 2026-07-20, while root-causing the concurrent-pytest cross-kill
+(issue #211's environment notes).
+
+**Symptom (predicted, not yet reproduced):** realdb pytest failures — missing or
+unexpectedly-`failed` invoices, `TRUNCATE` stalls — in a run that overlapped a
+locally-running backend (`pnpm dev:backend`, or the backend Playwright drives)
+pointed at the same Postgres.
+
+**Root cause:** the backend's background sweeps enumerate **every** organization
+in the control plane and open a connection per tenant DB —
+`extraction_reaper.run_reaper_loop` does
+`select(Organization.id, Organization.db_name)` with no filter, and it is on by
+default (`AP_EXTRACTION_REAPER_ENABLED` defaults to `True`). The realdb harness
+registers its test tenants in that same shared control plane
+(`account_payables`), so a dev server happily sweeps `ap_pytesta` / `ap_pytestb`
+— transitioning stuck `pending` invoices to `failed` inside a database a test is
+mid-way through asserting on, and holding a snapshot/lock the next test's
+`TRUNCATE` must wait for.
+
+The per-process slot claim added in `tests/conftest.py` (see backend
+`CLAUDE.md` § Test databases) makes *pytest processes* mutually exclusive, but it
+cannot hide the harness tenants from a dev server, which discovers them through
+the control plane rather than by name.
+
+**Blast radius:** local only, and only while a backend is running against the
+same Postgres as a pytest run. CI is immune — each shard boots its own Postgres
+and runs no server.
+
+**Workaround today:** don't run the dev backend against the same Postgres while
+running realdb pytest (stop `pnpm dev:backend`, or point one of them at another
+instance).
+
+**Recommended fix:** give the harness its own control-plane database per slot
+(`account_payables_pytest<N>`) instead of sharing `account_payables`, so the
+harness tenants are invisible to any server on the default control plane. That
+also removes the remaining cross-process contention on the shared control-plane
+unique constraints (emails, org slugs). Deferred here because it moves
+`settings.database_url` for the whole test session — a materially wider blast
+radius than the isolation fix it would extend, and worth landing on its own.
+
+**Trigger to revisit:** the next realdb failure that can't be reproduced with
+nothing else attached to Postgres, or any move to run the e2e stack and pytest
+concurrently.

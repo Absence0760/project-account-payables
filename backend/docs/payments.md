@@ -221,6 +221,82 @@ confirmed-stuck one (see the row-lock double-execute guard above). An
 operator calls `/resume` only after confirming the run has made no progress
 for an implausible amount of time.
 
+### The `virtual_card` leg — converging on an invoice's existing card
+
+A `virtual_card` payment skips the payment adapter and mints a card instead
+(`_execute_single_payment` → `services/card_issuance`). Because an invoice can
+hold at most one LIVE card (`uq_virtual_cards_one_live_per_invoice`), the leg
+has to cope with that card already existing — it may have been minted by `POST
+/api/cards/generate`, or by a concurrent payment run. Both are reachable, so
+the leg mirrors the batch endpoint's two-layer handling:
+
+1. **Pre-check** — `find_live_card_for_invoice` before the provider call. An
+   invoice that already holds a live card never reaches the adapter, so no
+   second spendable card is minted and then orphaned by the index rejecting its
+   row.
+2. **Savepoint** — the insert goes through `persist_card`, which flushes inside
+   a `begin_nested()` block. A racer that claimed the slot between the
+   pre-check and the flush trips the index; the savepoint contains it so the
+   dispatch loop's audit row and per-payment commit still succeed. Without it
+   the `IntegrityError` left the whole session needing a rollback, so the
+   loop's very next statement raised `PendingRollbackError`, the run never
+   rolled up, and it stayed `executing` — with `/resume` re-driving the same
+   payment into the same crash.
+
+The payment then settles against whichever card is live — but **only if that
+card can actually be what settled it** (`card_issuance.card_settlement_block`).
+Converging marks the payment `completed`, i.e. asserts money moved, so the
+assertion has to be true. Two honest failure states rather than a misleading
+`completed`:
+
+| `failure_reason` | When |
+|---|---|
+| `card_already_charged` | the occupying card is `charged`/`completed` — its funds already moved, under a *different* payment |
+| `card_already_issued_insufficient_limit` | the card is live and unspent but its `amount_limit` is below this payment's amount |
+| `card_issuance_conflict` | the contended live-card slot was empty on re-read (the winner cancelled its card in between) — surfaced for AP rather than silently re-calling the provider |
+
+The spent-card case is **not** a race. `amount_limit` is the authorization
+ceiling and is never reduced by spend (a charge only sets `amount_charged`), so
+a limit-only check would happily settle against a redeemed card. The reachable
+flow is: mint → the vendor redeems it (webhook → `charged`) → AP voids that
+payment → the invoice returns to the payable pool (`approved` is in
+`PAYABLE_INVOICE_STATUSES`) → the next run finds the same spent card.
+
+When convergence *is* valid, the payment claims the card's `payment_id` if
+nothing else owns it (a card from `POST /api/cards/generate` carries none) —
+`list_payments` resolves a row's card via `VirtualCard.payment_id ==
+Payment.id`, so without that link the UI shows no card on a payment whose
+reference reads `CARD-…`. A card already naming another payment is never
+re-pointed; that payment is live and the link is its badge.
+
+Both outcomes write a PII-free audit row against the card (ids, last four,
+exact amount as a string — never a PAN): `card.generated` on a fresh mint
+(matching the batch endpoint, so a card-lifecycle query shows a creation event
+on both mint paths) and `card.reused` when the payment settled against a card
+it did not mint. A converged payment does **not** re-email the vendor — the
+reveal link was already sent when the card was minted.
+
+### Voiding a card payment cancels the card
+
+`POST /payments/{id}/void` on a `virtual_card` payment also closes the card at
+the provider (`_cancel_card_for_void` → `card_issuance.cancel_card_at_provider`).
+Without that, the void only moved our books: the card stayed live and
+bearer-spendable with no payment behind it, and — still occupying the invoice's
+live-card slot — it was rediscovered by the next payment run.
+
+Provider-**first**, mirroring `POST /api/cards/{id}/cancel`: the row flips to
+`cancelled` (plus a `card.cancelled` audit row tagged `via: payment_void`) only
+once the provider confirms the close. Best-effort like the payment rail — a
+card-provider outage records the outcome instead of blocking the accounting
+void. The outcome lands on the `payment.voided` audit row as `card_outcome`:
+
+| `card_outcome` | Meaning |
+|---|---|
+| `card_cancelled` | closed at the provider and in our DB |
+| `card_already_charged` | already spent — the provider cannot un-spend it; AP must chase the refund. `card_settlement_block` is what then stops a later run settling against it |
+| `card_already_cancelled` / `no_card_linked` | nothing to do |
+| `cards_not_configured` / `card_cancel_rejected` / `card_cancel_error:<Type>` | the provider could not confirm; the card is left live (unverified cancels are never recorded) |
+
 ### Payment processor adapters
 
 The actual money movement is handled by an adapter pattern in `backend/app/services/payment_adapters/` — same shape as ERP, extraction, and card adapters. Each adapter implements:
@@ -510,11 +586,31 @@ gate entirely. A configured-but-unparseable threshold fails **closed** — the r
 is created `requires_cfo_approval=True` and the misconfiguration is logged
 (PII-free) for an admin to correct, rather than silently disabling the control.
 
-Independently, `create_payment_run` refuses any invoice that still carries an
-**unresolved** (`open`/`escalated`) `duplicate` or `fraud_flag` exception — the
-duplicate warning is advisory and doesn't block on its own, so this stops the
-same invoice being approved and paid twice. Resolving or dismissing the
-exception (the human sign-off) makes the invoice payable again.
+### Financial-integrity exception gate
+
+Independently of the CFO threshold, `create_payment_run` refuses any invoice
+that still carries an **unresolved** (`open`/`escalated`) exception of a class
+listed in `payments.PAYMENT_BLOCKING_EXCEPTION_TYPES`:
+
+| Type | What it would let through |
+|------|---------------------------|
+| `duplicate` | the same invoice approved and paid twice |
+| `fraud_flag` | a bank-detail swap, rush payment, statistical anomaly, or an altered / never-issued cheque from a Positive Pay return |
+| `line_total_mismatch` | a header `amount` that openly disagrees with the invoice's own line items — the run pays the header, and the header is never silently recomputed from the lines (see `line-total-reconciliation.md`) |
+
+Each is raised as an `error`-severity advisory flag, and **approval does not gate
+on any of them** — nothing in `services/review.py` or `workflow_engine.py` reads
+warning severity, so all three can be approved straight past. Payment-run
+creation is the gate that stops the money.
+
+Resolving or dismissing the exception is the human sign-off that clears it and
+makes the invoice payable again; `escalated` still blocks, because it means a
+human is still working it. The run is refused as a whole, naming only the
+offending invoices, so the operator drops or clears them rather than guessing.
+
+Coverage: `tests/test_payment_run_blocking_exceptions.py` drives real exception
+rows against a real DB, so the membership of the tuple is pinned in **both**
+directions (a `po_mismatch`, which is advisory here, must not block).
 
 ## Code Structure
 

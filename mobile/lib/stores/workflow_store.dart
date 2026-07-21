@@ -21,8 +21,11 @@ class WorkflowStore extends ChangeNotifier {
   bool get loading => _loading;
   String? get error => _error;
 
-  @visibleForTesting
-  void debugReset() {
+  /// Drop all in-memory state. Called on logout / forced logout through
+  /// `SessionManager.endSession` — these are process-lifetime singletons, so
+  /// without this a signed-out user's data would still be in memory for the
+  /// next account on the device. Tests use it to decouple from run order.
+  void reset() {
     _workflows = [];
     _loading = false;
     _error = null;

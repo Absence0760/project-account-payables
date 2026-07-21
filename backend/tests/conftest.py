@@ -146,6 +146,13 @@ def _autouse_fake_redis(monkeypatch):
 
     monkeypatch.setattr("app.services.rate_limit.get_redis", _get_redis)
     monkeypatch.setattr("app.services.webhook_security.get_redis", _get_redis)
+    # MFA holds a *pending* (started-but-unverified) TOTP enrollment secret in
+    # Redis so an in-flight enrollment can't disturb the factor already in
+    # force. Stubbing it here means every enroll/verify test gets the ceremony
+    # store for free; files that assert on the raw keyspace (test_mfa.py,
+    # test_mfa_security.py) install their own fake, which wins because
+    # test-requested fixtures run after autouse ones.
+    monkeypatch.setattr("app.services.mfa.get_redis", _get_redis)
     # Also stub the JWT-blocklist client so authenticated requests in tests
     # don't bind a module-level real-Redis connection to one test's event loop
     # (reused on the next test's loop → "Event loop is closed"). Tests that
@@ -170,17 +177,166 @@ def _autouse_fake_redis(monkeypatch):
 # business tables before each test. It is function-scoped with fresh engines
 # per call so there are no cross-event-loop engine-reuse pitfalls.
 #
+# The tenant pair is claimed EXCLUSIVELY by this pytest process for the whole
+# session — see ``_claim_realdb_slot`` below. Sharing it between two concurrent
+# pytest processes is not survivable: the per-test reset TRUNCATEs the tenant
+# tables and terminates every other backend on them, so each process would be
+# deleting the other's rows and killing its connections mid-test.
+#
 # Requires the dev Postgres to be up (``pnpm db:up``). When it isn't reachable
 # the fixture skips rather than erroring, so the mock-only suite still runs.
 # ---------------------------------------------------------------------------
 
+import asyncio  # noqa: E402
+import contextlib  # noqa: E402
 import os  # noqa: E402
+import threading  # noqa: E402
 import uuid  # noqa: E402
 from dataclasses import dataclass, field  # noqa: E402
 
 import pytest_asyncio  # noqa: E402
 
-_TEST_TENANTS = {"a": "pytesta", "b": "pytestb"}
+# ---------------------------------------------------------------------------
+# Per-process tenant slot
+#
+# `ap_pytesta` / `ap_pytestb` are process-EXCLUSIVE, not merely suite-exclusive:
+# the reset below TRUNCATEs their tables and reaps every other backend on them.
+# Two pytest processes pointed at the same Postgres therefore corrupt each other
+# (deleted rows + `ConnectionDoesNotExistError` in unrelated files), which reads
+# as flakiness rather than as the collision it is.
+#
+# So each process claims a *slot* — a Postgres session-level advisory lock —
+# and uses the tenant pair named for it. Slot 0 keeps the historical names, so
+# the overwhelmingly common single-process run (and every CI shard, each with
+# its own Postgres) behaves exactly as before and creates no extra databases;
+# only a second concurrent process pays for provisioning `ap_pytesta1` etc.,
+# once per session.
+#
+# Postgres arbitrates the claim, which is what makes this crash-safe: the lock
+# is released when the holding connection goes away, so a killed run never
+# strands a slot and there is nothing to garbage-collect. The connection is
+# parked on its own event loop in a daemon thread so the claim can outlive the
+# function-scoped loops pytest-asyncio hands each test.
+# ---------------------------------------------------------------------------
+
+# Arbitrary namespace for the two-int advisory-lock key; the second int is the
+# slot number. Only this harness uses it.
+_SLOT_LOCK_NAMESPACE = 0x41505453  # "APTS"
+
+
+class _SlotClaim:
+    """Holds an exclusive claim on one realdb tenant slot for the session."""
+
+    def __init__(self) -> None:
+        self.slot: int | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._conn = None
+
+    def acquire(self, dsn: str) -> int:
+        """Claim the lowest free slot. Raises whatever asyncpg raises if the
+        server is unreachable — the caller turns that into the usual skip."""
+        ready = threading.Event()
+        failure: list[BaseException] = []
+
+        def _run() -> None:
+            import asyncpg
+
+            loop = asyncio.new_event_loop()
+            self._loop = loop
+            asyncio.set_event_loop(loop)
+            try:
+                self._conn = loop.run_until_complete(asyncpg.connect(dsn))
+                slot = 0
+                while not loop.run_until_complete(
+                    self._conn.fetchval(
+                        "SELECT pg_try_advisory_lock($1, $2)", _SLOT_LOCK_NAMESPACE, slot
+                    )
+                ):
+                    slot += 1
+                self.slot = slot
+            except BaseException as exc:  # noqa: BLE001 - re-raised on the main thread
+                failure.append(exc)
+                # The handshake may have succeeded and only the lock probe
+                # failed; hand the socket back now rather than waiting for GC.
+                if self._conn is not None:
+                    with contextlib.suppress(Exception):
+                        loop.run_until_complete(self._conn.close())
+                    self._conn = None
+            finally:
+                ready.set()
+            if not failure:
+                # Park: keeps the connection (and therefore the lock) alive and
+                # serviced for the rest of the session.
+                loop.run_forever()
+            loop.close()
+
+        self._thread = threading.Thread(target=_run, name="realdb-slot", daemon=True)
+        self._thread.start()
+        ready.wait()
+        if failure:
+            # The thread has already torn its loop down. Drop every handle so a
+            # later `release()` (or a retry from the next test, when Postgres is
+            # simply down and the fixture keeps skipping) doesn't touch a closed
+            # loop.
+            self._loop = self._conn = self._thread = None
+            raise failure[0]
+        assert self.slot is not None
+        return self.slot
+
+    def release(self) -> None:
+        loop, conn, thread = self._loop, self._conn, self._thread
+        self._loop = self._conn = self._thread = None
+        self.slot = None
+        if loop is None or loop.is_closed():
+            return
+        # Best-effort: the run has already reported its result, and Postgres
+        # drops the lock when the process exits regardless — a hung close must
+        # not surface as a session-teardown error.
+        if conn is not None:
+            with contextlib.suppress(Exception):
+                asyncio.run_coroutine_threadsafe(conn.close(), loop).result(timeout=10)
+        with contextlib.suppress(Exception):
+            loop.call_soon_threadsafe(loop.stop)
+        if thread is not None:
+            thread.join(timeout=10)
+
+
+_slot_claim = _SlotClaim()
+
+
+def _asyncpg_dsn(url: str) -> str:
+    """`postgresql+asyncpg://…` (SQLAlchemy) → `postgresql://…` (asyncpg)."""
+    return url.replace("+asyncpg", "", 1)
+
+
+def _claim_realdb_slot() -> int:
+    """This process's realdb slot, claimed on first use and held for the session."""
+    if _slot_claim.slot is None:
+        from app.config import settings as cfg
+
+        _slot_claim.acquire(_asyncpg_dsn(cfg.database_url))
+    assert _slot_claim.slot is not None
+    return _slot_claim.slot
+
+
+def tenant_slugs_for_slot(slot: int) -> dict[str, str]:
+    """Tenant slugs for a slot. Slot 0 keeps the historical names."""
+    suffix = "" if slot == 0 else str(slot)
+    return {"a": f"pytesta{suffix}", "b": f"pytestb{suffix}"}
+
+
+def role_email(slug: str, role: str) -> str:
+    """The seeded login for a role in a test tenant. Single source of truth —
+    tests must derive it from here rather than hardcoding a slug, which changes
+    with the slot."""
+    return f"{role}@{slug}.test"
+
+
+def pytest_sessionfinish(session, exitstatus) -> None:  # noqa: ARG001
+    """Hand the slot back promptly. Postgres would release it at process exit
+    anyway; doing it here keeps a long-lived runner tidy."""
+    _slot_claim.release()
 
 
 @dataclass
@@ -227,17 +383,34 @@ async def _ensure_test_tenants() -> dict:
             )
 
         async with ctrl_mk() as s:
-            existing = {r.name: r.id for r in (await s.execute(select(Role))).scalars().all()}
-            for name in ALL_ROLES:
-                if name not in existing:
-                    rid = uuid.uuid4()
-                    s.add(Role(id=rid, name=name))
-                    existing[name] = rid
+            # `roles` is control-plane and NOT slotted, so on a freshly
+            # initialized Postgres two concurrent pytest processes can both find
+            # `admin` missing and both insert it. ON CONFLICT DO NOTHING against
+            # the system-role partial unique index (`uq_roles_system_name`, org
+            # id NULL) makes the seed a safe race instead of an IntegrityError
+            # in whichever process commits second.
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+            await s.execute(
+                pg_insert(Role)
+                .values([{"id": uuid.uuid4(), "name": name} for name in ALL_ROLES])
+                .on_conflict_do_nothing(
+                    index_elements=[Role.name],
+                    index_where=Role.organization_id.is_(None),
+                )
+            )
             await s.commit()
-            role_ids = {r.name: r.id for r in (await s.execute(select(Role))).scalars().all()}
+            # System roles only — a test's org-scoped custom role must never
+            # shadow the `admin` id the seeded users are granted.
+            role_ids = {
+                r.name: r.id
+                for r in (await s.execute(select(Role).where(Role.organization_id.is_(None))))
+                .scalars()
+                .all()
+            }
 
         tenants: dict = {}
-        for key, slug in _TEST_TENANTS.items():
+        for key, slug in tenant_slugs_for_slot(_claim_realdb_slot()).items():
             db_name = f"{cfg.tenant_db_prefix}{slug}"
             async with ctrl_mk() as s:
                 org = (
@@ -268,7 +441,7 @@ async def _ensure_test_tenants() -> dict:
             users: dict = {}
             async with ctrl_mk() as s:
                 for role_name in ALL_ROLES:
-                    email = f"{role_name}@{slug}.test"
+                    email = role_email(slug, role_name)
                     u = (
                         await s.execute(select(User).where(User.email == email))
                     ).scalar_one_or_none()
@@ -292,6 +465,27 @@ async def _ensure_test_tenants() -> dict:
                         users[role_name] = u.id
                 await s.commit()
             tenants[key] = TenantInfo(slug=slug, db_name=db_name, org_id=org_id, users=users)
+
+        # Control-plane reset — the counterpart of the tenant TRUNCATE below.
+        # `Organization.settings` (branding, SSO, payments, …) and the partner
+        # self-FK `parent_org_id` are shared mutable state on a row that
+        # persists for the life of the database, so a test that writes them and
+        # doesn't restore leaves every LATER run wrong, not just the rest of
+        # this one. (That is a real failure we hit: `test_portal_branding`
+        # stamped a product name on tenant B and `test_partner_admin`'s
+        # "child has no brand yet" assertions then failed permanently, even
+        # when that file was run alone.) Baseline both back to pristine here so
+        # per-test isolation doesn't depend on every author remembering a
+        # `finally`.
+        from sqlalchemy import update
+
+        async with ctrl_mk() as s:
+            await s.execute(
+                update(Organization)
+                .where(Organization.id.in_([t.org_id for t in tenants.values()]))
+                .values(settings={}, parent_org_id=None)
+            )
+            await s.commit()
         return tenants
     finally:
         await ctrl_engine.dispose()
@@ -327,6 +521,11 @@ class RealDB:
 
     def info(self, key: str) -> TenantInfo:
         return self.tenants[key]
+
+    def email(self, key: str, role: str = "admin") -> str:
+        """Seeded login for a role in a test tenant. Use this instead of writing
+        `admin@pytesta.test` — the slug carries this process's slot."""
+        return role_email(self.tenants[key].slug, role)
 
     def token(self, key: str, role: str = "admin") -> str:
         from app.api.deps import create_access_token
@@ -456,10 +655,17 @@ async def realdb():
                 # Postgres doesn't always process the close before THIS test's
                 # TRUNCATE fires next — which then either deadlocks or, worse,
                 # makes the freshly-inserted rows invisible to the request under
-                # test (an empty-result flake, ~1-in-3). These `ap_pytest{a,b}`
-                # DBs are exclusive to the (sequential) realdb suite, so reaping
-                # every *other* backend on the DB before the reset is safe and
-                # makes per-test isolation deterministic.
+                # test (an empty-result flake, ~1-in-3). Reaping every *other*
+                # backend on the DB before the reset makes per-test isolation
+                # deterministic.
+                #
+                # This is only safe because the slot claim (see
+                # `_claim_realdb_slot`) makes this tenant pair exclusive to THIS
+                # pytest process — every backend it reaps is one of our own. Do
+                # not weaken that: when the pair was merely "exclusive to the
+                # realdb suite", two concurrent pytest runs reaped each other,
+                # surfacing as `ConnectionDoesNotExistError` in whichever
+                # unrelated file happened to be mid-query.
                 await conn.exec_driver_sql(
                     "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
                     "WHERE datname = current_database() AND pid <> pg_backend_pid()"

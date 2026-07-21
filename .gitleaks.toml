@@ -20,8 +20,16 @@ useDefault = true
 
 # ---------------------------------------------------------------------------
 # Global allowlist — applies to every rule, including the upstream defaults.
+#
+# MUST be the singular [allowlist] table, NOT the plural [[allowlists]]
+# array-of-tables. Under `[extend] useDefault = true`, gitleaks (verified on
+# 8.24.3 — the version gitleaks-action@v3.0.0 runs in CI) silently IGNORES a
+# top-level [[allowlists]] block, so every path/regex below would be inert and
+# synthetic high-entropy fixtures (e.g. the idempotency-key UUIDs) would trip
+# generic-api-key. The singular form is honoured. Don't "modernize" it to the
+# plural spelling.
 # ---------------------------------------------------------------------------
-[[allowlists]]
+[allowlist]
 description = "Global skip list for test fixtures and doc examples"
 # Path patterns where every match is permissible. These files contain
 # synthetic credentials by definition (security tests, complexity
@@ -52,6 +60,11 @@ regexes = [
     '''Portal-Secret-\d+''',
     '''Right-Password-\d+''',
     '''Test-?Password-?\d*''',
+    # Synthetic idempotency-key UUIDs in test_card_create_idempotency_header.py
+    # (opaque request tokens, not credentials). Allowlisted as exact literals
+    # so a real UUID-shaped secret elsewhere still trips the scanner.
+    '''2f8c1f3e-4a6b-4c2d-9e1f-7b3a5c9d0e11''',
+    '''9a1d0c77-1111-4222-8333-444455556666''',
 ]
 
 # Historical findings the regexes above don't cleanly cover (a specific

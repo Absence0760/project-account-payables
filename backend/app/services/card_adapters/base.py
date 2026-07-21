@@ -31,6 +31,17 @@ class VirtualCardPayload:
     description: str | None = None
     expiry_days: int = 30
     metadata: dict | None = None
+    # Provider-level idempotency key for THIS logical card issuance. Stable
+    # across retries of the same issuance (derived deterministically by
+    # `card_issuance.build_card_idempotency_key`), so a client-side timeout
+    # after the provider already provisioned a card resolves to the SAME card
+    # on retry instead of minting — and orphaning — a second live one. Each
+    # adapter sends it on its provider's own idempotency channel (Lithic:
+    # `Idempotency-Key` header, must be a valid UUID; Nium: `x-request-id`
+    # header). Formatted as a UUID string so it satisfies the strictest
+    # provider. `None` means "caller supplied none" — the adapter then sends no
+    # key at all rather than inventing an unstable one.
+    idempotency_key: str | None = None
 
 
 @dataclass

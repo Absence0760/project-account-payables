@@ -39,7 +39,7 @@ void main() {
   });
 
   setUp(() async {
-    InvoiceStore.instance.debugReset();
+    InvoiceStore.instance.reset();
     await OfflineStore.instance.clear();
     ApiClient().debugConfigure();
   });
@@ -408,7 +408,7 @@ void main() {
 
   group('selection mode', () {
     test('enter/toggle/select-all/clear/exit track the selected set', () async {
-      store.debugReset();
+      store.reset();
       // Populate the list via a real fetch so selectAll has rows to enumerate.
       ApiClient().debugConfigure(
         client: MockClient((req) async => _list([
@@ -466,7 +466,7 @@ void main() {
       );
 
       store
-        ..debugReset()
+        ..reset()
         ..enterSelectionMode('1')
         ..toggleSelected('2');
 
@@ -497,7 +497,7 @@ void main() {
       );
 
       store
-        ..debugReset()
+        ..reset()
         ..enterSelectionMode('1');
 
       final result = await store.bulkStatusSelected('approved');
@@ -517,7 +517,7 @@ void main() {
         }),
       );
 
-      store.debugReset();
+      store.reset();
       expect(await store.bulkDeleteSelected(), isNull);
       expect(await store.bulkStatusSelected('approved'), isNull);
       expect(calls, 0);
@@ -529,7 +529,7 @@ void main() {
       );
 
       store
-        ..debugReset()
+        ..reset()
         ..enterSelectionMode('1');
 
       final result = await store.bulkDeleteSelected();
@@ -563,7 +563,7 @@ void main() {
       );
 
       store
-        ..debugReset()
+        ..reset()
         ..enterSelectionMode('1')
         ..toggleSelected('2');
 
@@ -590,7 +590,7 @@ void main() {
       );
 
       store
-        ..debugReset()
+        ..reset()
         ..enterSelectionMode('1');
 
       final result = await store.exportSelected('xml');
@@ -607,7 +607,7 @@ void main() {
         }),
       );
 
-      store.debugReset();
+      store.reset();
       expect(await store.exportSelected('csv'), isNull);
       expect(calls, 0);
     });
@@ -618,7 +618,7 @@ void main() {
       );
 
       store
-        ..debugReset()
+        ..reset()
         ..enterSelectionMode('1');
 
       final result = await store.exportSelected('csv');

@@ -530,7 +530,7 @@ void main() {
     });
 
     setUp(() async {
-      InvoiceStore.instance.debugReset();
+      InvoiceStore.instance.reset();
       FlutterSecureStorage.setMockInitialValues({});
       await OfflineStore.instance.clear();
       ApiClient().debugConfigure();
@@ -561,7 +561,7 @@ void main() {
     });
 
     setUp(() async {
-      InvoiceStore.instance.debugReset();
+      InvoiceStore.instance.reset();
       FlutterSecureStorage.setMockInitialValues({});
       await OfflineStore.instance.clear();
       ApiClient().debugConfigure();
@@ -638,7 +638,7 @@ void main() {
     });
 
     setUp(() async {
-      ExceptionStore.instance.debugReset();
+      ExceptionStore.instance.reset();
       FlutterSecureStorage.setMockInitialValues({});
       await OfflineStore.instance.clear();
       ApiClient().debugConfigure();
@@ -689,7 +689,7 @@ void main() {
 
   group('ExceptionDetailScreen', () {
     setUp(() async {
-      ExceptionStore.instance.debugReset();
+      ExceptionStore.instance.reset();
       FlutterSecureStorage.setMockInitialValues({});
       ApiClient().debugConfigure();
     });
@@ -768,7 +768,7 @@ void main() {
 
   group('NotificationBell', () {
     setUp(() {
-      NotificationStore.instance.debugReset();
+      NotificationStore.instance.reset();
       FlutterSecureStorage.setMockInitialValues({});
       ApiClient().debugConfigure();
     });
@@ -804,7 +804,7 @@ void main() {
     });
 
     setUp(() async {
-      NotificationStore.instance.debugReset();
+      NotificationStore.instance.reset();
       FlutterSecureStorage.setMockInitialValues({});
       await OfflineStore.instance.clear();
       ApiClient().debugConfigure();
@@ -835,7 +835,7 @@ void main() {
 
   group('CashFlowScreen', () {
     setUp(() {
-      CashFlowStore.instance.debugReset();
+      CashFlowStore.instance.reset();
       ApiClient().debugConfigure();
     });
 
@@ -917,7 +917,7 @@ void main() {
 
   group('AdminUsersScreen', () {
     setUp(() {
-      AdminUserStore.instance.debugReset();
+      AdminUserStore.instance.reset();
       FlutterSecureStorage.setMockInitialValues({});
       ApiClient().debugConfigure();
     });
@@ -1029,7 +1029,7 @@ void main() {
 
   group('OrgSettingsScreen', () {
     setUp(() {
-      OrgSettingsStore.instance.debugReset();
+      OrgSettingsStore.instance.reset();
       FlutterSecureStorage.setMockInitialValues({});
       ApiClient().debugConfigure();
     });
@@ -1067,7 +1067,7 @@ void main() {
 
   group('WorkflowsScreen', () {
     setUp(() {
-      WorkflowStore.instance.debugReset();
+      WorkflowStore.instance.reset();
       FlutterSecureStorage.setMockInitialValues({});
       ApiClient().debugConfigure();
     });

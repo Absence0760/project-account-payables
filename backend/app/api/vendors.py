@@ -522,8 +522,19 @@ async def create_vendor(
     org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
+    # Bank details on a brand-new vendor are dual-controlled exactly like an
+    # update — creating a payable vendor with attacker-controlled bank details
+    # was the single-person-action BEC bypass this closes (fake-new-payee is
+    # the more common real-world pattern than a bank-redirect on an existing
+    # vendor, which was already gated). Strip it off the initial insert; the
+    # vendor row lands with NO bank details until a SECOND user approves the
+    # staged VendorChangeRequest via the same flow as an existing-vendor
+    # bank-details PATCH.
+    payload = body.model_dump()
+    incoming_bank_details = payload.pop("bank_details", None)
+
     vendor = Vendor(
-        **body.model_dump(),
+        **payload,
         organization_id=org_id,
         entity_id=entity_id,
         status="active",
@@ -537,7 +548,8 @@ async def create_vendor(
 
     # Append-only audit row for the create (invariant #3 — vendor mutations
     # write an audit trail). PII guard: record whether tax_id / bank_details
-    # were SET, never their raw values.
+    # were SUBMITTED, never their raw values — `has_bank_details` reflects the
+    # request, not the row (which has none yet pending approval).
     await dispatch_audit(
         db,
         correlation_id=uuid.uuid4(),
@@ -550,9 +562,14 @@ async def create_vendor(
             "name": vendor.name,
             "code": vendor.code,
             "has_tax_id": bool(vendor.tax_id),
-            "has_bank_details": bool(vendor.bank_details),
+            "has_bank_details": bool(incoming_bank_details),
         },
     )
+
+    if incoming_bank_details:
+        await _stage_ap_bank_change(
+            db, vendor=vendor, incoming=incoming_bank_details, user=user, org_id=org_id
+        )
 
     # Initial sanctions / PEP screen. Best-effort: a provider failure must
     # never roll back or 500 the vendor write, so the screen runs inside a

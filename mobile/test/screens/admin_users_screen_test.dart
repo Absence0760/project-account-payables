@@ -64,7 +64,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() {
-    AdminUserStore.instance.debugReset();
+    AdminUserStore.instance.reset();
     FlutterSecureStorage.setMockInitialValues({});
     ApiClient().debugConfigure();
   });

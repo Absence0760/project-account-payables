@@ -8,11 +8,17 @@ invoices bidirectionally, and audits both — so each subsidiary's books reflect
 the transaction.
 
 Design notes:
-- **Idempotent.** ``intercompany_mirror_id`` on the origin is the dedupe guard:
-  if it's already set, the mirror exists and the existing one is returned — a
-  second call never creates a duplicate payable. No money moves here (the mirror
-  enters the normal approval queue at ``new``), but a duplicate payable is a real
-  accounting problem, so the guard is mandatory.
+- **Idempotent, at three layers.** ``intercompany_mirror_id`` on the origin is
+  the dedupe guard: if it's already set, the mirror exists and the existing one
+  is returned — a second call never creates a duplicate payable. That in-memory
+  check is only safe because the caller holds a row lock on the origin
+  (``workflow_engine.get_invoice_for_update``) and because the partial unique
+  index ``uq_invoice_intercompany_mirror`` (migration 0075) makes a second row
+  pointing at the same origin impossible to persist. No money moves here (the
+  mirror enters the normal approval queue at ``new``), but a duplicate payable
+  is a live double liability — it can be approved and paid on its own — so all
+  three layers are mandatory. **Callers must lock the origin first**; without
+  the lock two concurrent callers both read NULL and both insert.
 - **Money is exact.** The mirror copies the origin ``amount`` (``Decimal``)
   verbatim — never a float round-trip.
 - The mirror enters via the normal workflow entry point
@@ -44,7 +50,11 @@ async def route_intercompany_invoice(
     ``ValueError`` (the caller maps this to a 4xx).
 
     Idempotent: if ``invoice.intercompany_mirror_id`` is already set, the mirror
-    exists; it is loaded and returned without creating a second one.
+    exists; it is loaded and returned without creating a second one. **The caller
+    must hold a row lock on ``invoice``** (``get_invoice_for_update``) — this
+    check reads in-memory state, so without the lock two concurrent callers both
+    see NULL and both create a mirror. The ``uq_invoice_intercompany_mirror``
+    partial unique index is the DB-level backstop for that.
 
     Returns the mirror Invoice.
     """

@@ -30,6 +30,7 @@ Deep-dive docs live in `backend/docs/`:
 | Custom (ad-hoc) report builder | `docs/report-builder.md` |
 | Virtual cards (Lithic / Nium) | `docs/virtual-cards.md` |
 | PO matching (2-way / 3-way) | `docs/po-matching.md` |
+| Line-total reconciliation (lines vs the header amount) | `docs/line-total-reconciliation.md` |
 | Vendor management | `docs/vendor-management.md` |
 | Local AI testing (Ollama) | `docs/local-ai-testing.md` |
 | Docker Compose services | `docs/docker.md` |
@@ -46,12 +47,13 @@ Deep-dive docs live in `backend/docs/`:
 | Data enrichment (auto-fill, price variance, vendor scoring) | `docs/data-enrichment.md` |
 | PEPPOL AS4 outbound (e-invoice transmission) | `docs/peppol.md` |
 | Contract management (CLM) | `docs/contracts.md` |
-| Expense management | `docs/expense-management.md` |
+| Expense management (incl. multi-currency locked-FX reports) | `docs/expense-management.md` |
 | Digital signatures on approvals (SOX) | `docs/approval-signatures.md` |
 | Retention policies (SOX records management) | `docs/retention.md` |
 | Privacy — GDPR/CCPA DSAR export + right-to-erasure | `docs/privacy.md` |
 | Public Developer API (API keys + `/api/v1`) | `docs/public-api.md` |
 | Platform billing & metering (plans / subscriptions / entitlements) | `docs/billing.md` |
+| 1099 tracking + the card-rail (1099-K) exclusion | `docs/tax-1099.md` |
 
 Cross-cutting topics (auth, multi-tenancy, deployment) live at the repo root `../docs/`.
 
@@ -101,7 +103,7 @@ Pinned-Dependencies supply-chain check. Two locks, both regenerated from
 | Lock | Scope | Consumed by |
 |------|-------|-------------|
 | `requirements-dev.lock` | base + `[dev]` extra + pip | `ci.yml` — `pip install --require-hashes …` then `pip install -e . --no-deps` |
-| `requirements.lock` | base runtime only (no extras) | `backend/Dockerfile` — `uv pip install --system --require-hashes …` (app runs from source, no editable install) |
+| `requirements.lock` | base runtime only (no extras) | `backend/Dockerfile` — `uv pip install --system --no-cache --require-hashes …` (app runs from source, no editable install) |
 
 Regenerate **both** whenever you change `pyproject.toml` dependencies (or
 the pinned pip version in `requirements-dev.in`):
@@ -115,8 +117,50 @@ uv pip compile pyproject.toml \
 ```
 
 `uv` not installed? `pipx run uv pip compile …` works ephemerally. Commit
-the regenerated locks in the same change as the `pyproject.toml` edit, or
-the `--require-hashes` installs (CI + image build) fail.
+the regenerated locks in the same change as the `pyproject.toml` edit.
+
+**A stale lock does not fail the install** — that's the trap. The lock is
+internally consistent, so `--require-hashes` succeeds and CI stays green
+while the image installs whatever the lock says, ignoring the floor you
+just raised in `pyproject.toml`. This is not hypothetical: five merged
+Dependabot PRs (#111, #113, #114, #115, #117) raised `uvicorn`, `boto3`,
+`pgvector`, `joserfc` and `ruff` in `pyproject.toml`, and the image kept
+shipping every pre-bump version — including the security-motivated ones —
+until it was caught.
+
+Dependabot cannot close this itself. Its pip-compile support only pairs an
+`.in` file with a lockfile ending in `.txt`; these locks are compiled from
+`pyproject.toml` under a `.lock` name, so Dependabot updates the manifest
+and never touches them. (`tools/fake-erp` uses the `.in`/`.txt` pair
+precisely so Dependabot *can* maintain it there.)
+
+`tests/test_dependency_lock_sync.py` is the guard: it checks each declared
+requirement against the version its lock pins, so a manifest bump without a
+regenerated lock fails loudly. It compares constraints to pins — it never
+re-resolves and never hits the network, so it can't go red just because a
+new release appeared on PyPI overnight.
+
+### `.dockerignore` — what does NOT enter the image
+
+`backend/Dockerfile` ends in `COPY . .`, so `backend/.dockerignore` is the
+only thing standing between your working tree and a shipped layer. It
+excludes, in order of how much they matter:
+
+1. **`.env` / `.env.*`** (except the committed `.env.development`) and
+   `*.sops` — a gitignored local `.env` holds real credentials, and an
+   image layer is readable by anyone who can pull it.
+2. **`.venv`** — the local dev virtualenv. Copied in, it lands at
+   `/app/.venv` as a second Python install on whatever versions that
+   laptop had; Trivy then reports CVEs against packages the image never
+   runs (this is exactly how a stale `pip` showed up in a scan).
+3. Tool caches, `tests/`, `docs/`, egg-info — pure layer weight.
+
+Excluding the venv and the uv download cache took the image from **1.26 GB
+to 649 MB**. If you add something the running container genuinely needs,
+check it isn't caught by a pattern there — `app/`, `alembic/`,
+`alembic.ini`, `main.py`, `pyproject.toml`, `requirements.lock` and
+`scripts/` are the deliberate keeps (`deploy/deploy.sh` and
+`deploy/add-tenant.sh` run `scripts/*.py` inside this image).
 
 ## CI test sharding
 
@@ -146,6 +190,54 @@ pytest --store-durations          # writes backend/.test_durations
 Commit the updated `.test_durations` alongside the test changes. Bumping the
 shard count means editing the `matrix.shard` list, the `--splits N` flag, and the
 `name:` (`shard N/4`) together in `ci.yml`.
+
+## Test databases (the `realdb` harness)
+
+Most of the suite is mock-based. Tests that request the `realdb` fixture
+(`tests/conftest.py`) run against a live Postgres and a **pair of real tenant
+databases** — the only way to prove cross-tenant isolation, the SQL filters, and
+commit durability. Before each such test the harness truncates the tenant
+business tables, restores the Default entity, resets the shared control-plane
+`Organization` row, and reaps every other backend on those databases.
+
+**The tenant pair is exclusive to one pytest process.** Because the reset both
+TRUNCATEs and `pg_terminate_backend`s, two pytest runs sharing a pair delete each
+other's rows and kill each other's connections — which surfaces as
+`asyncpg.ConnectionDoesNotExistError` / `ConnectionResetError` in whatever
+unrelated file happened to be mid-query, i.e. as flakiness rather than as the
+collision it is.
+
+Exclusivity is therefore claimed, not assumed. On first use each process takes a
+**slot** — a Postgres session-level advisory lock — and uses the tenant pair
+named for it:
+
+| Slot | Tenants |
+|------|---------|
+| 0 (first / only process) | `ap_pytesta`, `ap_pytestb` |
+| 1, 2, … (each further concurrent process) | `ap_pytesta1`, `ap_pytestb1`, … |
+
+Consequences worth knowing:
+
+- **Nothing changes for the common path.** A lone `pytest` run — and every CI
+  shard, each with its own Postgres — takes slot 0 and uses exactly the
+  historical databases. No extra databases, no measurable extra time.
+- **A second concurrent run just works.** It provisions its own pair on first use
+  (one-off, per session) and cannot disturb the first. Run several agents or
+  terminals at once without coordinating.
+- **Crash-safe, nothing to clean up.** Postgres releases the lock when the
+  holding connection dies, so a killed run frees its slot; the databases are
+  reused by the next process to claim it.
+- **Never hardcode a test tenant's slug or a seeded login** — they carry the slot
+  number. Use `realdb.info("a").slug` / `realdb.email("a", "admin")`.
+- Any control-plane row a test creates needs a unique value per slot (derive it
+  from the slug or a uuid), or two concurrent runs collide on the shared
+  `account_payables` unique constraints.
+
+The harness resets tenant tables plus `Organization.settings` / `parent_org_id`.
+It does **not** delete extra control-plane `users` rows a test creates — those
+accumulate, so a test must not assume a fixed user count for a test org.
+
+`tests/test_realdb_harness.py` guards both properties.
 
 ## Project structure
 
@@ -323,6 +415,21 @@ the admin-config SSRF guard; an admin-supplied `base_url` stays guarded).
 ### Card adapters (`services/card_adapters/`)
 
 Registered: `lithic`, `nium`, `mock`. Both have sandbox modes.
+
+Card creation is **idempotent at the provider**, not only in our DB. The partial
+unique index `uq_virtual_cards_one_live_per_invoice` only catches duplicates
+that reached our database — an `httpx` timeout *after* the provider provisioned
+the card writes no row, so an unkeyed retry mints a second live card while the
+first is orphaned. `services/card_issuance.build_card_idempotency_key` mints a
+pure, deterministic UUID5 (`correlation_id or invoice_id` + a re-issue sequence
+read from the invoice's existing card rows — never a fresh `uuid4`), carried on
+`VirtualCardPayload.idempotency_key` and sent by each adapter on its provider's
+own channel: **Lithic** `Idempotency-Key` header (must be a UUID, 30-day
+retention), **Nium** `x-request-id` header (24-hour retention), **mock** derives
+the card id from it so the retry path is exercisable locally. The re-issue
+sequence is what keeps a deliberate cancel-then-reissue from replaying the
+original closed card. `issue_card_for_invoice` therefore takes `db`. See
+`docs/virtual-cards.md` § Issue.
 
 ### Payment adapters (`services/payment_adapters/`)
 
@@ -654,7 +761,8 @@ user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER))
 
 - TOTP (pyotp) + email-OTP backup + **WebAuthn/passkeys** (`py_webauthn`). Master switch `AP_MFA_ENABLED` (default `false` for local dev) gates all three.
 - Per-user TOTP secret on `User.mfa_secret`; org-wide enforcement via `Organization.settings.mfa.required`.
-- **Passkeys are a separate code path** (`services/webauthn.py`), additive + opt-in. Credentials live in the control-plane `webauthn_credentials` table (`WebAuthnCredential`, migration 0063, in `CONTROL_TABLES`) — one row per registered authenticator, keyed by `user_id`. Register/list/delete + authenticate endpoints under `/api/auth/mfa/passkey/*`; the authenticate ceremony is gated by the login-issued MFA challenge token (public, pre-access-token), register/list/delete require JWT. The per-ceremony challenge is stashed single-use in Redis (`webauthn:{reg,auth}_challenge:<user_id>`); the signature counter is verified + bumped (clone-detection). RP ID / origins configurable (`AP_WEBAUTHN_RP_ID` / `AP_WEBAUTHN_ORIGINS`; dev defaults `localhost` / `http://localhost:7777`). Public key + counter are not secret in the password sense and never logged.
+- **Enrollment is two-phase and never disturbs a live factor.** `POST /api/auth/mfa/enroll` (and the portal twin) mints a *candidate* secret into Redis (`mfa:pending_enroll:<user_id>` / `mfa:vendor_pending_enroll:<id>`, `AP_MFA_ENROLL_PENDING_TTL_SECONDS`, default 900s) — `mfa_secret` / `mfa_enabled` / `mfa_enrolled_at` are written ONLY by `/mfa/enroll/verify`. **Changing an existing factor is a step-up**: enroll-start, `POST /api/auth/mfa/passkey/register`, `DELETE /api/auth/mfa/passkey/{id}` and `POST /api/auth/mfa/disable` take an optional `{password?, code?, assertion?}` body and require one to check out whenever a factor is already live — the shared `pwd_context` password or a code from the CURRENT authenticator (both via the pure `mfa.step_up_verified`), or a **WebAuthn assertion** from an already-registered passkey (`api/auth._step_up_satisfied`, which needs the DB + Redis so it can't live in the pure helper). A "live factor" is an enabled TOTP secret OR any registered passkey, so both doors are gated symmetrically; a genuinely first factor needs none. The assertion is the proof an **SSO-only** account uses — with no password and no TOTP it would otherwise be locked out of its own factor management (it is never *exempted*; exempting would let a stolen JWT plant an attacker-controlled passkey). Its challenge comes from `POST /api/auth/mfa/step-up/passkey {operation}` and is **purpose- and operation-bound**: login and step-up challenges live in different single-use Redis slots (`webauthn:auth_challenge:<uid>` vs `webauthn:stepup_challenge:<operation>:<uid>`), so a step-up assertion can't mint an access token, a login assertion can't authorize a factor change, and a `passkey_register` assertion can't authorize a `passkey_delete` — the only thing separating the two ceremonies is the challenge, since `clientDataJSON.type` is `webauthn.get` for both. `purpose` is a required kwarg on `begin_authentication`/`finish_authentication`. The supplier portal has no passkeys (`WebAuthnCredential` → control-plane `users.id`, `VendorUser` is tenant-scoped), so `/portal/auth/mfa/*` stays password-or-code. Every step-up is throttled 5/min **per account** (`_throttle_step_up`, not per-IP — the attacker holds the token) and writes a PII-free `auth.mfa.step_up.failure` / `portal.mfa.step_up.failure` audit row on failure; `/mfa/disable` on both surfaces rides the same helpers. Without all of this, a leaked access token alone could strip or swap the second factor, silently and unthrottled.
+- **Passkeys are a separate code path** (`services/webauthn.py`), additive + opt-in. Credentials live in the control-plane `webauthn_credentials` table (`WebAuthnCredential`, migration 0063, in `CONTROL_TABLES`) — one row per registered authenticator, keyed by `user_id`. Register/list/delete + authenticate endpoints under `/api/auth/mfa/passkey/*`, plus the step-up-challenge endpoint `POST /api/auth/mfa/step-up/passkey`; the authenticate ceremony is gated by the login-issued MFA challenge token (public, pre-access-token), register/list/delete and step-up-start require JWT. The per-ceremony challenge is stashed single-use in Redis (`webauthn:reg_challenge:<user_id>`, `webauthn:auth_challenge:<user_id>`, `webauthn:stepup_challenge:<operation>:<user_id>`); the signature counter is verified + bumped (clone-detection). RP ID / origins configurable (`AP_WEBAUTHN_RP_ID` / `AP_WEBAUTHN_ORIGINS`; dev defaults `localhost` / `http://localhost:7777`). Public key + counter are not secret in the password sense and never logged.
 - Login returns either `TokenResponse` or `MFAChallengeResponse`. Challenge token is a short-lived JWT with `typ: mfa_challenge` — verified at `POST /api/auth/mfa/verify` (totp/email) or the passkey authenticate endpoints. `methods` lists the offered factors (`totp` / `passkey` / `email`); a passkey-only user trips the gate.
 - Email-OTP hashes live in Redis (`mfa:email_otp:<user_id>`), short TTL, single-use.
 - SSO sign-in skips our MFA challenge — IdPs handle their own MFA.
@@ -701,7 +809,7 @@ The three `webhook_*_secret` fields are HMAC keys used by the inbound webhook ha
 
 ## Exception types
 
-`duplicate`, `po_mismatch`, `fraud_flag`, `extraction_failed`, `unverified_vendor`, `review_rejected`, `amount_exceeded`, `missing_data`, `quality_hold`, `contract_noncompliant`, `erp_reconciliation`
+`duplicate`, `po_mismatch`, `fraud_flag`, `extraction_failed`, `unverified_vendor`, `review_rejected`, `amount_exceeded`, `missing_data`, `quality_hold`, `contract_noncompliant`, `erp_reconciliation`, `line_total_mismatch`
 
 Severity: `error`, `warning`, `info`. Auto-detected by `invoice_warnings.py`. `erp_reconciliation` is opened by the ERP webhook (`api/erp_webhook.py`) when the ERP reports an invoice VOIDED/CANCELLED that we already advanced past the point where `→ failed` is a legal transition (`sent_to_erp` / `posted_in_erp` / `payment_scheduled` / `paid`) — money may be in flight, so it is flagged for human reconciliation instead of auto-transitioned (idempotent per open exception, PII-free description).
 

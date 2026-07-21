@@ -50,7 +50,7 @@ void main() {
   final store = WorkflowStore.instance;
 
   setUp(() {
-    WorkflowStore.instance.debugReset();
+    WorkflowStore.instance.reset();
     ApiClient().debugConfigure();
   });
 

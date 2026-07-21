@@ -15,11 +15,34 @@ Two nullable columns on `Invoice`:
 | Column | Type | Meaning |
 |--------|------|---------|
 | `counterparty_entity_id` | FK → `entities.id`, nullable | Set when this invoice is an inter-company charge; names the OTHER entity. On the generated mirror it points back at the origin's entity. |
-| `intercompany_mirror_id` | self-FK → `invoices.id`, nullable | Links an origin invoice to its generated mirror payable, set on **both** rows. Also the idempotency guard. |
+| `intercompany_mirror_id` | self-FK → `invoices.id`, nullable | Links an origin invoice to its generated mirror payable, set on **both** rows. Also the idempotency guard, backed by the partial unique index `uq_invoice_intercompany_mirror` (see below). |
 
 Both are NULL on ordinary (non-inter-company) invoices. Migration `0051`
 (tenant-DB only, idempotent `ADD COLUMN IF NOT EXISTS` + `pg_constraint`-guarded
 FKs, mirroring `0029_entities`) adds them; `create_all` on fresh tenants matches.
+
+### `uq_invoice_intercompany_mirror` — the idempotency backstop
+
+Migration `0075` (tenant-DB only, `CREATE UNIQUE INDEX IF NOT EXISTS`, gated on
+the `invoices` table existing so it no-ops on the control DB and fans out via
+`scripts/migrate_all_tenants.py`) adds a **partial unique index**:
+
+```sql
+CREATE UNIQUE INDEX uq_invoice_intercompany_mirror
+  ON invoices (intercompany_mirror_id)
+  WHERE intercompany_mirror_id IS NOT NULL;
+```
+
+An invoice may therefore be named as the mirror-partner of at most **one** other
+invoice. The origin ↔ mirror link is bidirectional but 1:1 — the origin stores
+the mirror's id and the mirror stores the origin's id, two *distinct* values —
+so a legitimate pair never collides, and the partial predicate keeps ordinary
+invoices (column NULL, the overwhelming majority) out of the index entirely.
+
+Two concurrent routing calls on the same origin would each INSERT a mirror
+carrying `intercompany_mirror_id = <origin id>`; the index makes the second one
+impossible to persist. It is declared in the model's `__table_args__` too, so
+freshly provisioned tenants (`create_all`, not Alembic) get it as well.
 
 ## Service (`app/services/intercompany.py`)
 
@@ -30,9 +53,12 @@ FKs, mirroring `0029_entities`) adds them; `create_all` on fresh tenants matches
    `ValueError` (the route maps it to a 400).
 2. **Idempotent** — if `invoice.intercompany_mirror_id` is already set, the
    mirror exists; it's loaded and returned. A second call never creates a
-   duplicate payable. (No money moves — the mirror enters the approval queue at
-   `new` — but a duplicate payable is a real accounting problem, so the guard is
-   mandatory.)
+   duplicate payable. No money moves here — the mirror enters the approval queue
+   at `new` — but the duplicate would be a *live* payable, approvable and payable
+   on its own: a double liability. **The caller must hold a row lock on the
+   origin** (`workflow_engine.get_invoice_for_update`); this step reads
+   in-memory state, so without the lock two concurrent callers both see NULL and
+   both insert. `uq_invoice_intercompany_mirror` is the DB-level backstop.
 3. **Mirror creation** — a new `Invoice` under `entity_id =
    counterparty_entity_id`, copying `amount` (exact `Decimal`, never float),
    `currency`, `vendor_name`, and `invoice_number` prefixed `IC-`. Its
@@ -51,13 +77,23 @@ FKs, mirroring `0029_entities`) adds them; `create_all` on fresh tenants matches
   `app/schemas/invoice.py`).
 - RBAC: `admin` / `ap_manager` (treasury-ish control; clerks excluded). Every
   `/api` route carries an auth dependency.
+- Loads the origin with `get_invoice_for_update` (`SELECT … FOR UPDATE`) — the
+  row lock is what makes the service's dedupe check safe under concurrency.
 - Validates the counterparty is a real entity in **this** tenant (the `entities`
   table is tenant-local, so an unknown id can't point at another tenant's
   subsidiary — same guard `tenant.get_entity_id` uses), sets it on the invoice,
   then calls `route_intercompany_invoice`.
+- The counterparty is stamped **only while the invoice is unrouted**. Once the
+  mirror exists the pairing is settled: re-pointing the origin at a different
+  entity would leave it claiming a counterparty its only mirror doesn't sit
+  under. A re-route call with a different entity is a no-op that returns the
+  existing mirror. Genuinely re-routing means rejecting and starting over.
 - Returns the **mirror** invoice via `InvoiceResponse` (which now surfaces
   `counterparty_entity_id` + `intercompany_mirror_id`).
-- Idempotent at the boundary — calling twice returns the same mirror.
+- Idempotent at the boundary, in three layers: the `FOR UPDATE` row lock, the
+  service's `intercompany_mirror_id` short-circuit, and the
+  `uq_invoice_intercompany_mirror` unique index (whose `IntegrityError` the
+  handler turns into a clean, PII-free **409**).
 
 ## Tests
 
@@ -68,3 +104,11 @@ FKs, mirroring `0029_entities`) adds them; `create_all` on fresh tenants matches
 - idempotency: second call returns the same mirror, invoice count unchanged
 - self-billing (counterparty == own entity) → 400, no mirror
 - RBAC: ap_clerk → 403
+- **concurrency**: two simultaneous routing calls on the same origin, each on
+  its own DB connection, produce exactly **one** mirror and agree on its id (the
+  loser either returns the same mirror or 409s off the index) — the regression
+  guard for the duplicate-payable race
+- re-routing an already-routed invoice at a different entity does not re-point
+  `counterparty_entity_id`
+- the partial unique index is declared on the model, so `create_all`-provisioned
+  tenants get it too

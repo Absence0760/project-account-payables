@@ -45,6 +45,13 @@ def _jsonable(value: Any) -> Any:
         # by routing it through Decimal's string form rather than emitting a
         # lossy float into the audit trail.
         return str(Decimal(str(value)))
+    if isinstance(value, (list, tuple)):
+        # Recurse rather than stringify the whole container: a list field (e.g.
+        # the GL codes on a line-item edit) belongs in the JSONB as a real list,
+        # not as the opaque repr `"['6100']"` that nothing downstream can read.
+        return [_jsonable(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
     return str(value)
 
 

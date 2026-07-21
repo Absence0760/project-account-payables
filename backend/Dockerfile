@@ -4,7 +4,7 @@
 # leave a supply-chain pivot point. Bump the digest alongside the tag
 # when Renovate / Dependabot opens a PR (the trailing comment is what
 # the docker ecosystem reads as the human-version reference).
-FROM python:3.14-slim@sha256:7a500125bc50693f2214e842a621440a1b1b9cbb2188f74ab045d29ed2ea5856
+FROM python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6
 
 # Pull Debian security backports on top of the pinned base layer. The
 # digest above only changes when the upstream python:3.14-slim manifest
@@ -32,8 +32,12 @@ COPY --from=ghcr.io/astral-sh/uv:0.5@sha256:7bff3c3776ec467fc1437960f2c469d8beb3
 # from pyproject.toml with `uv pip compile … --generate-hashes` — see
 # backend/CLAUDE.md → Dependency lock. The app itself runs from the copied
 # source (no editable install), so only its dependencies are locked here.
+# `--no-cache` because uv otherwise leaves its download cache (~300 MB of
+# wheels and unpacked archives) in /root/.cache/uv in the final layer.
+# Nothing at runtime reads it, and Trivy scans the stale package metadata
+# inside it as if those copies were installed.
 COPY pyproject.toml requirements.lock .
-RUN uv pip install --system --require-hashes -r requirements.lock
+RUN uv pip install --system --no-cache --require-hashes -r requirements.lock
 
 COPY . .
 

@@ -93,6 +93,21 @@ class ExpenseReport(Base, EntityMixin, TimestampMixin):
         Numeric(15, 2), default=Decimal("0"), nullable=False
     )
     currency: Mapped[str] = mapped_column(String(3), default="USD")
+
+    # --- Locked conversion into the ORG REPORTING currency (issue #157) ----
+    # ``total_amount`` is denominated in this report's own ``currency``; the CFO
+    # threshold (settings.expense_approval.cfo_threshold) is a bare number in the
+    # org's reporting currency. These four columns snapshot the total in that
+    # currency at SUBMIT time so the gate compares like with like and can't be
+    # dodged by filing in a foreign currency. Same shape/semantics as
+    # ``invoices.reporting_*`` (migration 0025). NULL = not established; the gate
+    # then fails CLOSED (CFO sign-off required). See
+    # ``services/expense_currency.py``.
+    reporting_currency: Mapped[str | None] = mapped_column(String(3))
+    reporting_amount: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
+    reporting_fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    reporting_fx_locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     notes: Mapped[str | None] = mapped_column(Text)
 
     organization_id: Mapped[uuid.UUID] = mapped_column(
@@ -172,6 +187,21 @@ class Expense(Base, EntityMixin, TimestampMixin):
     amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), default="USD")
 
+    # --- Locked conversion into the OWNING REPORT's currency (issue #157) --
+    # A report legitimately mixes currencies (one trip, several countries), so
+    # each line carries its own amount plus this rate-locked expression of it in
+    # the report's currency. The rate is locked on the write paths that change
+    # what needs converting (create-with-report, amount/currency edit, attach,
+    # report-currency change) and read back verbatim — a report's total never
+    # drifts with the market. NULL when the line is unattached, or (legacy rows)
+    # never locked: a foreign-currency line with no lock is counted as
+    # *unconverted* and blocks submission rather than summing at face value.
+    # See ``services/expense_currency.py``.
+    converted_currency: Mapped[str | None] = mapped_column(String(3))
+    converted_amount: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
+    converted_fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    converted_fx_locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     gl_account_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("gl_accounts.id"), index=True
     )
@@ -222,7 +252,20 @@ class ExpensePolicy(Base, EntityMixin, TimestampMixin):
     category: Mapped[str | None] = mapped_column(String(100))
 
     # --- Money / rates (Numeric, never float) -----------------------------
+    # The currency EVERY money threshold below is denominated in — the unit that
+    # makes the numbers mean something. Without it the engine compared a €200
+    # expense to a "100" limit as bare numbers, and ``receipt_required`` is a
+    # BLOCKING code, so a policy could block or fail to block on a meaningless
+    # comparison. NULL (every row predating the column) resolves at evaluation
+    # time to the org's REPORTING currency — a tenant-DB migration cannot read
+    # control-plane org settings, so this is deferred rather than guessed at
+    # upgrade time. See ``services/expense_policy.threshold_currency_for``.
+    threshold_currency: Mapped[str | None] = mapped_column(String(3))
     per_diem_amount: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
+    # Legacy/descriptive: predates ``threshold_currency`` and was never read by
+    # the engine (it is server-defaulted "USD", so treating it as authoritative
+    # would re-introduce the silent-USD bug). Kept for API back-compat and kept
+    # in step with ``threshold_currency`` on write.
     per_diem_currency: Mapped[str] = mapped_column(String(3), default="USD")
     mileage_rate: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
     category_limit: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))

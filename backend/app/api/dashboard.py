@@ -20,6 +20,7 @@ from app.services.analytics import OPEN_AP_STATUSES
 from app.services.currency_conversion import (
     resolve_reporting_currency,
     rollup_from_grouped_rows,
+    vendor_rollup_to_reporting_currency,
 )
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
 
@@ -138,21 +139,39 @@ async def get_dashboard(
     }
 
     # Spend by vendor (top 10) — exclude rejected invoices (they were never
-    # real spend), matching the CFO analytics concentration figure.
-    vendor_spend_rows = await db.execute(
+    # real spend), matching the CFO analytics concentration figure. Rolled up
+    # into the org's reporting currency (not a naive SUM across currencies) —
+    # a vendor billing in more than one currency used to add e.g. USD + EUR
+    # as if they were one currency.
+    vendor_rows = await db.execute(
         _inv(
-            select(Invoice.vendor_name, func.sum(Invoice.amount).label("total"))
-            .where(
+            select(
+                Invoice.vendor_name,
+                Invoice.amount,
+                Invoice.currency,
+                Invoice.reporting_amount,
+                Invoice.reporting_currency,
+            ).where(
                 Invoice.vendor_name.isnot(None),
                 Invoice.vendor_name != "",
                 Invoice.status != "rejected",
             )
-            .group_by(Invoice.vendor_name)
-            .order_by(func.sum(Invoice.amount).desc())
-            .limit(10)
         )
     )
-    vendor_spend = [{"vendor": row[0], "amount": float(row[1])} for row in vendor_spend_rows.all()]
+    vendor_entries = vendor_rollup_to_reporting_currency(
+        [
+            {
+                "vendor": vendor,
+                "amount": amount,
+                "currency": currency,
+                "reporting_amount": rep_amt,
+                "reporting_currency": rep_cur,
+            }
+            for vendor, amount, currency, rep_amt, rep_cur in vendor_rows.all()
+        ],
+        reporting_currency=reporting_currency,
+    )
+    vendor_spend = [{"vendor": e.vendor, "amount": float(e.amount)} for e in vendor_entries[:10]]
 
     # Aging buckets — boundaries are days past the due date:
     # current (not yet due) / 1-30 / 31-60 / 61-90 / 90+.
@@ -166,11 +185,17 @@ async def get_dashboard(
         "days_90_plus": Decimal("0"),
     }
     # Aging covers the same open-payable population as the AP balance so the
-    # bands reconcile with it (F-4): approved → payment_scheduled. Bucket + sum
-    # in SQL (Postgres `date - date` is integer days) rather than pulling every
-    # open row into Python; the band boundaries match the old loop exactly.
+    # bands reconcile with it (F-4): approved → payment_scheduled. The AP
+    # balance has no due_date filter, so aging must not either — an open
+    # invoice missing a due date used to inflate the balance while vanishing
+    # from every bucket. A null due_date can't be judged overdue, so it
+    # buckets as "current" (the conservative read) rather than being dropped.
+    # Bucket + sum in SQL (Postgres `date - date` is integer days) rather than
+    # pulling every open row into Python; the band boundaries match the old
+    # loop exactly.
     _days_past = today - Invoice.due_date
     _aging_bucket = case(
+        (Invoice.due_date.is_(None), "current"),
         (_days_past <= 0, "current"),
         (_days_past <= 30, "days_30"),
         (_days_past <= 60, "days_60"),
@@ -180,7 +205,7 @@ async def get_dashboard(
     aging_rows = await db.execute(
         _inv(
             select(_aging_bucket.label("bucket"), func.coalesce(func.sum(Invoice.amount), 0))
-            .where(Invoice.status.in_(OPEN_AP_STATUSES), Invoice.due_date.isnot(None))
+            .where(Invoice.status.in_(OPEN_AP_STATUSES))
             .group_by(_aging_bucket)
         )
     )

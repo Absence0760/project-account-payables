@@ -193,20 +193,41 @@ def export_invoice_register(invoices: Iterable) -> str:
 
 
 def export_vendor_spend(rows: Iterable) -> str:
-    """Per-vendor rollup: name, invoice_count, total. The caller is
-    responsible for the SQL aggregation; this function only knows
-    how to serialise the resulting rows. Each row is a 3-tuple
-    `(vendor_name, invoice_count, total)` OR an object with the
-    same attributes."""
-    buf, w = _writer(["vendor_name", "invoice_count", "total_amount"])
+    """Per-vendor rollup: name, invoice_count, total (in the org's reporting
+    currency), and the distinct original currencies rolled into it.
+
+    The real caller is `currency_conversion.vendor_rollup_to_reporting_currency`
+    — each row a `VendorSpendEntry` (`.vendor` / `.amount` / `.invoice_count` /
+    `.currencies`) — so a vendor billing in more than one currency exports a
+    real converted total instead of a meaningless mixed-currency sum. Also
+    accepts a 3-item positional sequence `(vendor_name, invoice_count, total)`
+    — a plain tuple/list OR a SQLAlchemy `Row` — or an object exposing
+    `vendor_name`/`total_amount` (no currency info; the column exports blank),
+    for callers that haven't been migrated onto the rollup helper.
+
+    A `Row` is NOT an `isinstance(tuple)` in SQLAlchemy 2.x (it implements
+    `Sequence`, not `tuple`), so branching on `isinstance(r, (tuple, list))`
+    silently missed every REAL caller and fell into the attribute branch,
+    whose `total_amount`/`amount` attribute names don't match any of those
+    queries' column labels either — `total_amount` exported blank in
+    production on every run. Duck-type on `__getitem__` instead so `Row` and
+    `tuple`/`list` share the positional path; only an attribute-only object
+    (a `VendorSpendEntry` or a `SimpleNamespace` test double) falls to the
+    attribute branch.
+    """
+    buf, w = _writer(["vendor_name", "invoice_count", "total_amount", "currencies"])
     for r in rows:
-        if isinstance(r, (tuple, list)) and len(r) >= 3:
+        currencies = ""
+        if hasattr(r, "__getitem__"):
             vendor, count, total = r[0], r[1], r[2]
         else:
             vendor = getattr(r, "vendor_name", None) or getattr(r, "vendor", None)
             count = getattr(r, "invoice_count", 0)
             total = getattr(r, "total_amount", None) or getattr(r, "amount", None)
-        w.writerow([vendor or "", int(count or 0), _fmt_money(total)])
+            currency_list = getattr(r, "currencies", None)
+            if currency_list:
+                currencies = ", ".join(currency_list)
+        w.writerow([vendor or "", int(count or 0), _fmt_money(total), currencies])
     return buf.getvalue()
 
 

@@ -143,6 +143,64 @@ def test_best_tier_none_when_offer_window_passed():
 
 
 # --------------------------------------------------------------------------- #
+# select_tier_for_date — issue #124: select_tier alone had NO date check at
+# all, so a caller requesting a specific tier by name (the explicit-tier_days
+# accept path) could claim an expired rung's percent just by naming it.
+# --------------------------------------------------------------------------- #
+
+
+def test_select_tier_for_date_returns_none_for_unknown_days():
+    tiers = do.parse_tiers([{"days": 5, "percent": "3"}])
+    assert do.select_tier_for_date(tiers, 7, as_of=date(2026, 1, 1), valid_until=None) is None
+
+
+def test_select_tier_for_date_honors_still_open_window():
+    tiers = do.parse_tiers([{"days": 5, "percent": "3"}, {"days": 10, "percent": "2"}])
+    ref = date(2026, 1, 1)
+    # Day 6: the 5-day rung's deadline (Jan 6) is exactly today → still open.
+    assert do.select_tier_for_date(
+        tiers, 5, as_of=date(2026, 1, 6), valid_until=None, reference_date=ref
+    ) == {"days": 5, "percent": "3.00"}
+
+
+def test_select_tier_for_date_refuses_a_closed_window():
+    """Reproduces the issue's exploit: an offer opened 20 days ago, asked for
+    the 5-day tier by name today. Its real deadline (day 5 from open) is long
+    past — select_tier alone would happily return it; the date-aware version
+    must not."""
+    tiers = do.parse_tiers([{"days": 5, "percent": "3"}, {"days": 10, "percent": "2"}])
+    ref = date(2026, 1, 1)  # offer opened here
+    as_of = date(2026, 1, 21)  # 20 days later
+    # select_tier alone doesn't know about dates — this is the pre-fix bug.
+    assert do.select_tier(tiers, 5) == {"days": 5, "percent": "3.00"}
+    # select_tier_for_date correctly refuses — day 5's deadline (Jan 6) is
+    # long past `as_of` (Jan 21).
+    assert (
+        do.select_tier_for_date(
+            tiers, 5, as_of=as_of, valid_until=date(2026, 1, 31), reference_date=ref
+        )
+        is None
+    )
+
+
+def test_select_tier_for_date_refuses_past_valid_until_even_within_tier_window():
+    """The whole-offer valid_until caps every tier, even one whose own
+    day-count window hasn't technically closed yet."""
+    tiers = do.parse_tiers([{"days": 30, "percent": "1"}])
+    ref = date(2026, 1, 1)
+    assert (
+        do.select_tier_for_date(
+            tiers,
+            30,
+            as_of=date(2026, 1, 20),
+            valid_until=date(2026, 1, 15),  # offer closed 5 days before as_of
+            reference_date=ref,
+        )
+        is None
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Savings math
 # --------------------------------------------------------------------------- #
 

@@ -6,6 +6,7 @@ against a live test tenant. Skips automatically when no Postgres is
 available (the ``realdb`` fixture handles that).
 """
 
+import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -35,11 +36,17 @@ async def _vendor(mk, org_id, *, name, eligible, tax_id="12-3456789", w9=False, 
         return v.id
 
 
-async def _paid_invoice(mk, org_id, vendor_id, amount):
+async def _paid_invoice(mk, org_id, vendor_id, amount, *, method=None):
+    """Book one paid invoice + its single completed Payment on ``method``.
+
+    ``method=None`` mirrors the manual / legacy payment path, which leaves the
+    rail unset. One live Payment per invoice is a DB constraint
+    (``uq_payments_one_live_per_invoice``), so a vendor paid over two rails
+    needs two invoices."""
     async with mk() as s:
         inv = Invoice(
             organization_id=org_id,
-            invoice_number=f"INV-{vendor_id}",
+            invoice_number=f"INV-{vendor_id}-{uuid.uuid4().hex[:8]}",
             vendor_name="x",
             amount=Decimal(amount),
             status=InvoiceStatus.paid,
@@ -52,6 +59,7 @@ async def _paid_invoice(mk, org_id, vendor_id, amount):
             invoice_id=inv.id,
             amount=Decimal(amount),
             status="completed",
+            method=method,
             completed_at=datetime(YEAR, 6, 1, tzinfo=UTC),
         )
         s.add(p)
@@ -113,6 +121,125 @@ async def test_zero_payment_vendor_has_clean_zero_ytd(realdb):
     row = next(r for r in resp.json()["rows"] if r["vendor_name"] == "No Pay Co")
     assert Decimal(row["ytd_paid"]) == Decimal("0")
     assert row["over_threshold"] is False
+
+
+# ---------------------------------------------------------------------------
+# Card-rail exclusion (IRS: card payments are the settlement entity's 1099-K)
+# ---------------------------------------------------------------------------
+
+
+async def test_card_payments_excluded_from_reportable_total(realdb):
+    """The issue's exact scenario: a vendor paid $10,000 by ACH and $5,000 by
+    virtual card files the ACH portion only. Counting the card leg would
+    over-report the vendor by $5,000 AND double-count it against the card
+    processor's 1099-K."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    vid = await _vendor(mk, org_id, name="Split Rail Co", eligible=True, w9=True)
+    await _paid_invoice(mk, org_id, vid, "10000.00", method="ach")
+    await _paid_invoice(mk, org_id, vid, "5000.00", method="virtual_card")
+
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.get(f"/api/tax/1099-report?year={YEAR}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    row = next(r for r in body["rows"] if r["vendor_name"] == "Split Rail Co")
+    assert Decimal(row["ytd_paid"]) == Decimal("10000.00")
+    assert row["payment_count"] == 1
+    # The excluded card money is surfaced, not silently dropped — the operator
+    # reconciles it against the processor's 1099-K.
+    assert Decimal(row["card_paid"]) == Decimal("5000.00")
+    assert row["card_payment_count"] == 1
+    assert row["over_threshold"] is True
+
+    assert Decimal(body["total_reportable"]) == Decimal("10000.00")
+    assert Decimal(body["total_card_excluded"]) == Decimal("5000.00")
+
+
+async def test_card_only_vendor_has_nothing_to_report(realdb):
+    """A vendor paid $5,000 exclusively by virtual card is over the $600 line
+    on gross spend but has a $0 1099 — the card network files that money."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    vid = await _vendor(mk, org_id, name="Card Only Co", eligible=True, w9=True)
+    await _paid_invoice(mk, org_id, vid, "5000.00", method="virtual_card")
+
+    async with realdb.client(key="a", role="cfo") as c:
+        report = await c.get(f"/api/tax/1099-report?year={YEAR}")
+    assert report.status_code == 200, report.text
+    row = next(r for r in report.json()["rows"] if r["vendor_name"] == "Card Only Co")
+    assert Decimal(row["ytd_paid"]) == Decimal("0")
+    assert row["payment_count"] == 0
+    assert row["over_threshold"] is False
+    assert Decimal(row["card_paid"]) == Decimal("5000.00")
+
+    # ...so there is no working-copy form to generate either.
+    async with realdb.client(key="a", role="admin") as c:
+        pdf = await c.get(f"/api/tax/vendors/{vid}/1099?year={YEAR}")
+    assert pdf.status_code == 400
+
+    # ...and the vendor is not filed.
+    async with realdb.client(key="a", role="ap_manager") as c:
+        filed = await c.post(
+            "/api/tax/1099/file", json={"year": YEAR, "idempotency_key": "card-only"}
+        )
+    assert filed.status_code == 200, filed.text
+    assert filed.json()["submitted_count"] == 0
+
+
+async def test_efile_box_amount_excludes_card_payments(realdb, monkeypatch):
+    """The filed box amount is the reportable total, not gross spend. The
+    e-file result deliberately carries no amount (PII/redaction), so the
+    payload handed to the adapter is captured directly."""
+    from app.services.tax_filing_adapters import mock_adapter as mock_filing  # noqa: PLC0415
+
+    captured: list = []
+    original = mock_filing.MockTaxFilingAdapter.submit_batch
+
+    async def _recording(self, *, tax_year, forms, idempotency_key):
+        captured.extend(forms)
+        return await original(self, tax_year=tax_year, forms=forms, idempotency_key=idempotency_key)
+
+    monkeypatch.setattr(mock_filing.MockTaxFilingAdapter, "submit_batch", _recording)
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vid = await _vendor(mk, org_id, name="Box Co", eligible=True, w9=True)
+    await _paid_invoice(mk, org_id, vid, "9000.00", method="ach")
+    await _paid_invoice(mk, org_id, vid, "4000.00", method="virtual_card")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post("/api/tax/1099/file", json={"year": YEAR, "idempotency_key": "box-1"})
+    assert resp.status_code == 200, resp.text
+
+    form = next(f for f in captured if f.vendor_id == str(vid))
+    assert form.box_amount == Decimal("9000.00")
+    assert isinstance(form.box_amount, Decimal)
+
+
+async def test_every_non_card_rail_stays_reportable(realdb):
+    """Under-reporting is as wrong as over-reporting: every bank rail — and an
+    unset rail (the manual / legacy payment path) — still counts."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    vid = await _vendor(mk, org_id, name="All Rails Co", eligible=True, w9=True)
+    rails = ["ach", "wire", "check", "rtp", "sepa", "international_ach", "international_wire", None]
+    for rail in rails:
+        await _paid_invoice(mk, org_id, vid, "100.00", method=rail)
+    await _paid_invoice(mk, org_id, vid, "100.00", method="virtual_card")
+
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.get(f"/api/tax/1099-report?year={YEAR}")
+    assert resp.status_code == 200, resp.text
+    row = next(r for r in resp.json()["rows"] if r["vendor_name"] == "All Rails Co")
+
+    assert Decimal(row["ytd_paid"]) == Decimal("800.00")
+    assert row["payment_count"] == len(rails)
+    assert Decimal(row["card_paid"]) == Decimal("100.00")
 
 
 # ---------------------------------------------------------------------------

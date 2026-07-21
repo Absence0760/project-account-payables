@@ -284,10 +284,18 @@ def apply_entity_scope(
     endpoint sees every entity's rows. Otherwise the query is narrowed to
     ``model.entity_id == entity_id``.
 
-    ``include_shared=True`` also admits rows with a NULL ``entity_id``. This is
-    only for the chart of accounts (``GLAccount``), where NULL means "shared
-    across every entity", so an entity's effective chart is ``shared ∪ its
-    own``. Every other table backfills to the default entity and never carries a
+    ``include_shared=True`` also admits rows with a NULL ``entity_id``. Two
+    callers want that, for different reasons:
+
+    - the chart of accounts (``GLAccount``), where NULL is a *deliberate*
+      "shared across every entity" marker, so an entity's effective chart is
+      ``shared ∪ its own``;
+    - vendor matching (``services/vendor_matching``), where a NULL is an
+      *unstamped* row (pre-multi-entity, or created from an entity-less
+      invoice) that must stay matchable from every entity — excluding it would
+      silently duplicate the supplier rather than fail loudly.
+
+    Every other table backfills to the default entity and never carries a
     meaningful NULL, so the default (``False``) is correct for them.
     """
     if entity_id is None:

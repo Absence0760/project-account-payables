@@ -42,6 +42,35 @@ updates:
       day: monday
     open-pull-requests-limit: 5
 
+  # Both Dockerfiles pin their base image by digest so Scorecard's
+  # PinnedDependencies check passes and a re-tagged python:3.14-slim can't
+  # change what we build. A digest pin only stays safe if something bumps
+  # it — without this entry the fixture image would silently rot on an
+  # ever-older, ever-more-CVE-laden base.
+  - package-ecosystem: docker
+    directory: /tools/fake-erp
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+
+  # fake-erp's Python deps. Dependabot's pip-compile support pairs
+  # requirements.in with requirements.txt (it only treats a file as a
+  # pip-compile lockfile when the name ends in `.txt` and matches the
+  # `.in` basename) and re-applies --generate-hashes because the output
+  # already carries --hash= lines. Grouped because a fixture doesn't
+  # warrant one PR per transitive bump.
+  - package-ecosystem: pip
+    directory: /tools/fake-erp
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      fake-erp:
+        patterns:
+          - "*"
+
   - package-ecosystem: terraform
     directory: /infra
     schedule:

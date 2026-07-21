@@ -489,3 +489,114 @@ async def test_bank_change_approval_rescreen_blocks_sanctioned_vendor(realdb):
         )
         assert len(rows) == 1
         assert rows[0].result == "match"
+
+
+# ---------------------------------------------------------------------------
+# Issue #121 — new-vendor bank details bypassed the BEC dual-control gate.
+#
+# Only bank-detail CHANGES to existing vendors were dual-controlled; creating
+# a brand-new vendor with attacker-controlled bank details was a single-person
+# action (the row landed active + self-verified in one call, no second
+# approver). Fake-new-payee is the more common real-world BEC pattern.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_vendor_with_bank_details_stages_instead_of_applying(realdb):
+    """POST /vendors with bank_details must NOT land them on the row — the
+    vendor is created payable-eligible metadata-wise but with NO bank details
+    until a second approver signs off on the staged VendorChangeRequest,
+    exactly like the existing-vendor PATCH path."""
+    info = realdb.info(TENANT)
+    mk = realdb.sessionmaker(TENANT)
+
+    async with realdb.client(key=TENANT, role="admin") as client:
+        resp = await client.post(
+            "/api/vendors",
+            json={
+                "name": "Fresh Fraud LLC",
+                "bank_details": {"account_last4": "8888", "bank_name": "Attacker Bank"},
+            },
+        )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    vendor_id = uuid.UUID(body["id"])
+    # The response reflects the row as actually persisted — no bank details.
+    assert not body.get("bank_details")
+
+    async with mk() as s:
+        v = (await s.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one()
+        assert not v.bank_details, "bank details must NOT land on create"
+
+        req = (
+            await s.execute(
+                select(VendorChangeRequest).where(VendorChangeRequest.vendor_id == vendor_id)
+            )
+        ).scalar_one()
+        assert req.status == "pending"
+        assert req.change_type == "bank_details"
+        assert req.requested_by_user_id == info.users["admin"]
+        assert req.proposed_value["bank_details"]["account_last4"] == "8888"
+
+
+@pytest.mark.asyncio
+async def test_create_vendor_without_bank_details_is_unaffected(realdb):
+    """A vendor created with no bank_details at all must NOT stage a spurious
+    change request — the dual-control gate only engages when bank details are
+    actually submitted."""
+    mk = realdb.sessionmaker(TENANT)
+
+    async with realdb.client(key=TENANT, role="admin") as client:
+        resp = await client.post("/api/vendors", json={"name": "No Bank Info Inc"})
+    assert resp.status_code == 201, resp.text
+    vendor_id = uuid.UUID(resp.json()["id"])
+
+    async with mk() as s:
+        count = (
+            (
+                await s.execute(
+                    select(VendorChangeRequest).where(VendorChangeRequest.vendor_id == vendor_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert count == []
+
+
+@pytest.mark.asyncio
+async def test_approving_new_vendor_bank_change_applies_it(realdb):
+    """The full loop: create with bank details (staged, not applied), a
+    SECOND user approves, and only then does the vendor's bank_details get
+    set."""
+    mk = realdb.sessionmaker(TENANT)
+
+    async with realdb.client(key=TENANT, role="admin") as client:
+        create_resp = await client.post(
+            "/api/vendors",
+            json={
+                "name": "Pending Bank Co",
+                "bank_details": {"account_last4": "2222", "bank_name": "Real Bank"},
+            },
+        )
+        vendor_id = create_resp.json()["id"]
+
+    async with mk() as s:
+        req = (
+            await s.execute(
+                select(VendorChangeRequest).where(
+                    VendorChangeRequest.vendor_id == uuid.UUID(vendor_id)
+                )
+            )
+        ).scalar_one()
+
+    # A DIFFERENT user (ap_manager, distinct from the admin who created the
+    # vendor) approves — segregation of duties applies here too.
+    async with realdb.client(key=TENANT, role="ap_manager") as client:
+        approve_resp = await client.post(f"/api/vendors/change-requests/{req.id}/approve")
+    assert approve_resp.status_code == 200, approve_resp.text
+
+    async with mk() as s:
+        v = (await s.execute(select(Vendor).where(Vendor.id == uuid.UUID(vendor_id)))).scalar_one()
+        assert v.bank_details["account_last4"] == "2222"
+        assert v.bank_details["bank_name"] == "Real Bank"

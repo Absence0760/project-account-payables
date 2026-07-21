@@ -154,6 +154,123 @@ async def test_scheduled_report_aging_excludes_pre_approval(realdb):
     assert Decimal(row["total"]) != Decimal("3800.00")
 
 
+# ---------------------------------------------------------------------------
+# Issue #125 — a null due_date counted toward the AP balance (no due_date
+# filter there) but vanished from every aging bucket (which filtered
+# due_date IS NOT NULL), so the bands stopped summing to the balance the
+# moment one open invoice was missing a due date.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_with_null_due_date(realdb) -> Decimal:
+    """Same open-payable trio as `_seed`, PLUS one approved invoice with NO
+    due_date. Total AP balance grows by its amount; a correct aging
+    implementation must bucket it as "current" (unknowable, so not overdue)
+    so the bands still sum to the balance."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    today = date.today()
+
+    async with mk() as s:
+        ent = await _default_entity_id(s)
+        s.add_all(
+            [
+                Invoice(
+                    organization_id=org_id,
+                    entity_id=ent,
+                    invoice_number="AG-CUR",
+                    vendor_name="Recon Co",
+                    amount=Decimal("300.00"),
+                    currency="USD",
+                    status=InvoiceStatus.approved,
+                    invoice_date=today - timedelta(days=120),
+                    due_date=today + timedelta(days=10),
+                ),
+                Invoice(
+                    organization_id=org_id,
+                    entity_id=ent,
+                    invoice_number="AG-60",
+                    vendor_name="Recon Co",
+                    amount=Decimal("1000.00"),
+                    currency="USD",
+                    status=InvoiceStatus.approved,
+                    invoice_date=today - timedelta(days=120),
+                    due_date=today - timedelta(days=45),
+                ),
+                Invoice(
+                    organization_id=org_id,
+                    entity_id=ent,
+                    invoice_number="AG-90P",
+                    vendor_name="Recon Co",
+                    amount=Decimal("2000.00"),
+                    currency="USD",
+                    status=InvoiceStatus.payment_scheduled,
+                    invoice_date=today - timedelta(days=120),
+                    due_date=today - timedelta(days=100),
+                ),
+                Invoice(
+                    organization_id=org_id,
+                    entity_id=ent,
+                    invoice_number="AG-NODUE",
+                    vendor_name="Recon Co",
+                    amount=Decimal("450.00"),
+                    currency="USD",
+                    status=InvoiceStatus.approved,
+                    invoice_date=today - timedelta(days=120),
+                    due_date=None,  # the bug surface
+                ),
+            ]
+        )
+        await s.commit()
+    return Decimal("3750.00")  # 300 + 1000 + 2000 + 450
+
+
+@pytest.mark.asyncio
+async def test_dashboard_aging_includes_null_due_date_as_current(realdb):
+    expected = await _seed_with_null_due_date(realdb)
+    async with realdb.client(key=TENANT, role="cfo") as c:
+        dash = (await c.get("/api/dashboard")).json()
+        cfo = (await c.get("/api/analytics/cfo")).json()
+
+    aging = dash["aging"]
+    aging_total = sum(Decimal(str(v)) for v in aging.values())
+    ap_balance = Decimal(str(cfo["accounts_payable_balance"]))
+
+    assert ap_balance == expected
+    # Without the fix, aging_total would be 3300 (the null-due_date $450
+    # dropped out) while ap_balance stayed 3750 — the exact F-4 gap.
+    assert aging_total == ap_balance
+    # The null-due_date invoice landed in "current" alongside AG-CUR's $300.
+    assert Decimal(str(aging["current"])) == Decimal("750.00")
+
+
+@pytest.mark.asyncio
+async def test_aging_snapshot_export_includes_null_due_date(realdb):
+    expected = await _seed_with_null_due_date(realdb)
+    async with realdb.client(key=TENANT, role="cfo") as c:
+        resp = await c.get("/api/analytics/export/aging_snapshot")
+    assert resp.status_code == 200
+    lines = resp.text.splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.startswith("as_of_date"))
+    row = next(csv.DictReader(io.StringIO("\n".join(lines[start:]))))
+    assert Decimal(row["total"]) == expected
+    assert Decimal(row["current"]) == Decimal("750.00")
+
+
+@pytest.mark.asyncio
+async def test_scheduled_report_aging_includes_null_due_date(realdb):
+    expected = await _seed_with_null_due_date(realdb)
+    from app.services.scheduled_reports import _generate_report_payload
+
+    schedule = SimpleNamespace(report_type="aging_snapshot", period_days=30)
+    mk = realdb.sessionmaker(TENANT)
+    async with mk() as s:
+        csv_text = await _generate_report_payload(s, schedule)
+    row = next(csv.DictReader(io.StringIO(csv_text)))
+    assert Decimal(row["total"]) == expected
+    assert Decimal(row["current"]) == Decimal("750.00")
+
+
 @pytest.mark.asyncio
 async def test_cfo_unrealized_fx_fallback_on_outage(realdb, monkeypatch):
     """On an FX-adapter outage the CFO dashboard degrades gracefully: the
