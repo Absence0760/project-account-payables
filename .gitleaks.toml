@@ -52,4 +52,9 @@ regexes = [
     '''Portal-Secret-\d+''',
     '''Right-Password-\d+''',
     '''Test-?Password-?\d*''',
+    # Synthetic idempotency-key UUIDs in test_card_create_idempotency_header.py
+    # (opaque request tokens, not credentials). Allowlisted as exact literals
+    # so a real UUID-shaped secret elsewhere still trips the scanner.
+    '''2f8c1f3e-4a6b-4c2d-9e1f-7b3a5c9d0e11''',
+    '''9a1d0c77-1111-4222-8333-444455556666''',
 ]
