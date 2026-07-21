@@ -196,18 +196,33 @@ async def sync_pos_from_erp(
         )
         existing_po = existing.scalar_one_or_none()
         if existing_po is not None:
-            # Back-fill the ERP's promised delivery date onto an existing PO,
-            # but only when the ERP actually supplies one AND the PO doesn't
-            # already carry a date. Precedence: a date already on the row
+            # Refresh the ERP-owned fields on an already-known PO. total and
+            # status live entirely in the ERP (there's no PATCH endpoint for
+            # them here) — if a PO is amended or cancelled upstream after we
+            # first synced it, a re-sync must pick that up, or 3-way match
+            # keeps running invoice variance checks against a stale amount
+            # forever. po_number is the match key and is never re-keyed.
+            #
+            # expected_delivery_date keeps its existing human-first
+            # precedence: back-fill it only when the ERP supplies one AND the
+            # PO doesn't already carry a date. A date already on the row
             # (human-set via the model/API, or a prior sync) WINS — the sync
-            # never clobbers it, and a None payload never erases it. This keeps
-            # the existing-PO branch otherwise idempotent (the rest of the row
-            # is left untouched, matching the prior skip behaviour).
+            # never clobbers it, and a None payload never erases it.
+            changed = False
+            if existing_po.total != erp_po.total:
+                existing_po.total = erp_po.total
+                changed = True
+            if existing_po.status != erp_po.status:
+                existing_po.status = erp_po.status
+                changed = True
             if (
                 erp_po.expected_delivery_date is not None
                 and existing_po.expected_delivery_date is None
             ):
                 existing_po.expected_delivery_date = erp_po.expected_delivery_date
+                changed = True
+
+            if changed:
                 updated += 1
             else:
                 skipped += 1
