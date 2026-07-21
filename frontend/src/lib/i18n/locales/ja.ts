@@ -85,7 +85,7 @@ export const messages = {
 	// Dashboard
 	'dashboard.title': 'ダッシュボード',
 	'dashboard.kpi.invoices': '請求書',
-	'dashboard.kpi.totalAmount': '合計金額',
+	'dashboard.kpi.totalAmount': '合計金額(全請求書)',
 	'dashboard.kpi.paid': '支払済み',
 	'dashboard.kpi.pending': '保留中',
 	'dashboard.kpi.touchlessRate': '自動化率',

@@ -81,7 +81,7 @@ export const messages = {
 	// Dashboard
 	'dashboard.title': 'Tableau de bord',
 	'dashboard.kpi.invoices': 'Factures',
-	'dashboard.kpi.totalAmount': 'Montant total',
+	'dashboard.kpi.totalAmount': 'Montant total (toutes les factures)',
 	'dashboard.kpi.paid': 'Payées',
 	'dashboard.kpi.pending': 'En attente',
 	'dashboard.kpi.touchlessRate': 'Taux d’automatisation',

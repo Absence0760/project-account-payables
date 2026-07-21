@@ -90,7 +90,12 @@ export const en = {
 	// Dashboard (routes/+page.svelte)
 	'dashboard.title': 'Dashboard',
 	'dashboard.kpi.invoices': 'Invoices',
-	'dashboard.kpi.totalAmount': 'Total Amount',
+	// Disambiguated from the CFO analytics "total spend" figure
+	// (`GET /api/analytics/cfo` — a trailing period_days window excluding only
+	// rejected invoices): this KPI is a naive sum across EVERY invoice
+	// regardless of status or date, so the label states that population
+	// explicitly rather than reading like a like-for-like spend total.
+	'dashboard.kpi.totalAmount': 'Total Amount (All Invoices)',
 	'dashboard.kpi.paid': 'Paid',
 	'dashboard.kpi.pending': 'Pending',
 	'dashboard.kpi.touchlessRate': 'Touchless Rate',

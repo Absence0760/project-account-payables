@@ -200,3 +200,26 @@ async def test_cfo_concentration_converts_mixed_currency_invoices(realdb):
     conc = body["supplier_concentration"]
     assert conc["largest_vendor"] == "Global Supply Co"
     assert Decimal(str(conc["total_spend"])) == Decimal("2086.96")
+
+
+@pytest.mark.asyncio
+async def test_dashboard_total_amount_and_cfo_total_spend_are_different_populations(realdb):
+    """Regression test for issue #131 part 2 (ambiguous KPI labels).
+
+    The dashboard's "Total Amount" KPI (`total_amount`) and the CFO
+    analytics "total spend" figure (`total_spend`) are NOT the same
+    population — this pins down the exact contrast so the two labels never
+    drift back into looking interchangeable: `total_amount` is a naive sum
+    across every invoice regardless of status, while `total_spend` excludes
+    `rejected`. A rejected invoice must inflate the former but not the
+    latter."""
+    await _seed_vendor_invoices(realdb)
+    async with realdb.client(key=TENANT, role="admin") as c:
+        dashboard_body = (await c.get("/api/dashboard")).json()
+    async with realdb.client(key=TENANT, role="cfo") as c:
+        cfo_body = (await c.get("/api/analytics/cfo")).json()
+
+    # total_amount (dashboard) counts BOTH invoices: 1000 approved + 9000 rejected.
+    assert Decimal(str(dashboard_body["total_amount"])) == Decimal("10000")
+    # total_spend (CFO analytics) counts only the approved one — rejected excluded.
+    assert Decimal(str(cfo_body["total_spend"])) == Decimal("1000")

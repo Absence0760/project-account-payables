@@ -76,6 +76,15 @@ async def get_dashboard(
         return apply_entity_scope(q, APException, entity_id)
 
     # KPIs
+    # `total_amount` (the "Total Amount" KPI on the web dashboard) sums EVERY
+    # invoice regardless of status or date — no `.where()` at all. This is a
+    # DIFFERENT population from the CFO analytics `total_spend`
+    # (`GET /api/analytics/cfo` — a trailing `period_days` window that
+    # excludes only `rejected` invoices): a rejected or brand-new invoice
+    # counts here but not there, and this figure has no date bound while that
+    # one does. Both are intentional, but a caller/label that treats them as
+    # interchangeable will misreport. See backend/docs/analytics.md and
+    # `tests/test_analytics_rejected_exclusion.py`.
     totals = await db.execute(
         _inv(select(func.count(Invoice.id), func.coalesce(func.sum(Invoice.amount), 0)))
     )
