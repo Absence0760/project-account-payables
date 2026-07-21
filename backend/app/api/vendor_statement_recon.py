@@ -265,25 +265,31 @@ async def _create_run(
     db.add(run)
     await db.flush()
 
-    for r in results:
-        db.add(
-            VendorStatementReconLine(
-                reconciliation_id=run.id,
-                organization_id=org_id,
-                entity_id=entity_id,
-                statement_invoice_number=r.statement_invoice_number,
-                statement_date=r.statement_date,
-                statement_amount=r.statement_amount,
-                statement_status=r.statement_status,
-                classification=r.classification,
-                matched_invoice_id=r.matched_invoice_id,
-                ledger_amount=r.ledger_amount,
-                amount_difference=r.amount_difference,
-                match_method=r.match_method,
-                resolution_status=RESOLUTION_UNRESOLVED,
-                raw=r.raw,
-            )
+    lines = [
+        VendorStatementReconLine(
+            reconciliation_id=run.id,
+            organization_id=org_id,
+            entity_id=entity_id,
+            statement_invoice_number=r.statement_invoice_number,
+            statement_date=r.statement_date,
+            statement_amount=r.statement_amount,
+            statement_status=r.statement_status,
+            classification=r.classification,
+            matched_invoice_id=r.matched_invoice_id,
+            ledger_amount=r.ledger_amount,
+            amount_difference=r.amount_difference,
+            match_method=r.match_method,
+            resolution_status=RESOLUTION_UNRESOLVED,
+            raw=r.raw,
         )
+        for r in results
+    ]
+    db.add_all(lines)
+
+    # A statement that reconciles cleanly (no actionable line) has nothing for
+    # a human to resolve — recompute the status now instead of leaving it
+    # `open` forever waiting on a `resolve_line` call that will never come.
+    run.status = _recompute_run_status(lines)
 
     await dispatch_audit(
         db,

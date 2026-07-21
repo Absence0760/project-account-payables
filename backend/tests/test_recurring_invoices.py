@@ -582,3 +582,92 @@ async def test_generate_one_survives_a_racing_generation_for_the_same_period(rea
             .all()
         )
         assert len(rows) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Real-DB — background sweep's `generated` metric (issue #152)
+# --------------------------------------------------------------------------- #
+#
+# `generate_one()` returns the SAME non-None Invoice whether it just created
+# one or hit the (template, period_key) idempotency guard and handed back the
+# pre-existing row — so the sweep must not count "invoice is not None" alone,
+# or a tick that generates nothing new still reports the count of no-ops it
+# skipped.
+
+_SWEEP_TODAY = date(2026, 3, 1)
+
+
+async def _add_recurring_template(mk, org_id, *, next_run_on, name="Sweep Co"):
+    async with mk() as s:
+        t = RecurringInvoiceTemplate(
+            organization_id=org_id,
+            entity_id=await _default_entity_id(s),
+            name=name,
+            vendor_name=name,
+            amount=Decimal("500.00"),
+            currency="USD",
+            cadence=CADENCE_MONTHLY,
+            day_of_period=1,
+            start_date=_SWEEP_TODAY.replace(day=1),
+            status=STATUS_ACTIVE,
+            next_run_on=next_run_on,
+        )
+        s.add(t)
+        await s.commit()
+        await s.refresh(t)
+        return t.id
+
+
+async def test_sweep_generated_counts_only_genuine_new_invoices(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    db_name = realdb.info("a").db_name
+
+    t1 = await _add_recurring_template(mk, org_id, next_run_on=_SWEEP_TODAY, name="Sweep Co 1")
+    t2 = await _add_recurring_template(mk, org_id, next_run_on=_SWEEP_TODAY, name="Sweep Co 2")
+
+    generated = await svc._sweep_tenant(db_name, _SWEEP_TODAY)
+    assert generated == 2  # two genuinely new invoices, one per template
+
+    async with mk() as s:
+        rows = (
+            (await s.execute(select(Invoice).where(Invoice.recurring_template_id.in_([t1, t2]))))
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 2
+
+
+async def test_sweep_reports_zero_when_period_already_generated(realdb):
+    """Issue #152: a tick that generates nothing new must report 0, not the
+    count of already-generated periods it skipped."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    db_name = realdb.info("a").db_name
+
+    tid = await _add_recurring_template(mk, org_id, next_run_on=_SWEEP_TODAY)
+
+    first = await svc._sweep_tenant(db_name, _SWEEP_TODAY)
+    assert first == 1  # the one genuine create
+
+    # Simulate the cursor sitting back on an already-generated period (e.g. a
+    # stuck/retried cursor) so this tick's only work is the idempotent no-op.
+    async with mk() as s:
+        t = (
+            await s.execute(
+                select(RecurringInvoiceTemplate).where(RecurringInvoiceTemplate.id == tid)
+            )
+        ).scalar_one()
+        t.next_run_on = _SWEEP_TODAY
+        await s.commit()
+
+    second = await svc._sweep_tenant(db_name, _SWEEP_TODAY)
+    assert second == 0  # idempotent no-op — NOT the count of skipped periods
+
+    async with mk() as s:
+        rows = (
+            (await s.execute(select(Invoice).where(Invoice.recurring_template_id == tid)))
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1  # still exactly one invoice — no duplicate
