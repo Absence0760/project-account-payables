@@ -114,9 +114,14 @@ async def test_email_otp_reissue_invalidates_previous_code(fake_redis):
 
 
 @pytest.mark.asyncio
-async def test_email_otp_stored_value_is_a_sha256_hash_not_plaintext(fake_redis):
-    """A snapshot of Redis must not yield a usable code. The stored
-    value must be a 64-char SHA-256 hex digest, never the plaintext."""
+async def test_email_otp_stored_value_is_a_keyed_hmac_not_plaintext_or_bare_hash(fake_redis):
+    """A snapshot of Redis must not yield a usable code. The stored value must be
+    a 64-char hex digest, never the plaintext — and it must be the KEYED HMAC,
+    not a bare SHA-256 of the code. A bare hash of a 6-digit code is trivially
+    brute-forced offline from the stored digest; keying it with the server
+    secret closes that."""
+    import hashlib
+
     from app.services import mfa
 
     user_id = uuid.uuid4()
@@ -125,8 +130,10 @@ async def test_email_otp_stored_value_is_a_sha256_hash_not_plaintext(fake_redis)
     stored_bytes = fake_redis.store[f"mfa:email_otp:{user_id}"][1]
     stored = stored_bytes.decode("utf-8")
     assert plaintext not in stored, "Redis must not hold the plaintext OTP"
-    assert len(stored) == 64, f"expected 64-char SHA-256 hex; got {len(stored)} chars"
+    assert len(stored) == 64, f"expected 64-char hex digest; got {len(stored)} chars"
     assert all(c in "0123456789abcdef" for c in stored), "stored value must be hex"
+    bare = hashlib.sha256(plaintext.encode("utf-8")).hexdigest()
+    assert stored != bare, "stored digest must be a keyed HMAC, not a bare SHA-256 of the code"
 
 
 @pytest.mark.asyncio

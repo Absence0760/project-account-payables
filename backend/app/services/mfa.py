@@ -108,19 +108,23 @@ def qr_code_data_url(uri: str) -> str:
 _TOTP_CLAIM_TTL_SECONDS = 90
 
 
+def _keyed_digest(*parts: str) -> str:
+    """HMAC-SHA256 (keyed with the server secret) of the ``:``-joined parts, as
+    hex. Keyed rather than a bare hash so a Redis-keyspace snapshot can neither
+    brute-force a low-entropy input (a 6-digit OTP) nor correlate / precompute a
+    value for a known input without the server key — and so CodeQL's
+    py/weak-sensitive-data-hashing rule stays clear. The output is the same
+    64-char hex shape as a raw SHA-256 digest, so stored formats are unchanged."""
+    msg = ":".join(parts).encode()
+    return hmac.new(settings.secret_key.encode(), msg, hashlib.sha256).hexdigest()
+
+
 def _totp_claim_key(secret: str, code: str) -> str:
-    # Derive the Redis claim key with a keyed HMAC (server secret), not a bare
-    # hash of the credential. The TOTP secret/code never appear in cleartext in
-    # Redis keyspace listings / slow logs, AND — because the key material is
-    # secret — an attacker who can read the keyspace can't correlate or
-    # precompute a claim key for a (secret, code) pair. A bare SHA-256 of the
-    # secret would also trip CodeQL's py/weak-sensitive-data-hashing rule.
-    digest = hmac.new(
-        settings.secret_key.encode(),
-        f"{secret}:{code}".encode(),
-        hashlib.sha256,
-    ).hexdigest()
-    return f"mfa:totp_used:{digest}"
+    # Keyed HMAC (not a bare hash): the TOTP secret/code never appear in
+    # cleartext in Redis keyspace listings / slow logs, and without the server
+    # key an attacker who can read the keyspace can't correlate or precompute a
+    # claim key for a (secret, code) pair.
+    return f"mfa:totp_used:{_keyed_digest(secret, code)}"
 
 
 async def verify_totp(secret: str, code: str) -> bool:
@@ -157,8 +161,10 @@ def _email_otp_key(user_id: uuid.UUID) -> str:
 
 
 def _hash_otp(code: str) -> str:
-    """SHA-256 the OTP before storing — Redis dumps shouldn't reveal codes."""
-    return hashlib.sha256(code.encode("utf-8")).hexdigest()
+    """Keyed HMAC-SHA256 of the OTP before storing — a Redis snapshot must not
+    reveal the code, and keying it means the low-entropy 6-digit space can't be
+    brute-forced from the stored digest without the server secret."""
+    return _keyed_digest(code)
 
 
 async def issue_email_otp(user_id: uuid.UUID) -> str:
