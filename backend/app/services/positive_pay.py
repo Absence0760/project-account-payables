@@ -270,15 +270,20 @@ async def build_ach_authorization_items(
 ) -> list[AchAuthorizationItem]:
     """Build the ACH debit-authorization items for an org.
 
-    Selects ``active`` vendors whose ``bank_details`` carry both a routing and
-    an account number, and projects each into an :class:`AchAuthorizationItem`.
-    Vendors without ACH bank details are skipped (there's nothing to authorize).
-    Full routing / account numbers go only into the returned items (and thence
-    the rendered file) — never a log line.
+    Selects ``active`` vendors that are not payments-blocked (sanctions/compliance
+    hold) whose ``bank_details`` carry both a routing and an account number, and
+    projects each into an :class:`AchAuthorizationItem`. Vendors without ACH bank
+    details are skipped (there's nothing to authorize). A vendor with
+    ``payments_blocked=True`` is excluded even if its ``status`` is still
+    ``"active"`` — the two flags are independent, and the bank must never be told
+    to honor a debit the compliance layer intended to stop. Full routing /
+    account numbers go only into the returned items (and thence the rendered
+    file) — never a log line.
     """
     query = select(Vendor).where(
         Vendor.organization_id == org_id,
         Vendor.status == "active",
+        Vendor.payments_blocked.is_(False),
     )
     query = apply_entity_scope(query, Vendor, entity_id)
 

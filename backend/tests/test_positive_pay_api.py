@@ -67,13 +67,22 @@ async def _clear_settings(realdb, org_id):
         await s.commit()
 
 
-async def _add_vendor(mk, org_id, *, name="Globex Industrial", bank_details=None, status="active"):
+async def _add_vendor(
+    mk,
+    org_id,
+    *,
+    name="Globex Industrial",
+    bank_details=None,
+    status="active",
+    payments_blocked=False,
+):
     async with mk() as s:
         v = Vendor(
             organization_id=org_id,
             name=name,
             status=status,
             bank_details=bank_details,
+            payments_blocked=payments_blocked,
             entity_id=await _default_entity_id(s),
         )
         s.add(v)
@@ -374,6 +383,42 @@ async def test_generate_ach_authorization(realdb):
     assert "vendor_name,routing_number,account_number,status" in text
     assert "ACH Vendor" in text
     assert "No-Bank Vendor" not in text
+
+
+async def test_generate_ach_authorization_excludes_payments_blocked_vendor(realdb):
+    """A sanctions-blocked vendor (``payments_blocked=True``) must never land on the
+    ACH-authorization allowlist handed to the bank, even when its general ``status``
+    is still ``active`` — the two flags are independent (#184)."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _add_vendor(
+        mk,
+        org_id,
+        name="Blocked ACH Vendor",
+        bank_details={"routing_number": "021000021", "account_number": "444555666"},
+        status="active",
+        payments_blocked=True,
+    )
+    await _add_vendor(
+        mk,
+        org_id,
+        name="Clean ACH Vendor",
+        bank_details={"routing_number": "021000021", "account_number": "111222333"},
+        status="active",
+        payments_blocked=False,
+    )
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post("/api/positive-pay/ach-authorization", json={"bank_format": "csv"})
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["item_count"] == 1
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        dl = await c.get(f"/api/positive-pay/{body['id']}/download")
+    text = dl.content.decode("utf-8")
+    assert "Clean ACH Vendor" in text
+    assert "Blocked ACH Vendor" not in text
 
 
 # ---------------------------------------------------------------------------
