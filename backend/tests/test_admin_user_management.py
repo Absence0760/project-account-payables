@@ -116,7 +116,7 @@ def test_admin_set_password_rejects_weak(weak: str):
 
 
 def test_admin_set_password_accepts_complex():
-    _validate_admin_set_password("Str0ngEnoughPass")  # ≥12, upper+lower+digit
+    _validate_admin_set_password("StrongPass123")  # ≥12, upper+lower+digit
 
 
 # --------------------------------------------------------------------------
@@ -144,7 +144,7 @@ async def test_admin_password_reset_revokes_target_sessions(realdb, monkeypatch)
     async with realdb.client(key="a", role="admin") as c:
         resp = await c.patch(
             f"/api/admin/users/{target_id}",
-            json={"password": "Str0ngEnoughPass"},
+            json={"password": "StrongPass123"},
         )
     assert resp.status_code == 200
     assert calls == [target_id]
