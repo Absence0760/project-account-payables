@@ -185,7 +185,7 @@ def _mint_challenge_payload(payload: dict) -> str:
     return jwt.encode(payload, settings.secret_key, algorithm="HS256")
 
 
-def test_challenge_token_rejected_when_expired():
+async def test_challenge_token_rejected_when_expired():
     """A stale challenge — even with the right type and signature —
     must not be accepted. Otherwise the password-only step grants a
     much larger time window than the 5-minute design."""
@@ -199,10 +199,10 @@ def test_challenge_token_rejected_when_expired():
     }
     token = _mint_challenge_payload(expired_payload)
     with pytest.raises(ValueError):
-        mfa.decode_challenge_token(token)
+        await mfa.decode_challenge_token(token)
 
 
-def test_challenge_token_rejected_when_typ_is_user():
+async def test_challenge_token_rejected_when_typ_is_user():
     """The challenge token must carry `typ=mfa_challenge`. A regression
     that lets an `typ=user` JWT pass through `decode_challenge_token`
     would let an already-authenticated user bypass MFA entirely."""
@@ -216,10 +216,10 @@ def test_challenge_token_rejected_when_typ_is_user():
     }
     token = _mint_challenge_payload(payload)
     with pytest.raises(ValueError, match="Wrong token type"):
-        mfa.decode_challenge_token(token)
+        await mfa.decode_challenge_token(token)
 
 
-def test_challenge_token_rejected_when_missing_typ():
+async def test_challenge_token_rejected_when_missing_typ():
     """A token with no `typ` at all must not be treated as a valid
     challenge — the absence of the discriminator is itself disqualifying."""
     from app.services import mfa
@@ -231,10 +231,10 @@ def test_challenge_token_rejected_when_missing_typ():
     }
     token = _mint_challenge_payload(payload)
     with pytest.raises(ValueError):
-        mfa.decode_challenge_token(token)
+        await mfa.decode_challenge_token(token)
 
 
-def test_challenge_token_rejected_when_signed_with_wrong_secret():
+async def test_challenge_token_rejected_when_signed_with_wrong_secret():
     """An attacker can't mint a valid challenge by guessing the
     algorithm — the secret is the wall."""
     from app.services import mfa
@@ -247,10 +247,10 @@ def test_challenge_token_rejected_when_signed_with_wrong_secret():
     }
     bad = jwt.encode(payload, "wrong-secret", algorithm="HS256")
     with pytest.raises(ValueError):
-        mfa.decode_challenge_token(bad)
+        await mfa.decode_challenge_token(bad)
 
 
-def test_challenge_token_rejected_when_alg_is_none():
+async def test_challenge_token_rejected_when_alg_is_none():
     """alg=none is the canonical JWT bypass. The hand-rolled token
     below has no signature — decode must fail."""
     import base64
@@ -279,7 +279,7 @@ def test_challenge_token_rejected_when_alg_is_none():
     )
     token = f"{header}.{body}."  # no signature
     with pytest.raises(ValueError):
-        mfa.decode_challenge_token(token)
+        await mfa.decode_challenge_token(token)
 
 
 def test_challenge_token_ttl_matches_settings():
@@ -307,7 +307,7 @@ def test_challenge_token_ttl_matches_settings():
 # ---------------------------------------------------------------------------
 
 
-def test_totp_window_does_not_accept_arbitrary_old_codes():
+async def test_totp_window_does_not_accept_arbitrary_old_codes():
     """`verify_totp` must reject a code computed for a window far in
     the past. A `valid_window=1000`-style mistake would let any
     historical code authenticate."""
@@ -319,10 +319,10 @@ def test_totp_window_does_not_accept_arbitrary_old_codes():
     totp = pyotp.TOTP(secret)
     # Code from 10 minutes ago — way outside any reasonable drift.
     old_code = totp.at(int(time.time()) - 600)
-    assert mfa.verify_totp(secret, old_code) is False
+    assert await mfa.verify_totp(secret, old_code) is False
 
 
-def test_totp_rejects_obviously_wrong_codes():
+async def test_totp_rejects_obviously_wrong_codes():
     """Belt-and-braces: random 6-digit strings must not pass. A
     regression where verify defaulted to True on parse error would
     accept "000000"."""
@@ -330,7 +330,7 @@ def test_totp_rejects_obviously_wrong_codes():
 
     secret = mfa.generate_totp_secret()
     for bad in ("000000", "123456", "999999", "abcdef"):
-        assert mfa.verify_totp(secret, bad) is False, f"unexpectedly accepted: {bad!r}"
+        assert await mfa.verify_totp(secret, bad) is False, f"unexpectedly accepted: {bad!r}"
 
 
 # ---------------------------------------------------------------------------

@@ -48,29 +48,40 @@ def test_qr_code_data_url_is_png_data_uri():
     assert len(data_url) > 200
 
 
-def test_verify_totp_accepts_current_code():
+async def test_verify_totp_accepts_current_code():
     from app.services import mfa
 
     secret = mfa.generate_totp_secret()
     code = pyotp.TOTP(secret).now()
-    assert mfa.verify_totp(secret, code) is True
+    assert await mfa.verify_totp(secret, code) is True
 
 
-def test_verify_totp_rejects_bad_code():
+async def test_verify_totp_rejects_bad_code():
     from app.services import mfa
 
     secret = mfa.generate_totp_secret()
-    assert mfa.verify_totp(secret, "000000") is False
-    assert mfa.verify_totp(secret, "") is False
-    assert mfa.verify_totp("", "123456") is False
+    assert await mfa.verify_totp(secret, "000000") is False
+    assert await mfa.verify_totp(secret, "") is False
+    assert await mfa.verify_totp("", "123456") is False
 
 
-def test_verify_totp_strips_whitespace():
+async def test_verify_totp_strips_whitespace():
     from app.services import mfa
 
     secret = mfa.generate_totp_secret()
     code = pyotp.TOTP(secret).now()
-    assert mfa.verify_totp(secret, f"  {code}  ") is True
+    assert await mfa.verify_totp(secret, f"  {code}  ") is True
+
+
+async def test_verify_totp_is_single_use():
+    """Issue #162: the same TOTP code must not verify twice — a captured code
+    is a replay risk for the code's full validity window, not just one use."""
+    from app.services import mfa
+
+    secret = mfa.generate_totp_secret()
+    code = pyotp.TOTP(secret).now()
+    assert await mfa.verify_totp(secret, code) is True
+    assert await mfa.verify_totp(secret, code) is False
 
 
 # ---------- Org enforcement ---------------------------------------------
@@ -166,30 +177,45 @@ def test_verify_email_otp_returns_false_when_no_code_issued(fake_redis):  # noqa
 # ---------- Challenge token round-trip ----------------------------------
 
 
-def test_challenge_token_round_trip():
+async def test_challenge_token_round_trip():
     from app.services import mfa
 
     user_id = uuid.uuid4()
     token = mfa.create_challenge_token(user_id)
     assert isinstance(token, str)
-    assert mfa.decode_challenge_token(token) == user_id
+    claims = await mfa.decode_challenge_token(token)
+    assert claims.subject_id == user_id
 
 
-def test_challenge_token_rejects_garbage():
+async def test_challenge_token_rejects_garbage():
     from app.services import mfa
 
     with pytest.raises(ValueError):
-        mfa.decode_challenge_token("not-a-jwt")
+        await mfa.decode_challenge_token("not-a-jwt")
 
 
-def test_challenge_token_rejects_wrong_type():
+async def test_challenge_token_rejects_wrong_type():
     """A regular access token must not satisfy the challenge check."""
     from app.api.deps import create_access_token
     from app.services import mfa
 
     bad = create_access_token(uuid.uuid4(), uuid.uuid4())
     with pytest.raises(ValueError):
-        mfa.decode_challenge_token(bad)
+        await mfa.decode_challenge_token(bad)
+
+
+async def test_consume_challenge_token_makes_it_unusable():
+    """Issue #162: a challenge token's jti must be single-use — once
+    consumed, decoding the SAME token again must fail even though it hasn't
+    expired."""
+    from app.services import mfa
+
+    user_id = uuid.uuid4()
+    token = mfa.create_challenge_token(user_id)
+    claims = await mfa.decode_challenge_token(token)
+    await mfa.consume_challenge_token(claims.jti)
+    with pytest.raises(ValueError):
+        await mfa.decode_challenge_token(token)
 
 
 # ---------- Schema contract ---------------------------------------------
@@ -312,6 +338,59 @@ async def test_verify_mfa_failure_writes_audit_action():
     assert "auth.mfa.verify.failure" in audit_calls
     assert "auth.mfa.verify.success" not in audit_calls
     assert "auth.login.success" not in audit_calls
+
+
+@pytest.mark.asyncio
+async def test_verify_mfa_challenge_token_rejects_replay():
+    """Issue #162: once a challenge token has minted a real access token, the
+    SAME challenge token must not be usable again — otherwise one password
+    check plus one captured TOTP code lets an attacker mint unlimited
+    sessions for the challenge's full 5-minute TTL."""
+    from unittest.mock import patch as _patch
+
+    import pyotp
+    from fastapi import HTTPException
+
+    from app.api import auth as auth_mod
+    from app.schemas.auth import MFAVerifyRequest
+    from app.services import mfa as mfa_svc
+
+    user = _mfa_user(enrolled=True)
+    db = _single_user_db(user)
+
+    async def _fake_audit(**kwargs):
+        pass
+
+    async def _fake_register(user_id, jti):
+        pass
+
+    challenge = mfa_svc.create_challenge_token(user.id)
+    code = pyotp.TOTP(user.mfa_secret).now()
+
+    with (
+        _patch.object(auth_mod, "dispatch_auth_audit", _fake_audit),
+        _patch.object(auth_mod, "register_session", _fake_register),
+        _patch.object(auth_mod.settings, "mfa_enabled", True),
+    ):
+        # First exchange succeeds and mints a real token.
+        first = await auth_mod.verify_mfa(
+            MFAVerifyRequest(challenge_token=challenge, code=code, method="totp"),
+            _mfa_request(),
+            db,
+        )
+        assert first.access_token
+
+        # Replaying the SAME challenge token (even with a fresh valid TOTP
+        # code, proving it's the TOKEN that's burned, not just the code) must
+        # be refused.
+        fresh_code = pyotp.TOTP(user.mfa_secret).now()
+        with pytest.raises(HTTPException) as exc:
+            await auth_mod.verify_mfa(
+                MFAVerifyRequest(challenge_token=challenge, code=fresh_code, method="totp"),
+                _mfa_request(),
+                db,
+            )
+        assert exc.value.status_code == 401
 
 
 # --- tiny local helpers for the two tests above ----------------------

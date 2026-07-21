@@ -427,7 +427,7 @@ TOTP-based two-factor with optional email backup. Per-user opt-in by default; ad
 
 | Factor | Identifier | Notes |
 |---|---|---|
-| **TOTP** | `totp` | RFC 6238, 30-second window, ±1 step skew tolerance. `pyotp` under the hood. Compatible with Google Authenticator, 1Password, Authy, Microsoft Authenticator. |
+| **TOTP** | `totp` | RFC 6238, 30-second window, ±1 step skew tolerance. `pyotp` under the hood. Compatible with Google Authenticator, 1Password, Authy, Microsoft Authenticator. Single-use: a Redis claim (`SET NX`, ~90s TTL bounding the ±1-window validity) rejects a replay of the same code, closing the window the email-OTP path already had. |
 | **Passkey / WebAuthn** | `passkey` | FIDO2 / WebAuthn — a platform authenticator (Touch ID, Face ID, Windows Hello) or a roaming security key. `py_webauthn` under the hood. A **separate code path** from TOTP (`services/webauthn.py`), opt-in and additive: a user can register one or many passkeys alongside or instead of TOTP. |
 | **Email OTP** | `email` | 6-digit code emailed via the configured `AP_EMAIL_PROVIDER`. Lives in Redis with a `AP_MFA_EMAIL_OTP_TTL_SECONDS` TTL (default 6 minutes). Only the SHA-256 of the code is stored — Redis dumps don't reveal codes. Single-use. |
 
@@ -486,7 +486,9 @@ POST /api/auth/mfa/passkey/authenticate/verify {challenge_token, credential}
 
 `methods` in the challenge response lists which factors the user can submit (`totp` / `passkey` / `email`), so a user who has registered only a passkey (no TOTP) still trips the MFA gate and is offered `passkey`.
 
-The challenge token is itself a short-lived JWT (`AP_MFA_CHALLENGE_TTL_SECONDS`, default 5 minutes) with `typ: mfa_challenge`. That keeps the flow stateless — no DB row to garbage-collect, no Redis lookup on every check. A regular access token won't satisfy the challenge endpoint and vice versa.
+The challenge token is itself a short-lived JWT (`AP_MFA_CHALLENGE_TTL_SECONDS`, default 5 minutes) with `typ: mfa_challenge`. That keeps the flow stateless — no DB row to garbage-collect. A regular access token won't satisfy the challenge endpoint and vice versa.
+
+**Single-use.** The challenge token's `jti` is blocklisted (the same Redis blocklist `/logout` uses) the moment a factor verify actually mints a real access token — `/mfa/verify` (totp/email) and `/mfa/passkey/authenticate/verify` both consume it on success. A decode also checks the blocklist, so replaying an already-used token — even with a fresh, still-valid code — gets a clean 401 instead of a second session. Requesting an email OTP or starting a passkey ceremony does *not* consume the token (the user hasn't completed a factor yet), so those can be called more than once before the exchange finishes. The vendor portal's `vendor_mfa_challenge` token gets the identical treatment.
 
 **Token-type isolation is enforced at the dependency, not just the route.** `get_current_user` (in `app/api/deps.py`) rejects every JWT whose `typ` is a non-access type — `vendor`, `mfa_challenge`, or `vendor_mfa_challenge` (`_NON_ACCESS_TOKEN_TYPES`) — so a password-verified-but-MFA-pending caller cannot wield their `mfa_challenge` token as a fully-authenticated Bearer token and skip the second factor. A real access token is `typ="user"` (a missing `typ` is still accepted for legacy tokens predating the claim). Pinned by `backend/tests/test_auth_token_security.py::test_mfa_challenge_token_cannot_act_as_access_token` (and the `vendor_mfa_challenge` sibling), which wire the user lookup to a valid active user so only the type-rejection can produce the 401.
 

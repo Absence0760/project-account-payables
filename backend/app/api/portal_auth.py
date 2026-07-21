@@ -246,11 +246,13 @@ async def portal_request_email_otp(
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled")
     try:
-        vu_id = mfa.decode_vendor_challenge_token(body.challenge_token)
+        claims = await mfa.decode_vendor_challenge_token(body.challenge_token)
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
-    vu = (await db.execute(select(VendorUser).where(VendorUser.id == vu_id))).scalar_one_or_none()
+    vu = (
+        await db.execute(select(VendorUser).where(VendorUser.id == claims.subject_id))
+    ).scalar_one_or_none()
     # Only an enrolled, active vendor gets a code. Stay 204 either way so the
     # response doesn't reveal which accounts exist / are enrolled.
     if not vu or not vu.is_active or not vu.mfa_enabled:
@@ -278,11 +280,13 @@ async def portal_mfa_challenge(
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled")
     try:
-        vu_id = mfa.decode_vendor_challenge_token(body.challenge_token)
+        claims = await mfa.decode_vendor_challenge_token(body.challenge_token)
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
-    vu = (await db.execute(select(VendorUser).where(VendorUser.id == vu_id))).scalar_one_or_none()
+    vu = (
+        await db.execute(select(VendorUser).where(VendorUser.id == claims.subject_id))
+    ).scalar_one_or_none()
     if not vu or not vu.is_active:
         raise HTTPException(status_code=401, detail="Invalid challenge")
     # Both factors require the vendor to have actually enrolled MFA — the
@@ -294,8 +298,12 @@ async def portal_mfa_challenge(
         if not await mfa.verify_vendor_email_otp(vu.id, body.code):
             raise HTTPException(status_code=401, detail="Invalid or expired code")
     else:
-        if not mfa.verify_totp(vu.mfa_secret, body.code):
+        if not await mfa.verify_totp(vu.mfa_secret, body.code):
             raise HTTPException(status_code=401, detail="Invalid code")
+
+    # Single-use: burn the challenge token now that the factor is verified so
+    # it can't be replayed to mint a second session (issue #162).
+    await mfa.consume_challenge_token(claims.jti)
 
     token = create_vendor_access_token(vu.id, vu.vendor_id)
     return PortalTokenResponse(
@@ -339,7 +347,7 @@ async def portal_mfa_verify(
         raise HTTPException(status_code=400, detail="MFA is disabled on this deployment")
     if not vu.mfa_secret:
         raise HTTPException(status_code=400, detail="Start enrollment first")
-    if not mfa.verify_totp(vu.mfa_secret, body.code):
+    if not await mfa.verify_totp(vu.mfa_secret, body.code):
         raise HTTPException(status_code=401, detail="Invalid code")
 
     vu.mfa_enabled = True
@@ -371,7 +379,7 @@ async def portal_mfa_disable(
     a stolen session shouldn't be able to silently strip MFA off."""
     if not vu.mfa_enabled or not vu.mfa_secret:
         raise HTTPException(status_code=400, detail="MFA is not enabled")
-    if not mfa.verify_totp(vu.mfa_secret, body.code):
+    if not await mfa.verify_totp(vu.mfa_secret, body.code):
         raise HTTPException(status_code=401, detail="Invalid code")
 
     vu.mfa_secret = None

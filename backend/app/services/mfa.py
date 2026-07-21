@@ -26,6 +26,7 @@ import hmac
 import io
 import secrets
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import pyotp
@@ -33,7 +34,7 @@ import qrcode
 from jose import JWTError, jwt
 
 from app.config import settings
-from app.redis import get_redis
+from app.redis import block_token, get_redis, is_token_blocked
 
 ALGORITHM = "HS256"
 
@@ -98,14 +99,45 @@ def qr_code_data_url(uri: str) -> str:
     return f"data:image/png;base64,{encoded}"
 
 
-def verify_totp(secret: str, code: str) -> bool:
-    """Verify a 6-digit TOTP. Allows ±1 30-second window for clock skew."""
+# TTL for the single-use TOTP-code claim below. valid_window=1 accepts the
+# current period plus one on either side, so a code can be valid for close to
+# 90s around the moment it's generated — the claim TTL is set to that same
+# upper bound so it can't outlive the code's own validity window (a shorter
+# TTL would let a captured code be replayed again once the claim expires but
+# the code itself is still accepted).
+_TOTP_CLAIM_TTL_SECONDS = 90
+
+
+def _totp_claim_key(secret: str, code: str) -> str:
+    # Hash rather than store the secret/code in the Redis key verbatim — the
+    # secret is a long-lived credential and shouldn't appear in cleartext in
+    # Redis keyspace listings / slow logs.
+    digest = hashlib.sha256(f"{secret}:{code}".encode()).hexdigest()
+    return f"mfa:totp_used:{digest}"
+
+
+async def verify_totp(secret: str, code: str) -> bool:
+    """Verify + consume a 6-digit TOTP. Allows ±1 30-second window for clock
+    skew. Single-use: the first successful verification of a given (secret,
+    code) pair claims it in Redis, so the SAME code can't be replayed again
+    within its validity window — mirrors verify_email_otp's single-use
+    pattern (issue #162). A brand-new code every ~30s is unaffected; only an
+    exact repeat of an already-accepted code is rejected.
+    """
     if not secret or not code:
         return False
+    code = code.strip()
     try:
-        return pyotp.TOTP(secret).verify(code.strip(), valid_window=1)
+        if not pyotp.TOTP(secret).verify(code, valid_window=1):
+            return False
     except Exception:
         return False
+
+    r = await get_redis()
+    # SET NX: the first caller to claim this (secret, code) pair wins; a
+    # replay within the TTL finds the key already set and is rejected.
+    claimed = await r.set(_totp_claim_key(secret, code), "1", nx=True, ex=_TOTP_CLAIM_TTL_SECONDS)
+    return bool(claimed)
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +227,28 @@ async def verify_vendor_email_otp(vendor_user_id: uuid.UUID, code: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class ChallengeTokenClaims:
+    """The decoded subject id + jti of a verified, not-yet-consumed challenge
+    token. Callers that actually complete the MFA exchange (mint a real
+    access token) must call `consume_challenge_token(claims.jti)` — decoding
+    alone does not burn the token, since some callers (e.g. requesting an
+    email OTP) legitimately decode it more than once before the user
+    completes the factor."""
+
+    subject_id: uuid.UUID
+    jti: str
+
+
+async def consume_challenge_token(jti: str) -> None:
+    """Single-use: blocklist a challenge token's jti immediately after a
+    successful MFA verify (issue #162) so it can't be replayed to mint a
+    second access token from the same password check. Shares the same Redis
+    blocklist as regular access-token logout — jti values never collide
+    across token types since each is a freshly generated UUID."""
+    await block_token(jti, settings.mfa_challenge_ttl_seconds)
+
+
 def create_challenge_token(user_id: uuid.UUID) -> str:
     expire = datetime.now(UTC) + timedelta(seconds=settings.mfa_challenge_ttl_seconds)
     payload = {
@@ -206,8 +260,9 @@ def create_challenge_token(user_id: uuid.UUID) -> str:
     return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
 
 
-def decode_challenge_token(token: str) -> uuid.UUID:
-    """Verify a challenge token and return the user_id. Raises ValueError on bad tokens."""
+async def decode_challenge_token(token: str) -> ChallengeTokenClaims:
+    """Verify a challenge token and return its claims. Raises ValueError on a
+    bad, expired, wrong-type, or already-consumed (replayed) token."""
     try:
         payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
     except JWTError as exc:
@@ -215,9 +270,13 @@ def decode_challenge_token(token: str) -> uuid.UUID:
     if payload.get("typ") != CHALLENGE_TYPE:
         raise ValueError("Wrong token type for MFA challenge")
     try:
-        return uuid.UUID(payload["sub"])
+        subject_id = uuid.UUID(payload["sub"])
+        jti = payload["jti"]
     except (KeyError, ValueError) as exc:
         raise ValueError("Malformed MFA challenge token") from exc
+    if await is_token_blocked(jti):
+        raise ValueError("MFA challenge token already used")
+    return ChallengeTokenClaims(subject_id=subject_id, jti=jti)
 
 
 # ---------------------------------------------------------------------------
@@ -239,9 +298,10 @@ def create_vendor_challenge_token(vendor_user_id: uuid.UUID) -> str:
     return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
 
 
-def decode_vendor_challenge_token(token: str) -> uuid.UUID:
-    """Verify a vendor MFA challenge token and return the vendor_user_id.
-    Raises ValueError on bad tokens (wrong type, expired, malformed)."""
+async def decode_vendor_challenge_token(token: str) -> ChallengeTokenClaims:
+    """Verify a vendor MFA challenge token and return its claims. Raises
+    ValueError on a bad, expired, wrong-type, or already-consumed (replayed)
+    token. `subject_id` is the vendor_user_id."""
     try:
         payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
     except JWTError as exc:
@@ -249,6 +309,10 @@ def decode_vendor_challenge_token(token: str) -> uuid.UUID:
     if payload.get("typ") != VENDOR_CHALLENGE_TYPE:
         raise ValueError("Wrong token type for MFA challenge")
     try:
-        return uuid.UUID(payload["sub"])
+        subject_id = uuid.UUID(payload["sub"])
+        jti = payload["jti"]
     except (KeyError, ValueError) as exc:
         raise ValueError("Malformed MFA challenge token") from exc
+    if await is_token_blocked(jti):
+        raise ValueError("MFA challenge token already used")
+    return ChallengeTokenClaims(subject_id=subject_id, jti=jti)
