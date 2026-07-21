@@ -135,8 +135,10 @@ engine, one tenant's failure logged but never halts the sweep). Each tick:
    the `contract_renewal_due` event (`entity_type="contract"`).
 4. Stamp `renewal_alert_sent_at = now()` so the alert never re-fires for this
    term. `POST /{id}/renew` clears it, re-arming the alert for the new
-   `end_date`. (When there's no one to notify, the row is still stamped so it
-   isn't re-scanned every tick.)
+   `end_date`. (When there's no one to notify yet — no AP manager, no owner —
+   the row is deliberately left **unstamped** so a later sweep, once the org
+   has a recipient, still fires the alert instead of silently dropping it;
+   re-scanning a recipient-less contract every tick is cheap.)
 5. Separately (same tick), find `active` contracts whose `end_date` has
    actually **passed** (not just approaching) and transition them to
    `expired`, writing a `contract.expired` audit row
