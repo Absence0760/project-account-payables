@@ -320,6 +320,28 @@ def _claim_realdb_slot() -> int:
     return _slot_claim.slot
 
 
+# The per-test reap sweep (see the `realdb` fixture below). `pg_terminate_backend`
+# is pure PID-matching against a point-in-time scan of `pg_stat_activity` — it
+# does not re-verify that the target PID still belongs to the same logical
+# session by the time it actually fires. Excluding `state = 'active'` means the
+# sweep can only ever hit a backend that is sitting idle (or idle-in-transaction)
+# — exactly the lingering-leftover-from-a-prior-test case the comment below
+# describes — and can never catch a backend that is actively mid-statement,
+# which is what a THIS-test connection looks like the instant it opens and
+# starts its first INSERT. `state IS DISTINCT FROM 'active'` (not `<>`) so a
+# NULL state (a backend that hasn't reported one yet) is also left alone rather
+# than matching by SQL's three-valued-logic accident.
+#
+# See issue #214: `test_exception_agents.py` intermittently failed with
+# `Could not refresh instance` because the sweep (as it stood before this
+# filter) terminated a connection mid-`INSERT INTO purchase_orders ...`.
+_REAP_STALE_BACKENDS_SQL = (
+    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+    "WHERE datname = current_database() AND pid <> pg_backend_pid() "
+    "AND state IS DISTINCT FROM 'active'"
+)
+
+
 def tenant_slugs_for_slot(slot: int) -> dict[str, str]:
     """Tenant slugs for a slot. Slot 0 keeps the historical names."""
     suffix = "" if slot == 0 else str(slot)
@@ -666,10 +688,7 @@ async def realdb():
                 # realdb suite", two concurrent pytest runs reaped each other,
                 # surfacing as `ConnectionDoesNotExistError` in whichever
                 # unrelated file happened to be mid-query.
-                await conn.exec_driver_sql(
-                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                    "WHERE datname = current_database() AND pid <> pg_backend_pid()"
-                )
+                await conn.exec_driver_sql(_REAP_STALE_BACKENDS_SQL)
                 await conn.exec_driver_sql(truncate)
                 # Multi-entity (Phase 1): TRUNCATE wipes `entities` too, but every
                 # tenant is expected to always have its Default entity. Restore it

@@ -16,15 +16,31 @@ silent and looked like flakiness, so they get explicit coverage here:
    partner `parent_org_id` live on a row that outlives the whole session, so a
    test that wrote them and didn't restore corrupted every LATER run, not just
    the rest of that one.
+
+3. **The reap sweep never kills a backend mid-statement (issue #214).**
+   `pg_terminate_backend` is pure PID-matching against a point-in-time scan of
+   `pg_stat_activity` — it doesn't re-verify that the target PID still belongs
+   to the same logical session by the time it fires. Without a `state`
+   exclusion, the sweep could (and did) occasionally terminate a connection
+   that was actively mid-`INSERT`, surfacing as
+   `sqlalchemy.exc.InvalidRequestError: Could not refresh instance` in
+   `test_exception_agents.py`. The sweep now excludes `state = 'active'`.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+
+import asyncpg
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm.attributes import flag_modified
 
+from app.database import _make_tenant_url
 from app.models.organization import Organization
 from tests.conftest import (
+    _REAP_STALE_BACKENDS_SQL,
     _SLOT_LOCK_NAMESPACE,
     _asyncpg_dsn,
     _claim_realdb_slot,
@@ -101,6 +117,49 @@ async def test_harness_tenants_match_this_process_s_slot(realdb):
     assert {k: realdb.info(k).slug for k in ("a", "b")} == expected
     assert realdb.info("a").db_name.endswith(expected["a"])
     assert realdb.email("a", "admin") == role_email(expected["a"], "admin")
+
+
+# ── The reap sweep spares a backend mid-statement (issue #214) ────────
+
+
+async def test_reap_sweep_terminates_idle_backend_but_spares_active_one(realdb):
+    """Direct regression for the `Could not refresh instance` flake.
+
+    Simulates exactly the collision that hit `test_exception_agents.py`: one
+    backend sits genuinely idle (the thing the sweep exists to clean up) while
+    another is actively mid-statement (what a fresh test connection looks like
+    the instant it opens). Runs the real production sweep SQL — not a
+    reimplementation — from a third connection and asserts the idle one is
+    killed while the active one's statement completes untouched.
+    """
+    dsn = _asyncpg_dsn(_make_tenant_url(realdb.info("a").db_name))
+
+    idle_conn = await asyncpg.connect(dsn)
+    active_conn = await asyncpg.connect(dsn)
+    reaper_conn = await asyncpg.connect(dsn)
+    try:
+        active_query = asyncio.ensure_future(active_conn.execute("SELECT pg_sleep(1.5)"))
+        await asyncio.sleep(0.3)  # let both backends register their state
+
+        await reaper_conn.execute(_REAP_STALE_BACKENDS_SQL)
+
+        # The idle leftover is exactly what the sweep targets — it must be
+        # gone. asyncpg surfaces a server-initiated termination either as a
+        # PostgresError/OSError from the driver, or (once the protocol state
+        # machine has already been knocked over by the termination) as its own
+        # InternalClientError on the next call — any of them proves the
+        # backend is dead, which is the property under test.
+        with pytest.raises(Exception):  # noqa: B017, PT011 — see comment above
+            await idle_conn.fetchval("SELECT 1")
+
+        # The mid-statement connection must survive: its query completes
+        # normally, not with a server-side termination.
+        await active_query
+        assert await active_conn.fetchval("SELECT 1") == 1
+    finally:
+        for c in (idle_conn, active_conn, reaper_conn):
+            with contextlib.suppress(Exception):
+                await c.close()
 
 
 # ── Control-plane reset between tests ─────────────────────────────────
