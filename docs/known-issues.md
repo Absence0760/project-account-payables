@@ -179,12 +179,26 @@ any plan to run multiple suite directories in one CI shard sequentially.
 ## A dev backend on the same Postgres mutates the pytest tenant DBs mid-test
 
 **Discovered:** 2026-07-20, while root-causing the concurrent-pytest cross-kill
-(issue #211's environment notes).
+(issue #211's environment notes). **Confirmed:** 2026-07-22.
 
-**Symptom (predicted, not yet reproduced):** realdb pytest failures — missing or
-unexpectedly-`failed` invoices, `TRUNCATE` stalls — in a run that overlapped a
-locally-running backend (`pnpm dev:backend`, or the backend Playwright drives)
-pointed at the same Postgres.
+**Symptom:** realdb pytest failures — missing or unexpectedly-`failed`
+invoices, `TRUNCATE` stalls — in a run that overlapped a locally-running
+backend (`pnpm dev:backend`, or the backend Playwright drives) pointed at the
+same Postgres.
+
+**Confirmation (2026-07-22):** issue #211 reported ~23 failures (in
+`test_access_reviews.py`, `test_adaptive_workflows*.py`,
+`test_analytics_aging_reconciliation.py`, `test_assistant*.py`,
+`test_audit_access.py`, `test_partner_admin.py`) from a single whole-suite
+`pytest -q` run, with two confounds the reporter flagged themselves: a
+locally-running dev backend and a Playwright e2e run against the same
+Postgres. Re-ran the identical whole-suite `pytest -q` with **both stopped**
+and nothing else attached to Postgres (a clean ~2h16m serial run, single
+process, no sharding): **zero failures in any of the originally-reported
+files.** The only failures in that clean run (68, all `UndefinedColumnError`)
+were an unrelated, separately-diagnosed local schema-drift issue (see the next
+entry) — not this one. This is strong evidence the original ~23 failures were
+caused by the confound, not a genuine whole-suite test-ordering/leak bug.
 
 **Root cause:** the backend's background sweeps enumerate **every** organization
 in the control plane and open a connection per tenant DB —
@@ -221,3 +235,72 @@ radius than the isolation fix it would extend, and worth landing on its own.
 **Trigger to revisit:** the next realdb failure that can't be reproduced with
 nothing else attached to Postgres, or any move to run the e2e stack and pytest
 concurrently.
+
+---
+
+## The realdb harness's tenant DBs silently drift from the current ORM schema
+
+**Discovered:** 2026-07-22, while running a confound-free whole-suite `pytest
+-q` for issue #211. **Tracked:** issue #219. 68 failures, all
+`sqlalchemy.exc.ProgrammingError:
+asyncpg.exceptions.UndefinedColumnError: column "converted_currency" of
+relation "expenses" does not exist` (`expenses.converted_currency`, added by
+migration `0076_expense_currency_conversion`).
+
+**Root cause:** `ap_pytesta`/`ap_pytestb` are provisioned once, ever, by
+`services/tenant_provisioning._create_tenant_tables` —
+`Base.metadata.create_all(sync_conn, tables=tenant_tables, checkfirst=True)`.
+`checkfirst=True` only creates a table that doesn't exist yet; it never adds a
+column to a table that already exists. `tests/conftest.py::_ensure_test_tenants`
+is `checkfirst`-idempotent at the *organization* level too — it looks up the
+control-plane `Organization` row by slug and, if found, assumes the tenant is
+already fully provisioned; it never re-verifies the physical schema. Per
+backend `CLAUDE.md` § Test databases, these two databases are deliberately
+long-lived ("the databases are reused by the next process to claim it") — so
+any contributor whose `ap_pytesta`/`ap_pytestb` predates a later model change
+that added a column to an *existing* table (not a new table) carries that
+drift forward silently, forever, until something reads the missing column.
+Real tenants (`ap_acme`, …) don't have this problem — they're kept current via
+Alembic (`alembic upgrade head` / `migrate_all_tenants.py`); the pytest harness
+tenants are created via `create_all` specifically to sidestep migration
+history, and nothing ever reconciles them against it afterward.
+
+**Reproduction:** on a machine whose `ap_pytesta`/`ap_pytestb` predate
+migration 0076, run `pytest -q` (or any subset touching `expenses`) — every
+test touching the `expenses` table fails with the `UndefinedColumnError`
+above, even though the change under test has nothing to do with expenses.
+Dropping both databases (`DROP DATABASE ap_pytesta`, same for `b`) and their
+control-plane `organizations` rows (cascading `users`/`user_roles`/`api_keys`/
+etc.) forces a from-scratch reprovision on the next `pytest` invocation, which
+picks up the current `Base.metadata` and clears the drift — confirmed: the
+same 90 previously-failing tests passed cleanly afterward.
+
+**Blast radius:** local-only; misleads exactly the way issue #211 worried
+about — a contributor sees failures unrelated to their change (here,
+`expenses`/`analytics_export_dispatch`, not even necessarily correlated to what
+they touched) and either wastes time chasing a phantom regression or, worse,
+starts ignoring red local runs. CI is unaffected (every shard provisions fresh
+tenant DBs from the current `Base.metadata` every run).
+
+**Workaround today:** `DROP DATABASE ap_pytesta<N>` / `ap_pytestb<N>` (plus
+the matching control-plane `organizations` row and its dependents — see the
+reproduction above) whenever a local run shows schema-shaped failures
+(`UndefinedColumn`/`UndefinedTable`) that don't correlate with the change under
+test; the harness reprovisions automatically on the next run.
+
+**Recommended fix:** make `_ensure_test_tenants` self-healing instead of purely
+additive — e.g., once per pytest *session* (keyed off the existing slot claim,
+not once per test, to avoid re-paying the cost on every test) drop and
+recreate the tenant tables from the current `Base.metadata` rather than
+trusting that an existing `Organization` row means the physical schema is
+current. A full reconciliation with Alembic's migration history is a larger,
+riskier change (the harness deliberately bypasses it via `create_all`) and not
+needed here, since these two databases hold no data of any value between
+tests — a drop is always safe. Deferred rather than landed in the same session
+as its discovery because it touches the harness every contributor relies on
+and deserves its own focused review + test, not a rushed addition alongside an
+unrelated investigation.
+
+**Trigger to revisit:** the next contributor report of local-only failures
+that don't correlate with their change, especially clustered around one
+recently-migrated table.
