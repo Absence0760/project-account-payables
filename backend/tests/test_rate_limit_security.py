@@ -329,3 +329,44 @@ def test_signup_rate_limit_default_is_modest():
         f"signup rate limit default ({settings.signup_rate_limit_per_hour}/h) is too loose; "
         f"5/h is the documented default"
     )
+
+
+# ---------------------------------------------------------------------------
+# resolve_client_ip — the shared resolver the audit / captcha sites use
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_client_ip_none_without_request_or_peer():
+    from app.services.rate_limit import resolve_client_ip
+
+    assert resolve_client_ip(None) is None
+    req = MagicMock()
+    req.client = None
+    assert resolve_client_ip(req) is None
+
+
+def test_resolve_client_ip_ignores_xff_from_untrusted_peer():
+    from app.services.rate_limit import resolve_client_ip
+
+    resolved = resolve_client_ip(_fake_request(ip="203.0.113.1", forwarded="198.51.100.10"))
+    assert resolved == "203.0.113.1"
+
+
+def test_resolve_client_ip_honours_xff_behind_trusted_proxy(_trust_alb_proxy):
+    from app.services.rate_limit import resolve_client_ip
+
+    resolved = resolve_client_ip(_fake_request(ip="10.0.0.5", forwarded="198.51.100.10, 10.0.0.1"))
+    assert resolved == "198.51.100.10"
+
+
+def test_auth_audit_ip_goes_through_the_shared_resolver(_trust_alb_proxy):
+    """Login/signup/SSO audit rows must record the same client the limiter
+    buckets on — behind a trusted proxy (Caddy on the single-VM stack, the
+    ALB on ECS), raw request.client.host is the proxy's address."""
+    from app.api import auth
+
+    trusted = auth._client_ip(_fake_request(ip="10.0.0.5", forwarded="198.51.100.10"))
+    assert trusted == "198.51.100.10"
+    # Untrusted direct caller: the spoofable header must stay ignored.
+    untrusted = auth._client_ip(_fake_request(ip="203.0.113.1", forwarded="198.51.100.10"))
+    assert untrusted == "203.0.113.1"
