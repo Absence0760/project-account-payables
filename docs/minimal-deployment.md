@@ -109,7 +109,9 @@ resize is a stop → change-type → start. Add 2 GB of swap either way.
 ### 1. VM
 
 - EC2 `t4g.small`, Amazon Linux 2023 arm64, 30 GB gp3, security group: 80/443
-  from anywhere, 22 from your IP (or SSM Session Manager and no 22 at all).
+  from anywhere (TCP, plus UDP 443 — Caddy serves HTTP/3; without the UDP
+  rule browsers silently fall back to HTTP/2), 22 from your IP (or SSM
+  Session Manager and no 22 at all).
 - Instance profile: `kms:Decrypt` on the sops key; `s3:GetObject/PutObject/
   AbortMultipartUpload/ListBucket` on the invoice-files, audit-logs, and
   backups buckets (Abort because `backup.sh` streams multipart — a failed
@@ -120,9 +122,12 @@ resize is a stop → change-type → start. Add 2 GB of swap either way.
   of 1).
 - Run **`deploy/bootstrap-vm.sh`** — one idempotent script: docker + compose
   plugin + sops + cronie (AL2023 ships **no cron daemon** — without it the
-  backup cron is a file nothing reads) + AWS CLI, 2 GB swap, the nightly
-  backup cron, and the IMDS hop-limit fix. Node/pnpm are *not* needed on the
-  VM — the frontend builds inside a `node:20` container.
+  backup cron is a file nothing reads) + AWS CLI, automatic security updates
+  (dnf-automatic, security-only; docker/containerd excluded so a package
+  update never bounces the stack at a random hour — update those around a
+  deploy window), 2 GB swap, the nightly backup cron, and the IMDS hop-limit
+  fix. Node/pnpm are *not* needed on the VM — the frontend builds inside a
+  `node:20` container.
 - DNS: three records → the instance IP: `app.feohledger.com`, `api.feohledger.com`, and a
   **wildcard `*.app.feohledger.com`** so tenant onboarding never touches DNS again.
   (A DNS wildcard needs no wildcard *certificate* — Caddy still issues
@@ -216,10 +221,15 @@ run `scripts/seed.py` (demo data) in prod.
   cleanup, and incomplete-multipart reaping — no manual lifecycle rule to
   remember. Set `BACKUP_S3_BUCKET` from the `backups_bucket` output; the
   instance profile already has the access.
+- Optional heartbeat: set `BACKUP_PING_URL` (healthchecks.io-style) in the
+  sops env and `backup.sh` pings it after every successful run — silence
+  means backups stopped, noticed before a restore needs them.
 - Weekly EBS snapshot (Data Lifecycle Manager, free to configure) as the
   coarse fallback.
-- **Test a restore once** before calling this done: new volume, restore dump,
-  point a scratch compose stack at it.
+- Restore is scripted: `deploy/restore.sh <YYYY-MM-DD> [--force] [db …]` —
+  globals first, then each DB via `pg_restore --create`, streamed straight
+  from S3; existing DBs are skipped unless `--force`. **Test a restore once**
+  before calling this done: scratch stack, `restore.sh <yesterday>`, log in.
 - RPO ≈ 24h, RTO ≈ hours (new VM + restore). If a customer needs better, that
   is the RDS trigger below.
 
@@ -246,9 +256,10 @@ The deploy files are **built** and live under [`deploy/`](../deploy/):
 `bootstrap-vm.sh` (one-shot VM setup), `compose.prod.yml` (with API
 healthcheck + the RDS/ElastiCache override seams), `Caddyfile`
 (+ `tenants.caddy.example`), `deploy.sh` (preflight → build → migrate → roll
-→ verify), `add-tenant.sh` (tenant + Caddy + reload in one command),
-`backup.sh`, and `env.example` (the sops env contract, validated by
-deploy.sh). Also shipped: the S3 client factory now falls back to real AWS +
+→ verify), `add-tenant.sh` (tenant + Caddy + reload in one command,
+re-runnable via `--skip-existing`), `backup.sh`, `restore.sh` (streamed
+restore of any night's dumps), and `env.example` (the sops env contract,
+validated by deploy.sh). Also shipped: the S3 client factory now falls back to real AWS +
 the instance-profile credential chain when `FEOH_S3_ENDPOINT_URL` and the
 static keys are set empty (previously it always passed the MinIO dev
 defaults, so the "omit the endpoint for real S3" story couldn't work).

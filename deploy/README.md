@@ -16,13 +16,14 @@ The whole flow is four commands on a fresh VM:
 
 | File | Purpose |
 |---|---|
-| `bootstrap-vm.sh` | One-time, idempotent VM setup (Amazon Linux 2023): docker + compose plugin + sops + cronie (AL2023 ships no cron daemon) + AWS CLI, 2 GB swap, nightly backup cron, IMDSv2 hop-limit fix. Other distros get the manual list. |
+| `bootstrap-vm.sh` | One-time, idempotent VM setup (Amazon Linux 2023): docker + compose plugin + sops + cronie (AL2023 ships no cron daemon) + AWS CLI, automatic security updates (dnf-automatic; docker/containerd excluded so the stack never bounces at a random hour), 2 GB swap, nightly backup cron, IMDSv2 hop-limit fix. Other distros get the manual list. |
 | `compose.prod.yml` | Postgres (pgvector) + Redis (AOF) + API + Caddy. No DB host ports; S3 is real AWS. API healthcheck lets deploys verify themselves. Container logs capped (json-file, 10 MB × 5 per service) so they can't fill the 30 GB disk. `FEOH_DATABASE_URL`/`FEOH_REDIS_URL` are override seams for RDS/ElastiCache later. |
 | `Caddyfile` | TLS + static SPA + `api.feohledger.com` reverse proxy. Domains via env. |
 | `tenants.caddy.example` | Template for the per-VM tenant host list (`tenants.caddy`, gitignored). `add-tenant.sh` maintains it — manual edits rarely needed. |
 | `deploy.sh` | Preflight → pull → decrypt secrets → dockerized frontend build (no Node/pnpm on the VM) → backend build → migrate (control plane + all tenants) **before** rolling → `up -d --wait` → Caddy reload. Flags: `--no-pull`, `--backend-only`, `--frontend-only`. |
 | `add-tenant.sh` | Tenant DB + org + admin user (same `provision_tenant` path as signup) + Caddy host block + reload, in one shot. Generates a temp password (first-login change forced) unless `--admin-password` given. |
-| `backup.sh` | Nightly pg dumps (globals + control plane + every `feoh_*` DB) streamed to S3. Cron installed by bootstrap. |
+| `backup.sh` | Nightly pg dumps (globals + control plane + every `feoh_*` DB) streamed to S3. Cron installed by bootstrap. Optional `BACKUP_PING_URL` heartbeat (healthchecks.io-style) so silent failures get noticed. |
+| `restore.sh` | The other half of the DR story: streams a night's dumps back from S3 — globals via psql, each DB via `pg_restore --create` (skips existing DBs unless `--force`). Stops the api for the duration, rolls the stack back up after. Test it once against a scratch stack. |
 | `env.example` | Contract for the sops-encrypted env — `deploy.sh` validates the required keys against it. |
 
 ## Before the VM (once per project)
@@ -31,7 +32,9 @@ The whole flow is four commands on a fresh VM:
   lifecycle-expired backups bucket — its `backups_bucket` output feeds
   `BACKUP_S3_BUCKET` — and the KMS key).
 - EC2 `t4g.small` (Amazon Linux 2023 arm64 recommended), 30 GB gp3, ports
-  80/443 open. Instance profile: `kms:Decrypt` on the sops key; S3 read/write
+  80/443 open (TCP, plus UDP 443 — Caddy serves HTTP/3; without the UDP rule
+  browsers silently fall back to HTTP/2). Instance profile: `kms:Decrypt` on
+  the sops key; S3 read/write
   (`s3:GetObject/PutObject/AbortMultipartUpload/ListBucket`) on the
   invoice-files, audit-logs, and backup buckets; `ses:SendEmail` if using
   SES; ideally `ec2:ModifyInstanceMetadataOptions` so bootstrap can fix the
@@ -52,6 +55,13 @@ runs migrations before the new API serves traffic, and fails loudly (via the
 compose healthcheck) if the API doesn't come up. If the build or migration
 step fails, the previously-running containers keep serving.
 
+While you're in a deploy window: OS security patches auto-apply nightly
+(dnf-automatic, installed by bootstrap), but **docker/containerd are excluded**
+— their updates restart the daemon and would bounce the stack at a random
+hour, and the exclude also hides them from dnf-automatic's own reporting.
+Check them here, where a bounce is fine:
+`sudo dnf upgrade --refresh 'docker*' 'containerd*'`
+
 ## Tenants
 
 `./add-tenant.sh <slug> --name "Company" --admin-email admin@company.com` —
@@ -61,6 +71,13 @@ provisions everything and prints the login URL + temp password. Don't run
 ## Backups
 
 Installed by bootstrap as `/etc/cron.d/feoh-backup` (03:17 UTC nightly,
-logging to `/var/log/feoh-backup.log`). Restore a single DB (test this once
-before calling backups done):
-`aws s3 cp s3://<bucket>/pg/<date>/<db>.dump - | docker compose -f compose.prod.yml exec -T postgres pg_restore -U postgres --create -d postgres`
+logging to `/var/log/feoh-backup.log`). Set `BACKUP_PING_URL` in the sops env
+to get a heartbeat ping after each successful run.
+
+Restore with `./restore.sh <YYYY-MM-DD> [--force] [db ...]` — globals first,
+then each DB via `pg_restore --create`, streamed straight from S3; existing
+DBs are skipped unless `--force` (drop + recreate). A restore that fails
+partway deliberately leaves the api stopped (don't serve a half-restored
+stack) — fix the cause and re-run, or `docker compose -f compose.prod.yml up
+-d --wait` to bring it back as-is. **Test a restore once against a scratch
+stack before calling backups done.**
