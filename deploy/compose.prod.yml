@@ -11,11 +11,26 @@
 
 name: feoh-prod
 
+# Cap container logs — Docker's json-file driver is unbounded by default, and
+# on a 30 GB single-VM disk the uvicorn + Caddy access logs would eventually
+# fill it and take Postgres down with it. 10 MB × 5 files × 4 services ≈
+# 200 MB worst case.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   postgres:
     # Same image as dev: Postgres 16 + pgvector (RAG extraction priors).
     image: pgvector/pgvector:pg16
     restart: unless-stopped
+    logging: *default-logging
+    # Docker's default /dev/shm is 64 MB; Postgres parallel workers and
+    # pgvector index builds allocate dynamic shared memory there and fail
+    # with "could not resize shared memory segment" under the default.
+    shm_size: 256mb
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in deploy/.env (via sops)}
@@ -31,6 +46,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    logging: *default-logging
     # AOF persistence: losing the blocklist would resurrect logged-out JWTs
     # until natural expiry, and rate-limit / MFA state would reset.
     command: ["redis-server", "--appendonly", "yes"]
@@ -46,6 +62,7 @@ services:
     build:
       context: ../backend
     restart: unless-stopped
+    logging: *default-logging
     # All FEOH_* config + secrets come from the decrypted sops env.
     env_file: .env
     environment:
@@ -79,6 +96,7 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "80:80"
       - "443:443"
