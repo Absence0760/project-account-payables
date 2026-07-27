@@ -34,7 +34,7 @@ while [ $# -gt 0 ]; do
 	*) usage ;;
 	esac
 done
-[ -n "$NAME" ] && [ -n "$EMAIL" ] || usage
+{ [ -n "$NAME" ] && [ -n "$EMAIL" ]; } || usage
 echo "$SLUG" | grep -Eq '^[a-z0-9](-?[a-z0-9])*$' || die "invalid slug '$SLUG' (lowercase letters, digits, single hyphens)"
 [ -f .env ] || die "deploy/.env missing — run deploy.sh at least once first."
 
