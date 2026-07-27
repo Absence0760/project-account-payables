@@ -100,6 +100,12 @@ resource "aws_s3_bucket_lifecycle_configuration" "invoice_files" {
     noncurrent_version_expiration {
       noncurrent_days = var.invoice_retention_days + 30
     }
+
+    # Failed/interrupted multipart uploads bill for their parts forever and
+    # are invisible to normal listings — reap them.
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
   }
 }
 
@@ -212,6 +218,12 @@ resource "aws_s3_bucket_lifecycle_configuration" "audit_logs" {
 
     noncurrent_version_expiration {
       noncurrent_days = var.audit_retention_days + 30
+    }
+
+    # Failed/interrupted multipart uploads bill for their parts forever and
+    # are invisible to normal listings — reap them.
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
     }
   }
 }
@@ -334,5 +346,138 @@ resource "aws_s3_bucket_lifecycle_configuration" "access_logs" {
     noncurrent_version_expiration {
       noncurrent_days = 30
     }
+
+    # Failed/interrupted multipart uploads bill for their parts forever and
+    # are invisible to normal listings — reap them.
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
   }
+}
+
+
+# --- Database backups bucket --------------------------------------------------
+# Sink for deploy/backup.sh — the nightly pg_dump of the control plane and
+# every tenant DB, streamed from the VM (docs/minimal-deployment.md § Backups).
+# Same encryption / public-access / TLS posture as the data buckets, but NO
+# Object Lock: backups are an operational rolling window, and the lifecycle
+# rule below IS the retention policy (a lock would fight it). Versioning
+# guards against a same-day overwrite; the short noncurrent expiry keeps that
+# safety net from becoming a storage bill.
+#
+# Without the expiration rule this bucket grows forever — a full dump of
+# every database lands every night. 90 days ≈ the restore horizon anyone
+# actually uses; deep archival belongs to the audit-logs bucket, not here.
+
+resource "aws_s3_bucket" "backups" {
+  bucket = var.backups_bucket_name
+
+  tags = {
+    Name    = var.backups_bucket_name
+    purpose = "db-backups"
+  }
+}
+
+resource "aws_s3_bucket_versioning" "backups" {
+  bucket = aws_s3_bucket.backups.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "backups" {
+  bucket = aws_s3_bucket.backups.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.app.arn
+    }
+    bucket_key_enabled = true
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "backups" {
+  bucket                  = aws_s3_bucket.backups.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_logging" "backups" {
+  bucket        = aws_s3_bucket.backups.id
+  target_bucket = aws_s3_bucket.access_logs.id
+  target_prefix = "backups/"
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "backups" {
+  bucket = aws_s3_bucket.backups.id
+
+  rule {
+    id     = "expire-old-backups"
+    status = "Enabled"
+
+    filter {}
+
+    expiration {
+      days = var.backup_retention_days
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+
+    # backup.sh streams dumps via `aws s3 cp -`, which uses multipart
+    # uploads — an interrupted backup leaves parts that bill forever and
+    # are invisible to normal listings. Reap them.
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+
+  # Expiration on a versioned bucket leaves delete markers behind; clean
+  # them up once their versions age out so listings don't accumulate cruft.
+  rule {
+    id     = "remove-expired-delete-markers"
+    status = "Enabled"
+
+    filter {}
+
+    expiration {
+      expired_object_delete_marker = true
+    }
+  }
+}
+
+# Defense-in-depth: explicitly deny any request over plain HTTP. Public
+# Access Block already stops unauthenticated/public access, so this is
+# hardening rather than closing an open hole.
+data "aws_iam_policy_document" "backups_tls" {
+  statement {
+    sid     = "DenyInsecureTransport"
+    effect  = "Deny"
+    actions = ["s3:*"]
+
+    resources = [
+      aws_s3_bucket.backups.arn,
+      "${aws_s3_bucket.backups.arn}/*",
+    ]
+
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "backups_tls" {
+  bucket = aws_s3_bucket.backups.id
+  policy = data.aws_iam_policy_document.backups_tls.json
 }

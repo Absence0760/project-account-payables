@@ -64,20 +64,32 @@ def _ip_in_trusted_proxy(ip: str) -> bool:
     return any(addr in n for n in nets)
 
 
-def _client_ip(request: Request) -> str:
+def resolve_client_ip(request: Request | None) -> str | None:
     """Resolve the originating client IP.
 
     Only honours ``X-Forwarded-For`` when the connecting peer is in the
     configured ``trusted_proxy_cidrs`` allowlist — otherwise a direct
     attacker could rotate through arbitrary IPs by spoofing the header
     and dodge per-IP rate limits.
+
+    This is the single shared resolver: every request-path caller that
+    records or keys on a client IP (limiter buckets, login/signup/SSO
+    audit rows, captcha verification) goes through here, so they all
+    agree on who the client is when the app sits behind a trusted proxy
+    (Caddy on the single-VM stack, the ALB on ECS).
     """
-    peer = request.client.host if request.client else "unknown"
+    if request is None or request.client is None:
+        return None
+    peer = request.client.host
     if _ip_in_trusted_proxy(peer):
         forwarded = request.headers.get("x-forwarded-for", "")
         if forwarded:
             return forwarded.split(",")[0].strip()
     return peer
+
+
+def _client_ip(request: Request) -> str:
+    return resolve_client_ip(request) or "unknown"
 
 
 async def check_rate_limit(

@@ -27,6 +27,11 @@ terraform {
   # init -backend-config=…`. Storing backend config in-file makes it hard
   # to switch environments; a partial-backend pattern is the canonical
   # Hashicorp recommendation.
+  #
+  # Terraform 1.15+ `validate` checks this block's required arguments, so
+  # credential-free validation (CI, local) needs a gitignored
+  # `backend_override.tf` pointing at the `local` backend — see
+  # README.md § Local usage / .github/workflows/terraform.yml.
   backend "s3" {}
 }
 

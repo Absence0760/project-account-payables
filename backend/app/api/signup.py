@@ -51,7 +51,7 @@ from app.services.email_adapters import (
     normalize_locale,
     translate,
 )
-from app.services.rate_limit import check_rate_limit
+from app.services.rate_limit import check_rate_limit, resolve_client_ip
 from app.services.tenant_provisioning import provision_tenant
 from app.utils.hcaptcha import CaptchaError, verify_captcha
 from app.utils.passwords import generate_temp_password
@@ -141,8 +141,9 @@ async def signup_start(
         subject=body.admin_email.strip().lower(),
     )
 
-    # 3. Captcha.
-    client_ip = request.client.host if request.client else None
+    # 3. Captcha. (Shared resolver — behind the trusted proxy the raw peer
+    # address would be the proxy, not the client.)
+    client_ip = resolve_client_ip(request)
     try:
         await verify_captcha(body.captcha_token, client_ip)
     except CaptchaError as exc:

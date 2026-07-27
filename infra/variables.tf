@@ -48,3 +48,14 @@ variable "access_logs_retention_days" {
   type        = number
   default     = 365
 }
+
+variable "backups_bucket_name" {
+  description = "S3 bucket that receives the nightly pg_dump stream from deploy/backup.sh (control plane + every tenant DB). Must be globally unique; typically '<project>-backups-<env>-<random>'. No Object Lock — the lifecycle expiration is the retention policy."
+  type        = string
+}
+
+variable "backup_retention_days" {
+  description = "Lifecycle expiration (days) for nightly database dumps in the backups bucket. A full dump of every DB lands every night, so this window is the entire storage bill — 90d is a generous restore horizon at pilot volume."
+  type        = number
+  default     = 90
+}

@@ -35,6 +35,7 @@ from app.services.identity_provisioning import (
     extract_and_check_email,
     jit_provision,
 )
+from app.services.rate_limit import resolve_client_ip
 from app.services.session_management import register_session
 from app.services.sso import (
     SSOConfigError,
@@ -176,7 +177,7 @@ async def sso_callback(
 ):
     """Second leg: consume state, exchange code, validate ID token, JIT
     provision the user, mint our own JWT."""
-    ip = request.client.host if request.client else None
+    ip = resolve_client_ip(request)
     try:
         bound = await consume_state(body.state)
     except SSOValidationError as exc:

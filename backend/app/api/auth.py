@@ -48,7 +48,7 @@ from app.services.email_adapters import (
     get_email_adapter,
     is_supported_locale,
 )
-from app.services.rate_limit import check_rate_limit
+from app.services.rate_limit import check_rate_limit, resolve_client_ip
 from app.services.session_management import end_session, register_session
 from app.services.sso import is_sso_only
 from app.utils.passwords import (
@@ -165,9 +165,10 @@ async def _send_email_otp(user: User, code: str) -> None:
 
 
 def _client_ip(request: Request | None) -> str | None:
-    if request is None or request.client is None:
-        return None
-    return request.client.host
+    # Shared resolver so audit rows agree with the rate limiter about who
+    # the client is behind a trusted proxy (Caddy / ALB) — raw
+    # request.client.host would record the proxy's address instead.
+    return resolve_client_ip(request)
 
 
 # ---------------------------------------------------------------------------

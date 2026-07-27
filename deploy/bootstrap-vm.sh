@@ -5,9 +5,10 @@
 # Targets Amazon Linux 2023 (the recommended AMI). On other distros it exits
 # with the manual install list instead of guessing package names.
 #
-# Installs docker + the compose v2 plugin + sops, adds 2 GB swap, installs
-# the nightly backup cron, and sets the IMDSv2 hop limit to 2 (containers
-# cannot reach instance-profile credentials through Docker's NAT without it).
+# Installs docker + the compose v2 plugin + sops + cronie (AL2023 ships no
+# cron daemon), adds 2 GB swap, installs the nightly backup cron, and sets
+# the IMDSv2 hop limit to 2 (containers cannot reach instance-profile
+# credentials through Docker's NAT without it).
 # Node/pnpm are NOT needed on the VM — deploy.sh builds the frontend inside a
 # node:20 container.
 set -euo pipefail
@@ -26,10 +27,14 @@ if ! command -v dnf >/dev/null; then
 	exit 1
 fi
 
-echo "==> packages (docker, git, aws cli)"
-sudo dnf install -y docker git
+echo "==> packages (docker, git, cronie, aws cli)"
+# cronie is NOT in the AL2023 base image (Amazon dropped cron for systemd
+# timers) — without it /etc/cron.d/feoh-backup below is a file nothing reads
+# and the nightly backup never runs.
+sudo dnf install -y docker git cronie
 command -v aws >/dev/null || sudo dnf install -y awscli-2
 sudo systemctl enable --now docker
+sudo systemctl enable --now crond
 sudo usermod -aG docker "$USER"
 
 if ! docker compose version >/dev/null 2>&1 && ! sudo docker compose version >/dev/null 2>&1; then
@@ -48,6 +53,28 @@ if ! command -v sops >/dev/null; then
 		"https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-${SOPS_VERSION}-1.$(uname -m).rpm"
 fi
 
+echo "==> automatic security updates (dnf-automatic)"
+# An unattended pilot VM never gets OS patches otherwise. Security-only and
+# auto-applied; docker/containerd are excluded because their package scripts
+# restart the daemon — bouncing the whole stack at a random hour. NOTE: the
+# exclude removes them from dnf-automatic's reporting too, so nothing nudges
+# you about their pending patches — update them deliberately around deploy
+# windows (see deploy/README.md § Deploys).
+sudo dnf install -y dnf-automatic
+sudo tee /etc/dnf/automatic.conf >/dev/null <<-'EOF'
+	[commands]
+	upgrade_type = security
+	random_sleep = 3600
+	apply_updates = yes
+
+	[emitters]
+	emit_via = stdio
+
+	[base]
+	exclude = docker* containerd*
+EOF
+sudo systemctl enable --now dnf-automatic.timer
+
 if ! swapon --show | grep -q .; then
 	echo "==> 2 GB swap"
 	sudo fallocate -l 2G /swapfile
@@ -58,7 +85,10 @@ if ! swapon --show | grep -q .; then
 fi
 
 echo "==> nightly backup cron (/etc/cron.d/feoh-backup)"
+# Explicit PATH: crond's default is /usr/bin:/bin, which misses aws when it
+# was installed from the official zip (/usr/local/bin — the non-AL2023 path).
 sudo tee /etc/cron.d/feoh-backup >/dev/null <<-EOF
+	PATH=/usr/local/bin:/usr/bin:/bin
 	17 3 * * * $USER $REPO_ROOT/deploy/backup.sh >> /var/log/feoh-backup.log 2>&1
 EOF
 sudo touch /var/log/feoh-backup.log

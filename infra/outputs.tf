@@ -17,3 +17,8 @@ output "audit_logs_bucket" {
   description = "Name of the S3 bucket that receives shipped audit-log objects. Subject to COMPLIANCE-mode Object Lock — deletion of this bucket is not possible until all objects have aged past their retention date."
   value       = aws_s3_bucket.audit_logs.bucket
 }
+
+output "backups_bucket" {
+  description = "Name of the S3 bucket that receives the nightly database dumps (deploy/backup.sh) — set it as BACKUP_S3_BUCKET in the deploy env."
+  value       = aws_s3_bucket.backups.bucket
+}

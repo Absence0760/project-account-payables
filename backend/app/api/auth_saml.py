@@ -55,6 +55,7 @@ from app.services.identity_provisioning import (
     extract_and_check_email,
     jit_provision,
 )
+from app.services.rate_limit import resolve_client_ip
 from app.services.session_management import register_session
 from app.services.sso import (
     ResolvedSAMLConfig,
@@ -313,7 +314,7 @@ async def saml_acs(request: Request, db: AsyncSession = Depends(get_control_db))
     """Assertion Consumer Service. Verifies the signed SAMLResponse, recovers
     the tenant from server-minted RelayState, blocks replay, JIT-provisions,
     mints our JWT, and 303-redirects to the SPA bridge with a one-time code."""
-    ip = request.client.host if request.client else None
+    ip = resolve_client_ip(request)
     form = await request.form()
     saml_response = form.get("SAMLResponse")
     relay_state = form.get("RelayState")

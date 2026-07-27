@@ -181,6 +181,19 @@ async def _create_tenant_tables(db_name: str, organization_id: uuid.UUID | None 
     logger.info("Created tenant tables in: %s", db_name)
 
 
+async def organization_slug_exists(slug: str) -> bool:
+    """True when a control-plane Organization already claims this slug.
+
+    The cheap pre-check that makes provisioning wrappers re-runnable
+    (``scripts/create_tenant.py --skip-existing`` → ``deploy/add-tenant.sh``):
+    ``provision_tenant`` itself deliberately raises on a duplicate slug, so a
+    wrapper that wants skip-if-present semantics asks first.
+    """
+    async with control_session_factory() as session:
+        result = await session.execute(select(Organization.id).where(Organization.slug == slug))
+        return result.scalar_one_or_none() is not None
+
+
 async def provision_tenant(
     *,
     company_name: str,

@@ -47,9 +47,9 @@ see [Upgrade triggers](#upgrade-triggers) for when each piece graduates.
 | EBS 30 GB gp3 | ~$2.40 |
 | Public IPv4 address | ~$3.65 |
 | Route 53 hosted zone | $0.50 |
-| KMS key (sops) | $1.00 |
+| KMS keys ×2 (sops + the `infra/` app key for SSE-KMS) | $2.00 |
 | S3 (files + backups, pilot volume) + SES | ~$1 |
-| **Total** | **~$21** |
+| **Total** | **~$22** |
 
 Domain registration (~$12/yr) extra if you buy a product apex instead of using
 a delegated `<project>.jaredhoward.com` zone.
@@ -68,8 +68,9 @@ resize is a stop → change-type → start. Add 2 GB of swap either way.
 
 1. **Real S3 instead of MinIO in prod.** The `infra/` Terraform module already
    defines the invoice-files and audit-logs buckets (versioning, Object Lock,
-   SSE-KMS). Set `FEOH_S3_BUCKET`, omit `FEOH_S3_ENDPOINT_URL`, and drop the MinIO
-   container — less RAM, real durability, pennies at pilot volume.
+   SSE-KMS) plus the backups bucket (lifecycle-expired, no lock — see
+   § Backups). Set `FEOH_S3_BUCKET`, omit `FEOH_S3_ENDPOINT_URL`, and drop the
+   MinIO container — less RAM, real durability, pennies at pilot volume.
 2. **Caddy on the VM serves the frontend.** GitHub Pages can't serve wildcard
    tenant subdomains and CloudFront+ACM is more moving parts. Caddy serves the
    static `frontend/build`, reverse-proxies `api.feohledger.com` to the backend, and
@@ -108,17 +109,25 @@ resize is a stop → change-type → start. Add 2 GB of swap either way.
 ### 1. VM
 
 - EC2 `t4g.small`, Amazon Linux 2023 arm64, 30 GB gp3, security group: 80/443
-  from anywhere, 22 from your IP (or SSM Session Manager and no 22 at all).
+  from anywhere (TCP, plus UDP 443 — Caddy serves HTTP/3; without the UDP
+  rule browsers silently fall back to HTTP/2), 22 from your IP (or SSM
+  Session Manager and no 22 at all).
 - Instance profile: `kms:Decrypt` on the sops key; `s3:GetObject/PutObject/
-  ListBucket` on the invoice-files, audit-logs, and backups buckets;
+  AbortMultipartUpload/ListBucket` on the invoice-files, audit-logs, and
+  backups buckets (Abort because `backup.sh` streams multipart — a failed
+  upload must be abortable, and the lifecycle reaper handles stragglers);
   `ses:SendEmail` if using SES; ideally `ec2:ModifyInstanceMetadataOptions`
   so bootstrap can fix the IMDSv2 hop limit itself (containers can't reach
   instance-profile credentials through Docker's NAT at the default limit
   of 1).
 - Run **`deploy/bootstrap-vm.sh`** — one idempotent script: docker + compose
-  plugin + sops + AWS CLI, 2 GB swap, the nightly backup cron, and the IMDS
-  hop-limit fix. Node/pnpm are *not* needed on the VM — the frontend builds
-  inside a `node:20` container.
+  plugin + sops + cronie (AL2023 ships **no cron daemon** — without it the
+  backup cron is a file nothing reads) + AWS CLI, automatic security updates
+  (dnf-automatic, security-only; docker/containerd excluded so a package
+  update never bounces the stack at a random hour — update those around a
+  deploy window), 2 GB swap, the nightly backup cron, and the IMDS hop-limit
+  fix. Node/pnpm are *not* needed on the VM — the frontend builds inside a
+  `node:20` container.
 - DNS: three records → the instance IP: `app.feohledger.com`, `api.feohledger.com`, and a
   **wildcard `*.app.feohledger.com`** so tenant onboarding never touches DNS again.
   (A DNS wildcard needs no wildcard *certificate* — Caddy still issues
@@ -136,7 +145,12 @@ Four services (see [`deploy/README.md`](../deploy/README.md) for operations):
   `t3a.small`, ~$14). Runs the image CMD, `uvicorn app.main:app` (the
   production entrypoint — not `main.py`). `FEOH_DATABASE_URL` / `FEOH_REDIS_URL`
   are derived in the compose file from `POSTGRES_PASSWORD`, so the DB
-  password lives in exactly one sops entry.
+  password lives in exactly one sops entry. The compose network is pinned
+  (`172.28.0.0/16`) and `FEOH_TRUSTED_PROXY_CIDRS` defaults to it, so per-IP
+  rate limits and the login/signup audit rows key on the real client from
+  Caddy's `X-Forwarded-For` — untrusted, every user would collapse into the
+  proxy's container IP and the signup/login caps would throttle everyone
+  collectively.
 - `caddy` — ports 80/443, mounts the built `frontend/build` as the site root
   plus `deploy/Caddyfile` (domains via env) and the per-VM, gitignored
   `deploy/tenants.caddy` host list (one block per tenant subdomain —
@@ -159,6 +173,7 @@ Beyond the committed defaults, the deployed env sets at minimum:
 | `POSTGRES_PASSWORD` | `openssl rand -hex 24` (compose derives `FEOH_DATABASE_URL` / `FEOH_REDIS_URL` from it — don't set those) |
 | `FEOH_S3_BUCKET` | invoice-files bucket; set `FEOH_S3_ENDPOINT_URL` / `FEOH_S3_ACCESS_KEY` / `FEOH_S3_SECRET_KEY` **empty** → real S3 via the instance-profile credential chain |
 | `FEOH_MFA_ENABLED` / `FEOH_HSTS_ENABLED` | `true` / `true` |
+| `FEOH_WEBAUTHN_RP_ID` / `FEOH_WEBAUTHN_ORIGINS` | `app.feohledger.com` / `https://app.feohledger.com,https://*.app.feohledger.com` — with MFA on, the localhost dev defaults reject every prod origin and passkeys silently fail; the wildcard entry covers each tenant subdomain |
 | `FEOH_PUBLIC_URL` / `FEOH_API_PUBLIC_URL` | `https://app.feohledger.com` / `https://api.feohledger.com` |
 | `FEOH_TENANT_URL_TEMPLATE` | `https://{slug}.app.feohledger.com` |
 | `FEOH_CORS_PRODUCTION_DOMAIN` | `app.feohledger.com` |
@@ -200,13 +215,21 @@ run `scripts/seed.py` (demo data) in prod.
 - Nightly cron (installed by `bootstrap-vm.sh` as `/etc/cron.d/feoh-backup`):
   dumps role globals + per-DB
   `pg_dump -Fc` of `feohledger` and every `feoh_*` tenant DB, streamed
-  straight to a versioned backups bucket (nothing persists on disk). Add an
-  S3 lifecycle rule (e.g. expire after 90 days). The instance profile already
-  has the access.
+  straight to the backups bucket (nothing persists on disk). The bucket is
+  provisioned by the `infra/` module (`backups_bucket_name`) with the cost
+  guards baked in: 90-day expiry (`backup_retention_days`), noncurrent-version
+  cleanup, and incomplete-multipart reaping — no manual lifecycle rule to
+  remember. Set `BACKUP_S3_BUCKET` from the `backups_bucket` output; the
+  instance profile already has the access.
+- Optional heartbeat: set `BACKUP_PING_URL` (healthchecks.io-style) in the
+  sops env and `backup.sh` pings it after every successful run — silence
+  means backups stopped, noticed before a restore needs them.
 - Weekly EBS snapshot (Data Lifecycle Manager, free to configure) as the
   coarse fallback.
-- **Test a restore once** before calling this done: new volume, restore dump,
-  point a scratch compose stack at it.
+- Restore is scripted: `deploy/restore.sh <YYYY-MM-DD> [--force] [db …]` —
+  globals first, then each DB via `pg_restore --create`, streamed straight
+  from S3; existing DBs are skipped unless `--force`. **Test a restore once**
+  before calling this done: scratch stack, `restore.sh <yesterday>`, log in.
 - RPO ≈ 24h, RTO ≈ hours (new VM + restore). If a customer needs better, that
   is the RDS trigger below.
 
@@ -233,9 +256,10 @@ The deploy files are **built** and live under [`deploy/`](../deploy/):
 `bootstrap-vm.sh` (one-shot VM setup), `compose.prod.yml` (with API
 healthcheck + the RDS/ElastiCache override seams), `Caddyfile`
 (+ `tenants.caddy.example`), `deploy.sh` (preflight → build → migrate → roll
-→ verify), `add-tenant.sh` (tenant + Caddy + reload in one command),
-`backup.sh`, and `env.example` (the sops env contract, validated by
-deploy.sh). Also shipped: the S3 client factory now falls back to real AWS +
+→ verify), `add-tenant.sh` (tenant + Caddy + reload in one command,
+re-runnable via `--skip-existing`), `backup.sh`, `restore.sh` (streamed
+restore of any night's dumps), and `env.example` (the sops env contract,
+validated by deploy.sh). Also shipped: the S3 client factory now falls back to real AWS +
 the instance-profile credential chain when `FEOH_S3_ENDPOINT_URL` and the
 static keys are set empty (previously it always passed the MinIO dev
 defaults, so the "omit the endpoint for real S3" story couldn't work).
