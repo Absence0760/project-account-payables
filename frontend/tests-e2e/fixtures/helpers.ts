@@ -238,7 +238,7 @@ async function _ensureAdminStorageState(
 		// This is the post-consent steady state every real session is in after
 		// the first visit; it is NOT an init script, so consent-banner.spec.ts
 		// (which removes the key and reloads to assert the banner) still works.
-		await page.evaluate(() => localStorage.setItem('ap_consent_choice', 'accepted'));
+		await page.evaluate(() => localStorage.setItem('feoh_consent_choice', 'accepted'));
 		await context.storageState({ path: file });
 	} finally {
 		await context.close();
@@ -343,7 +343,7 @@ export async function signIn(
 	// banner still shows there.
 	await page.addInitScript(() => {
 		try {
-			localStorage.setItem('ap_consent_choice', 'accepted');
+			localStorage.setItem('feoh_consent_choice', 'accepted');
 		} catch {
 			/* about:blank — ignore */
 		}

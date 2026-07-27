@@ -15,7 +15,7 @@
 	 */
 	export type ConsentChoice = 'accepted' | 'rejected';
 
-	export const CONSENT_KEY = 'ap_consent_choice';
+	export const CONSENT_KEY = 'feoh_consent_choice';
 
 	/** Read the persisted non-essential-storage consent choice (or `null`). */
 	export function getConsent(): ConsentChoice | null {

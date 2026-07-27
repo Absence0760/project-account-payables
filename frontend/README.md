@@ -1,4 +1,4 @@
-# Account Payables — Frontend
+# FeohLedger — Frontend
 
 SvelteKit 2 + Svelte 5 + TypeScript
 

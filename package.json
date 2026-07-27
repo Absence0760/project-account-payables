@@ -1,6 +1,6 @@
 {
 	"$schema": "https://json.schemastore.org/package.json",
-	"name": "account-payables",
+	"name": "feohledger",
 	"version": "0.0.0",
 	"private": true,
 	"description": "Root-level dispatch scripts. Each script is a thin wrapper around a per-workspace toolchain (pip/pytest/ruff for backend, pnpm for frontend, flutter for mobile). Treat this package.json as a task runner — there are no JS dependencies at root.",

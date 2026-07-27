@@ -33,7 +33,7 @@ test.describe('SAML login via Keycloak', () => {
 		// consent-banner.spec.ts; mirrors sso/login.spec.ts.
 		await page.addInitScript(() => {
 			try {
-				localStorage.setItem('ap_consent_choice', 'accepted');
+				localStorage.setItem('feoh_consent_choice', 'accepted');
 			} catch {
 				/* about:blank — ignore */
 			}

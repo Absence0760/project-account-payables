@@ -57,7 +57,7 @@ export const en = {
 	'nav.partner': 'Partner Admin',
 
 	// App shell / sidebar (Sidebar.svelte, +layout.svelte)
-	'shell.appName': 'Account Payables',
+	'shell.appName': 'FeohLedger',
 	'shell.skipToMain': 'Skip to main content',
 	'shell.primaryNav': 'Primary',
 	'shell.sectionNav': '{group} sections',
@@ -575,7 +575,7 @@ export const en = {
 	'org.branding.hint':
 		'White-label the app for your organization. Leave a field blank to use the platform default. Accent colors retheme the app immediately on save.',
 	'org.branding.productName': 'Product Name',
-	'org.branding.productNamePlaceholder': 'Accounts Payable',
+	'org.branding.productNamePlaceholder': 'FeohLedger',
 	'org.branding.logoUrl': 'Logo URL',
 	'org.branding.logoUrlPlaceholder': 'https://cdn.example.com/logo.png',
 	'org.branding.accentColor': 'Accent Color',
@@ -1764,7 +1764,7 @@ export const en = {
 		"This page won't open again — the link is single-use. If you accidentally close it before saving the card, reply to the email and we'll re-issue.",
 
 	// Auth — login (routes/login/+page.svelte)
-	'auth.login.heading': 'Account Payables',
+	'auth.login.heading': 'FeohLedger',
 	'auth.login.subtitle': 'Sign in to continue',
 	'auth.login.email': 'Email',
 	'auth.login.password': 'Password',
@@ -1797,7 +1797,7 @@ export const en = {
 	'auth.mfa.error.verify': 'Verification failed',
 
 	// Auth — SSO / SAML callback (routes/login/{sso,saml}-callback/+page.svelte)
-	'auth.callback.pageTitle': 'Signing in… — Better AP',
+	'auth.callback.pageTitle': 'Signing in… — FeohLedger',
 	'auth.callback.signingIn': 'Signing you in…',
 	'auth.callback.idpError': 'Identity provider error: {error}',
 	'auth.callback.missingCodeState': 'Missing code or state in the callback URL.',
@@ -1807,7 +1807,7 @@ export const en = {
 	'auth.callback.backToSignIn': 'Back to sign in',
 
 	// Auth — signup (routes/signup/+page.svelte)
-	'auth.signup.pageTitle': 'Sign up — Better AP',
+	'auth.signup.pageTitle': 'Sign up — FeohLedger',
 	'auth.signup.successHeading': 'Check your email',
 	'auth.signup.successNext':
 		"Next: click the link in that email to finish creating your workspace. We'll send your sign-in details once it's ready.",
@@ -1831,7 +1831,7 @@ export const en = {
 	'auth.signup.footerPost': ' to sign in.',
 
 	// Auth — change password (routes/change-password/+page.svelte)
-	'auth.changePassword.pageTitle': 'Change password — Better AP',
+	'auth.changePassword.pageTitle': 'Change password — FeohLedger',
 	'auth.changePassword.heading': 'Set a new password',
 	'auth.changePassword.subForced': 'You signed in with a temporary password. Choose a new one to continue.',
 	'auth.changePassword.subVoluntary': 'Update your password.',
@@ -1850,7 +1850,7 @@ export const en = {
 	'auth.changePassword.signOut': 'Sign out',
 
 	// Auth — verify / provisioning (routes/verify/+page.svelte)
-	'auth.verify.pageTitle': 'Verifying — Better AP',
+	'auth.verify.pageTitle': 'Verifying — FeohLedger',
 	'auth.verify.noToken': 'No verification token in the URL.',
 	'auth.verify.failed': 'Verification failed.',
 	'auth.verify.pendingHeading': 'Creating your workspace…',
@@ -2167,7 +2167,7 @@ export const en = {
 	'admin.partner.branding.loading': 'Loading branding…',
 	'admin.partner.branding.loadFailed': 'Failed to load branding.',
 	'admin.partner.field.productName': 'Product name',
-	'admin.partner.field.productNamePlaceholder': 'Accounts Payable',
+	'admin.partner.field.productNamePlaceholder': 'FeohLedger',
 	'admin.partner.field.logoUrl': 'Logo URL',
 	'admin.partner.field.logoUrlPlaceholder': 'https://cdn.example.com/logo.png',
 	'admin.partner.field.accentColor': 'Accent color',

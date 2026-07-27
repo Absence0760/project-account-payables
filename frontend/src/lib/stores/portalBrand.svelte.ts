@@ -21,7 +21,7 @@ import {
  * (`brandThemeVars`, etc.) are shared with the employee store via `brandTheme.ts`.
  *
  * Every field is optional; an empty field means "use the platform default" (the
- * bundled mark + "Accounts Payable" + the AA-passing `app.css` accent tokens).
+ * bundled mark + "FeohLedger" + the AA-passing `app.css` accent tokens).
  * Resilient by design: any fetch failure degrades to defaults rather than
  * breaking a render, so the portal always themes.
  */

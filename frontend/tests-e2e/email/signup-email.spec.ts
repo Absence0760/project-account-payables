@@ -72,7 +72,7 @@ test.describe('Outbound email via Mailpit (signup)', () => {
 				msg = await findMessageTo(page, email);
 				return msg?.Subject ?? null;
 			}, { timeout: 15_000 })
-			.toBe('Verify your Account Payables workspace');
+			.toBe('Verify your FeohLedger workspace');
 		expect(msg!.To[0].Address).toBe(email);
 
 		// 3. Pull the verify token out of the captured email body.

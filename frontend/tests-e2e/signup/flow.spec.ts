@@ -74,7 +74,7 @@ test.use({ storageState: { cookies: [], origins: [] } });
 test.beforeEach(async ({ page }) => {
 	await page.addInitScript(() => {
 		try {
-			localStorage.setItem('ap_consent_choice', 'accepted');
+			localStorage.setItem('feoh_consent_choice', 'accepted');
 		} catch {
 			// about:blank — ignore
 		}
@@ -207,7 +207,7 @@ test.describe('signup happy path (UI + Mailpit)', () => {
 		});
 
 		// 2. Pull the verification link out of the email and open it (the user clicks it).
-		const verifyBody = await waitForEmail(page, email, 'Verify your Account Payables');
+		const verifyBody = await waitForEmail(page, email, 'Verify your FeohLedger');
 		const verifyLink = verifyBody.match(/\/verify\?token=[A-Za-z0-9_-]+/);
 		expect(verifyLink, 'verify link in email').toBeTruthy();
 
@@ -217,7 +217,7 @@ test.describe('signup happy path (UI + Mailpit)', () => {
 		});
 
 		// 3. Pull the temp password out of the welcome email.
-		const welcomeBody = await waitForEmail(page, email, 'Your Account Payables workspace');
+		const welcomeBody = await waitForEmail(page, email, 'Your FeohLedger workspace');
 		const pwMatch = welcomeBody.match(/Password:\s*(\S+)/);
 		expect(pwMatch, 'temp password in welcome email').toBeTruthy();
 		const tempPassword = pwMatch![1];

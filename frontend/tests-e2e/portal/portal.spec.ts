@@ -69,10 +69,10 @@ test.describe("/portal/login", () => {
 
     // The login card heading is the tenant's white-label PRODUCT NAME (themed
     // from the public GET /api/portal/branding). With no brand set on the
-    // worker's tenant it falls back to the platform default "Accounts Payable".
+    // worker's tenant it falls back to the platform default "FeohLedger".
     // See tests-e2e/portal/branding.spec.ts for the configured-brand assertions.
     await expect(
-      page.getByRole("heading", { name: "Accounts Payable" }),
+      page.getByRole("heading", { name: "FeohLedger" }),
     ).toBeVisible();
     await expect(page.locator('input[type="email"]')).toBeVisible();
     await expect(page.locator('input[type="password"]')).toBeVisible();

@@ -145,7 +145,7 @@ test.describe('/reports export (stubbed — backend-independent)', () => {
 				status: 200,
 				contentType: 'text/csv',
 				headers: { 'content-disposition': 'attachment; filename="report.csv"' },
-				body: '# Better AP — provenance header\nVendor,Sum of Amount\nAcme,12345.67\n'
+				body: '# FeohLedger — provenance header\nVendor,Sum of Amount\nAcme,12345.67\n'
 			})
 		);
 

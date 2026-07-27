@@ -31,7 +31,7 @@ test.describe('SSO login via Keycloak', () => {
 		// consent-banner.spec.ts; mirrors vendors/consolidation-merge.spec.ts.
 		await page.addInitScript(() => {
 			try {
-				localStorage.setItem('ap_consent_choice', 'accepted');
+				localStorage.setItem('feoh_consent_choice', 'accepted');
 			} catch {
 				/* about:blank — ignore */
 			}
