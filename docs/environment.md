@@ -39,7 +39,7 @@ Note: The frontend also reads the tenant slug from the browser subdomain at runt
 | `FEOH_SSO_STATE_TTL_SECONDS` | `600`                                                               | TTL on the OIDC state/nonce stored in Redis  |
 | `FEOH_SCIM_URL_PATH`    | `/api/scim/v2`                                                           | Mount path for SCIM 2.0 endpoints |
 | `FEOH_MFA_ENABLED`      | `false`                                                                  | Master MFA switch. `false` skips all MFA flows (recommended for local dev). Flip to `true` in deployed environments. |
-| `FEOH_MFA_ISSUER`       | `Account Payables`                                                       | Label shown in TOTP authenticator apps |
+| `FEOH_MFA_ISSUER`       | `FeohLedger`                                                       | Label shown in TOTP authenticator apps |
 | `FEOH_MFA_EMAIL_OTP_TTL_SECONDS` | `360`                                                           | Lifetime of email-OTP backup codes |
 | `FEOH_MFA_CHALLENGE_TTL_SECONDS` | `300`                                                           | Lifetime of the post-password "still need MFA" challenge token |
 | `FEOH_MFA_ENROLL_PENDING_TTL_SECONDS` | `900`                                                      | Lifetime of a pending (started-but-unverified) TOTP enrollment secret. The candidate lives in Redis, never on the account row, so starting an enrollment can't disturb the factor already in force |

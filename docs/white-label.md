@@ -21,7 +21,7 @@ product name, logo, and accent colors. Shipped so far:
 
 | Field | Stored as | Effect |
 |-------|-----------|--------|
-| `product_name` | `settings.brand.product_name` | Sidebar product name + document `<title>`. Fallback: **"Accounts Payable"**. |
+| `product_name` | `settings.brand.product_name` | Sidebar product name + document `<title>`. Fallback: **"FeohLedger"**. |
 | `logo_url` | `settings.brand.logo_url` | Sidebar logo `<img>`. Fallback: the bundled "AP" mark. |
 | `accent_color` | `settings.brand.accent_color` | Overrides the `--accent` CSS token (borders, focus rings, accent text). |
 | `accent_strong_color` | `settings.brand.accent_strong_color` | Overrides the `--accent-strong` token (text-bearing accent backgrounds — buttons, active chips). |
@@ -184,7 +184,7 @@ legal URLs) with platform defaults baked in. It is **pure + total**: tolerates a
 `None` settings dict, a missing / non-dict `brand` block, and individually
 malformed fields (each falls back to its platform default for text/accent, or to
 empty for URLs), and never touches the network. Platform defaults: product name
-**"Accounts Payable"**, accent **`#638cff`** (kept in sync with the frontend
+**"FeohLedger"**, accent **`#638cff`** (kept in sync with the frontend
 `app.css` token).
 
 ### PDFs

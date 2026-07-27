@@ -295,7 +295,7 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 | `FEOH_MFA_ENABLED` | `false` | Master MFA switch (gates TOTP, email-OTP, AND WebAuthn/passkeys) — keep `false` in local dev, flip on in deployed envs |
 | `FEOH_MFA_ENROLL_PENDING_TTL_SECONDS` | `900` | Lifetime of a *pending* (started-but-unverified) TOTP enrollment secret. The candidate lives in Redis (`mfa:pending_enroll:` / `mfa:vendor_pending_enroll:`), never on the account row, so starting an enrollment can't disturb the second factor already in force; past the TTL the user restarts enrollment. No secret. See `docs/authentication.md` § Per-user enrollment. |
 | `FEOH_WEBAUTHN_RP_ID` | `localhost` | WebAuthn/passkey Relying Party ID — the registrable domain a passkey is bound to. A bare host (no scheme/port). `localhost` works across every tenant subdomain in dev; set to your apex (e.g. `app.example.com`) in deployed envs. See `docs/authentication.md` § Passkeys. |
-| `FEOH_WEBAUTHN_RP_NAME` | `Account Payables` | Human-readable Relying Party name the authenticator UI shows. |
+| `FEOH_WEBAUTHN_RP_NAME` | `FeohLedger` | Human-readable Relying Party name the authenticator UI shows. |
 | `FEOH_WEBAUTHN_ORIGINS` | `http://localhost:7777` | Comma-separated allowed origins (scheme+host+port) the passkey register/authenticate ceremonies are verified against. Each tenant subdomain is its own origin in dev. No secret. |
 | `FEOH_WEBAUTHN_CHALLENGE_TTL_SECONDS` | `300` | Lifetime of the server-minted WebAuthn ceremony challenge stashed in Redis (single-use). |
 | `FEOH_API_PUBLIC_URL` | `http://localhost:8000` | Externally-reachable backend base URL. Builds the SAML SP entityId + ACS URL the IdP POSTs to (unlike OIDC's frontend redirect). Set to the real API host in deployed envs |
@@ -404,6 +404,7 @@ Full list in `backend/app/config.py`.
 | Environment vars | `docs/environment.md` — frontend + backend config |
 | Deployment | `docs/production-deployment.md` — AWS, CloudFront, ALB, ECS |
 | Minimal-cost deployment | `docs/minimal-deployment.md` — one-VM compose + Caddy pilot footprint (~$20/mo) |
+| FeohLedger rename migration | `docs/feohledger-rename-migration.md` — one-time upgrade for pre-rename environments (`AP_*` → `FEOH_*`, `account_payables`/`ap_<slug>` databases, KMS alias, Keycloak realm); `backend/scripts/rename_databases_to_feohledger.py` is the DB half |
 | SOC 2 readiness | `docs/soc2-readiness.md` — vendor comparison, control mapping, kickoff plan |
 | Data privacy (GDPR/CCPA) | `backend/docs/privacy.md` (DSAR + erasure), `docs/data-residency.md` (region pinning), `docs/ropa.md` (Record of Processing Activities), `docs/sub-processors.md` (sub-processor register) |
 | Platform billing & metering (plans / subscriptions / entitlements) | `backend/docs/billing.md` |

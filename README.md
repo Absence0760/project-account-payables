@@ -1,4 +1,4 @@
-# Account Payables
+# FeohLedger
 
 Full-stack accounts payable management application built with SvelteKit, FastAPI, and PostgreSQL.
 
@@ -66,7 +66,7 @@ Local identity testing, no cloud account:
 - **SSO** — `pnpm idp:up && pnpm idp:seed`, then sign in via SSO at
   `http://acme.localhost:7777` as `demo@acme.com` / `demo`.
 - **SCIM** — `pnpm idp:up && pnpm scim:seed`, then in Authentik
-  (`http://localhost:9002`, `akadmin` / `admin`) run the "Account Payables SCIM"
+  (`http://localhost:9002`, `akadmin` / `admin`) run the "FeohLedger SCIM"
   provider sync; provisioned users appear in `/admin`.
 
 See [`docs/local-sso-keycloak.md`](docs/local-sso-keycloak.md).
@@ -91,6 +91,7 @@ Cross-cutting docs live in [`/docs`](docs/). Backend-specific docs live in [`/ba
 | [Production Deployment](docs/production-deployment.md) | AWS, CloudFront, ALB, ECS |
 | [Backup & Disaster Recovery](docs/backup-disaster-recovery.md) | RTO/RPO, restore procedures |
 | [Secrets Rotation](docs/secrets-rotation.md) | What to rotate, when, and how |
+| [FeohLedger Rename Migration](docs/feohledger-rename-migration.md) | One-time upgrade for environments provisioned before the rename (`AP_*` → `FEOH_*`, database names, KMS alias) |
 | [SOC 2 Readiness](docs/soc2-readiness.md) | Control mapping, vendor selection, kickoff plan |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues and fixes |
 | [Founder Runbooks](docs/founder-runbooks/) | Non-code playbooks — legal, prod deploy, Stripe, payment rails, SOC 2, support |

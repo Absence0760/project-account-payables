@@ -113,7 +113,7 @@ pnpm idp:up        # starts Keycloak + the Authentik stack (Docker)
 pnpm scim:seed     # set the matching SCIM bearer token on the acme tenant
 pnpm dev           # the app must be running — Authentik POSTs to :8000
 # Authentik admin: http://localhost:9002  (akadmin / admin)
-#   Applications → Providers → "Account Payables SCIM" → Run sync
+#   Applications → Providers → "FeohLedger SCIM" → Run sync
 # Provisioned users land in acme; see them at http://acme.localhost:7777/admin
 pnpm idp:down      # stop the IdP stack when done
 ```
@@ -131,7 +131,7 @@ boot, so it's reproducible. The blueprint creates:
 |---|---|
 | Authentik admin | http://localhost:9002 (`akadmin` / `admin`) |
 | API token (for scripting) | `local-dev-authentik-api-token` |
-| SCIM provider | "Account Payables SCIM" → `http://host.docker.internal:8000/api/scim/v2` |
+| SCIM provider | "FeohLedger SCIM" → `http://host.docker.internal:8000/api/scim/v2` |
 | SCIM bearer token | `local-dev-scim-token-acme` (matches `pnpm scim:seed`) |
 | Demo user to sync | `scim.demo@acme.com` |
 

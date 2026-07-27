@@ -62,7 +62,7 @@ If the screen already matches one of these archetypes, *enhance* it within that 
 
 - `prefer_single_quotes` — `'foo'`, never `"foo"`.
 - `require_trailing_commas` — every multi-line collection / param list ends with a trailing comma. `flutter format` enforces the resulting layout.
-- `always_use_package_imports` — `import 'package:ap_mobile/...';`, never relative imports.
+- `always_use_package_imports` — `import 'package:feohledger_mobile/...';`, never relative imports.
 - `sort_pub_dependencies` — `pubspec.yaml` deps alphabetized.
 - Run `dart format .` (or trust your editor) before reporting done.
 
