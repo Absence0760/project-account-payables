@@ -16,8 +16,8 @@ The whole flow is four commands on a fresh VM:
 
 | File | Purpose |
 |---|---|
-| `bootstrap-vm.sh` | One-time, idempotent VM setup (Amazon Linux 2023): docker + compose plugin + sops + AWS CLI, 2 GB swap, nightly backup cron, IMDSv2 hop-limit fix. Other distros get the manual list. |
-| `compose.prod.yml` | Postgres (pgvector) + Redis (AOF) + API + Caddy. No DB host ports; S3 is real AWS. API healthcheck lets deploys verify themselves. `FEOH_DATABASE_URL`/`FEOH_REDIS_URL` are override seams for RDS/ElastiCache later. |
+| `bootstrap-vm.sh` | One-time, idempotent VM setup (Amazon Linux 2023): docker + compose plugin + sops + cronie (AL2023 ships no cron daemon) + AWS CLI, 2 GB swap, nightly backup cron, IMDSv2 hop-limit fix. Other distros get the manual list. |
+| `compose.prod.yml` | Postgres (pgvector) + Redis (AOF) + API + Caddy. No DB host ports; S3 is real AWS. API healthcheck lets deploys verify themselves. Container logs capped (json-file, 10 MB × 5 per service) so they can't fill the 30 GB disk. `FEOH_DATABASE_URL`/`FEOH_REDIS_URL` are override seams for RDS/ElastiCache later. |
 | `Caddyfile` | TLS + static SPA + `api.feohledger.com` reverse proxy. Domains via env. |
 | `tenants.caddy.example` | Template for the per-VM tenant host list (`tenants.caddy`, gitignored). `add-tenant.sh` maintains it — manual edits rarely needed. |
 | `deploy.sh` | Preflight → pull → decrypt secrets → dockerized frontend build (no Node/pnpm on the VM) → backend build → migrate (control plane + all tenants) **before** rolling → `up -d --wait` → Caddy reload. Flags: `--no-pull`, `--backend-only`, `--frontend-only`. |
@@ -27,7 +27,9 @@ The whole flow is four commands on a fresh VM:
 
 ## Before the VM (once per project)
 
-- AWS account + the `infra/` Terraform module applied (S3 buckets, KMS).
+- AWS account + the `infra/` Terraform module applied (S3 buckets incl. the
+  lifecycle-expired backups bucket — its `backups_bucket` output feeds
+  `BACKUP_S3_BUCKET` — and the KMS key).
 - EC2 `t4g.small` (Amazon Linux 2023 arm64 recommended), 30 GB gp3, ports
   80/443 open. Instance profile: `kms:Decrypt` on the sops key; S3 read/write
   on the invoice-files, audit-logs, and backup buckets; `ses:SendEmail` if

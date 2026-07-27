@@ -47,9 +47,9 @@ see [Upgrade triggers](#upgrade-triggers) for when each piece graduates.
 | EBS 30 GB gp3 | ~$2.40 |
 | Public IPv4 address | ~$3.65 |
 | Route 53 hosted zone | $0.50 |
-| KMS key (sops) | $1.00 |
+| KMS keys ×2 (sops + the `infra/` app key for SSE-KMS) | $2.00 |
 | S3 (files + backups, pilot volume) + SES | ~$1 |
-| **Total** | **~$21** |
+| **Total** | **~$22** |
 
 Domain registration (~$12/yr) extra if you buy a product apex instead of using
 a delegated `<project>.jaredhoward.com` zone.
@@ -68,8 +68,9 @@ resize is a stop → change-type → start. Add 2 GB of swap either way.
 
 1. **Real S3 instead of MinIO in prod.** The `infra/` Terraform module already
    defines the invoice-files and audit-logs buckets (versioning, Object Lock,
-   SSE-KMS). Set `FEOH_S3_BUCKET`, omit `FEOH_S3_ENDPOINT_URL`, and drop the MinIO
-   container — less RAM, real durability, pennies at pilot volume.
+   SSE-KMS) plus the backups bucket (lifecycle-expired, no lock — see
+   § Backups). Set `FEOH_S3_BUCKET`, omit `FEOH_S3_ENDPOINT_URL`, and drop the
+   MinIO container — less RAM, real durability, pennies at pilot volume.
 2. **Caddy on the VM serves the frontend.** GitHub Pages can't serve wildcard
    tenant subdomains and CloudFront+ACM is more moving parts. Caddy serves the
    static `frontend/build`, reverse-proxies `api.feohledger.com` to the backend, and
@@ -116,9 +117,10 @@ resize is a stop → change-type → start. Add 2 GB of swap either way.
   instance-profile credentials through Docker's NAT at the default limit
   of 1).
 - Run **`deploy/bootstrap-vm.sh`** — one idempotent script: docker + compose
-  plugin + sops + AWS CLI, 2 GB swap, the nightly backup cron, and the IMDS
-  hop-limit fix. Node/pnpm are *not* needed on the VM — the frontend builds
-  inside a `node:20` container.
+  plugin + sops + cronie (AL2023 ships **no cron daemon** — without it the
+  backup cron is a file nothing reads) + AWS CLI, 2 GB swap, the nightly
+  backup cron, and the IMDS hop-limit fix. Node/pnpm are *not* needed on the
+  VM — the frontend builds inside a `node:20` container.
 - DNS: three records → the instance IP: `app.feohledger.com`, `api.feohledger.com`, and a
   **wildcard `*.app.feohledger.com`** so tenant onboarding never touches DNS again.
   (A DNS wildcard needs no wildcard *certificate* — Caddy still issues
@@ -200,9 +202,12 @@ run `scripts/seed.py` (demo data) in prod.
 - Nightly cron (installed by `bootstrap-vm.sh` as `/etc/cron.d/feoh-backup`):
   dumps role globals + per-DB
   `pg_dump -Fc` of `feohledger` and every `feoh_*` tenant DB, streamed
-  straight to a versioned backups bucket (nothing persists on disk). Add an
-  S3 lifecycle rule (e.g. expire after 90 days). The instance profile already
-  has the access.
+  straight to the backups bucket (nothing persists on disk). The bucket is
+  provisioned by the `infra/` module (`backups_bucket_name`) with the cost
+  guards baked in: 90-day expiry (`backup_retention_days`), noncurrent-version
+  cleanup, and incomplete-multipart reaping — no manual lifecycle rule to
+  remember. Set `BACKUP_S3_BUCKET` from the `backups_bucket` output; the
+  instance profile already has the access.
 - Weekly EBS snapshot (Data Lifecycle Manager, free to configure) as the
   coarse fallback.
 - **Test a restore once** before calling this done: new volume, restore dump,
