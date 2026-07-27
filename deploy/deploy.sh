@@ -100,4 +100,13 @@ echo "==> rolling containers"
 # failure here is a real config error — do not suppress it.
 "${COMPOSE[@]}" exec caddy caddy reload --config /etc/caddy/Caddyfile
 
+# Reclaim disk: every deploy leaves the previous api image dangling, and on
+# a 30 GB volume months of deploys pile up until Postgres runs out of space.
+# Dangling-only — tagged images and volumes are untouched. The BuildKit
+# cache is capped rather than purged so rebuilds stay fast.
+docker image prune -f >/dev/null ||
+	echo "WARN: dangling-image prune failed (non-fatal — the deploy itself succeeded)" >&2
+docker builder prune -f --keep-storage 5g >/dev/null ||
+	echo "WARN: builder-cache prune failed (non-fatal; check 'docker builder prune' flags)" >&2
+
 echo "deploy complete — API healthcheck passed."

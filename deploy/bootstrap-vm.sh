@@ -53,6 +53,28 @@ if ! command -v sops >/dev/null; then
 		"https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-${SOPS_VERSION}-1.$(uname -m).rpm"
 fi
 
+echo "==> automatic security updates (dnf-automatic)"
+# An unattended pilot VM never gets OS patches otherwise. Security-only and
+# auto-applied; docker/containerd are excluded because their package scripts
+# restart the daemon — bouncing the whole stack at a random hour. NOTE: the
+# exclude removes them from dnf-automatic's reporting too, so nothing nudges
+# you about their pending patches — update them deliberately around deploy
+# windows (see deploy/README.md § Deploys).
+sudo dnf install -y dnf-automatic
+sudo tee /etc/dnf/automatic.conf >/dev/null <<-'EOF'
+	[commands]
+	upgrade_type = security
+	random_sleep = 3600
+	apply_updates = yes
+
+	[emitters]
+	emit_via = stdio
+
+	[base]
+	exclude = docker* containerd*
+EOF
+sudo systemctl enable --now dnf-automatic.timer
+
 if ! swapon --show | grep -q .; then
 	echo "==> 2 GB swap"
 	sudo fallocate -l 2G /swapfile

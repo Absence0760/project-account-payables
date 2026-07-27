@@ -47,3 +47,15 @@ for db in $DBS; do
 done
 
 echo "backup complete: ${PREFIX} ($(echo "$DBS" | wc -w) databases + globals)"
+
+# Optional dead-man's-switch: ping a heartbeat URL (healthchecks.io-style)
+# after a successful run, so backups that stop running get noticed instead
+# of discovered during a restore. No-op when unset.
+PING_URL="${BACKUP_PING_URL:-}"
+if [ -z "$PING_URL" ] && [ -f .env ]; then
+	PING_URL=$(grep -E '^BACKUP_PING_URL=' .env | tail -1 | cut -d= -f2- || true)
+fi
+if [ -n "$PING_URL" ]; then
+	curl -fsS -m 10 --retry 3 "$PING_URL" >/dev/null ||
+		echo "WARN: backup heartbeat ping failed (backup itself succeeded)" >&2
+fi
