@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
-import 'package:ap_mobile/models/vendor.dart';
-import 'package:ap_mobile/widgets/vendor_status_badge.dart';
+import 'package:feohledger_mobile/models/vendor.dart';
+import 'package:feohledger_mobile/widgets/vendor_status_badge.dart';
 
 class VendorListTile extends StatelessWidget {
   final Vendor vendor;

@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:ap_mobile/models/user.dart';
+import 'package:feohledger_mobile/models/user.dart';
 
 User _user(List<String> roles) => User(
       id: 'u1',

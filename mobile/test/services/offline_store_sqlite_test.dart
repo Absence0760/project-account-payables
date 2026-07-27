@@ -2,7 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-import 'package:ap_mobile/services/offline_store.dart';
+import 'package:feohledger_mobile/services/offline_store.dart';
 
 /// Session scoping against the **real SQLite backend** (issue #176).
 ///
@@ -12,7 +12,7 @@ import 'package:ap_mobile/services/offline_store.dart';
 /// upgrade actually purges an existing device's un-namespaced rows. This file
 /// runs the production code path on a real database via `sqflite_common_ffi`.
 
-Future<String> _dbPath() async => join(await getDatabasesPath(), 'ap_cache.db');
+Future<String> _dbPath() async => join(await getDatabasesPath(), 'feohledger_cache.db');
 
 void main() {
   sqfliteFfiInit();

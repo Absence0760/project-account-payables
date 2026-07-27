@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:ap_mobile/models/contract.dart';
+import 'package:feohledger_mobile/models/contract.dart';
 
 void main() {
   group('ContractStatus', () {

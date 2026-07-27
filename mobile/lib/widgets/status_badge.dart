@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'package:ap_mobile/models/invoice.dart';
+import 'package:feohledger_mobile/models/invoice.dart';
 
 class StatusBadge extends StatelessWidget {
   final InvoiceStatus status;

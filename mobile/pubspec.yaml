@@ -1,5 +1,5 @@
-name: ap_mobile
-description: Accounts Payable mobile app — invoice approval, payment tracking, dashboard.
+name: feohledger_mobile
+description: FeohLedger mobile app — invoice approval, payment tracking, dashboard.
 publish_to: 'none'
 version: 1.0.0+1
 

@@ -3,11 +3,11 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 
-import 'package:ap_mobile/api/api_client.dart';
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/services/camera_capture.dart';
-import 'package:ap_mobile/stores/invoice_store.dart';
-import 'package:ap_mobile/utils/a11y.dart';
+import 'package:feohledger_mobile/api/api_client.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/services/camera_capture.dart';
+import 'package:feohledger_mobile/stores/invoice_store.dart';
+import 'package:feohledger_mobile/utils/a11y.dart';
 
 /// Camera capture screen — snap a photo or pick from gallery, then upload.
 class CaptureScreen extends StatefulWidget {

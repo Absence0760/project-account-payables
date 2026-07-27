@@ -1,7 +1,7 @@
 import 'package:flutter/foundation.dart';
 
-import 'package:ap_mobile/api/endpoints.dart';
-import 'package:ap_mobile/models/organization.dart';
+import 'package:feohledger_mobile/api/endpoints.dart';
+import 'package:feohledger_mobile/models/organization.dart';
 
 /// Organization-settings state — loads the safe editable subset (company
 /// profile + invoice defaults) and saves edits over `PATCH /api/organization`.

@@ -7,9 +7,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
-import 'package:ap_mobile/api/api_client.dart';
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/screens/payments_screen.dart';
+import 'package:feohledger_mobile/api/api_client.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/screens/payments_screen.dart';
 
 Widget _localized(Widget home) => MaterialApp(
       localizationsDelegates: AppLocalizations.localizationsDelegates,

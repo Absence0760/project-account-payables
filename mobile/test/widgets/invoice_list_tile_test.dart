@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:ap_mobile/models/invoice.dart';
-import 'package:ap_mobile/widgets/invoice_list_tile.dart';
+import 'package:feohledger_mobile/models/invoice.dart';
+import 'package:feohledger_mobile/widgets/invoice_list_tile.dart';
 
 Widget _host(Widget child) => MaterialApp(home: Scaffold(body: child));
 

@@ -42,7 +42,7 @@ class BiometricService {
   Future<bool> authenticate() async {
     try {
       return await _auth.authenticate(
-        localizedReason: 'Unlock Account Payables',
+        localizedReason: 'Unlock FeohLedger',
       );
     } on Exception catch (e) {
       // PlatformException on a real device, MissingPluginException when no

@@ -4,10 +4,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
-import 'package:ap_mobile/api/api_client.dart';
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/models/mfa_challenge.dart';
-import 'package:ap_mobile/screens/mfa_screen.dart';
+import 'package:feohledger_mobile/api/api_client.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/models/mfa_challenge.dart';
+import 'package:feohledger_mobile/screens/mfa_screen.dart';
 
 const _totpAndEmail = MFAChallenge(
   challengeToken: 'chal-abc',

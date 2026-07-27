@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:ap_mobile/models/contract.dart';
-import 'package:ap_mobile/widgets/contract_status_badge.dart';
+import 'package:feohledger_mobile/models/contract.dart';
+import 'package:feohledger_mobile/widgets/contract_status_badge.dart';
 
 Widget _host(Widget child) => MaterialApp(home: Scaffold(body: child));
 

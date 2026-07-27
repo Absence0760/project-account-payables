@@ -7,12 +7,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
-import 'package:ap_mobile/api/api_client.dart';
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/screens/invoice_detail_screen.dart';
-import 'package:ap_mobile/services/offline_store.dart';
-import 'package:ap_mobile/stores/auth_store.dart';
-import 'package:ap_mobile/stores/invoice_store.dart';
+import 'package:feohledger_mobile/api/api_client.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/screens/invoice_detail_screen.dart';
+import 'package:feohledger_mobile/services/offline_store.dart';
+import 'package:feohledger_mobile/stores/auth_store.dart';
+import 'package:feohledger_mobile/stores/invoice_store.dart';
 
 /// Wraps the screen in a MaterialApp carrying the localization delegates so
 /// `AppLocalizations.of(context)` resolves (defaults to English).

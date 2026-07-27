@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
-import 'package:ap_mobile/models/contract.dart';
-import 'package:ap_mobile/widgets/contract_status_badge.dart';
+import 'package:feohledger_mobile/models/contract.dart';
+import 'package:feohledger_mobile/widgets/contract_status_badge.dart';
 
 final _currencyFormat = NumberFormat.currency(symbol: '\$');
 

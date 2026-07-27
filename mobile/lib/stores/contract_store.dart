@@ -1,9 +1,9 @@
 import 'package:flutter/foundation.dart';
 
-import 'package:ap_mobile/api/endpoints.dart';
-import 'package:ap_mobile/models/contract.dart';
-import 'package:ap_mobile/services/offline_store.dart';
-import 'package:ap_mobile/utils/sequenced_fetch.dart';
+import 'package:feohledger_mobile/api/endpoints.dart';
+import 'package:feohledger_mobile/models/contract.dart';
+import 'package:feohledger_mobile/services/offline_store.dart';
+import 'package:feohledger_mobile/utils/sequenced_fetch.dart';
 
 class ContractStore extends ChangeNotifier with SequencedFetch {
   static final ContractStore instance = ContractStore._();

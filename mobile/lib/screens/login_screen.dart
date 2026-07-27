@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/screens/home_screen.dart';
-import 'package:ap_mobile/screens/mfa_screen.dart';
-import 'package:ap_mobile/stores/auth_store.dart';
-import 'package:ap_mobile/utils/a11y.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/screens/home_screen.dart';
+import 'package:feohledger_mobile/screens/mfa_screen.dart';
+import 'package:feohledger_mobile/stores/auth_store.dart';
+import 'package:feohledger_mobile/utils/a11y.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});

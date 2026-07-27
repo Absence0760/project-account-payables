@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/models/notification.dart';
-import 'package:ap_mobile/screens/invoice_detail_screen.dart';
-import 'package:ap_mobile/stores/notification_store.dart';
-import 'package:ap_mobile/utils/a11y.dart';
-import 'package:ap_mobile/widgets/notification_list_tile.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/models/notification.dart';
+import 'package:feohledger_mobile/screens/invoice_detail_screen.dart';
+import 'package:feohledger_mobile/stores/notification_store.dart';
+import 'package:feohledger_mobile/utils/a11y.dart';
+import 'package:feohledger_mobile/widgets/notification_list_tile.dart';
 
 /// In-app notification center — lists the current user's notifications
 /// (`GET /api/notifications`), with an All / Unread filter, mark-all-read, and

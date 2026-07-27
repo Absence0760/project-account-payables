@@ -1,8 +1,8 @@
 import 'package:flutter/foundation.dart';
 
-import 'package:ap_mobile/api/endpoints.dart';
-import 'package:ap_mobile/models/payment.dart';
-import 'package:ap_mobile/services/offline_store.dart';
+import 'package:feohledger_mobile/api/endpoints.dart';
+import 'package:feohledger_mobile/models/payment.dart';
+import 'package:feohledger_mobile/services/offline_store.dart';
 
 class DashboardStore extends ChangeNotifier {
   static final DashboardStore instance = DashboardStore._();

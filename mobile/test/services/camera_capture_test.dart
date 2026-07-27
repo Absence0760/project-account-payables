@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:ap_mobile/services/camera_capture.dart';
+import 'package:feohledger_mobile/services/camera_capture.dart';
 
 void main() {
   // FilePicker.pickFiles touches a platform channel; the binding must exist

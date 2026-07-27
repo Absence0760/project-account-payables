@@ -1,4 +1,4 @@
-import 'package:ap_mobile/models/payment_queue.dart' show moneyToDisplay;
+import 'package:feohledger_mobile/models/payment_queue.dart' show moneyToDisplay;
 
 /// Cash-flow forecast + cash-position data for the CFO screen, from
 /// `GET /api/analytics/cashflow_forecast` and `GET /api/analytics/cash_position`.

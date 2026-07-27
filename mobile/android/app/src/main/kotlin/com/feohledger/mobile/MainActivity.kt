@@ -1,4 +1,4 @@
-package com.example.ap_mobile
+package com.feohledger.mobile
 
 import io.flutter.embedding.android.FlutterFragmentActivity
 

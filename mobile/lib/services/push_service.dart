@@ -83,7 +83,7 @@ class PushService {
       body: notification.body,
       notificationDetails: const NotificationDetails(
         android: AndroidNotificationDetails(
-          'ap_approvals',
+          'feoh_approvals',
           'Approval Notifications',
           channelDescription: 'Invoice approval requests and status updates',
           importance: Importance.high,

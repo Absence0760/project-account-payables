@@ -1,8 +1,8 @@
 import 'package:flutter/foundation.dart';
 
-import 'package:ap_mobile/api/endpoints.dart';
-import 'package:ap_mobile/models/admin_user.dart';
-import 'package:ap_mobile/utils/sequenced_fetch.dart';
+import 'package:feohledger_mobile/api/endpoints.dart';
+import 'package:feohledger_mobile/models/admin_user.dart';
+import 'package:feohledger_mobile/utils/sequenced_fetch.dart';
 
 /// Admin user-management state — the org's users + the available roles, plus
 /// role-assignment and activate/deactivate mutators. Admin-only (mirrors the

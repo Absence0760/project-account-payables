@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:ap_mobile/models/invoice.dart';
+import 'package:feohledger_mobile/models/invoice.dart';
 
 void main() {
   group('InvoiceStatus', () {

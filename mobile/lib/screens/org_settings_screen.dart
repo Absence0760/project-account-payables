@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/models/organization.dart';
-import 'package:ap_mobile/stores/org_settings_store.dart';
-import 'package:ap_mobile/utils/a11y.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/models/organization.dart';
+import 'package:feohledger_mobile/stores/org_settings_store.dart';
+import 'package:feohledger_mobile/utils/a11y.dart';
 
 /// Admin — organization settings. Reads + edits the safe subset of org settings
 /// the web app exposes: the company profile (address / phone / website / tax id)

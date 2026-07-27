@@ -1,8 +1,8 @@
 import 'package:flutter/foundation.dart';
 
-import 'package:ap_mobile/api/endpoints.dart';
-import 'package:ap_mobile/models/cash_flow.dart';
-import 'package:ap_mobile/utils/sequenced_fetch.dart';
+import 'package:feohledger_mobile/api/endpoints.dart';
+import 'package:feohledger_mobile/models/cash_flow.dart';
+import 'package:feohledger_mobile/utils/sequenced_fetch.dart';
 
 /// CFO / admin predictive cash-flow store over [CashFlowApi]. Holds the
 /// forecast + cash-position payload for the currently selected horizon and

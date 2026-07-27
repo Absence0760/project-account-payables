@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'package:ap_mobile/models/exception.dart';
+import 'package:feohledger_mobile/models/exception.dart';
 
 /// Status chip for an exception. Mirrors [StatusBadge] (the invoice one) but is
 /// typed to [ApExceptionStatus]. Text uses a darkened variant of the accent so

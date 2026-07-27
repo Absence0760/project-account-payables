@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:ap_mobile/models/organization.dart';
+import 'package:feohledger_mobile/models/organization.dart';
 
 void main() {
   group('OrgSettings.fromJson', () {

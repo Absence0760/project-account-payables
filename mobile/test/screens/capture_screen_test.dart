@@ -2,9 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:ap_mobile/api/api_client.dart';
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/screens/capture_screen.dart';
+import 'package:feohledger_mobile/api/api_client.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/screens/capture_screen.dart';
 
 /// Wraps the screen in a MaterialApp carrying the localization delegates so the
 /// localized `AppLocalizations.of(context)` resolves (defaults to English).

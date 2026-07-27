@@ -6,12 +6,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
-import 'package:ap_mobile/api/api_client.dart';
-import 'package:ap_mobile/services/offline_store.dart';
-import 'package:ap_mobile/services/session.dart';
-import 'package:ap_mobile/stores/auth_store.dart';
-import 'package:ap_mobile/stores/dashboard_store.dart';
-import 'package:ap_mobile/stores/invoice_store.dart';
+import 'package:feohledger_mobile/api/api_client.dart';
+import 'package:feohledger_mobile/services/offline_store.dart';
+import 'package:feohledger_mobile/services/session.dart';
+import 'package:feohledger_mobile/stores/auth_store.dart';
+import 'package:feohledger_mobile/stores/dashboard_store.dart';
+import 'package:feohledger_mobile/stores/invoice_store.dart';
 
 /// Session-scoped local state (issue #176): the offline cache and the store
 /// singletons outlive a session on a device, so they must be namespaced by

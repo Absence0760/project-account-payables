@@ -158,7 +158,7 @@ to the session that produced them. `services/session.dart` is the chokepoint;
   device preference, not account data) and `sequenced_fetch.dart` (the
   `SequencedFetch` mixin — a per-store request-sequence helper, not an
   account-scoped store singleton).
-- **Cache DB upgrade path.** `ap_cache.db` is at schema v2; the v1→v2 upgrade
+- **Cache DB upgrade path.** `feohledger_cache.db` is at schema v2; the v1→v2 upgrade
   deletes every pre-existing row, because rows written before scoping have
   global keys (`dashboard`, `invoices_all_`, …) with no owner to attribute them
   to. An install carrying an old cache therefore starts empty rather than

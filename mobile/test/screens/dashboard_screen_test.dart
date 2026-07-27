@@ -6,12 +6,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
-import 'package:ap_mobile/api/api_client.dart';
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/screens/dashboard_screen.dart';
-import 'package:ap_mobile/services/offline_store.dart';
-import 'package:ap_mobile/stores/dashboard_store.dart';
-import 'package:ap_mobile/widgets/kpi_card.dart';
+import 'package:feohledger_mobile/api/api_client.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/screens/dashboard_screen.dart';
+import 'package:feohledger_mobile/services/offline_store.dart';
+import 'package:feohledger_mobile/stores/dashboard_store.dart';
+import 'package:feohledger_mobile/widgets/kpi_card.dart';
 
 // Wraps a screen with the localization delegates it now needs. No explicit
 // `locale` → defaults to `en`, so the English assertions below still hold.

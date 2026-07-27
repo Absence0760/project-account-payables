@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/models/vendor.dart';
-import 'package:ap_mobile/stores/auth_store.dart';
-import 'package:ap_mobile/stores/vendor_store.dart';
-import 'package:ap_mobile/utils/a11y.dart';
-import 'package:ap_mobile/utils/debouncer.dart';
-import 'package:ap_mobile/widgets/vendor_list_tile.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/models/vendor.dart';
+import 'package:feohledger_mobile/stores/auth_store.dart';
+import 'package:feohledger_mobile/stores/vendor_store.dart';
+import 'package:feohledger_mobile/utils/a11y.dart';
+import 'package:feohledger_mobile/utils/debouncer.dart';
+import 'package:feohledger_mobile/widgets/vendor_list_tile.dart';
 
 /// Vendor management — list with status filters + search, verify / reject an
 /// unverified vendor, and pull vendors from the connected ERP. Mutations are

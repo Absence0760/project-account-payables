@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:ap_mobile/widgets/kpi_card.dart';
+import 'package:feohledger_mobile/widgets/kpi_card.dart';
 
 Widget _host(Widget child) => MaterialApp(home: Scaffold(body: child));
 

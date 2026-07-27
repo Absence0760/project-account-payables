@@ -10,7 +10,7 @@
   "navPayments": "Zahlungen",
   "navSettings": "Einstellungen",
 
-  "shellAppName": "Account Payables",
+  "shellAppName": "FeohLedger",
 
   "commonSave": "Speichern",
   "commonSaving": "Wird gespeichert …",
@@ -279,7 +279,7 @@
   "payConfirmCancel": "Abbrechen",
   "payConfirmExecute": "Ausführen",
 
-  "loginAppName": "Better AP",
+  "loginAppName": "FeohLedger",
   "loginTagline": "Kreditorenbuchhaltung, ganz einfach",
   "loginTenant": "Mandant",
   "loginEmail": "E-Mail",

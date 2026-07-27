@@ -5,12 +5,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
-import 'package:ap_mobile/api/api_client.dart';
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/screens/notifications_screen.dart';
-import 'package:ap_mobile/services/offline_store.dart';
-import 'package:ap_mobile/stores/notification_store.dart';
-import 'package:ap_mobile/widgets/notification_list_tile.dart';
+import 'package:feohledger_mobile/api/api_client.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/screens/notifications_screen.dart';
+import 'package:feohledger_mobile/services/offline_store.dart';
+import 'package:feohledger_mobile/stores/notification_store.dart';
+import 'package:feohledger_mobile/widgets/notification_list_tile.dart';
 
 Widget _localized(Widget home) => MaterialApp(
       localizationsDelegates: AppLocalizations.localizationsDelegates,

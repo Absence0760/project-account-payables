@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/stores/invoice_store.dart';
-import 'package:ap_mobile/widgets/advanced_search_sheet.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/stores/invoice_store.dart';
+import 'package:feohledger_mobile/widgets/advanced_search_sheet.dart';
 
 /// Host that opens the sheet via [showAdvancedSearchSheet] so we exercise the
 /// real Navigator.pop result contract.

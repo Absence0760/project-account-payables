@@ -4,8 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
-import 'package:ap_mobile/config.dart';
-import 'package:ap_mobile/services/session.dart';
+import 'package:feohledger_mobile/config.dart';
+import 'package:feohledger_mobile/services/session.dart';
 
 class ApiException implements Exception {
   final int statusCode;

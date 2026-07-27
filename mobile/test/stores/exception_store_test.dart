@@ -5,9 +5,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
-import 'package:ap_mobile/api/api_client.dart';
-import 'package:ap_mobile/services/offline_store.dart';
-import 'package:ap_mobile/stores/exception_store.dart';
+import 'package:feohledger_mobile/api/api_client.dart';
+import 'package:feohledger_mobile/services/offline_store.dart';
+import 'package:feohledger_mobile/stores/exception_store.dart';
 
 http.Response _list(List<Map<String, dynamic>> items) => http.Response(
       jsonEncode({'items': items, 'total': items.length, 'page': 1}),

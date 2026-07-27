@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:ap_mobile/models/vendor.dart';
+import 'package:feohledger_mobile/models/vendor.dart';
 
 void main() {
   group('VendorStatus enum', () {

@@ -1,4 +1,4 @@
-import 'package:ap_mobile/models/payment.dart';
+import 'package:feohledger_mobile/models/payment.dart';
 
 /// Convert a JSON money value (the backend emits these dict responses with
 /// `float(...)`, so they arrive as JSON numbers) into a display string WITHOUT

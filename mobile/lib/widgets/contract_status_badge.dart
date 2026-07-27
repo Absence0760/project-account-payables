@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'package:ap_mobile/models/contract.dart';
+import 'package:feohledger_mobile/models/contract.dart';
 
 class ContractStatusBadge extends StatelessWidget {
   final ContractStatus status;

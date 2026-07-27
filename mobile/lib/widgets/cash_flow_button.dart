@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
-import 'package:ap_mobile/screens/cash_flow_screen.dart';
-import 'package:ap_mobile/stores/auth_store.dart';
+import 'package:feohledger_mobile/screens/cash_flow_screen.dart';
+import 'package:feohledger_mobile/stores/auth_store.dart';
 
 /// App-bar action that opens the predictive cash-flow forecast. Gated to
 /// CFO / admin (mirrors the backend `_CFO_ROLES` gate on the analytics

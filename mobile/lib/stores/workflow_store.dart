@@ -1,7 +1,7 @@
 import 'package:flutter/foundation.dart';
 
-import 'package:ap_mobile/api/endpoints.dart';
-import 'package:ap_mobile/models/workflow.dart';
+import 'package:feohledger_mobile/api/endpoints.dart';
+import 'package:feohledger_mobile/models/workflow.dart';
 
 /// Read-only workflow-definition list. Mirrors the admin stores
 /// (`AdminUserStore` / `OrgSettingsStore`): an in-memory singleton that loads
