@@ -22,6 +22,7 @@ environment = "prod"
 # names reserved briefly to prevent takeover).
 invoice_files_bucket_name = "feohledger-invoices-prod-REPLACE"
 audit_logs_bucket_name    = "feohledger-audit-logs-prod-REPLACE"
+backups_bucket_name       = "feohledger-backups-prod-REPLACE"
 
 # --- Object Lock retention --------------------------------------------------
 # Days an object stays locked after it lands. Invoices run in Governance mode
@@ -30,6 +31,11 @@ audit_logs_bucket_name    = "feohledger-audit-logs-prod-REPLACE"
 # your data-retention policy calls for a different number.
 # invoice_retention_days = 365
 # audit_retention_days   = 2555
+
+# --- Backup retention ---------------------------------------------------------
+# The backups bucket (nightly pg dumps from deploy/backup.sh) has no Object
+# Lock — this lifecycle window is the whole retention/cost story.
+# backup_retention_days = 90
 
 # --- Placeholders for future real resources ---
 #

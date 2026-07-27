@@ -12,6 +12,7 @@ infra/
 ├── variables.tf                 # aws_region, project, environment, bucket names, retention
 ├── kms.tf                       # customer-managed KMS key (rotation ON)
 ├── s3.tf                        # invoice-files + audit-logs buckets (versioning + Object Lock)
+│                                #   + access-logs sink + backups bucket (lifecycle-expired, no lock)
 ├── outputs.tf                   # exports for downstream modules
 ├── terraform.tfvars.example     # committed template
 ├── terraform.tfvars.sops        # encrypted, committed (created by bin/sops-init.sh)
@@ -30,6 +31,7 @@ Every resource in this module follows the SOC 2 baseline:
 | S3 Object Lock — compliance mode, 7y | `s3.tf` — audit-logs bucket |
 | SSE-KMS on every bucket | `s3.tf` — references `aws_kms_key.app` |
 | Public access block on every bucket | `s3.tf` — all four flags true |
+| Lifecycle cost guards | `s3.tf` — backups bucket expires dumps after `backup_retention_days` (90d default; deliberately NO Object Lock — the lifecycle IS the retention policy), and every lifecycle rule reaps incomplete multipart uploads after 7 days |
 
 ### Caveat: Object Lock is immutable
 
