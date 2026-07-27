@@ -237,7 +237,7 @@ async def _matching_items(
 # Punch-out session orchestration (live cXML/OCI round-trip)
 # ---------------------------------------------------------------------------
 # Adapter is selected from ``Organization.settings.punchout.provider`` (falls
-# back to ``AP_PUNCHOUT_PROVIDER``, default ``mock``). These helpers are pure
+# back to ``FEOH_PUNCHOUT_PROVIDER``, default ``mock``). These helpers are pure
 # orchestration — they build/flush rows on the passed session but NEVER commit
 # (the router owns the transaction + audit, mirroring the requisition flow).
 # ===========================================================================

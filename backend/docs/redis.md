@@ -16,7 +16,7 @@ docker compose up -d redis
 - **Host:** `localhost`
 - **Port:** `6379`
 - **No password** (development only)
-- Configurable via `AP_REDIS_URL` (default `redis://localhost:6379`)
+- Configurable via `FEOH_REDIS_URL` (default `redis://localhost:6379`)
 
 ## What's stored
 
@@ -25,11 +25,11 @@ Every key has a TTL — Redis is used as a transient store, not a database.
 | Key prefix | TTL | What it does |
 |---|---|---|
 | `token:blocked:<jti>` | remaining JWT lifetime | JWT blocklist. `POST /api/auth/logout` writes here; `get_current_user` checks every authenticated request. |
-| `mfa:email_otp:<user_id>` | `AP_MFA_EMAIL_OTP_TTL_SECONDS` (default 6 min) | Server-secret-keyed PBKDF2 digest of an outstanding email-OTP backup code — keyed (secret salt) so the low-entropy 6-digit code can't be brute-forced from the digest. Single-use. |
-| `sso:state:<state>` | `AP_SSO_STATE_TTL_SECONDS` (default 10 min) | OIDC state + nonce binding. CSRF + replay protection across the authorize/callback hop. |
+| `mfa:email_otp:<user_id>` | `FEOH_MFA_EMAIL_OTP_TTL_SECONDS` (default 6 min) | Server-secret-keyed PBKDF2 digest of an outstanding email-OTP backup code — keyed (secret salt) so the low-entropy 6-digit code can't be brute-forced from the digest. Single-use. |
+| `sso:state:<state>` | `FEOH_SSO_STATE_TTL_SECONDS` (default 10 min) | OIDC state + nonce binding. CSRF + replay protection across the authorize/callback hop. |
 | `sso:discovery:<sha256(url)>` | 1 day | Cached OIDC discovery document. |
 | `sso:jwks:<sha256(uri)>` | 1 day | Cached IdP JWKS for ID-token signature verification. |
-| `ratelimit:signup:<ip>` | sliding window | Self-service signup rate limiter (`AP_SIGNUP_RATE_LIMIT_PER_HOUR`). |
+| `ratelimit:signup:<ip>` | sliding window | Self-service signup rate limiter (`FEOH_SIGNUP_RATE_LIMIT_PER_HOUR`). |
 
 Code: `app/redis.py` (blocklist), `app/services/mfa.py` (email-OTP), `app/services/sso.py` (state, discovery, JWKS), `app/services/rate_limit.py` (signup).
 

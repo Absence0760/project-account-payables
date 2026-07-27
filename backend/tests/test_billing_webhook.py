@@ -578,7 +578,7 @@ async def test_boot_refuses_mock_provider_with_webhook_enabled(monkeypatch):
     monkeypatch.setattr(settings, "billing_webhook_enabled", True)
     monkeypatch.setattr(settings, "billing_provider", "mock")
 
-    with pytest.raises(RuntimeError, match="AP_BILLING_PROVIDER"):
+    with pytest.raises(RuntimeError, match="FEOH_BILLING_PROVIDER"):
         async with lifespan(object()):  # pragma: no cover - never enters body
             pass
 

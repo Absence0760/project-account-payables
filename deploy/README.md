@@ -17,7 +17,7 @@ The whole flow is four commands on a fresh VM:
 | File | Purpose |
 |---|---|
 | `bootstrap-vm.sh` | One-time, idempotent VM setup (Amazon Linux 2023): docker + compose plugin + sops + AWS CLI, 2 GB swap, nightly backup cron, IMDSv2 hop-limit fix. Other distros get the manual list. |
-| `compose.prod.yml` | Postgres (pgvector) + Redis (AOF) + API + Caddy. No DB host ports; S3 is real AWS. API healthcheck lets deploys verify themselves. `AP_DATABASE_URL`/`AP_REDIS_URL` are override seams for RDS/ElastiCache later. |
+| `compose.prod.yml` | Postgres (pgvector) + Redis (AOF) + API + Caddy. No DB host ports; S3 is real AWS. API healthcheck lets deploys verify themselves. `FEOH_DATABASE_URL`/`FEOH_REDIS_URL` are override seams for RDS/ElastiCache later. |
 | `Caddyfile` | TLS + static SPA + `api.<domain>` reverse proxy. Domains via env. |
 | `tenants.caddy.example` | Template for the per-VM tenant host list (`tenants.caddy`, gitignored). `add-tenant.sh` maintains it — manual edits rarely needed. |
 | `deploy.sh` | Preflight → pull → decrypt secrets → dockerized frontend build (no Node/pnpm on the VM) → backend build → migrate (control plane + all tenants) **before** rolling → `up -d --wait` → Caddy reload. Flags: `--no-pull`, `--backend-only`, `--frontend-only`. |

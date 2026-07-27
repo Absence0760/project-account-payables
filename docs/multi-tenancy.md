@@ -128,7 +128,7 @@ alembic upgrade head
 ### Single tenant DB
 
 ```bash
-AP_MIGRATE_TENANT=ap_acme alembic upgrade head
+FEOH_MIGRATE_TENANT=ap_acme alembic upgrade head
 ```
 
 ### All tenant DBs

@@ -4,7 +4,7 @@ The frontend renders an hCaptcha widget and posts the resulting response
 token along with the signup form. The backend posts that token to hCaptcha's
 siteverify endpoint with the secret key to confirm the user is human.
 
-If AP_HCAPTCHA_SECRET is empty (local dev), verification is skipped and any
+If FEOH_HCAPTCHA_SECRET is empty (local dev), verification is skipped and any
 token value is accepted — this keeps the flow testable without hitting the
 hCaptcha API from laptops.
 """

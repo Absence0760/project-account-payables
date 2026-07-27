@@ -479,7 +479,7 @@ an existing one. Three more admin-only endpoints
 to be adopted. Returns `{link_code, expires_in_minutes}`. The code is an HMAC-
 signed token (`backend/app/services/partner_link_token.py`, pure, modelled on the
 email-action token) over the caller's org id only — **no name/slug/PII** — with a
-short TTL (`AP_PARTNER_LINK_TTL_MINUTES`, default 30). A **503** when no signing
+short TTL (`FEOH_PARTNER_LINK_TTL_MINUTES`, default 30). A **503** when no signing
 key is configured (feature off). Issuing is audited PII-free
 (`partner.link_code_issued`).
 
@@ -534,7 +534,7 @@ admin then redeems it. Because the platform holds the signing key (sops + KMS in
 deployed envs; a NON-secret value committed in `.env.development`), a partner
 **cannot forge a code or aim it at an org that never consented** — an attach with
 no/garbage/forged code is rejected and no link is created. The key's presence is
-the single on/off knob (`AP_PARTNER_LINK_SIGNING_KEY`), fail-closed with no
+the single on/off knob (`FEOH_PARTNER_LINK_SIGNING_KEY`), fail-closed with no
 hardcoded fallback. The link is a control-plane write only; no migration was
 needed (the `parent_org_id` column already exists).
 

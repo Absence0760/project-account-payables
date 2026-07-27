@@ -21,13 +21,13 @@ Triage `$ARGUMENTS` with project-account-payables' `flake-doctor` agent and fix 
 
 2. **Bring up the stack** (the e2e run needs the real backend + DB — Playwright only manages the frontend):
    - `pnpm db:up` — docker-compose Postgres + Redis + MinIO.
-   - `pnpm seed` — `python scripts/seed.py`; creates the demo tenants (`acme`, `techflow`) and the `e2e<N>` tenants the worker fixture pins to (`AP_E2E_TENANT_COUNT`, default 4).
+   - `pnpm seed` — `python scripts/seed.py`; creates the demo tenants (`acme`, `techflow`) and the `e2e<N>` tenants the worker fixture pins to (`FEOH_E2E_TENANT_COUNT`, default 4).
    - Backend on :8000, from `backend/`:
      ```
      cd backend && source .venv/bin/activate && python main.py
      ```
      (`main.py` is the auto-reload dev entrypoint.) The shortcut for the whole web stack is `pnpm dev:all` (`db:up` then backend :8000 + frontend :7777 together).
-   - The **frontend (:7777) is owned by Playwright's `webServer` block** in `frontend/tests-e2e/playwright.config.ts` (it runs `pnpm dev`, or `vite preview` when `AP_E2E_USE_PREVIEW=true`), with `reuseExistingServer` locally — so let Playwright start it; don't double-bind :7777. The **backend (:8000) and DB are NOT managed by Playwright** and must be up first. baseURL is `<slug>.localhost:7777` (Chromium resolves `*.localhost` to 127.0.0.1, no `/etc/hosts` edits).
+   - The **frontend (:7777) is owned by Playwright's `webServer` block** in `frontend/tests-e2e/playwright.config.ts` (it runs `pnpm dev`, or `vite preview` when `FEOH_E2E_USE_PREVIEW=true`), with `reuseExistingServer` locally — so let Playwright start it; don't double-bind :7777. The **backend (:8000) and DB are NOT managed by Playwright** and must be up first. baseURL is `<slug>.localhost:7777` (Chromium resolves `*.localhost` to 127.0.0.1, no `/etc/hosts` edits).
    - Confirm the admin storageState exists at `frontend/tests-e2e/.auth/e2e1-admin.json`; if missing, run the Playwright auth setup project once so the authenticated specs have a session.
 
 3. **Delegate to the `flake-doctor` agent.** Spawn it with the resolved target as the **first sentence** of the prompt, e.g.:

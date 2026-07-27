@@ -110,7 +110,7 @@ misconfig surfaces loudly rather than returning a wrong rate).
 
 The dispatcher (`get_tax_rate_adapter`) resolves the provider from
 `Organization.settings.tax.rate_provider`, falling back to the platform-wide
-`AP_TAX_RATE_PROVIDER`, then `mock`.
+`FEOH_TAX_RATE_PROVIDER`, then `mock`.
 
 ## Persistence + report
 
@@ -140,8 +140,8 @@ reverse-charge, GST by component, withholding). Tenant-scoped via
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `AP_TAX_RATE_PROVIDER` | `mock` | Platform-wide tax-rate adapter (`mock` \| `avalara` \| `taxjar`). Per-tenant override: `Organization.settings.tax.rate_provider`. |
-| `AP_TAX_RATE_API_KEY` | (empty) | Platform key for a cloud rate provider. Empty for mock; set via sops in deployed envs. |
+| `FEOH_TAX_RATE_PROVIDER` | `mock` | Platform-wide tax-rate adapter (`mock` \| `avalara` \| `taxjar`). Per-tenant override: `Organization.settings.tax.rate_provider`. |
+| `FEOH_TAX_RATE_API_KEY` | (empty) | Platform key for a cloud rate provider. Empty for mock; set via sops in deployed envs. |
 
 ## Tests
 

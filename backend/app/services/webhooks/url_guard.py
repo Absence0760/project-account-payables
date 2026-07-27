@@ -24,7 +24,7 @@ socket connect. Pinning the checked IP for the connection would close it;
 re-resolving immediately before send is the accepted fix per issue #171. See
 ``backend/docs/public-api.md`` § Outbound webhooks.
 
-Dev escape hatch: ``AP_WEBHOOKS_ALLOW_PRIVATE_TARGETS=true`` skips only the
+Dev escape hatch: ``FEOH_WEBHOOKS_ALLOW_PRIVATE_TARGETS=true`` skips only the
 address checks (URL scheme/host shape is still enforced) so the delivery path
 can be exercised locally against 127.0.0.1. Defaults to ``false`` (blocking);
 never enable it in a deployed env.

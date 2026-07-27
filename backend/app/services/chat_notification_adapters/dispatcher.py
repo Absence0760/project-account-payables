@@ -2,7 +2,7 @@
 
 Mirrors `email_adapters/dispatcher.py`: a decorator registry plus a factory
 that resolves the provider from the **per-org** chat-notification settings
-(falling back to the platform `AP_CHAT_NOTIFICATION_PROVIDER` default `mock`).
+(falling back to the platform `FEOH_CHAT_NOTIFICATION_PROVIDER` default `mock`).
 An unknown provider key falls back to `mock` so a bad config can never raise
 into the notification chokepoint.
 """
@@ -30,7 +30,7 @@ def get_chat_notification_adapter(org_config: dict | None = None) -> ChatNotific
 
     ``org_config`` is the org's ``settings.chat_notifications`` dict (provider +
     webhook_url + events). When it omits a provider, the platform default
-    (`AP_CHAT_NOTIFICATION_PROVIDER`, default `mock`) is used. An unknown
+    (`FEOH_CHAT_NOTIFICATION_PROVIDER`, default `mock`) is used. An unknown
     provider falls back to `mock` — never raises.
     """
     org_config = org_config or {}

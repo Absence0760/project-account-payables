@@ -43,7 +43,7 @@ flow is unchanged.
 
 The token is minted **per intended approver** (same no-privilege-escalation
 property as the per-recipient email link). Tokens are only added when
-**`AP_EMAIL_ACTION_SIGNING_KEY` is set and the chat provider is `teams`**;
+**`FEOH_EMAIL_ACTION_SIGNING_KEY` is set and the chat provider is `teams`**;
 otherwise the card stays a plain (non-interactive) post.
 
 ## The inbound webhook
@@ -60,11 +60,11 @@ Two gates, layered, both fail closed:
 
 1. **Teams request signature.** A Teams **Outgoing Webhook** signs every POST as
    `Authorization: HMAC <base64(hmac-sha256 over the raw body)>` using a
-   base64-encoded shared **security token** (`AP_TEAMS_SECURITY_TOKEN`). We
+   base64-encoded shared **security token** (`FEOH_TEAMS_SECURITY_TOKEN`). We
    base64-decode the secret to get the HMAC key, recompute the digest over the
    raw bytes, and compare with a constant-time `hmac.compare_digest`. When Teams
    includes an `X-Teams-Request-Timestamp` header we additionally **reject a
-   timestamp more than `AP_TEAMS_REQUEST_MAX_AGE_SECONDS` (default 300s) from
+   timestamp more than `FEOH_TEAMS_REQUEST_MAX_AGE_SECONDS` (default 300s) from
    now** so a captured POST can't be replayed; the header is optional (Teams does
    not always send it), and when absent the single-use `jti` + the workflow state
    machine still bound replay. No secret configured → the feature is OFF and every
@@ -115,10 +115,10 @@ HMAC token(s). Never bank details, tax IDs, addresses, or payment-method numbers
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `AP_TEAMS_SECURITY_TOKEN` | (empty) | Teams Outgoing-Webhook **security token** (base64) for the interactivity-POST HMAC. **Empty → feature OFF**: every inbound POST rejected (fail-closed, no hardcoded fallback). NON-secret base64 dev value committed in `.env.development`; real secret via sops. The token's presence IS the on/off switch (mirrors `AP_SLACK_SIGNING_SECRET`). |
-| `AP_TEAMS_REQUEST_MAX_AGE_SECONDS` | `300` | Reject a Teams interactivity POST whose `X-Teams-Request-Timestamp` is more than this far from now (replay-window guard; only enforced when the header is present). |
-| `AP_EMAIL_ACTION_SIGNING_KEY` | (empty) | Reused to sign the action token (bound to the `teams` channel). Empty → no actions added. |
-| `AP_EMAIL_ACTION_TTL_HOURS` | `168` | Reused as the action token's validity window. |
+| `FEOH_TEAMS_SECURITY_TOKEN` | (empty) | Teams Outgoing-Webhook **security token** (base64) for the interactivity-POST HMAC. **Empty → feature OFF**: every inbound POST rejected (fail-closed, no hardcoded fallback). NON-secret base64 dev value committed in `.env.development`; real secret via sops. The token's presence IS the on/off switch (mirrors `FEOH_SLACK_SIGNING_SECRET`). |
+| `FEOH_TEAMS_REQUEST_MAX_AGE_SECONDS` | `300` | Reject a Teams interactivity POST whose `X-Teams-Request-Timestamp` is more than this far from now (replay-window guard; only enforced when the header is present). |
+| `FEOH_EMAIL_ACTION_SIGNING_KEY` | (empty) | Reused to sign the action token (bound to the `teams` channel). Empty → no actions added. |
+| `FEOH_EMAIL_ACTION_TTL_HOURS` | `168` | Reused as the action token's validity window. |
 
 The outbound side also needs the org to have its chat provider set to `teams`
 with a configured `webhook_url` on `Organization.settings.chat_notifications`
@@ -129,9 +129,9 @@ with a configured `webhook_url` on `Organization.settings.chat_notifications`
 
 1. In the Teams channel, add an **Outgoing Webhook**, point its callback URL at
    `https://<api-host>/api/approvals/teams/interactivity`, and copy the generated
-   **security token** into `AP_TEAMS_SECURITY_TOKEN` (sops). (Or use an Incoming
+   **security token** into `FEOH_TEAMS_SECURITY_TOKEN` (sops). (Or use an Incoming
    Webhook for the outbound card + an Outgoing Webhook for the action callback.)
-2. Set `AP_EMAIL_ACTION_SIGNING_KEY` (sops) if not already set for email / Slack
+2. Set `FEOH_EMAIL_ACTION_SIGNING_KEY` (sops) if not already set for email / Slack
    approval.
 
 No real Teams account is needed for tests — the test suite constructs

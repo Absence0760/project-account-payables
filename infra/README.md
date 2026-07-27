@@ -37,7 +37,7 @@ Every resource in this module follows the SOC 2 baseline:
 
 1. Create a new bucket with `object_lock_enabled = true` (add a `-locked` suffix to avoid the name cooldown).
 2. `aws s3 sync s3://old s3://new` to copy all objects across.
-3. Update the application's `AP_S3_BUCKET` (or equivalent) to the new name and deploy.
+3. Update the application's `FEOH_S3_BUCKET` (or equivalent) to the new name and deploy.
 4. Once retention on the new bucket is verified, schedule deletion of the old bucket.
 
 This migration path is also tracked under "Pending — needs a code change" in `../docs/soc2-readiness.md`.

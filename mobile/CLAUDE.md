@@ -179,7 +179,7 @@ The mobile app talks to the same FastAPI backend as the web frontend:
 - Auth: `POST /api/auth/login` → JWT stored in secure storage
 - **MFA**: `POST /api/auth/login` may return an **MFA challenge**
   (`{mfa_required: true, mfa_challenge_token, methods, must_enroll}`) instead of
-  a `TokenResponse` when `AP_MFA_ENABLED` is on and the user is enrolled /
+  a `TokenResponse` when `FEOH_MFA_ENABLED` is on and the user is enrolled /
   org-enforced. `AuthStore.login` returns a `LoginResult`
   (`success`/`mfaRequired`/`failure`); on `mfaRequired` the login screen pushes
   `MfaScreen`, which submits the code to `POST /api/auth/mfa/verify` (`totp` or

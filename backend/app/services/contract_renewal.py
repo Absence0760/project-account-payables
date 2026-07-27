@@ -29,7 +29,7 @@ and the ``offered`` status guard in ``discount_auto_trigger``.
 
 Mirrors the ``audit_log_shipper`` pattern: long-lived asyncio task started in
 ``main.lifespan``, fresh per-tenant engine, one tenant's failure logged but
-never halts the sweep. Disabled by default (``AP_CONTRACT_RENEWAL_ENABLED``).
+never halts the sweep. Disabled by default (``FEOH_CONTRACT_RENEWAL_ENABLED``).
 """
 
 from __future__ import annotations

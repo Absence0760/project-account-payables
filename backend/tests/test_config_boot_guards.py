@@ -18,7 +18,7 @@ _GOOD_KEY = "x" * 48
 
 
 def test_deployed_env_refuses_default_secret_key():
-    with pytest.raises(ValidationError, match="AP_SECRET_KEY"):
+    with pytest.raises(ValidationError, match="FEOH_SECRET_KEY"):
         Settings(
             environment="production",
             hcaptcha_secret="hc",
@@ -27,7 +27,7 @@ def test_deployed_env_refuses_default_secret_key():
 
 
 def test_deployed_env_refuses_too_short_secret_key():
-    with pytest.raises(ValidationError, match="AP_SECRET_KEY"):
+    with pytest.raises(ValidationError, match="FEOH_SECRET_KEY"):
         Settings(environment="production", hcaptcha_secret="hc", secret_key="short")
 
 
@@ -49,7 +49,7 @@ def test_local_dev_keeps_the_default_secret_key():
 def test_deployed_env_refuses_lithic_live_key_with_sandbox_on():
     # A live Lithic key + sandbox=True routes every call at the sandbox host:
     # cards "issue" but can't be charged. Refuse to boot pointed at the void.
-    with pytest.raises(ValidationError, match="AP_LITHIC_SANDBOX"):
+    with pytest.raises(ValidationError, match="FEOH_LITHIC_SANDBOX"):
         Settings(
             environment="production",
             hcaptcha_secret="hc",
@@ -71,7 +71,7 @@ def test_deployed_env_accepts_lithic_live_key_with_sandbox_off():
 
 
 def test_deployed_env_refuses_nium_creds_with_sandbox_on():
-    with pytest.raises(ValidationError, match="AP_NIUM_SANDBOX"):
+    with pytest.raises(ValidationError, match="FEOH_NIUM_SANDBOX"):
         Settings(
             environment="production",
             hcaptcha_secret="hc",

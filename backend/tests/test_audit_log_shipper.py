@@ -387,7 +387,7 @@ async def test_ship_tenant_batch_does_not_cross_tenants(realdb):
 
 
 async def test_ship_tenant_respects_batch_size(realdb):
-    """Only up to AP_AUDIT_SHIPPING_BATCH_SIZE rows ship per sweep; the
+    """Only up to FEOH_AUDIT_SHIPPING_BATCH_SIZE rows ship per sweep; the
     remainder stay unshipped for the next tick (oldest-first)."""
     marker = uuid.uuid4()
     ids = await _add_audit_rows(realdb, "a", 5, marker)

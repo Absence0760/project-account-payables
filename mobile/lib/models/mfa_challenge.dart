@@ -1,6 +1,6 @@
 /// The `MFAChallengeResponse` the backend returns from `POST /api/auth/login`
 /// when the password checks out but the user still has to clear a second
-/// factor (`AP_MFA_ENABLED=true` and the user is enrolled, or the org enforces
+/// factor (`FEOH_MFA_ENABLED=true` and the user is enrolled, or the org enforces
 /// MFA). The client trades [challengeToken] + a code for the real access token
 /// at `POST /api/auth/mfa/verify`.
 ///

@@ -6,7 +6,7 @@ disable; wrong-code rejected; and — the security-critical part — that the
 three token types (`vendor` access, `vendor_mfa_challenge`, employee
 `mfa_challenge`) stay strictly separate so there's no cross-auth leak.
 
-Unit-level: the tenant DB session is mocked. `AP_MFA_ENABLED` is forced on for
+Unit-level: the tenant DB session is mocked. `FEOH_MFA_ENABLED` is forced on for
 the flow tests via the `settings` object (the master switch the endpoints read).
 """
 
@@ -281,7 +281,7 @@ async def test_login_no_challenge_when_not_enrolled(mfa_on, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_login_skips_mfa_when_master_switch_off(monkeypatch):
-    """AP_MFA_ENABLED off → enrolled vendor still gets a plain token."""
+    """FEOH_MFA_ENABLED off → enrolled vendor still gets a plain token."""
     monkeypatch.setattr(settings, "mfa_enabled", False)
     vu = _vendor_user(hashed_password="x", mfa_secret=pyotp.random_base32(), mfa_enabled=True)
     db = _mock_db(vendor_user=vu)

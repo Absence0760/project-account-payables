@@ -312,9 +312,9 @@ Migration 0020 adds `scheduled_reports`. Rows:
 - `enabled`
 
 The runner (`services/scheduled_reports.run_scheduled_reports_loop`
-— wired into `main.lifespan`, gated by `AP_SCHEDULED_REPORTS_ENABLED`,
+— wired into `main.lifespan`, gated by `FEOH_SCHEDULED_REPORTS_ENABLED`,
 disabled by default so local dev / tests never email) ticks every
-`AP_SCHEDULED_REPORTS_TICK_SECONDS`. Each tick `run_scheduled_reports_once`
+`FEOH_SCHEDULED_REPORTS_TICK_SECONDS`. Each tick `run_scheduled_reports_once`
 fans out across every tenant DB (`_sweep_tenant`), calls `list_due_schedules`,
 then `execute_schedule` per due row — one tenant's failure never halts the
 sweep. Success bumps `next_run_at` forward by the cadence and clears the error;

@@ -43,10 +43,10 @@ MinIO connection is configured via environment variables in `backend/.env`:
 
 | Variable             | Default                 | Description              |
 |----------------------|-------------------------|--------------------------|
-| `AP_S3_ENDPOINT_URL` | `http://localhost:9000` | MinIO/S3 API endpoint    |
-| `AP_S3_ACCESS_KEY`   | `minioadmin`            | Access key (username)    |
-| `AP_S3_SECRET_KEY`   | `minioadmin`            | Secret key (password)    |
-| `AP_S3_BUCKET`       | `invoices`              | Bucket name for uploads  |
+| `FEOH_S3_ENDPOINT_URL` | `http://localhost:9000` | MinIO/S3 API endpoint    |
+| `FEOH_S3_ACCESS_KEY`   | `minioadmin`            | Access key (username)    |
+| `FEOH_S3_SECRET_KEY`   | `minioadmin`            | Secret key (password)    |
+| `FEOH_S3_BUCKET`       | `invoices`              | Bucket name for uploads  |
 
 These are loaded in `backend/app/config.py` via pydantic-settings.
 
@@ -115,10 +115,10 @@ s3.create_bucket(Bucket="invoices")
 In production, replace MinIO with AWS S3 by changing the environment variables:
 
 ```env
-AP_S3_ENDPOINT_URL=https://s3.amazonaws.com
-AP_S3_ACCESS_KEY=<your-aws-access-key>
-AP_S3_SECRET_KEY=<your-aws-secret-key>
-AP_S3_BUCKET=your-production-bucket
+FEOH_S3_ENDPOINT_URL=https://s3.amazonaws.com
+FEOH_S3_ACCESS_KEY=<your-aws-access-key>
+FEOH_S3_SECRET_KEY=<your-aws-secret-key>
+FEOH_S3_BUCKET=your-production-bucket
 ```
 
 No code changes are needed — `boto3` works identically with both MinIO and S3.

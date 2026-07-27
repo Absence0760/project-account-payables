@@ -100,7 +100,7 @@ async def assert_within_budget(control_db: AsyncSession, org: Organization) -> N
     invariant) — an indefinitely long lock is a worse bug than a small,
     self-correcting overshoot.
 
-    Budget ``0`` disables the cap (matches ``AP_MAX_CONCURRENT_SESSIONS=0``).
+    Budget ``0`` disables the cap (matches ``FEOH_MAX_CONCURRENT_SESSIONS=0``).
     """
     budget = _budget_for(org)
     if budget <= 0:

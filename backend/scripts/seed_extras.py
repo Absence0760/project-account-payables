@@ -386,7 +386,7 @@ async def seed_extras(session, org_id: uuid.UUID) -> dict[str, int]:
     # monthly templates (SaaS + lease), a quarterly active one, and a paused
     # one. `next_run_on` is set to a near-future date so the upcoming-schedule
     # preview + generate-now have a live period to project; the sweep itself is
-    # off by default (AP_RECURRING_INVOICES_ENABLED=false) so nothing fires in
+    # off by default (FEOH_RECURRING_INVOICES_ENABLED=false) so nothing fires in
     # local dev. Money is exact (Numeric(15, 2)).
     recurring_specs = [
         # (name, cadence, status, amount, gl_idx, day_of_period, terms)

@@ -3,8 +3,8 @@
 Fail-closed posture: every method that would touch Stripe raises
 ``BillingNotConfigured`` when no API key is present, so selecting this provider
 without a key can never silently no-op or fall back to a permissive path. The
-real secret arrives via sops (``AP_BILLING_STRIPE_API_KEY`` /
-``AP_BILLING_STRIPE_WEBHOOK_SECRET``) — there is NO hardcoded fallback.
+real secret arrives via sops (``FEOH_BILLING_STRIPE_API_KEY`` /
+``FEOH_BILLING_STRIPE_WEBHOOK_SECRET``) — there is NO hardcoded fallback.
 
 Implemented end-to-end against the Stripe REST API (key as HTTP-Basic username,
 form-encoded bodies, ``Idempotency-Key`` on every create so a retry can't
@@ -44,7 +44,7 @@ from app.services.webhook_security import extract_signature_header
 logger = logging.getLogger(__name__)
 
 # Default Stripe REST base. The dispatcher injects an override into config
-# (AP_BILLING_STRIPE_API_BASE) so a sandbox / test can repoint it; this constant
+# (FEOH_BILLING_STRIPE_API_BASE) so a sandbox / test can repoint it; this constant
 # is only the last-resort fallback when config carries no value.
 _DEFAULT_API_BASE = "https://api.stripe.com"
 

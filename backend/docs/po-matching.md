@@ -184,7 +184,7 @@ families (`financing_adapters`, `fx_adapters`, …):
   fixtures, no network/credential — the local-first default) and `generic` (an
   httpx skeleton that **fails closed** without a per-org `base_url` + `api_key`;
   no hardcoded secret). Registry via `@register_qms_adapter`; selected per-org via
-  `Organization.settings.qms.provider`, falling back to `AP_QMS_PROVIDER`
+  `Organization.settings.qms.provider`, falling back to `FEOH_QMS_PROVIDER`
   (default `mock`). Contract: `async fetch_inspections(*, since=None) ->
   list[QMSInspectionRecord]` + `async test_connection() -> bool`.
 - **Sync** (`services/qms_sync.py`): `sync_tenant_inspections` fetches records,
@@ -197,8 +197,8 @@ families (`financing_adapters`, `fx_adapters`, …):
   SAVEPOINT) for invoices referencing the affected POs so a fresh quality verdict
   re-gates the 4-way match — never fails the sync.
 - **Sweep** (`run_qms_sync_loop`): a long-lived asyncio task (mirrors
-  `contract_renewal`) that sweeps every tenant DB on `AP_QMS_SYNC_INTERVAL_SECONDS`.
-  Disabled by default (`AP_QMS_SYNC_ENABLED=false`); orgs without a `settings.qms`
+  `contract_renewal`) that sweeps every tenant DB on `FEOH_QMS_SYNC_INTERVAL_SECONDS`.
+  Disabled by default (`FEOH_QMS_SYNC_ENABLED=false`); orgs without a `settings.qms`
   block are skipped while the platform provider is `mock`.
 - **Manual trigger**: `POST /api/inspections/sync` (admin / ap_manager) runs one
   sync for the current tenant from `Organization.settings.qms`, returning

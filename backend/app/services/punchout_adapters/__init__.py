@@ -4,7 +4,7 @@ Mirrors ``peppol_adapters``: a registry decorator, an in-process ``mock``
 default (local-first, no supplier/network) and a real ``cxml`` adapter that
 builds/parses real cXML and fails closed (``punchout_not_configured``) when the
 supplier shared secret is absent. Selection via
-``Organization.settings.punchout.provider`` → ``AP_PUNCHOUT_PROVIDER`` (default
+``Organization.settings.punchout.provider`` → ``FEOH_PUNCHOUT_PROVIDER`` (default
 ``mock``). See ``docs/procurement-catalogs.md``.
 """
 

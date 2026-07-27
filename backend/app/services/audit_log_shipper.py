@@ -3,7 +3,7 @@
 Every tick:
 
   1. Enumerate tenant DBs from the control plane.
-  2. For each tenant, SELECT up to `AP_AUDIT_SHIPPING_BATCH_SIZE`
+  2. For each tenant, SELECT up to `FEOH_AUDIT_SHIPPING_BATCH_SIZE`
      `audit_log` rows with `shipped_at IS NULL`, oldest first.
   3. Fan the batch out to every configured adapter (CloudWatch, S3, …).
      All adapters must succeed before we mark the rows shipped.
@@ -61,7 +61,7 @@ def _parse_providers(raw: str) -> list[str]:
 
 
 def _build_adapters() -> list[AuditShippingAdapter]:
-    """Instantiate every adapter listed in AP_AUDIT_SHIPPING_PROVIDERS.
+    """Instantiate every adapter listed in FEOH_AUDIT_SHIPPING_PROVIDERS.
 
     Split out so tests can patch it. Returns [] if nothing is configured,
     in which case the shipper skips the tick entirely.
@@ -185,7 +185,7 @@ async def _ship_tenant(db_name: str, adapters: list[AuditShippingAdapter]) -> in
 
 async def run_shipper_loop() -> None:
     """Long-lived loop, started in `main.lifespan` on app startup and
-    cancelled on shutdown. Sleeps `AP_AUDIT_SHIPPING_INTERVAL_SECONDS`
+    cancelled on shutdown. Sleeps `FEOH_AUDIT_SHIPPING_INTERVAL_SECONDS`
     between sweeps.
     """
     interval = settings.audit_shipping_interval_seconds

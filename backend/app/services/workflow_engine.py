@@ -228,7 +228,7 @@ async def transition_invoice(
     # pull surface). Same chokepoint as the notification hook — keyed off the
     # resulting status so every path that converges on `approved`/`paid` emits
     # exactly once. `emit_event` opens its own control-plane session, never
-    # raises into here, and is a silent no-op when AP_WEBHOOKS_ENABLED is off.
+    # raises into here, and is a silent no-op when FEOH_WEBHOOKS_ENABLED is off.
     try:
         await _maybe_emit_webhook(invoice, target_status)
     except Exception:  # noqa: BLE001 — a webhook emit must never break the transition

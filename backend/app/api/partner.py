@@ -290,10 +290,10 @@ async def mint_link_code(
     Handing the code to a partner is the org's act of CONSENT to being adopted —
     the partner can do nothing with it until then. The code carries only the
     caller's org id under an HMAC signature; it expires in
-    ``AP_PARTNER_LINK_TTL_MINUTES`` and is burned on first redeem.
+    ``FEOH_PARTNER_LINK_TTL_MINUTES`` and is burned on first redeem.
 
     A 503 (feature off) when no signing key is configured — distinct from a 4xx
-    so the operator knows to set ``AP_PARTNER_LINK_SIGNING_KEY``, not that they
+    so the operator knows to set ``FEOH_PARTNER_LINK_SIGNING_KEY``, not that they
     did something wrong. Issuing is audited (PII-free) into the org's own trail.
     """
     code = build_link_code(

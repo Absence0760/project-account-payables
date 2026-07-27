@@ -104,7 +104,7 @@ def test_extract_token(to, expected):
 
 
 def test_verify_signature_fails_closed_when_secret_unset_in_non_debug():
-    """Production deploys that forget to set AP_EMAIL_INTAKE_SIGNING_SECRET
+    """Production deploys that forget to set FEOH_EMAIL_INTAKE_SIGNING_SECRET
     must reject every webhook, not accept everything."""
     from app.services import email_intake
 
@@ -117,7 +117,7 @@ def test_verify_signature_fails_closed_when_secret_unset_in_non_debug():
 
 
 def test_verify_signature_skips_when_secret_unset_in_debug():
-    """Dev convenience: AP_DEBUG=true allows running locally with no secret."""
+    """Dev convenience: FEOH_DEBUG=true allows running locally with no secret."""
     from app.services import email_intake
 
     with (

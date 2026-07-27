@@ -25,7 +25,7 @@ TENANT DB ONLY: ``expenses`` / ``expense_reports`` are tenant-scoped (they do
 not exist on the control-plane DB). Both halves of the upgrade are gated on the
 table existing, so the revision no-ops on the control DB and fans out to every
 tenant DB via ``scripts/migrate_all_tenants.py`` (or
-``AP_MIGRATE_TENANT=ap_<slug> alembic upgrade head`` for one). Fresh tenants get
+``FEOH_MIGRATE_TENANT=ap_<slug> alembic upgrade head`` for one). Fresh tenants get
 the shape from ``create_all`` in ``tenant_provisioning`` (the columns are on the
 models) — this revision only backfills existing tenant DBs.
 

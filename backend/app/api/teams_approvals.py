@@ -15,7 +15,7 @@ Two gates, layered, both fail closed (the exact same posture as the Slack path):
 
 1. **Teams request signature** — a Teams Outgoing Webhook signs every POST as
    ``Authorization: HMAC <base64(hmac-sha256 over the raw body)>`` using a
-   base64-encoded shared **security token** (``AP_TEAMS_SECURITY_TOKEN``). We
+   base64-encoded shared **security token** (``FEOH_TEAMS_SECURITY_TOKEN``). We
    base64-decode the secret, recompute the digest over the raw bytes, and compare
    constant-time. When Teams includes an ``X-Teams-Request-Timestamp`` header we
    also reject stale timestamps (> ``teams_request_max_age_seconds``) to stop

@@ -15,7 +15,7 @@ import { SERVICES, skipUnlessReachable } from '../fixtures/services';
  *     welcome email (temp password) → first sign-in → forced password change →
  *     dashboard. Gated on Mailpit (the real outbound sink); ALSO needs the
  *     backend on the `smtp` adapter pointed at Mailpit:
- *        pnpm mail:up && AP_EMAIL_PROVIDER=smtp AP_SMTP_PORT=1025 pnpm dev:backend
+ *        pnpm mail:up && FEOH_EMAIL_PROVIDER=smtp FEOH_SMTP_PORT=1025 pnpm dev:backend
  *     If the backend is on `console` the verification email never arrives and
  *     the happy-path test fails loudly (a setup error, never a silent pass).
  *

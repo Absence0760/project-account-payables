@@ -36,7 +36,7 @@ Every org has one reporting currency. It is resolved by
 2. `Organization.settings.payments.home_currency` — legacy field the payment
    path already reads (so existing orgs keep working with no settings change).
 3. `Organization.settings.invoice_defaults.currency`.
-4. `AP_REPORTING_CURRENCY_DEFAULT` (config default `USD`) — platform last resort.
+4. `FEOH_REPORTING_CURRENCY_DEFAULT` (config default `USD`) — platform last resort.
 
 The result is always an uppercase ISO 4217 code; a misconfigured org degrades to
 the default rather than 500-ing a dashboard.
@@ -160,7 +160,7 @@ rollups work with no cloud account (local-first).
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `AP_REPORTING_CURRENCY_DEFAULT` | `USD` | Platform last-resort reporting currency when an org sets none. |
+| `FEOH_REPORTING_CURRENCY_DEFAULT` | `USD` | Platform last-resort reporting currency when an org sets none. |
 
 ## Tests
 

@@ -44,7 +44,7 @@ Create Date: 2026-07-01
 
 Tenant DB only (gated on the ``invoices`` table, so it no-ops on the control
 plane and fans out to every tenant via ``scripts/migrate_all_tenants.py`` — or
-``AP_MIGRATE_TENANT=ap_<slug> alembic upgrade head`` for one). Fresh tenants
+``FEOH_MIGRATE_TENANT=ap_<slug> alembic upgrade head`` for one). Fresh tenants
 get the shape from ``create_all`` in
 ``tenant_provisioning._create_tenant_tables`` (every index here is declared on
 the owning model — ``Invoice.__table_args__``, or ``index=True`` on the

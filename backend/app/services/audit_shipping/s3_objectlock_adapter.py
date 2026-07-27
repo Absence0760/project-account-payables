@@ -38,7 +38,7 @@ class S3ObjectLockAdapter(AuditShippingAdapter):
     """Ships audit rows as gzipped JSONL into an Object-Lock-enabled bucket.
 
     Config:
-        bucket_name:  Override AP_AUDIT_SHIPPING_S3_BUCKET.
+        bucket_name:  Override FEOH_AUDIT_SHIPPING_S3_BUCKET.
         region_name:  AWS region (default us-east-1).
         key_prefix:   Optional prefix under which all objects are written
                       (default: "audit").
@@ -51,11 +51,11 @@ class S3ObjectLockAdapter(AuditShippingAdapter):
         self.bucket = config.get("bucket_name") or settings.audit_shipping_s3_bucket
         if not self.bucket:
             raise ValueError(
-                "S3ObjectLockAdapter requires AP_AUDIT_SHIPPING_S3_BUCKET or bucket_name in config."
+                "S3ObjectLockAdapter requires FEOH_AUDIT_SHIPPING_S3_BUCKET or bucket_name in config."
             )
         region = config.get("region_name") or "us-east-1"
         self.key_prefix = config.get("key_prefix", "audit").strip("/")
-        # endpoint_url=None → real S3; set AP_AWS_ENDPOINT_URL for LocalStack.
+        # endpoint_url=None → real S3; set FEOH_AWS_ENDPOINT_URL for LocalStack.
         self._client = boto3.client(
             "s3", region_name=region, endpoint_url=settings.aws_endpoint_url or None
         )

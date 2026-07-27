@@ -34,7 +34,7 @@ def get_enrichment_adapter(enrichment_config: dict | None) -> VendorEnrichmentAd
             ...provider-specific fields...
         }
 
-    Resolution order: per-org ``provider`` → ``AP_VENDOR_ENRICHMENT_PROVIDER``
+    Resolution order: per-org ``provider`` → ``FEOH_VENDOR_ENRICHMENT_PROVIDER``
     env default (``mock``). An unknown provider name falls back to ``mock`` so a
     typo can never break enrichment — but the real providers still **fail closed**
     on a missing ``api_key`` at call time (no hardcoded fallback secret).

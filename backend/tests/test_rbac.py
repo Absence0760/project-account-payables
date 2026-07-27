@@ -131,7 +131,7 @@ NO_AUTH_REQUIRED = {
     ("GET", "/public-config"),
     # v1_openapi.py — the published OpenAPI contract + Swagger UI for the public
     # /api/v1 surface. Public-to-read like any API doc page; 404s when
-    # AP_PUBLIC_API_ENABLED is off (see _ensure_enabled). No tenant data.
+    # FEOH_PUBLIC_API_ENABLED is off (see _ensure_enabled). No tenant data.
     ("GET", "/v1/openapi.json"),
     ("GET", "/v1/docs"),
 }

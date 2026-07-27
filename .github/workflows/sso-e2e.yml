@@ -80,16 +80,16 @@ jobs:
           --health-retries=5
 
     env:
-      AP_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/account_payables
-      AP_REDIS_URL: redis://localhost:6379
-      AP_SECRET_KEY: ci-test-secret
-      AP_DEBUG: "true"
-      AP_PUBLIC_URL: http://localhost:7777
-      AP_TENANT_URL_TEMPLATE: "http://{slug}.localhost:7777"
-      AP_RATE_LIMIT_ENABLED: "false"
-      AP_MAX_CONCURRENT_SESSIONS: "100"
-      AP_E2E_TENANT_COUNT: "1"
-      AP_E2E_USE_PREVIEW: "true"
+      FEOH_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/account_payables
+      FEOH_REDIS_URL: redis://localhost:6379
+      FEOH_SECRET_KEY: ci-test-secret
+      FEOH_DEBUG: "true"
+      FEOH_PUBLIC_URL: http://localhost:7777
+      FEOH_TENANT_URL_TEMPLATE: "http://{slug}.localhost:7777"
+      FEOH_RATE_LIMIT_ENABLED: "false"
+      FEOH_MAX_CONCURRENT_SESSIONS: "100"
+      FEOH_E2E_TENANT_COUNT: "1"
+      FEOH_E2E_USE_PREVIEW: "true"
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -208,7 +208,7 @@ jobs:
           PLAYWRIGHT_WORKERS: "1"
           # Keycloak is up on purpose here — an unreachable IdP is a hard fail,
           # never a silent skip that would drop SAML coverage.
-          AP_REQUIRE_INTEGRATION: "1"
+          FEOH_REQUIRE_INTEGRATION: "1"
         run: pnpm exec playwright test --config=tests-e2e/playwright.config.ts saml/
 
       - name: Upload Playwright report on failure

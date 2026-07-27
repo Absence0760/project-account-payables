@@ -162,7 +162,7 @@ async def test_ship_once_continues_after_one_tenant_fails():
 
 @pytest.mark.asyncio
 async def test_ship_once_propagates_unknown_provider_instead_of_shipping_nothing():
-    """A typo'd `AP_AUDIT_SHIPPING_PROVIDERS` entry must blow up the sweep
+    """A typo'd `FEOH_AUDIT_SHIPPING_PROVIDERS` entry must blow up the sweep
     loudly (logged at ERROR each tick, rows stay unshipped) — not silently
     resolve to the mock adapter and mark rows shipped while nothing reaches
     the real sink (issue #164)."""
@@ -312,7 +312,7 @@ async def test_lifespan_does_not_start_shipper_when_disabled(monkeypatch):
 
     import app.main as main_mod
 
-    # Lifespan now refuses to boot in non-debug mode when AP_SECRET_KEY is at
+    # Lifespan now refuses to boot in non-debug mode when FEOH_SECRET_KEY is at
     # its insecure default. The test inherits the dev defaults, so flip the
     # debug bypass on for this lifespan exercise.
     monkeypatch.setattr(main_mod.settings, "debug", True)
@@ -345,15 +345,15 @@ async def test_lifespan_does_not_start_shipper_when_disabled(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_lifespan_refuses_boot_with_unregistered_shipping_provider(monkeypatch):
-    """A deployed env (AP_DEBUG=false) with AP_AUDIT_SHIPPING_ENABLED=true and
-    a typo'd AP_AUDIT_SHIPPING_PROVIDERS entry must refuse to boot rather than
+    """A deployed env (FEOH_DEBUG=false) with FEOH_AUDIT_SHIPPING_ENABLED=true and
+    a typo'd FEOH_AUDIT_SHIPPING_PROVIDERS entry must refuse to boot rather than
     silently degrade every tick to the no-op mock adapter (issue #164)."""
     import app.main as main_mod
 
     # Clear every OTHER boot guard so only the audit-shipping one is under
     # test — the committed .env.development enables several of them
-    # (AP_PEPPOL_INBOUND_ENABLED, AP_WEBHOOKS_ALLOW_PRIVATE_TARGETS) for local
-    # dev convenience, which would otherwise fire first under AP_DEBUG=false.
+    # (FEOH_PEPPOL_INBOUND_ENABLED, FEOH_WEBHOOKS_ALLOW_PRIVATE_TARGETS) for local
+    # dev convenience, which would otherwise fire first under FEOH_DEBUG=false.
     monkeypatch.setattr(main_mod.settings, "debug", False)
     monkeypatch.setattr(main_mod.settings, "secret_key", "a-real-non-default-secret-key")
     monkeypatch.setattr(main_mod.settings, "email_intake_domain", "")
@@ -497,7 +497,7 @@ def test_s3_objectlock_requires_bucket():
     from app.services.audit_shipping import s3_objectlock_adapter as s3_mod
 
     with patch("boto3.client"), patch.object(s3_mod.settings, "audit_shipping_s3_bucket", None):
-        with pytest.raises(ValueError, match="AP_AUDIT_SHIPPING_S3_BUCKET"):
+        with pytest.raises(ValueError, match="FEOH_AUDIT_SHIPPING_S3_BUCKET"):
             s3_mod.S3ObjectLockAdapter({})
 
 

@@ -76,7 +76,7 @@ async def portal_login(
     header scopes the lookup — a vendor user in one tenant cannot authenticate
     against another tenant's portal.
 
-    When the vendor has MFA enrolled (and the `AP_MFA_ENABLED` master switch is
+    When the vendor has MFA enrolled (and the `FEOH_MFA_ENABLED` master switch is
     on), returns a short-lived `PortalMFAChallengeResponse` instead of the
     access token; the browser then completes `/portal/auth/mfa/challenge`."""
     await check_rate_limit("portal_auth_login", request, limit=10, window_seconds=60)
@@ -94,7 +94,7 @@ async def portal_login(
     vu.last_login_at = datetime.now(UTC)
     await db.commit()
 
-    # MFA gate. The master switch (`AP_MFA_ENABLED`) wins — if MFA is off at the
+    # MFA gate. The master switch (`FEOH_MFA_ENABLED`) wins — if MFA is off at the
     # platform level we skip even an enrolled vendor, keeping local-dev login
     # painless. MFA is opt-in per vendor user (no org-wide enforcement yet).
     if settings.mfa_enabled and vu.mfa_enabled and vu.mfa_secret:
@@ -113,7 +113,7 @@ async def portal_logout(authorization: str = Header()):
     token = authorization.removeprefix("Bearer ")
     payload = decode_token(token)
     # Only a vendor-portal token may be revoked here. Without this guard the
-    # endpoint accepted ANY JWT signed with AP_SECRET_KEY — including an employee
+    # endpoint accepted ANY JWT signed with FEOH_SECRET_KEY — including an employee
     # `typ=user` token — and added its jti to the shared Redis blocklist, letting
     # the public portal-logout route revoke an employee session. Mirror the
     # symmetric `typ` check `get_current_vendor_user` enforces on every other

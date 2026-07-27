@@ -94,7 +94,7 @@ returns 403 and writes an `auth.sso.login.failure` audit row with
   different host/port than what's in `settings.sso.discovery_url`. Keep both on
   `localhost:8088`.
 - **Login session expired** on callback — the OIDC `state` lives in Redis with a
-  10-minute TTL (`AP_SSO_STATE_TTL_SECONDS`). Make sure `pnpm db:up` (Redis) is
+  10-minute TTL (`FEOH_SSO_STATE_TTL_SECONDS`). Make sure `pnpm db:up` (Redis) is
   running and you completed the flow within the window.
 - **Keycloak slow to accept connections** — first boot pulls the image and
   imports the realm; give it ~10-15s. `pnpm idp:logs` shows progress; it's ready

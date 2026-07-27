@@ -5,7 +5,7 @@ failing subscription ``active → past_due → canceled`` and we learn about eac
 hop via the inbound billing webhook (``api/billing_webhook.py``). This sweep is
 the **backstop** for when a terminal provider webhook never arrives: a
 subscription that has sat ``past_due`` longer than the grace window
-(``AP_BILLING_DUNNING_GRACE_DAYS``) is flagged ``canceled`` with an append-only
+(``FEOH_BILLING_DUNNING_GRACE_DAYS``) is flagged ``canceled`` with an append-only
 audit row.
 
 Money-path boundary (important)
@@ -29,7 +29,7 @@ Only ``past_due`` rows are touched, and canceling one moves it out of
 
 Mirrors the other sweeps: long-lived asyncio task started in ``main.lifespan``,
 one row's failure logged but never halts the sweep. Disabled by default
-(``AP_BILLING_DUNNING_ENABLED``). See ``backend/docs/billing.md``.
+(``FEOH_BILLING_DUNNING_ENABLED``). See ``backend/docs/billing.md``.
 """
 
 from __future__ import annotations

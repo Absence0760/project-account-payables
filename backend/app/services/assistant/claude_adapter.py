@@ -3,11 +3,11 @@
 Selected only when an API key is configured. House style: a raw ``httpx`` POST
 to ``https://api.anthropic.com/v1/messages`` (matches
 ``extraction_adapters/claude_vision.py``), not the SDK. The model id resolves
-from config (``AP_ASSISTANT_MODEL`` → falls back to ``AP_EXTRACTION_MODEL``,
+from config (``FEOH_ASSISTANT_MODEL`` → falls back to ``FEOH_EXTRACTION_MODEL``,
 the claude-opus-4-8 family) — never hardcoded. Adaptive thinking per house
 conventions for the Opus 4.x family.
 
-The manual tool-use loop is capped at ``AP_ASSISTANT_MAX_TOOL_HOPS`` to bound
+The manual tool-use loop is capped at ``FEOH_ASSISTANT_MAX_TOOL_HOPS`` to bound
 cost. Each ``tool_use`` block is executed via the orchestrator's tenant-bound,
 audited ``run_tool`` closure — the adapter never touches the DB.
 """

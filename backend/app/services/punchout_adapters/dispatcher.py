@@ -3,7 +3,7 @@
 Mirrors ``peppol_adapters/dispatcher.py``: a registry decorator
 (``@register_punchout_adapter``) + a ``get_punchout_adapter`` that picks the
 provider from the per-org ``Organization.settings.punchout`` block, falling
-back to the process-level ``AP_PUNCHOUT_PROVIDER`` (default ``mock``), and to
+back to the process-level ``FEOH_PUNCHOUT_PROVIDER`` (default ``mock``), and to
 ``mock`` when the provider is unknown — so a missed config never 500s the start
 path and local dev needs no supplier credential.
 """

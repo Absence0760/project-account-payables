@@ -2,7 +2,7 @@
 
 ``mock`` is the local-first DEFAULT (deterministic, no network/credential);
 ``stripe_billing`` is a fail-closed skeleton (live key via sops, no fallback).
-Select via ``AP_BILLING_PROVIDER`` or the per-org
+Select via ``FEOH_BILLING_PROVIDER`` or the per-org
 ``Organization.settings.billing.provider`` override. See ``backend/docs/billing.md``.
 """
 

@@ -7,7 +7,7 @@ Public surface:
 * ``process_delivery`` / ``deliver_due`` — sign + POST a delivery with bounded
   retries + exponential backoff, dead-lettering after exhaustion.
 * ``run_webhook_delivery_loop`` — the background retry sweep (gated behind
-  ``AP_WEBHOOKS_ENABLED``).
+  ``FEOH_WEBHOOKS_ENABLED``).
 * ``generate_signing_secret`` / ``sign_payload`` — the per-subscription secret
   + the HMAC-SHA256 signature reused from ``webhook_security``.
 """

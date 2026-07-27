@@ -82,7 +82,7 @@ Every authenticated `/api/v1` request is rate-limited **per API key** by the
 existing Redis sliding-window limiter (`services/rate_limit.py`), keyed on the
 `api_key_id` (not per-IP, not per-org — one key flooding the API can't lock out
 another key, even within the same org). The cap is
-`AP_PUBLIC_API_RATE_LIMIT_PER_MINUTE` (default **120 req/min**) over a fixed
+`FEOH_PUBLIC_API_RATE_LIMIT_PER_MINUTE` (default **120 req/min**) over a fixed
 **60-second** window. A key over its cap gets an
 **HTTP `429 Too Many Requests`** with a **`Retry-After`** header (seconds until
 the oldest in-window request ages out).
@@ -98,13 +98,13 @@ a **valid** key that is over its limit, never that a key exists.
 Redis unreachable — is swallowed with a PII-free warning (the key id only) and
 the request proceeds. A Redis blip must not deny otherwise-valid authenticated
 API access; this matches the best-effort posture of the adjacent usage meter.
-The limiter is also gated by the global `AP_RATE_LIMIT_ENABLED` master switch
+The limiter is also gated by the global `FEOH_RATE_LIMIT_ENABLED` master switch
 (CI's e2e suite flips it off).
 
 ### Failure mode
 
 Every API-key failure (missing header, unknown prefix, bad digest, revoked key,
-or the platform kill switch `AP_PUBLIC_API_ENABLED=false`) returns the **same
+or the platform kill switch `FEOH_PUBLIC_API_ENABLED=false`) returns the **same
 opaque `401 {"detail": "Invalid API key"}`** with `WWW-Authenticate: ApiKey`.
 Distinct messages would let a caller enumerate which keys/prefixes exist. A
 foreign / missing invoice id on `GET /api/v1/invoices/{id}` is a `404` — and a
@@ -155,7 +155,7 @@ machine-readable contract integrators code (and generate clients) against.
 | `GET` | `/api/v1/docs` | Swagger UI rendered against that spec (human-readable). |
 
 Both are **public** (no `X-API-Key` needed to *read the contract*) but both
-respect the `AP_PUBLIC_API_ENABLED` kill switch: when the public API is off they
+respect the `FEOH_PUBLIC_API_ENABLED` kill switch: when the public API is off they
 `404` — the surface, and therefore its contract, is simply not there. The 404
 (rather than a distinct "disabled") matches the opaque-failure posture of the
 data routes.
@@ -171,7 +171,7 @@ internal-only Pydantic model can't leak into the public contract via an orphan.
 What the document carries:
 
 - `info.version: "v1"` — the contract version (tracks the path prefix).
-- A `servers` entry built from `AP_API_PUBLIC_URL`, so generated clients target
+- A `servers` entry built from `FEOH_API_PUBLIC_URL`, so generated clients target
   the right base URL.
 - A single `ApiKeyAuth` security scheme (`apiKey` in the `X-API-Key` header),
   applied **globally** — every operation shows the auth requirement.
@@ -210,7 +210,7 @@ build against it safely:
   deprecated version is supported for **at least 6 months** after the
   announcement before removal, with the successor version available for the whole
   window so integrators can migrate.
-- **The kill switch is not a deprecation.** `AP_PUBLIC_API_ENABLED=false` is an
+- **The kill switch is not a deprecation.** `FEOH_PUBLIC_API_ENABLED=false` is an
   operational stop (incident response), not a contract change; it 404s the whole
   surface immediately and uniformly.
 
@@ -218,8 +218,8 @@ build against it safely:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `AP_PUBLIC_API_ENABLED` | `true` | Platform kill switch for the `/api/v1` surface — the read routes **and** the published spec/docs (`/api/v1/openapi.json`, `/api/v1/docs`). The surface is auth-gated regardless; when `false` every key fails closed with the opaque 401 and the spec/docs 404. No secret — API keys are minted per-org and stored hashed. |
-| `AP_PUBLIC_API_RATE_LIMIT_PER_MINUTE` | `120` | Per-API-key request cap on `/api/v1`, over a fixed 60-second window, enforced by the Redis sliding-window limiter keyed on `api_key_id`. A key over its cap gets a 429 + `Retry-After`. Checked after the key authenticates (a bad key still gets the opaque 401, never a 429). Fails open on a Redis outage; gated by the global `AP_RATE_LIMIT_ENABLED` master switch. No secret. |
+| `FEOH_PUBLIC_API_ENABLED` | `true` | Platform kill switch for the `/api/v1` surface — the read routes **and** the published spec/docs (`/api/v1/openapi.json`, `/api/v1/docs`). The surface is auth-gated regardless; when `false` every key fails closed with the opaque 401 and the spec/docs 404. No secret — API keys are minted per-org and stored hashed. |
+| `FEOH_PUBLIC_API_RATE_LIMIT_PER_MINUTE` | `120` | Per-API-key request cap on `/api/v1`, over a fixed 60-second window, enforced by the Redis sliding-window limiter keyed on `api_key_id`. A key over its cap gets a 429 + `Retry-After`. Checked after the key authenticates (a bad key still gets the opaque 401, never a 429). Fails open on a Redis outage; gated by the global `FEOH_RATE_LIMIT_ENABLED` master switch. No secret. |
 
 There is no API-key secret in config or `.env` — each key is generated at mint
 time and only its hash persists, so the secrets-via-sops / no-hardcoded-fallback
@@ -326,7 +326,7 @@ PII-free — invoice/exception metadata only, no bank/tax/PAN fields.
   tenant-scoped), inserts one `WebhookDelivery(status=pending)` per matching
   active subscription (deduped on `(subscription_id, event_id)`), then kicks off
   a fire-and-forget immediate delivery attempt on the running loop. **Never
-  raises into the caller** and is a silent no-op when `AP_WEBHOOKS_ENABLED` is
+  raises into the caller** and is a silent no-op when `FEOH_WEBHOOKS_ENABLED` is
   off (same best-effort contract as `notification_dispatch.notify_event`).
 - **deliver** (`delivery.process_delivery`) — signs the byte-identical frozen
   payload, POSTs via `httpx` (10 s timeout), classifies the result. `2xx` →
@@ -335,7 +335,7 @@ PII-free — invoice/exception metadata only, no bank/tax/PAN fields.
   (`30s · 2^(n-1)`); once exhausted → `dead` (dead-letter). A transport error
   (timeout / refused) is a failed attempt with a null `response_code`.
 - **retry sweep** (`delivery.run_webhook_delivery_loop`) — background loop, gated
-  behind `AP_WEBHOOKS_ENABLED` (OFF by default), re-attempts every due
+  behind `FEOH_WEBHOOKS_ENABLED` (OFF by default), re-attempts every due
   `pending`/`failed` delivery. The durable backstop for retries; the immediate
   emit attempt handles the happy path. Local-first: delivery is an in-process
   `httpx` POST — no cloud queue.
@@ -368,7 +368,7 @@ silent partial coverage):
 Each caller keeps its own dedupe-precheck (different uniqueness rules), so the
 helper never double-creates; it owns only the construct → flush → emit tail.
 Like the invoice-status emit, it never raises into the caller and is a silent
-no-op when `AP_WEBHOOKS_ENABLED` is off — a webhook failure can't break
+no-op when `FEOH_WEBHOOKS_ENABLED` is off — a webhook failure can't break
 exception creation or the invoice mutation that triggered it.
 
 ### Target-URL SSRF guard
@@ -402,13 +402,13 @@ is judged the same way, and IPv4-mapped IPv6 (`::ffff:10.0.0.1`) is unwrapped
 and judged as its embedded IPv4 address. A host that fails to resolve is
 rejected (fail-closed) at create time and refused at send time.
 
-**Escape hatch (local-first dev only):** `AP_WEBHOOKS_ALLOW_PRIVATE_TARGETS`
+**Escape hatch (local-first dev only):** `FEOH_WEBHOOKS_ALLOW_PRIVATE_TARGETS`
 (default `false` = blocking) skips only the address checks — scheme/host shape
 is still enforced — so the delivery path can be exercised against `127.0.0.1`
 (e.g. a local sink) under `pnpm dev`. The committed `backend/.env.development`
 sets it `true`; deployed envs must leave it at the safe default — and this is
 enforced, not just documented: `app/main.py::lifespan` **refuses to boot** with
-the flag on when `AP_DEBUG=false` (same fail-fast block as the secret-key /
+the flag on when `FEOH_DEBUG=false` (same fail-fast block as the secret-key /
 billing-webhook guards).
 
 **Residual risk:** the actual connection is opened by `httpx`, which performs
@@ -436,9 +436,9 @@ writes a PII-free audit row (`webhook_subscription.created/updated/deleted`,
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `AP_WEBHOOKS_ENABLED` | `false` | Master switch for outbound webhooks — gates BOTH `emit_event` (OFF → silent no-op, no outbound HTTP) and the background retry/delivery sweep. OFF by default so a fresh clone / `pnpm dev` never makes outbound calls. Flip on in deployed envs. No secret — each subscription's signing secret is generated at create time and stored on the row. |
-| `AP_WEBHOOKS_DELIVERY_INTERVAL_SECONDS` | `60` | Retry-sweep tick interval. |
-| `AP_WEBHOOKS_ALLOW_PRIVATE_TARGETS` | `false` | SSRF-guard escape hatch — `true` lets a target URL resolve to a private/loopback address (local-first dev of the delivery path against `127.0.0.1` only; the committed `.env.development` sets it). The safe default blocks non-public targets at create/update AND again before every dispatch. Never enable in a deployed env. See [Target-URL SSRF guard](#target-url-ssrf-guard). |
+| `FEOH_WEBHOOKS_ENABLED` | `false` | Master switch for outbound webhooks — gates BOTH `emit_event` (OFF → silent no-op, no outbound HTTP) and the background retry/delivery sweep. OFF by default so a fresh clone / `pnpm dev` never makes outbound calls. Flip on in deployed envs. No secret — each subscription's signing secret is generated at create time and stored on the row. |
+| `FEOH_WEBHOOKS_DELIVERY_INTERVAL_SECONDS` | `60` | Retry-sweep tick interval. |
+| `FEOH_WEBHOOKS_ALLOW_PRIVATE_TARGETS` | `false` | SSRF-guard escape hatch — `true` lets a target URL resolve to a private/loopback address (local-first dev of the delivery path against `127.0.0.1` only; the committed `.env.development` sets it). The safe default blocks non-public targets at create/update AND again before every dispatch. Never enable in a deployed env. See [Target-URL SSRF guard](#target-url-ssrf-guard). |
 
 ## Deferred
 

@@ -67,14 +67,14 @@ employee flow (`docs/authentication.md` § MFA) but scoped to `VendorUser` + the
 `typ=vendor` JWT. Reuses the shared TOTP primitives in `services/mfa.py` —
 secret generation, provisioning URI, QR, and `verify_totp` (±1 step skew).
 
-- **Master switch.** `AP_MFA_ENABLED` (default `false` for local dev) gates the
+- **Master switch.** `FEOH_MFA_ENABLED` (default `false` for local dev) gates the
   whole feature, exactly like employee MFA. With it off, an enrolled vendor
   still logs in with just a password (no challenge). MFA is **opt-in per vendor
   user**; there is no org-wide enforcement for vendors yet.
 - **Enrollment.** `POST /mfa/enroll` mints a *candidate* secret + QR data URL and
   returns the secret in plaintext (manual entry). The candidate is parked in
   Redis (`mfa:vendor_pending_enroll:<vendor_user_id>`,
-  `AP_MFA_ENROLL_PENDING_TTL_SECONDS`) — **nothing is written to
+  `FEOH_MFA_ENROLL_PENDING_TTL_SECONDS`) — **nothing is written to
   `vendor_users`** until `POST /mfa/verify` confirms a valid code, which is the
   only place `mfa_secret`/`mfa_enabled`/`mfa_enrolled_at` are set. That way an
   abandoned enrollment can never leave the supplier without the factor they
@@ -93,7 +93,7 @@ secret generation, provisioning URI, QR, and `verify_totp` (±1 step skew).
   failure writes a PII-free `portal.mfa.step_up.failure` audit row carrying
   only the operation name. `POST /mfa/disable` rides the same throttle +
   audit. Without both, the credential check is a silent, unlimited oracle.
-- **Login challenge.** When `AP_MFA_ENABLED` is on and the vendor is enrolled,
+- **Login challenge.** When `FEOH_MFA_ENABLED` is on and the vendor is enrolled,
   `POST /login` returns `PortalMFAChallengeResponse` (`{mfa_required, mfa_challenge_token,
   methods: ["totp", "email"]}`) instead of the access token. The browser submits the code
   to `POST /mfa/challenge` with `method` (`totp` default | `email`), which verifies and
@@ -106,7 +106,7 @@ secret generation, provisioning URI, QR, and `verify_totp` (±1 step skew).
   outbound email adapter (`console` in local dev — local-first, no cloud). The
   code's SHA-256 lives in Redis under a **distinct** keyspace
   (`mfa:vendor_email_otp:<vendor_user_id>`, separate from the employee
-  `mfa:email_otp:` prefix) with the `AP_MFA_EMAIL_OTP_TTL_SECONDS` TTL,
+  `mfa:email_otp:` prefix) with the `FEOH_MFA_EMAIL_OTP_TTL_SECONDS` TTL,
   single-use. The vendor then submits it to `POST /mfa/challenge` with
   `method="email"`. The backup is gated on the vendor having actually enrolled
   TOTP (`mfa_enabled` + `mfa_secret`) — it's a fallback to the authenticator, not
@@ -381,8 +381,8 @@ show a "pending AP approval" banner (read from `GET /portal/company`'s
 - [x] In-app per-invoice chat between vendor and AP team
 - [x] Notification preferences (email-on-paid, email-on-rejected) — per-portal-user, vendor-controlled; wired into the `transition_invoice` dispatch chokepoint
 - [x] Virtual card viewing (secure, single-use reveal token) — `GET /portal/cards/{token}` consumes a one-time `CardRevealToken` atomically (`UPDATE … WHERE used_at IS NULL … RETURNING`), committed before the provider call; see *Single-use virtual-card reveal* above
-- [x] MFA (TOTP) for portal users (migration 0053; opt-in per vendor user, gated by `AP_MFA_ENABLED`)
-- [x] MFA email-OTP backup factor for portal users (Redis-only, no migration; on-demand via `POST /portal/auth/mfa/challenge/email`, sent through the email adapter, gated by `AP_MFA_ENABLED`)
+- [x] MFA (TOTP) for portal users (migration 0053; opt-in per vendor user, gated by `FEOH_MFA_ENABLED`)
+- [x] MFA email-OTP backup factor for portal users (Redis-only, no migration; on-demand via `POST /portal/auth/mfa/challenge/email`, sent through the email adapter, gated by `FEOH_MFA_ENABLED`)
 
 ## Phase 3 (deferred)
 

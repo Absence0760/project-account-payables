@@ -190,7 +190,7 @@ test.describe('matching tenant isolation', () => {
 		// into the other tenant in a throwaway context (read-only — no writes to
 		// its DB) and confirm the PO number is absent.
 		// Use the always-seeded `acme` tenant as the "other" side. The dynamic
-		// `e2e<N>` neighbours are only present when AP_E2E_TENANT_COUNT > 1,
+		// `e2e<N>` neighbours are only present when FEOH_E2E_TENANT_COUNT > 1,
 		// which is NOT the case on CI shards (TENANT_COUNT=1 → only e2e1).
 		// `acme` + `techflow` are always seeded regardless of TENANT_COUNT.
 		const otherSlug = 'acme';

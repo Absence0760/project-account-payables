@@ -1,4 +1,4 @@
-"""ERP adapter base-URL overrides (AP_ERP_*_API_BASE / AP_ERP_D365_TOKEN_URL).
+"""ERP adapter base-URL overrides (FEOH_ERP_*_API_BASE / FEOH_ERP_D365_TOKEN_URL).
 
 The three real ERP adapters must honour the operator-controlled settings that
 point them at the local fake ERP container (backend/docker-compose.yml

@@ -16,7 +16,7 @@ Two entry points:
     org that has a QMS configured. Mirrors ``contract_renewal.run_renewal_loop``:
     long-lived asyncio task started in ``main.lifespan``, fresh per-tenant
     engine, one tenant's failure logged but never halting the sweep. Disabled
-    by default (``AP_QMS_SYNC_ENABLED``).
+    by default (``FEOH_QMS_SYNC_ENABLED``).
 
 Idempotency: the upsert key is ``(organization_id, inspection_number)``. A
 re-run updates the existing row's result / quantities / notes / dates in place
@@ -280,7 +280,7 @@ async def run_qms_sync_once(*, since: datetime | None = None) -> QMSSyncResult:
     for org_id, db_name, settings_blob in tenants:
         qms_config = await _org_qms_config(settings_blob)
         # Skip orgs that have not opted in. A platform provider override
-        # (AP_QMS_PROVIDER != "mock") opts every org in with the default config.
+        # (FEOH_QMS_PROVIDER != "mock") opts every org in with the default config.
         if qms_config is None:
             if settings.qms_provider == "mock":
                 continue

@@ -40,7 +40,7 @@ def get_tax_rate_adapter(tax_config: dict | None) -> TaxRateAdapter:
 
     cfg = dict(tax_config or {})
     # Per-org `rate_provider` wins; otherwise fall back to the platform-wide
-    # default (AP_TAX_RATE_PROVIDER). Mock when neither names a real provider.
+    # default (FEOH_TAX_RATE_PROVIDER). Mock when neither names a real provider.
     provider = (cfg.get("rate_provider") or settings.tax_rate_provider or "mock").lower()
     # Surface the platform API key to a cloud adapter when the org didn't set
     # its own (kept out of logs; the adapter only reads it).

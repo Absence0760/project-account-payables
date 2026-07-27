@@ -76,7 +76,7 @@ Auth endpoints do **not** require the `X-Tenant-Slug` header.
 
 ## MFA
 
-TOTP-based two-factor with email-OTP backup. Master switch `AP_MFA_ENABLED` (default `false` for local dev). See [`docs/authentication.md`](../../docs/authentication.md) § MFA for the full flow.
+TOTP-based two-factor with email-OTP backup. Master switch `FEOH_MFA_ENABLED` (default `false` for local dev). See [`docs/authentication.md`](../../docs/authentication.md) § MFA for the full flow.
 
 | Method | Path                              | Roles | Description |
 |--------|-----------------------------------|-------|-------------|
@@ -224,7 +224,7 @@ surface.
 
 Per-record-class retention windows on `Organization.settings.retention`
 (configurable, not hardcoded). The enforcement sweep is `services/retention_sweep.py`
-(disabled by default behind `AP_RETENTION_ENABLED`). See `retention.md`.
+(disabled by default behind `FEOH_RETENTION_ENABLED`). See `retention.md`.
 
 | Method | Path                       | Roles | Description |
 |--------|----------------------------|-------|-------------|
@@ -242,7 +242,7 @@ See [`access-reviews.md`](access-reviews.md).
 
 | Method | Path                              | Roles | Description |
 |--------|-----------------------------------|-------|-------------|
-| `GET`  | `/api/access-reviews`             | admin/cfo | Computed review list. Each user: `user_id`, `full_name`, `email`, `roles`, `last_privileged_action_at`, `dormant`, `days_since`. DORMANT when last mutating action is older than `AP_ACCESS_REVIEW_DORMANT_DAYS` (default 90) or never acted. Sorted dormant-first. Inactive users excluded. Writes an `access_review.viewed` row. |
+| `GET`  | `/api/access-reviews`             | admin/cfo | Computed review list. Each user: `user_id`, `full_name`, `email`, `roles`, `last_privileged_action_at`, `dormant`, `days_since`. DORMANT when last mutating action is older than `FEOH_ACCESS_REVIEW_DORMANT_DAYS` (default 90) or never acted. Sorted dormant-first. Inactive users excluded. Writes an `access_review.viewed` row. |
 | `POST` | `/api/access-reviews/acknowledge` | admin/cfo | Records review completion for the period: writes an `access_review.completed` audit row + stamps `Organization.settings.access_review.{last_completed_at,last_completed_by}` (control plane). Idempotent-friendly (re-stamps). |
 
 ## Workflow Definitions
@@ -487,7 +487,7 @@ Inbound email turns provider attachments into invoices. The public webhook is pr
 ## Example: full curl flow (MFA off)
 
 ```bash
-# Login (no tenant header needed). When AP_MFA_ENABLED=true and the user is
+# Login (no tenant header needed). When FEOH_MFA_ENABLED=true and the user is
 # enrolled, the response is an MFAChallengeResponse instead — see
 # docs/authentication.md § MFA for the verify flow.
 TOKEN=$(curl -s -X POST http://localhost:8000/api/auth/login \

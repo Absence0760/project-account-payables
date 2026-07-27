@@ -94,12 +94,12 @@ Via compose (opt-in `erp` profile, host port **12112** → container 8080):
 docker compose -f backend/docker-compose.yml --profile erp up -d fake-erp
 ```
 
-Point the backend at it with the `AP_ERP_*_API_BASE` overrides in
+Point the backend at it with the `FEOH_ERP_*_API_BASE` overrides in
 `backend/.env.development`:
 
 ```
-AP_ERP_MERGE_API_BASE=http://localhost:12112/merge/api/accounting/v1
-AP_ERP_NETSUITE_API_BASE=http://localhost:12112/netsuite/services/rest/record/v1
-AP_ERP_D365_API_BASE=http://localhost:12112/d365
-AP_ERP_D365_TOKEN_URL=http://localhost:12112/d365/oauth2/token
+FEOH_ERP_MERGE_API_BASE=http://localhost:12112/merge/api/accounting/v1
+FEOH_ERP_NETSUITE_API_BASE=http://localhost:12112/netsuite/services/rest/record/v1
+FEOH_ERP_D365_API_BASE=http://localhost:12112/d365
+FEOH_ERP_D365_TOKEN_URL=http://localhost:12112/d365/oauth2/token
 ```

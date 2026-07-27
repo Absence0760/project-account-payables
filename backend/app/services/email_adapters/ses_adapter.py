@@ -28,7 +28,7 @@ class SesAdapter(EmailAdapter):
         super().__init__(config)
         region = config.get("region") or "us-east-1"
         # boto3 is sync — run each call in a thread to stay off the event loop.
-        # endpoint_url=None → real AWS SES; set AP_AWS_ENDPOINT_URL for LocalStack.
+        # endpoint_url=None → real AWS SES; set FEOH_AWS_ENDPOINT_URL for LocalStack.
         self._client = boto3.client(
             "ses", region_name=region, endpoint_url=settings.aws_endpoint_url or None
         )

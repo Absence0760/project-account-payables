@@ -23,7 +23,7 @@ reconciliation nightmare or a regulatory incident on your rails.
   **URL path** (no JWT) — so path + signature are the only trust. 204 on every
   rejection.
 - **The reconciler backstop.** If my webhook never arrives, the platform re-polls
-  status after `AP_PAYMENT_RECONCILE_AFTER_MINUTES` — and that re-poll must be
+  status after `FEOH_PAYMENT_RECONCILE_AFTER_MINUTES` — and that re-poll must be
   idempotent with a late webhook (no double-completion).
 - **FX is locked once.** For an international payment the rate is fetched exactly
   once at submission and persisted (`fx_locked_at`); it must never silently

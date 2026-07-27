@@ -47,7 +47,7 @@ def _safe_filename(name: str | None) -> str:
 
 
 def _get_client():
-    # Empty AP_S3_ENDPOINT_URL targets real AWS S3; empty access keys defer
+    # Empty FEOH_S3_ENDPOINT_URL targets real AWS S3; empty access keys defer
     # to boto3's default credential chain (instance profile / env vars) —
     # how deployed environments authenticate. The committed dev defaults
     # (localhost MinIO + minioadmin) keep the local-first behaviour.

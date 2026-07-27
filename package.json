@@ -33,7 +33,7 @@
 		"saml:seed": "cd backend && python scripts/enable_keycloak_saml.py",
 		"scim:seed": "cd backend && python scripts/enable_authentik_scim.py",
 
-		"//-- aws --": "LocalStack :4566 (opt-in aws profile) emulating SQS/SES/CloudWatch/S3-ObjectLock; point the backend at it via AP_AWS_ENDPOINT_URL. Docs: docs/local-aws-localstack.md.",
+		"//-- aws --": "LocalStack :4566 (opt-in aws profile) emulating SQS/SES/CloudWatch/S3-ObjectLock; point the backend at it via FEOH_AWS_ENDPOINT_URL. Docs: docs/local-aws-localstack.md.",
 		"aws:up": "cd backend && docker compose --profile aws up -d localstack",
 		"aws:down": "cd backend && docker compose stop localstack",
 		"aws:logs": "cd backend && docker compose logs -f localstack",
@@ -49,7 +49,7 @@
 		"stripe:down": "cd backend && docker compose stop stripe-mock",
 		"stripe:logs": "cd backend && docker compose logs -f stripe-mock",
 
-		"//-- mail --": "Mailpit (opt-in mail profile): SMTP sink :1025 + web inbox :8025 for the smtp email adapter (AP_EMAIL_PROVIDER=smtp). Docs: docs/local-email-mailpit.md.",
+		"//-- mail --": "Mailpit (opt-in mail profile): SMTP sink :1025 + web inbox :8025 for the smtp email adapter (FEOH_EMAIL_PROVIDER=smtp). Docs: docs/local-email-mailpit.md.",
 		"mail:up": "cd backend && docker compose --profile mail up -d mailpit",
 		"mail:down": "cd backend && docker compose stop mailpit",
 		"mail:logs": "cd backend && docker compose logs -f mailpit",

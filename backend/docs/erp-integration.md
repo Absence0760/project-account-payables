@@ -747,10 +747,10 @@ carry committed, non-secret local-dev values in `backend/.env.development`:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `AP_ERP_MERGE_API_BASE` | `https://api.merge.dev/api/accounting/v1` | Merge.dev API base. Dev value: `http://localhost:12112/merge/api/accounting/v1`. |
-| `AP_ERP_NETSUITE_API_BASE` | (empty) | Empty → the per-account URL derived from `account_id`; set → used verbatim. Dev value: `http://localhost:12112/netsuite/services/rest/record/v1`. |
-| `AP_ERP_D365_API_BASE` | (empty) | Empty → the admin-config `base_url` + SSRF guard; set → used verbatim. Dev value: `http://localhost:12112/d365`. |
-| `AP_ERP_D365_TOKEN_URL` | (empty) | Empty → `https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token`. Dev value: `http://localhost:12112/d365/oauth2/token`. |
+| `FEOH_ERP_MERGE_API_BASE` | `https://api.merge.dev/api/accounting/v1` | Merge.dev API base. Dev value: `http://localhost:12112/merge/api/accounting/v1`. |
+| `FEOH_ERP_NETSUITE_API_BASE` | (empty) | Empty → the per-account URL derived from `account_id`; set → used verbatim. Dev value: `http://localhost:12112/netsuite/services/rest/record/v1`. |
+| `FEOH_ERP_D365_API_BASE` | (empty) | Empty → the admin-config `base_url` + SSRF guard; set → used verbatim. Dev value: `http://localhost:12112/d365`. |
+| `FEOH_ERP_D365_TOKEN_URL` | (empty) | Empty → `https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token`. Dev value: `http://localhost:12112/d365/oauth2/token`. |
 
 **Trust model:** these vars are process-level and operator-controlled
 (TRUSTED), so they bypass the SSRF guard that screens *tenant-admin-supplied*

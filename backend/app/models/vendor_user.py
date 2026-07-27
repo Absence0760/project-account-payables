@@ -58,7 +58,7 @@ class VendorUser(Base, TimestampMixin):
     # populated during enrollment and only treated as "active" once
     # `mfa_enabled` flips true (after the vendor verifies a code). The pending
     # secret stays around so the user can re-scan without restarting enrollment.
-    # MFA stays opt-in per vendor user and is gated by the `AP_MFA_ENABLED`
+    # MFA stays opt-in per vendor user and is gated by the `FEOH_MFA_ENABLED`
     # master switch, exactly like employee MFA. See docs/supplier-portal.md.
     mfa_secret: Mapped[str | None] = mapped_column(String(64))
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

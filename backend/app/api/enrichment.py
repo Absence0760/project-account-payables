@@ -695,7 +695,7 @@ async def enrich_vendor(
 
     Pluggable adapter family (``services/enrichment_adapters/``); the provider is
     chosen per-org via ``Organization.settings.enrichment.provider`` →
-    ``AP_VENDOR_ENRICHMENT_PROVIDER`` (default ``mock`` — deterministic, no
+    ``FEOH_VENDOR_ENRICHMENT_PROVIDER`` (default ``mock`` — deterministic, no
     network/credential, the local-first default). The real providers fail closed
     without a per-org ``api_key`` (no hardcoded fallback) → 422.
 

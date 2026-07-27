@@ -27,7 +27,7 @@
 }
 
 # Backend API. The frontend is built with PUBLIC_API_URL=https://{$API_DOMAIN};
-# CORS for the tenant subdomains is the backend's job (AP_CORS_PRODUCTION_DOMAIN).
+# CORS for the tenant subdomains is the backend's job (FEOH_CORS_PRODUCTION_DOMAIN).
 {$API_DOMAIN} {
 	reverse_proxy api:8000
 }

@@ -64,14 +64,14 @@ Redis holds the JWT blocklist, MFA OTPs, SSO state, and signup rate-limit counte
      --restore-time '2026-04-19T14:30:00Z'
    ```
 3. Validate the restore (row counts, sample records).
-4. **Switch the app over** — update `AP_DATABASE_URL` to the restored instance's endpoint and redeploy. Or rename DNS / RDS endpoints if available.
+4. **Switch the app over** — update `FEOH_DATABASE_URL` to the restored instance's endpoint and redeploy. Or rename DNS / RDS endpoints if available.
 5. Decommission the old instance after a 24-hour soak.
 
 ### Scenario B — RDS instance lost entirely
 
 1. List available automated snapshots: `aws rds describe-db-snapshots --db-instance-identifier ap-prod`.
 2. Restore the latest: `aws rds restore-db-instance-from-db-snapshot --db-instance-identifier ap-prod --db-snapshot-identifier <snap-id>`.
-3. Update `AP_DATABASE_URL` and redeploy.
+3. Update `FEOH_DATABASE_URL` and redeploy.
 4. Run `python scripts/migrate_all_tenants.py` against the restored instance to ensure schema is current.
 
 ### Scenario C — accidental S3 object deletion

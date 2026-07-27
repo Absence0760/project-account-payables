@@ -54,20 +54,20 @@ sops backend/.env.sops
 ```
 
 Required values for prod:
-- `AP_SECRET_KEY` — generate with `openssl rand -hex 32`
-- `AP_DATABASE_URL` — RDS endpoint from Terraform outputs
-- `AP_REDIS_URL` — ElastiCache endpoint
-- `AP_S3_BUCKET` — Terraform-provisioned invoice bucket
-- `AP_ANTHROPIC_API_KEY` — your Claude Vision key
-- `AP_MFA_ENABLED=true`
-- `AP_HSTS_ENABLED=true`
-- `AP_AUDIT_SHIPPING_ENABLED=true`
-- `AP_AUDIT_SHIPPING_PROVIDERS=cloudwatch,s3_objectlock`
-- `AP_AUDIT_SHIPPING_S3_BUCKET` — from Terraform
-- `AP_EMAIL_PROVIDER=ses`
-- `AP_EMAIL_INTAKE_DOMAIN=ap.yourcompany.com` (see
+- `FEOH_SECRET_KEY` — generate with `openssl rand -hex 32`
+- `FEOH_DATABASE_URL` — RDS endpoint from Terraform outputs
+- `FEOH_REDIS_URL` — ElastiCache endpoint
+- `FEOH_S3_BUCKET` — Terraform-provisioned invoice bucket
+- `FEOH_ANTHROPIC_API_KEY` — your Claude Vision key
+- `FEOH_MFA_ENABLED=true`
+- `FEOH_HSTS_ENABLED=true`
+- `FEOH_AUDIT_SHIPPING_ENABLED=true`
+- `FEOH_AUDIT_SHIPPING_PROVIDERS=cloudwatch,s3_objectlock`
+- `FEOH_AUDIT_SHIPPING_S3_BUCKET` — from Terraform
+- `FEOH_EMAIL_PROVIDER=ses`
+- `FEOH_EMAIL_INTAKE_DOMAIN=ap.yourcompany.com` (see
   `backend/docs/email-intake.md`)
-- `AP_EMAIL_INTAKE_SIGNING_SECRET` — generate with `openssl rand -hex 32`
+- `FEOH_EMAIL_INTAKE_SIGNING_SECRET` — generate with `openssl rand -hex 32`
 
 ## Step 4 — `terraform apply`
 

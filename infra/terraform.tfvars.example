@@ -40,5 +40,5 @@ audit_logs_bucket_name    = "account-payables-audit-logs-prod-REPLACE"
 #   - github_repo (for OIDC role trust policy)
 #   - domain_name / route53_zone_id
 #
-# Mirror the AP_* env vars in backend/.env.example — anything in there that
+# Mirror the FEOH_* env vars in backend/.env.example — anything in there that
 # is a real secret belongs in this file once deployed to AWS.

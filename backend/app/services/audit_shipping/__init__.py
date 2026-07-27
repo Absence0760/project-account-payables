@@ -11,7 +11,7 @@ To add a new adapter:
         async def ship(self, rows): ...
         async def test_connection(self) -> bool: ...
 
-Then add its name to `AP_AUDIT_SHIPPING_PROVIDERS` (comma-separated).
+Then add its name to `FEOH_AUDIT_SHIPPING_PROVIDERS` (comma-separated).
 """
 
 # Importing adapter modules registers them with the dispatcher. Keep

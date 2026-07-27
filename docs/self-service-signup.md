@@ -39,9 +39,9 @@ End-to-end flow for anonymous visitors to provision their own workspace. Landing
 
 ## Abuse mitigations
 
-- **Captcha**: hCaptcha on `POST /signup/start`. Skipped locally when `AP_HCAPTCHA_SECRET` is empty — but a **deployed** env (`AP_ENVIRONMENT` not in `development`/`test`/`ci`/…) **refuses to boot** with the secret empty, so the gate can't silently fail open in production. The empty-secret skip logs at WARNING.
-- **Rate limit (per IP)**: Redis sliding window keyed by IP+endpoint. `AP_SIGNUP_RATE_LIMIT_PER_HOUR` (default 5) caps `/signup/start` and `/signup/complete`; `/signup/slug-check` has its own higher cap (`AP_SLUG_CHECK_RATE_LIMIT_PER_HOUR`, default 120) so it can't be scripted for namespace enumeration / control-plane DB amplification.
-- **Rate limit (per email)**: a second limiter keyed on the target address (`AP_SIGNUP_EMAIL_RATE_LIMIT_PER_HOUR`, default 3) caps verification-email volume to one victim — the per-IP limit alone can't stop an attacker rotating IPs to email-bomb an address. A "resend" also **replaces** any prior un-consumed verification for that email, so the table can't grow unbounded per address.
+- **Captcha**: hCaptcha on `POST /signup/start`. Skipped locally when `FEOH_HCAPTCHA_SECRET` is empty — but a **deployed** env (`FEOH_ENVIRONMENT` not in `development`/`test`/`ci`/…) **refuses to boot** with the secret empty, so the gate can't silently fail open in production. The empty-secret skip logs at WARNING.
+- **Rate limit (per IP)**: Redis sliding window keyed by IP+endpoint. `FEOH_SIGNUP_RATE_LIMIT_PER_HOUR` (default 5) caps `/signup/start` and `/signup/complete`; `/signup/slug-check` has its own higher cap (`FEOH_SLUG_CHECK_RATE_LIMIT_PER_HOUR`, default 120) so it can't be scripted for namespace enumeration / control-plane DB amplification.
+- **Rate limit (per email)**: a second limiter keyed on the target address (`FEOH_SIGNUP_EMAIL_RATE_LIMIT_PER_HOUR`, default 3) caps verification-email volume to one victim — the per-IP limit alone can't stop an attacker rotating IPs to email-bomb an address. A "resend" also **replaces** any prior un-consumed verification for that email, so the table can't grow unbounded per address.
 - **Email verification**: no resources are provisioned until the user proves inbox access by clicking the link. Stolen email addresses don't result in tenants.
 - **Single-use, race-safe tokens**: `/signup/complete` selects the verification row `FOR UPDATE`, so two concurrent completes for one token can't both pass the consumed-check and double-provision. Every non-actionable token state (missing / consumed / expired) returns the **same** 410 + message, so the response can't be used to tell a token that never existed from one that did.
 - **Slug squatting**: slugs are only locked when `/complete` runs. Abandoned `/start` submissions do not reserve the namespace.
@@ -52,7 +52,7 @@ End-to-end flow for anonymous visitors to provision their own workspace. Landing
 
 ## Email
 
-Pluggable via `AP_EMAIL_PROVIDER`:
+Pluggable via `FEOH_EMAIL_PROVIDER`:
 
 - `console` (default for local dev) — logs the full message to stdout.
 - `ses` — AWS SES via boto3. Requires the sending domain to be verified and the runtime IAM role to have `ses:SendEmail`.
@@ -63,17 +63,17 @@ Adding a provider: copy `app/services/email_adapters/console_adapter.py`, implem
 
 | Var | Default | Notes |
 |-----|---------|-------|
-| `AP_EMAIL_PROVIDER` | `console` | `console` or `ses` |
-| `AP_EMAIL_FROM` | `no-reply@localhost` | Verified SES sender in prod |
-| `AP_AWS_SES_REGION` | `us-east-1` | Only used by the SES adapter |
-| `AP_PUBLIC_URL` | `http://localhost:7777` | Frontend URL — used to build verification links |
-| `AP_TENANT_URL_TEMPLATE` | `http://{slug}.localhost:7777` | `{slug}` is substituted in the welcome email |
-| `AP_ENVIRONMENT` | `development` | Deployment discriminator. Any value outside `development`/`dev`/`local`/`test`/`ci` is "deployed" and turns on the production safety guards (e.g. captcha must be configured). |
-| `AP_HCAPTCHA_SECRET` | *(empty)* | Empty skips verification — OK for local dev; a deployed env refuses to boot when empty. |
-| `AP_HCAPTCHA_SITEKEY` | *(empty)* | Exposed to the frontend via `/api/public-config` |
-| `AP_SIGNUP_RATE_LIMIT_PER_HOUR` | `5` | Per-IP cap on `/signup/start` (and `/signup/complete`) |
-| `AP_SIGNUP_EMAIL_RATE_LIMIT_PER_HOUR` | `3` | Per-email cap on verification sends (anti email-bombing) |
-| `AP_SLUG_CHECK_RATE_LIMIT_PER_HOUR` | `120` | Per-IP cap on `/signup/slug-check` (anti-enumeration) |
+| `FEOH_EMAIL_PROVIDER` | `console` | `console` or `ses` |
+| `FEOH_EMAIL_FROM` | `no-reply@localhost` | Verified SES sender in prod |
+| `FEOH_AWS_SES_REGION` | `us-east-1` | Only used by the SES adapter |
+| `FEOH_PUBLIC_URL` | `http://localhost:7777` | Frontend URL — used to build verification links |
+| `FEOH_TENANT_URL_TEMPLATE` | `http://{slug}.localhost:7777` | `{slug}` is substituted in the welcome email |
+| `FEOH_ENVIRONMENT` | `development` | Deployment discriminator. Any value outside `development`/`dev`/`local`/`test`/`ci` is "deployed" and turns on the production safety guards (e.g. captcha must be configured). |
+| `FEOH_HCAPTCHA_SECRET` | *(empty)* | Empty skips verification — OK for local dev; a deployed env refuses to boot when empty. |
+| `FEOH_HCAPTCHA_SITEKEY` | *(empty)* | Exposed to the frontend via `/api/public-config` |
+| `FEOH_SIGNUP_RATE_LIMIT_PER_HOUR` | `5` | Per-IP cap on `/signup/start` (and `/signup/complete`) |
+| `FEOH_SIGNUP_EMAIL_RATE_LIMIT_PER_HOUR` | `3` | Per-email cap on verification sends (anti email-bombing) |
+| `FEOH_SLUG_CHECK_RATE_LIMIT_PER_HOUR` | `120` | Per-IP cap on `/signup/slug-check` (anti-enumeration) |
 
 ## Migration
 

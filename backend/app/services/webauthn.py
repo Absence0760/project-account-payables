@@ -18,8 +18,8 @@ challenge. Nothing here logs credential material; the WebAuthn public key is not
 a secret in the password sense (the private key never leaves the authenticator),
 so there is no bcrypt/sops concern — but we still keep it out of logs.
 
-RP ID / allowed origins are configurable (``AP_WEBAUTHN_RP_ID`` /
-``AP_WEBAUTHN_ORIGINS``) so the same code runs on ``localhost`` in dev and a
+RP ID / allowed origins are configurable (``FEOH_WEBAUTHN_RP_ID`` /
+``FEOH_WEBAUTHN_ORIGINS``) so the same code runs on ``localhost`` in dev and a
 real apex in production. Local-first: the defaults work on
 ``*.localhost:7777`` with no cloud account.
 """

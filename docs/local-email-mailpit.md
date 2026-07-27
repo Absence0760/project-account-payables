@@ -4,7 +4,7 @@ The app sends transactional email (signup verification, welcome + temp password,
 scheduled CFO reports) through pluggable adapters in
 `backend/app/services/email_adapters/`:
 
-| Provider (`AP_EMAIL_PROVIDER`) | What it does |
+| Provider (`FEOH_EMAIL_PROVIDER`) | What it does |
 |---|---|
 | `console` (default) | Logs the email to backend stdout — no rendering, no inbox |
 | `smtp` | Sends over SMTP — point it at **Mailpit** locally to get a real web inbox |
@@ -20,9 +20,9 @@ local-first guard rail applied to email.
 ```bash
 pnpm mail:up       # Mailpit — SMTP on :1025, web inbox on http://localhost:8025
 # backend/.env:
-#   AP_EMAIL_PROVIDER=smtp
-#   AP_SMTP_HOST=localhost
-#   AP_SMTP_PORT=1025
+#   FEOH_EMAIL_PROVIDER=smtp
+#   FEOH_SMTP_HOST=localhost
+#   FEOH_SMTP_PORT=1025
 pnpm dev:backend   # restart to pick up the env
 # trigger an email (sign up a tenant, run a scheduled report) → open :8025
 pnpm mail:down     # stop it
@@ -35,16 +35,16 @@ email dispatcher:
 
 | Setting | Default | Notes |
 |---|---|---|
-| `AP_SMTP_HOST` | `localhost` | Mailpit host |
-| `AP_SMTP_PORT` | `1025` | Mailpit SMTP port |
-| `AP_SMTP_USERNAME` | (empty) | Mailpit needs none |
-| `AP_SMTP_PASSWORD` | (empty) | secret — set via sops for a real relay, never for Mailpit |
-| `AP_SMTP_USE_TLS` | `false` | Mailpit is plaintext locally |
-| `AP_EMAIL_FROM` | `no-reply@localhost` | From address |
+| `FEOH_SMTP_HOST` | `localhost` | Mailpit host |
+| `FEOH_SMTP_PORT` | `1025` | Mailpit SMTP port |
+| `FEOH_SMTP_USERNAME` | (empty) | Mailpit needs none |
+| `FEOH_SMTP_PASSWORD` | (empty) | secret — set via sops for a real relay, never for Mailpit |
+| `FEOH_SMTP_USE_TLS` | `false` | Mailpit is plaintext locally |
+| `FEOH_EMAIL_FROM` | `no-reply@localhost` | From address |
 
 The same `smtp` adapter works against any SMTP relay in a deployed environment —
 set the host/port/credentials (credentials via sops) and flip
-`AP_EMAIL_PROVIDER=smtp`.
+`FEOH_EMAIL_PROVIDER=smtp`.
 
 ## Inspecting captured mail
 
@@ -64,7 +64,7 @@ hands-on complement for actually eyeballing rendered email.
 
 - Mailpit vs LocalStack SES: use **Mailpit** (`smtp` provider) for a nice inbox
   while iterating on email copy/HTML; use **LocalStack SES** (`ses` provider +
-  `AP_AWS_ENDPOINT_URL`) when you specifically want to exercise the SES code
+  `FEOH_AWS_ENDPOINT_URL`) when you specifically want to exercise the SES code
   path. Both capture rather than deliver.
 - This is *outbound* email. Inbound email-to-invoice intake is a separate webhook
   path — see `backend/docs/email-intake.md`.

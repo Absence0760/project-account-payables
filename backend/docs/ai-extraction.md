@@ -101,7 +101,7 @@ extraction call, which materially improves output quality on Textract and
 local LLaVA / Llama 3.2 Vision runs. Claude Vision and GPT-4V handle minor
 rotation acceptably on their own, but still benefit from upright input.
 
-Gated on `AP_EXTRACTION_AUTO_ROTATE` (default `true`). The dependency is
+Gated on `FEOH_EXTRACTION_AUTO_ROTATE` (default `true`). The dependency is
 optional — install with:
 
 ```bash
@@ -137,7 +137,7 @@ Dispatch (local or Lambda)
     |
     v
 Resolve Config
-    ├── Platform → use app-level Anthropic key (AP_ANTHROPIC_API_KEY)
+    ├── Platform → use app-level Anthropic key (FEOH_ANTHROPIC_API_KEY)
     └── BYOK → use customer's key from org.settings.extraction
     |
     v
@@ -343,8 +343,8 @@ BYOK example:
 ```
 
 Platform mode uses environment variables:
-- `AP_ANTHROPIC_API_KEY` — your Anthropic API key
-- `AP_EXTRACTION_MODEL` — model to use (default: claude-sonnet-4-20250514)
+- `FEOH_ANTHROPIC_API_KEY` — your Anthropic API key
+- `FEOH_EXTRACTION_MODEL` — model to use (default: claude-sonnet-4-20250514)
 
 ## Code Structure
 
@@ -468,7 +468,7 @@ HNSW index on `embedding` using `vector_cosine_ops`. Migration: `0003_rag_embedd
 | `mock` | Default for local dev. Deterministic hash-to-vector — same text → same vector, different text → different vector. No external calls. |
 | `openai` | Production. `text-embedding-3-small`, 1536-d, via httpx to avoid the full openai SDK dep. Costs ~$0.02/1M tokens. |
 
-Configured via `AP_EMBEDDING_PROVIDER`, `AP_EMBEDDING_API_KEY`, `AP_EMBEDDING_MODEL`, `AP_EMBEDDING_DIMENSIONS`.
+Configured via `FEOH_EMBEDDING_PROVIDER`, `FEOH_EMBEDDING_API_KEY`, `FEOH_EMBEDDING_MODEL`, `FEOH_EMBEDDING_DIMENSIONS`.
 
 ### Write path — embed on correction
 
@@ -523,7 +523,7 @@ In `services/extraction.run_extraction`, after the RAG priors + vendor-cache pas
 
 1. Embeds the current invoice's text (same adapter as RAG — mock locally, OpenAI in prod).
 2. Queries `invoice_embeddings` ordered by cosine distance.
-3. Returns every match at or above `AP_DUPLICATE_SIMILARITY_THRESHOLD` (default `0.95`).
+3. Returns every match at or above `FEOH_DUPLICATE_SIMILARITY_THRESHOLD` (default `0.95`).
 
 If any matches come back, extraction:
 
@@ -536,7 +536,7 @@ Extraction never blocks — the invoice still gets created and routed. Reviewer 
 
 `0.95` is intentionally tighter than RAG retrieval (which wants semantically related but *distinct* invoices for few-shot prompting). In observed data, recurring monthly invoices from the same vendor with a new amount/date typically land in the 0.85-0.93 range and should NOT be flagged. Only near-identical text should hit 0.95+.
 
-Adjust via `AP_DUPLICATE_SIMILARITY_THRESHOLD`. Lower → more sensitive (more false positives); higher → stricter (only exact duplicates).
+Adjust via `FEOH_DUPLICATE_SIMILARITY_THRESHOLD`. Lower → more sensitive (more false positives); higher → stricter (only exact duplicates).
 
 ### Interaction with the rule-based check
 

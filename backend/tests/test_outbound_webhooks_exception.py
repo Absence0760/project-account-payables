@@ -6,7 +6,7 @@ Covers the deferred event source now wired:
     delivery to a subscribed active subscription;
   * the payload is PII-free and money serialises as an exact string;
   * a webhook-emit failure NEVER breaks exception creation (best-effort);
-  * AP_WEBHOOKS_ENABLED off → no delivery;
+  * FEOH_WEBHOOKS_ENABLED off → no delivery;
   * the same exception id dedupes to a single delivery (re-fire / replay);
   * an invoice-less exception (Positive Pay never-issued cheque) still emits
     with identifiers only.

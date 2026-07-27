@@ -13,7 +13,7 @@ import { API_BASE, currentTenantSlug } from '../fixtures/helpers';
  * ── Why this file is split into two regimes ───────────────────────────────
  *
  * MFA is OFF by default. The master switch is the backend env var
- * `AP_MFA_ENABLED` (committed `false` in `backend/.env.development`, which
+ * `FEOH_MFA_ENABLED` (committed `false` in `backend/.env.development`, which
  * `main.py` loads — so the CI/e2e backend boots with MFA disabled). With MFA
  * off:
  *   - `POST /api/auth/login` never returns an MFA challenge (it mints a token
@@ -32,7 +32,7 @@ import { API_BASE, currentTenantSlug } from '../fixtures/helpers';
  * The *full happy path* — real TOTP enrollment on /profile, and trading a real
  * challenge token + a computed TOTP code for a session at /login/mfa — needs a
  * backend booted with MFA on. Those live in the describe blocks guarded by
- * `mfaBackendEnabled()` (env `AP_E2E_MFA_ENABLED=true`) and are skipped when
+ * `mfaBackendEnabled()` (env `FEOH_E2E_MFA_ENABLED=true`) and are skipped when
  * the flag is absent, with a `test.info().annotations` note so a skip is never
  * silent. See "Running the MFA happy-path suite" at the bottom of this file.
  */
@@ -42,7 +42,7 @@ const CHALLENGE_KEY = 'mfa_challenge';
 /** True when the operator has brought up an MFA-enabled backend and signalled
  *  it to Playwright. Gates the real-verify / real-enroll suites. */
 function mfaBackendEnabled(): boolean {
-	return process.env.AP_E2E_MFA_ENABLED === 'true';
+	return process.env.FEOH_E2E_MFA_ENABLED === 'true';
 }
 
 /** A synthetic MFA challenge for the sessionStorage-driven UI tests. The token
@@ -291,7 +291,7 @@ test.describe('/profile — real TOTP enrollment (MFA-enabled backend)', () => {
 	test.beforeEach(async () => {
 		test.skip(
 			!mfaBackendEnabled(),
-			'Set AP_E2E_MFA_ENABLED=true with an AP_MFA_ENABLED backend to run the MFA happy path'
+			'Set FEOH_E2E_MFA_ENABLED=true with an FEOH_MFA_ENABLED backend to run the MFA happy path'
 		);
 	});
 
@@ -340,7 +340,7 @@ test.describe('/login/mfa — real TOTP verification (MFA-enabled backend)', () 
 	test.beforeEach(async () => {
 		test.skip(
 			!mfaBackendEnabled(),
-			'Set AP_E2E_MFA_ENABLED=true with an AP_MFA_ENABLED backend to run the MFA happy path'
+			'Set FEOH_E2E_MFA_ENABLED=true with an FEOH_MFA_ENABLED backend to run the MFA happy path'
 		);
 	});
 
@@ -411,14 +411,14 @@ test.describe('/login/mfa — real TOTP verification (MFA-enabled backend)', () 
 /**
  * ── Running the MFA happy-path suite ───────────────────────────────────────
  *
- * The describe blocks (3) and (4) are skipped unless `AP_E2E_MFA_ENABLED=true`
+ * The describe blocks (3) and (4) are skipped unless `FEOH_E2E_MFA_ENABLED=true`
  * AND the backend was booted with MFA on. To run them locally:
  *
  *   1. Start the backend with MFA enabled (overrides the committed default):
- *        cd backend && AP_MFA_ENABLED=true python main.py
+ *        cd backend && FEOH_MFA_ENABLED=true python main.py
  *   2. Seed if not already:  python scripts/seed.py
  *   3. Run just the MFA spec with the flag set:
- *        cd frontend && AP_E2E_MFA_ENABLED=true pnpm exec playwright test \
+ *        cd frontend && FEOH_E2E_MFA_ENABLED=true pnpm exec playwright test \
  *          tests-e2e/auth/mfa.spec.ts
  *
  * Without those, the sessionStorage-seeded challenge-UI block (1) and the

@@ -9,7 +9,7 @@ Tenant-only migration. Enables the pgvector extension, creates the
 `invoice_extraction_results`. Gated on presence of the `invoices` table so
 it's a no-op on the control plane DB.
 
-The embedding dimension (1536) must match AP_EMBEDDING_DIMENSIONS.
+The embedding dimension (1536) must match FEOH_EMBEDDING_DIMENSIONS.
 """
 
 from sqlalchemy import text

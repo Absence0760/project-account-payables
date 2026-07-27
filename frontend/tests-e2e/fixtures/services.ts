@@ -31,11 +31,11 @@ export const SERVICES = {
 const HINTS: Record<string, string> = {
 	[SERVICES.keycloak]: 'Keycloak not running — `pnpm idp:up && pnpm idp:seed`',
 	[SERVICES.keycloakSaml]: 'Keycloak SAML not seeded — `pnpm idp:up && pnpm saml:seed`',
-	[SERVICES.mailpit]: 'Mailpit not running — `pnpm mail:up` (+ backend AP_EMAIL_PROVIDER=smtp)',
+	[SERVICES.mailpit]: 'Mailpit not running — `pnpm mail:up` (+ backend FEOH_EMAIL_PROVIDER=smtp)',
 	[SERVICES.localstack]: 'LocalStack not running — `pnpm aws:up`',
 	[SERVICES.stripeMock]: 'stripe-mock not running — `pnpm stripe:up`',
 	[SERVICES.fakeErp]:
-		'fake-erp not running — `pnpm erp:up` (backend must have started with the .env.development AP_ERP_*_API_BASE overrides)'
+		'fake-erp not running — `pnpm erp:up` (backend must have started with the .env.development FEOH_ERP_*_API_BASE overrides)'
 };
 
 const _cache = new Map<string, boolean>();
@@ -59,7 +59,7 @@ export async function isReachable(url: string, timeoutMs = 2500): Promise<boolea
  * The message names the `pnpm` command that starts the missing service.
  *
  * In CI's service-e2e job the container is started on purpose and
- * `AP_REQUIRE_INTEGRATION` is set — there an unreachable service is a hard
+ * `FEOH_REQUIRE_INTEGRATION` is set — there an unreachable service is a hard
  * failure, never a silent skip that leaves the job green with this flow's
  * coverage quietly dropped. Locally (var unset) it still skips with an
  * actionable hint when the optional service isn't running.
@@ -68,8 +68,8 @@ export async function skipUnlessReachable(url: string): Promise<void> {
 	const up = await isReachable(url);
 	if (up) return;
 	const hint = HINTS[url] ?? `Required local service not reachable: ${url}`;
-	if (process.env.AP_REQUIRE_INTEGRATION) {
-		throw new Error(`${hint} — AP_REQUIRE_INTEGRATION is set, refusing to skip`);
+	if (process.env.FEOH_REQUIRE_INTEGRATION) {
+		throw new Error(`${hint} — FEOH_REQUIRE_INTEGRATION is set, refusing to skip`);
 	}
 	test.skip(true, hint);
 }

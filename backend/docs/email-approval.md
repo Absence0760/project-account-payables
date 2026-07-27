@@ -97,17 +97,17 @@ configured. The links are **per-recipient** — the token binds to that specific
 reviewer — built by `email_action_token.build_email_action_links` against
 `settings.api_public_url`. When no key is set, no links are added (the rest of
 the email is unchanged). Preview the rendered email locally with Mailpit
-(`pnpm mail:up`, `AP_EMAIL_PROVIDER=smtp`).
+(`pnpm mail:up`, `FEOH_EMAIL_PROVIDER=smtp`).
 
 ## Configuration
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `AP_EMAIL_ACTION_SIGNING_KEY` | (empty) | HMAC-SHA256 key for the link token. **Empty → feature OFF**: no links added, every token rejected (fail-closed, no hardcoded fallback). NON-secret dev value committed in `.env.development`; real key via sops in deployed envs. |
-| `AP_EMAIL_ACTION_TTL_HOURS` | `168` | Link validity window (7 days). Past this, the reviewer signs in instead. |
+| `FEOH_EMAIL_ACTION_SIGNING_KEY` | (empty) | HMAC-SHA256 key for the link token. **Empty → feature OFF**: no links added, every token rejected (fail-closed, no hardcoded fallback). NON-secret dev value committed in `.env.development`; real key via sops in deployed envs. |
+| `FEOH_EMAIL_ACTION_TTL_HOURS` | `168` | Link validity window (7 days). Past this, the reviewer signs in instead. |
 
 Single knob: the key's presence *is* the on/off switch (mirrors
-`AP_APPROVAL_SIGNING_KEY`). No separate enabled flag and no boot guard — an
+`FEOH_APPROVAL_SIGNING_KEY`). No separate enabled flag and no boot guard — an
 unset key simply disables the feature everywhere.
 
 ## Security properties

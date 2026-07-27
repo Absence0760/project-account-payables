@@ -120,7 +120,7 @@ _TOTP_CLAIM_TTL_SECONDS = 90
 
 # Work factor for the keyed KDF below. This is NOT password storage: security
 # rests on the secret salt (a Redis-keyspace snapshot can't derive or precompute
-# a key without AP_SECRET_KEY), so the iteration count is not a brute-force
+# a key without FEOH_SECRET_KEY), so the iteration count is not a brute-force
 # defense here — it's simply the computationally-expensive KDF that CodeQL's
 # py/weak-sensitive-data-hashing rule requires for hashing sensitive data. Kept
 # modest so the login-path derivation stays fast.
@@ -132,7 +132,7 @@ def _keyed_digest(*parts: str) -> str:
     used as a fixed salt (fixed so the derivation stays deterministic for an O(1)
     Redis lookup). The secret salt is what protects it: a Redis-keyspace snapshot
     can neither reverse a key to its (secret, code) nor precompute one without
-    AP_SECRET_KEY. PBKDF2 — not a bare or HMAC SHA-256 — is the KDF CodeQL's
+    FEOH_SECRET_KEY. PBKDF2 — not a bare or HMAC SHA-256 — is the KDF CodeQL's
     py/weak-sensitive-data-hashing rule accepts for sensitive data. 64-char hex,
     the same shape as a SHA-256 digest, so stored formats are unchanged."""
     msg = ":".join(parts).encode()

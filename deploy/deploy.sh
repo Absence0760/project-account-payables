@@ -51,7 +51,7 @@ sops -d .env.sops >.env
 
 # Everything compose interpolation / the app cannot default sensibly.
 MISSING=""
-for var in POSTGRES_PASSWORD APP_DOMAIN API_DOMAIN ACME_EMAIL AWS_REGION AP_SECRET_KEY; do
+for var in POSTGRES_PASSWORD APP_DOMAIN API_DOMAIN ACME_EMAIL AWS_REGION FEOH_SECRET_KEY; do
 	grep -Eq "^${var}=.+" .env || MISSING="$MISSING $var"
 done
 [ -z "$MISSING" ] || die "required var(s) missing/empty in the sops env:$MISSING (contract: deploy/env.example)"

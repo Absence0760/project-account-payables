@@ -6,7 +6,7 @@ the presence of the ``invoices`` table.
   - **Tenant DB** (``invoices`` present): ``assistant_conversations`` +
     ``assistant_messages`` (conversation content is tenant data — must inherit
     tenant isolation). Fans out via
-    ``AP_MIGRATE_TENANT=ap_acme alembic upgrade head`` then
+    ``FEOH_MIGRATE_TENANT=ap_acme alembic upgrade head`` then
     ``python scripts/migrate_all_tenants.py``. Fresh tenants get these via
     ``tenant_provisioning._create_tenant_tables`` (``create_all``) once the
     models are registered.

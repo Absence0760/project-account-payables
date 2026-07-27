@@ -5,7 +5,7 @@ Covers:
     169.254.169.254 metadata endpoint) / ULA / IPv4-mapped IPv6 / unspecified /
     CGNAT / multicast targets are rejected; public IPv4 + IPv6 pass; a hostname
     is judged by EVERY address it resolves to (mixed public+private rejects);
-    DNS failure fails closed; the AP_WEBHOOKS_ALLOW_PRIVATE_TARGETS escape
+    DNS failure fails closed; the FEOH_WEBHOOKS_ALLOW_PRIVATE_TARGETS escape
     hatch skips only the address checks (scheme/host shape still enforced);
   * the management API — create/update with a private target 422s with the one
     generic non-enumerating message;
@@ -180,7 +180,7 @@ async def test_guard_rejection_message_is_generic(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Escape hatch (AP_WEBHOOKS_ALLOW_PRIVATE_TARGETS=true).
+# Escape hatch (FEOH_WEBHOOKS_ALLOW_PRIVATE_TARGETS=true).
 # ---------------------------------------------------------------------------
 
 
@@ -199,7 +199,7 @@ async def test_escape_hatch_allows_private_but_keeps_shape_checks(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Boot-time guard — a deployed env (AP_DEBUG=false) may not ship with the
+# Boot-time guard — a deployed env (FEOH_DEBUG=false) may not ship with the
 # escape hatch on. Mirrors the billing-webhook / peppol boot guards.
 # ---------------------------------------------------------------------------
 
@@ -212,7 +212,7 @@ async def test_boot_refuses_escape_hatch_when_not_debug(monkeypatch):
     monkeypatch.setattr(settings, "secret_key", "a-real-non-default-secret-value")
     monkeypatch.setattr(settings, "webhooks_allow_private_targets", True)
 
-    with pytest.raises(RuntimeError, match="AP_WEBHOOKS_ALLOW_PRIVATE_TARGETS"):
+    with pytest.raises(RuntimeError, match="FEOH_WEBHOOKS_ALLOW_PRIVATE_TARGETS"):
         async with lifespan(object()):  # pragma: no cover - never enters body
             pass
 

@@ -3,7 +3,7 @@
 Runs on the same cadence-via-asyncio pattern as
 `extraction_reaper` / `payment_reconciler` / `audit_log_shipper`:
 one long-lived task per app process, started in `main.lifespan`,
-ticks every `AP_SCHEDULED_REPORTS_TICK_SECONDS`, sweeps every
+ticks every `FEOH_SCHEDULED_REPORTS_TICK_SECONDS`, sweeps every
 tenant DB for `scheduled_reports` rows whose `next_run_at <= now`
 and `enabled = true`, generates the CSV via `report_export`,
 emails it to the listed recipients, then bumps `next_run_at` by

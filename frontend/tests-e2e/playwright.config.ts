@@ -25,7 +25,7 @@ import { defineConfig, devices } from '@playwright/test';
  *     worker's tenant. Override with `PLAYWRIGHT_WORKERS=1` if a
  *     flake suggests within-worker spec interference.
  *
- * Seed (`backend/scripts/seed.py`) honors `AP_E2E_TENANT_COUNT`
+ * Seed (`backend/scripts/seed.py`) honors `FEOH_E2E_TENANT_COUNT`
  * (default 4) — CI sets it to 1 so each shard only provisions
  * one e2e tenant.
  *
@@ -64,7 +64,7 @@ export default defineConfig({
 	// to 4 workers for a fast inner loop — each worker is pinned to
 	// its own `e2e<N>` tenant via the worker-scoped `tenantSlug`
 	// fixture in `fixtures/helpers.ts`. The seed
-	// (`backend/scripts/seed.py`) provisions `AP_E2E_TENANT_COUNT`
+	// (`backend/scripts/seed.py`) provisions `FEOH_E2E_TENANT_COUNT`
 	// (default 4) such tenants. Setting workers higher than the
 	// tenant count makes the modulo in `fixtures/helpers.ts` wrap,
 	// losing isolation between the wrapping workers.
@@ -74,7 +74,7 @@ export default defineConfig({
 	// mutates state (creates a user, voids a payment) needs them
 	// ordered. Files across workers still run in parallel.
 	workers: parseInt(
-		process.env.PLAYWRIGHT_WORKERS ?? process.env.AP_E2E_TENANT_COUNT ?? '4',
+		process.env.PLAYWRIGHT_WORKERS ?? process.env.FEOH_E2E_TENANT_COUNT ?? '4',
 		10
 	),
 	fullyParallel: false,
@@ -86,13 +86,13 @@ export default defineConfig({
 	// dev time. Default to localhost:8000 so a developer's locally-run
 	// backend works without extra config.
 	//
-	// CI sets `AP_E2E_USE_PREVIEW=true` and runs `pnpm build` before
+	// CI sets `FEOH_E2E_USE_PREVIEW=true` and runs `pnpm build` before
 	// Playwright starts. Preview serves the static bundle straight
 	// from `frontend/build/` — sub-second boot, no on-demand HMR
 	// transforms during page navigation. Locally we keep `pnpm dev`
 	// so an interactive run picks up source edits.
 	webServer: {
-		command: process.env.AP_E2E_USE_PREVIEW === 'true'
+		command: process.env.FEOH_E2E_USE_PREVIEW === 'true'
 			? 'pnpm exec vite preview --port 7777'
 			: 'pnpm dev',
 		url: 'http://localhost:7777',

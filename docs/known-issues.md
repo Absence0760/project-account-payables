@@ -204,7 +204,7 @@ caused by the confound, not a genuine whole-suite test-ordering/leak bug.
 in the control plane and open a connection per tenant DB —
 `extraction_reaper.run_reaper_loop` does
 `select(Organization.id, Organization.db_name)` with no filter, and it is on by
-default (`AP_EXTRACTION_REAPER_ENABLED` defaults to `True`). The realdb harness
+default (`FEOH_EXTRACTION_REAPER_ENABLED` defaults to `True`). The realdb harness
 registers its test tenants in that same shared control plane
 (`account_payables`), so a dev server happily sweeps `ap_pytesta` / `ap_pytestb`
 — transitioning stuck `pending` invoices to `failed` inside a database a test is

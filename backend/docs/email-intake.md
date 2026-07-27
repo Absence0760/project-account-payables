@@ -79,7 +79,7 @@ Options:
 - Dedicated domain: `yourcompany-invoices.com`. More work to manage but
   easier to sunset if a provider goes sideways.
 
-Set `AP_EMAIL_INTAKE_DOMAIN=ap.yourcompany.com` in the backend env.
+Set `FEOH_EMAIL_INTAKE_DOMAIN=ap.yourcompany.com` in the backend env.
 
 ### 3. Point MX at the provider
 
@@ -113,12 +113,12 @@ openssl rand -hex 32 | tee /dev/stderr | head -c 64
 ```
 
 ```
-AP_EMAIL_INTAKE_SIGNING_SECRET=<the-hex-string>
+FEOH_EMAIL_INTAKE_SIGNING_SECRET=<the-hex-string>
 ```
 
 For Mailgun, their built-in `signature` parameter is HMAC-SHA256 of
 `timestamp + token` using your API key — **not** the same as our check.
-Easiest: use the Mailgun webhook signing key as `AP_EMAIL_INTAKE_SIGNING_SECRET`
+Easiest: use the Mailgun webhook signing key as `FEOH_EMAIL_INTAKE_SIGNING_SECRET`
 and verify via the provider's standard signature header
 (`X-Mailgun-Signature-V2`).
 

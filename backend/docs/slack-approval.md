@@ -42,7 +42,7 @@ buttons to that one approver — same no-privilege-escalation property as the
 per-recipient email link. If an `invoice_assigned` event ever carries zero or
 many recipients, the buttons are omitted (the deep link still works).
 
-Tokens are only added when **`AP_EMAIL_ACTION_SIGNING_KEY` is set and the chat
+Tokens are only added when **`FEOH_EMAIL_ACTION_SIGNING_KEY` is set and the chat
 provider is `slack`**; otherwise the message stays a plain (non-interactive) post.
 
 ## The inbound webhook
@@ -59,9 +59,9 @@ Two gates, layered, both fail closed:
 
 1. **Slack request signature.** Slack signs every interactivity POST as
    `X-Slack-Signature: v0=<HMAC-SHA256 over "v0:{X-Slack-Request-Timestamp}:{raw_body}">`
-   with the app's *signing secret* (`AP_SLACK_SIGNING_SECRET`). We rebuild that
+   with the app's *signing secret* (`FEOH_SLACK_SIGNING_SECRET`). We rebuild that
    base string and compare with a constant-time HMAC, and **reject a timestamp
-   more than `AP_SLACK_REQUEST_MAX_AGE_SECONDS` (default 300s) from now** so a
+   more than `FEOH_SLACK_REQUEST_MAX_AGE_SECONDS` (default 300s) from now** so a
    captured POST can't be replayed. No secret configured → the feature is OFF and
    every request is rejected (no hardcoded fallback).
 2. **Action token.** Parse the `application/x-www-form-urlencoded`
@@ -112,10 +112,10 @@ payment-method numbers.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `AP_SLACK_SIGNING_SECRET` | (empty) | Slack app **signing secret** for the interactivity-POST HMAC. **Empty → feature OFF**: every inbound POST rejected (fail-closed, no hardcoded fallback). NON-secret dev value committed in `.env.development`; real secret via sops. The key's presence IS the on/off switch (mirrors `AP_EMAIL_ACTION_SIGNING_KEY`). |
-| `AP_SLACK_REQUEST_MAX_AGE_SECONDS` | `300` | Reject a Slack interactivity POST whose `X-Slack-Request-Timestamp` is more than this far from now (replay-window guard). |
-| `AP_EMAIL_ACTION_SIGNING_KEY` | (empty) | Reused to sign the button action token (bound to the `slack` channel). Empty → no buttons added. |
-| `AP_EMAIL_ACTION_TTL_HOURS` | `168` | Reused as the action token's validity window. |
+| `FEOH_SLACK_SIGNING_SECRET` | (empty) | Slack app **signing secret** for the interactivity-POST HMAC. **Empty → feature OFF**: every inbound POST rejected (fail-closed, no hardcoded fallback). NON-secret dev value committed in `.env.development`; real secret via sops. The key's presence IS the on/off switch (mirrors `FEOH_EMAIL_ACTION_SIGNING_KEY`). |
+| `FEOH_SLACK_REQUEST_MAX_AGE_SECONDS` | `300` | Reject a Slack interactivity POST whose `X-Slack-Request-Timestamp` is more than this far from now (replay-window guard). |
+| `FEOH_EMAIL_ACTION_SIGNING_KEY` | (empty) | Reused to sign the button action token (bound to the `slack` channel). Empty → no buttons added. |
+| `FEOH_EMAIL_ACTION_TTL_HOURS` | `168` | Reused as the action token's validity window. |
 
 The outbound side also needs the org to have its chat provider set to `slack`
 with a configured `webhook_url` on `Organization.settings.chat_notifications`
@@ -126,8 +126,8 @@ with a configured `webhook_url` on `Organization.settings.chat_notifications`
 
 1. In the Slack app config, enable **Interactivity & Shortcuts** and set the
    **Request URL** to `https://<api-host>/api/approvals/slack/interactivity`.
-2. Copy the app's **Signing Secret** into `AP_SLACK_SIGNING_SECRET` (sops).
-3. Set `AP_EMAIL_ACTION_SIGNING_KEY` (sops) if not already set for email approval.
+2. Copy the app's **Signing Secret** into `FEOH_SLACK_SIGNING_SECRET` (sops).
+3. Set `FEOH_EMAIL_ACTION_SIGNING_KEY` (sops) if not already set for email approval.
 
 No real Slack account is needed for tests — the test suite constructs
 correctly-signed interactivity requests in-process.

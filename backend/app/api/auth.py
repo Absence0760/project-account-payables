@@ -237,7 +237,7 @@ async def login(
 
     org_required = mfa.org_requires_mfa(org.settings if org else None)
 
-    # MFA gate. The master switch (`AP_MFA_ENABLED`) wins — if MFA is off
+    # MFA gate. The master switch (`FEOH_MFA_ENABLED`) wins — if MFA is off
     # at the platform level, we skip even when an individual user is enrolled.
     # This keeps local-dev login painless. A user who enrolled ONLY a passkey
     # (no TOTP) still has a second factor, so a registered credential also

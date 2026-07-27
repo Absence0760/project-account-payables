@@ -27,7 +27,7 @@ transfer mechanism changes.
 Retention windows below are summarized from
 [`backend/docs/retention.md`](../backend/docs/retention.md); that document is the
 authoritative source and the enforcement mechanism (the retention sweep,
-`AP_RETENTION_*` env vars, the audit-log WORM store). Where a number here and
+`FEOH_RETENTION_*` env vars, the audit-log WORM store). Where a number here and
 there diverge, the retention doc wins.
 
 International-transfer notes below are summarized from

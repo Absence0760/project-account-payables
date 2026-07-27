@@ -26,7 +26,7 @@ async def main():
 
     for db_name in db_names:
         print(f"\n--- {db_name} ---")
-        env = {**os.environ, "AP_MIGRATE_TENANT": db_name}
+        env = {**os.environ, "FEOH_MIGRATE_TENANT": db_name}
         result = subprocess.run(
             [sys.executable, "-m", "alembic", "upgrade", "head"],
             env=env,

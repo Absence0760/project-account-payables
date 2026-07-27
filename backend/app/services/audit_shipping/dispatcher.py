@@ -24,7 +24,7 @@ def register_audit_shipping_adapter(provider: str):
 def get_audit_shipping_adapter(config: dict) -> AuditShippingAdapter:
     """Build a single adapter by `config["provider"]`.
 
-    Raises on an unregistered name — a typo'd `AP_AUDIT_SHIPPING_PROVIDERS`
+    Raises on an unregistered name — a typo'd `FEOH_AUDIT_SHIPPING_PROVIDERS`
     entry (e.g. "cloudwath") must fail loud, not silently substitute the
     no-op `mock` adapter. `mock` "succeeding" on every ship() would let
     `audit_log_shipper` stamp every row `shipped_at` while nothing ever

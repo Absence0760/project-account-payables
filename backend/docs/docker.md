@@ -77,7 +77,7 @@ docker compose --profile aws up -d localstack   # pnpm aws:up
 
 An init script (`localstack/init/ready.d/`) creates the queues, SES identity,
 log group, and object-lock bucket on boot. Point the app at it with
-`AP_AWS_ENDPOINT_URL=http://localhost:4566` (empty = real AWS). MinIO stays the
+`FEOH_AWS_ENDPOINT_URL=http://localhost:4566` (empty = real AWS). MinIO stays the
 S3 *file* store; LocalStack only fronts the other AWS services. Full walkthrough:
 [`../../docs/local-aws-localstack.md`](../../docs/local-aws-localstack.md).
 
@@ -92,7 +92,7 @@ docker compose exec ollama ollama pull moondream # pnpm ollama:pull moondream
 ```
 
 Port 11435 avoids the native Ollama default (11434), so a container and a native
-install coexist. Select the container with `AP_OLLAMA_BASE_URL=http://localhost:11435`.
+install coexist. Select the container with `FEOH_OLLAMA_BASE_URL=http://localhost:11435`.
 CPU by default; a commented `deploy:` block enables NVIDIA GPU. Full walkthrough:
 [`local-ai-testing.md`](local-ai-testing.md).
 
@@ -105,13 +105,13 @@ API mock. Opt-in under the `payments` profile:
 docker compose --profile payments up -d stripe-mock   # pnpm stripe:up (port 12111)
 ```
 
-Point the adapter at it with `AP_STRIPE_API_BASE=http://localhost:12111/v1`
+Point the adapter at it with `FEOH_STRIPE_API_BASE=http://localhost:12111/v1`
 (empty = live Stripe). Returns canned fixtures (no persisted state). Details:
 [`payments.md` § Local testing with stripe-mock](payments.md#local-testing-with-stripe-mock).
 
 ## Local email inbox (Mailpit)
 
-With `AP_EMAIL_PROVIDER=smtp`, the app's outbound transactional email (signup,
+With `FEOH_EMAIL_PROVIDER=smtp`, the app's outbound transactional email (signup,
 welcome, scheduled reports) is delivered to a local Mailpit sink and viewable as
 rendered HTML at http://localhost:8025 — instead of stdout (`console`) or the
 real internet. Opt-in under the `mail` profile:
@@ -120,7 +120,7 @@ real internet. Opt-in under the `mail` profile:
 docker compose --profile mail up -d mailpit   # pnpm mail:up (SMTP :1025, UI :8025)
 ```
 
-Set `AP_EMAIL_PROVIDER=smtp` + `AP_SMTP_HOST=localhost` + `AP_SMTP_PORT=1025`.
+Set `FEOH_EMAIL_PROVIDER=smtp` + `FEOH_SMTP_HOST=localhost` + `FEOH_SMTP_PORT=1025`.
 Full walkthrough: [`../../docs/local-email-mailpit.md`](../../docs/local-email-mailpit.md).
 
 ## Fake ERP server (fake-erp)
@@ -134,7 +134,7 @@ surfaces by path prefix. Opt-in under the `erp` profile:
 docker compose --profile erp up -d fake-erp   # pnpm erp:up (host port 12112, container 8080)
 ```
 
-The `AP_ERP_*_BASE` env vars point the adapters at it (the committed
+The `FEOH_ERP_*_BASE` env vars point the adapters at it (the committed
 `backend/.env.development` values already do). `GET /health` for liveness,
 `POST /__reset` to restore fixture state. Details:
 [`erp-integration.md` § Local e2e testing](erp-integration.md#local-e2e-testing-fake-erp-server).

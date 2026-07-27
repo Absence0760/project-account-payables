@@ -9,7 +9,7 @@ re-queues it.
 Local-first: delivery is a plain ``httpx`` POST in-process. No cloud queue is
 required. The immediate attempt fires from ``dispatch.emit_event`` on the running
 loop; ``run_webhook_delivery_loop`` is the durable retry backstop, gated behind
-``AP_WEBHOOKS_ENABLED`` (OFF by default in local dev).
+``FEOH_WEBHOOKS_ENABLED`` (OFF by default in local dev).
 
 PII discipline: the payloads themselves carry only invoice metadata (no bank /
 tax / PAN fields — built in ``dispatch.py``), and the logs here record the
@@ -194,7 +194,7 @@ async def deliver_due(db: AsyncSession, *, limit: int = 100) -> int:
 async def run_webhook_delivery_loop() -> None:
     """Background retry sweep — re-attempts due failed/pending deliveries.
 
-    Gated behind ``AP_WEBHOOKS_ENABLED`` at the call site (main.lifespan), like
+    Gated behind ``FEOH_WEBHOOKS_ENABLED`` at the call site (main.lifespan), like
     every other background sweep. The immediate emit attempt handles the happy
     path; this loop is the durable backstop for retries + anything queued while
     no event loop was available.

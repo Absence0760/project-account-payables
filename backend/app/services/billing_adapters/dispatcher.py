@@ -3,7 +3,7 @@
 Selection order (mirrors the email / peppol / qms dispatchers):
   1. an explicit ``provider`` argument (the per-org override the caller resolved
      from ``Organization.settings.billing.provider``), else
-  2. ``settings.billing_provider`` (``AP_BILLING_PROVIDER``, default ``mock``).
+  2. ``settings.billing_provider`` (``FEOH_BILLING_PROVIDER``, default ``mock``).
 
 An unknown provider falls back to ``mock`` (local-first: a bad config can never
 make billing read paths 500). The real ``stripe_billing`` adapter fails CLOSED

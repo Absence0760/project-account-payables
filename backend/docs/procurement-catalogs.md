@@ -148,7 +148,7 @@ and scrubbed from the URL).
 ### Adapters (`services/punchout_adapters/`)
 
 Registry decorator `@register_punchout_adapter`; selection via
-`Organization.settings.punchout.provider` → `AP_PUNCHOUT_PROVIDER` (default
+`Organization.settings.punchout.provider` → `FEOH_PUNCHOUT_PROVIDER` (default
 `mock`). Interface (`base.py`):
 
 - `build_setup_request(ctx: PunchoutSetupContext) -> PunchoutStartResult` — build
@@ -167,7 +167,7 @@ Registered:
 - **`cxml`** (real) — builds a real cXML PunchOutSetupRequest and parses a real
   PunchOutOrderMessage (`services/punchout_adapters/cxml.py`, reusing the
   e_invoice XXE-hardened parser). The supplier shared secret comes from
-  `Organization.settings.punchout.shared_secret` → `AP_PUNCHOUT_SHARED_SECRET`
+  `Organization.settings.punchout.shared_secret` → `FEOH_PUNCHOUT_SHARED_SECRET`
   with **no hardcoded fallback** — an unconfigured adapter **fails closed**
   (`punchout_not_configured`), mirroring the PEPPOL `as4_gateway` posture. The
   OCI shape slots in behind the same interface (`protocol="oci"`).
@@ -202,11 +202,11 @@ supplier (or the buyer's browser POSTing on its behalf) returns the cart there.
 It mirrors the PEPPOL inbound webhook posture exactly:
 
 - a body-size cap before buffering (memory-exhaustion guard,
-  `AP_PUNCHOUT_RETURN_MAX_BYTES`),
+  `FEOH_PUNCHOUT_RETURN_MAX_BYTES`),
 - a **shared-secret HMAC-SHA256** over the raw body is the gate
-  (`AP_PUNCHOUT_RETURN_SIGNING_SECRET`; verified via the shared
+  (`FEOH_PUNCHOUT_RETURN_SIGNING_SECRET`; verified via the shared
   `webhook_security.verify_hmac_sha256`). An empty secret falls back to
-  `AP_DEBUG` (local-dev convenience — the BuyerCookie match is then the sole
+  `FEOH_DEBUG` (local-dev convenience — the BuyerCookie match is then the sole
   gate); deployed envs set the real secret via sops,
 - the tenant is in the **URL path** (never a spoofable header),
 - the **BuyerCookie** (in the body, cross-checked against the query string)
@@ -219,10 +219,10 @@ It mirrors the PEPPOL inbound webhook posture exactly:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `AP_PUNCHOUT_PROVIDER` | `mock` | Adapter — `mock` (in-process default) \| `cxml`. Per-org override `Organization.settings.punchout.provider`. |
-| `AP_PUNCHOUT_SHARED_SECRET` | (empty) | cXML supplier credential — **no hardcoded fallback**; sops in deployed. Per-org override `…punchout.shared_secret`. |
-| `AP_PUNCHOUT_RETURN_SIGNING_SECRET` | (empty) | HMAC key the supplier signs the cart-return POST with. No hardcoded fallback; the committed `.env.development` sets a NON-secret dev value. |
-| `AP_PUNCHOUT_RETURN_MAX_BYTES` | `4194304` | Hard cap on the cart-return body before parsing. |
+| `FEOH_PUNCHOUT_PROVIDER` | `mock` | Adapter — `mock` (in-process default) \| `cxml`. Per-org override `Organization.settings.punchout.provider`. |
+| `FEOH_PUNCHOUT_SHARED_SECRET` | (empty) | cXML supplier credential — **no hardcoded fallback**; sops in deployed. Per-org override `…punchout.shared_secret`. |
+| `FEOH_PUNCHOUT_RETURN_SIGNING_SECRET` | (empty) | HMAC key the supplier signs the cart-return POST with. No hardcoded fallback; the committed `.env.development` sets a NON-secret dev value. |
+| `FEOH_PUNCHOUT_RETURN_MAX_BYTES` | `4194304` | Hard cap on the cart-return body before parsing. |
 
 ## Frontend
 

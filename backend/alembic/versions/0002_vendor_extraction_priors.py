@@ -8,7 +8,7 @@ Tenant-only migration. The `vendors` table lives in tenant DBs and not in
 the control plane, so we gate the operation on its presence — when this
 migration runs against the control plane (via the default
 `alembic upgrade head`), it's a no-op; when it runs against a tenant DB
-(via `AP_MIGRATE_TENANT=ap_<slug> alembic upgrade head` or
+(via `FEOH_MIGRATE_TENANT=ap_<slug> alembic upgrade head` or
 `scripts/migrate_all_tenants.py`), it creates the table.
 """
 

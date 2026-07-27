@@ -21,7 +21,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
 
-# Must match AP_EMBEDDING_DIMENSIONS. Changing requires re-embedding everything.
+# Must match FEOH_EMBEDDING_DIMENSIONS. Changing requires re-embedding everything.
 EMBEDDING_DIMENSIONS = 1536
 
 

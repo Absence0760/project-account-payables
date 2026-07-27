@@ -22,7 +22,7 @@ import {
  * merge_dev adapter e2e — the REAL Merge.dev unified-accounting adapter
  * (backend/app/services/erp_adapters/merge_dev.py) against the local fake ERP
  * container (tools/fake-erp, `pnpm erp:up`, host port 12112). The committed
- * backend/.env.development points AP_ERP_MERGE_API_BASE at the fake, so the
+ * backend/.env.development points FEOH_ERP_MERGE_API_BASE at the fake, so the
  * adapter's real httpx calls (auth headers, cursor pagination, payload
  * mapping) run end-to-end with no Merge.dev account.
  *

@@ -16,7 +16,7 @@ All databases run on the same PostgreSQL instance. Tenant database URLs are deri
 
 ## Connection
 
-Default control-plane connection string (configured via `AP_DATABASE_URL`):
+Default control-plane connection string (configured via `FEOH_DATABASE_URL`):
 
 ```
 postgresql+asyncpg://postgres:postgres@localhost:5432/account_payables
@@ -91,7 +91,7 @@ alembic upgrade head
 ### Single tenant DB
 
 ```bash
-AP_MIGRATE_TENANT=ap_acme alembic upgrade head
+FEOH_MIGRATE_TENANT=ap_acme alembic upgrade head
 ```
 
 ### All tenant DBs

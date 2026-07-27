@@ -59,7 +59,7 @@ Call sites:
 - **Vendor create / update** (`api/vendors.py`) — `check_type="initial"`. Update
   re-screens only when an identity field changed (`name`, `tax_id`,
   `bank_details.country`, beneficial owners). Best-effort: a screening failure
-  never blocks the vendor write. Gated by `AP_VENDOR_SCREENING_ENABLED`.
+  never blocks the vendor write. Gated by `FEOH_VENDOR_SCREENING_ENABLED`.
 - **Manual re-screen** — `POST /api/vendors/{id}/screen` (`check_type="manual"`).
 - **Approved bank-detail change** (`api/vendors.py::approve_change_request`) —
   `check_type="bank_change"`. The dual-control gate catches the *approval* of a
@@ -69,7 +69,7 @@ Call sites:
   landed on a list hard-blocks) **and** every in-queue payable invoice for the
   vendor gets a de-duped `fraud_flag` payment hold. Best-effort — a screening
   failure never blocks applying the approved change. Gated by
-  `AP_VENDOR_SCREENING_ENABLED`.
+  `FEOH_VENDOR_SCREENING_ENABLED`.
 - **Periodic sweep** — `services/vendor_rescreen.py` (`check_type="periodic"`).
 - **Pre-payment** — `check_payment_compliance` keeps its own
   `check_type="pre_payment"` screen (different verdict contract).
@@ -106,10 +106,10 @@ the control is hidden for a non-holder; re-screen is gated on
 ## Periodic re-screening
 
 `services/vendor_rescreen.py` is a background loop (same shape as
-`contract_renewal`): every `AP_VENDOR_RESCREEN_INTERVAL_SECONDS` it sweeps every
+`contract_renewal`): every `FEOH_VENDOR_RESCREEN_INTERVAL_SECONDS` it sweeps every
 tenant, re-screens active vendors whose `last_screened_at` is NULL or older than
-`AP_VENDOR_RESCREEN_AFTER_DAYS`, and notifies AP managers when a vendor newly
-flips to `match` / `review`. Disabled by default (`AP_VENDOR_RESCREEN_ENABLED`).
+`FEOH_VENDOR_RESCREEN_AFTER_DAYS`, and notifies AP managers when a vendor newly
+flips to `match` / `review`. Disabled by default (`FEOH_VENDOR_RESCREEN_ENABLED`).
 
 ## Risk scoring
 
@@ -133,7 +133,7 @@ same `ScreeningResult` (the list NAME identifies the category, e.g.
 
 | Var | Default | Purpose |
 |---|---|---|
-| `AP_VENDOR_SCREENING_ENABLED` | `true` | Screen on vendor create / update (mock-safe, local-first). |
-| `AP_VENDOR_RESCREEN_ENABLED` | `false` | Master switch for the periodic re-screen sweep. |
-| `AP_VENDOR_RESCREEN_INTERVAL_SECONDS` | `86400` | Sweep interval. |
-| `AP_VENDOR_RESCREEN_AFTER_DAYS` | `7` | Re-screen vendors whose last screen is older than this. |
+| `FEOH_VENDOR_SCREENING_ENABLED` | `true` | Screen on vendor create / update (mock-safe, local-first). |
+| `FEOH_VENDOR_RESCREEN_ENABLED` | `false` | Master switch for the periodic re-screen sweep. |
+| `FEOH_VENDOR_RESCREEN_INTERVAL_SECONDS` | `86400` | Sweep interval. |
+| `FEOH_VENDOR_RESCREEN_AFTER_DAYS` | `7` | Re-screen vendors whose last screen is older than this. |

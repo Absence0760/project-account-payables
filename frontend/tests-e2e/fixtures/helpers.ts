@@ -15,7 +15,7 @@ const _thisDir = path.dirname(_thisFile);
 /**
  * Per-worker tenant isolation for parallel Playwright execution.
  *
- * `backend/scripts/seed.py` provisions `AP_E2E_TENANT_COUNT` (default 4)
+ * `backend/scripts/seed.py` provisions `FEOH_E2E_TENANT_COUNT` (default 4)
  * `e2e<N>` tenants. Each Playwright worker maps to one tenant via
  * `workerIndex`, so a worker that creates / deletes data in
  * `e2e1` can't collide with another worker working in `e2e2`. Spec
@@ -36,7 +36,7 @@ const _thisDir = path.dirname(_thisFile);
 const AUTH_DIR = path.resolve(_thisDir, '../.auth');
 
 const E2E_TENANT_COUNT = parseInt(
-	process.env.E2E_TENANT_COUNT ?? process.env.AP_E2E_TENANT_COUNT ?? '4',
+	process.env.E2E_TENANT_COUNT ?? process.env.FEOH_E2E_TENANT_COUNT ?? '4',
 	10
 );
 

@@ -1,6 +1,6 @@
 """The stripe_treasury adapter must honor a configurable API base.
 
-Empty AP_STRIPE_API_BASE → live Stripe (prod default). Set it → the adapter
+Empty FEOH_STRIPE_API_BASE → live Stripe (prod default). Set it → the adapter
 targets that host (the local stripe-mock container). A per-config `api_base`
 overrides both. This is the seam that lets the payment path run offline against
 stripe-mock (see backend/docs/payments.md § Local testing).

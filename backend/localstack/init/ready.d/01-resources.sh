@@ -6,12 +6,12 @@
 # Idempotent enough for dev: re-running just re-asserts the same resources.
 #
 # Mirrors the env the app should be given (see docs/local-aws-localstack.md):
-#   AP_AWS_ENDPOINT_URL=http://localhost:4566
-#   AP_SQS_EXTRACTION_QUEUE_URL=http://localhost:4566/000000000000/ap-extraction
-#   AP_SQS_ERP_QUEUE_URL=http://localhost:4566/000000000000/ap-erp
-#   AP_SQS_AUDIT_QUEUE_URL=http://localhost:4566/000000000000/ap-audit
-#   AP_AUDIT_SHIPPING_S3_BUCKET=ap-audit-worm
-#   AP_AUDIT_SHIPPING_CLOUDWATCH_GROUP=/ap/audit
+#   FEOH_AWS_ENDPOINT_URL=http://localhost:4566
+#   FEOH_SQS_EXTRACTION_QUEUE_URL=http://localhost:4566/000000000000/ap-extraction
+#   FEOH_SQS_ERP_QUEUE_URL=http://localhost:4566/000000000000/ap-erp
+#   FEOH_SQS_AUDIT_QUEUE_URL=http://localhost:4566/000000000000/ap-audit
+#   FEOH_AUDIT_SHIPPING_S3_BUCKET=ap-audit-worm
+#   FEOH_AUDIT_SHIPPING_CLOUDWATCH_GROUP=/ap/audit
 set -euo pipefail
 
 echo "[init] creating SQS queues..."

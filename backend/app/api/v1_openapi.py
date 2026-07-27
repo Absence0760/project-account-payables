@@ -9,12 +9,12 @@ with:
 - a single ``X-API-Key`` security scheme (the only auth on this surface — never
   the SPA's JWT) applied globally;
 - an ``info.version`` of ``v1`` and a ``servers`` entry built from
-  ``AP_API_PUBLIC_URL`` so generated clients hit the right base URL;
+  ``FEOH_API_PUBLIC_URL`` so generated clients hit the right base URL;
 - the published ``V1Invoice`` / ``V1InvoiceList`` component schemas only — no
   internal-only model leaks in.
 
 Both this spec and the human-readable docs page respect the
-``AP_PUBLIC_API_ENABLED`` kill switch: when the public API is off, the spec and
+``FEOH_PUBLIC_API_ENABLED`` kill switch: when the public API is off, the spec and
 docs 404 (the surface is simply not there), consistent with every API-key
 request failing closed.
 
@@ -164,7 +164,7 @@ def _ensure_enabled() -> None:
     """404 when the public API kill switch is off — the surface is simply gone.
 
     Keeps the spec/docs behaviour consistent with every API-key request, which
-    fails closed when ``AP_PUBLIC_API_ENABLED`` is false. A 404 (rather than a
+    fails closed when ``FEOH_PUBLIC_API_ENABLED`` is false. A 404 (rather than a
     distinct "disabled") doesn't confirm the endpoint exists.
     """
     if not settings.public_api_enabled:

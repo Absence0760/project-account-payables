@@ -23,7 +23,7 @@ Design choices that keep the numbers honest:
       2. `Organization.settings.payments.home_currency` (legacy — the field the
          payment path already reads)
       3. `Organization.settings.invoice_defaults.currency`
-      4. `settings.reporting_currency_default` (AP_REPORTING_CURRENCY_DEFAULT)
+      4. `settings.reporting_currency_default` (FEOH_REPORTING_CURRENCY_DEFAULT)
 
 The functions here are pure-ish: the FX adapter is handed in, mirroring
 `international_payments`, so the rollup logic is unit-testable against the mock

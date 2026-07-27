@@ -1,4 +1,4 @@
-"""The AWS-backed clients must honor AP_AWS_ENDPOINT_URL (LocalStack).
+"""The AWS-backed clients must honor FEOH_AWS_ENDPOINT_URL (LocalStack).
 
 When `aws_endpoint_url` is set, the SES / CloudWatch Logs / S3 Object Lock
 clients and the SQS dispatch client must be built with that `endpoint_url`; when

@@ -1,7 +1,7 @@
 """Mock PEPPOL Access Point adapter — local dev + test default.
 
 Simulates a hosted Access Point entirely in-process: no DNS, no SMP/SML
-lookup, no network. This is the default provider (``AP_PEPPOL_PROVIDER=mock``)
+lookup, no network. This is the default provider (``FEOH_PEPPOL_PROVIDER=mock``)
 so ``pnpm dev`` transmits e-invoices end-to-end without a real credential.
 
 Resolution: returns a canned :class:`ParticipantCapability` for any receiver

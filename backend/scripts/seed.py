@@ -10,7 +10,7 @@ Two seed shapes:
   richly-related named rows, so every one spans several pages of its
   default 25-row pagination. Best for local development where you
   actually want to click around.
-- **Lean** (``--lean`` / ``AP_SEED_MODE=lean``) — every tenant gets
+- **Lean** (``--lean`` / ``FEOH_SEED_MODE=lean``) — every tenant gets
   just enough for the e2e suite (4 vendors, 10 invoices across status
   buckets, 1 default workflow, 1 GL account, no exceptions/payments/
   cards). Specs that need richer state build it via API at the start
@@ -74,9 +74,9 @@ TECH_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000020")
 
 # Per-worker e2e tenants. Playwright workers map (workerIndex % N) → e2eN, so
 # each parallel worker owns its own tenant DB and can mutate freely without
-# colliding with peers. Default N=4; bump via AP_E2E_TENANT_COUNT for higher
+# colliding with peers. Default N=4; bump via FEOH_E2E_TENANT_COUNT for higher
 # parallelism. Setting it to 0 skips the e2e seed entirely.
-E2E_TENANT_COUNT = int(os.environ.get("AP_E2E_TENANT_COUNT", "4"))
+E2E_TENANT_COUNT = int(os.environ.get("FEOH_E2E_TENANT_COUNT", "4"))
 
 # Control-plane vs tenant table split is owned by
 # `app.services.tenant_provisioning.CONTROL_TABLES` (imported above). Seeding
@@ -1697,7 +1697,7 @@ async def seed_e2e_control_plane(roles: dict[str, "Role"]) -> list[tuple[str, uu
     already exist (matched by slug).
     """
     if E2E_TENANT_COUNT <= 0:
-        print("  AP_E2E_TENANT_COUNT=0 — skipping e2e tenant seed.")
+        print("  FEOH_E2E_TENANT_COUNT=0 — skipping e2e tenant seed.")
         return []
 
     created: list[tuple[str, uuid.UUID, str]] = []
@@ -2281,11 +2281,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--lean",
         action="store_true",
-        default=os.environ.get("AP_SEED_MODE", "").lower() == "lean",
+        default=os.environ.get("FEOH_SEED_MODE", "").lower() == "lean",
         help=(
             "Use the minimal per-tenant fixture set. Faster (~10× less work "
             "per tenant); intended for CI's e2e job. Local dev defaults to "
-            "the full demo dataset. Also enabled via AP_SEED_MODE=lean."
+            "the full demo dataset. Also enabled via FEOH_SEED_MODE=lean."
         ),
     )
     return parser.parse_args()

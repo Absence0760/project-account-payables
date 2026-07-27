@@ -80,7 +80,7 @@ class StripeTreasuryAdapter(PaymentAdapter):
         # Required: the FinancialAccount the payment debits from.
         self.financial_account_id: str = config.get("financial_account_id", "")
         self.webhook_secret: str = config.get("webhook_secret", "")
-        # Stripe API base. Defaults to live Stripe; AP_STRIPE_API_BASE (or a
+        # Stripe API base. Defaults to live Stripe; FEOH_STRIPE_API_BASE (or a
         # per-config api_base) repoints it at the local stripe-mock container for
         # offline testing. See backend/docs/payments.md § Local testing.
         from app.config import settings

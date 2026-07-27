@@ -16,7 +16,7 @@ Retention windows live on `Organization.settings.retention`, keyed
 
 `resolve_retention_months(settings, record_class)` (in
 `services/retention_sweep.py`) resolves the effective window: per-org override →
-platform default `AP_RETENTION_DEFAULT_MONTHS` (84 = 7 years, the common
+platform default `FEOH_RETENTION_DEFAULT_MONTHS` (84 = 7 years, the common
 SOX/IRS baseline). It never raises — a malformed/missing value degrades to the
 default.
 
@@ -38,8 +38,8 @@ Record classes the engine understands: `invoices`, `audit_log` (`RECORD_CLASSES`
 ## Enforcement sweep — `services/retention_sweep.py`
 
 A long-lived asyncio loop (mirrors `contract_renewal` / `qms_sync`) started in
-`app/main.py` lifespan, **disabled by default** behind `AP_RETENTION_ENABLED`,
-interval `AP_RETENTION_INTERVAL_SECONDS` (default daily). It sweeps every tenant
+`app/main.py` lifespan, **disabled by default** behind `FEOH_RETENTION_ENABLED`,
+interval `FEOH_RETENTION_INTERVAL_SECONDS` (default daily). It sweeps every tenant
 DB; one tenant's failure is logged but never halts the sweep.
 
 ### Business records (deletable) — soft-archive, idempotent
@@ -78,9 +78,9 @@ deleted. An idle tenant writes no manifest (no no-op spam).
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `AP_RETENTION_ENABLED` | `false` | Master switch for the enforcement sweep. Keep `false` in local dev; flip on in deployed envs. |
-| `AP_RETENTION_INTERVAL_SECONDS` | `86400` | Sweep interval. |
-| `AP_RETENTION_DEFAULT_MONTHS` | `84` | Platform-default window (months) when an org sets no per-class override. |
+| `FEOH_RETENTION_ENABLED` | `false` | Master switch for the enforcement sweep. Keep `false` in local dev; flip on in deployed envs. |
+| `FEOH_RETENTION_INTERVAL_SECONDS` | `86400` | Sweep interval. |
+| `FEOH_RETENTION_DEFAULT_MONTHS` | `84` | Platform-default window (months) when an org sets no per-class override. |
 
 ## Why no migration
 

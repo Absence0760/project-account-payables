@@ -14,7 +14,7 @@ rows out of every tenant DB and writes them to one or more WORM
 
 ## How it works
 
-1. Every `AP_AUDIT_SHIPPING_INTERVAL_SECONDS` (default 60s), a background
+1. Every `FEOH_AUDIT_SHIPPING_INTERVAL_SECONDS` (default 60s), a background
    asyncio task wakes up.
 2. The control plane's `Organization` table is queried for every tenant
    DB name.
@@ -28,7 +28,7 @@ rows out of every tenant DB and writes them to one or more WORM
    ```
 
 4. The batch is converted to `AuditLogRow` dataclasses and handed to every
-   adapter listed in `AP_AUDIT_SHIPPING_PROVIDERS`.
+   adapter listed in `FEOH_AUDIT_SHIPPING_PROVIDERS`.
 5. **All** adapters must succeed before the tenant's rows get marked
    `shipped_at = now()`. If any one raises, the shipper logs a WARNING,
    leaves `shipped_at` NULL, and the next tick retries the entire batch.
@@ -41,7 +41,7 @@ rows out of every tenant DB and writes them to one or more WORM
 
 Simple + bounded. The largest tenant DB governs how quickly we drain
 — if you notice rows aging past a few ticks of the interval, raise
-`AP_AUDIT_SHIPPING_BATCH_SIZE`. A 500-row batch gzips to ~80KB of JSONL;
+`FEOH_AUDIT_SHIPPING_BATCH_SIZE`. A 500-row batch gzips to ~80KB of JSONL;
 CloudWatch accepts up to 10,000 events per `PutLogEvents`, so there's
 plenty of headroom.
 
@@ -55,16 +55,16 @@ fan-out under a runaway sweep.
 
 ## Configuration
 
-All env vars have the `AP_` prefix.
+All env vars have the `FEOH_` prefix.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `AP_AUDIT_SHIPPING_ENABLED` | `false` | Master switch. Default off so local dev doesn't fire AWS calls. |
-| `AP_AUDIT_SHIPPING_INTERVAL_SECONDS` | `60` | How often the shipper sweeps. |
-| `AP_AUDIT_SHIPPING_BATCH_SIZE` | `500` | Max rows pulled per tenant per tick. |
-| `AP_AUDIT_SHIPPING_PROVIDERS` | `mock` | Comma-separated adapter names. Typical prod value: `cloudwatch,s3_objectlock`. |
-| `AP_AUDIT_SHIPPING_CLOUDWATCH_GROUP` | `/ap/audit` | CloudWatch Logs group name. |
-| `AP_AUDIT_SHIPPING_S3_BUCKET` | (empty) | Object-Lock-enabled S3 bucket for the WORM copy. Required when `s3_objectlock` is enabled. |
+| `FEOH_AUDIT_SHIPPING_ENABLED` | `false` | Master switch. Default off so local dev doesn't fire AWS calls. |
+| `FEOH_AUDIT_SHIPPING_INTERVAL_SECONDS` | `60` | How often the shipper sweeps. |
+| `FEOH_AUDIT_SHIPPING_BATCH_SIZE` | `500` | Max rows pulled per tenant per tick. |
+| `FEOH_AUDIT_SHIPPING_PROVIDERS` | `mock` | Comma-separated adapter names. Typical prod value: `cloudwatch,s3_objectlock`. |
+| `FEOH_AUDIT_SHIPPING_CLOUDWATCH_GROUP` | `/ap/audit` | CloudWatch Logs group name. |
+| `FEOH_AUDIT_SHIPPING_S3_BUCKET` | (empty) | Object-Lock-enabled S3 bucket for the WORM copy. Required when `s3_objectlock` is enabled. |
 
 ## Adapters
 
@@ -79,7 +79,7 @@ Not durable — do not use in production.
 Writes each row as a single JSON log event. Events are partitioned by
 log stream: one stream per `(tenant_db, UTC-date)`, e.g.
 `ap_acme/2026-04-21`. The log group is controlled by
-`AP_AUDIT_SHIPPING_CLOUDWATCH_GROUP`.
+`FEOH_AUDIT_SHIPPING_CLOUDWATCH_GROUP`.
 
 Why one stream per tenant per day? CloudWatch charges by ingested
 bytes, not stream count, and pre-partitioning by tenant + day lets
@@ -145,7 +145,7 @@ Then:
 
 1. Import the new module in `audit_shipping/__init__.py` so its
    registration decorator runs.
-2. Add the provider name to `AP_AUDIT_SHIPPING_PROVIDERS`
+2. Add the provider name to `FEOH_AUDIT_SHIPPING_PROVIDERS`
    (comma-separated with existing ones).
 3. Add a test to `tests/test_audit_shipping.py`.
 

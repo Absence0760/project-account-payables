@@ -14,7 +14,7 @@
 # buckets created before this change:
 #   a. Create a new bucket (name + `-locked` suffix) with the lock config
 #   b. Run `aws s3 sync` from the old bucket to the new one
-#   c. Switch the application config (`AP_S3_BUCKET`) to the new name
+#   c. Switch the application config (`FEOH_S3_BUCKET`) to the new name
 #   d. Schedule deletion of the old bucket once retention on the new one is
 #      verified and the app has cut over
 #

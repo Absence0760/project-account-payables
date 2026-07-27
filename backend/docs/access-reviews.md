@@ -42,7 +42,7 @@ reset the clock.
 A user is flagged **DORMANT** when:
 
 - their last mutating privileged action is older than
-  `AP_ACCESS_REVIEW_DORMANT_DAYS` (default **90**), **or**
+  `FEOH_ACCESS_REVIEW_DORMANT_DAYS` (default **90**), **or**
 - they have never produced a mutating audit row (`last_privileged_action_at` is
   `null`, `days_since` is `null`).
 
@@ -103,7 +103,7 @@ Idempotent-friendly: re-acknowledging simply re-stamps with the latest timestamp
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `AP_ACCESS_REVIEW_DORMANT_DAYS` | `90` | Dormancy window. A user whose last *mutating* privileged action is older than this (or who has never acted) is flagged DORMANT in `GET /api/access-reviews`. |
+| `FEOH_ACCESS_REVIEW_DORMANT_DAYS` | `90` | Dormancy window. A user whose last *mutating* privileged action is older than this (or who has never acted) is flagged DORMANT in `GET /api/access-reviews`. |
 
 ## Invariants honoured
 

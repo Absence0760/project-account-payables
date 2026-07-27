@@ -71,7 +71,7 @@ Every successful login, MFA verify, and SSO callback **also** registers the newl
 
 ### Concurrent session limit
 
-Configured by `AP_MAX_CONCURRENT_SESSIONS` (default `5`; set to `0` to disable). On each login, `track_session` adds the JTI and — if the user is over the cap — evicts the oldest entries and adds them to the blocklist. The evicted sessions stop authenticating on their next request.
+Configured by `FEOH_MAX_CONCURRENT_SESSIONS` (default `5`; set to `0` to disable). On each login, `track_session` adds the JTI and — if the user is over the cap — evicts the oldest entries and adds them to the blocklist. The evicted sessions stop authenticating on their next request.
 
 ### Forced logout on role change
 
@@ -183,7 +183,7 @@ deterministically. Intentional; no migration needed (config is additive JSONB).
 **Config (`settings.sso`, `protocol="saml"`):** `idp_entity_id`, `idp_sso_url`,
 `idp_x509_cert` (required), `sp_entity_id` (defaults per-tenant), optional
 `idp_x509_cert_multi`, `allowed_email_domains`. The optional SP signing keypair
-(only when the IdP requires signed AuthnRequests) is a real secret → `AP_SAML_SP_*`
+(only when the IdP requires signed AuthnRequests) is a real secret → `FEOH_SAML_SP_*`
 via sops; empty by default so local Keycloak runs with no SP keypair.
 
 ## SSO-only mode
@@ -213,12 +213,12 @@ hidden form is UX.
 
 | Variable        | Default                    | Description               |
 |-----------------|----------------------------|---------------------------|
-| `AP_SECRET_KEY` | `change-me-in-production`  | JWT signing key           |
-| `AP_ACCESS_TOKEN_EXPIRE_MINUTES` | `30`      | Token lifetime in minutes |
-| `AP_REDIS_URL`  | `redis://localhost:6379`   | Redis URL for blocklist + active-session tracking |
-| `AP_MAX_CONCURRENT_SESSIONS` | `5`        | Concurrent sessions per user. `0` disables the cap. |
+| `FEOH_SECRET_KEY` | `change-me-in-production`  | JWT signing key           |
+| `FEOH_ACCESS_TOKEN_EXPIRE_MINUTES` | `30`      | Token lifetime in minutes |
+| `FEOH_REDIS_URL`  | `redis://localhost:6379`   | Redis URL for blocklist + active-session tracking |
+| `FEOH_MAX_CONCURRENT_SESSIONS` | `5`        | Concurrent sessions per user. `0` disables the cap. |
 
-Set `AP_SECRET_KEY` to a strong, random value in production.
+Set `FEOH_SECRET_KEY` to a strong, random value in production.
 
 ## RBAC (Role-Based Access Control)
 
@@ -303,7 +303,7 @@ exactly as before.
 ## Testing Auth via curl
 
 ```bash
-# Login and capture token. NOTE: when AP_MFA_ENABLED=true and the user has MFA
+# Login and capture token. NOTE: when FEOH_MFA_ENABLED=true and the user has MFA
 # enrolled (or the org enforces it), the response is an MFAChallengeResponse
 # (no `access_token` field) and you'll need to complete /api/auth/mfa/verify
 # next. The snippet below assumes MFA is off (the local-dev default).
@@ -356,7 +356,7 @@ A single OIDC flow supports both Okta and Entra because they're both OIDC-compli
 
 1. User clicks **Sign in with Okta/Microsoft** on `/login` (button renders only when `GET /api/auth/sso/config?slug=<tenant>` returns `enabled: true`).
 2. Browser navigates to `GET /api/auth/sso/authorize?slug=<tenant>` on the backend.
-3. Backend fetches the discovery doc (cached in Redis for 24h), mints a one-shot `state` + `nonce` into Redis (keyed to the tenant slug), and **302-redirects** to the IdP's `authorization_endpoint` with `redirect_uri` pointing to the *tenant's own subdomain* (built from `AP_TENANT_URL_TEMPLATE`).
+3. Backend fetches the discovery doc (cached in Redis for 24h), mints a one-shot `state` + `nonce` into Redis (keyed to the tenant slug), and **302-redirects** to the IdP's `authorization_endpoint` with `redirect_uri` pointing to the *tenant's own subdomain* (built from `FEOH_TENANT_URL_TEMPLATE`).
 4. User authenticates on the IdP.
 5. IdP redirects back to `<tenant>.app.com/login/sso-callback?code=...&state=...`.
 6. Frontend callback page POSTs `{code, state}` to `/api/auth/sso/callback`.
@@ -371,7 +371,7 @@ A single OIDC flow supports both Okta and Entra because they're both OIDC-compli
 
 ### Why callback URLs are per-tenant
 
-Each customer registers their own Okta/Entra app with `redirect_uri = https://<theirtenant>.app.com/login/sso-callback`. That way the IdP redirects directly to the tenant origin and our localStorage JWT works without cross-origin hops. In dev, `AP_TENANT_URL_TEMPLATE=http://{slug}.localhost:7777` gives each tenant their own callback URL for free.
+Each customer registers their own Okta/Entra app with `redirect_uri = https://<theirtenant>.app.com/login/sso-callback`. That way the IdP redirects directly to the tenant origin and our localStorage JWT works without cross-origin hops. In dev, `FEOH_TENANT_URL_TEMPLATE=http://{slug}.localhost:7777` gives each tenant their own callback URL for free.
 
 ### Local testing with Keycloak (no cloud account)
 
@@ -422,7 +422,7 @@ TOTP-based two-factor with optional email backup. Per-user opt-in by default; ad
 
 ### Master switch
 
-`AP_MFA_ENABLED` (default `false`) is the platform-level gate. When false, all MFA endpoints, login challenges, and enforcement are skipped — useful for local dev where you don't want to scan a QR code every time. Flip to `true` in any deployed environment.
+`FEOH_MFA_ENABLED` (default `false`) is the platform-level gate. When false, all MFA endpoints, login challenges, and enforcement are skipped — useful for local dev where you don't want to scan a QR code every time. Flip to `true` in any deployed environment.
 
 ### Factors
 
@@ -430,13 +430,13 @@ TOTP-based two-factor with optional email backup. Per-user opt-in by default; ad
 |---|---|---|
 | **TOTP** | `totp` | RFC 6238, 30-second window, ±1 step skew tolerance. `pyotp` under the hood. Compatible with Google Authenticator, 1Password, Authy, Microsoft Authenticator. Single-use: a Redis claim (`SET NX`, ~90s TTL bounding the ±1-window validity) rejects a replay of the same code, closing the window the email-OTP path already had. |
 | **Passkey / WebAuthn** | `passkey` | FIDO2 / WebAuthn — a platform authenticator (Touch ID, Face ID, Windows Hello) or a roaming security key. `py_webauthn` under the hood. A **separate code path** from TOTP (`services/webauthn.py`), opt-in and additive: a user can register one or many passkeys alongside or instead of TOTP. |
-| **Email OTP** | `email` | 6-digit code emailed via the configured `AP_EMAIL_PROVIDER`. Lives in Redis with a `AP_MFA_EMAIL_OTP_TTL_SECONDS` TTL (default 6 minutes). Only a server-secret-keyed PBKDF2 digest of the code is stored — Redis dumps don't reveal codes, and keying it (via a secret salt) stops the low-entropy code being brute-forced from the digest. Single-use. |
+| **Email OTP** | `email` | 6-digit code emailed via the configured `FEOH_EMAIL_PROVIDER`. Lives in Redis with a `FEOH_MFA_EMAIL_OTP_TTL_SECONDS` TTL (default 6 minutes). Only a server-secret-keyed PBKDF2 digest of the code is stored — Redis dumps don't reveal codes, and keying it (via a secret salt) stops the low-entropy code being brute-forced from the digest. Single-use. |
 
 Email is offered as a backup so a lost phone doesn't lock the account out. It's also the only available factor for users under org-enforcement who haven't enrolled TOTP yet (verifying email proves inbox ownership before they're allowed to enroll).
 
 ### Passkeys (WebAuthn)
 
-Passkeys are an additional second factor, gated by the same `AP_MFA_ENABLED` master switch. They use the standard two-ceremony WebAuthn protocol:
+Passkeys are an additional second factor, gated by the same `FEOH_MFA_ENABLED` master switch. They use the standard two-ceremony WebAuthn protocol:
 
 **Registration (enroll a passkey — authenticated, on `/profile`):**
 
@@ -468,7 +468,7 @@ POST /api/auth/mfa/passkey/authenticate/verify  {challenge_token, credential}  #
 
 Both authenticate endpoints are **pre-access-token, public-by-design**: the login-issued MFA challenge token (`typ: mfa_challenge`, the same credential the `/mfa/verify` path uses) IS the gate; there is no JWT yet. The register / list / delete endpoints require the normal JWT.
 
-The per-ceremony challenge is server-minted and stashed in Redis (`webauthn:reg_challenge:<user_id>` for registration, `webauthn:auth_challenge:<user_id>` for login, `webauthn:stepup_challenge:<operation>:<user_id>` for a step-up — `AP_WEBAUTHN_CHALLENGE_TTL_SECONDS` TTL, single-use) so the verify call can't be fed an attacker-chosen challenge. **Those namespaces are a security boundary, not bookkeeping** — see "Purpose binding" below. On every successful assertion the credential's monotonic signature counter is verified and bumped — a regression (a cloned authenticator) is rejected per the WebAuthn spec. RP ID and allowed origins are configurable (`AP_WEBAUTHN_RP_ID` / `AP_WEBAUTHN_ORIGINS`); the dev defaults (`localhost` / `http://localhost:7777`) work across every tenant subdomain with no cloud account.
+The per-ceremony challenge is server-minted and stashed in Redis (`webauthn:reg_challenge:<user_id>` for registration, `webauthn:auth_challenge:<user_id>` for login, `webauthn:stepup_challenge:<operation>:<user_id>` for a step-up — `FEOH_WEBAUTHN_CHALLENGE_TTL_SECONDS` TTL, single-use) so the verify call can't be fed an attacker-chosen challenge. **Those namespaces are a security boundary, not bookkeeping** — see "Purpose binding" below. On every successful assertion the credential's monotonic signature counter is verified and bumped — a regression (a cloned authenticator) is rejected per the WebAuthn spec. RP ID and allowed origins are configurable (`FEOH_WEBAUTHN_RP_ID` / `FEOH_WEBAUTHN_ORIGINS`); the dev defaults (`localhost` / `http://localhost:7777`) work across every tenant subdomain with no cloud account.
 
 Stored material — the credential id, COSE public key, and counter — is not secret in the password sense (the private key never leaves the authenticator) and is never logged. The login challenge offers `passkey` as a method whenever the user has at least one registered credential.
 
@@ -520,7 +520,7 @@ POST /api/auth/mfa/passkey/authenticate/verify {challenge_token, credential}
 
 `methods` in the challenge response lists which factors the user can submit (`totp` / `passkey` / `email`), so a user who has registered only a passkey (no TOTP) still trips the MFA gate and is offered `passkey`.
 
-The challenge token is itself a short-lived JWT (`AP_MFA_CHALLENGE_TTL_SECONDS`, default 5 minutes) with `typ: mfa_challenge`. That keeps the flow stateless — no DB row to garbage-collect. A regular access token won't satisfy the challenge endpoint and vice versa.
+The challenge token is itself a short-lived JWT (`FEOH_MFA_CHALLENGE_TTL_SECONDS`, default 5 minutes) with `typ: mfa_challenge`. That keeps the flow stateless — no DB row to garbage-collect. A regular access token won't satisfy the challenge endpoint and vice versa.
 
 **Single-use.** The challenge token's `jti` is blocklisted (the same Redis blocklist `/logout` uses) the moment a factor verify actually mints a real access token — `/mfa/verify` (totp/email) and `/mfa/passkey/authenticate/verify` both consume it on success. A decode also checks the blocklist, so replaying an already-used token — even with a fresh, still-valid code — gets a clean 401 instead of a second session. Requesting an email OTP or starting a passkey ceremony does *not* consume the token (the user hasn't completed a factor yet), so those can be called more than once before the exchange finishes. The vendor portal's `vendor_mfa_challenge` token gets the identical treatment.
 
@@ -537,7 +537,7 @@ POST /api/auth/mfa/step-up/passkey {operation}              # mint a step-up ass
 
 The QR code is returned inline as a `data:image/png;base64,...` URL so the frontend doesn't need a separate authed image endpoint. The plaintext base32 secret is also returned so users without a camera-equipped scanner can paste it manually.
 
-**Enrollment never disturbs the factor already in force.** `/mfa/enroll` mints a *candidate* secret and parks it in Redis (`mfa:pending_enroll:<user_id>`, `AP_MFA_ENROLL_PENDING_TTL_SECONDS`, default 15 min). `User.mfa_secret` / `mfa_enabled` / `mfa_enrolled_at` are written by `/mfa/enroll/verify` and nowhere else, so an abandoned or half-finished enrollment leaves the account exactly as it was. Previously enroll-start wrote the new secret straight onto the row and cleared `mfa_enabled`, which made *starting* an enrollment a silent second-factor strip.
+**Enrollment never disturbs the factor already in force.** `/mfa/enroll` mints a *candidate* secret and parks it in Redis (`mfa:pending_enroll:<user_id>`, `FEOH_MFA_ENROLL_PENDING_TTL_SECONDS`, default 15 min). `User.mfa_secret` / `mfa_enabled` / `mfa_enrolled_at` are written by `/mfa/enroll/verify` and nowhere else, so an abandoned or half-finished enrollment leaves the account exactly as it was. Previously enroll-start wrote the new secret straight onto the row and cleared `mfa_enabled`, which made *starting* an enrollment a silent second-factor strip.
 
 **Changing an existing factor is a step-up operation.** When the account already has a live factor, `/mfa/enroll` (and `/mfa/passkey/register` — see below) requires one of:
 
@@ -570,7 +570,7 @@ Every step-up check is **throttled and audited**: 5 attempts per minute keyed on
 | Data | Lives in | Why |
 |---|---|---|
 | `User.mfa_secret` (base32) | control-plane DB | Per-user, durable, written ONLY by a successful `/mfa/enroll/verify`. |
-| Pending (unverified) enrollment secret | Redis (`mfa:pending_enroll:<user_id>`, `mfa:vendor_pending_enroll:<id>`) | The candidate from an in-flight enrollment. Kept off the account row so starting an enrollment can't disturb the factor already in force; TTL `AP_MFA_ENROLL_PENDING_TTL_SECONDS`, consumed on verify. |
+| Pending (unverified) enrollment secret | Redis (`mfa:pending_enroll:<user_id>`, `mfa:vendor_pending_enroll:<id>`) | The candidate from an in-flight enrollment. Kept off the account row so starting an enrollment can't disturb the factor already in force; TTL `FEOH_MFA_ENROLL_PENDING_TTL_SECONDS`, consumed on verify. |
 | `User.mfa_enabled`, `mfa_enrolled_at` | control-plane DB | Drives login-flow decisions. |
 | `WebAuthnCredential` rows (credential id, COSE public key, sign counter) | control-plane DB (`webauthn_credentials`, migration 0063) | One row per registered passkey, keyed by `user_id` (control-plane, never tenant-fanned). Not secret in the password sense; never logged. |
 | `Organization.settings.mfa.required` | control-plane DB (JSONB) | Org-wide policy; lives next to other settings. |
@@ -584,13 +584,13 @@ OIDC SSO sign-in does **not** trigger our MFA challenge — the IdP is the sourc
 
 ### Supplier-portal MFA (vendor users)
 
-The supplier portal has its own TOTP MFA (with an email-OTP backup) for `VendorUser`s, mirroring this flow but on the separate vendor auth surface (`typ=vendor` JWT, tenant-scoped). It reuses the same `services/mfa.py` primitives and the same `AP_MFA_ENABLED` master switch.
+The supplier portal has its own TOTP MFA (with an email-OTP backup) for `VendorUser`s, mirroring this flow but on the separate vendor auth surface (`typ=vendor` JWT, tenant-scoped). It reuses the same `services/mfa.py` primitives and the same `FEOH_MFA_ENABLED` master switch.
 
 - **Columns:** `vendor_users.mfa_secret` / `mfa_enabled` / `mfa_enrolled_at` (migration `0053_vendor_mfa`, tenant DB) — the exact shape of the `User` MFA columns. The email-OTP backup needs no column (Redis-only, like the employee one).
-- **Opt-in per vendor user.** There's no org-wide enforcement for vendors (unlike employee `Organization.settings.mfa.required`). With `AP_MFA_ENABLED=false` (local-dev default), an enrolled vendor still logs in with just a password.
+- **Opt-in per vendor user.** There's no org-wide enforcement for vendors (unlike employee `Organization.settings.mfa.required`). With `FEOH_MFA_ENABLED=false` (local-dev default), an enrolled vendor still logs in with just a password.
 - **Login challenge** returns `PortalMFAChallengeResponse` (`methods: ["totp", "email"]`); the vendor completes `POST /api/portal/auth/mfa/challenge` (with `method` totp|email) to mint the access token. Enroll / verify / disable live at `/api/portal/auth/mfa/{enroll,verify,disable}`.
 - **Same enrollment safety as the employee surface.** `/portal/auth/mfa/enroll` parks a *candidate* secret in Redis (`mfa:vendor_pending_enroll:<id>`) and writes nothing to `vendor_users`; only `/mfa/verify` promotes it. Re-enrolling over a live factor requires the same `{password?, code?}` step-up (portal password or a code from the current authenticator), so a stolen vendor session can't strip or swap the supplier's second factor. First-time enrollment needs no step-up.
-- **Email-OTP backup.** When the vendor has lost their authenticator, `POST /api/portal/auth/mfa/challenge/email` (public, gated by the `vendor_mfa_challenge` token) emails a single-use 6-digit code via the configured email adapter (`console` in dev). Its server-secret-keyed PBKDF2 digest lives in Redis under a distinct keyspace (`mfa:vendor_email_otp:<id>`, separate from the employee `mfa:email_otp:`) with the `AP_MFA_EMAIL_OTP_TTL_SECONDS` TTL. Gated on the vendor having enrolled TOTP — a backup to the authenticator, not a standalone enrollment path. 204-silent for unenrolled / unknown accounts (no enumeration); OTP + email never logged.
+- **Email-OTP backup.** When the vendor has lost their authenticator, `POST /api/portal/auth/mfa/challenge/email` (public, gated by the `vendor_mfa_challenge` token) emails a single-use 6-digit code via the configured email adapter (`console` in dev). Its server-secret-keyed PBKDF2 digest lives in Redis under a distinct keyspace (`mfa:vendor_email_otp:<id>`, separate from the employee `mfa:email_otp:`) with the `FEOH_MFA_EMAIL_OTP_TTL_SECONDS` TTL. Gated on the vendor having enrolled TOTP — a backup to the authenticator, not a standalone enrollment path. 204-silent for unenrolled / unknown accounts (no enumeration); OTP + email never logged.
 - **Token-type isolation.** The portal challenge token carries `typ=vendor_mfa_challenge` — distinct from the employee challenge (`mfa_challenge`) and the vendor access token (`vendor`) — so the three token types can never be substituted for one another across surfaces. Full reference: `backend/docs/supplier-portal.md` § MFA.
 
 ### Endpoints
@@ -608,7 +608,7 @@ The supplier portal has its own TOTP MFA (with an email-OTP backup) for `VendorU
 
 - **WebAuthn / passkeys** — tracked in roadmap. TOTP covers the bulk of "we need MFA" asks; WebAuthn is a separate, more involved code path.
 - **Backup codes (static)** — email-OTP fills the same recovery role and doesn't require the user to safely store anything.
-- **Mobile MFA** — the Flutter app currently expects `TokenResponse` from `/login` and doesn't handle `MFAChallengeResponse`. Mobile users can sign in with `AP_MFA_ENABLED=false`. Mobile MFA is on the roadmap.
+- **Mobile MFA** — the Flutter app currently expects `TokenResponse` from `/login` and doesn't handle `MFAChallengeResponse`. Mobile users can sign in with `FEOH_MFA_ENABLED=false`. Mobile MFA is on the roadmap.
 
 ---
 

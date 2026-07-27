@@ -33,7 +33,7 @@ import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixt
  * IP (10 / 60 s). Under the local 4-worker model every worker hits that
  * endpoint from the same loopback IP, so the bucket can saturate and those
  * three tests get a 429 on the helper login. CI runs the e2e backend with
- * `AP_RATE_LIMIT_ENABLED=false` precisely for this reason (see
+ * `FEOH_RATE_LIMIT_ENABLED=false` precisely for this reason (see
  * `.github/workflows/ci.yml`), and these tests are green there. The other
  * eight tests touch no login endpoint and pass unconditionally.
  */
@@ -200,7 +200,7 @@ test.describe('/invoices lifecycle — forward money path', () => {
 			await action(page, inv.id, 'approve');
 			expect((await getInvoice(page, inv.id)).status).toBe('approved');
 
-			// The committed .env.development sets AP_APPROVAL_SIGNING_KEY to a
+			// The committed .env.development sets FEOH_APPROVAL_SIGNING_KEY to a
 			// (non-secret) dev value, so the approval is signed and re-verifies
 			// true. A post-approval tamper would flip this to valid:false.
 			const verify = await page.request.get(
