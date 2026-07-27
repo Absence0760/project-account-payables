@@ -83,7 +83,7 @@ dev = [
     # to a single minor keeps CI's `pip install` from quietly picking
     # up stricter rules than the local venv runs. Bump intentionally
     # via dependabot or a manual upgrade pass.
-    "ruff>=0.15.22,<0.16",
+    "ruff>=0.16.0,<0.17",
 ]
 # Optional: auto-rotation of scanned invoice pages via Tesseract OSD.
 # Install with `pip install -e ".[ocr]"` and ensure the `tesseract` binary
@@ -103,6 +103,15 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+
+[tool.ruff.format]
+# ruff 0.16 began formatting Python code blocks embedded in Markdown, which
+# put 11 docs (including CLAUDE.md) permanently red under
+# `ruff format --check .`. This config lints and formats Python *source*; the
+# docs' snippets are illustrative rather than runnable — elided bodies (`...`),
+# and comment alignment used for emphasis (`db.add(card)   # WRONG — pending`)
+# that the formatter collapses. Prose stays hand-formatted.
+exclude = ["*.md"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

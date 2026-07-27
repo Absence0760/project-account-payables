@@ -911,6 +911,10 @@ See `infra/README.md` and the comments at the top of `.sops.yaml` for full conte
 
 - **Async only** — all DB operations use SQLAlchemy 2 async. Don't introduce sync DB calls.
 - **ruff** — `ruff check .` and `ruff format .` before committing. Line length 100.
+  `[tool.ruff.format] exclude = ["*.md"]` keeps the formatter on Python source:
+  ruff 0.16 started formatting Python blocks embedded in Markdown, and the docs'
+  snippets are illustrative (elided `...` bodies, comment alignment used for
+  emphasis) rather than runnable. Lint rules are unaffected.
 - **Schemas** — Pydantic v2 models in `app/schemas/` for all request/response types.
 - **No dotenv in Lambda paths** — `main.py` imports dotenv for local dev; Lambda entry points must not.
 - **Tenant isolation** — always resolve tenant via dependency injection (`get_tenant_db()`), never hardcode DB names.
