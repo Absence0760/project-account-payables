@@ -16,7 +16,15 @@
 (spa) {
 	root * /srv
 	encode zstd gzip
-	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+	# Tablestakes security headers for the static SPA. The API host doesn't
+	# need them here — the backend middleware (app/main.py) sets its own on
+	# every response. No CSP: SvelteKit's hydration uses inline scripts.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+	}
 	try_files {path} /index.html
 	file_server
 }

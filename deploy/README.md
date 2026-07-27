@@ -32,9 +32,10 @@ The whole flow is four commands on a fresh VM:
   `BACKUP_S3_BUCKET` — and the KMS key).
 - EC2 `t4g.small` (Amazon Linux 2023 arm64 recommended), 30 GB gp3, ports
   80/443 open. Instance profile: `kms:Decrypt` on the sops key; S3 read/write
-  on the invoice-files, audit-logs, and backup buckets; `ses:SendEmail` if
-  using SES; ideally `ec2:ModifyInstanceMetadataOptions` so bootstrap can fix
-  the IMDS hop limit itself.
+  (`s3:GetObject/PutObject/AbortMultipartUpload/ListBucket`) on the
+  invoice-files, audit-logs, and backup buckets; `ses:SendEmail` if using
+  SES; ideally `ec2:ModifyInstanceMetadataOptions` so bootstrap can fix the
+  IMDS hop limit itself.
 - DNS: three records → this VM: `app.feohledger.com`, `api.feohledger.com`, and a
   **wildcard** `*.app.feohledger.com` (the wildcard makes tenant onboarding
   DNS-free; it needs no wildcard certificate — Caddy issues per-host certs).

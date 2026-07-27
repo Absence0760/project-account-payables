@@ -111,7 +111,9 @@ resize is a stop → change-type → start. Add 2 GB of swap either way.
 - EC2 `t4g.small`, Amazon Linux 2023 arm64, 30 GB gp3, security group: 80/443
   from anywhere, 22 from your IP (or SSM Session Manager and no 22 at all).
 - Instance profile: `kms:Decrypt` on the sops key; `s3:GetObject/PutObject/
-  ListBucket` on the invoice-files, audit-logs, and backups buckets;
+  AbortMultipartUpload/ListBucket` on the invoice-files, audit-logs, and
+  backups buckets (Abort because `backup.sh` streams multipart — a failed
+  upload must be abortable, and the lifecycle reaper handles stragglers);
   `ses:SendEmail` if using SES; ideally `ec2:ModifyInstanceMetadataOptions`
   so bootstrap can fix the IMDSv2 hop limit itself (containers can't reach
   instance-profile credentials through Docker's NAT at the default limit
@@ -138,7 +140,12 @@ Four services (see [`deploy/README.md`](../deploy/README.md) for operations):
   `t3a.small`, ~$14). Runs the image CMD, `uvicorn app.main:app` (the
   production entrypoint — not `main.py`). `FEOH_DATABASE_URL` / `FEOH_REDIS_URL`
   are derived in the compose file from `POSTGRES_PASSWORD`, so the DB
-  password lives in exactly one sops entry.
+  password lives in exactly one sops entry. The compose network is pinned
+  (`172.28.0.0/16`) and `FEOH_TRUSTED_PROXY_CIDRS` defaults to it, so per-IP
+  rate limits and the login/signup audit rows key on the real client from
+  Caddy's `X-Forwarded-For` — untrusted, every user would collapse into the
+  proxy's container IP and the signup/login caps would throttle everyone
+  collectively.
 - `caddy` — ports 80/443, mounts the built `frontend/build` as the site root
   plus `deploy/Caddyfile` (domains via env) and the per-VM, gitignored
   `deploy/tenants.caddy` host list (one block per tenant subdomain —
@@ -161,6 +168,7 @@ Beyond the committed defaults, the deployed env sets at minimum:
 | `POSTGRES_PASSWORD` | `openssl rand -hex 24` (compose derives `FEOH_DATABASE_URL` / `FEOH_REDIS_URL` from it — don't set those) |
 | `FEOH_S3_BUCKET` | invoice-files bucket; set `FEOH_S3_ENDPOINT_URL` / `FEOH_S3_ACCESS_KEY` / `FEOH_S3_SECRET_KEY` **empty** → real S3 via the instance-profile credential chain |
 | `FEOH_MFA_ENABLED` / `FEOH_HSTS_ENABLED` | `true` / `true` |
+| `FEOH_WEBAUTHN_RP_ID` / `FEOH_WEBAUTHN_ORIGINS` | `app.feohledger.com` / `https://app.feohledger.com,https://*.app.feohledger.com` — with MFA on, the localhost dev defaults reject every prod origin and passkeys silently fail; the wildcard entry covers each tenant subdomain |
 | `FEOH_PUBLIC_URL` / `FEOH_API_PUBLIC_URL` | `https://app.feohledger.com` / `https://api.feohledger.com` |
 | `FEOH_TENANT_URL_TEMPLATE` | `https://{slug}.app.feohledger.com` |
 | `FEOH_CORS_PRODUCTION_DOMAIN` | `app.feohledger.com` |
