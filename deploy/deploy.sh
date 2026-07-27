@@ -45,13 +45,22 @@ if [ "$DO_PULL" = 1 ]; then
 fi
 
 # Secrets: decrypt fresh on every deploy (KMS access via the instance
-# profile). Both files are gitignored.
+# profile). Both files are gitignored. Decrypt to a temp file and move into
+# place atomically — `sops -d >.env` would truncate .env before decrypting,
+# so a KMS outage / bad file would leave an empty .env that breaks the
+# nightly backup.sh and add-tenant.sh until the next successful deploy.
 umask 077
-sops -d .env.sops >.env
+trap 'rm -f .env.tmp' EXIT
+sops -d .env.sops >.env.tmp
+mv .env.tmp .env
 
-# Everything compose interpolation / the app cannot default sensibly.
+# Everything compose interpolation / the app cannot default sensibly, plus
+# the vars the app hard-refuses to boot without in a deployed env
+# (FEOH_ENVIRONMENT=production arms those boot checks; FEOH_HCAPTCHA_SECRET
+# is one of them) and the two S3 buckets uploads/backups silently need.
 MISSING=""
-for var in POSTGRES_PASSWORD APP_DOMAIN API_DOMAIN ACME_EMAIL AWS_REGION FEOH_SECRET_KEY; do
+for var in POSTGRES_PASSWORD APP_DOMAIN API_DOMAIN ACME_EMAIL AWS_REGION \
+	FEOH_SECRET_KEY FEOH_ENVIRONMENT FEOH_S3_BUCKET BACKUP_S3_BUCKET FEOH_HCAPTCHA_SECRET; do
 	grep -Eq "^${var}=.+" .env || MISSING="$MISSING $var"
 done
 [ -z "$MISSING" ] || die "required var(s) missing/empty in the sops env:$MISSING (contract: deploy/env.example)"
