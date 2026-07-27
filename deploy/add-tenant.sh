@@ -49,15 +49,22 @@ if [ -z "$PASSWORD" ]; then
 	FORCE_CHANGE=(--force-password-change)
 fi
 
+# --skip-existing makes the whole script re-runnable: if a previous run
+# provisioned the tenant but died before the Caddy step, the re-run skips
+# provisioning cleanly instead of tripping the deliberate duplicate-slug
+# error, and still repairs the Caddy side below.
 "${COMPOSE[@]}" exec -T api python scripts/create_tenant.py \
 	--name "$NAME" --slug "$SLUG" \
 	--admin-email "$EMAIL" --admin-password "$PASSWORD" \
-	"${FORCE_CHANGE[@]}"
+	--skip-existing "${FORCE_CHANGE[@]}"
 
 if ! grep -q "^${HOST} {" tenants.caddy 2>/dev/null; then
 	printf '\n%s {\n\timport spa\n}\n' "$HOST" >>tenants.caddy
-	"${COMPOSE[@]}" exec caddy caddy reload --config /etc/caddy/Caddyfile
 fi
+# Reload unconditionally (zero-downtime, no-op when nothing changed) — inside
+# the grep guard a re-run after "block appended but reload failed" would skip
+# the reload forever and the tenant host would never start serving.
+"${COMPOSE[@]}" exec caddy caddy reload --config /etc/caddy/Caddyfile
 
 echo
 echo "tenant ready: https://${HOST}"
