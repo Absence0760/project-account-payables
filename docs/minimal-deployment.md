@@ -197,7 +197,7 @@ run `scripts/seed.py` (demo data) in prod.
 
 ### 5. Backups (`deploy/backup.sh` — built; this is the whole DR story)
 
-- Nightly cron (installed by `bootstrap-vm.sh` as `/etc/cron.d/ap-backup`):
+- Nightly cron (installed by `bootstrap-vm.sh` as `/etc/cron.d/feoh-backup`):
   dumps role globals + per-DB
   `pg_dump -Fc` of `feohledger` and every `feoh_*` tenant DB, streamed
   straight to a versioned backups bucket (nothing persists on disk). Add an

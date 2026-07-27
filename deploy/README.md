@@ -57,7 +57,7 @@ provisions everything and prints the login URL + temp password. Don't run
 
 ## Backups
 
-Installed by bootstrap as `/etc/cron.d/ap-backup` (03:17 UTC nightly,
-logging to `/var/log/ap-backup.log`). Restore a single DB (test this once
+Installed by bootstrap as `/etc/cron.d/feoh-backup` (03:17 UTC nightly,
+logging to `/var/log/feoh-backup.log`). Restore a single DB (test this once
 before calling backups done):
 `aws s3 cp s3://<bucket>/pg/<date>/<db>.dump - | docker compose -f compose.prod.yml exec -T postgres pg_restore -U postgres --create -d postgres`

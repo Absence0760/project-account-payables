@@ -640,7 +640,7 @@ jobs:
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
       AWS_DEFAULT_REGION: us-east-1
-      FEOH_AUDIT_SHIPPING_S3_BUCKET: ap-audit-worm
+      FEOH_AUDIT_SHIPPING_S3_BUCKET: feoh-audit-worm
       FEOH_STRIPE_API_BASE: http://localhost:12111/v1
 
     steps:
@@ -694,7 +694,7 @@ jobs:
           for i in $(seq 1 30); do curl -s -o /dev/null "http://localhost:12111/v1/treasury/financial_accounts" -H "Authorization: Bearer sk_test_x" && { echo "stripe-mock up"; break; }; sleep 2; done
           # LocalStack init (queues / bucket / log group / SES identity) lands a
           # moment after health — poll for the object-lock bucket.
-          for i in $(seq 1 30); do docker compose exec -T localstack awslocal s3 ls s3://ap-audit-worm >/dev/null 2>&1 && { echo "localstack resources ready"; break; }; sleep 2; done
+          for i in $(seq 1 30); do docker compose exec -T localstack awslocal s3 ls s3://feoh-audit-worm >/dev/null 2>&1 && { echo "localstack resources ready"; break; }; sleep 2; done
 
       - name: Seed database (lean)
         working-directory: backend

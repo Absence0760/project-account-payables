@@ -57,12 +57,12 @@ if ! swapon --show | grep -q .; then
 	echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
 fi
 
-echo "==> nightly backup cron (/etc/cron.d/ap-backup)"
-sudo tee /etc/cron.d/ap-backup >/dev/null <<-EOF
-	17 3 * * * $USER $REPO_ROOT/deploy/backup.sh >> /var/log/ap-backup.log 2>&1
+echo "==> nightly backup cron (/etc/cron.d/feoh-backup)"
+sudo tee /etc/cron.d/feoh-backup >/dev/null <<-EOF
+	17 3 * * * $USER $REPO_ROOT/deploy/backup.sh >> /var/log/feoh-backup.log 2>&1
 EOF
-sudo touch /var/log/ap-backup.log
-sudo chown "$USER" /var/log/ap-backup.log
+sudo touch /var/log/feoh-backup.log
+sudo chown "$USER" /var/log/feoh-backup.log
 
 # IMDSv2 hop limit: 1 (the default) stops containers one NAT hop away from
 # reaching instance-profile credentials. Harmless to re-apply.

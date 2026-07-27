@@ -62,7 +62,7 @@ def test_s3_objectlock_adapter_uses_endpoint_when_set(captured_client, monkeypat
     from app.services.audit_shipping.s3_objectlock_adapter import S3ObjectLockAdapter
 
     monkeypatch.setattr(settings, "aws_endpoint_url", LOCAL)
-    S3ObjectLockAdapter({"bucket_name": "ap-audit-worm"})
+    S3ObjectLockAdapter({"bucket_name": "feoh-audit-worm"})
     assert captured_client[-1]["service"] == "s3"
     assert captured_client[-1]["endpoint_url"] == LOCAL
 

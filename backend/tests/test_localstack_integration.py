@@ -15,7 +15,7 @@ Run locally:
     pnpm aws:up
     FEOH_AWS_ENDPOINT_URL=http://localhost:4566 AWS_ACCESS_KEY_ID=test \
       AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1 \
-      FEOH_AUDIT_SHIPPING_S3_BUCKET=ap-audit-worm \
+      FEOH_AUDIT_SHIPPING_S3_BUCKET=feoh-audit-worm \
       pytest tests/test_localstack_integration.py -v
 """
 
@@ -29,7 +29,7 @@ import httpx
 import pytest
 
 ENDPOINT = os.environ.get("FEOH_AWS_ENDPOINT_URL", "")
-BUCKET = os.environ.get("FEOH_AUDIT_SHIPPING_S3_BUCKET", "ap-audit-worm")
+BUCKET = os.environ.get("FEOH_AUDIT_SHIPPING_S3_BUCKET", "feoh-audit-worm")
 
 
 def _localstack_up() -> bool:

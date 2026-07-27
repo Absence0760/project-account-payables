@@ -95,14 +95,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build backend image
-        run: docker build -t ap-backend:scan ./backend
+        run: docker build -t feoh-backend:scan ./backend
 
       - name: Trivy scan
         # Pin to an actual published tag. `0.28.0` was a typo — Trivy's
         # v0.x/v1.x tags live at https://github.com/aquasecurity/trivy-action/releases.
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: ap-backend:scan
+          image-ref: feoh-backend:scan
           format: sarif
           output: trivy-backend.sarif
           # Only fail the build on HIGH or CRITICAL — anything below is

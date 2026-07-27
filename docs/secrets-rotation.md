@@ -55,15 +55,15 @@ The KMS key encrypts every secret in `backend/.env.sops` and `infra/terraform.tf
 
 **Auto-rotation** — preferred. AWS KMS rotates the key material annually with no operator action when the `EnableKeyRotation` flag is set:
 ```bash
-aws kms enable-key-rotation --key-id alias/ap-sops
-aws kms get-key-rotation-status --key-id alias/ap-sops
+aws kms enable-key-rotation --key-id alias/feohledger-sops
+aws kms get-key-rotation-status --key-id alias/feohledger-sops
 ```
 
 **Manual rotation to a brand-new key** — if the key needs to be replaced (compromised IAM principal, audit finding):
 1. Create a new key + alias:
    ```bash
    aws kms create-key --description 'AP SOPS rotation' --key-usage ENCRYPT_DECRYPT
-   aws kms create-alias --alias-name alias/ap-sops-new --target-key-id <new-key-id>
+   aws kms create-alias --alias-name alias/feohledger-sops-new --target-key-id <new-key-id>
    ```
 2. Update `.sops.yaml` to point at the new alias.
 3. Re-encrypt every SOPS file under the new key:
@@ -85,7 +85,7 @@ aws kms get-key-rotation-status --key-id alias/ap-sops
    ```
 2. Update via the AWS Console or CLI:
    ```bash
-   aws rds modify-db-instance --db-instance-identifier ap-prod \
+   aws rds modify-db-instance --db-instance-identifier feoh-prod \
      --master-user-password '<new>' --apply-immediately
    ```
 3. Update `FEOH_DATABASE_URL` in `backend/.env.sops`.

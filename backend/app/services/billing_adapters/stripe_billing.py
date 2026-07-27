@@ -160,6 +160,11 @@ class StripeBillingAdapter(BillingAdapter):
             form["name"] = name
         if email:
             form["email"] = email
+        # The "ap-" prefix is frozen and deliberately survived the FeohLedger
+        # rename: this string IS the idempotency key Stripe already has on
+        # record for previously-created customers. Renaming it would make the
+        # next retry look like a brand-new request and create a DUPLICATE
+        # customer. It is an opaque key, never shown to anyone.
         headers = {"Idempotency-Key": f"ap-customer-{organization_id}"}
         async with self._client() as client:
             resp = await client.post("/v1/customers", data=form, headers=headers)
@@ -188,6 +193,8 @@ class StripeBillingAdapter(BillingAdapter):
             "product_data[name]": plan_code,
             "metadata[plan_code]": plan_code,
         }
+        # Frozen prefix — see ensure_customer: renaming an idempotency key
+        # already registered with Stripe would duplicate the price on retry.
         headers = {"Idempotency-Key": f"ap-price-{plan_code}-{unit_amount}-{cur}"}
         async with self._client() as client:
             resp = await client.post("/v1/prices", data=form, headers=headers)

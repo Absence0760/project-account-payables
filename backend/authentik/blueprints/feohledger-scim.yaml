@@ -22,7 +22,7 @@ metadata:
     blueprints.goauthentik.io/instantiate: "true"
 entries:
   - model: authentik_providers_scim.scimprovider
-    id: ap-scim-provider
+    id: feoh-scim-provider
     identifiers:
       name: FeohLedger SCIM
     attrs:
@@ -39,19 +39,19 @@ entries:
       property_mappings_group: []
 
   - model: authentik_core.application
-    id: ap-app
+    id: feoh-app
     identifiers:
       slug: feohledger
     attrs:
       name: FeohLedger
       slug: feohledger
-      provider: !KeyOf ap-scim-provider
+      provider: !KeyOf feoh-scim-provider
       meta_description: Local SCIM provisioning target for FeohLedger.
 
   # A demo user to provision. Assign more users to the application (or remove
   # exclude filters) to push them on the next sync.
   - model: authentik_core.user
-    id: ap-scim-demo-user
+    id: feoh-scim-demo-user
     identifiers:
       username: scim.demo
     attrs:

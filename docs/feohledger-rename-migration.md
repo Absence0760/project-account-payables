@@ -4,9 +4,10 @@ One-time migration for environments provisioned **before** the rename. A fresh
 clone needs none of this — the defaults are already correct, and `pnpm dev:all`
 comes up clean.
 
-The rename changed four things that live outside the code: environment
-variable names, database names, the SOPS KMS alias, and the local IdP realm.
-Each is covered below. Work top to bottom — steps 2 and 3 depend on step 1.
+The rename changed five things that live outside the code: environment variable
+names, database names, the SOPS KMS alias, the local IdP realm, and the
+deployment resource names. Sections 1–5 need action; 6–7 are informational.
+Work top to bottom.
 
 > **Not renamed, on purpose.** The RBAC roles `ap_manager` / `ap_clerk`, the
 > chat author type `ap_team`, and the audit actor `ap_user` keep their names:
@@ -99,7 +100,43 @@ the IdP containers:
 pnpm idp:down && pnpm idp:up && pnpm idp:seed   # add saml:seed / scim:seed as needed
 ```
 
-## 5. Client-side state (informational — no action)
+## 5. Deployment resource names (one-VM / compose deployments)
+
+Infrastructure resource names lost their `ap-` prefix. These are not read from
+the database, so they only matter where the old name is already materialised.
+
+| Resource | Old | New |
+|---|---|---|
+| Compose project | `ap-prod` | `feoh-prod` |
+| pnpm store volume | `ap-prod-pnpm-store` | `feoh-prod-pnpm-store` |
+| Backup cron / log | `/etc/cron.d/ap-backup`, `/var/log/ap-backup.log` | `feoh-backup` |
+| SQS queues (lambda dispatch modes) | `ap-extraction`, `ap-erp`, `ap-audit` | `feoh-*` |
+| Audit WORM bucket | `ap-audit-worm` | `feoh-audit-worm` |
+
+**The compose project rename is the one with teeth.** Docker Compose scopes
+containers, networks and volumes by project name, so after the rename the stack
+no longer *sees* the running `ap-prod` resources — `docker compose up` starts a
+second, empty set rather than upgrading the old one. Stop the old project by its
+old name first, and move the Postgres volume across (or restore from backup):
+
+```bash
+cd deploy
+docker compose -p ap-prod -f compose.prod.yml down     # stop under the OLD name
+sudo rm -f /etc/cron.d/ap-backup                        # bootstrap-vm.sh reinstalls it
+./bootstrap-vm.sh                                       # or just re-run deploy.sh
+```
+
+If `FEOH_EXTRACTION_MODE` / `FEOH_ERP_MODE` / `FEOH_AUDIT_MODE` are still
+`local` (the default), the SQS queues are unused and nothing needs recreating —
+just update `FEOH_SQS_*_QUEUE_URL` if you later switch to `lambda`.
+
+> **Fixed in this change:** `deploy/backup.sh` selected tenant databases with
+> `LIKE 'ap\_%'`. Left as-is it would have matched nothing after the rename and
+> backed up only the control plane — silently, with a success message. It now
+> matches `feoh\_%`. If you run a pre-rename backup script against renamed
+> databases, check its output count before trusting it.
+
+## 6. Client-side state (informational — no action)
 
 These reset themselves once, per device:
 
@@ -110,7 +147,7 @@ These reset themselves once, per device:
 | `ap_cache.db` → `feohledger_cache.db` (mobile) | Offline cache starts empty and refills on next sync |
 | Mobile application id → `com.feohledger.mobile` | An installed build is replaced, not upgraded |
 
-## 6. API keys and webhooks (informational — no action)
+## 7. API keys and webhooks (informational — no action)
 
 Newly minted API keys carry the `feoh_live_` brand instead of `ap_live_`.
 **Existing keys keep working**: lookup is by the stored prefix plus a SHA-256

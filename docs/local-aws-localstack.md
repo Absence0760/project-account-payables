@@ -30,12 +30,12 @@ pnpm aws:down      # stop it when done
 
 | Resource | Value | Used by |
 |---|---|---|
-| SQS queue | `ap-extraction` | `FEOH_EXTRACTION_MODE=lambda` |
-| SQS queue | `ap-erp` | `FEOH_ERP_MODE=lambda` |
-| SQS queue | `ap-audit` | `FEOH_AUDIT_MODE=lambda` |
+| SQS queue | `feoh-extraction` | `FEOH_EXTRACTION_MODE=lambda` |
+| SQS queue | `feoh-erp` | `FEOH_ERP_MODE=lambda` |
+| SQS queue | `feoh-audit` | `FEOH_AUDIT_MODE=lambda` |
 | SES identity | `no-reply@localhost` | `ses` email adapter |
 | CloudWatch log group | `/ap/audit` | `cloudwatch` audit sink |
-| S3 bucket (Object Lock) | `ap-audit-worm` | `s3_objectlock` audit sink |
+| S3 bucket (Object Lock) | `feoh-audit-worm` | `s3_objectlock` audit sink |
 
 The single knob is **`FEOH_AWS_ENDPOINT_URL`** (`app/config.py`). When set, the SQS
 dispatch clients, the `ses` email adapter, and the `cloudwatch` / `s3_objectlock`
@@ -53,7 +53,7 @@ The headline SOC 2 path — previously only the `mock` sink ran locally.
 # backend/.env (plus the four AWS vars above)
 FEOH_AUDIT_SHIPPING_ENABLED=true
 FEOH_AUDIT_SHIPPING_PROVIDERS=cloudwatch,s3_objectlock
-FEOH_AUDIT_SHIPPING_S3_BUCKET=ap-audit-worm
+FEOH_AUDIT_SHIPPING_S3_BUCKET=feoh-audit-worm
 FEOH_AUDIT_SHIPPING_CLOUDWATCH_GROUP=/ap/audit
 ```
 
@@ -62,7 +62,7 @@ after the shipper tick:
 
 ```bash
 docker compose -f backend/docker-compose.yml exec localstack \
-  awslocal s3 ls s3://ap-audit-worm --recursive
+  awslocal s3 ls s3://feoh-audit-worm --recursive
 docker compose -f backend/docker-compose.yml exec localstack \
   awslocal logs describe-log-streams --log-group-name /ap/audit
 ```
@@ -72,7 +72,7 @@ docker compose -f backend/docker-compose.yml exec localstack \
 ```bash
 # backend/.env
 FEOH_EXTRACTION_MODE=lambda
-FEOH_SQS_EXTRACTION_QUEUE_URL=http://localhost:4566/000000000000/ap-extraction
+FEOH_SQS_EXTRACTION_QUEUE_URL=http://localhost:4566/000000000000/feoh-extraction
 # (and FEOH_ERP_MODE / FEOH_SQS_ERP_QUEUE_URL, FEOH_AUDIT_MODE / FEOH_SQS_AUDIT_QUEUE_URL)
 ```
 
@@ -80,7 +80,7 @@ Trigger an extraction; the job lands on the queue instead of the in-process pool
 
 ```bash
 docker compose -f backend/docker-compose.yml exec localstack \
-  awslocal sqs receive-message --queue-url http://localhost:4566/000000000000/ap-extraction
+  awslocal sqs receive-message --queue-url http://localhost:4566/000000000000/feoh-extraction
 ```
 
 (There's no local Lambda consumer — this verifies the *dispatch* half. The

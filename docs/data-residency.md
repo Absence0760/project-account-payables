@@ -54,8 +54,8 @@ as the platform default region.
 | `au` | Australia | Privacy Act / APP cross-border-disclosure restrictions. |
 
 Each region maps to a documented placement in `REGION_PLACEMENT` — an intended
-Postgres cluster name (e.g. `ap-pg-eu-central-1`), an object-storage bucket
-(e.g. `ap-tenant-files-eu`), and the S3 region + endpoint for that bucket.
+Postgres cluster name (e.g. `feoh-pg-eu-central-1`), an object-storage bucket
+(e.g. `feoh-tenant-files-eu`), and the S3 region + endpoint for that bucket.
 These are target names the future connection/provisioning layer will resolve
 against; nothing here is wired into live infra yet.
 

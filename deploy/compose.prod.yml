@@ -9,7 +9,7 @@
 # the static keys are set empty in the sops env, so boto3 uses the instance
 # profile).
 
-name: ap-prod
+name: feoh-prod
 
 services:
   postgres:

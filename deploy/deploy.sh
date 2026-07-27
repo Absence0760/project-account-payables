@@ -67,7 +67,7 @@ if [ "$DO_FRONTEND" = 1 ]; then
 	echo "==> building frontend (PUBLIC_API_URL=https://${API_DOMAIN})"
 	docker run --rm \
 		-v "$REPO_ROOT":/repo -w /repo/frontend \
-		-v ap-prod-pnpm-store:/pnpm-store \
+		-v feoh-prod-pnpm-store:/pnpm-store \
 		-e npm_config_store_dir=/pnpm-store \
 		-e PUBLIC_API_URL="https://${API_DOMAIN}" \
 		"$NODE_IMAGE" sh -ec "npm i -g ${PNPM_SPEC} >/dev/null 2>&1 && pnpm install --frozen-lockfile && pnpm build"
