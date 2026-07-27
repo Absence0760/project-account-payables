@@ -107,12 +107,21 @@ async def _rename_database(
 async def _rewrite_org_db_names(
     dsn: dict, control_db: str, old_prefix: str, new_prefix: str, *, apply: bool
 ) -> str:
-    """Repoint ``organizations.db_name`` at the renamed tenant databases."""
+    """Repoint ``organizations.db_name`` at the renamed tenant databases.
+
+    Matching is ``left(db_name, n) = prefix`` rather than ``LIKE prefix || '%'``
+    on purpose. In LIKE, ``_`` is a single-character WILDCARD, so the pattern
+    ``ap_%`` also matches names like ``apiserver`` — and the rewrite below would
+    then turn that into ``feoh_server``, silently corrupting an unrelated row.
+    ``left()`` is a plain string comparison with no pattern semantics.
+    """
     conn = await asyncpg.connect(**{**dsn, "database": control_db})
+    n = len(old_prefix)
     try:
         stale = await conn.fetchval(
-            "SELECT count(*) FROM organizations WHERE db_name LIKE $1",
-            f"{old_prefix}%",
+            "SELECT count(*) FROM organizations WHERE left(db_name, $1::int) = $2",
+            n,
+            old_prefix,
         )
         if not stale:
             return "skipped (no rows to rewrite)"
@@ -122,15 +131,16 @@ async def _rewrite_org_db_names(
         # (substring past the prefix), so the slug is never re-derived and a
         # slug that happens to contain the old prefix is left intact.
         #
-        # The ::int cast is load-bearing: with an untyped $2, Postgres resolves
-        # substring(text FROM ...) to the POSIX-regex overload (text FROM text)
-        # and the driver then rejects the integer offset.
+        # The ::int casts are load-bearing: with an untyped parameter, Postgres
+        # resolves substring(text FROM ...) to the POSIX-regex overload
+        # (text FROM text) and the driver then rejects the integer offset.
         await conn.execute(
             "UPDATE organizations SET db_name = $1 || substring(db_name from $2::int) "
-            "WHERE db_name LIKE $3",
+            "WHERE left(db_name, $3::int) = $4",
             new_prefix,
-            len(old_prefix) + 1,
-            f"{old_prefix}%",
+            n + 1,
+            n,
+            old_prefix,
         )
         return f"rewrote {stale} organizations.db_name row(s)"
     finally:
@@ -176,12 +186,15 @@ async def main() -> int:
         # 1. Tenant databases. Discovered from pg_database rather than from
         #    organizations, so a tenant DB that was provisioned but never
         #    recorded (or vice versa) still gets surfaced.
+        #
+        #    Filtered with str.startswith rather than SQL LIKE: '_' is a
+        #    single-character wildcard in LIKE, so 'ap_%' would also match an
+        #    unrelated database such as 'apiserver' — which this script would
+        #    then happily rename to 'feoh_server'.
         tenant_dbs = [
             r["datname"]
-            for r in await conn.fetch(
-                "SELECT datname FROM pg_database WHERE datname LIKE $1 ORDER BY datname",
-                f"{args.old_tenant_prefix}%",
-            )
+            for r in await conn.fetch("SELECT datname FROM pg_database ORDER BY datname")
+            if r["datname"].startswith(args.old_tenant_prefix)
         ]
         print(f"Tenant databases matching {args.old_tenant_prefix!r}*: {len(tenant_dbs)}")
         for old in tenant_dbs:
