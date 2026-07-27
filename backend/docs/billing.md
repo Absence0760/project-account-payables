@@ -27,7 +27,7 @@ accounts-payable money path the app manages for customers.
 
 Billing is a property of the **customer account**, so — like `Organization`,
 `User`, `ExtractionUsage`, `CardRebate`, and `ApiKey` — it lives in the
-**control-plane** DB (`account_payables`) keyed by `organization_id`. It never
+**control-plane** DB (`feohledger`) keyed by `organization_id`. It never
 fans out to per-tenant DBs. The two tables are in `CONTROL_TABLES`
 (`services/tenant_provisioning.py`), guarded by the coverage test in
 `tests/test_tenant_provisioning.py`.
@@ -137,9 +137,9 @@ real billing back-end degrades gracefully rather than 500ing.
 | Adapter | Notes |
 |---------|-------|
 | `mock` (**default**) | In-process, deterministic, no network/credential. Synthetic `mock_sub_<org>` id; `report_usage` is a no-op; `parse_webhook` reads a dev JSON envelope; `list_invoices` fabricates a stable run of monthly `$49.00` receipts (newest `open`, the rest `paid`) keyed off the customer id, or `[]` when there's no customer; `create_setup_intent` returns a deterministic synthetic SetupIntent (`mock_seti_<cus>` + `<…>_secret`, status `requires_payment_method`) and `list_payment_methods` a single deterministic `visa ****4242` (exp 12/2030, default), both `None`/`[]` with no customer. Local-first. |
-| `stripe_billing` | Live key via sops, **fails closed** (`BillingNotConfigured`) without `AP_BILLING_STRIPE_API_KEY`. `ensure_customer` / `ensure_price` / `create_subscription` / `get_subscription` / `report_usage` are **implemented** against the Stripe REST API via `httpx` (key as HTTP-Basic username, form-encoded bodies; every create sends an `Idempotency-Key` header so a retry can't duplicate; `report_usage` POSTs one Billing Meter Event per meter with the quantity as an exact decimal **string**, never float). `ensure_customer` resolve-or-creates the per-org Stripe `customer` (idempotency key `ap-customer-<org>`, sends only the org business name + an admin email — never bank/tax/PAN); `ensure_price` resolve-or-creates the per-plan recurring `price` (unit amount = the plan's monthly price in integer **minor units** via exact Decimal math, idempotency key `ap-price-<code>-<cents>-<cur>`). `create_subscription` consumes the resolved `stripe_customer_id` + `stripe_price_id` from config (the provisioning resolver injects them) → `BillingNotConfigured` if absent. A non-2xx raises a PII-free `BillingProviderError` (status + op only, never the response body). `parse_webhook` verifies the `Stripe-Signature` HMAC over the raw body and maps Stripe statuses → our four-state lifecycle. `list_invoices` GETs `/v1/invoices?customer=<id>&limit=` (cap 100), normalizes each to `ProviderInvoice` (amount from the integer-minor-units `total` via exact Decimal → decimal **string**; `created`/`period_start` Unix → ISO/`YYYY-MM`; status map `draft`/`uncollectible`→`open`, `void`→`void`; `hosted_invoice_url` → `invoice_pdf` fallback) — fails closed without a key, returns `[]` for a `None` customer. `create_setup_intent` POSTs `/v1/setup_intents` (`customer`, `payment_method_types[]=card`, `usage=off_session`) → `ProviderSetupIntent`; `list_payment_methods` GETs `/v1/payment_methods?customer=<id>&type=card` and maps each to brand/last4/exp **only** (Stripe never returns a PAN here) — both fail closed without a key, `None`/`[]` for a `None` customer. |
+| `stripe_billing` | Live key via sops, **fails closed** (`BillingNotConfigured`) without `FEOH_BILLING_STRIPE_API_KEY`. `ensure_customer` / `ensure_price` / `create_subscription` / `get_subscription` / `report_usage` are **implemented** against the Stripe REST API via `httpx` (key as HTTP-Basic username, form-encoded bodies; every create sends an `Idempotency-Key` header so a retry can't duplicate; `report_usage` POSTs one Billing Meter Event per meter with the quantity as an exact decimal **string**, never float). `ensure_customer` resolve-or-creates the per-org Stripe `customer` (idempotency key `ap-customer-<org>`, sends only the org business name + an admin email — never bank/tax/PAN); `ensure_price` resolve-or-creates the per-plan recurring `price` (unit amount = the plan's monthly price in integer **minor units** via exact Decimal math, idempotency key `ap-price-<code>-<cents>-<cur>`). `create_subscription` consumes the resolved `stripe_customer_id` + `stripe_price_id` from config (the provisioning resolver injects them) → `BillingNotConfigured` if absent. A non-2xx raises a PII-free `BillingProviderError` (status + op only, never the response body). `parse_webhook` verifies the `Stripe-Signature` HMAC over the raw body and maps Stripe statuses → our four-state lifecycle. `list_invoices` GETs `/v1/invoices?customer=<id>&limit=` (cap 100), normalizes each to `ProviderInvoice` (amount from the integer-minor-units `total` via exact Decimal → decimal **string**; `created`/`period_start` Unix → ISO/`YYYY-MM`; status map `draft`/`uncollectible`→`open`, `void`→`void`; `hosted_invoice_url` → `invoice_pdf` fallback) — fails closed without a key, returns `[]` for a `None` customer. `create_setup_intent` POSTs `/v1/setup_intents` (`customer`, `payment_method_types[]=card`, `usage=off_session`) → `ProviderSetupIntent`; `list_payment_methods` GETs `/v1/payment_methods?customer=<id>&type=card` and maps each to brand/last4/exp **only** (Stripe never returns a PAN here) — both fail closed without a key, `None`/`[]` for a `None` customer. |
 
-`get_billing_adapter(provider=None)` resolves: explicit arg → `AP_BILLING_PROVIDER`
+`get_billing_adapter(provider=None)` resolves: explicit arg → `FEOH_BILLING_PROVIDER`
 → `mock`. An unknown name falls back to `mock` (a bad config can't break read
 paths). Per-org override: `Organization.settings.billing.provider`. The
 dispatcher injects the process-level Stripe key / webhook secret / API base from
@@ -160,7 +160,7 @@ id is the tenant boundary here.
 
 **Boot guard.** `app/main.py::lifespan` refuses to start (`RuntimeError`, same
 pattern as the email-intake / PEPPOL-inbound guards) when
-`AP_BILLING_WEBHOOK_ENABLED=true` **and** `AP_BILLING_PROVIDER` is still `mock`.
+`FEOH_BILLING_WEBHOOK_ENABLED=true` **and** `FEOH_BILLING_PROVIDER` is still `mock`.
 The `mock` adapter's `parse_webhook` does zero signature verification by design
 (it's a local-only dev double — see "Mock" above) and its
 `create_subscription` mints a deterministic `mock_sub_<organization_id>`, so
@@ -168,18 +168,18 @@ serving it on the public route in a deployed env would let anyone who knows (or
 derives, from their own JWT `org` claim) an org id flip that org's
 `Subscription.status` with an unauthenticated POST. The guard only fires when
 the webhook route is explicitly turned on — the documented local-first default
-(`mock` + `AP_BILLING_WEBHOOK_ENABLED=false`) is unaffected, so `pnpm dev` never
+(`mock` + `FEOH_BILLING_WEBHOOK_ENABLED=false`) is unaffected, so `pnpm dev` never
 requires a real Stripe key. Deployed envs must pair the switch with a real
-provider (`AP_BILLING_PROVIDER=stripe_billing`, key via sops).
+provider (`FEOH_BILLING_PROVIDER=stripe_billing`, key via sops).
 
 Pipeline (mirrors the PEPPOL-inbound webhook, honouring invariant #9):
 
-1. **Master switch** `AP_BILLING_WEBHOOK_ENABLED` — OFF in local dev (no outbound
+1. **Master switch** `FEOH_BILLING_WEBHOOK_ENABLED` — OFF in local dev (no outbound
    billing integration), flipped ON in deployed envs. Off → silent 204.
 2. **Body-size cap** (512 KiB) checked on the declared `Content-Length` *and* the
    actual read (memory-exhaustion guard on a public route).
 3. **Provider match** — the `{provider}` path segment must equal the configured
-   `AP_BILLING_PROVIDER`, else silent 204 (don't accept a different provider's
+   `FEOH_BILLING_PROVIDER`, else silent 204 (don't accept a different provider's
    unverifiable payload).
 4. **HMAC verify + normalize** inside the adapter's `parse_webhook` (fail-closed:
    no secret / bad signature / unparseable → `None` → silent 204).
@@ -219,7 +219,7 @@ The provider's own retry schedule (Stripe Smart Retries) normally drives a
 failing subscription `active → past_due → canceled` and each hop arrives via the
 webhook above. The dunning sweep is the **backstop** for when a terminal provider
 webhook never arrives: a subscription that has sat `past_due` longer than
-`AP_BILLING_DUNNING_GRACE_DAYS` (measured from `current_period_end`; a row with no
+`FEOH_BILLING_DUNNING_GRACE_DAYS` (measured from `current_period_end`; a row with no
 period end is overdue by default) is flagged `canceled` with an append-only
 `billing.subscription_canceled` audit row.
 
@@ -229,7 +229,7 @@ grants nothing via `get_entitlements`; that down-grade is a read consequence, no
 a money op.) **Control-plane only** — `Subscription` lives in the control DB, so
 one query, no per-tenant fan-out. **Idempotent** — only `past_due` rows are
 touched and canceling moves a row out of `past_due`. Long-lived asyncio task in
-`main.lifespan`, OFF by default (`AP_BILLING_DUNNING_ENABLED`).
+`main.lifespan`, OFF by default (`FEOH_BILLING_DUNNING_ENABLED`).
 
 ## Per-org provisioning (`services/billing/provisioning.py`)
 
@@ -507,14 +507,14 @@ dashboard and never sees the tab.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `AP_BILLING_PROVIDER` | `mock` | Billing adapter — `mock` (local-first default) \| `stripe_billing`. Per-org override `Organization.settings.billing.provider`. |
-| `AP_BILLING_STRIPE_API_KEY` | (empty) | Live Stripe Billing secret key — **no hardcoded fallback**; sops in deployed. The `stripe_billing` adapter fails closed without it. |
-| `AP_BILLING_STRIPE_WEBHOOK_SECRET` | (empty) | HMAC secret for Stripe webhook signature verification — no fallback; sops in deployed. |
-| `AP_BILLING_STRIPE_API_BASE` | `https://api.stripe.com` | Stripe REST API base URL — overridable so a sandbox / test can point the adapter elsewhere. The adapter still fails closed without an API key regardless. |
-| `AP_BILLING_WEBHOOK_ENABLED` | `false` | Master switch for the inbound billing webhook route (`POST /api/billing/webhook/{provider}`). OFF in local dev (no outbound billing integration); flip ON in deployed envs. The route is HMAC-gated regardless; off → silent 204. **Boot guard**: refuses to start when this is `true` and `AP_BILLING_PROVIDER` is still `mock` (the mock adapter's `parse_webhook` does no signature verification) — pair with a real provider in deployed envs. |
-| `AP_BILLING_DUNNING_ENABLED` | `false` | Master switch for the dunning / past-due automation sweep. OFF by default; flip ON in deployed envs. The sweep only cancels subscriptions overdue past the grace window — it NEVER moves money. |
-| `AP_BILLING_DUNNING_INTERVAL_SECONDS` | `3600` | Dunning sweep tick interval. |
-| `AP_BILLING_DUNNING_GRACE_DAYS` | `14` | Grace window (days from `current_period_end`) a subscription may sit `past_due` before the dunning sweep cancels it. |
+| `FEOH_BILLING_PROVIDER` | `mock` | Billing adapter — `mock` (local-first default) \| `stripe_billing`. Per-org override `Organization.settings.billing.provider`. |
+| `FEOH_BILLING_STRIPE_API_KEY` | (empty) | Live Stripe Billing secret key — **no hardcoded fallback**; sops in deployed. The `stripe_billing` adapter fails closed without it. |
+| `FEOH_BILLING_STRIPE_WEBHOOK_SECRET` | (empty) | HMAC secret for Stripe webhook signature verification — no fallback; sops in deployed. |
+| `FEOH_BILLING_STRIPE_API_BASE` | `https://api.stripe.com` | Stripe REST API base URL — overridable so a sandbox / test can point the adapter elsewhere. The adapter still fails closed without an API key regardless. |
+| `FEOH_BILLING_WEBHOOK_ENABLED` | `false` | Master switch for the inbound billing webhook route (`POST /api/billing/webhook/{provider}`). OFF in local dev (no outbound billing integration); flip ON in deployed envs. The route is HMAC-gated regardless; off → silent 204. **Boot guard**: refuses to start when this is `true` and `FEOH_BILLING_PROVIDER` is still `mock` (the mock adapter's `parse_webhook` does no signature verification) — pair with a real provider in deployed envs. |
+| `FEOH_BILLING_DUNNING_ENABLED` | `false` | Master switch for the dunning / past-due automation sweep. OFF by default; flip ON in deployed envs. The sweep only cancels subscriptions overdue past the grace window — it NEVER moves money. |
+| `FEOH_BILLING_DUNNING_INTERVAL_SECONDS` | `3600` | Dunning sweep tick interval. |
+| `FEOH_BILLING_DUNNING_GRACE_DAYS` | `14` | Grace window (days from `current_period_end`) a subscription may sit `past_due` before the dunning sweep cancels it. |
 
 ## Tests
 

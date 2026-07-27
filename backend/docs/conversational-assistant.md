@@ -6,11 +6,11 @@ tenant. The assistant never exposes raw SQL and never reads another tenant's
 data; the model can only emit one of the five fixed tool calls with typed,
 clamped parameters.
 
-**Local-AI default.** `pnpm dev` ships with `AP_ASSISTANT_PROVIDER=ollama`
+**Local-AI default.** `pnpm dev` ships with `FEOH_ASSISTANT_PROVIDER=ollama`
 (in `backend/.env.development`): the `ollama` adapter drives the assistant
-against a **local, tool-capable** Ollama text model (`AP_ASSISTANT_OLLAMA_MODEL`,
+against a **local, tool-capable** Ollama text model (`FEOH_ASSISTANT_OLLAMA_MODEL`,
 default `qwen2.5:7b`) — no key, no cloud. A real `claude` adapter
-(Anthropic Messages API tool-use) is selected with `AP_ASSISTANT_PROVIDER=claude`
+(Anthropic Messages API tool-use) is selected with `FEOH_ASSISTANT_PROVIDER=claude`
 + a key.
 
 **Local-first is preserved.** The `ollama` adapter **fails soft to the
@@ -18,7 +18,7 @@ deterministic `mock` adapter** whenever Ollama is unreachable, the model isn't
 pulled, or it returns no usable answer — so a fresh clone with no Ollama still
 answers with zero dependencies. (The `mock` adapter routes a query to one tool
 via keyword/intent heuristics, no network/key.) The `claude` adapter likewise
-auto-downgrades to `mock` when `AP_ANTHROPIC_API_KEY` is empty. The code-level
+auto-downgrades to `mock` when `FEOH_ANTHROPIC_API_KEY` is empty. The code-level
 default in `app/config.py` stays `mock`, so tests and a bare-config boot remain
 deterministic; only the committed dev env selects `ollama`.
 
@@ -80,17 +80,17 @@ inside the adapter instead.
   `https://api.anthropic.com/v1/messages` (house style; matches
   `extraction_adapters/claude_vision.py`), `thinking: {"type": "adaptive"}`,
   the five tools as Anthropic tool schemas, and a manual tool-use loop capped at
-  `AP_ASSISTANT_MAX_TOOL_HOPS`. The model id resolves from config
-  (`AP_ASSISTANT_MODEL` → falls back to `AP_EXTRACTION_MODEL`) — never
+  `FEOH_ASSISTANT_MAX_TOOL_HOPS`. The model id resolves from config
+  (`FEOH_ASSISTANT_MODEL` → falls back to `FEOH_EXTRACTION_MODEL`) — never
   hardcoded. Real `usage` tokens are summed across hops. **Streaming**: it also
   implements `respond_streaming`, a `stream: true` variant of the same tool-use
   loop that forwards the Anthropic Messages SSE `text_delta`s as they arrive
   (true per-token passthrough) — see [Streaming (SSE)](#streaming-sse--post-apiassistantchatstream).
 - **`ollama_adapter.py`** (committed dev default) — raw `httpx` POST to a local
   Ollama `/api/chat` with the five tools converted to OpenAI-style function
-  schemas, the same `AP_ASSISTANT_MAX_TOOL_HOPS` loop, and `prompt_eval_count` /
+  schemas, the same `FEOH_ASSISTANT_MAX_TOOL_HOPS` loop, and `prompt_eval_count` /
   `eval_count` summed as the usage tokens. Uses a dedicated **tool-capable text
-  model** (`AP_ASSISTANT_OLLAMA_MODEL`, not the vision model used for
+  model** (`FEOH_ASSISTANT_OLLAMA_MODEL`, not the vision model used for
   extraction). Robustness: many local models emit the tool call as JSON *text*
   rather than a structured `tool_calls` field — `_parse_text_tool_calls`
   recovers those so the tool still runs. Any failure (Ollama down, model not
@@ -154,10 +154,10 @@ cap without fanning a sum across every tenant DB on each call.
   so the cap can be overshot by at most a handful of concurrent turns' worth of
   tokens before the next check catches it — an acceptable trade for a soft
   usage-shaping guardrail (not a money invariant). Budget `0` disables the cap
-  (matching the `AP_MAX_CONCURRENT_SESSIONS=0` convention). Per-org override in
+  (matching the `FEOH_MAX_CONCURRENT_SESSIONS=0` convention). Per-org override in
   `Organization.settings.assistant.monthly_token_budget` beats the platform
   default. (A single turn is still bounded by `max_tokens ×
-  AP_ASSISTANT_MAX_TOOL_HOPS`, bounding how large that overshoot can get.)
+  FEOH_ASSISTANT_MAX_TOOL_HOPS`, bounding how large that overshoot can get.)
 - **Refusal contract** — `AssistantBudgetExceeded` → **HTTP 429** with
   `{"detail": "...", "code": "assistant_budget_exceeded", "used", "budget",
   "period"}`. No tool runs, no model call, nothing persisted.
@@ -308,22 +308,22 @@ conversation load/create → history → adapter → audited `run_tool` closure)
 `orchestrator._prepare_turn` + `_build_run_tool`, so the two can never diverge
 on the security-critical isolation/audit bits.
 
-## Configuration (`AP_` prefix)
+## Configuration (`FEOH_` prefix)
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `AP_ASSISTANT_PROVIDER` | `mock` | `mock` (local-first) \| `claude` |
-| `AP_ASSISTANT_MODEL` | (empty) | Model id; empty → `AP_EXTRACTION_MODEL` (claude-opus-4-8 family) |
-| `AP_ASSISTANT_MONTHLY_TOKEN_BUDGET` | `200000` | Per-org/month token cap; `0` disables |
-| `AP_ASSISTANT_MAX_TOOL_HOPS` | `4` | Claude tool-use loop cap (cost bound) |
-| `AP_ANTHROPIC_API_KEY` | (empty) | Reused from extraction — **no new secret**. Empty → auto-downgrade `claude`→`mock` |
+| `FEOH_ASSISTANT_PROVIDER` | `mock` | `mock` (local-first) \| `claude` |
+| `FEOH_ASSISTANT_MODEL` | (empty) | Model id; empty → `FEOH_EXTRACTION_MODEL` (claude-opus-4-8 family) |
+| `FEOH_ASSISTANT_MONTHLY_TOKEN_BUDGET` | `200000` | Per-org/month token cap; `0` disables |
+| `FEOH_ASSISTANT_MAX_TOOL_HOPS` | `4` | Claude tool-use loop cap (cost bound) |
+| `FEOH_ANTHROPIC_API_KEY` | (empty) | Reused from extraction — **no new secret**. Empty → auto-downgrade `claude`→`mock` |
 
 ## Migration
 
 `0032_assistant` is branch-aware (gated on the `invoices` table): tenant DBs get
 `assistant_conversations` + `assistant_messages`; the control plane gets
 `assistant_usage`. Apply with
-`AP_MIGRATE_TENANT=ap_acme alembic upgrade head` →
+`FEOH_MIGRATE_TENANT=feoh_acme alembic upgrade head` →
 `python scripts/migrate_all_tenants.py` → `alembic upgrade head` (control). Fresh
 tenants get the conversation tables via `tenant_provisioning._create_tenant_tables`
 (`create_all`); `assistant_usage` is in `CONTROL_TABLES` so it's never created on

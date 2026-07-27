@@ -8,7 +8,7 @@ latest extraction's confidence + priors metadata.
 - Service: `app/services/audit_summary.py`
 - Endpoints: `GET /api/invoices/{id}/summary`, `POST /api/invoices/{id}/summary/regenerate`
 - Cache: `invoices.meta["audit_summary"]` (JSONB)
-- Config: `AP_AUDIT_SUMMARY_ENABLED` (default `true`), `AP_AUDIT_SUMMARY_MODEL` (defaults to `AP_EXTRACTION_MODEL`)
+- Config: `FEOH_AUDIT_SUMMARY_ENABLED` (default `true`), `FEOH_AUDIT_SUMMARY_MODEL` (defaults to `FEOH_EXTRACTION_MODEL`)
 
 ## Cache-freshness mechanism
 

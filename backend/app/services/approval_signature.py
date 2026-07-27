@@ -11,7 +11,7 @@ trail wasn't altered. This is non-repudiation, not encryption — the payload
 fields themselves stay in the clear in the audit row.
 
 Pure module: no DB, no network. The signing key comes from
-``settings.approval_signing_key`` (``AP_APPROVAL_SIGNING_KEY``) — empty by
+``settings.approval_signing_key`` (``FEOH_APPROVAL_SIGNING_KEY``) — empty by
 default, a NON-secret dev value committed in ``.env.development``, the real key
 via sops in deployed envs. There is NO hardcoded production fallback; an empty
 key yields an empty signature (signing is skipped), mirroring

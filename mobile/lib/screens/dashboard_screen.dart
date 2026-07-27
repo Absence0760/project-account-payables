@@ -2,11 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:intl/intl.dart';
 
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/stores/dashboard_store.dart';
-import 'package:ap_mobile/widgets/cash_flow_button.dart';
-import 'package:ap_mobile/widgets/kpi_card.dart';
-import 'package:ap_mobile/widgets/notification_bell.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/stores/dashboard_store.dart';
+import 'package:feohledger_mobile/widgets/cash_flow_button.dart';
+import 'package:feohledger_mobile/widgets/kpi_card.dart';
+import 'package:feohledger_mobile/widgets/notification_bell.dart';
 
 final _currencyFormat = NumberFormat.compactCurrency(symbol: '\$');
 

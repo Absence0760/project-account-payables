@@ -9,12 +9,12 @@ with:
 - a single ``X-API-Key`` security scheme (the only auth on this surface — never
   the SPA's JWT) applied globally;
 - an ``info.version`` of ``v1`` and a ``servers`` entry built from
-  ``AP_API_PUBLIC_URL`` so generated clients hit the right base URL;
+  ``FEOH_API_PUBLIC_URL`` so generated clients hit the right base URL;
 - the published ``V1Invoice`` / ``V1InvoiceList`` component schemas only — no
   internal-only model leaks in.
 
 Both this spec and the human-readable docs page respect the
-``AP_PUBLIC_API_ENABLED`` kill switch: when the public API is off, the spec and
+``FEOH_PUBLIC_API_ENABLED`` kill switch: when the public API is off, the spec and
 docs 404 (the surface is simply not there), consistent with every API-key
 request failing closed.
 
@@ -66,10 +66,10 @@ def build_public_openapi(app: FastAPI) -> dict[str, Any]:
     dict) — safe to call per request.
     """
     full = get_openapi(
-        title="Account Payables — Public Developer API",
+        title="FeohLedger — Public Developer API",
         version=PUBLIC_API_VERSION,
         description=(
-            "Programmatic, versioned access to the Account Payables platform. "
+            "Programmatic, versioned access to the FeohLedger platform. "
             "Authenticated with a per-organization API key sent in the "
             "`X-API-Key` header (NOT the SPA session JWT). The key resolves to "
             "its organization and tenant data — there is no tenant header to "
@@ -103,7 +103,7 @@ def build_public_openapi(app: FastAPI) -> dict[str, Any]:
             "in": "header",
             "name": "X-API-Key",
             "description": (
-                "Per-organization API key, format `ap_live_…`. Mint via the "
+                "Per-organization API key, format `feoh_live_…`. Mint via the "
                 "admin key-management API. The key is the tenant boundary."
             ),
         }
@@ -115,7 +115,7 @@ def build_public_openapi(app: FastAPI) -> dict[str, Any]:
     full["servers"] = [
         {
             "url": settings.api_public_url.rstrip("/"),
-            "description": "Account Payables API",
+            "description": "FeohLedger API",
         }
     ]
 
@@ -164,7 +164,7 @@ def _ensure_enabled() -> None:
     """404 when the public API kill switch is off — the surface is simply gone.
 
     Keeps the spec/docs behaviour consistent with every API-key request, which
-    fails closed when ``AP_PUBLIC_API_ENABLED`` is false. A 404 (rather than a
+    fails closed when ``FEOH_PUBLIC_API_ENABLED`` is false. A 404 (rather than a
     distinct "disabled") doesn't confirm the endpoint exists.
     """
     if not settings.public_api_enabled:
@@ -184,5 +184,5 @@ async def public_docs() -> HTMLResponse:
     _ensure_enabled()
     return get_swagger_ui_html(
         openapi_url=f"{_PUBLIC_PATH_PREFIX}/openapi.json",
-        title="Account Payables — Public Developer API",
+        title="FeohLedger — Public Developer API",
     )

@@ -37,7 +37,7 @@ class CloudWatchAdapter(AuditShippingAdapter):
     """Ships audit rows to CloudWatch Logs.
 
     Config:
-        log_group_name: Override the default AP_AUDIT_SHIPPING_CLOUDWATCH_GROUP.
+        log_group_name: Override the default FEOH_AUDIT_SHIPPING_CLOUDWATCH_GROUP.
         region_name:    Override the default aws region.
     """
 
@@ -47,7 +47,7 @@ class CloudWatchAdapter(AuditShippingAdapter):
         super().__init__(config)
         self.log_group = config.get("log_group_name") or settings.audit_shipping_cloudwatch_group
         region = config.get("region_name") or "us-east-1"
-        # endpoint_url=None → real CloudWatch; set AP_AWS_ENDPOINT_URL for LocalStack.
+        # endpoint_url=None → real CloudWatch; set FEOH_AWS_ENDPOINT_URL for LocalStack.
         self._client = boto3.client(
             "logs", region_name=region, endpoint_url=settings.aws_endpoint_url or None
         )

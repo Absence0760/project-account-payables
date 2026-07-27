@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/models/workflow.dart';
-import 'package:ap_mobile/screens/workflow_detail_screen.dart';
-import 'package:ap_mobile/stores/workflow_store.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/models/workflow.dart';
+import 'package:feohledger_mobile/screens/workflow_detail_screen.dart';
+import 'package:feohledger_mobile/stores/workflow_store.dart';
 
 /// Admin — read-only workflow management. Lists the org's workflow definitions
 /// (name, active/default status, step count) over `GET /api/workflows`; tapping

@@ -9,13 +9,13 @@ import {
 	test
 } from '../fixtures/helpers';
 
-/** Run psql against the CONTROL-plane DB (`account_payables`) where
+/** Run psql against the CONTROL-plane DB (`feohledger`) where
  *  `organizations` lives — `tenantPsql` only reaches the per-tenant
- *  `ap_<slug>` DB, which has no organizations table. */
+ *  `feoh_<slug>` DB, which has no organizations table. */
 function controlPsql(query: string): string {
 	return execFileSync(
 		'psql',
-		['-h', 'localhost', '-U', 'postgres', '-p', '5432', '-d', 'account_payables', '-tAc', query],
+		['-h', 'localhost', '-U', 'postgres', '-p', '5432', '-d', 'feohledger', '-tAc', query],
 		{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: ['ignore', 'pipe', 'pipe'] }
 	).toString();
 }

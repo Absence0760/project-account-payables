@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 # Platform defaults — used for any brand field the tenant hasn't set. Kept in
 # sync with the frontend brand store fallbacks (docs/white-label.md).
-PLATFORM_PRODUCT_NAME = "Accounts Payable"
+PLATFORM_PRODUCT_NAME = "FeohLedger"
 PLATFORM_ACCENT_COLOR = "#638cff"
 
 # Same guards the BrandConfig schema enforces. We re-validate on read because a

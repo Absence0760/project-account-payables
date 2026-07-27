@@ -552,7 +552,7 @@ async def test_notify_vendor_returns_false_when_vendor_has_no_email():
 
 @pytest.mark.asyncio
 async def test_notify_vendor_returns_false_when_no_url_template():
-    """Without `AP_TENANT_URL_TEMPLATE` we have nowhere to point the
+    """Without `FEOH_TENANT_URL_TEMPLATE` we have nowhere to point the
     vendor — skip the email rather than send a broken link."""
     inv = SimpleNamespace(
         vendor_id=uuid.uuid4(), id=uuid.uuid4(), invoice_number="INV-1", currency="USD"

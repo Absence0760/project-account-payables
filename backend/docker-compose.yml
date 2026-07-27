@@ -8,7 +8,7 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: account_payables
+      POSTGRES_DB: feohledger
     ports:
       - "5432:5432"
     volumes:
@@ -50,8 +50,8 @@ services:
   #
   # Runs in dev mode (start-dev) with an ephemeral in-memory database, and
   # re-imports realm-export.json on every boot — so the IdP is always a clean,
-  # reproducible state. Realm `account-payables` ships a confidential client
-  # (account-payables-app) and two test users (demo@acme.com, newhire@acme.com),
+  # reproducible state. Realm `feohledger` ships a confidential client
+  # (feohledger-app) and two test users (demo@acme.com, newhire@acme.com),
   # both password `demo`.
   keycloak:
     image: quay.io/keycloak/keycloak:26.0
@@ -182,7 +182,7 @@ services:
   # shipper sinks). Opt-in under the `aws` profile (`pnpm aws:up`). The init
   # script under localstack/init/ready.d/ creates the queues, SES identity, log
   # group, and object-lock bucket on boot. Point the app at it by setting
-  # AP_AWS_ENDPOINT_URL=http://localhost:4566 (see docs/local-aws-localstack.md).
+  # FEOH_AWS_ENDPOINT_URL=http://localhost:4566 (see docs/local-aws-localstack.md).
   localstack:
     image: localstack/localstack:3
     profiles: ["aws"]
@@ -205,7 +205,7 @@ services:
   # extraction with no API key and no cloud. Opt-in under the `ai` profile
   # (`pnpm ollama:up`). Host port 11435 (not the native default 11434) so it
   # coexists with a natively-installed Ollama; select it with
-  # AP_OLLAMA_BASE_URL=http://localhost:11435. Pull a model first, e.g.
+  # FEOH_OLLAMA_BASE_URL=http://localhost:11435. Pull a model first, e.g.
   # `pnpm ollama:pull moondream` (small vision model). CPU by default; uncomment
   # the deploy block for NVIDIA GPU (needs nvidia-container-toolkit).
   # See backend/docs/local-ai-testing.md.
@@ -234,7 +234,7 @@ services:
   # network). Opt-in under the `payments` profile (`pnpm stripe:up`). Returns
   # canned fixtures generated from Stripe's OpenAPI spec (no persisted state), so
   # it validates request shape + response parsing, not stateful flows. Point the
-  # adapter at it with AP_STRIPE_API_BASE=http://localhost:12111/v1.
+  # adapter at it with FEOH_STRIPE_API_BASE=http://localhost:12111/v1.
   stripe-mock:
     image: stripe/stripe-mock:latest
     profiles: ["payments"]
@@ -247,8 +247,8 @@ services:
   # (/d365) in one deterministic in-memory process, so post_invoice / status
   # polling / PO + GL-account sync run end-to-end with no cloud account. Opt-in
   # under the `erp` profile (`pnpm erp:up`). Point the adapters at it via the
-  # AP_ERP_MERGE_API_BASE / AP_ERP_NETSUITE_API_BASE / AP_ERP_D365_API_BASE /
-  # AP_ERP_D365_TOKEN_URL overrides in backend/.env.development (host port
+  # FEOH_ERP_MERGE_API_BASE / FEOH_ERP_NETSUITE_API_BASE / FEOH_ERP_D365_API_BASE /
+  # FEOH_ERP_D365_TOKEN_URL overrides in backend/.env.development (host port
   # 12112). POST /__reset clears state between test runs. See tools/fake-erp/.
   fake-erp:
     build:
@@ -262,7 +262,7 @@ services:
       timeout: 5s
       retries: 10
 
-  # Local SMTP sink + web inbox for outbound email. With AP_EMAIL_PROVIDER=smtp
+  # Local SMTP sink + web inbox for outbound email. With FEOH_EMAIL_PROVIDER=smtp
   # the app's transactional mail (signup, welcome, scheduled reports) lands here
   # instead of the real internet — view rendered HTML at http://localhost:8025.
   # Opt-in under the `mail` profile (`pnpm mail:up`). Captures only; never relays.
@@ -270,7 +270,7 @@ services:
     image: axllent/mailpit:latest
     profiles: ["mail"]
     ports:
-      - "1025:1025"   # SMTP — AP_SMTP_PORT
+      - "1025:1025"   # SMTP — FEOH_SMTP_PORT
       - "8025:8025"   # web UI + API
 
 volumes:

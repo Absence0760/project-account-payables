@@ -3,8 +3,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/stores/locale_store.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/stores/locale_store.dart';
 
 // End-to-end proof that the localeNotifier → MaterialApp.locale plumbing is
 // real: switching the device locale through LocaleStore must re-localize a

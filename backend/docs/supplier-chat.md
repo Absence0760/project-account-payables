@@ -244,8 +244,8 @@ message text.
 
 ## Configuration & feature flag
 
-**No new secret, no new `AP_` env var.** The feature reuses
-`AP_NOTIFICATIONS_ENABLED` (`settings.notifications_enabled`, default `true`) —
+**No new secret, no new `FEOH_` env var.** The feature reuses
+`FEOH_NOTIFICATIONS_ENABLED` (`settings.notifications_enabled`, default `true`) —
 it auto-gates `notify_event`, and the supplier-email helper checks it explicitly.
 
 The per-org feature flag is an **off-safe, local-first** read on

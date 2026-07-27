@@ -17,12 +17,12 @@ The whole flow is four commands on a fresh VM:
 | File | Purpose |
 |---|---|
 | `bootstrap-vm.sh` | One-time, idempotent VM setup (Amazon Linux 2023): docker + compose plugin + sops + AWS CLI, 2 GB swap, nightly backup cron, IMDSv2 hop-limit fix. Other distros get the manual list. |
-| `compose.prod.yml` | Postgres (pgvector) + Redis (AOF) + API + Caddy. No DB host ports; S3 is real AWS. API healthcheck lets deploys verify themselves. `AP_DATABASE_URL`/`AP_REDIS_URL` are override seams for RDS/ElastiCache later. |
-| `Caddyfile` | TLS + static SPA + `api.<domain>` reverse proxy. Domains via env. |
+| `compose.prod.yml` | Postgres (pgvector) + Redis (AOF) + API + Caddy. No DB host ports; S3 is real AWS. API healthcheck lets deploys verify themselves. `FEOH_DATABASE_URL`/`FEOH_REDIS_URL` are override seams for RDS/ElastiCache later. |
+| `Caddyfile` | TLS + static SPA + `api.feohledger.com` reverse proxy. Domains via env. |
 | `tenants.caddy.example` | Template for the per-VM tenant host list (`tenants.caddy`, gitignored). `add-tenant.sh` maintains it — manual edits rarely needed. |
 | `deploy.sh` | Preflight → pull → decrypt secrets → dockerized frontend build (no Node/pnpm on the VM) → backend build → migrate (control plane + all tenants) **before** rolling → `up -d --wait` → Caddy reload. Flags: `--no-pull`, `--backend-only`, `--frontend-only`. |
 | `add-tenant.sh` | Tenant DB + org + admin user (same `provision_tenant` path as signup) + Caddy host block + reload, in one shot. Generates a temp password (first-login change forced) unless `--admin-password` given. |
-| `backup.sh` | Nightly pg dumps (globals + control plane + every `ap_*` DB) streamed to S3. Cron installed by bootstrap. |
+| `backup.sh` | Nightly pg dumps (globals + control plane + every `feoh_*` DB) streamed to S3. Cron installed by bootstrap. |
 | `env.example` | Contract for the sops-encrypted env — `deploy.sh` validates the required keys against it. |
 
 ## Before the VM (once per project)
@@ -33,8 +33,8 @@ The whole flow is four commands on a fresh VM:
   on the invoice-files, audit-logs, and backup buckets; `ses:SendEmail` if
   using SES; ideally `ec2:ModifyInstanceMetadataOptions` so bootstrap can fix
   the IMDS hop limit itself.
-- DNS: three records → this VM: `app.<domain>`, `api.<domain>`, and a
-  **wildcard** `*.app.<domain>` (the wildcard makes tenant onboarding
+- DNS: three records → this VM: `app.feohledger.com`, `api.feohledger.com`, and a
+  **wildcard** `*.app.feohledger.com` (the wildcard makes tenant onboarding
   DNS-free; it needs no wildcard certificate — Caddy issues per-host certs).
 - Secrets: author a real-valued copy of `env.example`, encrypt with sops into
   the **private** `infra-secrets` repo (per-project subdir + KMS key — see
@@ -57,7 +57,7 @@ provisions everything and prints the login URL + temp password. Don't run
 
 ## Backups
 
-Installed by bootstrap as `/etc/cron.d/ap-backup` (03:17 UTC nightly,
-logging to `/var/log/ap-backup.log`). Restore a single DB (test this once
+Installed by bootstrap as `/etc/cron.d/feoh-backup` (03:17 UTC nightly,
+logging to `/var/log/feoh-backup.log`). Restore a single DB (test this once
 before calling backups done):
 `aws s3 cp s3://<bucket>/pg/<date>/<db>.dump - | docker compose -f compose.prod.yml exec -T postgres pg_restore -U postgres --create -d postgres`

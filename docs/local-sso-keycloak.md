@@ -45,9 +45,9 @@ always a clean, reproducible state (no persisted volume).
 | Thing | Value |
 |---|---|
 | Keycloak admin console | http://localhost:8088 (`admin` / `admin`) |
-| Realm | `account-payables` |
-| Discovery URL | `http://localhost:8088/realms/account-payables/.well-known/openid-configuration` |
-| Client ID | `account-payables-app` |
+| Realm | `feohledger` |
+| Discovery URL | `http://localhost:8088/realms/feohledger/.well-known/openid-configuration` |
+| Client ID | `feohledger-app` |
 | Client secret | `local-dev-keycloak-secret` |
 | Test user (links to seeded admin) | `demo@acme.com` / `demo` |
 | Test user (JIT-provisions new) | `newhire@acme.com` / `demo` |
@@ -62,7 +62,7 @@ Keycloak's own default is 8080, but that port is commonly taken by other local
 dev tooling, so this repo maps the host port to **8088**. Keycloak in dev mode
 derives its issuer and endpoint URLs from the request `Host` header, so hitting
 it on `localhost:8088` yields an issuer of
-`http://localhost:8088/realms/account-payables` with no extra hostname config —
+`http://localhost:8088/realms/feohledger` with no extra hostname config —
 which is what keeps the backend's discovery host check (`auth_sso.py`,
 authorize-host-must-match-discovery-host) happy.
 
@@ -94,7 +94,7 @@ returns 403 and writes an `auth.sso.login.failure` audit row with
   different host/port than what's in `settings.sso.discovery_url`. Keep both on
   `localhost:8088`.
 - **Login session expired** on callback — the OIDC `state` lives in Redis with a
-  10-minute TTL (`AP_SSO_STATE_TTL_SECONDS`). Make sure `pnpm db:up` (Redis) is
+  10-minute TTL (`FEOH_SSO_STATE_TTL_SECONDS`). Make sure `pnpm db:up` (Redis) is
   running and you completed the flow within the window.
 - **Keycloak slow to accept connections** — first boot pulls the image and
   imports the realm; give it ~10-15s. `pnpm idp:logs` shows progress; it's ready
@@ -113,7 +113,7 @@ pnpm idp:up        # starts Keycloak + the Authentik stack (Docker)
 pnpm scim:seed     # set the matching SCIM bearer token on the acme tenant
 pnpm dev           # the app must be running — Authentik POSTs to :8000
 # Authentik admin: http://localhost:9002  (akadmin / admin)
-#   Applications → Providers → "Account Payables SCIM" → Run sync
+#   Applications → Providers → "FeohLedger SCIM" → Run sync
 # Provisioned users land in acme; see them at http://acme.localhost:7777/admin
 pnpm idp:down      # stop the IdP stack when done
 ```
@@ -124,14 +124,14 @@ pnpm idp:down      # stop the IdP stack when done
 ### What's provisioned
 
 The Authentik stack is **self-contained** (its own Postgres + Redis, not the
-app's) and applies `backend/authentik/blueprints/account-payables-scim.yaml` on
+app's) and applies `backend/authentik/blueprints/feohledger-scim.yaml` on
 boot, so it's reproducible. The blueprint creates:
 
 | Thing | Value |
 |---|---|
 | Authentik admin | http://localhost:9002 (`akadmin` / `admin`) |
 | API token (for scripting) | `local-dev-authentik-api-token` |
-| SCIM provider | "Account Payables SCIM" → `http://host.docker.internal:8000/api/scim/v2` |
+| SCIM provider | "FeohLedger SCIM" → `http://host.docker.internal:8000/api/scim/v2` |
 | SCIM bearer token | `local-dev-scim-token-acme` (matches `pnpm scim:seed`) |
 | Demo user to sync | `scim.demo@acme.com` |
 

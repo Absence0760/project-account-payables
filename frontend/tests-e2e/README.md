@@ -49,15 +49,15 @@ The CI e2e backend sets two env vars that the default `pnpm dev:backend`
 does **not**; without them a long serial run (or several concurrent
 independent processes) flakes on the shared auth surface:
 
-- `AP_RATE_LIMIT_ENABLED=false` — the login endpoint is otherwise capped
+- `FEOH_RATE_LIMIT_ENABLED=false` — the login endpoint is otherwise capped
   at 10/60s per IP, and every worker shares the loopback IP.
-- `AP_MAX_CONCURRENT_SESSIONS=100` — the default cap of 5 evicts the
+- `FEOH_MAX_CONCURRENT_SESSIONS=100` — the default cap of 5 evicts the
   per-worker cached storage-state JTI onto the blocklist once a spec
   re-logs-in as the same user ≥5 times (e.g. an `afterEach` re-auth),
   surfacing as a spurious `401` on later API setup calls.
 
 Start the local e2e backend with both set (CI uses these exact values):
-`AP_RATE_LIMIT_ENABLED=false AP_MAX_CONCURRENT_SESSIONS=100 python main.py`.
+`FEOH_RATE_LIMIT_ENABLED=false FEOH_MAX_CONCURRENT_SESSIONS=100 python main.py`.
 
 ### Specs that don't follow the worker-tenant pattern
 
@@ -153,8 +153,8 @@ container is up.
 | Spec | Needs | Bring it up |
 |---|---|---|
 | `sso/login.spec.ts` | Keycloak + acme SSO seeded | `pnpm idp:up && pnpm idp:seed` |
-| `email/signup-email.spec.ts` | Mailpit + backend on `AP_EMAIL_PROVIDER=smtp` | `pnpm mail:up`, restart backend with smtp |
-| `erp/` (merge-dev / netsuite / dynamics specs) | fake-erp on :12112 + backend on the committed `.env.development` `AP_ERP_*` base URLs | `pnpm erp:up`, then `pnpm test:erp` |
+| `email/signup-email.spec.ts` | Mailpit + backend on `FEOH_EMAIL_PROVIDER=smtp` | `pnpm mail:up`, restart backend with smtp |
+| `erp/` (merge-dev / netsuite / dynamics specs) | fake-erp on :12112 + backend on the committed `.env.development` `FEOH_ERP_*` base URLs | `pnpm erp:up`, then `pnpm test:erp` |
 | `scim/provisioning.spec.ts` | (none — CI-safe contract test) | always runs |
 
 Backend-only service flows are pytest integration tests, also gated:
@@ -173,7 +173,7 @@ push/PR to main, **sharded across 14 parallel GitHub runners** via
 Playwright's `--shard=N/14` flag. Each shard:
 
 - pgvector/pgvector:pg16 + Redis 7 as services (per-shard, isolated)
-- `AP_E2E_TENANT_COUNT=1` — each shard only needs one tenant
+- `FEOH_E2E_TENANT_COUNT=1` — each shard only needs one tenant
   (`e2e1`) since it runs `workers=1`. Skips provisioning the other
   three e2e tenants and shaves ~5 s off seed time per shard.
 - Python 3.14 → install backend deps →
@@ -219,8 +219,8 @@ A dedicated **`erp-e2e`** job in `ci.yml` (modeled on `service-e2e`,
 gated by the same `changes.e2e` filter and required by `ci-gate`) does
 the same for the ERP suite: it boots only fake-erp (`docker compose
 --profile erp`), lets the backend pick up the committed
-`.env.development` `AP_ERP_*` base URLs, and runs just `erp/` with
-`AP_REQUIRE_INTEGRATION=1` so a skip there is a hard failure. Locally
+`.env.development` `FEOH_ERP_*` base URLs, and runs just `erp/` with
+`FEOH_REQUIRE_INTEGRATION=1` so a skip there is a hard failure. Locally
 the same specs skip with an actionable message when fake-erp isn't
 reachable (`pnpm erp:up` starts it), so the normal suite stays green
 without the container.
@@ -263,7 +263,7 @@ Reach for these instead of duplicating boilerplate per spec:
   — compose the `Authorization` + `X-Tenant-Slug` headers for an
   authenticated, tenant-scoped API request. Default to the
   worker's slug.
-- `tenantPsql(query, slug?)` — `psql -d ap_<slug>` for the half
+- `tenantPsql(query, slug?)` — `psql -d feoh_<slug>` for the half
   dozen specs that need to clobber DB state the API doesn't expose
   (hard-delete an approved invoice, force-fail a settled payment,
   etc.). Defaults to the worker's DB.

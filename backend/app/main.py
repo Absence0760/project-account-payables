@@ -77,32 +77,32 @@ from app.config import settings
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Fail fast if the deploy left security-critical config at its insecure
-    # defaults. Local dev sets `AP_DEBUG=true` to keep these guards as
+    # defaults. Local dev sets `FEOH_DEBUG=true` to keep these guards as
     # warnings rather than crashes; every other environment must override.
     if not settings.debug:
         if settings.secret_key in ("", "change-me-in-production"):
             raise RuntimeError(
-                "AP_SECRET_KEY must be set to a non-default value when AP_DEBUG=false"
+                "FEOH_SECRET_KEY must be set to a non-default value when FEOH_DEBUG=false"
             )
         if settings.email_intake_domain and not settings.email_intake_signing_secret:
             raise RuntimeError(
-                "AP_EMAIL_INTAKE_SIGNING_SECRET must be set when "
-                "AP_EMAIL_INTAKE_DOMAIN is configured"
+                "FEOH_EMAIL_INTAKE_SIGNING_SECRET must be set when "
+                "FEOH_EMAIL_INTAKE_DOMAIN is configured"
             )
         if settings.peppol_inbound_enabled and not settings.peppol_inbound_signing_secret:
             raise RuntimeError(
-                "AP_PEPPOL_INBOUND_SIGNING_SECRET must be set when "
-                "AP_PEPPOL_INBOUND_ENABLED is true"
+                "FEOH_PEPPOL_INBOUND_SIGNING_SECRET must be set when "
+                "FEOH_PEPPOL_INBOUND_ENABLED is true"
             )
         if settings.billing_webhook_enabled and settings.billing_provider == "mock":
             raise RuntimeError(
-                "AP_BILLING_PROVIDER must not be 'mock' when AP_BILLING_WEBHOOK_ENABLED "
+                "FEOH_BILLING_PROVIDER must not be 'mock' when FEOH_BILLING_WEBHOOK_ENABLED "
                 "is true — the mock adapter's parse_webhook performs no signature "
                 "verification, so serving it publicly would accept unauthenticated events"
             )
         if settings.webhooks_allow_private_targets:
             raise RuntimeError(
-                "AP_WEBHOOKS_ALLOW_PRIVATE_TARGETS must not be true when AP_DEBUG=false — "
+                "FEOH_WEBHOOKS_ALLOW_PRIVATE_TARGETS must not be true when FEOH_DEBUG=false — "
                 "it disables the outbound-webhook SSRF guard, letting a tenant admin point "
                 "signed webhook deliveries at loopback/private/metadata addresses"
             )
@@ -114,7 +114,7 @@ async def lifespan(app: FastAPI):
             unknown = sorted(set(configured) - set(list_available_providers()))
             if unknown:
                 raise RuntimeError(
-                    f"AP_AUDIT_SHIPPING_PROVIDERS names unregistered adapter(s) {unknown} — "
+                    f"FEOH_AUDIT_SHIPPING_PROVIDERS names unregistered adapter(s) {unknown} — "
                     f"registered providers: {list_available_providers()}. A typo'd name "
                     "would otherwise silently fall back to the no-op mock adapter and mark "
                     "rows shipped while nothing reaches the real sink."
@@ -122,7 +122,7 @@ async def lifespan(app: FastAPI):
 
     # Background reaper for invoices stuck in `pending` extraction. Started
     # on app boot, cancelled cleanly on shutdown. Toggleable via
-    # AP_EXTRACTION_REAPER_ENABLED so tests / one-shot CLI runs can disable it.
+    # FEOH_EXTRACTION_REAPER_ENABLED so tests / one-shot CLI runs can disable it.
     import asyncio
 
     from app.services.approval_escalation import run_escalation_loop
@@ -155,7 +155,7 @@ async def lifespan(app: FastAPI):
     if settings.extraction_reaper_enabled:
         reaper_task = asyncio.create_task(run_reaper_loop(), name="extraction-reaper")
     # Centralized audit-log shipper (SOC 2). Disabled by default so local
-    # dev doesn't spin up AWS clients; flip AP_AUDIT_SHIPPING_ENABLED on in
+    # dev doesn't spin up AWS clients; flip FEOH_AUDIT_SHIPPING_ENABLED on in
     # deployed envs.
     if settings.audit_shipping_enabled:
         shipper_task = asyncio.create_task(run_shipper_loop(), name="audit-log-shipper")
@@ -164,33 +164,33 @@ async def lifespan(app: FastAPI):
     if settings.payment_reconcile_enabled:
         reconciler_task = asyncio.create_task(run_reconciler_loop(), name="payment-reconciler")
     # Contract renewal-alert sweep. Disabled by default; flip
-    # AP_CONTRACT_RENEWAL_ENABLED on in deployed envs.
+    # FEOH_CONTRACT_RENEWAL_ENABLED on in deployed envs.
     if settings.contract_renewal_enabled:
         renewal_task = asyncio.create_task(run_renewal_loop(), name="contract-renewal")
     # Periodic vendor sanctions re-screening sweep. Disabled by default;
-    # flip AP_VENDOR_RESCREEN_ENABLED on in deployed envs.
+    # flip FEOH_VENDOR_RESCREEN_ENABLED on in deployed envs.
     if settings.vendor_rescreen_enabled:
         rescreen_task = asyncio.create_task(run_vendor_rescreen_loop(), name="vendor-rescreen")
     # Dynamic-discounting auto-capture sweep. Disabled by default; flip
-    # AP_DISCOUNT_OPTIMIZATION_ENABLED on in deployed envs. Only accepts
+    # FEOH_DISCOUNT_OPTIMIZATION_ENABLED on in deployed envs. Only accepts
     # high-ROI offers — never moves money (see discount_auto_trigger).
     if settings.discount_optimization_enabled:
         discount_task = asyncio.create_task(
             run_discount_optimization_loop(), name="discount-auto-trigger"
         )
-    # QMS inspection sync. Disabled by default; flip AP_QMS_SYNC_ENABLED on in
+    # QMS inspection sync. Disabled by default; flip FEOH_QMS_SYNC_ENABLED on in
     # deployed envs once a real QMS is configured per-org. Pulls inspection
     # records into the quality_inspections table (4-way-match leg).
     if settings.qms_sync_enabled:
         qms_task = asyncio.create_task(run_qms_sync_loop(), name="qms-sync")
     # Retention-policy enforcement sweep (SOX records management). Disabled by
-    # default; flip AP_RETENTION_ENABLED on in deployed envs. Soft-archives
+    # default; flip FEOH_RETENTION_ENABLED on in deployed envs. Soft-archives
     # overdue terminal invoices + verifies audit-log WORM shipment; NEVER
     # deletes audit_log rows (composes with the immutability trigger).
     if settings.retention_enabled:
         retention_task = asyncio.create_task(run_retention_loop(), name="retention-sweep")
     # Recurring / subscription invoice generation sweep. Disabled by default;
-    # flip AP_RECURRING_INVOICES_ENABLED on in deployed envs. Only creates
+    # flip FEOH_RECURRING_INVOICES_ENABLED on in deployed envs. Only creates
     # pre-coded invoices in the approval queue — never moves money (see
     # recurring_invoices).
     if settings.recurring_invoices_enabled:
@@ -198,17 +198,17 @@ async def lifespan(app: FastAPI):
             run_recurring_invoices_loop(), name="recurring-invoices"
         )
     # Outbound-webhook retry/delivery sweep. Disabled by default; flip
-    # AP_WEBHOOKS_ENABLED on in deployed envs. The emit path delivers inline on
+    # FEOH_WEBHOOKS_ENABLED on in deployed envs. The emit path delivers inline on
     # the running loop; this sweep is the durable retry backstop.
     if settings.webhooks_enabled:
         webhooks_task = asyncio.create_task(run_webhook_delivery_loop(), name="webhook-delivery")
     # Billing dunning / past-due automation sweep. Disabled by default; flip
-    # AP_BILLING_DUNNING_ENABLED on in deployed envs. Only cancels subscriptions
+    # FEOH_BILLING_DUNNING_ENABLED on in deployed envs. Only cancels subscriptions
     # overdue past the grace window — never moves money (see dunning_sweep).
     if settings.billing_dunning_enabled:
         dunning_task = asyncio.create_task(run_dunning_loop(), name="billing-dunning")
     # Scheduled-report runner. Disabled by default so local dev / tests never
-    # email reports; flip AP_SCHEDULED_REPORTS_ENABLED on in deployed envs.
+    # email reports; flip FEOH_SCHEDULED_REPORTS_ENABLED on in deployed envs.
     if settings.scheduled_reports_enabled:
         scheduled_reports_task = asyncio.create_task(
             run_scheduled_reports_loop(), name="scheduled-reports"
@@ -245,7 +245,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Account Payables API",
+    title="FeohLedger API",
     version="0.1.0",
     lifespan=lifespan,
 )
@@ -254,7 +254,7 @@ app = FastAPI(
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Attach SOC 2 tablestakes security headers to every response.
 
-    - `Strict-Transport-Security` (HSTS) is gated on `AP_HSTS_ENABLED` so the
+    - `Strict-Transport-Security` (HSTS) is gated on `FEOH_HSTS_ENABLED` so the
       local HTTP dev server doesn't accidentally pin `localhost` to HTTPS in
       developer browsers. Flip the flag on in deployed envs.
     - The other three headers have no HTTP/HTTPS dependency and are always
@@ -296,7 +296,7 @@ def _build_cors_origin_regex() -> str:
     """Compose the allow_origin_regex from settings.
 
     Local dev always gets ``localhost`` (any subdomain + port). Production
-    domains come from ``AP_CORS_PRODUCTION_DOMAIN`` (comma-separated for
+    domains come from ``FEOH_CORS_PRODUCTION_DOMAIN`` (comma-separated for
     multi-domain deploys). Empty domain → only localhost matches, which
     is the right default for local boot.
     """
@@ -329,7 +329,7 @@ app.include_router(api_keys.router, prefix="/api")
 # Public versioned programmatic surface (X-API-Key auth) — becomes /api/v1/...
 app.include_router(public_v1_router, prefix="/api")
 # Published OpenAPI spec + Swagger UI for the public /api/v1 surface only
-# (GET /api/v1/openapi.json, GET /api/v1/docs). Both respect AP_PUBLIC_API_ENABLED.
+# (GET /api/v1/openapi.json, GET /api/v1/docs). Both respect FEOH_PUBLIC_API_ENABLED.
 app.include_router(public_v1_openapi_router, prefix="/api")
 app.include_router(audit.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")

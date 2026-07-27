@@ -1,4 +1,4 @@
-# Account Payables — Backend
+# FeohLedger — Backend
 
 Python 3.12+ / FastAPI / PostgreSQL / Redis / MinIO
 
@@ -21,8 +21,8 @@ API runs on http://localhost:8000 — Swagger docs at http://localhost:8000/docs
 
 Uses database-per-tenant isolation. The `X-Tenant-Slug` header routes requests to the correct tenant DB.
 
-- Control plane DB: `account_payables` (orgs, users, roles)
-- Tenant DBs: `ap_acme`, `ap_techflow`, etc.
+- Control plane DB: `feohledger` (orgs, users, roles)
+- Tenant DBs: `feoh_acme`, `feoh_techflow`, etc.
 
 Provision a new tenant:
 

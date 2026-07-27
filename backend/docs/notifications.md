@@ -70,7 +70,7 @@ the GET/PATCH portal endpoints are documented in
 
 ### Email approval links (`invoice_assigned` only)
 
-When `AP_EMAIL_ACTION_SIGNING_KEY` is set, the **`invoice_assigned`** email gains
+When `FEOH_EMAIL_ACTION_SIGNING_KEY` is set, the **`invoice_assigned`** email gains
 per-recipient **Approve / Reject** links so the reviewer can decide straight from
 the email without logging in. `notify_event` resolves the tenant slug once and
 calls `email_action_token.build_email_action_links` per recipient (the token
@@ -122,7 +122,7 @@ default:
 | `teams` | legacy `MessageCard` (`@type`/`sections.facts`/`potentialAction`) | Posts to a Teams incoming-webhook URL via httpx. |
 
 `get_chat_notification_adapter(org_config)` resolves the provider from
-`org_config["provider"]` → `AP_CHAT_NOTIFICATION_PROVIDER` (default `mock`); an
+`org_config["provider"]` → `FEOH_CHAT_NOTIFICATION_PROVIDER` (default `mock`); an
 unknown key falls back to `mock` and never raises.
 `render_chat_message(event_type, ...)` builds the PII-free `ChatMessage`
 (returns `None` for non-approval events like `chat_message` /
@@ -160,7 +160,7 @@ handles (`invoice_assigned` / `invoice_approved` / `invoice_rejected` /
 `settings.chat_notifications`, checks the enable + per-event gate, renders the
 message, builds the adapter, and sends — the whole thing wrapped in its own
 try/except so any failure (config load, adapter build, transport) is swallowed
-and logged PII-free. The deep link is built from `AP_TENANT_URL_TEMPLATE` +
+and logged PII-free. The deep link is built from `FEOH_TENANT_URL_TEMPLATE` +
 invoice id (no secrets).
 
 ### PII
@@ -237,7 +237,7 @@ revision that runs on BOTH the control DB (adds `users.locale`) and every tenant
 DB (adds `vendor_users.locale`); each `ADD COLUMN IF NOT EXISTS` is gated on its
 table existing, so the same revision is safe on both. **Fan-out**: control DB via
 `alembic upgrade head`; every existing tenant via
-`python scripts/migrate_all_tenants.py` (or `AP_MIGRATE_TENANT=ap_<slug> alembic
+`python scripts/migrate_all_tenants.py` (or `FEOH_MIGRATE_TENANT=feoh_<slug> alembic
 upgrade head`); fresh tenants get the column from `create_all` in
 `tenant_provisioning` (the model field). Nullable + reversible.
 
@@ -305,12 +305,12 @@ user's row returns the same 404 as a missing row — no enumeration.
 
 ## Configuration & local-first
 
-- `AP_NOTIFICATIONS_ENABLED` (default `true`) — master kill switch. When off,
+- `FEOH_NOTIFICATIONS_ENABLED` (default `true`) — master kill switch. When off,
   both hooks skip dispatch entirely.
 - No new external dependency: outbound email reuses the existing adapter stack
-  (`AP_EMAIL_PROVIDER`, `console` default — no network, no secrets). Mailpit
+  (`FEOH_EMAIL_PROVIDER`, `console` default — no network, no secrets). Mailpit
   (`pnpm mail:up`) previews SMTP locally. The in-app center is pure Postgres.
-- `AP_CHAT_NOTIFICATION_PROVIDER` (default `mock`) — platform-default chat
+- `FEOH_CHAT_NOTIFICATION_PROVIDER` (default `mock`) — platform-default chat
   adapter. Per-org override + webhook URL + per-event toggles live on
   `Organization.settings.chat_notifications` (see § Chat notifications above).
   The `mock` default needs no Slack/Teams credential, so `pnpm dev` runs

@@ -60,7 +60,7 @@ def test_build_cors_origin_regex_with_no_production_domain():
 
 
 def test_build_cors_origin_regex_with_configured_production_domain():
-    """When ``AP_CORS_PRODUCTION_DOMAIN`` is set, the regex picks up
+    """When ``FEOH_CORS_PRODUCTION_DOMAIN`` is set, the regex picks up
     both the root domain and any subdomain. Multi-domain deploys can
     pass a comma-separated list."""
     import re

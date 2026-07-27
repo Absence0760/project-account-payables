@@ -7,7 +7,7 @@ like ``app/api/assistant.py``'s ``chat`` / ``chat_stream`` — same deps
 (``get_tenant_db`` / ``get_control_db`` / ``get_tenant`` / ``get_entity_id``),
 the same tenant isolation + budget gate + audit trail + SSE contract — but
 gated to finance-leader roles only (``admin`` / ``ap_manager`` / ``cfo`` — NOT
-``ap_clerk``) and behind the ``AP_CASHFLOW_COPILOT_ENABLED`` kill switch (both
+``ap_clerk``) and behind the ``FEOH_CASHFLOW_COPILOT_ENABLED`` kill switch (both
 routes 404 when disabled, so the surface simply doesn't exist when off).
 
 The Phase 3 enact routes (draft-run / capture-discounts) are intentionally NOT
@@ -51,7 +51,7 @@ _COPILOT_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)
 
 
 def _require_enabled() -> None:
-    """Kill switch: when ``AP_CASHFLOW_COPILOT_ENABLED`` is off the whole
+    """Kill switch: when ``FEOH_CASHFLOW_COPILOT_ENABLED`` is off the whole
     surface 404s, so a disabled copilot is indistinguishable from an unmounted
     route (it doesn't enumerate a feature the org hasn't turned on)."""
     if not settings.cashflow_copilot_enabled:

@@ -149,7 +149,7 @@ class TextSearchResult(BaseModel):
 
 class CashflowForecastParams(BaseModel):
     granularity: Literal["day", "week", "month"] = "week"
-    # None → AP_CASHFLOW_COPILOT_DEFAULT_HORIZON_DAYS (resolved in the tool).
+    # None → FEOH_CASHFLOW_COPILOT_DEFAULT_HORIZON_DAYS (resolved in the tool).
     horizon_days: int | None = Field(default=None, ge=7, le=730)
     include_pending: bool = True
 

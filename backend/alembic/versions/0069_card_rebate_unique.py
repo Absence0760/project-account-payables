@@ -15,7 +15,7 @@ Create Date: 2026-07-01
 TENANT DB ONLY: ``card_rebates`` is tenant-scoped (NOT in
 ``tenant_provisioning.CONTROL_TABLES``). The upgrade is gated on the table
 existing, so the revision no-ops on the control DB and fans out to every tenant
-DB via ``scripts/migrate_all_tenants.py`` (or ``AP_MIGRATE_TENANT=ap_<slug>
+DB via ``scripts/migrate_all_tenants.py`` (or ``FEOH_MIGRATE_TENANT=feoh_<slug>
 alembic upgrade head`` for one). Fresh tenants get the index from ``create_all``
 in ``tenant_provisioning`` (it's declared on the model).
 

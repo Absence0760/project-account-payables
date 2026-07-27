@@ -13,7 +13,7 @@ import hmac
 import secrets
 
 # Stable brand on every signing secret so a leaked one is recognisable as ours
-# (greppable, secret-scanner-friendly) — mirrors the ``ap_live`` API-key brand.
+# (greppable, secret-scanner-friendly) — mirrors the ``feoh_live`` API-key brand.
 SECRET_BRAND = "whsec"
 # Leading chars of the secret stored + shown in the management UI (non-secret).
 SECRET_PREFIX_LEN = 12

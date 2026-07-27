@@ -58,7 +58,7 @@ class SubscriptionView(BaseModel):
 
 
 class BillingSummaryResponse(BaseModel):
-    # Provider in effect for this org (per-org override → AP_BILLING_PROVIDER).
+    # Provider in effect for this org (per-org override → FEOH_BILLING_PROVIDER).
     provider: str
     # None when the org has no live subscription (e.g. never subscribed).
     plan: PlanView | None

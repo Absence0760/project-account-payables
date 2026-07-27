@@ -47,7 +47,7 @@ test.describe('/vendors consolidation merge (admin)', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.addInitScript(() => {
 			try {
-				localStorage.setItem('ap_consent_choice', 'accepted');
+				localStorage.setItem('feoh_consent_choice', 'accepted');
 			} catch {
 				/* about:blank — ignore */
 			}

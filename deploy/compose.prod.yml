@@ -5,11 +5,11 @@
 # create deploy/.env by hand and never commit it.
 #
 # Postgres and Redis publish NO host ports: they are reachable only on the
-# compose network. S3 is real AWS S3 (no MinIO here — AP_S3_ENDPOINT_URL and
+# compose network. S3 is real AWS S3 (no MinIO here — FEOH_S3_ENDPOINT_URL and
 # the static keys are set empty in the sops env, so boto3 uses the instance
 # profile).
 
-name: ap-prod
+name: feoh-prod
 
 services:
   postgres:
@@ -19,7 +19,7 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in deploy/.env (via sops)}
-      POSTGRES_DB: account_payables
+      POSTGRES_DB: feohledger
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -46,16 +46,16 @@ services:
     build:
       context: ../backend
     restart: unless-stopped
-    # All AP_* config + secrets come from the decrypted sops env.
+    # All FEOH_* config + secrets come from the decrypted sops env.
     env_file: .env
     environment:
       # Defaults derive from the local containers so the DB password lives in
       # exactly one sops entry (keep POSTGRES_PASSWORD URL-safe, e.g.
       # `openssl rand -hex 24`). These are the UPGRADE SEAMS: setting
-      # AP_DATABASE_URL / AP_REDIS_URL in the sops env overrides them, which
+      # FEOH_DATABASE_URL / FEOH_REDIS_URL in the sops env overrides them, which
       # is the whole migration to RDS / ElastiCache later — no compose edit.
-      AP_DATABASE_URL: ${AP_DATABASE_URL:-postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres:5432/account_payables}
-      AP_REDIS_URL: ${AP_REDIS_URL:-redis://redis:6379}
+      FEOH_DATABASE_URL: ${FEOH_DATABASE_URL:-postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres:5432/feohledger}
+      FEOH_REDIS_URL: ${FEOH_REDIS_URL:-redis://redis:6379}
       # boto3 (S3 / SES) resolves credentials from the EC2 instance profile;
       # the region must be explicit. NOTE: IMDSv2 needs hop limit 2 for
       # containers — see deploy/README.md.

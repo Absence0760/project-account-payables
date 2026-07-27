@@ -2,7 +2,7 @@
 
 Expected body:
     {
-      "to": "invoices+abc123@ap.yourcompany.com",
+      "to": "invoices+abc123@ap.feohledger.com",
       "from": "ap@vendor.com",
       "subject": "Invoice INV-001",
       "message_id": "<opaque>",

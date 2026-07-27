@@ -320,7 +320,7 @@ async def test_rate_limit_ignores_xff_from_untrusted_peer(fake_redis):
 
 
 def test_signup_rate_limit_default_is_modest():
-    """`AP_SIGNUP_RATE_LIMIT_PER_HOUR` defaults to 5. A regression
+    """`FEOH_SIGNUP_RATE_LIMIT_PER_HOUR` defaults to 5. A regression
     that raised it to e.g. 100 would let a single IP create a
     storm of half-provisioned tenants before the limiter kicked in."""
     from app.config import settings

@@ -9,7 +9,7 @@ scale-up target; this one is the pilot / first-customers footprint.
 everything else in-process.**
 
 ```
-        *.app.<domain>  ──────► one VM (EC2 t4g.small)
+        *.app.feohledger.com  ──────► one VM (EC2 t4g.small)
                                  ├── Caddy         — TLS, static frontend, /api reverse-proxy
                                  ├── FastAPI       — backend container (uvicorn)
                                  ├── Postgres 16   — pgvector/pgvector:pg16 (control + tenant DBs)
@@ -22,16 +22,16 @@ everything else in-process.**
 
 The app was designed local-first, and that carries straight into a cheap deploy:
 
-- `AP_EXTRACTION_MODE` / `AP_ERP_MODE` / `AP_AUDIT_MODE` default to `local` —
+- `FEOH_EXTRACTION_MODE` / `FEOH_ERP_MODE` / `FEOH_AUDIT_MODE` default to `local` —
   in-process worker threads, **no SQS, no Lambda**.
 - Every provider integration defaults to its `mock` adapter; real providers
   (Claude Vision, a payment rail, Lithic) are per-org config flips later, not
   infrastructure.
 - All background sweeps are asyncio tasks inside the API process, each behind
-  an `AP_*_ENABLED` flag.
+  an `FEOH_*_ENABLED` flag.
 - The frontend is a static SPA; the only build-time input is `PUBLIC_API_URL`.
 - Tenant routing is subdomain → `X-Tenant-Slug`; CORS for that is already
-  solved by `AP_CORS_PRODUCTION_DOMAIN` (wildcard subdomain regex).
+  solved by `FEOH_CORS_PRODUCTION_DOMAIN` (wildcard subdomain regex).
 
 ## What this deliberately does NOT give you
 
@@ -68,11 +68,11 @@ resize is a stop → change-type → start. Add 2 GB of swap either way.
 
 1. **Real S3 instead of MinIO in prod.** The `infra/` Terraform module already
    defines the invoice-files and audit-logs buckets (versioning, Object Lock,
-   SSE-KMS). Set `AP_S3_BUCKET`, omit `AP_S3_ENDPOINT_URL`, and drop the MinIO
+   SSE-KMS). Set `FEOH_S3_BUCKET`, omit `FEOH_S3_ENDPOINT_URL`, and drop the MinIO
    container — less RAM, real durability, pennies at pilot volume.
 2. **Caddy on the VM serves the frontend.** GitHub Pages can't serve wildcard
    tenant subdomains and CloudFront+ACM is more moving parts. Caddy serves the
-   static `frontend/build`, reverse-proxies `api.<domain>` to the backend, and
+   static `frontend/build`, reverse-proxies `api.feohledger.com` to the backend, and
    auto-provisions TLS. Start with an **explicit hostname list** (one line per
    tenant subdomain — plain HTTP-01, no DNS plugin, no extra IAM); move to a
    wildcard cert via DNS-01 + the Route 53 plugin only when tenant churn makes
@@ -119,8 +119,8 @@ resize is a stop → change-type → start. Add 2 GB of swap either way.
   plugin + sops + AWS CLI, 2 GB swap, the nightly backup cron, and the IMDS
   hop-limit fix. Node/pnpm are *not* needed on the VM — the frontend builds
   inside a `node:20` container.
-- DNS: three records → the instance IP: `app.<domain>`, `api.<domain>`, and a
-  **wildcard `*.app.<domain>`** so tenant onboarding never touches DNS again.
+- DNS: three records → the instance IP: `app.feohledger.com`, `api.feohledger.com`, and a
+  **wildcard `*.app.feohledger.com`** so tenant onboarding never touches DNS again.
   (A DNS wildcard needs no wildcard *certificate* — Caddy still issues
   ordinary per-host HTTP-01 certs.)
 
@@ -134,7 +134,7 @@ Four services (see [`deploy/README.md`](../deploy/README.md) for operations):
 - `api` — built from `backend/Dockerfile` (works on arm64; the lock resolves
   universally — if an arm64 wheel gap ever bites, fall back to an x86
   `t3a.small`, ~$14). Runs the image CMD, `uvicorn app.main:app` (the
-  production entrypoint — not `main.py`). `AP_DATABASE_URL` / `AP_REDIS_URL`
+  production entrypoint — not `main.py`). `FEOH_DATABASE_URL` / `FEOH_REDIS_URL`
   are derived in the compose file from `POSTGRES_PASSWORD`, so the DB
   password lives in exactly one sops entry.
 - `caddy` — ports 80/443, mounts the built `frontend/build` as the site root
@@ -142,8 +142,8 @@ Four services (see [`deploy/README.md`](../deploy/README.md) for operations):
   `deploy/tenants.caddy` host list (one block per tenant subdomain —
   per-host HTTP-01 certs, no DNS plugin; maintained by `add-tenant.sh`, not
   by hand):
-  - `app.<domain>` + each tenant host → SPA (`try_files {path} /index.html`)
-  - `api.<domain>` → `reverse_proxy api:8000`
+  - `app.feohledger.com` + each tenant host → SPA (`try_files {path} /index.html`)
+  - `api.feohledger.com` → `reverse_proxy api:8000`
 
 The frontend is built by the deploy script with
 `PUBLIC_API_URL=https://<API_DOMAIN>` baked in.
@@ -154,20 +154,20 @@ Beyond the committed defaults, the deployed env sets at minimum:
 
 | Var | Value |
 |---|---|
-| `AP_ENVIRONMENT` | `production` (arms hCaptcha enforcement on signup) |
-| `AP_SECRET_KEY` | `openssl rand -hex 32` |
-| `POSTGRES_PASSWORD` | `openssl rand -hex 24` (compose derives `AP_DATABASE_URL` / `AP_REDIS_URL` from it — don't set those) |
-| `AP_S3_BUCKET` | invoice-files bucket; set `AP_S3_ENDPOINT_URL` / `AP_S3_ACCESS_KEY` / `AP_S3_SECRET_KEY` **empty** → real S3 via the instance-profile credential chain |
-| `AP_MFA_ENABLED` / `AP_HSTS_ENABLED` | `true` / `true` |
-| `AP_PUBLIC_URL` / `AP_API_PUBLIC_URL` | `https://app.<domain>` / `https://api.<domain>` |
-| `AP_TENANT_URL_TEMPLATE` | `https://{slug}.app.<domain>` |
-| `AP_CORS_PRODUCTION_DOMAIN` | `app.<domain>` |
-| `AP_EMAIL_PROVIDER` / `AP_EMAIL_FROM` | `ses` / verified sender |
-| `AP_APPROVAL_SIGNING_KEY` + the other HMAC signing keys | real values (each key's presence is its feature's on-switch; leave unset = feature off) |
+| `FEOH_ENVIRONMENT` | `production` (arms hCaptcha enforcement on signup) |
+| `FEOH_SECRET_KEY` | `openssl rand -hex 32` |
+| `POSTGRES_PASSWORD` | `openssl rand -hex 24` (compose derives `FEOH_DATABASE_URL` / `FEOH_REDIS_URL` from it — don't set those) |
+| `FEOH_S3_BUCKET` | invoice-files bucket; set `FEOH_S3_ENDPOINT_URL` / `FEOH_S3_ACCESS_KEY` / `FEOH_S3_SECRET_KEY` **empty** → real S3 via the instance-profile credential chain |
+| `FEOH_MFA_ENABLED` / `FEOH_HSTS_ENABLED` | `true` / `true` |
+| `FEOH_PUBLIC_URL` / `FEOH_API_PUBLIC_URL` | `https://app.feohledger.com` / `https://api.feohledger.com` |
+| `FEOH_TENANT_URL_TEMPLATE` | `https://{slug}.app.feohledger.com` |
+| `FEOH_CORS_PRODUCTION_DOMAIN` | `app.feohledger.com` |
+| `FEOH_EMAIL_PROVIDER` / `FEOH_EMAIL_FROM` | `ses` / verified sender |
+| `FEOH_APPROVAL_SIGNING_KEY` + the other HMAC signing keys | real values (each key's presence is its feature's on-switch; leave unset = feature off) |
 
 Everything else keeps its safe default: mock adapters, `local` modes, sweeps
-off. Flip individual `AP_*_ENABLED` sweeps on once there's a reason
-(`AP_PAYMENT_RECONCILE_ENABLED` and `AP_AUDIT_SHIPPING_ENABLED` are the two
+off. Flip individual `FEOH_*_ENABLED` sweeps on once there's a reason
+(`FEOH_PAYMENT_RECONCILE_ENABLED` and `FEOH_AUDIT_SHIPPING_ENABLED` are the two
 worth enabling first when real payments/compliance start).
 
 SES note: a fresh SES account is sandboxed (verified recipients only). Either
@@ -197,9 +197,9 @@ run `scripts/seed.py` (demo data) in prod.
 
 ### 5. Backups (`deploy/backup.sh` — built; this is the whole DR story)
 
-- Nightly cron (installed by `bootstrap-vm.sh` as `/etc/cron.d/ap-backup`):
+- Nightly cron (installed by `bootstrap-vm.sh` as `/etc/cron.d/feoh-backup`):
   dumps role globals + per-DB
-  `pg_dump -Fc` of `account_payables` and every `ap_*` tenant DB, streamed
+  `pg_dump -Fc` of `feohledger` and every `feoh_*` tenant DB, streamed
   straight to a versioned backups bucket (nothing persists on disk). Add an
   S3 lifecycle rule (e.g. expire after 90 days). The instance profile already
   has the access.
@@ -217,14 +217,14 @@ rebuilding the stack:
 
 | Left out | Trigger | How to add it |
 |---|---|---|
-| Managed Postgres (RDS) | Uptime SLA / RPO < 24h asks | Create RDS PG16 (pgvector supported), restore the latest `backup.sh` dumps, set `AP_DATABASE_URL` in the sops env — the compose default is an **override seam**, no compose edit — redeploy, then `docker compose stop postgres`. ~$15–30/mo. |
-| Managed Redis (ElastiCache) | Same HA push | Same seam: set `AP_REDIS_URL` in the sops env, redeploy. Redis holds only ephemeral state (blocklist / MFA / rate limits) — no data migration. |
-| SQS + Lambda async workers | Extraction/OCR saturates the VM | Already implemented and bundled in the same image (`awslambdaric`). Provision queues + functions (production-deployment.md § Lambda workers), flip `AP_EXTRACTION_MODE=lambda` + `AP_SQS_*_QUEUE_URL` in the sops env, redeploy. Same pattern for the ERP and audit modes. |
+| Managed Postgres (RDS) | Uptime SLA / RPO < 24h asks | Create RDS PG16 (pgvector supported), restore the latest `backup.sh` dumps, set `FEOH_DATABASE_URL` in the sops env — the compose default is an **override seam**, no compose edit — redeploy, then `docker compose stop postgres`. ~$15–30/mo. |
+| Managed Redis (ElastiCache) | Same HA push | Same seam: set `FEOH_REDIS_URL` in the sops env, redeploy. Redis holds only ephemeral state (blocklist / MFA / rate limits) — no data migration. |
+| SQS + Lambda async workers | Extraction/OCR saturates the VM | Already implemented and bundled in the same image (`awslambdaric`). Provision queues + functions (production-deployment.md § Lambda workers), flip `FEOH_EXTRACTION_MODE=lambda` + `FEOH_SQS_*_QUEUE_URL` in the sops env, redeploy. Same pattern for the ERP and audit modes. |
 | CloudFront + S3 frontend | Global latency / offloading the VM | The build artifact is identical. Arm the committed `aws-deploy.yml` pipeline (its § Arming checklist), then drop the SPA hosts from Caddy. |
-| Wildcard TLS certificate | Tenant count makes per-host certs noisy (Let's Encrypt ~50 certs/week limit) | DNS already wildcards; swap the Caddy image for an xcaddy build with the Route 53 DNS plugin and replace `tenants.caddy` with one `*.app.<domain>` site block. |
+| Wildcard TLS certificate | Tenant count makes per-host certs noisy (Let's Encrypt ~50 certs/week limit) | DNS already wildcards; swap the Caddy image for an xcaddy build with the Route 53 DNS plugin and replace `tenants.caddy` with one `*.app.feohledger.com` site block. |
 | Real provider adapters (payments, cards, AI extraction, ERP, sanctions…) | Going live with real money / real data | Per-org `Organization.settings.*` flips + sops keys — zero infrastructure. |
-| Background sweeps (payment reconciler, audit shipping, renewals, dunning…) | First real payments / compliance needs | `AP_*_ENABLED=true` in the sops env, redeploy. |
-| SES production access | Emailing unverified recipients (self-service signup) | AWS console request; until it clears, `AP_EMAIL_PROVIDER=console` + CLI-provisioned tenants. |
+| Background sweeps (payment reconciler, audit shipping, renewals, dunning…) | First real payments / compliance needs | `FEOH_*_ENABLED=true` in the sops env, redeploy. |
+| SES production access | Emailing unverified recipients (self-service signup) | AWS console request; until it clears, `FEOH_EMAIL_PROVIDER=console` + CLI-provisioned tenants. |
 | Multi-instance / ECS / ALB | >1 instance needed | The full `production-deployment.md` build-out; the compose file retires. Nothing here changes shape — the same image, env contract, DB schema, and S3 layout move onto ECS. |
 
 ## Implementation status
@@ -236,7 +236,7 @@ healthcheck + the RDS/ElastiCache override seams), `Caddyfile`
 → verify), `add-tenant.sh` (tenant + Caddy + reload in one command),
 `backup.sh`, and `env.example` (the sops env contract, validated by
 deploy.sh). Also shipped: the S3 client factory now falls back to real AWS +
-the instance-profile credential chain when `AP_S3_ENDPOINT_URL` and the
+the instance-profile credential chain when `FEOH_S3_ENDPOINT_URL` and the
 static keys are set empty (previously it always passed the MinIO dev
 defaults, so the "omit the endpoint for real S3" story couldn't work).
 

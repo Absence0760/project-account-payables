@@ -48,7 +48,7 @@ export const messages = {
 	'nav.partner': 'Admin. de socios',
 
 	// App shell / sidebar
-	'shell.appName': 'Account Payables',
+	'shell.appName': 'FeohLedger',
 	'shell.skipToMain': 'Saltar al contenido principal',
 	'shell.primaryNav': 'Navegación principal',
 	'shell.sectionNav': 'Secciones: {group}',
@@ -562,7 +562,7 @@ export const messages = {
 	'org.section.brandingSaved': 'Marca',
 	'org.branding.hint': 'Personalice la aplicación con marca blanca para su organización. Deje un campo en blanco para usar el valor predeterminado de la plataforma. Los colores de acento cambian el tema de la aplicación inmediatamente al guardar.',
 	'org.branding.productName': 'Nombre del producto',
-	'org.branding.productNamePlaceholder': 'Accounts Payable',
+	'org.branding.productNamePlaceholder': 'FeohLedger',
 	'org.branding.logoUrl': 'URL del logotipo',
 	'org.branding.logoUrlPlaceholder': 'https://cdn.example.com/logo.png',
 	'org.branding.accentColor': 'Color de acento',
@@ -1732,7 +1732,7 @@ export const messages = {
 		'Esta página no se volverá a abrir: el enlace es de un solo uso. Si la cierras por accidente antes de guardar la tarjeta, responde al correo y la reemitiremos.',
 
 	// Auth — login (routes/login/+page.svelte)
-	'auth.login.heading': 'Account Payables',
+	'auth.login.heading': 'FeohLedger',
 	'auth.login.subtitle': 'Inicia sesión para continuar',
 	'auth.login.email': 'Correo electrónico',
 	'auth.login.password': 'Contraseña',
@@ -1765,7 +1765,7 @@ export const messages = {
 	'auth.mfa.error.verify': 'Error de verificación',
 
 	// Auth — SSO / SAML callback (routes/login/{sso,saml}-callback/+page.svelte)
-	'auth.callback.pageTitle': 'Iniciando sesión… — Better AP',
+	'auth.callback.pageTitle': 'Iniciando sesión… — FeohLedger',
 	'auth.callback.signingIn': 'Iniciando tu sesión…',
 	'auth.callback.idpError': 'Error del proveedor de identidad: {error}',
 	'auth.callback.missingCodeState': 'Falta el código o el estado en la URL de retorno.',
@@ -1775,7 +1775,7 @@ export const messages = {
 	'auth.callback.backToSignIn': 'Volver al inicio de sesión',
 
 	// Auth — signup (routes/signup/+page.svelte)
-	'auth.signup.pageTitle': 'Registrarse — Better AP',
+	'auth.signup.pageTitle': 'Registrarse — FeohLedger',
 	'auth.signup.successHeading': 'Revisa tu correo',
 	'auth.signup.successNext':
 		'A continuación: haz clic en el enlace de ese correo para terminar de crear tu espacio de trabajo. Te enviaremos tus datos de acceso en cuanto esté listo.',
@@ -1799,7 +1799,7 @@ export const messages = {
 	'auth.signup.footerPost': ' para iniciar sesión.',
 
 	// Auth — change password (routes/change-password/+page.svelte)
-	'auth.changePassword.pageTitle': 'Cambiar contraseña — Better AP',
+	'auth.changePassword.pageTitle': 'Cambiar contraseña — FeohLedger',
 	'auth.changePassword.heading': 'Establece una nueva contraseña',
 	'auth.changePassword.subForced': 'Iniciaste sesión con una contraseña temporal. Elige una nueva para continuar.',
 	'auth.changePassword.subVoluntary': 'Actualiza tu contraseña.',
@@ -1818,7 +1818,7 @@ export const messages = {
 	'auth.changePassword.signOut': 'Cerrar sesión',
 
 	// Auth — verify / provisioning (routes/verify/+page.svelte)
-	'auth.verify.pageTitle': 'Verificando — Better AP',
+	'auth.verify.pageTitle': 'Verificando — FeohLedger',
 	'auth.verify.noToken': 'No hay token de verificación en la URL.',
 	'auth.verify.failed': 'Error en la verificación.',
 	'auth.verify.pendingHeading': 'Creando tu espacio de trabajo…',

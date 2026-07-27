@@ -29,7 +29,7 @@ test.use({ baseURL: ACME_BASE });
  *   1. JWT carries the org_id claim. Cross-tenant requests fail at
  *      the auth dependency.
  *   2. Each tenant's data lives in a separate Postgres DB
- *      (`ap_<slug>`), so even a leaked JWT can't accidentally read
+ *      (`feoh_<slug>`), so even a leaked JWT can't accidentally read
  *      another tenant's rows.
  *
  * Tests below exercise that contract at two layers:

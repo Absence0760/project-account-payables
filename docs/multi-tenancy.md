@@ -5,13 +5,13 @@ The application uses **subdomain-based routing** with **database-per-tenant isol
 ## Architecture
 
 ```
-acme.localhost:7777 ──┐                        ┌── ap_acme DB (invoices, vendors, ...)
-                      ├── Backend API :8000 ────┼── ap_techflow DB
-techflow.localhost:7777┘   (shared)             └── account_payables DB (control plane)
+acme.localhost:7777 ──┐                        ┌── feoh_acme DB (invoices, vendors, ...)
+                      ├── Backend API :8000 ────┼── feoh_techflow DB
+techflow.localhost:7777┘   (shared)             └── feohledger DB (control plane)
 ```
 
-- **Control-plane DB** (`account_payables`): organizations, users, roles
-- **Tenant DBs** (`ap_<slug>`): invoices, vendors, payments, workflows, exceptions
+- **Control-plane DB** (`feohledger`): organizations, users, roles
+- **Tenant DBs** (`feoh_<slug>`): invoices, vendors, payments, workflows, exceptions
 
 ## How It Works
 
@@ -52,7 +52,7 @@ When the `X-Tenant-Slug` header is **absent**, `get_tenant_slug` falls back to m
 
 ## Database Layout
 
-### Control-plane DB (`account_payables`)
+### Control-plane DB (`feohledger`)
 
 | Table                  | Purpose                                                          |
 |------------------------|------------------------------------------------------------------|
@@ -64,7 +64,7 @@ When the `X-Tenant-Slug` header is **absent**, `get_tenant_slug` falls back to m
 | `extraction_usage`     | Per-invoice billing rows for platform extraction                 |
 | `card_rebates`         | Per-virtual-card rebate billing rows                             |
 
-### Tenant DB (`ap_<slug>`)
+### Tenant DB (`feoh_<slug>`)
 
 | Table                        | Purpose                    |
 |------------------------------|----------------------------|
@@ -109,10 +109,10 @@ python scripts/create_tenant.py \
 ```
 
 This:
-1. Creates `ap_newcorp` database on the Postgres server
+1. Creates `feoh_newcorp` database on the Postgres server
 2. Inserts the org row into the control-plane DB
 3. Creates the admin user in the control-plane DB
-4. Creates all tenant tables in `ap_newcorp`
+4. Creates all tenant tables in `feoh_newcorp`
 
 The new tenant is immediately accessible at `newcorp.localhost:7777`.
 
@@ -128,7 +128,7 @@ alembic upgrade head
 ### Single tenant DB
 
 ```bash
-AP_MIGRATE_TENANT=ap_acme alembic upgrade head
+FEOH_MIGRATE_TENANT=feoh_acme alembic upgrade head
 ```
 
 ### All tenant DBs
@@ -169,7 +169,7 @@ For Safari, add entries manually:
 
 ### Docker
 
-The `docker-compose.yml` mounts `init-tenants.sql` which auto-creates `ap_acme` and `ap_techflow` databases on first run. For a fresh start:
+The `docker-compose.yml` mounts `init-tenants.sql` which auto-creates `feoh_acme` and `feoh_techflow` databases on first run. For a fresh start:
 
 ```bash
 docker compose down -v

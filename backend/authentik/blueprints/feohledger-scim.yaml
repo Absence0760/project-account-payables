@@ -1,5 +1,5 @@
 # Authentik blueprint — auto-configures an outbound SCIM provider that pushes
-# users into the Account Payables app's SCIM Service Provider endpoint.
+# users into the FeohLedger app's SCIM Service Provider endpoint.
 #
 # Authentik discovers and applies blueprints mounted under /blueprints/custom
 # on startup (see docker-compose.yml `authentik-server`/`authentik-worker`).
@@ -12,21 +12,21 @@
 # host (run via `pnpm dev`, :8000) through Docker's host-gateway alias.
 #
 # After this applies: open http://localhost:9002 (akadmin / admin), go to
-# Applications → Providers → "Account Payables SCIM" → Run sync. Assigned,
+# Applications → Providers → "FeohLedger SCIM" → Run sync. Assigned,
 # non-service-account users get POSTed to /api/scim/v2/Users. See
 # docs/local-sso-keycloak.md § Authentik for the end-to-end steps.
 version: 1
 metadata:
-  name: Account Payables — SCIM provisioning
+  name: FeohLedger — SCIM provisioning
   labels:
     blueprints.goauthentik.io/instantiate: "true"
 entries:
   - model: authentik_providers_scim.scimprovider
-    id: ap-scim-provider
+    id: feoh-scim-provider
     identifiers:
-      name: Account Payables SCIM
+      name: FeohLedger SCIM
     attrs:
-      name: Account Payables SCIM
+      name: FeohLedger SCIM
       url: http://host.docker.internal:8000/api/scim/v2
       token: local-dev-scim-token-acme
       # Don't try to provision authentik's internal service accounts.
@@ -39,19 +39,19 @@ entries:
       property_mappings_group: []
 
   - model: authentik_core.application
-    id: ap-app
+    id: feoh-app
     identifiers:
-      slug: account-payables
+      slug: feohledger
     attrs:
-      name: Account Payables
-      slug: account-payables
-      provider: !KeyOf ap-scim-provider
-      meta_description: Local SCIM provisioning target for Account Payables.
+      name: FeohLedger
+      slug: feohledger
+      provider: !KeyOf feoh-scim-provider
+      meta_description: Local SCIM provisioning target for FeohLedger.
 
   # A demo user to provision. Assign more users to the application (or remove
   # exclude filters) to push them on the next sync.
   - model: authentik_core.user
-    id: ap-scim-demo-user
+    id: feoh-scim-demo-user
     identifiers:
       username: scim.demo
     attrs:

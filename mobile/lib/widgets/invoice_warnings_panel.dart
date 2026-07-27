@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/models/invoice.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/models/invoice.dart';
 
 /// Detail-screen panel that surfaces an invoice's warnings / fraud flags and
 /// (when present) its latest PO-match result — the same signals the web invoice

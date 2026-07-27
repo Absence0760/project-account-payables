@@ -95,7 +95,7 @@ the sweep). Each tick:
 
 1. Enumerate tenant DBs from the control plane.
 2. Per tenant, find `active` templates whose `next_run_on` has arrived
-   (`next_run_on <= today`), up to `AP_RECURRING_INVOICES_MAX_PER_SWEEP` per
+   (`next_run_on <= today`), up to `FEOH_RECURRING_INVOICES_MAX_PER_SWEEP` per
    tick (the per-tenant cap keeps a backlog from monopolising a tick).
 3. For each, compute the `period_key`, generate the next `Invoice` (pre-coded
    from the template: vendor, amount, currency, GL / cost-center / department /
@@ -135,9 +135,9 @@ Disabled by default. Env vars:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `AP_RECURRING_INVOICES_ENABLED` | `false` | Master switch for the generation sweep. Off in local dev/tests; flip on in deployed envs. |
-| `AP_RECURRING_INVOICES_INTERVAL_SECONDS` | `3600` | Sweep interval. |
-| `AP_RECURRING_INVOICES_MAX_PER_SWEEP` | `200` | Per-tick cap on invoices generated per tenant (backlog guard). |
+| `FEOH_RECURRING_INVOICES_ENABLED` | `false` | Master switch for the generation sweep. Off in local dev/tests; flip on in deployed envs. |
+| `FEOH_RECURRING_INVOICES_INTERVAL_SECONDS` | `3600` | Sweep interval. |
+| `FEOH_RECURRING_INVOICES_MAX_PER_SWEEP` | `200` | Per-tick cap on invoices generated per tenant (backlog guard). |
 
 ## Variance signal
 
@@ -218,7 +218,7 @@ admin / ap_manager (`auth.isManager`). See `frontend/CLAUDE.md`.
 ## Local-first
 
 No new external dependency and no new `pnpm` script. The generation sweep is
-disabled by default (`AP_RECURRING_INVOICES_ENABLED=false`), so `pnpm dev` runs
+disabled by default (`FEOH_RECURRING_INVOICES_ENABLED=false`), so `pnpm dev` runs
 the whole feature — template CRUD, upcoming-schedule preview, generated-invoice
 history, and on-demand `generate-now` — with no background loop and no cloud
 credential. Flip the switch on in deployed envs to enable scheduled generation.

@@ -15,7 +15,7 @@ const _thisDir = path.dirname(_thisFile);
 /**
  * Per-worker tenant isolation for parallel Playwright execution.
  *
- * `backend/scripts/seed.py` provisions `AP_E2E_TENANT_COUNT` (default 4)
+ * `backend/scripts/seed.py` provisions `FEOH_E2E_TENANT_COUNT` (default 4)
  * `e2e<N>` tenants. Each Playwright worker maps to one tenant via
  * `workerIndex`, so a worker that creates / deletes data in
  * `e2e1` can't collide with another worker working in `e2e2`. Spec
@@ -36,7 +36,7 @@ const _thisDir = path.dirname(_thisFile);
 const AUTH_DIR = path.resolve(_thisDir, '../.auth');
 
 const E2E_TENANT_COUNT = parseInt(
-	process.env.E2E_TENANT_COUNT ?? process.env.AP_E2E_TENANT_COUNT ?? '4',
+	process.env.E2E_TENANT_COUNT ?? process.env.FEOH_E2E_TENANT_COUNT ?? '4',
 	10
 );
 
@@ -238,7 +238,7 @@ async function _ensureAdminStorageState(
 		// This is the post-consent steady state every real session is in after
 		// the first visit; it is NOT an init script, so consent-banner.spec.ts
 		// (which removes the key and reloads to assert the banner) still works.
-		await page.evaluate(() => localStorage.setItem('ap_consent_choice', 'accepted'));
+		await page.evaluate(() => localStorage.setItem('feoh_consent_choice', 'accepted'));
 		await context.storageState({ path: file });
 	} finally {
 		await context.close();
@@ -343,7 +343,7 @@ export async function signIn(
 	// banner still shows there.
 	await page.addInitScript(() => {
 		try {
-			localStorage.setItem('ap_consent_choice', 'accepted');
+			localStorage.setItem('feoh_consent_choice', 'accepted');
 		} catch {
 			/* about:blank — ignore */
 		}
@@ -427,7 +427,7 @@ export async function authedTenantHeaders(
  *  inspect state the API doesn't expose (e.g. clobbering
  *  `assigned_to_id` to provoke a blocked-delete branch). */
 export function tenantPsql(query: string, slug?: string): string {
-	const db = `ap_${slug ?? currentTenantSlug()}`;
+	const db = `feoh_${slug ?? currentTenantSlug()}`;
 	const out = execFileSync(
 		'psql',
 		['-h', 'localhost', '-U', 'postgres', '-p', '5432', '-d', db, '-tAc', query],

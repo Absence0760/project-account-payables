@@ -18,7 +18,7 @@ docker compose up -d
 ```
 
 This starts:
-- **PostgreSQL 16** on `localhost:5432` (includes `account_payables`, `ap_acme`, `ap_techflow` databases)
+- **PostgreSQL 16** on `localhost:5432` (includes `feohledger`, `feoh_acme`, `feoh_techflow` databases)
 - **Redis 7** on `localhost:6379`
 - **MinIO** on `localhost:9000` (console: `localhost:9001`)
 

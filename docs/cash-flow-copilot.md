@@ -251,7 +251,7 @@ chart + streamed answer; request a plan → assert the plan card renders → cli
 | Tenant isolation at the data layer | Inherited from `get_tenant` chokepoint + entity scoping; tools bound to one tenant session |
 | Auth before everything + RBAC | Façade + tools gated `admin/ap_manager/cfo`; per-tool `allowed_roles` enforced in `run_tool`; clerk gets a clean refusal |
 | PII out of logs | Audit logs arg *shape* only; cash figures never enter the trail |
-| Secrets via sops | No new secret — reuses `AP_ANTHROPIC_API_KEY`; local-first via mock/ollama |
+| Secrets via sops | No new secret — reuses `FEOH_ANTHROPIC_API_KEY`; local-first via mock/ollama |
 | Local-first | Fully functional under `mock` (deterministic) and `ollama` (default); no cloud account required |
 
 The critical new security surface is the **per-tool role gate** (clerks must not
@@ -260,16 +260,16 @@ explicit tests (§10).
 
 ---
 
-## 9. Configuration (`AP_` prefix)
+## 9. Configuration (`FEOH_` prefix)
 
 Reuses the assistant's config; a couple of additive knobs:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `AP_CASHFLOW_COPILOT_ENABLED` | `true` | Master switch for the copilot tools + façade routes |
-| `AP_CASHFLOW_COPILOT_DEFAULT_HORIZON_DAYS` | `90` | Default forecast horizon when the user doesn't specify |
-| (reused) `AP_ASSISTANT_PROVIDER` / `AP_ASSISTANT_MONTHLY_TOKEN_BUDGET` / `AP_ANTHROPIC_API_KEY` | — | Adapter, budget, key — **no new secret** |
-| (reused) `AP_DISCOUNT_COST_OF_CAPITAL_PCT` | `8.0` | Optimizer cost-of-capital when the user doesn't override |
+| `FEOH_CASHFLOW_COPILOT_ENABLED` | `true` | Master switch for the copilot tools + façade routes |
+| `FEOH_CASHFLOW_COPILOT_DEFAULT_HORIZON_DAYS` | `90` | Default forecast horizon when the user doesn't specify |
+| (reused) `FEOH_ASSISTANT_PROVIDER` / `FEOH_ASSISTANT_MONTHLY_TOKEN_BUDGET` / `FEOH_ANTHROPIC_API_KEY` | — | Adapter, budget, key — **no new secret** |
+| (reused) `FEOH_DISCOUNT_COST_OF_CAPITAL_PCT` | `8.0` | Optimizer cost-of-capital when the user doesn't override |
 
 ---
 

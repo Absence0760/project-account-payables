@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/models/admin_user.dart';
-import 'package:ap_mobile/stores/admin_user_store.dart';
-import 'package:ap_mobile/stores/auth_store.dart';
-import 'package:ap_mobile/utils/a11y.dart';
-import 'package:ap_mobile/utils/debouncer.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/models/admin_user.dart';
+import 'package:feohledger_mobile/stores/admin_user_store.dart';
+import 'package:feohledger_mobile/stores/auth_store.dart';
+import 'package:feohledger_mobile/utils/a11y.dart';
+import 'package:feohledger_mobile/utils/debouncer.dart';
 
 /// Admin — user management. Lists the org's users (search by name/email) and
 /// lets an admin change a user's roles or activate / deactivate them over

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
-import 'package:ap_mobile/models/notification.dart';
+import 'package:feohledger_mobile/models/notification.dart';
 
 final _absoluteFormat = DateFormat('MMM d, yyyy');
 

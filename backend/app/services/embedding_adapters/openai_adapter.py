@@ -27,7 +27,7 @@ class OpenAIEmbeddingAdapter(EmbeddingAdapter):
         model = self.config.get("model") or "text-embedding-3-small"
 
         if not api_key:
-            raise RuntimeError("AP_EMBEDDING_API_KEY is not set")
+            raise RuntimeError("FEOH_EMBEDDING_API_KEY is not set")
 
         # Trim to OpenAI's ~8k token safe ceiling — character-level approx
         # so we don't need a tokenizer dep. 4 chars/token is a safe upper bound.

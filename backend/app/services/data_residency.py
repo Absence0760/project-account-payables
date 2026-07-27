@@ -1,7 +1,7 @@
 """Data residency — pin a tenant's DB + object storage to a geographic region.
 
 GDPR / CCPA data-residency model for the database-per-tenant architecture.
-Every tenant already gets its own Postgres database (``ap_<slug>``) and its own
+Every tenant already gets its own Postgres database (``feoh_<slug>``) and its own
 MinIO/S3 key prefix, so pinning a tenant's data to a region is a *placement*
 decision, not a schema change: route that tenant's DB onto a regional cluster
 and its object storage onto a regional bucket/endpoint. This module is the
@@ -54,36 +54,36 @@ DEFAULT_REGION: str = "us"
 REGION_PLACEMENT: dict[str, dict[str, str]] = {
     "us": {
         "label": "United States",
-        "db_cluster": "ap-pg-us-east-1",
-        "s3_bucket": "ap-tenant-files-us",
+        "db_cluster": "feoh-pg-us-east-1",
+        "s3_bucket": "feoh-tenant-files-us",
         "s3_region": "us-east-1",
         "s3_endpoint": "https://s3.us-east-1.amazonaws.com",
     },
     "eu": {
         "label": "European Union",
-        "db_cluster": "ap-pg-eu-central-1",
-        "s3_bucket": "ap-tenant-files-eu",
+        "db_cluster": "feoh-pg-eu-central-1",
+        "s3_bucket": "feoh-tenant-files-eu",
         "s3_region": "eu-central-1",
         "s3_endpoint": "https://s3.eu-central-1.amazonaws.com",
     },
     "uk": {
         "label": "United Kingdom",
-        "db_cluster": "ap-pg-eu-west-2",
-        "s3_bucket": "ap-tenant-files-uk",
+        "db_cluster": "feoh-pg-eu-west-2",
+        "s3_bucket": "feoh-tenant-files-uk",
         "s3_region": "eu-west-2",
         "s3_endpoint": "https://s3.eu-west-2.amazonaws.com",
     },
     "ca": {
         "label": "Canada",
-        "db_cluster": "ap-pg-ca-central-1",
-        "s3_bucket": "ap-tenant-files-ca",
+        "db_cluster": "feoh-pg-ca-central-1",
+        "s3_bucket": "feoh-tenant-files-ca",
         "s3_region": "ca-central-1",
         "s3_endpoint": "https://s3.ca-central-1.amazonaws.com",
     },
     "au": {
         "label": "Australia",
-        "db_cluster": "ap-pg-ap-southeast-2",
-        "s3_bucket": "ap-tenant-files-au",
+        "db_cluster": "feoh-pg-ap-southeast-2",
+        "s3_bucket": "feoh-tenant-files-au",
         "s3_region": "ap-southeast-2",
         "s3_endpoint": "https://s3.ap-southeast-2.amazonaws.com",
     },

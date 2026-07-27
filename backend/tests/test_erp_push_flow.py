@@ -22,7 +22,7 @@ These tests pin:
     ERP unless an actual human approved
   - retry_erp resets erp_retries to 0 and parks the invoice at
     sending_to_erp WITHOUT running the ERP call inline — the route's
-    dispatch_erp owns the call (org config + AP_ERP_MODE); an inline
+    dispatch_erp owns the call (org config + FEOH_ERP_MODE); an inline
     call would double-post and always use the mock adapter
 
 Adapter calls and `asyncio.sleep` are stubbed — we never want real
@@ -283,7 +283,7 @@ async def test_retry_erp_prepares_state_but_never_runs_the_erp_call_inline():
     Regression: retry_erp used to ALSO run send_to_erp_internal inline
     — without the org's erp_config (so the retry always posted via the
     MOCK adapter), racing the route's own dispatch_erp (double-post),
-    and bypassing AP_ERP_MODE=lambda. The actual call is the
+    and bypassing FEOH_ERP_MODE=lambda. The actual call is the
     dispatcher's job; retry_erp must only prepare state."""
     inv = _invoice(status=InvoiceStatus.failed)
     inst = _instance(state_data={"erp_retries": 3, "last_error": "old"})

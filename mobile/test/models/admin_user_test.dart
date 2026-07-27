@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:ap_mobile/models/admin_user.dart';
+import 'package:feohledger_mobile/models/admin_user.dart';
 
 void main() {
   group('AdminUser.fromJson', () {

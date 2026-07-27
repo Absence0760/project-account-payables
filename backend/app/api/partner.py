@@ -290,10 +290,10 @@ async def mint_link_code(
     Handing the code to a partner is the org's act of CONSENT to being adopted —
     the partner can do nothing with it until then. The code carries only the
     caller's org id under an HMAC signature; it expires in
-    ``AP_PARTNER_LINK_TTL_MINUTES`` and is burned on first redeem.
+    ``FEOH_PARTNER_LINK_TTL_MINUTES`` and is burned on first redeem.
 
     A 503 (feature off) when no signing key is configured — distinct from a 4xx
-    so the operator knows to set ``AP_PARTNER_LINK_SIGNING_KEY``, not that they
+    so the operator knows to set ``FEOH_PARTNER_LINK_SIGNING_KEY``, not that they
     did something wrong. Issuing is audited (PII-free) into the org's own trail.
     """
     code = build_link_code(
@@ -373,7 +373,7 @@ async def provision_child(
 
     Flow: validate the slug (format + reserved-word + availability) → provision
     the full tenant via the shared ``provision_tenant`` primitive (control-plane
-    org + admin user + the ``ap_<slug>`` tenant DB + tables, with its own
+    org + admin user + the ``feoh_<slug>`` tenant DB + tables, with its own
     drop-the-orphan-DB rollback on any partial failure) → stamp
     ``parent_org_id = org.id`` on the new org → audit ``partner.child_provisioned``
     on BOTH trails (the partner's and the new child's), PII-free (org ids + slug

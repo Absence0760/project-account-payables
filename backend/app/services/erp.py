@@ -147,7 +147,7 @@ async def retry_erp(
 
     Resets the retry counter and transitions to sending_to_erp; the actual
     ERP call is the caller's job via `dispatch_erp` (which resolves the
-    org's settings.erp and honours AP_ERP_MODE). Running it inline here
+    org's settings.erp and honours FEOH_ERP_MODE). Running it inline here
     would double-post — the route already dispatches after this returns —
     and would bypass both the org's adapter config and the lambda mode.
     """

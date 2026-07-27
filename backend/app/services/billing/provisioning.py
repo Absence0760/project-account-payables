@@ -28,7 +28,7 @@ Money / PII / secrets
 The price unit amount is derived from ``Plan.monthly_price`` (Decimal) with exact
 math inside the adapter — never float. Only the org's business name + an admin
 email are sent to the provider (never bank/tax/PAN). The adapter fails closed
-without ``AP_BILLING_STRIPE_API_KEY`` (the dispatcher injects the key); the
+without ``FEOH_BILLING_STRIPE_API_KEY`` (the dispatcher injects the key); the
 ``mock`` adapter returns deterministic synthetic ids with no network.
 """
 

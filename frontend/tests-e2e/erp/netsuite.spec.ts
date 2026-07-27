@@ -22,7 +22,7 @@ import {
  * netsuite adapter e2e — the REAL NetSuite SuiteTalk REST adapter
  * (backend/app/services/erp_adapters/netsuite.py) against the local fake ERP
  * container (tools/fake-erp, `pnpm erp:up`, host port 12112). The committed
- * backend/.env.development points AP_ERP_NETSUITE_API_BASE at the fake
+ * backend/.env.development points FEOH_ERP_NETSUITE_API_BASE at the fake
  * (instead of deriving the per-account suitetalk.api.netsuite.com URL from
  * account_id), so the adapter's real OAuth 1.0 TBA header construction +
  * httpx calls run end-to-end with no NetSuite account.

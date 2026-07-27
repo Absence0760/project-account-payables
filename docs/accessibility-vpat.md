@@ -1,6 +1,6 @@
 # Accessibility Conformance Report (VPAT / ACR)
 
-**Product:** project-account-payables — accounts-payable platform (web app,
+**Product:** FeohLedger — accounts-payable platform (web app,
 supplier portal, Flutter mobile app)
 **Report date:** 2026-06-19
 **Edition basis:** [VPAT® 2.5](https://www.itic.org/policy/accessibility/vpat)

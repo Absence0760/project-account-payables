@@ -152,9 +152,9 @@ Disabled by default. Env vars:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `AP_CONTRACT_RENEWAL_ENABLED` | `false` | Master switch for the renewal sweep. Off in local dev/tests; flip on in deployed envs. |
-| `AP_CONTRACT_RENEWAL_INTERVAL_SECONDS` | `3600` | Sweep interval. |
-| `AP_CONTRACT_RENEWAL_DEFAULT_NOTICE_DAYS` | `30` | Platform default lead window; per-contract `renewal_notice_days` overrides it. |
+| `FEOH_CONTRACT_RENEWAL_ENABLED` | `false` | Master switch for the renewal sweep. Off in local dev/tests; flip on in deployed envs. |
+| `FEOH_CONTRACT_RENEWAL_INTERVAL_SECONDS` | `3600` | Sweep interval. |
+| `FEOH_CONTRACT_RENEWAL_DEFAULT_NOTICE_DAYS` | `30` | Platform default lead window; per-contract `renewal_notice_days` overrides it. |
 
 `notify_renewals_once(today=…)` is callable directly (CLI / tests) for a single
 sweep.
@@ -262,7 +262,7 @@ The renewal sweep emits the **`contract_renewal_due`** event
 ## Local-first
 
 No new external dependency and no new `pnpm` script. The renewal sweep is
-disabled by default (`AP_CONTRACT_RENEWAL_ENABLED=false`), so `pnpm dev` runs
+disabled by default (`FEOH_CONTRACT_RENEWAL_ENABLED=false`), so `pnpm dev` runs
 the whole contract feature — repository, spend tracking, compliance, PO
 creation — with no background loop and no cloud credential. Flip the switch on
 in deployed envs to enable renewal alerts.

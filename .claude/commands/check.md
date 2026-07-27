@@ -36,7 +36,7 @@ If the diff is trivial (typo, comment, single-line dep bump, generated-file rege
 
 Send a single message with three Agent tool calls:
 
-- `code-reviewer` — prompt: "Review the working diff against project-account-payables' documented conventions. Output the strict format from your spec."
+- `code-reviewer` — prompt: "Review the working diff against FeohLedger' documented conventions. Output the strict format from your spec."
 - `test-gap-checker` — prompt: "Audit the working diff for missing unit / integration / e2e test surface. Output the format from your spec."
 - `doc-hygiene-checker` — prompt: "Audit the working diff against the docs hygiene rule. Output which docs need updating."
 

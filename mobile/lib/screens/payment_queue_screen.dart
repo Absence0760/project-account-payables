@@ -2,13 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:intl/intl.dart';
 
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/models/payment.dart';
-import 'package:ap_mobile/models/payment_queue.dart';
-import 'package:ap_mobile/stores/auth_store.dart';
-import 'package:ap_mobile/stores/payment_queue_store.dart';
-import 'package:ap_mobile/utils/a11y.dart';
-import 'package:ap_mobile/widgets/kpi_card.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/models/payment.dart';
+import 'package:feohledger_mobile/models/payment_queue.dart';
+import 'package:feohledger_mobile/stores/auth_store.dart';
+import 'package:feohledger_mobile/stores/payment_queue_store.dart';
+import 'package:feohledger_mobile/utils/a11y.dart';
+import 'package:feohledger_mobile/widgets/kpi_card.dart';
 
 final _currencyFormat = NumberFormat.currency(symbol: '\$');
 final _dateFormat = DateFormat('MMM d, yyyy');

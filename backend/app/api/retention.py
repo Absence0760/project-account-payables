@@ -4,7 +4,7 @@ Per-record-class retention windows live on ``Organization.settings.retention``
 (configurable, not hardcoded). Admin-only read + update; every mutation writes a
 ``retention_policy.updated`` audit row into the tenant trail. The enforcement
 sweep that acts on these windows is ``services/retention_sweep.py`` (disabled by
-default behind ``AP_RETENTION_ENABLED``).
+default behind ``FEOH_RETENTION_ENABLED``).
 """
 
 from __future__ import annotations

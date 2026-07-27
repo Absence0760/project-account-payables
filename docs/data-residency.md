@@ -8,7 +8,7 @@ customer in the UK/Canada/Australia can require the equivalent for their
 jurisdiction.
 
 The **database-per-tenant** architecture is what makes this tractable: each
-tenant already gets its own database (`ap_<slug>`) and its own MinIO/S3 key
+tenant already gets its own database (`feoh_<slug>`) and its own MinIO/S3 key
 prefix, so pinning a tenant to a region is a *placement* decision (which
 cluster does its DB live on, which bucket/endpoint holds its files) rather than
 a schema change. No per-row region column, no cross-tenant data commingling to
@@ -54,8 +54,8 @@ as the platform default region.
 | `au` | Australia | Privacy Act / APP cross-border-disclosure restrictions. |
 
 Each region maps to a documented placement in `REGION_PLACEMENT` — an intended
-Postgres cluster name (e.g. `ap-pg-eu-central-1`), an object-storage bucket
-(e.g. `ap-tenant-files-eu`), and the S3 region + endpoint for that bucket.
+Postgres cluster name (e.g. `feoh-pg-eu-central-1`), an object-storage bucket
+(e.g. `feoh-tenant-files-eu`), and the S3 region + endpoint for that bucket.
 These are target names the future connection/provisioning layer will resolve
 against; nothing here is wired into live infra yet.
 
@@ -98,7 +98,7 @@ and the alignment check land now and the infra follows.
 When multi-region infra ships, the placement map becomes load-bearing:
 
 1. **Regional Postgres clusters** — one per region (the `db_cluster` values in
-   `REGION_PLACEMENT`). Tenant provisioning routes a new tenant's `ap_<slug>`
+   `REGION_PLACEMENT`). Tenant provisioning routes a new tenant's `feoh_<slug>`
    database onto the cluster for its region; the per-tenant engine pool in
    `app/database.py` resolves the host from `resolve_region(org)` →
    `get_region_placement(region)["db_cluster"]` instead of a single global host.

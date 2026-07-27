@@ -1,14 +1,14 @@
 import 'package:flutter/material.dart';
 
-import 'package:ap_mobile/config.dart';
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/screens/admin_users_screen.dart';
-import 'package:ap_mobile/screens/login_screen.dart';
-import 'package:ap_mobile/screens/org_settings_screen.dart';
-import 'package:ap_mobile/screens/workflows_screen.dart';
-import 'package:ap_mobile/services/biometric_service.dart';
-import 'package:ap_mobile/stores/auth_store.dart';
-import 'package:ap_mobile/stores/locale_store.dart';
+import 'package:feohledger_mobile/config.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/screens/admin_users_screen.dart';
+import 'package:feohledger_mobile/screens/login_screen.dart';
+import 'package:feohledger_mobile/screens/org_settings_screen.dart';
+import 'package:feohledger_mobile/screens/workflows_screen.dart';
+import 'package:feohledger_mobile/services/biometric_service.dart';
+import 'package:feohledger_mobile/stores/auth_store.dart';
+import 'package:feohledger_mobile/stores/locale_store.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});

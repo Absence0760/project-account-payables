@@ -88,7 +88,7 @@ def test_signup_request_rejects_obvious_non_email():
 
 
 def test_signup_request_rejects_overlong_slug():
-    """Signup tenants are stamped into a DB name (`ap_<slug>`); a
+    """Signup tenants are stamped into a DB name (`feoh_<slug>`); a
     huge slug would either blow Postgres's identifier limit (63
     chars) or build a URL too large to render. Pydantic caps it."""
     from app.schemas.signup import SignupStartRequest

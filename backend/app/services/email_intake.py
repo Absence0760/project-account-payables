@@ -1,7 +1,7 @@
 """Email-to-invoice intake.
 
 Receives forwarded-PDF invoices from a per-tenant inbound email address
-(e.g. ``invoices+a1b2c3d4@ap.yourcompany.com``) and routes each
+(e.g. ``invoices+a1b2c3d4@ap.feohledger.com``) and routes each
 attachment through the normal extraction pipeline. The AP team tells
 their vendors "send POs to this address" and the invoice appears in the
 queue without anyone touching the UI.
@@ -200,7 +200,7 @@ def verify_signature(body: bytes, signature: str | None) -> bool:
     """Verify an HMAC-SHA256 signature of the webhook body.
 
     Fails closed: returns ``False`` whenever the secret is empty unless
-    ``AP_DEBUG`` is true (local dev convenience). The startup guard in
+    ``FEOH_DEBUG`` is true (local dev convenience). The startup guard in
     :func:`main.lifespan` already refuses to boot a deployed env that has
     ``email_intake_domain`` set but ``email_intake_signing_secret`` empty,
     so this branch only fires for an explicitly debug-mode developer.

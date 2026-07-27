@@ -4,15 +4,15 @@ Exercises the real adapter (test_connection, create_payment, get_payment_status)
 over HTTP against Stripe's official API mock, validating request shape +
 response parsing without a live Stripe account.
 
-Gated: the module is skipped unless AP_STRIPE_API_BASE is set AND stripe-mock
+Gated: the module is skipped unless FEOH_STRIPE_API_BASE is set AND stripe-mock
 answers — so it runs locally after `pnpm stripe:up` (with
-AP_STRIPE_API_BASE=http://localhost:12111/v1) and in the CI e2e job, and is a
+FEOH_STRIPE_API_BASE=http://localhost:12111/v1) and in the CI e2e job, and is a
 no-op otherwise. stripe-mock returns canned fixtures (no persisted state), so the
 assertions check the adapter's success/parse path, not stateful flows.
 
 Run locally:
     pnpm stripe:up
-    AP_STRIPE_API_BASE=http://localhost:12111/v1 pytest tests/test_stripe_mock_integration.py -v
+    FEOH_STRIPE_API_BASE=http://localhost:12111/v1 pytest tests/test_stripe_mock_integration.py -v
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
-API_BASE = os.environ.get("AP_STRIPE_API_BASE", "")
+API_BASE = os.environ.get("FEOH_STRIPE_API_BASE", "")
 
 
 def _stripe_mock_up() -> bool:
@@ -45,20 +45,20 @@ _UP = _stripe_mock_up()
 
 # Locally this module skips when stripe-mock isn't up, so a dev box without
 # `pnpm stripe:up` still runs the rest of the suite. But the CI service-e2e
-# job starts stripe-mock on purpose and sets AP_REQUIRE_INTEGRATION — there,
+# job starts stripe-mock on purpose and sets FEOH_REQUIRE_INTEGRATION — there,
 # an unreachable service is a hard failure, never a silent skip that leaves
 # the job green with this coverage quietly dropped.
-if not _UP and os.environ.get("AP_REQUIRE_INTEGRATION"):
+if not _UP and os.environ.get("FEOH_REQUIRE_INTEGRATION"):
     raise RuntimeError(
-        "stripe-mock is required (AP_REQUIRE_INTEGRATION is set) but was not "
-        "reachable at AP_STRIPE_API_BASE. The CI service-e2e job starts it "
+        "stripe-mock is required (FEOH_REQUIRE_INTEGRATION is set) but was not "
+        "reachable at FEOH_STRIPE_API_BASE. The CI service-e2e job starts it "
         "on purpose; refusing to skip and drop coverage silently."
     )
 
 pytestmark = [
     pytest.mark.skipif(
         not _UP,
-        reason="stripe-mock not configured/reachable — set AP_STRIPE_API_BASE + `pnpm stripe:up`",
+        reason="stripe-mock not configured/reachable — set FEOH_STRIPE_API_BASE + `pnpm stripe:up`",
     ),
     pytest.mark.asyncio,
 ]

@@ -188,7 +188,7 @@ test.describe('/admin/webhooks (admin)', () => {
 				'-p',
 				'5432',
 				'-d',
-				'account_payables',
+				'feohledger',
 				'-c',
 				`INSERT INTO webhook_deliveries
 				   (id, subscription_id, organization_id, event_id, event_type, payload, status, attempt_count)
@@ -238,7 +238,7 @@ test.describe('/admin/webhooks (admin)', () => {
 				'-p',
 				'5432',
 				'-d',
-				'account_payables',
+				'feohledger',
 				'-c',
 				`INSERT INTO webhook_deliveries
 				   (id, subscription_id, organization_id, event_id, event_type, payload, status, attempt_count)

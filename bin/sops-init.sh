@@ -39,7 +39,7 @@
 #       tags with `aws kms list-resource-tags --key-id <id>` to confirm.)
 #   2. Either attach the expected alias to it:
 #        aws kms create-alias \
-#          --alias-name alias/account-payables-sops \
+#          --alias-name alias/feohledger-sops \
 #          --target-key-id <orphan-key-id>
 #      …then re-run this script (it'll find the alias and reuse the key).
 #   3. Or schedule the orphan for deletion and re-run:
@@ -58,14 +58,14 @@
 #
 #   KMS_REGION    — AWS region for the KMS key (default: us-east-1)
 #   KMS_ALIAS     — Alias name without the "alias/" prefix
-#                   (default: account-payables-sops)
+#                   (default: feohledger-sops)
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOPS_CONFIG="$REPO_ROOT/.sops.yaml"
 KMS_REGION="${KMS_REGION:-us-east-1}"
-KMS_ALIAS_NAME="${KMS_ALIAS:-account-payables-sops}"
+KMS_ALIAS_NAME="${KMS_ALIAS:-feohledger-sops}"
 KMS_ALIAS_PATH="alias/$KMS_ALIAS_NAME"
 REGION_PLACEHOLDER="KMS_REGION_PLACEHOLDER"
 ACCOUNT_PLACEHOLDER="KMS_ACCOUNT_PLACEHOLDER"
@@ -153,9 +153,9 @@ ensure_kms_key() {
 		local key_id
 		key_id=$(aws kms create-key \
 			--region "$KMS_REGION" \
-			--description "SOPS secrets encryption for account-payables" \
+			--description "SOPS secrets encryption for feohledger" \
 			--key-usage ENCRYPT_DECRYPT \
-			--tags TagKey=project,TagValue=account-payables \
+			--tags TagKey=project,TagValue=feohledger \
 			       TagKey=purpose,TagValue=sops-secrets \
 			--query 'KeyMetadata.KeyId' \
 			--output text)

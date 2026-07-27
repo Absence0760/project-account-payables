@@ -12,10 +12,10 @@ Revises: 0060_po_expected_delivery_date
 Create Date: 2026-06-20
 
 TENANT DB ONLY: ``vendors`` is a tenant-scoped table (it does not exist on the
-control plane ``account_payables`` DB). The upgrade is gated on the table
+control plane ``feohledger`` DB). The upgrade is gated on the table
 existing, so the same revision no-ops on the control DB and fans out to every
 tenant DB via ``scripts/migrate_all_tenants.py`` (or
-``AP_MIGRATE_TENANT=ap_<slug> alembic upgrade head`` for one). Fresh tenants get
+``FEOH_MIGRATE_TENANT=feoh_<slug> alembic upgrade head`` for one). Fresh tenants get
 the column from ``create_all`` in ``tenant_provisioning`` (it's on the model) —
 this migration only backfills existing tenant DBs.
 

@@ -1,6 +1,6 @@
 ---
 name: ui-polisher
-description: Redesigns a single page, route, or component to project-account-payables' UI quality bar — workspace layout, status-filter chips, SearchBox / BulkBar / RowAction / StatusBadge reuse, friendly relative dates, modal create flows, URL-backed filter state. Knows the existing pattern library and matches it. Edits files; does not commit. Invoked by /polish-ui or directly when the user asks to "make page X look better".
+description: Redesigns a single page, route, or component to FeohLedger' UI quality bar — workspace layout, status-filter chips, SearchBox / BulkBar / RowAction / StatusBadge reuse, friendly relative dates, modal create flows, URL-backed filter state. Knows the existing pattern library and matches it. Edits files; does not commit. Invoked by /polish-ui or directly when the user asks to "make page X look better".
 tools: Bash, Read, Edit, Write, Grep, Glob
 model: opus
 ---

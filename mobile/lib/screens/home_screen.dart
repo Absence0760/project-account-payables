@@ -1,16 +1,16 @@
 import 'package:flutter/material.dart';
 
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/screens/approvals_screen.dart';
-import 'package:ap_mobile/screens/contracts_screen.dart';
-import 'package:ap_mobile/screens/dashboard_screen.dart';
-import 'package:ap_mobile/screens/exceptions_screen.dart';
-import 'package:ap_mobile/screens/invoices_screen.dart';
-import 'package:ap_mobile/screens/payment_queue_screen.dart';
-import 'package:ap_mobile/screens/payments_screen.dart';
-import 'package:ap_mobile/screens/settings_screen.dart';
-import 'package:ap_mobile/screens/vendors_screen.dart';
-import 'package:ap_mobile/stores/auth_store.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/screens/approvals_screen.dart';
+import 'package:feohledger_mobile/screens/contracts_screen.dart';
+import 'package:feohledger_mobile/screens/dashboard_screen.dart';
+import 'package:feohledger_mobile/screens/exceptions_screen.dart';
+import 'package:feohledger_mobile/screens/invoices_screen.dart';
+import 'package:feohledger_mobile/screens/payment_queue_screen.dart';
+import 'package:feohledger_mobile/screens/payments_screen.dart';
+import 'package:feohledger_mobile/screens/settings_screen.dart';
+import 'package:feohledger_mobile/screens/vendors_screen.dart';
+import 'package:feohledger_mobile/stores/auth_store.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});

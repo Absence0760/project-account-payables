@@ -7,12 +7,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
-import 'package:ap_mobile/api/api_client.dart';
-import 'package:ap_mobile/config.dart';
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/screens/login_screen.dart';
-import 'package:ap_mobile/screens/settings_screen.dart';
-import 'package:ap_mobile/stores/auth_store.dart';
+import 'package:feohledger_mobile/api/api_client.dart';
+import 'package:feohledger_mobile/config.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/screens/login_screen.dart';
+import 'package:feohledger_mobile/screens/settings_screen.dart';
+import 'package:feohledger_mobile/stores/auth_store.dart';
 
 http.Response _json(Object body, [int status = 200]) => http.Response(
       jsonEncode(body),

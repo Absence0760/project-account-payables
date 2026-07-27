@@ -4,7 +4,7 @@ description: Generate a canonical inventory of the backend HTTP API by reading t
 
 Produce a canonical, table-shaped inventory of every backend HTTP endpoint by reading the FastAPI routers — not by trusting any doc.
 
-There is **no codegen** in project-account-payables (request/response types are hand-synced across the backend Pydantic schemas in `backend/app/schemas/`, the frontend client `frontend/src/lib/api.ts`, and the ORM models) and **no maintained OpenAPI / API spec as the contract**. FastAPI does auto-generate `/docs` at runtime, but that's derived state, not the ground truth — the route source itself is the only authority for "what endpoints exist." This command flattens that into one artifact two audiences need:
+There is **no codegen** in FeohLedger (request/response types are hand-synced across the backend Pydantic schemas in `backend/app/schemas/`, the frontend client `frontend/src/lib/api.ts`, and the ORM models) and **no maintained OpenAPI / API spec as the contract**. FastAPI does auto-generate `/docs` at runtime, but that's derived state, not the ground truth — the route source itself is the only authority for "what endpoints exist." This command flattens that into one artifact two audiences need:
 
 - **External integrators** wiring against the API (ERP webhook callers, payment-rail webhook senders, card-provider webhooks, SCIM provisioners, email-intake providers, supplier-portal clients) who have no spec to read.
 - **`/audit/auth`**, which sweeps every backend route for auth-dependency gating + tenant-context discipline. Hand it a maintained inventory instead of re-deriving the route list every run.
@@ -32,8 +32,8 @@ Column semantics — fill each from the actual code, never inferred:
   - `/api/email-intake` (provider-signed inbound webhook — HMAC, no JWT)
   - `/api/erp/webhook/{erp_type}` inbound ERP webhooks (HMAC, tenant in path)
   - `/api/payments/webhook/{tenant_slug}/{provider}` and `/api/cards/webhook/{provider}` payment/card webhooks (HMAC-verified, tenant in URL path, no JWT)
-- **Tenant-scope** — `get_tenant_db` (resolves the tenant DB from the `X-Tenant-Slug` header → `ap_<slug>`, with a JWT `org`-claim cross-check in `backend/app/tenant.py::get_tenant`) is the norm for tenant-data routes. Flag the exceptions explicitly:
-  - **Control-plane-only** routes that hit `account_payables` via `get_control_db` (orgs / users / roles under `/api/admin`, `/api/auth`, `/api/signup`, `/api/organization`) — they touch no tenant DB.
+- **Tenant-scope** — `get_tenant_db` (resolves the tenant DB from the `X-Tenant-Slug` header → `feoh_<slug>`, with a JWT `org`-claim cross-check in `backend/app/tenant.py::get_tenant`) is the norm for tenant-data routes. Flag the exceptions explicitly:
+  - **Control-plane-only** routes that hit `feohledger` via `get_control_db` (orgs / users / roles under `/api/admin`, `/api/auth`, `/api/signup`, `/api/organization`) — they touch no tenant DB.
   - Routes that resolve the tenant from a **URL path segment** rather than the header (`/api/payments/webhook/{tenant_slug}/...`, `/api/erp/webhook/{erp_type}`, email-intake's `+<token>@` address) — note where the tenant comes from.
   - A handler that touches tenant data **without** `get_tenant_db`, or that **hardcodes a tenant DB name**, is a finding for `/audit/auth` / `/audit-security` — note it, don't fix it here.
 - **Request params** — path params (`{invoice_id}`, `{provider}`, `{tenant_slug}`, `{file_key:path}`), query params (the real casing the handler reads — e.g. `?status=`, `?page=`, `?slug=`), and the body schema name for POST/PATCH/PUT (the Pydantic model the handler takes, from `backend/app/schemas/`). Use the names the handler actually reads, not the doc's names.

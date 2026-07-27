@@ -23,7 +23,7 @@ any that newly hit. Every tick:
 
 Mirrors ``services/contract_renewal.py``: long-lived asyncio task started in
 ``main.lifespan``, fresh per-tenant engine, one tenant's failure logged but
-never halting the sweep. Disabled by default (``AP_VENDOR_RESCREEN_ENABLED``).
+never halting the sweep. Disabled by default (``FEOH_VENDOR_RESCREEN_ENABLED``).
 """
 
 from __future__ import annotations

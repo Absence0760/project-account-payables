@@ -13,7 +13,7 @@ import {
  * shape (cache + single in-flight request + resilient fallback).
  *
  * Every field is optional. An empty field means "use the platform default":
- * the bundled "AP" logo + "Accounts Payable" product name, and the AA-passing
+ * the bundled "AP" logo + "FeohLedger" product name, and the AA-passing
  * accent tokens already in `src/app.css`. The custom accent colors are applied
  * by writing CSS custom properties on `document.documentElement` ONLY when the
  * org actually configured them (see {@link brandThemeVars}) — so an org that

@@ -149,9 +149,9 @@ definition. Any spec (or user) that then relies on the approval / erp_export
 steps being enabled gets surprising transitions: `POST /complete` walks
 `new → done` (no approval step), so a follow-up `/approve` 409s.
 
-**Evidence:** local `ap_e2e3` had `Default Workflow (entity-scoped,
+**Evidence:** local `feoh_e2e3` had `Default Workflow (entity-scoped,
 is_default=t, is_active=f)` + `Invoice Processing (shared, is_default=t,
-is_active=t, all steps disabled)`; `ap_e2e1/2/4` were healthy. The state is
+is_active=t, all steps disabled)`; `feoh_e2e1/2/4` were healthy. The state is
 left behind by workflow-mutating suites (`workflows/`, `workflow-builder`)
 whose cleanup doesn't restore `is_active` / step-enabled flags on the seeded
 default. CI is unaffected today (every run seeds fresh, and the `erp-e2e` job
@@ -204,9 +204,9 @@ caused by the confound, not a genuine whole-suite test-ordering/leak bug.
 in the control plane and open a connection per tenant DB —
 `extraction_reaper.run_reaper_loop` does
 `select(Organization.id, Organization.db_name)` with no filter, and it is on by
-default (`AP_EXTRACTION_REAPER_ENABLED` defaults to `True`). The realdb harness
+default (`FEOH_EXTRACTION_REAPER_ENABLED` defaults to `True`). The realdb harness
 registers its test tenants in that same shared control plane
-(`account_payables`), so a dev server happily sweeps `ap_pytesta` / `ap_pytestb`
+(`feohledger`), so a dev server happily sweeps `feoh_pytesta` / `feoh_pytestb`
 — transitioning stuck `pending` invoices to `failed` inside a database a test is
 mid-way through asserting on, and holding a snapshot/lock the next test's
 `TRUNCATE` must wait for.
@@ -225,7 +225,7 @@ running realdb pytest (stop `pnpm dev:backend`, or point one of them at another
 instance).
 
 **Recommended fix:** give the harness its own control-plane database per slot
-(`account_payables_pytest<N>`) instead of sharing `account_payables`, so the
+(`feohledger_pytest<N>`) instead of sharing `feohledger`, so the
 harness tenants are invisible to any server on the default control plane. That
 also removes the remaining cross-process contention on the shared control-plane
 unique constraints (emails, org slugs). Deferred here because it moves
@@ -247,7 +247,7 @@ asyncpg.exceptions.UndefinedColumnError: column "converted_currency" of
 relation "expenses" does not exist` (`expenses.converted_currency`, added by
 migration `0076_expense_currency_conversion`).
 
-**Root cause:** `ap_pytesta`/`ap_pytestb` are provisioned once, ever, by
+**Root cause:** `feoh_pytesta`/`feoh_pytestb` are provisioned once, ever, by
 `services/tenant_provisioning._create_tenant_tables` —
 `Base.metadata.create_all(sync_conn, tables=tenant_tables, checkfirst=True)`.
 `checkfirst=True` only creates a table that doesn't exist yet; it never adds a
@@ -257,19 +257,19 @@ control-plane `Organization` row by slug and, if found, assumes the tenant is
 already fully provisioned; it never re-verifies the physical schema. Per
 backend `CLAUDE.md` § Test databases, these two databases are deliberately
 long-lived ("the databases are reused by the next process to claim it") — so
-any contributor whose `ap_pytesta`/`ap_pytestb` predates a later model change
+any contributor whose `feoh_pytesta`/`feoh_pytestb` predates a later model change
 that added a column to an *existing* table (not a new table) carries that
 drift forward silently, forever, until something reads the missing column.
-Real tenants (`ap_acme`, …) don't have this problem — they're kept current via
+Real tenants (`feoh_acme`, …) don't have this problem — they're kept current via
 Alembic (`alembic upgrade head` / `migrate_all_tenants.py`); the pytest harness
 tenants are created via `create_all` specifically to sidestep migration
 history, and nothing ever reconciles them against it afterward.
 
-**Reproduction:** on a machine whose `ap_pytesta`/`ap_pytestb` predate
+**Reproduction:** on a machine whose `feoh_pytesta`/`feoh_pytestb` predate
 migration 0076, run `pytest -q` (or any subset touching `expenses`) — every
 test touching the `expenses` table fails with the `UndefinedColumnError`
 above, even though the change under test has nothing to do with expenses.
-Dropping both databases (`DROP DATABASE ap_pytesta`, same for `b`) and their
+Dropping both databases (`DROP DATABASE feoh_pytesta`, same for `b`) and their
 control-plane `organizations` rows (cascading `users`/`user_roles`/`api_keys`/
 etc.) forces a from-scratch reprovision on the next `pytest` invocation, which
 picks up the current `Base.metadata` and clears the drift — confirmed: the
@@ -282,7 +282,7 @@ they touched) and either wastes time chasing a phantom regression or, worse,
 starts ignoring red local runs. CI is unaffected (every shard provisions fresh
 tenant DBs from the current `Base.metadata` every run).
 
-**Workaround today:** `DROP DATABASE ap_pytesta<N>` / `ap_pytestb<N>` (plus
+**Workaround today:** `DROP DATABASE feoh_pytesta<N>` / `feoh_pytestb<N>` (plus
 the matching control-plane `organizations` row and its dependents — see the
 reproduction above) whenever a local run shows schema-shaped failures
 (`UndefinedColumn`/`UndefinedTable`) that don't correlate with the change under

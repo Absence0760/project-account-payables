@@ -3,7 +3,7 @@
 Covers the SOC 2 transport-layer hardening added in
 `docs/soc2-readiness.md` § Encryption:
 
-- HSTS toggles on `AP_HSTS_ENABLED`.
+- HSTS toggles on `FEOH_HSTS_ENABLED`.
 - `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` are always
   set — they aren't HTTPS-dependent, so gating them behind the HSTS flag
   would just give auditors something to flag in local dev.
@@ -24,7 +24,7 @@ from app.main import app
 
 @pytest.fixture
 def _restore_hsts_flag():
-    """Snapshot + restore AP_HSTS_ENABLED so tests don't leak state."""
+    """Snapshot + restore FEOH_HSTS_ENABLED so tests don't leak state."""
     original = settings.hsts_enabled
     try:
         yield

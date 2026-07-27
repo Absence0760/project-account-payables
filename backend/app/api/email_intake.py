@@ -47,7 +47,7 @@ def _ack() -> JSONResponse:
     passed signature verification: unknown/disabled intake token, no usable
     attachment, an internal processing failure, or genuine success.
 
-    Anyone holding the platform-wide ``AP_EMAIL_INTAKE_SIGNING_SECRET`` (shared
+    Anyone holding the platform-wide ``FEOH_EMAIL_INTAKE_SIGNING_SECRET`` (shared
     across all tenants, since the provider doesn't know tenants) could
     otherwise grind per-tenant intake tokens by watching for ``tenant_slug`` to
     populate in the response body. Per-request detail is logged server-side

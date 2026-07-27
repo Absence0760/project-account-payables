@@ -10,7 +10,7 @@
   "navPayments": "Pagos",
   "navSettings": "Ajustes",
 
-  "shellAppName": "Account Payables",
+  "shellAppName": "FeohLedger",
 
   "commonSave": "Guardar",
   "commonSaving": "Guardando…",
@@ -279,7 +279,7 @@
   "payConfirmCancel": "Cancelar",
   "payConfirmExecute": "Ejecutar",
 
-  "loginAppName": "Better AP",
+  "loginAppName": "FeohLedger",
   "loginTagline": "Cuentas por pagar, simplificadas",
   "loginTenant": "Inquilino",
   "loginEmail": "Correo electrónico",

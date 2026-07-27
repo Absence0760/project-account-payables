@@ -14,7 +14,7 @@ Two gates, layered, both fail closed:
 
 1. **Slack request signature** — Slack signs every interactivity POST as
    ``X-Slack-Signature: v0=<hmac-sha256 over "v0:{X-Slack-Request-Timestamp}:{raw_body}">``
-   with the app's *signing secret* (``AP_SLACK_SIGNING_SECRET``). We verify it
+   with the app's *signing secret* (``FEOH_SLACK_SIGNING_SECRET``). We verify it
    with the shared constant-time HMAC helper and reject stale timestamps
    (> ``slack_request_max_age_seconds``) to stop replay of a captured POST. No
    secret configured → the feature is OFF and every request is rejected.

@@ -23,7 +23,7 @@ export const EMPTY_BRAND: Brand = {
 	legal_url: ''
 };
 
-export const DEFAULT_PRODUCT_NAME = 'Accounts Payable';
+export const DEFAULT_PRODUCT_NAME = 'FeohLedger';
 
 /**
  * Strict guard mirroring the backend — a 3- or 6-digit hex literal. The value

@@ -6,7 +6,7 @@ import { expect, test } from './fixtures/helpers';
  * Mounted once in `routes/+layout.svelte` (outside the routed slot) so it
  * covers the app shell, marketing landing, signup, and supplier portal. It
  * shows on first visit and hides once a choice is recorded in `localStorage`
- * under `ap_consent_choice`.
+ * under `feoh_consent_choice`.
  *
  * The default per-worker storage state signs the admin in (an `auth_token`
  * in localStorage) but never sets the consent key, so the banner still
@@ -15,7 +15,7 @@ import { expect, test } from './fixtures/helpers';
  * (the banner region appearing / detaching) and on the persisted value.
  */
 
-const CONSENT_KEY = 'ap_consent_choice';
+const CONSENT_KEY = 'feoh_consent_choice';
 const banner = (page) => page.getByRole('region', { name: 'Cookie and privacy consent' });
 
 test.describe('consent banner', () => {

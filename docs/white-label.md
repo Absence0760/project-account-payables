@@ -21,7 +21,7 @@ product name, logo, and accent colors. Shipped so far:
 
 | Field | Stored as | Effect |
 |-------|-----------|--------|
-| `product_name` | `settings.brand.product_name` | Sidebar product name + document `<title>`. Fallback: **"Accounts Payable"**. |
+| `product_name` | `settings.brand.product_name` | Sidebar product name + document `<title>`. Fallback: **"FeohLedger"**. |
 | `logo_url` | `settings.brand.logo_url` | Sidebar logo `<img>`. Fallback: the bundled "AP" mark. |
 | `accent_color` | `settings.brand.accent_color` | Overrides the `--accent` CSS token (borders, focus rings, accent text). |
 | `accent_strong_color` | `settings.brand.accent_strong_color` | Overrides the `--accent-strong` token (text-bearing accent backgrounds — buttons, active chips). |
@@ -184,7 +184,7 @@ legal URLs) with platform defaults baked in. It is **pure + total**: tolerates a
 `None` settings dict, a missing / non-dict `brand` block, and individually
 malformed fields (each falls back to its platform default for text/accent, or to
 empty for URLs), and never touches the network. Platform defaults: product name
-**"Accounts Payable"**, accent **`#638cff`** (kept in sync with the frontend
+**"FeohLedger"**, accent **`#638cff`** (kept in sync with the frontend
 `app.css` token).
 
 ### PDFs
@@ -479,7 +479,7 @@ an existing one. Three more admin-only endpoints
 to be adopted. Returns `{link_code, expires_in_minutes}`. The code is an HMAC-
 signed token (`backend/app/services/partner_link_token.py`, pure, modelled on the
 email-action token) over the caller's org id only — **no name/slug/PII** — with a
-short TTL (`AP_PARTNER_LINK_TTL_MINUTES`, default 30). A **503** when no signing
+short TTL (`FEOH_PARTNER_LINK_TTL_MINUTES`, default 30). A **503** when no signing
 key is configured (feature off). Issuing is audited PII-free
 (`partner.link_code_issued`).
 
@@ -509,11 +509,11 @@ create a child UNDER ITSELF. Flow: validate the admin-email shape + the slug
 (format + reserved-word + availability, same `utils/slug` checks signup uses) →
 provision the full tenant via the shared
 `services/tenant_provisioning.provision_tenant` primitive (control-plane org +
-admin user + the `ap_<slug>` tenant DB + tables) → stamp `parent_org_id = org.id`
+admin user + the `feoh_<slug>` tenant DB + tables) → stamp `parent_org_id = org.id`
 → audit `partner.child_provisioned` on the partner's trail + `partner.parent_linked`
 (`via:provision`) on the new child's, PII-free (org ids + slug only, never the
 admin email or password). **Failure path is clean** — `provision_tenant` owns the
-orphan-DB rollback (it drops the `ap_<slug>` DB it created on any partial
+orphan-DB rollback (it drops the `feoh_<slug>` DB it created on any partial
 failure), so we never half-create; a slug that races past the pre-check trips the
 unique constraint inside provisioning → a clean **409** (not a 500). An invalid
 slug is **422**, a taken slug **409** (the only enumeration surface is the
@@ -534,7 +534,7 @@ admin then redeems it. Because the platform holds the signing key (sops + KMS in
 deployed envs; a NON-secret value committed in `.env.development`), a partner
 **cannot forge a code or aim it at an org that never consented** — an attach with
 no/garbage/forged code is rejected and no link is created. The key's presence is
-the single on/off knob (`AP_PARTNER_LINK_SIGNING_KEY`), fail-closed with no
+the single on/off knob (`FEOH_PARTNER_LINK_SIGNING_KEY`), fail-closed with no
 hardcoded fallback. The link is a control-plane write only; no migration was
 needed (the `parent_org_id` column already exists).
 

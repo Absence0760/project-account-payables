@@ -45,7 +45,7 @@ class BrandConfig(BaseModel):
     """Per-tenant white-label branding (stored under `settings.brand`).
 
     All fields optional / empty by default — an unset field means "use the
-    platform default" (product name "Accounts Payable", the bundled logo, the
+    platform default" (product name "FeohLedger", the bundled logo, the
     app.css accent tokens). Validated so the values are safe to inject into the
     DOM: accent colors must be hex literals, URLs must be http(s).
     """

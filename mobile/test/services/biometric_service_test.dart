@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:ap_mobile/services/biometric_service.dart';
+import 'package:feohledger_mobile/services/biometric_service.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

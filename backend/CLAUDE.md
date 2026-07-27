@@ -88,7 +88,7 @@ ruff check . && ruff format . # lint + format
 # Migrations
 alembic revision --autogenerate -m "description"
 alembic upgrade head                                # control plane
-AP_MIGRATE_TENANT=ap_acme alembic upgrade head      # single tenant
+FEOH_MIGRATE_TENANT=feoh_acme alembic upgrade head      # single tenant
 python scripts/migrate_all_tenants.py               # all tenants
 ```
 
@@ -213,8 +213,8 @@ named for it:
 
 | Slot | Tenants |
 |------|---------|
-| 0 (first / only process) | `ap_pytesta`, `ap_pytestb` |
-| 1, 2, … (each further concurrent process) | `ap_pytesta1`, `ap_pytestb1`, … |
+| 0 (first / only process) | `feoh_pytesta`, `feoh_pytestb` |
+| 1, 2, … (each further concurrent process) | `feoh_pytesta1`, `feoh_pytestb1`, … |
 
 Consequences worth knowing:
 
@@ -231,7 +231,7 @@ Consequences worth knowing:
   number. Use `realdb.info("a").slug` / `realdb.email("a", "admin")`.
 - Any control-plane row a test creates needs a unique value per slot (derive it
   from the slug or a uuid), or two concurrent runs collide on the shared
-  `account_payables` unique constraints.
+  `feohledger` unique constraints.
 
 The harness resets tenant tables plus `Organization.settings` / `parent_org_id`.
 It does **not** delete extra control-plane `users` rows a test creates — those
@@ -245,7 +245,7 @@ accumulate, so a test must not assume a fixed user count for a test org.
 backend/
 ├── app/
 │   ├── main.py              # FastAPI app, CORS, router includes, lifespan
-│   ├── config.py            # Pydantic Settings (AP_ prefix env vars)
+│   ├── config.py            # Pydantic Settings (FEOH_ prefix env vars)
 │   ├── database.py          # Control engine + per-tenant engine pool
 │   ├── redis.py             # Redis connection + token blocklist
 │   ├── tenant.py            # X-Tenant-Slug → tenant DB session
@@ -267,7 +267,7 @@ backend/
 
 **Two-database pattern:**
 
-1. **Control plane** (`account_payables`) — shared across all tenants
+1. **Control plane** (`feohledger`) — shared across all tenants
    - `Organization` — id, name, slug, db_name, settings (JSONB), plan
    - `User` — email, full_name, hashed_password, sso_provider/id, mfa_secret/enabled/enrolled_at, must_change_password, notification_prefs (JSONB — per-user email/in-app channel prefs, user-global), organization_id
    - `Role` — name (admin, ap_manager, ap_clerk, cfo)
@@ -276,7 +276,7 @@ backend/
    - `ExtractionUsage` — billing: invoice_id, provider, program_type, period
    - `CardRebate` — virtual_card_id, amount, rate, status, period
 
-2. **Tenant DBs** (`ap_<slug>`) — isolated per customer
+2. **Tenant DBs** (`feoh_<slug>`) — isolated per customer
    - `Entity` — legal entity / subsidiary within the tenant (name, slug, currency, is_default, is_active). Business tables carry a nullable `entity_id` FK (`EntityMixin`); every tenant has one `is_default` Entity. Multi-entity Phase 2 (reads/writes scoped by the `X-Entity-ID` header) — see `../docs/multi-entity.md`
    - `Invoice` — invoice_number, vendor_name, amount, status (12 states), file_key, warnings (JSONB), po_match (JSONB), meta (JSONB — holds `audit_summary`)
    - `InvoiceLineItem` — invoice_id, item_code, description, quantity, unit_price, total, gl_account
@@ -354,16 +354,16 @@ Step types: `extraction` → `approval` → `erp_export` → `done`
 | Service | What it does |
 |---------|-------------|
 | `services/extraction_reaper.py` | Sweeps every tenant DB on a timer; transitions invoices stuck in `pending` extraction to `failed`. |
-| `services/audit_log_shipper.py` | Centralized audit-log shipper (SOC 2). Sweeps every tenant DB, reads unshipped `audit_log` rows in batches, fans them out to every configured `audit_shipping` adapter (CloudWatch Logs + S3 Object Lock), then marks `shipped_at=now()`. All adapters must ACK before rows are marked; failures leave rows unshipped so the next tick retries. Disabled by default — flip `AP_AUDIT_SHIPPING_ENABLED` on in deployed envs. See `docs/audit-log-shipping.md`. |
-| `services/approval_escalation.py` | Sweeps every tenant's active workflow instances and appends `escalation_to_user_ids` onto any approval chain level waiting longer than its configured `escalation_hours`. Disabled by default (`AP_APPROVAL_ESCALATION_ENABLED`); flip on in deployed envs. |
-| `services/payment_reconciler.py` | Backstop polling for payments whose processor webhook went missing. Re-fetches status from the payment adapter when a `submitted`/`processing` payment sits longer than `AP_PAYMENT_RECONCILE_AFTER_MINUTES`. Disabled by default (`AP_PAYMENT_RECONCILE_ENABLED`); flip on in deployed envs alongside Modern Treasury. |
-| `services/contract_renewal.py` | Contract renewal-alert sweep. Sweeps every tenant DB; finds `active` contracts within their own `renewal_notice_days` of `end_date` with no alert sent, notifies the owner + AP managers once (`contract_renewal_due` event), then stamps `renewal_alert_sent_at` for idempotency (cleared on `POST /api/contracts/{id}/renew`). Same tick also transitions any `active` contract whose `end_date` has actually passed to `expired` (`contract.expired` audit row) — the only runtime path that sets `ContractStatus.expired`; idempotent (status guard). Disabled by default (`AP_CONTRACT_RENEWAL_ENABLED`); `AP_CONTRACT_RENEWAL_INTERVAL_SECONDS` / `_DEFAULT_NOTICE_DAYS`. See `docs/contracts.md`. |
-| `services/discount_auto_trigger.py` | Dynamic-discounting auto-capture sweep. Sweeps every tenant DB; auto-accepts `offered` `DiscountOffer`s whose annualized ROI clears `AP_DISCOUNT_AUTO_CAPTURE_ROI_THRESHOLD`, writing a `discount_offer.auto_accepted` audit row. **Only flags `offered → accepted` — never creates a Payment/PaymentRun**; the status guard is the dedupe. Disabled by default (`AP_DISCOUNT_OPTIMIZATION_ENABLED`). See `docs/dynamic-discounting.md`. |
-| `services/retention_sweep.py` | Retention-policy enforcement sweep (SOX records management). Sweeps every tenant DB; soft-archives overdue terminal (`done`/`paid`) invoices via a `meta.archived_at` marker (idempotent — re-run never double-archives) and writes a `retention.archived` manifest. **Composes with the audit-immutability trigger — NEVER deletes `audit_log` rows**; for the audit class "retention" verifies WORM shipment (`shipped_at`) + records overdue/unshipped counts only. Windows are per-class on `Organization.settings.retention` (`resolve_retention_months`); `GET/PUT /api/retention-policy` reads/updates them. Disabled by default (`AP_RETENTION_ENABLED`); `AP_RETENTION_INTERVAL_SECONDS` / `_DEFAULT_MONTHS`. See `docs/retention.md`. |
-| `services/recurring_invoices.py` | Recurring / subscription invoice generation sweep. Sweeps every tenant DB; finds `active` `RecurringInvoiceTemplate`s whose `next_run_on` has arrived, generates the next pre-coded `Invoice` into the approval queue (period_key `YYYY-MM` / `YYYY-Qn` / `YYYY`), advances `next_run_on`, and writes a `recurring_template.generated` audit row. **Idempotent on `(template, period_key)`** via the partial unique index `uq_invoice_recurring_period` (a double-fire never double-creates); **only creates an Invoice in the queue — never creates a Payment/PaymentRun**, exactly like `discount_auto_trigger`. Per-tenant cap `AP_RECURRING_INVOICES_MAX_PER_SWEEP`. Disabled by default (`AP_RECURRING_INVOICES_ENABLED`); `AP_RECURRING_INVOICES_INTERVAL_SECONDS`. See `docs/recurring-invoices.md`. |
-| `services/scheduled_reports.py` | Scheduled-report runner. `run_scheduled_reports_once` sweeps every tenant DB; runs each `enabled` schedule whose `next_run_at` has arrived (`execute_schedule`: generate CSV via `report_export` → email recipients → bump `next_run_at` by the cadence / persist a `[retry N]` failure marker, auto-disabling after 5 consecutive failures). One tenant's failure never halts the sweep. Disabled by default (`AP_SCHEDULED_REPORTS_ENABLED`); `AP_SCHEDULED_REPORTS_TICK_SECONDS`. See `docs/analytics.md` § Scheduled report delivery. |
+| `services/audit_log_shipper.py` | Centralized audit-log shipper (SOC 2). Sweeps every tenant DB, reads unshipped `audit_log` rows in batches, fans them out to every configured `audit_shipping` adapter (CloudWatch Logs + S3 Object Lock), then marks `shipped_at=now()`. All adapters must ACK before rows are marked; failures leave rows unshipped so the next tick retries. Disabled by default — flip `FEOH_AUDIT_SHIPPING_ENABLED` on in deployed envs. See `docs/audit-log-shipping.md`. |
+| `services/approval_escalation.py` | Sweeps every tenant's active workflow instances and appends `escalation_to_user_ids` onto any approval chain level waiting longer than its configured `escalation_hours`. Disabled by default (`FEOH_APPROVAL_ESCALATION_ENABLED`); flip on in deployed envs. |
+| `services/payment_reconciler.py` | Backstop polling for payments whose processor webhook went missing. Re-fetches status from the payment adapter when a `submitted`/`processing` payment sits longer than `FEOH_PAYMENT_RECONCILE_AFTER_MINUTES`. Disabled by default (`FEOH_PAYMENT_RECONCILE_ENABLED`); flip on in deployed envs alongside Modern Treasury. |
+| `services/contract_renewal.py` | Contract renewal-alert sweep. Sweeps every tenant DB; finds `active` contracts within their own `renewal_notice_days` of `end_date` with no alert sent, notifies the owner + AP managers once (`contract_renewal_due` event), then stamps `renewal_alert_sent_at` for idempotency (cleared on `POST /api/contracts/{id}/renew`). Same tick also transitions any `active` contract whose `end_date` has actually passed to `expired` (`contract.expired` audit row) — the only runtime path that sets `ContractStatus.expired`; idempotent (status guard). Disabled by default (`FEOH_CONTRACT_RENEWAL_ENABLED`); `FEOH_CONTRACT_RENEWAL_INTERVAL_SECONDS` / `_DEFAULT_NOTICE_DAYS`. See `docs/contracts.md`. |
+| `services/discount_auto_trigger.py` | Dynamic-discounting auto-capture sweep. Sweeps every tenant DB; auto-accepts `offered` `DiscountOffer`s whose annualized ROI clears `FEOH_DISCOUNT_AUTO_CAPTURE_ROI_THRESHOLD`, writing a `discount_offer.auto_accepted` audit row. **Only flags `offered → accepted` — never creates a Payment/PaymentRun**; the status guard is the dedupe. Disabled by default (`FEOH_DISCOUNT_OPTIMIZATION_ENABLED`). See `docs/dynamic-discounting.md`. |
+| `services/retention_sweep.py` | Retention-policy enforcement sweep (SOX records management). Sweeps every tenant DB; soft-archives overdue terminal (`done`/`paid`) invoices via a `meta.archived_at` marker (idempotent — re-run never double-archives) and writes a `retention.archived` manifest. **Composes with the audit-immutability trigger — NEVER deletes `audit_log` rows**; for the audit class "retention" verifies WORM shipment (`shipped_at`) + records overdue/unshipped counts only. Windows are per-class on `Organization.settings.retention` (`resolve_retention_months`); `GET/PUT /api/retention-policy` reads/updates them. Disabled by default (`FEOH_RETENTION_ENABLED`); `FEOH_RETENTION_INTERVAL_SECONDS` / `_DEFAULT_MONTHS`. See `docs/retention.md`. |
+| `services/recurring_invoices.py` | Recurring / subscription invoice generation sweep. Sweeps every tenant DB; finds `active` `RecurringInvoiceTemplate`s whose `next_run_on` has arrived, generates the next pre-coded `Invoice` into the approval queue (period_key `YYYY-MM` / `YYYY-Qn` / `YYYY`), advances `next_run_on`, and writes a `recurring_template.generated` audit row. **Idempotent on `(template, period_key)`** via the partial unique index `uq_invoice_recurring_period` (a double-fire never double-creates); **only creates an Invoice in the queue — never creates a Payment/PaymentRun**, exactly like `discount_auto_trigger`. Per-tenant cap `FEOH_RECURRING_INVOICES_MAX_PER_SWEEP`. Disabled by default (`FEOH_RECURRING_INVOICES_ENABLED`); `FEOH_RECURRING_INVOICES_INTERVAL_SECONDS`. See `docs/recurring-invoices.md`. |
+| `services/scheduled_reports.py` | Scheduled-report runner. `run_scheduled_reports_once` sweeps every tenant DB; runs each `enabled` schedule whose `next_run_at` has arrived (`execute_schedule`: generate CSV via `report_export` → email recipients → bump `next_run_at` by the cadence / persist a `[retry N]` failure marker, auto-disabling after 5 consecutive failures). One tenant's failure never halts the sweep. Disabled by default (`FEOH_SCHEDULED_REPORTS_ENABLED`); `FEOH_SCHEDULED_REPORTS_TICK_SECONDS`. See `docs/analytics.md` § Scheduled report delivery. |
 
-These long-lived asyncio tasks are started in `main.lifespan` (each behind its `AP_*_ENABLED` gate) and cancelled on shutdown.
+These long-lived asyncio tasks are started in `main.lifespan` (each behind its `FEOH_*_ENABLED` gate) and cancelled on shutdown.
 
 ## Adapter patterns
 
@@ -402,8 +402,8 @@ Config `integration_method: "merge_dev"|"direct"` selects whether to use Merge.d
 ERP send has retry logic: up to 3 attempts with exponential backoff (2s, 4s, 8s).
 
 The three real adapters' provider base URLs are env-overridable via the
-operator-trusted `AP_ERP_MERGE_API_BASE` / `AP_ERP_NETSUITE_API_BASE` /
-`AP_ERP_D365_API_BASE` / `AP_ERP_D365_TOKEN_URL` (process-level, so they bypass
+operator-trusted `FEOH_ERP_MERGE_API_BASE` / `FEOH_ERP_NETSUITE_API_BASE` /
+`FEOH_ERP_D365_API_BASE` / `FEOH_ERP_D365_TOKEN_URL` (process-level, so they bypass
 the admin-config SSRF guard; an admin-supplied `base_url` stays guarded).
 `backend/.env.development` points all four at the local fake ERP server — the
 `fake-erp` compose service (opt-in `erp` profile, :12112, built from
@@ -519,7 +519,7 @@ class MyAdapter:
     async def test_connection(self) -> bool: ...
 ```
 
-Registered: `mock` (deterministic synthetic firmographics, no network/credential — the local-first default), `dun_bradstreet` + `clearbit` (httpx skeletons — live key via per-org settings; **fail closed** `EnrichmentNotConfigured` without it, no hardcoded fallback). `get_enrichment_adapter(config)` resolves `Organization.settings.enrichment.provider` → `AP_VENDOR_ENRICHMENT_PROVIDER` (default `mock`); an unknown name falls back to `mock`. External vendor firmographics (legal name / registered address / industry+SIC/NAICS / employee count / revenue / website / DUNS / founding year) for `POST /api/enrichment/vendors/{id}/enrich`. **Advisory / suggestion-only** — returns the firmographics + a per-field suggestion diff but NEVER writes back onto the `Vendor` row. Raw `tax_id` is an input match-key only — never echoed (only `***<last4>` via `mask_tax_id`), never logged. See `docs/data-enrichment.md` § External enrichment.
+Registered: `mock` (deterministic synthetic firmographics, no network/credential — the local-first default), `dun_bradstreet` + `clearbit` (httpx skeletons — live key via per-org settings; **fail closed** `EnrichmentNotConfigured` without it, no hardcoded fallback). `get_enrichment_adapter(config)` resolves `Organization.settings.enrichment.provider` → `FEOH_VENDOR_ENRICHMENT_PROVIDER` (default `mock`); an unknown name falls back to `mock`. External vendor firmographics (legal name / registered address / industry+SIC/NAICS / employee count / revenue / website / DUNS / founding year) for `POST /api/enrichment/vendors/{id}/enrich`. **Advisory / suggestion-only** — returns the firmographics + a per-field suggestion diff but NEVER writes back onto the `Vendor` row. Raw `tax_id` is an input match-key only — never echoed (only `***<last4>` via `mask_tax_id`), never logged. See `docs/data-enrichment.md` § External enrichment.
 
 ### Audit-shipping adapters (`services/audit_shipping/`)
 
@@ -532,7 +532,7 @@ class MySinkAdapter(AuditShippingAdapter):
 
 Registered: `mock`, `cloudwatch`, `s3_objectlock`.
 
-The `audit_log_shipper` background loop instantiates every adapter named in `AP_AUDIT_SHIPPING_PROVIDERS` and ships each batch to all of them; all must succeed before the rows are marked shipped. See `docs/audit-log-shipping.md`.
+The `audit_log_shipper` background loop instantiates every adapter named in `FEOH_AUDIT_SHIPPING_PROVIDERS` and ships each batch to all of them; all must succeed before the rows are marked shipped. See `docs/audit-log-shipping.md`.
 
 ### TIN-validation adapters (`services/tin_validation_adapters/`)
 
@@ -545,7 +545,7 @@ class MyAdapter:
     async def test_connection(self) -> bool: ...
 ```
 
-Registered: `mock` (offline EIN/SSN format + IRS structural rules — the local-first default), `tax1099` (IRS TIN-match skeleton — live key required; degrades to format-only without a key). Selected per-org via `Organization.settings.tax.tin_validation` → falls back to `AP_TIN_VALIDATION_PROVIDER` (default `mock`). Results carry only the verdict + redacted last-4 — never the raw TIN. Wired at `POST /api/tax/vendors/{id}/tin-verify`. See `docs/tax-1099.md`.
+Registered: `mock` (offline EIN/SSN format + IRS structural rules — the local-first default), `tax1099` (IRS TIN-match skeleton — live key required; degrades to format-only without a key). Selected per-org via `Organization.settings.tax.tin_validation` → falls back to `FEOH_TIN_VALIDATION_PROVIDER` (default `mock`). Results carry only the verdict + redacted last-4 — never the raw TIN. Wired at `POST /api/tax/vendors/{id}/tin-verify`. See `docs/tax-1099.md`.
 
 ### 1099 e-filing adapters (`services/tax_filing_adapters/`)
 
@@ -558,7 +558,7 @@ class MyAdapter:
     async def test_connection(self) -> bool: ...
 ```
 
-Registered: `mock` (offline, deterministic, idempotent — the local-first default), `tax1099` (partner e-file skeleton — live key required). Selected per-org via `Organization.settings.tax.filing` → falls back to `AP_TAX_FILING_PROVIDER` (default `mock`). `POST /api/tax/1099/file` is idempotent on `(organization_id, idempotency_key)` via the `tax_1099_filings` table (a duplicate IRS filing is a real problem); the filing row carries no recipient TIN. See `docs/tax-1099.md`.
+Registered: `mock` (offline, deterministic, idempotent — the local-first default), `tax1099` (partner e-file skeleton — live key required). Selected per-org via `Organization.settings.tax.filing` → falls back to `FEOH_TAX_FILING_PROVIDER` (default `mock`). `POST /api/tax/1099/file` is idempotent on `(organization_id, idempotency_key)` via the `tax_1099_filings` table (a duplicate IRS filing is a real problem); the filing row carries no recipient TIN. See `docs/tax-1099.md`.
 
 ### Exception-agent resolvers (`services/exception_agents/`)
 
@@ -584,7 +584,7 @@ class MyAdapter(PeppolAdapter):
     def parse_inbound(self, headers, body) -> InboundPeppolMessage | None: ...
 ```
 
-Registered: `mock` (in-process, no network — the **local-first default**), `as4_gateway` (real — `httpx` to a hosted Access Point; key via sops, no hardcoded fallback). Selection via `Organization.settings.peppol.provider` → `AP_PEPPOL_PROVIDER` (default `mock`). Outbound **send** turns an invoice into UBL via the `e_invoice` package, resolves the receiver via SMP/SML (`resolve_participant`), and transmits via the gateway; SBDH wrapping lives in the adapter, never the generator. `services/peppol_send.send_invoice_over_peppol` orchestrates it (map → tax-validate → UBL → resolve → INSERT `peppol_transmissions('sending')` → send → audit), idempotent at the DB layer. Route `POST /api/invoices/{id}/peppol-send`.
+Registered: `mock` (in-process, no network — the **local-first default**), `as4_gateway` (real — `httpx` to a hosted Access Point; key via sops, no hardcoded fallback). Selection via `Organization.settings.peppol.provider` → `FEOH_PEPPOL_PROVIDER` (default `mock`). Outbound **send** turns an invoice into UBL via the `e_invoice` package, resolves the receiver via SMP/SML (`resolve_participant`), and transmits via the gateway; SBDH wrapping lives in the adapter, never the generator. `services/peppol_send.send_invoice_over_peppol` orchestrates it (map → tax-validate → UBL → resolve → INSERT `peppol_transmissions('sending')` → send → audit), idempotent at the DB layer. Route `POST /api/invoices/{id}/peppol-send`.
 
 **Inbound receive** (the C4 corner) is now implemented: `parse_inbound` is real on both adapters (mock parses a dev JSON/header envelope; `as4_gateway` maps the hosted AP's inbound-delivery envelope). `api/peppol_inbound.public_router` mounts `POST /api/peppol/inbound/{tenant_slug}` (public-by-design, HMAC-gated, tenant in path, always 204). `services/peppol_receive.receive_peppol_message` mirrors `email_intake.process_inbound_email`: dedupe-precheck → `e_invoice.parse_e_invoice` (structural validate) → create `Invoice(status=new)` → claim the `uq_peppol_message_id` slot with a `PeppolTransmission(direction="inbound", status="delivered")` flushed **before** the S3 upload (so a concurrent-redelivery loser's `IntegrityError` rolls back the whole tenant txn — no second invoice, no orphaned S3 object) → upload payload → `invoice.peppol_received` audit → commit → `dispatch_extraction` (auto-routes to the `einvoice` adapter). Dedupe is the DB unique index only (deliberately **not** Redis — a 24h TTL would let a later redelivery slip through). See `docs/peppol.md`.
 
@@ -602,7 +602,7 @@ Registered: `mock` (in-process, no supplier/network — the **local-first
 default**), `cxml` (real cXML build/parse; supplier shared secret via sops, **no
 hardcoded fallback** → fails closed `punchout_not_configured`; OCI shape behind
 the same interface via `protocol="oci"`). Selection via
-`Organization.settings.punchout.provider` → `AP_PUNCHOUT_PROVIDER` (default
+`Organization.settings.punchout.provider` → `FEOH_PUNCHOUT_PROVIDER` (default
 `mock`). Live cXML/OCI catalog punch-out: a `punchout` `Catalog` starts a
 `PunchoutSession` (migration `0045`) → adapter builds a PunchOutSetupRequest +
 returns a supplier start URL → the supplier POSTs a PunchOutOrderMessage cart to
@@ -616,10 +616,10 @@ parse reused from `e_invoice/_xml`). See `docs/procurement-catalogs.md`.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `AP_PUNCHOUT_PROVIDER` | `mock` | Adapter — `mock` \| `cxml`. Per-org override `Organization.settings.punchout.provider`. |
-| `AP_PUNCHOUT_SHARED_SECRET` | (empty) | cXML supplier credential — no hardcoded fallback; sops in deployed. |
-| `AP_PUNCHOUT_RETURN_SIGNING_SECRET` | (empty) | HMAC key the supplier signs the cart-return POST with. No hardcoded fallback; committed `.env.development` sets a NON-secret dev value. |
-| `AP_PUNCHOUT_RETURN_MAX_BYTES` | `4194304` | Cart-return body cap (memory-exhaustion guard). |
+| `FEOH_PUNCHOUT_PROVIDER` | `mock` | Adapter — `mock` \| `cxml`. Per-org override `Organization.settings.punchout.provider`. |
+| `FEOH_PUNCHOUT_SHARED_SECRET` | (empty) | cXML supplier credential — no hardcoded fallback; sops in deployed. |
+| `FEOH_PUNCHOUT_RETURN_SIGNING_SECRET` | (empty) | HMAC key the supplier signs the cart-return POST with. No hardcoded fallback; committed `.env.development` sets a NON-secret dev value. |
+| `FEOH_PUNCHOUT_RETURN_MAX_BYTES` | `4194304` | Cart-return body cap (memory-exhaustion guard). |
 
 ### Billing adapters (`services/billing_adapters/`)
 
@@ -646,7 +646,7 @@ idempotent creates, minor-units via exact Decimal), `create_subscription` /
 `[]` default, mock fabricates deterministic receipts, Stripe GETs
 `/v1/invoices`), `report_usage` (one Billing Meter Event per meter, exact
 decimal-string quantities), and `parse_webhook` (Stripe-Signature HMAC verify).
-Selection via `Organization.settings.billing.provider` → `AP_BILLING_PROVIDER`
+Selection via `Organization.settings.billing.provider` → `FEOH_BILLING_PROVIDER`
 (default `mock`). This is the AP platform's OWN customer billing (plans /
 subscriptions / metering — control-plane, keyed by org), distinct from the AP
 money path the app runs for customers. The **payment-method** capability
@@ -676,9 +676,9 @@ only the live-Stripe plan-change UI is later. See `docs/billing.md`.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `AP_BILLING_PROVIDER` | `mock` | Billing adapter — `mock` \| `stripe_billing`. Per-org override `Organization.settings.billing.provider`. |
-| `AP_BILLING_STRIPE_API_KEY` | (empty) | Live Stripe Billing key — no hardcoded fallback; sops in deployed. Adapter fails closed without it. |
-| `AP_BILLING_STRIPE_WEBHOOK_SECRET` | (empty) | HMAC secret for Stripe webhook verification — no fallback; sops in deployed. |
+| `FEOH_BILLING_PROVIDER` | `mock` | Billing adapter — `mock` \| `stripe_billing`. Per-org override `Organization.settings.billing.provider`. |
+| `FEOH_BILLING_STRIPE_API_KEY` | (empty) | Live Stripe Billing key — no hardcoded fallback; sops in deployed. Adapter fails closed without it. |
+| `FEOH_BILLING_STRIPE_WEBHOOK_SECRET` | (empty) | HMAC secret for Stripe webhook verification — no fallback; sops in deployed. |
 
 ## Webhook security (`services/webhook_security.py`)
 
@@ -695,10 +695,10 @@ Per-tenant secrets:
 | `/api/payments/webhook/...` | `Organization.settings.payments.webhook_secret` (verified inside the adapter's `parse_webhook`). The route rejects `provider == "mock"` outright before any tenant lookup — the `mock` adapter's `parse_webhook` does no signature verification and `mock` is the default provider for un-configured tenants, so serving it publicly would accept forged status transitions (mock never delivers real webhooks). Mirrors `cards.card_webhook`'s `lithic`/`nium` allowlist and the billing route's boot-time mock refusal. |
 | `/api/cards/webhook/{provider}` | `Organization.settings.cards.webhook_signing_secret` |
 | `/api/erp/webhook/{erp_type}` | `Organization.settings.erp.webhook_signing_secret` |
-| `/api/email-intake/inbound/{provider}` | `AP_EMAIL_INTAKE_SIGNING_SECRET` (process-level HMAC key; verified in `email_intake.verify_signature`). Dedupe is `is_event_already_processed("email_intake", message_id)`, claimed right after tenant resolution and released via `release_event_claim` if invoice creation fails downstream (mirrors `api/cards.py`'s claim/release discipline) so a redelivery can retry. Recipient-token match uses `hmac.compare_digest`. |
-| `/api/peppol/inbound/{tenant_slug}` | `AP_PEPPOL_INBOUND_SIGNING_SECRET` (process-level HMAC key; verified by `peppol_receive.verify_inbound_signature`). Dedupe is the DB `uq_peppol_message_id` index, not Redis. |
-| `/api/catalogs/punchout/return/{tenant_slug}` | `AP_PUNCHOUT_RETURN_SIGNING_SECRET` (process-level HMAC key; verified in `catalogs._verify_return_signature`). Correlation is the BuyerCookie matched to a pending `PunchoutSession`. |
-| `/api/approvals/slack/interactivity` | `AP_SLACK_SIGNING_SECRET` (process-level HMAC key; verified in `slack_approvals._verify_slack_signature` over `v0:{X-Slack-Request-Timestamp}:{raw_body}`, with a `±AP_SLACK_REQUEST_MAX_AGE_SECONDS` replay window). Per-action dedupe is the single-use action-token `jti` in Redis (the email-approval mechanism), not `is_event_already_processed`. Returns an opaque 200 ack (Slack-friendly) on every path, not 204. See `docs/slack-approval.md`. |
+| `/api/email-intake/inbound/{provider}` | `FEOH_EMAIL_INTAKE_SIGNING_SECRET` (process-level HMAC key; verified in `email_intake.verify_signature`). Dedupe is `is_event_already_processed("email_intake", message_id)`, claimed right after tenant resolution and released via `release_event_claim` if invoice creation fails downstream (mirrors `api/cards.py`'s claim/release discipline) so a redelivery can retry. Recipient-token match uses `hmac.compare_digest`. |
+| `/api/peppol/inbound/{tenant_slug}` | `FEOH_PEPPOL_INBOUND_SIGNING_SECRET` (process-level HMAC key; verified by `peppol_receive.verify_inbound_signature`). Dedupe is the DB `uq_peppol_message_id` index, not Redis. |
+| `/api/catalogs/punchout/return/{tenant_slug}` | `FEOH_PUNCHOUT_RETURN_SIGNING_SECRET` (process-level HMAC key; verified in `catalogs._verify_return_signature`). Correlation is the BuyerCookie matched to a pending `PunchoutSession`. |
+| `/api/approvals/slack/interactivity` | `FEOH_SLACK_SIGNING_SECRET` (process-level HMAC key; verified in `slack_approvals._verify_slack_signature` over `v0:{X-Slack-Request-Timestamp}:{raw_body}`, with a `±FEOH_SLACK_REQUEST_MAX_AGE_SECONDS` replay window). Per-action dedupe is the single-use action-token `jti` in Redis (the email-approval mechanism), not `is_event_already_processed`. Returns an opaque 200 ack (Slack-friendly) on every path, not 204. See `docs/slack-approval.md`. |
 
 Every webhook handler returns **204 silently** on every rejection path (bad signature, unknown tenant, missing event id, unknown card / invoice / payment, disabled master switch, unparseable / malformed inbound document) — except the Slack interactivity webhook, which returns an opaque **200 ack** on every path (Slack requires 2xx to acknowledge a button click; the ack text is identical across success and rejection, so it doesn't enumerate), and the email-intake webhook, which is a hybrid: pre-signature rejections (unknown provider / bad signature / unparseable body — nothing sensitive resolved yet) still return 204, but every outcome *after* the signature verifies (unknown/disabled intake token, duplicate delivery, no usable attachments, a processing exception, or genuine success) returns the SAME opaque 200 ack (`email_intake._ack()`) — because unlike the other handlers, a 204-vs-200-with-a-body split there would itself be the token-enumeration oracle (the platform-wide signing secret is shared across all tenants, so anyone who can sign a request can watch for the response to change once they guess a valid intake token). Distinct 4xx responses / differing response bodies would enumerate tenant slugs or card/intake tokens. Tests: `backend/tests/test_webhook_security.py`, `tests/test_payment_webhook_security.py`, `tests/test_peppol_inbound.py`, `tests/test_slack_approvals.py`, `tests/test_email_intake.py`, `tests/test_email_intake_processing.py`.
 
@@ -719,9 +719,9 @@ Two request-path helpers in `app/services/audit_access.py` (thin wrappers over `
 
 The auditor-export surface is `app/api/audit.py` (`/api/audit/export`, `/api/audit/invoice/{id}` — GET-only, admin/CFO). `/api/audit/export` also serves a formatted **PDF** SOX audit-trail report via `?format=pdf` (cover + event-count summary + chronological table; `app/services/audit_report_pdf.py`, pure-function modelled on `remittance_pdf.py`; renders only the field-NAME-sanitised entries). See `docs/api-reference.md` § Audit Trail.
 
-**Periodic access reviews (SOX)** — `app/api/access_reviews.py` (`GET /api/access-reviews` + `POST /api/access-reviews/acknowledge`, admin/CFO). Compute-on-read (no migration): `app/services/access_review.py` flags users holding an elevated role (`admin`/`ap_manager`/`cfo`) whose last *mutating* audit action is older than `AP_ACCESS_REVIEW_DORMANT_DAYS` (default 90), or who never acted, as DORMANT. The review list is itself a sensitive read (`access_review.viewed`); acknowledge writes `access_review.completed` + stamps `Organization.settings.access_review`. See `docs/access-reviews.md`.
+**Periodic access reviews (SOX)** — `app/api/access_reviews.py` (`GET /api/access-reviews` + `POST /api/access-reviews/acknowledge`, admin/CFO). Compute-on-read (no migration): `app/services/access_review.py` flags users holding an elevated role (`admin`/`ap_manager`/`cfo`) whose last *mutating* audit action is older than `FEOH_ACCESS_REVIEW_DORMANT_DAYS` (default 90), or who never acted, as DORMANT. The review list is itself a sensitive read (`access_review.viewed`); acknowledge writes `access_review.completed` + stamps `Organization.settings.access_review`. See `docs/access-reviews.md`.
 
-**Digital signatures on approvals (non-repudiation):** every `invoice.approved` audit row carries an HMAC-SHA256 "timestamp + user hash" in `details.signature` over the canonical approval facts (invoice id + exact Decimal amount + actor + decision + timestamp). Signed in `services/review.approve_invoice` (`services/approval_signature.py` — pure); re-verifiable at `GET /api/audit/invoice/{id}/verify-signatures` (admin/CFO), where a post-approval tamper of the amount/actor/timestamp → `valid: false`. Key `AP_APPROVAL_SIGNING_KEY` — empty → signing skipped, NON-secret committed dev value, real key via sops (no hardcoded fallback). See `docs/approval-signatures.md`.
+**Digital signatures on approvals (non-repudiation):** every `invoice.approved` audit row carries an HMAC-SHA256 "timestamp + user hash" in `details.signature` over the canonical approval facts (invoice id + exact Decimal amount + actor + decision + timestamp). Signed in `services/review.approve_invoice` (`services/approval_signature.py` — pure); re-verifiable at `GET /api/audit/invoice/{id}/verify-signatures` (admin/CFO), where a post-approval tamper of the amount/actor/timestamp → `valid: false`. Key `FEOH_APPROVAL_SIGNING_KEY` — empty → signing skipped, NON-secret committed dev value, real key via sops (no hardcoded fallback). See `docs/approval-signatures.md`.
 
 **Retention policies (records management):** per-record-class windows on `Organization.settings.retention` (`GET/PUT /api/retention-policy`, admin); the `retention_sweep` background loop archives overdue terminal invoices via a `meta.archived_at` marker and, for the WORM `audit_log` class, verifies shipment instead of deleting — it never deletes audit rows (composes with the immutability trigger). See `docs/retention.md`.
 
@@ -735,7 +735,7 @@ Files: `*_dispatch.py` (router), `*_lambda.py` (Lambda handler).
 
 ## Authentication (`api/deps.py`)
 
-- JWT HS256 signed with `AP_SECRET_KEY`, 30-min expiry (configurable)
+- JWT HS256 signed with `FEOH_SECRET_KEY`, 30-min expiry (configurable)
 - Token payload: `sub` (user_id), `org` (org_id), `jti` (unique ID for blocklist)
 - `get_current_user()` — FastAPI dependency, returns User or 401
 - Logout adds `jti` to Redis blocklist with TTL matching token expiry
@@ -759,10 +759,10 @@ user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER))
 
 ### MFA (`services/mfa.py`, `services/webauthn.py`)
 
-- TOTP (pyotp) + email-OTP backup + **WebAuthn/passkeys** (`py_webauthn`). Master switch `AP_MFA_ENABLED` (default `false` for local dev) gates all three.
+- TOTP (pyotp) + email-OTP backup + **WebAuthn/passkeys** (`py_webauthn`). Master switch `FEOH_MFA_ENABLED` (default `false` for local dev) gates all three.
 - Per-user TOTP secret on `User.mfa_secret`; org-wide enforcement via `Organization.settings.mfa.required`.
-- **Enrollment is two-phase and never disturbs a live factor.** `POST /api/auth/mfa/enroll` (and the portal twin) mints a *candidate* secret into Redis (`mfa:pending_enroll:<user_id>` / `mfa:vendor_pending_enroll:<id>`, `AP_MFA_ENROLL_PENDING_TTL_SECONDS`, default 900s) — `mfa_secret` / `mfa_enabled` / `mfa_enrolled_at` are written ONLY by `/mfa/enroll/verify`. **Changing an existing factor is a step-up**: enroll-start, `POST /api/auth/mfa/passkey/register`, `DELETE /api/auth/mfa/passkey/{id}` and `POST /api/auth/mfa/disable` take an optional `{password?, code?, assertion?}` body and require one to check out whenever a factor is already live — the shared `pwd_context` password or a code from the CURRENT authenticator (both via the pure `mfa.step_up_verified`), or a **WebAuthn assertion** from an already-registered passkey (`api/auth._step_up_satisfied`, which needs the DB + Redis so it can't live in the pure helper). A "live factor" is an enabled TOTP secret OR any registered passkey, so both doors are gated symmetrically; a genuinely first factor needs none. The assertion is the proof an **SSO-only** account uses — with no password and no TOTP it would otherwise be locked out of its own factor management (it is never *exempted*; exempting would let a stolen JWT plant an attacker-controlled passkey). Its challenge comes from `POST /api/auth/mfa/step-up/passkey {operation}` and is **purpose- and operation-bound**: login and step-up challenges live in different single-use Redis slots (`webauthn:auth_challenge:<uid>` vs `webauthn:stepup_challenge:<operation>:<uid>`), so a step-up assertion can't mint an access token, a login assertion can't authorize a factor change, and a `passkey_register` assertion can't authorize a `passkey_delete` — the only thing separating the two ceremonies is the challenge, since `clientDataJSON.type` is `webauthn.get` for both. `purpose` is a required kwarg on `begin_authentication`/`finish_authentication`. The supplier portal has no passkeys (`WebAuthnCredential` → control-plane `users.id`, `VendorUser` is tenant-scoped), so `/portal/auth/mfa/*` stays password-or-code. Every step-up is throttled 5/min **per account** (`_throttle_step_up`, not per-IP — the attacker holds the token) and writes a PII-free `auth.mfa.step_up.failure` / `portal.mfa.step_up.failure` audit row on failure; `/mfa/disable` on both surfaces rides the same helpers. Without all of this, a leaked access token alone could strip or swap the second factor, silently and unthrottled.
-- **Passkeys are a separate code path** (`services/webauthn.py`), additive + opt-in. Credentials live in the control-plane `webauthn_credentials` table (`WebAuthnCredential`, migration 0063, in `CONTROL_TABLES`) — one row per registered authenticator, keyed by `user_id`. Register/list/delete + authenticate endpoints under `/api/auth/mfa/passkey/*`, plus the step-up-challenge endpoint `POST /api/auth/mfa/step-up/passkey`; the authenticate ceremony is gated by the login-issued MFA challenge token (public, pre-access-token), register/list/delete and step-up-start require JWT. The per-ceremony challenge is stashed single-use in Redis (`webauthn:reg_challenge:<user_id>`, `webauthn:auth_challenge:<user_id>`, `webauthn:stepup_challenge:<operation>:<user_id>`); the signature counter is verified + bumped (clone-detection). RP ID / origins configurable (`AP_WEBAUTHN_RP_ID` / `AP_WEBAUTHN_ORIGINS`; dev defaults `localhost` / `http://localhost:7777`). Public key + counter are not secret in the password sense and never logged.
+- **Enrollment is two-phase and never disturbs a live factor.** `POST /api/auth/mfa/enroll` (and the portal twin) mints a *candidate* secret into Redis (`mfa:pending_enroll:<user_id>` / `mfa:vendor_pending_enroll:<id>`, `FEOH_MFA_ENROLL_PENDING_TTL_SECONDS`, default 900s) — `mfa_secret` / `mfa_enabled` / `mfa_enrolled_at` are written ONLY by `/mfa/enroll/verify`. **Changing an existing factor is a step-up**: enroll-start, `POST /api/auth/mfa/passkey/register`, `DELETE /api/auth/mfa/passkey/{id}` and `POST /api/auth/mfa/disable` take an optional `{password?, code?, assertion?}` body and require one to check out whenever a factor is already live — the shared `pwd_context` password or a code from the CURRENT authenticator (both via the pure `mfa.step_up_verified`), or a **WebAuthn assertion** from an already-registered passkey (`api/auth._step_up_satisfied`, which needs the DB + Redis so it can't live in the pure helper). A "live factor" is an enabled TOTP secret OR any registered passkey, so both doors are gated symmetrically; a genuinely first factor needs none. The assertion is the proof an **SSO-only** account uses — with no password and no TOTP it would otherwise be locked out of its own factor management (it is never *exempted*; exempting would let a stolen JWT plant an attacker-controlled passkey). Its challenge comes from `POST /api/auth/mfa/step-up/passkey {operation}` and is **purpose- and operation-bound**: login and step-up challenges live in different single-use Redis slots (`webauthn:auth_challenge:<uid>` vs `webauthn:stepup_challenge:<operation>:<uid>`), so a step-up assertion can't mint an access token, a login assertion can't authorize a factor change, and a `passkey_register` assertion can't authorize a `passkey_delete` — the only thing separating the two ceremonies is the challenge, since `clientDataJSON.type` is `webauthn.get` for both. `purpose` is a required kwarg on `begin_authentication`/`finish_authentication`. The supplier portal has no passkeys (`WebAuthnCredential` → control-plane `users.id`, `VendorUser` is tenant-scoped), so `/portal/auth/mfa/*` stays password-or-code. Every step-up is throttled 5/min **per account** (`_throttle_step_up`, not per-IP — the attacker holds the token) and writes a PII-free `auth.mfa.step_up.failure` / `portal.mfa.step_up.failure` audit row on failure; `/mfa/disable` on both surfaces rides the same helpers. Without all of this, a leaked access token alone could strip or swap the second factor, silently and unthrottled.
+- **Passkeys are a separate code path** (`services/webauthn.py`), additive + opt-in. Credentials live in the control-plane `webauthn_credentials` table (`WebAuthnCredential`, migration 0063, in `CONTROL_TABLES`) — one row per registered authenticator, keyed by `user_id`. Register/list/delete + authenticate endpoints under `/api/auth/mfa/passkey/*`, plus the step-up-challenge endpoint `POST /api/auth/mfa/step-up/passkey`; the authenticate ceremony is gated by the login-issued MFA challenge token (public, pre-access-token), register/list/delete and step-up-start require JWT. The per-ceremony challenge is stashed single-use in Redis (`webauthn:reg_challenge:<user_id>`, `webauthn:auth_challenge:<user_id>`, `webauthn:stepup_challenge:<operation>:<user_id>`); the signature counter is verified + bumped (clone-detection). RP ID / origins configurable (`FEOH_WEBAUTHN_RP_ID` / `FEOH_WEBAUTHN_ORIGINS`; dev defaults `localhost` / `http://localhost:7777`). Public key + counter are not secret in the password sense and never logged.
 - Login returns either `TokenResponse` or `MFAChallengeResponse`. Challenge token is a short-lived JWT with `typ: mfa_challenge` — verified at `POST /api/auth/mfa/verify` (totp/email) or the passkey authenticate endpoints. `methods` lists the offered factors (`totp` / `passkey` / `email`); a passkey-only user trips the gate.
 - Email-OTP hashes live in Redis (`mfa:email_otp:<user_id>`), short TTL, single-use.
 - SSO sign-in skips our MFA challenge — IdPs handle their own MFA.
@@ -780,7 +780,7 @@ user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER))
   posture: `wantAssertionsSigned`, SHA-256-only, issuer/audience/destination +
   mandatory InResponseTo, per-tenant replay dedup, IdP cert pinned (no
   fingerprint/embedded), XXE-hardened parsing. SP signing keypair (optional) →
-  `AP_SAML_SP_*` via sops. Local IdP: Keycloak (`pnpm saml:seed`).
+  `FEOH_SAML_SP_*` via sops. Local IdP: Keycloak (`pnpm saml:seed`).
 - Full reference: `../docs/authentication.md` § SAML SSO + `../docs/local-sso-saml.md`.
 
 ## Organization settings (JSONB)
@@ -818,7 +818,7 @@ Severity: `error`, `warning`, `info`. Auto-detected by `invoice_warnings.py`. `e
 | Script | Purpose |
 |--------|---------|
 | `scripts/seed.py` | Creates 2 tenants (acme, techflow) with full sample data (vendors, invoices, POs, payments, exceptions) + a `WorkflowInstance`/`WorkflowStep` per invoice (so the approval queue + assistant pending-approvals tool aren't empty — `ready_for_review` invoices get an active approval step assigned to the org admin) + calls `seed_extras` so contracts / credit memos / discount offers / expenses are populated too |
-| `scripts/seed_extras.py` | Additive, idempotent per-tenant seed for the contract (`/contracts`), credit-memo (`/credit-memos`), discounting (`/discounts`) and expense (`/expenses`) pages. `seed_extras(session, org_id)` is reused in-line by `seed_tenant`; the CLI (`--tenant ap_acme`) tops up an already-seeded tenant without a wipe. Skips if the tenant already has contracts. |
+| `scripts/seed_extras.py` | Additive, idempotent per-tenant seed for the contract (`/contracts`), credit-memo (`/credit-memos`), discounting (`/discounts`) and expense (`/expenses`) pages. `seed_extras(session, org_id)` is reused in-line by `seed_tenant`; the CLI (`--tenant feoh_acme`) tops up an already-seeded tenant without a wipe. Skips if the tenant already has contracts. |
 | `scripts/seed_payable_invoices.py` | Tops up a tenant's payment queue with N approved invoices (`--tenant`, `--count`) — re-run after executing a payment run drains the queue. |
 | `scripts/create_tenant.py` | CLI wrapper around `services.tenant_provisioning.provision_tenant` — provisions a single tenant (org + admin user + DB + tables) |
 | `scripts/migrate_all_tenants.py` | Runs `alembic upgrade head` on every tenant DB |
@@ -834,20 +834,20 @@ Two-step flow under `/api/signup`:
 | `POST /api/signup/complete` | Consumes the token, re-checks slug availability, provisions the tenant via `services.tenant_provisioning.provision_tenant`, generates a temp password, sends the welcome email with tenant URL + credentials, marks the verification consumed. |
 | `POST /api/auth/change-password` | Authenticated. Validates current password, enforces complexity, sets the new hash and clears `User.must_change_password`. |
 
-The welcome email contains the tenant URL (`AP_TENANT_URL_TEMPLATE`, e.g. `https://{slug}.app.com`) and a 16-char URL-safe temp password. The user is forced to change it on first login (`User.must_change_password` is `true` until they hit `/api/auth/change-password`).
+The welcome email contains the tenant URL (`FEOH_TENANT_URL_TEMPLATE`, e.g. `https://{slug}.app.com`) and a 16-char URL-safe temp password. The user is forced to change it on first login (`User.must_change_password` is `true` until they hit `/api/auth/change-password`).
 
 **Pluggable services:**
 
-- `services/email_adapters/` — `console` (local dev, logs to stdout) and `ses` (AWS SES) via `AP_EMAIL_PROVIDER`. Same registry pattern as extraction/ERP adapters.
+- `services/email_adapters/` — `console` (local dev, logs to stdout) and `ses` (AWS SES) via `FEOH_EMAIL_PROVIDER`. Same registry pattern as extraction/ERP adapters.
 - `services/tenant_provisioning.py` — reusable async `provision_tenant()` used by both the CLI and the API.
-- `services/rate_limit.py` — Redis sliding-window limiter, keyed on `(endpoint, subject)` where `subject` defaults to client IP but can be an explicit value (e.g. email). Signup uses three limits: per-IP `/start` + `/complete` (`AP_SIGNUP_RATE_LIMIT_PER_HOUR`, default 5), per-email `/start` (`AP_SIGNUP_EMAIL_RATE_LIMIT_PER_HOUR`, default 3, anti email-bombing), and per-IP `/slug-check` (`AP_SLUG_CHECK_RATE_LIMIT_PER_HOUR`, default 120, anti-enumeration).
+- `services/rate_limit.py` — Redis sliding-window limiter, keyed on `(endpoint, subject)` where `subject` defaults to client IP but can be an explicit value (e.g. email). Signup uses three limits: per-IP `/start` + `/complete` (`FEOH_SIGNUP_RATE_LIMIT_PER_HOUR`, default 5), per-email `/start` (`FEOH_SIGNUP_EMAIL_RATE_LIMIT_PER_HOUR`, default 3, anti email-bombing), and per-IP `/slug-check` (`FEOH_SLUG_CHECK_RATE_LIMIT_PER_HOUR`, default 120, anti-enumeration).
 - `utils/slug.py` — regex + reserved-word blocklist + DB uniqueness check.
-- `utils/hcaptcha.py` — server-side siteverify. Skips when `AP_HCAPTCHA_SECRET` is empty (local dev).
+- `utils/hcaptcha.py` — server-side siteverify. Skips when `FEOH_HCAPTCHA_SECRET` is empty (local dev).
 - `utils/passwords.py` — `generate_temp_password()` + `validate_password_complexity()` (min 12 chars, upper/lower/digit).
 
 The captcha sitekey is exposed to the frontend via `GET /api/public-config` so the SvelteKit build doesn't need to bake it in.
 
-Relevant env vars: `AP_ENVIRONMENT` (deployed envs refuse to boot with an empty `AP_HCAPTCHA_SECRET`), `AP_EMAIL_PROVIDER`, `AP_EMAIL_FROM`, `AP_AWS_SES_REGION`, `AP_PUBLIC_URL`, `AP_TENANT_URL_TEMPLATE`, `AP_HCAPTCHA_SECRET`, `AP_HCAPTCHA_SITEKEY`, `AP_SIGNUP_RATE_LIMIT_PER_HOUR`, `AP_SIGNUP_EMAIL_RATE_LIMIT_PER_HOUR`, `AP_SLUG_CHECK_RATE_LIMIT_PER_HOUR`.
+Relevant env vars: `FEOH_ENVIRONMENT` (deployed envs refuse to boot with an empty `FEOH_HCAPTCHA_SECRET`), `FEOH_EMAIL_PROVIDER`, `FEOH_EMAIL_FROM`, `FEOH_AWS_SES_REGION`, `FEOH_PUBLIC_URL`, `FEOH_TENANT_URL_TEMPLATE`, `FEOH_HCAPTCHA_SECRET`, `FEOH_HCAPTCHA_SITEKEY`, `FEOH_SIGNUP_RATE_LIMIT_PER_HOUR`, `FEOH_SIGNUP_EMAIL_RATE_LIMIT_PER_HOUR`, `FEOH_SLUG_CHECK_RATE_LIMIT_PER_HOUR`.
 
 ## Secrets management (SOPS + AWS KMS)
 

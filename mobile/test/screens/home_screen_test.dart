@@ -7,17 +7,17 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
-import 'package:ap_mobile/api/api_client.dart';
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/screens/home_screen.dart';
-import 'package:ap_mobile/services/offline_store.dart';
-import 'package:ap_mobile/stores/auth_store.dart';
-import 'package:ap_mobile/stores/contract_store.dart';
-import 'package:ap_mobile/stores/dashboard_store.dart';
-import 'package:ap_mobile/stores/exception_store.dart';
-import 'package:ap_mobile/stores/invoice_store.dart';
-import 'package:ap_mobile/stores/payment_queue_store.dart';
-import 'package:ap_mobile/stores/vendor_store.dart';
+import 'package:feohledger_mobile/api/api_client.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/screens/home_screen.dart';
+import 'package:feohledger_mobile/services/offline_store.dart';
+import 'package:feohledger_mobile/stores/auth_store.dart';
+import 'package:feohledger_mobile/stores/contract_store.dart';
+import 'package:feohledger_mobile/stores/dashboard_store.dart';
+import 'package:feohledger_mobile/stores/exception_store.dart';
+import 'package:feohledger_mobile/stores/invoice_store.dart';
+import 'package:feohledger_mobile/stores/payment_queue_store.dart';
+import 'package:feohledger_mobile/stores/vendor_store.dart';
 
 http.Response _json(Object body, [int status = 200]) => http.Response(
       jsonEncode(body),

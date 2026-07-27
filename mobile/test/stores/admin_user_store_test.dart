@@ -5,8 +5,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
-import 'package:ap_mobile/api/api_client.dart';
-import 'package:ap_mobile/stores/admin_user_store.dart';
+import 'package:feohledger_mobile/api/api_client.dart';
+import 'package:feohledger_mobile/stores/admin_user_store.dart';
 
 http.Response _users(List<Map<String, dynamic>> items) => http.Response(
       jsonEncode({'items': items, 'total': items.length, 'page': 1}),

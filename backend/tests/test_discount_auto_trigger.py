@@ -58,7 +58,7 @@ async def test_run_once_iterates_every_tenant():
         patch.object(
             discount_auto_trigger,
             "control_session_factory",
-            _fake_control_session(["ap_a", "ap_b", "ap_c"]),
+            _fake_control_session(["feoh_a", "feoh_b", "feoh_c"]),
         ),
         patch.object(discount_auto_trigger, "_sweep_tenant", AsyncMock(return_value=2)) as sweep,
     ):
@@ -76,7 +76,7 @@ async def test_run_once_continues_after_one_tenant_fails():
         patch.object(
             discount_auto_trigger,
             "control_session_factory",
-            _fake_control_session(["ap_a", "ap_b", "ap_c"]),
+            _fake_control_session(["feoh_a", "feoh_b", "feoh_c"]),
         ),
         patch.object(discount_auto_trigger, "_sweep_tenant", AsyncMock(side_effect=side_effects)),
     ):

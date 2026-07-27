@@ -435,14 +435,14 @@ async def test_run_once_aggregates_and_isolates_tenant_failures():
 
     ctrl = AsyncMock()
     ctrl_result = MagicMock()
-    ctrl_result.all = MagicMock(return_value=[("ap_a",), ("ap_b",)])
+    ctrl_result.all = MagicMock(return_value=[("feoh_a",), ("feoh_b",)])
     ctrl.execute = AsyncMock(return_value=ctrl_result)
     ctrl_cm = MagicMock()
     ctrl_cm.__aenter__ = AsyncMock(return_value=ctrl)
     ctrl_cm.__aexit__ = AsyncMock(return_value=False)
 
     async def _fake_sweep(db_name, *, now):
-        if db_name == "ap_a":
+        if db_name == "feoh_a":
             return (2, 0)  # 2 schedules ran, none failed
         raise RuntimeError("tenant b is broken")
 
@@ -454,4 +454,4 @@ async def test_run_once_aggregates_and_isolates_tenant_failures():
 
     assert result.tenants_scanned == 2
     assert result.schedules_run == 2
-    assert result.failures == 1  # ap_b's exception counted, ap_a still ran
+    assert result.failures == 1  # feoh_b's exception counted, feoh_a still ran

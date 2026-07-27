@@ -3,8 +3,8 @@
 Fail-closed posture: every method that would touch Stripe raises
 ``BillingNotConfigured`` when no API key is present, so selecting this provider
 without a key can never silently no-op or fall back to a permissive path. The
-real secret arrives via sops (``AP_BILLING_STRIPE_API_KEY`` /
-``AP_BILLING_STRIPE_WEBHOOK_SECRET``) — there is NO hardcoded fallback.
+real secret arrives via sops (``FEOH_BILLING_STRIPE_API_KEY`` /
+``FEOH_BILLING_STRIPE_WEBHOOK_SECRET``) — there is NO hardcoded fallback.
 
 Implemented end-to-end against the Stripe REST API (key as HTTP-Basic username,
 form-encoded bodies, ``Idempotency-Key`` on every create so a retry can't
@@ -44,7 +44,7 @@ from app.services.webhook_security import extract_signature_header
 logger = logging.getLogger(__name__)
 
 # Default Stripe REST base. The dispatcher injects an override into config
-# (AP_BILLING_STRIPE_API_BASE) so a sandbox / test can repoint it; this constant
+# (FEOH_BILLING_STRIPE_API_BASE) so a sandbox / test can repoint it; this constant
 # is only the last-resort fallback when config carries no value.
 _DEFAULT_API_BASE = "https://api.stripe.com"
 
@@ -160,6 +160,11 @@ class StripeBillingAdapter(BillingAdapter):
             form["name"] = name
         if email:
             form["email"] = email
+        # The "ap-" prefix is frozen and deliberately survived the FeohLedger
+        # rename: this string IS the idempotency key Stripe already has on
+        # record for previously-created customers. Renaming it would make the
+        # next retry look like a brand-new request and create a DUPLICATE
+        # customer. It is an opaque key, never shown to anyone.
         headers = {"Idempotency-Key": f"ap-customer-{organization_id}"}
         async with self._client() as client:
             resp = await client.post("/v1/customers", data=form, headers=headers)
@@ -188,6 +193,8 @@ class StripeBillingAdapter(BillingAdapter):
             "product_data[name]": plan_code,
             "metadata[plan_code]": plan_code,
         }
+        # Frozen prefix — see ensure_customer: renaming an idempotency key
+        # already registered with Stripe would duplicate the price on retry.
         headers = {"Idempotency-Key": f"ap-price-{plan_code}-{unit_amount}-{cur}"}
         async with self._client() as client:
             resp = await client.post("/v1/prices", data=form, headers=headers)

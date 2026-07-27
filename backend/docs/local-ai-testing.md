@@ -20,13 +20,13 @@ workstation, which has GPU-accelerated native Ollama). Both expose the same API.
 pnpm ollama:up                 # starts the ollama container on host port 11435
 pnpm ollama:pull moondream     # pull a small vision model (~1.7GB); or llama3.2-vision:11b
 # point the app at the container (backend/.env):
-#   AP_OLLAMA_BASE_URL=http://localhost:11435
+#   FEOH_OLLAMA_BASE_URL=http://localhost:11435
 pnpm dev:backend               # restart to pick up the env
 pnpm ollama:logs               # follow logs;  pnpm ollama:down to stop
 ```
 
 Host port is **11435** (not the native default 11434) so the container coexists
-with a natively-installed Ollama. `AP_OLLAMA_BASE_URL` is the global fallback the
+with a natively-installed Ollama. `FEOH_OLLAMA_BASE_URL` is the global fallback the
 `ollama` extraction adapter uses when an org's extraction config doesn't set its
 own `base_url` (the per-org `base_url` always wins). The container is CPU-only by
 default; uncomment the `deploy:` GPU block in `docker-compose.yml` (needs

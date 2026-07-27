@@ -23,7 +23,7 @@ idempotent (already-marked rows are skipped, so a re-run never double-archives).
 
 Mirrors ``contract_renewal`` / ``qms_sync``: a long-lived asyncio loop started
 in ``main.lifespan``, fresh per-tenant engine, one tenant's failure logged but
-never halting the sweep. Disabled by default (``AP_RETENTION_ENABLED``).
+never halting the sweep. Disabled by default (``FEOH_RETENTION_ENABLED``).
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ def resolve_retention_months(settings_dict: dict | None, record_class: str) -> i
 
     Looks up ``settings.retention.<record_class>_months`` (the per-org,
     configurable value), falling back to the platform default
-    (``AP_RETENTION_DEFAULT_MONTHS``). Never raises — a malformed / missing
+    (``FEOH_RETENTION_DEFAULT_MONTHS``). Never raises — a malformed / missing
     value degrades to the default.
     """
     retention = ((settings_dict or {}).get("retention")) or {}

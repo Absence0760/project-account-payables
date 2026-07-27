@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:ap_mobile/models/payment.dart';
+import 'package:feohledger_mobile/models/payment.dart';
 
 void main() {
   group('PaymentMethod / PaymentStatus enums', () {

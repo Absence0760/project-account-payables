@@ -53,7 +53,7 @@ def _org(*, token: str, enabled: bool, slug: str = "acme") -> SimpleNamespace:
     return SimpleNamespace(
         id=uuid.uuid4(),
         slug=slug,
-        db_name=f"ap_{slug}",
+        db_name=f"feoh_{slug}",
         settings={"email_intake": {"token": token, "enabled": enabled}},
     )
 
@@ -99,7 +99,7 @@ async def test_resolve_tenant_handles_non_string_stored_token():
     org = SimpleNamespace(
         id=uuid.uuid4(),
         slug="acme",
-        db_name="ap_acme",
+        db_name="feoh_acme",
         settings={"email_intake": {"token": None, "enabled": True}},
     )
     ctrl = _FakeOrgsCtrl([org])
@@ -216,7 +216,7 @@ async def test_xml_attachment_is_accepted_not_skipped():
         ),
         patch(
             "app.database._make_tenant_url",
-            MagicMock(return_value="postgresql+asyncpg://x/ap_acme"),
+            MagicMock(return_value="postgresql+asyncpg://x/feoh_acme"),
         ),
         patch("sqlalchemy.ext.asyncio.create_async_engine", MagicMock(return_value=engine)),
         patch("sqlalchemy.ext.asyncio.async_sessionmaker", MagicMock(return_value=lambda: session)),
@@ -245,7 +245,7 @@ async def test_process_creates_invoice_per_attachment_and_dispatches_system_extr
         patch.object(email_intake, "_create_invoice_from_attachment", AsyncMock(side_effect=ids)),
         patch(
             "app.database._make_tenant_url",
-            MagicMock(return_value="postgresql+asyncpg://x/ap_acme"),
+            MagicMock(return_value="postgresql+asyncpg://x/feoh_acme"),
         ),
         patch("sqlalchemy.ext.asyncio.create_async_engine", MagicMock(return_value=engine)),
         patch("sqlalchemy.ext.asyncio.async_sessionmaker", MagicMock(return_value=lambda: session)),
@@ -295,7 +295,7 @@ async def test_process_dedupes_identical_message_id_across_deliveries():
         patch.object(email_intake, "_create_invoice_from_attachment", AsyncMock(side_effect=ids)),
         patch(
             "app.database._make_tenant_url",
-            MagicMock(return_value="postgresql+asyncpg://x/ap_acme"),
+            MagicMock(return_value="postgresql+asyncpg://x/feoh_acme"),
         ),
         patch("sqlalchemy.ext.asyncio.create_async_engine", create_engine),
         patch("sqlalchemy.ext.asyncio.async_sessionmaker", MagicMock(return_value=lambda: session)),
@@ -332,7 +332,7 @@ async def test_process_does_not_dedupe_distinct_message_ids():
         patch.object(email_intake, "_create_invoice_from_attachment", AsyncMock(side_effect=ids)),
         patch(
             "app.database._make_tenant_url",
-            MagicMock(return_value="postgresql+asyncpg://x/ap_acme"),
+            MagicMock(return_value="postgresql+asyncpg://x/feoh_acme"),
         ),
         patch("sqlalchemy.ext.asyncio.create_async_engine", create_engine),
         patch("sqlalchemy.ext.asyncio.async_sessionmaker", MagicMock(return_value=lambda: session)),
@@ -394,7 +394,7 @@ async def test_process_releases_dedup_claim_on_downstream_failure_so_retry_succe
         ),
         patch(
             "app.database._make_tenant_url",
-            MagicMock(return_value="postgresql+asyncpg://x/ap_acme"),
+            MagicMock(return_value="postgresql+asyncpg://x/feoh_acme"),
         ),
         patch("sqlalchemy.ext.asyncio.create_async_engine", MagicMock(return_value=engine)),
         patch("sqlalchemy.ext.asyncio.async_sessionmaker", MagicMock(return_value=lambda: session)),
@@ -419,7 +419,7 @@ async def test_process_releases_dedup_claim_on_downstream_failure_so_retry_succe
         ),
         patch(
             "app.database._make_tenant_url",
-            MagicMock(return_value="postgresql+asyncpg://x/ap_acme"),
+            MagicMock(return_value="postgresql+asyncpg://x/feoh_acme"),
         ),
         patch("sqlalchemy.ext.asyncio.create_async_engine", MagicMock(return_value=engine2)),
         patch(

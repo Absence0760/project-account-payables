@@ -381,12 +381,12 @@ no `sk_test_` key, no network. It's opt-in under the Compose `payments` profile:
 ```bash
 pnpm stripe:up     # stripe/stripe-mock on :12111
 # backend/.env:
-#   AP_STRIPE_API_BASE=http://localhost:12111/v1
+#   FEOH_STRIPE_API_BASE=http://localhost:12111/v1
 # org settings.payments: provider=stripe_treasury, api_key=sk_test_x, financial_account_id=fa_x
 pnpm stripe:down   # stop it
 ```
 
-`AP_STRIPE_API_BASE` (empty = live Stripe) repoints the adapter's API base; a
+`FEOH_STRIPE_API_BASE` (empty = live Stripe) repoints the adapter's API base; a
 per-config `api_base` overrides it. stripe-mock returns canned fixtures from
 Stripe's OpenAPI spec — it validates request shape + response parsing
 (`create_payment`, `get_payment_status`, `test_connection`), not stateful flows

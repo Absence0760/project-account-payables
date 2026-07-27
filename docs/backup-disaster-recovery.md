@@ -10,8 +10,8 @@ This is a SOC 2 prerequisite (`docs/soc2-readiness.md` § Backup, recovery, and 
 
 | | RTO (Recovery Time Objective) | RPO (Recovery Point Objective) |
 |---|---|---|
-| Control-plane DB (`account_payables`) | **4 hours** | **15 minutes** |
-| Tenant DB (`ap_<slug>`) | **4 hours** | **15 minutes** |
+| Control-plane DB (`feohledger`) | **4 hours** | **15 minutes** |
+| Tenant DB (`feoh_<slug>`) | **4 hours** | **15 minutes** |
 | S3 (invoice files) | **24 hours** | **0 minutes** (versioned, durable) |
 | Redis | n/a — transient | n/a |
 | Application code | **15 minutes** (re-deploy from main) | n/a |
@@ -28,7 +28,7 @@ Redis holds the JWT blocklist, MFA OTPs, SSO state, and signup rate-limit counte
 
 - **Automated snapshots** — daily, 7-day retention. Configured in Terraform (`infra/main.tf` `aws_db_instance.backup_retention_period = 7`).
 - **Point-in-time recovery (PITR)** — RDS keeps WAL for the retention period, so we can restore to any second within the last 7 days. Drives the 15-minute RPO.
-- **Manual snapshots before risky operations** — major migrations, destructive scripts, etc. Created via `aws rds create-db-snapshot --db-snapshot-identifier ap-prod-pre-<change>-<date>`.
+- **Manual snapshots before risky operations** — major migrations, destructive scripts, etc. Created via `aws rds create-db-snapshot --db-snapshot-identifier feoh-prod-pre-<change>-<date>`.
 - **Cross-region copy** — pending. Once we have customers in multiple regions, copy snapshots to a secondary region nightly.
 
 ### S3 (invoice files)
@@ -59,19 +59,19 @@ Redis holds the JWT blocklist, MFA OTPs, SSO state, and signup rate-limit counte
 2. **Don't roll back the migration.** Instead, restore the database to that point in time:
    ```bash
    aws rds restore-db-instance-to-point-in-time \
-     --source-db-instance-identifier ap-prod \
-     --target-db-instance-identifier ap-prod-restore-$(date +%s) \
+     --source-db-instance-identifier feoh-prod \
+     --target-db-instance-identifier feoh-prod-restore-$(date +%s) \
      --restore-time '2026-04-19T14:30:00Z'
    ```
 3. Validate the restore (row counts, sample records).
-4. **Switch the app over** — update `AP_DATABASE_URL` to the restored instance's endpoint and redeploy. Or rename DNS / RDS endpoints if available.
+4. **Switch the app over** — update `FEOH_DATABASE_URL` to the restored instance's endpoint and redeploy. Or rename DNS / RDS endpoints if available.
 5. Decommission the old instance after a 24-hour soak.
 
 ### Scenario B — RDS instance lost entirely
 
-1. List available automated snapshots: `aws rds describe-db-snapshots --db-instance-identifier ap-prod`.
-2. Restore the latest: `aws rds restore-db-instance-from-db-snapshot --db-instance-identifier ap-prod --db-snapshot-identifier <snap-id>`.
-3. Update `AP_DATABASE_URL` and redeploy.
+1. List available automated snapshots: `aws rds describe-db-snapshots --db-instance-identifier feoh-prod`.
+2. Restore the latest: `aws rds restore-db-instance-from-db-snapshot --db-instance-identifier feoh-prod --db-snapshot-identifier <snap-id>`.
+3. Update `FEOH_DATABASE_URL` and redeploy.
 4. Run `python scripts/migrate_all_tenants.py` against the restored instance to ensure schema is current.
 
 ### Scenario C — accidental S3 object deletion

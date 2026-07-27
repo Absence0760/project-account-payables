@@ -2,9 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 import 'package:pdfx/pdfx.dart';
 
-import 'package:ap_mobile/api/api_client.dart';
-import 'package:ap_mobile/config.dart';
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/api/api_client.dart';
+import 'package:feohledger_mobile/config.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
 
 /// Renders an uploaded invoice file (image or PDF) full-screen.
 ///

@@ -5,7 +5,7 @@ reuses them on future extractions for the same vendor.
 See backend/docs/ai-extraction.md § Learning from corrections for the
 design rationale.
 
-Tenant-scoped — lives in each `ap_<slug>` database alongside vendors and
+Tenant-scoped — lives in each `feoh_<slug>` database alongside vendors and
 invoices.
 """
 

@@ -9,8 +9,8 @@ import { API_BASE, authedTenantHeaders, expect } from '../fixtures/helpers';
  * port 12112; `pnpm erp:up`).
  *
  * The backend's committed .env.development points the adapters' base URLs
- * at the fake via AP_ERP_MERGE_API_BASE / AP_ERP_NETSUITE_API_BASE /
- * AP_ERP_D365_API_BASE / AP_ERP_D365_TOKEN_URL, so a normally-started dev
+ * at the fake via FEOH_ERP_MERGE_API_BASE / FEOH_ERP_NETSUITE_API_BASE /
+ * FEOH_ERP_D365_API_BASE / FEOH_ERP_D365_TOKEN_URL, so a normally-started dev
  * or CI backend talks to it with no per-run config. The specs only have to
  * flip the org's `settings.erp` to the adapter under test (and reset it to
  * null in afterAll — other suites assume no ERP configured).

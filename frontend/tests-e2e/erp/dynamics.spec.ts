@@ -22,8 +22,8 @@ import {
  * dynamics_365_bc adapter e2e — the REAL Dynamics 365 Business Central
  * adapter (backend/app/services/erp_adapters/dynamics_365_bc.py) against the
  * local fake ERP container (tools/fake-erp, `pnpm erp:up`, host port 12112).
- * The committed backend/.env.development points AP_ERP_D365_API_BASE and
- * AP_ERP_D365_TOKEN_URL at the fake — which is why this config deliberately
+ * The committed backend/.env.development points FEOH_ERP_D365_API_BASE and
+ * FEOH_ERP_D365_TOKEN_URL at the fake — which is why this config deliberately
  * OMITS `base_url`: the operator env override supplies the API base, so the
  * admin-config field (and its SSRF guard) is never consulted.
  *

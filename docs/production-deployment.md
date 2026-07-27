@@ -118,44 +118,44 @@ named tenant DB. Deployed by the `lambdas` job in `aws-deploy.yml`.
 
 ## Environment Configuration
 
-The FastAPI app uses `pydantic-settings` (`backend/app/config.py`) with the `AP_` prefix. **Every variable below MUST be prefixed with `AP_`** — pydantic-settings ignores unprefixed names and silently falls back to defaults.
+The FastAPI app uses `pydantic-settings` (`backend/app/config.py`) with the `FEOH_` prefix. **Every variable below MUST be prefixed with `FEOH_`** — pydantic-settings ignores unprefixed names and silently falls back to defaults.
 
 ```env
 # Database
-AP_DATABASE_URL=postgresql+asyncpg://user:pass@rds-host:5432/account_payables
-AP_TENANT_DB_PREFIX=ap_
+FEOH_DATABASE_URL=postgresql+asyncpg://user:pass@rds-host:5432/feohledger
+FEOH_TENANT_DB_PREFIX=feoh_
 
 # Auth — REQUIRED in production
-AP_SECRET_KEY=<generate via `openssl rand -hex 32`>
-AP_MFA_ENABLED=true
+FEOH_SECRET_KEY=<generate via `openssl rand -hex 32`>
+FEOH_MFA_ENABLED=true
 
 # S3 (use real S3, not MinIO)
-AP_S3_BUCKET=your-invoice-bucket
+FEOH_S3_BUCKET=your-invoice-bucket
 # Set the endpoint + static keys EMPTY to use real AWS S3 via the ambient
 # credential chain (task/instance role). The committed defaults point at
 # local MinIO, so merely omitting the vars keeps the localhost endpoint.
-AP_S3_ENDPOINT_URL=
-AP_S3_ACCESS_KEY=
-AP_S3_SECRET_KEY=
+FEOH_S3_ENDPOINT_URL=
+FEOH_S3_ACCESS_KEY=
+FEOH_S3_SECRET_KEY=
 
 # Dispatch — async via SQS in production
-AP_EXTRACTION_MODE=lambda
-AP_SQS_EXTRACTION_QUEUE_URL=https://sqs.region.amazonaws.com/account/extraction-queue
-AP_ERP_MODE=lambda
-AP_SQS_ERP_QUEUE_URL=https://sqs.region.amazonaws.com/account/erp-queue
-AP_AUDIT_MODE=lambda
-AP_SQS_AUDIT_QUEUE_URL=https://sqs.region.amazonaws.com/account/audit-queue
+FEOH_EXTRACTION_MODE=lambda
+FEOH_SQS_EXTRACTION_QUEUE_URL=https://sqs.region.amazonaws.com/account/extraction-queue
+FEOH_ERP_MODE=lambda
+FEOH_SQS_ERP_QUEUE_URL=https://sqs.region.amazonaws.com/account/erp-queue
+FEOH_AUDIT_MODE=lambda
+FEOH_SQS_AUDIT_QUEUE_URL=https://sqs.region.amazonaws.com/account/audit-queue
 
 # Redis — required for auth blocklist, MFA, SSO state
-AP_REDIS_URL=redis://elasticache-host:6379
+FEOH_REDIS_URL=redis://elasticache-host:6379
 
 # Email + signup
-AP_EMAIL_PROVIDER=ses
-AP_EMAIL_FROM=no-reply@yourcompany.com
-AP_PUBLIC_URL=https://app.yourcompany.com
-AP_TENANT_URL_TEMPLATE=https://{slug}.app.yourcompany.com
-AP_HCAPTCHA_SECRET=<from hCaptcha dashboard>
-AP_HCAPTCHA_SITEKEY=<from hCaptcha dashboard>
+FEOH_EMAIL_PROVIDER=ses
+FEOH_EMAIL_FROM=no-reply@feohledger.com
+FEOH_PUBLIC_URL=https://app.feohledger.com
+FEOH_TENANT_URL_TEMPLATE=https://{slug}.app.feohledger.com
+FEOH_HCAPTCHA_SECRET=<from hCaptcha dashboard>
+FEOH_HCAPTCHA_SITEKEY=<from hCaptcha dashboard>
 ```
 
 See `docs/environment.md` for the full var list including extraction, ERP, and card platform keys.

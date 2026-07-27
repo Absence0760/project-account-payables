@@ -1,6 +1,6 @@
 ---
 name: mobile-ui-polisher
-description: Redesigns a single screen or widget in the Flutter mobile app to project-account-payables' UI quality bar — Material 3 archetype fit, FilterChip rows, RefreshIndicator lists, KpiCard grids, Dismissible swipe actions, ListenableBuilder reuse, short date formatting. Knows the existing widget library and matches it. Edits files; does not commit. Invoked by /polish-ui (mobile target) or directly when the user asks to "make mobile screen X look better".
+description: Redesigns a single screen or widget in the Flutter mobile app to FeohLedger' UI quality bar — Material 3 archetype fit, FilterChip rows, RefreshIndicator lists, KpiCard grids, Dismissible swipe actions, ListenableBuilder reuse, short date formatting. Knows the existing widget library and matches it. Edits files; does not commit. Invoked by /polish-ui (mobile target) or directly when the user asks to "make mobile screen X look better".
 tools: Bash, Read, Edit, Write, Grep, Glob
 model: opus
 ---
@@ -62,7 +62,7 @@ If the screen already matches one of these archetypes, *enhance* it within that 
 
 - `prefer_single_quotes` — `'foo'`, never `"foo"`.
 - `require_trailing_commas` — every multi-line collection / param list ends with a trailing comma. `flutter format` enforces the resulting layout.
-- `always_use_package_imports` — `import 'package:ap_mobile/...';`, never relative imports.
+- `always_use_package_imports` — `import 'package:feohledger_mobile/...';`, never relative imports.
 - `sort_pub_dependencies` — `pubspec.yaml` deps alphabetized.
 - Run `dart format .` (or trust your editor) before reporting done.
 

@@ -10,13 +10,13 @@ This is a SOC 2 prerequisite (`docs/soc2-readiness.md` § Secrets management).
 
 | Secret | Where it lives | Cadence | Blast radius if leaked |
 |---|---|---|---|
-| `AP_SECRET_KEY` (JWT signing) | `backend/.env.sops` | **90 days** | Forge any user's JWT; full impersonation |
+| `FEOH_SECRET_KEY` (JWT signing) | `backend/.env.sops` | **90 days** | Forge any user's JWT; full impersonation |
 | AWS KMS key for SOPS | AWS KMS | **365 days (auto)** | Decrypt every encrypted secret in the repo |
 | RDS master password | AWS Secrets Manager | **90 days** | Full DB read/write |
-| `AP_ANTHROPIC_API_KEY` (platform Claude Vision) | `backend/.env.sops` | **180 days** | Anthropic billing fraud, prompt extraction abuse |
-| `AP_LITHIC_API_KEY` (virtual cards — platform) | `backend/.env.sops` | **180 days** | Issue cards on our account |
-| `AP_NIUM_CLIENT_*` (virtual cards — platform) | `backend/.env.sops` | **180 days** | Issue cards on our account |
-| `AP_HCAPTCHA_SECRET` (signup) | `backend/.env.sops` | **365 days** (or on suspected leak) | Bypass signup captcha |
+| `FEOH_ANTHROPIC_API_KEY` (platform Claude Vision) | `backend/.env.sops` | **180 days** | Anthropic billing fraud, prompt extraction abuse |
+| `FEOH_LITHIC_API_KEY` (virtual cards — platform) | `backend/.env.sops` | **180 days** | Issue cards on our account |
+| `FEOH_NIUM_CLIENT_*` (virtual cards — platform) | `backend/.env.sops` | **180 days** | Issue cards on our account |
+| `FEOH_HCAPTCHA_SECRET` (signup) | `backend/.env.sops` | **365 days** (or on suspected leak) | Bypass signup captcha |
 | AWS SES credentials (transactional email) | IAM role (preferred) or `backend/.env.sops` | **365 days** if static | Send email from our domain |
 | GitHub Actions OIDC role | AWS IAM role (no static keys) | n/a — short-lived | n/a |
 | Per-tenant SCIM bearer tokens | `Organization.settings.sso.scim_bearer_hash` (sha256) | **On request** by tenant admin via `POST /api/organization/sso/scim-token` | Read/write users on that one tenant |
@@ -31,7 +31,7 @@ This is a SOC 2 prerequisite (`docs/soc2-readiness.md` § Secrets management).
 
 ## Procedures
 
-### `AP_SECRET_KEY` (JWT signing key)
+### `FEOH_SECRET_KEY` (JWT signing key)
 
 The riskiest secret in the system — leaks let an attacker forge any user's session.
 
@@ -43,7 +43,7 @@ The riskiest secret in the system — leaks let an attacker forge any user's ses
    ```bash
    sops backend/.env.sops
    ```
-   Update `AP_SECRET_KEY` to the new value.
+   Update `FEOH_SECRET_KEY` to the new value.
 3. Deploy. **Every existing JWT becomes invalid immediately** — all users are forced to re-login. This is the intended behaviour.
 4. Record the rotation in the compliance vendor's evidence locker (date, who rotated, ticket if any).
 
@@ -55,15 +55,15 @@ The KMS key encrypts every secret in `backend/.env.sops` and `infra/terraform.tf
 
 **Auto-rotation** — preferred. AWS KMS rotates the key material annually with no operator action when the `EnableKeyRotation` flag is set:
 ```bash
-aws kms enable-key-rotation --key-id alias/ap-sops
-aws kms get-key-rotation-status --key-id alias/ap-sops
+aws kms enable-key-rotation --key-id alias/feohledger-sops
+aws kms get-key-rotation-status --key-id alias/feohledger-sops
 ```
 
 **Manual rotation to a brand-new key** — if the key needs to be replaced (compromised IAM principal, audit finding):
 1. Create a new key + alias:
    ```bash
    aws kms create-key --description 'AP SOPS rotation' --key-usage ENCRYPT_DECRYPT
-   aws kms create-alias --alias-name alias/ap-sops-new --target-key-id <new-key-id>
+   aws kms create-alias --alias-name alias/feohledger-sops-new --target-key-id <new-key-id>
    ```
 2. Update `.sops.yaml` to point at the new alias.
 3. Re-encrypt every SOPS file under the new key:
@@ -85,10 +85,10 @@ aws kms get-key-rotation-status --key-id alias/ap-sops
    ```
 2. Update via the AWS Console or CLI:
    ```bash
-   aws rds modify-db-instance --db-instance-identifier ap-prod \
+   aws rds modify-db-instance --db-instance-identifier feoh-prod \
      --master-user-password '<new>' --apply-immediately
    ```
-3. Update `AP_DATABASE_URL` in `backend/.env.sops`.
+3. Update `FEOH_DATABASE_URL` in `backend/.env.sops`.
 4. Deploy. Application reconnects with the new password.
 5. Rotate any other consumers (read replicas, BI tools).
 
@@ -117,7 +117,7 @@ Tenant admin updates the secret in their Okta/Entra app, then PATCHes `org.setti
 
 Every rotation must leave a paper trail:
 
-- **Code rotations** (`AP_SECRET_KEY`, third-party keys) — visible in git history because they touch `backend/.env.sops`. The rotator notes the secret name + date in the commit message (don't mention values).
+- **Code rotations** (`FEOH_SECRET_KEY`, third-party keys) — visible in git history because they touch `backend/.env.sops`. The rotator notes the secret name + date in the commit message (don't mention values).
 - **AWS rotations** (KMS, RDS) — CloudTrail captures the API call. Compliance vendor pulls it as evidence.
 - **Tenant rotations** (SCIM, OIDC) — application audit log writes a `tenant.scim_token_rotated` / `tenant.sso_secret_rotated` row (auth audit logging is on the SOC 2 prereq list — see `docs/soc2-readiness.md` § Logging).
 

@@ -164,7 +164,7 @@ abstract class AppLocalizations {
   /// No description provided for @shellAppName.
   ///
   /// In en, this message translates to:
-  /// **'Account Payables'**
+  /// **'FeohLedger'**
   String get shellAppName;
 
   /// No description provided for @commonSave.
@@ -1664,7 +1664,7 @@ abstract class AppLocalizations {
   /// No description provided for @loginAppName.
   ///
   /// In en, this message translates to:
-  /// **'Better AP'**
+  /// **'FeohLedger'**
   String get loginAppName;
 
   /// No description provided for @loginTagline.

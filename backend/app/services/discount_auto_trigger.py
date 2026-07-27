@@ -33,7 +33,7 @@ Only ``offered`` offers are touched, and accepting one moves it out of
 
 Mirrors the ``contract_renewal`` pattern: long-lived asyncio task started in
 ``main.lifespan``, fresh per-tenant engine, one tenant's failure logged but
-never halts the sweep. Disabled by default (``AP_DISCOUNT_OPTIMIZATION_ENABLED``).
+never halts the sweep. Disabled by default (``FEOH_DISCOUNT_OPTIMIZATION_ENABLED``).
 See ``backend/docs/dynamic-discounting.md``.
 """
 

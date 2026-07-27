@@ -7,7 +7,7 @@ Covers:
     the ``V1Invoice`` shape (money as a JSON string), pagination params, a
     ``servers`` entry, and ``info.version == "v1"``
   * ``GET /api/v1/openapi.json`` serves it and ``GET /api/v1/docs`` renders
-    Swagger UI — both gated by ``AP_PUBLIC_API_ENABLED`` (404 when off)
+    Swagger UI — both gated by ``FEOH_PUBLIC_API_ENABLED`` (404 when off)
 
 These are pure / app-level — no DB harness needed (the spec is generated from
 the route table, and the endpoints don't authenticate).

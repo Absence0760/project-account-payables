@@ -59,7 +59,7 @@ def _org(slug="acme", provider="modern_treasury"):
     return SimpleNamespace(
         id=uuid.uuid4(),
         slug=slug,
-        db_name=f"ap_{slug}",
+        db_name=f"feoh_{slug}",
         settings={"payments": {"provider": provider, "webhook_signing_secret": "s3cret"}},
     )
 

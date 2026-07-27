@@ -68,10 +68,10 @@ Things an auditor expects to see *in code or config*, not just in a policy doc. 
 | RBAC enforcement at the API layer | Done | `backend/app/api/deps.py` `require_roles()` + every router |
 | Segregation of duties (approver ≠ uploader) | Done | `backend/app/services/approval_chain.py::check_segregation` — default-on; opt-out per workflow via `require_segregation: false` |
 | Token revocation on logout (Redis blocklist) | Done | `backend/app/redis.py` |
-| Session timeout (JWT lifetime ≤ 30 min) | Done | `AP_ACCESS_TOKEN_EXPIRE_MINUTES` |
+| Session timeout (JWT lifetime ≤ 30 min) | Done | `FEOH_ACCESS_TOKEN_EXPIRE_MINUTES` |
 | Quarterly access reviews (auditor-friendly export) | Done | `backend/scripts/access_review.py` |
 | Forced logout on role change | Done | `app/api/admin.py` → `update_user` / `delete_user` call `services.session_management.revoke_user_sessions` on role change or deactivation |
-| Concurrent session limit | Done | Redis sorted-set per user (`active_jtis:<user_id>`) populated on login / MFA verify / SSO callback; oldest evicted via `AP_MAX_CONCURRENT_SESSIONS` (default 5) |
+| Concurrent session limit | Done | Redis sorted-set per user (`active_jtis:<user_id>`) populated on login / MFA verify / SSO callback; oldest evicted via `FEOH_MAX_CONCURRENT_SESSIONS` (default 5) |
 | SSO-only mode (disable password login when SSO is configured) | Pending | Org-settings flag; gate `/auth/login` |
 
 ### Encryption
@@ -79,7 +79,7 @@ Things an auditor expects to see *in code or config*, not just in a policy doc. 
 | Control | Status | Where it lives |
 |---|---|---|
 | TLS in transit (frontend + API) | Done | CloudFront/ALB (`infra/`) + HSTS middleware (`backend/app/main.py` `SecurityHeadersMiddleware`). Post-deploy smoke test: `backend/scripts/verify_tls.py` |
-| HSTS + security response headers | Done | `backend/app/main.py` `SecurityHeadersMiddleware` — HSTS gated on `AP_HSTS_ENABLED`; `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` always set. Tests: `backend/tests/test_security_headers.py` |
+| HSTS + security response headers | Done | `backend/app/main.py` `SecurityHeadersMiddleware` — HSTS gated on `FEOH_HSTS_ENABLED`; `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` always set. Tests: `backend/tests/test_security_headers.py` |
 | Encryption at rest — RDS | Done in prod | RDS storage encryption flag (Terraform) |
 | Encryption at rest — S3 | Done | `infra/s3.tf` — SSE-KMS via the customer-managed key from `infra/kms.tf` |
 | Encryption at rest — secrets | Done | SOPS + AWS KMS (`backend/.env.sops`) |
@@ -194,7 +194,7 @@ Renewals (Type II + pen test annually) are around **$25–40K/yr** thereafter.
   enabled at bucket creation — the invoice-files and audit-logs buckets in
   `infra/s3.tf` are net-new. For any pre-existing bucket: create a new
   bucket with `object_lock_enabled = true`, `aws s3 sync` the contents,
-  switch `AP_S3_BUCKET` to the new name, delete the old bucket once
+  switch `FEOH_S3_BUCKET` to the new name, delete the old bucket once
   retention on the new one is verified.
 
 **Pending — process work** (founder, not engineer):

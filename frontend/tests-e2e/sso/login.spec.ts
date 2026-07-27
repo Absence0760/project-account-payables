@@ -31,7 +31,7 @@ test.describe('SSO login via Keycloak', () => {
 		// consent-banner.spec.ts; mirrors vendors/consolidation-merge.spec.ts.
 		await page.addInitScript(() => {
 			try {
-				localStorage.setItem('ap_consent_choice', 'accepted');
+				localStorage.setItem('feoh_consent_choice', 'accepted');
 			} catch {
 				/* about:blank — ignore */
 			}
@@ -53,7 +53,7 @@ test.describe('SSO login via Keycloak', () => {
 		await page.locator('button.sso-btn').click();
 
 		// Keycloak's hosted login form.
-		await page.waitForURL(/\/realms\/account-payables\/protocol\/openid-connect\/auth/, {
+		await page.waitForURL(/\/realms\/feohledger\/protocol\/openid-connect\/auth/, {
 			timeout: 15_000
 		});
 		await page.locator('#username').fill('demo@acme.com');

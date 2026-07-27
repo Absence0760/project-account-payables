@@ -442,7 +442,7 @@ async def notify_vendor_of_card(
 
     plaintext_token = await mint_reveal_token(db, card)
 
-    # `public_url_template` is the same `AP_TENANT_URL_TEMPLATE` the
+    # `public_url_template` is the same `FEOH_TENANT_URL_TEMPLATE` the
     # signup flow uses ("https://{slug}.app.com"). When empty, we skip
     # the email — nothing useful to point the vendor at.
     if not public_url_template:

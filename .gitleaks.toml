@@ -1,4 +1,4 @@
-# Gitleaks configuration for project-account-payables.
+# Gitleaks configuration for FeohLedger.
 #
 # Inherits every rule from the upstream default config and layers a
 # project-specific allowlist on top. The allowlist below covers test
@@ -65,6 +65,14 @@ regexes = [
     # so a real UUID-shaped secret elsewhere still trips the scanner.
     '''2f8c1f3e-4a6b-4c2d-9e1f-7b3a5c9d0e11''',
     '''9a1d0c77-1111-4222-8333-444455556666''',
+    # FEOH_TEAMS_SECURITY_TOKEN's committed local-dev value in
+    # backend/.env.development. It is base64 of the literal string
+    # "dev-teams-security-token" — Teams verifies its HMAC with the
+    # base64-DECODED token, so unlike every sibling dev value (plain
+    # `dev-*` text) this one has to be base64, and that encoding is what
+    # pushes it over generic-api-key's entropy threshold. Allowlisted as an
+    # exact literal, so a real Teams token in this variable still trips.
+    '''ZGV2LXRlYW1zLXNlY3VyaXR5LXRva2Vu''',
 ]
 
 # Historical findings the regexes above don't cleanly cover (a specific

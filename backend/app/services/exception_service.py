@@ -14,7 +14,7 @@ What it does, in order:
   3. fires a **best-effort** ``exception.raised`` emit — wrapped so a webhook
      failure can NEVER break exception creation or the invoice mutation that
      triggered it (same contract as the ``transition_invoice`` emit hook). The
-     emit itself is a silent no-op when ``AP_WEBHOOKS_ENABLED`` is off.
+     emit itself is a silent no-op when ``FEOH_WEBHOOKS_ENABLED`` is off.
 
 Callers keep their own dedupe-precheck (each has a different uniqueness rule —
 ``_ensure_exception`` dedupes on ``(invoice, type, open/escalated)``; Positive

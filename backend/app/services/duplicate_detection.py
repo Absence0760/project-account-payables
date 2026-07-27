@@ -5,7 +5,7 @@ matches on exact `vendor_name + invoice_number`). Catches near-duplicates
 where text overlap is very high but strings differ slightly — re-uploads,
 resends from the same vendor with one field changed, OCR-whitespace drift.
 
-The threshold (AP_DUPLICATE_SIMILARITY_THRESHOLD, default 0.95) is
+The threshold (FEOH_DUPLICATE_SIMILARITY_THRESHOLD, default 0.95) is
 intentionally tighter than the RAG-retrieval threshold. RAG wants
 semantically-related-but-distinct invoices for few-shot context;
 duplicate detection wants near-identical invoices. A recurring monthly

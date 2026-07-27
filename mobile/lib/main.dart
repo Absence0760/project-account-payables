@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/screens/home_screen.dart';
-import 'package:ap_mobile/screens/login_screen.dart';
-import 'package:ap_mobile/services/biometric_service.dart';
-import 'package:ap_mobile/services/push_service.dart';
-import 'package:ap_mobile/stores/auth_store.dart';
-import 'package:ap_mobile/stores/locale_store.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/screens/home_screen.dart';
+import 'package:feohledger_mobile/screens/login_screen.dart';
+import 'package:feohledger_mobile/services/biometric_service.dart';
+import 'package:feohledger_mobile/services/push_service.dart';
+import 'package:feohledger_mobile/stores/auth_store.dart';
+import 'package:feohledger_mobile/stores/locale_store.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -28,7 +28,7 @@ class APApp extends StatelessWidget {
       listenable: LocaleStore.instance,
       builder: (context, _) {
         return MaterialApp(
-          title: 'Better AP',
+          title: 'FeohLedger',
           debugShowCheckedModeBanner: false,
           locale: LocaleStore.instance.locale,
           localizationsDelegates: AppLocalizations.localizationsDelegates,

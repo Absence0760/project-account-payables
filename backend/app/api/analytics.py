@@ -595,11 +595,11 @@ async def get_cfo_analytics(
             )
         )
         cogs_m = Decimal(str(month_spend_q.scalar() or 0))
-        ap_m = Decimal(str(month_ap_q.scalar() or 0))
+        feoh_m = Decimal(str(month_ap_q.scalar() or 0))
         monthly_dpo_rows.append(
             {
                 "month": month_start.strftime("%Y-%m"),
-                "dpo": compute_dpo(accounts_payable=ap_m, cogs=cogs_m, period_days=30),
+                "dpo": compute_dpo(accounts_payable=feoh_m, cogs=cogs_m, period_days=30),
             }
         )
         cursor = month_start
@@ -1223,7 +1223,7 @@ async def drill_dpo(
                 entity_id,
             )
         )
-        ap_q = await db.execute(
+        feoh_q = await db.execute(
             apply_entity_scope(
                 select(func.coalesce(func.sum(Invoice.amount), 0)).where(
                     Invoice.invoice_date <= month_end,
@@ -1242,7 +1242,7 @@ async def drill_dpo(
             )
         )
         cogs = Decimal(str(cogs_q.scalar() or 0))
-        ap = Decimal(str(ap_q.scalar() or 0))
+        ap = Decimal(str(feoh_q.scalar() or 0))
         dpo_val = compute_dpo(accounts_payable=ap, cogs=cogs, period_days=30)
         rows.append(
             {

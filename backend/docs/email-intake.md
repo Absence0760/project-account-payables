@@ -74,18 +74,18 @@ Recommended: **SES** if on AWS, **Mailgun** otherwise.
 
 You need a domain where the MX records can point at the email provider.
 Options:
-- Subdomain of your app domain: `ap.yourcompany.com`. Keeps the primary
+- Subdomain of your app domain: `ap.feohledger.com`. Keeps the primary
   domain's reputation isolated from email-intake's spam signals.
-- Dedicated domain: `yourcompany-invoices.com`. More work to manage but
+- Dedicated domain: `feohledger-invoices.com`. More work to manage but
   easier to sunset if a provider goes sideways.
 
-Set `AP_EMAIL_INTAKE_DOMAIN=ap.yourcompany.com` in the backend env.
+Set `FEOH_EMAIL_INTAKE_DOMAIN=ap.feohledger.com` in the backend env.
 
 ### 3. Point MX at the provider
 
 **SES:**
 ```
-ap.yourcompany.com.  MX 10 inbound-smtp.us-east-1.amazonaws.com.
+ap.feohledger.com.  MX 10 inbound-smtp.us-east-1.amazonaws.com.
 ```
 Then create a receipt rule in SES console → store to S3 *or* publish to
 SNS. The SNS path is the one the `ses` adapter understands. Subscribe a
@@ -94,12 +94,12 @@ topic.
 
 **Mailgun:**
 ```
-ap.yourcompany.com.  MX 10 mxa.mailgun.org.
-ap.yourcompany.com.  MX 10 mxb.mailgun.org.
+ap.feohledger.com.  MX 10 mxa.mailgun.org.
+ap.feohledger.com.  MX 10 mxb.mailgun.org.
 ```
 Then create a Route in the Mailgun console:
-- Match recipient: `.*@ap.yourcompany.com` (regex route)
-- Action: `forward("https://api.yourcompany.com/api/email-intake/inbound/mailgun")`
+- Match recipient: `.*@ap.feohledger.com` (regex route)
+- Action: `forward("https://api.feohledger.com/api/email-intake/inbound/mailgun")`
 - Store and notify: unchecked (we don't need the S3 copy)
 
 ### 4. Set the signing secret
@@ -113,12 +113,12 @@ openssl rand -hex 32 | tee /dev/stderr | head -c 64
 ```
 
 ```
-AP_EMAIL_INTAKE_SIGNING_SECRET=<the-hex-string>
+FEOH_EMAIL_INTAKE_SIGNING_SECRET=<the-hex-string>
 ```
 
 For Mailgun, their built-in `signature` parameter is HMAC-SHA256 of
 `timestamp + token` using your API key — **not** the same as our check.
-Easiest: use the Mailgun webhook signing key as `AP_EMAIL_INTAKE_SIGNING_SECRET`
+Easiest: use the Mailgun webhook signing key as `FEOH_EMAIL_INTAKE_SIGNING_SECRET`
 and verify via the provider's standard signature header
 (`X-Mailgun-Signature-V2`).
 
@@ -136,7 +136,7 @@ welcome flow. For existing tenants, an admin can hit
 
 The tenant's admin sees the address in Organization Settings and tells
 their vendors:
-> "Send invoices to `invoices+a1b2c3d4@ap.yourcompany.com`."
+> "Send invoices to `invoices+a1b2c3d4@ap.feohledger.com`."
 
 ### 6. Tell the tenant their address is sensitive
 

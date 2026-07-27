@@ -140,7 +140,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: account_payables
+          POSTGRES_DB: feohledger
         ports:
           - 5432:5432
         options: >-
@@ -213,20 +213,20 @@ jobs:
 
       - name: Run tests (shard ${{ matrix.shard }}/4)
         env:
-          AP_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/account_payables
-          AP_REDIS_URL: redis://localhost:6379
-          AP_SECRET_KEY: ci-test-secret
+          FEOH_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/feohledger
+          FEOH_REDIS_URL: redis://localhost:6379
+          FEOH_SECRET_KEY: ci-test-secret
           # MinIO started above; the storage layer defaults already match these,
           # but pin them explicitly alongside the other service URLs.
-          AP_S3_ENDPOINT_URL: http://localhost:9000
-          AP_S3_ACCESS_KEY: minioadmin
-          AP_S3_SECRET_KEY: minioadmin
-          AP_S3_BUCKET: invoices
+          FEOH_S3_ENDPOINT_URL: http://localhost:9000
+          FEOH_S3_ACCESS_KEY: minioadmin
+          FEOH_S3_SECRET_KEY: minioadmin
+          FEOH_S3_BUCKET: invoices
           # Postgres is a declared, health-checked service in this job — so the
           # realdb fixture must run, not silently skip. With this set, an
           # unreachable DB hard-fails instead of dropping the tenant-isolation /
           # token-rotation coverage while the job stays green.
-          AP_REQUIRE_REALDB: "1"
+          FEOH_REQUIRE_REALDB: "1"
         # pytest-split partitions the suite into 4 deterministic slices; this
         # shard runs slice `matrix.shard`. See the job-level comment for balance.
         run: pytest --splits 4 --group ${{ matrix.shard }}
@@ -344,7 +344,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: account_payables
+          POSTGRES_DB: feohledger
           # Point Postgres at a tmpfs-backed data dir. `/dev/shm` is
           # tmpfs on every Linux runner, so the entire DB lives in
           # RAM for the lifetime of the job. Seed runs faster, and
@@ -381,19 +381,19 @@ jobs:
           --health-retries=5
 
     env:
-      AP_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/account_payables
-      AP_REDIS_URL: redis://localhost:6379
-      AP_SECRET_KEY: ci-test-secret
-      AP_DEBUG: "true"
-      AP_PUBLIC_URL: http://localhost:7777
-      AP_TENANT_URL_TEMPLATE: "http://{slug}.localhost:7777"
+      FEOH_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/feohledger
+      FEOH_REDIS_URL: redis://localhost:6379
+      FEOH_SECRET_KEY: ci-test-secret
+      FEOH_DEBUG: "true"
+      FEOH_PUBLIC_URL: http://localhost:7777
+      FEOH_TENANT_URL_TEMPLATE: "http://{slug}.localhost:7777"
       # Within a shard, the storage-state preload plus the suite's many
       # sequential sign-ins all hit that shard's backend from the same
       # loopback IP. The Redis-backed `auth_login` limit (10/min/IP)
       # would 429 the preload before the suite finished signing in. The
       # same goes for the `auth_mfa_*` and `portal_auth_login` buckets.
       # Disable rate limiting for the duration of the e2e run.
-      AP_RATE_LIMIT_ENABLED: "false"
+      FEOH_RATE_LIMIT_ENABLED: "false"
       # The e2e suite signs in fresh JWTs many times per worker
       # (CFO + clerk role-switching tests, the storage-state preload,
       # `signInAndWait` calls). The product default of 5 concurrent
@@ -402,24 +402,24 @@ jobs:
       # mid-run and every subsequent API call returns 401. Bump
       # generously for CI; the prod cap stays at 5 because no env
       # sets this var there.
-      AP_MAX_CONCURRENT_SESSIONS: "100"
+      FEOH_MAX_CONCURRENT_SESSIONS: "100"
       # Each shard runs `workers=1`, so it only needs one e2e tenant
       # (e2e1). Cuts seed time per shard from ~6 lean-tenant seeds
       # down to 3 (acme + techflow + e2e1).
-      AP_E2E_TENANT_COUNT: "1"
+      FEOH_E2E_TENANT_COUNT: "1"
       # Tell Playwright's webServer block to swap `pnpm dev` for
       # `vite preview --port 7777` — pre-built static bundle, no
       # HMR compile-on-demand, sub-second cold start. Read in
       # `frontend/tests-e2e/playwright.config.ts`.
-      AP_E2E_USE_PREVIEW: "true"
+      FEOH_E2E_USE_PREVIEW: "true"
       # MinIO started via `docker run` in a step below (can't be a
       # `services:` container — needs the `server /data` argument).
       # The positive-pay and other storage-backed e2e specs write real
       # S3 objects; without this the upload returns 500.
-      AP_S3_ENDPOINT_URL: http://localhost:9000
-      AP_S3_ACCESS_KEY: minioadmin
-      AP_S3_SECRET_KEY: minioadmin
-      AP_S3_BUCKET: invoices
+      FEOH_S3_ENDPOINT_URL: http://localhost:9000
+      FEOH_S3_ACCESS_KEY: minioadmin
+      FEOH_S3_SECRET_KEY: minioadmin
+      FEOH_S3_BUCKET: invoices
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -598,7 +598,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: account_payables
+          POSTGRES_DB: feohledger
           PGDATA: /dev/shm/pgdata
         ports:
           - 5432:5432
@@ -619,29 +619,29 @@ jobs:
           --health-retries=5
 
     env:
-      AP_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/account_payables
-      AP_REDIS_URL: redis://localhost:6379
-      AP_SECRET_KEY: ci-test-secret
-      AP_DEBUG: "true"
-      AP_PUBLIC_URL: http://localhost:7777
-      AP_TENANT_URL_TEMPLATE: "http://{slug}.localhost:7777"
-      AP_RATE_LIMIT_ENABLED: "false"
-      AP_MAX_CONCURRENT_SESSIONS: "100"
-      AP_E2E_TENANT_COUNT: "1"
-      AP_E2E_USE_PREVIEW: "true"
+      FEOH_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/feohledger
+      FEOH_REDIS_URL: redis://localhost:6379
+      FEOH_SECRET_KEY: ci-test-secret
+      FEOH_DEBUG: "true"
+      FEOH_PUBLIC_URL: http://localhost:7777
+      FEOH_TENANT_URL_TEMPLATE: "http://{slug}.localhost:7777"
+      FEOH_RATE_LIMIT_ENABLED: "false"
+      FEOH_MAX_CONCURRENT_SESSIONS: "100"
+      FEOH_E2E_TENANT_COUNT: "1"
+      FEOH_E2E_USE_PREVIEW: "true"
       # Route email at Mailpit (smtp adapter), the AWS clients at LocalStack, and
       # the Stripe adapter at stripe-mock. Harmless to the rest of the backend:
       # audit shipping is off by default, dispatch stays in-process (local), and
       # payment e2e uses the mock provider.
-      AP_EMAIL_PROVIDER: smtp
-      AP_SMTP_HOST: localhost
-      AP_SMTP_PORT: "1025"
-      AP_AWS_ENDPOINT_URL: http://localhost:4566
+      FEOH_EMAIL_PROVIDER: smtp
+      FEOH_SMTP_HOST: localhost
+      FEOH_SMTP_PORT: "1025"
+      FEOH_AWS_ENDPOINT_URL: http://localhost:4566
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
       AWS_DEFAULT_REGION: us-east-1
-      AP_AUDIT_SHIPPING_S3_BUCKET: ap-audit-worm
-      AP_STRIPE_API_BASE: http://localhost:12111/v1
+      FEOH_AUDIT_SHIPPING_S3_BUCKET: feoh-audit-worm
+      FEOH_STRIPE_API_BASE: http://localhost:12111/v1
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -687,14 +687,14 @@ jobs:
         run: |
           set -euo pipefail
           wait_http() { for i in $(seq 1 60); do curl -fsS "$1" >/dev/null 2>&1 && { echo "$2 up"; return 0; }; sleep 2; done; echo "::error::$2 not ready"; return 1; }
-          wait_http "http://localhost:8088/realms/account-payables/.well-known/openid-configuration" keycloak
+          wait_http "http://localhost:8088/realms/feohledger/.well-known/openid-configuration" keycloak
           wait_http "http://localhost:8025/api/v1/info" mailpit
           wait_http "http://localhost:4566/_localstack/health" localstack
           # stripe-mock 404s on bare /v1 but answers a real path
           for i in $(seq 1 30); do curl -s -o /dev/null "http://localhost:12111/v1/treasury/financial_accounts" -H "Authorization: Bearer sk_test_x" && { echo "stripe-mock up"; break; }; sleep 2; done
           # LocalStack init (queues / bucket / log group / SES identity) lands a
           # moment after health — poll for the object-lock bucket.
-          for i in $(seq 1 30); do docker compose exec -T localstack awslocal s3 ls s3://ap-audit-worm >/dev/null 2>&1 && { echo "localstack resources ready"; break; }; sleep 2; done
+          for i in $(seq 1 30); do docker compose exec -T localstack awslocal s3 ls s3://feoh-audit-worm >/dev/null 2>&1 && { echo "localstack resources ready"; break; }; sleep 2; done
 
       - name: Seed database (lean)
         working-directory: backend
@@ -748,7 +748,7 @@ jobs:
           # Keycloak + Mailpit are started and readiness-waited above, so the
           # SSO/email specs must run — a skip here would mean the service came
           # up unusable yet the job stays green. Force a hard failure instead.
-          AP_REQUIRE_INTEGRATION: "1"
+          FEOH_REQUIRE_INTEGRATION: "1"
         run: pnpm exec playwright test --config=tests-e2e/playwright.config.ts sso/ email/ scim/
 
       # SAML shares Keycloak + the acme tenant with OIDC; seeding it rewrites
@@ -763,18 +763,18 @@ jobs:
         env:
           PUBLIC_API_URL: http://localhost:8000
           PLAYWRIGHT_WORKERS: "1"
-          AP_REQUIRE_INTEGRATION: "1"
+          FEOH_REQUIRE_INTEGRATION: "1"
         run: pnpm exec playwright test --config=tests-e2e/playwright.config.ts saml/
 
       - name: Run service integration tests (LocalStack + stripe-mock)
         working-directory: backend
-        # AP_REQUIRE_INTEGRATION turns an unreachable service from a silent
+        # FEOH_REQUIRE_INTEGRATION turns an unreachable service from a silent
         # skip into a hard failure — this job started both containers on
         # purpose, so a skip here would mean the readiness wait passed but the
         # service still isn't usable, and we must not stay green on dropped
         # coverage.
         env:
-          AP_REQUIRE_INTEGRATION: "1"
+          FEOH_REQUIRE_INTEGRATION: "1"
         run: python -m pytest tests/test_localstack_integration.py tests/test_stripe_mock_integration.py -v
 
       - name: Upload Playwright report on failure
@@ -799,8 +799,8 @@ jobs:
   # Modeled on service-e2e above, minus the IdP/mail/AWS/stripe stack it
   # doesn't need (and no MinIO — the erp specs never touch storage). The
   # backend's committed .env.development already points the adapters at the
-  # fake (AP_ERP_MERGE_API_BASE / AP_ERP_NETSUITE_API_BASE /
-  # AP_ERP_D365_API_BASE / AP_ERP_D365_TOKEN_URL), and `python main.py`
+  # fake (FEOH_ERP_MERGE_API_BASE / FEOH_ERP_NETSUITE_API_BASE /
+  # FEOH_ERP_D365_API_BASE / FEOH_ERP_D365_TOKEN_URL), and `python main.py`
   # loads that file — so no extra ERP env is set here. Single runner, not
   # sharded: the suite is three small spec files.
   erp-e2e:
@@ -816,7 +816,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: account_payables
+          POSTGRES_DB: feohledger
           PGDATA: /dev/shm/pgdata
         ports:
           - 5432:5432
@@ -837,16 +837,16 @@ jobs:
           --health-retries=5
 
     env:
-      AP_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/account_payables
-      AP_REDIS_URL: redis://localhost:6379
-      AP_SECRET_KEY: ci-test-secret
-      AP_DEBUG: "true"
-      AP_PUBLIC_URL: http://localhost:7777
-      AP_TENANT_URL_TEMPLATE: "http://{slug}.localhost:7777"
-      AP_RATE_LIMIT_ENABLED: "false"
-      AP_MAX_CONCURRENT_SESSIONS: "100"
-      AP_E2E_TENANT_COUNT: "1"
-      AP_E2E_USE_PREVIEW: "true"
+      FEOH_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/feohledger
+      FEOH_REDIS_URL: redis://localhost:6379
+      FEOH_SECRET_KEY: ci-test-secret
+      FEOH_DEBUG: "true"
+      FEOH_PUBLIC_URL: http://localhost:7777
+      FEOH_TENANT_URL_TEMPLATE: "http://{slug}.localhost:7777"
+      FEOH_RATE_LIMIT_ENABLED: "false"
+      FEOH_MAX_CONCURRENT_SESSIONS: "100"
+      FEOH_E2E_TENANT_COUNT: "1"
+      FEOH_E2E_USE_PREVIEW: "true"
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -944,7 +944,7 @@ jobs:
           # fake-erp is started and readiness-waited above, so the erp specs
           # must run — a skip here would mean the container came up unusable
           # yet the job stays green. Force a hard failure instead.
-          AP_REQUIRE_INTEGRATION: "1"
+          FEOH_REQUIRE_INTEGRATION: "1"
         run: pnpm exec playwright test --config=tests-e2e/playwright.config.ts erp/
 
       - name: Upload Playwright report on failure

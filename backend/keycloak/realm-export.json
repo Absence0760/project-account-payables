@@ -1,14 +1,14 @@
 {
-  "realm": "account-payables",
+  "realm": "feohledger",
   "enabled": true,
-  "displayName": "Account Payables (local dev IdP)",
+  "displayName": "FeohLedger (local dev IdP)",
   "loginWithEmailAllowed": true,
   "registrationEmailAsUsername": true,
   "sslRequired": "none",
   "clients": [
     {
-      "clientId": "account-payables-app",
-      "name": "Account Payables (local dev)",
+      "clientId": "feohledger-app",
+      "name": "FeohLedger (local dev)",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,
@@ -40,7 +40,7 @@
     },
     {
       "clientId": "http://localhost:8000/api/auth/saml/metadata",
-      "name": "Account Payables SAML (local dev)",
+      "name": "FeohLedger SAML (local dev)",
       "description": "Shared local SAML SP. One client serves every tenant; the backend recovers the tenant from the server-minted RelayState (not the assertion), so the SP entityId + ACS are shared. See docs/local-sso-saml.md.",
       "enabled": true,
       "protocol": "saml",

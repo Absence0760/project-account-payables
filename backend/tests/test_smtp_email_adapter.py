@@ -80,7 +80,7 @@ def test_send_connects_and_sends_mime(fake_smtp):
     # White-label: the adapter brands the From display name. With no brand on the
     # message it uses the platform-default product name; the deliverable address
     # is unchanged. (Branded-message coverage lives in tests/test_branding.py.)
-    assert mime["From"] == "Accounts Payable <no-reply@acme.test>"
+    assert mime["From"] == "FeohLedger <no-reply@acme.test>"
     assert mime["Subject"] == "Welcome"
     # text + html alternative both present
     assert mime.is_multipart()

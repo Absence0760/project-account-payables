@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
-import 'package:ap_mobile/screens/notifications_screen.dart';
-import 'package:ap_mobile/stores/notification_store.dart';
+import 'package:feohledger_mobile/screens/notifications_screen.dart';
+import 'package:feohledger_mobile/stores/notification_store.dart';
 
 /// App-bar bell that opens the notification center and shows the live unread
 /// count as a [Badge]. Drop it into any screen's `AppBar.actions`. Refreshes

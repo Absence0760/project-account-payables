@@ -61,7 +61,7 @@ def build_setup_request_xml(
         f"<From><Credential><Identity>{identity}</Identity></Credential></From>"
         "<Sender>"
         f"<Credential><Identity>{identity}</Identity>{secret_block}</Credential>"
-        "<UserAgent>project-account-payables</UserAgent>"
+        "<UserAgent>FeohLedger</UserAgent>"
         "</Sender>"
         "</Header>"
         "<Request>"

@@ -57,7 +57,7 @@ optimizer, the auto-capture sweep, and the per-invoice ROI endpoint all build
 on this one module so the economics agree everywhere.
 
 Cost of capital: per-org `Organization.settings.discounting.cost_of_capital_pct`
-→ falls back to `AP_DISCOUNT_COST_OF_CAPITAL_PCT` (default 8.0).
+→ falls back to `FEOH_DISCOUNT_COST_OF_CAPITAL_PCT` (default 8.0).
 
 ## Services
 
@@ -66,7 +66,7 @@ Cost of capital: per-org `Organization.settings.discounting.cost_of_capital_pct`
 | `discount_roi.py` | annualized-return primitive (above) |
 | `discount_offers.py` | tier normalization/selection (`best_tier_for_date`, `select_tier` / `select_tier_for_date`), savings math, lifecycle mutators (`accept_offer` / `decline_offer` / `mark_captured` / `expire_if_past`), and `build_bulk_offer` (sum a vendor's open balances into a vendor-scoped offer). Pure — never commits |
 | `discount_optimizer.py` | `optimize(opportunities, cash_budget, cost_of_capital_pct, today)` — scores each opportunity, ranks by APR desc (tie-break savings, then id), and **greedily** selects the highest-yield `worthwhile` + still-capturable ones until the cash budget is exhausted (capture vs. cash preservation). `cash_budget=None` selects every worthwhile one. Pure |
-| `discount_auto_trigger.py` | background sweep — auto-accepts open offers whose ROI clears `AP_DISCOUNT_AUTO_CAPTURE_ROI_THRESHOLD`. Mirrors `contract_renewal` (per-tenant fan-out, fresh engine, one failure never halts the sweep). Also the sole place `expire_if_past` runs — flips an `offered` row whose `valid_until` has passed to `expired` before it's ever considered for auto-accept. **Money-path boundary: only flags `offered → accepted`; never creates a `Payment`/`PaymentRun`** — actual funding still flows through the CFO-gated payment run. The status guard is the dedupe |
+| `discount_auto_trigger.py` | background sweep — auto-accepts open offers whose ROI clears `FEOH_DISCOUNT_AUTO_CAPTURE_ROI_THRESHOLD`. Mirrors `contract_renewal` (per-tenant fan-out, fresh engine, one failure never halts the sweep). Also the sole place `expire_if_past` runs — flips an `offered` row whose `valid_until` has passed to `expired` before it's ever considered for auto-accept. **Money-path boundary: only flags `offered → accepted`; never creates a `Payment`/`PaymentRun`** — actual funding still flows through the CFO-gated payment run. The status guard is the dedupe |
 
 **Tier window is measured from `valid_from`, not from today.** Every call site that resolves a tier — `best_tier_for_date` (best-tier-today) and `select_tier_for_date` (a caller-named tier, e.g. the accept endpoints' `tier_days`) — takes an optional `reference_date` that should be the offer's `valid_from` (when it was actually extended). A tier `{"days": N}`'s real deadline is `valid_from + N days`; omitting `reference_date` (or passing `None`) silently measures every deadline from "today" instead, which makes every tier look perpetually achievable regardless of how long the offer has been open — the exact bug in issue #124. `select_tier` alone (no `_for_date` suffix) has **no date check at all**; only use it when the caller has already verified the tier's window separately.
 
@@ -122,14 +122,14 @@ never 403). Audit rows are `discount_offer.accepted_by_vendor` /
 control-plane user). No migration — the `DiscountOffer` table already exists.
 See `supplier-portal.md` § Early-payment discount offers.
 
-## Config (`AP_` env vars)
+## Config (`FEOH_` env vars)
 
 | Var | Default | Purpose |
 |-----|---------|---------|
-| `AP_DISCOUNT_OPTIMIZATION_ENABLED` | `false` | master switch for the auto-capture background sweep — keep `false` in local dev, flip on in deployed envs |
-| `AP_DISCOUNT_OPTIMIZATION_INTERVAL_SECONDS` | `3600` | sweep interval |
-| `AP_DISCOUNT_AUTO_CAPTURE_ROI_THRESHOLD` | `12.0` | annualized return (APR %) an offer must clear for the sweep to auto-accept it |
-| `AP_DISCOUNT_COST_OF_CAPITAL_PCT` | `8.0` | platform-default annual cost of capital; per-org override `settings.discounting.cost_of_capital_pct` |
+| `FEOH_DISCOUNT_OPTIMIZATION_ENABLED` | `false` | master switch for the auto-capture background sweep — keep `false` in local dev, flip on in deployed envs |
+| `FEOH_DISCOUNT_OPTIMIZATION_INTERVAL_SECONDS` | `3600` | sweep interval |
+| `FEOH_DISCOUNT_AUTO_CAPTURE_ROI_THRESHOLD` | `12.0` | annualized return (APR %) an offer must clear for the sweep to auto-accept it |
+| `FEOH_DISCOUNT_COST_OF_CAPITAL_PCT` | `8.0` | platform-default annual cost of capital; per-org override `settings.discounting.cost_of_capital_pct` |
 
 The ROI calculator, offer lifecycle, optimizer, and dashboard run
 unconditionally; only the *auto-accept sweep* is gated (and it never moves

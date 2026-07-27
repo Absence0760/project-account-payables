@@ -26,7 +26,7 @@ import pytest
 
 from app.services import erp_lambda
 
-BASE_URL = "postgresql+asyncpg://u:p@host:5432/account_payables"
+BASE_URL = "postgresql+asyncpg://u:p@host:5432/feohledger"
 
 
 def _body(**overrides) -> dict:
@@ -99,7 +99,7 @@ async def test_process_message_routes_to_tenant_db_and_sends():
     invoice = SimpleNamespace(id=uuid.UUID(body["invoice_id"]))
     erp_cfg = {"type": "netsuite", "integration_method": "direct", "account_id": "ACCT"}
     org = SimpleNamespace(
-        id=uuid.UUID(body["org_id"]), db_name="ap_acme", settings={"erp": erp_cfg}
+        id=uuid.UUID(body["org_id"]), db_name="feoh_acme", settings={"erp": erp_cfg}
     )
     with _harness(org=org, invoice=invoice) as h:
         await erp_lambda._process_message(body)
@@ -110,7 +110,9 @@ async def test_process_message_routes_to_tenant_db_and_sends():
     # The org's configured ERP rides into the send — without it the lambda
     # path posts via the mock adapter no matter what the tenant configured.
     assert h.send.await_args.kwargs["erp_config"] == erp_cfg
-    assert h.create_engine.call_args_list[1].args[0] == "postgresql+asyncpg://u:p@host:5432/ap_acme"
+    assert (
+        h.create_engine.call_args_list[1].args[0] == "postgresql+asyncpg://u:p@host:5432/feoh_acme"
+    )
     h.control_engine.dispose.assert_awaited_once()
     h.tenant_engine.dispose.assert_awaited_once()
 
@@ -125,7 +127,7 @@ async def test_process_message_unknown_org_short_circuits_without_tenant_engine(
 
 
 async def test_process_message_unknown_invoice_is_noop_and_disposes_both():
-    org = SimpleNamespace(id=uuid.uuid4(), db_name="ap_acme", settings=None)
+    org = SimpleNamespace(id=uuid.uuid4(), db_name="feoh_acme", settings=None)
     with _harness(org=org, invoice=None) as h:
         await erp_lambda._process_message(_body())
     h.send.assert_not_awaited()
@@ -134,7 +136,7 @@ async def test_process_message_unknown_invoice_is_noop_and_disposes_both():
 
 
 async def test_process_message_send_failure_rolls_back_and_reraises():
-    org = SimpleNamespace(id=uuid.uuid4(), db_name="ap_acme", settings=None)
+    org = SimpleNamespace(id=uuid.uuid4(), db_name="feoh_acme", settings=None)
     invoice = SimpleNamespace(id=uuid.uuid4())
     boom = AsyncMock(side_effect=RuntimeError("erp 500"))
     with _harness(org=org, invoice=invoice, send=boom) as h:

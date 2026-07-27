@@ -428,7 +428,7 @@ pattern (the same shape as `sanctions_adapters` / `fx_adapters` /
 
 Registry via the `@register_enrichment_adapter` decorator;
 `get_enrichment_adapter(config)` resolves per-org
-`Organization.settings.enrichment.provider` → the `AP_VENDOR_ENRICHMENT_PROVIDER`
+`Organization.settings.enrichment.provider` → the `FEOH_VENDOR_ENRICHMENT_PROVIDER`
 env default (`mock`). An unknown provider name falls back to `mock` (a typo can't
 break enrichment), but the real providers still fail closed on a missing key.
 

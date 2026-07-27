@@ -8,24 +8,24 @@ The app uses a **database-per-tenant** isolation model:
 
 | Database            | Purpose                    | Contains                                                                                    |
 |---------------------|----------------------------|---------------------------------------------------------------------------------------------|
-| `account_payables`  | Control plane              | organizations, users, roles, user_roles, email_verifications, extraction_usage, card_rebates |
-| `ap_acme`           | Acme Corp tenant           | invoices, vendors, payments, workflows, vendor_extraction_priors, invoice_embeddings, ...   |
-| `ap_techflow`       | TechFlow Inc tenant        | invoices, vendors, payments, workflows, vendor_extraction_priors, invoice_embeddings, ...   |
+| `feohledger`  | Control plane              | organizations, users, roles, user_roles, email_verifications, extraction_usage, card_rebates |
+| `feoh_acme`           | Acme Corp tenant           | invoices, vendors, payments, workflows, vendor_extraction_priors, invoice_embeddings, ...   |
+| `feoh_techflow`       | TechFlow Inc tenant        | invoices, vendors, payments, workflows, vendor_extraction_priors, invoice_embeddings, ...   |
 
 All databases run on the same PostgreSQL instance. Tenant database URLs are derived from the control-plane URL by swapping the database name.
 
 ## Connection
 
-Default control-plane connection string (configured via `AP_DATABASE_URL`):
+Default control-plane connection string (configured via `FEOH_DATABASE_URL`):
 
 ```
-postgresql+asyncpg://postgres:postgres@localhost:5432/account_payables
+postgresql+asyncpg://postgres:postgres@localhost:5432/feohledger
 ```
 
 Tenant connections are derived automatically:
 
 ```
-postgresql+asyncpg://postgres:postgres@localhost:5432/ap_acme
+postgresql+asyncpg://postgres:postgres@localhost:5432/feoh_acme
 ```
 
 ## Data Models
@@ -91,7 +91,7 @@ alembic upgrade head
 ### Single tenant DB
 
 ```bash
-AP_MIGRATE_TENANT=ap_acme alembic upgrade head
+FEOH_MIGRATE_TENANT=feoh_acme alembic upgrade head
 ```
 
 ### All tenant DBs

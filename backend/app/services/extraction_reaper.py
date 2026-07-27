@@ -4,7 +4,7 @@ When extraction never completes — Ollama hung, worker crashed, an upload
 landed without a file_key — the invoice sits in `pending` forever, taking
 up a slot in the reviewer's queue and confusing the user. This service
 sweeps every tenant DB on a timer and transitions any `pending` invoice
-older than `AP_EXTRACTION_TIMEOUT_SECONDS` to `failed`. The reviewer can
+older than `FEOH_EXTRACTION_TIMEOUT_SECONDS` to `failed`. The reviewer can
 then re-trigger extraction or fall back to manual entry.
 
 Pure async — runs as a long-lived asyncio task started in `main.lifespan`.
@@ -148,7 +148,7 @@ async def _reap_tenant(db_name: str, cutoff: datetime, *, threshold_seconds: int
 
 async def run_reaper_loop() -> None:
     """Long-lived loop. Started in `main.lifespan` on app startup, cancelled
-    on shutdown. Sleeps `AP_EXTRACTION_REAPER_INTERVAL` between sweeps so
+    on shutdown. Sleeps `FEOH_EXTRACTION_REAPER_INTERVAL` between sweeps so
     even a crashed worker only leaves an invoice stuck for the threshold +
     one interval at most.
     """

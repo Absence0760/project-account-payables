@@ -14,7 +14,7 @@ The DDL itself lives in ``app/services/audit_immutability.py`` so the same
 trigger install is reused by ``tenant_provisioning._create_tenant_tables`` for
 tenants created via ``create_all`` (fresh tenants + the test harness). This
 revision is the production fan-out across existing tenants
-(``scripts/migrate_all_tenants.py`` runs it per ``AP_MIGRATE_TENANT``).
+(``scripts/migrate_all_tenants.py`` runs it per ``FEOH_MIGRATE_TENANT``).
 
 All statements are idempotent (``CREATE OR REPLACE`` / ``DROP ... IF EXISTS``).
 """

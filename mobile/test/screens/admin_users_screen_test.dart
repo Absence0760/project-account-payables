@@ -6,10 +6,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
-import 'package:ap_mobile/api/api_client.dart';
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/screens/admin_users_screen.dart';
-import 'package:ap_mobile/stores/admin_user_store.dart';
+import 'package:feohledger_mobile/api/api_client.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/screens/admin_users_screen.dart';
+import 'package:feohledger_mobile/stores/admin_user_store.dart';
 
 /// Localized host (defaults to `en`) so `AppLocalizations.of(context)` resolves.
 Widget _host(Widget home) => MaterialApp(

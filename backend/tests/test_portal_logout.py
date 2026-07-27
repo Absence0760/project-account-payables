@@ -2,7 +2,7 @@
 
 `POST /portal/auth/logout` reads the raw `Authorization` header (no dependency)
 and blocks the token's jti in the shared Redis blocklist. Without a `typ` guard
-it accepted ANY JWT signed with `AP_SECRET_KEY` — including an employee
+it accepted ANY JWT signed with `FEOH_SECRET_KEY` — including an employee
 `typ=user` token — so the public portal-logout route could revoke an employee
 session. These tests pin the symmetric `typ == "vendor"` guard.
 """

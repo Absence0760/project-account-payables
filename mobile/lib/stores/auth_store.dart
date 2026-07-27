@@ -1,11 +1,11 @@
 import 'package:flutter/foundation.dart';
 
-import 'package:ap_mobile/api/api_client.dart';
-import 'package:ap_mobile/api/endpoints.dart';
-import 'package:ap_mobile/config.dart';
-import 'package:ap_mobile/models/mfa_challenge.dart';
-import 'package:ap_mobile/models/user.dart';
-import 'package:ap_mobile/services/session.dart';
+import 'package:feohledger_mobile/api/api_client.dart';
+import 'package:feohledger_mobile/api/endpoints.dart';
+import 'package:feohledger_mobile/config.dart';
+import 'package:feohledger_mobile/models/mfa_challenge.dart';
+import 'package:feohledger_mobile/models/user.dart';
+import 'package:feohledger_mobile/services/session.dart';
 
 /// Outcome of [AuthStore.login] / [AuthStore.completeMfa].
 enum LoginOutcome {

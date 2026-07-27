@@ -208,7 +208,7 @@ def test_register_session_blocklists_evicted(fake_redis):
 
 
 def test_register_session_override_via_settings(fake_redis):
-    """AP_MAX_CONCURRENT_SESSIONS=2 should cap at 2."""
+    """FEOH_MAX_CONCURRENT_SESSIONS=2 should cap at 2."""
     from app.services import session_management
 
     user_id = uuid.uuid4()

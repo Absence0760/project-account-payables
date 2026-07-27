@@ -35,7 +35,7 @@ import pytest
 
 from app.services import audit_lambda, erp_lambda, extraction_lambda
 
-BASE_URL = "postgresql+asyncpg://u:p@host:5432/account_payables"
+BASE_URL = "postgresql+asyncpg://u:p@host:5432/feohledger"
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +120,7 @@ def _msg(**overrides) -> dict:
 
 
 async def test_extraction_lambda_rolls_back_session_on_error():
-    org = SimpleNamespace(id=uuid.uuid4(), db_name="ap_acme")
+    org = SimpleNamespace(id=uuid.uuid4(), db_name="feoh_acme")
     invoice = SimpleNamespace(id=uuid.uuid4())
     boom = AsyncMock(side_effect=RuntimeError("extract failed"))
     with _two_engine_harness(
@@ -136,7 +136,7 @@ async def test_extraction_lambda_rolls_back_session_on_error():
 
 
 async def test_erp_lambda_rolls_back_session_on_error():
-    org = SimpleNamespace(id=uuid.uuid4(), db_name="ap_acme", settings=None)
+    org = SimpleNamespace(id=uuid.uuid4(), db_name="feoh_acme", settings=None)
     invoice = SimpleNamespace(id=uuid.uuid4())
     boom = AsyncMock(side_effect=RuntimeError("erp 500"))
     with _two_engine_harness(
@@ -296,7 +296,7 @@ async def test_reap_tenant_transitions_stuck_invoice_as_system_action():
     cutoff = datetime.now(UTC) - timedelta(seconds=600)
 
     with _reaper_harness([inv], transition) as h:
-        reaped = await extraction_reaper._reap_tenant("ap_acme", cutoff, threshold_seconds=600)
+        reaped = await extraction_reaper._reap_tenant("feoh_acme", cutoff, threshold_seconds=600)
 
     assert reaped == 1
     transition.assert_awaited_once()
@@ -324,7 +324,7 @@ async def test_reap_tenant_no_stuck_invoices_does_not_commit():
     transition = AsyncMock()
     cutoff = datetime.now(UTC) - timedelta(seconds=600)
     with _reaper_harness([], transition) as h:
-        reaped = await extraction_reaper._reap_tenant("ap_acme", cutoff, threshold_seconds=600)
+        reaped = await extraction_reaper._reap_tenant("feoh_acme", cutoff, threshold_seconds=600)
 
     assert reaped == 0
     transition.assert_not_awaited()
@@ -361,7 +361,7 @@ async def test_reap_tenant_disposes_engine_even_on_query_failure():
     ):
         with pytest.raises(RuntimeError, match="connection refused"):
             await extraction_reaper._reap_tenant(
-                "ap_acme", datetime.now(UTC), threshold_seconds=600
+                "feoh_acme", datetime.now(UTC), threshold_seconds=600
             )
     engine.dispose.assert_awaited_once()
 

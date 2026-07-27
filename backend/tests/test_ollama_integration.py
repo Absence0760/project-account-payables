@@ -11,7 +11,7 @@ box after:
     pnpm ollama:up
     pnpm ollama:pull qwen2.5:0.5b        # any model; vision model for real extraction
 
-Probes AP_OLLAMA_BASE_URL if set, else the container port (11435), then the
+Probes FEOH_OLLAMA_BASE_URL if set, else the container port (11435), then the
 native default (11434).
 """
 
@@ -23,7 +23,7 @@ import httpx
 import pytest
 
 _CANDIDATES = [
-    os.environ.get("AP_OLLAMA_BASE_URL", ""),
+    os.environ.get("FEOH_OLLAMA_BASE_URL", ""),
     "http://localhost:11435",  # Compose container (pnpm ollama:up)
     "http://localhost:11434",  # native install
 ]

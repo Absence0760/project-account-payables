@@ -563,7 +563,7 @@ rather than a fabricated number:
 
 The bands (`pullback_overturn_pct` 5 %, `freeze_overturn_pct` 15 %) and the
 minimum sample (5) are function arguments with conservative defaults; no new
-`AP_` env var or migration. **Read-only** — the feedback endpoint never mutates
+`FEOH_` env var or migration. **Read-only** — the feedback endpoint never mutates
 workflow state. It is a sensitive read (it exposes the org's approval-control
 posture), so it writes a PII-free `adaptive_feedback.viewed` access-audit row
 (field-names / counts only — no amounts, vendor, or PII), mirroring the other

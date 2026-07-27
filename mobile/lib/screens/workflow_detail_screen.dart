@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 
-import 'package:ap_mobile/api/endpoints.dart';
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/models/workflow.dart';
-import 'package:ap_mobile/screens/workflows_screen.dart' show WorkflowStatusBadge;
+import 'package:feohledger_mobile/api/endpoints.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/models/workflow.dart';
+import 'package:feohledger_mobile/screens/workflows_screen.dart' show WorkflowStatusBadge;
 
 /// Read-only detail for one workflow definition — its configured steps (type,
 /// name, enabled flag) and a brief per-step config summary. No editing: the

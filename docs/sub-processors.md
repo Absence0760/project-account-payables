@@ -157,7 +157,7 @@ to the relevant processor at the moment of use. See root `CLAUDE.md` §
 | `mailgun` | **Mailgun (Sinch)** | Inbound email → invoice | DOC, INV, COMMS | US/EU | Configured only | DPA — to be confirmed |
 | `generic` | **(operator's provider)** | Generic inbound webhook | DOC, INV, COMMS | Provider-dependent | Configured only | Depends on chosen provider — to be confirmed |
 
-> Email intake is off unless `AP_EMAIL_INTAKE_DOMAIN` is set; with it unset no
+> Email intake is off unless `FEOH_EMAIL_INTAKE_DOMAIN` is set; with it unset no
 > inbound provider is active.
 
 ## 9. Audit-log shipping (`services/audit_shipping/`)

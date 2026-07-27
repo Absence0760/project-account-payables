@@ -36,7 +36,7 @@ class AppLocalizationsPt extends AppLocalizations {
   String get navSettings => 'Configurações';
 
   @override
-  String get shellAppName => 'Account Payables';
+  String get shellAppName => 'FeohLedger';
 
   @override
   String get commonSave => 'Salvar';
@@ -883,7 +883,7 @@ class AppLocalizationsPt extends AppLocalizations {
   String get payConfirmExecute => 'Executar';
 
   @override
-  String get loginAppName => 'Better AP';
+  String get loginAppName => 'FeohLedger';
 
   @override
   String get loginTagline => 'Contas a pagar, simplificadas';
@@ -1716,7 +1716,7 @@ class AppLocalizationsPtBr extends AppLocalizationsPt {
   String get navSettings => 'Configurações';
 
   @override
-  String get shellAppName => 'Account Payables';
+  String get shellAppName => 'FeohLedger';
 
   @override
   String get commonSave => 'Salvar';
@@ -2563,7 +2563,7 @@ class AppLocalizationsPtBr extends AppLocalizationsPt {
   String get payConfirmExecute => 'Executar';
 
   @override
-  String get loginAppName => 'Better AP';
+  String get loginAppName => 'FeohLedger';
 
   @override
   String get loginTagline => 'Contas a pagar, simplificadas';

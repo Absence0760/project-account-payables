@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/models/contract.dart';
-import 'package:ap_mobile/screens/contract_detail_screen.dart';
-import 'package:ap_mobile/stores/contract_store.dart';
-import 'package:ap_mobile/utils/debouncer.dart';
-import 'package:ap_mobile/widgets/contract_list_tile.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/models/contract.dart';
+import 'package:feohledger_mobile/screens/contract_detail_screen.dart';
+import 'package:feohledger_mobile/stores/contract_store.dart';
+import 'package:feohledger_mobile/utils/debouncer.dart';
+import 'package:feohledger_mobile/widgets/contract_list_tile.dart';
 
 class ContractsScreen extends StatefulWidget {
   const ContractsScreen({super.key});

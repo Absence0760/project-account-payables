@@ -27,7 +27,7 @@ transfer mechanism changes.
 Retention windows below are summarized from
 [`backend/docs/retention.md`](../backend/docs/retention.md); that document is the
 authoritative source and the enforcement mechanism (the retention sweep,
-`AP_RETENTION_*` env vars, the audit-log WORM store). Where a number here and
+`FEOH_RETENTION_*` env vars, the audit-log WORM store). Where a number here and
 there diverge, the retention doc wins.
 
 International-transfer notes below are summarized from
@@ -116,7 +116,7 @@ holds the legal basis and we process under the
 A general description — see `docs/soc2-readiness.md` and the project invariants
 in the root `CLAUDE.md` for specifics:
 
-- **Tenant isolation** at the data layer (database-per-tenant; header→`ap_<slug>`
+- **Tenant isolation** at the data layer (database-per-tenant; header→`feoh_<slug>`
   resolution cross-checked against the JWT `org` claim).
 - **Encryption** in transit (TLS) and at rest (object store / DB); secrets via
   SOPS + AWS KMS, no hardcoded fallbacks.

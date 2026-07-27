@@ -366,7 +366,7 @@ delegate's `agent_type` so the `AgentDecision` records the real resolver.
 
 `llm_rationale.build_rationale` mirrors `audit_summary.py`: the deterministic
 `template` rationale is always the fallback, an LLM is consulted **only** when a
-key is configured (reusing `AP_ANTHROPIC_API_KEY` + `AP_EXTRACTION_MODEL`, or the
+key is configured (reusing `FEOH_ANTHROPIC_API_KEY` + `FEOH_EXTRACTION_MODEL`, or the
 org's BYOK extraction key), and there is **zero network call** in the no-key
 local default. The *decision* (action + confidence + amount change) is 100%
 rules-derived — the LLM only rewords the rationale string.
@@ -426,7 +426,7 @@ the API maps to **409** (no second `AgentDecision` row, no status clobber).
 ```
 
 Default (key absent) → `conservative` → everything escalates. No new env var:
-the optional rationale LLM reuses `AP_ANTHROPIC_API_KEY` + `AP_EXTRACTION_MODEL`.
+the optional rationale LLM reuses `FEOH_ANTHROPIC_API_KEY` + `FEOH_EXTRACTION_MODEL`.
 
 ## Deferred
 

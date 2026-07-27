@@ -17,7 +17,7 @@ test.describe('/login', () => {
 		await page.goto('/login');
 		await page.waitForLoadState('networkidle');
 
-		await expect(page.getByRole('heading', { name: 'Account Payables' })).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'FeohLedger' })).toBeVisible();
 		await expect(page.locator('input[type="email"]')).toBeVisible();
 		await expect(page.locator('input[type="password"]')).toBeVisible();
 		await expect(page.getByRole('button', { name: /Sign in/ })).toBeVisible();

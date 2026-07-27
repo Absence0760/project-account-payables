@@ -182,7 +182,7 @@ class AS4GatewayAdapter(PeppolAdapter):
 
         The route already verified the gateway HMAC over ``body`` (via
         ``peppol_receive.verify_inbound_signature`` + the
-        ``AP_PEPPOL_INBOUND_SIGNING_SECRET``) and dedupes by the AS4 MessageId,
+        ``FEOH_PEPPOL_INBOUND_SIGNING_SECRET``) and dedupes by the AS4 MessageId,
         so this only unpacks the (trusted) envelope into an
         :class:`InboundPeppolMessage`.
 

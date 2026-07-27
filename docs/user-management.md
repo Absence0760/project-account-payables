@@ -171,7 +171,7 @@ organizations
 
 - **Method**: JWT Bearer tokens
 - **Login**: `POST /api/auth/login` with email + password
-- **Token lifetime**: 30 minutes (configurable via `AP_ACCESS_TOKEN_EXPIRE_MINUTES`)
+- **Token lifetime**: 30 minutes (configurable via `FEOH_ACCESS_TOKEN_EXPIRE_MINUTES`)
 - **Token revocation**: Redis-backed blocklist (tokens are blocklisted on logout)
 - **Password hashing**: Bcrypt
 

@@ -9,7 +9,7 @@ import { DEFAULT_LOCALE, dirForLocale, isSupportedLocale, negotiateLocale, type 
 // localStorage key for the persisted picker choice. Kept distinct from the
 // (account-level) email-language pref that a later server-side track adds —
 // this one is "what language to show in-app on THIS device".
-const STORAGE_KEY = 'ap_locale';
+const STORAGE_KEY = 'feoh_locale';
 
 // Reactive locale runes. `dict` is what `m()` reads, so swapping it on
 // setLocale re-renders every call site (template / $derived).

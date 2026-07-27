@@ -62,7 +62,7 @@ class OfflineStore {
   Future<Database> _initDb() async {
     final dbPath = await getDatabasesPath();
     return openDatabase(
-      join(dbPath, 'ap_cache.db'),
+      join(dbPath, 'feohledger_cache.db'),
       version: _dbVersion,
       onCreate: _createSchema,
       onUpgrade: _upgradeSchema,

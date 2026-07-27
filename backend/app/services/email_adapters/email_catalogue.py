@@ -113,11 +113,11 @@ _EN: dict[str, str] = {
     "chat.portal_link.body": "{org} posted a new message on invoice {ref}.",
     "chat.portal_link.cta": "View the conversation and reply:",
     # Signup verification email (pre-account; locale optional from the request).
-    "signup.verify.subject": "Verify your Account Payables workspace",
+    "signup.verify.subject": "Verify your FeohLedger workspace",
     "signup.verify.greeting": "Hi {name},",
     "signup.verify.body": (
         "Someone (hopefully you) requested to create the '{slug}' workspace on "
-        "Account Payables. Click the link below to confirm and finish setting "
+        "FeohLedger. Click the link below to confirm and finish setting "
         "up your tenant:"
     ),
     "signup.verify.expiry": (
@@ -125,7 +125,7 @@ _EN: dict[str, str] = {
         "safely ignore this email."
     ),
     # Welcome email (sent right after tenant provisioning).
-    "signup.welcome.subject": "Your Account Payables workspace '{slug}' is ready",
+    "signup.welcome.subject": "Your FeohLedger workspace '{slug}' is ready",
     "signup.welcome.greeting": "Hi {name},",
     "signup.welcome.body": "Your workspace is live.",
     "signup.welcome.url_label": "URL",
@@ -159,7 +159,7 @@ _DE: dict[str, str] = {
     "signup.verify.greeting": "Hallo {name},",
     "signup.verify.body": (
         "Jemand (hoffentlich Sie) hat die Erstellung des Arbeitsbereichs '{slug}' "
-        "bei Account Payables angefordert. Klicken Sie auf den Link unten, um zu "
+        "bei FeohLedger angefordert. Klicken Sie auf den Link unten, um zu "
         "bestätigen und die Einrichtung Ihres Mandanten abzuschließen:"
     ),
     "signup.verify.expiry": (
@@ -196,18 +196,18 @@ _FR: dict[str, str] = {
     "chat.portal_link.greeting": "Bonjour {name},",
     "chat.portal_link.body": "{org} a publié un nouveau message sur la facture {ref}.",
     "chat.portal_link.cta": "Voir la conversation et répondre :",
-    "signup.verify.subject": "Confirmez votre espace de travail Account Payables",
+    "signup.verify.subject": "Confirmez votre espace de travail FeohLedger",
     "signup.verify.greeting": "Bonjour {name},",
     "signup.verify.body": (
         "Quelqu'un (vous, on l'espère) a demandé la création de l'espace de "
-        "travail « {slug} » sur Account Payables. Cliquez sur le lien ci-dessous "
+        "travail « {slug} » sur FeohLedger. Cliquez sur le lien ci-dessous "
         "pour confirmer et terminer la configuration de votre client :"
     ),
     "signup.verify.expiry": (
         "Ce lien expire dans 24 heures. Si vous n'êtes pas à l'origine de cette "
         "demande, vous pouvez ignorer cet e-mail en toute sécurité."
     ),
-    "signup.welcome.subject": "Votre espace de travail Account Payables « {slug} » est prêt",
+    "signup.welcome.subject": "Votre espace de travail FeohLedger « {slug} » est prêt",
     "signup.welcome.greeting": "Bonjour {name},",
     "signup.welcome.body": "Votre espace de travail est actif.",
     "signup.welcome.url_label": "URL",
@@ -237,18 +237,18 @@ _ES: dict[str, str] = {
     "chat.portal_link.greeting": "Hola {name}:",
     "chat.portal_link.body": "{org} publicó un nuevo mensaje en la factura {ref}.",
     "chat.portal_link.cta": "Ver la conversación y responder:",
-    "signup.verify.subject": "Verifique su espacio de trabajo de Account Payables",
+    "signup.verify.subject": "Verifique su espacio de trabajo de FeohLedger",
     "signup.verify.greeting": "Hola {name}:",
     "signup.verify.body": (
         "Alguien (con suerte, usted) solicitó crear el espacio de trabajo "
-        "'{slug}' en Account Payables. Haga clic en el enlace de abajo para "
+        "'{slug}' en FeohLedger. Haga clic en el enlace de abajo para "
         "confirmar y terminar de configurar su inquilino:"
     ),
     "signup.verify.expiry": (
         "Este enlace caduca en 24 horas. Si no solicitó esto, puede ignorar este "
         "correo electrónico con total seguridad."
     ),
-    "signup.welcome.subject": "Su espacio de trabajo de Account Payables '{slug}' está listo",
+    "signup.welcome.subject": "Su espacio de trabajo de FeohLedger '{slug}' está listo",
     "signup.welcome.greeting": "Hola {name}:",
     "signup.welcome.body": "Su espacio de trabajo está activo.",
     "signup.welcome.url_label": "URL",
@@ -278,18 +278,18 @@ _PT_BR: dict[str, str] = {
     "chat.portal_link.greeting": "Olá {name},",
     "chat.portal_link.body": "{org} publicou uma nova mensagem na fatura {ref}.",
     "chat.portal_link.cta": "Veja a conversa e responda:",
-    "signup.verify.subject": "Verifique seu espaço de trabalho do Account Payables",
+    "signup.verify.subject": "Verifique seu espaço de trabalho do FeohLedger",
     "signup.verify.greeting": "Olá {name},",
     "signup.verify.body": (
         "Alguém (esperamos que você) solicitou a criação do espaço de trabalho "
-        "'{slug}' no Account Payables. Clique no link abaixo para confirmar e "
+        "'{slug}' no FeohLedger. Clique no link abaixo para confirmar e "
         "concluir a configuração do seu locatário:"
     ),
     "signup.verify.expiry": (
         "Este link expira em 24 horas. Se você não solicitou isso, pode ignorar "
         "este e-mail com segurança."
     ),
-    "signup.welcome.subject": "Seu espaço de trabalho do Account Payables '{slug}' está pronto",
+    "signup.welcome.subject": "Seu espaço de trabalho do FeohLedger '{slug}' está pronto",
     "signup.welcome.greeting": "Olá {name},",
     "signup.welcome.body": "Seu espaço de trabalho está ativo.",
     "signup.welcome.url_label": "URL",
@@ -317,10 +317,10 @@ _JA: dict[str, str] = {
     "chat.portal_link.greeting": "{name} さん、",
     "chat.portal_link.body": "{org} が請求書 {ref} に新しいメッセージを投稿しました。",
     "chat.portal_link.cta": "会話を表示して返信する:",
-    "signup.verify.subject": "Account Payables ワークスペースを確認してください",
+    "signup.verify.subject": "FeohLedger ワークスペースを確認してください",
     "signup.verify.greeting": "{name} さん、",
     "signup.verify.body": (
-        "どなたか（おそらくあなた）が Account Payables で '{slug}' ワークスペースの"
+        "どなたか（おそらくあなた）が FeohLedger で '{slug}' ワークスペースの"
         "作成をリクエストしました。以下のリンクをクリックして確認し、テナントの"
         "セットアップを完了してください:"
     ),
@@ -328,7 +328,7 @@ _JA: dict[str, str] = {
         "このリンクは 24 時間で期限切れになります。心当たりがない場合は、"
         "このメールを無視していただいて構いません。"
     ),
-    "signup.welcome.subject": "Account Payables ワークスペース '{slug}' の準備が整いました",
+    "signup.welcome.subject": "FeohLedger ワークスペース '{slug}' の準備が整いました",
     "signup.welcome.greeting": "{name} さん、",
     "signup.welcome.body": "ワークスペースが有効になりました。",
     "signup.welcome.url_label": "URL",

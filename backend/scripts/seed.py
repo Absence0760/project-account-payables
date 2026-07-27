@@ -10,7 +10,7 @@ Two seed shapes:
   richly-related named rows, so every one spans several pages of its
   default 25-row pagination. Best for local development where you
   actually want to click around.
-- **Lean** (``--lean`` / ``AP_SEED_MODE=lean``) — every tenant gets
+- **Lean** (``--lean`` / ``FEOH_SEED_MODE=lean``) — every tenant gets
   just enough for the e2e suite (4 vendors, 10 invoices across status
   buckets, 1 default workflow, 1 GL account, no exceptions/payments/
   cards). Specs that need richer state build it via API at the start
@@ -74,9 +74,9 @@ TECH_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000020")
 
 # Per-worker e2e tenants. Playwright workers map (workerIndex % N) → e2eN, so
 # each parallel worker owns its own tenant DB and can mutate freely without
-# colliding with peers. Default N=4; bump via AP_E2E_TENANT_COUNT for higher
+# colliding with peers. Default N=4; bump via FEOH_E2E_TENANT_COUNT for higher
 # parallelism. Setting it to 0 skips the e2e seed entirely.
-E2E_TENANT_COUNT = int(os.environ.get("AP_E2E_TENANT_COUNT", "4"))
+E2E_TENANT_COUNT = int(os.environ.get("FEOH_E2E_TENANT_COUNT", "4"))
 
 # Control-plane vs tenant table split is owned by
 # `app.services.tenant_provisioning.CONTROL_TABLES` (imported above). Seeding
@@ -263,7 +263,7 @@ async def seed_control_plane():
                 name="Acme Corp",
                 slug="acme",
                 plan="pro",
-                db_name="ap_acme",
+                db_name="feoh_acme",
                 settings={
                     "cards": {
                         "enabled": True,
@@ -282,7 +282,7 @@ async def seed_control_plane():
                 name="TechFlow Inc",
                 slug="techflow",
                 plan="pro",
-                db_name="ap_techflow",
+                db_name="feoh_techflow",
                 settings={
                     "cards": {
                         "enabled": True,
@@ -1697,7 +1697,7 @@ async def seed_e2e_control_plane(roles: dict[str, "Role"]) -> list[tuple[str, uu
     already exist (matched by slug).
     """
     if E2E_TENANT_COUNT <= 0:
-        print("  AP_E2E_TENANT_COUNT=0 — skipping e2e tenant seed.")
+        print("  FEOH_E2E_TENANT_COUNT=0 — skipping e2e tenant seed.")
         return []
 
     created: list[tuple[str, uuid.UUID, str]] = []
@@ -1711,7 +1711,7 @@ async def seed_e2e_control_plane(roles: dict[str, "Role"]) -> list[tuple[str, uu
 
         for i in range(1, E2E_TENANT_COUNT + 1):
             slug = f"e2e{i}"
-            db_name = f"ap_{slug}"
+            db_name = f"feoh_{slug}"
             label = f"E2E Worker {i}"
             org_id = _e2e_org_id(i)
             created.append((db_name, org_id, label))
@@ -2250,8 +2250,8 @@ async def seed(lean: bool = False):
     e2e_tenants = await seed_e2e_control_plane(roles)
 
     base_tenants = [
-        ("ap_acme", ACME_ORG_ID, "Acme Corp"),
-        ("ap_techflow", TECH_ORG_ID, "TechFlow Inc"),
+        ("feoh_acme", ACME_ORG_ID, "Acme Corp"),
+        ("feoh_techflow", TECH_ORG_ID, "TechFlow Inc"),
     ]
     tenant_seeder = seed_tenant_lean if lean else seed_tenant
     for db_name, org_id, label in base_tenants + e2e_tenants:
@@ -2267,7 +2267,7 @@ async def seed(lean: bool = False):
     print("  acme.localhost:7777    — demo@acme.com")
     print("  techflow.localhost:7777 — admin@techflow.com")
     for db_name, _org_id, label in e2e_tenants:
-        slug = db_name.removeprefix("ap_")
+        slug = db_name.removeprefix("feoh_")
         # Don't interpolate the password into stdout — CodeQL flags
         # ``print(...{PASSWORD}...)`` even when the value is the dev
         # default. The credentials are documented in ``frontend/tests-e2e/
@@ -2281,11 +2281,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--lean",
         action="store_true",
-        default=os.environ.get("AP_SEED_MODE", "").lower() == "lean",
+        default=os.environ.get("FEOH_SEED_MODE", "").lower() == "lean",
         help=(
             "Use the minimal per-tenant fixture set. Faster (~10× less work "
             "per tenant); intended for CI's e2e job. Local dev defaults to "
-            "the full demo dataset. Also enabled via AP_SEED_MODE=lean."
+            "the full demo dataset. Also enabled via FEOH_SEED_MODE=lean."
         ),
     )
     return parser.parse_args()

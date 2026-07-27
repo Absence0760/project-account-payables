@@ -195,7 +195,7 @@ async def test_dispatch_run_local_logs_class_name_not_raw_message(caplog):
 
     universal = SimpleNamespace(
         id=uuid.uuid4(),
-        db_name="ap_test",
+        db_name="feoh_test",
         settings={},
         status=InvoiceStatus("failed"),  # not 'pending' → fallback no-ops
         file_key="invoices/test.pdf",

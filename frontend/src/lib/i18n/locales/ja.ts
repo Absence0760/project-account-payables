@@ -52,7 +52,7 @@ export const messages = {
 	'nav.partner': 'パートナー管理',
 
 	// App shell / sidebar
-	'shell.appName': 'Account Payables',
+	'shell.appName': 'FeohLedger',
 	'shell.skipToMain': 'メインコンテンツへスキップ',
 	'shell.primaryNav': 'メインナビゲーション',
 	'shell.sectionNav': 'セクション：{group}',
@@ -561,7 +561,7 @@ export const messages = {
 	'org.section.brandingSaved': 'ブランディング',
 	'org.branding.hint': '組織向けにアプリをホワイトラベル化します。プラットフォームのデフォルトを使うにはフィールドを空のままにします。アクセントカラーは保存時にアプリのテーマを即座に変更します。',
 	'org.branding.productName': '製品名',
-	'org.branding.productNamePlaceholder': 'Accounts Payable',
+	'org.branding.productNamePlaceholder': 'FeohLedger',
 	'org.branding.logoUrl': 'ロゴURL',
 	'org.branding.logoUrlPlaceholder': 'https://cdn.example.com/logo.png',
 	'org.branding.accentColor': 'アクセントカラー',
@@ -1723,7 +1723,7 @@ export const messages = {
 		'このページは再度開けません。リンクは単回使用です。カードを保存する前に誤って閉じてしまった場合は、メールに返信していただければ再発行します。',
 
 	// Auth — login (routes/login/+page.svelte)
-	'auth.login.heading': 'Account Payables',
+	'auth.login.heading': 'FeohLedger',
 	'auth.login.subtitle': '続行するにはサインインしてください',
 	'auth.login.email': 'メールアドレス',
 	'auth.login.password': 'パスワード',
@@ -1756,7 +1756,7 @@ export const messages = {
 	'auth.mfa.error.verify': '認証に失敗しました',
 
 	// Auth — SSO / SAML callback (routes/login/{sso,saml}-callback/+page.svelte)
-	'auth.callback.pageTitle': 'サインインしています… — Better AP',
+	'auth.callback.pageTitle': 'サインインしています… — FeohLedger',
 	'auth.callback.signingIn': 'サインインしています…',
 	'auth.callback.idpError': 'IDプロバイダーのエラー: {error}',
 	'auth.callback.missingCodeState': 'コールバックURLにコードまたはステートがありません。',
@@ -1766,7 +1766,7 @@ export const messages = {
 	'auth.callback.backToSignIn': 'サインインに戻る',
 
 	// Auth — signup (routes/signup/+page.svelte)
-	'auth.signup.pageTitle': 'サインアップ — Better AP',
+	'auth.signup.pageTitle': 'サインアップ — FeohLedger',
 	'auth.signup.successHeading': 'メールをご確認ください',
 	'auth.signup.successNext':
 		'次に、そのメール内のリンクをクリックしてワークスペースの作成を完了してください。準備ができ次第、サインイン情報をお送りします。',
@@ -1790,7 +1790,7 @@ export const messages = {
 	'auth.signup.footerPost': 'にアクセスしてサインインしてください。',
 
 	// Auth — change password (routes/change-password/+page.svelte)
-	'auth.changePassword.pageTitle': 'パスワード変更 — Better AP',
+	'auth.changePassword.pageTitle': 'パスワード変更 — FeohLedger',
 	'auth.changePassword.heading': '新しいパスワードを設定',
 	'auth.changePassword.subForced': '一時パスワードでサインインしました。続行するには新しいパスワードを選択してください。',
 	'auth.changePassword.subVoluntary': 'パスワードを更新します。',
@@ -1809,7 +1809,7 @@ export const messages = {
 	'auth.changePassword.signOut': 'サインアウト',
 
 	// Auth — verify / provisioning (routes/verify/+page.svelte)
-	'auth.verify.pageTitle': '確認中 — Better AP',
+	'auth.verify.pageTitle': '確認中 — FeohLedger',
 	'auth.verify.noToken': 'URLに確認トークンがありません。',
 	'auth.verify.failed': '確認に失敗しました。',
 	'auth.verify.pendingHeading': 'ワークスペースを作成しています…',

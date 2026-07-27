@@ -128,9 +128,9 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
     """Re-poll every non-terminal payment in one tenant DB.
 
     The cutoff for re-polling: `submitted_at` older than
-    `AP_PAYMENT_RECONCILE_AFTER_MINUTES`. Polling earlier is wasteful;
+    `FEOH_PAYMENT_RECONCILE_AFTER_MINUTES`. Polling earlier is wasteful;
     polling never can hide a stuck row indefinitely. Anything older
-    than `AP_PAYMENT_RECONCILE_MAX_AGE_HOURS` flips to `failed` with a
+    than `FEOH_PAYMENT_RECONCILE_MAX_AGE_HOURS` flips to `failed` with a
     diagnostic reason — the operator can pull the row up by audit log
     and chase the rail manually.
     """

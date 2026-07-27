@@ -37,9 +37,7 @@ from app.models.organization import Organization
 
 # Keycloak's SAML IdP metadata (the SAML analog of the OIDC discovery doc). The
 # signing cert + SSO URL + entityId are read from here every run.
-KEYCLOAK_SAML_DESCRIPTOR_URL = (
-    "http://localhost:8088/realms/account-payables/protocol/saml/descriptor"
-)
+KEYCLOAK_SAML_DESCRIPTOR_URL = "http://localhost:8088/realms/feohledger/protocol/saml/descriptor"
 
 # Shared local SP entityId — MUST equal the SAML client's clientId in
 # realm-export.json (one client for all local tenants; tenant comes from

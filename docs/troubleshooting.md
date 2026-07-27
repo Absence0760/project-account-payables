@@ -1,6 +1,6 @@
 # Troubleshooting
 
-## `database "account_payables" does not exist`
+## `database "feohledger" does not exist`
 
 A local PostgreSQL (e.g. from Homebrew) is likely running on port 5432, intercepting the connection before the Docker container.
 
@@ -113,4 +113,4 @@ python scripts/seed.py
 
 If you see connection errors, wait a few seconds for PostgreSQL to finish starting, then retry.
 
-The seed script creates tenant databases (`ap_acme`, `ap_techflow`) automatically if they don't exist. If Docker was reset with `down -v`, the init SQL re-creates them on startup as well.
+The seed script creates tenant databases (`feoh_acme`, `feoh_techflow`) automatically if they don't exist. If Docker was reset with `down -v`, the init SQL re-creates them on startup as well.

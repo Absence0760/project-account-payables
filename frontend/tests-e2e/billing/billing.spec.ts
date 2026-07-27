@@ -15,7 +15,7 @@ import { currentTenantSlug, expect, signInAndWait, test } from '../fixtures/help
  * so the page loads directly without a redirect. The "not authorized" block
  * opts out and signs in as the clerk.
  *
- * Billing rows live in the CONTROL plane (`account_payables`), keyed by the
+ * Billing rows live in the CONTROL plane (`feohledger`), keyed by the
  * org's id — not the tenant DB — so the happy-path test seeds a Plan +
  * Subscription via control-plane psql and tears them down in `finally`.
  *
@@ -23,7 +23,7 @@ import { currentTenantSlug, expect, signInAndWait, test } from '../fixtures/help
  * never `waitForTimeout`.
  */
 
-const CONTROL_DB = 'account_payables';
+const CONTROL_DB = 'feohledger';
 
 /** Run a synchronous `psql -c <query>` against the CONTROL-plane DB and return
  *  the FIRST output line. `INSERT … RETURNING id` emits the id line AND a

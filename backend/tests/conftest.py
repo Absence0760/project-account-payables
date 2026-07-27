@@ -173,7 +173,7 @@ def _autouse_fake_redis(monkeypatch):
 # against a live Postgres + the real ASGI app: cross-tenant isolation (needs
 # two real tenant DBs), the SQL WHERE filters, commit/rollback durability, and
 # the role-gated HTTP endpoints. This harness provisions two persistent test
-# tenants (``ap_pytesta`` / ``ap_pytestb``), idempotently, and truncates their
+# tenants (``feoh_pytesta`` / ``feoh_pytestb``), idempotently, and truncates their
 # business tables before each test. It is function-scoped with fresh engines
 # per call so there are no cross-event-loop engine-reuse pitfalls.
 #
@@ -199,7 +199,7 @@ import pytest_asyncio  # noqa: E402
 # ---------------------------------------------------------------------------
 # Per-process tenant slot
 #
-# `ap_pytesta` / `ap_pytestb` are process-EXCLUSIVE, not merely suite-exclusive:
+# `feoh_pytesta` / `feoh_pytestb` are process-EXCLUSIVE, not merely suite-exclusive:
 # the reset below TRUNCATEs their tables and reaps every other backend on them.
 # Two pytest processes pointed at the same Postgres therefore corrupt each other
 # (deleted rows + `ConnectionDoesNotExistError` in unrelated files), which reads
@@ -209,7 +209,7 @@ import pytest_asyncio  # noqa: E402
 # and uses the tenant pair named for it. Slot 0 keeps the historical names, so
 # the overwhelmingly common single-process run (and every CI shard, each with
 # its own Postgres) behaves exactly as before and creates no extra databases;
-# only a second concurrent process pays for provisioning `ap_pytesta1` etc.,
+# only a second concurrent process pays for provisioning `feoh_pytesta1` etc.,
 # once per session.
 #
 # Postgres arbitrates the claim, which is what makes this crash-safe: the lock
@@ -652,13 +652,13 @@ async def realdb():
         tenants = await _ensure_test_tenants()
     except (OSError, asyncpg.PostgresError, OperationalError) as exc:
         # The CI backend job declares Postgres as a health-checked service and
-        # sets AP_REQUIRE_REALDB — there, an unreachable DB is a hard failure,
+        # sets FEOH_REQUIRE_REALDB — there, an unreachable DB is a hard failure,
         # not a silent skip that would hide breakage in the real-DB tenant
         # isolation / token-rotation tests. Local runs without `pnpm db:up`
         # still skip so the mock-only suite keeps running.
-        if os.environ.get("AP_REQUIRE_REALDB"):
+        if os.environ.get("FEOH_REQUIRE_REALDB"):
             raise RuntimeError(
-                "realdb fixture requires a live Postgres and AP_REQUIRE_REALDB is "
+                "realdb fixture requires a live Postgres and FEOH_REQUIRE_REALDB is "
                 f"set (CI declares Postgres as a service); refusing to skip: {exc}"
             ) from exc
         pytest.skip(f"realdb fixture requires a live Postgres (pnpm db:up): {exc}")

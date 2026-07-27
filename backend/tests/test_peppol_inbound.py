@@ -543,7 +543,7 @@ async def test_boot_refuses_without_secret(monkeypatch):
     monkeypatch.setattr(settings, "peppol_inbound_enabled", True)
     monkeypatch.setattr(settings, "peppol_inbound_signing_secret", "")
 
-    with pytest.raises(RuntimeError, match="AP_PEPPOL_INBOUND_SIGNING_SECRET"):
+    with pytest.raises(RuntimeError, match="FEOH_PEPPOL_INBOUND_SIGNING_SECRET"):
         async with lifespan(object()):  # pragma: no cover - never enters body
             pass
 

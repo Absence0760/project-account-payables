@@ -1,7 +1,7 @@
 """Mock punch-out adapter — local dev + test default.
 
 Simulates a supplier's hosted punch-out site entirely in-process: no network,
-no real supplier. This is the default provider (``AP_PUNCHOUT_PROVIDER=mock``)
+no real supplier. This is the default provider (``FEOH_PUNCHOUT_PROVIDER=mock``)
 so ``pnpm dev`` runs the whole round-trip — setup → start URL → returned cart →
 convert-to-requisition — without an external supplier or credential.
 

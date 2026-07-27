@@ -36,7 +36,7 @@ class AppLocalizationsJa extends AppLocalizations {
   String get navSettings => '設定';
 
   @override
-  String get shellAppName => 'Account Payables';
+  String get shellAppName => 'FeohLedger';
 
   @override
   String get commonSave => '保存';
@@ -861,7 +861,7 @@ class AppLocalizationsJa extends AppLocalizations {
   String get payConfirmExecute => '実行';
 
   @override
-  String get loginAppName => 'Better AP';
+  String get loginAppName => 'FeohLedger';
 
   @override
   String get loginTagline => '買掛金管理をシンプルに';

@@ -1,9 +1,9 @@
 import 'package:flutter/foundation.dart';
 
-import 'package:ap_mobile/api/endpoints.dart';
-import 'package:ap_mobile/models/payment.dart';
-import 'package:ap_mobile/models/payment_queue.dart';
-import 'package:ap_mobile/services/offline_store.dart';
+import 'package:feohledger_mobile/api/endpoints.dart';
+import 'package:feohledger_mobile/models/payment.dart';
+import 'package:feohledger_mobile/models/payment_queue.dart';
+import 'package:feohledger_mobile/services/offline_store.dart';
 
 /// Payment queue + summary + runs. Holds the approved-invoice queue, the
 /// per-row selection (checkbox + chosen [PaymentMethod]), the KPI summary, and

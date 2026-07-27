@@ -55,8 +55,8 @@ The SAML client (`backend/keycloak/realm-export.json`):
 - `saml.assertion.signature = true` — Keycloak signs the assertion. This
   signature, verified against Keycloak's signing cert, is the trust anchor.
 - `saml.client.signature = false` — the SP does **not** sign its AuthnRequests
-  locally, so no SP keypair is needed to run (set `AP_SAML_SP_PRIVATE_KEY` /
-  `AP_SAML_SP_CERT` via sops + flip the client setting on for a prod-like setup).
+  locally, so no SP keypair is needed to run (set `FEOH_SAML_SP_PRIVATE_KEY` /
+  `FEOH_SAML_SP_CERT` via sops + flip the client setting on for a prod-like setup).
 - `saml_name_id_format = email` + email/givenName/sn attribute mappers — so the
   assertion carries the email the JIT provisioner needs.
 - ACS POST binding → `http://localhost:8000/api/auth/saml/acs`.
@@ -72,7 +72,7 @@ changes every boot. So the cert can't be hardcoded the way the OIDC
 and signing cert from Keycloak's SAML descriptor:
 
 ```
-http://localhost:8088/realms/account-payables/protocol/saml/descriptor
+http://localhost:8088/realms/feohledger/protocol/saml/descriptor
 ```
 
 (parsed with python3-saml's DTD/entity-hardened metadata parser — no XXE). If you
@@ -88,7 +88,7 @@ pnpm test:saml                    # frontend/tests-e2e/saml/login.spec.ts
 The spec drives the full browser handshake against the real Keycloak and asserts
 the JWT never appears in the callback URL. It **skips** with an actionable hint
 when Keycloak/SAML isn't reachable (gated on `SERVICES.keycloakSaml`); under
-`AP_REQUIRE_INTEGRATION=1` (CI) an unreachable IdP is a hard failure, never a
+`FEOH_REQUIRE_INTEGRATION=1` (CI) an unreachable IdP is a hard failure, never a
 silent skip. CI runs it in `sso-e2e.yml` and the `service-e2e` job of `ci.yml`,
 after the OIDC specs (SAML seeding rewrites acme's `settings.sso`).
 

@@ -2,9 +2,9 @@
 
 Exercises the real adapters end-to-end: the cloudwatch + s3_objectlock audit
 sinks and the SES email adapter, all pointed at a running LocalStack via
-AP_AWS_ENDPOINT_URL, asserting the artifacts actually land.
+FEOH_AWS_ENDPOINT_URL, asserting the artifacts actually land.
 
-Gated: the whole module is skipped unless AP_AWS_ENDPOINT_URL is set AND
+Gated: the whole module is skipped unless FEOH_AWS_ENDPOINT_URL is set AND
 LocalStack answers its health probe — so it runs locally after `pnpm aws:up`
 (with the env from docs/local-aws-localstack.md) and in the CI e2e job, but is a
 clean no-op in the default DB-free unit run. This is environment gating on an
@@ -13,9 +13,9 @@ assertions are strict.
 
 Run locally:
     pnpm aws:up
-    AP_AWS_ENDPOINT_URL=http://localhost:4566 AWS_ACCESS_KEY_ID=test \
+    FEOH_AWS_ENDPOINT_URL=http://localhost:4566 AWS_ACCESS_KEY_ID=test \
       AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1 \
-      AP_AUDIT_SHIPPING_S3_BUCKET=ap-audit-worm \
+      FEOH_AUDIT_SHIPPING_S3_BUCKET=feoh-audit-worm \
       pytest tests/test_localstack_integration.py -v
 """
 
@@ -28,8 +28,8 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 
-ENDPOINT = os.environ.get("AP_AWS_ENDPOINT_URL", "")
-BUCKET = os.environ.get("AP_AUDIT_SHIPPING_S3_BUCKET", "ap-audit-worm")
+ENDPOINT = os.environ.get("FEOH_AWS_ENDPOINT_URL", "")
+BUCKET = os.environ.get("FEOH_AUDIT_SHIPPING_S3_BUCKET", "feoh-audit-worm")
 
 
 def _localstack_up() -> bool:
@@ -46,20 +46,20 @@ _UP = _localstack_up()
 
 # Locally this module skips when LocalStack isn't up, so a dev box without
 # `pnpm aws:up` still runs the rest of the suite. But the CI service-e2e job
-# starts LocalStack on purpose and sets AP_REQUIRE_INTEGRATION — there, an
+# starts LocalStack on purpose and sets FEOH_REQUIRE_INTEGRATION — there, an
 # unreachable service is a hard failure, never a silent skip that leaves the
 # job green with this coverage quietly dropped.
-if not _UP and os.environ.get("AP_REQUIRE_INTEGRATION"):
+if not _UP and os.environ.get("FEOH_REQUIRE_INTEGRATION"):
     raise RuntimeError(
-        "LocalStack is required (AP_REQUIRE_INTEGRATION is set) but was not "
-        "reachable at AP_AWS_ENDPOINT_URL. The CI service-e2e job starts it "
+        "LocalStack is required (FEOH_REQUIRE_INTEGRATION is set) but was not "
+        "reachable at FEOH_AWS_ENDPOINT_URL. The CI service-e2e job starts it "
         "on purpose; refusing to skip and drop coverage silently."
     )
 
 pytestmark = [
     pytest.mark.skipif(
         not _UP,
-        reason="LocalStack not configured/reachable — set AP_AWS_ENDPOINT_URL + `pnpm aws:up`",
+        reason="LocalStack not configured/reachable — set FEOH_AWS_ENDPOINT_URL + `pnpm aws:up`",
     ),
     pytest.mark.asyncio,
 ]
@@ -75,7 +75,7 @@ def _row() -> object:
 
     return AuditLogRow(
         id=uuid.uuid4(),
-        tenant_db="ap_acme",
+        tenant_db="feoh_acme",
         organization_id=uuid.uuid4(),
         correlation_id=None,
         actor_id=None,

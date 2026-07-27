@@ -11,7 +11,7 @@
 #
 # Run `bin/sops-init.sh` once. It will:
 #   1. Verify aws CLI auth and sops + jq are installed
-#   2. Create a KMS key + alias (alias/account-payables-sops) in us-east-1
+#   2. Create a KMS key + alias (alias/feohledger-sops) in us-east-1
 #      IF one doesn't already exist — idempotent on re-run
 #   3. Write the key's alias ARN into the placeholders below
 #   4. Seed empty encrypted files from the examples
@@ -58,7 +58,7 @@
 # To rotate the KMS key itself:
 #   1. Create a new key (or let AWS auto-rotate the key material annually).
 #   2. Update the alias to point at the new key:
-#        aws kms update-alias --alias-name alias/account-payables-sops \
+#        aws kms update-alias --alias-name alias/feohledger-sops \
 #          --target-key-id <new-key-id>
 #   3. Run `sops updatekeys infra/terraform.tfvars.sops` and the same for
 #      backend/.env.sops to re-encrypt with the new key material.
@@ -73,7 +73,7 @@ creation_rules:
   # secret rotated without decrypting both versions. Acceptable for the
   # rare-rotation cadence on this project.
   - path_regex: infra/terraform\.tfvars\.sops$
-    kms: 'arn:aws:kms:KMS_REGION_PLACEHOLDER:KMS_ACCOUNT_PLACEHOLDER:alias/account-payables-sops'
+    kms: 'arn:aws:kms:KMS_REGION_PLACEHOLDER:KMS_ACCOUNT_PLACEHOLDER:alias/feohledger-sops'
 
   - path_regex: backend/\.env\.sops$
-    kms: 'arn:aws:kms:KMS_REGION_PLACEHOLDER:KMS_ACCOUNT_PLACEHOLDER:alias/account-payables-sops'
+    kms: 'arn:aws:kms:KMS_REGION_PLACEHOLDER:KMS_ACCOUNT_PLACEHOLDER:alias/feohledger-sops'

@@ -9,16 +9,16 @@ _NON_DEPLOYED_ENVS = frozenset({"development", "dev", "local", "test", "ci"})
 
 
 class Settings(BaseSettings):
-    model_config = {"env_prefix": "AP_"}
+    model_config = {"env_prefix": "FEOH_"}
 
-    # Deployment environment discriminator (AP_ENVIRONMENT). Defaults to
+    # Deployment environment discriminator (FEOH_ENVIRONMENT). Defaults to
     # "development" so local dev + CI are unaffected; deployed envs set it to
     # "production"/"staging" to opt into the production safety guards below.
     environment: str = "development"
 
     # Database
-    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/account_payables"
-    tenant_db_prefix: str = "ap_"
+    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/feohledger"
+    tenant_db_prefix: str = "feoh_"
 
     # Auth / JWT
     secret_key: str = "change-me-in-production"
@@ -240,7 +240,7 @@ class Settings(BaseSettings):
     # one of the five fixed tools via deterministic keyword/intent heuristics —
     # no network, no key. The `claude` adapter (Anthropic Messages API tool-use)
     # is selected only when an API key is configured; the dispatcher
-    # auto-downgrades `claude` → `mock` when `AP_ANTHROPIC_API_KEY` is empty, so
+    # auto-downgrades `claude` → `mock` when `FEOH_ANTHROPIC_API_KEY` is empty, so
     # `pnpm dev` never requires a real credential. Reuses the extraction key — no
     # new secret.
     assistant_provider: str = "mock"  # "mock" (local-first default) | "claude"
@@ -248,7 +248,7 @@ class Settings(BaseSettings):
     # request time; never hardcoded in the adapter.
     assistant_model: str = ""
     # Per-org / per-month token budget. 0 disables the cap (matching the
-    # AP_MAX_CONCURRENT_SESSIONS=0 convention). Per-org override lives in
+    # FEOH_MAX_CONCURRENT_SESSIONS=0 convention). Per-org override lives in
     # Organization.settings.assistant.monthly_token_budget.
     assistant_monthly_token_budget: int = 200_000
     # Caps the claude/ollama adapter's tool-use loop so a single turn can't run
@@ -398,7 +398,7 @@ class Settings(BaseSettings):
     mfa_enabled: bool = False
     # Issuer label baked into TOTP provisioning URIs (what the user sees in
     # Google Authenticator / 1Password). Customer name keeps it brand-aligned.
-    mfa_issuer: str = "Account Payables"
+    mfa_issuer: str = "FeohLedger"
     # Email-OTP code lifetime. Six minutes balances "user has time to switch
     # from inbox back to the form" with "stolen email is short-lived."
     mfa_email_otp_ttl_seconds: int = 360
@@ -425,7 +425,7 @@ class Settings(BaseSettings):
     # set this to your apex (e.g. `app.example.com`).
     webauthn_rp_id: str = "localhost"
     # Human-readable Relying Party name shown by the authenticator UI.
-    webauthn_rp_name: str = "Account Payables"
+    webauthn_rp_name: str = "FeohLedger"
     # Comma-separated list of allowed origins the browser ceremony may come
     # from — verified against `response.origin` on both register + authenticate.
     # Multiple because each tenant is its own subdomain origin in dev. A value
@@ -438,7 +438,7 @@ class Settings(BaseSettings):
 
     # SSO / SCIM
     # Base URL the OIDC provider redirects back to. Must exactly match what's
-    # registered with Okta / Entra. {base} is substituted from AP_PUBLIC_URL.
+    # registered with Okta / Entra. {base} is substituted from FEOH_PUBLIC_URL.
     sso_redirect_path: str = "/login/sso-callback"
     # Called after successful SSO to hand the browser our own JWT in a short-
     # lived URL fragment; the frontend reads and stores it. Keep the path
@@ -467,7 +467,7 @@ class Settings(BaseSettings):
     # Master switch for outbound webhooks: subscription emit + the background
     # retry/delivery sweep. OFF by default so a fresh clone / pnpm dev never
     # makes outbound HTTP calls and no background task spins up. Flip
-    # AP_WEBHOOKS_ENABLED on in deployed envs. No secret here — each
+    # FEOH_WEBHOOKS_ENABLED on in deployed envs. No secret here — each
     # subscription's signing secret is generated at create time and stored on
     # the row (it's a symmetric HMAC verification key; see app/models/webhook.py).
     # See backend/docs/public-api.md § Outbound webhooks.
@@ -480,7 +480,7 @@ class Settings(BaseSettings):
     # re-checked immediately before every dispatch (DNS-rebinding TOCTOU).
     # `true` skips only the address checks so local-first dev can point a
     # webhook at 127.0.0.1 (e.g. a local sink); never enable in a deployed env —
-    # main.lifespan refuses to boot with this on when AP_DEBUG=false.
+    # main.lifespan refuses to boot with this on when FEOH_DEBUG=false.
     # See backend/docs/public-api.md § Outbound webhooks (target-URL SSRF guard).
     webhooks_allow_private_targets: bool = False
 
@@ -535,7 +535,7 @@ class Settings(BaseSettings):
 
     # Security headers (SOC 2 — TLS + tablestakes hardening)
     # HSTS is gated off by default so local HTTP dev isn't broken. Deployed
-    # environments should set AP_HSTS_ENABLED=true.
+    # environments should set FEOH_HSTS_ENABLED=true.
     hsts_enabled: bool = False
     # Two years is the value required by browsers that consider preload
     # submissions (hstspreload.org). Keep it as a setting so ops can dial it
@@ -712,7 +712,7 @@ class Settings(BaseSettings):
     # audited path. Per-record-class retention periods live on
     # `Organization.settings.retention` (configurable, not hardcoded), read +
     # updated via GET/PUT /api/retention-policy. Disabled by default so local
-    # dev / tests don't run a background sweep; flip AP_RETENTION_ENABLED on in
+    # dev / tests don't run a background sweep; flip FEOH_RETENTION_ENABLED on in
     # deployed envs. CRITICAL: the sweep composes with the audit-immutability
     # trigger — `audit_log` rows are NEVER deleted; "retention" for the audit
     # class means verifying WORM-shipment and recording a manifest. See
@@ -725,9 +725,9 @@ class Settings(BaseSettings):
     retention_default_months: int = 84
 
     # App
-    # Default is `False` so a deploy that forgets to set `AP_DEBUG` does not
+    # Default is `False` so a deploy that forgets to set `FEOH_DEBUG` does not
     # ship FastAPI tracebacks (internal paths, env names) to clients. Local
-    # dev sets `AP_DEBUG=true` in `.env`.
+    # dev sets `FEOH_DEBUG=true` in `.env`.
     debug: bool = False
 
     @property
@@ -742,7 +742,7 @@ class Settings(BaseSettings):
         # tenant-creating endpoint.
         if self.is_deployed and not self.hcaptcha_secret:
             raise ValueError(
-                "AP_HCAPTCHA_SECRET must be set when AP_ENVIRONMENT is a deployed "
+                "FEOH_HCAPTCHA_SECRET must be set when FEOH_ENVIRONMENT is a deployed "
                 f"environment ({self.environment!r}); refusing to boot with captcha "
                 "verification disabled on the public signup endpoint."
             )
@@ -752,7 +752,7 @@ class Settings(BaseSettings):
     def _require_real_secret_key_in_deployed_envs(self) -> "Settings":
         # The JWT signing key is the root of the whole auth system. The default
         # `change-me-in-production` is in the public repo, so a deployed instance
-        # that never set AP_SECRET_KEY would let anyone forge a token for any
+        # that never set FEOH_SECRET_KEY would let anyone forge a token for any
         # user/org with HS256 + the known string. Refuse to boot rather than ship
         # that silently (mirrors the captcha guard above). A too-short key is
         # likewise rejected — HS256 wants at least 256 bits of entropy.
@@ -760,8 +760,8 @@ class Settings(BaseSettings):
             self.secret_key == "change-me-in-production" or len(self.secret_key) < 32
         ):
             raise ValueError(
-                "AP_SECRET_KEY must be set to a cryptographically random value of "
-                f"at least 32 chars when AP_ENVIRONMENT is deployed ({self.environment!r}); "
+                "FEOH_SECRET_KEY must be set to a cryptographically random value of "
+                f"at least 32 chars when FEOH_ENVIRONMENT is deployed ({self.environment!r}); "
                 "refusing to boot with the default / weak JWT signing key."
             )
         return self
@@ -777,13 +777,13 @@ class Settings(BaseSettings):
             return self
         if self.lithic_api_key and self.lithic_sandbox:
             raise ValueError(
-                "AP_LITHIC_SANDBOX must be false when AP_LITHIC_API_KEY is set in a "
+                "FEOH_LITHIC_SANDBOX must be false when FEOH_LITHIC_API_KEY is set in a "
                 f"deployed environment ({self.environment!r}); refusing to boot a live "
                 "card program pointed at the Lithic sandbox host."
             )
         if (self.nium_client_id or self.nium_client_secret) and self.nium_sandbox:
             raise ValueError(
-                "AP_NIUM_SANDBOX must be false when Nium credentials are set in a "
+                "FEOH_NIUM_SANDBOX must be false when Nium credentials are set in a "
                 f"deployed environment ({self.environment!r}); refusing to boot a live "
                 "card program pointed at the Nium sandbox host."
             )

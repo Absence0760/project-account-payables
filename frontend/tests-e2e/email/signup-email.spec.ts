@@ -11,8 +11,8 @@ import type { Page } from '@playwright/test';
  * provisions the tenant (and sends the welcome email, which also lands).
  *
  * Gated on Mailpit being reachable. It ALSO requires the backend to be running
- * with AP_EMAIL_PROVIDER=smtp (pointing at Mailpit) — locally:
- *   pnpm mail:up && AP_EMAIL_PROVIDER=smtp AP_SMTP_PORT=1025 pnpm dev:backend
+ * with FEOH_EMAIL_PROVIDER=smtp (pointing at Mailpit) — locally:
+ *   pnpm mail:up && FEOH_EMAIL_PROVIDER=smtp FEOH_SMTP_PORT=1025 pnpm dev:backend
  * The CI e2e job sets that env. If the backend is on the `console` adapter the
  * verification email never arrives and the test fails (a setup error, surfaced
  * loudly) rather than silently passing.
@@ -72,7 +72,7 @@ test.describe('Outbound email via Mailpit (signup)', () => {
 				msg = await findMessageTo(page, email);
 				return msg?.Subject ?? null;
 			}, { timeout: 15_000 })
-			.toBe('Verify your Account Payables workspace');
+			.toBe('Verify your FeohLedger workspace');
 		expect(msg!.To[0].Address).toBe(email);
 
 		// 3. Pull the verify token out of the captured email body.

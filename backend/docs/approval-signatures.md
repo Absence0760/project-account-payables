@@ -80,7 +80,7 @@ already lives elsewhere on the row — the block stays PII-free).
   An approval row written before signing was enabled reports `signed: false`
   (nothing to verify) rather than `valid: false`.
 
-## The signing key (`AP_APPROVAL_SIGNING_KEY`)
+## The signing key (`FEOH_APPROVAL_SIGNING_KEY`)
 
 | | |
 |--|--|

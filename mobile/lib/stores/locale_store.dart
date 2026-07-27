@@ -11,7 +11,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 ///
 /// This is the mobile counterpart of the web `setLocale()` in
 /// `frontend/src/lib/i18n/store.svelte.ts` (which persists to `localStorage`
-/// under `ap_locale`, also device-scoped).
+/// under `feoh_locale`, also device-scoped).
 class LocaleStore extends ChangeNotifier {
   static final LocaleStore instance = LocaleStore._();
   LocaleStore._();

@@ -8,8 +8,8 @@ import 'package:http_parser/http_parser.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path/path.dart' as p;
 
-import 'package:ap_mobile/api/api_client.dart';
-import 'package:ap_mobile/config.dart';
+import 'package:feohledger_mobile/api/api_client.dart';
+import 'package:feohledger_mobile/config.dart';
 
 /// Camera capture and invoice upload service.
 class CameraCapture {

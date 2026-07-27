@@ -6,7 +6,7 @@ Flow:
        Backend fetches the OIDC discovery doc, mints state + nonce in Redis,
        and 302-redirects the browser to the IdP's authorization endpoint.
     3. User authenticates with the IdP; IdP redirects back to our fixed
-       callback path (AP_PUBLIC_URL + AP_SSO_REDIRECT_PATH) with code + state.
+       callback path (FEOH_PUBLIC_URL + FEOH_SSO_REDIRECT_PATH) with code + state.
     4. Frontend callback page calls POST /api/auth/sso/callback with code+state.
        Backend consumes state (single-use), exchanges code for tokens,
        validates the ID token signature + claims, JIT-provisions the user,

@@ -3,7 +3,7 @@
 Multi-entity lets one organization run several **legal entities / subsidiaries**
 inside its single tenant database. This is distinct from multi-tenancy: the
 tenant boundary is still the per-org database (`app/tenant.py`,
-`X-Tenant-Slug` → `ap_<slug>`). Entities subdivide data *within* one tenant.
+`X-Tenant-Slug` → `feoh_<slug>`). Entities subdivide data *within* one tenant.
 
 **Status: complete (Phases 1–4).** On top of the Phase 1 schema, requests scope
 to a selected subsidiary via the `X-Entity-ID` header, new rows are stamped with

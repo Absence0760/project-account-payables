@@ -47,7 +47,7 @@ def _unique_slug(prefix: str = "pchild") -> str:
 
 async def _drop_provisioned(realdb, slug: str) -> None:
     """Tear down a provisioned child: delete its control-plane org/user rows and
-    drop the `ap_<slug>` tenant DB. Idempotent — safe even if provisioning failed
+    drop the `feoh_<slug>` tenant DB. Idempotent — safe even if provisioning failed
     partway (provision_tenant already drops its own orphan DB on failure)."""
     async with realdb.control_sessionmaker()() as s:
         org = (

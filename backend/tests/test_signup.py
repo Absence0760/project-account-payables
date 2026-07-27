@@ -362,7 +362,7 @@ def test_config_requires_captcha_in_deployed_env():
     # A deployed env also requires a real JWT signing key
     # (_require_real_secret_key_in_deployed_envs). Pass a valid one explicitly
     # so this test isolates the captcha axis and doesn't depend on the ambient
-    # AP_SECRET_KEY (CI's is shorter than the 32-char floor).
+    # FEOH_SECRET_KEY (CI's is shorter than the 32-char floor).
     strong_key = "x" * 32
 
     # Local/CI (development) is fine with an empty secret.

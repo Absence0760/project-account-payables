@@ -1,5 +1,5 @@
 ---
-description: Polish the UI/UX of a single web page or mobile screen to project-account-payables' quality bar. Dispatches to `ui-polisher` (frontend / SvelteKit) or `mobile-ui-polisher` (mobile / Flutter) based on the resolved target.
+description: Polish the UI/UX of a single web page or mobile screen to FeohLedger' quality bar. Dispatches to `ui-polisher` (frontend / SvelteKit) or `mobile-ui-polisher` (mobile / Flutter) based on the resolved target.
 argument-hint: <route, screen, or component/widget path>
 ---
 

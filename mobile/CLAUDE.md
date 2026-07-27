@@ -158,7 +158,7 @@ to the session that produced them. `services/session.dart` is the chokepoint;
   device preference, not account data) and `sequenced_fetch.dart` (the
   `SequencedFetch` mixin — a per-store request-sequence helper, not an
   account-scoped store singleton).
-- **Cache DB upgrade path.** `ap_cache.db` is at schema v2; the v1→v2 upgrade
+- **Cache DB upgrade path.** `feohledger_cache.db` is at schema v2; the v1→v2 upgrade
   deletes every pre-existing row, because rows written before scoping have
   global keys (`dashboard`, `invoices_all_`, …) with no owner to attribute them
   to. An install carrying an old cache therefore starts empty rather than
@@ -179,7 +179,7 @@ The mobile app talks to the same FastAPI backend as the web frontend:
 - Auth: `POST /api/auth/login` → JWT stored in secure storage
 - **MFA**: `POST /api/auth/login` may return an **MFA challenge**
   (`{mfa_required: true, mfa_challenge_token, methods, must_enroll}`) instead of
-  a `TokenResponse` when `AP_MFA_ENABLED` is on and the user is enrolled /
+  a `TokenResponse` when `FEOH_MFA_ENABLED` is on and the user is enrolled /
   org-enforced. `AuthStore.login` returns a `LoginResult`
   (`success`/`mfaRequired`/`failure`); on `mfaRequired` the login screen pushes
   `MfaScreen`, which submits the code to `POST /api/auth/mfa/verify` (`totp` or

@@ -2,10 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:intl/intl.dart';
 
-import 'package:ap_mobile/l10n/gen/app_localizations.dart';
-import 'package:ap_mobile/models/cash_flow.dart';
-import 'package:ap_mobile/stores/cash_flow_store.dart';
-import 'package:ap_mobile/widgets/kpi_card.dart';
+import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/models/cash_flow.dart';
+import 'package:feohledger_mobile/stores/cash_flow_store.dart';
+import 'package:feohledger_mobile/widgets/kpi_card.dart';
 
 final _currencyFormat = NumberFormat.currency(symbol: '\$');
 

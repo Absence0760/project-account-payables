@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'package:ap_mobile/models/vendor.dart';
+import 'package:feohledger_mobile/models/vendor.dart';
 
 class VendorStatusBadge extends StatelessWidget {
   final VendorStatus status;

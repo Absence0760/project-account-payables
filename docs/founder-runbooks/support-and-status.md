@@ -18,13 +18,13 @@ set up; neither is optional for a paying customer.
 | **Front** | $19/seat | Shared inbox over email + SMS + WhatsApp. |
 
 **Recommendation for solo / pre-seed**: Plain or Help Scout. A
-dedicated email like `support@yourcompany.com` routed to the shared
+dedicated email like `support@feohledger.com` routed to the shared
 inbox is fine. Skip the in-app chat widget until you have >20
 customers — it's a time sink when you have 2.
 
 ### What to set up
 
-1. **Forwarding address**: `support@yourcompany.com` forwards into
+1. **Forwarding address**: `support@feohledger.com` forwards into
    the shared inbox.
 2. **First-response SLA**: Public commitment of "within one business
    day." Deliver in <4h in practice for your first 10 customers.
@@ -60,7 +60,7 @@ monitoring + on-call in one product. Free tier works for pre-launch.
    incident history.
 3. **Public subscribe**: Customers can subscribe to email/SMS when
    status changes.
-4. **Domain**: Host it at `status.yourcompany.com` — looks professional.
+4. **Domain**: Host it at `status.feohledger.com` — looks professional.
 
 ## Monitoring → status page automation
 
@@ -70,7 +70,7 @@ Connect Better Stack (or your monitor) to the status page so:
 - Recovery posts "Resolved" automatically
 
 For our backend, point Better Stack at:
-- `https://api.yourcompany.com/api/health` (every 1 min from 3 regions)
+- `https://api.feohledger.com/api/health` (every 1 min from 3 regions)
 - Frontend root URL (loads the static bundle)
 - Core dependency checks — if RDS or S3 is down, acknowledge it
 
@@ -114,9 +114,9 @@ Insurance is its own pre-customer checklist — see
 
 ## Checklist
 
-- [ ] `support@yourcompany.com` active, routed to shared inbox
+- [ ] `support@feohledger.com` active, routed to shared inbox
 - [ ] First-response SLA published on marketing site (or in MSA)
-- [ ] Status page live at `status.yourcompany.com`
+- [ ] Status page live at `status.feohledger.com`
 - [ ] Uptime monitoring alerts to your phone
 - [ ] Incident response runbook written (one page)
 - [ ] Cyber + E&O insurance quoted + bound

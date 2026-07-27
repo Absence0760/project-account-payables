@@ -74,7 +74,7 @@
 	<header class="nav">
 		<a href="/" class="brand">
 			<span class="brand-dot"></span>
-			<span class="brand-name">Better AP</span>
+			<span class="brand-name">FeohLedger</span>
 		</a>
 		<nav class="nav-links">
 			<a href="#features">Features</a>
@@ -145,7 +145,7 @@
 			<h2>One platform, from capture to payment.</h2>
 			<p>
 				Most teams stitch together extraction, approvals, matching, and ERP
-				sync across four tools. Better AP is one tool that does all of it —
+				sync across four tools. FeohLedger is one tool that does all of it —
 				with the pluggable pieces you'd expect.
 			</p>
 		</div>
@@ -240,7 +240,7 @@
 		<div class="footer-inner">
 			<div class="footer-brand">
 				<span class="brand-dot"></span>
-				<span class="brand-name">Better AP</span>
+				<span class="brand-name">FeohLedger</span>
 			</div>
 			<div class="footer-links">
 				<a href="/signup">Sign up</a>
@@ -248,7 +248,7 @@
 				<a href="#how">How it works</a>
 			</div>
 			<div class="footer-copy">
-				© {new Date().getFullYear()} Better AP.
+				© {new Date().getFullYear()} FeohLedger.
 			</div>
 		</div>
 	</footer>

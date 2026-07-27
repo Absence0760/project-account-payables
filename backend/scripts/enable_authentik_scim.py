@@ -19,7 +19,7 @@ Usage (from ``backend/`` with the venv active):
     python scripts/enable_authentik_scim.py --disable  # clear the token
 
 The plaintext token MUST equal the `token:` in
-``authentik/blueprints/account-payables-scim.yaml``.
+``authentik/blueprints/feohledger-scim.yaml``.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from sqlalchemy import select
 from app.database import control_engine, control_session_factory
 from app.models.organization import Organization
 
-# Keep in lockstep with authentik/blueprints/account-payables-scim.yaml (token:).
+# Keep in lockstep with authentik/blueprints/feohledger-scim.yaml (token:).
 SCIM_TOKEN = "local-dev-scim-token-acme"
 
 
@@ -70,7 +70,7 @@ async def _apply(slug: str, disable: bool) -> None:
     if not disable:
         print(f"  Token (matches the Authentik blueprint): {SCIM_TOKEN}")
         print("  Authentik admin: http://localhost:9002  (akadmin / admin)")
-        print("  Then: Providers -> 'Account Payables SCIM' -> Run sync")
+        print("  Then: Providers -> 'FeohLedger SCIM' -> Run sync")
 
 
 async def _main() -> None:

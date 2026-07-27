@@ -15,7 +15,7 @@ import {
 function controlPsql(query: string): string {
 	return execFileSync(
 		'psql',
-		['-h', 'localhost', '-U', 'postgres', '-p', '5432', '-d', 'account_payables', '-tAc', query],
+		['-h', 'localhost', '-U', 'postgres', '-p', '5432', '-d', 'feohledger', '-tAc', query],
 		{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: ['ignore', 'pipe', 'pipe'] }
 	).toString();
 }

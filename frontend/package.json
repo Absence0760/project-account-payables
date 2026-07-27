@@ -1,6 +1,6 @@
 {
 	"$schema": "https://json.schemastore.org/package.json",
-	"name": "FTF",
+	"name": "feohledger-frontend",
 	"version": "0.0.1",
 	"private": true,
 	"scripts": {

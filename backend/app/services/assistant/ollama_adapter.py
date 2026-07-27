@@ -6,14 +6,14 @@ text model (NOT the vision model used for extraction) via Ollama's
 contributor's laptop.
 
 Local-first rail (#7): even though this is the committed default
-(``AP_ASSISTANT_PROVIDER=ollama``), a fresh clone with no Ollama running — or
+(``FEOH_ASSISTANT_PROVIDER=ollama``), a fresh clone with no Ollama running — or
 a model that isn't pulled / can't do tool-calling — **fails soft to the
 deterministic ``mock`` adapter**, so ``pnpm dev`` still answers with zero
 dependencies. The fallback is decided at call time (a sync dispatcher can't
 probe the network), mirroring how the claude adapter downgrades on a missing
 key.
 
-The manual tool-use loop is capped at ``AP_ASSISTANT_MAX_TOOL_HOPS`` to bound
+The manual tool-use loop is capped at ``FEOH_ASSISTANT_MAX_TOOL_HOPS`` to bound
 runaway cost, and each ``tool_call`` is executed via the orchestrator's
 tenant-bound, audited ``run_tool`` closure — the adapter never touches the DB.
 """

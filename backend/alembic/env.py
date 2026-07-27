@@ -11,8 +11,8 @@ from app.models import Base
 
 config = context.config
 
-# Support per-tenant migrations via AP_MIGRATE_TENANT env var
-tenant_db = os.environ.get("AP_MIGRATE_TENANT")
+# Support per-tenant migrations via FEOH_MIGRATE_TENANT env var
+tenant_db = os.environ.get("FEOH_MIGRATE_TENANT")
 if tenant_db:
     url = settings.database_url.rsplit("/", 1)[0] + "/" + tenant_db
 else:

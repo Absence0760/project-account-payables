@@ -121,7 +121,7 @@ Once Modern Treasury + bank are live:
   ```
 - For direct-funding, the customer's counterparty_id on each vendor
   is their own bank account (verified via Plaid), not yours.
-- The payment webhook URL is `https://api.yourcompany.com/api/payments/webhook/{tenant_slug}/modern_treasury` — register this in the MT dashboard.
+- The payment webhook URL is `https://api.feohledger.com/api/payments/webhook/{tenant_slug}/modern_treasury` — register this in the MT dashboard.
 - First real payment: pick an internal invoice (pay yourself from
   the operating account to your personal account) before touching
   customer money.
