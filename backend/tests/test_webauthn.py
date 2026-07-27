@@ -386,3 +386,34 @@ def test_round_trips_public_key_is_decodable(fake_redis):  # noqa: ARG001
     user_id = uuid.uuid4()
     _, fields = _register(webauthn, user_id)
     assert base64url_to_bytes(fields["public_key"])  # no exception
+
+
+def test_verify_origin_exact_and_wildcard(monkeypatch):
+    """A wildcard entry (https://*.base) admits every tenant subdomain so a
+    multi-tenant deployment doesn't need an env change per tenant — while
+    suffix look-alikes, scheme downgrades, ports, and userinfo tricks stay
+    rejected, and the bare base needs its own exact entry."""
+    from app.services import webauthn
+
+    monkeypatch.setattr(
+        webauthn.settings,
+        "webauthn_origins",
+        "https://app.example.com, https://*.app.example.com",
+    )
+    assert webauthn._verify_origin_ok("https://app.example.com")
+    assert webauthn._verify_origin_ok("https://acme.app.example.com")
+    assert webauthn._verify_origin_ok("https://a.b.app.example.com")
+
+    monkeypatch.setattr(webauthn.settings, "webauthn_origins", "https://*.app.example.com")
+    assert not webauthn._verify_origin_ok("https://app.example.com")
+    assert not webauthn._verify_origin_ok("https://evilapp.example.com")
+    assert not webauthn._verify_origin_ok("http://acme.app.example.com")
+    assert not webauthn._verify_origin_ok("https://acme.app.example.com:8443")
+    assert not webauthn._verify_origin_ok("https://evil.com@acme.app.example.com")
+    assert not webauthn._verify_origin_ok("https://evil.com/?x=.app.example.com")
+    assert not webauthn._verify_origin_ok("https://foo..app.example.com")
+    assert not webauthn._verify_origin_ok("https://.app.example.com")
+
+    # Malformed wildcard entries never match anything.
+    monkeypatch.setattr(webauthn.settings, "webauthn_origins", "https://*.")
+    assert not webauthn._verify_origin_ok("https://acme.app.example.com")

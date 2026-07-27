@@ -94,11 +94,41 @@ def _allowed_origins() -> list[str]:
     return origins or ["http://localhost:7777"]
 
 
+def _origin_matches(seen_origin: str, allowed: str) -> bool:
+    """Exact match, or a wildcard-subdomain entry.
+
+    A deployed multi-tenant app serves one login origin per tenant
+    (``https://acme.app.example.com``), so an exact-match-only allowlist
+    would need an env change for every tenant. An entry shaped
+    ``https://*.app.example.com`` matches any subdomain of that base over
+    the same scheme — never the bare base itself (list it separately), and
+    never a suffix look-alike (``https://evilapp.example.com`` does not end
+    with ``.app.example.com``). Entries carrying an explicit port stay
+    exact-match only.
+    """
+    if seen_origin == allowed:
+        return True
+    scheme, sep, rest = allowed.partition("://*.")
+    if not sep or not scheme or not rest:
+        return False
+    prefix = f"{scheme}://"
+    if not seen_origin.startswith(prefix):
+        return False
+    host = seen_origin[len(prefix) :]
+    if not host.endswith("." + rest):
+        return False
+    # The subdomain part must be a plain DNS label chunk — reject anything
+    # a browser-produced origin could never contain there, including empty
+    # labels (doubled / leading dots).
+    sub = host[: -(len(rest) + 1)]
+    return all(sub.split(".")) and not any(c in sub for c in "/:@?#")
+
+
 def _verify_origin_ok(seen_origin: str) -> bool:
     """py_webauthn's verify takes a single expected_origin (or list, version
     dependent). We pre-check against our allowed set so a multi-tenant /
     multi-origin deployment works regardless of the library's list support."""
-    return seen_origin in _allowed_origins()
+    return any(_origin_matches(seen_origin, allowed) for allowed in _allowed_origins())
 
 
 def _redis_key(prefix: str, user_id: uuid.UUID) -> str:
