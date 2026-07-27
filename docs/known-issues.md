@@ -225,7 +225,7 @@ running realdb pytest (stop `pnpm dev:backend`, or point one of them at another
 instance).
 
 **Recommended fix:** give the harness its own control-plane database per slot
-(`account_payables_pytest<N>`) instead of sharing `feohledger`, so the
+(`feohledger_pytest<N>`) instead of sharing `feohledger`, so the
 harness tenants are invisible to any server on the default control plane. That
 also removes the remaining cross-process contention on the shared control-plane
 unique constraints (emails, org slugs). Deferred here because it moves

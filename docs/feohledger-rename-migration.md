@@ -77,14 +77,25 @@ backup is the safer undo.
 ## 3. SOPS KMS alias
 
 The alias moves from `alias/account-payables-sops` to `alias/feohledger-sops`.
-The key material is unchanged, so nothing needs re-encrypting — just repoint
-the alias:
+The key material is unchanged, so nothing needs re-encrypting. `update-alias`
+is the wrong verb here — it repoints an alias that already *exists*, and
+`alias/feohledger-sops` doesn't yet, so it fails with `NotFoundException`.
+Create the new alias on the same key, then refresh the ARN each encrypted
+file has recorded:
 
 ```bash
-aws kms update-alias --alias-name alias/feohledger-sops \
+aws kms create-alias --alias-name alias/feohledger-sops \
   --target-key-id "$(aws kms describe-key --key-id alias/account-payables-sops \
                        --query KeyMetadata.KeyId --output text)"
+sops updatekeys backend/.env.sops            # rewrite the embedded alias ARN
+sops updatekeys infra/terraform.tfvars.sops
+aws kms delete-alias --alias-name alias/account-payables-sops   # optional, LAST
 ```
+
+Order matters: each `.sops` file records the alias ARN it was encrypted
+under and decryption resolves that recorded ARN, so deleting the old alias
+before `updatekeys` has rewritten it leaves the files undecryptable until
+the alias is restored.
 
 If no encrypted payload exists yet, skip this and run `./bin/sops-init.sh`,
 which now creates the alias under the new name.
