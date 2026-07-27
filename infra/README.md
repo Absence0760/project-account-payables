@@ -48,9 +48,14 @@ This migration path is also tracked under "Pending — needs a code change" in `
 
 ```bash
 cd infra
+# Terraform 1.15+ validates the (intentionally empty) partial-backend block,
+# so point validate at the local backend first. The override file is
+# gitignored — never commit it.
+printf 'terraform {\n  backend "local" {}\n}\n' > backend_override.tf
 terraform init -backend=false    # skip the S3 backend for local validation
 terraform fmt -recursive .       # format
 terraform validate               # syntactic + type-check (no AWS creds needed)
+rm backend_override.tf           # remove before any real plan/apply
 ```
 
 Real `apply` / `plan` runs target the S3 backend; pass the bucket + DynamoDB
