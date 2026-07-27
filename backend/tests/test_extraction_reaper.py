@@ -88,7 +88,9 @@ async def test_reap_once_uses_explicit_threshold_over_default():
         return 0
 
     with (
-        patch.object(extraction_reaper, "control_session_factory", _fake_control_session(["feoh_a"])),
+        patch.object(
+            extraction_reaper, "control_session_factory", _fake_control_session(["feoh_a"])
+        ),
         patch.object(extraction_reaper, "_reap_tenant", capture),
     ):
         before = datetime.now(UTC)

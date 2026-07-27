@@ -72,7 +72,7 @@ def test_pdf_configured_brand_renders():
 def test_pdf_default_brand_when_unconfigured():
     """No brand block → platform default product name, no logo, still renders."""
     brand = get_brand_context(None)
-    assert brand.product_name == "Accounts Payable"
+    assert brand.product_name == "FeohLedger"
     assert not brand.has_logo
     pdf = render_analytics_report_pdf(_ctx(brand=brand))
     assert pdf.startswith(b"%PDF")

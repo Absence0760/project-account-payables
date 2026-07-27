@@ -20,7 +20,7 @@ import secrets
 
 # Stable brand/segment prefix on every key, so a leaked token is recognisable
 # as one of ours (e.g. by secret-scanners) and the format is greppable.
-KEY_BRAND = "ap_live"
+KEY_BRAND = "feoh_live"
 # How many leading characters of the full plaintext key we store as the
 # (non-secret) lookup prefix shown in the management UI.
 PREFIX_LEN = 16
@@ -30,7 +30,7 @@ def generate_api_key() -> tuple[str, str, str]:
     """Mint a new API key.
 
     Returns ``(full_key, key_prefix, key_hash)``:
-      * ``full_key`` — the plaintext, e.g. ``ap_live_<43 url-safe chars>``.
+      * ``full_key`` — the plaintext, e.g. ``feoh_live_<43 url-safe chars>``.
         Shown to the admin EXACTLY ONCE and never persisted or logged.
       * ``key_prefix`` — the first ``PREFIX_LEN`` chars, stored + indexed for
         lookup and shown in the UI. Not a secret on its own.

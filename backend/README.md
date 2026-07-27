@@ -1,4 +1,4 @@
-# Account Payables — Backend
+# FeohLedger — Backend
 
 Python 3.12+ / FastAPI / PostgreSQL / Redis / MinIO
 

@@ -110,7 +110,9 @@ async def test_process_message_routes_to_tenant_db_and_sends():
     # The org's configured ERP rides into the send — without it the lambda
     # path posts via the mock adapter no matter what the tenant configured.
     assert h.send.await_args.kwargs["erp_config"] == erp_cfg
-    assert h.create_engine.call_args_list[1].args[0] == "postgresql+asyncpg://u:p@host:5432/feoh_acme"
+    assert (
+        h.create_engine.call_args_list[1].args[0] == "postgresql+asyncpg://u:p@host:5432/feoh_acme"
+    )
     h.control_engine.dispose.assert_awaited_once()
     h.tenant_engine.dispose.assert_awaited_once()
 

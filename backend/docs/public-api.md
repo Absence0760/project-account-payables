@@ -13,7 +13,7 @@ deprecation policy](#versioning--deprecation-policy)).
 
 | Surface | Auth | Header |
 |---------|------|--------|
-| `/api/v1/*` (programmatic) | API key | `X-API-Key: ap_live_…` |
+| `/api/v1/*` (programmatic) | API key | `X-API-Key: feoh_live_…` |
 | `/api/api-keys/*` (key management) | JWT session + `admin` role | `Authorization: Bearer …` + `X-Tenant-Slug` |
 
 A programmatic request carries **no** `X-Tenant-Slug` header and **no** JWT — the
@@ -50,7 +50,7 @@ flag it.
 
 - **Plaintext shown once.** The mint response is the only place the full key ever
   appears. It is never stored or logged — only `key_hash` + `key_prefix` persist.
-- **Format.** `ap_live_<43 url-safe chars>`. The stable `ap_live` brand makes a
+- **Format.** `feoh_live_<43 url-safe chars>`. The stable `feoh_live` brand makes a
   leaked key recognisable to secret-scanners and greppable.
 - **Scopes.** This slice mints `["read"]` only. The `scopes` column is JSONB and
   each route is gated by `require_api_scope(...)`, so a future write surface

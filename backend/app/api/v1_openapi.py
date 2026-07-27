@@ -66,10 +66,10 @@ def build_public_openapi(app: FastAPI) -> dict[str, Any]:
     dict) — safe to call per request.
     """
     full = get_openapi(
-        title="Account Payables — Public Developer API",
+        title="FeohLedger — Public Developer API",
         version=PUBLIC_API_VERSION,
         description=(
-            "Programmatic, versioned access to the Account Payables platform. "
+            "Programmatic, versioned access to the FeohLedger platform. "
             "Authenticated with a per-organization API key sent in the "
             "`X-API-Key` header (NOT the SPA session JWT). The key resolves to "
             "its organization and tenant data — there is no tenant header to "
@@ -103,7 +103,7 @@ def build_public_openapi(app: FastAPI) -> dict[str, Any]:
             "in": "header",
             "name": "X-API-Key",
             "description": (
-                "Per-organization API key, format `ap_live_…`. Mint via the "
+                "Per-organization API key, format `feoh_live_…`. Mint via the "
                 "admin key-management API. The key is the tenant boundary."
             ),
         }
@@ -115,7 +115,7 @@ def build_public_openapi(app: FastAPI) -> dict[str, Any]:
     full["servers"] = [
         {
             "url": settings.api_public_url.rstrip("/"),
-            "description": "Account Payables API",
+            "description": "FeohLedger API",
         }
     ]
 
@@ -184,5 +184,5 @@ async def public_docs() -> HTMLResponse:
     _ensure_enabled()
     return get_swagger_ui_html(
         openapi_url=f"{_PUBLIC_PATH_PREFIX}/openapi.json",
-        title="Account Payables — Public Developer API",
+        title="FeohLedger — Public Developer API",
     )

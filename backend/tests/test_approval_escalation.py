@@ -165,7 +165,9 @@ async def test_escalate_tenant_writes_audit_row_per_escalation():
         patch.object(approval_escalation, "apply_escalation", MagicMock(return_value=True)),
         patch.object(approval_escalation, "dispatch_audit", _capture_audit),
     ):
-        n = await approval_escalation._escalate_tenant("feoh_acme", datetime.now(UTC), org_id=org_id)
+        n = await approval_escalation._escalate_tenant(
+            "feoh_acme", datetime.now(UTC), org_id=org_id
+        )
 
     assert n == 1
     assert len(audit_calls) == 1

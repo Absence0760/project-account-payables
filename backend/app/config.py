@@ -398,7 +398,7 @@ class Settings(BaseSettings):
     mfa_enabled: bool = False
     # Issuer label baked into TOTP provisioning URIs (what the user sees in
     # Google Authenticator / 1Password). Customer name keeps it brand-aligned.
-    mfa_issuer: str = "Account Payables"
+    mfa_issuer: str = "FeohLedger"
     # Email-OTP code lifetime. Six minutes balances "user has time to switch
     # from inbox back to the form" with "stolen email is short-lived."
     mfa_email_otp_ttl_seconds: int = 360
@@ -425,7 +425,7 @@ class Settings(BaseSettings):
     # set this to your apex (e.g. `app.example.com`).
     webauthn_rp_id: str = "localhost"
     # Human-readable Relying Party name shown by the authenticator UI.
-    webauthn_rp_name: str = "Account Payables"
+    webauthn_rp_name: str = "FeohLedger"
     # Comma-separated list of allowed origins the browser ceremony may come
     # from — verified against `response.origin` on both register + authenticate.
     # Multiple because each tenant is its own subdomain origin in dev. A value

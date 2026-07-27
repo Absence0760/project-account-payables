@@ -193,7 +193,7 @@ async def test_missing_and_bad_key_rejected(realdb):
     assert resp.json()["detail"] == "Invalid API key"
 
     # Garbage key.
-    async with _api_key_client(realdb, "a", api_key="ap_live_not-a-real-key") as c:
+    async with _api_key_client(realdb, "a", api_key="feoh_live_not-a-real-key") as c:
         resp = await c.get("/api/v1/invoices")
     assert resp.status_code == 401
     assert resp.json()["detail"] == "Invalid API key"
@@ -461,7 +461,7 @@ async def test_bad_key_gets_401_not_429(realdb, monkeypatch):
     # must never reach the limiter — it short-circuits on the 401.
     monkeypatch.setattr(settings, "public_api_rate_limit_per_minute", 0)
 
-    async with _api_key_client(realdb, "a", api_key="ap_live_not-a-real-key") as c:
+    async with _api_key_client(realdb, "a", api_key="feoh_live_not-a-real-key") as c:
         for _ in range(3):
             resp = await c.get("/api/v1/invoices")
             assert resp.status_code == 401, resp.text

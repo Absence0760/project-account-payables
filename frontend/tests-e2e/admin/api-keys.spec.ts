@@ -64,7 +64,7 @@ test.describe('/admin/api-keys (admin)', () => {
 		await createModal.getByRole('textbox').first().fill(name);
 		await createModal.getByRole('button', { name: 'Create' }).click();
 
-		// The one-time reveal modal shows the FULL plaintext key (ap_live_… / a
+		// The one-time reveal modal shows the FULL plaintext key (feoh_live_… / a
 		// long token), warns it's shown once, and offers a Copy button.
 		const reveal = page.getByRole('dialog', { name: 'API key created' });
 		await expect(reveal).toBeVisible({ timeout: 10_000 });

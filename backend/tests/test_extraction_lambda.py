@@ -119,7 +119,9 @@ async def test_process_message_connects_to_org_db_name_not_control():
     with _harness(org=org, invoice=invoice) as h:
         await extraction_lambda._process_message(body)
     # Second engine is the tenant one; URL swaps only the db name.
-    assert h.create_engine.call_args_list[1].args[0] == "postgresql+asyncpg://u:p@host:5432/feoh_acme"
+    assert (
+        h.create_engine.call_args_list[1].args[0] == "postgresql+asyncpg://u:p@host:5432/feoh_acme"
+    )
 
 
 # ---------------------------------------------------------------------------

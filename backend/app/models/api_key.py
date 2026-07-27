@@ -45,7 +45,7 @@ class ApiKey(Base, TimestampMixin):
     )
     # Human label so an admin can tell two keys apart in the management UI.
     name: Mapped[str] = mapped_column(String(120), nullable=False)
-    # First segment of the plaintext key (e.g. "ap_live_3kPq9xZ"). Indexed so
+    # First segment of the plaintext key (e.g. "feoh_live_3kPq9xZ"). Indexed so
     # the auth path can resolve the candidate row(s) cheaply, then verify the
     # full sha256 digest in constant time. NOT a secret on its own.
     key_prefix: Mapped[str] = mapped_column(String(32), nullable=False, index=True)

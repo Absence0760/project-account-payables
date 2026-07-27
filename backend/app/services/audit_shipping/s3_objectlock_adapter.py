@@ -51,7 +51,8 @@ class S3ObjectLockAdapter(AuditShippingAdapter):
         self.bucket = config.get("bucket_name") or settings.audit_shipping_s3_bucket
         if not self.bucket:
             raise ValueError(
-                "S3ObjectLockAdapter requires FEOH_AUDIT_SHIPPING_S3_BUCKET or bucket_name in config."
+                "S3ObjectLockAdapter requires FEOH_AUDIT_SHIPPING_S3_BUCKET "
+                "or bucket_name in config."
             )
         region = config.get("region_name") or "us-east-1"
         self.key_prefix = config.get("key_prefix", "audit").strip("/")

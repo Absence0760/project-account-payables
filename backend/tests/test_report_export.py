@@ -376,7 +376,7 @@ def test_brand_provenance_default_product_name_when_no_brand_configured():
     """An org with no brand block → the platform default product name, no logo."""
     brand = get_brand_context(None)
     header = brand_provenance_header(brand, org_name="Acme", report="vendor_spend")
-    assert "Accounts Payable" in header.splitlines()[0]
+    assert "FeohLedger" in header.splitlines()[0]
 
 
 def test_branded_csv_data_grid_still_parses_column_positionally():

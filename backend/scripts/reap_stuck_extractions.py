@@ -6,9 +6,9 @@ loop hasn't been deployed yet (e.g. lambda extraction mode).
 
 Usage (from `backend/`):
 
-    python scripts/reap_stuck_extractions.py                   # uses FEOH_EXTRACTION_TIMEOUT_SECONDS
-    python scripts/reap_stuck_extractions.py --threshold 60    # tighter cutoff (seconds)
-    python scripts/reap_stuck_extractions.py --dry-run         # report without committing
+    python scripts/reap_stuck_extractions.py                 # FEOH_EXTRACTION_TIMEOUT_SECONDS
+    python scripts/reap_stuck_extractions.py --threshold 60  # tighter cutoff (seconds)
+    python scripts/reap_stuck_extractions.py --dry-run       # report without committing
 """
 
 from __future__ import annotations

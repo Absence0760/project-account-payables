@@ -70,7 +70,7 @@ async def _apply(slug: str, disable: bool) -> None:
     if not disable:
         print(f"  Token (matches the Authentik blueprint): {SCIM_TOKEN}")
         print("  Authentik admin: http://localhost:9002  (akadmin / admin)")
-        print("  Then: Providers -> 'Account Payables SCIM' -> Run sync")
+        print("  Then: Providers -> 'FeohLedger SCIM' -> Run sync")
 
 
 async def _main() -> None:

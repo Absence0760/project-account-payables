@@ -82,7 +82,9 @@ async def test_dispatch_audit_lambda_sends_to_sqs_not_local(monkeypatch):
     kw = _kw()
     log_action = AsyncMock()
     with (
-        patch.object(audit_dispatch, "_resolve_tenant_db_name", AsyncMock(return_value="feoh_acme")),
+        patch.object(
+            audit_dispatch, "_resolve_tenant_db_name", AsyncMock(return_value="feoh_acme")
+        ),
         patch.object(audit_dispatch, "_send_to_sqs") as send,
         patch("app.services.audit.log_action", log_action),
     ):
@@ -123,7 +125,9 @@ async def test_dispatch_auth_audit_writes_tenant_audit_row(monkeypatch):
     log_action = AsyncMock()
     org_id, actor_id = uuid.uuid4(), uuid.uuid4()
     with (
-        patch.object(audit_dispatch, "_resolve_tenant_db_name", AsyncMock(return_value="feoh_acme")),
+        patch.object(
+            audit_dispatch, "_resolve_tenant_db_name", AsyncMock(return_value="feoh_acme")
+        ),
         patch("app.database.get_tenant_engine", MagicMock(return_value=MagicMock())),
         patch.object(audit_dispatch, "async_sessionmaker", MagicMock(return_value=lambda: session)),
         patch("app.services.audit.log_action", log_action),
