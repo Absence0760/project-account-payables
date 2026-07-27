@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import (
 from app.config import settings
 
 # ---------------------------------------------------------------------------
-# Control-plane engine (account_payables DB — orgs, users, roles)
+# Control-plane engine (feohledger DB — orgs, users, roles)
 # ---------------------------------------------------------------------------
 control_engine = create_async_engine(
     settings.database_url,
@@ -33,7 +33,7 @@ async def get_control_db() -> AsyncGenerator[AsyncSession]:
 
 
 # ---------------------------------------------------------------------------
-# Per-tenant engines (ap_<slug> DBs — business data)
+# Per-tenant engines (feoh_<slug> DBs — business data)
 # ---------------------------------------------------------------------------
 _tenant_engines: dict[str, AsyncEngine] = {}
 

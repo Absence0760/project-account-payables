@@ -6,8 +6,8 @@ this script to top up.
 
 Usage (from `backend/`):
 
-    python scripts/seed_payable_invoices.py                      # default: 5 into ap_acme
-    python scripts/seed_payable_invoices.py --tenant ap_techflow # specific tenant
+    python scripts/seed_payable_invoices.py                      # default: 5 into feoh_acme
+    python scripts/seed_payable_invoices.py --tenant feoh_techflow # specific tenant
     python scripts/seed_payable_invoices.py --count 10           # more invoices
 """
 
@@ -103,8 +103,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--tenant",
-        default="ap_acme",
-        help="Tenant DB name (default: ap_acme)",
+        default="feoh_acme",
+        help="Tenant DB name (default: feoh_acme)",
     )
     parser.add_argument(
         "--count",

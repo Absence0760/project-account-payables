@@ -3,7 +3,7 @@
 Covers the path shared by ``scripts/create_tenant.py`` and the
 ``/api/signup/complete`` endpoint (``app/services/tenant_provisioning.py``):
 
-* slug -> ``ap_<slug>`` database-name mapping
+* slug -> ``feoh_<slug>`` database-name mapping
 * the CONTROL_TABLES / tenant-tables split (so a tenant DB never gets
   control-plane tables, and every tenant table fans out)
 * ``_create_postgres_database`` idempotency / duplicate-slug handling
@@ -89,11 +89,11 @@ def test_tenant_table_set_excludes_control_and_is_nonempty():
 
 
 def test_db_name_uses_prefix_and_slug():
-    # The slug -> ap_<slug> mapping is the multi-tenancy invariant. Provisioning
+    # The slug -> feoh_<slug> mapping is the multi-tenancy invariant. Provisioning
     # derives db_name as f"{settings.tenant_db_prefix}{slug}".
-    assert settings.tenant_db_prefix == "ap_"
+    assert settings.tenant_db_prefix == "feoh_"
     slug = "newco"
-    assert f"{settings.tenant_db_prefix}{slug}" == "ap_newco"
+    assert f"{settings.tenant_db_prefix}{slug}" == "feoh_newco"
 
 
 # ---------------------------------------------------------------------------
@@ -112,28 +112,28 @@ async def test_create_postgres_database_creates_when_absent():
         "app.services.tenant_provisioning.asyncpg.connect",
         new=AsyncMock(return_value=conn),
     ):
-        await _create_postgres_database("ap_freshslug")
+        await _create_postgres_database("feoh_freshslug")
 
     # Exactly one CREATE DATABASE for the requested name.
     assert conn.execute.await_count == 1
     created_sql = conn.execute.await_args.args[0]
     assert "CREATE DATABASE" in created_sql
-    assert "ap_freshslug" in created_sql
+    assert "feoh_freshslug" in created_sql
     conn.close.assert_awaited_once()
 
 
 @pytest.mark.parametrize(
     "evil_name",
     [
-        'ap_x"; DROP DATABASE account_payables; --',
-        "ap_a b",  # whitespace
-        "ap_a;b",  # statement separator
-        "ap_a)b",  # paren
-        "ap_UPPER",  # uppercase not allowed
+        'feoh_x"; DROP DATABASE feohledger; --',
+        "feoh_a b",  # whitespace
+        "feoh_a;b",  # statement separator
+        "feoh_a)b",  # paren
+        "feoh_UPPER",  # uppercase not allowed
         "1ap_x",  # must start with a letter
         "ap",  # too short (< 3 chars)
         "",  # empty
-        "ap_" + "x" * 70,  # over Postgres's 63-char identifier limit
+        "feoh_" + "x" * 70,  # over Postgres's 63-char identifier limit
     ],
 )
 async def test_create_postgres_database_rejects_unsafe_name(evil_name):
@@ -162,7 +162,7 @@ async def test_create_postgres_database_idempotent_when_present():
         "app.services.tenant_provisioning.asyncpg.connect",
         new=AsyncMock(return_value=conn),
     ):
-        await _create_postgres_database("ap_existing")
+        await _create_postgres_database("feoh_existing")
 
     conn.execute.assert_not_called()
     conn.close.assert_awaited_once()
@@ -180,7 +180,7 @@ async def test_create_postgres_database_closes_connection_on_error():
         new=AsyncMock(return_value=conn),
     ):
         with pytest.raises(RuntimeError):
-            await _create_postgres_database("ap_explodes")
+            await _create_postgres_database("feoh_explodes")
 
     conn.close.assert_awaited_once()
 
@@ -199,13 +199,13 @@ async def test_create_postgres_database_parses_host_port_from_url():
         c.close = AsyncMock()
         return c
 
-    test_url = "postgresql+asyncpg://apuser:apsecret@db.example.com:6543/account_payables"
+    test_url = "postgresql+asyncpg://apuser:apsecret@db.example.com:6543/feohledger"
     with patch.object(settings, "database_url", test_url):
         with patch(
             "app.services.tenant_provisioning.asyncpg.connect",
             new=_fake_connect,
         ):
-            await _create_postgres_database("ap_parsetest")
+            await _create_postgres_database("feoh_parsetest")
 
     assert captured["host"] == "db.example.com"
     assert captured["port"] == 6543
@@ -227,13 +227,13 @@ async def test_create_postgres_database_url_parse_defaults_port_5432():
         return c
 
     # No explicit port in the URL -> default 5432.
-    test_url = "postgresql+asyncpg://u:p@localhost/account_payables"
+    test_url = "postgresql+asyncpg://u:p@localhost/feohledger"
     with patch.object(settings, "database_url", test_url):
         with patch(
             "app.services.tenant_provisioning.asyncpg.connect",
             new=_fake_connect,
         ):
-            await _create_postgres_database("ap_defaultport")
+            await _create_postgres_database("feoh_defaultport")
 
     assert captured["host"] == "localhost"
     assert captured["port"] == 5432
@@ -349,7 +349,7 @@ async def test_provision_tenant_creates_org_user_and_tenant_tables(
             admin_password="Sup3rSecret!pw",
         )
 
-        # Result carries the slug -> ap_<slug> mapping.
+        # Result carries the slug -> feoh_<slug> mapping.
         assert result.db_name == db_name
         assert isinstance(result.organization_id, uuid.UUID)
         assert isinstance(result.user_id, uuid.UUID)

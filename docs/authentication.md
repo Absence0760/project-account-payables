@@ -109,8 +109,8 @@ Login-failure rows for unknown emails are dropped — without an `organization_i
 
 ### Database separation
 
-- **Auth routes** (`/api/auth/*`) read from the control-plane DB (`account_payables`) — this is where `users`, `organizations`, and `roles` tables live
-- **Business routes** (`/api/invoices`, `/api/vendors`, `/api/dashboard`) read from the tenant DB (`ap_<slug>`) — resolved via the `X-Tenant-Slug` header
+- **Auth routes** (`/api/auth/*`) read from the control-plane DB (`feohledger`) — this is where `users`, `organizations`, and `roles` tables live
+- **Business routes** (`/api/invoices`, `/api/vendors`, `/api/dashboard`) read from the tenant DB (`feoh_<slug>`) — resolved via the `X-Tenant-Slug` header
 
 ### Cross-tenant guard
 

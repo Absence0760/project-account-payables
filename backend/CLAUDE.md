@@ -88,7 +88,7 @@ ruff check . && ruff format . # lint + format
 # Migrations
 alembic revision --autogenerate -m "description"
 alembic upgrade head                                # control plane
-FEOH_MIGRATE_TENANT=ap_acme alembic upgrade head      # single tenant
+FEOH_MIGRATE_TENANT=feoh_acme alembic upgrade head      # single tenant
 python scripts/migrate_all_tenants.py               # all tenants
 ```
 
@@ -213,8 +213,8 @@ named for it:
 
 | Slot | Tenants |
 |------|---------|
-| 0 (first / only process) | `ap_pytesta`, `ap_pytestb` |
-| 1, 2, … (each further concurrent process) | `ap_pytesta1`, `ap_pytestb1`, … |
+| 0 (first / only process) | `feoh_pytesta`, `feoh_pytestb` |
+| 1, 2, … (each further concurrent process) | `feoh_pytesta1`, `feoh_pytestb1`, … |
 
 Consequences worth knowing:
 
@@ -231,7 +231,7 @@ Consequences worth knowing:
   number. Use `realdb.info("a").slug` / `realdb.email("a", "admin")`.
 - Any control-plane row a test creates needs a unique value per slot (derive it
   from the slug or a uuid), or two concurrent runs collide on the shared
-  `account_payables` unique constraints.
+  `feohledger` unique constraints.
 
 The harness resets tenant tables plus `Organization.settings` / `parent_org_id`.
 It does **not** delete extra control-plane `users` rows a test creates — those
@@ -267,7 +267,7 @@ backend/
 
 **Two-database pattern:**
 
-1. **Control plane** (`account_payables`) — shared across all tenants
+1. **Control plane** (`feohledger`) — shared across all tenants
    - `Organization` — id, name, slug, db_name, settings (JSONB), plan
    - `User` — email, full_name, hashed_password, sso_provider/id, mfa_secret/enabled/enrolled_at, must_change_password, notification_prefs (JSONB — per-user email/in-app channel prefs, user-global), organization_id
    - `Role` — name (admin, ap_manager, ap_clerk, cfo)
@@ -276,7 +276,7 @@ backend/
    - `ExtractionUsage` — billing: invoice_id, provider, program_type, period
    - `CardRebate` — virtual_card_id, amount, rate, status, period
 
-2. **Tenant DBs** (`ap_<slug>`) — isolated per customer
+2. **Tenant DBs** (`feoh_<slug>`) — isolated per customer
    - `Entity` — legal entity / subsidiary within the tenant (name, slug, currency, is_default, is_active). Business tables carry a nullable `entity_id` FK (`EntityMixin`); every tenant has one `is_default` Entity. Multi-entity Phase 2 (reads/writes scoped by the `X-Entity-ID` header) — see `../docs/multi-entity.md`
    - `Invoice` — invoice_number, vendor_name, amount, status (12 states), file_key, warnings (JSONB), po_match (JSONB), meta (JSONB — holds `audit_summary`)
    - `InvoiceLineItem` — invoice_id, item_code, description, quantity, unit_price, total, gl_account
@@ -818,7 +818,7 @@ Severity: `error`, `warning`, `info`. Auto-detected by `invoice_warnings.py`. `e
 | Script | Purpose |
 |--------|---------|
 | `scripts/seed.py` | Creates 2 tenants (acme, techflow) with full sample data (vendors, invoices, POs, payments, exceptions) + a `WorkflowInstance`/`WorkflowStep` per invoice (so the approval queue + assistant pending-approvals tool aren't empty — `ready_for_review` invoices get an active approval step assigned to the org admin) + calls `seed_extras` so contracts / credit memos / discount offers / expenses are populated too |
-| `scripts/seed_extras.py` | Additive, idempotent per-tenant seed for the contract (`/contracts`), credit-memo (`/credit-memos`), discounting (`/discounts`) and expense (`/expenses`) pages. `seed_extras(session, org_id)` is reused in-line by `seed_tenant`; the CLI (`--tenant ap_acme`) tops up an already-seeded tenant without a wipe. Skips if the tenant already has contracts. |
+| `scripts/seed_extras.py` | Additive, idempotent per-tenant seed for the contract (`/contracts`), credit-memo (`/credit-memos`), discounting (`/discounts`) and expense (`/expenses`) pages. `seed_extras(session, org_id)` is reused in-line by `seed_tenant`; the CLI (`--tenant feoh_acme`) tops up an already-seeded tenant without a wipe. Skips if the tenant already has contracts. |
 | `scripts/seed_payable_invoices.py` | Tops up a tenant's payment queue with N approved invoices (`--tenant`, `--count`) — re-run after executing a payment run drains the queue. |
 | `scripts/create_tenant.py` | CLI wrapper around `services.tenant_provisioning.provision_tenant` — provisions a single tenant (org + admin user + DB + tables) |
 | `scripts/migrate_all_tenants.py` | Runs `alembic upgrade head` on every tenant DB |

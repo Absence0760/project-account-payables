@@ -40,8 +40,8 @@ async def test_run_once_skips_orgs_without_qms_when_default_is_mock():
     # Two orgs: one with a qms block, one without. Default provider is mock,
     # so the org without a qms block is skipped (no opt-in).
     rows = [
-        (uuid.uuid4(), "ap_a", {"qms": {"provider": "mock"}}),
-        (uuid.uuid4(), "ap_b", {}),  # no qms block
+        (uuid.uuid4(), "feoh_a", {"qms": {"provider": "mock"}}),
+        (uuid.uuid4(), "feoh_b", {}),  # no qms block
     ]
     with (
         patch.object(qms_sync, "control_session_factory", _fake_control_session(rows)),
@@ -54,15 +54,15 @@ async def test_run_once_skips_orgs_without_qms_when_default_is_mock():
     ):
         result = await run_qms_sync_once()
 
-    assert result.tenants_scanned == 1  # only ap_a opted in
+    assert result.tenants_scanned == 1  # only feoh_a opted in
     assert sweep.await_count == 1
     assert result.created == 3
 
 
 async def test_run_once_opts_in_all_orgs_when_platform_provider_overridden():
     rows = [
-        (uuid.uuid4(), "ap_a", {}),
-        (uuid.uuid4(), "ap_b", None),
+        (uuid.uuid4(), "feoh_a", {}),
+        (uuid.uuid4(), "feoh_b", None),
     ]
     with (
         patch.object(qms_sync, "control_session_factory", _fake_control_session(rows)),
@@ -81,8 +81,8 @@ async def test_run_once_opts_in_all_orgs_when_platform_provider_overridden():
 
 async def test_run_once_continues_after_one_tenant_fails():
     rows = [
-        (uuid.uuid4(), "ap_a", {"qms": {"provider": "mock"}}),
-        (uuid.uuid4(), "ap_b", {"qms": {"provider": "mock"}}),
+        (uuid.uuid4(), "feoh_a", {"qms": {"provider": "mock"}}),
+        (uuid.uuid4(), "feoh_b", {"qms": {"provider": "mock"}}),
     ]
     side = [
         {"fetched": 3, "created": 3, "updated": 0},

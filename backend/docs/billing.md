@@ -27,7 +27,7 @@ accounts-payable money path the app manages for customers.
 
 Billing is a property of the **customer account**, so — like `Organization`,
 `User`, `ExtractionUsage`, `CardRebate`, and `ApiKey` — it lives in the
-**control-plane** DB (`account_payables`) keyed by `organization_id`. It never
+**control-plane** DB (`feohledger`) keyed by `organization_id`. It never
 fans out to per-tenant DBs. The two tables are in `CONTROL_TABLES`
 (`services/tenant_provisioning.py`), guarded by the coverage test in
 `tests/test_tenant_provisioning.py`.

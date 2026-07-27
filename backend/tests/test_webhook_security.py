@@ -250,7 +250,7 @@ def _org_with_card_secret(secret: str):
     return SimpleNamespace(
         id=uuid.uuid4(),
         slug="acme",
-        db_name="ap_acme",
+        db_name="feoh_acme",
         settings={"cards": {"webhook_signing_secret": secret}},
     )
 
@@ -538,7 +538,7 @@ def _org_with_erp_secret(secret: str):
     return SimpleNamespace(
         id=uuid.uuid4(),
         slug="acme",
-        db_name="ap_acme",
+        db_name="feoh_acme",
         settings={"erp": {"webhook_signing_secret": secret}},
     )
 

@@ -28,7 +28,7 @@ import pytest
 
 from app.services import audit_lambda
 
-BASE_URL = "postgresql+asyncpg://u:p@host:5432/account_payables"
+BASE_URL = "postgresql+asyncpg://u:p@host:5432/feohledger"
 
 
 def _body(**overrides) -> dict:
@@ -41,7 +41,7 @@ def _body(**overrides) -> dict:
         "entity_type": "payment",
         "entity_id": str(uuid.uuid4()),
         "details": {"reason": "test"},
-        "tenant_db_name": "ap_acme",
+        "tenant_db_name": "feoh_acme",
     }
     body.update(overrides)
     return body
@@ -91,13 +91,13 @@ def _harness(log_action: AsyncMock | None = None):
 async def test_process_message_writes_row_to_named_tenant_db():
     """The engine URL is derived from the message's tenant_db_name and the
     audit row is written then committed against that DB."""
-    body = _body(tenant_db_name="ap_acme")
+    body = _body(tenant_db_name="feoh_acme")
     with _harness() as h:
         await audit_lambda._process_message(body)
 
     # Tenant-isolation invariant: URL host/creds kept, only the db name swapped.
     h.create_engine.assert_called_once()
-    assert h.create_engine.call_args.args[0] == "postgresql+asyncpg://u:p@host:5432/ap_acme"
+    assert h.create_engine.call_args.args[0] == "postgresql+asyncpg://u:p@host:5432/feoh_acme"
 
     h.log_action.assert_awaited_once()
     kwargs = h.log_action.await_args.kwargs
@@ -120,8 +120,8 @@ async def test_process_message_targets_the_exact_db_name_from_the_message():
     """A different tenant_db_name produces a different URL — proves the
     consumer trusts only that field for routing (the isolation chokepoint)."""
     with _harness() as h:
-        await audit_lambda._process_message(_body(tenant_db_name="ap_techflow"))
-    assert h.create_engine.call_args.args[0].endswith("/ap_techflow")
+        await audit_lambda._process_message(_body(tenant_db_name="feoh_techflow"))
+    assert h.create_engine.call_args.args[0].endswith("/feoh_techflow")
 
 
 # ---------------------------------------------------------------------------

@@ -63,7 +63,7 @@ async def test_escalate_once_iterates_every_tenant():
         patch.object(
             approval_escalation,
             "control_session_factory",
-            _fake_control_session(["ap_a", "ap_b", "ap_c"]),
+            _fake_control_session(["feoh_a", "feoh_b", "feoh_c"]),
         ),
         patch.object(approval_escalation, "_escalate_tenant", AsyncMock(return_value=2)) as sweep,
     ):
@@ -82,7 +82,7 @@ async def test_escalate_once_continues_after_one_tenant_fails():
         patch.object(
             approval_escalation,
             "control_session_factory",
-            _fake_control_session(["ap_a", "ap_b", "ap_c"]),
+            _fake_control_session(["feoh_a", "feoh_b", "feoh_c"]),
         ),
         patch.object(approval_escalation, "_escalate_tenant", AsyncMock(side_effect=side_effects)),
     ):
@@ -118,7 +118,7 @@ async def test_escalate_tenant_commits_only_when_something_escalated():
         patches[2],
         patch.object(approval_escalation, "apply_escalation", MagicMock(side_effect=[True, False])),
     ):
-        n = await approval_escalation._escalate_tenant("ap_acme", datetime.now(UTC))
+        n = await approval_escalation._escalate_tenant("feoh_acme", datetime.now(UTC))
 
     assert n == 1
     session.commit.assert_awaited_once()
@@ -165,7 +165,7 @@ async def test_escalate_tenant_writes_audit_row_per_escalation():
         patch.object(approval_escalation, "apply_escalation", MagicMock(return_value=True)),
         patch.object(approval_escalation, "dispatch_audit", _capture_audit),
     ):
-        n = await approval_escalation._escalate_tenant("ap_acme", datetime.now(UTC), org_id=org_id)
+        n = await approval_escalation._escalate_tenant("feoh_acme", datetime.now(UTC), org_id=org_id)
 
     assert n == 1
     assert len(audit_calls) == 1
@@ -187,7 +187,7 @@ async def test_escalate_tenant_does_not_commit_when_nothing_overdue():
         patches[2],
         patch.object(approval_escalation, "apply_escalation", MagicMock(return_value=False)),
     ):
-        n = await approval_escalation._escalate_tenant("ap_acme", datetime.now(UTC))
+        n = await approval_escalation._escalate_tenant("feoh_acme", datetime.now(UTC))
 
     assert n == 0
     session.commit.assert_not_awaited()

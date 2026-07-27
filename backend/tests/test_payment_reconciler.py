@@ -61,7 +61,7 @@ async def test_reconciler_skips_payments_younger_than_settle_after():
 
     org = SimpleNamespace(
         id=uuid.uuid4(),
-        db_name="ap_acme",
+        db_name="feoh_acme",
         settings={"payments": {"provider": "mock"}},
     )
 
@@ -98,7 +98,7 @@ async def test_reconciler_accepts_terminal_status_from_adapter():
 
     org = SimpleNamespace(
         id=uuid.uuid4(),
-        db_name="ap_acme",
+        db_name="feoh_acme",
         settings={"payments": {"provider": "mock"}},
     )
     old = _payment(submitted_at=datetime.now(UTC) - timedelta(hours=2))
@@ -142,7 +142,7 @@ async def test_reconciler_does_not_clobber_a_webhook_won_payment():
 
     org = SimpleNamespace(
         id=uuid.uuid4(),
-        db_name="ap_acme",
+        db_name="feoh_acme",
         settings={"payments": {"provider": "mock"}},
     )
     old = _payment(submitted_at=datetime.now(UTC) - timedelta(hours=2))
@@ -194,7 +194,7 @@ async def test_reconciler_poll_resolution_writes_audit_row():
 
     org = SimpleNamespace(
         id=uuid.uuid4(),
-        db_name="ap_acme",
+        db_name="feoh_acme",
         settings={"payments": {"provider": "mock"}},
     )
     old = _payment(submitted_at=datetime.now(UTC) - timedelta(hours=2))
@@ -241,7 +241,7 @@ async def test_reconciler_completion_dispatches_payment_sync():
 
     org = SimpleNamespace(
         id=uuid.uuid4(),
-        db_name="ap_acme",
+        db_name="feoh_acme",
         settings={"payments": {"provider": "mock"}},
     )
     old = _payment(submitted_at=datetime.now(UTC) - timedelta(hours=2))
@@ -277,7 +277,7 @@ async def test_reconciler_aged_out_does_not_dispatch_payment_sync():
 
     org = SimpleNamespace(
         id=uuid.uuid4(),
-        db_name="ap_acme",
+        db_name="feoh_acme",
         settings={"payments": {"provider": "mock"}},
     )
     ancient = _payment(submitted_at=datetime.now(UTC) - timedelta(days=10))
@@ -312,7 +312,7 @@ async def test_reconciler_aged_out_writes_audit_row():
 
     org = SimpleNamespace(
         id=uuid.uuid4(),
-        db_name="ap_acme",
+        db_name="feoh_acme",
         settings={"payments": {"provider": "mock"}},
     )
     ancient = _payment(submitted_at=datetime.now(UTC) - timedelta(days=10))
@@ -350,7 +350,7 @@ async def test_reconciler_aged_out_payments_flip_to_failed():
 
     org = SimpleNamespace(
         id=uuid.uuid4(),
-        db_name="ap_acme",
+        db_name="feoh_acme",
         settings={"payments": {"provider": "mock"}},
     )
     ancient = _payment(submitted_at=datetime.now(UTC) - timedelta(days=10))
@@ -387,7 +387,7 @@ async def test_reconciler_swallows_adapter_exceptions():
 
     org = SimpleNamespace(
         id=uuid.uuid4(),
-        db_name="ap_acme",
+        db_name="feoh_acme",
         settings={"payments": {"provider": "mock"}},
     )
     old = _payment(submitted_at=datetime.now(UTC) - timedelta(hours=2))
@@ -425,7 +425,7 @@ async def test_reconciler_skips_org_without_payment_provider():
 
     org = SimpleNamespace(
         id=uuid.uuid4(),
-        db_name="ap_acme",
+        db_name="feoh_acme",
         settings={"payments": {}},
     )
 
@@ -468,13 +468,13 @@ async def test_reconcile_once_aggregates_outcomes_across_tenants():
 
     orgs = [
         SimpleNamespace(
-            id=uuid.uuid4(), db_name="ap_a", settings={"payments": {"provider": "mock"}}
+            id=uuid.uuid4(), db_name="feoh_a", settings={"payments": {"provider": "mock"}}
         ),
         SimpleNamespace(
-            id=uuid.uuid4(), db_name="ap_b", settings={"payments": {"provider": "mock"}}
+            id=uuid.uuid4(), db_name="feoh_b", settings={"payments": {"provider": "mock"}}
         ),
         SimpleNamespace(
-            id=uuid.uuid4(), db_name="ap_c", settings={"payments": {"provider": "mock"}}
+            id=uuid.uuid4(), db_name="feoh_c", settings={"payments": {"provider": "mock"}}
         ),
     ]
 
@@ -511,13 +511,13 @@ async def test_reconcile_once_isolates_per_tenant_failures():
 
     orgs = [
         SimpleNamespace(
-            id=uuid.uuid4(), db_name="ap_good", settings={"payments": {"provider": "mock"}}
+            id=uuid.uuid4(), db_name="feoh_good", settings={"payments": {"provider": "mock"}}
         ),
         SimpleNamespace(
-            id=uuid.uuid4(), db_name="ap_bad", settings={"payments": {"provider": "mock"}}
+            id=uuid.uuid4(), db_name="feoh_bad", settings={"payments": {"provider": "mock"}}
         ),
         SimpleNamespace(
-            id=uuid.uuid4(), db_name="ap_also_good", settings={"payments": {"provider": "mock"}}
+            id=uuid.uuid4(), db_name="feoh_also_good", settings={"payments": {"provider": "mock"}}
         ),
     ]
 
@@ -570,7 +570,7 @@ async def test_reconcile_once_passes_caller_supplied_now_through():
 
     orgs = [
         SimpleNamespace(
-            id=uuid.uuid4(), db_name="ap_a", settings={"payments": {"provider": "mock"}}
+            id=uuid.uuid4(), db_name="feoh_a", settings={"payments": {"provider": "mock"}}
         ),
     ]
     fixed_now = datetime(2030, 1, 1, 12, 0, 0, tzinfo=UTC)

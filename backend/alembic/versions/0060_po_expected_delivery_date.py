@@ -13,10 +13,10 @@ Revises: 0059_email_locale_pref
 Create Date: 2026-06-20
 
 TENANT DB ONLY: ``purchase_orders`` is a tenant-scoped table (it does not exist
-on the control plane ``account_payables`` DB). The upgrade is gated on the table
+on the control plane ``feohledger`` DB). The upgrade is gated on the table
 existing, so the same revision no-ops on the control DB and fans out to every
 tenant DB via ``scripts/migrate_all_tenants.py`` (or
-``FEOH_MIGRATE_TENANT=ap_<slug> alembic upgrade head`` for one). Fresh tenants get
+``FEOH_MIGRATE_TENANT=feoh_<slug> alembic upgrade head`` for one). Fresh tenants get
 the column from ``create_all`` in ``tenant_provisioning`` (it's on the model) —
 this migration only backfills existing tenant DBs.
 

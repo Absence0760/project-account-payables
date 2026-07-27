@@ -140,7 +140,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: account_payables
+          POSTGRES_DB: feohledger
         ports:
           - 5432:5432
         options: >-
@@ -213,7 +213,7 @@ jobs:
 
       - name: Run tests (shard ${{ matrix.shard }}/4)
         env:
-          FEOH_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/account_payables
+          FEOH_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/feohledger
           FEOH_REDIS_URL: redis://localhost:6379
           FEOH_SECRET_KEY: ci-test-secret
           # MinIO started above; the storage layer defaults already match these,
@@ -344,7 +344,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: account_payables
+          POSTGRES_DB: feohledger
           # Point Postgres at a tmpfs-backed data dir. `/dev/shm` is
           # tmpfs on every Linux runner, so the entire DB lives in
           # RAM for the lifetime of the job. Seed runs faster, and
@@ -381,7 +381,7 @@ jobs:
           --health-retries=5
 
     env:
-      FEOH_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/account_payables
+      FEOH_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/feohledger
       FEOH_REDIS_URL: redis://localhost:6379
       FEOH_SECRET_KEY: ci-test-secret
       FEOH_DEBUG: "true"
@@ -598,7 +598,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: account_payables
+          POSTGRES_DB: feohledger
           PGDATA: /dev/shm/pgdata
         ports:
           - 5432:5432
@@ -619,7 +619,7 @@ jobs:
           --health-retries=5
 
     env:
-      FEOH_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/account_payables
+      FEOH_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/feohledger
       FEOH_REDIS_URL: redis://localhost:6379
       FEOH_SECRET_KEY: ci-test-secret
       FEOH_DEBUG: "true"
@@ -816,7 +816,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: account_payables
+          POSTGRES_DB: feohledger
           PGDATA: /dev/shm/pgdata
         ports:
           - 5432:5432
@@ -837,7 +837,7 @@ jobs:
           --health-retries=5
 
     env:
-      FEOH_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/account_payables
+      FEOH_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/feohledger
       FEOH_REDIS_URL: redis://localhost:6379
       FEOH_SECRET_KEY: ci-test-secret
       FEOH_DEBUG: "true"

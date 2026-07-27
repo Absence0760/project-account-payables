@@ -72,7 +72,7 @@ isolation this project relies on. Find both classes of bug in one pass.
 
    Anywhere code constructs a tenant engine **without** going through
    `get_tenant_db` — e.g. calling `get_tenant_engine(...)` directly
-   from a request handler, or hardcoding an `ap_<slug>` DB name — is
+   from a request handler, or hardcoding an `feoh_<slug>` DB name — is
    a finding. That path bypasses the JWT/header cross-check.
 
 4. **Resource-level authorization on path-param handlers.** Endpoints

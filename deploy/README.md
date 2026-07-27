@@ -22,7 +22,7 @@ The whole flow is four commands on a fresh VM:
 | `tenants.caddy.example` | Template for the per-VM tenant host list (`tenants.caddy`, gitignored). `add-tenant.sh` maintains it — manual edits rarely needed. |
 | `deploy.sh` | Preflight → pull → decrypt secrets → dockerized frontend build (no Node/pnpm on the VM) → backend build → migrate (control plane + all tenants) **before** rolling → `up -d --wait` → Caddy reload. Flags: `--no-pull`, `--backend-only`, `--frontend-only`. |
 | `add-tenant.sh` | Tenant DB + org + admin user (same `provision_tenant` path as signup) + Caddy host block + reload, in one shot. Generates a temp password (first-login change forced) unless `--admin-password` given. |
-| `backup.sh` | Nightly pg dumps (globals + control plane + every `ap_*` DB) streamed to S3. Cron installed by bootstrap. |
+| `backup.sh` | Nightly pg dumps (globals + control plane + every `feoh_*` DB) streamed to S3. Cron installed by bootstrap. |
 | `env.example` | Contract for the sops-encrypted env — `deploy.sh` validates the required keys against it. |
 
 ## Before the VM (once per project)

@@ -11,12 +11,12 @@ Revises: 0058_api_key_usage
 Create Date: 2026-06-20
 
 DUAL-TARGET, EXISTENCE-GUARDED: this single revision runs against the control DB
-(``account_payables`` — has ``users``, no ``vendor_users``) AND every tenant DB
-(``ap_<slug>`` — has ``vendor_users``, no ``users``). Each ``ADD COLUMN`` is
+(``feohledger`` — has ``users``, no ``vendor_users``) AND every tenant DB
+(``feoh_<slug>`` — has ``vendor_users``, no ``users``). Each ``ADD COLUMN`` is
 guarded by an ``information_schema`` table-existence check, so the column lands
 ONLY where its table exists — the same revision is safe on both. The control DB
 is migrated by ``alembic upgrade head``; every tenant DB by
-``scripts/migrate_all_tenants.py`` (or ``FEOH_MIGRATE_TENANT=ap_<slug> alembic
+``scripts/migrate_all_tenants.py`` (or ``FEOH_MIGRATE_TENANT=feoh_<slug> alembic
 upgrade head`` for one). Fresh tenants get the column from ``create_all`` in
 ``tenant_provisioning`` (model field) — this migration only backfills existing
 DBs.

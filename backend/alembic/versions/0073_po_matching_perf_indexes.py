@@ -14,7 +14,7 @@ draft, which in turn issues queries with no supporting index:
   unindexed FKs (Postgres doesn't auto-index FK columns; same class of bug as
   0072's ``invoice_id`` sweep).
 
-Measured against ``ap_acme`` inflated to 50k purchase_orders / 30k
+Measured against ``feoh_acme`` inflated to 50k purchase_orders / 30k
 goods_receipts (a realistic multi-year PO volume): the PO lookup was a 5.1ms
 Seq Scan over 50,005 rows; the GR lookup was a 1.8ms Seq Scan over 30,371 rows.
 Smaller in absolute terms than the invoices table (POs/GRs are usually an
@@ -30,7 +30,7 @@ Create Date: 2026-07-01
 
 Tenant DB only (gated on the ``invoices`` table, so it no-ops on the control
 plane and fans out to every tenant via ``scripts/migrate_all_tenants.py`` — or
-``FEOH_MIGRATE_TENANT=ap_<slug> alembic upgrade head`` for one). Fresh tenants
+``FEOH_MIGRATE_TENANT=feoh_<slug> alembic upgrade head`` for one). Fresh tenants
 get the shape from ``create_all`` in ``tenant_provisioning._create_tenant_tables``
 (every index here is declared ``index=True`` on the owning model in
 ``app.models.procurement``); this migration only builds them for existing

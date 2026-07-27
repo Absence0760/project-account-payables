@@ -6,7 +6,7 @@ silent and looked like flakiness, so they get explicit coverage here:
 
 1. **The tenant pair is exclusive to this pytest process.** The per-test reset
    TRUNCATEs the tenant tables and `pg_terminate_backend`s every other backend
-   on them. Two concurrent pytest runs sharing `ap_pytesta` therefore deleted
+   on them. Two concurrent pytest runs sharing `feoh_pytesta` therefore deleted
    each other's rows and killed each other's connections, surfacing as
    `asyncpg.ConnectionDoesNotExistError` in whatever unrelated file happened to
    be mid-query. Exclusivity now comes from a Postgres session-level advisory

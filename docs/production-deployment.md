@@ -122,8 +122,8 @@ The FastAPI app uses `pydantic-settings` (`backend/app/config.py`) with the `FEO
 
 ```env
 # Database
-FEOH_DATABASE_URL=postgresql+asyncpg://user:pass@rds-host:5432/account_payables
-FEOH_TENANT_DB_PREFIX=ap_
+FEOH_DATABASE_URL=postgresql+asyncpg://user:pass@rds-host:5432/feohledger
+FEOH_TENANT_DB_PREFIX=feoh_
 
 # Auth — REQUIRED in production
 FEOH_SECRET_KEY=<generate via `openssl rand -hex 32`>

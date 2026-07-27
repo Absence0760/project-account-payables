@@ -509,11 +509,11 @@ create a child UNDER ITSELF. Flow: validate the admin-email shape + the slug
 (format + reserved-word + availability, same `utils/slug` checks signup uses) →
 provision the full tenant via the shared
 `services/tenant_provisioning.provision_tenant` primitive (control-plane org +
-admin user + the `ap_<slug>` tenant DB + tables) → stamp `parent_org_id = org.id`
+admin user + the `feoh_<slug>` tenant DB + tables) → stamp `parent_org_id = org.id`
 → audit `partner.child_provisioned` on the partner's trail + `partner.parent_linked`
 (`via:provision`) on the new child's, PII-free (org ids + slug only, never the
 admin email or password). **Failure path is clean** — `provision_tenant` owns the
-orphan-DB rollback (it drops the `ap_<slug>` DB it created on any partial
+orphan-DB rollback (it drops the `feoh_<slug>` DB it created on any partial
 failure), so we never half-create; a slug that races past the pre-check trips the
 unique constraint inside provisioning → a clean **409** (not a 500). An invalid
 slug is **422**, a taken slug **409** (the only enumeration surface is the

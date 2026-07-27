@@ -30,7 +30,7 @@ def _mint(payload: dict) -> str:
 
 
 def _fake_org(org_id: uuid.UUID, slug: str = "acme") -> SimpleNamespace:
-    return SimpleNamespace(id=org_id, slug=slug, db_name=f"ap_{slug}")
+    return SimpleNamespace(id=org_id, slug=slug, db_name=f"feoh_{slug}")
 
 
 def _ctrl_db_returning(org):

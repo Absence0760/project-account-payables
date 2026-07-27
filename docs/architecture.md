@@ -3,11 +3,11 @@
 ## System Overview
 
 ```
-acme.localhost:7777 ──┐                        ┌── ap_acme DB
+acme.localhost:7777 ──┐                        ┌── feoh_acme DB
                       │                        │   (invoices, vendors, ...)
-                      ├── Backend API :8000 ────┼── ap_techflow DB
+                      ├── Backend API :8000 ────┼── feoh_techflow DB
                       │   (shared FastAPI)      │
-techflow.localhost:7777┘                       └── account_payables DB
+techflow.localhost:7777┘                       └── feohledger DB
                                                     (control plane: orgs, users, roles)
                               │
                        ┌──────┴───────┐       ┌─────────────────┐
@@ -34,8 +34,8 @@ techflow.localhost:7777┘                       └── account_payables DB
 The app uses **subdomain-based routing** with **database-per-tenant isolation**:
 
 - Each tenant gets a unique subdomain (e.g., `acme.app.com`, `techflow.app.com`)
-- Each tenant gets their own PostgreSQL database (e.g., `ap_acme`, `ap_techflow`)
-- A shared **control-plane DB** (`account_payables`) stores the tenant registry, users, and roles
+- Each tenant gets their own PostgreSQL database (e.g., `feoh_acme`, `feoh_techflow`)
+- A shared **control-plane DB** (`feohledger`) stores the tenant registry, users, and roles
 - The frontend extracts the subdomain and sends an `X-Tenant-Slug` header on every API request
 - The backend resolves the slug to the correct tenant database via `app/tenant.py`
 
@@ -48,7 +48,7 @@ See [multi-tenancy.md](multi-tenancy.md) for full details.
 3. Backend validates against the control-plane DB and returns a JWT token
 4. Token is stored in `localStorage` and attached as a `Bearer` header on all requests
 5. Every request also includes `X-Tenant-Slug: acme` header
-6. Backend resolves `acme` → `ap_acme` database and routes the query there
+6. Backend resolves `acme` → `feoh_acme` database and routes the query there
 7. On 401 responses, the token is cleared and the user is redirected to `/login`
 
 All API calls go through `src/lib/api.ts` which handles auth headers, tenant headers, error responses, and token lifecycle.

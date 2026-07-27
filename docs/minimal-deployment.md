@@ -199,7 +199,7 @@ run `scripts/seed.py` (demo data) in prod.
 
 - Nightly cron (installed by `bootstrap-vm.sh` as `/etc/cron.d/ap-backup`):
   dumps role globals + per-DB
-  `pg_dump -Fc` of `account_payables` and every `ap_*` tenant DB, streamed
+  `pg_dump -Fc` of `feohledger` and every `feoh_*` tenant DB, streamed
   straight to a versioned backups bucket (nothing persists on disk). Add an
   S3 lifecycle rule (e.g. expire after 90 days). The instance profile already
   has the access.

@@ -7,7 +7,7 @@ adapter as few-shot examples.
 
 See backend/docs/ai-extraction.md § RAG with pgvector.
 
-Tenant-scoped — lives in each `ap_<slug>` database alongside invoices and
+Tenant-scoped — lives in each `feoh_<slug>` database alongside invoices and
 vendors. The `vector` column type is provided by the pgvector Postgres
 extension (created by services.tenant_provisioning._create_tenant_tables).
 """

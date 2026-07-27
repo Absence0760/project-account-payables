@@ -29,7 +29,7 @@ from app.services.audit_shipping import (
 # ---------------------------------------------------------------------------
 
 
-def _row(*, tenant_db: str = "ap_acme", action: str = "invoice.approved") -> AuditLogRow:
+def _row(*, tenant_db: str = "feoh_acme", action: str = "invoice.approved") -> AuditLogRow:
     return AuditLogRow(
         id=uuid.uuid4(),
         tenant_db=tenant_db,
@@ -108,7 +108,7 @@ async def test_ship_once_iterates_every_tenant():
         patch.object(
             audit_log_shipper,
             "control_session_factory",
-            _fake_control_session(["ap_a", "ap_b", "ap_c"]),
+            _fake_control_session(["feoh_a", "feoh_b", "feoh_c"]),
         ),
         patch.object(
             audit_log_shipper,
@@ -140,7 +140,7 @@ async def test_ship_once_continues_after_one_tenant_fails():
         patch.object(
             audit_log_shipper,
             "control_session_factory",
-            _fake_control_session(["ap_a", "ap_b", "ap_c"]),
+            _fake_control_session(["feoh_a", "feoh_b", "feoh_c"]),
         ),
         patch.object(
             audit_log_shipper,
@@ -179,7 +179,7 @@ async def test_ship_once_noop_when_no_providers_configured():
     reading tenants. Flip `providers` at runtime is supported."""
     from app.services import audit_log_shipper
 
-    ctrl_mock = _fake_control_session(["ap_a"])
+    ctrl_mock = _fake_control_session(["feoh_a"])
     with (
         patch.object(audit_log_shipper, "control_session_factory", ctrl_mock),
         patch.object(audit_log_shipper, "_build_adapters", return_value=[]),
@@ -241,7 +241,7 @@ async def test_ship_tenant_requires_every_adapter_to_succeed(tmp_path):
         patch.object(audit_log_shipper, "async_sessionmaker", return_value=factory),
     ):
         with pytest.raises(RuntimeError, match="cloudwatch down"):
-            await audit_log_shipper._ship_tenant("ap_a", [good, bad])
+            await audit_log_shipper._ship_tenant("feoh_a", [good, bad])
 
     # The good adapter DID ship (no way to roll back a side-effectful
     # adapter) — documented at-least-once semantic. But crucially the
@@ -292,7 +292,7 @@ async def test_ship_tenant_marks_rows_shipped_on_success():
         patch.object(audit_log_shipper, "create_async_engine", return_value=engine),
         patch.object(audit_log_shipper, "async_sessionmaker", return_value=factory),
     ):
-        shipped = await audit_log_shipper._ship_tenant("ap_a", [good])
+        shipped = await audit_log_shipper._ship_tenant("feoh_a", [good])
 
     assert shipped == 1
     db_session.commit.assert_awaited_once()
@@ -435,18 +435,18 @@ async def test_cloudwatch_adapter_groups_rows_by_tenant_and_day():
         adapter = cw_mod.CloudWatchAdapter({})
 
     rows = [
-        _row(tenant_db="ap_a"),
-        _row(tenant_db="ap_a", action="invoice.rejected"),
-        _row(tenant_db="ap_b"),
+        _row(tenant_db="feoh_a"),
+        _row(tenant_db="feoh_a", action="invoice.rejected"),
+        _row(tenant_db="feoh_b"),
     ]
     await adapter.ship(rows)
 
-    # Two different streams (ap_a/2026-04-21, ap_b/2026-04-21) → two put_log_events calls.
+    # Two different streams (feoh_a/2026-04-21, feoh_b/2026-04-21) → two put_log_events calls.
     assert fake_client.put_log_events.call_count == 2
     stream_names = {
         call.kwargs["logStreamName"] for call in fake_client.put_log_events.call_args_list
     }
-    assert stream_names == {"ap_a/2026-04-21", "ap_b/2026-04-21"}
+    assert stream_names == {"feoh_a/2026-04-21", "feoh_b/2026-04-21"}
 
 
 @pytest.mark.asyncio
@@ -477,14 +477,14 @@ async def test_s3_objectlock_writes_gzipped_jsonl():
     with patch("boto3.client", return_value=fake_client):
         adapter = s3_mod.S3ObjectLockAdapter({"bucket_name": "audit-bucket"})
 
-    rows = [_row(tenant_db="ap_a"), _row(tenant_db="ap_a", action="invoice.rejected")]
+    rows = [_row(tenant_db="feoh_a"), _row(tenant_db="feoh_a", action="invoice.rejected")]
     await adapter.ship(rows)
 
     fake_client.put_object.assert_called_once()
     kwargs = fake_client.put_object.call_args.kwargs
     assert kwargs["Bucket"] == "audit-bucket"
     assert kwargs["ContentEncoding"] == "gzip"
-    assert kwargs["Key"].startswith("audit/ap_a/2026/04/21/")
+    assert kwargs["Key"].startswith("audit/feoh_a/2026/04/21/")
     assert kwargs["Key"].endswith(".jsonl.gz")
 
     # Body decodes back to two JSONL records.

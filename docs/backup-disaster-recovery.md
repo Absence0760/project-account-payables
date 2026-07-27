@@ -10,8 +10,8 @@ This is a SOC 2 prerequisite (`docs/soc2-readiness.md` § Backup, recovery, and 
 
 | | RTO (Recovery Time Objective) | RPO (Recovery Point Objective) |
 |---|---|---|
-| Control-plane DB (`account_payables`) | **4 hours** | **15 minutes** |
-| Tenant DB (`ap_<slug>`) | **4 hours** | **15 minutes** |
+| Control-plane DB (`feohledger`) | **4 hours** | **15 minutes** |
+| Tenant DB (`feoh_<slug>`) | **4 hours** | **15 minutes** |
 | S3 (invoice files) | **24 hours** | **0 minutes** (versioned, durable) |
 | Redis | n/a — transient | n/a |
 | Application code | **15 minutes** (re-deploy from main) | n/a |

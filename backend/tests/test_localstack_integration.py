@@ -75,7 +75,7 @@ def _row() -> object:
 
     return AuditLogRow(
         id=uuid.uuid4(),
-        tenant_db="ap_acme",
+        tenant_db="feoh_acme",
         organization_id=uuid.uuid4(),
         correlation_id=None,
         actor_id=None,

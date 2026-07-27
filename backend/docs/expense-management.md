@@ -20,7 +20,7 @@ reconciliation routes section below.
 
 ## Data model
 
-All five tables are tenant-scoped (live in each `ap_<slug>` DB), carry an
+All five tables are tenant-scoped (live in each `feoh_<slug>` DB), carry an
 explicit `organization_id uuid NOT NULL` (indexed) and the nullable
 `entity_id` FK from `EntityMixin` (multi-entity Phase 2), and `created_at` /
 `updated_at` from `TimestampMixin`. Money is `Decimal` in Python /

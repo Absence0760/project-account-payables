@@ -73,7 +73,7 @@ test.describe('/admin/api-keys (admin)', () => {
 		const plaintext = (await minted.textContent())?.trim() ?? '';
 		// The plaintext is a real, long, prefixed key — not just the stored prefix.
 		expect(plaintext.length).toBeGreaterThan(12);
-		expect(plaintext.startsWith('ap_')).toBe(true);
+		expect(plaintext.startsWith('feoh_')).toBe(true);
 		await expect(reveal.getByText(/shown only once/i)).toBeVisible();
 		await expect(reveal.getByRole('button', { name: 'Copy' })).toBeVisible();
 

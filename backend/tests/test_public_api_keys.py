@@ -352,7 +352,7 @@ async def test_failed_usage_write_does_not_break_auth(monkeypatch):
         scopes=["read"],
         revoked_at=None,
     )
-    org = Organization(id=org_id, name="Stub", slug="stub", db_name="ap_stub")
+    org = Organization(id=org_id, name="Stub", slug="stub", db_name="feoh_stub")
 
     rollback_calls = {"n": 0}
 
@@ -523,7 +523,7 @@ async def test_rate_limit_fails_open_on_redis_outage(monkeypatch):
         scopes=["read"],
         revoked_at=None,
     )
-    org = Organization(id=org_id, name="Stub", slug="stub", db_name="ap_stub")
+    org = Organization(id=org_id, name="Stub", slug="stub", db_name="feoh_stub")
 
     class _StubResult:
         def scalars(self):

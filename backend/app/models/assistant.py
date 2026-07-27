@@ -3,11 +3,11 @@
 Two planes (see ``docs/conversational-assistant.md`` for the decision):
 
   - ``Conversation`` / ``ConversationMessage`` are **tenant-scoped** (live in
-    each ``ap_<slug>`` DB). Conversation content is tenant business data and
+    each ``feoh_<slug>`` DB). Conversation content is tenant business data and
     must inherit tenant isolation: every read filters
     ``(organization_id == jwt_org, user_id == current_user.id)``.
 
-  - ``AssistantUsage`` is **control-plane** (lives in ``account_payables``,
+  - ``AssistantUsage`` is **control-plane** (lives in ``feohledger``,
     next to ``ExtractionUsage``). The token budget is a per-org cap; a single
     upsert-on-``(org, period)`` row enforces it without fanning a sum across
     every tenant DB on each chat call.

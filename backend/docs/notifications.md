@@ -237,7 +237,7 @@ revision that runs on BOTH the control DB (adds `users.locale`) and every tenant
 DB (adds `vendor_users.locale`); each `ADD COLUMN IF NOT EXISTS` is gated on its
 table existing, so the same revision is safe on both. **Fan-out**: control DB via
 `alembic upgrade head`; every existing tenant via
-`python scripts/migrate_all_tenants.py` (or `FEOH_MIGRATE_TENANT=ap_<slug> alembic
+`python scripts/migrate_all_tenants.py` (or `FEOH_MIGRATE_TENANT=feoh_<slug> alembic
 upgrade head`); fresh tenants get the column from `create_all` in
 `tenant_provisioning` (the model field). Nullable + reversible.
 

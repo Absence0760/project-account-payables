@@ -25,7 +25,7 @@ import pytest
 
 from app.services import extraction_lambda
 
-BASE_URL = "postgresql+asyncpg://u:p@host:5432/account_payables"
+BASE_URL = "postgresql+asyncpg://u:p@host:5432/feohledger"
 
 
 def _body(**overrides) -> dict:
@@ -101,7 +101,7 @@ def _harness(*, org, invoice, run_extraction: AsyncMock | None = None):
 async def test_process_message_runs_extraction_for_resolved_tenant():
     body = _body()
     invoice = SimpleNamespace(id=uuid.UUID(body["invoice_id"]))
-    org = SimpleNamespace(id=uuid.UUID(body["org_id"]), db_name="ap_acme")
+    org = SimpleNamespace(id=uuid.UUID(body["org_id"]), db_name="feoh_acme")
     with _harness(org=org, invoice=invoice) as h:
         await extraction_lambda._process_message(body)
 
@@ -115,11 +115,11 @@ async def test_process_message_runs_extraction_for_resolved_tenant():
 async def test_process_message_connects_to_org_db_name_not_control():
     body = _body()
     invoice = SimpleNamespace(id=uuid.UUID(body["invoice_id"]))
-    org = SimpleNamespace(id=uuid.UUID(body["org_id"]), db_name="ap_acme")
+    org = SimpleNamespace(id=uuid.UUID(body["org_id"]), db_name="feoh_acme")
     with _harness(org=org, invoice=invoice) as h:
         await extraction_lambda._process_message(body)
     # Second engine is the tenant one; URL swaps only the db name.
-    assert h.create_engine.call_args_list[1].args[0] == "postgresql+asyncpg://u:p@host:5432/ap_acme"
+    assert h.create_engine.call_args_list[1].args[0] == "postgresql+asyncpg://u:p@host:5432/feoh_acme"
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +138,7 @@ async def test_process_message_org_not_found_disposes_and_returns():
 
 
 async def test_process_message_invoice_not_found_disposes_both_engines():
-    org = SimpleNamespace(id=uuid.uuid4(), db_name="ap_acme")
+    org = SimpleNamespace(id=uuid.uuid4(), db_name="feoh_acme")
     with _harness(org=org, invoice=None) as h:
         await extraction_lambda._process_message(_body())
     h.run_extraction.assert_not_awaited()
@@ -152,7 +152,7 @@ async def test_process_message_invoice_not_found_disposes_both_engines():
 
 
 async def test_process_message_rolls_back_and_reraises_on_extraction_error():
-    org = SimpleNamespace(id=uuid.uuid4(), db_name="ap_acme")
+    org = SimpleNamespace(id=uuid.uuid4(), db_name="feoh_acme")
     invoice = SimpleNamespace(id=uuid.uuid4())
     boom = AsyncMock(side_effect=RuntimeError("extract failed"))
     with _harness(org=org, invoice=invoice, run_extraction=boom) as h:

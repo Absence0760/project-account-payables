@@ -78,7 +78,7 @@ Not durable — do not use in production.
 
 Writes each row as a single JSON log event. Events are partitioned by
 log stream: one stream per `(tenant_db, UTC-date)`, e.g.
-`ap_acme/2026-04-21`. The log group is controlled by
+`feoh_acme/2026-04-21`. The log group is controlled by
 `FEOH_AUDIT_SHIPPING_CLOUDWATCH_GROUP`.
 
 Why one stream per tenant per day? CloudWatch charges by ingested

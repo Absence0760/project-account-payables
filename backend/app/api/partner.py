@@ -373,7 +373,7 @@ async def provision_child(
 
     Flow: validate the slug (format + reserved-word + availability) → provision
     the full tenant via the shared ``provision_tenant`` primitive (control-plane
-    org + admin user + the ``ap_<slug>`` tenant DB + tables, with its own
+    org + admin user + the ``feoh_<slug>`` tenant DB + tables, with its own
     drop-the-orphan-DB rollback on any partial failure) → stamp
     ``parent_org_id = org.id`` on the new org → audit ``partner.child_provisioned``
     on BOTH trails (the partner's and the new child's), PII-free (org ids + slug

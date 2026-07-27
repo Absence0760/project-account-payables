@@ -82,14 +82,14 @@ async def test_dispatch_audit_lambda_sends_to_sqs_not_local(monkeypatch):
     kw = _kw()
     log_action = AsyncMock()
     with (
-        patch.object(audit_dispatch, "_resolve_tenant_db_name", AsyncMock(return_value="ap_acme")),
+        patch.object(audit_dispatch, "_resolve_tenant_db_name", AsyncMock(return_value="feoh_acme")),
         patch.object(audit_dispatch, "_send_to_sqs") as send,
         patch("app.services.audit.log_action", log_action),
     ):
         await audit_dispatch.dispatch_audit(MagicMock(), **kw)
 
     send.assert_called_once()
-    assert send.call_args.kwargs["tenant_db_name"] == "ap_acme"
+    assert send.call_args.kwargs["tenant_db_name"] == "feoh_acme"
     assert send.call_args.kwargs["action"] == "payment.voided"
     log_action.assert_not_awaited()
 
@@ -123,7 +123,7 @@ async def test_dispatch_auth_audit_writes_tenant_audit_row(monkeypatch):
     log_action = AsyncMock()
     org_id, actor_id = uuid.uuid4(), uuid.uuid4()
     with (
-        patch.object(audit_dispatch, "_resolve_tenant_db_name", AsyncMock(return_value="ap_acme")),
+        patch.object(audit_dispatch, "_resolve_tenant_db_name", AsyncMock(return_value="feoh_acme")),
         patch("app.database.get_tenant_engine", MagicMock(return_value=MagicMock())),
         patch.object(audit_dispatch, "async_sessionmaker", MagicMock(return_value=lambda: session)),
         patch("app.services.audit.log_action", log_action),
@@ -169,10 +169,10 @@ async def test_dispatch_auth_audit_swallows_errors_so_auth_never_fails(monkeypat
 
 
 async def test_resolve_tenant_db_name_returns_name_for_known_org():
-    factory = MagicMock(return_value=_FakeCtrl("ap_acme"))
+    factory = MagicMock(return_value=_FakeCtrl("feoh_acme"))
     with patch("app.database.control_session_factory", factory):
         name = await audit_dispatch._resolve_tenant_db_name(uuid.uuid4())
-    assert name == "ap_acme"
+    assert name == "feoh_acme"
 
 
 async def test_resolve_tenant_db_name_raises_for_unknown_org():
@@ -204,7 +204,7 @@ def test_send_to_sqs_serializes_body_and_sets_group_id(monkeypatch):
     with _sqs_settings(monkeypatch, aws_endpoint_url="http://aws:4566"):
         with patch.object(audit_dispatch.boto3, "client", MagicMock(return_value=client)) as mk:
             audit_dispatch._send_to_sqs(
-                tenant_db_name="ap_acme",
+                tenant_db_name="feoh_acme",
                 correlation_id=corr,
                 organization_id=org,
                 actor_id=None,
@@ -221,7 +221,7 @@ def test_send_to_sqs_serializes_body_and_sets_group_id(monkeypatch):
     assert send["MessageGroupId"] == str(corr)
     body = json.loads(send["MessageBody"])
     assert body == {
-        "tenant_db_name": "ap_acme",
+        "tenant_db_name": "feoh_acme",
         "correlation_id": str(corr),
         "organization_id": str(org),
         "actor_id": None,
@@ -237,7 +237,7 @@ def test_send_to_sqs_falls_back_to_s3_endpoint(monkeypatch):
     with _sqs_settings(monkeypatch, aws_endpoint_url=None, s3_endpoint_url="http://s3:4566"):
         with patch.object(audit_dispatch.boto3, "client", MagicMock(return_value=client)) as mk:
             audit_dispatch._send_to_sqs(
-                tenant_db_name="ap_acme",
+                tenant_db_name="feoh_acme",
                 correlation_id=uuid.uuid4(),
                 organization_id=uuid.uuid4(),
                 actor_id=uuid.uuid4(),

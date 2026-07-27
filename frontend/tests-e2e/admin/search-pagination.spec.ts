@@ -45,7 +45,7 @@ function purgeE2EUsers(): void {
 			'-p',
 			'5432',
 			'-d',
-			'account_payables',
+			'feohledger',
 			'-c',
 			`DELETE FROM user_roles WHERE user_id IN (SELECT id FROM users WHERE email LIKE '${pattern}')`,
 			'-c',

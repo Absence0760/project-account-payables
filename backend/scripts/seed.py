@@ -263,7 +263,7 @@ async def seed_control_plane():
                 name="Acme Corp",
                 slug="acme",
                 plan="pro",
-                db_name="ap_acme",
+                db_name="feoh_acme",
                 settings={
                     "cards": {
                         "enabled": True,
@@ -282,7 +282,7 @@ async def seed_control_plane():
                 name="TechFlow Inc",
                 slug="techflow",
                 plan="pro",
-                db_name="ap_techflow",
+                db_name="feoh_techflow",
                 settings={
                     "cards": {
                         "enabled": True,
@@ -1711,7 +1711,7 @@ async def seed_e2e_control_plane(roles: dict[str, "Role"]) -> list[tuple[str, uu
 
         for i in range(1, E2E_TENANT_COUNT + 1):
             slug = f"e2e{i}"
-            db_name = f"ap_{slug}"
+            db_name = f"feoh_{slug}"
             label = f"E2E Worker {i}"
             org_id = _e2e_org_id(i)
             created.append((db_name, org_id, label))
@@ -2250,8 +2250,8 @@ async def seed(lean: bool = False):
     e2e_tenants = await seed_e2e_control_plane(roles)
 
     base_tenants = [
-        ("ap_acme", ACME_ORG_ID, "Acme Corp"),
-        ("ap_techflow", TECH_ORG_ID, "TechFlow Inc"),
+        ("feoh_acme", ACME_ORG_ID, "Acme Corp"),
+        ("feoh_techflow", TECH_ORG_ID, "TechFlow Inc"),
     ]
     tenant_seeder = seed_tenant_lean if lean else seed_tenant
     for db_name, org_id, label in base_tenants + e2e_tenants:
@@ -2267,7 +2267,7 @@ async def seed(lean: bool = False):
     print("  acme.localhost:7777    — demo@acme.com")
     print("  techflow.localhost:7777 — admin@techflow.com")
     for db_name, _org_id, label in e2e_tenants:
-        slug = db_name.removeprefix("ap_")
+        slug = db_name.removeprefix("feoh_")
         # Don't interpolate the password into stdout — CodeQL flags
         # ``print(...{PASSWORD}...)`` even when the value is the dev
         # default. The credentials are documented in ``frontend/tests-e2e/

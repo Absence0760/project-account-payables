@@ -32,8 +32,8 @@ Column semantics — fill each from the actual code, never inferred:
   - `/api/email-intake` (provider-signed inbound webhook — HMAC, no JWT)
   - `/api/erp/webhook/{erp_type}` inbound ERP webhooks (HMAC, tenant in path)
   - `/api/payments/webhook/{tenant_slug}/{provider}` and `/api/cards/webhook/{provider}` payment/card webhooks (HMAC-verified, tenant in URL path, no JWT)
-- **Tenant-scope** — `get_tenant_db` (resolves the tenant DB from the `X-Tenant-Slug` header → `ap_<slug>`, with a JWT `org`-claim cross-check in `backend/app/tenant.py::get_tenant`) is the norm for tenant-data routes. Flag the exceptions explicitly:
-  - **Control-plane-only** routes that hit `account_payables` via `get_control_db` (orgs / users / roles under `/api/admin`, `/api/auth`, `/api/signup`, `/api/organization`) — they touch no tenant DB.
+- **Tenant-scope** — `get_tenant_db` (resolves the tenant DB from the `X-Tenant-Slug` header → `feoh_<slug>`, with a JWT `org`-claim cross-check in `backend/app/tenant.py::get_tenant`) is the norm for tenant-data routes. Flag the exceptions explicitly:
+  - **Control-plane-only** routes that hit `feohledger` via `get_control_db` (orgs / users / roles under `/api/admin`, `/api/auth`, `/api/signup`, `/api/organization`) — they touch no tenant DB.
   - Routes that resolve the tenant from a **URL path segment** rather than the header (`/api/payments/webhook/{tenant_slug}/...`, `/api/erp/webhook/{erp_type}`, email-intake's `+<token>@` address) — note where the tenant comes from.
   - A handler that touches tenant data **without** `get_tenant_db`, or that **hardcodes a tenant DB name**, is a finding for `/audit/auth` / `/audit-security` — note it, don't fix it here.
 - **Request params** — path params (`{invoice_id}`, `{provider}`, `{tenant_slug}`, `{file_key:path}`), query params (the real casing the handler reads — e.g. `?status=`, `?page=`, `?slug=`), and the body schema name for POST/PATCH/PUT (the Pydantic model the handler takes, from `backend/app/schemas/`). Use the names the handler actually reads, not the doc's names.

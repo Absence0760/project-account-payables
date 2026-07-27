@@ -442,7 +442,7 @@ async def get_api_key_db(
 
     Reuses the same `get_tenant_engine` chokepoint as the JWT path's
     `get_tenant_db`, so programmatic reads are tenant-isolated at the data
-    layer — never a hand-rolled engine, never a hardcoded `ap_<slug>` name.
+    layer — never a hand-rolled engine, never a hardcoded `feoh_<slug>` name.
     """
     engine = get_tenant_engine(principal.db_name)
     factory = async_sessionmaker(engine, expire_on_commit=False)

@@ -116,7 +116,7 @@ holds the legal basis and we process under the
 A general description — see `docs/soc2-readiness.md` and the project invariants
 in the root `CLAUDE.md` for specifics:
 
-- **Tenant isolation** at the data layer (database-per-tenant; header→`ap_<slug>`
+- **Tenant isolation** at the data layer (database-per-tenant; header→`feoh_<slug>`
   resolution cross-checked against the JWT `org` claim).
 - **Encryption** in transit (TLS) and at rest (object store / DB); secrets via
   SOPS + AWS KMS, no hardcoded fallbacks.

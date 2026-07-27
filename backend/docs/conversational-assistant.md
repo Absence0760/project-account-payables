@@ -323,7 +323,7 @@ on the security-critical isolation/audit bits.
 `0032_assistant` is branch-aware (gated on the `invoices` table): tenant DBs get
 `assistant_conversations` + `assistant_messages`; the control plane gets
 `assistant_usage`. Apply with
-`FEOH_MIGRATE_TENANT=ap_acme alembic upgrade head` →
+`FEOH_MIGRATE_TENANT=feoh_acme alembic upgrade head` →
 `python scripts/migrate_all_tenants.py` → `alembic upgrade head` (control). Fresh
 tenants get the conversation tables via `tenant_provisioning._create_tenant_tables`
 (`create_all`); `assistant_usage` is in `CONTROL_TABLES` so it's never created on

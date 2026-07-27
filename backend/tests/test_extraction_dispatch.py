@@ -349,7 +349,7 @@ async def test_mark_failed_transitions_pending_invoice_to_failed():
     invoice_id = uuid.uuid4()
     org_id = uuid.uuid4()
 
-    fake_org = SimpleNamespace(id=org_id, db_name="ap_test")
+    fake_org = SimpleNamespace(id=org_id, db_name="feoh_test")
     fake_invoice = SimpleNamespace(
         id=invoice_id,
         correlation_id=uuid.uuid4(),
@@ -365,7 +365,7 @@ async def test_mark_failed_transitions_pending_invoice_to_failed():
 
     # Identify engine by URL so extra create_async_engine calls (e.g. from
     # app.database module-level code) don't shift the counter.
-    _TENANT_URL = "postgresql+asyncpg://localhost/ap_test"
+    _TENANT_URL = "postgresql+asyncpg://localhost/feoh_test"
 
     def make_engine(url, **kwargs):
         if url == _TENANT_URL:
@@ -403,7 +403,7 @@ async def test_mark_failed_is_noop_when_org_not_found():
     mock_ctrl_engine = AsyncMock()
     mock_tenant_engine = AsyncMock()
 
-    _TENANT_URL = "postgresql+asyncpg://localhost/ap_test_noop"
+    _TENANT_URL = "postgresql+asyncpg://localhost/feoh_test_noop"
 
     def make_engine(url, **kwargs):
         if url == _TENANT_URL:
@@ -434,7 +434,7 @@ async def test_mark_failed_does_not_transition_non_pending_invoice():
     invoice_id = uuid.uuid4()
     org_id = uuid.uuid4()
 
-    fake_org = SimpleNamespace(id=org_id, db_name="ap_test")
+    fake_org = SimpleNamespace(id=org_id, db_name="feoh_test")
     fake_invoice = SimpleNamespace(id=invoice_id, status=InvoiceStatus.done)
 
     ctrl_session = _FakeDbSession(fake_org)
@@ -443,7 +443,7 @@ async def test_mark_failed_does_not_transition_non_pending_invoice():
     mock_ctrl_engine = AsyncMock()
     mock_tenant_engine = AsyncMock()
 
-    _TENANT_URL = "postgresql+asyncpg://localhost/ap_test"
+    _TENANT_URL = "postgresql+asyncpg://localhost/feoh_test"
 
     def make_engine(url, **kwargs):
         if url == _TENANT_URL:

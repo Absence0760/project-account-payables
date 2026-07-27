@@ -27,8 +27,8 @@ Note: The frontend also reads the tenant slug from the browser subdomain at runt
 
 | Variable              | Default                                                                  | Description                      |
 |-----------------------|--------------------------------------------------------------------------|----------------------------------|
-| `FEOH_DATABASE_URL`     | `postgresql+asyncpg://postgres:postgres@localhost:5432/account_payables` | Control-plane DB connection      |
-| `FEOH_TENANT_DB_PREFIX` | `ap_`                                                                    | Prefix for tenant database names |
+| `FEOH_DATABASE_URL`     | `postgresql+asyncpg://postgres:postgres@localhost:5432/feohledger` | Control-plane DB connection      |
+| `FEOH_TENANT_DB_PREFIX` | `feoh_`                                                                    | Prefix for tenant database names |
 | `FEOH_SECRET_KEY`       | `change-me-in-production`                                                | JWT signing key                  |
 | `FEOH_S3_ENDPOINT_URL`  | `http://localhost:9000`                                                  | MinIO/S3 endpoint. Set **empty** in deployed envs → real AWS S3 |
 | `FEOH_S3_ACCESS_KEY`    | `minioadmin`                                                             | MinIO/S3 access key. Set **empty** (with the secret key) → boto3 default credential chain (instance/task role) |
@@ -118,14 +118,14 @@ All backend variables are prefixed with `FEOH_` and loaded via `pydantic-setting
 
 ### Database URLs
 
-The `FEOH_DATABASE_URL` points to the **control-plane database** (`account_payables`). Tenant database URLs are derived automatically by replacing the database name with `<FEOH_TENANT_DB_PREFIX><slug>` (e.g., `ap_acme`).
+The `FEOH_DATABASE_URL` points to the **control-plane database** (`feohledger`). Tenant database URLs are derived automatically by replacing the database name with `<FEOH_TENANT_DB_PREFIX><slug>` (e.g., `feoh_acme`).
 
 ### Alembic
 
 Set `FEOH_MIGRATE_TENANT` to target a specific tenant database for migrations:
 
 ```bash
-FEOH_MIGRATE_TENANT=ap_acme alembic upgrade head
+FEOH_MIGRATE_TENANT=feoh_acme alembic upgrade head
 ```
 
 When unset, Alembic targets the control-plane database.

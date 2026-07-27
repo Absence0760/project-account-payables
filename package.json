@@ -65,7 +65,7 @@
 		"services:logs": "cd backend && docker compose --profile idp --profile aws --profile ai --profile payments --profile mail --profile erp logs -f",
 		"services:reset": "cd backend && docker compose --profile idp --profile aws --profile ai --profile payments --profile mail --profile erp down -v && docker compose --profile idp --profile aws --profile ai --profile payments --profile mail --profile erp up -d",
 
-		"//-- seed & migrate --": "Demo data + Alembic migrations. Need core services up (db:up) and the backend venv activated. seed creates 2 demo tenants; migrate:all = control plane + every per-tenant ap_<slug> DB. Docs: backend/docs/database.md.",
+		"//-- seed & migrate --": "Demo data + Alembic migrations. Need core services up (db:up) and the backend venv activated. seed creates 2 demo tenants; migrate:all = control plane + every per-tenant feoh_<slug> DB. Docs: backend/docs/database.md.",
 		"seed": "cd backend && python scripts/seed.py",
 		"seed:lean": "cd backend && python scripts/seed.py --lean",
 		"migrate": "cd backend && alembic upgrade head",

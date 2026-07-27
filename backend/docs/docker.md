@@ -18,8 +18,8 @@ docker compose up -d        # core trio only — pnpm db:up
 
 This starts PostgreSQL, Redis, and MinIO in the background (Keycloak is held
 behind the `idp` profile and does NOT start here). On first run, PostgreSQL
-automatically creates three databases: `account_payables` (control plane),
-`ap_acme`, and `ap_techflow` (dev tenants) via the mounted `init-tenants.sql`.
+automatically creates three databases: `feohledger` (control plane),
+`feoh_acme`, and `feoh_techflow` (dev tenants) via the mounted `init-tenants.sql`.
 
 To start individual services:
 
@@ -180,9 +180,9 @@ PostgreSQL hosts multiple databases for the multi-tenant architecture:
 
 | Database           | Purpose              |
 |--------------------|----------------------|
-| `account_payables` | Control plane (orgs, users, roles) |
-| `ap_acme`          | Acme Corp tenant data |
-| `ap_techflow`      | TechFlow tenant data  |
+| `feohledger` | Control plane (orgs, users, roles) |
+| `feoh_acme`          | Acme Corp tenant data |
+| `feoh_techflow`      | TechFlow tenant data  |
 
 The `init-tenants.sql` file is mounted at `docker-entrypoint-initdb.d/` and runs on first startup only. Additional tenant databases are created by `scripts/create_tenant.py`.
 

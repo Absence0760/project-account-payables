@@ -74,7 +74,7 @@ flutter test                  # run tests
 # Database migrations (from backend/)
 alembic revision --autogenerate -m "description"   # create migration
 alembic upgrade head                                # apply to control plane
-FEOH_MIGRATE_TENANT=ap_acme alembic upgrade head      # apply to one tenant
+FEOH_MIGRATE_TENANT=feoh_acme alembic upgrade head      # apply to one tenant
 python scripts/migrate_all_tenants.py               # apply to all tenants
 ```
 
@@ -112,8 +112,8 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 
 ## Multi-tenancy
 
-- **Control plane DB** (`account_payables`): organizations, users, roles
-- **Tenant DBs** (`ap_<slug>`): invoices, vendors, payments, workflows, etc.
+- **Control plane DB** (`feohledger`): organizations, users, roles
+- **Tenant DBs** (`feoh_<slug>`): invoices, vendors, payments, workflows, etc.
 - Frontend extracts subdomain → sends `X-Tenant-Slug` header → backend resolves tenant DB
 - Provision: `python scripts/create_tenant.py --name "Corp" --slug corp --admin-email admin@corp.com --admin-password changeme`
 
@@ -271,7 +271,7 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `FEOH_DATABASE_URL` | `postgresql+asyncpg://...localhost:5432/account_payables` | Control plane DB |
+| `FEOH_DATABASE_URL` | `postgresql+asyncpg://...localhost:5432/feohledger` | Control plane DB |
 | `FEOH_SECRET_KEY` | `change-me-in-production` | JWT signing (HS256) |
 | `FEOH_S3_ENDPOINT_URL` | `http://localhost:9000` | MinIO/S3 |
 | `FEOH_EXTRACTION_MODE` | `local` | `local` or `lambda` |
@@ -617,7 +617,7 @@ If you spot a candidate fix that fits one of those patterns: stop, surface the u
 - Don't call secret-bearing services from the frontend — go through the backend.
 - Don't modify tenant DBs outside of Alembic migrations.
 - Don't add `dotenv` imports to modules reachable from Lambda entry points.
-- Don't hardcode tenant DB names — always use `ap_<slug>` via config.
+- Don't hardcode tenant DB names — always use `feoh_<slug>` via config.
 
 ## Project invariants
 
@@ -626,7 +626,7 @@ These are the rules the `.claude/agents/code-reviewer.md` agent cites. A diff th
 - **Money is exact.** Amounts use `Decimal` (never `float`), and SQLAlchemy columns for currency use `Numeric(precision, scale)` (never `Float` / `Real`). A new column or in-memory total typed as `float` for currency is `Critical`.
 - **Idempotency on writes that move money.** Anything that initiates a payment, reverses a payment, or confirms an invoice as paid must be idempotent at the API boundary. The mechanism is whichever the backend already uses (idempotency-key header, request-id table, or a DB-level unique constraint on the operation tuple). A new "send payment" / "post payment" / "confirm payable" handler with no idempotency story is `Critical`.
 - **Audit trail is append-only.** Status transitions on invoices, payments, approvals, and vendors write a log row through the audit-shipping infrastructure (`services/audit_shipping/` — see `## Architecture overview`), not just mutate state. A status change that overwrites without producing an audit row is `Improvement` at minimum, `Critical` if the field is regulated (`paid_at`, `approved_at`, `void_at`).
-- **Tenant isolation is enforced at the data layer, not just by application code.** Every read / write resolves the tenant DB via the `X-Tenant-Slug` header → `ap_<slug>` mapping (see `## Multi-tenancy`). `backend/app/tenant.py::get_tenant` is the chokepoint and cross-checks the JWT's `org` claim against the resolved tenant — so a leaked / spoofed header alone can't widen access. A new query that runs against the control-plane DB while reading tenant data, hardcodes a tenant DB name, or constructs a tenant engine outside `get_tenant_db` is `Critical`.
+- **Tenant isolation is enforced at the data layer, not just by application code.** Every read / write resolves the tenant DB via the `X-Tenant-Slug` header → `feoh_<slug>` mapping (see `## Multi-tenancy`). `backend/app/tenant.py::get_tenant` is the chokepoint and cross-checks the JWT's `org` claim against the resolved tenant — so a leaked / spoofed header alone can't widen access. A new query that runs against the control-plane DB while reading tenant data, hardcodes a tenant DB name, or constructs a tenant engine outside `get_tenant_db` is `Critical`.
 - **Auth before everything.** Every route under `/api` is behind the auth middleware unless it is documented public-by-design. A new route mounted before the auth dependency, or one that references the user's identity without the auth dependency injected, is `Critical`. Approval / payment endpoints also check role / RBAC, not just authentication.
 - **Secrets via sops + AWS KMS, no hardcoded fallback.** Long-lived secrets live only in `*.sops` files, decrypted via the project's KMS key. A new `os.environ["X"]` with a fallback like `or "some-default"` for a secret is `Critical`. The only committed env files are `*.env.development` (safe local-dev defaults only — loopback URLs, mock adapters, the `change-me` JWT key) and the encrypted `*.sops` files; a committed `.env` / `.env.local` / `.env.production` carrying a real secret is `Critical`.
 - **PII / banking data stays out of logs and error responses.** Bank account numbers, tax IDs, full vendor addresses, and full payment-method numbers must not appear in `logger` output, in HTTP error bodies, or in URL query strings. A `print` / `logger.info(...)` containing one of those fields is `Critical`.

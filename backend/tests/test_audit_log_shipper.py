@@ -115,7 +115,7 @@ async def test_ship_once_iterates_every_tenant():
         patch.object(
             audit_log_shipper,
             "control_session_factory",
-            _fake_control_session(["ap_a", "ap_b", "ap_c"]),
+            _fake_control_session(["feoh_a", "feoh_b", "feoh_c"]),
         ),
         patch.object(audit_log_shipper, "_ship_tenant", AsyncMock(return_value=2)) as ship_tenant,
     ):
@@ -135,7 +135,7 @@ async def test_ship_once_continues_after_one_tenant_fails():
         patch.object(
             audit_log_shipper,
             "control_session_factory",
-            _fake_control_session(["ap_a", "ap_b", "ap_c"]),
+            _fake_control_session(["feoh_a", "feoh_b", "feoh_c"]),
         ),
         patch.object(audit_log_shipper, "_ship_tenant", AsyncMock(side_effect=side_effects)),
     ):
@@ -154,7 +154,7 @@ async def test_ship_once_builds_adapters_from_settings_when_none_passed():
         patch.object(
             audit_log_shipper,
             "control_session_factory",
-            _fake_control_session(["ap_a"]),
+            _fake_control_session(["feoh_a"]),
         ),
         patch.object(audit_log_shipper, "_ship_tenant", AsyncMock(return_value=0)) as ship_tenant,
     ):

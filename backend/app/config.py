@@ -17,8 +17,8 @@ class Settings(BaseSettings):
     environment: str = "development"
 
     # Database
-    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/account_payables"
-    tenant_db_prefix: str = "ap_"
+    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/feohledger"
+    tenant_db_prefix: str = "feoh_"
 
     # Auth / JWT
     secret_key: str = "change-me-in-production"

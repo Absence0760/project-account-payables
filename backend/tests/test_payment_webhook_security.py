@@ -71,7 +71,7 @@ def _org(slug="acme", provider="modern_treasury", webhook_secret="s3cret"):
     return SimpleNamespace(
         id=uuid.uuid4(),
         slug=slug,
-        db_name=f"ap_{slug}",
+        db_name=f"feoh_{slug}",
         settings={
             "payments": {
                 "provider": provider,
@@ -547,7 +547,7 @@ async def test_webhook_only_touches_the_url_path_tenant_db():
 
     # The engine was requested for acme's DB, not techflow's.
     assert mk_engine.call_count == 1
-    assert mk_engine.call_args[0][0] == "ap_acme"
+    assert mk_engine.call_args[0][0] == "feoh_acme"
 
 
 # ---------------------------------------------------------------------------

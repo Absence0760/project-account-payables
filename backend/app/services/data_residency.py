@@ -1,7 +1,7 @@
 """Data residency — pin a tenant's DB + object storage to a geographic region.
 
 GDPR / CCPA data-residency model for the database-per-tenant architecture.
-Every tenant already gets its own Postgres database (``ap_<slug>``) and its own
+Every tenant already gets its own Postgres database (``feoh_<slug>``) and its own
 MinIO/S3 key prefix, so pinning a tenant's data to a region is a *placement*
 decision, not a schema change: route that tenant's DB onto a regional cluster
 and its object storage onto a regional bucket/endpoint. This module is the

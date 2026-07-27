@@ -1,10 +1,10 @@
 """Tenant slug validation.
 
 A slug becomes part of a URL (https://acme.app.com) and a Postgres database
-name (ap_acme). Both places need strict rules:
+name (feoh_acme). Both places need strict rules:
 
   - DNS-safe (lowercase letters, digits, hyphens; must start with a letter)
-  - Length 3-30 to keep URLs readable and leave room for the 'ap_' prefix
+  - Length 3-30 to keep URLs readable and leave room for the 'feoh_' prefix
     within Postgres's 63-char identifier limit
   - Not in a reserved list (admin, www, api, etc.) to avoid colliding with
     marketing subdomains or internal services

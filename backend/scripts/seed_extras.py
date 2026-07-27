@@ -15,8 +15,8 @@ in-line so fresh full seeds include this data automatically.
 
 Usage (from `backend/`):
 
-    python scripts/seed_extras.py                       # default: ap_acme
-    python scripts/seed_extras.py --tenant ap_techflow  # a specific tenant
+    python scripts/seed_extras.py                       # default: feoh_acme
+    python scripts/seed_extras.py --tenant feoh_techflow  # a specific tenant
 
 `seed_extras(session, org_id)` is the reusable builder — it queries the
 tenant's existing vendors/invoices/GL accounts from the session, so it works
@@ -769,7 +769,7 @@ async def _run(db_name: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--tenant", default="ap_acme", help="Tenant DB name (default: ap_acme)")
+    parser.add_argument("--tenant", default="feoh_acme", help="Tenant DB name (default: feoh_acme)")
     args = parser.parse_args()
     asyncio.run(_run(args.tenant))
 

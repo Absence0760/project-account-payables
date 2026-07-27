@@ -294,7 +294,7 @@ ExtractionResult:
 
 Every extraction (success or failure) creates an `ExtractionUsage` record.
 
-> **Note:** `ExtractionUsage` is a **control-plane model** — it lives in the `account_payables` DB, not in tenant DBs. Because of this, `run_extraction()` accepts an optional `ctrl_db: AsyncSession` parameter for writing usage records to the control-plane database.
+> **Note:** `ExtractionUsage` is a **control-plane model** — it lives in the `feohledger` DB, not in tenant DBs. Because of this, `run_extraction()` accepts an optional `ctrl_db: AsyncSession` parameter for writing usage records to the control-plane database.
 
 | Field | Description |
 |---|---|
@@ -509,7 +509,7 @@ When they disagree on a field, cache wins (runs later in the pipeline) — per-v
 
 ### Privacy
 
-Default per-tenant: no invoice embeddings ever leak across tenants. The table lives in each `ap_<slug>` DB. Cross-tenant learning is possible as an explicit opt-in (move embeddings to a shared catalog and flag with a consent column), but not implemented — mentioned here for future design.
+Default per-tenant: no invoice embeddings ever leak across tenants. The table lives in each `feoh_<slug>` DB. Cross-tenant learning is possible as an explicit opt-in (move embeddings to a shared catalog and flag with a consent column), but not implemented — mentioned here for future design.
 
 ---
 

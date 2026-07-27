@@ -13,7 +13,7 @@ supporting index:
   ``created_at DESC LIMIT N`` — also a full-table seq scan with no index on
   either ``vendor_id`` or ``status``.
 
-Measured against a 1.2M-row ``ap_acme`` (~24k invoices/vendor, a realistic
+Measured against a 1.2M-row ``feoh_acme`` (~24k invoices/vendor, a realistic
 multi-year AP volume): each of these was a ~100-310ms Parallel Seq Scan
 touching ~33k buffers — and ``refresh_warnings`` fires 3-4 of them serially on
 a single invoice save. `ix_invoices_vendor_id_created_at` turns the
@@ -44,7 +44,7 @@ Create Date: 2026-07-01
 
 Tenant DB only (gated on the ``invoices`` table, so it no-ops on the control
 plane and fans out to every tenant via ``scripts/migrate_all_tenants.py`` — or
-``FEOH_MIGRATE_TENANT=ap_<slug> alembic upgrade head`` for one). Fresh tenants
+``FEOH_MIGRATE_TENANT=feoh_<slug> alembic upgrade head`` for one). Fresh tenants
 get the shape from ``create_all`` in
 ``tenant_provisioning._create_tenant_tables`` (every index here is declared on
 the owning model — ``Invoice.__table_args__``, or ``index=True`` on the

@@ -19,7 +19,7 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in deploy/.env (via sops)}
-      POSTGRES_DB: account_payables
+      POSTGRES_DB: feohledger
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -54,7 +54,7 @@ services:
       # `openssl rand -hex 24`). These are the UPGRADE SEAMS: setting
       # FEOH_DATABASE_URL / FEOH_REDIS_URL in the sops env overrides them, which
       # is the whole migration to RDS / ElastiCache later — no compose edit.
-      FEOH_DATABASE_URL: ${FEOH_DATABASE_URL:-postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres:5432/account_payables}
+      FEOH_DATABASE_URL: ${FEOH_DATABASE_URL:-postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres:5432/feohledger}
       FEOH_REDIS_URL: ${FEOH_REDIS_URL:-redis://redis:6379}
       # boto3 (S3 / SES) resolves credentials from the EC2 instance profile;
       # the region must be explicit. NOTE: IMDSv2 needs hop limit 2 for

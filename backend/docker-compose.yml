@@ -8,7 +8,7 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: account_payables
+      POSTGRES_DB: feohledger
     ports:
       - "5432:5432"
     volumes:

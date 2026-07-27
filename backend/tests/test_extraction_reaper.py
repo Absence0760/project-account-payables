@@ -42,7 +42,7 @@ async def test_reap_once_iterates_every_tenant():
         patch.object(
             extraction_reaper,
             "control_session_factory",
-            _fake_control_session(["ap_a", "ap_b", "ap_c"]),
+            _fake_control_session(["feoh_a", "feoh_b", "feoh_c"]),
         ),
         patch.object(extraction_reaper, "_reap_tenant", AsyncMock(return_value=2)) as reap_tenant,
     ):
@@ -64,7 +64,7 @@ async def test_reap_once_continues_after_one_tenant_fails():
         patch.object(
             extraction_reaper,
             "control_session_factory",
-            _fake_control_session(["ap_a", "ap_b", "ap_c"]),
+            _fake_control_session(["feoh_a", "feoh_b", "feoh_c"]),
         ),
         patch.object(extraction_reaper, "_reap_tenant", AsyncMock(side_effect=side_effects)),
     ):
@@ -88,7 +88,7 @@ async def test_reap_once_uses_explicit_threshold_over_default():
         return 0
 
     with (
-        patch.object(extraction_reaper, "control_session_factory", _fake_control_session(["ap_a"])),
+        patch.object(extraction_reaper, "control_session_factory", _fake_control_session(["feoh_a"])),
         patch.object(extraction_reaper, "_reap_tenant", capture),
     ):
         before = datetime.now(UTC)
@@ -147,7 +147,7 @@ async def test_reap_tenant_audit_detail_records_real_threshold_not_epoch():
             AsyncMock(side_effect=fake_transition),
         ),
     ):
-        reaped = await extraction_reaper._reap_tenant("ap_x", cutoff, threshold_seconds=600)
+        reaped = await extraction_reaper._reap_tenant("feoh_x", cutoff, threshold_seconds=600)
 
     assert reaped == 1
     assert captured["details"]["threshold_seconds"] == 600  # not int(cutoff.timestamp())

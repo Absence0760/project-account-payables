@@ -75,8 +75,8 @@ def _fake_control_session(rows: list[tuple]):
 @pytest.mark.asyncio
 async def test_run_once_isolates_per_tenant_failure():
     rows = [
-        (uuid.uuid4(), "ap_a", {}),
-        (uuid.uuid4(), "ap_b", {}),
+        (uuid.uuid4(), "feoh_a", {}),
+        (uuid.uuid4(), "feoh_b", {}),
     ]
     engine = MagicMock()
     engine.dispose = AsyncMock()

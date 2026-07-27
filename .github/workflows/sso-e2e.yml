@@ -59,7 +59,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: account_payables
+          POSTGRES_DB: feohledger
           PGDATA: /dev/shm/pgdata
         ports:
           - 5432:5432
@@ -80,7 +80,7 @@ jobs:
           --health-retries=5
 
     env:
-      FEOH_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/account_payables
+      FEOH_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/feohledger
       FEOH_REDIS_URL: redis://localhost:6379
       FEOH_SECRET_KEY: ci-test-secret
       FEOH_DEBUG: "true"

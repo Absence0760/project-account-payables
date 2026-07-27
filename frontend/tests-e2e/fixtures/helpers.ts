@@ -427,7 +427,7 @@ export async function authedTenantHeaders(
  *  inspect state the API doesn't expose (e.g. clobbering
  *  `assigned_to_id` to provoke a blocked-delete branch). */
 export function tenantPsql(query: string, slug?: string): string {
-	const db = `ap_${slug ?? currentTenantSlug()}`;
+	const db = `feoh_${slug ?? currentTenantSlug()}`;
 	const out = execFileSync(
 		'psql',
 		['-h', 'localhost', '-U', 'postgres', '-p', '5432', '-d', db, '-tAc', query],

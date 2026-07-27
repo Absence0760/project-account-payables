@@ -15,7 +15,7 @@ Create Date: 2026-07-01
 TENANT DB ONLY: ``positive_pay_files`` is tenant-scoped (it does not exist on
 the control-plane DB). The upgrade is gated on the table existing, so the
 revision no-ops on the control DB and fans out to every tenant DB via
-``scripts/migrate_all_tenants.py`` (or ``FEOH_MIGRATE_TENANT=ap_<slug> alembic
+``scripts/migrate_all_tenants.py`` (or ``FEOH_MIGRATE_TENANT=feoh_<slug> alembic
 upgrade head`` for one). Fresh tenants get the shape from ``create_all`` in
 ``tenant_provisioning`` (it's on the model) — this migration only backfills
 existing tenant DBs.

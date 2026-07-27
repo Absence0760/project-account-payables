@@ -263,7 +263,7 @@ Reach for these instead of duplicating boilerplate per spec:
   — compose the `Authorization` + `X-Tenant-Slug` headers for an
   authenticated, tenant-scoped API request. Default to the
   worker's slug.
-- `tenantPsql(query, slug?)` — `psql -d ap_<slug>` for the half
+- `tenantPsql(query, slug?)` — `psql -d feoh_<slug>` for the half
   dozen specs that need to clobber DB state the API doesn't expose
   (hard-delete an approved invoice, force-fail a settled payment,
   etc.). Defaults to the worker's DB.
