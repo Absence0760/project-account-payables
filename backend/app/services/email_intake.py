@@ -1,7 +1,7 @@
 """Email-to-invoice intake.
 
 Receives forwarded-PDF invoices from a per-tenant inbound email address
-(e.g. ``invoices+a1b2c3d4@ap.yourcompany.com``) and routes each
+(e.g. ``invoices+a1b2c3d4@ap.feohledger.com``) and routes each
 attachment through the normal extraction pipeline. The AP team tells
 their vendors "send POs to this address" and the invoice appears in the
 queue without anyone touching the UI.

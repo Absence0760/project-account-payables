@@ -19,8 +19,8 @@ import { test } from './helpers';
 
 /** Probe URLs — any HTTP response (even 4xx) means the service is up. */
 export const SERVICES = {
-	keycloak: 'http://localhost:8088/realms/account-payables/.well-known/openid-configuration',
-	keycloakSaml: 'http://localhost:8088/realms/account-payables/protocol/saml/descriptor',
+	keycloak: 'http://localhost:8088/realms/feohledger/.well-known/openid-configuration',
+	keycloakSaml: 'http://localhost:8088/realms/feohledger/protocol/saml/descriptor',
 	mailpit: 'http://localhost:8025/api/v1/info',
 	localstack: 'http://localhost:4566/_localstack/health',
 	stripeMock: 'http://localhost:12111/v1',

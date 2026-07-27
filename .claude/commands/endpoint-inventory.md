@@ -4,7 +4,7 @@ description: Generate a canonical inventory of the backend HTTP API by reading t
 
 Produce a canonical, table-shaped inventory of every backend HTTP endpoint by reading the FastAPI routers — not by trusting any doc.
 
-There is **no codegen** in project-account-payables (request/response types are hand-synced across the backend Pydantic schemas in `backend/app/schemas/`, the frontend client `frontend/src/lib/api.ts`, and the ORM models) and **no maintained OpenAPI / API spec as the contract**. FastAPI does auto-generate `/docs` at runtime, but that's derived state, not the ground truth — the route source itself is the only authority for "what endpoints exist." This command flattens that into one artifact two audiences need:
+There is **no codegen** in FeohLedger (request/response types are hand-synced across the backend Pydantic schemas in `backend/app/schemas/`, the frontend client `frontend/src/lib/api.ts`, and the ORM models) and **no maintained OpenAPI / API spec as the contract**. FastAPI does auto-generate `/docs` at runtime, but that's derived state, not the ground truth — the route source itself is the only authority for "what endpoints exist." This command flattens that into one artifact two audiences need:
 
 - **External integrators** wiring against the API (ERP webhook callers, payment-rail webhook senders, card-provider webhooks, SCIM provisioners, email-intake providers, supplier-portal clients) who have no spec to read.
 - **`/audit/auth`**, which sweeps every backend route for auth-dependency gating + tenant-context discipline. Hand it a maintained inventory instead of re-deriving the route list every run.

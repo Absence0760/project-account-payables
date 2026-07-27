@@ -16,7 +16,7 @@ After enabling, the acme login page (http://acme.localhost:7777) renders the
 mirrors the seeded admin, so the first SSO login links to the existing row).
 
 The values here MUST match the realm export: client id, client secret, and the
-discovery URL of the `account-payables` realm. localhost:8088 is reachable from
+discovery URL of the `feohledger` realm. localhost:8088 is reachable from
 the backend process (run on the host, not in a container) and from the browser.
 """
 
@@ -33,10 +33,8 @@ from app.models.organization import Organization
 KEYCLOAK_SSO_CONFIG = {
     "enabled": True,
     "provider": "oidc",
-    "discovery_url": (
-        "http://localhost:8088/realms/account-payables/.well-known/openid-configuration"
-    ),
-    "client_id": "account-payables-app",
+    "discovery_url": ("http://localhost:8088/realms/feohledger/.well-known/openid-configuration"),
+    "client_id": "feohledger-app",
     "client_secret": "local-dev-keycloak-secret",
     # Empty allowlist = accept any email domain. Add "acme.com" here to exercise
     # the JIT domain-allowlist path in app/api/auth_sso.py.

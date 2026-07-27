@@ -17,8 +17,8 @@ precedence over `.env.development`).
 Override at build time for different environments:
 
 ```bash
-PUBLIC_API_URL=https://api-qa.example.com pnpm build    # QA
-PUBLIC_API_URL=https://api.example.com pnpm build        # Production
+PUBLIC_API_URL=https://api-qa.feohledger.com pnpm build    # QA
+PUBLIC_API_URL=https://api.feohledger.com pnpm build        # Production
 ```
 
 Note: The frontend also reads the tenant slug from the browser subdomain at runtime (not from env vars). See [multi-tenancy.md](multi-tenancy.md).

@@ -50,8 +50,8 @@ services:
   #
   # Runs in dev mode (start-dev) with an ephemeral in-memory database, and
   # re-imports realm-export.json on every boot — so the IdP is always a clean,
-  # reproducible state. Realm `account-payables` ships a confidential client
-  # (account-payables-app) and two test users (demo@acme.com, newhire@acme.com),
+  # reproducible state. Realm `feohledger` ships a confidential client
+  # (feohledger-app) and two test users (demo@acme.com, newhire@acme.com),
   # both password `demo`.
   keycloak:
     image: quay.io/keycloak/keycloak:26.0

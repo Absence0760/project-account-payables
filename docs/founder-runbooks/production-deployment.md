@@ -21,7 +21,7 @@ real values.
 ## What you need
 
 - AWS account (preferably new, dedicated to the production workload)
-- A domain you control (e.g., `yourcompany.com`)
+- A domain you control (e.g., `feohledger.com`)
 - A few hours of focused DevOps work
 
 ## Step 1 — AWS account setup
@@ -40,7 +40,7 @@ real values.
 
 1. Register or transfer your domain into Route53 (cleanest DNS
    management; ~$12/yr for `.com`).
-2. Request an ACM cert for `*.yourcompany.com` in `us-east-1`
+2. Request an ACM cert for `*.feohledger.com` in `us-east-1`
    (CloudFront requires this region).
 3. Validate via DNS record (Terraform automates this if the domain is
    in Route53).
@@ -65,7 +65,7 @@ Required values for prod:
 - `FEOH_AUDIT_SHIPPING_PROVIDERS=cloudwatch,s3_objectlock`
 - `FEOH_AUDIT_SHIPPING_S3_BUCKET` — from Terraform
 - `FEOH_EMAIL_PROVIDER=ses`
-- `FEOH_EMAIL_INTAKE_DOMAIN=ap.yourcompany.com` (see
+- `FEOH_EMAIL_INTAKE_DOMAIN=ap.feohledger.com` (see
   `backend/docs/email-intake.md`)
 - `FEOH_EMAIL_INTAKE_SIGNING_SECRET` — generate with `openssl rand -hex 32`
 
@@ -113,7 +113,7 @@ The frontend is static (SvelteKit adapter-static) and goes to S3 +
 CloudFront. Two options:
 
 - **GitHub Pages** (cheapest, what the repo is set up for today).
-  Point your custom subdomain (e.g. `app.yourcompany.com`) at Pages.
+  Point your custom subdomain (e.g. `app.feohledger.com`) at Pages.
   Fine for pre-revenue.
 - **S3 + CloudFront via Terraform** (production-appropriate). The
   Terraform already provisions the bucket + distribution; update the
@@ -129,7 +129,7 @@ From your laptop, against the production URL:
 1. Hit `GET /api/health` — should return `{"status": "ok"}`
 2. Create a test tenant via `scripts/create_tenant.py`
 3. Log in to the test tenant at
-   `https://<tenant-slug>.app.yourcompany.com`
+   `https://<tenant-slug>.app.feohledger.com`
 4. Upload a test invoice → watch extraction complete in the UI
 5. Check CloudWatch Logs for the backend service — errors should be
    zero

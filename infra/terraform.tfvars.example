@@ -11,7 +11,7 @@
 aws_region = "us-east-1"
 
 # Project name used for tagging and resource naming.
-project = "account-payables"
+project = "feohledger"
 
 # Environment (prod, staging, etc.). Becomes part of resource names + tags.
 environment = "prod"
@@ -20,8 +20,8 @@ environment = "prod"
 # Globally unique. Include a short random suffix so re-creation doesn't
 # conflict with the bucket name's 30-day cooldown (AWS keeps deleted bucket
 # names reserved briefly to prevent takeover).
-invoice_files_bucket_name = "account-payables-invoices-prod-REPLACE"
-audit_logs_bucket_name    = "account-payables-audit-logs-prod-REPLACE"
+invoice_files_bucket_name = "feohledger-invoices-prod-REPLACE"
+audit_logs_bucket_name    = "feohledger-audit-logs-prod-REPLACE"
 
 # --- Object Lock retention --------------------------------------------------
 # Days an object stays locked after it lands. Invoices run in Governance mode

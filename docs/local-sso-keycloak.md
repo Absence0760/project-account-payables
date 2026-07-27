@@ -45,9 +45,9 @@ always a clean, reproducible state (no persisted volume).
 | Thing | Value |
 |---|---|
 | Keycloak admin console | http://localhost:8088 (`admin` / `admin`) |
-| Realm | `account-payables` |
-| Discovery URL | `http://localhost:8088/realms/account-payables/.well-known/openid-configuration` |
-| Client ID | `account-payables-app` |
+| Realm | `feohledger` |
+| Discovery URL | `http://localhost:8088/realms/feohledger/.well-known/openid-configuration` |
+| Client ID | `feohledger-app` |
 | Client secret | `local-dev-keycloak-secret` |
 | Test user (links to seeded admin) | `demo@acme.com` / `demo` |
 | Test user (JIT-provisions new) | `newhire@acme.com` / `demo` |
@@ -62,7 +62,7 @@ Keycloak's own default is 8080, but that port is commonly taken by other local
 dev tooling, so this repo maps the host port to **8088**. Keycloak in dev mode
 derives its issuer and endpoint URLs from the request `Host` header, so hitting
 it on `localhost:8088` yields an issuer of
-`http://localhost:8088/realms/account-payables` with no extra hostname config —
+`http://localhost:8088/realms/feohledger` with no extra hostname config —
 which is what keeps the backend's discovery host check (`auth_sso.py`,
 authorize-host-must-match-discovery-host) happy.
 
@@ -124,7 +124,7 @@ pnpm idp:down      # stop the IdP stack when done
 ### What's provisioned
 
 The Authentik stack is **self-contained** (its own Postgres + Redis, not the
-app's) and applies `backend/authentik/blueprints/account-payables-scim.yaml` on
+app's) and applies `backend/authentik/blueprints/feohledger-scim.yaml` on
 boot, so it's reproducible. The blueprint creates:
 
 | Thing | Value |

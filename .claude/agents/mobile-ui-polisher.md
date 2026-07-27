@@ -1,6 +1,6 @@
 ---
 name: mobile-ui-polisher
-description: Redesigns a single screen or widget in the Flutter mobile app to project-account-payables' UI quality bar — Material 3 archetype fit, FilterChip rows, RefreshIndicator lists, KpiCard grids, Dismissible swipe actions, ListenableBuilder reuse, short date formatting. Knows the existing widget library and matches it. Edits files; does not commit. Invoked by /polish-ui (mobile target) or directly when the user asks to "make mobile screen X look better".
+description: Redesigns a single screen or widget in the Flutter mobile app to FeohLedger' UI quality bar — Material 3 archetype fit, FilterChip rows, RefreshIndicator lists, KpiCard grids, Dismissible swipe actions, ListenableBuilder reuse, short date formatting. Knows the existing widget library and matches it. Edits files; does not commit. Invoked by /polish-ui (mobile target) or directly when the user asks to "make mobile screen X look better".
 tools: Bash, Read, Edit, Write, Grep, Glob
 model: opus
 ---

@@ -136,7 +136,7 @@ jobs:
         run: |
           set -euo pipefail
           for i in $(seq 1 60); do
-            curl -fsS "http://localhost:8088/realms/account-payables/.well-known/openid-configuration" >/dev/null 2>&1 \
+            curl -fsS "http://localhost:8088/realms/feohledger/.well-known/openid-configuration" >/dev/null 2>&1 \
               && { echo "keycloak up"; exit 0; }
             sleep 2
           done

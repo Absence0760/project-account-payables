@@ -3,7 +3,7 @@ description: Implement a non-trivial change with a code-reviewer agent loop — 
 argument-hint: <task description>
 ---
 
-Implement the task `$ARGUMENTS` with project-account-payables' code-reviewer agent in the loop.
+Implement the task `$ARGUMENTS` with FeohLedger' code-reviewer agent in the loop.
 
 ## When to use this command
 
@@ -33,7 +33,7 @@ The cost of this loop is real (~2-3x tokens, ~30-60s extra latency, one or two `
 
 2. **Round 1 review.** Spawn the `code-reviewer` agent with the prompt:
 
-   > "Review the working diff against project-account-payables' documented conventions. The task being implemented is: `$ARGUMENTS`. Output the strict format from your spec."
+   > "Review the working diff against FeohLedger' documented conventions. The task being implemented is: `$ARGUMENTS`. Output the strict format from your spec."
 
    The reviewer reads `git diff`, cross-references project rules, and outputs:
    - `Status: CLEAN` → go to step 5.

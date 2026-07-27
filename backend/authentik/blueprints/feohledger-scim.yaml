@@ -41,10 +41,10 @@ entries:
   - model: authentik_core.application
     id: ap-app
     identifiers:
-      slug: account-payables
+      slug: feohledger
     attrs:
       name: FeohLedger
-      slug: account-payables
+      slug: feohledger
       provider: !KeyOf ap-scim-provider
       meta_description: Local SCIM provisioning target for FeohLedger.
 

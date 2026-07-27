@@ -1,5 +1,5 @@
 ---
-description: Go wide hunting for real correctness bugs across project-account-payables — reproduce each with a probe, confirm it's real, fix at the root, lock it with a regression test, then sweep sibling paths. Multi-round; commits scoped; never pushes.
+description: Go wide hunting for real correctness bugs across FeohLedger — reproduce each with a probe, confirm it's real, fix at the root, lock it with a regression test, then sweep sibling paths. Multi-round; commits scoped; never pushes.
 argument-hint: "[optional scope — a layer, feature, or path, e.g. 'PO matching', 'the payment webhooks', backend/app/services/po_matching.py; omit to let it choose high-yield targets]"
 ---
 

@@ -7,7 +7,7 @@ variable "aws_region" {
 variable "project" {
   description = "Project slug used for resource naming + default_tags."
   type        = string
-  default     = "account-payables"
+  default     = "feohledger"
 }
 
 variable "environment" {

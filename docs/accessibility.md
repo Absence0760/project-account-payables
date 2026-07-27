@@ -5,7 +5,7 @@
 **Self-assessment status:** Partial — automated coverage in CI; manual
 screen-reader audit in progress (see [Known limitations](#known-limitations)).
 
-We are committed to making the project-account-payables accounts-payable
+We are committed to making the FeohLedger accounts-payable
 platform usable by everyone, including people who rely on assistive technology
 (screen readers, screen magnifiers, switch access, voice control) or who
 navigate without a mouse. This page is our public conformance statement; the

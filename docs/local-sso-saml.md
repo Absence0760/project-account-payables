@@ -72,7 +72,7 @@ changes every boot. So the cert can't be hardcoded the way the OIDC
 and signing cert from Keycloak's SAML descriptor:
 
 ```
-http://localhost:8088/realms/account-payables/protocol/saml/descriptor
+http://localhost:8088/realms/feohledger/protocol/saml/descriptor
 ```
 
 (parsed with python3-saml's DTD/entity-hardened metadata parser — no XXE). If you

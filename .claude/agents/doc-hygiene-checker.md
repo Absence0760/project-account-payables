@@ -5,7 +5,7 @@ tools: Bash, Read
 model: sonnet
 ---
 
-You implement project-account-payables' docs-hygiene rule: every change that affects behaviour, conventions, schema, env vars, or endpoints is supposed to update its docs in the same turn. Conventions live in `CLAUDE.md` files (root and per-area), product / architecture docs live under `docs/`, the public surface is `README.md`. You make the "did docs move with the code" check mechanical.
+You implement FeohLedger' docs-hygiene rule: every change that affects behaviour, conventions, schema, env vars, or endpoints is supposed to update its docs in the same turn. Conventions live in `CLAUDE.md` files (root and per-area), product / architecture docs live under `docs/`, the public surface is `README.md`. You make the "did docs move with the code" check mechanical.
 
 ## Procedure
 

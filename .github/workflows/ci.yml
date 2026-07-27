@@ -687,7 +687,7 @@ jobs:
         run: |
           set -euo pipefail
           wait_http() { for i in $(seq 1 60); do curl -fsS "$1" >/dev/null 2>&1 && { echo "$2 up"; return 0; }; sleep 2; done; echo "::error::$2 not ready"; return 1; }
-          wait_http "http://localhost:8088/realms/account-payables/.well-known/openid-configuration" keycloak
+          wait_http "http://localhost:8088/realms/feohledger/.well-known/openid-configuration" keycloak
           wait_http "http://localhost:8025/api/v1/info" mailpit
           wait_http "http://localhost:4566/_localstack/health" localstack
           # stripe-mock 404s on bare /v1 but answers a real path

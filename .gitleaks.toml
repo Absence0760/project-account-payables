@@ -1,4 +1,4 @@
-# Gitleaks configuration for project-account-payables.
+# Gitleaks configuration for FeohLedger.
 #
 # Inherits every rule from the upstream default config and layers a
 # project-specific allowlist on top. The allowlist below covers test

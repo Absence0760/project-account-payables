@@ -53,7 +53,7 @@ test.describe('SSO login via Keycloak', () => {
 		await page.locator('button.sso-btn').click();
 
 		// Keycloak's hosted login form.
-		await page.waitForURL(/\/realms\/account-payables\/protocol\/openid-connect\/auth/, {
+		await page.waitForURL(/\/realms\/feohledger\/protocol\/openid-connect\/auth/, {
 			timeout: 15_000
 		});
 		await page.locator('#username').fill('demo@acme.com');

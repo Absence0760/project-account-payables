@@ -3,7 +3,7 @@ description: Triage and source-fix a flaky/failing Playwright e2e test. Brings u
 argument-hint: "[spec path | CI run URL | 'red e2e'] — what to triage (empty = the currently-failing e2e on the latest CI run / working tree)"
 ---
 
-Triage `$ARGUMENTS` with project-account-payables' `flake-doctor` agent and fix it at the source.
+Triage `$ARGUMENTS` with FeohLedger' `flake-doctor` agent and fix it at the source.
 
 ## Usage
 

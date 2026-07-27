@@ -151,9 +151,9 @@ FEOH_REDIS_URL=redis://elasticache-host:6379
 
 # Email + signup
 FEOH_EMAIL_PROVIDER=ses
-FEOH_EMAIL_FROM=no-reply@yourcompany.com
-FEOH_PUBLIC_URL=https://app.yourcompany.com
-FEOH_TENANT_URL_TEMPLATE=https://{slug}.app.yourcompany.com
+FEOH_EMAIL_FROM=no-reply@feohledger.com
+FEOH_PUBLIC_URL=https://app.feohledger.com
+FEOH_TENANT_URL_TEMPLATE=https://{slug}.app.feohledger.com
 FEOH_HCAPTCHA_SECRET=<from hCaptcha dashboard>
 FEOH_HCAPTCHA_SITEKEY=<from hCaptcha dashboard>
 ```

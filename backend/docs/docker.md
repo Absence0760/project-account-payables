@@ -52,7 +52,7 @@ provisioning: it's the SCIM *client* that pushes users into the app's SCIM
 Service Provider (`app/api/scim.py`, `/api/scim/v2/Users`). It's the local-first
 equivalent of Okta / Entra SCIM. `pnpm idp:up` starts it alongside Keycloak; the
 stack is self-contained (its own Postgres + Redis under the `idp` profile, not
-the app's) and applies `authentik/blueprints/account-payables-scim.yaml` on boot
+the app's) and applies `authentik/blueprints/feohledger-scim.yaml` on boot
 to configure the SCIM provider automatically.
 
 ```bash
@@ -169,7 +169,7 @@ The PostgreSQL image is `pgvector/pgvector:pg16` (official Postgres 16 + the [pg
 | Keycloak   | `admin`       | `admin`       |
 | Authentik  | `akadmin`     | `admin`       |
 
-Keycloak realm test users (realm `account-payables`): `demo@acme.com` / `demo`
+Keycloak realm test users (realm `feohledger`): `demo@acme.com` / `demo`
 and `newhire@acme.com` / `demo`. Authentik API token for scripting:
 `local-dev-authentik-api-token`. SCIM bearer (set by `pnpm scim:seed`):
 `local-dev-scim-token-acme`.

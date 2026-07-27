@@ -1,7 +1,7 @@
 """Post-deploy TLS smoke test.
 
 Usable as a CI step after a deploy: given an origin URL (e.g.
-`https://api.example.com`), it asserts:
+`https://api.feohledger.com`), it asserts:
 
 1. The TLS handshake succeeds against a real (not self-signed) cert.
 2. The origin returns `Strict-Transport-Security` on a plain `GET /`.
@@ -12,8 +12,8 @@ plus `httpx` (already a backend dep).
 
 Usage:
 
-    python scripts/verify_tls.py https://api.example.com
-    python scripts/verify_tls.py https://api.example.com --path /api/health
+    python scripts/verify_tls.py https://api.feohledger.com
+    python scripts/verify_tls.py https://api.feohledger.com --path /api/health
 
 Part of SOC 2 engineering prereqs in `docs/soc2-readiness.md`.
 """

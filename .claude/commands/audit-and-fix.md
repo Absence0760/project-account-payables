@@ -3,7 +3,7 @@ description: Pick one app area (random if none given), audit it for real bugs, f
 argument-hint: "[optional area — a path, glob, module, or feature, e.g. backend/app/services/po_matching.py or 'the payment-run execute path']"
 ---
 
-Deep-audit a single area of project-account-payables, fix the real issues you find, and ship tests with the fix. Unlike `/audit-*` (read-only sweeps that write a review doc) and `/check` (advisory pre-commit gate), this command **lands changes**: fix + tests + scoped commits.
+Deep-audit a single area of FeohLedger, fix the real issues you find, and ship tests with the fix. Unlike `/audit-*` (read-only sweeps that write a review doc) and `/check` (advisory pre-commit gate), this command **lands changes**: fix + tests + scoped commits.
 
 `$ARGUMENTS` is the area to audit. If empty, you pick one (see step 1).
 

@@ -64,7 +64,7 @@ The SOPS KMS key is **not** provisioned by the Terraform module above. It's crea
 
 That single command:
 1. Checks prereqs (`sops`, `aws`, `jq`, authenticated AWS CLI)
-2. Creates or discovers the KMS key + alias (`alias/account-payables-sops`)
+2. Creates or discovers the KMS key + alias (`alias/feohledger-sops`)
 3. Replaces placeholders in `.sops.yaml` with the real ARN
 4. Seeds `infra/terraform.tfvars.sops` and `backend/.env.sops` from their `.example` siblings
 
@@ -87,7 +87,7 @@ Grant the operator `kms:Decrypt` (and usually `kms:Encrypt`, `kms:GenerateDataKe
 
 ```bash
 # Find the key ID behind the alias
-aws kms describe-key --region us-east-1 --key-id alias/account-payables-sops \
+aws kms describe-key --region us-east-1 --key-id alias/feohledger-sops \
   --query 'KeyMetadata.KeyId' --output text
 
 # Schedule deletion (minimum 7-day pending window)

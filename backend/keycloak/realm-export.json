@@ -1,5 +1,5 @@
 {
-  "realm": "account-payables",
+  "realm": "feohledger",
   "enabled": true,
   "displayName": "FeohLedger (local dev IdP)",
   "loginWithEmailAllowed": true,
@@ -7,7 +7,7 @@
   "sslRequired": "none",
   "clients": [
     {
-      "clientId": "account-payables-app",
+      "clientId": "feohledger-app",
       "name": "FeohLedger (local dev)",
       "enabled": true,
       "protocol": "openid-connect",

@@ -88,7 +88,7 @@ If tests will need the local stack, run `pnpm db:up` **once from the orchestrato
 
 Spawn all fixer agents in one message so they run concurrently. Each is a `general-purpose` agent with `isolation: "worktree"`, scoped to **exactly one issue**. Give each agent this contract:
 
-> You are fixing GitHub issue **#N** in an isolated git worktree of project-account-payables. Work only on this issue.
+> You are fixing GitHub issue **#N** in an isolated git worktree of FeohLedger. Work only on this issue.
 >
 > 1. **Re-root first:** `git fetch origin && git checkout -B fix/issue-N origin/main`. Your worktree starts from local HEAD, which is AHEAD of the published origin — your PR must build on `origin/main` only, never on unpushed local commits.
 > 2. **Bootstrap what you need:** `backend/.venv` and `node_modules` do not carry into a worktree. Backend tests → `cd backend && python3 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"`. Frontend → `pnpm -C frontend i`. Compose services are already up and shared — do not run `docker compose down`/`services:reset`.

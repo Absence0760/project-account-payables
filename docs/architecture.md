@@ -56,7 +56,7 @@ All API calls go through `src/lib/api.ts` which handles auth headers, tenant hea
 ## Project Structure
 
 ```
-project-account-payables/
+feohledger/
 ├── frontend/                  # SvelteKit SPA
 │   ├── src/
 │   │   ├── lib/
