@@ -21,6 +21,16 @@ if [ -z "$BUCKET" ]; then
 	exit 1
 fi
 
+# On EC2 the aws CLI infers the region from IMDS; off-EC2 (the Hetzner
+# variant) there is no IMDS, so fall back to the AWS_REGION the sops env
+# already carries.
+if [ -z "${AWS_DEFAULT_REGION:-}" ] && [ -z "${AWS_REGION:-}" ] && [ -f .env ]; then
+	REGION=$(grep -E '^AWS_REGION=' .env | tail -1 | cut -d= -f2- || true)
+	if [ -n "$REGION" ]; then
+		export AWS_DEFAULT_REGION="$REGION"
+	fi
+fi
+
 STAMP=$(date -u +%F)
 PREFIX="s3://${BUCKET}/pg/${STAMP}"
 
