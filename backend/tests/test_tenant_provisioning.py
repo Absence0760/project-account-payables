@@ -731,3 +731,25 @@ async def test_org_scoped_roles_unique_within_org_not_across(realdb):
             await s.rollback()
     finally:
         await engine.dispose()
+
+
+async def test_organization_slug_exists_precheck(realdb, throwaway_slug, _provision_on_test_loop):  # noqa: ARG001
+    """The --skip-existing pre-check used by deploy/add-tenant.sh: False before
+    provisioning, True after — so a partially-failed tenant add (e.g. Caddy
+    reload died after the tenant landed) can be re-run without tripping
+    provision_tenant's deliberate duplicate-slug raise."""
+    from app.services.tenant_provisioning import organization_slug_exists
+
+    slug = throwaway_slug
+    assert not await organization_slug_exists(slug)
+    try:
+        await provision_tenant(
+            company_name="Precheck Corp",
+            slug=slug,
+            admin_email=f"admin@{slug}.test",
+            admin_name="Precheck Admin",
+            admin_password="Sup3rSecret!pw",
+        )
+        assert await organization_slug_exists(slug)
+    finally:
+        await _cleanup_org(slug)

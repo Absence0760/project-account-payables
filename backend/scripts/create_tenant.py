@@ -9,7 +9,7 @@ import argparse
 import asyncio
 
 from app.database import control_engine
-from app.services.tenant_provisioning import provision_tenant
+from app.services.tenant_provisioning import organization_slug_exists, provision_tenant
 
 
 async def main():
@@ -33,9 +33,21 @@ async def main():
         action="store_true",
         help="Require the admin to change their password on first login",
     )
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Exit 0 without changes when the slug is already provisioned "
+        "(makes wrappers like deploy/add-tenant.sh re-runnable; provisioning "
+        "itself deliberately errors on a duplicate slug)",
+    )
     args = parser.parse_args()
 
     admin_name = args.admin_name or f"{args.name} Admin"
+
+    if args.skip_existing and await organization_slug_exists(args.slug):
+        print(f"Tenant '{args.slug}' already exists — skipping provisioning (--skip-existing).")
+        await control_engine.dispose()
+        return
 
     print(f"Provisioning tenant: {args.name} (slug={args.slug})")
     result = await provision_tenant(
