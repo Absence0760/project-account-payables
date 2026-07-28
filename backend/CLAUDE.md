@@ -227,6 +227,15 @@ Consequences worth knowing:
 - **Crash-safe, nothing to clean up.** Postgres releases the lock when the
   holding connection dies, so a killed run frees its slot; the databases are
   reused by the next process to claim it.
+- **Schema drift self-heals at session start** (issue #219). Because the pair
+  is long-lived and provisioned via `create_all(checkfirst=True)` — which never
+  adds a column to an existing table — a pair predating a model change used to
+  stay silently stale until something read the missing column. The harness now
+  drops and recreates each pre-existing tenant DB's schema from the current
+  `Base.metadata` once per pytest session (on the first `_ensure_test_tenants`
+  call, keyed like the slot claim), so a local pair can never lag the ORM.
+  Fresh provisioning (CI shards, a new slot) skips the rebuild — it's already
+  current by construction. Guarded by `test_realdb_harness.py`.
 - **Never hardcode a test tenant's slug or a seeded login** — they carry the slot
   number. Use `realdb.info("a").slug` / `realdb.email("a", "admin")`.
 - Any control-plane row a test creates needs a unique value per slot (derive it

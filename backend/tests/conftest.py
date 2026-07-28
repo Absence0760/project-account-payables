@@ -342,6 +342,42 @@ _REAP_STALE_BACKENDS_SQL = (
 )
 
 
+# Tenant DBs whose physical schema has been rebuilt from the current
+# Base.metadata during THIS pytest session (issue #219). Module-level so the
+# once-per-session rebuild in `_ensure_test_tenants` survives its per-test
+# calls; a test simulating a new session clears it.
+_REBUILT_TENANT_DBS: set[str] = set()
+
+
+async def _rebuild_tenant_schema(db_name: str) -> None:
+    """Drop everything in a test tenant DB so `_create_tenant_tables` can
+    recreate it from the current ``Base.metadata`` (issue #219).
+
+    `DROP SCHEMA public CASCADE` rather than a metadata-driven `drop_all`:
+    the point is that the existing schema may not match the current metadata
+    (columns, tables, or constraints from another branch), so the current
+    metadata cannot be trusted to enumerate what needs dropping. The pgvector
+    extension and the audit_log immutability trigger go down with the schema;
+    `_create_tenant_tables` reinstalls both. Only safe because the slot claim
+    makes this DB exclusive to this process and its data worthless between
+    tests — never point this at anything but a `feoh_pytest*` database.
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.database import _make_tenant_url
+
+    engine = create_async_engine(_make_tenant_url(db_name), **_HARNESS_ENGINE_KW)
+    try:
+        async with engine.begin() as conn:
+            # A previous (crashed) run can leave backends holding locks that
+            # would block the DROP; the slot claim makes them ours to reap.
+            await conn.exec_driver_sql(_REAP_STALE_BACKENDS_SQL)
+            await conn.exec_driver_sql("DROP SCHEMA public CASCADE")
+            await conn.exec_driver_sql("CREATE SCHEMA public")
+    finally:
+        await engine.dispose()
+
+
 def tenant_slugs_for_slot(slot: int) -> dict[str, str]:
     """Tenant slugs for a slot. Slot 0 keeps the historical names."""
     suffix = "" if slot == 0 else str(slot)
@@ -438,8 +474,17 @@ async def _ensure_test_tenants() -> dict:
                 org = (
                     await s.execute(select(Organization).where(Organization.slug == slug))
                 ).scalar_one_or_none()
+            # First ensure of this pytest session for this DB? (Once-per-session,
+            # keyed like the slot claim — NOT once per test, so the rebuild cost
+            # below is paid a single time.)
+            first_ensure = db_name not in _REBUILT_TENANT_DBS
+            created = False
+            if org is None or first_ensure:
+                # Idempotent; returns False when the DB already existed. Also
+                # heals the orphan states (org row without its DB, DB without
+                # its org row) a manual cleanup can leave behind.
+                created = await _create_postgres_database(db_name)
             if org is None:
-                await _create_postgres_database(db_name)
                 org_id = uuid.uuid4()
                 async with ctrl_mk() as s:
                     s.add(
@@ -454,6 +499,20 @@ async def _ensure_test_tenants() -> dict:
                     await s.commit()
             else:
                 org_id = org.id
+            if first_ensure:
+                # Self-heal schema drift (issue #219). These tenant DBs are
+                # long-lived across pytest invocations and provisioned via
+                # `create_all(checkfirst=True)`, which creates missing TABLES
+                # but never adds a missing COLUMN to an existing one — so a DB
+                # predating a later model change stays silently stale forever
+                # (e.g. 68 UndefinedColumnError failures after migration 0076
+                # added expenses.converted_currency). The data holds no value
+                # between sessions, so rebuild from scratch: drop the schema
+                # once per session and let `_create_tenant_tables` below
+                # recreate everything from the CURRENT Base.metadata.
+                if not created:
+                    await _rebuild_tenant_schema(db_name)
+                _REBUILT_TENANT_DBS.add(db_name)
             # Always (re)create tenant tables — idempotent (checkfirst) and
             # backfills any table missing from a DB provisioned earlier with an
             # incomplete model metadata. Pass org_id so the Default entity is

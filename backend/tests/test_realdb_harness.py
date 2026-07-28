@@ -41,9 +41,11 @@ from app.database import _make_tenant_url
 from app.models.organization import Organization
 from tests.conftest import (
     _REAP_STALE_BACKENDS_SQL,
+    _REBUILT_TENANT_DBS,
     _SLOT_LOCK_NAMESPACE,
     _asyncpg_dsn,
     _claim_realdb_slot,
+    _ensure_test_tenants,
     role_email,
     tenant_slugs_for_slot,
 )
@@ -160,6 +162,53 @@ async def test_reap_sweep_terminates_idle_backend_but_spares_active_one(realdb):
         for c in (idle_conn, active_conn, reaper_conn):
             with contextlib.suppress(Exception):
                 await c.close()
+
+
+# ── Schema drift is healed at session start (issue #219) ─────────────
+
+
+async def test_schema_drift_is_rebuilt_on_first_ensure_of_a_session(realdb):
+    """Direct regression for issue #219.
+
+    The tenant pair is long-lived across pytest invocations, and
+    `create_all(checkfirst=True)` creates missing tables but never adds a
+    missing column to an existing one — so a DB predating a later model change
+    stayed silently stale forever (the real incident: 68 failures on
+    `expenses.converted_currency` after migration 0076). The harness now
+    rebuilds the physical schema from the current metadata once per session.
+
+    Simulates the drift by dropping that same column, then clears the
+    once-per-session marker so the next `_ensure_test_tenants` call behaves
+    like the first of a fresh pytest session. The ensure must restore the
+    column, and must reinstall what goes down with the schema — the audit_log
+    immutability triggers prove the rebuild went through the real
+    `_create_tenant_tables` path, not a bare `create_all`.
+    """
+    dsn = _asyncpg_dsn(_make_tenant_url(realdb.info("a").db_name))
+
+    conn = await asyncpg.connect(dsn)
+    try:
+        await conn.execute("ALTER TABLE expenses DROP COLUMN converted_currency")
+    finally:
+        await conn.close()
+
+    _REBUILT_TENANT_DBS.clear()
+    await _ensure_test_tenants()  # re-adds both DBs to the marker set
+
+    conn = await asyncpg.connect(dsn)
+    try:
+        col = await conn.fetchval(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = 'expenses' AND column_name = 'converted_currency'"
+        )
+        assert col == 1, "session-start rebuild did not restore the dropped column"
+        triggers = await conn.fetchval(
+            "SELECT count(*) FROM pg_trigger "
+            "WHERE tgname IN ('audit_log_no_delete', 'audit_log_no_update')"
+        )
+        assert triggers == 2, "audit_log immutability triggers missing after the rebuild"
+    finally:
+        await conn.close()
 
 
 # ── Control-plane reset between tests ─────────────────────────────────
