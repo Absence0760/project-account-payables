@@ -15,6 +15,7 @@ from app.api import (
     auth,
     auth_saml,
     auth_sso,
+    bank_reconciliation,
     billing,
     billing_webhook,
     budgets,
@@ -367,6 +368,7 @@ app.include_router(intake.router, prefix="/api")
 app.include_router(vendors.router, prefix="/api")
 app.include_router(vendor_risk.router, prefix="/api")
 app.include_router(vendor_statement_recon.router, prefix="/api")
+app.include_router(bank_reconciliation.router, prefix="/api")
 app.include_router(positive_pay.router, prefix="/api")
 app.include_router(privacy.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")

@@ -20,10 +20,14 @@ Two responsibilities:
           uses (token Jaccard). Confidence is the Jaccard score
           scaled into 50–70.
 
-A transaction with NO match stays `matched_payment_id=NULL`. The
-exception-opener layer in `services/invoice_warnings.py` reads
-unmatched transactions and surfaces them as
-`unmatched_bank_transaction` exceptions for the AP team.
+A transaction with NO match stays `matched_payment_id=NULL`. Today
+the AP team reviews unmatched transactions from the statement detail
+view (`GET /api/bank-reconciliation/{id}`) and resolves them by hand
+via `POST .../transactions/{id}/resolve` — there is no automatic
+`Exception` row yet (unlike `invoice_warnings.py`'s duplicate/fraud
+checks). Wiring an `unmatched_bank_transaction` exception type into
+the queue is tracked as follow-up work; see
+`docs/bank-reconciliation.md` § Deferred.
 """
 
 from __future__ import annotations
@@ -415,11 +419,36 @@ async def match_statement_transactions(
     `matched_payment_id`, `match_method`, `match_confidence`,
     `matched_at`. Credits are skipped (we don't track incoming).
 
+    A Payment can be matched to at most one BankTransaction — two bank
+    lines can't both be "the" clearing of a single payment. Without this
+    guard, two same-amount transactions inside the same window (a common
+    shape: two invoices happen to be paid for the same amount) would each
+    independently see that one Payment as their sole candidate and both
+    claim it, silently double-counting it as reconciled while leaving
+    whichever transaction actually belongs to a different (unrecorded or
+    not-yet-imported) payment mismatched. `claimed` seeds from every
+    Payment a PRIOR statement import already matched (so re-running this
+    on a new statement can't re-claim one), then grows as this batch makes
+    its own matches so two transactions in the same call can't collide
+    either.
+
     Returns counts by outcome so the caller can summarise the result
     on the import API response: `{"matched": N, "unmatched": M,
     "skipped_credit": K}`.
     """
     counts = {"matched": 0, "unmatched": 0, "skipped_credit": 0}
+
+    claimed: set[uuid.UUID] = set(
+        (
+            await db.execute(
+                select(BankTransaction.matched_payment_id).where(
+                    BankTransaction.matched_payment_id.is_not(None)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
 
     for tx in transactions:
         if tx.direction != "debit":
@@ -431,15 +460,15 @@ async def match_statement_transactions(
         # Strategy 1: exact reference match.
         if tx.reference:
             found = await _payment_by_reference(db, tx.reference)
-            if found is not None:
+            if found is not None and found.id not in claimed:
                 attempt = MatchAttempt(
                     payment_id=found.id,
                     method="provider_id",
                     confidence=_CONFIDENCE_PROVIDER_ID,
                 )
 
-        # Strategy 2: amount + date window. Only one candidate in
-        # the window → confident; multiple → fall through to fuzzy.
+        # Strategy 2: amount + date window. Only one (unclaimed) candidate
+        # in the window → confident; multiple → fall through to fuzzy.
         candidates: list[Payment] = []
         if attempt is None:
             candidates = await _candidate_payments_in_window(
@@ -449,6 +478,7 @@ async def match_statement_transactions(
                 transaction_date=tx.transaction_date,
                 window_days=window_days,
             )
+            candidates = [c for c in candidates if c.id not in claimed]
             if len(candidates) == 1:
                 attempt = MatchAttempt(
                     payment_id=candidates[0].id,
@@ -477,6 +507,7 @@ async def match_statement_transactions(
         tx.matched_payment_id = attempt.payment_id
         tx.match_method = attempt.method
         tx.match_confidence = attempt.confidence
+        claimed.add(attempt.payment_id)
         tx.matched_at = datetime.now(UTC)
         counts["matched"] += 1
 
