@@ -48,7 +48,20 @@ intake.
   (mirroring `positive_pay`'s invoice-less `fraud_flag` pattern for a
   non-invoice-linked exception), and clear/resolve it when the transaction is
   later matched via `/resolve`. Needs an `Exception` row with no
-  `invoice_id` — already supported since migration 0049.
+  `invoice_id` — already supported since migration 0049. **Open design
+  question before implementing**: `BankStatement`/`BankTransaction` carry no
+  `entity_id` (org-wide, predates multi-entity — see above), but
+  `api/exceptions.py`'s list query calls `apply_entity_scope(...)` WITHOUT
+  `include_shared=True`, so an `Exception` row stamped `entity_id=None` would
+  be invisible to any user with a specific entity selected — only visible in
+  the "all entities" consolidated view. Positive Pay's invoice-less
+  `fraud_flag` sidesteps this because Positive Pay files ARE entity-scoped
+  (`entity_id` comes from a real `get_write_entity_id`), so its exceptions
+  always get a real entity, never `None`. Bank reconciliation has no entity to
+  attribute to, so this needs a real decision (stamp the org's default entity?
+  add `include_shared=True` to the exceptions query? something else?) — not a
+  default worth guessing at silently, since guessing wrong ships a queue item
+  most multi-entity tenants would never see.
 - **Frontend page.** No `/bank-reconciliation` route ships yet in the SPA;
   the API is usable today via any HTTP client / the `/docs` Swagger UI. A
   dedicated page (statement list, upload form, transaction match-review
