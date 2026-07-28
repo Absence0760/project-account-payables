@@ -306,6 +306,24 @@ async def resolve_transaction(
         ).scalar_one_or_none()
         if payment is None:
             raise HTTPException(status_code=404, detail="Payment not found")
+        # A Payment can be matched to at most one BankTransaction — same
+        # invariant the automatic matcher enforces (see
+        # services.bank_reconciliation.match_statement_transactions).
+        # Without this check a clerk could manually point two different
+        # transactions at the same payment, double-counting it as cleared.
+        other = (
+            await db.execute(
+                select(BankTransaction.id).where(
+                    BankTransaction.matched_payment_id == payment_id,
+                    BankTransaction.id != tx.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if other is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="This payment is already matched to another bank transaction.",
+            )
         tx.matched_payment_id = payment.id
         tx.match_method = "manual"
         tx.match_confidence = _MANUAL_MATCH_CONFIDENCE
