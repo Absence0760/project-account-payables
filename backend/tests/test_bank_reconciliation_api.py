@@ -314,6 +314,52 @@ async def test_resolve_unknown_payment_is_404(realdb):
     assert resp.status_code == 404
 
 
+async def test_resolve_refuses_to_double_claim_a_payment(realdb):
+    """A Payment can be matched to at most one BankTransaction — the same
+    invariant the automatic matcher enforces. Manually resolving a second
+    transaction onto an already-matched payment must be refused (409), not
+    silently steal/duplicate the match."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    payment_id = await _add_payment(mk, org_id, amount="42.00")
+
+    csv_body = _csv(
+        "Date,Amount,Description",
+        f"{_TODAY.isoformat()},-11.00,First",
+        f"{_TODAY.isoformat()},-12.00,Second",
+    )
+    async with realdb.client(key="a", role="ap_manager") as c:
+        up = await c.post(
+            "/api/bank-reconciliation/upload",
+            data={
+                "account_identifier": "Operating ****7777",
+                "period_start": (_TODAY - timedelta(days=30)).isoformat(),
+                "period_end": _TODAY.isoformat(),
+            },
+            files={"file": ("statement.csv", csv_body, "text/csv")},
+        )
+        stmt_id = up.json()["id"]
+        tx1_id, tx2_id = (t["id"] for t in up.json()["transactions"])
+
+        first = await c.post(
+            f"/api/bank-reconciliation/{stmt_id}/transactions/{tx1_id}/resolve",
+            json={"matched_payment_id": payment_id},
+        )
+        assert first.status_code == 200, first.text
+
+        second = await c.post(
+            f"/api/bank-reconciliation/{stmt_id}/transactions/{tx2_id}/resolve",
+            json={"matched_payment_id": payment_id},
+        )
+        assert second.status_code == 409, second.text
+
+        # The first transaction's match is untouched by the refused attempt.
+        detail = await c.get(f"/api/bank-reconciliation/{stmt_id}")
+        by_id = {t["id"]: t for t in detail.json()["transactions"]}
+        assert by_id[tx1_id]["matched_payment_id"] == payment_id
+        assert by_id[tx2_id]["matched_payment_id"] is None
+
+
 # ---------------------------------------------------------------------------
 # Delete
 # ---------------------------------------------------------------------------

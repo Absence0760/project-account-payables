@@ -320,7 +320,9 @@ def _invoice(*, vendor_name="Acme Corp", id_=None):
     return SimpleNamespace(id=id_ or uuid.uuid4(), vendor_name=vendor_name)
 
 
-def _mock_db(*, by_provider_id=None, by_reference=None, payments=None, invoices=None):
+def _mock_db(
+    *, by_provider_id=None, by_reference=None, payments=None, invoices=None, already_claimed=None
+):
     """Build a DB whose execute() returns the right shape based on
     SQL pattern matching the production queries. We sniff the
     rendered SQL because match_statement_transactions issues a
@@ -330,10 +332,20 @@ def _mock_db(*, by_provider_id=None, by_reference=None, payments=None, invoices=
     by_reference = by_reference or {}
     payments = payments or []
     invoices = invoices or []
+    already_claimed = already_claimed or []
 
     async def _execute(query):
         sql = str(query).lower()
         result = MagicMock()
+        # The one-time "which payments has a PRIOR statement already
+        # claimed" pre-query — anchor on the table, since it selects only
+        # the matched_payment_id column (no WHERE-clause literal to key on
+        # the way the others below do).
+        if "from bank_transactions" in sql:
+            scalars = MagicMock()
+            scalars.all = MagicMock(return_value=already_claimed)
+            result.scalars = MagicMock(return_value=scalars)
+            return result
         # Anchor on the WHERE-clause shape, not on column names in
         # the SELECT list — every Payment query has provider_payment_id
         # / reference as selected columns.
@@ -524,3 +536,49 @@ async def test_match_returns_full_outcome_counts():
 
     counts = await match_statement_transactions(db, txs)
     assert counts == {"matched": 2, "unmatched": 1, "skipped_credit": 1}
+
+
+# ---------------------------------------------------------------------------
+# A Payment can be matched to at most one BankTransaction.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_match_does_not_double_claim_a_payment_within_one_batch():
+    """Two same-amount debit transactions, only one Payment candidate in
+    the window. Before the claimed-set guard, BOTH transactions
+    independently saw that single Payment as their sole candidate and
+    both got `matched_payment_id` set to it — double-counting one
+    payment as reconciled twice while masking that the second
+    transaction has no real match on file. Only the first transaction
+    processed may claim it; the second must stay unmatched rather than
+    also point at the already-claimed payment."""
+    payment = _payment(amount=Decimal("100"), submitted_at=datetime(2026, 5, 1, tzinfo=UTC))
+    tx1 = _tx(amount=Decimal("100"), date_=date(2026, 5, 2))
+    tx2 = _tx(amount=Decimal("100"), date_=date(2026, 5, 3))
+    db = _mock_db(payments=[payment])
+
+    counts = await match_statement_transactions(db, [tx1, tx2])
+
+    assert counts == {"matched": 1, "unmatched": 1, "skipped_credit": 0}
+    assert tx1.matched_payment_id == payment.id
+    assert tx2.matched_payment_id is None
+    # The two transactions must never end up pointing at the same payment.
+    assert tx1.matched_payment_id != tx2.matched_payment_id
+
+
+@pytest.mark.asyncio
+async def test_match_does_not_reclaim_a_payment_already_matched_by_a_prior_statement():
+    """A Payment a previous statement import already matched must not be
+    handed out again to a transaction on a fresh statement — otherwise
+    re-running an import (or importing a second statement covering an
+    overlapping period) could silently reassign an already-reconciled
+    payment to an unrelated transaction."""
+    payment = _payment(amount=Decimal("100"), submitted_at=datetime(2026, 5, 1, tzinfo=UTC))
+    tx = _tx(amount=Decimal("100"), date_=date(2026, 5, 2))
+    db = _mock_db(payments=[payment], already_claimed=[payment.id])
+
+    counts = await match_statement_transactions(db, [tx])
+
+    assert counts == {"matched": 0, "unmatched": 1, "skipped_credit": 0}
+    assert tx.matched_payment_id is None
