@@ -20,10 +20,14 @@ Two responsibilities:
           uses (token Jaccard). Confidence is the Jaccard score
           scaled into 50–70.
 
-A transaction with NO match stays `matched_payment_id=NULL`. The
-exception-opener layer in `services/invoice_warnings.py` reads
-unmatched transactions and surfaces them as
-`unmatched_bank_transaction` exceptions for the AP team.
+A transaction with NO match stays `matched_payment_id=NULL`. Today
+the AP team reviews unmatched transactions from the statement detail
+view (`GET /api/bank-reconciliation/{id}`) and resolves them by hand
+via `POST .../transactions/{id}/resolve` — there is no automatic
+`Exception` row yet (unlike `invoice_warnings.py`'s duplicate/fraud
+checks). Wiring an `unmatched_bank_transaction` exception type into
+the queue is tracked as follow-up work; see
+`docs/bank-reconciliation.md` § Deferred.
 """
 
 from __future__ import annotations

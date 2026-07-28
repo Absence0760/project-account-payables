@@ -4,7 +4,7 @@ Import a bank statement (CSV today; OFX / camt.053 reserved) and
 auto-match the debit transactions against the `Payment` rows that
 should appear on it. Match results are surfaced to the AP team:
 matched rows show their match method + confidence; unmatched rows
-become exceptions.
+stay visible on the statement detail view for manual review.
 
 ## Components
 
@@ -14,6 +14,47 @@ become exceptions.
 | Migration | `alembic/versions/0019_bank_reconciliation.py` | Tables + indexes (tenant DB) |
 | Importer | `app/services/bank_reconciliation.py::parse_csv_statement` | CSV → rows |
 | Matcher | `app/services/bank_reconciliation.py::match_statement_transactions` | Rows → `Payment` |
+| API | `app/api/bank_reconciliation.py` | `/api/bank-reconciliation` — the HTTP surface below |
+
+## API (`/api/bank-reconciliation`)
+
+Not entity-scoped (predates multi-entity; a bank account is org-wide, not
+per-subsidiary — mirrors how an unscoped `GLAccount` is shared). Read
+admin/ap_manager/ap_clerk/cfo; mutate admin/ap_manager only (treasury-adjacent
+raw account data, same write gate as Positive Pay — clerks excluded). Every
+mutation writes a PII-free audit row (`bank_reconciliation.imported` /
+`.transaction_resolved` / `.deleted`).
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/upload` | Multipart CSV upload (`file`, `account_identifier`, `period_start`, `period_end`, `currency`). Parses via `parse_csv_statement`, persists the statement + transactions, runs `match_statement_transactions`, returns the detail view. 422 on a malformed CSV (`StatementImportError`). |
+| `GET` | `` | List statements, paginated, optional `?account_identifier=` filter. |
+| `GET` | `/{id}` | Statement detail including every transaction (list omits transactions to avoid an N+1 payload on the index). |
+| `POST` | `/{id}/transactions/{tx_id}/resolve` | Manually set (`matched_payment_id: "<uuid>"`) or clear (`null`) a transaction's match — `match_method="manual"`, confidence 100 when set. Recomputes the statement's `matched_count`. |
+| `DELETE` | `/{id}` | Delete a statement; cascades its transactions. |
+
+Raw-file storage (the uploaded CSV → S3, for audit replay) is deferred —
+`file_key` is always `NULL` today, matching `vendor_statement_recon`'s CSV
+intake.
+
+## Deferred
+
+- **`unmatched_bank_transaction` exception.** Today an unmatched transaction
+  is only visible by opening the statement detail view; it does not raise an
+  `Exception` row the way `invoice_warnings.py` does for duplicates/fraud, so
+  it won't surface on the shared exceptions queue. Durable fix: after
+  `match_statement_transactions` runs (in the `/upload` handler), open a
+  de-duped `unmatched_bank_transaction` Exception per still-unmatched debit
+  (mirroring `positive_pay`'s invoice-less `fraud_flag` pattern for a
+  non-invoice-linked exception), and clear/resolve it when the transaction is
+  later matched via `/resolve`. Needs an `Exception` row with no
+  `invoice_id` — already supported since migration 0049.
+- **Frontend page.** No `/bank-reconciliation` route ships yet in the SPA;
+  the API is usable today via any HTTP client / the `/docs` Swagger UI. A
+  dedicated page (statement list, upload form, transaction match-review
+  table) is tracked as its own follow-up — same shape as `/vendor-statements`.
+- **OFX / camt.053 import.** `source_format` already carries the value;
+  only the CSV parser is implemented.
 
 ## CSV importer
 
@@ -109,3 +150,4 @@ exceptions queue.
 | File | Coverage |
 |---|---|
 | `tests/test_bank_reconciliation.py` | CSV sniffing (signed-amount + separate debit/credit; parenthesized negatives; comma + dollar-sign amounts; reference + counterparty pass-through; bad rows skipped); refusal paths (empty / header-only / missing columns / all-bad-rows / latin-1 fallback); matcher strategies (provider_id 100, amount_date 80, fuzzy_vendor 50–70, multi-candidate-no-fuzzy unmatched, credits skipped); outcome-count rollup |
+| `tests/test_bank_reconciliation_api.py` | The HTTP surface end-to-end against real test tenants: upload → persisted statement + matched transactions + audit row, credits skipped, malformed CSV → 422, list + detail (transactions omitted from list), manual resolve (set + clear, audited, `matched_count` recomputed), resolve against an unknown payment → 404, delete cascades transactions, RBAC (`ap_clerk` reads but can't upload/delete) |
