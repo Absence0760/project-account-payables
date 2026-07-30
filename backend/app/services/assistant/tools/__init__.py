@@ -20,6 +20,7 @@ from app.services.assistant.tools.approvals import list_pending_approvals
 from app.services.assistant.tools.cashflow import (
     get_cash_position,
     get_cashflow_forecast,
+    propose_payment_plan,
     run_payment_whatif,
 )
 from app.services.assistant.tools.forecast import get_payment_forecast
@@ -182,6 +183,21 @@ TOOLS: dict[str, ToolSpec] = {
         param_model=schemas.OptimizeDiscountsParams,
         return_model=schemas.OptimizeDiscountsResult,
         fn=optimize_discount_capture,
+        allowed_roles=FINANCE_LEADER_ROLES,
+    ),
+    "propose_payment_plan": ToolSpec(
+        name="propose_payment_plan",
+        description=(
+            "Assemble a proposed payment plan for a cash ceiling and horizon: "
+            "the resulting period-by-period cash-position curve plus which "
+            "early-payment discount offers to capture and the savings that "
+            "produces. Read-only — it never moves money or mutates anything, it "
+            "only returns a proposal. Use for 'propose a payment plan', 'what "
+            "should I pay given $X cash', 'build me a plan for the next quarter'."
+        ),
+        param_model=schemas.ProposePaymentPlanParams,
+        return_model=schemas.PaymentPlanResult,
+        fn=propose_payment_plan,
         allowed_roles=FINANCE_LEADER_ROLES,
     ),
 }

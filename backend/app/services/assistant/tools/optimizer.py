@@ -47,17 +47,26 @@ async def _cost_of_capital(
     return Decimal(str(settings.discount_cost_of_capital_pct))
 
 
-async def optimize_discount_capture(
+async def run_discount_optimization(
     db: AsyncSession,
     *,
     org_id: uuid.UUID,
     entity_id: uuid.UUID | None,
-    current_user_id: uuid.UUID,
-    params: OptimizeDiscountsParams,
-    control_db: AsyncSession | None = None,
-) -> OptimizeDiscountsResult:
-    today = datetime.now(UTC).date()
-    cost_of_capital = await _cost_of_capital(control_db, org_id, params.cost_of_capital_pct)
+    control_db: AsyncSession | None,
+    cash_budget: Decimal | None,
+    cost_of_capital_pct: Decimal | None,
+    today,
+):
+    """Fetch open offers, build opportunities, and rank/select them.
+
+    The single source of truth shared by the ``optimize_discount_capture``
+    tool, ``POST /api/discounts/optimize``, and the ``propose_payment_plan``
+    tool (``services.cash_flow_plan``) — every caller gets the identical
+    selection for the same inputs. Returns ``(OptimizationResult, offers)``;
+    ``offers`` (the raw ``DiscountOffer`` rows) lets a caller resolve
+    vendor/invoice names without a second query.
+    """
+    cost_of_capital = await _cost_of_capital(control_db, org_id, cost_of_capital_pct)
 
     offers = list(
         (
@@ -72,21 +81,28 @@ async def optimize_discount_capture(
         .scalars()
         .all()
     )
-    offer_by_id = {str(o.id): o for o in offers}
     opportunities = []
     for offer in offers:
         opp = await _build_opportunity(db, offer, today=today)
         if opp is not None:
             opportunities.append(opp)
-    vmap, imap = await _name_maps(db, offers)
 
     result = optimize(
         opportunities,
-        cash_budget=params.cash_budget,
+        cash_budget=cash_budget,
         cost_of_capital_pct=cost_of_capital,
         today=today,
     )
+    return result, offers
 
+
+def build_discount_recommendations(result, offers, vmap, imap) -> list[DiscountRecommendation]:
+    """Map an ``OptimizationResult`` + its source ``DiscountOffer`` rows onto
+    the shared ``DiscountRecommendation`` schema (vendor/invoice names
+    resolved via the ``_name_maps`` maps). Shared by ``optimize_discount_capture``
+    and the ``propose_payment_plan`` tool so the two never format the same
+    selection differently."""
+    offer_by_id = {str(o.id): o for o in offers}
     recommendations: list[DiscountRecommendation] = []
     for r in result.recommendations:
         offer = offer_by_id.get(r.opportunity.offer_id)
@@ -111,6 +127,31 @@ async def optimize_discount_capture(
                 selected=r.selected,
             )
         )
+    return recommendations
+
+
+async def optimize_discount_capture(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    entity_id: uuid.UUID | None,
+    current_user_id: uuid.UUID,
+    params: OptimizeDiscountsParams,
+    control_db: AsyncSession | None = None,
+) -> OptimizeDiscountsResult:
+    today = datetime.now(UTC).date()
+
+    result, offers = await run_discount_optimization(
+        db,
+        org_id=org_id,
+        entity_id=entity_id,
+        control_db=control_db,
+        cash_budget=params.cash_budget,
+        cost_of_capital_pct=params.cost_of_capital_pct,
+        today=today,
+    )
+    vmap, imap = await _name_maps(db, offers)
+    recommendations = build_discount_recommendations(result, offers, vmap, imap)
 
     return OptimizeDiscountsResult(
         currency=await resolve_org_currency(org_id, control_db),

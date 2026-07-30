@@ -779,7 +779,7 @@ Use AP data to forecast cash outflows and optimize payment timing.
 ---
 
 ### AI Cash-Flow Copilot
-**Status:** Phase 1 shipped (read-only cash Q&A + `/cash-flow` copilot); Phases 2–3 planned — see [cash-flow-copilot.md](cash-flow-copilot.md).
+**Status:** Phases 1–2 shipped (read-only cash Q&A + `/cash-flow` copilot; proposed payment plans via `propose_payment_plan` + the display-only plan card); Phase 3 (draft-only enactment) planned — see [cash-flow-copilot.md](cash-flow-copilot.md).
 
 A **beyond-parity** differentiator, not a competitive gap: a natural-language,
 forward-looking copilot that answers "when do I run low on cash?" and "what
@@ -800,7 +800,7 @@ staging a **draft** payment run (existing idempotent, CFO-gated path); funding
 stays behind the unchanged human review + CFO gate + segregation.
 
 - [x] Phase 1 — read-only cash Q&A: four new entity-scoped, finance-leader-gated (`admin`/`ap_manager`/`cfo`, not `ap_clerk`) planning tools (`get_cashflow_forecast`, `get_cash_position`, `run_payment_whatif`, `optimize_discount_capture`) registered alongside the existing assistant tools; `/api/cash-flow/copilot(+/stream)` façade; `/cash-flow` chat + cash-position chart. Money as exact strings (must NOT inherit the analytics endpoints' `float()` coercion). Gated by `FEOH_CASHFLOW_COPILOT_ENABLED` (default on); `FEOH_CASHFLOW_COPILOT_DEFAULT_HORIZON_DAYS` (default 90).
-- [ ] Phase 2 — proposed plans: `propose_payment_plan` tool assembles a plan artifact (period-by-period schedule + discounts to capture + resulting cash curve) from the pure functions; plan-card UI (display only).
+- [x] Phase 2 — proposed plans: `propose_payment_plan` tool assembles a plan artifact (period-by-period schedule + discounts to capture + resulting cash curve) from the pure functions (`bucket_outflows`/`compute_cash_position`/the discount optimizer's own selection, reused not re-derived — same source of truth as `optimize_discount_capture`); a selected discount re-times onto its `pay_by` period at its discounted outlay when it matches a single commitment row, otherwise it's flagged `unretimed_offer_ids` rather than misrepresenting the curve. Display-only plan-card UI (`PlanCard.svelte`) — no enact affordance yet (Phase 3). See `services/cash_flow_plan.py`.
 - [ ] Phase 3 — draft-only enactment: `POST /api/cash-flow/plans/{id}/draft-run` (idempotent draft run, execute stays CFO-gated) + `.../capture-discounts` (status-only accept), human-confirmed + audited.
 - [ ] Deferred: saved plans / plan-vs-actual (`CashPlan` model + migration), opening-balance provenance surfacing, consolidated cross-entity mode, proactive shortfall-alert sweep.
 

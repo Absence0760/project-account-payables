@@ -766,6 +766,22 @@ export const messages = {
 	'cashFlow.chart.aria': '{start} から {end} までのキャッシュポジション。{shortfall}',
 	'cashFlow.chart.ariaShortfall': '最初の予測不足は {period} です。',
 	'cashFlow.chart.ariaHealthy': '期間を通じて最低残高を上回っています。',
+	// キャッシュフロー・コパイロット — 提案された支払いプラン（フェーズ2、表示のみ）
+	'cashFlow.plan.title': '提案された支払いプラン',
+	'cashFlow.plan.savingsSummary':
+		'{n, plural, other {# 件の割引オファーを活用すると}} {amount} 節約できます。',
+	'cashFlow.plan.noSavings': 'このプランで活用できる割引オファーはありません。',
+	'cashFlow.plan.scheduleHeading': '支払いスケジュール',
+	'cashFlow.plan.discountsHeading': '活用する割引',
+	'cashFlow.plan.col.period': '期間',
+	'cashFlow.plan.col.outflow': '支出',
+	'cashFlow.plan.col.closing': '期末残高',
+	'cashFlow.plan.col.vendor': '仕入先',
+	'cashFlow.plan.col.savings': '節約額',
+	'cashFlow.plan.col.payBy': '支払期限',
+	'cashFlow.plan.unretimedNote':
+		'{n, plural, other {上記のオファーのうち # 件は}}節約合計には含まれていますが、対象となる単一の請求書がないためスケジュールには反映されていません。',
+	'cashFlow.plan.disclaimer': 'これは提案です — まだ支払いも予定もされていません。',
 	// Cash Flow / CFO dashboard (routes/cfo/+page.svelte)
 	'cfo.title': 'キャッシュフロー',
 	'cfo.exportCsv': 'CSVをエクスポート',
