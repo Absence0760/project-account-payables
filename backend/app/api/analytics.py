@@ -143,9 +143,7 @@ async def _commitment_rows(
     )
     committed_set = set(_COMMITTED_STATUSES)
     rows: list[dict] = []
-    for inv_id, amount, status, inv_due, sched_due, discount_date, discount_percent in (
-        result.all()
-    ):
+    for inv_id, amount, status, inv_due, sched_due, discount_date, discount_percent in result.all():
         due = sched_due or inv_due
         if due is None or due < today or due > horizon_end:
             continue

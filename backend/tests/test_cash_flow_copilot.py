@@ -803,9 +803,7 @@ async def test_propose_payment_plan_money_exact_and_matches_optimizer(realdb):
             entity_id=None,
             current_user_id=a.users["admin"],
             control_db=ctrl,
-            params=ProposePaymentPlanParams(
-                granularity="week", opening_balance=Decimal("5000.00")
-            ),
+            params=ProposePaymentPlanParams(granularity="week", opening_balance=Decimal("5000.00")),
         )
     async with mk_a() as sa, ctrl_mk() as ctrl:
         opt = await optimize_discount_capture(
@@ -876,9 +874,7 @@ async def test_propose_payment_plan_retimes_captured_discount_onto_pay_by(realdb
             entity_id=None,
             current_user_id=a.users["admin"],
             control_db=ctrl,
-            params=ProposePaymentPlanParams(
-                granularity="week", opening_balance=Decimal("5000.00")
-            ),
+            params=ProposePaymentPlanParams(granularity="week", opening_balance=Decimal("5000.00")),
         )
 
     selected = [r for r in plan.discount_recommendations if r.selected]
@@ -949,9 +945,7 @@ async def test_propose_payment_plan_never_double_counts_two_offers_on_one_invoic
             entity_id=None,
             current_user_id=a.users["admin"],
             control_db=ctrl,
-            params=ProposePaymentPlanParams(
-                granularity="week", opening_balance=Decimal("5000.00")
-            ),
+            params=ProposePaymentPlanParams(granularity="week", opening_balance=Decimal("5000.00")),
         )
 
     selected = [r for r in plan.discount_recommendations if r.selected]
@@ -1019,9 +1013,7 @@ async def test_propose_payment_plan_flags_unretimed_vendor_scoped_offer(realdb):
             entity_id=None,
             current_user_id=a.users["admin"],
             control_db=ctrl,
-            params=ProposePaymentPlanParams(
-                granularity="week", opening_balance=Decimal("5000.00")
-            ),
+            params=ProposePaymentPlanParams(granularity="week", opening_balance=Decimal("5000.00")),
         )
 
     selected = [r for r in plan.discount_recommendations if r.selected]
@@ -1075,9 +1067,7 @@ async def test_propose_payment_plan_never_mutates_anything(realdb):
             entity_id=None,
             current_user_id=a.users["admin"],
             control_db=ctrl,
-            params=ProposePaymentPlanParams(
-                granularity="week", opening_balance=Decimal("5000.00")
-            ),
+            params=ProposePaymentPlanParams(granularity="week", opening_balance=Decimal("5000.00")),
         )
 
     async with mk_a() as sa:
@@ -1129,9 +1119,7 @@ async def test_propose_payment_plan_never_reads_other_tenant(realdb):
             entity_id=None,
             current_user_id=a.users["admin"],
             control_db=ctrl,
-            params=ProposePaymentPlanParams(
-                granularity="week", opening_balance=Decimal("0")
-            ),
+            params=ProposePaymentPlanParams(granularity="week", opening_balance=Decimal("0")),
         )
     total_outflow = sum((p.outflow for p in plan.periods), Decimal("0"))
     assert total_outflow == Decimal("222.00")
