@@ -237,6 +237,65 @@ async def test_cfo_approve_refuses_the_user_who_created_the_run(realdb):
     assert "approve" in ei.value.detail
 
 
+@pytest.mark.asyncio
+async def test_resume_refuses_the_user_who_created_the_run(realdb):
+    """Resuming a stuck `executing` run dispatches real payments exactly like
+    /execute — same maker-checker gate. Without it, a run's own initiator
+    could wait for (or force) it into `executing` and resume-execute their
+    own run solo, after already being refused at /execute."""
+    from app.api.payments import resume_payment_run
+
+    info = realdb.info("a")
+    org_id = info.org_id
+    creator = info.users["admin"]
+    mk = realdb.sessionmaker("a")
+    run_id = await _seed_draft_run(mk, org_id, initiated_by=creator)
+
+    # Simulate a crash mid-execute: the run is stuck `executing` with its
+    # payment still `pending` (exactly resume's documented use case).
+    async with mk() as s:
+        run = (await s.execute(select_run(run_id))).scalar_one()
+        run.status = "executing"
+        await s.commit()
+
+    async with realdb.sessionmaker("a")() as db:
+        with pytest.raises(HTTPException) as ei:
+            await resume_payment_run(run_id=run_id, db=db, org=_org(org_id), user=_user(creator))
+    assert ei.value.status_code == 403
+    assert "execute" in ei.value.detail
+
+    # Nothing moved: the payment is still pending, the run still executing.
+    async with mk() as s:
+        run = (await s.execute(select_run(run_id))).scalar_one()
+        assert run.status == "executing"
+
+
+@pytest.mark.asyncio
+async def test_resume_proceeds_for_a_different_actor(realdb):
+    from app.api.payments import resume_payment_run
+
+    info = realdb.info("a")
+    org_id = info.org_id
+    mk = realdb.sessionmaker("a")
+    # Creator differs from the resuming admin → maker-checker satisfied.
+    run_id = await _seed_draft_run(mk, org_id, initiated_by=info.users["ap_manager"])
+    async with mk() as s:
+        run = (await s.execute(select_run(run_id))).scalar_one()
+        run.status = "executing"
+        await s.commit()
+
+    async with realdb.sessionmaker("a")() as db:
+        with (
+            patch("app.api.payments.get_payment_adapter", return_value=_mock_adapter()),
+            patch("app.api.payments.transition_invoice", new_callable=AsyncMock),
+            patch("app.services.payment_erp_sync.dispatch_payment_sync", new_callable=AsyncMock),
+        ):
+            res = await resume_payment_run(
+                run_id=run_id, db=db, org=_org(org_id), user=_user(info.users["admin"])
+            )
+    assert res["status"] in ("completed", "submitted", "partial")
+
+
 def select_run(run_id):
     from sqlalchemy import select
 

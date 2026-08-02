@@ -1664,6 +1664,18 @@ async def _dispatch_run_payments(
     pending_payments = pay_result.scalars().all()
 
     for payment in pending_payments:
+        # Re-lock and re-check immediately before dispatching, mirroring the
+        # reconciler's claim pattern (payment_reconciler.py). The bulk read
+        # above is a plain SELECT with no lock — held across this whole loop
+        # it would be released early anyway by the per-payment commit below —
+        # so without this, two concurrent callers (two /resume calls, or a
+        # /resume racing an in-flight /execute) both load the same pending
+        # row and both dispatch it to the adapter. This is what makes a
+        # second concurrent caller see the row already claimed and skip it
+        # instead of double-charging the processor.
+        await db.refresh(payment, with_for_update=True)
+        if payment.status != "pending":
+            continue
         try:
             await _execute_single_payment(
                 db, payment=payment, org=org, adapter=adapter, user=user, now=now
@@ -1883,6 +1895,16 @@ async def resume_payment_run(
             status_code=409,
             detail=f"Can only resume a run stuck 'executing', not '{run.status}'",
         )
+    # Resuming dispatches real payments exactly like /execute — same
+    # maker-checker gate. Without this, the run's own initiator could wait
+    # for (or force) it into `executing` and resume-execute their own run
+    # solo, after already being refused at /execute.
+    check_run_segregation(
+        run.initiated_by,
+        user.id,
+        (org.settings or {}).get("payments"),
+        action="execute",
+    )
 
     # Release the row lock before the (potentially slow) per-payment loop —
     # no status change needed here, the run is already `executing`.
