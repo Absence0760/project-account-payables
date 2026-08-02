@@ -42,6 +42,101 @@ async def test_manual_create_lands_at_new_with_no_file(realdb):
         assert inv.file_key is None
 
 
+async def test_manual_create_stamps_uploaded_by_id(realdb):
+    """A hand-keyed invoice must carry the same authorship tracking a file
+    upload gets (`app/api/workflow.py`) — otherwise `approval_chain.
+    violates_segregation` treats it as a NULL-uploader "pre-existing" row and
+    exempts it from segregation of duties entirely (the creator could then
+    approve their own fabricated invoice with zero friction)."""
+    actor_id = realdb.info("a").users["ap_manager"]
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/invoices",
+            json={
+                "vendor": "SoD Test Vendor",
+                "invoice_number": "SOD-001",
+                "amount": "500.00",
+                "currency": "USD",
+            },
+        )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        inv = (await s.execute(select(Invoice).where(Invoice.id == body["id"]))).scalar_one()
+        assert inv.uploaded_by_id == actor_id
+
+
+async def test_manual_create_then_self_approve_is_blocked_by_segregation(realdb):
+    """End-to-end proof the SoD gap is closed at the API, not just on the
+    model: the same user who hand-keyed an invoice cannot also approve it."""
+    async with realdb.client(key="a", role="ap_manager") as c:
+        create = await c.post(
+            "/api/invoices",
+            json={
+                "vendor": "SoD Approve Test Vendor",
+                "invoice_number": "SOD-002",
+                "amount": "500.00",
+                "currency": "USD",
+            },
+        )
+        assert create.status_code == 201, create.text
+        invoice_id = create.json()["id"]
+
+        resp = await c.post(f"/api/invoices/{invoice_id}/approve", json={})
+    assert resp.status_code == 403, resp.text
+    assert "segregation" in resp.json()["detail"].lower()
+
+
+async def test_manual_create_runs_duplicate_detection(realdb):
+    """A byte-identical resubmission (same vendor + invoice number + amount)
+    must raise the same `duplicate` warning + exception the extraction path
+    gets — `create_invoice` never called `refresh_warnings` before, so this
+    detection layer was entirely dark for hand-keyed invoices."""
+    async with realdb.client(key="a", role="ap_manager") as c:
+        first = await c.post(
+            "/api/invoices",
+            json={
+                "vendor": "Dupe Test Vendor",
+                "invoice_number": "DUPE-001",
+                "amount": "2500.00",
+                "currency": "USD",
+            },
+        )
+        assert first.status_code == 201, first.text
+
+        second = await c.post(
+            "/api/invoices",
+            json={
+                "vendor": "Dupe Test Vendor",
+                "invoice_number": "DUPE-001",
+                "amount": "2500.00",
+                "currency": "USD",
+            },
+        )
+        assert second.status_code == 201, second.text
+        second_body = second.json()
+
+    warnings = second_body["warnings"] or []
+    assert any(w.get("type") == "duplicate" for w in warnings), second_body
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        from app.models.exception import Exception as ExceptionModel
+
+        rows = (
+            await s.execute(
+                select(ExceptionModel).where(
+                    ExceptionModel.invoice_id == second_body["id"],
+                    ExceptionModel.exception_type == "duplicate",
+                )
+            )
+        ).scalars().all()
+        assert len(rows) == 1, "expected exactly one open duplicate exception"
+        assert rows[0].status == "open"
+
+
 async def test_ap_clerk_cannot_manually_create_an_invoice(realdb):
     """`create_invoice` is gated to admin/ap_manager/cfo — an ap_clerk (the
     role that normally just uploads/extracts) is refused."""

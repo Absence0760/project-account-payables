@@ -807,13 +807,18 @@ async def save_invoice_line_items(
 async def create_invoice(
     body: InvoiceCreate,
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
-    org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
     invoice = Invoice(
-        organization_id=org_id,
+        organization_id=org.id,
         entity_id=entity_id,
+        # Same authorship tracking a file upload gets (app/api/workflow.py) —
+        # manual entry is not exempt from segregation of duties. Without this,
+        # `approval_chain.violates_segregation` treats every hand-keyed invoice
+        # as NULL-uploader "pre-existing" and lets the creator self-approve.
+        uploaded_by_id=user.id,
         invoice_number=body.invoice_number,
         vendor_name=body.vendor,
         description=body.description,
@@ -856,7 +861,13 @@ async def create_invoice(
     # pipeline uses, so a manual entry and an extracted one land on the same
     # vendor row; an unmatched name creates an `unverified` vendor stamped
     # `source="manual"` for an AP steward to confirm.
-    await match_and_link_vendor(db, invoice, org_id, source="manual")
+    await match_and_link_vendor(db, invoice, org.id, source="manual")
+    # Run the same duplicate/fraud detection every extracted invoice gets.
+    # Manual entry runs no extraction, so without this the exact-match
+    # duplicate check, round-amount/rush-payment heuristics, etc. are dark
+    # for the entire create-then-approve path — a byte-identical resubmission
+    # could clear approval with zero warning or exception.
+    await refresh_warnings(db, invoice, org_settings=org.settings)
     # Snapshot the active workflow definition onto this invoice so any
     # later config edits don't retroactively change its routing.
     await create_workflow_instance(db, invoice)
