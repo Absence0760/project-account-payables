@@ -768,6 +768,22 @@ export const messages = {
 	'cashFlow.chart.aria': 'Liquidität von {start} bis {end}. {shortfall}',
 	'cashFlow.chart.ariaShortfall': 'Erste prognostizierte Unterdeckung in {period}.',
 	'cashFlow.chart.ariaHealthy': 'Bleibt durchgehend über dem Mindestsaldo.',
+	// Cash-Flow Copilot — vorgeschlagener Zahlungsplan (Phase 2, nur Anzeige)
+	'cashFlow.plan.title': 'Vorgeschlagener Zahlungsplan',
+	'cashFlow.plan.savingsSummary':
+		'{n, plural, one {Die Nutzung von # Skonto-Angebot spart} other {Die Nutzung von # Skonto-Angeboten spart}} {amount}.',
+	'cashFlow.plan.noSavings': 'Keine lohnenswerten Skonto-Angebote in diesem Plan.',
+	'cashFlow.plan.scheduleHeading': 'Zahlungsplan',
+	'cashFlow.plan.discountsHeading': 'Zu nutzende Skonti',
+	'cashFlow.plan.col.period': 'Periode',
+	'cashFlow.plan.col.outflow': 'Abfluss',
+	'cashFlow.plan.col.closing': 'Schlussbestand',
+	'cashFlow.plan.col.vendor': 'Lieferant',
+	'cashFlow.plan.col.savings': 'Ersparnis',
+	'cashFlow.plan.col.payBy': 'Zahlbar bis',
+	'cashFlow.plan.unretimedNote':
+		'{n, plural, one {# der obigen Angebote ist} other {# der obigen Angebote sind}} in der Ersparnissumme enthalten, aber nicht im Zeitplan abgebildet (keine einzelne Rechnung zur Terminierung).',
+	'cashFlow.plan.disclaimer': 'Dies ist ein Vorschlag — es wurde noch nichts bezahlt oder geplant.',
 	// Cash Flow / CFO dashboard (routes/cfo/+page.svelte)
 	'cfo.title': 'Liquidität',
 	'cfo.exportCsv': 'CSV exportieren',

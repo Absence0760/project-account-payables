@@ -768,6 +768,22 @@ export const messages = {
 	'cashFlow.chart.aria': 'Posição de caixa de {start} a {end}. {shortfall}',
 	'cashFlow.chart.ariaShortfall': 'Primeiro déficit projetado em {period}.',
 	'cashFlow.chart.ariaHealthy': 'Permanece acima do saldo mínimo o tempo todo.',
+	// Cash-Flow Copilot — plano de pagamento proposto (Fase 2, somente exibição)
+	'cashFlow.plan.title': 'Plano de pagamento proposto',
+	'cashFlow.plan.savingsSummary':
+		'{n, plural, one {Aproveitar # oferta de desconto economiza} other {Aproveitar # ofertas de desconto economiza}} {amount}.',
+	'cashFlow.plan.noSavings': 'Nenhuma oferta de desconto que valha a pena aproveitar neste plano.',
+	'cashFlow.plan.scheduleHeading': 'Cronograma de pagamento',
+	'cashFlow.plan.discountsHeading': 'Descontos a aproveitar',
+	'cashFlow.plan.col.period': 'Período',
+	'cashFlow.plan.col.outflow': 'Saída',
+	'cashFlow.plan.col.closing': 'Fechamento',
+	'cashFlow.plan.col.vendor': 'Fornecedor',
+	'cashFlow.plan.col.savings': 'Economia',
+	'cashFlow.plan.col.payBy': 'Pagar até',
+	'cashFlow.plan.unretimedNote':
+		'{n, plural, one {# das ofertas acima está} other {# das ofertas acima estão}} contabilizada(s) no total de economia, mas não refletida(s) no cronograma (sem uma única fatura para posicionar).',
+	'cashFlow.plan.disclaimer': 'Esta é uma proposta — nada foi pago ou agendado ainda.',
 	// Cash Flow / CFO dashboard (routes/cfo/+page.svelte)
 	'cfo.title': 'Fluxo de caixa',
 	'cfo.exportCsv': 'Exportar CSV',

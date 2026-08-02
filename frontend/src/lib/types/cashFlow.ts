@@ -37,3 +37,53 @@ export interface CashPositionResult {
 	periods: CashPositionPeriod[];
 	first_shortfall_period: string | null;
 }
+
+/** One period of a proposed payment plan's cash curve — from the Phase 2
+ *  `propose_payment_plan` tool result. Same shape as `CashPositionPeriod`
+ *  minus `period`'s neighbours; kept as its own type since the two tools can
+ *  diverge independently. */
+export interface PaymentPlanPeriod {
+	period: string;
+	opening: string;
+	outflow: string;
+	closing: string;
+	below_threshold: boolean;
+}
+
+/** One ranked early-payment discount recommendation — shared shape between
+ *  the `optimize_discount_capture` tool and `propose_payment_plan`'s
+ *  `discount_recommendations` (both come from the same optimizer pass). */
+export interface DiscountRecommendation {
+	offer_id: string;
+	vendor_name: string | null;
+	invoice_number: string | null;
+	base_amount: string;
+	discount_percent: string;
+	annualized_return_pct: string;
+	savings: string;
+	pay_by: string;
+	selected: boolean;
+}
+
+/** The `propose_payment_plan` tool result (Phase 2 — advisory, draft-only;
+ *  see docs/cash-flow-copilot.md §5). Never represents money moving — it is a
+ *  proposal only. All money fields are exact decimal strings. */
+export interface PaymentPlanResult {
+	currency: string;
+	granularity: string;
+	horizon_days: number;
+	opening_balance: string;
+	opening_balance_source: string;
+	min_balance_threshold: string | null;
+	periods: PaymentPlanPeriod[];
+	first_shortfall_period: string | null;
+	cost_of_capital_pct: string;
+	total_savings_selected: string;
+	total_outlay_selected: string;
+	discount_recommendations: DiscountRecommendation[];
+	/** offer_ids the optimizer selected but the plan could not re-time onto
+	 *  the curve (a vendor-scoped offer with no single invoice, or an
+	 *  invoice outside the forecast horizon) — still counted in the totals
+	 *  above, just not reflected in `periods`. */
+	unretimed_offer_ids: string[];
+}

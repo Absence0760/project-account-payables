@@ -1,14 +1,16 @@
 import { expect, test } from '../fixtures/helpers';
 
 /**
- * /cash-flow — AI Cash-Flow Copilot (Phase 1: read-only cash Q&A).
+ * /cash-flow — AI Cash-Flow Copilot (Phase 1: read-only cash Q&A; Phase 2:
+ * proposed payment plans, display-only — no enact buttons yet).
  *
  * The default storage state signs the worker's admin in — a finance leader, so
  * the copilot tools (admin/ap_manager/cfo only) are permitted. The backend's
  * mock assistant adapter is the local-first default and deterministic: the
- * copilot's own example prompts route to the new cash-flow tools, and
- * "cash position" / "run low on cash" resolve to `get_cash_position` (which the
- * page renders as the dedicated running-balance chart).
+ * copilot's own example prompts route to the cash-flow tools, "cash position" /
+ * "run low on cash" resolve to `get_cash_position` (which the page renders as
+ * the dedicated running-balance chart), and "propose a payment plan" resolves
+ * to `propose_payment_plan` (which the page renders as the plan card).
  *
  * We assert structure (an answer renders, the routed tool's chart/table
  * renders, the usage meter shows) rather than exact dollar amounts, which the
@@ -28,7 +30,7 @@ test.describe('/cash-flow', () => {
 		// The usage meter is fetched on mount, independent of any turn.
 		await expect(page.getByTestId('usage-meter')).toBeVisible({ timeout: 10_000 });
 
-		await expect(page.locator('.prompt-btn')).toHaveCount(3);
+		await expect(page.locator('.prompt-btn')).toHaveCount(4);
 		await expect(
 			page.locator('.prompt-btn', { hasText: 'When are we going to run low on cash?' })
 		).toBeVisible();
@@ -37,6 +39,9 @@ test.describe('/cash-flow', () => {
 		).toBeVisible();
 		await expect(
 			page.locator('.prompt-btn', { hasText: 'Which discounts should I capture to save the most?' })
+		).toBeVisible();
+		await expect(
+			page.locator('.prompt-btn', { hasText: 'Propose a payment plan for the next quarter' })
 		).toBeVisible();
 	});
 
@@ -74,6 +79,25 @@ test.describe('/cash-flow', () => {
 		).toBeVisible({ timeout: 15_000 });
 	});
 
+	test('a payment-plan question renders the plan card, display-only (no enact buttons)', async ({
+		page
+	}) => {
+		await page
+			.locator('.prompt-btn', { hasText: 'Propose a payment plan for the next quarter' })
+			.click();
+
+		const assistant = page.locator('.msg.assistant').last();
+		await expect(assistant).toBeVisible({ timeout: 15_000 });
+
+		const planCard = assistant.getByTestId('payment-plan-card');
+		await expect(planCard).toBeVisible({ timeout: 15_000 });
+		await expect(planCard.getByText('Proposed payment plan')).toBeVisible();
+		// A proposal only — Phase 2 ships no enact affordance yet (Phase 3).
+		await expect(planCard.getByRole('button')).toHaveCount(0);
+
+		await expect(page.getByLabel('Ask the cash-flow copilot')).toBeEnabled({ timeout: 15_000 });
+	});
+
 	test('typing a free-form cash question in the composer works', async ({ page }) => {
 		const box = page.getByLabel('Ask the cash-flow copilot');
 		await box.fill('when will we run low on cash?');
@@ -96,7 +120,7 @@ test.describe('/cash-flow', () => {
 
 		await page.getByRole('button', { name: 'New chat' }).click();
 
-		await expect(page.locator('.prompt-btn')).toHaveCount(3);
+		await expect(page.locator('.prompt-btn')).toHaveCount(4);
 		await expect(page.locator('.msg')).toHaveCount(0);
 	});
 });

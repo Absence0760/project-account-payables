@@ -127,6 +127,7 @@ async def _commitment_rows(
     result = await db.execute(
         apply_entity_scope(
             select(
+                Invoice.id,
                 Invoice.amount,
                 Invoice.status,
                 Invoice.due_date,
@@ -142,13 +143,14 @@ async def _commitment_rows(
     )
     committed_set = set(_COMMITTED_STATUSES)
     rows: list[dict] = []
-    for amount, status, inv_due, sched_due, discount_date, discount_percent in result.all():
+    for inv_id, amount, status, inv_due, sched_due, discount_date, discount_percent in result.all():
         due = sched_due or inv_due
         if due is None or due < today or due > horizon_end:
             continue
         status_value = status.value if hasattr(status, "value") else status
         rows.append(
             {
+                "invoice_id": str(inv_id),
                 "due_date": due,
                 "amount": Decimal(str(amount or 0)),
                 "committed": status_value in committed_set,

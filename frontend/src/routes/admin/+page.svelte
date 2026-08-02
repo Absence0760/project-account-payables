@@ -1,9 +1,25 @@
 <script lang="ts">
 	import { page } from '$app/stores';
+	import { goto } from '$app/navigation';
+	import { auth } from '$lib/stores/auth.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import UsersPanel from '$lib/components/admin/UsersPanel.svelte';
 	import RolesPanel from '$lib/components/admin/RolesPanel.svelte';
+
+	// RBAC: `/api/admin/users` + `/api/admin/roles` are admin-only and 403 the
+	// rest (`$lib/nav.ts` gates the sidebar Users/Roles rows to `admin`
+	// accordingly). Mirror the guard every other admin-only page uses
+	// (`/admin/api-keys`, `/admin/partner`, `/admin/webhooks`): wait for
+	// `auth.user` to resolve before redirecting so we don't bounce before /me
+	// lands, then send a non-admin home instead of letting the panels mount
+	// and throw on the guaranteed 403.
+	const userLoaded = $derived(auth.user !== null);
+	const allowed = $derived(auth.isAdmin);
+
+	$effect(() => {
+		if (userLoaded && !allowed) goto('/');
+	});
 
 	type Tab = 'users' | 'roles';
 	// Users + Roles are peer tabs in the sidebar's Settings section bar
@@ -30,10 +46,12 @@
 	{/snippet}
 
 	<div class="tabpanel">
-		{#if tab === 'users'}
-			<UsersPanel bind:this={usersPanel} />
-		{:else}
-			<RolesPanel bind:this={rolesPanel} />
+		{#if allowed}
+			{#if tab === 'users'}
+				<UsersPanel bind:this={usersPanel} />
+			{:else}
+				<RolesPanel bind:this={rolesPanel} />
+			{/if}
 		{/if}
 	</div>
 </PageHeader>

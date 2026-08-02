@@ -1,4 +1,4 @@
-import { expect, test } from '../fixtures/helpers';
+import { expect, signInAndWait, test } from '../fixtures/helpers';
 
 /**
  * /admin — admin-only user management. Seed creates 4 users per tenant
@@ -50,5 +50,29 @@ test.describe('/admin', () => {
 		await page.goto('/admin/roles');
 		await expect(page).toHaveURL(/\/admin\?tab=roles$/);
 		await expect(page.getByRole('heading', { name: 'Custom roles' })).toBeVisible();
+	});
+});
+
+test.describe('/admin (clerk — not authorized)', () => {
+	test.use({ storageState: { cookies: [], origins: [] } });
+
+	test('ap_clerk is redirected away with no uncaught error, and the API 403s them', async ({
+		page,
+		tenantClerk
+	}) => {
+		const pageErrors: string[] = [];
+		page.on('pageerror', (err) => pageErrors.push(err.message));
+
+		await signInAndWait(page, tenantClerk);
+
+		await page.goto('/admin');
+		// admin-only — the page waits for /me then bounces the clerk to root,
+		// same guard as the sibling admin-only pages (/admin/api-keys,
+		// /admin/partner, /admin/webhooks). Regression: the panels used to
+		// mount unconditionally and their unguarded fetch threw an uncaught
+		// exception on the guaranteed 403 instead of redirecting cleanly.
+		await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
+		await expect(page.getByRole('heading', { name: 'Users & Roles' })).toHaveCount(0);
+		expect(pageErrors).toEqual([]);
 	});
 });

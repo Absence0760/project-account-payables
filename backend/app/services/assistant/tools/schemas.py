@@ -245,3 +245,47 @@ class OptimizeDiscountsResult(BaseModel):
     total_savings_selected: Decimal
     total_outlay_selected: Decimal
     recommendations: list[DiscountRecommendation]
+
+
+# ---------------------------------------------------------------------------
+# propose_payment_plan (finance-leader only) — Phase 2, advisory + draft-only.
+# Combines get_cash_position + optimize_discount_capture into one proposed
+# plan artifact. Never moves money; see docs/cash-flow-copilot.md §5.
+# ---------------------------------------------------------------------------
+
+
+class ProposePaymentPlanParams(BaseModel):
+    granularity: Literal["day", "week", "month"] = "week"
+    horizon_days: int | None = Field(default=None, ge=7, le=730)
+    opening_balance: Decimal | None = None
+    min_balance_threshold: Decimal | None = None
+    cash_budget: Decimal | None = Field(default=None, ge=0)
+    cost_of_capital_pct: Decimal | None = Field(default=None, ge=0, le=100)
+
+
+class PaymentPlanPeriod(BaseModel):
+    period: str
+    opening: Decimal
+    outflow: Decimal
+    closing: Decimal
+    below_threshold: bool
+
+
+class PaymentPlanResult(BaseModel):
+    currency: str
+    granularity: str
+    horizon_days: int
+    opening_balance: Decimal
+    opening_balance_source: str
+    min_balance_threshold: Decimal | None
+    periods: list[PaymentPlanPeriod]
+    first_shortfall_period: str | None
+    cost_of_capital_pct: Decimal
+    total_savings_selected: Decimal
+    total_outlay_selected: Decimal
+    discount_recommendations: list[DiscountRecommendation]
+    # offer_ids the optimizer selected but this plan could not re-time onto
+    # the cash curve (a vendor-scoped offer with no single invoice, or an
+    # invoice outside the forecast horizon) — still counted in the totals
+    # above, just not reflected in `periods`. See services/cash_flow_plan.py.
+    unretimed_offer_ids: list[str]

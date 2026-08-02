@@ -767,6 +767,22 @@ export const messages = {
 	'cashFlow.chart.aria': 'Position de trésorerie de {start} à {end}. {shortfall}',
 	'cashFlow.chart.ariaShortfall': 'Premier déficit projeté en {period}.',
 	'cashFlow.chart.ariaHealthy': 'Reste au-dessus du solde minimum sur toute la période.',
+	// Cash-Flow Copilot — plan de paiement proposé (Phase 2, affichage seul)
+	'cashFlow.plan.title': 'Plan de paiement proposé',
+	'cashFlow.plan.savingsSummary':
+		'{n, plural, one {La saisie de # offre d’escompte permet d’économiser} other {La saisie de # offres d’escompte permet d’économiser}} {amount}.',
+	'cashFlow.plan.noSavings': 'Aucune offre d’escompte intéressante à saisir dans ce plan.',
+	'cashFlow.plan.scheduleHeading': 'Calendrier de paiement',
+	'cashFlow.plan.discountsHeading': 'Escomptes à saisir',
+	'cashFlow.plan.col.period': 'Période',
+	'cashFlow.plan.col.outflow': 'Sortie',
+	'cashFlow.plan.col.closing': 'Clôture',
+	'cashFlow.plan.col.vendor': 'Fournisseur',
+	'cashFlow.plan.col.savings': 'Économie',
+	'cashFlow.plan.col.payBy': 'À payer avant',
+	'cashFlow.plan.unretimedNote':
+		'{n, plural, one {# des offres ci-dessus est} other {# des offres ci-dessus sont}} compté(es) dans le total des économies mais non reflété(es) dans le calendrier (aucune facture unique à planifier).',
+	'cashFlow.plan.disclaimer': 'Ceci est une proposition — rien n’a encore été payé ni planifié.',
 	// Cash Flow / CFO dashboard (routes/cfo/+page.svelte)
 	'cfo.title': 'Trésorerie',
 	'cfo.exportCsv': 'Exporter en CSV',

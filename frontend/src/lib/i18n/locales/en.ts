@@ -800,6 +800,22 @@ export const en = {
 	'cashFlow.chart.aria': 'Cash position from {start} to {end}. {shortfall}',
 	'cashFlow.chart.ariaShortfall': 'First projected shortfall in {period}.',
 	'cashFlow.chart.ariaHealthy': 'Stays above the minimum-balance threshold throughout.',
+	// Cash-Flow Copilot — proposed payment plan card (Phase 2, display-only)
+	'cashFlow.plan.title': 'Proposed payment plan',
+	'cashFlow.plan.savingsSummary':
+		'{n, plural, one {Capturing # discount offer} other {Capturing # discount offers}} saves {amount}.',
+	'cashFlow.plan.noSavings': 'No worthwhile discount offers to capture in this plan.',
+	'cashFlow.plan.scheduleHeading': 'Pay schedule',
+	'cashFlow.plan.discountsHeading': 'Discounts to capture',
+	'cashFlow.plan.col.period': 'Period',
+	'cashFlow.plan.col.outflow': 'Outflow',
+	'cashFlow.plan.col.closing': 'Closing',
+	'cashFlow.plan.col.vendor': 'Vendor',
+	'cashFlow.plan.col.savings': 'Savings',
+	'cashFlow.plan.col.payBy': 'Pay by',
+	'cashFlow.plan.unretimedNote':
+		'{n, plural, one {# of the offers above is} other {# of the offers above are}} counted in the savings total but not reflected in the schedule (no single invoice to time it against).',
+	'cashFlow.plan.disclaimer': 'This is a proposal — nothing has been paid or scheduled.',
 	// Cash Flow / CFO dashboard (routes/cfo/+page.svelte)
 	'cfo.title': 'Cash Flow',
 	'cfo.exportCsv': 'Export CSV',

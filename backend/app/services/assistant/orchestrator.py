@@ -50,6 +50,7 @@ _COPILOT_TOOLS = frozenset(
         "get_cash_position",
         "run_payment_whatif",
         "optimize_discount_capture",
+        "propose_payment_plan",
     }
 )
 
@@ -86,6 +87,14 @@ def _safe_args_summary(tool_name: str, params) -> dict:
         return {"horizon": params.horizon, "granularity": params.granularity}
     if tool_name == "find_invoices_by_text":
         return {"query_len": len(params.query), "k": params.k}
+    if tool_name == "propose_payment_plan":
+        return {
+            "granularity": params.granularity,
+            "has_horizon_override": params.horizon_days is not None,
+            "has_opening_balance_override": params.opening_balance is not None,
+            "has_cash_budget": params.cash_budget is not None,
+            "has_cost_of_capital_override": params.cost_of_capital_pct is not None,
+        }
     return {}
 
 

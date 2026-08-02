@@ -1,7 +1,7 @@
 """Mock assistant adapter — the local-first default.
 
 Deterministically routes a natural-language message to ONE of the fixed
-tools (the five base tools + the four finance-leader cash-flow copilot tools)
+tools (the five base tools + the five finance-leader cash-flow copilot tools)
 via ordered keyword/intent rules, calls ``run_tool``, and formats a
 templated answer. No LLM, no network, no key. Token counts are a deterministic
 estimate so the usage meter + budget path are exercised identically to the
@@ -178,6 +178,37 @@ def route(message: str) -> tuple[str, dict]:
     # ── Cash-flow copilot intents (finance-leader tools). These precede the
     # generic payment-forecast rule below because several also contain the bare
     # word "cash". A clerk who reaches one gets a clean refusal from run_tool. ──
+
+    # 1a. proposed payment plan — combines cash position + discount capture.
+    # Checked before the narrower cash-position / discount rules below so an
+    # explicit "plan" ask always wins over the bare keywords it also contains.
+    if any(
+        kw in text
+        for kw in (
+            "payment plan",
+            "propose a plan",
+            "propose plan",
+            "build me a plan",
+            "build a plan",
+            "what should i pay",
+            "what should we pay",
+        )
+    ):
+        plan_args: dict = {"granularity": _parse_granularity(text)}
+        hd = _parse_horizon_days(text)
+        if hd is not None:
+            plan_args["horizon_days"] = hd
+        budget = (
+            re.search(r"\$\s*([0-9][0-9,]*(?:\.\d+)?)", text)
+            or re.search(r"budget[^0-9]{0,12}([0-9][0-9,]*(?:\.\d+)?)", text)
+            or re.search(r"\bwith[^0-9]{0,12}([0-9][0-9,]*(?:\.\d+)?)", text)
+            or re.search(r"\bgiven[^0-9]{0,12}([0-9][0-9,]*(?:\.\d+)?)", text)
+        )
+        if budget:
+            amt = _parse_money(budget.group(1))
+            if amt is not None:
+                plan_args["cash_budget"] = amt
+        return "propose_payment_plan", plan_args
 
     # 1b. cash position / runway — "when do we run low on cash".
     if any(
@@ -448,6 +479,23 @@ def _template_answer(tool: str, result: dict | None, error: str | None) -> str:
                 f"• {vendor} — save {_fmt_money(r['savings'], currency)} "
                 f"@ {r['annualized_return_pct']}% APR"
             )
+        return "\n".join(lines)
+
+    if tool == "propose_payment_plan":
+        currency = result.get("currency", "")
+        periods = result.get("periods", [])
+        first = result.get("first_shortfall_period")
+        recs = result.get("discount_recommendations", [])
+        selected = [r for r in recs if r.get("selected")]
+        lines = [
+            f"Proposed plan over {len(periods)} period(s): capturing {len(selected)} "
+            f"discount offer(s) for "
+            f"{_fmt_money(result.get('total_savings_selected', 0), currency)} in savings."
+        ]
+        if first:
+            lines.append(f"Cash is projected to run below your minimum balance in {first}.")
+        else:
+            lines.append("Cash stays above your minimum balance across the horizon.")
         return "\n".join(lines)
 
     if tool == "find_invoices_by_text":

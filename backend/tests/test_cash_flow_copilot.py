@@ -1,11 +1,11 @@
-"""AI Cash-Flow Copilot (Phase 1) — backend coverage.
+"""AI Cash-Flow Copilot (Phases 1-2) — backend coverage.
 
-Exercises the four finance-leader-only planning tools (`get_cashflow_forecast`,
-`get_cash_position`, `run_payment_whatif`, `optimize_discount_capture`), the
-orchestrator's per-tool role gate + copilot kill-switch in ``run_tool``, and the
-`/api/cash-flow/copilot` façade's RBAC + 404 kill-switch, against the live
-per-process test tenant pair (the shared ``realdb`` harness in
-``conftest.py``).
+Exercises the five finance-leader-only planning tools (`get_cashflow_forecast`,
+`get_cash_position`, `run_payment_whatif`, `optimize_discount_capture`, and the
+Phase 2 `propose_payment_plan`), the orchestrator's per-tool role gate +
+copilot kill-switch in ``run_tool``, and the `/api/cash-flow/copilot` façade's
+RBAC + 404 kill-switch, against the live per-process test tenant pair (the
+shared ``realdb`` harness in ``conftest.py``).
 
 The load-bearing invariants proven here (per ``docs/cash-flow-copilot.md`` §10):
 
@@ -17,10 +17,13 @@ The load-bearing invariants proven here (per ``docs/cash-flow-copilot.md`` §10)
     audited ``run_tool`` closure gets a clean refusal (``error`` set, ``result``
     None) — never data, never an exception; a finance leader gets data.
   - **Kill-switch** — with ``cashflow_copilot_enabled`` off, ``run_tool`` refuses
-    the four tools and the façade routes 404.
-  - **Optimizer parity** — ``optimize_discount_capture`` returns the SAME
-    selection + totals as ``POST /api/discounts/optimize`` for the same inputs
-    (single source of truth).
+    the copilot tools and the façade routes 404.
+  - **Optimizer parity** — ``optimize_discount_capture`` AND `propose_payment_plan`
+    return the SAME selection + totals as ``POST /api/discounts/optimize`` for
+    the same inputs (single source of truth; the plan never invents its own
+    discount ranking).
+  - **Draft-only boundary** — `propose_payment_plan` never mutates anything: no
+    Payment/PaymentRun is created and no invoice status changes.
   - **Tenant isolation** — a tool bound to tenant A never surfaces tenant B's
     commitments.
 """
@@ -369,6 +372,7 @@ async def _build_copilot_run_tool(realdb, key, role, ctrl, tenant):
         "get_cash_position",
         "run_payment_whatif",
         "optimize_discount_capture",
+        "propose_payment_plan",
     ],
 )
 async def test_run_tool_refuses_ap_clerk_for_every_copilot_tool(realdb, tool_name):
@@ -434,9 +438,19 @@ async def test_run_tool_admits_all_three_finance_leader_roles(realdb, role):
     assert inv.result is not None
 
 
-async def test_run_tool_refuses_copilot_tools_when_disabled(realdb, monkeypatch):
-    """With the copilot kill-switch off, ``run_tool`` refuses the four tools even
-    for a finance leader — a clean refusal, never data, never a 500."""
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "get_cashflow_forecast",
+        "get_cash_position",
+        "run_payment_whatif",
+        "optimize_discount_capture",
+        "propose_payment_plan",
+    ],
+)
+async def test_run_tool_refuses_copilot_tools_when_disabled(realdb, monkeypatch, tool_name):
+    """With the copilot kill-switch off, ``run_tool`` refuses every copilot tool
+    even for a finance leader — a clean refusal, never data, never a 500."""
     from app.config import settings
 
     monkeypatch.setattr(settings, "cashflow_copilot_enabled", False)
@@ -445,7 +459,7 @@ async def test_run_tool_refuses_copilot_tools_when_disabled(realdb, monkeypatch)
     ctrl_mk = realdb.control_sessionmaker()
     async with ctrl_mk() as ctrl, mk_a() as tenant:
         run_tool = await _build_copilot_run_tool(realdb, "a", "admin", ctrl, tenant)
-        inv = await run_tool("get_cashflow_forecast", {})
+        inv = await run_tool(tool_name, {})
     assert inv.result is None
     assert inv.error is not None
     assert "not available" in inv.error.lower()
@@ -741,7 +755,378 @@ async def test_optimizer_tool_never_reads_other_tenant(realdb):
 
 
 # ===========================================================================
-# 5. Façade RBAC + kill-switch — POST /api/cash-flow/copilot
+# 5. propose_payment_plan (Phase 2) — plan assembly, re-timing, draft-only
+# ===========================================================================
+
+
+async def test_propose_payment_plan_money_exact_and_matches_optimizer(realdb):
+    """The plan's discount selection is the SAME one `optimize_discount_capture`
+    would pick for equivalent inputs (single source of truth — the plan never
+    re-derives its own ranking), and every money field is an exact string."""
+    from app.services.assistant.tools.cashflow import propose_payment_plan
+    from app.services.assistant.tools.optimizer import optimize_discount_capture
+    from app.services.assistant.tools.schemas import (
+        OptimizeDiscountsParams,
+        ProposePaymentPlanParams,
+    )
+
+    a = realdb.info("a")
+    mk_a = realdb.sessionmaker("a")
+    async with mk_a() as sa:
+        ent = await _default_entity_id(sa, a.org_id)
+        inv = await _seed_invoice(
+            sa,
+            a.org_id,
+            ent,
+            number="PLAN-1",
+            vendor_name="PlanCo",
+            amount="1000.00",
+            status="approved",
+            due_date=date.today() + timedelta(days=30),
+        )
+        await sa.commit()
+        inv_id = str(inv.id)
+
+    tiers = [{"days": 5, "percent": "3.00"}]
+    async with realdb.client(key="a", role="ap_manager") as c:
+        r = await c.post(
+            "/api/discounts/offers",
+            json={"scope": "invoice", "invoice_id": inv_id, "tiers": tiers},
+        )
+        assert r.status_code == 201, r.text
+
+    ctrl_mk = realdb.control_sessionmaker()
+    async with mk_a() as sa, ctrl_mk() as ctrl:
+        plan = await propose_payment_plan(
+            sa,
+            org_id=a.org_id,
+            entity_id=None,
+            current_user_id=a.users["admin"],
+            control_db=ctrl,
+            params=ProposePaymentPlanParams(granularity="week", opening_balance=Decimal("5000.00")),
+        )
+    async with mk_a() as sa, ctrl_mk() as ctrl:
+        opt = await optimize_discount_capture(
+            sa,
+            org_id=a.org_id,
+            entity_id=None,
+            current_user_id=a.users["admin"],
+            control_db=ctrl,
+            params=OptimizeDiscountsParams(),
+        )
+
+    plan_selected = {r.offer_id for r in plan.discount_recommendations if r.selected}
+    opt_selected = {r.offer_id for r in opt.recommendations if r.selected}
+    assert plan_selected == opt_selected
+    assert plan_selected, "expected the worthwhile 3% offer to be selected"
+    assert plan.total_savings_selected == opt.total_savings_selected
+    assert plan.total_outlay_selected == opt.total_outlay_selected
+
+    dumped = plan.model_dump(mode="json")
+    _assert_no_float(dumped)
+    _assert_money_str(dumped["opening_balance"], "opening_balance")
+    _assert_money_str(dumped["total_savings_selected"], "total_savings_selected")
+    for i, p in enumerate(dumped["periods"]):
+        for field in ("opening", "outflow", "closing"):
+            _assert_money_str(p[field], f"periods[{i}].{field}")
+
+
+async def test_propose_payment_plan_retimes_captured_discount_onto_pay_by(realdb):
+    """A selected discount's invoice-scoped offer is removed from its due-date
+    period and reappears, at its discounted outlay, in the pay_by period — the
+    resulting curve reflects the plan's own capture decision, not the naive
+    full-amount-on-due-date schedule."""
+    from app.services.assistant.tools.cashflow import propose_payment_plan
+    from app.services.assistant.tools.schemas import ProposePaymentPlanParams
+
+    a = realdb.info("a")
+    mk_a = realdb.sessionmaker("a")
+    due = date.today() + timedelta(days=40)
+    async with mk_a() as sa:
+        ent = await _default_entity_id(sa, a.org_id)
+        inv = await _seed_invoice(
+            sa,
+            a.org_id,
+            ent,
+            number="RETIME-1",
+            vendor_name="RetimeCo",
+            amount="1000.00",
+            status="approved",
+            due_date=due,
+        )
+        await sa.commit()
+        inv_id = str(inv.id)
+
+    # pay_by lands ~5 days out — a different week bucket than due (~40 days out).
+    tiers = [{"days": 5, "percent": "5.00"}]
+    async with realdb.client(key="a", role="ap_manager") as c:
+        r = await c.post(
+            "/api/discounts/offers",
+            json={"scope": "invoice", "invoice_id": inv_id, "tiers": tiers},
+        )
+        assert r.status_code == 201, r.text
+
+    ctrl_mk = realdb.control_sessionmaker()
+    async with mk_a() as sa, ctrl_mk() as ctrl:
+        plan = await propose_payment_plan(
+            sa,
+            org_id=a.org_id,
+            entity_id=None,
+            current_user_id=a.users["admin"],
+            control_db=ctrl,
+            params=ProposePaymentPlanParams(granularity="week", opening_balance=Decimal("5000.00")),
+        )
+
+    selected = [r for r in plan.discount_recommendations if r.selected]
+    assert len(selected) == 1
+    assert not plan.unretimed_offer_ids, "an invoice-scoped offer should always re-time cleanly"
+
+    # 1000 face − 50 savings (5%) = 950 outlay is what actually leaves the bank —
+    # the full 1000 must NOT still be sitting on its original due-date period.
+    total_outflow = sum((p.outflow for p in plan.periods), Decimal("0"))
+    assert total_outflow == Decimal("950.00")
+
+
+async def test_propose_payment_plan_never_double_counts_two_offers_on_one_invoice(realdb):
+    """Two open, invoice-scoped `DiscountOffer`s on the SAME invoice can both be
+    worthwhile and both get selected by the optimizer (it has no per-invoice
+    dedupe) — but the plan must re-time the invoice's single row only ONCE.
+    The lower-ranked offer still counts toward `total_savings_selected` (the
+    optimizer's own total) but is flagged `unretimed_offer_ids` rather than
+    doubling that invoice's outflow on the curve."""
+    from app.services.assistant.tools.cashflow import propose_payment_plan
+    from app.services.assistant.tools.schemas import ProposePaymentPlanParams
+
+    a = realdb.info("a")
+    mk_a = realdb.sessionmaker("a")
+    due = date.today() + timedelta(days=30)
+    async with mk_a() as sa:
+        ent = await _default_entity_id(sa, a.org_id)
+        inv = await _seed_invoice(
+            sa,
+            a.org_id,
+            ent,
+            number="DUP-1",
+            vendor_name="DupCo",
+            amount="1000.00",
+            status="approved",
+            due_date=due,
+        )
+        await sa.commit()
+        inv_id = str(inv.id)
+
+    # Two open offers on the same invoice — both worthwhile at 5% off in 5 days
+    # of acceleration (~25 days to net due), so `cash_budget=None` selects both.
+    async with realdb.client(key="a", role="ap_manager") as c:
+        r1 = await c.post(
+            "/api/discounts/offers",
+            json={
+                "scope": "invoice",
+                "invoice_id": inv_id,
+                "tiers": [{"days": 5, "percent": "4.00"}],
+            },
+        )
+        assert r1.status_code == 201, r1.text
+        r2 = await c.post(
+            "/api/discounts/offers",
+            json={
+                "scope": "invoice",
+                "invoice_id": inv_id,
+                "tiers": [{"days": 5, "percent": "3.00"}],
+            },
+        )
+        assert r2.status_code == 201, r2.text
+
+    ctrl_mk = realdb.control_sessionmaker()
+    async with mk_a() as sa, ctrl_mk() as ctrl:
+        plan = await propose_payment_plan(
+            sa,
+            org_id=a.org_id,
+            entity_id=None,
+            current_user_id=a.users["admin"],
+            control_db=ctrl,
+            params=ProposePaymentPlanParams(granularity="week", opening_balance=Decimal("5000.00")),
+        )
+
+    selected = [r for r in plan.discount_recommendations if r.selected]
+    assert len(selected) == 2, "expected both offers on the invoice to be worthwhile and selected"
+    # Exactly one is retimed (the higher-APR 4% offer, ranked first); the other
+    # is honestly flagged rather than silently double-counted.
+    assert len(plan.unretimed_offer_ids) == 1
+
+    # The curve must reflect the invoice ONCE — at the retimed offer's discounted
+    # outlay (1000 − 4% = 960), never the full 1000 AND never 1000+960 stacked.
+    total_outflow = sum((p.outflow for p in plan.periods), Decimal("0"))
+    assert total_outflow == Decimal("960.00"), (
+        f"expected a single re-timed outlay of 960.00, got {total_outflow} "
+        "(double-counted or mis-timed the shared invoice)"
+    )
+
+
+async def test_propose_payment_plan_flags_unretimed_vendor_scoped_offer(realdb):
+    """A selected vendor-scoped (bulk) offer has no single invoice to re-time —
+    it still counts toward `total_savings_selected` (the optimizer says it's
+    worth capturing) but is honestly flagged in `unretimed_offer_ids` rather
+    than silently misrepresenting the curve's precision."""
+    from app.models.vendor import Vendor
+    from app.services.assistant.tools.cashflow import propose_payment_plan
+    from app.services.assistant.tools.schemas import ProposePaymentPlanParams
+
+    a = realdb.info("a")
+    mk_a = realdb.sessionmaker("a")
+    async with mk_a() as sa:
+        ent = await _default_entity_id(sa, a.org_id)
+        vendor = Vendor(organization_id=a.org_id, name="BulkVendorCo", entity_id=ent)
+        sa.add(vendor)
+        await sa.flush()
+        vendor_id = str(vendor.id)
+        await _seed_invoice(
+            sa,
+            a.org_id,
+            ent,
+            number="BULK-1",
+            vendor_name="BulkVendorCo",
+            amount="1000.00",
+            status="approved",
+            due_date=date.today() + timedelta(days=30),
+            vendor_id=vendor.id,
+        )
+        await sa.commit()
+
+    future = (date.today() + timedelta(days=40)).isoformat()
+    async with realdb.client(key="a", role="ap_manager") as c:
+        r = await c.post(
+            "/api/discounts/bulk-negotiate",
+            json={
+                "vendor_id": vendor_id,
+                "tiers": [{"days": 7, "percent": "3.00"}],
+                "valid_until": future,
+            },
+        )
+        assert r.status_code == 201, r.text
+
+    ctrl_mk = realdb.control_sessionmaker()
+    async with mk_a() as sa, ctrl_mk() as ctrl:
+        plan = await propose_payment_plan(
+            sa,
+            org_id=a.org_id,
+            entity_id=None,
+            current_user_id=a.users["admin"],
+            control_db=ctrl,
+            params=ProposePaymentPlanParams(granularity="week", opening_balance=Decimal("5000.00")),
+        )
+
+    selected = [r for r in plan.discount_recommendations if r.selected]
+    assert selected, "expected the vendor-scoped offer to be worthwhile and selected"
+    assert plan.unretimed_offer_ids == [selected[0].offer_id]
+    assert plan.total_savings_selected > Decimal("0")
+
+
+async def test_propose_payment_plan_never_mutates_anything(realdb):
+    """Draft-only boundary (docs/cash-flow-copilot.md §5): the plan is a pure
+    read. No Payment/PaymentRun is created and the source invoice's status is
+    untouched — proposing a plan can never move money."""
+    from sqlalchemy import select
+
+    from app.models.invoice import Invoice
+    from app.models.payment import Payment, PaymentRun
+    from app.services.assistant.tools.cashflow import propose_payment_plan
+    from app.services.assistant.tools.schemas import ProposePaymentPlanParams
+
+    a = realdb.info("a")
+    mk_a = realdb.sessionmaker("a")
+    async with mk_a() as sa:
+        ent = await _default_entity_id(sa, a.org_id)
+        inv = await _seed_invoice(
+            sa,
+            a.org_id,
+            ent,
+            number="NOMUTATE-1",
+            vendor_name="NoMutateCo",
+            amount="1000.00",
+            status="approved",
+            due_date=date.today() + timedelta(days=30),
+        )
+        await sa.commit()
+        inv_id = inv.id
+        inv_number = str(inv_id)
+
+    tiers = [{"days": 5, "percent": "3.00"}]
+    async with realdb.client(key="a", role="ap_manager") as c:
+        r = await c.post(
+            "/api/discounts/offers",
+            json={"scope": "invoice", "invoice_id": inv_number, "tiers": tiers},
+        )
+        assert r.status_code == 201, r.text
+
+    ctrl_mk = realdb.control_sessionmaker()
+    async with mk_a() as sa, ctrl_mk() as ctrl:
+        await propose_payment_plan(
+            sa,
+            org_id=a.org_id,
+            entity_id=None,
+            current_user_id=a.users["admin"],
+            control_db=ctrl,
+            params=ProposePaymentPlanParams(granularity="week", opening_balance=Decimal("5000.00")),
+        )
+
+    async with mk_a() as sa:
+        refreshed = await sa.get(Invoice, inv_id)
+        assert refreshed.status == "approved"
+        assert (await sa.execute(select(Payment))).first() is None
+        assert (await sa.execute(select(PaymentRun))).first() is None
+
+
+async def test_propose_payment_plan_never_reads_other_tenant(realdb):
+    """A plan bound to tenant A never surfaces tenant B's commitments."""
+    from app.services.assistant.tools.cashflow import propose_payment_plan
+    from app.services.assistant.tools.schemas import ProposePaymentPlanParams
+
+    a, b = realdb.info("a"), realdb.info("b")
+    mk_a, mk_b = realdb.sessionmaker("a"), realdb.sessionmaker("b")
+    async with mk_a() as sa:
+        ent_a = await _default_entity_id(sa, a.org_id)
+        await _seed_invoice(
+            sa,
+            a.org_id,
+            ent_a,
+            number="PLAN-ISO-1",
+            vendor_name="TenantAVendor",
+            amount="222.00",
+            status="approved",
+            due_date=date.today() + timedelta(days=8),
+        )
+        await sa.commit()
+    async with mk_b() as sb:
+        ent_b = await _default_entity_id(sb, b.org_id)
+        await _seed_invoice(
+            sb,
+            b.org_id,
+            ent_b,
+            number="PLAN-ISO-1",
+            vendor_name="TenantBVendor",
+            amount="888888.00",
+            status="approved",
+            due_date=date.today() + timedelta(days=8),
+        )
+        await sb.commit()
+
+    ctrl_mk = realdb.control_sessionmaker()
+    async with mk_a() as sa, ctrl_mk() as ctrl:
+        plan = await propose_payment_plan(
+            sa,
+            org_id=a.org_id,
+            entity_id=None,
+            current_user_id=a.users["admin"],
+            control_db=ctrl,
+            params=ProposePaymentPlanParams(granularity="week", opening_balance=Decimal("0")),
+        )
+    total_outflow = sum((p.outflow for p in plan.periods), Decimal("0"))
+    assert total_outflow == Decimal("222.00")
+
+
+# ===========================================================================
+# 6. Façade RBAC + kill-switch — POST /api/cash-flow/copilot
 # ===========================================================================
 
 
@@ -814,3 +1199,36 @@ async def test_facade_stream_forbids_ap_clerk(realdb):
     async with realdb.client(key="a", role="ap_clerk") as c:
         resp = await c.post("/api/cash-flow/copilot/stream", json={"message": "list invoices"})
     assert resp.status_code == 403, resp.text
+
+
+async def test_facade_routes_plan_question_to_propose_payment_plan(realdb):
+    """A 'propose a payment plan' ask reaches the façade, the mock adapter
+    routes it to the new tool, and the tool invocation carries a plan result —
+    proving the Phase 2 tool is wired end-to-end through the same route
+    Phase 1's tools already use (no new route needed)."""
+    a = realdb.info("a")
+    mk_a = realdb.sessionmaker("a")
+    async with mk_a() as sa:
+        ent = await _default_entity_id(sa, a.org_id)
+        await _seed_invoice(
+            sa,
+            a.org_id,
+            ent,
+            number="FAC-PLAN-1",
+            vendor_name="FacadePlanCo",
+            amount="654.00",
+            status="approved",
+            due_date=date.today() + timedelta(days=15),
+        )
+        await sa.commit()
+
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post(
+            "/api/cash-flow/copilot", json={"message": "propose a payment plan for this quarter"}
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    invocations = body["tool_invocations"]
+    assert invocations and invocations[0]["tool"] == "propose_payment_plan"
+    assert invocations[0]["error"] is None
+    assert invocations[0]["result"]["periods"]

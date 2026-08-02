@@ -8,11 +8,13 @@
 	import type { ChatResponse, ToolInvocation, UiMessage, UsageResponse } from '$lib/types/assistant';
 
 	// Cash-flow copilot starter prompts. The first two route to `get_cash_position`
-	// (running-balance chart); the rest exercise the forecast / discount tools.
+	// (running-balance chart); the third exercises the discount optimizer; the
+	// fourth routes to the Phase 2 `propose_payment_plan` tool (plan card).
 	const EXAMPLES: readonly string[] = [
 		'When are we going to run low on cash?',
 		"What's our cash position over the next 90 days?",
-		'Which discounts should I capture to save the most?'
+		'Which discounts should I capture to save the most?',
+		'Propose a payment plan for the next quarter'
 	] as const;
 
 	let messages = $state<UiMessage[]>([]);

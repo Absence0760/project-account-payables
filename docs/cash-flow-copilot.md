@@ -1,13 +1,15 @@
 # AI Cash-Flow Copilot
 
-**Status: Phase 1 SHIPPED (read-only cash Q&A + `/cash-flow` copilot); Phases 2–3
-planned.** Phase 1 — the four read-only, finance-leader-gated planning tools plus
-the `/api/cash-flow/copilot(+/stream)` façade and the `/cash-flow` chat &
-cash-position chart — is built and live. Phases 2 (proposed plans) and 3
-(draft-only enactment) below remain design-only: the `propose_payment_plan` tool,
-the plan-card UI, and the enact routes (`.../draft-run`, `.../capture-discounts`)
-do **not** exist yet — do not treat any Phase 2/3 path, endpoint, model, or flag
-named here as shipped.
+**Status: Phases 1–2 SHIPPED (read-only cash Q&A + proposed payment plans);
+Phase 3 planned.** Phase 1 — the four read-only, finance-leader-gated planning
+tools plus the `/api/cash-flow/copilot(+/stream)` façade and the `/cash-flow`
+chat & cash-position chart — is built and live. Phase 2 — the `propose_payment_plan`
+tool (`app/services/assistant/tools/cashflow.py`) + the pure plan assembler
+(`app/services/cash_flow_plan.py`) + the display-only plan-card UI
+(`PlanCard.svelte`) — is also built and live. Phase 3 (draft-only enactment)
+below remains design-only: the enact routes (`.../draft-run`,
+`.../capture-discounts`) do **not** exist yet — do not treat any Phase 3 path,
+endpoint, or model named here as shipped.
 
 **Author:** platform · **Target:** beyond-parity differentiator · **Est. size:** M (3 phases)
 
@@ -140,10 +142,11 @@ entity-scoped, money as **exact Decimal → JSON string** (never `float`).
 | `run_payment_whatif` | + `grace_days∈[0,90]` | `{early, on_time, late}` each `{total_outflow, discount_captured, weighted_avg_days_to_pay}` |
 | `optimize_discount_capture` | `cash_budget?`, `cost_of_capital_pct?` | ranked recommendations `[{offer_id, vendor, apr, savings, pay_by, selected}]` + `total_savings_selected` |
 
-**Role gating per tool.** The four cash tools are finance-leader reads —
+**Role gating per tool.** The five cash tools (the four §4 planning tools plus
+`propose_payment_plan`, §5) are finance-leader reads —
 `admin` / `ap_manager` / `cfo` (mirroring analytics' `_CFO_ROLES`), **not**
 `ap_clerk`. This is stricter than the assistant's blanket four-role access, so
-the `run_tool` closure must enforce a per-tool `allowed_roles` check and return a
+the `run_tool` closure enforces a per-tool `allowed_roles` check and returns a
 clean "not permitted" tool result (never a 500, never leaking data) when a clerk
 asks a cash question. The other (existing) tools keep their current access.
 
@@ -156,17 +159,31 @@ the answer (to an already-authenticated finance leader), never in the audit row.
 
 ## 5. The `propose_payment_plan` action (advisory, draft-only)
 
-The one capability beyond pure Q&A. Given a cash ceiling and a horizon, it
-assembles a **plan artifact**: which open commitments to pay in which period,
-which discount offers to capture, the resulting cash-position curve, and the
-captured-savings total. It is built entirely from the pure functions above.
+**§5 point 1 below is Phase 2 · SHIPPED** (`propose_payment_plan` tool +
+`services/cash_flow_plan.py::assemble_plan`, both read-only). **Points 2–4 —
+the actual enact tiers (draft run / discount capture) — are Phase 3 ·
+planned**, unbuilt; nothing in the app can act on a plan yet, only propose one.
+
+Given a cash ceiling and a horizon, `propose_payment_plan` assembles a **plan
+artifact**: which open commitments to pay in which period, which discount
+offers to capture, the resulting cash-position curve, and the captured-savings
+total. It is built entirely from the pure functions above (`bucket_outflows`,
+`compute_cash_position`, and the discount optimizer's own selection via
+`run_discount_optimization` — the plan reuses `optimize_discount_capture`'s
+exact selection rather than re-deriving it, so the two can never diverge). A
+selected discount is re-timed onto its `pay_by` period at its discounted
+outlay when it can be matched back to a single commitment row (a
+vendor-scoped offer, or an invoice outside the forecast horizon, cannot be —
+its offer id is surfaced in `unretimed_offer_ids` instead of silently
+overclaiming precision on the curve).
 
 **Safety model — this is the load-bearing part:**
 
 1. **It never moves money and never mutates an invoice/payment.** It returns a
-   proposal object. Full stop.
+   proposal object. Full stop. **Shipped** — see above.
 2. Enacting the plan is a **separate, explicit** user action with two tiers,
-   both reusing existing gated paths — nothing new on the money path:
+   both reusing existing gated paths — nothing new on the money path. **Phase 3
+   — planned, not built:**
    - *Capture discounts*: flips eligible `DiscountOffer`s `offered → accepted`
      via the existing `POST /api/discounts/offers/{id}/accept`. Per today's
      design this is **status-only and never moves money** (the CFO-gated payment
@@ -209,7 +226,7 @@ RBAC, a system-prompt hint, streaming on by default).
 | POST | `/api/cash-flow/plans/{plan_id}/draft-run` | Phase 3 · planned | Enact: create a **draft** payment run from a proposal (idempotent, audited, CFO gate at execute-time unchanged) |
 | POST | `/api/cash-flow/plans/{plan_id}/capture-discounts` | Phase 3 · planned | Enact: accept the plan's discount offers (status-only, reuses discount accept) |
 
-The plain `/api/assistant/chat` also gains the four read-only cash tools, so a
+The plain `/api/assistant/chat` also gains the five read-only cash tools, so a
 clerk-free finance user can ask cash questions in the general assistant too
 (subject to the per-tool role gate). The façade exists mainly for the dedicated
 UI and defaults.
@@ -281,9 +298,12 @@ Reuses the assistant's config; a couple of additive knobs:
 - **Optimizer correctness** — reuse/extend the existing `optimize` unit tests;
   assert the copilot tool returns the same selection the `/api/discounts/optimize`
   endpoint does for the same inputs (single source of truth).
-- **Draft-only boundary (critical)** — `propose_payment_plan` + enact creates a
-  `draft` run and **executes nothing**; assert no `Payment` leaves `draft`, no
-  invoice transitions to `paid`, and the CFO gate still guards execute.
+- **Draft-only boundary (critical)** — **Phase 2, shipped:** `propose_payment_plan`
+  mutates nothing at all — assert no `Payment`/`PaymentRun` is created and no
+  invoice status changes (`test_propose_payment_plan_never_mutates_anything`).
+  **Phase 3, planned:** once the enact routes exist, assert they create a
+  `draft` run and **execute nothing** — no `Payment` leaves `draft`, no invoice
+  transitions to `paid`, and the CFO gate still guards execute.
 - **Per-tool RBAC** — an `ap_clerk` asking a cash question gets a clean refusal
   tool result (not data, not a 500); `test_rbac.py` coverage gate stays green for
   the new routes.
@@ -300,16 +320,16 @@ Reuses the assistant's config; a couple of additive knobs:
 1. **Phase 1 — Read-only cash Q&A. ✅ SHIPPED.** The four planning tools + per-tool
    RBAC + the `/api/cash-flow/copilot(+/stream)` façade + the `/cash-flow` chat &
    cash-position chart. Ships value with zero write surface.
-2. **Phase 2 — Proposed plans. (planned)** `propose_payment_plan` tool + the plan
-   card UI (display only, no enact). The optimizer + what-if drive a concrete
-   schedule.
+2. **Phase 2 — Proposed plans. ✅ SHIPPED.** `propose_payment_plan` tool + the
+   plan card UI (display only, no enact). The optimizer + cash-position math
+   drive a concrete, re-timed pay schedule; nothing moves money.
 3. **Phase 3 — Draft-only enactment. (planned)** The two enact endpoints (draft
    run + discount capture), idempotent + audited, human-confirmed, CFO gate
    unchanged.
 
-Each phase is independently shippable and independently valuable. As of Phase 1,
-the `propose_payment_plan` action (§5) and the enact routes in §6
-(`.../draft-run`, `.../capture-discounts`) are still design-only.
+Each phase is independently shippable and independently valuable. As of Phase 2,
+the enact routes in §6 (`.../draft-run`, `.../capture-discounts`) are still
+design-only — everything else on this page is shipped.
 
 ---
 
