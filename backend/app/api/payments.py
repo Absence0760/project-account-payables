@@ -940,10 +940,29 @@ async def create_payment_run(
             ),
         )
 
+    # Net any applied credit memos off what actually gets paid — the entire
+    # point of applying a credit against a payable. Without this, applying a
+    # memo was cosmetic: credit_memos.py enforces the memo can never exceed
+    # the invoice's remaining creditable balance, so `inv.amount -
+    # already_applied` can never go negative here. Same query
+    # credit_memos.py already uses for its own over-application guard.
+    from app.models.credit_memo import CreditMemo
+
+    net_amounts: dict[str, Decimal] = {}
     total = Decimal("0")
     for item in body.items:
         inv = invoices[item.invoice_id]
-        total += inv.amount
+        already_applied = (
+            await db.execute(
+                select(func.coalesce(func.sum(CreditMemo.amount), Decimal("0"))).where(
+                    CreditMemo.invoice_id == inv.id,
+                    CreditMemo.status == "applied",
+                )
+            )
+        ).scalar_one()
+        net_amount = inv.amount - already_applied
+        net_amounts[item.invoice_id] = net_amount
+        total += net_amount
 
     # CFO sign-off: org admins set `payments.cfo_approval_above` (a
     # threshold in $) on the org settings. Runs whose total exceeds it
@@ -1001,7 +1020,7 @@ async def create_payment_run(
             invoice_id=inv.id,
             entity_id=inv.entity_id,
             payment_run_id=run.id,
-            amount=inv.amount,
+            amount=net_amounts[item.invoice_id],
             method=item.method,
             status="pending",
             # Per-payment idempotency anchor. correlation_id is sent to the rail
