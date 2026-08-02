@@ -83,6 +83,97 @@ export interface CashPosition {
 	breaches: CashPositionBreach[];
 }
 
+// CFO metrics dashboard — `GET /api/analytics/cfo`. Unlike most of this file
+// (and unlike the by-entity rollup below), money here is plain `number`
+// (backend-serialized float), matching the pre-existing convention of the
+// forecast/what-if/cash-position endpoints on this same page — a tenant-wide
+// roll-up with no per-row currency, rendered via the org default currency
+// (`orgCurrency`), same as `CashflowForecast` above.
+
+export interface CfoDpoTrendPoint {
+	month: string;
+	dpo: number;
+}
+
+export interface CfoAccruals {
+	open_po_amount: number;
+	received_amount: number;
+	unposted_invoice_amount: number;
+	total_accrual: number;
+}
+
+export interface CfoSupplierConcentration {
+	total_spend: number;
+	top_10_share_pct: number;
+	top_50_share_pct: number;
+	largest_vendor: string | null;
+	largest_vendor_share_pct: number;
+	flagged: boolean;
+}
+
+export interface CfoFraudTrendPoint {
+	month: string;
+	invoice_count: number;
+	exception_count: number;
+	rate_pct: number;
+}
+
+export interface CfoRebateYield {
+	rebates_total: number;
+	total_spend: number;
+	yield_pct: number;
+	annualised_rebates: number;
+}
+
+export interface CfoUnrealizedFxByCurrency {
+	currency: string;
+	open_original_amount: number;
+	booked_reporting_amount: number;
+	current_reporting_amount: number;
+	unrealized_gain_loss: number;
+}
+
+export interface CfoUnrealizedFx {
+	reporting_currency: string;
+	total_unrealized_gain_loss: number;
+	by_currency: CfoUnrealizedFxByCurrency[];
+	available: boolean;
+}
+
+export interface CfoReportingSpendByCurrency {
+	currency: string;
+	original_amount: number;
+	reporting_amount: number;
+	count: number;
+	unconverted_count: number;
+}
+
+export interface CfoReportingSpend {
+	reporting_currency: string;
+	total_amount: number;
+	total_count: number;
+	unconverted_count: number;
+	by_currency: CfoReportingSpendByCurrency[];
+}
+
+export interface CfoAnalytics {
+	period_days: number;
+	period_start: string;
+	total_spend: number;
+	reporting_spend: CfoReportingSpend;
+	unrealized_fx: CfoUnrealizedFx;
+	accounts_payable_balance: number;
+	dpo_current: number;
+	dpo_trend: CfoDpoTrendPoint[];
+	cash_conversion_cycle: number | null;
+	accruals: CfoAccruals;
+	working_capital_impact_5_days: number;
+	avg_daily_outflow: number;
+	supplier_concentration: CfoSupplierConcentration;
+	fraud_rate_trend: CfoFraudTrendPoint[];
+	rebate_yield: CfoRebateYield;
+}
+
 // Consolidated reporting ACROSS entities — `GET /api/analytics/by-entity`.
 // Money fields are string-Decimal (the backend never floats currency); render
 // them through the `Money` component / `formatMoney`, never `parseFloat`. This

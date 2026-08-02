@@ -1,0 +1,303 @@
+<script lang="ts">
+	import { api } from '$lib/api';
+	import DataTable from '$lib/components/ui/DataTable.svelte';
+	import KpiCard from '$lib/components/ui/KpiCard.svelte';
+	import { formatMoney } from '$lib/utils/money';
+	import { formatPeriod } from '$lib/utils/time';
+	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
+	import { m } from '$lib/i18n/store.svelte';
+	import type { CfoAnalytics } from '$lib/types/analytics';
+
+	// DPO, cash conversion cycle, accruals, supplier concentration, fraud-rate
+	// trend, and rebate yield — `GET /api/analytics/cfo` computes all of these
+	// correctly (Decimal throughout on the backend) but had no frontend
+	// surface at all until this component. Found by exploratory persona-driven
+	// testing (CFO persona). Filed as #236.
+
+	interface Props {
+		/** Trailing window in days (matches the rest of the CFO surface). */
+		periodDays?: number;
+	}
+
+	let { periodDays = 365 }: Props = $props();
+
+	let data = $state<CfoAnalytics | null>(null);
+	let loading = $state(false);
+	let error = $state<string | null>(null);
+
+	function fmt(n: number): string {
+		return formatMoney(n, { currency: orgCurrency.currency, whole: true });
+	}
+
+	let maxDpo = $derived(Math.max(1, ...(data?.dpo_trend ?? []).map((r) => r.dpo)));
+	let maxFraudRate = $derived(Math.max(1, ...(data?.fraud_rate_trend ?? []).map((r) => r.rate_pct)));
+
+	$effect(() => {
+		void periodDays;
+		orgCurrency.ensureLoaded();
+		load();
+	});
+
+	async function load() {
+		loading = true;
+		error = null;
+		try {
+			data = await api.get<CfoAnalytics>(`/api/analytics/cfo?period_days=${periodDays}`);
+		} catch (e) {
+			error = e instanceof Error ? e.message : m('cfoMetrics.loadFailed');
+		} finally {
+			loading = false;
+		}
+	}
+</script>
+
+<div class="chart-card" data-testid="cfo-metrics-section">
+	<h2>{m('cfoMetrics.heading')}</h2>
+	{#if error}
+		<p class="cfm-error" role="alert">{error}</p>
+	{:else if loading && !data}
+		<p class="empty">{m('cfoMetrics.loading')}</p>
+	{:else if data}
+		<div class="kpi-row">
+			<KpiCard value={`${data.dpo_current.toFixed(1)}d`} label={m('cfoMetrics.kpi.dpo')} />
+			<KpiCard
+				value={data.cash_conversion_cycle !== null ? `${data.cash_conversion_cycle.toFixed(1)}d` : '—'}
+				label={m('cfoMetrics.kpi.ccc')}
+				sub={data.cash_conversion_cycle === null ? m('cfoMetrics.kpi.cccUnavailable') : null}
+			/>
+			<KpiCard value={fmt(data.accounts_payable_balance)} label={m('cfoMetrics.kpi.apBalance')} />
+			<KpiCard
+				value={`${data.rebate_yield.yield_pct.toFixed(2)}%`}
+				label={m('cfoMetrics.kpi.rebateYield')}
+				highlight={data.rebate_yield.yield_pct > 0 ? 'green' : null}
+			/>
+		</div>
+
+		{#if data.dpo_trend.length > 0}
+			<div class="cfm-subsection">
+				<h3>{m('cfoMetrics.dpoTrend.title')}</h3>
+				<div class="cf-bars">
+					{#each data.dpo_trend as r (r.month)}
+						<div class="cf-bar-row">
+							<span class="cf-bar-label">{formatPeriod(r.month)}</span>
+							<div class="cf-bar-bg" role="img" aria-label={`${r.dpo.toFixed(1)} days`}>
+								<div class="cf-bar committed" style="width:{(r.dpo / maxDpo) * 100}%"></div>
+							</div>
+							<span class="cf-bar-amount">{r.dpo.toFixed(1)}d</span>
+						</div>
+					{/each}
+				</div>
+			</div>
+		{/if}
+
+		<div class="cfm-subsection">
+			<h3>{m('cfoMetrics.accruals.title')}</h3>
+			<div class="cfm-stat-grid">
+				<div class="cfm-stat">
+					<span class="cfm-stat-label">{m('cfoMetrics.accruals.openPo')}</span>
+					<span class="cfm-stat-value">{fmt(data.accruals.open_po_amount)}</span>
+				</div>
+				<div class="cfm-stat">
+					<span class="cfm-stat-label">{m('cfoMetrics.accruals.received')}</span>
+					<span class="cfm-stat-value">{fmt(data.accruals.received_amount)}</span>
+				</div>
+				<div class="cfm-stat">
+					<span class="cfm-stat-label">{m('cfoMetrics.accruals.unposted')}</span>
+					<span class="cfm-stat-value">{fmt(data.accruals.unposted_invoice_amount)}</span>
+				</div>
+				<div class="cfm-stat cfm-stat-total">
+					<span class="cfm-stat-label">{m('cfoMetrics.accruals.total')}</span>
+					<span class="cfm-stat-value">{fmt(data.accruals.total_accrual)}</span>
+				</div>
+			</div>
+		</div>
+
+		<div class="cfm-subsection">
+			<h3>{m('cfoMetrics.concentration.title')}</h3>
+			{#if data.supplier_concentration.flagged}
+				<p class="cfm-flag" role="alert">
+					{m('cfoMetrics.concentration.flagged', {
+						vendor: data.supplier_concentration.largest_vendor ?? '—',
+						pct: data.supplier_concentration.largest_vendor_share_pct.toFixed(1)
+					})}
+				</p>
+			{/if}
+			<div class="cfm-stat-grid">
+				<div class="cfm-stat">
+					<span class="cfm-stat-label">{m('cfoMetrics.concentration.top10')}</span>
+					<span class="cfm-stat-value">{data.supplier_concentration.top_10_share_pct.toFixed(1)}%</span>
+				</div>
+				<div class="cfm-stat">
+					<span class="cfm-stat-label">{m('cfoMetrics.concentration.top50')}</span>
+					<span class="cfm-stat-value">{data.supplier_concentration.top_50_share_pct.toFixed(1)}%</span>
+				</div>
+				<div class="cfm-stat">
+					<span class="cfm-stat-label">{m('cfoMetrics.concentration.largest')}</span>
+					<span class="cfm-stat-value">{data.supplier_concentration.largest_vendor ?? '—'}</span>
+				</div>
+			</div>
+		</div>
+
+		{#if data.fraud_rate_trend.length > 0}
+			<div class="cfm-subsection">
+				<h3>{m('cfoMetrics.fraudTrend.title')}</h3>
+				<div class="cf-bars">
+					{#each data.fraud_rate_trend as r (r.month)}
+						<div class="cf-bar-row">
+							<span class="cf-bar-label">{formatPeriod(r.month)}</span>
+							<div class="cf-bar-bg" role="img" aria-label={`${r.rate_pct.toFixed(1)}%`}>
+								<div class="cf-bar pending" style="width:{(r.rate_pct / maxFraudRate) * 100}%"></div>
+							</div>
+							<span class="cf-bar-amount">{r.rate_pct.toFixed(1)}%</span>
+						</div>
+					{/each}
+				</div>
+			</div>
+		{/if}
+
+		{#if data.unrealized_fx.available && data.unrealized_fx.by_currency.length > 0}
+			<div class="cfm-subsection">
+				<h3>{m('cfoMetrics.fx.title')}</h3>
+				<DataTable
+					columns={[
+						{ label: m('cfoMetrics.fx.colCurrency') },
+						{ label: m('cfoMetrics.fx.colOpen'), class: 'num' },
+						{ label: m('cfoMetrics.fx.colBooked'), class: 'num' },
+						{ label: m('cfoMetrics.fx.colCurrent'), class: 'num' },
+						{ label: m('cfoMetrics.fx.colGainLoss'), class: 'num' }
+					]}
+				>
+					{#snippet body()}
+						{#each data?.unrealized_fx.by_currency ?? [] as e (e.currency)}
+							<tr>
+								<td>{e.currency}</td>
+								<td class="num">{fmt(e.open_original_amount)}</td>
+								<td class="num">{fmt(e.booked_reporting_amount)}</td>
+								<td class="num">{fmt(e.current_reporting_amount)}</td>
+								<td class="num" class:cfm-alert={e.unrealized_gain_loss < 0}>
+									{fmt(e.unrealized_gain_loss)}
+								</td>
+							</tr>
+						{/each}
+					{/snippet}
+				</DataTable>
+			</div>
+		{/if}
+	{/if}
+</div>
+
+<style>
+	/* This component is mounted standalone (not via <slot>), so it needs its
+	   own copy of the .chart-card / .cf-bar* / .empty recipe rather than
+	   relying on the parent route's scoped <style> — Svelte scoped CSS never
+	   reaches into a child component's own template. Kept in sync with
+	   routes/cfo/+page.svelte's identical block by inspection. */
+	.chart-card {
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 10px;
+		padding: 20px;
+	}
+	.chart-card h2 {
+		font-size: 1rem;
+		margin: 0 0 16px;
+	}
+	.cf-bars {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+	.cf-bar-row {
+		display: grid;
+		grid-template-columns: 90px 1fr 110px;
+		align-items: center;
+		gap: 12px;
+	}
+	.cf-bar-label {
+		font-size: 0.8rem;
+		color: var(--text-muted);
+	}
+	.cf-bar-bg {
+		display: flex;
+		height: 18px;
+		background: rgba(128, 128, 128, 0.12);
+		border-radius: 4px;
+		overflow: hidden;
+	}
+	.cf-bar {
+		height: 100%;
+	}
+	.cf-bar.committed {
+		background: #638cff;
+	}
+	.cf-bar.pending {
+		background: #b7c5f5;
+	}
+	.cf-bar-amount {
+		font-size: 0.82rem;
+		text-align: right;
+		font-variant-numeric: tabular-nums;
+	}
+	.empty {
+		color: var(--text-muted);
+		text-align: center;
+		padding: 20px;
+	}
+
+	.cfm-error {
+		color: #e04040;
+		font-weight: 500;
+	}
+
+	.cfm-subsection {
+		margin-top: 20px;
+	}
+
+	.cfm-subsection h3 {
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: var(--text-muted);
+		margin: 0 0 10px;
+	}
+
+	.cfm-stat-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+		gap: 12px;
+	}
+
+	.cfm-stat {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		padding: 12px 14px;
+		border: 1px solid var(--border);
+		border-radius: 8px;
+	}
+
+	.cfm-stat-total {
+		border-color: var(--accent);
+	}
+
+	.cfm-stat-label {
+		font-size: 0.72rem;
+		color: var(--text-muted);
+	}
+
+	.cfm-stat-value {
+		font-size: 1.1rem;
+		font-weight: 700;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.cfm-flag {
+		color: #e04040;
+		font-weight: 600;
+		font-size: 0.85rem;
+		margin: 0 0 12px;
+	}
+
+	.cfm-alert {
+		color: #e04040;
+	}
+</style>

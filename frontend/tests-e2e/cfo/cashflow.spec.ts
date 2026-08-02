@@ -21,9 +21,13 @@ test.describe('/cfo (admin)', () => {
 
 	test('renders the forecast surface with KPI cards and controls', async ({ page }) => {
 		await expect(page.getByRole('heading', { name: 'Cash Flow' })).toBeVisible();
-		// KPI row populated from /cashflow_forecast + /cashflow_whatif.
-		await expect(page.locator('.kpi').first()).toBeVisible({ timeout: 10_000 });
-		await expect(page.locator('.kpi')).toHaveCount(4);
+		// KPI row populated from /cashflow_forecast + /cashflow_whatif. Scoped to
+		// the forecast's own row — the page also embeds the CFO-metrics section
+		// (CfoMetrics.svelte) below, which renders its own .kpi cards using the
+		// same shared class.
+		const forecastKpis = page.getByTestId('forecast-kpi-row').locator('.kpi');
+		await expect(forecastKpis.first()).toBeVisible({ timeout: 10_000 });
+		await expect(forecastKpis).toHaveCount(4);
 		// Granularity + horizon segmented controls present.
 		await expect(page.locator('.seg-btn', { hasText: 'week' })).toBeVisible();
 	});
