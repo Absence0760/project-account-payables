@@ -54,6 +54,12 @@ async function createApprovedInvoice(
 	).trim();
 	const sets = `status='approved'${vendorId ? `, vendor_id='${vendorId}'` : ''}`;
 	tenantPsql(`UPDATE invoices SET ${sets} WHERE id='${body.id}'`);
+	// 'E2E Void/Cancel Vendor' may auto-mint `unverified` on first use —
+	// refresh_warnings (now run at manual-entry creation time) can raise an
+	// open exception against it, which FKs to this invoice and would block
+	// hardDeleteInvoice's cleanup below. Resolve it so the void/cancel
+	// behavior under test is exercised in isolation from the fraud signal.
+	tenantPsql(`UPDATE exceptions SET status='resolved' WHERE invoice_id='${body.id}'`);
 	return body.id;
 }
 
@@ -110,6 +116,9 @@ function hardDeleteInvoice(id: string): void {
 		`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${id}')`
 	);
 	tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${id}'`);
+	// createApprovedInvoice resolves any create-time exception rather than
+	// deleting it, so it still FKs to this invoice and must clear first.
+	tenantPsql(`DELETE FROM exceptions WHERE invoice_id='${id}'`);
 	// audit_log is append-only (a BEFORE DELETE trigger raises) — once an
 	// invoice runs through execute/void it carries invoice.payment_scheduled
 	// / invoice.voided_return_to_approved rows that cannot be deleted. Leave

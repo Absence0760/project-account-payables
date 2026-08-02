@@ -116,6 +116,15 @@ async function createApprovedInvoice(page: Page, suffix: string, amount: number)
 	).trim();
 	const sets = `status='approved'${vendorId ? `, vendor_id='${vendorId}'` : ''}`;
 	tenantPsql(`UPDATE invoices SET ${sets} WHERE id='${body.id}'`);
+	// 'E2E Run Signoff Vendor' is fresh + these amounts can be large (CFO
+	// threshold boundary tests), so create-time fraud detection (now run at
+	// manual-entry creation, before vendor_id is reassigned above) can raise
+	// an open exception (unverified_vendor, or fraud_flag for "new vendor +
+	// large amount" — the latter is a PAYMENT_BLOCKING_EXCEPTION_TYPES
+	// member that would 409 the payment-run creation these tests are
+	// actually about). Resolve it so the run/CFO-gate logic under test is
+	// exercised in isolation from the fraud signal.
+	tenantPsql(`UPDATE exceptions SET status='resolved' WHERE invoice_id='${body.id}'`);
 	return body.id;
 }
 
@@ -192,6 +201,9 @@ function hardDeleteInvoice(id: string): void {
 		`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${id}')`
 	);
 	tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${id}'`);
+	// createApprovedInvoice resolves any create-time exception rather than
+	// deleting it, so it still FKs to this invoice and must clear first.
+	tenantPsql(`DELETE FROM exceptions WHERE invoice_id='${id}'`);
 	// Do NOT delete audit_log rows — the table is append-only (a BEFORE
 	// DELETE trigger raises), and once an invoice runs through execute/void
 	// it carries invoice.payment_scheduled / invoice.voided_return_to_approved
