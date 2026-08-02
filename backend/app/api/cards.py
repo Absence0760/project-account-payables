@@ -769,8 +769,13 @@ async def list_rebates(
     period: str | None = None,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    query = select(CardRebate)
+    # CardRebate carries no entity_id of its own — join to VirtualCard
+    # (which does, via EntityMixin) so this scopes like every other
+    # entity-aware KPI instead of always returning the whole org's rebates.
+    query = select(CardRebate).join(VirtualCard, CardRebate.virtual_card_id == VirtualCard.id)
+    query = apply_entity_scope(query, VirtualCard, entity_id)
     if period:
         query = query.where(CardRebate.period == period)
     query = query.order_by(CardRebate.created_at.desc())
@@ -778,7 +783,13 @@ async def list_rebates(
     result = await db.execute(query)
     rebates = result.scalars().all()
 
-    total_q = select(func.coalesce(func.sum(CardRebate.amount), 0))
+    total_q = apply_entity_scope(
+        select(func.coalesce(func.sum(CardRebate.amount), 0)).join(
+            VirtualCard, CardRebate.virtual_card_id == VirtualCard.id
+        ),
+        VirtualCard,
+        entity_id,
+    )
     if period:
         total_q = total_q.where(CardRebate.period == period)
     total = (await db.execute(total_q)).scalar() or 0

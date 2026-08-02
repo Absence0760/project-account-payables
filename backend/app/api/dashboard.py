@@ -15,7 +15,7 @@ from app.models.invoice import Invoice
 from app.models.organization import Organization
 from app.models.payment import Payment
 from app.models.user import User
-from app.models.virtual_card import CardRebate
+from app.models.virtual_card import CardRebate, VirtualCard
 from app.services.analytics import OPEN_AP_STATUSES
 from app.services.currency_conversion import (
     resolve_reporting_currency,
@@ -323,9 +323,20 @@ async def get_dashboard(
     )
     total_pending = float(pending_q.scalar() or 0)
 
-    # Rebates
+    # Rebates. CardRebate carries no entity_id of its own — join to
+    # VirtualCard (which does, via EntityMixin) so switching the entity
+    # selector scopes this KPI like every other one on the page instead of
+    # silently staying a whole-org total.
     try:
-        rebate_q = await db.execute(select(func.coalesce(func.sum(CardRebate.amount), 0)))
+        rebate_q = await db.execute(
+            apply_entity_scope(
+                select(func.coalesce(func.sum(CardRebate.amount), 0)).join(
+                    VirtualCard, CardRebate.virtual_card_id == VirtualCard.id
+                ),
+                VirtualCard,
+                entity_id,
+            )
+        )
         total_rebates = float(rebate_q.scalar() or 0)
     except Exception:
         total_rebates = 0.0

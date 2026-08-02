@@ -33,7 +33,7 @@ from app.models.invoice import Invoice, InvoiceStatus
 from app.models.organization import Organization
 from app.models.payment import Payment, PaymentSchedule
 from app.models.user import User
-from app.models.virtual_card import CardRebate
+from app.models.virtual_card import CardRebate, VirtualCard
 from app.services.analytics import (
     OPEN_AP_STATUSES,
     ReceivedPO,
@@ -491,9 +491,10 @@ async def get_cfo_analytics(
     is a query the operational DB shouldn't be running.
 
     Every Invoice/Payment/Exception/PO query is entity-scoped via the
-    `_inv` / `_pay` / `_exc` helpers (None = consolidated). The control-plane
-    `CardRebate` rebate total stays org-wide (cross-DB from the tenant's
-    entities), matching the dashboard + payments-summary KPIs."""
+    `_inv` / `_pay` / `_exc` helpers (None = consolidated). `CardRebate` is
+    tenant-scoped like everything else here (not control-plane) and is
+    scoped the same way, via a join to `VirtualCard` (which carries
+    `entity_id`, `CardRebate` itself does not)."""
     today = date.today()
     period_start = today - timedelta(days=period_days)
 
@@ -749,7 +750,15 @@ async def get_cfo_analytics(
 
     # ----- Rebate yield -----
     try:
-        rebate_q = await db.execute(select(func.coalesce(func.sum(CardRebate.amount), 0)))
+        rebate_q = await db.execute(
+            apply_entity_scope(
+                select(func.coalesce(func.sum(CardRebate.amount), 0)).join(
+                    VirtualCard, CardRebate.virtual_card_id == VirtualCard.id
+                ),
+                VirtualCard,
+                entity_id,
+            )
+        )
         rebates_total = Decimal(str(rebate_q.scalar() or 0))
     except Exception:  # noqa: BLE001
         rebates_total = Decimal("0")
