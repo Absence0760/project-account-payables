@@ -603,12 +603,21 @@ async def test_execute_payment_run_holds_virtual_card_for_null_vendor_invoice():
     rollup_scalars.all = MagicMock(return_value=[pay])
     rollup_res.scalars = MagicMock(return_value=rollup_scalars)
 
+    # The hold now also opens an Exception (payment_compliance_hold) so it's
+    # surfaced in the queue — one more dedupe-check SELECT ("does an open one
+    # already exist?") between the invoice lookup and the rollup query.
+    no_existing_exception = MagicMock()
+    no_existing_exception.scalar_one_or_none = MagicMock(return_value=None)
+
     db = AsyncMock()
-    # Only three queries fire before the hold: run lookup, payments fan-out,
-    # invoice lookup. The vendor.bank_details lookup is skipped (vendor_id
-    # NULL) and no compliance/card query runs. The final rollup query then
-    # re-reads every payment on the run to compute the run's final status.
-    db.execute = AsyncMock(side_effect=[run_res, pay_res, inv_res, rollup_res])
+    # Four queries fire before the hold: run lookup, payments fan-out,
+    # invoice lookup, the compliance-hold-exception dedupe check. The vendor
+    # .bank_details lookup is skipped (vendor_id NULL) and no compliance/card
+    # query runs. The final rollup query then re-reads every payment on the
+    # run to compute the run's final status.
+    db.execute = AsyncMock(
+        side_effect=[run_res, pay_res, inv_res, no_existing_exception, rollup_res]
+    )
     db.commit = AsyncMock()
     db.add = MagicMock()
 

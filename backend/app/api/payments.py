@@ -26,6 +26,7 @@ from app.api.permissions import (
     PERM_PAYMENT_RUN_APPROVE,
     PERM_PAYMENT_VOID,
 )
+from app.models.exception import Exception as APException
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.organization import Organization
 from app.models.payment import Payment, PaymentRun, PaymentSchedule
@@ -678,6 +679,169 @@ async def void_payment(
     return PaymentResponse.from_db(payment, invoice)
 
 
+async def _resolve_compliance_hold_exception(
+    db: AsyncSession, *, invoice_id: uuid.UUID, actor_name: str, resolution: str
+) -> None:
+    """Resolve the open `payment_compliance_hold` exception for an invoice,
+    if one exists. Mirrors `api/exceptions.py::_apply_resolution`'s field
+    set (status/resolution/resolved_by/resolved_at/time_to_resolution) —
+    duplicated rather than cross-imported from that router module, same as
+    every other router in this codebase keeps its own small mutators."""
+    result = await db.execute(
+        select(APException).where(
+            APException.invoice_id == invoice_id,
+            APException.exception_type == "payment_compliance_hold",
+            APException.status == "open",
+        )
+    )
+    exc = result.scalar_one_or_none()
+    if exc is None:
+        return
+    now = datetime.now(UTC)
+    exc.status = "resolved"
+    exc.resolution = resolution
+    exc.resolved_by = actor_name
+    exc.resolved_at = now
+    if exc.created_at is not None:
+        exc.time_to_resolution_seconds = int((now - exc.created_at).total_seconds())
+
+
+class DismissComplianceHoldRequest(BaseModel):
+    reason: str = Field(..., min_length=1, max_length=1000)
+
+
+@router.post("/{payment_id}/compliance/release", response_model=PaymentResponse)
+async def release_compliance_hold(
+    payment_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    # Releasing dispatches the payment to the processor exactly like
+    # /execute — same money-moving permission.
+    user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE)),
+):
+    """Re-run compliance + dispatch for a payment stuck in `pending_compliance`.
+
+    A `hold` verdict (an AML spend-threshold signal, or a `review_required`
+    sanctions match — both everyday, non-fraud events; the trailing-12-month
+    AML check is explicitly documented as "does NOT refuse — too many false
+    positives") used to leave the payment exactly where it landed with no
+    way forward. This re-runs `_execute_single_payment`'s full
+    compliance-then-adapter path — the SAME gate a fresh /execute would run,
+    never a bypass — so a payment that's genuinely still blocked (the hold
+    condition hasn't actually changed) stays `pending_compliance` and the
+    response reflects that, rather than silently forcing money to move.
+    """
+    result = await db.execute(select(Payment).where(Payment.id == payment_id).with_for_update())
+    payment = result.scalar_one_or_none()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    if payment.status != "pending_compliance":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Can only release a payment stuck 'pending_compliance', not '{payment.status}'"
+            ),
+        )
+
+    invoice = (
+        await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
+    ).scalar_one_or_none()
+
+    payment_config = (org.settings or {}).get("payments") or {}
+    adapter = get_payment_adapter(payment_config)
+    now = datetime.now(UTC)
+    await _execute_single_payment(db, payment=payment, org=org, adapter=adapter, user=user, now=now)
+
+    from app.services.audit_dispatch import dispatch_audit
+
+    await dispatch_audit(
+        db,
+        correlation_id=payment.correlation_id or uuid.uuid4(),
+        organization_id=org.id,
+        actor_id=user.id,
+        action="payment.compliance_released",
+        entity_type="payment",
+        entity_id=payment.id,
+        details={
+            "new_status": payment.status,
+            "amount": str(payment.amount),
+        },
+    )
+
+    # A human just made the release decision — that IS the sign-off. Only
+    # resolve the exception if the hold actually cleared; still-held
+    # payments keep it open (re-running /release again does nothing new).
+    if payment.status != "pending_compliance" and invoice is not None:
+        await _resolve_compliance_hold_exception(
+            db, invoice_id=invoice.id, actor_name=user.full_name, resolution="released"
+        )
+
+    await db.commit()
+    await db.refresh(payment)
+    return PaymentResponse.from_db(payment, invoice)
+
+
+@router.post("/{payment_id}/compliance/dismiss", response_model=PaymentResponse)
+async def dismiss_compliance_hold(
+    payment_id: uuid.UUID,
+    body: DismissComplianceHoldRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    # Dismissing moves no money (nothing ever settled) — a treasury decision
+    # to give up on this payment, same gate as void.
+    user: User = Depends(require_permission(PERM_PAYMENT_VOID)),
+):
+    """Give up on a payment stuck in `pending_compliance` — flips it to
+    `failed` without ever reaching the processor. AP has reviewed the hold
+    (e.g. a genuine sanctions match, or a decision to pay this vendor a
+    different way) and decided this payment should not proceed as-is."""
+    result = await db.execute(select(Payment).where(Payment.id == payment_id).with_for_update())
+    payment = result.scalar_one_or_none()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    if payment.status != "pending_compliance":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Can only dismiss a payment stuck 'pending_compliance', not '{payment.status}'"
+            ),
+        )
+
+    invoice = (
+        await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
+    ).scalar_one_or_none()
+
+    now = datetime.now(UTC)
+    payment.status = "failed"
+    payment.failure_reason = f"compliance_dismissed by {user.full_name}: {body.reason}"
+    payment.completed_at = now
+
+    from app.services.audit_dispatch import dispatch_audit
+
+    await dispatch_audit(
+        db,
+        correlation_id=payment.correlation_id or uuid.uuid4(),
+        organization_id=org.id,
+        actor_id=user.id,
+        action="payment.compliance_dismissed",
+        entity_type="payment",
+        entity_id=payment.id,
+        details={"reason": body.reason, "amount": str(payment.amount)},
+    )
+
+    if invoice is not None:
+        await _resolve_compliance_hold_exception(
+            db,
+            invoice_id=invoice.id,
+            actor_name=user.full_name,
+            resolution=f"dismissed: {body.reason}",
+        )
+
+    await db.commit()
+    await db.refresh(payment)
+    return PaymentResponse.from_db(payment, invoice)
+
+
 @router.post("", response_model=PaymentResponse, status_code=status.HTTP_201_CREATED)
 async def create_payment(
     body: PaymentCreate,
@@ -1260,6 +1424,48 @@ async def cancel_payment_run(
     }
 
 
+async def _open_compliance_hold_exception(
+    db: AsyncSession,
+    *,
+    payment: Payment,
+    invoice: Invoice | None,
+    org: Organization,
+) -> None:
+    """Surface a `pending_compliance` payment in the Exceptions queue.
+
+    `check_payment_compliance`'s own docstring promises a hold "opens an
+    exception for AP review" — until this, none of the four call sites that
+    set `payment.status = "pending_compliance"` actually did, so a held
+    payment was invisible everywhere except its own `failure_reason` field.
+    Dedupes on `(invoice_id, "payment_compliance_hold", "open")`: a payment
+    without a screenable vendor can be re-dispatched (e.g. by /resume) and
+    hit the same hold repeatedly, and `uq_payments_one_live_per_invoice`
+    means at most one live payment exists per invoice at a time, so an
+    invoice-scoped dedupe is equivalent to a payment-scoped one.
+    """
+    if invoice is None:
+        return
+    from app.services.exception_service import create_exception
+
+    existing = await db.execute(
+        select(APException.id).where(
+            APException.invoice_id == invoice.id,
+            APException.exception_type == "payment_compliance_hold",
+            APException.status == "open",
+        )
+    )
+    if existing.scalar_one_or_none() is not None:
+        return
+    await create_exception(
+        db,
+        exception_type="payment_compliance_hold",
+        description=payment.failure_reason,
+        organization_id=org.id,
+        severity="error",
+        invoice=invoice,
+    )
+
+
 async def _execute_single_payment(
     db: AsyncSession,
     *,
@@ -1322,6 +1528,7 @@ async def _execute_single_payment(
             # ACH/wire leg); never mint a card unscreened.
             payment.status = "pending_compliance"
             payment.failure_reason = "compliance_hold: no screenable vendor on invoice"
+            await _open_compliance_hold_exception(db, payment=payment, invoice=invoice, org=org)
             return
         card_decision = await check_payment_compliance(
             db,
@@ -1340,6 +1547,7 @@ async def _execute_single_payment(
         if card_decision.verdict == "hold":
             payment.status = "pending_compliance"
             payment.failure_reason = "compliance_hold: " + "; ".join(card_decision.reasons)
+            await _open_compliance_hold_exception(db, payment=payment, invoice=invoice, org=org)
             return
 
         # Idempotency pre-check, mirroring the batch `/api/cards/generate` leg:
@@ -1559,6 +1767,7 @@ async def _execute_single_payment(
             # AP to attach + verify a vendor, never pay unscreened.
             payment.status = "pending_compliance"
             payment.failure_reason = "compliance_hold: no screenable vendor on invoice"
+            await _open_compliance_hold_exception(db, payment=payment, invoice=invoice, org=org)
             return
         decision = await check_payment_compliance(
             db,
@@ -1578,6 +1787,7 @@ async def _execute_single_payment(
             payment.status = "pending_compliance"
             payment.failure_reason = "compliance_hold: " + "; ".join(decision.reasons)
             # Hold doesn't flip the invoice — money hasn't moved.
+            await _open_compliance_hold_exception(db, payment=payment, invoice=invoice, org=org)
             return
 
     payload = PaymentPayload(

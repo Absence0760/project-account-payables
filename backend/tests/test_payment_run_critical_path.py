@@ -944,6 +944,15 @@ async def test_execute_holds_payment_when_invoice_has_no_screenable_vendor():
     invoice = _invoice(amount=Decimal("100.00"), status=InvoiceStatus.approved)
     invoice.vendor_id = None  # the bypass surface
     db = _execute_db(run, [p], {str(p.invoice_id): invoice})
+    # The hold now also opens an Exception (payment_compliance_hold) so it's
+    # surfaced in the queue — that's an extra dedupe-check SELECT ("does an
+    # open one already exist?") between the invoice lookup and the final
+    # rollup query. Splice a "none found" result into that slot.
+    no_existing_exception = MagicMock()
+    no_existing_exception.scalar_one_or_none = MagicMock(return_value=None)
+    side_effects = list(db.execute.side_effect)
+    side_effects.insert(-1, no_existing_exception)
+    db.execute = AsyncMock(side_effect=side_effects)
     adapter = _adapter()
 
     with (
