@@ -1,4 +1,11 @@
-import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers';
+import {
+	API_BASE,
+	authedTenantHeaders,
+	currentTenantSlug,
+	expect,
+	tenantHeaders,
+	test
+} from '../fixtures/helpers';
 
 /**
  * "Send to ERP" from the invoice-modal button — the UI money-path leg the
@@ -28,11 +35,33 @@ async function createNewInvoice(page: import('@playwright/test').Page): Promise<
 	return (await resp.json()) as Inv;
 }
 
-async function action(page: import('@playwright/test').Page, id: string, verb: string) {
+async function action(
+	page: import('@playwright/test').Page,
+	id: string,
+	verb: string,
+	creds?: Record<string, string>
+) {
 	return page.request.post(`${API_BASE}/api/invoices/${id}/${verb}`, {
-		headers: await authedTenantHeaders(page),
+		headers: creds ?? (await authedTenantHeaders(page)),
 		data: {}
 	});
+}
+
+/** Sign the tenant's seeded `manager` account in for the approve step —
+ *  segregation of duties refuses the same actor who created the invoice
+ *  from also approving it (manual entry now stamps uploaded_by_id, same as
+ *  the file-upload path always did). */
+async function managerCreds(
+	page: import('@playwright/test').Page
+): Promise<Record<string, string>> {
+	const slug = currentTenantSlug();
+	const resp = await page.request.post(`${API_BASE}/api/auth/login`, {
+		headers: { 'X-Tenant-Slug': slug, 'Content-Type': 'application/json' },
+		data: { email: `demo+manager@${slug}.localhost`, password: 'demo' }
+	});
+	expect(resp.ok(), `manager login failed (${resp.status()})`).toBe(true);
+	const { access_token } = (await resp.json()) as { access_token: string };
+	return tenantHeaders(access_token, slug);
 }
 
 async function getStatus(page: import('@playwright/test').Page, id: string): Promise<string> {
@@ -67,7 +96,9 @@ test.describe('/invoices — Send to ERP button', () => {
 			// action() calls back-to-back can otherwise 409 on stale status.
 			expect((await action(page, inv.id, 'complete')).status()).toBe(200);
 			await expect.poll(() => getStatus(page, inv.id), { timeout: 10_000 }).toBe('ready_for_review');
-			expect((await action(page, inv.id, 'approve')).status()).toBe(200);
+			expect((await action(page, inv.id, 'approve', await managerCreds(page))).status()).toBe(
+				200
+			);
 			await expect.poll(() => getStatus(page, inv.id), { timeout: 10_000 }).toBe('approved');
 
 			// Open the approved invoice's detail modal from the list.

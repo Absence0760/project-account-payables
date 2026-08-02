@@ -1,7 +1,9 @@
 import {
 	API_BASE,
 	authedTenantHeaders,
+	currentTenantSlug,
 	expect,
+	tenantHeaders,
 	tenantPsql,
 	test
 } from '../fixtures/helpers';
@@ -49,9 +51,13 @@ async function createWorkflow(
 	return ((await resp.json()) as { id: string }).id;
 }
 
-async function createInvoice(page: import('@playwright/test').Page, suffix: string) {
+async function createInvoice(
+	page: import('@playwright/test').Page,
+	suffix: string,
+	creds?: Record<string, string>
+) {
 	const resp = await page.request.post(`${API_BASE}/api/invoices`, {
-		headers: await authedTenantHeaders(page),
+		headers: creds ?? (await authedTenantHeaders(page)),
 		data: {
 			vendor: 'Snapshot Test Vendor',
 			invoice_number: `SNAP-${suffix}`,
@@ -61,6 +67,26 @@ async function createInvoice(page: import('@playwright/test').Page, suffix: stri
 		}
 	});
 	return ((await resp.json()) as { id: string }).id;
+}
+
+/** Sign the tenant's seeded `manager` account in — used to create an
+ *  invoice as a DIFFERENT actor than the one who completes it. The
+ *  auto_approve_below threshold path degrades to human review (rather than
+ *  auto-approving) when the completer is also the creator — the same
+ *  segregation-of-duties check `check_segregation` raises on, just
+ *  fail-soft instead of a 403 for a legitimate submission. See
+ *  `services/approval_chain.violates_segregation`. */
+async function managerCreds(
+	page: import('@playwright/test').Page
+): Promise<Record<string, string>> {
+	const slug = currentTenantSlug();
+	const resp = await page.request.post(`${API_BASE}/api/auth/login`, {
+		headers: { 'X-Tenant-Slug': slug, 'Content-Type': 'application/json' },
+		data: { email: `demo+manager@${slug}.localhost`, password: 'demo' }
+	});
+	expect(resp.ok(), `manager login failed (${resp.status()})`).toBe(true);
+	const { access_token } = (await resp.json()) as { access_token: string };
+	return tenantHeaders(access_token, slug);
 }
 
 async function completeInvoice(page: import('@playwright/test').Page, id: string) {
@@ -175,8 +201,11 @@ test.describe('workflow deactivation snapshot semantics', () => {
 			expect(xStatus).toBe('ready_for_review');
 
 			// New invoice Y — picks up B's config (auto_approve_below=999_999),
-			// auto-approves immediately.
-			const y = await createInvoice(page, `y-${Date.now()}`);
+			// auto-approves immediately. Created as the manager, completed as the
+			// page's own admin session — different actors, so the auto-approve
+			// path's segregation check doesn't degrade to human review (see
+			// managerCreds' docstring).
+			const y = await createInvoice(page, `y-${Date.now()}`, await managerCreds(page));
 			created.push(y);
 			const yStatus = await completeInvoice(page, y);
 			expect(yStatus).toBe('approved');

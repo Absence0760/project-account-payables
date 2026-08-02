@@ -39,6 +39,13 @@ async function createApprovedInvoice(
 	).trim();
 	const sets = `status='approved'${vendorId ? `, vendor_id='${vendorId}'` : ''}`;
 	tenantPsql(`UPDATE invoices SET ${sets} WHERE id='${body.id}'`);
+	// 'E2E CFO Vendor' is fresh + these amounts are large, so create-time fraud
+	// detection (now run at manual-entry creation, before vendor_id is
+	// reassigned above) can raise an open fraud_flag ("new vendor + large
+	// amount") — a PAYMENT_BLOCKING_EXCEPTION_TYPES member that would 409 the
+	// payment-run creation these tests are actually about. Resolve it so the
+	// CFO-threshold gate is tested in isolation from the fraud signal.
+	tenantPsql(`UPDATE exceptions SET status='resolved' WHERE invoice_id='${body.id}'`);
 	return body.id;
 }
 
@@ -63,6 +70,10 @@ function hardDeleteInvoice(id: string): void {
 		`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${id}')`
 	);
 	tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${id}'`);
+	// 'E2E CFO Vendor' may auto-mint `unverified` on first use — refresh_warnings
+	// (now run at manual-entry creation time) raises an `unverified_vendor`
+	// exception against it, which FKs to this invoice and must clear first.
+	tenantPsql(`DELETE FROM exceptions WHERE invoice_id='${id}'`);
 	// audit_log is append-only (a BEFORE DELETE trigger raises) — an invoice
 	// that ran through execute carries an invoice.payment_scheduled row that
 	// cannot be deleted. Leave it orphaned (no FK to invoices); deleting the
