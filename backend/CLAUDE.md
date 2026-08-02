@@ -283,7 +283,6 @@ backend/
    - `UserRole` — junction table
    - `WebAuthnCredential` — registered passkey (credential_id, public_key, sign_count, transports) per `user_id`; the WebAuthn second factor (migration 0063)
    - `ExtractionUsage` — billing: invoice_id, provider, program_type, period
-   - `CardRebate` — virtual_card_id, amount, rate, status, period
 
 2. **Tenant DBs** (`feoh_<slug>`) — isolated per customer
    - `Entity` — legal entity / subsidiary within the tenant (name, slug, currency, is_default, is_active). Business tables carry a nullable `entity_id` FK (`EntityMixin`); every tenant has one `is_default` Entity. Multi-entity Phase 2 (reads/writes scoped by the `X-Entity-ID` header) — see `../docs/multi-entity.md`
@@ -301,6 +300,7 @@ backend/
    - `PaymentSchedule` — invoice_id, due_date, discount_date, discount_percent
    - `Payment` — invoice_id, payment_run_id, amount, method (ach/wire/check/virtual_card), status
    - `VirtualCard` — invoice_id, card_provider (lithic/nium), provider_card_id, amount_limit, status
+   - `CardRebate` — virtual_card_id, amount, rate, status (`pending`/`confirmed`/`paid_out`), period. Not in `CONTROL_TABLES` — fanned to every tenant DB like the rest, despite living in `app/models/virtual_card.py` alongside `VirtualCard`
    - `WorkflowDefinition` — name, steps_config (JSONB), is_active, is_default
    - `WorkflowInstance` — definition_id, invoice_id, current_step, state, steps_config_snapshot (JSONB)
    - `WorkflowStep` — instance_id, step_number, step_type, assigned_to, action, completed_at

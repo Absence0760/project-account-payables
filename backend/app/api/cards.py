@@ -649,9 +649,18 @@ async def card_webhook(provider: str, request: Request):
                 # the SAME card serialize at the DB layer (one waits for the
                 # other's commit/rollback) — the Redis dedup alone can't order
                 # them if both slip through the NX gap under load.
+                # `card_provider` is filtered too — defense-in-depth. The two
+                # providers' opaque `provider_card_id` values are independently
+                # generated so a real cross-provider collision is negligible,
+                # but the URL's {provider} segment is otherwise used only to
+                # pick the field-normalization branch below, never as part of
+                # the lookup itself.
                 result = await db.execute(
                     select(VirtualCard)
-                    .where(VirtualCard.provider_card_id == card_token)
+                    .where(
+                        VirtualCard.provider_card_id == card_token,
+                        VirtualCard.card_provider == provider,
+                    )
                     .with_for_update()
                 )
                 card = result.scalar_one_or_none()
@@ -823,3 +832,98 @@ async def list_rebates(
         ],
         total=total,
     )
+
+
+async def _get_org_rebate(db: AsyncSession, rebate_id: uuid.UUID) -> CardRebate:
+    """Look up a rebate scoped to the caller's tenant DB (implicit — `db` is
+    already the tenant session). No entity filter: a rebate confirmation is an
+    org-level bookkeeping action, not a per-subsidiary read."""
+    result = await db.execute(select(CardRebate).where(CardRebate.id == rebate_id))
+    rebate = result.scalar_one_or_none()
+    if rebate is None:
+        raise HTTPException(status_code=404, detail="Rebate not found")
+    return rebate
+
+
+def _rebate_response(r: CardRebate) -> RebateResponse:
+    return RebateResponse(
+        id=str(r.id),
+        virtual_card_id=str(r.virtual_card_id),
+        amount=r.amount,
+        rate=r.rate,
+        status=r.status,
+        period=r.period,
+        created_at=r.created_at.isoformat() if r.created_at else "",
+    )
+
+
+@router.post("/rebates/{rebate_id}/confirm", response_model=RebateResponse)
+async def confirm_rebate(
+    rebate_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+):
+    """Advance a rebate `pending` → `confirmed` — the processor's monthly
+    statement (or equivalent manual reconciliation) confirmed the rebate
+    actually accrued. `CardRebate.status` never transitioned automatically —
+    real rebate reporting from Lithic/Nium arrives out-of-band (a periodic
+    statement, not a webhook event we already ingest), so this is a
+    human-driven confirmation, not something the card webhook can do for us."""
+    rebate = await _get_org_rebate(db, rebate_id)
+    if rebate.status != "pending":
+        raise HTTPException(
+            status_code=409, detail=f"Cannot confirm a rebate in '{rebate.status}' status"
+        )
+    rebate.status = "confirmed"
+
+    from app.services.audit_dispatch import dispatch_audit
+
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org.id,
+        actor_id=user.id,
+        action="card_rebate.confirmed",
+        entity_type="card_rebate",
+        entity_id=rebate.id,
+        details={"amount": str(rebate.amount), "from": "pending", "to": "confirmed"},
+    )
+    await db.commit()
+    await db.refresh(rebate)
+    return _rebate_response(rebate)
+
+
+@router.post("/rebates/{rebate_id}/mark-paid", response_model=RebateResponse)
+async def mark_rebate_paid(
+    rebate_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+):
+    """Advance a rebate `confirmed` → `paid_out` once the processor's payout
+    actually lands (e.g. as a line on the org's own bank statement). Requires
+    `confirmed` first — a rebate can't be recorded paid before it was
+    confirmed to exist."""
+    rebate = await _get_org_rebate(db, rebate_id)
+    if rebate.status != "confirmed":
+        raise HTTPException(
+            status_code=409, detail=f"Cannot mark paid a rebate in '{rebate.status}' status"
+        )
+    rebate.status = "paid_out"
+
+    from app.services.audit_dispatch import dispatch_audit
+
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org.id,
+        actor_id=user.id,
+        action="card_rebate.paid_out",
+        entity_type="card_rebate",
+        entity_id=rebate.id,
+        details={"amount": str(rebate.amount), "from": "confirmed", "to": "paid_out"},
+    )
+    await db.commit()
+    await db.refresh(rebate)
+    return _rebate_response(rebate)
