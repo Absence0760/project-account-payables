@@ -140,10 +140,15 @@ def _resolve_card_config(org: Organization) -> dict:
             "default_expiry_days": expiry_days,
         }
     else:
-        # Platform keys — auto-select provider by region
+        # Platform keys. An explicit admin-set `provider` override wins;
+        # auto-select by region only when unset. Without this, `platform`
+        # mode (the default for every fresh clone's seeded tenants) could
+        # never be pointed at `mock` — issuance would always resolve to
+        # lithic/nium and, with no platform credential configured locally,
+        # silently fail with a live outbound call to the real sandbox host.
         from app.services.card_adapters.dispatcher import get_default_provider
 
-        provider = get_default_provider(region)
+        provider = org_cards.get("provider") or get_default_provider(region)
 
         if provider == "lithic":
             return {
@@ -153,7 +158,7 @@ def _resolve_card_config(org: Organization) -> dict:
                 "sandbox": settings.lithic_sandbox,
                 "default_expiry_days": expiry_days,
             }
-        else:
+        elif provider == "nium":
             return {
                 "provider": "nium",
                 "region": region,
@@ -162,6 +167,15 @@ def _resolve_card_config(org: Organization) -> dict:
                 "customer_hash_id": settings.nium_customer_hash_id,
                 "wallet_hash_id": settings.nium_wallet_hash_id,
                 "sandbox": settings.nium_sandbox,
+                "default_expiry_days": expiry_days,
+            }
+        else:
+            # e.g. "mock" for local-first testing — no live credentials
+            # needed. Any other/unrecognized value falls through to
+            # get_card_adapter's own mock backstop.
+            return {
+                "provider": provider,
+                "region": region,
                 "default_expiry_days": expiry_days,
             }
 

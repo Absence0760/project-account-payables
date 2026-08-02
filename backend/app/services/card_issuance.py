@@ -247,7 +247,11 @@ def _resolve_card_config(org_settings: dict, app_settings) -> dict | None:
 
     from app.services.card_adapters.dispatcher import get_default_provider
 
-    provider = get_default_provider(region)
+    # An explicit admin-set `provider` override wins; auto-select by region
+    # only when unset. Mirror api.cards._resolve_card_config — see its
+    # comment for why platform mode must honour this (local-first: without
+    # it, platform mode can never be pointed at `mock`).
+    provider = org_cards.get("provider") or get_default_provider(region)
     if provider == "lithic":
         return {
             "provider": "lithic",
@@ -256,14 +260,23 @@ def _resolve_card_config(org_settings: dict, app_settings) -> dict | None:
             "sandbox": app_settings.lithic_sandbox,
             "default_expiry_days": expiry_days,
         }
+    if provider == "nium":
+        return {
+            "provider": "nium",
+            "region": region,
+            "client_id": app_settings.nium_client_id,
+            "client_secret": app_settings.nium_client_secret,
+            "customer_hash_id": app_settings.nium_customer_hash_id,
+            "wallet_hash_id": app_settings.nium_wallet_hash_id,
+            "sandbox": app_settings.nium_sandbox,
+            "default_expiry_days": expiry_days,
+        }
+    # e.g. "mock" for local-first testing — no live credentials needed. Any
+    # other/unrecognized value falls through to get_card_adapter's own mock
+    # backstop.
     return {
-        "provider": "nium",
+        "provider": provider,
         "region": region,
-        "client_id": app_settings.nium_client_id,
-        "client_secret": app_settings.nium_client_secret,
-        "customer_hash_id": app_settings.nium_customer_hash_id,
-        "wallet_hash_id": app_settings.nium_wallet_hash_id,
-        "sandbox": app_settings.nium_sandbox,
         "default_expiry_days": expiry_days,
     }
 
