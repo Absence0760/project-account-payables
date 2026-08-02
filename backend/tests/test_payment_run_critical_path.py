@@ -122,9 +122,7 @@ def _create_run_db(
     credit_results = []
     for inv in invoices:
         credit_sel = MagicMock()
-        credit_sel.scalar_one = MagicMock(
-            return_value=credit_totals.get(inv.id, Decimal("0"))
-        )
+        credit_sel.scalar_one = MagicMock(return_value=credit_totals.get(inv.id, Decimal("0")))
         credit_results.append(credit_sel)
 
     db = AsyncMock()

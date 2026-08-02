@@ -70,9 +70,7 @@ async def test_list_rebates_scopes_by_entity(realdb):
         r = await c.post("/api/entities", json={"name": "Rebate Sub", "slug": "rebate-sub"})
         assert r.status_code == 201, r.text
         sub_id = r.json()["id"]
-        default_id = next(
-            e["id"] for e in (await c.get("/api/entities")).json() if e["is_default"]
-        )
+        default_id = next(e["id"] for e in (await c.get("/api/entities")).json() if e["is_default"])
 
     await _seed_card_and_rebate(
         mk, org_id, entity_id=uuid.UUID(sub_id), amount=Decimal("15.00"), inv_number="REB-SUB-1"
@@ -111,9 +109,7 @@ async def test_dashboard_rebates_earned_scopes_by_entity(realdb):
         r = await c.post("/api/entities", json={"name": "Rebate Sub 2", "slug": "rebate-sub-2"})
         assert r.status_code == 201, r.text
         sub_id = r.json()["id"]
-        default_id = next(
-            e["id"] for e in (await c.get("/api/entities")).json() if e["is_default"]
-        )
+        default_id = next(e["id"] for e in (await c.get("/api/entities")).json() if e["is_default"])
 
     await _seed_card_and_rebate(
         mk, org_id, entity_id=uuid.UUID(sub_id), amount=Decimal("10.00"), inv_number="REB-DASH-SUB"
@@ -144,9 +140,7 @@ async def test_cfo_analytics_rebate_yield_scopes_by_entity(realdb):
         r = await c.post("/api/entities", json={"name": "Rebate Sub 3", "slug": "rebate-sub-3"})
         assert r.status_code == 201, r.text
         sub_id = r.json()["id"]
-        default_id = next(
-            e["id"] for e in (await c.get("/api/entities")).json() if e["is_default"]
-        )
+        default_id = next(e["id"] for e in (await c.get("/api/entities")).json() if e["is_default"])
 
     await _seed_card_and_rebate(
         mk, org_id, entity_id=uuid.UUID(sub_id), amount=Decimal("12.00"), inv_number="REB-CFO-SUB"

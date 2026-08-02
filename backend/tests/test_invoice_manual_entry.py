@@ -126,13 +126,17 @@ async def test_manual_create_runs_duplicate_detection(realdb):
         from app.models.exception import Exception as ExceptionModel
 
         rows = (
-            await s.execute(
-                select(ExceptionModel).where(
-                    ExceptionModel.invoice_id == second_body["id"],
-                    ExceptionModel.exception_type == "duplicate",
+            (
+                await s.execute(
+                    select(ExceptionModel).where(
+                        ExceptionModel.invoice_id == second_body["id"],
+                        ExceptionModel.exception_type == "duplicate",
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(rows) == 1, "expected exactly one open duplicate exception"
         assert rows[0].status == "open"
 
