@@ -12,6 +12,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
+from sqlalchemy import update as sa_update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -27,16 +28,28 @@ from app.api.deps import (
 )
 from app.api.pagination import PaginationParams, pagination_params
 from app.database import get_control_db
+from app.models.agent_decision import AgentDecision
 from app.models.contract import Contract
+from app.models.credit_memo import CreditMemo
+from app.models.discount import DiscountOffer
 from app.models.entity import Entity
 from app.models.exception import Exception as ExceptionModel
+from app.models.expense import CorporateCardTransaction
 from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceLineItem
 from app.models.invoice import InvoiceStatus as DBInvoiceStatus
 from app.models.organization import Organization
 from app.models.payment import Payment, PaymentSchedule
-from app.models.supplier_chat import ChatAuthorRole, ChatThreadStatus, SupplierChatMessage
+from app.models.peppol_transmission import PeppolTransmission
+from app.models.supplier_chat import (
+    ChatAuthorRole,
+    ChatThreadStatus,
+    SupplierChatMessage,
+    SupplierChatThread,
+)
 from app.models.user import User
 from app.models.vendor import Vendor
+from app.models.vendor_statement_recon import VendorStatementReconLine
+from app.models.virtual_card import CardRebate, CardRevealToken, VirtualCard
 from app.models.workflow import WorkflowInstance, WorkflowStep
 from app.schemas.invoice import (
     AuditSummaryResponse,
@@ -807,13 +820,18 @@ async def save_invoice_line_items(
 async def create_invoice(
     body: InvoiceCreate,
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
-    org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
     invoice = Invoice(
-        organization_id=org_id,
+        organization_id=org.id,
         entity_id=entity_id,
+        # Same authorship tracking a file upload gets (app/api/workflow.py) —
+        # manual entry is not exempt from segregation of duties. Without this,
+        # `approval_chain.violates_segregation` treats every hand-keyed invoice
+        # as NULL-uploader "pre-existing" and lets the creator self-approve.
+        uploaded_by_id=user.id,
         invoice_number=body.invoice_number,
         vendor_name=body.vendor,
         description=body.description,
@@ -856,7 +874,13 @@ async def create_invoice(
     # pipeline uses, so a manual entry and an extracted one land on the same
     # vendor row; an unmatched name creates an `unverified` vendor stamped
     # `source="manual"` for an AP steward to confirm.
-    await match_and_link_vendor(db, invoice, org_id, source="manual")
+    await match_and_link_vendor(db, invoice, org.id, source="manual")
+    # Run the same duplicate/fraud detection every extracted invoice gets.
+    # Manual entry runs no extraction, so without this the exact-match
+    # duplicate check, round-amount/rush-payment heuristics, etc. are dark
+    # for the entire create-then-approve path — a byte-identical resubmission
+    # could clear approval with zero warning or exception.
+    await refresh_warnings(db, invoice, org_settings=org.settings)
     # Snapshot the active workflow definition onto this invoice so any
     # later config edits don't retroactively change its routing.
     await create_workflow_instance(db, invoice)
@@ -1631,11 +1655,44 @@ async def delete_invoice(
 
 
 async def _delete_invoice_cascade(db: AsyncSession, invoice_id: uuid.UUID) -> None:
-    """Delete an invoice and all related records across tables."""
-    # Delete workflow steps (child of workflow_instances)
+    """Delete an invoice and all related records across tables.
+
+    Every FK referencing `invoices.id` (or transitively, `virtual_cards.id` /
+    `supplier_chat_threads.id`) is `NO ACTION` — nothing cascades at the DB
+    level, so a table missing from this function surfaces as an unhandled
+    IntegrityError (500) the moment an invoice with one of those child rows
+    is deleted, rather than a clean error or a real cascade. Records genuinely
+    OWNED BY the invoice (created because of it) are deleted outright, same
+    as the original six tables below. Records that independently reference
+    the invoice from an external/reconciliation feed — a corporate-card
+    statement import, a vendor-statement reconciliation line, the other side
+    of an inter-company mirror pair — are unlinked (FK set NULL) instead,
+    so deleting the invoice doesn't destroy that external history.
+    """
+    # Grandchildren first: supplier chat messages (child of chat threads),
+    # and virtual card reveal tokens / rebates (children of virtual_cards).
+    thread_ids_q = select(SupplierChatThread.id).where(SupplierChatThread.invoice_id == invoice_id)
+    await db.execute(
+        sa_delete(SupplierChatMessage).where(SupplierChatMessage.thread_id.in_(thread_ids_q))
+    )
+
+    card_ids_q = select(VirtualCard.id).where(VirtualCard.invoice_id == invoice_id)
+    await db.execute(sa_delete(CardRevealToken).where(CardRevealToken.card_id.in_(card_ids_q)))
+    await db.execute(sa_delete(CardRebate).where(CardRebate.virtual_card_id.in_(card_ids_q)))
+    # A corporate-card statement transaction is an independently-imported
+    # bank feed row reconciled TO a virtual card, not owned by it — unlink
+    # rather than delete, mirroring the app's own /unmatch semantics.
+    await db.execute(
+        sa_update(CorporateCardTransaction)
+        .where(CorporateCardTransaction.virtual_card_id.in_(card_ids_q))
+        .values(virtual_card_id=None)
+    )
+
+    # Workflow steps (child of workflow_instances).
     wf_ids_q = select(WorkflowInstance.id).where(WorkflowInstance.invoice_id == invoice_id)
     await db.execute(sa_delete(WorkflowStep).where(WorkflowStep.instance_id.in_(wf_ids_q)))
-    # Delete direct children of invoices
+
+    # Direct children of invoices, owned outright.
     for model in (
         ExceptionModel,
         Payment,
@@ -1643,8 +1700,30 @@ async def _delete_invoice_cascade(db: AsyncSession, invoice_id: uuid.UUID) -> No
         WorkflowInstance,
         InvoiceExtractionResult,
         InvoiceLineItem,
+        AgentDecision,
+        PeppolTransmission,
+        CreditMemo,
+        DiscountOffer,
+        SupplierChatThread,
+        VirtualCard,
     ):
         await db.execute(sa_delete(model).where(model.invoice_id == invoice_id))
+
+    # Unlink (don't delete) records that reference this invoice from an
+    # independent source.
+    await db.execute(
+        sa_update(VendorStatementReconLine)
+        .where(VendorStatementReconLine.matched_invoice_id == invoice_id)
+        .values(matched_invoice_id=None)
+    )
+    # Inter-company mirror pair: the other side's FK must be cleared before
+    # this invoice can be deleted, whichever direction it points.
+    await db.execute(
+        sa_update(Invoice)
+        .where(Invoice.intercompany_mirror_id == invoice_id)
+        .values(intercompany_mirror_id=None)
+    )
+
     await db.execute(sa_delete(Invoice).where(Invoice.id == invoice_id))
 
 

@@ -262,6 +262,11 @@ test.describe('/credit-memos', () => {
 				`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${invoiceB.id}')`
 			);
 			tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${invoiceB.id}'`);
+			// vendorB.name may not match an existing vendor exactly, minting a
+			// fresh `unverified` one — refresh_warnings (now run at manual-entry
+			// creation time) raises an `unverified_vendor` exception against it,
+			// which FKs to this invoice and must clear before the delete below.
+			tenantPsql(`DELETE FROM exceptions WHERE invoice_id='${invoiceB.id}'`);
 			// audit_log is append-only (DB trigger, migration 0022 + seed) — never DELETE;
 			// orphan rows for the removed invoice are harmless (no FK back to invoices).
 			tenantPsql(`DELETE FROM invoices WHERE id='${invoiceB.id}'`);

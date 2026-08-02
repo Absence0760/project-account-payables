@@ -61,7 +61,23 @@ async function createNewInvoice(
 	if (resp.status() !== 201) {
 		throw new Error(`create invoice failed (${resp.status()}): ${await resp.text()}`);
 	}
-	return (await resp.json()) as Inv;
+	const inv = (await resp.json()) as Inv;
+
+	// Read-after-write race (docs/known-issues.md): the mutating request's
+	// transaction commits in the dependency's post-yield code, which runs
+	// AFTER the 201 is already sent — so a follow-up action (every test here
+	// calls `complete` immediately) can 404 even though creation "succeeded".
+	// Poll until the row is actually readable before handing it back, closing
+	// the race for every caller at one shared point instead of per-test.
+	await expect
+		.poll(
+			async () => (await page.request.get(`${API_BASE}/api/invoices/${inv.id}`, {
+				headers: await authedTenantHeaders(page)
+			})).status(),
+			{ timeout: 5_000 }
+		)
+		.toBe(200);
+	return inv;
 }
 
 async function getInvoice(page: Page, id: string): Promise<Inv> {
@@ -70,6 +86,20 @@ async function getInvoice(page: Page, id: string): Promise<Inv> {
 	});
 	if (resp.status() !== 200) throw new Error(`get invoice ${id} failed (${resp.status()})`);
 	return (await resp.json()) as Inv;
+}
+
+/** Poll for an invoice to reach `expected`, rather than a single immediate
+ *  GET — the backend commits a mutating request's transaction in the
+ *  dependency's post-yield code, which runs AFTER the response is already
+ *  sent to the client (see docs/known-issues.md § read-after-write race). A
+ *  GET issued right after a 200 response can race that commit, especially
+ *  once an extra round-trip (a second actor's login) sits between the write
+ *  and the read. Same mitigation as the ERP-completion poll further down in
+ *  this file — waiting on the real signal, not a fixed sleep. */
+async function expectStatus(page: Page, id: string, expected: string): Promise<void> {
+	await expect
+		.poll(async () => (await getInvoice(page, id)).status, { timeout: 5_000 })
+		.toBe(expected);
 }
 
 /** Action POST helper — returns the raw response so the caller asserts status. */
@@ -147,13 +177,17 @@ test.describe('/invoices lifecycle — forward money path', () => {
 			// new → ready_for_review (submit for review via the workflow).
 			const submitted = await action(page, inv.id, 'complete');
 			expect(submitted.status()).toBe(200);
-			expect((await getInvoice(page, inv.id)).status).toBe('ready_for_review');
+			await expectStatus(page, inv.id, 'ready_for_review');
 
-			// ready_for_review → approved.
-			const approved = await action(page, inv.id, 'approve');
+			// ready_for_review → approved. A manual-entry invoice now carries its
+			// creator's uploaded_by_id (segregation of duties), so the approver
+			// must be a different actor than the worker admin who created it —
+			// same as the file-upload path always required.
+			const manager = await headersForRole(page, 'manager');
+			const approved = await action(page, inv.id, 'approve', {}, manager);
 			expect(approved.status()).toBe(200);
+			await expectStatus(page, inv.id, 'approved');
 			const afterApprove = await getInvoice(page, inv.id);
-			expect(afterApprove.status).toBe('approved');
 			// Money survives the transition byte-for-byte (Numeric, no drift).
 			expect(afterApprove.amount).toBe(4242.42);
 			expect(tenantPsql(`select amount from invoices where id='${inv.id}'`).trim()).toBe(
@@ -197,8 +231,9 @@ test.describe('/invoices lifecycle — forward money path', () => {
 		const inv = await createNewInvoice(page);
 		try {
 			await action(page, inv.id, 'complete');
-			await action(page, inv.id, 'approve');
-			expect((await getInvoice(page, inv.id)).status).toBe('approved');
+			// A different actor than the creator — segregation of duties.
+			await action(page, inv.id, 'approve', {}, await headersForRole(page, 'manager'));
+			await expectStatus(page, inv.id, 'approved');
 
 			// The committed .env.development sets FEOH_APPROVAL_SIGNING_KEY to a
 			// (non-secret) dev value, so the approval is signed and re-verifies
@@ -235,12 +270,12 @@ test.describe('/invoices lifecycle — reject / rework loop', () => {
 		const inv = await createNewInvoice(page);
 		try {
 			await action(page, inv.id, 'complete');
-			expect((await getInvoice(page, inv.id)).status).toBe('ready_for_review');
+			await expectStatus(page, inv.id, 'ready_for_review');
 
 			// Reject creates a review_rejected exception and writes an audit row.
 			const rejected = await action(page, inv.id, 'reject', { reason: 'e2e rework reason' });
 			expect(rejected.status()).toBe(200);
-			expect((await getInvoice(page, inv.id)).status).toBe('rejected');
+			await expectStatus(page, inv.id, 'rejected');
 
 			const exResp = await page.request.get(`${API_BASE}/api/exceptions`, {
 				headers: await authedTenantHeaders(page)
@@ -259,7 +294,7 @@ test.describe('/invoices lifecycle — reject / rework loop', () => {
 			// rejected → ready_for_review (the rework back-edge).
 			const resubmitted = await action(page, inv.id, 'resubmit');
 			expect(resubmitted.status()).toBe(200);
-			expect((await getInvoice(page, inv.id)).status).toBe('ready_for_review');
+			await expectStatus(page, inv.id, 'ready_for_review');
 
 			const actions = await auditActions(page, inv.id);
 			expect(actions).toContain('invoice.rejected');
@@ -276,7 +311,7 @@ test.describe('/invoices lifecycle — reject / rework loop', () => {
 			const resp = await action(page, inv.id, 'reject', { reason: '' });
 			expect(resp.status()).toBe(422);
 			// State unchanged — the failed validation did not move the invoice.
-			expect((await getInvoice(page, inv.id)).status).toBe('ready_for_review');
+			await expectStatus(page, inv.id, 'ready_for_review');
 		} finally {
 			await deleteInvoice(page, inv.id);
 		}
@@ -295,7 +330,7 @@ test.describe('/invoices lifecycle — invalid-transition guards (409)', () => {
 			const resp = await action(page, inv.id, 'send-to-erp');
 			// new ∉ {sending_to_erp …} → validate_transition raises 409.
 			expect(resp.status()).toBe(409);
-			expect((await getInvoice(page, inv.id)).status).toBe('new');
+			await expectStatus(page, inv.id, 'new');
 		} finally {
 			await deleteInvoice(page, inv.id);
 		}
@@ -305,13 +340,19 @@ test.describe('/invoices lifecycle — invalid-transition guards (409)', () => {
 		const inv = await createNewInvoice(page);
 		try {
 			await action(page, inv.id, 'complete');
-			await action(page, inv.id, 'approve');
-			expect((await getInvoice(page, inv.id)).status).toBe('approved');
+			// Segregation of duties checks against the ORIGINAL creator
+			// (uploaded_by_id) regardless of who approves, so both calls here
+			// need a different actor than the worker admin who created the
+			// invoice — otherwise the second call would 403 on SoD instead of
+			// exercising the invalid-transition 409 this test is actually about.
+			const manager = await headersForRole(page, 'manager');
+			await action(page, inv.id, 'approve', {}, manager);
+			await expectStatus(page, inv.id, 'approved');
 
-			const again = await action(page, inv.id, 'approve');
+			const again = await action(page, inv.id, 'approve', {}, manager);
 			// approved ∉ {approved} as a target → 409.
 			expect(again.status()).toBe(409);
-			expect((await getInvoice(page, inv.id)).status).toBe('approved');
+			await expectStatus(page, inv.id, 'approved');
 		} finally {
 			await deleteInvoice(page, inv.id);
 		}
@@ -321,12 +362,12 @@ test.describe('/invoices lifecycle — invalid-transition guards (409)', () => {
 		const inv = await createNewInvoice(page);
 		try {
 			await action(page, inv.id, 'complete');
-			expect((await getInvoice(page, inv.id)).status).toBe('ready_for_review');
+			await expectStatus(page, inv.id, 'ready_for_review');
 
 			const resp = await action(page, inv.id, 'resubmit');
 			// ready_for_review → ready_for_review is not a valid edge → 409.
 			expect(resp.status()).toBe(409);
-			expect((await getInvoice(page, inv.id)).status).toBe('ready_for_review');
+			await expectStatus(page, inv.id, 'ready_for_review');
 		} finally {
 			await deleteInvoice(page, inv.id);
 		}
@@ -347,12 +388,12 @@ test.describe('/invoices lifecycle — RBAC + segregation of duties on approval'
 			const clerk = await headersForRole(page, 'clerk');
 			const clerkApprove = await action(page, inv.id, 'approve', {}, clerk);
 			expect(clerkApprove.status()).toBe(403);
-			expect((await getInvoice(page, inv.id)).status).toBe('ready_for_review');
+			await expectStatus(page, inv.id, 'ready_for_review');
 
 			const manager = await headersForRole(page, 'manager');
 			const mgrApprove = await action(page, inv.id, 'approve', {}, manager);
 			expect(mgrApprove.status()).toBe(200);
-			expect((await getInvoice(page, inv.id)).status).toBe('approved');
+			await expectStatus(page, inv.id, 'approved');
 		} finally {
 			await deleteInvoice(page, inv.id);
 		}
@@ -361,10 +402,10 @@ test.describe('/invoices lifecycle — RBAC + segregation of duties on approval'
 	test('segregation of duties: the uploader cannot approve their own invoice', async ({ page }) => {
 		const inv = await createNewInvoice(page);
 		try {
-			// Stamp the worker admin as the uploader — the API only sets
-			// uploaded_by_id on file upload, so we set it directly (the kind of
-			// state tenantPsql exists for) to exercise the SoD branch without a
-			// PDF + async extraction.
+			// createNewInvoice already stamps the worker admin as uploaded_by_id
+			// (manual-entry create sets it, same as the file-upload path always
+			// did) — re-asserting it explicitly here documents the precondition
+			// this test depends on rather than relying on it implicitly.
 			const me = await page.request.get(`${API_BASE}/api/auth/me`, {
 				headers: await authedTenantHeaders(page)
 			});
@@ -376,13 +417,13 @@ test.describe('/invoices lifecycle — RBAC + segregation of duties on approval'
 			// Same user (the uploader) tries to approve → 403 SoD.
 			const selfApprove = await action(page, inv.id, 'approve');
 			expect(selfApprove.status()).toBe(403);
-			expect((await getInvoice(page, inv.id)).status).toBe('ready_for_review');
+			await expectStatus(page, inv.id, 'ready_for_review');
 
 			// A different approver (the manager) is allowed → 200.
 			const manager = await headersForRole(page, 'manager');
 			const mgrApprove = await action(page, inv.id, 'approve', {}, manager);
 			expect(mgrApprove.status()).toBe(200);
-			expect((await getInvoice(page, inv.id)).status).toBe('approved');
+			await expectStatus(page, inv.id, 'approved');
 		} finally {
 			await deleteInvoice(page, inv.id);
 		}
@@ -401,8 +442,9 @@ test.describe('/invoices lifecycle — void back-edge to approved', () => {
 		const inv = await createNewInvoice(page, { amount: '500.00' });
 		try {
 			await action(page, inv.id, 'complete');
-			await action(page, inv.id, 'approve');
-			expect((await getInvoice(page, inv.id)).status).toBe('approved');
+			// A different actor than the creator — segregation of duties.
+			await action(page, inv.id, 'approve', {}, await headersForRole(page, 'manager'));
+			await expectStatus(page, inv.id, 'approved');
 
 			// Stand up the minimal "scheduled payment" state the void path
 			// reverses: a completed Payment row on a payment_scheduled invoice.
@@ -421,7 +463,7 @@ test.describe('/invoices lifecycle — void back-edge to approved', () => {
 					`values ('${paymentId}','${inv.id}',500.00,'completed','${corr}','ach',now(),now()); ` +
 					`commit;`
 			);
-			expect((await getInvoice(page, inv.id)).status).toBe('payment_scheduled');
+			await expectStatus(page, inv.id, 'payment_scheduled');
 
 			// Void is admin/CFO-gated; the worker admin qualifies.
 			const voided = await page.request.post(`${API_BASE}/api/payments/${paymentId}/void`, {
@@ -431,7 +473,7 @@ test.describe('/invoices lifecycle — void back-edge to approved', () => {
 			expect(voided.status()).toBe(200);
 
 			// The back-edge fired: invoice is back in approved, re-queued for payment.
-			expect((await getInvoice(page, inv.id)).status).toBe('approved');
+			await expectStatus(page, inv.id, 'approved');
 
 			// And it's on the immutable trail.
 			expect(await auditActions(page, inv.id)).toContain('invoice.voided_return_to_approved');
@@ -447,15 +489,20 @@ test.describe('/invoices lifecycle — void back-edge to approved', () => {
 test.describe('/invoices lifecycle — approve through the real modal UI', () => {
 	// This one drives the SvelteKit UI end to end (the most-walked path),
 	// complementing the API-level coverage above. The invoice is created via
-	// the API (so uploaded_by_id is NULL and segregation of duties does not
-	// trip), then approved by the signed-in worker admin straight from the
-	// modal — exactly the journey a real approver walks.
+	// the API, then approved by the signed-in worker admin straight from the
+	// modal — exactly the journey a real approver walks. A UI-driven test
+	// can't easily swap to a second browser identity mid-test the way the
+	// API-level specs do via headersForRole, so uploaded_by_id (now always
+	// stamped on manual-entry create) is nulled back out directly — this
+	// test is about the modal wiring the click through to the endpoint, not
+	// segregation of duties (that has its own dedicated test above).
 	test('clicking Approve in the modal flips the invoice to approved', async ({ page }) => {
 		await page.goto('/invoices');
 		await page.waitForLoadState('networkidle');
 		const inv = await createNewInvoice(page);
+		tenantPsql(`update invoices set uploaded_by_id=NULL where id='${inv.id}'`);
 		await action(page, inv.id, 'complete');
-		expect((await getInvoice(page, inv.id)).status).toBe('ready_for_review');
+		await expectStatus(page, inv.id, 'ready_for_review');
 
 		try {
 			// Reload the queue so the freshly-promoted row is rendered.
@@ -481,7 +528,7 @@ test.describe('/invoices lifecycle — approve through the real modal UI', () =>
 			await approved;
 			await expect(modal).toBeHidden({ timeout: 5_000 });
 
-			expect((await getInvoice(page, inv.id)).status).toBe('approved');
+			await expectStatus(page, inv.id, 'approved');
 		} finally {
 			await deleteInvoice(page, inv.id);
 		}

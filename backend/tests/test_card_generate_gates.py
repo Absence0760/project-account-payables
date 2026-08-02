@@ -238,6 +238,45 @@ async def test_successful_mint_writes_audit_row(realdb):
 
 
 @pytest.mark.asyncio
+async def test_platform_mode_honors_an_explicit_provider_override(realdb):
+    """`program_type: "platform"` (the seeded default for every fresh clone)
+    used to always auto-select lithic/nium by region, discarding any
+    admin-set `provider` override entirely — so a platform-mode org could
+    never point local-first issuance at `mock`, and instead silently made a
+    live outbound call to the real sandbox host with no credential
+    configured. This end-to-end reproduces the persona's exact live repro:
+    `program_type: "platform"` + an explicit `provider: "mock"` override
+    must actually mint a mock card, not no-op or reach the network."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+
+    ctrl_mk = realdb.control_sessionmaker()
+    async with ctrl_mk() as s:
+        org = await s.get(Organization, org_id)
+        settings = dict(org.settings or {})
+        settings["cards"] = {
+            "enabled": True,
+            "program_type": "platform",
+            "region": "US",  # would otherwise resolve to lithic
+            "provider": "mock",
+        }
+        org.settings = settings
+        await s.commit()
+
+    vendor_id = await _seed_vendor(mk, org_id)
+    invoice_id = await _seed_invoice(
+        mk, org_id, status=InvoiceStatus.approved, vendor_id=vendor_id, number="PLATOVERRIDE"
+    )
+
+    async with realdb.client(key=TENANT, role="admin") as c:
+        resp = await c.post("/api/cards/generate", json={"invoice_ids": [str(invoice_id)]})
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["total"] == 1, body
+    assert body["items"][0]["card_provider"] == "mock"
+
+
+@pytest.mark.asyncio
 async def test_minted_card_follows_the_invoice_entity(realdb):
     """The card follows the invoice it pays (multi-entity P2) — a card minted
     for an invoice under a non-default `Entity` must carry that same

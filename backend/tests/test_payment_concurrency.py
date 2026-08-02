@@ -27,6 +27,21 @@ Postgres ``SELECT ... FOR UPDATE`` actually serializes them.
           Assertion: the adapter's ``void_payment`` is awaited exactly
           once and exactly one ``payment.voided`` audit row is written.
 
+  BUG C — concurrent ``resume_payment_run`` double-dispatches. Unlike
+          /execute, /resume never re-claims the run row before the
+          adapter loop (the run is already `executing`, so there's
+          nothing to atomically flip) — ``_dispatch_run_payments``'
+          pending-payment query was a plain, unlocked SELECT. Two
+          concurrent /resume calls both loaded the same still-`pending`
+          payment and both dispatched it to the adapter. The fix
+          re-locks and re-checks each payment (``db.refresh(...,
+          with_for_update=True)``) immediately before dispatch, mirroring
+          the reconciler's claim pattern — the loser sees the row already
+          claimed (no longer `pending`) and skips it. Assertion: the
+          adapter's ``create_payment`` is awaited exactly once across
+          both racers, and both calls return 200 (resume has no run-lock
+          loser to 409 — the race is per-payment, not per-run).
+
 Requires the dev Postgres (``pnpm db:up``); skips otherwise, like every
 other ``realdb`` test.
 """
@@ -209,6 +224,120 @@ async def test_concurrent_execute_run_charges_adapter_exactly_once(realdb):
     assert len(oks) == 1
 
     # And the run + its payment landed in a single completed state.
+    async with mk() as s:
+        run = (await s.execute(select(PaymentRun).where(PaymentRun.id == run_id))).scalar_one()
+        assert run.status == "completed"
+        pays = (
+            (await s.execute(select(Payment).where(Payment.payment_run_id == run_id)))
+            .scalars()
+            .all()
+        )
+        assert len(pays) == 1
+        assert pays[0].status == "completed"
+
+
+# ---------------------------------------------------------------------------
+# BUG C — concurrent resume_payment_run must not double-dispatch
+# ---------------------------------------------------------------------------
+
+
+async def test_concurrent_resume_charges_adapter_exactly_once(realdb):
+    """Two concurrent /resume calls on the same stuck-`executing` run must
+    result in the payment adapter being called exactly once — mirrors BUG A
+    but for the crash-recovery path, which has no run-level claim to lock
+    (the run is already `executing`) so the race is per-payment instead.
+    """
+    from app.api.payments import resume_payment_run
+
+    info = realdb.info("a")
+    org_id = info.org_id
+    admin_id = info.users["admin"]
+    creator_id = info.users["ap_manager"]
+    mk = realdb.sessionmaker("a")
+
+    inv = await _seed_invoice(mk, org_id, amount=Decimal("100.00"))
+
+    # A run stuck `executing` with one still-`pending` payment — exactly the
+    # state a crashed execute_payment_run worker leaves behind.
+    run_id = uuid.uuid4()
+    async with mk() as s:
+        s.add(
+            PaymentRun(
+                id=run_id,
+                organization_id=org_id,
+                status="executing",
+                total_amount=Decimal("100.00"),
+                initiated_by=creator_id,
+                requires_cfo_approval=False,
+            )
+        )
+        await s.flush()
+        s.add(
+            Payment(
+                id=uuid.uuid4(),
+                invoice_id=inv.id,
+                payment_run_id=run_id,
+                amount=Decimal("100.00"),
+                method="ach",
+                status="pending",
+                correlation_id=inv.correlation_id,
+            )
+        )
+        await s.commit()
+
+    call_count = 0
+
+    async def _counting_create_payment(payload):
+        nonlocal call_count
+        call_count += 1
+        await asyncio.sleep(0)
+        return SimpleNamespace(
+            success=True,
+            status=PaymentStatus.completed,
+            provider_payment_id=f"px_{call_count}",
+            reference=f"REF-{call_count}",
+            failure_reason=None,
+        )
+
+    adapter = SimpleNamespace(
+        provider_name="mock",
+        create_payment=_counting_create_payment,
+    )
+
+    async def _resume_once():
+        session_mk = realdb.sessionmaker("a")
+        async with session_mk() as db:
+            try:
+                res = await resume_payment_run(
+                    run_id=run_id,
+                    db=db,
+                    org=_org(org_id),
+                    user=_user(admin_id),
+                )
+                await db.commit()
+                return ("ok", res)
+            except HTTPException as exc:
+                await db.rollback()
+                return ("http", exc.status_code)
+
+    with (
+        patch("app.api.payments.get_payment_adapter", return_value=adapter),
+        patch("app.api.payments.transition_invoice", new_callable=AsyncMock) as ti,
+        patch("app.services.payment_erp_sync.dispatch_payment_sync", new_callable=AsyncMock),
+        patch(
+            "app.services.compliance.check_payment_compliance",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(verdict="allow", reasons=[]),
+        ),
+    ):
+        ti.return_value = inv
+        results = await asyncio.gather(_resume_once(), _resume_once())
+
+    # Both /resume calls return 200 (no run-lock loser here — the race is
+    # per-payment) but the adapter was only ever charged once.
+    assert call_count == 1, f"adapter.create_payment called {call_count}x (double-dispatch!)"
+    assert all(kind == "ok" for kind, _ in results), f"expected both to succeed, got {results}"
+
     async with mk() as s:
         run = (await s.execute(select(PaymentRun).where(PaymentRun.id == run_id))).scalar_one()
         assert run.status == "completed"

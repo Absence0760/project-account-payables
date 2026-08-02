@@ -140,10 +140,15 @@ def _resolve_card_config(org: Organization) -> dict:
             "default_expiry_days": expiry_days,
         }
     else:
-        # Platform keys — auto-select provider by region
+        # Platform keys. An explicit admin-set `provider` override wins;
+        # auto-select by region only when unset. Without this, `platform`
+        # mode (the default for every fresh clone's seeded tenants) could
+        # never be pointed at `mock` — issuance would always resolve to
+        # lithic/nium and, with no platform credential configured locally,
+        # silently fail with a live outbound call to the real sandbox host.
         from app.services.card_adapters.dispatcher import get_default_provider
 
-        provider = get_default_provider(region)
+        provider = org_cards.get("provider") or get_default_provider(region)
 
         if provider == "lithic":
             return {
@@ -153,7 +158,7 @@ def _resolve_card_config(org: Organization) -> dict:
                 "sandbox": settings.lithic_sandbox,
                 "default_expiry_days": expiry_days,
             }
-        else:
+        elif provider == "nium":
             return {
                 "provider": "nium",
                 "region": region,
@@ -162,6 +167,15 @@ def _resolve_card_config(org: Organization) -> dict:
                 "customer_hash_id": settings.nium_customer_hash_id,
                 "wallet_hash_id": settings.nium_wallet_hash_id,
                 "sandbox": settings.nium_sandbox,
+                "default_expiry_days": expiry_days,
+            }
+        else:
+            # e.g. "mock" for local-first testing — no live credentials
+            # needed. Any other/unrecognized value falls through to
+            # get_card_adapter's own mock backstop.
+            return {
+                "provider": provider,
+                "region": region,
                 "default_expiry_days": expiry_days,
             }
 
@@ -769,8 +783,13 @@ async def list_rebates(
     period: str | None = None,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    query = select(CardRebate)
+    # CardRebate carries no entity_id of its own — join to VirtualCard
+    # (which does, via EntityMixin) so this scopes like every other
+    # entity-aware KPI instead of always returning the whole org's rebates.
+    query = select(CardRebate).join(VirtualCard, CardRebate.virtual_card_id == VirtualCard.id)
+    query = apply_entity_scope(query, VirtualCard, entity_id)
     if period:
         query = query.where(CardRebate.period == period)
     query = query.order_by(CardRebate.created_at.desc())
@@ -778,7 +797,13 @@ async def list_rebates(
     result = await db.execute(query)
     rebates = result.scalars().all()
 
-    total_q = select(func.coalesce(func.sum(CardRebate.amount), 0))
+    total_q = apply_entity_scope(
+        select(func.coalesce(func.sum(CardRebate.amount), 0)).join(
+            VirtualCard, CardRebate.virtual_card_id == VirtualCard.id
+        ),
+        VirtualCard,
+        entity_id,
+    )
     if period:
         total_q = total_q.where(CardRebate.period == period)
     total = (await db.execute(total_q)).scalar() or 0

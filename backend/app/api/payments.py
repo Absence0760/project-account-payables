@@ -940,10 +940,29 @@ async def create_payment_run(
             ),
         )
 
+    # Net any applied credit memos off what actually gets paid — the entire
+    # point of applying a credit against a payable. Without this, applying a
+    # memo was cosmetic: credit_memos.py enforces the memo can never exceed
+    # the invoice's remaining creditable balance, so `inv.amount -
+    # already_applied` can never go negative here. Same query
+    # credit_memos.py already uses for its own over-application guard.
+    from app.models.credit_memo import CreditMemo
+
+    net_amounts: dict[str, Decimal] = {}
     total = Decimal("0")
     for item in body.items:
         inv = invoices[item.invoice_id]
-        total += inv.amount
+        already_applied = (
+            await db.execute(
+                select(func.coalesce(func.sum(CreditMemo.amount), Decimal("0"))).where(
+                    CreditMemo.invoice_id == inv.id,
+                    CreditMemo.status == "applied",
+                )
+            )
+        ).scalar_one()
+        net_amount = inv.amount - already_applied
+        net_amounts[item.invoice_id] = net_amount
+        total += net_amount
 
     # CFO sign-off: org admins set `payments.cfo_approval_above` (a
     # threshold in $) on the org settings. Runs whose total exceeds it
@@ -1001,7 +1020,7 @@ async def create_payment_run(
             invoice_id=inv.id,
             entity_id=inv.entity_id,
             payment_run_id=run.id,
-            amount=inv.amount,
+            amount=net_amounts[item.invoice_id],
             method=item.method,
             status="pending",
             # Per-payment idempotency anchor. correlation_id is sent to the rail
@@ -1664,6 +1683,18 @@ async def _dispatch_run_payments(
     pending_payments = pay_result.scalars().all()
 
     for payment in pending_payments:
+        # Re-lock and re-check immediately before dispatching, mirroring the
+        # reconciler's claim pattern (payment_reconciler.py). The bulk read
+        # above is a plain SELECT with no lock — held across this whole loop
+        # it would be released early anyway by the per-payment commit below —
+        # so without this, two concurrent callers (two /resume calls, or a
+        # /resume racing an in-flight /execute) both load the same pending
+        # row and both dispatch it to the adapter. This is what makes a
+        # second concurrent caller see the row already claimed and skip it
+        # instead of double-charging the processor.
+        await db.refresh(payment, with_for_update=True)
+        if payment.status != "pending":
+            continue
         try:
             await _execute_single_payment(
                 db, payment=payment, org=org, adapter=adapter, user=user, now=now
@@ -1883,6 +1914,16 @@ async def resume_payment_run(
             status_code=409,
             detail=f"Can only resume a run stuck 'executing', not '{run.status}'",
         )
+    # Resuming dispatches real payments exactly like /execute — same
+    # maker-checker gate. Without this, the run's own initiator could wait
+    # for (or force) it into `executing` and resume-execute their own run
+    # solo, after already being refused at /execute.
+    check_run_segregation(
+        run.initiated_by,
+        user.id,
+        (org.settings or {}).get("payments"),
+        action="execute",
+    )
 
     # Release the row lock before the (potentially slow) per-payment loop —
     # no status change needed here, the run is already `executing`.

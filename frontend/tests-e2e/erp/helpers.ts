@@ -1,6 +1,12 @@
 import type { Page } from '@playwright/test';
 
-import { API_BASE, authedTenantHeaders, expect } from '../fixtures/helpers';
+import {
+	API_BASE,
+	authedTenantHeaders,
+	currentTenantSlug,
+	expect,
+	tenantHeaders
+} from '../fixtures/helpers';
 
 /**
  * Shared plumbing for the erp/ suite — the specs that exercise the three
@@ -72,6 +78,24 @@ async function getInvoice(page: Page, id: string): Promise<Inv> {
 	return (await resp.json()) as Inv;
 }
 
+/** Mint a token for the tenant's seeded `cfo` account via a raw login POST —
+ *  decoupled from `page`'s own session/localStorage. Used so
+ *  `createApprovedInvoice` can approve as a genuinely different actor than
+ *  the one who created the invoice (segregation of duties: the uploader
+ *  cannot also approve — see `services/approval_chain.py`). `page` is
+ *  always signed in as the tenant admin (`signInAndWait(page)`), so `cfo`
+ *  is guaranteed distinct. */
+async function loginAsSecondActor(page: Page): Promise<Record<string, string>> {
+	const slug = currentTenantSlug();
+	const resp = await page.request.post(`${API_BASE}/api/auth/login`, {
+		headers: { 'X-Tenant-Slug': slug, 'Content-Type': 'application/json' },
+		data: { email: `demo+cfo@${slug}.localhost`, password: 'demo' }
+	});
+	expect(resp.ok(), `second-actor login failed (${resp.status()})`).toBe(true);
+	const { access_token } = (await resp.json()) as { access_token: string };
+	return tenantHeaders(access_token, slug);
+}
+
 /** Create a fresh invoice via the API and approve it directly (`new →
  *  approved` is a legal edge in VALID_TRANSITIONS — the manual-entry
  *  fast path). Deliberately does NOT go through `/complete`: complete's
@@ -80,7 +104,12 @@ async function getInvoice(page: Page, id: string): Promise<Inv> {
  *  both then 409 the explicit approve), and this suite's subject is the
  *  ERP adapters, not the review flow (lifecycle-money-path.spec.ts owns
  *  that). Direct approve keeps these specs deterministic on any
- *  workflow-definition state a prior suite left behind. */
+ *  workflow-definition state a prior suite left behind.
+ *
+ *  Creates as `page`'s own user (the tenant admin) and approves as the
+ *  seeded `cfo` account — segregation of duties refuses a same-user
+ *  create-then-approve on a manually-entered invoice, same as the real
+ *  review flow. */
 export async function createApprovedInvoice(
 	page: Page,
 	opts: { prefix: string; amount?: string; vendor?: string }
@@ -103,8 +132,9 @@ export async function createApprovedInvoice(
 	}
 	const inv = (await created.json()) as Inv;
 
+	const approverHeaders = await loginAsSecondActor(page);
 	const approved = await page.request.post(`${API_BASE}/api/invoices/${inv.id}/approve`, {
-		headers,
+		headers: approverHeaders,
 		data: {}
 	});
 	expect(

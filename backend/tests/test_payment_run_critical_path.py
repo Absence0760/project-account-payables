@@ -85,18 +85,28 @@ def _invoice(*, amount: Decimal, status=InvoiceStatus.approved):
     )
 
 
-def _create_run_db(invoices: list, blocking_invoice_ids: list | None = None):
+def _create_run_db(
+    invoices: list,
+    blocking_invoice_ids: list | None = None,
+    credit_totals: dict | None = None,
+):
     """Build an AsyncSession mock for `create_payment_run`.
 
-    The handler issues exactly two SELECTs: (1) `select(Invoice).where(
-    Invoice.id.in_(...))` → `.scalars().all()`, then (2) the unresolved
-    `duplicate`/`fraud_flag` exception gate → `.scalars().all()` of the
-    blocked invoice ids. It then `db.add(run)`, `db.flush()`, `db.add(
-    payment)` per item, and `db.commit()`. We capture every added object
-    so a test can inspect the created run + payment rows.
+    The handler issues: (1) `select(Invoice).where(Invoice.id.in_(...))`
+    → `.scalars().all()`, (2) the unresolved `duplicate`/`fraud_flag`
+    exception gate → `.scalars().all()` of the blocked invoice ids, then
+    (3) one already-applied-credit-memo SUM query per item in `body.items`
+    (in the same order — every test here builds `body.items` from this
+    same `invoices` list) → `.scalar_one()`. It then `db.add(run)`,
+    `db.flush()`, `db.add(payment)` per item, and `db.commit()`. We
+    capture every added object so a test can inspect the created run +
+    payment rows.
 
     `blocking_invoice_ids` seeds the second SELECT so a test can simulate
     an invoice sitting under an open duplicate/fraud exception.
+    `credit_totals` (keyed by invoice id) seeds the per-invoice credit
+    SUM; an invoice not present defaults to no applied credit (0), which
+    preserves every existing test's un-netted totals.
     """
     sel = MagicMock()
     scalars = MagicMock()
@@ -108,8 +118,15 @@ def _create_run_db(invoices: list, blocking_invoice_ids: list | None = None):
     block_scalars.all = MagicMock(return_value=list(blocking_invoice_ids or []))
     block_sel.scalars = MagicMock(return_value=block_scalars)
 
+    credit_totals = credit_totals or {}
+    credit_results = []
+    for inv in invoices:
+        credit_sel = MagicMock()
+        credit_sel.scalar_one = MagicMock(return_value=credit_totals.get(inv.id, Decimal("0")))
+        credit_results.append(credit_sel)
+
     db = AsyncMock()
-    db.execute = AsyncMock(side_effect=[sel, block_sel])
+    db.execute = AsyncMock(side_effect=[sel, block_sel, *credit_results])
     db.commit = AsyncMock()
     db.flush = AsyncMock()
     db.added = []

@@ -41,6 +41,11 @@ function hardDeleteInvoice(id: string): void {
 		`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${id}')`
 	);
 	tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${id}'`);
+	// 'E2E Pluralization Vendor' may auto-mint `unverified` on first use —
+	// refresh_warnings (now run at manual-entry creation time) raises an
+	// `unverified_vendor` exception against it, which FKs to this invoice and
+	// must clear before the delete below.
+	tenantPsql(`DELETE FROM exceptions WHERE invoice_id='${id}'`);
 	// audit_log is append-only (DB trigger, migration 0022 + seed) — never DELETE;
 	// orphan rows for the removed invoice are harmless (no FK back to invoices).
 	tenantPsql(`DELETE FROM invoices WHERE id='${id}'`);

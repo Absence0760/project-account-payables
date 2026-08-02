@@ -402,6 +402,60 @@ def test_resolve_card_config_platform_honors_expiry_override():
     assert cfg["default_expiry_days"] == 7
 
 
+def test_resolve_card_config_platform_defaults_to_region_when_no_override():
+    """Platform program, no `provider` override → region default (unchanged
+    behavior). US resolves to lithic."""
+    cfg = _resolve_card_config(
+        {"cards": {"enabled": True, "program_type": "platform", "region": "US"}},
+        _app_settings(),
+    )
+    assert cfg is not None
+    assert cfg["provider"] == "lithic"
+
+
+def test_resolve_card_config_platform_honors_explicit_provider_override():
+    """An admin-set `provider` override must win over the region default —
+    otherwise `program_type: "platform"` (the seeded default for every fresh
+    clone) can never be pointed at `mock` for local-first testing, and
+    issuance silently makes a real outbound call to the live sandbox host
+    with no credential configured."""
+    cfg = _resolve_card_config(
+        {
+            "cards": {
+                "enabled": True,
+                "program_type": "platform",
+                "region": "US",  # would otherwise resolve to lithic
+                "provider": "mock",
+            }
+        },
+        _app_settings(),
+    )
+    assert cfg is not None
+    assert cfg["provider"] == "mock"
+    # The mock branch needs no live credential fields.
+    assert "api_key" not in cfg
+    assert "client_id" not in cfg
+
+
+def test_resolve_card_config_platform_explicit_nium_override_still_works():
+    """Forcing a specific real processor (not just mock) also has to work —
+    the override isn't mock-only."""
+    cfg = _resolve_card_config(
+        {
+            "cards": {
+                "enabled": True,
+                "program_type": "platform",
+                "region": "US",  # would otherwise resolve to lithic
+                "provider": "nium",
+            }
+        },
+        _app_settings(),
+    )
+    assert cfg is not None
+    assert cfg["provider"] == "nium"
+    assert cfg["client_id"] == _app_settings().nium_client_id
+
+
 def test_resolve_card_config_byok_honors_expiry_override():
     """BYOK orgs supply their own keys AND can set their own expiry
     window. Both must propagate."""

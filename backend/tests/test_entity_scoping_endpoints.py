@@ -323,6 +323,22 @@ async def test_exception_list_and_summary_scope_by_entity(realdb):
     import uuid
 
     from app.models.exception import Exception as APException
+    from app.models.vendor import Vendor
+
+    # Pre-seed active (not "unverified") vendors named X/Y so
+    # match_and_link_vendor links the invoices below to them instead of
+    # auto-creating unverified vendors — an unverified-vendor link raises
+    # its own `unverified_vendor` exception on create (refresh_warnings now
+    # runs at manual-entry creation time), which would otherwise inflate
+    # this test's exception counts beyond the two it seeds manually below.
+    # This test is about entity-scoping the exceptions endpoint, not about
+    # the unverified-vendor fraud signal.
+    org_id = realdb.info("a").org_id
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        s.add(Vendor(organization_id=org_id, name="X", status="active"))
+        s.add(Vendor(organization_id=org_id, name="Y", status="active"))
+        await s.commit()
 
     async with realdb.client(key="a", role="admin") as c:
         us = await _create_entity(c, name="US Inc", slug="us")
@@ -343,8 +359,6 @@ async def test_exception_list_and_summary_scope_by_entity(realdb):
             )
         ).json()
 
-    org_id = realdb.info("a").org_id
-    mk = realdb.sessionmaker("a")
     async with mk() as s:
         s.add(
             APException(
