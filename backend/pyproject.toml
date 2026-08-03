@@ -64,7 +64,7 @@ dependencies = [
     # manylinux wheel, so no compiler is added to the slim image. The RIC is
     # imported only by the Lambda runtime, never on the ECS/API path. See
     # docs/production-deployment.md → Lambda workers.
-    "awslambdaric>=4.0.1,<5",
+    "awslambdaric>=4.0.2,<5",
 ]
 
 [project.optional-dependencies]
