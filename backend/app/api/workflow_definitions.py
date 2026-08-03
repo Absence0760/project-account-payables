@@ -245,7 +245,13 @@ async def create_workflow(
     user: User = Depends(require_roles(ROLE_ADMIN)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
-    steps_config = {"steps": [s.model_dump() for s in body.steps]}
+    # mode="json" — a step's config can carry Decimal money fields
+    # (ApprovalStepConfig.auto_approve_below, ApprovalLevelConfig.max_amount,
+    # …) since the workflow-schema discriminator fix; the default python-mode
+    # model_dump() leaves those as Decimal objects, which the JSONB column's
+    # json.dumps chokes on. json mode serializes them as exact strings,
+    # matching what `_to_decimal` (workflow_engine.py) already coerces back.
+    steps_config = {"steps": [s.model_dump(mode="json") for s in body.steps]}
     # New workflows start inactive — user must explicitly activate
     defn = WorkflowDefinition(
         name=body.name,
@@ -438,7 +444,10 @@ async def update_workflow(
             )
         defn.is_active = body.is_active
     if body.steps is not None:
-        new_steps_config = {"steps": [s.model_dump() for s in body.steps]}
+        # mode="json" — see the identical comment on the create-workflow path
+        # above; a step's config can carry Decimal money fields that must be
+        # written to the JSONB column as exact strings, not Decimal objects.
+        new_steps_config = {"steps": [s.model_dump(mode="json") for s in body.steps]}
         # Auto-versioning: snapshot the PRIOR steps_config into history before
         # overwriting it, but only when the steps actually change (so a no-op
         # PATCH or a name-only edit doesn't pile up empty versions).

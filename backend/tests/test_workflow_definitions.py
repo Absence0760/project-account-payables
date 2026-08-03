@@ -283,6 +283,58 @@ async def test_patch_steps_replaces_snapshotless_config(realdb):
     assert steps[0]["type"] == "approval"
 
 
+# An approval step's Decimal money fields (auto_approve_below, and each
+# approval_chain level's min/max_amount) exercise the exact path that broke
+# when the schema discriminator fix started routing "approval" configs to
+# the REAL ApprovalStepConfig: model_dump() in its default python mode left
+# those fields as Decimal objects, and the JSONB column's json.dumps has no
+# encoder for Decimal — a 500 on every create/patch carrying an approval
+# chain with money thresholds. json mode serializes them as exact strings.
+_STEPS_WITH_APPROVAL_CHAIN = [
+    {
+        "number": 1,
+        "type": "approval",
+        "name": "Chain Approval",
+        "enabled": True,
+        "config": {
+            "approver_strategy": "chain",
+            "auto_approve_below": "500.00",
+            "require_cfo_above": "50000.00",
+            "approval_chain": [
+                {"min_amount": "0", "max_amount": "5000.00", "approver_ids": ["u1"]},
+                {"min_amount": "5000.00", "max_amount": None, "approver_ids": ["u2"]},
+            ],
+        },
+    },
+]
+
+
+async def test_create_workflow_with_approval_chain_money_fields(realdb):
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await _create_workflow(c, name="Chain WF", steps=_STEPS_WITH_APPROVAL_CHAIN)
+    assert resp.status_code == 201, resp.text
+    config = resp.json()["steps_config"]["steps"][0]["config"]
+    assert config["auto_approve_below"] == "500.00"
+    assert config["approval_chain"][0]["max_amount"] == "5000.00"
+    assert config["approval_chain"][1]["max_amount"] is None
+
+
+async def test_patch_workflow_with_approval_chain_money_fields(realdb):
+    async with realdb.client(key="a", role="admin") as c:
+        wf_id = (await _create_workflow(c)).json()["id"]
+        resp = await c.patch(f"/api/workflows/{wf_id}", json={"steps": _STEPS_WITH_APPROVAL_CHAIN})
+    assert resp.status_code == 200, resp.text
+    config = resp.json()["steps_config"]["steps"][0]["config"]
+    assert config["approval_chain"][0]["max_amount"] == "5000.00"
+
+    # Round-trips through a fresh GET too (proves the JSONB write itself is
+    # sound, not just the response echoing the request back).
+    async with realdb.client(key="a", role="admin") as c:
+        get_resp = await c.get(f"/api/workflows/{wf_id}")
+    reread_config = get_resp.json()["steps_config"]["steps"][0]["config"]
+    assert reread_config["approval_chain"][0]["max_amount"] == "5000.00"
+
+
 # ---------------------------------------------------------------------------
 # active steps
 # ---------------------------------------------------------------------------
