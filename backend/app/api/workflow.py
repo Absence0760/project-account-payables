@@ -469,7 +469,14 @@ async def complete_invoice(
                 "id": str(invoice.id),
                 "correlation_id": str(invoice.correlation_id),
                 "status": invoice.status.value,
-                "message": (f"Auto-approved (amount below ${auto_below:,.2f} threshold)."),
+                "message": (
+                    # auto_below comes straight off the JSONB snapshot, which
+                    # (correctly, per the money invariant) stores it as an
+                    # exact string, not a float — Decimal(str(...)) mirrors
+                    # the same coercion decide_auto_approve() already applies
+                    # before comparing it against the invoice amount.
+                    f"Auto-approved (amount below ${Decimal(str(auto_below)):,.2f} threshold)."
+                ),
             }
 
         # Submit for review
