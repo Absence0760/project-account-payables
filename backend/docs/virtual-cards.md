@@ -369,19 +369,37 @@ If the supplier portal is implemented, vendors can:
 
 ## API Endpoints
 
-### Planned
-
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/cards` | List virtual cards (filterable by status, vendor, date) |
-| `GET` | `/api/cards/{id}` | Get card details (masked by default) |
 | `GET` | `/api/cards/{id}/details` | Get full card number + CVV (audit logged) |
 | `POST` | `/api/cards/generate` | Generate cards for selected invoices |
-| `POST` | `/api/cards/{id}/send` | Send card details to vendor |
 | `POST` | `/api/cards/{id}/cancel` | Cancel an unused card |
-| `POST` | `/api/cards/webhook/{provider}` | Receive charge/settlement webhooks |
+| `POST` | `/api/cards/webhook/{provider}` | Receive charge/settlement webhooks (public-by-design, HMAC-gated) |
 | `GET` | `/api/cards/rebates` | List rebates by period |
+| `POST` | `/api/cards/rebates/{id}/confirm` | Advance a rebate `pending` → `confirmed` (admin/ap_manager/cfo) — see § Rebate status lifecycle |
+| `POST` | `/api/cards/rebates/{id}/mark-paid` | Advance a rebate `confirmed` → `paid_out` (admin/ap_manager/cfo) — see § Rebate status lifecycle |
 | `GET` | `/api/cards/dashboard` | Card program KPIs |
+
+### Rebate status lifecycle
+
+`CardRebate.status` (`pending` → `confirmed` → `paid_out`) never advanced past
+`pending` — nothing transitioned it. Real rebate confirmation/payout from
+Lithic/Nium arrives out-of-band (a periodic statement, not a webhook event
+already ingested here), so the settlement webhook can only ever create a
+rebate at `pending`; it can't itself learn when the processor later confirms
+or pays it out. Found by exploratory persona-driven testing (card-processor
+persona); recorded as a "minor / out of scope" gap since it wasn't a money
+correctness bug (nothing was miscounted, the feature was simply never wired
+end-to-end).
+
+The two endpoints above give AP a human-driven way to record that
+confirmation/payout when it happens (e.g. reconciling against the processor's
+statement): `confirm` requires `pending`, `mark-paid` requires `confirmed` — a
+rebate can't skip straight to `paid_out`. Both 404 on an unknown rebate, 409
+on a status that isn't the required predecessor, and write an append-only
+`card_rebate.confirmed` / `card_rebate.paid_out` audit row. No frontend surface
+yet — API-only, mirroring `/bank-reconciliation`.
 
 ## Security
 
@@ -437,6 +455,8 @@ float.
 | `card.cancelled` | manual cancel (`POST /{id}/cancel`) | `last_four`, `from`, `to` |
 | `card.charged` | authorization webhook applies a charge | `last_four`, `from`, `to`, `amount_charged` (string Decimal) |
 | `card.settled` | settlement webhook completes + accrues the rebate | `last_four`, `from`, `to`, `rebate_amount`, `rebate_rate` (string Decimals), `rebate_created` (bool — `false` if the one-per-card unique index skipped a duplicate) |
+| `card_rebate.confirmed` | `POST /rebates/{id}/confirm` (`pending` → `confirmed`) | `amount` (string Decimal), `from`, `to` |
+| `card_rebate.paid_out` | `POST /rebates/{id}/mark-paid` (`confirmed` → `paid_out`) | `amount` (string Decimal), `from`, `to` |
 
 ### Issue — idempotent at the provider, not just in our DB
 
@@ -599,7 +619,12 @@ raw body against the owning tenant's
 `Organization.settings.cards.webhook_signing_secret`. The handler:
 
 1. parses `card_token` + `event_id` from the provider-specific body,
-2. finds the owning tenant by `provider_card_id`,
+2. finds the owning tenant by `provider_card_id` AND `VirtualCard.card_provider
+   == {provider}` (the URL path segment is a filter, not just a hint for
+   which field-normalization branch to use — a card issued by one provider
+   can't be matched by an event posted to the other provider's URL, even one
+   carrying the same token value; defense-in-depth, since a real
+   cross-provider token collision is independently negligible),
 3. verifies the HMAC (`verify_hmac_sha256`) — missing/forged signature is rejected,
 4. dedupes by `event_id` (`is_event_already_processed`, Redis `SET NX`) so a re-delivery is a no-op,
 5. applies the state change + writes the audit row in a single committed transaction.

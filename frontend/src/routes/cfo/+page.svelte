@@ -3,6 +3,7 @@
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import KpiCard from '$lib/components/ui/KpiCard.svelte';
 	import ByEntityBreakdown from '$lib/components/analytics/ByEntityBreakdown.svelte';
+	import CfoMetrics from '$lib/components/analytics/CfoMetrics.svelte';
 	import { formatMoney } from '$lib/utils/money';
 	import { formatPeriod } from '$lib/utils/time';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
@@ -147,7 +148,7 @@
 	{:else if loading}
 		<p class="loading">{m('cfo.loading')}</p>
 	{:else if forecast}
-		<div class="kpi-row">
+		<div class="kpi-row" data-testid="forecast-kpi-row">
 			<KpiCard value={fmt(forecast.totals.scheduled_amount)} label={m('cfo.kpi.projectedOutflow')} />
 			<KpiCard value={fmt(forecast.totals.committed_amount)} label={m('cfo.kpi.committed')} />
 			<KpiCard value={fmt(forecast.totals.pending_amount)} label={m('cfo.kpi.pipeline')} />
@@ -253,6 +254,10 @@
 				</table>
 			</div>
 		{/if}
+
+		<!-- CFO metrics: DPO, cash conversion cycle, accruals, supplier
+		     concentration, fraud-rate trend, rebate yield -->
+		<CfoMetrics periodDays={horizonDays} />
 
 		<!-- Consolidated reporting across entities (self-hides for single-entity tenants) -->
 		<ByEntityBreakdown />

@@ -4,7 +4,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.api.pagination import PageMeta
 
@@ -140,6 +140,28 @@ class DelayStepConfig(BaseModel):
     until_field: str | None = None
 
 
+# Maps a step's `type` to the config model that shape actually owns. Pydantic
+# can't natively discriminate `config`'s Union by this — the tag (`type`)
+# lives on the SIBLING field, not inside `config` itself — so a bare Union
+# resolves by trying each member in declaration order and scoring the best
+# "fit", which is ambiguous when every member's fields are optional and the
+# last member is a catch-all `dict`. That let a full, valid `ApprovalStepConfig`
+# payload (including the Decimal money fields) silently resolve to the untyped
+# `dict` fallback instead — the Union's own typing was never actually enforced
+# on that write path. `"done"` has no config shape of its own and is
+# deliberately absent (falls through to the Union's own resolution → `dict`).
+_STEP_CONFIG_MODELS: dict[str, type[BaseModel]] = {
+    "extraction": ExtractionStepConfig,
+    "approval": ApprovalStepConfig,
+    "erp_export": ErpExportStepConfig,
+    "condition": ConditionStepConfig,
+    "parallel": ParallelStepConfig,
+    "webhook": WebhookStepConfig,
+    "email": EmailStepConfig,
+    "delay": DelayStepConfig,
+}
+
+
 class WorkflowStepConfig(BaseModel):
     number: int
     # extraction | approval | erp_export | done (canonical) +
@@ -168,6 +190,22 @@ class WorkflowStepConfig(BaseModel):
         | DelayStepConfig
         | dict
     ) = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _dispatch_config_by_type(cls, data):
+        """Resolve `config` against the model `type` actually names, instead
+        of leaving the Union to guess. Only intercepts plain-dict input (a
+        JSON request body); an already-constructed instance or config object
+        passes through untouched. An unrecognized `type` (e.g. "done") falls
+        through to the Union's own resolution unchanged."""
+        if not isinstance(data, dict):
+            return data
+        model_cls = _STEP_CONFIG_MODELS.get(data.get("type"))
+        raw_config = data.get("config")
+        if model_cls is not None and isinstance(raw_config, dict):
+            data = {**data, "config": model_cls.model_validate(raw_config)}
+        return data
 
 
 class WorkflowDefinitionCreate(BaseModel):

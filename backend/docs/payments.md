@@ -297,6 +297,44 @@ void. The outcome lands on the `payment.voided` audit row as `card_outcome`:
 | `card_already_cancelled` / `no_card_linked` | nothing to do |
 | `cards_not_configured` / `card_cancel_rejected` / `card_cancel_error:<Type>` | the provider could not confirm; the card is left live (unverified cancels are never recorded) |
 
+### Sanctions / compliance hold resolution
+
+`_execute_single_payment` parks a payment at `status="pending_compliance"`
+in two cases: the invoice has no screenable vendor at all, or
+`services/compliance.check_payment_compliance` itself returns a `hold`
+verdict (sanctions/KYC review required). Both cases open a
+`payment_compliance_hold` Exception (`exception_type`, severity `error`)
+scoped to the invoice — deduplicated on `(invoice_id,
+"payment_compliance_hold", "open")` so a retried/resumed execution never
+opens a second one for the same hold. This is what makes the hold visible
+in the normal exceptions queue instead of only in the payment's own
+`failure_reason` field.
+
+Two endpoints resolve it. Neither requires the invoice to actually own an
+open `payment_compliance_hold` exception — resolving it is best-effort/a
+no-op if none exists — the payment's own `pending_compliance` status is
+the real gate:
+
+- **`POST /payments/{id}/compliance/release`** (`payment.execute`) —
+  re-runs the exact same compliance-then-adapter path
+  (`_execute_single_payment`) that produced the hold. This is deliberate:
+  it is a retry of the real gate, not a bypass. If the underlying problem
+  is unresolved (e.g. the vendor is still unlinked, or screening still
+  returns `hold`), the payment lands right back on `pending_compliance`
+  with a fresh exception opened, rather than being forced through. AP's
+  fix — attaching a real vendor, correcting sanctions data, etc. — happens
+  out-of-band before calling this.
+- **`POST /payments/{id}/compliance/dismiss`** (`payment.void`) — gives up
+  without ever reaching the adapter: flips the payment straight to
+  `failed` with `failure_reason` set from the required `{reason}` body.
+  Use when the payment genuinely should not go out (e.g. the vendor turned
+  out to be sanctioned, or is confirmed defunct).
+
+Both are row-locked (`SELECT ... FOR UPDATE`), 409 on any payment not
+currently `pending_compliance`, and resolve the invoice's open
+`payment_compliance_hold` exception (`resolution` = `"released"` or
+`"dismissed: <reason>"`) on success.
+
 ### Payment processor adapters
 
 The actual money movement is handled by an adapter pattern in `backend/app/services/payment_adapters/` — same shape as ERP, extraction, and card adapters. Each adapter implements:
@@ -450,6 +488,9 @@ Matching payments against bank statement entries:
 | `POST` | `/api/payments/runs/{id}/resume` | Resume a run stuck in `executing` — re-dispatches only its still-`pending` payments; anything already `completed`/`failed`/`submitted`/`processing`/`pending_compliance` from before the crash is left untouched. Same `payment.execute` permission gate as `/execute`. |
 | `GET` | `/api/payments/queue` | List invoices ready for payment |
 | `GET` | `/api/payments/summary` | KPIs: total paid, pending, queue count, rebates. Requires a `control_db` dependency because `CardRebate` is a control-plane model; the rebate query includes a try/except fallback returning `0.0` if the `card_rebates` table doesn't exist yet. |
+| `POST` | `/api/payments/{id}/void` | Void a pending/completed payment. Reverses a `virtual_card` payment's card at the provider too — see § Voiding a card payment cancels the card. |
+| `POST` | `/api/payments/{id}/compliance/release` | Re-run compliance-then-adapter for a payment stuck `pending_compliance`. `payment.execute`-gated, 409 outside that status. See § Sanctions / compliance hold resolution. |
+| `POST` | `/api/payments/{id}/compliance/dismiss` | Give up on a payment stuck `pending_compliance` — flips it to `failed` with a required `{reason}`, never reaches the adapter. `payment.void`-gated, 409 outside that status. See § Sanctions / compliance hold resolution. |
 
 **Query parameters for `GET /api/payments`:**
 
@@ -482,7 +523,6 @@ Matching payments against bank statement entries:
 | `POST` | `/api/payments/runs/{id}/cancel` | Cancel a draft run |
 | `GET` | `/api/payments/schedules` | List payment schedules with discount info |
 | `PATCH` | `/api/payments/{id}` | Update payment (status, reference) |
-| `POST` | `/api/payments/{id}/void` | Void a pending/completed payment |
 
 ## Data Model
 
@@ -559,6 +599,8 @@ Decimal `amount` as a string, and the reference — never bank/account values.
 | `payment.failed` | A child payment failed during execution | `payment` |
 | `payment.submitted` / `payment.processing` | A child payment is in flight awaiting the processor webhook | `payment` |
 | `payment.pending_compliance` | A child payment held by the sanctions/KYC gate | `payment` |
+| `payment.compliance_released` | `POST /{id}/compliance/release` re-ran compliance-then-adapter for a held payment | `payment` |
+| `payment.compliance_dismissed` | `POST /{id}/compliance/dismiss` gave up on a held payment, flipping it to `failed` | `payment` |
 | `payment.voided` | A completed / in-flight payment voided (`POST /{id}/void`); also writes the `invoice.voided_return_to_approved` invoice row | `payment` |
 | `payment_run.cfo_approved` | CFO sign-off on an over-threshold draft run | `payment_run` |
 | `payment_run.cancelled` | A draft run cancelled before execution | `payment_run` |

@@ -120,6 +120,18 @@ Drill-through:
   Forecasts are NOT persisted — the CFO pastes from their FP&A
   tool.
 
+**Frontend surface**: `frontend/src/lib/components/analytics/CfoMetrics.svelte`,
+embedded in `/cfo` below the forecast/what-if/cash-position panels (a
+self-fetching component mirroring `ByEntityBreakdown` — its own `GET
+/api/analytics/cfo?period_days=` call, own loading/error state). Renders a KPI
+row (DPO current, cash conversion cycle, AP balance, rebate yield %), the DPO
+6-month trend as a bar chart, an accruals breakdown, supplier concentration
+(with the flagged-vendor banner), the fraud-rate trend, and the unrealized-FX
+table when available. The per-metric drill-through endpoints
+(`/drill/spend_concentration`, `/drill/dpo`, `/forecast_variance`) are not yet
+wired into the UI — this closes the "no frontend surface at all" gap, not the
+drill-down affordance, which stays a future slice. Filed as #236.
+
 ## Consolidated reporting across entities (`GET /api/analytics/by-entity`)
 
 Read-only, admin + CFO only. A side-by-side **per-entity AP rollup PLUS a
@@ -332,8 +344,6 @@ is stored.
 - **Cash conversion cycle**: AP-only; DSO + DIO need data we
   don't carry. Returns NULL; the UI renders "needs receivables
   data" rather than a misleading 0.
-- **PDF export**: only CSV today. PDF needs reportlab/weasyprint
-  + templates; a separate piece.
 
 ## Tests
 
