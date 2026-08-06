@@ -598,3 +598,56 @@ The `realdb.client()` harness previously overrode both providers with the old
 late-commit bodies, which is exactly why the suite never caught this. The
 overrides now mirror the real providers — they exist to swap the *engine*, not
 the commit semantics.
+
+---
+
+## 21. CI guards for the three things tests can't fail on
+
+**Decided:** 2026-08-06 · adopted from `project-running`
+
+Three classes of regression are invisible to this repo's test suites, because in
+each case the code *works* — it is only wrong later, or wrong for someone else:
+
+- **Bundle weight.** The frontend is adapter-static on GitHub Pages, so every
+  kilobyte is paid by every cold visit. No test fails when a dependency doubles
+  the payload.
+- **Compliance drift.** A migration adds a column holding personal data. The
+  DSAR export never learns to include it; erasure never learns to redact it.
+  Every test passes. It is wrong on the day someone exercises a data-subject
+  right — the worst possible moment to discover it.
+- **Env isolation.** This repo is public and deliberately commits
+  `*.env.development` so a clone runs with no setup. That is safe exactly as
+  long as those files stay boring. gitleaks catches known credential *formats*;
+  it does not catch a dev default quietly re-pointed at a production endpoint.
+
+Each now has a workflow. Three choices inside them worth recording:
+
+**Ceilings carry a change log, not just a number.** `web-bundle-budget.yml`
+requires a dated entry — measurement plus reason — for every bump. A bare number
+tells the next person nothing, so they either raise it reflexively or refuse to
+touch it. The log makes "ship the feature, raise the ceiling" a legitimate,
+auditable move.
+
+**The compliance detector ships in `warn` mode.** It is heuristic; a heuristic
+guard that blocks merges gets switched off, and a switched-off guard protects
+nothing. It runs advisory with a documented flip to `fail`. Before landing it I
+measured the noise: **0 findings across 726 changed files** of real history,
+while still firing correctly on a genuine PII-adding migration. Its own tests
+weight the *negative* cases — the ones asserting it stays quiet when the
+companion update is present — for the same reason.
+
+**The env guard never prints what it matched.** It reports file, line, and rule
+only. A CI log is as public as the repo, so a guard that echoed the credential
+it just found would publish the leak it exists to prevent.
+
+**Trade-off:** three more workflows on every PR, and the compliance detector is
+pattern-matching that will need its column list extended as the schema grows. A
+stale list degrades to silence rather than to false alarms — the failure mode is
+"missed a finding", not "blocked a PR", which is the right way round for an
+advisory guard.
+
+**Deliberately not adopted:** `project-running`'s `check_production_env` release
+guard, which refuses to *build* a release against placeholder endpoints. That
+repo ships mobile/watch binaries where a bad endpoint is unrecoverable after
+store submission; here the frontend redeploys in minutes and the backend reads
+its config at runtime from sops. The guard would cost more than it protects.
