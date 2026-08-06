@@ -115,7 +115,7 @@ When `pytesseract` or the `tesseract` binary is unavailable, auto-rotate
 degrades to a silent no-op — extraction still succeeds, pages just go out
 at whatever orientation they arrived. Small-angle deskew (1–5° tilt) and
 low-quality enhancement are not yet implemented; see
-`docs/roadmap.md` § Real AI Extraction.
+`docs/roadmap_shipped.md` § Real AI Extraction.
 
 ### Requirements
 

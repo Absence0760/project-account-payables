@@ -6,7 +6,7 @@ An approver clicks an action and the decision runs through the **exact same**
 `services.review` path the in-app buttons use — no app login, no JWT. This is the
 Teams counterpart of the already-shipped Slack interactive approval and closes
 the "Slack/Teams approval" gap under **Advanced Approval Routing** in
-`docs/roadmap.md`.
+`docs/roadmap_shipped.md`.
 
 It builds directly on the same two pieces as Slack and adds nothing weaker:
 

@@ -402,6 +402,7 @@ Full list in `backend/app/config.py`.
 | Multi-tenancy | `docs/multi-tenancy.md` — DB isolation, provisioning |
 | Multi-entity | `docs/multi-entity.md` — subsidiaries within a tenant (`entity_id`, Default entity, Phase 1) |
 | Architecture | `docs/architecture.md` — system overview |
+| **Why it's built this way** | `docs/decisions.md` — numbered log of non-obvious calls and what was rejected. **Read before proposing something that may already have been considered**; cite entries as `decisions §N`. Append-only |
 | Environment vars | `docs/environment.md` — frontend + backend config |
 | Deployment | `docs/production-deployment.md` — AWS, CloudFront, ALB, ECS |
 | Minimal-cost deployment | `docs/minimal-deployment.md` — one-VM compose + Caddy pilot footprint (~$20/mo) |
@@ -428,10 +429,12 @@ Full list in `backend/app/config.py`.
 | Getting started | `docs/getting-started.md` — first-run setup |
 | Troubleshooting | `docs/troubleshooting.md` — common issues |
 | Known issues (diagnosed, unfixed) | `docs/known-issues.md` — e.g. the read-after-write race on mutating endpoints (FastAPI `Depends(yield)` commits after the response is sent) |
+| Open follow-ups (deferred work) | `docs/followups.md` — the destination guard rail 6 requires: every deferral, categorized (blocked on a credential / operator step on merged code / sized-but-unstarted), with its durable fix and trigger. Open items only — prune on landing. Mirrored as issue #251 |
 | Self-service signup | `docs/self-service-signup.md` — signup flow, email adapters, abuse mitigations |
 | Supplier portal | `backend/docs/supplier-portal.md` — VendorUser auth, invoice submission, phase 2 deferrals |
 | Supplier chat & collaboration | `backend/docs/supplier-chat.md` — per-invoice AP↔supplier thread, author polymorphism, attachment key scheme + cross-tenant gate, audit actions, `chat_message` notification + supplier portal-link email, `Organization.settings.supplier_chat.enabled` flag, static templates |
-| Roadmap | `docs/roadmap.md` — feature backlog with status and competitive context |
+| Roadmap (open work) | `docs/roadmap.md` — only the 11 areas that still have unshipped work; each carries an `**Open:**` line naming exactly what's left. **Prune on landing** — when a section's last open item ships, move the whole section to the archive in the same commit |
+| Roadmap (shipped archive) | `docs/roadmap_shipped.md` — the 40 completed sections, verbatim. **Check here for prior art before building** — most capabilities are already covered |
 | Competition | `docs/competitive-analysis.md` — competitor matrix, gaps, advantages |
 
 Prefer reading docs over guessing. Update them when behavior changes.
@@ -465,8 +468,11 @@ below or in `## Project invariants` — this is the index.)
    not left as a passing mention. Default: fix it the same session when it's
    bounded and you've already diagnosed it. Defer only when a fix is genuinely
    too large or risky to land now — and a deferral needs a tracked follow-up
-   (issue / ticket — confirm before creating) naming what's broken, the durable
-   fix, and the trigger to do it. "Deferred / recommended" in a report is a
+   naming what's broken, the durable fix, and the trigger to do it. **The
+   destination is `docs/followups.md`** (categorized: blocked on a credential /
+   operator step on merged code / sized-but-unstarted), plus a GitHub issue when
+   it warrants one — confirm before creating. A *diagnosed defect* goes to
+   `docs/known-issues.md` instead. "Deferred / recommended" in a report is a
    staging area, not a destination. Extends rails 4–5: surfacing an issue is the
    start of the obligation, not the end of it.
 7. **Local-first.** Every part of the app must run on a dev laptop with no cloud
