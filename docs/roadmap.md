@@ -2,6 +2,13 @@
 
 Feature backlog for the AP automation platform, ordered by impact.
 
+**Related:** open deferrals with their trigger and durable fix live in
+[followups.md](followups.md); diagnosed-but-unfixed defects in
+[known-issues.md](known-issues.md); the reasoning behind non-obvious design
+calls in [decisions.md](decisions.md). This file carries **scope and status**
+— when an entry needs to explain *why* something was built a given way, put the
+paragraph in `decisions.md` and link it.
+
 ## Legend
 
 - **Done** — implemented and working

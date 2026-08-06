@@ -5,6 +5,11 @@ names the root cause, the evidence, blast radius, and a recommended fix
 approach — this is a staging area for real problems, not a place to let them
 go stale. See root `CLAUDE.md` guard rail 6 (no dangling deferred findings).
 
+**Scope:** *diagnosed defects* only. A deferral that isn't a defect — blocked on
+a credential, an operator step on merged code, or sized-but-unstarted work —
+goes to [followups.md](followups.md). Reasoning behind a deliberate design call
+goes to [decisions.md](decisions.md).
+
 ---
 
 ## Read-after-write race on every mutating endpoint (write commits *after* the response is sent)
