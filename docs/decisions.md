@@ -494,3 +494,48 @@ intended write (Phase 3, unshipped) is staging a *draft* payment run through the
 existing idempotent, CFO-gated path. Funding stays behind human review.
 
 See [cash-flow-copilot.md](cash-flow-copilot.md).
+
+---
+
+## 19. The roadmap is split into open work and a shipped archive, and pruned on landing
+
+**Decided:** 2026-08-06
+
+`roadmap.md` had grown to 1131 lines of which roughly 95 % described work
+already finished. Two consequences, both observed rather than hypothetical:
+
+- **Answering "what's left?" required grepping** for non-`Done` statuses and
+  unchecked boxes rather than reading the file.
+- **Stale statuses survived unnoticed.** Expense Management still read "In
+  progress (foundation shipped — WF1)" with every checkbox ticked through WF4;
+  the Public Developer API and Supplier Portal entries were similarly out of
+  date. Nobody was going to spot that inside a thousand lines of shipped prose.
+
+So: `roadmap.md` keeps only sections with genuinely open work (11 of 51), each
+gaining an `**Open:**` line that names what's left and links to
+[followups.md](followups.md); `roadmap_shipped.md` takes the other 40
+**verbatim**, under their original priority headings.
+
+Two sub-decisions worth recording:
+
+- **The archive is not summarized.** Compressing shipped entries would destroy
+  the thing that makes them useful — the checkbox detail is how someone answers
+  "does the platform already do X?" before rebuilding it. Size is not the
+  problem an archive has.
+- **A section moves on its *last* open item landing, not incrementally.** Ticking
+  a box mid-section leaves it in the open file. That keeps a section's scope
+  readable as one unit and makes the move a single, reviewable diff.
+
+The split criterion is deliberately mechanical: a section stays open **iff** it
+has an item in `followups.md`. That makes the two files verify each other — a
+section with an `**Open:**` line but no follow-up entry (or the reverse) is a
+detectable inconsistency rather than a matter of taste.
+
+**Trade-off:** a priority heading that contains both open and shipped sections
+is duplicated across the two files, and moving a section is a manual step the
+`doc-hygiene-checker` agent has to remember to flag. Accepted — both are cheaper
+than a roadmap nobody trusts.
+
+**Don't re-litigate unless** the open file starts accumulating shipped sections
+again, which would mean the prune-on-landing rule isn't being followed — fix the
+rule's enforcement, not the split.

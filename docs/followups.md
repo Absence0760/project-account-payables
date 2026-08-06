@@ -22,13 +22,22 @@ or it doesn't get deferred.
 | That | Goes here |
 |---|---|
 | Diagnosed defects with a root cause | [known-issues.md](known-issues.md) |
-| Feature scope + shipped status | [roadmap.md](roadmap.md) |
+| Scope + status of work still open | [roadmap.md](roadmap.md) |
+| Scope of work already shipped | [roadmap_shipped.md](roadmap_shipped.md) |
 | Why something was built the way it was | [decisions.md](decisions.md) |
+
+Each open roadmap section carries an `**Open:**` line naming what's left; the
+matching entry here carries the category, durable fix, and trigger. Keep the
+pair consistent — if an item leaves this file, its roadmap section either loses
+its `**Open:**` line or moves to the archive.
 
 Mirrored as GitHub issue [#251](https://github.com/Absence0760/project-account-payables/issues/251)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-08-06 against `701a0c1c`.
+**Last reconciled:** 2026-08-06 against `701a0c1c`. Two docs-drift items from
+the first pass (stale Expense Management and Supplier Portal statuses) were
+**closed** by the roadmap split rather than carried — their durable fix was the
+split itself.
 
 ---
 
@@ -96,6 +105,20 @@ that isn't wired.
 to verify against (see the credentials section below). Testable against the
 `mock` adapter first.
 Ref: [billing.md](../backend/docs/billing.md) § Customer-facing UI.
+
+### Vendor statement reconciliation — PDF intake
+
+CSV upload and the manual pasted-lines path both ship. A supplier statement that
+arrives as a PDF still has to be transcribed by hand.
+
+- [ ] PDF-via-extraction statement intake + raw-file storage — route the PDF
+      through the existing extraction pipeline rather than adding a second
+      parser.
+
+**Why deferred:** the CSV/manual paths cover the common case, and reusing the
+extraction adapters properly is a real slice rather than a bolt-on.
+**Trigger:** a pilot tenant whose suppliers send PDF statements.
+Ref: [vendor-statement-reconciliation.md](../backend/docs/vendor-statement-reconciliation.md) § Deferred.
 
 ### In-source TODOs
 
@@ -173,17 +196,3 @@ as oversights.
 
 ---
 
-## Docs drift
-
-Small, but they mislead a reader about what's shipped.
-
-- [ ] `docs/roadmap.md:972` — Expense Management reads "In progress (foundation
-      shipped — WF1)", but all seven checkboxes are `[x]` through WF4.
-- [ ] `docs/roadmap.md:520` — Supplier Portal reads "Only an MFA email-OTP backup
-      factor remains deferred", but it ships at
-      `backend/app/api/portal_auth.py:235`.
-
-**Durable fix for the class:** the roadmap is 1131 lines and largely shipped
-prose, which is why a stale status line survives unnoticed. Splitting it into an
-open roadmap plus a `roadmap_shipped.md` archive — the way this file splits from
-its own history — would make drift visible. Sized, unstarted.
