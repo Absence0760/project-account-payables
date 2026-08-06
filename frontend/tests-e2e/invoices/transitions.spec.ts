@@ -15,6 +15,39 @@ async function fetchInvoiceByStatus(
 }
 
 /**
+ * Open a specific invoice's edit modal from the list page.
+ *
+ * These tests pick their target from the *status-filtered* API
+ * (`fetchInvoiceByStatus`) but the `/invoices` table renders the *unfiltered*
+ * list, one page at a time. Locating the row directly therefore assumes the
+ * target happens to be on the first page — which silently stops being true as
+ * soon as enough newer invoices exist to push it off (other specs in the same
+ * shard create them). That assumption produced a 30s `locator.click` timeout
+ * waiting for a row the API could see and the page had simply not rendered.
+ *
+ * So drive the page's own search box and wait on the resulting request. That
+ * narrows the table to the target server-side, which is deterministic
+ * regardless of how many invoices the tenant has accumulated.
+ */
+async function openInvoiceRow(
+	page: import('@playwright/test').Page,
+	invoiceNumber: string
+) {
+	const responsePromise = page.waitForResponse(
+		(r) =>
+			r.url().includes('/api/invoices?') &&
+			r.url().includes(`search=${encodeURIComponent(invoiceNumber)}`) &&
+			r.request().method() === 'GET'
+	);
+	await page.getByPlaceholder('Search invoices...').fill(invoiceNumber);
+	await responsePromise;
+
+	const row = page.locator('table tbody tr', { hasText: invoiceNumber }).first();
+	await expect(row).toBeVisible();
+	await row.getByRole('button', { name: 'Edit' }).click();
+}
+
+/**
  * Force an invoice to a given status via direct SQL. The PATCH /api/invoices
  * endpoint intentionally ignores the `status` field (it was removed from
  * InvoiceUpdate to prevent status-injection), and the workflow API only
@@ -104,11 +137,7 @@ test.describe('/invoices status transitions', () => {
 		const target = await fetchInvoiceByStatus(page, 'ready_for_review');
 		expect(target).toBeTruthy();
 
-		await page
-			.locator('table tbody tr', { hasText: target!.invoice_number })
-			.first()
-			.getByRole('button', { name: 'Edit' })
-			.click();
+		await openInvoiceRow(page, target!.invoice_number);
 		const modal = page.locator('div.modal[role="dialog"]');
 		await expect(modal).toBeVisible();
 
@@ -123,11 +152,7 @@ test.describe('/invoices status transitions', () => {
 		const target = await fetchInvoiceByStatus(page, 'approved');
 		expect(target).toBeTruthy();
 
-		await page
-			.locator('table tbody tr', { hasText: target!.invoice_number })
-			.first()
-			.getByRole('button', { name: 'Edit' })
-			.click();
+		await openInvoiceRow(page, target!.invoice_number);
 		const modal = page.locator('div.modal[role="dialog"]');
 		await expect(modal).toBeVisible();
 
@@ -143,11 +168,7 @@ test.describe('/invoices status transitions', () => {
 		expect(target).toBeTruthy();
 
 		try {
-			await page
-				.locator('table tbody tr', { hasText: target!.invoice_number })
-				.first()
-				.getByRole('button', { name: 'Edit' })
-				.click();
+			await openInvoiceRow(page, target!.invoice_number);
 			const modal = page.locator('div.modal[role="dialog"]');
 			await expect(modal).toBeVisible();
 
@@ -189,11 +210,7 @@ test.describe('/invoices status transitions', () => {
 		const target = await fetchInvoiceByStatus(page, 'ready_for_review');
 		expect(target).toBeTruthy();
 
-		await page
-			.locator('table tbody tr', { hasText: target!.invoice_number })
-			.first()
-			.getByRole('button', { name: 'Edit' })
-			.click();
+		await openInvoiceRow(page, target!.invoice_number);
 		const modal = page.locator('div.modal[role="dialog"]');
 		await modal.getByRole('button', { name: /^Reject$/ }).click();
 		await expect(modal.locator('.reject-form')).toBeVisible();

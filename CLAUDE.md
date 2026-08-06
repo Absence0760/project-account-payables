@@ -428,7 +428,7 @@ Full list in `backend/app/config.py`.
 | Secrets rotation | `docs/secrets-rotation.md` — what to rotate, when, and how |
 | Getting started | `docs/getting-started.md` — first-run setup |
 | Troubleshooting | `docs/troubleshooting.md` — common issues |
-| Known issues (diagnosed, unfixed) | `docs/known-issues.md` — e.g. the read-after-write race on mutating endpoints (FastAPI `Depends(yield)` commits after the response is sent) |
+| Known issues (diagnosed, unfixed) | `docs/known-issues.md` — e.g. workflow-mutating e2e specs stranding a tenant on a disabled workflow definition. (The read-after-write race is **fixed** — see `decisions.md` §20) |
 | Open follow-ups (deferred work) | `docs/followups.md` — the destination guard rail 6 requires: every deferral, categorized (blocked on a credential / operator step on merged code / sized-but-unstarted), with its durable fix and trigger. Open items only — prune on landing. Mirrored as issue #251 |
 | Self-service signup | `docs/self-service-signup.md` — signup flow, email adapters, abuse mitigations |
 | Supplier portal | `backend/docs/supplier-portal.md` — VendorUser auth, invoice submission, phase 2 deferrals |

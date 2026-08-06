@@ -12,12 +12,12 @@ still the per-org DB resolved below). See ``docs/multi-entity.md``.
 import uuid
 from collections.abc import AsyncGenerator
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.sql import Select
 
-from app.database import get_control_db, get_tenant_engine
+from app.database import commit_before_response, get_control_db, get_tenant_engine
 from app.models.entity import Entity
 from app.models.organization import Organization
 
@@ -170,6 +170,7 @@ async def get_tenant(
 
 
 async def get_tenant_db(
+    request: Request,
     tenant: Organization = Depends(get_tenant),
 ) -> AsyncGenerator[AsyncSession]:
     """Yield a SQLAlchemy session bound to the tenant's DB.
@@ -181,9 +182,15 @@ async def get_tenant_db(
     engine = get_tenant_engine(tenant.db_name)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as session:
+        # Durability: commit before the response is sent, not from this
+        # generator's post-yield teardown (which FastAPI runs after the client
+        # already has its 201). See `commit_before_response` + decisions §20.
+        commit_before_response(session, request)
         try:
             yield session
-            await session.commit()
+            # Backstop — see the matching comment in ``get_control_db``.
+            if session.in_transaction():
+                await session.commit()
         except Exception:
             await session.rollback()
             raise

@@ -327,6 +327,24 @@ backend/
 - Engine pool: `pool_size=5, max_overflow=10` per tenant; `pool_size=10, max_overflow=20` for control
 - All engines disposed on app shutdown
 
+**Commit-before-response (durability).** Both providers call
+`database.commit_before_response(session, request)`, which registers the
+success-path commit on the exit stack FastAPI unwinds *before*
+`await response(scope, receive, send)`. Their post-`yield` `commit()` is now a
+conditional backstop (`if session.in_transaction()`), not the primary path —
+FastAPI runs that teardown **after** the client already has its `201`, so
+relying on it acknowledged writes that weren't durable yet. Consequences:
+
+- **Don't "simplify" the providers back to a bare post-`yield` commit** — that
+  silently reinstates the bug. `tests/test_commit_before_response.py` pins the
+  ordering and drift-guards the FastAPI internal (`fastapi_function_astack`).
+- **A test that overrides `get_control_db` / `get_tenant_db` must mirror this.**
+  The `realdb.client()` overrides do; they exist to swap the *engine*, not the
+  commit semantics. An override with the old body makes every test in that file
+  exercise a code path production no longer uses.
+- **Any new session provider needs the same call.** Rationale + the rejected
+  alternatives: `../docs/decisions.md` §20.
+
 ## Invoice workflow state machine
 
 ```python

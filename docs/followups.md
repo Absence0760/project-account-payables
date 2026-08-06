@@ -137,13 +137,12 @@ Ref: [vendor-statement-reconciliation.md](../backend/docs/vendor-statement-recon
 Full write-ups — root cause, evidence, blast radius, recommended fix — live in
 [known-issues.md](known-issues.md). Listed here only so the ledger is complete.
 
-- [ ] **Read-after-write race on every mutating endpoint.** FastAPI's
-      `Depends(yield)` commits *after* the response is sent, so a client can
-      receive `201 Created` for a write that hasn't committed. Reproduced with a
-      raw script, no test framework involved: ~50 % failure across 30 rapid
-      create-then-read pairs; a 50 ms delay makes it vanish. App-wide, root-caused
-      against the installed FastAPI's own `routing.py`. **Highest-value open item
-      in this file.**
+- [x] ~~**Read-after-write race on every mutating endpoint.**~~ **Fixed
+      2026-08-06** — `commit_before_response` moves the success-path commit onto
+      the exit stack FastAPI unwinds before sending, so a `201` is no longer
+      returned for an uncommitted write. See [decisions.md §20](decisions.md);
+      regression coverage in `backend/tests/test_commit_before_response.py`.
+      *(Pruned from this list on the next pass.)*
 - [ ] Workflow-mutating e2e specs can strand a tenant on a disabled workflow
       definition.
 - [ ] A dev backend on the same Postgres mutates the pytest tenant DBs mid-test.
