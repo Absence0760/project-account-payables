@@ -1,0 +1,132 @@
+name: Web bundle budget
+
+# Hard ceilings on the shipped frontend bundle. The app is adapter-static and
+# served from GitHub Pages, so every kilobyte here is downloaded by every user
+# on a cold visit — and nothing else in CI notices weight. A PR that pushes
+# either metric over its budget fails, so a reviewer has to acknowledge the
+# increase instead of it landing unremarked.
+#
+# This is a ratchet, not a wall: bumping a ceiling is a legitimate outcome when
+# the right answer is "ship the feature". The rule is that the bump is
+# deliberate and justified IN THIS FILE (see the log under MAX_TOTAL_KB), never
+# a casual edit because the job went red.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/web-bundle-budget.yml'
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  # Measured 2026-08-06 at the first run of this guard: 747 KB total gzipped
+  # across 182 JS+CSS files, largest single chunk 43 KB. Ceilings set with
+  # ~14% headroom on the total and deliberately generous headroom on the
+  # largest chunk.
+  #
+  # Why the largest-chunk ceiling is far above the current max: its job is to
+  # catch ONE heavyweight dependency landing in ONE chunk (a charting library,
+  # a PDF renderer, a second date library), which is the failure mode that
+  # actually hurts. This app hand-rolls its charts as CSS bars precisely to
+  # avoid that, so the current 43 KB max has room to grow naturally before the
+  # gate has anything to say.
+  #
+  # IMPORTANT: the total sums ALL emitted chunks, including lazily-imported
+  # ones. Code-splitting a dependency therefore does NOT lower this number —
+  # only removing weight does. (The i18n locale catalogues are lazy chunks and
+  # are counted here in full.)
+  #
+  # ── Ceiling change log — append a dated entry with the measurement + reason ──
+  # 2026-08-06 — initial: total 850, largest 100. Baseline 747 / 43.
+  MAX_TOTAL_KB: 850
+  MAX_LARGEST_CHUNK_KB: 100
+
+jobs:
+  bundle-budget:
+    name: Web bundle budget
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.2
+        with:
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6.0.0
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: pnpm install
+
+      - name: Build (production)
+        working-directory: frontend
+        env:
+          # Same placeholder CI uses. The value is baked into the bundle at
+          # build time but does not affect its size.
+          PUBLIC_API_URL: http://localhost:8000
+        run: pnpm build
+
+      - name: Measure + assert budget
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_DIR=frontend/build
+          if [ ! -d "$BUILD_DIR" ]; then
+            echo "::error::No build output at $BUILD_DIR"
+            exit 1
+          fi
+
+          total_kb=0
+          largest_kb=0
+          largest_path=""
+          file_count=0
+
+          while IFS= read -r -d '' f; do
+            gz_size=$(gzip -c "$f" | wc -c)
+            kb=$(( (gz_size + 1023) / 1024 ))
+            total_kb=$(( total_kb + kb ))
+            file_count=$(( file_count + 1 ))
+            if [ "$kb" -gt "$largest_kb" ]; then
+              largest_kb="$kb"
+              largest_path="$f"
+            fi
+          done < <(find "$BUILD_DIR" \( -name '*.js' -o -name '*.css' \) -print0)
+
+          echo "Files measured:       ${file_count}"
+          echo "Total gzipped JS+CSS: ${total_kb} KB (budget ${MAX_TOTAL_KB} KB)"
+          echo "Largest chunk:        ${largest_kb} KB — ${largest_path} (budget ${MAX_LARGEST_CHUNK_KB} KB)"
+
+          {
+            echo "## Web bundle budget"
+            echo ""
+            echo "| Metric | Size | Budget |"
+            echo "|---|---|---|"
+            echo "| Total gzipped JS+CSS | ${total_kb} KB | ${MAX_TOTAL_KB} KB |"
+            echo "| Largest single chunk | ${largest_kb} KB | ${MAX_LARGEST_CHUNK_KB} KB |"
+            echo "| Files measured | ${file_count} | — |"
+            echo ""
+            echo "Largest chunk: \`${largest_path#"$BUILD_DIR"/}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          failed=0
+          if [ "$total_kb" -gt "$MAX_TOTAL_KB" ]; then
+            echo "::error::Total gzipped bundle ${total_kb} KB exceeds the ${MAX_TOTAL_KB} KB budget. Either trim weight, or raise MAX_TOTAL_KB in .github/workflows/web-bundle-budget.yml and append a dated entry to the ceiling change log explaining the measurement and why the growth is warranted."
+            failed=1
+          fi
+          if [ "$largest_kb" -gt "$MAX_LARGEST_CHUNK_KB" ]; then
+            echo "::error::Largest chunk ${largest_path#"$BUILD_DIR"/} is ${largest_kb} KB, over the ${MAX_LARGEST_CHUNK_KB} KB per-chunk budget. This usually means a single heavyweight dependency landed in one chunk — check whether it is really needed before raising the ceiling."
+            failed=1
+          fi
+          exit "$failed"
