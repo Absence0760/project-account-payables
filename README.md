@@ -95,7 +95,10 @@ Cross-cutting docs live in [`/docs`](docs/). Backend-specific docs live in [`/ba
 | [SOC 2 Readiness](docs/soc2-readiness.md) | Control mapping, vendor selection, kickoff plan |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues and fixes |
 | [Founder Runbooks](docs/founder-runbooks/) | Non-code playbooks — legal, prod deploy, Stripe, payment rails, SOC 2, support |
-| [Roadmap](docs/roadmap.md) | Feature backlog with status |
+| [Roadmap](docs/roadmap.md) | Open feature backlog — only what's still unshipped |
+| [Roadmap — shipped](docs/roadmap_shipped.md) | Archive of completed roadmap sections |
+| [Architecture decisions](docs/decisions.md) | Why non-obvious choices were made, and what was rejected |
+| [Open follow-ups](docs/followups.md) | Deferred work, categorized, with its durable fix and trigger |
 | [Competitive Analysis](docs/competitive-analysis.md) | Market landscape |
 
 **Backend (`/backend/docs`)**

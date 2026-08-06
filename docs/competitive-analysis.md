@@ -219,7 +219,7 @@ These are areas where we are genuinely ahead of most or all competitors:
 
 ## Critical Gaps to Close
 
-Ranked by competitive impact — features where we are behind most or all competitors. Matches the prioritization in `roadmap.md`.
+Ranked by competitive impact — features where we are behind most or all competitors. Matches the prioritization in `roadmap.md` (open work) + `roadmap_shipped.md` (archive).
 
 As of this revision the entire prior Tier-2 and Tier-3 gap sets have shipped (see **Recently Closed** below). **Only one competitive gap remains, and it is not a coding gap** — SOC 2 Type II attestation. Beyond it, the frontier is now *beyond-parity* differentiation rather than catch-up (see **Beyond-parity bets**).
 

@@ -5,7 +5,7 @@ the approval message posted to the channel carries **Approve / Reject buttons**.
 An approver clicks a button and the decision runs through the **exact same**
 `services.review` path the in-app buttons use — no app login, no JWT. This closes
 the last "Slack/Teams approval" gap under **Advanced Approval Routing** in
-`docs/roadmap.md` for the Slack side (Teams interactivity is a later slice).
+`docs/roadmap_shipped.md` for the Slack side (Teams interactivity shipped since).
 
 It builds directly on two existing pieces and adds nothing weaker:
 

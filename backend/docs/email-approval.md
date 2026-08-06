@@ -9,7 +9,7 @@ every control (segregation of duties, approval thresholds, the CFO gate, the
 immutable audit row, the approval digital signature) still applies.
 
 This closes the "Email approval" item under **Advanced Approval Routing** in
-`docs/roadmap.md`.
+`docs/roadmap_shipped.md`.
 
 ## Why a token, not a login
 

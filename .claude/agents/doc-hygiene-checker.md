@@ -41,8 +41,9 @@ Pick zero or more from this list — a single change can hit several:
 - **Integration change** — a new payment processor, accounting integration, vendor-master sync, or email provider, or a change to how an existing one is wired.
 - **Convention / house rule change** — a new pattern that should apply to future code.
 - **Process / tooling change** — npm script, GitHub Actions step, build flag, deploy procedure, infra rollback plan.
-- **Roadmap progress** — something on `docs/roadmap.md` is now done or in progress.
-- **Decision / trade-off** — a deliberate non-obvious choice with a reason worth recording. Would go in `docs/decisions.md` as a numbered ADR once that file is started; until then, surface it to the parent so the user can decide whether to bootstrap the ADR doc.
+- **Roadmap progress** — something on `docs/roadmap.md` is now done or in progress. If the change closes a section's **last** open item, that whole section moves to `docs/roadmap_shipped.md` in the same commit — flag that, not just the tick.
+- **Decision / trade-off** — a deliberate non-obvious choice with a reason worth recording. Goes in `docs/decisions.md` as the next sequentially-numbered entry (append to the bottom; never renumber or rewrite an existing one).
+- **Deferred finding** — the change surfaced a real issue that isn't being fixed now. Guard rail 6 requires a destination: a *diagnosed defect* → `docs/known-issues.md`; anything else (blocked on a credential, an operator step, sized-but-unstarted) → `docs/followups.md`, with its category, durable fix, and trigger.
 
 ### 4. Map to docs
 
@@ -59,8 +60,9 @@ For each classification, list the docs that should be considered:
 | Integration | the matching `backend/docs/*` file (`erp-integration.md`, `ai-extraction.md`, `email-intake.md`, `bank-reconciliation.md`, `international-payments.md`, `tax-1099.md`, etc.), the per-area `CLAUDE.md`, runbook under `docs/founder-runbooks/` |
 | Convention | the file the convention belongs to: root `CLAUDE.md` for cross-cutting, per-area for area-scoped |
 | Process / tooling | `README.md`, root `CLAUDE.md`, per-area `CLAUDE.md`, `CONTRIBUTING.md` |
-| Roadmap | `docs/roadmap.md` (tick the box) |
-| Decision | `docs/decisions.md` — append a numbered ADR (the file may not exist yet; bootstrap it if this is the first decision worth recording) |
+| Roadmap | `docs/roadmap.md` (tick the box; update the section's `**Open:**` line). If it was the last open item, move the section to `docs/roadmap_shipped.md` in the same commit |
+| Decision | `docs/decisions.md` — append the next numbered entry: what was decided, why, what was traded away |
+| Deferred finding | `docs/known-issues.md` if it's a diagnosed defect, else `docs/followups.md` with its category + durable fix + trigger |
 
 Don't dump the whole table back to the parent — only list the rows that match the diff's classifications.
 

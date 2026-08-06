@@ -12,7 +12,7 @@ an `entity_id`, a sidebar switcher drives it, and the full CFO analytics surface
 accounts into the AI extraction GL catalog + bulk-recode validation and taught
 the workflow engine to pick the entity's own definition. Phase 4 added
 inter-company invoice routing and a consolidated cross-entity report. See
-`docs/roadmap.md` → Priority 5 → Multi-Entity, and *Remaining phases* below for
+`docs/roadmap_shipped.md` → Priority 5 → Multi-Entity, and *Remaining phases* below for
 the per-feature detail.
 
 ## Data model
