@@ -12,6 +12,7 @@ the local ``fake_redis`` fixture and override this one.
 from __future__ import annotations
 
 import pytest
+from fastapi import Request
 
 
 class _FakeSortedSet:
@@ -643,7 +644,7 @@ class RealDB:
 
         from app.api.deps import get_api_key_db
         from app.config import settings as cfg
-        from app.database import _make_tenant_url, get_control_db
+        from app.database import _make_tenant_url, commit_before_response, get_control_db
         from app.main import app
         from app.tenant import get_tenant_db
 
@@ -654,20 +655,30 @@ class RealDB:
         ctrl_mk = async_sessionmaker(ctrl_engine, expire_on_commit=False)
         tenant_mk = async_sessionmaker(tenant_engine, expire_on_commit=False)
 
-        async def _control_db():
+        # These overrides swap the ENGINE (per-loop harness engines), not the
+        # commit semantics. They must keep mirroring the real providers'
+        # commit-before-response behaviour — otherwise every realdb test
+        # silently exercises the late-commit path production no longer uses,
+        # and a durability regression can't be caught here. See
+        # `app.database.commit_before_response` + docs/decisions.md §20.
+        async def _control_db(request: Request):
             async with ctrl_mk() as s:
+                commit_before_response(s, request)
                 try:
                     yield s
-                    await s.commit()
+                    if s.in_transaction():
+                        await s.commit()
                 except Exception:
                     await s.rollback()
                     raise
 
-        async def _tenant_db():
+        async def _tenant_db(request: Request):
             async with tenant_mk() as s:
+                commit_before_response(s, request)
                 try:
                     yield s
-                    await s.commit()
+                    if s.in_transaction():
+                        await s.commit()
                 except Exception:
                     await s.rollback()
                     raise
