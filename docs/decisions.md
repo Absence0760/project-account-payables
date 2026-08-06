@@ -539,3 +539,62 @@ than a roadmap nobody trusts.
 **Don't re-litigate unless** the open file starts accumulating shipped sections
 again, which would mean the prune-on-landing rule isn't being followed — fix the
 rule's enforcement, not the split.
+
+---
+
+## 20. A write commits before its response is sent, not from the dependency's teardown
+
+**Decided:** 2026-08-06 · `backend/app/database.py::commit_before_response`
+
+Every session in this app came from a `Depends(yield)` provider that committed
+in its post-`yield` teardown. FastAPI unwinds that teardown from an
+`AsyncExitStack` it only exits **after** `await response(scope, receive, send)`
+— so the client already held its `201` for a write that had not been made
+durable. Measured on the real app (instrumenting `AsyncSession.commit` and the
+outermost ASGI `send`): both the tenant and control commits landed *after*
+`http.response.start`.
+
+For an AP ledger that is a durability defect, not a test annoyance: the API
+acknowledged money-relevant writes it had not committed.
+
+**The fix.** FastAPI unwinds a *second*, inner stack (`fastapi_function_astack`)
+**before** sending. `commit_before_response` registers the success-path commit
+there, so it lands on the correct side of the response. The two session
+providers call it; the post-`yield` commit stays as a conditional backstop
+(`if session.in_transaction()`), which covers writes made after the response
+starts (a streaming body) and any request where the hook could not register.
+
+**Why not the two options the original write-up proposed:**
+
+- *An explicit commit in every mutating handler* touches dozens of files, and
+  every future route has to remember. A durability rule enforced by memory is
+  not enforced.
+- *An ASGI middleware committing before forwarding `http.response.start`* is the
+  common workaround, but it needs its own session registry, has to special-case
+  requests that never touch the DB, requests using both sessions, and streaming
+  responses — and this app already runs a `BaseHTTPMiddleware` whose own task
+  semantics interact with send-wrapping. More moving parts for the same result.
+
+A custom `APIRoute` class was also rejected: it only applies to routers that opt
+in, so router #66 constructed with a plain `APIRouter` would silently reinstate
+the bug. **Silent** reintroduction is worse than the loud alternative below.
+
+**Trade-off:** `fastapi_function_astack` is a FastAPI internal. Mitigated two
+ways — the helper degrades to the *old* (correct, merely racy) behaviour if the
+key ever disappears, so the failure mode is never a lost write; and
+`tests/test_commit_before_response.py` asserts the key still exists, so a
+FastAPI upgrade that renames it fails loudly with instructions rather than
+silently regressing.
+
+**Testing note worth keeping.** The documented network repro (rapid
+create-then-read pairs) did **not** reproduce over loopback even while the
+defect was measurably present — server and middleware pacing decide whether a
+client can observe it. So the regression tests pin the **ordering** invariant
+directly (commit precedes `http.response.start`) rather than racing a live
+server. Ordering is the invariant; a lost race is only one symptom of breaking
+it, and an in-process ASGI transport can never observe that symptom at all.
+
+The `realdb.client()` harness previously overrode both providers with the old
+late-commit bodies, which is exactly why the suite never caught this. The
+overrides now mirror the real providers — they exist to swap the *engine*, not
+the commit semantics.
