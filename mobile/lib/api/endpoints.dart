@@ -423,6 +423,18 @@ class NotificationApi {
     final data = await _api.post('/notifications/read-all');
     return (data['updated'] as num?)?.toInt() ?? 0;
   }
+
+  /// `POST /api/notifications/device-token` — register (or re-register) this
+  /// device's push token for [platform] (`ios` or `android`). Registration
+  /// only — there is no push-SENDING backend yet; this just gives that a
+  /// token to read later. Upsert: replaces any token already stored for the
+  /// same platform on this account.
+  static Future<void> registerDeviceToken(String token, String platform) async {
+    await _api.post('/notifications/device-token', {
+      'token': token,
+      'platform': platform,
+    });
+  }
 }
 
 class DashboardApi {

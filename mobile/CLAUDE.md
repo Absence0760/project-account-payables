@@ -29,7 +29,7 @@ flutter gen-l10n             # regenerate AppLocalizations from lib/l10n/*.arb
 mobile/
 ├── l10n.yaml                    # gen-l10n config (arb-dir, template, committed output dir)
 ├── lib/
-│   ├── main.dart                # App entry, splash, biometric check, push init; MaterialApp.locale ← LocaleStore (i18n)
+│   ├── main.dart                # App entry, splash, biometric check, push init; MaterialApp.locale ← LocaleStore (i18n); MaterialApp.navigatorKey ← PushService.navigatorKey (notification-tap deep links)
 │   ├── config.dart              # API URL, tenant slug
 │   ├── l10n/                    # i18n — ARB catalogues + committed gen-l10n output
 │   │   ├── app_en.arb           # source-of-truth catalogue (+ app_{de,fr,es,pt,pt_BR,ja}.arb)
@@ -54,7 +54,7 @@ mobile/
 │   │   ├── file_share.dart         # Swappable share_plus wrapper — writes bytes to a temp file → platform share sheet (bulk export); FileShare.debugOverride for tests
 │   │   ├── offline_store.dart      # SQLite cache for offline viewing — every key namespaced by (tenant, user); inert with no session scope
 │   │   ├── session.dart            # Session lifetime chokepoint — beginSession (scope + purge on change) / endSession (clear cache + reset every store)
-│   │   └── push_service.dart       # Firebase Cloud Messaging + local notifications
+│   │   └── push_service.dart       # Firebase Cloud Messaging + local notifications; registers the device token with the backend (POST /api/notifications/device-token) on acquisition + refresh; deep-links a notification tap to InvoiceDetailScreen via PushService.navigatorKey (wired into MaterialApp in main.dart)
 │   ├── stores/
 │   │   ├── auth_store.dart      # Auth state — login, logout, role checks (incl. canBulkEditInvoices + isOrgAdmin gates); binds the session scope on login/restore
 │   │   ├── admin_user_store.dart # Admin user management — users + roles, set-roles / activate-deactivate (admin-only, not offline-cached)
@@ -294,7 +294,7 @@ everyone else.
 - Camera OCR — snap photo or pick from gallery → upload → trigger AI extraction
 - File upload via file picker — pick a PDF / PNG / JPG / TIFF document on the device (`CameraCapture.pickDocument` → `file_picker`) and upload it through the same `/api/invoices/upload` extraction pipeline as the camera path. The capture screen offers Camera / Gallery / Choose file; PDFs preview as a document card (no inline bitmap), images preview inline
 - File viewer — the invoice detail screen previews the uploaded file (image thumbnail or a PDF card) and opens it full-screen via `InvoiceFileViewer`: images via `Image.network` (auth headers), PDFs fetched as bytes (`ApiClient.getBytes`, so the JWT + tenant headers are attached) and rendered with `pdfx`; loading / error / Retry states
-- Push notifications — Firebase Cloud Messaging (foreground + background), no-op if Firebase not configured
+- Push notifications — Firebase Cloud Messaging (foreground + background), no-op if Firebase not configured. The device token is registered with the backend (`POST /api/notifications/device-token`, best-effort — a pre-login/offline failure is logged and swallowed, and the token is re-sent on the next `onTokenRefresh`) on both initial acquisition and every refresh — see `backend/docs/notifications.md` § Push device tokens; registration only, no server-side push-SENDING adapter exists yet. Tapping a background/terminated notification deep-links to `InvoiceDetailScreen` for `message.data['invoice_id']` via `PushService.navigatorKey` (a `GlobalKey<NavigatorState>` wired into `MaterialApp.navigatorKey` in `main.dart`, since the FCM tap callback runs outside the widget tree with no `BuildContext` of its own); a missing id or an unmounted navigator no-ops rather than crashing
 - Offline mode — SQLite cache for dashboard and invoice list, serves cached data on network failure; **scoped to the signed-in `(tenant, user)`** and torn down on logout (see Session lifetime + offline-cache scoping)
 - Biometric login — Face ID / fingerprint / device PIN, toggle in settings, checked on app launch
 
