@@ -52,6 +52,15 @@ const FAKE_POS = [
 	{ number: 'PO-FAKE-303', total: 4400.0 }
 ];
 
+// Mirrors backend/app/services/vendor_consolidation.py::mask_tax_id — the
+// vendor list API never returns a raw tax_id (PII invariant), only a
+// display-safe `***<last4>`. Vendor sync itself stores the raw value; this
+// is purely for asserting what the *response* is supposed to look like.
+function maskTaxId(taxId: string): string {
+	const normalized = taxId.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+	return normalized.length < 4 ? '***' : `***${normalized.slice(-4)}`;
+}
+
 const FAKE_GL_ACCOUNTS = [
 	{ code: '6100', name: 'Fake Office Supplies' },
 	{ code: '6200', name: 'Fake Software' },
@@ -275,7 +284,11 @@ test.describe('/erp merge_dev adapter against fake-erp', () => {
 			expect(vendor, `synced vendor ${fixture.name} is listable`).toBeTruthy();
 			expect(vendor!.email).toBe(fixture.email);
 			expect(vendor!.phone).toBe(fixture.phone);
-			expect(vendor!.tax_id).toBe(fixture.taxId);
+			// The vendor list API masks tax_id to `***<last4>` (PII invariant,
+			// see backend/app/schemas/vendor.py::VendorResponse.from_db) — this
+			// still proves the real value round-tripped through the sync
+			// correctly, since a wrong/missing tax_id would mask differently.
+			expect(vendor!.tax_id).toBe(maskTaxId(fixture.taxId));
 			expect(vendor!.payment_terms).toBe(fixture.paymentTerms);
 			expect(vendor!.address).toContain(fixture.addressContains);
 			expect(vendor!.erp_vendor_id).toBeTruthy();
