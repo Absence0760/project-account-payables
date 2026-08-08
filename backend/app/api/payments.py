@@ -47,6 +47,7 @@ from app.services.payment_adapters import (
     get_payment_adapter,
 )
 from app.services.payment_controls import check_run_segregation
+from app.services.payment_runs import PaymentRunItemInput, create_payment_run_for_invoices
 from app.services.workflow_engine import transition_invoice
 from app.tenant import (
     apply_entity_scope,
@@ -1052,201 +1053,36 @@ async def create_payment_run(
     org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
-    """Create a payment run from selected invoices."""
-    # Validate invoices exist and are payable
-    invoice_ids = [uuid.UUID(item.invoice_id) for item in body.items]
-    result = await db.execute(select(Invoice).where(Invoice.id.in_(invoice_ids)))
-    invoices = {str(inv.id): inv for inv in result.scalars().all()}
+    """Create a payment run from selected invoices.
 
-    if len(invoices) != len(invoice_ids):
-        raise HTTPException(status_code=404, detail="One or more invoices not found")
-
-    # Every invoice in the run must have cleared approval. The comment above
-    # claimed "are payable" but nothing enforced it — a run could be built (and
-    # then executed, moving real money) from a `new`/`rejected`/`pending`
-    # invoice that never passed segregation, the thresholds, or the CFO gate.
-    not_payable = [
-        inv.invoice_number
-        for inv in invoices.values()
-        if inv.status not in PAYABLE_INVOICE_STATUSES
+    The validation + creation gates (payable-status, the financial-integrity
+    exception block, credit-memo netting, the CFO-approval threshold, and the
+    `uq_payments_one_live_per_invoice` idempotency backstop) live in
+    `services.payment_runs.create_payment_run_for_invoices` — shared verbatim
+    with the AI Cash-Flow Copilot's draft-run enact route
+    (`POST /api/cash-flow/plans/{plan_id}/draft-run`) so the two can never
+    diverge on what counts as a legitimate run.
+    """
+    items = [
+        PaymentRunItemInput(invoice_id=uuid.UUID(item.invoice_id), method=item.method)
+        for item in body.items
     ]
-    if not_payable:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Invoice(s) not approved for payment: {', '.join(not_payable)}",
-        )
-
-    # Financial-integrity gate: an invoice carrying an UNRESOLVED exception of a
-    # PAYMENT_BLOCKING_EXCEPTION_TYPES class must not enter a payment run.
-    # Approval status alone doesn't cover any of them — each is raised as an
-    # advisory `error` flag that a reviewer can approve straight past. A human
-    # clears it by resolving/dismissing the exception (that IS the sign-off);
-    # only `open`/`escalated` block here.
-    from app.models.exception import Exception as InvoiceException
-
-    blocking_res = await db.execute(
-        select(InvoiceException.invoice_id).where(
-            InvoiceException.invoice_id.in_(invoice_ids),
-            InvoiceException.exception_type.in_(PAYMENT_BLOCKING_EXCEPTION_TYPES),
-            InvoiceException.status.notin_(("resolved", "dismissed")),
-        )
-    )
-    blocked_ids = {str(iid) for iid in blocking_res.scalars().all()}
-    if blocked_ids:
-        blocked_numbers = [
-            inv.invoice_number for iid, inv in invoices.items() if iid in blocked_ids
-        ]
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Invoice(s) have an unresolved duplicate/fraud/line-total exception and "
-                f"can't be paid until it's cleared: {', '.join(sorted(blocked_numbers))}"
-            ),
-        )
-
-    # Net any applied credit memos off what actually gets paid — the entire
-    # point of applying a credit against a payable. Without this, applying a
-    # memo was cosmetic: credit_memos.py enforces the memo can never exceed
-    # the invoice's remaining creditable balance, so `inv.amount -
-    # already_applied` can never go negative here. Same query
-    # credit_memos.py already uses for its own over-application guard.
-    from app.models.credit_memo import CreditMemo
-
-    net_amounts: dict[str, Decimal] = {}
-    total = Decimal("0")
-    for item in body.items:
-        inv = invoices[item.invoice_id]
-        already_applied = (
-            await db.execute(
-                select(func.coalesce(func.sum(CreditMemo.amount), Decimal("0"))).where(
-                    CreditMemo.invoice_id == inv.id,
-                    CreditMemo.status == "applied",
-                )
-            )
-        ).scalar_one()
-        net_amount = inv.amount - already_applied
-        net_amounts[item.invoice_id] = net_amount
-        total += net_amount
-
-    # CFO sign-off: org admins set `payments.cfo_approval_above` (a
-    # threshold in $) on the org settings. Runs whose total exceeds it
-    # land with `requires_cfo_approval=True` and refuse to /execute
-    # until a CFO PATCHes /approve.
-    pmt_cfg = (org.settings or {}).get("payments") or {}
-    cfo_threshold_raw = pmt_cfg.get("cfo_approval_above")
-    requires_cfo = False
-    if cfo_threshold_raw is not None:
-        try:
-            cfo_threshold = Decimal(str(cfo_threshold_raw))
-        except (ValueError, ArithmeticError):
-            # Malformed threshold (a settings typo — or an insider who
-            # corrupted `cfo_approval_above` to defeat the gate). Fail
-            # CLOSED: a configured-but-unparseable CFO gate must require
-            # sign-off, never silently disable itself (the old behaviour
-            # here was a `pass` that let a single settings write turn a
-            # fraud control off for every run). We deliberately do NOT 422
-            # the whole run — a typo must not halt all payments org-wide —
-            # so the run is created *requiring* CFO approval and the
-            # misconfiguration is logged PII-free for an admin to correct.
-            logger.error(
-                "payments.cfo_approval_above is unparseable (%r) for org %s; "
-                "requiring CFO approval on this run (fail-closed)",
-                cfo_threshold_raw,
-                org.id,
-            )
-            requires_cfo = True
-        else:
-            # Strict `>` is intentional and matches the setting name
-            # (`cfo_approval_above`): a run *above* the threshold needs
-            # sign-off; a threshold of 0 / negative means "no gate".
-            if cfo_threshold > 0 and total > cfo_threshold:
-                requires_cfo = True
-
-    # Create the run. The run is stamped with the selected (or default) entity;
-    # its individual payments each follow their own invoice's entity, so a run
-    # built in the consolidated view across entities still records each payment
-    # under the right subsidiary (multi-entity Phase 2).
-    run = PaymentRun(
-        organization_id=org_id,
-        entity_id=entity_id,
-        status="draft",
-        total_amount=total,
-        initiated_by=user.id,
-        requires_cfo_approval=requires_cfo,
-    )
-    db.add(run)
-    await db.flush()
-
-    # Create individual payments
-    for item in body.items:
-        inv = invoices[item.invoice_id]
-        payment = Payment(
-            invoice_id=inv.id,
-            entity_id=inv.entity_id,
-            payment_run_id=run.id,
-            amount=net_amounts[item.invoice_id],
-            method=item.method,
-            status="pending",
-            # Per-payment idempotency anchor. correlation_id is sent to the rail
-            # as the Idempotency-Key (see PaymentPayload at execute time); it must
-            # be unique per payment ATTEMPT, not per invoice. Copying the invoice's
-            # stable correlation_id meant a re-queued payment after a void reused
-            # the original key — the processor returned the cached first order, so
-            # no money actually moved while AP recorded a settled payment (a silent
-            # missed payment). A fresh uuid here matches every other Payment-creation
-            # site (manual create, discount capture, retry); the webhook/reconciler
-            # join on provider_payment_id, never on correlation_id.
-            correlation_id=uuid.uuid4(),
-        )
-        db.add(payment)
-
-    # Materialize the payment rows now (not at the trailing commit) so the
-    # `uq_payments_one_live_per_invoice` backstop surfaces as a clean 409 here
-    # rather than an unhandled 500 at request teardown: if any selected invoice
-    # already has a live payment (a concurrent standalone POST, or an overlapping
-    # run built from the same invoice), booking a second one is exactly the
-    # double-pay the index prevents. Legitimate runs — every invoice PAYABLE and
-    # not already scheduled — never trip this.
-    try:
-        await db.flush()
-    except IntegrityError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail="One or more invoices already have a live payment scheduled.",
-        ) from exc
-
-    # SOX trail starts at run assembly, not at execution — an insider who builds
-    # a fraudulent run and cancels it before execution must still leave a record
-    # of who assembled it, when, and for how much. Without this row the only
-    # evidence of a cancelled-before-execute run is the `payment_run.cancelled`
-    # event, which doesn't name the assembler.
-    from app.services.audit_dispatch import dispatch_audit
-
-    await dispatch_audit(
-        db,
-        correlation_id=uuid.uuid4(),
-        organization_id=org.id,
-        actor_id=user.id,
-        action="payment_run.created",
-        entity_type="payment_run",
-        entity_id=run.id,
-        details={
-            "total_amount": str(total),
-            "payment_count": len(body.items),
-            "requires_cfo_approval": run.requires_cfo_approval,
-        },
+    result = await create_payment_run_for_invoices(
+        db, org=org, org_id=org_id, entity_id=entity_id, user=user, items=items
     )
     await db.commit()
 
+    run = result.run
     return {
         "id": str(run.id),
         "status": run.status,
         # Money serialises as an exact Decimal STRING, never float().
-        "total_amount": str(total),
-        "payment_count": len(body.items),
+        "total_amount": str(result.total_amount),
+        "payment_count": result.payment_count,
         "requires_cfo_approval": run.requires_cfo_approval,
         "message": (
-            f"Payment run created with {len(body.items)} payments totaling ${total:,.2f}"
+            f"Payment run created with {result.payment_count} payments totaling "
+            f"${result.total_amount:,.2f}"
             + (" (CFO approval required)" if run.requires_cfo_approval else "")
         ),
     }

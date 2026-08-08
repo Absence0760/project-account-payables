@@ -9,6 +9,7 @@
 	import type { AdminUser } from '$lib/types/admin';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { formatDate } from '$lib/utils/time';
 
 	// A message is one of the two surface shapes. Reads are guarded so the
 	// component works against either: AP messages carry author_user_id +
@@ -167,7 +168,7 @@
 		if (hr < 24) return `${hr}h ago`;
 		const day = Math.round(hr / 24);
 		if (day < 7) return `${day}d ago`;
-		return new Date(iso).toLocaleDateString();
+		return formatDate(iso, '', { year: 'numeric', month: 'numeric', day: 'numeric' });
 	}
 
 	function mentionIdsOf(msg: AnyMessage): string[] {

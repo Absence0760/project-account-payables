@@ -3,6 +3,7 @@
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import { m } from '$lib/i18n/store.svelte';
+	import { formatDate } from '$lib/utils/time';
 
 	interface CompanyProfile {
 		address: string;
@@ -1629,7 +1630,7 @@
 				<div class="plan-info">
 					<span class="plan-badge">{planLabel(org.plan)}</span>
 					<span class="plan-slug">{m('org.plan.tenant')} <code>{org.slug}</code></span>
-					<span class="plan-date">{m('org.plan.created', { date: new Date(org.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) })}</span>
+					<span class="plan-date">{m('org.plan.created', { date: formatDate(org.created_at, '—', { month: 'long', day: 'numeric', year: 'numeric' }) })}</span>
 				</div>
 			</section>
 		</div>

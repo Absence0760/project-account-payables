@@ -2,7 +2,8 @@ import { expect, test } from '../fixtures/helpers';
 
 /**
  * /cash-flow — AI Cash-Flow Copilot (Phase 1: read-only cash Q&A; Phase 2:
- * proposed payment plans, display-only — no enact buttons yet).
+ * proposed payment plans; Phase 3: draft-only enactment — "Create draft run" /
+ * "Capture N discounts" buttons on the plan card).
  *
  * The default storage state signs the worker's admin in — a finance leader, so
  * the copilot tools (admin/ap_manager/cfo only) are permitted. The backend's
@@ -79,7 +80,7 @@ test.describe('/cash-flow', () => {
 		).toBeVisible({ timeout: 15_000 });
 	});
 
-	test('a payment-plan question renders the plan card, display-only (no enact buttons)', async ({
+	test('a payment-plan question renders the plan card with the Phase 3 enact action', async ({
 		page
 	}) => {
 		await page
@@ -92,10 +93,33 @@ test.describe('/cash-flow', () => {
 		const planCard = assistant.getByTestId('payment-plan-card');
 		await expect(planCard).toBeVisible({ timeout: 15_000 });
 		await expect(planCard.getByText('Proposed payment plan')).toBeVisible();
-		// A proposal only — Phase 2 ships no enact affordance yet (Phase 3).
-		await expect(planCard.getByRole('button')).toHaveCount(0);
+		// The finance-leader worker (admin) sees the draft-run enact button on
+		// every plan card, regardless of whether THIS plan happens to have any
+		// worthwhile discounts to capture (that button only renders when there
+		// are selected recommendations).
+		await expect(planCard.getByRole('button', { name: 'Create draft run' })).toBeVisible();
 
 		await expect(page.getByLabel('Ask the cash-flow copilot')).toBeEnabled({ timeout: 15_000 });
+	});
+
+	test('clicking "Create draft run" on the plan card enacts it', async ({ page }) => {
+		await page
+			.locator('.prompt-btn', { hasText: 'Propose a payment plan for the next quarter' })
+			.click();
+
+		const assistant = page.locator('.msg.assistant').last();
+		const planCard = assistant.getByTestId('payment-plan-card');
+		await expect(planCard).toBeVisible({ timeout: 15_000 });
+
+		await planCard.getByRole('button', { name: 'Create draft run' }).click();
+
+		// Either it staged a draft run, or this plan's horizon had nothing
+		// currently payable to stage — either way the call completes and
+		// renders exactly one of the two feedback paragraphs (never hangs,
+		// never a raw unhandled error).
+		await expect(
+			planCard.locator('.plan-action-result, .plan-action-error')
+		).toBeVisible({ timeout: 15_000 });
 	});
 
 	test('typing a free-form cash question in the composer works', async ({ page }) => {

@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -61,6 +62,26 @@ class NotificationPrefsUpdate(BaseModel):
     invoice_paid: ChannelPrefs | None = None
 
 
+class DeviceTokenRegister(BaseModel):
+    """`POST /api/notifications/device-token` body — registers (or
+    re-registers) the caller's current push token for one platform.
+
+    Registration only. There is no server-side push-SENDING path yet (no
+    Firebase Admin SDK adapter exists in this codebase) — this just persists
+    the token for whenever that's built. At most one token per platform per
+    user: a fresh registration replaces whatever was stored, since FCM tokens
+    rotate and a stale one should be overwritten, not accumulated.
+    """
+
+    token: str = Field(min_length=1, max_length=4096)
+    platform: Literal["ios", "android"]
+
+
+class DeviceTokenResponse(BaseModel):
+    platform: Literal["ios", "android"]
+    updated_at: datetime
+
+
 class MarkReadResponse(BaseModel):
     id: uuid.UUID
     read_at: datetime | None = None
@@ -81,6 +102,8 @@ __all__ = [
     "ChannelPrefs",
     "NotificationPrefs",
     "NotificationPrefsUpdate",
+    "DeviceTokenRegister",
+    "DeviceTokenResponse",
     "MarkReadResponse",
     "ReadAllResponse",
     "UnreadCountResponse",

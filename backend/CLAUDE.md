@@ -278,7 +278,7 @@ backend/
 
 1. **Control plane** (`feohledger`) — shared across all tenants
    - `Organization` — id, name, slug, db_name, settings (JSONB), plan
-   - `User` — email, full_name, hashed_password, sso_provider/id, mfa_secret/enabled/enrolled_at, must_change_password, notification_prefs (JSONB — per-user email/in-app channel prefs, user-global), organization_id
+   - `User` — email, full_name, hashed_password, sso_provider/id, mfa_secret/enabled/enrolled_at, must_change_password, notification_prefs (JSONB — per-user email/in-app channel prefs, user-global), device_tokens (JSONB — one mobile push token per platform, registration only, no push-sending adapter yet; migration 0078), organization_id
    - `Role` — name (admin, ap_manager, ap_clerk, cfo)
    - `UserRole` — junction table
    - `WebAuthnCredential` — registered passkey (credential_id, public_key, sign_count, transports) per `user_id`; the WebAuthn second factor (migration 0063)

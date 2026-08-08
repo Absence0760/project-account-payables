@@ -14,6 +14,7 @@
 		PendingApprovalsResult,
 		TextSearchResult
 	} from '$lib/types/assistant';
+	import { formatDate } from '$lib/utils/time';
 
 	let { invocation }: { invocation: ToolInvocation } = $props();
 
@@ -38,10 +39,7 @@
 	}
 
 	function fmtDate(d?: string | null): string {
-		if (!d) return '—';
-		const dt = new Date(d.length === 7 ? `${d}-01` : d);
-		if (Number.isNaN(dt.getTime())) return d;
-		return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
+		return formatDate(d, '—', { month: 'short', day: 'numeric', year: '2-digit' });
 	}
 
 	// A tool status string maps onto the known InvoiceStatus union for the

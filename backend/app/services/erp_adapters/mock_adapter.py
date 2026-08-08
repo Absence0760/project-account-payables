@@ -13,6 +13,7 @@ from app.services.erp_adapters.base import (
     InvoicePayload,
     PoLinePayload,
     PoPayload,
+    VendorPayload,
 )
 from app.services.erp_adapters.dispatcher import register_adapter
 
@@ -207,6 +208,27 @@ _MOCK_GL_ACCOUNTS: list[dict] = [
 ]
 
 
+# Deterministic mock vendor catalogue. Used by the /api/vendors/sync-erp
+# endpoint when the org is configured against the mock ERP — preserves the
+# exact local-dev behavior of the pre-`list_vendors()` hardcoded list.
+_MOCK_VENDORS: list[VendorPayload] = [
+    VendorPayload(
+        erp_vendor_id="ERP-V001",
+        name="Office Supplies Co",
+        code="OSC",
+        email="ap@officesupplies.com",
+        payment_terms="Net 30",
+    ),
+    VendorPayload(
+        erp_vendor_id="ERP-V002",
+        name="Cloud Services Inc",
+        code="CSI",
+        email="billing@cloudservices.com",
+        payment_terms="Net 20",
+    ),
+]
+
+
 @register_adapter("mock")
 class MockAdapter(ErpAdapter):
     erp_type = "mock"
@@ -255,6 +277,23 @@ class MockAdapter(ErpAdapter):
                 ],
             )
             for p in _MOCK_POS
+        ]
+
+    async def list_vendors(self) -> list[VendorPayload]:
+        await asyncio.sleep(0.05)
+        # Return copies so the caller can't mutate the shared catalogue.
+        return [
+            VendorPayload(
+                erp_vendor_id=v.erp_vendor_id,
+                name=v.name,
+                code=v.code,
+                email=v.email,
+                phone=v.phone,
+                address=v.address,
+                tax_id=v.tax_id,
+                payment_terms=v.payment_terms,
+            )
+            for v in _MOCK_VENDORS
         ]
 
     async def test_connection(self) -> bool:

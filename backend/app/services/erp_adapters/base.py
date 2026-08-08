@@ -118,6 +118,27 @@ class GLAccountPayload:
     parent_code: str | None = None
 
 
+@dataclass
+class VendorPayload:
+    """Normalized vendor record returned by `ErpAdapter.list_vendors`.
+
+    Field shape mirrors what `services.vendor_sync.sync_vendors_from_erp`
+    expects on each dict it's handed — `erp_vendor_id` and `name` are the
+    only ones a real ERP is guaranteed to supply; the rest are optional
+    and a missing one never nulls out an existing local value (see that
+    function's docstring).
+    """
+
+    erp_vendor_id: str
+    name: str
+    code: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    tax_id: str | None = None
+    payment_terms: str | None = None
+
+
 class ErpAdapter:
     """Base class for ERP integrations. Subclass and implement all methods."""
 
@@ -156,6 +177,16 @@ class ErpAdapter:
         local chart untouched. The Auto GL Coding pipeline relies on
         this — the prompt only constrains AI suggestions when the org
         has synced a real chart.
+        """
+        return []
+
+    async def list_vendors(self) -> list[VendorPayload]:
+        """Pull vendors from the ERP.
+
+        Same contract as `list_pos` / `list_gl_accounts`: default returns
+        an empty list so an adapter that doesn't yet support vendor sync
+        just reports "0 new" instead of 500ing the `/api/vendors/sync-erp`
+        endpoint. Adapters that *do* support it override this.
         """
         return []
 

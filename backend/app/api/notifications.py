@@ -24,6 +24,8 @@ from app.database import get_control_db
 from app.models.notification import Notification
 from app.models.user import User
 from app.schemas.notification import (
+    DeviceTokenRegister,
+    DeviceTokenResponse,
     MarkReadResponse,
     NotificationListResponse,
     NotificationPrefs,
@@ -142,6 +144,36 @@ async def update_preferences(
     await ctrl_db.commit()
 
     return NotificationPrefs(**merged)
+
+
+@router.post("/device-token", response_model=DeviceTokenResponse)
+async def register_device_token(
+    body: DeviceTokenRegister,
+    ctrl_db: AsyncSession = Depends(get_control_db),
+    user: User = Depends(require_roles(*ALL_ROLES)),
+):
+    """Register (or re-register) the caller's current push device token.
+
+    Registration only — there is no server-side push-SENDING adapter yet (no
+    Firebase Admin SDK integration exists in this codebase). This just
+    persists the token so a future dispatch feature has something to read.
+
+    Upsert semantics: a user has at most one stored token per platform. FCM
+    tokens rotate (app reinstall, OS-level refresh), so a fresh registration
+    REPLACES whatever was stored for that platform rather than accumulating —
+    an old, unregistered token would otherwise sit there as a dead target
+    forever.
+    """
+    now = datetime.now(UTC)
+    # Re-fetch on the control session so the write is bound to it (same
+    # pattern as `update_preferences` above).
+    target = (await ctrl_db.execute(select(User).where(User.id == user.id))).scalar_one()
+    tokens = dict(target.device_tokens or {})
+    tokens[body.platform] = {"token": body.token, "updated_at": now.isoformat()}
+    target.device_tokens = tokens
+    await ctrl_db.commit()
+
+    return DeviceTokenResponse(platform=body.platform, updated_at=now)
 
 
 @router.post("/read-all", response_model=ReadAllResponse)

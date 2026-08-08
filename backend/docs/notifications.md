@@ -302,6 +302,35 @@ user's row returns the same 404 as a missing row — no enumeration.
 | POST | `/api/notifications/read-all` | `{updated}` |
 | GET | `/api/notifications/preferences` | current prefs (defaults if unset) |
 | PATCH | `/api/notifications/preferences` | partial update; unspecified events unchanged |
+| POST | `/api/notifications/device-token` | register/re-register this device's push token — see § Push device tokens |
+
+## Push device tokens
+
+`POST /api/notifications/device-token` (`{token, platform: "ios"|"android"}`)
+lets the mobile app register its current Firebase Cloud Messaging token.
+**Registration only** — there is no server-side push-SENDING adapter in this
+codebase yet (no Firebase Admin SDK integration), so this just persists the
+token for whenever that's built.
+
+Stored on the control-plane `User.device_tokens` JSONB column (migration
+`0078_user_device_tokens`) — deliberately a **separate column** from
+`notification_prefs`: a device token is per-device registration state that
+rotates and gets replaced, not a per-event delivery preference, and the two
+have unrelated shapes. Device tokens are per-employee-user, not tenant
+business data, so — like `notification_prefs` — they live on the
+control-plane `users` table, never fanned out to tenant DBs. Shape:
+`{"ios": {"token": "...", "updated_at": "<iso8601>"}, "android": {...}}`.
+
+**Upsert semantics**: at most one token per platform per account. A fresh
+registration for a platform replaces whatever was stored — FCM tokens rotate
+(reinstall, OS-level refresh), and a stale, unregistered token should be
+overwritten rather than accumulated.
+
+Mobile calls this from `PushService` (`mobile/lib/services/push_service.dart`)
+both on initial token acquisition and on every `onTokenRefresh` fire; the call
+is best-effort (a failure — e.g. not yet authenticated at cold-start, since
+push init runs before session restore — is logged and swallowed, never blocks
+push setup). See `mobile/CLAUDE.md`.
 
 ## Configuration & local-first
 
@@ -332,7 +361,9 @@ user's row returns the same 404 as a missing row — no enumeration.
   preference gating (in-app/email suppression), email-failure isolation (the
   transition + audit row survive), kill switch (real DB).
 - `tests/test_notifications.py` — router: per-user scoping, cross-user/tenant
-  isolation, mark-read 404, read-all, pagination shape, prefs round-trip.
+  isolation, mark-read 404, read-all, pagination shape, prefs round-trip, and
+  the device-token register/upsert-per-platform round-trip + platform
+  validation (real DB).
 - `tests/test_chat_notification_adapters.py` — chat fan-out: mock default +
   unknown-key fallback, per-org provider override, Slack vs Teams body shaping
   (httpx mocked, no network), fail-closed when no webhook URL, PII absent from

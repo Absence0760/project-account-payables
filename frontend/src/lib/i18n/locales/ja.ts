@@ -782,6 +782,22 @@ export const messages = {
 	'cashFlow.plan.unretimedNote':
 		'{n, plural, other {上記のオファーのうち # 件は}}節約合計には含まれていますが、対象となる単一の請求書がないためスケジュールには反映されていません。',
 	'cashFlow.plan.disclaimer': 'これは提案です — まだ支払いも予定もされていません。',
+	'cashFlow.plan.actions.createDraftRun': '下書きの支払いバッチを作成',
+	'cashFlow.plan.actions.creatingRun': '作成中…',
+	'cashFlow.plan.actions.captureDiscounts': '{n, plural, other {割引を # 件確保}}',
+	'cashFlow.plan.actions.captureDiscountsConfirm': 'もう一度クリックして確定',
+	'cashFlow.plan.actions.capturingDiscounts': '確保中…',
+	'cashFlow.plan.actions.draftRunCreated':
+		'{n, plural, other {# 件の支払いを含む下書きバッチを作成しました}}（合計 {amount}）。',
+	'cashFlow.plan.actions.draftRunExisting':
+		'このプランにはすでに下書きバッチがあります — {n, plural, other {# 件の支払い}}、合計 {amount}。',
+	'cashFlow.plan.actions.cfoApprovalNote': '実行する前にCFOの承認が必要です。',
+	'cashFlow.plan.actions.captureResult': '{n, plural, other {割引オファーを # 件確保しました。}}',
+	'cashFlow.plan.actions.captureNoneNew':
+		'新たに確保するものはありません — これらのオファーはすでに処理済みです。',
+	'cashFlow.plan.actions.stale':
+		'このプランは提案後に変更されました — 実行する前にコパイロットに最新のプランを依頼してください。',
+	'cashFlow.plan.actions.error': 'この操作を完了できませんでした: {detail}',
 	// Cash Flow / CFO dashboard (routes/cfo/+page.svelte)
 	'cfo.title': 'キャッシュフロー',
 	'cfo.exportCsv': 'CSVをエクスポート',

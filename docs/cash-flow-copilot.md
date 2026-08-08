@@ -1,15 +1,17 @@
 # AI Cash-Flow Copilot
 
-**Status: Phases 1–2 SHIPPED (read-only cash Q&A + proposed payment plans);
-Phase 3 planned.** Phase 1 — the four read-only, finance-leader-gated planning
-tools plus the `/api/cash-flow/copilot(+/stream)` façade and the `/cash-flow`
-chat & cash-position chart — is built and live. Phase 2 — the `propose_payment_plan`
-tool (`app/services/assistant/tools/cashflow.py`) + the pure plan assembler
-(`app/services/cash_flow_plan.py`) + the display-only plan-card UI
-(`PlanCard.svelte`) — is also built and live. Phase 3 (draft-only enactment)
-below remains design-only: the enact routes (`.../draft-run`,
-`.../capture-discounts`) do **not** exist yet — do not treat any Phase 3 path,
-endpoint, or model named here as shipped.
+**Status: Phases 1–3 SHIPPED (read-only cash Q&A + proposed payment plans +
+draft-only enactment).** Phase 1 — the four read-only, finance-leader-gated
+planning tools plus the `/api/cash-flow/copilot(+/stream)` façade and the
+`/cash-flow` chat & cash-position chart — is built and live. Phase 2 — the
+`propose_payment_plan` tool (`app/services/assistant/tools/cashflow.py`) + the
+pure plan assembler (`app/services/cash_flow_plan.py`) + the plan-card UI
+(`PlanCard.svelte`) — is also built and live. Phase 3 (draft-only enactment) —
+the two enact routes (`POST /api/cash-flow/plans/{plan_id}/draft-run` +
+`.../capture-discounts`), the `services/payment_runs.py` shared creation
+service, the `payment_runs.plan_id` idempotency anchor (migration 0079), and
+the plan card's "Create draft run" / "Capture N discounts" buttons — is now
+built and live too. See §5/§6/§11 below.
 
 **Author:** platform · **Target:** beyond-parity differentiator · **Est. size:** M (3 phases)
 
@@ -159,10 +161,11 @@ the answer (to an already-authenticated finance leader), never in the audit row.
 
 ## 5. The `propose_payment_plan` action (advisory, draft-only)
 
-**§5 point 1 below is Phase 2 · SHIPPED** (`propose_payment_plan` tool +
-`services/cash_flow_plan.py::assemble_plan`, both read-only). **Points 2–4 —
-the actual enact tiers (draft run / discount capture) — are Phase 3 ·
-planned**, unbuilt; nothing in the app can act on a plan yet, only propose one.
+**All four points below are shipped.** Point 1 is Phase 2
+(`propose_payment_plan` tool + `services/cash_flow_plan.py::assemble_plan`,
+both read-only). Points 2–4 — the enact tiers (draft run / discount capture)
+— are Phase 3, now built: `POST /api/cash-flow/plans/{plan_id}/draft-run` +
+`.../capture-discounts` (`app/api/cash_flow.py`).
 
 Given a cash ceiling and a horizon, `propose_payment_plan` assembles a **plan
 artifact**: which open commitments to pay in which period, which discount
@@ -182,23 +185,42 @@ overclaiming precision on the curve).
 1. **It never moves money and never mutates an invoice/payment.** It returns a
    proposal object. Full stop. **Shipped** — see above.
 2. Enacting the plan is a **separate, explicit** user action with two tiers,
-   both reusing existing gated paths — nothing new on the money path. **Phase 3
-   — planned, not built:**
-   - *Capture discounts*: flips eligible `DiscountOffer`s `offered → accepted`
-     via the existing `POST /api/discounts/offers/{id}/accept`. Per today's
-     design this is **status-only and never moves money** (the CFO-gated payment
-     run still funds).
-   - *Stage payments*: creates a **draft** `PaymentRun` via the existing payment
-     -run create path — never `execute`. Execution stays behind the current
-     human review + `requires_cfo_approval` gate + segregation-of-duties
-     (`POST /api/payments/runs/{id}/approve` then `/execute`), unchanged.
+   both reusing existing gated paths — nothing new on the money path.
+   **Shipped:**
+   - *Capture discounts* (`POST /api/cash-flow/plans/{plan_id}/capture-discounts`):
+     re-runs the SAME discount-optimizer pass (`run_discount_optimization`) to
+     get the current `selected` offer ids, then flips each still-`offered` one
+     `offered → accepted` via the existing `services.discount_offers.accept_offer`
+     mutator (the same one `POST /api/discounts/offers/{id}/accept` uses).
+     **Status-only and never moves money** (the CFO-gated payment run still
+     funds). An offer no longer `offered` (already handled by a prior call, or
+     a manual accept in the meantime) is skipped, not re-raised.
+   - *Stage payments* (`POST /api/cash-flow/plans/{plan_id}/draft-run`):
+     re-derives the SAME commitment rows the plan used (`_commitment_rows`),
+     narrows them to invoices that are ACTUALLY payable right now
+     (`PAYABLE_INVOICE_STATUSES` — a plan's horizon also includes
+     pre-approval pipeline invoices, which can't be staged), and creates a
+     **draft** `PaymentRun` via `services.payment_runs.create_payment_run_for_invoices`
+     — the exact function `POST /api/payments/runs` uses (same payable-status
+     gate, financial-integrity exception block, credit-memo netting, and
+     CFO-threshold computation). Never `execute`s. Execution stays behind the
+     current human review + `requires_cfo_approval` gate + segregation-of-duties
+     (`POST /api/payments/runs/{id}/approve` then `/execute`), completely
+     unchanged.
 3. **Idempotency:** plan enactment reuses the existing idempotent create paths;
-   re-submitting the same proposal must not create a second draft run (dedupe on
-   a `plan_id` correlation key persisted on the draft run).
+   re-submitting the same proposal must not create a second draft run. Dedupe
+   is on the deterministic `plan_id` (§6) persisted on the draft run
+   (`payment_runs.plan_id`, a partial-unique-indexed column — migration
+   `0079_payment_run_plan_id`): retrying `.../draft-run` for the same
+   `plan_id` returns the existing run (`created:false`, HTTP 200) instead of
+   staging a second one. `capture-discounts` is naturally idempotent too — an
+   offer no longer `offered` is simply excluded from the next optimizer pass.
 4. **Confirmation UX:** the copilot presents the plan; the human clicks
-   "Create draft run" / "Capture these discounts". The LLM cannot trigger either
-   — the tool only *returns* the plan; the enact endpoints are ordinary
-   RBAC-gated, audited, non-LLM routes.
+   "Create draft run" / "Capture N discounts" on the plan card
+   (`PlanCard.svelte`). The LLM cannot trigger either — the tool only
+   *returns* the plan; the enact endpoints are ordinary RBAC-gated, audited,
+   non-LLM routes, gated to the same finance-leader roles as the rest of the
+   copilot.
 
 So the LLM's influence ends at "here is a proposal"; every irreversible step is a
 deterministic, human-initiated, already-audited action.
@@ -206,10 +228,11 @@ deterministic, human-initiated, already-audited action.
 ### Persistence
 
 Reuse the tenant-scoped `assistant_conversations` / `assistant_messages` for the
-chat. The **plan artifact** does not need its own table for v1 — it is a
-computed, stateless object returned in the tool result and re-derivable from
-inputs. If we later want "saved plans" or "plan vs. actual" tracking, add a
-tenant-scoped `CashPlan` model + migration then (deferred, §12).
+chat. The **plan artifact** does not have its own table — it is a computed,
+stateless object returned in the tool result and re-derivable from inputs (see
+§6 for how `plan_id` substitutes for a stored primary key). If we later want
+"saved plans" or "plan vs. actual" tracking, add a tenant-scoped `CashPlan`
+model + migration then (deferred, §12).
 
 ---
 
@@ -223,8 +246,35 @@ RBAC, a system-prompt hint, streaming on by default).
 |--------|------|--------|-------|
 | POST | `/api/cash-flow/copilot` | Phase 1 · shipped | Façade over `orchestrator.run_turn`; body `{message, conversation_id?}`; RBAC `admin/ap_manager/cfo`; entity-scoped |
 | POST | `/api/cash-flow/copilot/stream` | Phase 1 · shipped | SSE variant (reuses `run_turn_streaming`, identical event contract) |
-| POST | `/api/cash-flow/plans/{plan_id}/draft-run` | Phase 3 · planned | Enact: create a **draft** payment run from a proposal (idempotent, audited, CFO gate at execute-time unchanged) |
-| POST | `/api/cash-flow/plans/{plan_id}/capture-discounts` | Phase 3 · planned | Enact: accept the plan's discount offers (status-only, reuses discount accept) |
+| POST | `/api/cash-flow/plans/{plan_id}/draft-run` | Phase 3 · shipped | Enact: create a **draft** payment run from a proposal (idempotent on `plan_id`, audited, CFO gate at execute-time unchanged) |
+| POST | `/api/cash-flow/plans/{plan_id}/capture-discounts` | Phase 3 · shipped | Enact: accept the plan's discount offers (status-only, reuses discount accept) |
+
+### The `plan_id` scheme (no `CashPlan` table)
+
+Per §5's persistence note, a plan is stateless — there is nothing to look up
+`plan_id` against. Instead it is a **deterministic idempotency correlation
+key**: `services/cash_flow_plan.py::compute_plan_id` hashes (UUID5, not a
+random `uuid4`) the plan's own RESOLVED defining inputs — `org_id`,
+`entity_id`, `granularity`, `horizon_days`, `min_balance_threshold`,
+`cash_budget`, `cost_of_capital_pct` — plus the calendar **date** (not a
+timestamp: "today" determines which commitments are in-horizon, so a plan
+computed yesterday and an identical-params plan computed today are, correctly,
+two different plans).
+
+`propose_payment_plan` computes this once and returns it as `plan_id` on the
+tool result (`PaymentPlanResult`, which also echoes the resolved
+`granularity` / `horizon_days` / `min_balance_threshold` / `cash_budget` /
+`cost_of_capital_pct` fields verbatim). The frontend replays those same fields
+in the body of both enact calls (`CashFlowPlanReplay` — see
+`app/schemas/cash_flow.py`); the enact endpoints independently resolve the
+identical inputs and recompute `plan_id` server-side. If it doesn't match the
+`plan_id` in the URL — a tampered field, or the underlying org settings
+changed since the plan was proposed, or simply a new day — the request is
+refused with a clean `409` rather than silently acting on a different plan
+than the one the human is looking at. **The client is never trusted for WHAT
+to act on** — only its replayed parameters decide which plan_id the server
+expects, and the server re-derives its own commitment rows / discount-offer
+selection from scratch either way.
 
 The plain `/api/assistant/chat` also gains the five read-only cash tools, so a
 clerk-free finance user can ask cash questions in the general assistant too
@@ -244,17 +294,26 @@ fetches via `$lib/api.ts`:
   prose streams alongside).
 - **Cash-position chart** — running-balance curve with shortfall periods flagged
   red (from `get_cash_position`).
-- **Proposed-plan card** — when the turn returns a plan artifact: the period-by
-  -period pay schedule, captured-savings figure, and two explicit buttons
-  ("Create draft run", "Capture N discounts") that call the enact endpoints. The
-  buttons are gated by `auth.can(...)` / role and show the same confirm-then-act
-  pattern used elsewhere.
+- **Proposed-plan card** (`PlanCard.svelte`) — the period-by-period pay
+  schedule, captured-savings figure, and two explicit buttons ("Create draft
+  run", "Capture N discounts") that call `$lib/api/cashFlow.ts`
+  (`createDraftRunFromPlan` / `captureDiscountsFromPlan`, both over
+  `$lib/api.ts`, never raw `fetch`). The buttons are gated by role
+  (`auth.isManager || auth.isCfo` — mirroring the backend's `_COPILOT_ROLES`,
+  the same check `/discounts`' accept button uses) and rendered only when the
+  plan has anything to act on. "Create draft run" fires on a single click
+  (mirrors the manual payments-queue "Create draft run" button — a draft
+  isn't destructive); "Capture N discounts" uses an armed two-click confirm
+  (mutates several `DiscountOffer` rows). A `409` from either call — the
+  stale-plan guard (§6) — surfaces a friendly "ask the copilot for a fresh
+  plan" notice instead of a raw error (`ApiError`, `$lib/api.ts`, carries the
+  HTTP status so the frontend can branch on it without parsing message text).
 - Money via the shared `<Money>` component (exact-string aware). Loading / empty
   / error states throughout. Build from the shared component library.
 
-e2e (`tests-e2e/cash-flow/copilot.spec.ts`): ask a forecast question → assert the
-chart + streamed answer; request a plan → assert the plan card renders → click
-"Create draft run" → assert a draft (not executed) run appears and no money moved.
+No dedicated Playwright e2e spec for the enact buttons yet (backend coverage
+is in `backend/tests/test_cash_flow_copilot.py` §10 below) — a natural
+follow-up once the surface has real usage to script against.
 
 ---
 

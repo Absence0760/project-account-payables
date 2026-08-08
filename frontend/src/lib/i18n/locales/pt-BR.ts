@@ -784,6 +784,25 @@ export const messages = {
 	'cashFlow.plan.unretimedNote':
 		'{n, plural, one {# das ofertas acima está} other {# das ofertas acima estão}} contabilizada(s) no total de economia, mas não refletida(s) no cronograma (sem uma única fatura para posicionar).',
 	'cashFlow.plan.disclaimer': 'Esta é uma proposta — nada foi pago ou agendado ainda.',
+	'cashFlow.plan.actions.createDraftRun': 'Criar lote rascunho',
+	'cashFlow.plan.actions.creatingRun': 'Criando…',
+	'cashFlow.plan.actions.captureDiscounts':
+		'{n, plural, one {Capturar # desconto} other {Capturar # descontos}}',
+	'cashFlow.plan.actions.captureDiscountsConfirm': 'Clique novamente para confirmar',
+	'cashFlow.plan.actions.capturingDiscounts': 'Capturando…',
+	'cashFlow.plan.actions.draftRunCreated':
+		'{n, plural, one {Lote rascunho criado com # pagamento} other {Lote rascunho criado com # pagamentos}}, totalizando {amount}.',
+	'cashFlow.plan.actions.draftRunExisting':
+		'Este plano já tem um lote rascunho — {n, plural, one {# pagamento} other {# pagamentos}} totalizando {amount}.',
+	'cashFlow.plan.actions.cfoApprovalNote':
+		'Requer aprovação do CFO antes de poder ser executado.',
+	'cashFlow.plan.actions.captureResult':
+		'{n, plural, one {# desconto capturado.} other {# descontos capturados.}}',
+	'cashFlow.plan.actions.captureNoneNew':
+		'Nada novo para capturar — essas ofertas já foram tratadas.',
+	'cashFlow.plan.actions.stale':
+		'Este plano mudou desde que foi proposto — peça ao copiloto um novo plano antes de agir.',
+	'cashFlow.plan.actions.error': 'Não foi possível concluir esta ação: {detail}',
 	// Cash Flow / CFO dashboard (routes/cfo/+page.svelte)
 	'cfo.title': 'Fluxo de caixa',
 	'cfo.exportCsv': 'Exportar CSV',

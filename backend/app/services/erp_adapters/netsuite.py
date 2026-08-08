@@ -14,6 +14,7 @@ from app.services.erp_adapters.base import (
     ErpInvoiceStatus,
     ErpPostResult,
     InvoicePayload,
+    VendorPayload,
 )
 from app.services.erp_adapters.dispatcher import register_adapter
 
@@ -203,6 +204,42 @@ class NetSuiteAdapter(ErpAdapter):
         # NetSuite uses a "void" transform
         return False
 
+    async def list_vendors(self) -> list[VendorPayload]:
+        """Pull vendors via NetSuite's `/vendor` record collection.
+
+        Best-effort like the Merge.dev adapter's `list_pos`/`list_gl_accounts`:
+        a non-200 response or a network error degrades to an empty list rather
+        than raising, so an unreachable/misconfigured NetSuite account doesn't
+        500 the `/api/vendors/sync-erp` endpoint. NetSuite pages this
+        collection via `offset` + `hasMore`; we follow it capped at 1000
+        vendors (10 pages × 100) to bound memory, matching the PO/GL sync cap.
+        """
+        items: list[VendorPayload] = []
+        offset = 0
+        limit = 100
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            for _ in range(10):  # 10 pages × 100 = 1000 vendor cap
+                url = f"{self._base_url()}/vendor?limit={limit}&offset={offset}"
+                headers = {"Authorization": self._auth_header("GET", url)}
+                try:
+                    resp = await client.get(url, headers=headers)
+                except httpx.HTTPError:
+                    break
+
+                if resp.status_code != 200:
+                    break
+
+                body = resp.json() if resp.content else {}
+                for raw in body.get("items") or []:
+                    items.append(_netsuite_vendor_to_payload(raw))
+
+                if not body.get("hasMore"):
+                    break
+                offset += limit
+
+        return items
+
     async def test_connection(self) -> bool:
         try:
             url = f"{self._base_url()}/vendor?limit=1"
@@ -214,3 +251,23 @@ class NetSuiteAdapter(ErpAdapter):
             return resp.status_code == 200
         except Exception:
             return False
+
+
+def _netsuite_vendor_to_payload(raw: dict) -> VendorPayload:
+    """Map a NetSuite vendor record to our normalized VendorPayload.
+
+    `entityId` is the vendor record's name/display field (what
+    `test_connection` and the fake-erp fixture both key on); real vendor
+    records may also carry `companyName`, `email`, `phone`. Anything absent
+    maps to None — `sync_vendors_from_erp` never nulls out an existing local
+    value for a missing field.
+    """
+    vendor_id = raw.get("id")
+    name = raw.get("entityId") or raw.get("companyName") or (str(vendor_id) if vendor_id else "")
+
+    return VendorPayload(
+        erp_vendor_id=str(vendor_id) if vendor_id is not None else name,
+        name=name,
+        email=raw.get("email"),
+        phone=raw.get("phone"),
+    )

@@ -27,6 +27,7 @@
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
 	import { untrack } from 'svelte';
+	import { formatDate } from '$lib/utils/time';
 
 	const canCreate = $derived(auth.isManager);
 
@@ -207,13 +208,6 @@
 		} finally {
 			busyId = null;
 		}
-	}
-
-	function formatDate(s: string | null): string {
-		if (!s) return '—';
-		const d = new Date(s);
-		if (Number.isNaN(d.getTime())) return s;
-		return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 	}
 
 	// --- KPI math (derived from the loaded rows) ---

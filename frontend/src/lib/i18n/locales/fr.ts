@@ -783,6 +783,25 @@ export const messages = {
 	'cashFlow.plan.unretimedNote':
 		'{n, plural, one {# des offres ci-dessus est} other {# des offres ci-dessus sont}} compté(es) dans le total des économies mais non reflété(es) dans le calendrier (aucune facture unique à planifier).',
 	'cashFlow.plan.disclaimer': 'Ceci est une proposition — rien n’a encore été payé ni planifié.',
+	'cashFlow.plan.actions.createDraftRun': 'Créer un lot brouillon',
+	'cashFlow.plan.actions.creatingRun': 'Création…',
+	'cashFlow.plan.actions.captureDiscounts':
+		'{n, plural, one {Capturer # remise} other {Capturer # remises}}',
+	'cashFlow.plan.actions.captureDiscountsConfirm': 'Cliquez à nouveau pour confirmer',
+	'cashFlow.plan.actions.capturingDiscounts': 'Capture en cours…',
+	'cashFlow.plan.actions.draftRunCreated':
+		'{n, plural, one {Lot brouillon créé avec # paiement} other {Lot brouillon créé avec # paiements}}, pour un total de {amount}.',
+	'cashFlow.plan.actions.draftRunExisting':
+		'Ce plan a déjà un lot brouillon — {n, plural, one {# paiement} other {# paiements}} pour un total de {amount}.',
+	'cashFlow.plan.actions.cfoApprovalNote':
+		'Nécessite l’approbation du directeur financier avant de pouvoir être exécuté.',
+	'cashFlow.plan.actions.captureResult':
+		'{n, plural, one {# remise capturée.} other {# remises capturées.}}',
+	'cashFlow.plan.actions.captureNoneNew':
+		'Rien de nouveau à capturer — ces offres ont déjà été traitées.',
+	'cashFlow.plan.actions.stale':
+		'Ce plan a changé depuis sa proposition — demandez au copilote un plan à jour avant d’agir.',
+	'cashFlow.plan.actions.error': 'Impossible de terminer cette action : {detail}',
 	// Cash Flow / CFO dashboard (routes/cfo/+page.svelte)
 	'cfo.title': 'Trésorerie',
 	'cfo.exportCsv': 'Exporter en CSV',

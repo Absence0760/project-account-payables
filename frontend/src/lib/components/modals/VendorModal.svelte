@@ -29,6 +29,7 @@
 		type EnrichmentFieldSuggestion
 	} from '$lib/types/vendor';
 	import { m } from '$lib/i18n/store.svelte';
+	import { formatDate } from '$lib/utils/time';
 
 	const SCREENING_RESULTS: ScreeningStatus[] = ['unscreened', 'clear', 'review', 'match'];
 
@@ -79,8 +80,7 @@
 	});
 
 	function fmt(iso: string | null): string {
-		if (!iso) return '—';
-		return new Date(iso).toLocaleDateString('en-US', {
+		return formatDate(iso, '—', {
 			month: 'short',
 			day: 'numeric',
 			year: 'numeric',

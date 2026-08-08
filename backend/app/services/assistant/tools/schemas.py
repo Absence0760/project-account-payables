@@ -272,12 +272,22 @@ class PaymentPlanPeriod(BaseModel):
 
 
 class PaymentPlanResult(BaseModel):
+    # Deterministic correlation key (services/cash_flow_plan.compute_plan_id)
+    # over this plan's own RESOLVED defining inputs + today's date — Phase 3
+    # enactment's idempotency anchor. See docs/cash-flow-copilot.md §5/§6.
+    plan_id: str
     currency: str
     granularity: str
     horizon_days: int
     opening_balance: Decimal
     opening_balance_source: str
     min_balance_threshold: Decimal | None
+    # The raw cash-budget input the optimizer selection was run under (may be
+    # None — unconstrained). Echoed back verbatim (not resolved to anything)
+    # so the Phase 3 enact endpoints can recompute the SAME `plan_id` from the
+    # client's replayed params without the frontend having to remember what
+    # it originally sent.
+    cash_budget: Decimal | None
     periods: list[PaymentPlanPeriod]
     first_shortfall_period: str | None
     cost_of_capital_pct: Decimal

@@ -632,7 +632,13 @@ is created `requires_cfo_approval=True` and the misconfiguration is logged
 
 Independently of the CFO threshold, `create_payment_run` refuses any invoice
 that still carries an **unresolved** (`open`/`escalated`) exception of a class
-listed in `payments.PAYMENT_BLOCKING_EXCEPTION_TYPES`:
+listed in `payments.PAYMENT_BLOCKING_EXCEPTION_TYPES`. This gate (along with
+the payable-status check, credit-memo netting, and the CFO-threshold
+computation above) lives in `services/payment_runs.py::create_payment_run_for_invoices`
+— `POST /api/payments/runs` and the AI Cash-Flow Copilot's
+`POST /api/cash-flow/plans/{plan_id}/draft-run` (`docs/cash-flow-copilot.md`
+§5/§6) both call the same function, so a fraud-control gate can never diverge
+between the manual and copilot-driven paths:
 
 | Type | What it would let through |
 |------|---------------------------|

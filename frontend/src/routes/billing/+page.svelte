@@ -20,6 +20,7 @@
 		BillingPaymentMethod,
 		BillingSubscriptionResponse
 	} from '$lib/types/billing';
+	import { formatDate } from '$lib/utils/time';
 
 	// RBAC: the backend gates `GET /api/billing/subscription` to admin / cfo and
 	// 403s everyone else. `isAdmin` covers admin; `isCfo` = admin|cfo, so the
@@ -168,13 +169,6 @@
 	const plan = $derived(data?.plan ?? null);
 	const subscription = $derived(data?.subscription ?? null);
 	const hasSubscription = $derived(plan !== null && subscription !== null);
-
-	function formatDate(dateStr: string | null): string {
-		if (!dateStr) return '—';
-		const d = new Date(dateStr);
-		if (Number.isNaN(d.getTime())) return dateStr;
-		return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-	}
 
 	/** Whole-number usage counter rendered defensively (the API sends strings). */
 	function asCount(n: string | undefined): string {

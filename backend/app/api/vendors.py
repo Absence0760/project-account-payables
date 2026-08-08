@@ -1,5 +1,6 @@
 """Vendor CRUD endpoints with verification workflow + portal-user management."""
 
+import dataclasses
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -1008,28 +1009,19 @@ async def sync_vendors_from_erp_endpoint(
     import app.services.erp_adapters.netsuite  # noqa: F401
     from app.services.erp_adapters import get_erp_adapter
 
-    get_erp_adapter(erp_config)
+    adapter = get_erp_adapter(erp_config)
+    try:
+        erp_vendors = await adapter.list_vendors()
+    except Exception as exc:
+        logger.exception("ERP list_vendors failed for org %s", org_id)
+        raise HTTPException(
+            status_code=502,
+            detail=f"ERP request failed: {type(exc).__name__}",
+        ) from exc
 
-    # For now, use mock vendor data — real adapters would call adapter.list_vendors()
-    # TODO(jared): add list_vendors() to ErpAdapter interface
-    mock_erp_vendors = [
-        {
-            "erp_vendor_id": "ERP-V001",
-            "name": "Office Supplies Co",
-            "code": "OSC",
-            "email": "ap@officesupplies.com",
-            "payment_terms": "Net 30",
-        },
-        {
-            "erp_vendor_id": "ERP-V002",
-            "name": "Cloud Services Inc",
-            "code": "CSI",
-            "email": "billing@cloudservices.com",
-            "payment_terms": "Net 20",
-        },
-    ]
+    vendor_dicts = [dataclasses.asdict(v) for v in erp_vendors]
 
-    result = await sync_vendors_from_erp(db, org_id, mock_erp_vendors, entity_id=entity_id)
+    result = await sync_vendors_from_erp(db, org_id, vendor_dicts, entity_id=entity_id)
     await db.commit()
 
     return {

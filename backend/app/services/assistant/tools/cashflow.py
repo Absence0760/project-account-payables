@@ -46,7 +46,7 @@ from app.services.assistant.tools.schemas import (
     ProposePaymentPlanParams,
     WhatifScenario,
 )
-from app.services.cash_flow_plan import assemble_plan
+from app.services.cash_flow_plan import assemble_plan, compute_plan_id
 from app.services.cashflow import fetch_provider_balance, resolve_cash_thresholds
 
 _ZERO = Decimal("0")
@@ -295,13 +295,26 @@ async def propose_payment_plan(
         today=today,
     )
 
+    plan_id = compute_plan_id(
+        org_id=org_id,
+        entity_id=entity_id,
+        granularity=params.granularity,
+        horizon_days=horizon_days,
+        min_balance_threshold=threshold,
+        cash_budget=params.cash_budget,
+        cost_of_capital_pct=optimizer_result.cost_of_capital_pct,
+        today=today,
+    )
+
     return PaymentPlanResult(
+        plan_id=plan_id,
         currency=await resolve_org_currency(org_id, control_db),
         granularity=params.granularity,
         horizon_days=horizon_days,
         opening_balance=plan.opening_balance,
         opening_balance_source=source,
         min_balance_threshold=threshold,
+        cash_budget=params.cash_budget,
         periods=[
             PaymentPlanPeriod(
                 period=p.period,

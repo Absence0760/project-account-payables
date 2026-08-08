@@ -30,6 +30,7 @@
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
 	import { onMount, untrack } from 'svelte';
+	import { formatDate } from '$lib/utils/time';
 
 	const canCreate = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk'));
 	// approve / reject / convert = admin | ap_manager (convert is the money step).
@@ -147,15 +148,6 @@
 		} catch {
 			/* non-critical for the list view */
 		}
-	}
-
-	function formatDate(s: string | null): string {
-		if (!s) return '—';
-		return new Date(s).toLocaleDateString('en-US', {
-			month: 'short',
-			day: 'numeric',
-			year: 'numeric'
-		});
 	}
 
 	function onSaved(r: Requisition) {

@@ -12,6 +12,24 @@ from app.models.base import Base, EntityMixin, TimestampMixin
 class PaymentRun(Base, EntityMixin, TimestampMixin):
     __tablename__ = "payment_runs"
 
+    # AI Cash-Flow Copilot Phase 3 idempotency anchor: at most one run per
+    # non-NULL `plan_id`. Retrying `POST /api/cash-flow/plans/{plan_id}/
+    # draft-run` for the SAME deterministic plan id
+    # (`services/cash_flow_plan.compute_plan_id`) must return the existing
+    # draft run, never stage a second one. NULL on every run created through
+    # the ordinary `POST /api/payments/runs` flow, so ordinary manual runs
+    # never contend with each other or this index. Mirrors migration 0075's
+    # partial-unique-index style; declared here so fresh tenants built via
+    # create_all in tenant_provisioning get it too, not only migrated ones.
+    __table_args__ = (
+        Index(
+            "uq_payment_runs_plan_id",
+            "plan_id",
+            unique=True,
+            postgresql_where=text("plan_id IS NOT NULL"),
+        ),
+    )
+
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     status: Mapped[str] = mapped_column(String(30), default="draft")
     total_amount: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
@@ -24,6 +42,9 @@ class PaymentRun(Base, EntityMixin, TimestampMixin):
     requires_cfo_approval: Mapped[bool] = mapped_column(default=False, nullable=False)
     cfo_approved_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     cfo_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # See the partial unique index above. NULL for every manually-created run.
+    plan_id: Mapped[str | None] = mapped_column(String(64))
 
     organization_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False, index=True

@@ -9,6 +9,7 @@
 	import { get1099Report } from '$lib/api/tax';
 	import { m } from '$lib/i18n/store.svelte';
 	import type { Report1099, Vendor1099Row } from '$lib/types/tax';
+	import { formatDate } from '$lib/utils/time';
 
 	// Year selector — current year and the prior five (1099s are filed for
 	// completed calendar years, so people mostly look back).
@@ -93,13 +94,6 @@
 		{ label: m('tax.col.ytdPaid'), class: 'right' },
 		{ label: m('tax.col.cardExcluded'), class: 'right' }
 	]);
-
-	function fmtDate(s: string | null): string {
-		if (!s) return '—';
-		const d = new Date(s);
-		if (Number.isNaN(d.getTime())) return s;
-		return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
-	}
 
 	// A TIN counts as "on file" when the vendor has a tax id captured.
 	function hasTin(r: Vendor1099Row): boolean {
@@ -206,7 +200,7 @@
 						</td>
 						<td class="center">
 							{#if r.w9_on_file}
-								<span class="chip chip-on" title={fmtDate(r.w9_received_date)}>{m('tax.chip.onFile')}</span>
+								<span class="chip chip-on" title={formatDate(r.w9_received_date)}>{m('tax.chip.onFile')}</span>
 							{:else}
 								<span class="chip chip-warn">{m('tax.chip.missing')}</span>
 							{/if}
@@ -247,7 +241,7 @@
 
 		<p class="report-meta">
 			{m('tax.reportMeta', {
-				generated: fmtDate(report.generated_at),
+				generated: formatDate(report.generated_at),
 				threshold: report.threshold_usd,
 				year
 			})}

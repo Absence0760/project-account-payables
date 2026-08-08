@@ -30,6 +30,7 @@ class APApp extends StatelessWidget {
         return MaterialApp(
           title: 'FeohLedger',
           debugShowCheckedModeBanner: false,
+          navigatorKey: PushService.navigatorKey,
           locale: LocaleStore.instance.locale,
           localizationsDelegates: AppLocalizations.localizationsDelegates,
           supportedLocales: AppLocalizations.supportedLocales,
