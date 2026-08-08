@@ -103,6 +103,18 @@ class ErpAdapter:
         """
         ...
 
+    async def list_vendors(self) -> list[VendorPayload]:
+        """Pull vendors from the ERP for `POST /api/vendors/sync-erp`.
+
+        Same default-empty pattern as `list_pos` / `list_gl_accounts`.
+        Implemented by all three real adapters — `merge_dev` (best-effort
+        against the unified `/vendors`, paginated), `netsuite` (`GET
+        /vendor`), and `dynamics_365_bc` (`GET .../vendors`) — plus `mock`.
+        Covered by the local fake-erp e2e suite (`pnpm test:erp`); see
+        "Local e2e testing" below.
+        """
+        ...
+
     async def test_connection(self) -> bool:
         """Verify the ERP connection is working."""
         ...
@@ -155,6 +167,23 @@ class ErpPostResult:
     erp_document_number: str | None # Human-readable document number
     message: str | None
     raw_response: dict | None
+
+@dataclass
+class VendorPayload:
+    """Normalized vendor record returned by `ErpAdapter.list_vendors`.
+
+    `erp_vendor_id` and `name` are the only fields a real ERP is guaranteed
+    to supply; the rest are optional, and `services.vendor_sync.sync_vendors_from_erp`
+    never nulls out an existing local value for a field a given pull omits.
+    """
+    erp_vendor_id: str
+    name: str
+    code: str | None
+    email: str | None
+    phone: str | None
+    address: str | None
+    tax_id: str | None
+    payment_terms: str | None
 
 class ErpInvoiceStatus(str, Enum):
     draft = "draft"           # Created but not posted
@@ -737,8 +766,12 @@ One server fakes three provider surfaces by path prefix:
 
 `GET /health` reports liveness; `POST /__reset` restores the fixture state.
 Fixture data: purchase orders `PO-FAKE-301` (1250.00), `PO-FAKE-302` (980.50),
-`PO-FAKE-303` (4400.00) — cursor-paginated — and GL accounts `6100 Fake Office
-Supplies`, `6200 Fake Software`, `6300 Fake Consulting`.
+`PO-FAKE-303` (4400.00) — cursor-paginated — GL accounts `6100 Fake Office
+Supplies`, `6200 Fake Software`, `6300 Fake Consulting`, and (Merge.dev only,
+issue #256) three cursor-paginated vendors — `Fake Merge Vendor Co` (Net 30),
+`Fake Merge Supply Co` (Net 45), `Fake Merge Services Co` (Net 60, and the one
+fixture whose `payment_term` is a bare string rather than an object) — full
+list in `tools/fake-erp/README.md`.
 
 ### Env-overridable base URLs
 
@@ -765,6 +798,12 @@ pnpm erp:up      # start fake-erp (compose profile erp, :12112); erp:down / erp:
 pnpm dev         # backend picks up the .env.development fake-erp base URLs
 pnpm test:erp    # Playwright suite frontend/tests-e2e/erp/ (merge-dev / netsuite / dynamics specs)
 ```
+
+Coverage per spec: `test_connection`, PO sync (`list_pos`), GL-account sync
+(`list_gl_accounts`), vendor sync (`list_vendors` — Merge.dev only for now,
+asserting the full field mapping — name/email/phone/address/tax id/payment
+terms — not just that the sync call didn't error), and a full send-to-ERP
+round trip to a terminal invoice status.
 
 The specs skip gracefully when fake-erp isn't reachable, so the normal suite
 stays green without it. CI runs them in the dedicated `erp-e2e` job in

@@ -34,7 +34,13 @@ import {
  *      adapter's cursor-following end-to-end; a second sync inserts 0.
  *   3. GL-account sync — imports the fake chart (6100/6200/6300), also
  *      cursor-paginated.
- *   4. Full send — an approved invoice posts through the async ERP dispatch
+ *   4. Vendor sync — the real `list_vendors()` (issue #256) against the
+ *      fake's three fixed vendors, also cursor-paginated 2 + 1; asserts the
+ *      full `_merge_vendor_to_payload` field mapping (name, email, phone,
+ *      address, tax id, payment terms — including the bare-string
+ *      `payment_term` shape one fixture exercises), not just that the sync
+ *      call didn't error.
+ *   5. Full send — an approved invoice posts through the async ERP dispatch
  *      and lands `done` with a Merge-shaped erp_document_id (merge-inv-N).
  */
 
@@ -50,6 +56,36 @@ const FAKE_GL_ACCOUNTS = [
 	{ code: '6100', name: 'Fake Office Supplies' },
 	{ code: '6200', name: 'Fake Software' },
 	{ code: '6300', name: 'Fake Consulting' }
+];
+
+const FAKE_VENDORS = [
+	{
+		name: 'Fake Merge Vendor Co',
+		email: 'ap@fakemergevendor.example',
+		phone: '+1-555-0170',
+		taxId: '71-1234567',
+		paymentTerms: 'Net 30',
+		addressContains: '701 Fake Merge Ave'
+	},
+	{
+		name: 'Fake Merge Supply Co',
+		email: 'billing@fakemergesupply.example',
+		phone: '+1-555-0172',
+		taxId: '72-2345678',
+		paymentTerms: 'Net 45',
+		addressContains: '702 Fake Supply Rd'
+	},
+	{
+		name: 'Fake Merge Services Co',
+		email: 'invoices@fakemergeservices.example',
+		phone: '+1-555-0173',
+		taxId: '73-3456789',
+		// This fixture's payment_term is a bare string on the fake, not an
+		// {"name": ...} object — proves _merge_vendor_to_payload's `elif
+		// isinstance(pt, str)` branch, not just the common dict shape.
+		paymentTerms: 'Net 60',
+		addressContains: '703 Fake Services Blvd'
+	}
 ];
 
 // The exact settings.erp shape the adapter reads: get_erp_adapter passes the
@@ -176,6 +212,73 @@ test.describe('/erp merge_dev adapter against fake-erp', () => {
 			const match = accounts.find((a) => a.code === fixture.code);
 			expect(match, `GL account ${fixture.code} synced`).toBeTruthy();
 			expect(match!.name).toBe(fixture.name);
+		}
+	});
+
+	test('vendor sync imports the fake vendors across cursor pages with full field mapping, idempotent on re-run', async ({
+		page
+	}) => {
+		const headers = await authedTenantHeaders(page);
+
+		// First sync: all three fixture vendors end up present. Same
+		// created+skipped-equals-catalogue-size invariant as the PO sync test
+		// above — the fake serves them 2 + 1 across two cursor pages, so a
+		// total of 3 proves the REAL merge_dev adapter's list_vendors()
+		// followed the `next` cursor rather than stopping at page 1.
+		const first = await page.request.post(`${API_BASE}/api/vendors/sync-erp`, {
+			headers
+		});
+		expect(first.status()).toBe(200);
+		const firstBody = (await first.json()) as {
+			success: boolean;
+			created: number;
+			updated: number;
+			unchanged: number;
+		};
+		expect(firstBody.success).toBe(true);
+		expect(firstBody.created + firstBody.updated + firstBody.unchanged).toBe(
+			FAKE_VENDORS.length
+		);
+
+		// Second sync: everything already matches by erp_vendor_id → 0
+		// created, all three unchanged (the dedupe guarantee).
+		const second = await page.request.post(`${API_BASE}/api/vendors/sync-erp`, {
+			headers
+		});
+		expect(second.status()).toBe(200);
+		const secondBody = (await second.json()) as { created: number; unchanged: number };
+		expect(secondBody.created).toBe(0);
+		expect(secondBody.unchanged).toBe(FAKE_VENDORS.length);
+
+		// The synced vendors are listable with the REAL adapter's parsed
+		// fields intact — proves _merge_vendor_to_payload's mapping of
+		// Merge's unified Vendor shape (name / email_address / phone_number /
+		// addresses[0] / tax_number / payment_term), not just that the sync
+		// call didn't error.
+		type VendorRow = {
+			name: string;
+			email: string | null;
+			phone: string | null;
+			address: string | null;
+			tax_id: string | null;
+			payment_terms: string | null;
+			erp_vendor_id: string | null;
+		};
+		const list = await page.request.get(
+			`${API_BASE}/api/vendors?search=Fake%20Merge&page_size=50`,
+			{ headers }
+		);
+		expect(list.status()).toBe(200);
+		const listBody = (await list.json()) as { items: VendorRow[] };
+		for (const fixture of FAKE_VENDORS) {
+			const vendor = listBody.items.find((v) => v.name === fixture.name);
+			expect(vendor, `synced vendor ${fixture.name} is listable`).toBeTruthy();
+			expect(vendor!.email).toBe(fixture.email);
+			expect(vendor!.phone).toBe(fixture.phone);
+			expect(vendor!.tax_id).toBe(fixture.taxId);
+			expect(vendor!.payment_terms).toBe(fixture.paymentTerms);
+			expect(vendor!.address).toContain(fixture.addressContains);
+			expect(vendor!.erp_vendor_id).toBeTruthy();
 		}
 	});
 
