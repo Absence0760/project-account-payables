@@ -8,6 +8,7 @@ from app.services.erp_adapters.base import (
     ErpInvoiceStatus,
     ErpPostResult,
     InvoicePayload,
+    VendorPayload,
 )
 from app.services.erp_adapters.dispatcher import register_adapter
 
@@ -209,6 +210,46 @@ class BusinessCentralAdapter(ErpAdapter):
         # BC doesn't support direct void — must create a credit memo
         return False
 
+    async def list_vendors(self) -> list[VendorPayload]:
+        """Pull vendors via BC's OData `vendors` entity.
+
+        Best-effort like the Merge.dev adapter's `list_pos`/`list_gl_accounts`:
+        a failed token exchange, a non-200 response, or a network error all
+        degrade to an empty list rather than raising, so the
+        `/api/vendors/sync-erp` endpoint shows "0 new vendors" instead of
+        500ing when BC is unreachable. Follows OData's `@odata.nextLink` for
+        pagination, capped at 10 pages to bound memory.
+        """
+        try:
+            token = await self._get_token()
+        except Exception:
+            return []
+
+        headers = {"Authorization": f"Bearer {token}"}
+        items: list[VendorPayload] = []
+        url = self._api_url("vendors")
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            for _ in range(10):
+                try:
+                    resp = await client.get(url, headers=headers)
+                except httpx.HTTPError:
+                    break
+
+                if resp.status_code != 200:
+                    break
+
+                body = resp.json() if resp.content else {}
+                for raw in body.get("value") or []:
+                    items.append(_d365_vendor_to_payload(raw))
+
+                next_link = body.get("@odata.nextLink")
+                if not next_link:
+                    break
+                url = next_link
+
+        return items
+
     async def test_connection(self) -> bool:
         try:
             token = await self._get_token()
@@ -221,3 +262,28 @@ class BusinessCentralAdapter(ErpAdapter):
             return resp.status_code == 200
         except Exception:
             return False
+
+
+def _d365_vendor_to_payload(raw: dict) -> VendorPayload:
+    """Map a Dynamics 365 Business Central OData vendor record to our
+    normalized VendorPayload.
+
+    `displayName` is the vendor's name field (what `test_connection` and
+    the fake-erp fixture both key on); `number` is BC's vendor code. Real
+    vendor records may also carry `email`, `phoneNumber`,
+    `taxRegistrationNumber`, `paymentTermsId`. Anything absent maps to
+    None — `sync_vendors_from_erp` never nulls out an existing local value
+    for a missing field.
+    """
+    vendor_id = raw.get("id") or raw.get("number")
+    name = raw.get("displayName") or raw.get("number") or (str(vendor_id) if vendor_id else "")
+
+    return VendorPayload(
+        erp_vendor_id=str(vendor_id) if vendor_id is not None else name,
+        name=name,
+        code=raw.get("number"),
+        email=raw.get("email"),
+        phone=raw.get("phoneNumber"),
+        tax_id=raw.get("taxRegistrationNumber"),
+        payment_terms=raw.get("paymentTermsId"),
+    )
