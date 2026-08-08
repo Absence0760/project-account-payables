@@ -4,6 +4,21 @@ import { getSelectedEntityId } from '$lib/entity';
 
 const BASE = PUBLIC_API_URL.replace(/\/+$/, '');
 
+/** Raised by `request()` on any non-OK HTTP response. Carries the status code
+ *  so a caller can branch on a specific status (e.g. a 409 "stale state"
+ *  conflict) without parsing the message text — `AssistantBudgetError`
+ *  already established the "extend Error with structured fields" pattern for
+ *  its own special-cased 429; this is the general-purpose counterpart for
+ *  everything routed through the shared `request()` helper. */
+export class ApiError extends Error {
+	status: number;
+	constructor(message: string, status: number) {
+		super(message);
+		this.name = 'ApiError';
+		this.status = status;
+	}
+}
+
 function getToken(): string | null {
 	if (typeof window === 'undefined') return null;
 	return localStorage.getItem('auth_token');
@@ -54,12 +69,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 			window.location.href = '/login';
 		}
 		const body = await res.json().catch(() => ({}));
-		throw new Error(body.detail || 'Unauthorized');
+		throw new ApiError(body.detail || 'Unauthorized', res.status);
 	}
 
 	if (!res.ok) {
 		const body = await res.json().catch(() => ({}));
-		throw new Error(body.detail || `API error ${res.status}`);
+		throw new ApiError(body.detail || `API error ${res.status}`, res.status);
 	}
 
 	if (res.status === 204) return undefined as T;

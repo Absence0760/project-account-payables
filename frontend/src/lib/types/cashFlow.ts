@@ -65,16 +65,27 @@ export interface DiscountRecommendation {
 	selected: boolean;
 }
 
-/** The `propose_payment_plan` tool result (Phase 2 — advisory, draft-only;
- *  see docs/cash-flow-copilot.md §5). Never represents money moving — it is a
- *  proposal only. All money fields are exact decimal strings. */
+/** The `propose_payment_plan` tool result (Phase 2 — advisory; Phase 3 adds
+ *  draft-only enactment on top, see docs/cash-flow-copilot.md §5/§6).
+ *  Proposing never moves money. All money fields are exact decimal strings.
+ */
 export interface PaymentPlanResult {
+	/** Deterministic correlation key for this plan (same resolved inputs +
+	 *  today's date always hash the same). The Phase 3 enact endpoints
+	 *  (`POST /api/cash-flow/plans/{plan_id}/{draft-run,capture-discounts}`)
+	 *  recompute it server-side from the fields below and refuse (409) if it
+	 *  no longer matches — never trust the client for WHAT to act on. */
+	plan_id: string;
 	currency: string;
 	granularity: string;
 	horizon_days: number;
 	opening_balance: string;
 	opening_balance_source: string;
 	min_balance_threshold: string | null;
+	/** The raw cash-budget input the discount selection was optimized under
+	 *  (may be null — unconstrained). Echoed back verbatim so an enact call
+	 *  can replay the exact same optimizer inputs. */
+	cash_budget: string | null;
 	periods: PaymentPlanPeriod[];
 	first_shortfall_period: string | null;
 	cost_of_capital_pct: string;

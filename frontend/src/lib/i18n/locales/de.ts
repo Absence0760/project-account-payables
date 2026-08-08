@@ -784,6 +784,25 @@ export const messages = {
 	'cashFlow.plan.unretimedNote':
 		'{n, plural, one {# der obigen Angebote ist} other {# der obigen Angebote sind}} in der Ersparnissumme enthalten, aber nicht im Zeitplan abgebildet (keine einzelne Rechnung zur Terminierung).',
 	'cashFlow.plan.disclaimer': 'Dies ist ein Vorschlag — es wurde noch nichts bezahlt oder geplant.',
+	'cashFlow.plan.actions.createDraftRun': 'Entwurfslauf erstellen',
+	'cashFlow.plan.actions.creatingRun': 'Wird erstellt…',
+	'cashFlow.plan.actions.captureDiscounts':
+		'{n, plural, one {# Rabatt sichern} other {# Rabatte sichern}}',
+	'cashFlow.plan.actions.captureDiscountsConfirm': 'Zum Bestätigen erneut klicken',
+	'cashFlow.plan.actions.capturingDiscounts': 'Wird gesichert…',
+	'cashFlow.plan.actions.draftRunCreated':
+		'{n, plural, one {Entwurfslauf mit # Zahlung erstellt} other {Entwurfslauf mit # Zahlungen erstellt}} über insgesamt {amount}.',
+	'cashFlow.plan.actions.draftRunExisting':
+		'Für diesen Plan existiert bereits ein Entwurfslauf — {n, plural, one {# Zahlung} other {# Zahlungen}} über insgesamt {amount}.',
+	'cashFlow.plan.actions.cfoApprovalNote':
+		'Erfordert die Freigabe durch die Finanzleitung, bevor er ausgeführt werden kann.',
+	'cashFlow.plan.actions.captureResult':
+		'{n, plural, one {# Rabattangebot gesichert.} other {# Rabattangebote gesichert.}}',
+	'cashFlow.plan.actions.captureNoneNew':
+		'Nichts Neues zu sichern — diese Angebote wurden bereits bearbeitet.',
+	'cashFlow.plan.actions.stale':
+		'Dieser Plan hat sich seit dem Vorschlag geändert — bitten Sie den Copiloten um einen aktuellen Plan, bevor Sie handeln.',
+	'cashFlow.plan.actions.error': 'Aktion konnte nicht abgeschlossen werden: {detail}',
 	// Cash Flow / CFO dashboard (routes/cfo/+page.svelte)
 	'cfo.title': 'Liquidität',
 	'cfo.exportCsv': 'CSV exportieren',

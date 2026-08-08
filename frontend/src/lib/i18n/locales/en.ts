@@ -816,6 +816,25 @@ export const en = {
 	'cashFlow.plan.unretimedNote':
 		'{n, plural, one {# of the offers above is} other {# of the offers above are}} counted in the savings total but not reflected in the schedule (no single invoice to time it against).',
 	'cashFlow.plan.disclaimer': 'This is a proposal — nothing has been paid or scheduled.',
+	// Cash-Flow Copilot — plan card Phase 3 enact actions (draft-only)
+	'cashFlow.plan.actions.createDraftRun': 'Create draft run',
+	'cashFlow.plan.actions.creatingRun': 'Creating…',
+	'cashFlow.plan.actions.captureDiscounts':
+		'{n, plural, one {Capture # discount} other {Capture # discounts}}',
+	'cashFlow.plan.actions.captureDiscountsConfirm': 'Click again to confirm',
+	'cashFlow.plan.actions.capturingDiscounts': 'Capturing…',
+	'cashFlow.plan.actions.draftRunCreated':
+		'{n, plural, one {Draft run created with # payment} other {Draft run created with # payments}} totaling {amount}.',
+	'cashFlow.plan.actions.draftRunExisting':
+		'This plan already has a draft run — {n, plural, one {# payment} other {# payments}} totaling {amount}.',
+	'cashFlow.plan.actions.cfoApprovalNote': 'Requires CFO approval before it can be executed.',
+	'cashFlow.plan.actions.captureResult':
+		'{n, plural, one {Captured # discount offer.} other {Captured # discount offers.}}',
+	'cashFlow.plan.actions.captureNoneNew':
+		'Nothing new to capture — these offers were already handled.',
+	'cashFlow.plan.actions.stale':
+		'This plan has changed since it was proposed — ask the copilot for a fresh plan before acting on it.',
+	'cashFlow.plan.actions.error': "Couldn't complete this action: {detail}",
 	// Cash Flow / CFO dashboard (routes/cfo/+page.svelte)
 	'cfo.title': 'Cash Flow',
 	'cfo.exportCsv': 'Export CSV',

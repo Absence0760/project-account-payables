@@ -3,6 +3,14 @@
 	import { formatMoney } from '$lib/utils/money';
 	import { formatDate, formatPeriod } from '$lib/utils/time';
 	import { m } from '$lib/i18n/store.svelte';
+	import { ApiError } from '$lib/api';
+	import { auth } from '$lib/stores/auth.svelte';
+	import {
+		captureDiscountsFromPlan,
+		createDraftRunFromPlan,
+		type CaptureDiscountsResult,
+		type DraftRunResult
+	} from '$lib/api/cashFlow';
 	import type { PaymentPlanResult } from '$lib/types/cashFlow';
 
 	let { result }: { result: PaymentPlanResult } = $props();
@@ -14,7 +22,88 @@
 	let selected = $derived(result.discount_recommendations.filter((r) => r.selected));
 	let hasBreach = $derived(result.periods.some((p) => p.below_threshold));
 	let breachCount = $derived(result.periods.filter((p) => p.below_threshold).length);
+
+	// Phase 3 — draft-only enactment (docs/cash-flow-copilot.md §6/§7). Gated
+	// to the same finance-leader roles as the copilot backend (`_COPILOT_ROLES`
+	// — admin/ap_manager/cfo, not ap_clerk); defense-in-depth alongside the
+	// backend's own RBAC, mirroring how /discounts gates its accept button.
+	let canEnact = $derived(auth.isManager || auth.isCfo);
+
+	let draftBusy = $state(false);
+	let draftMessage = $state<string | null>(null);
+	let draftError = $state<string | null>(null);
+
+	let captureBusy = $state(false);
+	let captureArmed = $state(false);
+	let captureMessage = $state<string | null>(null);
+	let captureError = $state<string | null>(null);
+
+	/** A 409 here means the plan's parameters no longer match what the URL's
+	 *  plan_id was computed from (edited underlying data, or "today" moved
+	 *  on) — the stale-plan guard. Surface a friendly nudge to re-ask instead
+	 *  of a raw error. */
+	function describeFailure(err: unknown): string {
+		if (err instanceof ApiError && err.status === 409) {
+			return m('cashFlow.plan.actions.stale');
+		}
+		const detail = err instanceof Error ? err.message : String(err);
+		return m('cashFlow.plan.actions.error', { detail });
+	}
+
+	async function handleCreateDraftRun() {
+		if (draftBusy) return;
+		draftBusy = true;
+		draftError = null;
+		draftMessage = null;
+		try {
+			const res: DraftRunResult = await createDraftRunFromPlan(result);
+			draftMessage = m(
+				res.created
+					? 'cashFlow.plan.actions.draftRunCreated'
+					: 'cashFlow.plan.actions.draftRunExisting',
+				{ n: res.payment_count, amount: fmt(res.total_amount) }
+			);
+			if (res.requires_cfo_approval) {
+				draftMessage = `${draftMessage} ${m('cashFlow.plan.actions.cfoApprovalNote')}`;
+			}
+		} catch (err) {
+			draftError = describeFailure(err);
+		} finally {
+			draftBusy = false;
+		}
+	}
+
+	async function handleCaptureDiscounts() {
+		if (!captureArmed) {
+			captureArmed = true;
+			return;
+		}
+		captureArmed = false;
+		if (captureBusy) return;
+		captureBusy = true;
+		captureError = null;
+		captureMessage = null;
+		try {
+			const res: CaptureDiscountsResult = await captureDiscountsFromPlan(result);
+			captureMessage =
+				res.accepted_count > 0
+					? m('cashFlow.plan.actions.captureResult', { n: res.accepted_count })
+					: m('cashFlow.plan.actions.captureNoneNew');
+		} catch (err) {
+			captureError = describeFailure(err);
+		} finally {
+			captureBusy = false;
+		}
+	}
+
+	function unarmCapture(e: MouseEvent) {
+		if (captureArmed && !(e.target as HTMLElement)?.closest?.('.plan-capture-btn')) {
+			captureArmed = false;
+		}
+	}
 </script>
+
+<svelte:window onclick={unarmCapture} />
 
 <figure class="plan-card" data-testid="payment-plan-card">
 	<figcaption class="plan-cap">
@@ -107,6 +196,48 @@
 		<p class="plan-note">
 			{m('cashFlow.plan.unretimedNote', { n: result.unretimed_offer_ids.length })}
 		</p>
+	{/if}
+
+	{#if canEnact}
+		<div class="plan-actions">
+			<button
+				type="button"
+				class="plan-action-btn"
+				disabled={draftBusy}
+				onclick={handleCreateDraftRun}
+			>
+				{draftBusy
+					? m('cashFlow.plan.actions.creatingRun')
+					: m('cashFlow.plan.actions.createDraftRun')}
+			</button>
+			{#if selected.length > 0}
+				<button
+					type="button"
+					class="plan-action-btn plan-capture-btn"
+					class:armed={captureArmed}
+					disabled={captureBusy}
+					onclick={handleCaptureDiscounts}
+				>
+					{captureBusy
+						? m('cashFlow.plan.actions.capturingDiscounts')
+						: captureArmed
+							? m('cashFlow.plan.actions.captureDiscountsConfirm')
+							: m('cashFlow.plan.actions.captureDiscounts', { n: selected.length })}
+				</button>
+			{/if}
+		</div>
+		{#if draftMessage}
+			<p class="plan-action-result" role="status">{draftMessage}</p>
+		{/if}
+		{#if draftError}
+			<p class="plan-action-error" role="alert">{draftError}</p>
+		{/if}
+		{#if captureMessage}
+			<p class="plan-action-result" role="status">{captureMessage}</p>
+		{/if}
+		{#if captureError}
+			<p class="plan-action-error" role="alert">{captureError}</p>
+		{/if}
 	{/if}
 
 	<p class="plan-disclaimer">{m('cashFlow.plan.disclaimer')}</p>
@@ -214,6 +345,46 @@
 		margin: 0 0 8px;
 		font-size: 0.76rem;
 		color: var(--text-muted);
+	}
+	.plan-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+		margin: 0 0 8px;
+	}
+	.plan-action-btn {
+		padding: 7px 14px;
+		border-radius: 8px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text);
+		font-family: inherit;
+		font-size: 0.82rem;
+		font-weight: 500;
+		cursor: pointer;
+	}
+	.plan-action-btn:hover:not(:disabled) {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+	.plan-action-btn:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+	.plan-capture-btn.armed {
+		border-color: #e04040;
+		background: rgba(240, 70, 70, 0.1);
+		color: #e04040;
+	}
+	.plan-action-result {
+		margin: 0 0 6px;
+		font-size: 0.78rem;
+		color: var(--text);
+	}
+	.plan-action-error {
+		margin: 0 0 6px;
+		font-size: 0.78rem;
+		color: #e04040;
 	}
 	.plan-disclaimer {
 		margin: 0;
