@@ -35,6 +35,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import select
 
 # ===========================================================================
 # Helpers (mirror the realdb seeding patterns in test_assistant.py /
@@ -1232,3 +1233,375 @@ async def test_facade_routes_plan_question_to_propose_payment_plan(realdb):
     assert invocations and invocations[0]["tool"] == "propose_payment_plan"
     assert invocations[0]["error"] is None
     assert invocations[0]["result"]["periods"]
+
+
+# ===========================================================================
+# 7. Phase 3 — draft-only enactment: POST .../draft-run + .../capture-discounts
+#
+# Per docs/cash-flow-copilot.md §10:
+#   - draft-only boundary: enacting either path mutates nothing beyond
+#     `draft` PaymentRun / `accepted` DiscountOffer status — no Payment
+#     leaves `pending`, no invoice transitions to `paid`, CFO gate/execute
+#     unchanged.
+#   - idempotency: the same plan_id enacted twice yields ONE draft run;
+#     capture-discounts' second call is a no-op.
+#   - RBAC: ap_clerk gets a clean 403, never data/500.
+#   - tenant isolation: tenant B can't reuse tenant A's plan_id.
+#   - a stale/mismatched plan_id (or tampered replay body) -> clean 409.
+#   - money is exact-string in both endpoints' responses.
+# ===========================================================================
+
+
+def _replay_body(plan) -> dict:
+    """Build the `CashFlowPlanReplay` body a well-behaved frontend would send
+    back — the plan's own RESOLVED defining fields, verbatim."""
+    return {
+        "granularity": plan.granularity,
+        "horizon_days": plan.horizon_days,
+        "min_balance_threshold": (
+            str(plan.min_balance_threshold) if plan.min_balance_threshold is not None else None
+        ),
+        "cash_budget": str(plan.cash_budget) if plan.cash_budget is not None else None,
+        "cost_of_capital_pct": str(plan.cost_of_capital_pct),
+    }
+
+
+async def _propose_plan(realdb, key="a", **param_overrides):
+    from app.services.assistant.tools.cashflow import propose_payment_plan
+    from app.services.assistant.tools.schemas import ProposePaymentPlanParams
+
+    info = realdb.info(key)
+    mk = realdb.sessionmaker(key)
+    ctrl_mk = realdb.control_sessionmaker()
+    async with mk() as sa, ctrl_mk() as ctrl:
+        return await propose_payment_plan(
+            sa,
+            org_id=info.org_id,
+            entity_id=None,
+            current_user_id=info.users["admin"],
+            control_db=ctrl,
+            params=ProposePaymentPlanParams(granularity="week", **param_overrides),
+        )
+
+
+async def test_draft_run_stages_run_over_payable_invoices_and_is_idempotent(realdb):
+    from app.models.payment import Payment, PaymentRun
+
+    a = realdb.info("a")
+    mk_a = realdb.sessionmaker("a")
+    async with mk_a() as sa:
+        ent = await _default_entity_id(sa, a.org_id)
+        inv = await _seed_invoice(
+            sa,
+            a.org_id,
+            ent,
+            number="DRAFT-1",
+            vendor_name="DraftCo",
+            amount="500.00",
+            status="approved",
+            due_date=date.today() + timedelta(days=10),
+        )
+        await sa.commit()
+        inv_id = inv.id
+
+    plan = await _propose_plan(realdb)
+    body = _replay_body(plan)
+
+    async with realdb.client(key="a", role="admin") as c:
+        r1 = await c.post(f"/api/cash-flow/plans/{plan.plan_id}/draft-run", json=body)
+        assert r1.status_code == 201, r1.text
+        data1 = r1.json()
+        assert data1["created"] is True
+        assert data1["status"] == "draft"
+        assert data1["payment_count"] == 1
+        _assert_money_str(data1["total_amount"], "total_amount")
+        assert data1["total_amount"] == "500.00"
+
+        # Idempotent retry: same plan_id -> the SAME run, not a second one.
+        r2 = await c.post(f"/api/cash-flow/plans/{plan.plan_id}/draft-run", json=body)
+        assert r2.status_code == 200, r2.text
+        data2 = r2.json()
+        assert data2["created"] is False
+        assert data2["run_id"] == data1["run_id"]
+
+    async with mk_a() as sa:
+        runs = (
+            (await sa.execute(select(PaymentRun).where(PaymentRun.plan_id == plan.plan_id)))
+            .scalars()
+            .all()
+        )
+        assert len(runs) == 1, "expected exactly one draft run for this plan_id, not a duplicate"
+        payments = (
+            (await sa.execute(select(Payment).where(Payment.invoice_id == inv_id))).scalars().all()
+        )
+        assert len(payments) == 1
+
+
+async def test_draft_run_never_executes_anything(realdb):
+    """Draft-only boundary: the created run stays `draft`, the source invoice
+    never advances to `paid`, and no Payment leaves `pending`."""
+    from app.models.invoice import Invoice
+    from app.models.payment import Payment
+
+    a = realdb.info("a")
+    mk_a = realdb.sessionmaker("a")
+    async with mk_a() as sa:
+        ent = await _default_entity_id(sa, a.org_id)
+        inv = await _seed_invoice(
+            sa,
+            a.org_id,
+            ent,
+            number="NOEXEC-1",
+            vendor_name="NoExecCo",
+            amount="750.00",
+            status="approved",
+            due_date=date.today() + timedelta(days=10),
+        )
+        await sa.commit()
+        inv_id = inv.id
+
+    plan = await _propose_plan(realdb)
+    body = _replay_body(plan)
+
+    async with realdb.client(key="a", role="admin") as c:
+        r = await c.post(f"/api/cash-flow/plans/{plan.plan_id}/draft-run", json=body)
+        assert r.status_code == 201, r.text
+        run_id = r.json()["run_id"]
+
+        run_detail = await c.get(f"/api/payments/runs/{run_id}")
+        assert run_detail.status_code == 200, run_detail.text
+        assert run_detail.json()["status"] == "draft"
+        assert run_detail.json()["executed_at"] is None
+
+    async with mk_a() as sa:
+        refreshed = (await sa.execute(select(Invoice).where(Invoice.id == inv_id))).scalar_one()
+        assert refreshed.status == "approved", "invoice must never advance to paid on its own"
+
+        payments = (
+            (await sa.execute(select(Payment).where(Payment.invoice_id == inv_id))).scalars().all()
+        )
+        assert len(payments) == 1
+        assert payments[0].status == "pending"
+
+
+async def test_draft_run_cfo_gate_still_guards_execute(realdb):
+    """The copilot's draft-run reuses `create_payment_run_for_invoices`, so
+    the CFO-approval-threshold gate composes identically: a plan whose total
+    clears `cfo_approval_above` lands `requires_cfo_approval=True`, and
+    `/execute` still refuses (403) until a CFO signs off — completely
+    unchanged from the manual `POST /api/payments/runs` path."""
+    from sqlalchemy import update
+
+    from app.models.organization import Organization
+
+    a = realdb.info("a")
+    mk_a = realdb.sessionmaker("a")
+    async with mk_a() as sa:
+        ent = await _default_entity_id(sa, a.org_id)
+        await _seed_invoice(
+            sa,
+            a.org_id,
+            ent,
+            number="CFOGATE-1",
+            vendor_name="CfoGateCo",
+            amount="5000.00",
+            status="approved",
+            due_date=date.today() + timedelta(days=10),
+        )
+        await sa.commit()
+
+    ctrl_mk = realdb.control_sessionmaker()
+    async with ctrl_mk() as ctrl:
+        await ctrl.execute(
+            update(Organization)
+            .where(Organization.id == a.org_id)
+            .values(settings={"payments": {"cfo_approval_above": "1000"}})
+        )
+        await ctrl.commit()
+
+    plan = await _propose_plan(realdb)
+    body = _replay_body(plan)
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        r = await c.post(f"/api/cash-flow/plans/{plan.plan_id}/draft-run", json=body)
+        assert r.status_code == 201, r.text
+        data = r.json()
+        assert data["requires_cfo_approval"] is True
+        run_id = data["run_id"]
+
+    # A DIFFERENT actor (segregation-of-duties is a separate, already-tested
+    # gate) holding the CFO role still can't execute — `cfo_approved_at` is
+    # what's missing, and only the explicit /approve endpoint sets it.
+    async with realdb.client(key="a", role="cfo") as c:
+        exec_resp = await c.post(f"/api/payments/runs/{run_id}/execute")
+    assert exec_resp.status_code == 403, exec_resp.text
+
+
+async def test_draft_run_refuses_stale_or_mismatched_plan_id(realdb):
+    """A `plan_id` that doesn't hash from the replayed params — bogus, or a
+    tampered field — is refused with a clean 409, never silently acted on."""
+    async with realdb.client(key="a", role="admin") as c:
+        bogus = await c.post(
+            "/api/cash-flow/plans/not-a-real-plan-id/draft-run",
+            json={
+                "granularity": "week",
+                "horizon_days": 90,
+                "min_balance_threshold": None,
+                "cash_budget": None,
+                "cost_of_capital_pct": "8.0",
+            },
+        )
+    assert bogus.status_code == 409, bogus.text
+
+    plan = await _propose_plan(realdb, horizon_days=30)
+    body = _replay_body(plan)
+    body["horizon_days"] = 60  # tampered: no longer matches the URL's plan_id
+
+    async with realdb.client(key="a", role="admin") as c:
+        mismatched = await c.post(f"/api/cash-flow/plans/{plan.plan_id}/draft-run", json=body)
+    assert mismatched.status_code == 409, mismatched.text
+
+
+async def test_capture_discounts_refuses_stale_plan_id(realdb):
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post(
+            "/api/cash-flow/plans/not-a-real-plan-id/capture-discounts",
+            json={
+                "granularity": "week",
+                "horizon_days": 90,
+                "min_balance_threshold": None,
+                "cash_budget": None,
+                "cost_of_capital_pct": "8.0",
+            },
+        )
+    assert resp.status_code == 409, resp.text
+
+
+async def test_draft_run_tenant_b_cannot_reuse_tenant_a_plan_id(realdb):
+    """Tenant isolation: tenant B's request never resolves tenant A's plan —
+    the plan_id is org-scoped, so replaying it under tenant B's credentials
+    can only ever fail the stale-plan check (409), never touch A's data or
+    B's own tables."""
+    from app.models.payment import PaymentRun
+
+    a = realdb.info("a")
+    mk_a = realdb.sessionmaker("a")
+    async with mk_a() as sa:
+        ent = await _default_entity_id(sa, a.org_id)
+        await _seed_invoice(
+            sa,
+            a.org_id,
+            ent,
+            number="ISO-A-1",
+            vendor_name="IsoACo",
+            amount="400.00",
+            status="approved",
+            due_date=date.today() + timedelta(days=10),
+        )
+        await sa.commit()
+
+    plan = await _propose_plan(realdb, key="a")
+    body = _replay_body(plan)
+
+    async with realdb.client(key="b", role="admin") as c:
+        resp = await c.post(f"/api/cash-flow/plans/{plan.plan_id}/draft-run", json=body)
+    assert resp.status_code == 409, resp.text
+
+    mk_b = realdb.sessionmaker("b")
+    async with mk_b() as sb:
+        runs = (await sb.execute(select(PaymentRun))).scalars().all()
+        assert runs == [], "tenant B's payment_runs must be untouched by tenant A's plan_id"
+
+
+@pytest.mark.parametrize("route", ["draft-run", "capture-discounts"])
+async def test_enact_routes_forbid_ap_clerk(realdb, route):
+    """Per-route RBAC: an ap_clerk gets a clean 403 refusal — never data,
+    never a 500 — even against a bogus plan_id (role gate runs first)."""
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        resp = await c.post(
+            f"/api/cash-flow/plans/whatever/{route}",
+            json={
+                "granularity": "week",
+                "horizon_days": 90,
+                "min_balance_threshold": None,
+                "cash_budget": None,
+                "cost_of_capital_pct": "8.0",
+            },
+        )
+    assert resp.status_code == 403, resp.text
+
+
+async def test_capture_discounts_accepts_selected_offers_and_moves_no_money(realdb):
+    from app.models.discount import DiscountOffer
+    from app.models.invoice import Invoice
+    from app.models.payment import Payment
+
+    a = realdb.info("a")
+    mk_a = realdb.sessionmaker("a")
+    async with mk_a() as sa:
+        ent = await _default_entity_id(sa, a.org_id)
+        inv = await _seed_invoice(
+            sa,
+            a.org_id,
+            ent,
+            number="CAP-1",
+            vendor_name="CapCo",
+            amount="1000.00",
+            status="approved",
+            due_date=date.today() + timedelta(days=30),
+        )
+        await sa.commit()
+        inv_id = inv.id
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        r = await c.post(
+            "/api/discounts/offers",
+            json={
+                "scope": "invoice",
+                "invoice_id": str(inv_id),
+                "tiers": [{"days": 5, "percent": "3.00"}],
+            },
+        )
+        assert r.status_code == 201, r.text
+        offer_id = r.json()["id"]
+
+    plan = await _propose_plan(realdb, opening_balance=Decimal("5000.00"))
+    assert any(r.selected for r in plan.discount_recommendations), (
+        "expected the 3% offer to be worthwhile and selected"
+    )
+    body = _replay_body(plan)
+
+    async with realdb.client(key="a", role="admin") as c:
+        r1 = await c.post(f"/api/cash-flow/plans/{plan.plan_id}/capture-discounts", json=body)
+        assert r1.status_code == 200, r1.text
+        data1 = r1.json()
+        assert data1["accepted_offer_ids"] == [offer_id]
+        assert data1["accepted_count"] == 1
+        assert data1["skipped_count"] == 0
+        _assert_money_str(data1["total_savings_selected"], "total_savings_selected")
+        _assert_no_float(data1)
+
+        # Idempotent: the offer is no longer `offered`, so the fresh optimizer
+        # pass a second call re-runs doesn't even see it anymore (the
+        # candidate query is `status == OFFERED`) — a clean no-op, never a
+        # re-raise, never a double-accept.
+        r2 = await c.post(f"/api/cash-flow/plans/{plan.plan_id}/capture-discounts", json=body)
+        assert r2.status_code == 200, r2.text
+        data2 = r2.json()
+        assert data2["accepted_offer_ids"] == []
+        assert data2["accepted_count"] == 0
+        assert data2["skipped_count"] == 0
+
+    async with mk_a() as sa:
+        offer = (
+            await sa.execute(select(DiscountOffer).where(DiscountOffer.id == uuid.UUID(offer_id)))
+        ).scalar_one()
+        assert offer.status == "accepted"
+
+        refreshed_inv = (await sa.execute(select(Invoice).where(Invoice.id == inv_id))).scalar_one()
+        assert refreshed_inv.status == "approved", "capture-discounts must never move money"
+
+        payments = (
+            (await sa.execute(select(Payment).where(Payment.invoice_id == inv_id))).scalars().all()
+        )
+        assert payments == [], "capture-discounts must never create a Payment"

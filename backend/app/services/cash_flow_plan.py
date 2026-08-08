@@ -30,6 +30,7 @@ transparent about the gap instead of silently overclaiming precision.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -151,3 +152,52 @@ def assemble_plan(
         selected_offer_ids=[r.opportunity.offer_id for r in selected],
         unretimed_offer_ids=unretimed_offer_ids,
     )
+
+
+def compute_plan_id(
+    *,
+    org_id: uuid.UUID,
+    entity_id: uuid.UUID | None,
+    granularity: str,
+    horizon_days: int,
+    min_balance_threshold: Decimal | None,
+    cash_budget: Decimal | None,
+    cost_of_capital_pct: Decimal,
+    today: date,
+) -> str:
+    """Deterministic correlation key for a proposed cash-flow plan (Phase 3).
+
+    Per §5/§12 there is no persisted ``CashPlan`` row to look up by primary
+    key — a plan is stateless and re-derivable from its own inputs. This
+    hashes exactly those inputs (the plan's RESOLVED defining parameters,
+    never a raw possibly-``None`` request field — resolution must happen
+    before hashing so a ``None`` override on both the propose call and a
+    later enact call, which independently resolve to the same org default,
+    still hash identically) plus the calendar ``date`` (not a timestamp —
+    "today" determines which commitments are in-horizon, so a plan computed
+    yesterday and one computed today for identical parameters are, correctly,
+    two different plans).
+
+    ``propose_payment_plan`` computes this once and returns it on the tool
+    result as ``plan_id``; the enact endpoints
+    (``POST /api/cash-flow/plans/{plan_id}/{draft-run,capture-discounts}``)
+    recompute it from the SAME resolution over the client's replayed
+    parameters and refuse (409) on a mismatch rather than trusting the
+    caller about which plan to act on. See docs/cash-flow-copilot.md §5/§6.
+
+    UUID5 (not ``uuid4``) so the id is a pure function of its inputs, not
+    random state — the whole point of the scheme.
+    """
+    parts = "|".join(
+        [
+            str(org_id),
+            str(entity_id) if entity_id is not None else "-",
+            granularity,
+            str(horizon_days),
+            str(min_balance_threshold) if min_balance_threshold is not None else "-",
+            str(cash_budget) if cash_budget is not None else "-",
+            str(cost_of_capital_pct),
+            today.isoformat(),
+        ]
+    )
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"feoh:cashflow-plan:{parts}"))
