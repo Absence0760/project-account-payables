@@ -19,6 +19,7 @@
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
 	import { untrack } from 'svelte';
+	import { formatDate } from '$lib/utils/time';
 
 	const canCreate = $derived(auth.isManager);
 
@@ -136,15 +137,6 @@
 		contractStore.upsert(c);
 		// Keep the open detail modal in sync after a lifecycle action.
 		if (editing && editing.id === c.id) editing = c;
-	}
-
-	function formatDate(s: string | null): string {
-		if (!s) return '—';
-		return new Date(s).toLocaleDateString('en-US', {
-			month: 'short',
-			day: 'numeric',
-			year: 'numeric'
-		});
 	}
 
 	function typeLabel(t: ContractType): string {

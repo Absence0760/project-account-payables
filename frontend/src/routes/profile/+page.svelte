@@ -174,6 +174,7 @@
 	// --- Passkeys (WebAuthn) — an additional MFA factor ----------------------
 	import { isWebAuthnSupported } from '$lib/webauthn';
 	import type { Passkey, StepUpProof } from '$lib/stores/auth.svelte';
+	import { formatDate } from '$lib/utils/time';
 
 	let passkeys = $state<Passkey[] | null>(null);
 	let passkeyName = $state('');
@@ -512,7 +513,11 @@
 									<span class="passkey-name">{pk.name}</span>
 									{#if pk.last_used_at}
 										<span class="passkey-sub">
-											Last used {new Date(pk.last_used_at).toLocaleDateString()}
+											Last used {formatDate(pk.last_used_at, '—', {
+												year: 'numeric',
+												month: 'numeric',
+												day: 'numeric'
+											})}
 										</span>
 									{:else}
 										<span class="passkey-sub">Never used</span>

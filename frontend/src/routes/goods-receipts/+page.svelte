@@ -8,6 +8,7 @@
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
+	import { formatDate } from '$lib/utils/time';
 
 	const COLUMNS = $derived([
 		{ label: m('goodsReceipts.col.grNumber') },
@@ -103,15 +104,6 @@
 		} finally {
 			detailLoading = false;
 		}
-	}
-
-	function formatDate(s: string | null): string {
-		if (!s) return '—';
-		return new Date(s).toLocaleDateString('en-US', {
-			month: 'short',
-			day: 'numeric',
-			year: 'numeric'
-		});
 	}
 
 	let hasMore = $derived(grs.length < total);
