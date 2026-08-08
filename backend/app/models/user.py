@@ -98,6 +98,18 @@ class User(Base, TimestampMixin):
         JSONB, nullable=False, default=dict, server_default="{}"
     )
 
+    # Mobile push device tokens — one per platform. Shape:
+    # {"ios": {"token": "...", "updated_at": "<iso8601>"}, "android": {...}}.
+    # Deliberately a SEPARATE column from `notification_prefs` — a device token
+    # is per-device registration state (rotates, gets replaced), not a
+    # per-event delivery preference; conflating the two shapes would make both
+    # harder to reason about. Written by `POST /api/notifications/device-token`
+    # (registration only — there is no push-SENDING adapter yet, see
+    # docs/notifications.md § Push device tokens).
+    device_tokens: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
+
     # Account-level email language preference — "what language to email this
     # person in" (signup/welcome, invoice notifications, supplier chat). NULL =
     # English fallback. Validated against the supported set at the write path

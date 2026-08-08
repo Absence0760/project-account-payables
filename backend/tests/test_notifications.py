@@ -177,6 +177,67 @@ async def test_preferences_round_trip(realdb):
         await s.commit()
 
 
+async def test_device_token_register_and_upsert(realdb):
+    ctrl_mk = realdb.control_sessionmaker()
+    me = realdb.info("a").users["admin"]
+    # reset
+    async with ctrl_mk() as s:
+        u = (await s.execute(select(User).where(User.id == me))).scalar_one()
+        u.device_tokens = {}
+        await s.commit()
+
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post(
+            "/api/notifications/device-token",
+            json={"token": "fcm-token-ios-1", "platform": "ios"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["platform"] == "ios"
+        assert body["updated_at"]
+
+        # Registering android doesn't disturb the ios entry.
+        resp2 = await c.post(
+            "/api/notifications/device-token",
+            json={"token": "fcm-token-android-1", "platform": "android"},
+        )
+        assert resp2.status_code == 200
+
+    async with ctrl_mk() as s:
+        u = (await s.execute(select(User).where(User.id == me))).scalar_one()
+        assert u.device_tokens["ios"]["token"] == "fcm-token-ios-1"
+        assert u.device_tokens["android"]["token"] == "fcm-token-android-1"
+
+    # A fresh registration for the same platform REPLACES the prior token
+    # (upsert — a rotated FCM token shouldn't leave the stale one behind).
+    async with realdb.client(key="a", role="admin") as c:
+        resp3 = await c.post(
+            "/api/notifications/device-token",
+            json={"token": "fcm-token-ios-2", "platform": "ios"},
+        )
+        assert resp3.status_code == 200
+
+    async with ctrl_mk() as s:
+        u = (await s.execute(select(User).where(User.id == me))).scalar_one()
+        assert u.device_tokens["ios"]["token"] == "fcm-token-ios-2"
+        assert u.device_tokens["android"]["token"] == "fcm-token-android-1"
+
+    # cleanup
+    async with ctrl_mk() as s:
+        u = (await s.execute(select(User).where(User.id == me))).scalar_one()
+        u.device_tokens = {}
+        await s.commit()
+
+
+async def test_device_token_rejects_bad_platform(realdb):
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post(
+            "/api/notifications/device-token",
+            json={"token": "some-token", "platform": "windows_phone"},
+        )
+    assert resp.status_code == 422
+
+
 async def test_requires_auth(realdb):
     async with realdb.client(key="a", role=None) as c:
         resp = await c.get("/api/notifications")
