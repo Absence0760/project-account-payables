@@ -12,6 +12,7 @@
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import { m } from '$lib/i18n/store.svelte';
+	import { formatDate } from '$lib/utils/time';
 	import type { MessageKey } from '$lib/i18n/messages';
 	import type { ActiveSteps } from '$lib/stores/workflows.svelte';
 
@@ -986,9 +987,7 @@
 
 	function formatAuditDate(iso: string): string {
 		if (!iso) return '';
-		const d = new Date(iso);
-		return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) +
-			' ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+		return formatDate(iso, '', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 	}
 
 	function handleBackdrop(e: MouseEvent) {

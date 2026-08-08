@@ -9,6 +9,7 @@
 	import { getAgentStats, getAgentDecisions } from '$lib/api/exceptionAgents';
 	import { ACTION_LABELS, type AgentStats, type AgentDecision } from '$lib/types/exceptionAgents';
 	import { appendUnique } from '$lib/utils/pagination';
+	import { formatDate } from '$lib/utils/time';
 
 	const PAGE_SIZE = 20;
 
@@ -74,15 +75,6 @@
 		if (actionFilter === action) return;
 		actionFilter = action;
 		loadDecisions();
-	}
-
-	function formatDate(iso: string): string {
-		return new Date(iso).toLocaleDateString('en-US', {
-			month: 'short',
-			day: 'numeric',
-			hour: 'numeric',
-			minute: '2-digit'
-		});
 	}
 
 	function changeSummary(d: AgentDecision): string {
