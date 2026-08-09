@@ -48,6 +48,13 @@ export default defineConfig({
 	testDir: '.',
 	testIgnore: ['**/node_modules/**', '**/.auth/**', '**/fixtures/**'],
 
+	// Runs once in the main process before any test/worker starts. Verifies
+	// every tenant's seeded "Default Workflow" is still is_active with its
+	// approval + erp_export steps enabled — the cheap guard against
+	// docs/known-issues.md § "Workflow-mutating e2e specs can strand a tenant
+	// on a disabled workflow definition". See fixtures/globalSetup.ts.
+	globalSetup: './fixtures/globalSetup.ts',
+
 	timeout: 30_000,
 	expect: { timeout: 10_000 },
 
