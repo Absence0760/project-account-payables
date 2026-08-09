@@ -75,62 +75,38 @@ any plan to run multiple suite directories in one CI shard sequentially.
 
 ---
 
-## A dev backend on the same Postgres mutates the pytest tenant DBs mid-test
+## ~~A dev backend on the same Postgres mutates the pytest tenant DBs mid-test~~ — FIXED 2026-08-08
 
-**Discovered:** 2026-07-20, while root-causing the concurrent-pytest cross-kill
-(issue #211's environment notes). **Confirmed:** 2026-07-22.
+**Resolved** by giving the `realdb` pytest harness its own control-plane
+database per slot (`feohledger_pytest<N>` — slot 0 included) instead of
+registering test orgs in the real, shared `feohledger`
+(`backend/tests/conftest.py::control_db_name_for_slot`). A dev backend's
+background sweeps (`extraction_reaper.run_reaper_loop` et al. —
+`select(Organization.id, Organization.db_name)` with no filter against
+whatever DB `settings.database_url` names) can no longer discover the
+harness's test tenants at all, because their `Organization` rows no longer
+live there. This also removes the cross-process contention the original
+write-up flagged on the shared control plane's unique constraints (org slugs,
+user emails) — concurrent slots now don't share a control-plane database
+either.
 
-**Symptom:** realdb pytest failures — missing or unexpectedly-`failed`
-invoices, `TRUNCATE` stalls — in a run that overlapped a locally-running
-backend (`pnpm dev:backend`, or the backend Playwright drives) pointed at the
-same Postgres.
+Kept as a stub because the diagnosis is worth not repeating: the root cause
+(background sweeps enumerating every org with no filter), the confirmation
+run that ruled out a genuine test-ordering/leak bug, and why the fix landed
+as its own change rather than folded into the original slot-claim work all
+still apply as background. The current mechanism — naming, one-time-per-slot
+provisioning, and the session-start schema self-heal it shares with the
+tenant pair — is documented in `backend/CLAUDE.md` § Test databases and in
+`control_db_name_for_slot`'s docstring in `backend/tests/conftest.py`.
+Regression coverage is `backend/tests/test_realdb_harness.py` (the "control
+plane is per-slot" section) — including a direct proof that a session opened
+against `settings.database_url` cannot see an `Organization` row the harness
+created for its slot.
 
-**Confirmation (2026-07-22):** issue #211 reported ~23 failures (in
-`test_access_reviews.py`, `test_adaptive_workflows*.py`,
-`test_analytics_aging_reconciliation.py`, `test_assistant*.py`,
-`test_audit_access.py`, `test_partner_admin.py`) from a single whole-suite
-`pytest -q` run, with two confounds the reporter flagged themselves: a
-locally-running dev backend and a Playwright e2e run against the same
-Postgres. Re-ran the identical whole-suite `pytest -q` with **both stopped**
-and nothing else attached to Postgres (a clean ~2h16m serial run, single
-process, no sharding): **zero failures in any of the originally-reported
-files.** The only failures in that clean run (68, all `UndefinedColumnError`)
-were an unrelated, separately-diagnosed local schema-drift issue (see the next
-entry) — not this one. This is strong evidence the original ~23 failures were
-caused by the confound, not a genuine whole-suite test-ordering/leak bug.
-
-**Root cause:** the backend's background sweeps enumerate **every** organization
-in the control plane and open a connection per tenant DB —
-`extraction_reaper.run_reaper_loop` does
-`select(Organization.id, Organization.db_name)` with no filter, and it is on by
-default (`FEOH_EXTRACTION_REAPER_ENABLED` defaults to `True`). The realdb harness
-registers its test tenants in that same shared control plane
-(`feohledger`), so a dev server happily sweeps `feoh_pytesta` / `feoh_pytestb`
-— transitioning stuck `pending` invoices to `failed` inside a database a test is
-mid-way through asserting on, and holding a snapshot/lock the next test's
-`TRUNCATE` must wait for.
-
-The per-process slot claim added in `tests/conftest.py` (see backend
-`CLAUDE.md` § Test databases) makes *pytest processes* mutually exclusive, but it
-cannot hide the harness tenants from a dev server, which discovers them through
-the control plane rather than by name.
-
-**Blast radius:** local only, and only while a backend is running against the
-same Postgres as a pytest run. CI is immune — each shard boots its own Postgres
-and runs no server.
-
-**Workaround today:** don't run the dev backend against the same Postgres while
-running realdb pytest (stop `pnpm dev:backend`, or point one of them at another
-instance).
-
-**Recommended fix:** give the harness its own control-plane database per slot
-(`feohledger_pytest<N>`) instead of sharing `feohledger`, so the
-harness tenants are invisible to any server on the default control plane. That
-also removes the remaining cross-process contention on the shared control-plane
-unique constraints (emails, org slugs). Deferred here because it moves
-`settings.database_url` for the whole test session — a materially wider blast
-radius than the isolation fix it would extend, and worth landing on its own.
-
-**Trigger to revisit:** the next realdb failure that can't be reproduced with
-nothing else attached to Postgres, or any move to run the e2e stack and pytest
-concurrently.
+One thing worth carrying forward: this is a **one-time-per-slot** cost
+(provisioning a new database, or self-healing its schema, once per pytest
+process — the same accepted trade-off the tenant pair already makes), not a
+per-test one. Measured on a single realdb test reaching a cold slot: about 3
+seconds slower than before this fix, which does not survive contact with a
+multi-thousand-test suite where the fixture's setup is paid once regardless
+of how many realdb tests follow.

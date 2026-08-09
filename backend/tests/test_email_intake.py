@@ -559,8 +559,6 @@ def test_usable_attachments_drops_wrong_content_type():
 
 
 async def test_admin_rotate_token_changes_address_and_kills_old(realdb, monkeypatch):
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
     from app.config import settings as cfg
     from app.services.email_intake import resolve_tenant_from_recipient
 
@@ -582,14 +580,13 @@ async def test_admin_rotate_token_changes_address_and_kills_old(realdb, monkeypa
     assert body["address"] == second
     assert body["enabled"] is True
 
-    # The old address no longer resolves; the current one does.
-    engine = create_async_engine(cfg.database_url)
-    mk = async_sessionmaker(engine, expire_on_commit=False)
-    try:
-        async with mk() as s:
-            assert await resolve_tenant_from_recipient(s, first) is None
-            org = await resolve_tenant_from_recipient(s, second)
-            assert org is not None
-            assert org.slug == realdb.info("a").slug
-    finally:
-        await engine.dispose()
+    # The old address no longer resolves; the current one does. Goes through
+    # realdb.control_sessionmaker() (not a bare create_async_engine(cfg.database_url))
+    # since the harness's org lives in this process's per-slot control-plane
+    # database, not the real, shared one.
+    mk = realdb.control_sessionmaker()
+    async with mk() as s:
+        assert await resolve_tenant_from_recipient(s, first) is None
+        org = await resolve_tenant_from_recipient(s, second)
+        assert org is not None
+        assert org.slug == realdb.info("a").slug

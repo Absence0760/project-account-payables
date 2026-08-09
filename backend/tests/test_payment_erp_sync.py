@@ -16,9 +16,10 @@ import uuid
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.config import settings
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.payment import Payment, PaymentRun
 from app.models.workflow import AuditLog
@@ -26,28 +27,48 @@ from app.services import payment_erp_sync
 from app.services.payment_erp_sync import _sync_payments
 
 
+@pytest.fixture(autouse=True)
+def _redirect_database_url_to_slot(realdb, monkeypatch):
+    """Point the global ``settings.database_url`` at THIS slot's own
+    control-plane DB for the duration of each test.
+
+    ``_sync_payments`` deliberately does NOT go through the shared
+    `app.database.control_session_factory` — it builds its own throwaway
+    control + tenant engines straight off `settings.database_url` /
+    `org.db_name` every call, because in production it also runs detached
+    from any request/test event loop (`dispatch_payment_sync` fires it on a
+    background thread with a brand-new loop, so it can't safely reuse a
+    pooled engine bound to a different loop). That means it can't pick up the
+    per-slot control-plane DB the way code that reads
+    `control_session_factory` does — the harness has to redirect the global
+    `settings.database_url` itself instead. Safe because `settings` is a
+    module-global singleton every reader shares, monkeypatch reverts it after
+    the test, and `_make_tenant_url` (used for the tenant-side engine) only
+    ever keeps the host/port/credentials from this value and replaces the
+    trailing db-name segment — so the real tenant DBs stay reachable exactly
+    as before.
+    """
+    monkeypatch.setattr(settings, "database_url", realdb.control_db_url())
+
+
 async def _set_org_erp(realdb, key: str, erp_config: dict | None) -> None:
-    from app.config import settings as cfg
     from app.models.organization import Organization
 
-    engine = create_async_engine(cfg.database_url)
-    mk = async_sessionmaker(engine, expire_on_commit=False)
-    try:
-        async with mk() as s:
-            org = (
-                await s.execute(
-                    select(Organization).where(Organization.id == realdb.info(key).org_id)
-                )
-            ).scalar_one()
-            new_settings = dict(org.settings or {})
-            if erp_config is None:
-                new_settings.pop("erp", None)
-            else:
-                new_settings["erp"] = erp_config
-            org.settings = new_settings
-            await s.commit()
-    finally:
-        await engine.dispose()
+    # Goes through realdb.control_sessionmaker() (not a bare
+    # create_async_engine(cfg.database_url)) — the harness's org lives in this
+    # process's per-slot control-plane database, not the real, shared one.
+    mk = realdb.control_sessionmaker()
+    async with mk() as s:
+        org = (
+            await s.execute(select(Organization).where(Organization.id == realdb.info(key).org_id))
+        ).scalar_one()
+        new_settings = dict(org.settings or {})
+        if erp_config is None:
+            new_settings.pop("erp", None)
+        else:
+            new_settings["erp"] = erp_config
+        org.settings = new_settings
+        await s.commit()
 
 
 async def _seed_run(

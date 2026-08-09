@@ -44,8 +44,10 @@ from tests.conftest import (
     _REBUILT_TENANT_DBS,
     _SLOT_LOCK_NAMESPACE,
     _asyncpg_dsn,
+    _base_control_db_name,
     _claim_realdb_slot,
     _ensure_test_tenants,
+    control_db_name_for_slot,
     role_email,
     tenant_slugs_for_slot,
 )
@@ -74,6 +76,76 @@ def test_each_slot_names_a_disjoint_tenant_pair():
 
 def test_role_email_is_derived_from_the_slug():
     assert role_email("pytesta3", "admin") == "admin@pytesta3.test"
+
+
+# ── The control-plane DB is per-slot too (issue #251 bucket 2) ────────
+#
+# Unlike the tenant pair — where slot 0 reuses the historical unsuffixed
+# names so the common single-process run provisions nothing new — the
+# control-plane database must NEVER be the real shared default
+# (`settings.database_url`, i.e. `feohledger`), not even for slot 0. Sharing
+# it was the actual defect: a locally-running dev backend's background
+# sweeps (e.g. `extraction_reaper.run_reaper_loop`) enumerate every
+# `Organization` row in that database with no filter, so a harness org
+# living there was discoverable — and mutable — by a process this harness
+# never claimed exclusivity from. See docs/known-issues.md § "A dev backend
+# on the same Postgres mutates the pytest tenant DBs mid-test".
+
+
+def test_control_db_name_for_slot_never_reuses_the_shared_default():
+    base = _base_control_db_name()
+    for slot in range(4):
+        name = control_db_name_for_slot(slot)
+        assert name != base, f"slot {slot} resolved to the shared default control-plane DB"
+        assert name.startswith(f"{base}_pytest")
+
+
+def test_each_slot_names_a_disjoint_control_db():
+    seen: set[str] = set()
+    for slot in range(4):
+        name = control_db_name_for_slot(slot)
+        assert name not in seen, f"slot {slot} reuses a control-plane DB from a lower slot"
+        seen.add(name)
+
+
+async def test_control_sessionmaker_points_at_this_slot_s_own_db(realdb):
+    """`RealDB.control_sessionmaker()` (and, by the same construction, the
+    `client()` control-DB override) must resolve to THIS slot's own
+    control-plane database, never the shared default."""
+    expected_name = control_db_name_for_slot(_claim_realdb_slot())
+    async with realdb.control_sessionmaker()() as s:
+        bind = s.get_bind()
+        assert bind.url.database == expected_name
+
+
+async def test_default_control_plane_cannot_see_a_harness_organization(realdb):
+    """The headline regression: a session on the DEFAULT control-plane
+    connection string (`settings.database_url` — exactly what a locally
+    running dev backend uses, e.g. via `pnpm dev:backend`) must not be able
+    to see an `Organization` row this harness created for its slot.
+
+    Before this fix, every slot's test orgs lived in that same shared
+    `feohledger` database, so a dev backend's background sweeps discovered
+    and mutated them mid-test — the confirmed root cause in
+    docs/known-issues.md. This is a raw column check against
+    `settings.database_url` directly (not the ORM `Organization` mapping, and
+    not `realdb.control_sessionmaker()`, which now deliberately points
+    elsewhere) so the proof doesn't depend on the default database's schema
+    matching current model metadata — the two are now free to diverge, which
+    is itself part of what this fix buys.
+    """
+    from app.config import settings as cfg
+
+    org_id = realdb.info("a").org_id
+    conn = await asyncpg.connect(_asyncpg_dsn(cfg.database_url))
+    try:
+        found = await conn.fetchval("SELECT 1 FROM organizations WHERE id = $1", org_id)
+        assert found is None, (
+            "a session on the DEFAULT control-plane DB could see the harness's "
+            "org row — the per-slot control-plane DB isolation is broken"
+        )
+    finally:
+        await conn.close()
 
 
 # ── The claim actually excludes another session ───────────────────────
