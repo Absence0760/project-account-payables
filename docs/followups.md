@@ -91,21 +91,6 @@ guard so a new inline `toLocaleDateString` in `routes/`/`components/` fails the
 suite — otherwise the class reopens.
 Ref: [roadmap.md](roadmap.md) § Internationalization.
 
-### Billing — live-Stripe plan-change UI
-
-Backend `POST /api/billing/change-plan` is shipped (Decimal-exact proration,
-idempotent, audited). The frontend button at
-`frontend/src/routes/billing/+page.svelte:302` is deliberately disabled with a
-"coming soon" title so the page reads complete without implying an affordance
-that isn't wired.
-
-- [ ] Wire the plan-change flow; replace the disabled affordance.
-
-**Blocked on:** rides the live-Stripe path — needs a provisioned Stripe account
-to verify against (see the credentials section below). Testable against the
-`mock` adapter first.
-Ref: [billing.md](../backend/docs/billing.md) § Customer-facing UI.
-
 ### Vendor statement reconciliation — PDF intake
 
 CSV upload and the manual pasted-lines path both ship. A supplier statement that
@@ -168,8 +153,11 @@ as oversights.
       Refinitiv adapters are fail-closed skeletons awaiting keys. `mock` is the
       local-first default and the screening path itself is shipped and tested.
       Ref: [vendor-risk-screening.md](../backend/docs/vendor-risk-screening.md).
-- [ ] **Stripe Billing** — a provisioned Stripe account for the live
-      `stripe_billing` adapter path (also unblocks the plan-change UI above).
+- [ ] **Stripe Billing** — a provisioned Stripe account to verify the live
+      `stripe_billing` adapter path end-to-end. All the code that needs it is
+      shipped, including the plan-change UI (`/billing`, tested against the
+      `mock` adapter) — this is purely the credential to validate the real
+      Stripe leg.
       Ref: [billing.md](../backend/docs/billing.md).
 - [ ] **Mobile push (FCM + APNs)** — a Firebase project,
       `google-services.json` / `GoogleService-Info.plist`, and an APNs auth key.
