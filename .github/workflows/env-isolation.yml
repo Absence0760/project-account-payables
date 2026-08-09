@@ -1,0 +1,114 @@
+name: Env isolation guard
+
+# This repo is PUBLIC and deliberately commits `*.env.development` so a fresh
+# clone runs with no setup (root CLAUDE.md, guard rail 7). That convenience is
+# only safe while those files stay boring: loopback URLs, mock adapters, and
+# placeholder keys. The moment a real endpoint or a live credential lands in
+# one, it is public, permanent, and archived by third parties.
+#
+# gitleaks already scans for known credential formats. This guard is the
+# semantic complement: it asserts the committed dev defaults still *point at
+# the local stack*, and that no env file outside the documented allowlist is
+# tracked at all.
+#
+# It never prints a matched value — only the file, the line number, and the
+# rule. A CI log is as public as the repo, so a guard that echoed the thing it
+# caught would publish the leak it just found.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '**/.env*'
+      - '.github/workflows/env-isolation.yml'
+      - '.gitignore'
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  env-isolation:
+    name: committed env files stay local-only
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Only allowlisted env files may be tracked
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The invariant (root CLAUDE.md § Secrets): the ONLY committed env
+          # files are `*.env.development` (safe local defaults) and the
+          # KMS-encrypted `*.sops` files. Anything else — .env, .env.local,
+          # .env.production — is a real-secret carrier by convention.
+          bad=$(git ls-files | grep -E '(^|/)\.env($|\.)' | grep -vE '\.env\.development$|\.env\.example$|\.sops$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::Tracked env file(s) outside the allowlist:"
+            echo "$bad"
+            echo "Only *.env.development (safe local defaults) and *.sops (KMS-encrypted) may be committed."
+            exit 1
+          fi
+          echo "OK — no disallowed env files tracked."
+
+      - name: Committed dev defaults must point at the local stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          errors=0
+          while IFS= read -r f; do
+            [ -f "$f" ] || continue
+            echo "Scanning $f"
+            lineno=0
+            while IFS= read -r line; do
+              lineno=$((lineno+1))
+              # Comments carry documentation examples (deployed hostnames,
+              # provider dashboards) on purpose — only real assignments matter.
+              case "$line" in \#*|'') continue ;; esac
+              case "$line" in *=*) : ;; *) continue ;; esac
+              value=${line#*=}
+              # Extract any http(s) host in the assigned value.
+              hosts=$(printf '%s' "$value" | grep -oE 'https?://[^"'"'"' ,;]+' || true)
+              [ -n "$hosts" ] || continue
+              while IFS= read -r url; do
+                [ -n "$url" ] || continue
+                host=${url#*://}
+                host=${host%%/*}
+                host=${host%%:*}
+                case "$host" in
+                  localhost|127.0.0.1|0.0.0.0|host.docker.internal|\{slug\}.localhost) continue ;;
+                  *.localhost) continue ;;
+                esac
+                # Report position + rule only, never the value.
+                echo "::error file=$f,line=$lineno::Non-local host in a committed dev default (line $lineno). Committed *.env.development must point at the local stack only."
+                errors=$((errors+1))
+              done <<< "$hosts"
+            done < "$f"
+          done < <(git ls-files | grep -E '\.env\.development$' || true)
+          if [ "$errors" -gt 0 ]; then
+            echo "$errors non-local endpoint(s) found in committed dev defaults."
+            exit 1
+          fi
+          echo "OK — every committed dev default points at the local stack."
+
+      - name: Placeholder secrets must stay placeholders
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The committed JWT signing key is the documented `change-me`
+          # placeholder. If it is ever replaced with something that looks like
+          # a real key, that key is now public.
+          errors=0
+          while IFS= read -r f; do
+            [ -f "$f" ] || continue
+            key_line=$(grep -nE '^FEOH_SECRET_KEY=' "$f" || true)
+            [ -n "$key_line" ] || continue
+            lineno=${key_line%%:*}
+            if ! grep -qE '^FEOH_SECRET_KEY=change-me' "$f"; then
+              echo "::error file=$f,line=$lineno::FEOH_SECRET_KEY in a committed env file is no longer the 'change-me' placeholder. A real signing key here is public. Move it to sops."
+              errors=$((errors+1))
+            fi
+          done < <(git ls-files | grep -E '\.env\.development$' || true)
+          [ "$errors" -eq 0 ] || exit 1
+          echo "OK — placeholder secrets intact."

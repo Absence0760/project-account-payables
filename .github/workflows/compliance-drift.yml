@@ -1,0 +1,82 @@
+name: Compliance drift
+
+# Advisory guard against a change quietly invalidating the GDPR/CCPA posture.
+#
+# The failure mode: a migration adds a column holding personal data and nothing
+# else changes. The DSAR export never learns to include it, right-to-erasure
+# never learns to redact it, and the RoPA keeps describing a data set that no
+# longer matches reality. Nothing fails — the app works perfectly. It is only
+# wrong on the day someone exercises a data-subject right, which is exactly
+# when being wrong is expensive.
+#
+# Runs in `warn` mode: it prints findings and a job summary but never fails the
+# build. Flip COMPLIANCE_DRIFT_MODE to `fail` once the signal has proven itself
+# low-noise in practice. (Measured at introduction: 0 findings across 726
+# changed files of real history, and it does fire on a genuine PII migration.)
+
+on:
+  pull_request:
+    branches: [main]
+    # Only run where the detector could possibly have something to say: schema
+    # changes, application source (outbound hosts), the compliance docs it
+    # cross-checks, or the detector itself. A docs-only or CI-only PR cannot
+    # produce a finding, so spending a runner on it is pure queue pressure.
+    paths:
+      - 'backend/alembic/versions/**'
+      - 'backend/app/**'
+      - 'frontend/src/**'
+      - 'docs/ropa.md'
+      - 'docs/sub-processors.md'
+      - 'backend/docs/privacy.md'
+      - 'backend/docs/retention.md'
+      - 'scripts/check_compliance_drift*.mjs'
+      - '.github/workflows/compliance-drift.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  compliance-drift:
+    name: Compliance drift advisory
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The detector diffs against origin/<base>; the base ref has to
+          # exist locally for that to resolve.
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6.0.0
+        with:
+          node-version: 20
+
+      # The detector is heuristic, so its own tests are what keep it honest —
+      # particularly the cases asserting it stays QUIET when the companion
+      # update is present. A guard that cries wolf gets ignored. Runs as a step
+      # in this job rather than its own: it is a sub-second `node --test`, and a
+      # second runner for it costs more queue time than it saves wall-clock.
+      - name: Detector unit tests
+        run: node --test scripts/check_compliance_drift.test.mjs
+
+      - name: Run compliance-drift detector
+        id: drift
+        env:
+          # 'warn' = print findings, never fail the job.
+          # 'fail' = exit 1 when findings exist. Flip when ready to enforce.
+          COMPLIANCE_DRIFT_MODE: warn
+        run: |
+          set -euo pipefail
+          node scripts/check_compliance_drift.mjs | tee /tmp/drift.txt
+
+      - name: Job summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Compliance drift (advisory)"
+            echo ""
+            echo '```'
+            cat /tmp/drift.txt 2>/dev/null || echo "detector did not run"
+            echo '```'
+            echo ""
+            echo "Reference: \`docs/ropa.md\`, \`docs/sub-processors.md\`, \`backend/docs/privacy.md\`."
+          } >> "$GITHUB_STEP_SUMMARY"

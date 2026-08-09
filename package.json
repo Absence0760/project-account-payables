@@ -84,8 +84,9 @@
 		"format:backend:check": "cd backend && ruff format --check .",
 		"format": "pnpm run format:backend",
 		"check": "pnpm run lint",
+		"check:compliance-drift": "node scripts/check_compliance_drift.mjs",
 
-		"//-- test --": "Test suites per surface: pytest (backend — venv + core services required), Playwright e2e (frontend), flutter test (mobile). test:scim/test:saml need the local IdPs up + seeded (idp:up then scim:seed/saml:seed); test:erp needs fake-erp up (erp:up). test:scripts validates this file's script targets.",
+		"//-- test --": "Test suites per surface: pytest (backend — venv + core services required), Playwright e2e (frontend), flutter test (mobile). test:scim/test:saml need the local IdPs up + seeded (idp:up then scim:seed/saml:seed); test:erp needs fake-erp up (erp:up). test:scripts validates this file's script targets; test:compliance covers the compliance-drift detector (scripts/check_compliance_drift.mjs), which the compliance-drift CI workflow runs against a PR diff.",
 		"test:backend": "cd backend && pytest",
 		"test:frontend": "cd frontend && pnpm test:e2e",
 		"test:scim": "cd frontend && pnpm exec playwright test --config=tests-e2e/playwright.config.ts scim/",
@@ -93,6 +94,7 @@
 		"test:erp": "cd frontend && pnpm exec playwright test --config=tests-e2e/playwright.config.ts erp/",
 		"test:mobile": "cd mobile && flutter test",
 		"test:scripts": "node scripts/check_root_scripts.mjs",
+		"test:compliance": "node --test scripts/check_compliance_drift.test.mjs",
 		"test": "pnpm run test:backend && pnpm run test:frontend && pnpm run test:mobile"
 	}
 }

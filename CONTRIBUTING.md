@@ -72,6 +72,21 @@ The backend scripts (lint, test, format) assume your backend venv is activated �
 
 Or, if Claude Code is available: `/check` runs the relevant gates against the working diff and reports.
 
+### Guard workflows that only run in CI
+
+Three checks have no local equivalent in the list above, because each needs
+either a production build or the PR diff. You can still run them by hand:
+
+| Guard | What it protects | Run locally |
+|---|---|---|
+| **Web bundle budget** (`web-bundle-budget.yml`) | The frontend is static and served from GitHub Pages, so bundle weight is paid by every cold visit and nothing else in CI notices it. Fails on a total or per-chunk ceiling. | `cd frontend && PUBLIC_API_URL=http://localhost:8000 pnpm build`, then measure `build/**/*.{js,css}` gzipped |
+| **Compliance drift** (`compliance-drift.yml`) | A migration adding personal data without the matching DSAR-export / erasure / RoPA update. Nothing fails today — it is only wrong the day a data-subject right is exercised. **Advisory (`warn`) — never fails the build.** | `pnpm check:compliance-drift` (detector) / `pnpm test:compliance` (its tests) |
+| **Env isolation** (`env-isolation.yml`) | This repo is public and commits `*.env.development`. Asserts those files still point at the local stack, keep their placeholder secrets, and that no other env file is tracked. | Read the workflow — it is three self-contained shell steps |
+
+Raising a bundle ceiling is a legitimate outcome; the rule is that you append a
+dated entry to the change log inside `web-bundle-budget.yml` saying what you
+measured and why the growth is warranted. Don't edit the number silently.
+
 ## Opening a PR
 
 - Title: same conventional-commit format as commits.
