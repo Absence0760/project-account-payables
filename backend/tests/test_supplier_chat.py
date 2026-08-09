@@ -32,27 +32,23 @@ TENANT = "a"
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _fresh_control_factory(monkeypatch):
+async def _fresh_control_factory(realdb, monkeypatch):
     """Point `control_session_factory` (used by notify_event /
-    resolve_role_user_ids) at a fresh engine bound to THIS test's event loop.
+    resolve_role_user_ids) at a fresh engine bound to THIS test's event loop
+    AND this slot's own control-plane DB.
 
     The production code reads control-plane users through the module-global
     `control_session_factory`, whose engine is bound to whichever loop first
     touched it. Across function-scoped async tests that stale binding raises a
     cross-loop error. Patching it per test mirrors `test_notification_dispatch`
-    and leaves the production call path unchanged.
+    and leaves the production call path unchanged. Goes through
+    ``realdb.control_sessionmaker()`` (not a bare
+    ``create_async_engine(settings.database_url)``) because the harness's orgs
+    live in this process's per-slot control-plane database, not the real,
+    shared one — see ``control_db_name_for_slot`` in conftest.py.
     """
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
-    from app.config import settings as cfg
-
-    engine = create_async_engine(cfg.database_url)
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    monkeypatch.setattr("app.database.control_session_factory", factory)
-    try:
-        yield
-    finally:
-        await engine.dispose()
+    monkeypatch.setattr("app.database.control_session_factory", realdb.control_sessionmaker())
+    yield
 
 
 # ---------------------------------------------------------------------------

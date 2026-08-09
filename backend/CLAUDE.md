@@ -209,38 +209,66 @@ collision it is.
 
 Exclusivity is therefore claimed, not assumed. On first use each process takes a
 **slot** — a Postgres session-level advisory lock — and uses the tenant pair
-named for it:
+(and, see below, the control-plane database) named for it:
 
-| Slot | Tenants |
-|------|---------|
-| 0 (first / only process) | `feoh_pytesta`, `feoh_pytestb` |
-| 1, 2, … (each further concurrent process) | `feoh_pytesta1`, `feoh_pytestb1`, … |
+| Slot | Tenants | Control-plane DB |
+|------|---------|-------------------|
+| 0 (first / only process) | `feoh_pytesta`, `feoh_pytestb` | `feohledger_pytest` |
+| 1, 2, … (each further concurrent process) | `feoh_pytesta1`, `feoh_pytestb1`, … | `feohledger_pytest1`, … |
+
+**The harness's `Organization`/`User`/`Role` rows live in their OWN per-slot
+control-plane database, never the real, shared `feohledger`** (`settings.database_url`)
+— unlike the tenant pair, this is true for slot 0 too. `control_db_name_for_slot`
+in `tests/conftest.py` derives the name from the configured control-plane DB
+(`<base>_pytest<slot>`), and every control-plane operation the harness performs
+— seeding roles/orgs/users in `_ensure_test_tenants`, `RealDB.control_sessionmaker()`,
+the `get_control_db` override in `RealDB.client()` — targets it instead. This is
+what closes a real defect (see `docs/known-issues.md`): a locally-running dev
+backend's background sweeps (e.g. `extraction_reaper.run_reaper_loop`) enumerate
+**every** `Organization` row in whatever database `settings.database_url` names,
+with no filter. When the harness's test orgs lived there too, a dev server
+sweeping the real control plane would discover and mutate them mid-test — stray
+`TRUNCATE` stalls and invoices flipped to `failed` out from under a running
+assertion. Giving every slot (0 included) its own control-plane database makes
+the harness's tenants invisible to any server pointed at the default one. It
+also removes the last cross-process contention: two concurrent slots no longer
+share the control plane's unique constraints (org slugs, user emails) either.
 
 Consequences worth knowing:
 
-- **Nothing changes for the common path.** A lone `pytest` run — and every CI
-  shard, each with its own Postgres — takes slot 0 and uses exactly the
-  historical databases. No extra databases, no measurable extra time.
-- **A second concurrent run just works.** It provisions its own pair on first use
-  (one-off, per session) and cannot disturb the first. Run several agents or
-  terminals at once without coordinating.
+- **The common path pays a small, one-time-per-process cost, not a per-test
+  one.** A lone `pytest` run — and every CI shard, each with its own fresh
+  Postgres — still takes slot 0 and reuses the historical tenant names, but
+  (like the tenant pair) it also provisions/self-heals its own
+  `feohledger_pytest` the first time any test in the process requests `realdb`.
+  Measured: roughly 2-3 extra seconds on that first call, not per test —
+  negligible against a multi-thousand-test suite's total wall-clock.
+- **A second concurrent run just works.** It provisions its own tenant pair
+  *and* its own control-plane database on first use (one-off, per session) and
+  cannot disturb the first. Run several agents or terminals at once without
+  coordinating.
 - **Crash-safe, nothing to clean up.** Postgres releases the lock when the
-  holding connection dies, so a killed run frees its slot; the databases are
-  reused by the next process to claim it.
-- **Schema drift self-heals at session start** (issue #219). Because the pair
-  is long-lived and provisioned via `create_all(checkfirst=True)` — which never
-  adds a column to an existing table — a pair predating a model change used to
-  stay silently stale until something read the missing column. The harness now
-  drops and recreates each pre-existing tenant DB's schema from the current
-  `Base.metadata` once per pytest session (on the first `_ensure_test_tenants`
-  call, keyed like the slot claim), so a local pair can never lag the ORM.
-  Fresh provisioning (CI shards, a new slot) skips the rebuild — it's already
-  current by construction. Guarded by `test_realdb_harness.py`.
+  holding connection dies, so a killed run frees its slot; the databases
+  (tenant pair and control-plane DB alike) are reused by the next process to
+  claim it.
+- **Schema drift self-heals at session start** (issue #219) — for the tenant
+  pair AND, the same way, for the per-slot control-plane database. Because
+  they're long-lived and provisioned via `create_all(checkfirst=True)` — which
+  never adds a column to an existing table — a database predating a later
+  model change used to stay (or, absent this fix, would stay) silently stale
+  until something read the missing column. The harness drops and recreates
+  each pre-existing database's schema from the current `Base.metadata` once per
+  pytest session (on the first `_ensure_test_tenants` call, keyed like the slot
+  claim, via the shared `_rebuild_pytest_schema` helper), so a local slot can
+  never lag the ORM. Fresh provisioning (CI shards, a new slot) skips the
+  rebuild — it's already current by construction. Guarded by
+  `test_realdb_harness.py`.
 - **Never hardcode a test tenant's slug or a seeded login** — they carry the slot
   number. Use `realdb.info("a").slug` / `realdb.email("a", "admin")`.
-- Any control-plane row a test creates needs a unique value per slot (derive it
-  from the slug or a uuid), or two concurrent runs collide on the shared
-  `feohledger` unique constraints.
+- A control-plane row a test creates still needs a unique value per SESSION
+  within its own slot's database (derive it from the slug or a uuid) — that
+  database is long-lived across separate pytest invocations of the same slot,
+  even though it's no longer shared with any other slot.
 
 The harness resets tenant tables plus `Organization.settings` / `parent_org_id`.
 It does **not** delete extra control-plane `users` rows a test creates — those

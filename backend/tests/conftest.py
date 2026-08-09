@@ -349,19 +349,95 @@ _REAP_STALE_BACKENDS_SQL = (
 # calls; a test simulating a new session clears it.
 _REBUILT_TENANT_DBS: set[str] = set()
 
+# The per-slot control-plane pytest DB (`feohledger_pytest<N>`) whose schema
+# has been rebuilt/created THIS pytest session. Sibling of `_REBUILT_TENANT_DBS`
+# — same once-per-session drift guard, applied to the control-plane database
+# now that it's its own long-lived per-slot DB rather than the shared
+# `feohledger` (which was never rebuilt here — a schema-drift issue is the
+# app's, not this harness's, to fix on a real deployment).
+_REBUILT_CONTROL_DBS: set[str] = set()
 
-async def _rebuild_tenant_schema(db_name: str) -> None:
-    """Drop everything in a test tenant DB so `_create_tenant_tables` can
-    recreate it from the current ``Base.metadata`` (issue #219).
+# The engine the app's module-global `control_session_factory` (app.database)
+# has been repointed to, for the life of this pytest process. Set once by
+# `_repoint_global_control_session_factory`; see its docstring for why this
+# exists at all.
+_sweep_control_engine = None
+
+
+async def _repoint_global_control_session_factory(ctrl_db_name: str) -> None:
+    """Point the app's own module-global ``control_session_factory``
+    (``app.database``) at THIS SLOT's control-plane database, once per
+    pytest process.
+
+    A whole class of background-sweep services — `contract_renewal
+    .notify_renewals_once`, `discount_auto_trigger`, `recurring_invoices`,
+    `vendor_rescreen`, `qms_sync`, `retention_sweep`, `scheduled_reports`,
+    `billing/dunning_sweep`, `webhooks/delivery`, `audit_log_shipper`,
+    `notification_dispatch`, `payment_reconciler`, `approval_chain`/
+    `approval_escalation` — import `control_session_factory` straight from
+    `app.database` and call it themselves (`select(Organization.id,
+    Organization.db_name)` with no filter, exactly the discovery pattern
+    `docs/known-issues.md` diagnosed). They bypass FastAPI dependency
+    injection entirely, so `RealDB.client()`'s `get_control_db` override —
+    which only intercepts requests routed through the ASGI app — never
+    reaches a test that calls one of these functions directly (the only way
+    to exercise a background sweep with no HTTP endpoint of its own).
+
+    Before the per-slot control-plane DB, a realdb test calling one of these
+    functions directly "just worked" by accident: the harness's orgs and this
+    global engine's target were the SAME shared `feohledger`. Now that every
+    slot (0 included) has its own database, that accidental overlap is gone
+    — so this rebinds `control_session_factory` in place to restore it.
+    `.configure(bind=...)` MUTATES the existing `async_sessionmaker` object;
+    every one of those modules already holds a reference to that same object
+    (`from app.database import control_session_factory`), so they all pick up
+    the new bind with no per-module edit.
+
+    Uses NullPool (like every other harness engine) specifically so this ONE
+    engine can be reused safely across every test's fresh event loop for the
+    rest of the process — NullPool never holds a persistent connection bound
+    to the loop that created it, unlike the production engine's real pool
+    (which is why `dispose_all_engines()` disposes THAT one after every
+    realdb test). Deliberately never reset back to the real engine: any
+    hypothetical non-realdb test that reached this global unmocked would have
+    hit the real `feohledger` before this change — pointing it at a
+    disposable per-slot pytest database instead is strictly safer, not a new
+    hazard.
+    """
+    global _sweep_control_engine
+    if _sweep_control_engine is not None:
+        return
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    import app.database as db_module
+    from app.database import _make_tenant_url
+
+    _sweep_control_engine = create_async_engine(
+        _make_tenant_url(ctrl_db_name), **_HARNESS_ENGINE_KW
+    )
+    db_module.control_session_factory.configure(bind=_sweep_control_engine)
+
+
+async def _rebuild_pytest_schema(db_name: str) -> None:
+    """Drop everything in a pytest-exclusive DB so its tables can be recreated
+    from the current ``Base.metadata`` (issue #219).
+
+    Used for both a test tenant DB (`feoh_pytest*`) and, per slot, this
+    harness's own control-plane DB (`<base>_pytest*` — see
+    `control_db_name_for_slot`) — the same long-lived-across-sessions drift
+    problem applies to both, since neither is ever dropped between pytest
+    invocations.
 
     `DROP SCHEMA public CASCADE` rather than a metadata-driven `drop_all`:
     the point is that the existing schema may not match the current metadata
     (columns, tables, or constraints from another branch), so the current
     metadata cannot be trusted to enumerate what needs dropping. The pgvector
-    extension and the audit_log immutability trigger go down with the schema;
-    `_create_tenant_tables` reinstalls both. Only safe because the slot claim
-    makes this DB exclusive to this process and its data worthless between
-    tests — never point this at anything but a `feoh_pytest*` database.
+    extension and the audit_log immutability trigger go down with a tenant
+    DB's schema; `_create_tenant_tables` reinstalls both (a no-op relevant
+    part for the control-plane DB, which never had them). Only safe because
+    the slot claim makes this DB exclusive to this process and its data
+    worthless between tests — never point this at anything but a
+    `<something>_pytest*` database.
     """
     from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -383,6 +459,60 @@ def tenant_slugs_for_slot(slot: int) -> dict[str, str]:
     """Tenant slugs for a slot. Slot 0 keeps the historical names."""
     suffix = "" if slot == 0 else str(slot)
     return {"a": f"pytesta{suffix}", "b": f"pytestb{suffix}"}
+
+
+_BASE_CONTROL_DB_NAME: str | None = None
+
+
+def _base_control_db_name() -> str:
+    """The configured control-plane DB name (e.g. ``feohledger``), read from
+    ``settings.database_url`` rather than hardcoded — mirrors the project rule
+    against hardcoding tenant DB names.
+
+    Memoized on the FIRST call and never re-derived after. Some tests
+    legitimately redirect the global ``settings.database_url`` itself (not
+    just `control_session_factory`) to THIS slot's control-plane DB, for the
+    rare production function that builds its own throwaway engine straight off
+    `settings.database_url` (see `RealDB.control_db_url`'s docstring). If this
+    read `settings.database_url` live on every call, `control_db_name_for_slot`
+    would derive a NEW name from the ALREADY-per-slot value produced earlier in
+    the same process — silently doubling the suffix
+    (`feohledger_pytest_pytest`) the moment any test does that. The first-ever
+    call in a process always happens before any such redirect could exist
+    (`_claim_realdb_slot`'s advisory-lock connection reads the same
+    unredirected value even earlier), so caching it here is safe and correct
+    regardless of what any later test points the global at.
+    """
+    global _BASE_CONTROL_DB_NAME
+    if _BASE_CONTROL_DB_NAME is None:
+        from app.config import settings as cfg
+
+        tail = cfg.database_url.rsplit("/", 1)[1]
+        _BASE_CONTROL_DB_NAME = tail.split("?", 1)[0]
+    return _BASE_CONTROL_DB_NAME
+
+
+def control_db_name_for_slot(slot: int) -> str:
+    """This slot's OWN control-plane database name.
+
+    Unlike ``tenant_slugs_for_slot`` — where slot 0 reuses the historical
+    unsuffixed tenant names — slot 0 does NOT reuse the real control-plane
+    database (``feohledger``/``settings.database_url``). That would defeat the
+    entire point: a dev backend's background sweeps (e.g.
+    ``extraction_reaper.run_reaper_loop``) enumerate every ``Organization`` row
+    in whatever DB ``settings.database_url`` names with no filter, so if the
+    harness's test orgs lived there, a locally-running dev server pointed at
+    the default control plane would discover and sweep the pytest tenants too
+    — mutating rows a test is mid-assertion on. See
+    ``docs/known-issues.md`` § "A dev backend on the same Postgres mutates the
+    pytest tenant DBs mid-test". Every slot, including 0, therefore gets its
+    own ``<base>_pytest<slot>`` database, invisible to any server on the
+    default control plane. This also removes the last cross-process
+    contention between concurrent slots: two processes no longer share the
+    control plane's unique constraints (org slugs, user emails) at all.
+    """
+    suffix = "" if slot == 0 else str(slot)
+    return f"{_base_control_db_name()}_pytest{suffix}"
 
 
 def role_email(slug: str, role: str) -> str:
@@ -422,6 +552,7 @@ async def _ensure_test_tenants() -> dict:
     import app.main  # noqa: F401
     from app.api.deps import ALL_ROLES
     from app.config import settings as cfg
+    from app.database import _make_tenant_url
     from app.models import Base
     from app.models.organization import Organization
     from app.models.user import Role, User, UserRole
@@ -432,7 +563,28 @@ async def _ensure_test_tenants() -> dict:
     )
     from app.utils.passwords import pwd_context
 
-    ctrl_engine = create_async_engine(cfg.database_url)
+    slot = _claim_realdb_slot()
+
+    # This slot's OWN control-plane database — never the shared
+    # `settings.database_url` (`feohledger`). See `control_db_name_for_slot`
+    # for why: a dev backend pointed at the default control plane must never
+    # be able to discover this harness's test orgs. `_make_tenant_url` is a
+    # generic "swap the DB name in the base URL" helper despite its name —
+    # reused here for the control-plane DB, not just tenant DBs.
+    ctrl_db_name = control_db_name_for_slot(slot)
+    if ctrl_db_name not in _REBUILT_CONTROL_DBS:
+        # Idempotent; False means it already existed from an earlier session.
+        created = await _create_postgres_database(ctrl_db_name)
+        if not created:
+            # Same schema-drift self-heal as the tenant DBs (issue #219):
+            # this DB is long-lived across pytest invocations, so a session
+            # predating a later control-plane model change (a new `users` /
+            # `organizations` column, a new control-plane table) would
+            # otherwise stay silently stale forever.
+            await _rebuild_pytest_schema(ctrl_db_name)
+        _REBUILT_CONTROL_DBS.add(ctrl_db_name)
+
+    ctrl_engine = create_async_engine(_make_tenant_url(ctrl_db_name))
     ctrl_mk = async_sessionmaker(ctrl_engine, expire_on_commit=False)
     try:
         async with ctrl_engine.begin() as conn:
@@ -441,13 +593,20 @@ async def _ensure_test_tenants() -> dict:
                 lambda c: Base.metadata.create_all(c, tables=ctrl_tables, checkfirst=True)
             )
 
+        # See `_repoint_global_control_session_factory`'s docstring: a
+        # background-sweep service called directly (not through the ASGI app)
+        # reaches the app's OWN module-global control engine, which must
+        # resolve to this slot's control-plane DB too, or it silently scans
+        # zero of this test's orgs.
+        await _repoint_global_control_session_factory(ctrl_db_name)
+
         async with ctrl_mk() as s:
-            # `roles` is control-plane and NOT slotted, so on a freshly
-            # initialized Postgres two concurrent pytest processes can both find
-            # `admin` missing and both insert it. ON CONFLICT DO NOTHING against
-            # the system-role partial unique index (`uq_roles_system_name`, org
-            # id NULL) makes the seed a safe race instead of an IntegrityError
-            # in whichever process commits second.
+            # Each slot now owns its OWN control-plane database (see
+            # `control_db_name_for_slot`), so this is no longer a cross-process
+            # race — but ON CONFLICT DO NOTHING against the system-role partial
+            # unique index (`uq_roles_system_name`, org id NULL) still makes a
+            # repeat run across pytest SESSIONS against the same slot's
+            # long-lived DB a safe no-op instead of an IntegrityError.
             from sqlalchemy.dialects.postgresql import insert as pg_insert
 
             await s.execute(
@@ -469,7 +628,7 @@ async def _ensure_test_tenants() -> dict:
             }
 
         tenants: dict = {}
-        for key, slug in tenant_slugs_for_slot(_claim_realdb_slot()).items():
+        for key, slug in tenant_slugs_for_slot(slot).items():
             db_name = f"{cfg.tenant_db_prefix}{slug}"
             async with ctrl_mk() as s:
                 org = (
@@ -512,7 +671,7 @@ async def _ensure_test_tenants() -> dict:
                 # once per session and let `_create_tenant_tables` below
                 # recreate everything from the CURRENT Base.metadata.
                 if not created:
-                    await _rebuild_tenant_schema(db_name)
+                    await _rebuild_pytest_schema(db_name)
                 _REBUILT_TENANT_DBS.add(db_name)
             # Always (re)create tenant tables — idempotent (checkfirst) and
             # backfills any table missing from a DB provisioned earlier with an
@@ -626,15 +785,32 @@ class RealDB:
         self._engines.append(engine)
         return async_sessionmaker(engine, expire_on_commit=False)
 
+    def control_db_url(self) -> str:
+        """This slot's own control-plane DB connection URL.
+
+        For the rare production function that builds its OWN throwaway engine
+        straight off ``settings.database_url`` (rather than going through the
+        shared `app.database.control_session_factory` — usually because it's
+        designed to run detached from the request/test event loop, e.g.
+        `payment_erp_sync._sync_payments`'s background-thread path), a test
+        needs to `monkeypatch.setattr(settings, "database_url", realdb
+        .control_db_url())` so that hardcoded read lands on this slot's
+        control-plane database instead of the real, shared one. Prefer
+        `control_sessionmaker()` when the caller can accept a sessionmaker.
+        """
+        from app.database import _make_tenant_url
+
+        return _make_tenant_url(control_db_name_for_slot(_claim_realdb_slot()))
+
     def control_sessionmaker(self):
-        """Session maker for the control-plane DB (organizations, users,
-        roles, email_verifications) — used by signup / provisioning tests that
-        read or write control tables the tenant session makers can't reach."""
+        """Session maker for THIS SLOT's own control-plane DB (organizations,
+        users, roles, email_verifications) — used by signup / provisioning
+        tests that read or write control tables the tenant session makers
+        can't reach. Never `settings.database_url` (`feohledger`) — see
+        `control_db_name_for_slot`."""
         from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-        from app.config import settings as cfg
-
-        engine = create_async_engine(cfg.database_url, **_HARNESS_ENGINE_KW)
+        engine = create_async_engine(self.control_db_url(), **_HARNESS_ENGINE_KW)
         self._engines.append(engine)
         return async_sessionmaker(engine, expire_on_commit=False)
 
@@ -643,13 +819,12 @@ class RealDB:
         from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
         from app.api.deps import get_api_key_db
-        from app.config import settings as cfg
         from app.database import _make_tenant_url, commit_before_response, get_control_db
         from app.main import app
         from app.tenant import get_tenant_db
 
         info = self.tenants[key]
-        ctrl_engine = create_async_engine(cfg.database_url, **_HARNESS_ENGINE_KW)
+        ctrl_engine = create_async_engine(self.control_db_url(), **_HARNESS_ENGINE_KW)
         tenant_engine = create_async_engine(_make_tenant_url(info.db_name), **_HARNESS_ENGINE_KW)
         self._engines += [ctrl_engine, tenant_engine]
         ctrl_mk = async_sessionmaker(ctrl_engine, expire_on_commit=False)
