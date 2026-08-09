@@ -232,6 +232,69 @@ MERGE_ACCOUNT_FIXTURES: list[dict] = [
     },
 ]
 
+MERGE_VENDOR_FIXTURES: list[dict] = [
+    {
+        "id": "merge-vendor-701",
+        "remote_id": "fake-remote-vendor-701",
+        "name": "Fake Merge Vendor Co",
+        "email_address": "ap@fakemergevendor.example",
+        "phone_number": "+1-555-0170",
+        "addresses": [
+            {
+                "line1": "701 Fake Merge Ave",
+                "line2": None,
+                "city": "Faketown",
+                "state": "CA",
+                "zip_code": "94107",
+                "country": "US",
+            }
+        ],
+        "tax_number": "71-1234567",
+        "payment_term": {"name": "Net 30"},
+    },
+    {
+        "id": "merge-vendor-702",
+        "remote_id": "fake-remote-vendor-702",
+        "name": "Fake Merge Supply Co",
+        "email_address": "billing@fakemergesupply.example",
+        "phone_number": "+1-555-0172",
+        "addresses": [
+            {
+                "line1": "702 Fake Supply Rd",
+                "line2": None,
+                "city": "Faketown",
+                "state": "CA",
+                "zip_code": "94108",
+                "country": "US",
+            }
+        ],
+        "tax_number": "72-2345678",
+        "payment_term": {"name": "Net 45"},
+    },
+    {
+        "id": "merge-vendor-703",
+        "remote_id": "fake-remote-vendor-703",
+        "name": "Fake Merge Services Co",
+        "email_address": "invoices@fakemergeservices.example",
+        "phone_number": "+1-555-0173",
+        "addresses": [
+            {
+                "line1": "703 Fake Services Blvd",
+                "line2": None,
+                "city": "Faketown",
+                "state": "CA",
+                "zip_code": "94109",
+                "country": "US",
+            }
+        ],
+        "tax_number": "73-3456789",
+        # Some ERPs surface payment_term as a bare string rather than an
+        # {"name": ...} object — the adapter's _merge_vendor_to_payload
+        # handles both; this fixture exercises the string branch.
+        "payment_term": "Net 60",
+    },
+]
+
 MERGE_401 = {"detail": "Authentication credentials were not provided."}
 
 
@@ -332,6 +395,12 @@ async def merge_list_pos(request: Request, cursor: str | None = None) -> dict:
 async def merge_list_accounts(request: Request, cursor: str | None = None) -> dict:
     _require_merge_auth(request)
     return _merge_paginate(MERGE_ACCOUNT_FIXTURES, cursor, "account-cursor-page-2")
+
+
+@merge.get("/vendors")
+async def merge_list_vendors(request: Request, cursor: str | None = None) -> dict:
+    _require_merge_auth(request)
+    return _merge_paginate(MERGE_VENDOR_FIXTURES, cursor, "vendor-cursor-page-2")
 
 
 app.include_router(merge)

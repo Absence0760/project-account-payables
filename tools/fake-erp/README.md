@@ -29,8 +29,9 @@ surfaces:
 
 - **Merge**: `POST /invoices` (creates `merge-inv-<n>`, status `OPEN`; response
   nests the record under `model`), `GET /invoices/{id}` (top-level `status`),
-  `GET /purchase-orders` + `GET /accounts` (cursor-paginated 2 + 1 via `next`
-  / `?cursor=`), `GET /account-details` (test_connection).
+  `GET /purchase-orders` + `GET /accounts` + `GET /vendors` (all
+  cursor-paginated 2 + 1 via `next` / `?cursor=`), `GET /account-details`
+  (test_connection).
 - **NetSuite**: `POST /vendorBill` → **204** with the new numeric id (`1001`,
   `1002`, …) in the `Location` header, status `Open`;
   `GET /vendorBill/{id}` → `{"status": {"refName": "Open"}}`;
@@ -54,6 +55,14 @@ GL accounts (`GET /merge/api/accounting/v1/accounts`):
 1. `6100` "Fake Office Supplies" (expense)
 2. `6200` "Fake Software" (expense)
 3. `6300` "Fake Consulting" (expense)
+
+Vendors (`GET /merge/api/accounting/v1/vendors`):
+
+1. "Fake Merge Vendor Co" — Net 30, tax id `71-1234567`
+2. "Fake Merge Supply Co" — Net 45, tax id `72-2345678`
+3. "Fake Merge Services Co" — Net 60 (`payment_term` as a bare string, not an
+   object — exercises that branch of `_merge_vendor_to_payload`), tax id
+   `73-3456789`
 
 ## Test hooks
 

@@ -7,7 +7,6 @@
 	import { auth } from '$lib/stores/auth.svelte';
 	import { adminStore } from '$lib/stores/admin.svelte';
 	import { api } from '$lib/api';
-	import { getTenantSlug } from '$lib/tenant';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
@@ -544,18 +543,11 @@
 				const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
 				triggerDownload(blob, `invoice-${invoice.invoice_number || invoice.id}.json`);
 			} else {
-				// For XML/CSV, fetch raw response
-				const { PUBLIC_API_URL } = await import('$env/static/public');
-				const base = PUBLIC_API_URL.replace(/\/+$/, '');
-				const token = localStorage.getItem('auth_token');
-				const res = await fetch(`${base}${url}`, {
-					headers: {
-						...(token ? { Authorization: `Bearer ${token}` } : {}),
-						'X-Tenant-Slug': getTenantSlug() ?? '',
-					},
-				});
-				if (!res.ok) throw new Error(`Export failed: ${res.status}`);
-				const blob = await res.blob();
+				// For XML/CSV, fetch a raw blob response through the shared client
+				// (auto-adds Authorization + X-Tenant-Slug, same as every other
+				// request — see $lib/api/audit.ts::downloadAuditExportCsv for the
+				// same JSON-vs-blob export pattern).
+				const blob = await api.downloadBlob(url);
 				const ext = format === 'xml' ? 'xml' : 'csv';
 				triggerDownload(blob, `invoice-${invoice.invoice_number || invoice.id}.${ext}`);
 			}
