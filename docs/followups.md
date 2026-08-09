@@ -143,8 +143,14 @@ Full write-ups — root cause, evidence, blast radius, recommended fix — live 
       returned for an uncommitted write. See [decisions.md §20](decisions.md);
       regression coverage in `backend/tests/test_commit_before_response.py`.
       *(Pruned from this list on the next pass.)*
-- [ ] Workflow-mutating e2e specs can strand a tenant on a disabled workflow
-      definition.
+- [x] ~~**Workflow-mutating e2e specs can strand a tenant on a disabled
+      workflow definition.**~~ **Resolved 2026-08-08** — audit found every
+      mutating spec already restores state via `try/finally` or a throwaway
+      definition; added the missing piece, a `globalSetup` guard
+      (`frontend/tests-e2e/fixtures/globalSetup.ts`) that asserts every
+      tenant's default workflow shape before any test runs. See
+      [known-issues.md](known-issues.md). *(Pruned from this list on the next
+      pass.)*
 - [ ] A dev backend on the same Postgres mutates the pytest tenant DBs mid-test.
 
 ---

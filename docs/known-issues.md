@@ -35,43 +35,51 @@ bug is absent — measure the ordering instead.
 
 ---
 
-## Workflow-mutating e2e specs can strand a tenant on a disabled workflow definition
+## ~~Workflow-mutating e2e specs can strand a tenant on a disabled workflow definition~~ — RESOLVED 2026-08-08
 
-**Discovered:** 2026-07-17, while stabilizing the new `tests-e2e/erp/` suite —
-its netsuite spec flaked with a 409 on `/api/invoices/{id}/approve` only when
-its Playwright worker landed on the `e2e3` tenant.
+**Audit:** every spec that mutates a workflow definition's `is_active`, step
+`enabled` flags, or `is_default` — `tests-e2e/workflows/*.spec.ts`,
+`tests-e2e/workflow-builder.spec.ts`, and the two files that touch the live
+default in passing (`admin/delete-safety.spec.ts`,
+`invoices/daily-journey.spec.ts`) — already wraps its mutation in a
+`try/finally` that restores the exact prior state, or scopes itself to a
+throwaway definition it creates and deletes. No spec needed a code fix; the
+original diagnosis's "afterAll doesn't restore" theory didn't match what's on
+disk today.
 
-**Symptom:** on a long-lived local dev database, a tenant's genuine seeded
-"Default Workflow" can end up `is_active = false`, leaving the auto-created
-"Invoice Processing" stub (every step `enabled: false`) as the governing
-definition. Any spec (or user) that then relies on the approval / erp_export
-steps being enabled gets surprising transitions: `POST /complete` walks
-`new → done` (no approval step), so a follow-up `/approve` 409s.
+**What was actually missing** was the doc's own second recommendation: a cheap
+guard for the residual risk the try/finally pattern can't close on its own — a
+hard interruption (killed process, machine crash, a timed-out test whose
+continuation never gets scheduled) skipping the `finally` block entirely.
+Added `frontend/tests-e2e/fixtures/globalSetup.ts`, wired into
+`tests-e2e/playwright.config.ts`'s `globalSetup`: before any test/worker
+starts, it asserts every tenant (`acme`, `techflow`, `e2e1..N`) has exactly one
+`is_default=true` workflow definition, `is_active=true`, with its `approval`
+and `erp_export` steps enabled — the shape `backend/scripts/seed.py` creates.
+A miss throws one clear, tenant-and-field-named error instead of a confusing
+409 three specs later.
 
-**Evidence:** local `feoh_e2e3` had `Default Workflow (entity-scoped,
-is_default=t, is_active=f)` + `Invoice Processing (shared, is_default=t,
-is_active=t, all steps disabled)`; `feoh_e2e1/2/4` were healthy. The state is
-left behind by workflow-mutating suites (`workflows/`, `workflow-builder`)
-whose cleanup doesn't restore `is_active` / step-enabled flags on the seeded
-default. CI is unaffected today (every run seeds fresh, and the `erp-e2e` job
-runs only `erp/`), but a within-shard ordering that runs a workflow suite
-before an invoice-flow suite could reproduce it in CI.
+**The guard is proven, not just written**: this local dev Postgres had
+genuinely accumulated the exact symptom the original diagnosis described —
+`feoh_e2e1` and `feoh_e2e3` each carried a shared-scope `is_default=true`
+"Invoice Processing" stub (all steps disabled) alongside the entity-scoped
+`Default Workflow`. The new guard flagged both, by name, before any test ran.
+Cleaned up (no `workflow_instances` referenced either stub, so a plain
+`DELETE` restored the fresh-seed shape) and re-ran the guard clean. Then ran
+the full `tests-e2e/workflows/` + `workflow-builder.spec.ts` suite (52 tests)
+twice back-to-back against `e2e1` — all green both times, and
+`workflow_definitions` for that tenant was bit-for-bit identical (one
+`Default Workflow`, `is_active=t`, all three steps `enabled:true`) before,
+between, and after both runs.
 
-**Blast radius:** local e2e flakiness for any suite that assumes the seeded
-workflow shape (`invoices/lifecycle-money-path`, `purchase-orders/sync`, …);
-confusing local-dev behavior when clicking through the same tenant. The
-`erp/` suite is immune since 2026-07-17 — its helper approves directly via the
-legal `new → approved` edge instead of relying on `/complete`.
-
-**Recommended fix:** audit the workflow-mutating specs' `afterAll` blocks to
-restore the definitions they touched (`is_active`, step `enabled` flags,
-`is_default`), and prefer creating throwaway definitions over mutating the
-seeded default. A cheap guard: a fixture assertion (or `seed.py --verify`
-mode) that the tenant's governing definition has approval + erp_export
-enabled before suites that depend on it run.
-
-**Trigger to revisit:** the next local flake that traces to workflow state, or
-any plan to run multiple suite directories in one CI shard sequentially.
+One thing worth carrying forward: the stray "Invoice Processing" stub wasn't
+traceable to any spec in the current suite — none of them create a window
+where zero workflows are active while also creating a new invoice with no
+entity-scoped default in play, which is what the auto-create fallback needs to
+fire. It most likely came from manual UI exploration against a long-lived
+dev tenant, not test-run drift. The guard doesn't care which — it catches the
+*state*, not the cause — but if it ever fires again, check for a new code path
+that can leave zero active workflows before assuming it's the old bug back.
 
 ---
 

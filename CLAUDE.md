@@ -428,7 +428,7 @@ Full list in `backend/app/config.py`.
 | Secrets rotation | `docs/secrets-rotation.md` — what to rotate, when, and how |
 | Getting started | `docs/getting-started.md` — first-run setup |
 | Troubleshooting | `docs/troubleshooting.md` — common issues |
-| Known issues (diagnosed, unfixed) | `docs/known-issues.md` — e.g. workflow-mutating e2e specs stranding a tenant on a disabled workflow definition. (The read-after-write race is **fixed** — see `decisions.md` §20) |
+| Known issues (diagnosed, unfixed) | `docs/known-issues.md` — e.g. a dev backend on the same Postgres mutating the pytest tenant DBs mid-test. (The read-after-write race and the workflow-mutating-e2e-strand issue are both **fixed** — see `decisions.md` §20 and `known-issues.md`) |
 | Open follow-ups (deferred work) | `docs/followups.md` — the destination guard rail 6 requires: every deferral, categorized (blocked on a credential / operator step on merged code / sized-but-unstarted), with its durable fix and trigger. Open items only — prune on landing. Mirrored as issue #251 |
 | Self-service signup | `docs/self-service-signup.md` — signup flow, email adapters, abuse mitigations |
 | Supplier portal | `backend/docs/supplier-portal.md` — VendorUser auth, invoice submission, phase 2 deferrals |
