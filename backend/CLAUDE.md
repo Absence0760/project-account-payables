@@ -691,7 +691,9 @@ deterministic `visa ****4242`, Stripe POSTs `/v1/setup_intents` + GETs
 `.plan_price_ids`, no migration), mid-period proration
 (`services/billing/proration.py`, pure Decimal, `ROUND_HALF_UP` 2 dp), and the
 plan-change endpoint (`POST /api/billing/change-plan`, admin/cfo, idempotent +
-audited), and the invoices/receipts list endpoint (`GET /api/billing/invoices`,
+audited), the `GET /api/billing/plans` catalog endpoint (admin/cfo, active
+plans only, cheapest first — the plan-change picker's data source), and the
+invoices/receipts list endpoint (`GET /api/billing/invoices`,
 admin/cfo, money as exact strings, graceful empty-list on no-customer /
 unconfigured), and the payment-method endpoint (`POST
 /api/billing/payment-method/setup-intent` + `GET /api/billing/payment-methods`,
@@ -699,7 +701,12 @@ admin/cfo, PII-safe card metadata only, graceful not-configured / empty on
 no-customer / unconfigured) are shipped; the invoices/receipts + payment-method
 UI ships on `/billing` (`frontend/src/routes/billing/` — saved-cards list +
 add/replace-card SetupIntent flow with a deployed-only Stripe Elements seam),
-only the live-Stripe plan-change UI is later. See `docs/billing.md`.
+and so does the **live plan-change UI** — a `Modal` picker over `GET
+/api/billing/plans` → an "applies immediately, prorates the current period"
+notice (there is no preview-only mode on the backend) → `POST
+/api/billing/change-plan` on confirm → the result view renders the real
+returned proration via `<Money>` (or a clean no-op message when `changed`
+comes back `false`). See `docs/billing.md`.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|

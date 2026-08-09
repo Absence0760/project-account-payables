@@ -19,11 +19,13 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import ROLE_ADMIN, ROLE_CFO, require_roles
 from app.config import settings
 from app.database import get_control_db
+from app.models.billing import Plan
 from app.models.organization import Organization
 from app.models.user import User
 from app.services.billing import (
@@ -122,6 +124,46 @@ async def get_subscription(
         subscription=sub_view,
         period=period,
         usage=usage.as_meters(),
+    )
+
+
+class PlansCatalogResponse(BaseModel):
+    plans: list[PlanView]
+
+
+@router.get("/plans", response_model=PlansCatalogResponse)
+async def list_plans(
+    _user: User = Depends(require_roles(ROLE_ADMIN, ROLE_CFO)),
+    control_db: AsyncSession = Depends(get_control_db),
+) -> PlansCatalogResponse:
+    """The sellable plan catalog (active plans only), for the plan-change picker.
+
+    admin/cfo only (matches the other billing routes). The catalog is global —
+    not org-scoped — so this doesn't resolve a tenant, only the caller's
+    control-plane identity/role. Ordered by price so the picker reads as a
+    ladder. Money is an exact decimal string, same as every other billing view.
+    """
+    plans = (
+        (
+            await control_db.execute(
+                select(Plan).where(Plan.is_active.is_(True)).order_by(Plan.monthly_price)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return PlansCatalogResponse(
+        plans=[
+            PlanView(
+                code=p.code,
+                name=p.name,
+                monthly_price=str(p.monthly_price),
+                currency=p.currency,
+                entitlements=dict(p.entitlements or {}),
+                trial_days=p.trial_days,
+            )
+            for p in plans
+        ]
     )
 
 

@@ -352,6 +352,141 @@ test.describe('/billing (admin)', () => {
 		await expect(tab).toHaveText('Subscription');
 		await expect(tab).toHaveAttribute('aria-current', 'page');
 	});
+
+	test.describe('plan-change flow (seeded subscription)', () => {
+		// The "Change plan" action only renders once the org has a live
+		// subscription (it lives inside the plan-card block), so every test in
+		// this group seeds a real Plan + Subscription — mirroring the
+		// "with a seeded subscription" test above — and tears it down after.
+		let orgId: string;
+		let currentPlanId: string;
+		let targetPlanId: string;
+		// `plans.code` is varchar(50) — keep the per-test suffix short (a testId
+		// hash is too long) but still unique enough to avoid cross-test collision.
+		let currentCode: string;
+		let targetCode: string;
+
+		test.beforeEach(async ({ page }) => {
+			const suffix = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+			currentCode = `e2e_pc_cur_${suffix}`;
+			targetCode = `e2e_pc_tgt_${suffix}`;
+			orgId = currentOrgId();
+			currentPlanId = controlPsql(
+				`INSERT INTO plans (id, code, name, monthly_price, currency, seat_component, ` +
+					`usage_components, entitlements, trial_days, is_active, created_at, updated_at) ` +
+					`VALUES (gen_random_uuid(), '${currentCode}', 'E2E Current', 49.00, 'USD', '{}'::jsonb, ` +
+					`'{}'::jsonb, '{}'::jsonb, 0, true, now(), now()) RETURNING id`
+			);
+			targetPlanId = controlPsql(
+				`INSERT INTO plans (id, code, name, monthly_price, currency, seat_component, ` +
+					`usage_components, entitlements, trial_days, is_active, created_at, updated_at) ` +
+					`VALUES (gen_random_uuid(), '${targetCode}', 'E2E Target', 99.00, 'USD', '{}'::jsonb, ` +
+					`'{}'::jsonb, '{}'::jsonb, 0, true, now(), now()) RETURNING id`
+			);
+			controlPsql(
+				`INSERT INTO subscriptions (id, organization_id, plan_id, status, ` +
+					`current_period_start, current_period_end, trial_end, created_at, updated_at) ` +
+					`VALUES (gen_random_uuid(), '${orgId}', '${currentPlanId}', 'active', ` +
+					`now() - interval '5 days', now() + interval '25 days', NULL, now(), now())`
+			);
+
+			await page.goto('/billing');
+			await page.waitForLoadState('networkidle');
+		});
+
+		test.afterEach(() => {
+			controlPsql(`DELETE FROM subscriptions WHERE plan_id IN ('${currentPlanId}', '${targetPlanId}')`);
+			controlPsql(`DELETE FROM plans WHERE id IN ('${currentPlanId}', '${targetPlanId}')`);
+		});
+
+		test('changes plan and shows the real returned proration', async ({ page }) => {
+			await page.getByTestId('billing-change-plan').click();
+
+			const modal = page.getByRole('dialog', { name: 'Change plan' });
+			await expect(modal).toBeVisible();
+
+			// The current plan is marked and its radio is disabled — a genuine
+			// change is the point of the UI flow.
+			const currentRadio = modal.getByRole('radio', { name: 'Select the E2E Current plan' });
+			await expect(currentRadio).toBeDisabled();
+			await expect(modal.getByText('Current plan')).toBeVisible();
+
+			const targetRadio = modal.getByRole('radio', { name: 'Select the E2E Target plan' });
+			await targetRadio.check();
+
+			const confirm = page.getByTestId('billing-change-plan-confirm');
+			await expect(confirm).toBeEnabled();
+			await confirm.click();
+
+			// Real POST /api/billing/change-plan applied the move; the result view
+			// renders the ACTUAL proration the response returned (an upgrade from
+			// $49 to $99 is a positive mid-period charge), never a fabricated one.
+			const result = page.getByTestId('billing-plan-change-result');
+			await expect(result).toBeVisible({ timeout: 10_000 });
+			await expect(result.getByText("You're now on the E2E Target plan.")).toBeVisible();
+			await expect(result.getByText('Prorated adjustment')).toBeVisible();
+
+			await result.getByRole('button', { name: 'Done' }).click();
+			await expect(modal).toBeHidden();
+
+			// The plan card behind the modal reflects the change without a manual
+			// reload (confirmPlanChange re-fetches the subscription on success).
+			await expect(page.getByTestId('billing-plan').getByRole('heading', { name: 'E2E Target' })).toBeVisible();
+		});
+
+		test('an idempotent no-op change ("changed": false) renders as a clean success, not an error', async ({
+			page
+		}) => {
+			// Stub only the POST — the backend's own idempotent-no-op case is the
+			// org already being on the target plan, which this UI's disabled
+			// current-plan radio prevents reaching directly. The response shape is
+			// still the API's contract, so the UI must honour a `changed: false`
+			// reply regardless of which plan triggered it.
+			await page.route('**/api/billing/change-plan', async (route) => {
+				await route.fulfill({
+					status: 200,
+					contentType: 'application/json',
+					body: JSON.stringify({
+						changed: false,
+						old_plan_code: currentCode,
+						new_plan_code: currentCode,
+						proration: { amount: '0.00', unused_days: 0, period_days: 0 }
+					})
+				});
+			});
+
+			await page.getByTestId('billing-change-plan').click();
+			const modal = page.getByRole('dialog', { name: 'Change plan' });
+			await modal.getByRole('radio', { name: 'Select the E2E Target plan' }).check();
+			await page.getByTestId('billing-change-plan-confirm').click();
+
+			const noop = page.getByTestId('billing-plan-change-noop');
+			await expect(noop).toBeVisible({ timeout: 10_000 });
+			await expect(noop).toHaveText("You're already on the E2E Current plan — nothing changed.");
+			// No proration panel on the no-op path.
+			await expect(page.getByText('Prorated adjustment')).toHaveCount(0);
+		});
+
+		test('the picker lists the plan catalog from GET /api/billing/plans, cheapest first', async ({
+			page
+		}) => {
+			// Other active plans may already exist in the control-plane catalog
+			// (the platform default seed, or other tests' fixtures) — assert our
+			// two seeded plans are present and correctly ordered RELATIVE to each
+			// other, not the total row count.
+			await page.getByTestId('billing-change-plan').click();
+			const modal = page.getByRole('dialog', { name: 'Change plan' });
+			const options = modal.locator('.plan-option');
+			await expect(options.filter({ hasText: 'E2E Current' })).toBeVisible({ timeout: 10_000 });
+			const texts = await options.allTextContents();
+			const currentIdx = texts.findIndex((t) => t.includes('E2E Current'));
+			const targetIdx = texts.findIndex((t) => t.includes('E2E Target'));
+			expect(currentIdx).toBeGreaterThanOrEqual(0);
+			expect(targetIdx).toBeGreaterThanOrEqual(0);
+			// $49 current plan sorts before the $99 target plan.
+			expect(currentIdx).toBeLessThan(targetIdx);
+		});
+	});
 });
 
 test.describe('/billing (clerk — not authorized)', () => {
@@ -376,8 +511,9 @@ test.describe('/billing (clerk — not authorized)', () => {
 		const token = await page.evaluate(() => localStorage.getItem('auth_token'));
 		const base = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
 		const headers = { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': currentTenantSlug() };
-		// Every billing read (subscription + invoices + payment methods) is
-		// admin/cfo-only; so is starting a SetupIntent.
+		// Every billing read (subscription + invoices + payment methods + the
+		// plan catalog) is admin/cfo-only; so is starting a SetupIntent or
+		// changing the plan.
 		const sub = await page.request.get(`${base}/api/billing/subscription`, { headers });
 		expect(sub.status()).toBe(403);
 		const invoices = await page.request.get(`${base}/api/billing/invoices`, { headers });
@@ -388,5 +524,12 @@ test.describe('/billing (clerk — not authorized)', () => {
 			headers
 		});
 		expect(setup.status()).toBe(403);
+		const plans = await page.request.get(`${base}/api/billing/plans`, { headers });
+		expect(plans.status()).toBe(403);
+		const changePlan = await page.request.post(`${base}/api/billing/change-plan`, {
+			headers,
+			data: { plan_code: 'growth' }
+		});
+		expect(changePlan.status()).toBe(403);
 	});
 });
