@@ -12,7 +12,6 @@ from __future__ import annotations
 import uuid
 
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.vendor import Vendor
 from app.services.vendor_sync import sync_vendors_from_erp
@@ -246,28 +245,26 @@ async def test_sync_filters_name_match_by_org(realdb):
 
 
 async def _set_org_erp(realdb, key: str, erp_config: dict | None):
-    """Patch the control-plane org's settings.erp for the given tenant key."""
-    from app.config import settings as cfg
+    """Patch the control-plane org's settings.erp for the given tenant key.
+
+    Goes through ``realdb.control_sessionmaker()`` (not a bare
+    ``create_async_engine(cfg.database_url)``) — the harness's org lives in
+    this process's per-slot control-plane database, not the real, shared one.
+    """
     from app.models.organization import Organization
 
-    engine = create_async_engine(cfg.database_url)
-    mk = async_sessionmaker(engine, expire_on_commit=False)
-    try:
-        async with mk() as s:
-            org = (
-                await s.execute(
-                    select(Organization).where(Organization.id == realdb.info(key).org_id)
-                )
-            ).scalar_one()
-            new_settings = dict(org.settings or {})
-            if erp_config is None:
-                new_settings.pop("erp", None)
-            else:
-                new_settings["erp"] = erp_config
-            org.settings = new_settings
-            await s.commit()
-    finally:
-        await engine.dispose()
+    mk = realdb.control_sessionmaker()
+    async with mk() as s:
+        org = (
+            await s.execute(select(Organization).where(Organization.id == realdb.info(key).org_id))
+        ).scalar_one()
+        new_settings = dict(org.settings or {})
+        if erp_config is None:
+            new_settings.pop("erp", None)
+        else:
+            new_settings["erp"] = erp_config
+        org.settings = new_settings
+        await s.commit()
 
 
 async def test_sync_erp_endpoint_requires_config(realdb):

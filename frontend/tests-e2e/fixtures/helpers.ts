@@ -35,7 +35,11 @@ const _thisDir = path.dirname(_thisFile);
 
 const AUTH_DIR = path.resolve(_thisDir, '../.auth');
 
-const E2E_TENANT_COUNT = parseInt(
+// Exported so `fixtures/globalSetup.ts` (the workflow-definition shape guard,
+// see docs/known-issues.md § "Workflow-mutating e2e specs can strand a tenant
+// on a disabled workflow definition") enumerates the same tenant set as the
+// per-worker fixture below, instead of re-deriving the env-var precedence.
+export const E2E_TENANT_COUNT = parseInt(
 	process.env.E2E_TENANT_COUNT ?? process.env.FEOH_E2E_TENANT_COUNT ?? '4',
 	10
 );

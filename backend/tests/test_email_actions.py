@@ -39,23 +39,19 @@ _KEY = "integration-email-action-key"
 
 
 @pytest_asyncio.fixture
-async def fresh_control_factory(monkeypatch):
+async def fresh_control_factory(realdb, monkeypatch):
     """Point the module-global ``control_session_factory`` (used by
     ``notify_event`` / ``_resolve_org_slug``) at an engine bound to THIS test's
-    loop — mirrors the same fixture in test_notification_dispatch.py."""
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
-    from app.config import settings as cfg
-
-    engine = create_async_engine(cfg.database_url)
+    loop AND this slot's own control-plane DB — mirrors the same fixture in
+    test_notification_dispatch.py. Must go through ``realdb.control_sessionmaker()``
+    (not a bare ``create_async_engine(settings.database_url)``): the harness's
+    orgs live in this process's per-slot control-plane database, not the real,
+    shared one — see ``control_db_name_for_slot`` in conftest.py."""
     monkeypatch.setattr(
         "app.database.control_session_factory",
-        async_sessionmaker(engine, expire_on_commit=False),
+        realdb.control_sessionmaker(),
     )
-    try:
-        yield
-    finally:
-        await engine.dispose()
+    yield
 
 
 @pytest.fixture

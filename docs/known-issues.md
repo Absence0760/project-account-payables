@@ -35,102 +35,86 @@ bug is absent — measure the ordering instead.
 
 ---
 
-## Workflow-mutating e2e specs can strand a tenant on a disabled workflow definition
+## ~~Workflow-mutating e2e specs can strand a tenant on a disabled workflow definition~~ — RESOLVED 2026-08-08
 
-**Discovered:** 2026-07-17, while stabilizing the new `tests-e2e/erp/` suite —
-its netsuite spec flaked with a 409 on `/api/invoices/{id}/approve` only when
-its Playwright worker landed on the `e2e3` tenant.
+**Audit:** every spec that mutates a workflow definition's `is_active`, step
+`enabled` flags, or `is_default` — `tests-e2e/workflows/*.spec.ts`,
+`tests-e2e/workflow-builder.spec.ts`, and the two files that touch the live
+default in passing (`admin/delete-safety.spec.ts`,
+`invoices/daily-journey.spec.ts`) — already wraps its mutation in a
+`try/finally` that restores the exact prior state, or scopes itself to a
+throwaway definition it creates and deletes. No spec needed a code fix; the
+original diagnosis's "afterAll doesn't restore" theory didn't match what's on
+disk today.
 
-**Symptom:** on a long-lived local dev database, a tenant's genuine seeded
-"Default Workflow" can end up `is_active = false`, leaving the auto-created
-"Invoice Processing" stub (every step `enabled: false`) as the governing
-definition. Any spec (or user) that then relies on the approval / erp_export
-steps being enabled gets surprising transitions: `POST /complete` walks
-`new → done` (no approval step), so a follow-up `/approve` 409s.
+**What was actually missing** was the doc's own second recommendation: a cheap
+guard for the residual risk the try/finally pattern can't close on its own — a
+hard interruption (killed process, machine crash, a timed-out test whose
+continuation never gets scheduled) skipping the `finally` block entirely.
+Added `frontend/tests-e2e/fixtures/globalSetup.ts`, wired into
+`tests-e2e/playwright.config.ts`'s `globalSetup`: before any test/worker
+starts, it asserts every tenant (`acme`, `techflow`, `e2e1..N`) has exactly one
+`is_default=true` workflow definition, `is_active=true`, with its `approval`
+and `erp_export` steps enabled — the shape `backend/scripts/seed.py` creates.
+A miss throws one clear, tenant-and-field-named error instead of a confusing
+409 three specs later.
 
-**Evidence:** local `feoh_e2e3` had `Default Workflow (entity-scoped,
-is_default=t, is_active=f)` + `Invoice Processing (shared, is_default=t,
-is_active=t, all steps disabled)`; `feoh_e2e1/2/4` were healthy. The state is
-left behind by workflow-mutating suites (`workflows/`, `workflow-builder`)
-whose cleanup doesn't restore `is_active` / step-enabled flags on the seeded
-default. CI is unaffected today (every run seeds fresh, and the `erp-e2e` job
-runs only `erp/`), but a within-shard ordering that runs a workflow suite
-before an invoice-flow suite could reproduce it in CI.
+**The guard is proven, not just written**: this local dev Postgres had
+genuinely accumulated the exact symptom the original diagnosis described —
+`feoh_e2e1` and `feoh_e2e3` each carried a shared-scope `is_default=true`
+"Invoice Processing" stub (all steps disabled) alongside the entity-scoped
+`Default Workflow`. The new guard flagged both, by name, before any test ran.
+Cleaned up (no `workflow_instances` referenced either stub, so a plain
+`DELETE` restored the fresh-seed shape) and re-ran the guard clean. Then ran
+the full `tests-e2e/workflows/` + `workflow-builder.spec.ts` suite (52 tests)
+twice back-to-back against `e2e1` — all green both times, and
+`workflow_definitions` for that tenant was bit-for-bit identical (one
+`Default Workflow`, `is_active=t`, all three steps `enabled:true`) before,
+between, and after both runs.
 
-**Blast radius:** local e2e flakiness for any suite that assumes the seeded
-workflow shape (`invoices/lifecycle-money-path`, `purchase-orders/sync`, …);
-confusing local-dev behavior when clicking through the same tenant. The
-`erp/` suite is immune since 2026-07-17 — its helper approves directly via the
-legal `new → approved` edge instead of relying on `/complete`.
-
-**Recommended fix:** audit the workflow-mutating specs' `afterAll` blocks to
-restore the definitions they touched (`is_active`, step `enabled` flags,
-`is_default`), and prefer creating throwaway definitions over mutating the
-seeded default. A cheap guard: a fixture assertion (or `seed.py --verify`
-mode) that the tenant's governing definition has approval + erp_export
-enabled before suites that depend on it run.
-
-**Trigger to revisit:** the next local flake that traces to workflow state, or
-any plan to run multiple suite directories in one CI shard sequentially.
+One thing worth carrying forward: the stray "Invoice Processing" stub wasn't
+traceable to any spec in the current suite — none of them create a window
+where zero workflows are active while also creating a new invoice with no
+entity-scoped default in play, which is what the auto-create fallback needs to
+fire. It most likely came from manual UI exploration against a long-lived
+dev tenant, not test-run drift. The guard doesn't care which — it catches the
+*state*, not the cause — but if it ever fires again, check for a new code path
+that can leave zero active workflows before assuming it's the old bug back.
 
 ---
 
-## A dev backend on the same Postgres mutates the pytest tenant DBs mid-test
+## ~~A dev backend on the same Postgres mutates the pytest tenant DBs mid-test~~ — FIXED 2026-08-08
 
-**Discovered:** 2026-07-20, while root-causing the concurrent-pytest cross-kill
-(issue #211's environment notes). **Confirmed:** 2026-07-22.
+**Resolved** by giving the `realdb` pytest harness its own control-plane
+database per slot (`feohledger_pytest<N>` — slot 0 included) instead of
+registering test orgs in the real, shared `feohledger`
+(`backend/tests/conftest.py::control_db_name_for_slot`). A dev backend's
+background sweeps (`extraction_reaper.run_reaper_loop` et al. —
+`select(Organization.id, Organization.db_name)` with no filter against
+whatever DB `settings.database_url` names) can no longer discover the
+harness's test tenants at all, because their `Organization` rows no longer
+live there. This also removes the cross-process contention the original
+write-up flagged on the shared control plane's unique constraints (org slugs,
+user emails) — concurrent slots now don't share a control-plane database
+either.
 
-**Symptom:** realdb pytest failures — missing or unexpectedly-`failed`
-invoices, `TRUNCATE` stalls — in a run that overlapped a locally-running
-backend (`pnpm dev:backend`, or the backend Playwright drives) pointed at the
-same Postgres.
+Kept as a stub because the diagnosis is worth not repeating: the root cause
+(background sweeps enumerating every org with no filter), the confirmation
+run that ruled out a genuine test-ordering/leak bug, and why the fix landed
+as its own change rather than folded into the original slot-claim work all
+still apply as background. The current mechanism — naming, one-time-per-slot
+provisioning, and the session-start schema self-heal it shares with the
+tenant pair — is documented in `backend/CLAUDE.md` § Test databases and in
+`control_db_name_for_slot`'s docstring in `backend/tests/conftest.py`.
+Regression coverage is `backend/tests/test_realdb_harness.py` (the "control
+plane is per-slot" section) — including a direct proof that a session opened
+against `settings.database_url` cannot see an `Organization` row the harness
+created for its slot.
 
-**Confirmation (2026-07-22):** issue #211 reported ~23 failures (in
-`test_access_reviews.py`, `test_adaptive_workflows*.py`,
-`test_analytics_aging_reconciliation.py`, `test_assistant*.py`,
-`test_audit_access.py`, `test_partner_admin.py`) from a single whole-suite
-`pytest -q` run, with two confounds the reporter flagged themselves: a
-locally-running dev backend and a Playwright e2e run against the same
-Postgres. Re-ran the identical whole-suite `pytest -q` with **both stopped**
-and nothing else attached to Postgres (a clean ~2h16m serial run, single
-process, no sharding): **zero failures in any of the originally-reported
-files.** The only failures in that clean run (68, all `UndefinedColumnError`)
-were an unrelated, separately-diagnosed local schema-drift issue (see the next
-entry) — not this one. This is strong evidence the original ~23 failures were
-caused by the confound, not a genuine whole-suite test-ordering/leak bug.
-
-**Root cause:** the backend's background sweeps enumerate **every** organization
-in the control plane and open a connection per tenant DB —
-`extraction_reaper.run_reaper_loop` does
-`select(Organization.id, Organization.db_name)` with no filter, and it is on by
-default (`FEOH_EXTRACTION_REAPER_ENABLED` defaults to `True`). The realdb harness
-registers its test tenants in that same shared control plane
-(`feohledger`), so a dev server happily sweeps `feoh_pytesta` / `feoh_pytestb`
-— transitioning stuck `pending` invoices to `failed` inside a database a test is
-mid-way through asserting on, and holding a snapshot/lock the next test's
-`TRUNCATE` must wait for.
-
-The per-process slot claim added in `tests/conftest.py` (see backend
-`CLAUDE.md` § Test databases) makes *pytest processes* mutually exclusive, but it
-cannot hide the harness tenants from a dev server, which discovers them through
-the control plane rather than by name.
-
-**Blast radius:** local only, and only while a backend is running against the
-same Postgres as a pytest run. CI is immune — each shard boots its own Postgres
-and runs no server.
-
-**Workaround today:** don't run the dev backend against the same Postgres while
-running realdb pytest (stop `pnpm dev:backend`, or point one of them at another
-instance).
-
-**Recommended fix:** give the harness its own control-plane database per slot
-(`feohledger_pytest<N>`) instead of sharing `feohledger`, so the
-harness tenants are invisible to any server on the default control plane. That
-also removes the remaining cross-process contention on the shared control-plane
-unique constraints (emails, org slugs). Deferred here because it moves
-`settings.database_url` for the whole test session — a materially wider blast
-radius than the isolation fix it would extend, and worth landing on its own.
-
-**Trigger to revisit:** the next realdb failure that can't be reproduced with
-nothing else attached to Postgres, or any move to run the e2e stack and pytest
-concurrently.
+One thing worth carrying forward: this is a **one-time-per-slot** cost
+(provisioning a new database, or self-healing its schema, once per pytest
+process — the same accepted trade-off the tenant pair already makes), not a
+per-test one. Measured on a single realdb test reaching a cold slot: about 3
+seconds slower than before this fix, which does not survive contact with a
+multi-thousand-test suite where the fixture's setup is paid once regardless
+of how many realdb tests follow.

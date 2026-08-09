@@ -20,8 +20,12 @@ accounts-payable money path the app manages for customers.
 > + the adapter `create_setup_intent` / `list_payment_methods` capabilities),
 > **and the frontend invoices/receipts + payment-method UI** (the saved-cards
 > list + the add/replace-card SetupIntent flow, with a clearly-marked
-> deployed-only Stripe Elements seam).** **Deferred to a later slice:** the
-> live-Stripe **plan-change** UI (rides the live-Stripe plan-change path).
+> deployed-only Stripe Elements seam), **and the plan catalog endpoint (`GET
+> /api/billing/plans`) + the live plan-change UI** (a `Modal` picker → an
+> "applies immediately" notice → `POST /api/billing/change-plan` on confirm →
+> the real returned proration, or a clean no-op message). A provisioned Stripe
+> account to verify the live-Stripe path end-to-end remains an external
+> dependency, not unshipped code — see `docs/followups.md`.
 
 ## Where it lives (control plane)
 
@@ -485,9 +489,25 @@ dashboard and never sees the tab.
     in production (the `client_secret` is confirmed against the provider's JS SDK
     there; it never leaves that boundary). After the flow the saved-cards list is
     re-fetched.
-- The live-Stripe **plan-change** action stays a **disabled** "coming soon"
-  button + a "contact us" link (it rides the live-Stripe plan-change path — a
-  later frontend slice).
+- **Live plan-change flow.** The "Change plan" button opens a `Modal`
+  (`billing-change-plan-modal` — plan list fetched from `GET /api/billing/plans`
+  via `$lib/api/billing.ts::getBillingPlans`, cheapest first). Each plan renders
+  as a radio option with its `<Money>` price; the org's current plan is marked
+  with a "Current plan" pill and its radio is disabled (a genuine change is the
+  point — the idempotent same-plan no-op below exists for a race, not as the
+  primary UI path). Selecting a different plan enables the confirm button,
+  which sits under a plain-language notice that **the change applies
+  immediately and prorates the current billing period** — `POST
+  /api/billing/change-plan` has no preview-only mode, so the UI never implies
+  one. On success the modal switches to a result view: `changed: true` renders
+  "You're now on the {plan} plan." plus the REAL returned proration
+  (`proration.amount`, exact string, via `<Money accounting>` — positive =
+  extra charge, negative = credit) and a plain-language hint explaining the
+  sign; `changed: false` (the org was already on the target plan) renders a
+  clean "nothing changed" message instead of an error. Closing the result view
+  re-fetches `GET /api/billing/subscription` so the plan card reflects the
+  change without a manual reload. A "contact us" link stays alongside for
+  anything outside the self-serve catalog (enterprise/custom plans).
 - `SubscriptionBadge.svelte` (`$lib/components/ui/`) is a new shared status pill
   for the four subscription states (WCAG-1.4.3-calibrated tones, matching
   `StatusBadge`).

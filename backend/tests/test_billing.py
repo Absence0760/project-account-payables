@@ -550,6 +550,61 @@ async def test_no_subscription_yields_null_plan(realdb):
 
 
 @pytest.mark.asyncio
+async def test_list_plans_returns_active_plans_ordered_by_price(realdb):
+    """GET /api/billing/plans is the plan-change picker's data source: only
+    active plans, cheapest first, money as an exact string — never float."""
+    org_id = realdb.info("a").org_id
+    try:
+        await _seed_plan(realdb, code="test_pricey", entitlements={}, price="199.00")
+        await _seed_plan(realdb, code="test_cheap", entitlements={"public_api": True}, price="9.00")
+        # An inactive plan must never appear in the picker.
+        async with realdb.control_sessionmaker()() as s:
+            s.add(
+                Plan(
+                    id=uuid.uuid4(),
+                    code="test_retired",
+                    name="Retired",
+                    monthly_price=Decimal("1.00"),
+                    currency="USD",
+                    entitlements={},
+                    trial_days=0,
+                    is_active=False,
+                )
+            )
+            await s.commit()
+
+        async with realdb.client(key="a", role="admin") as c:
+            resp = await c.get("/api/billing/plans")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        codes = [p["code"] for p in body["plans"]]
+        assert "test_retired" not in codes
+        assert "test_cheap" in codes and "test_pricey" in codes
+        # Cheapest-first ordering, at least relative to each other.
+        assert codes.index("test_cheap") < codes.index("test_pricey")
+        cheap = next(p for p in body["plans"] if p["code"] == "test_cheap")
+        assert cheap["monthly_price"] == "9.00"
+        assert isinstance(cheap["monthly_price"], str)  # exact string, not float
+        assert cheap["entitlements"]["public_api"] is True
+    finally:
+        await _cleanup_billing(realdb, org_id)
+
+
+@pytest.mark.asyncio
+async def test_list_plans_admin_or_cfo_only(realdb):
+    org_id = realdb.info("a").org_id
+    try:
+        async with realdb.client(key="a", role="ap_clerk") as c:
+            resp = await c.get("/api/billing/plans")
+        assert resp.status_code == 403
+        async with realdb.client(key="a", role="cfo") as c:
+            resp = await c.get("/api/billing/plans")
+        assert resp.status_code == 200
+    finally:
+        await _cleanup_billing(realdb, org_id)
+
+
+@pytest.mark.asyncio
 async def test_public_api_is_plan_gated(realdb):
     """The /api/v1 surface 402s when the plan lacks `public_api`, 200s when it
     includes it. Demonstrates require_api_entitlement composing with the scope."""

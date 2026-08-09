@@ -18,9 +18,7 @@ import uuid
 from decimal import Decimal
 
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.config import settings as cfg
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.organization import Organization
 from app.models.procurement import POLineItem, PurchaseOrder
@@ -31,29 +29,25 @@ from app.models.vendor import Vendor
 # ---------------------------------------------------------------------------
 
 
-async def _set_org_erp(org_id: uuid.UUID, erp_config: dict | None) -> None:
+async def _set_org_erp(realdb, org_id: uuid.UUID, erp_config: dict | None) -> None:
     """Patch the control-plane Organization.settings.erp for one org.
 
     sync-erp reads ``org.settings["erp"]`` off the control DB row, so the
-    realdb tenant sessionmaker can't reach it — go straight to the control
-    engine via the configured database_url.
+    realdb tenant sessionmaker can't reach it — go through
+    ``realdb.control_sessionmaker()`` (not a bare
+    ``create_async_engine(cfg.database_url)``): the harness's org lives in
+    this process's per-slot control-plane database, not the real, shared one.
     """
-    engine = create_async_engine(cfg.database_url)
-    mk = async_sessionmaker(engine, expire_on_commit=False)
-    try:
-        async with mk() as s:
-            org = (
-                await s.execute(select(Organization).where(Organization.id == org_id))
-            ).scalar_one()
-            settings = dict(org.settings or {})
-            if erp_config is None:
-                settings.pop("erp", None)
-            else:
-                settings["erp"] = erp_config
-            org.settings = settings
-            await s.commit()
-    finally:
-        await engine.dispose()
+    mk = realdb.control_sessionmaker()
+    async with mk() as s:
+        org = (await s.execute(select(Organization).where(Organization.id == org_id))).scalar_one()
+        settings = dict(org.settings or {})
+        if erp_config is None:
+            settings.pop("erp", None)
+        else:
+            settings["erp"] = erp_config
+        org.settings = settings
+        await s.commit()
 
 
 async def _add_po(
@@ -275,7 +269,7 @@ async def test_get_purchase_order_tenant_isolation(realdb):
 
 
 async def test_sync_erp_no_config_returns_400(realdb):
-    await _set_org_erp(realdb.info("a").org_id, None)
+    await _set_org_erp(realdb, realdb.info("a").org_id, None)
     async with realdb.client(key="a", role="ap_manager") as c:
         resp = await c.post("/api/purchase-orders/sync-erp")
     assert resp.status_code == 400
@@ -284,7 +278,9 @@ async def test_sync_erp_no_config_returns_400(realdb):
 
 async def test_sync_erp_rbac_forbidden_roles(realdb):
     # Even with ERP configured, ap_clerk and cfo are not permitted.
-    await _set_org_erp(realdb.info("a").org_id, {"type": "mock", "integration_method": "direct"})
+    await _set_org_erp(
+        realdb, realdb.info("a").org_id, {"type": "mock", "integration_method": "direct"}
+    )
     for role in ("ap_clerk", "cfo"):
         async with realdb.client(key="a", role=role) as c:
             resp = await c.post("/api/purchase-orders/sync-erp")
@@ -293,7 +289,7 @@ async def test_sync_erp_rbac_forbidden_roles(realdb):
 
 async def test_sync_erp_creates_pos_and_is_idempotent(realdb):
     org_id = realdb.info("a").org_id
-    await _set_org_erp(org_id, {"type": "mock", "integration_method": "direct"})
+    await _set_org_erp(realdb, org_id, {"type": "mock", "integration_method": "direct"})
 
     # Seed one vendor whose name matches a mock PO so vendor linking exercises.
     mk = realdb.sessionmaker("a")
@@ -331,7 +327,9 @@ async def test_sync_erp_creates_pos_and_is_idempotent(realdb):
 
 async def test_sync_erp_isolated_per_tenant(realdb):
     """A sync against tenant A leaves tenant B's PO table empty."""
-    await _set_org_erp(realdb.info("a").org_id, {"type": "mock", "integration_method": "direct"})
+    await _set_org_erp(
+        realdb, realdb.info("a").org_id, {"type": "mock", "integration_method": "direct"}
+    )
     async with realdb.client(key="a", role="admin") as c:
         resp = await c.post("/api/purchase-orders/sync-erp")
     assert resp.status_code == 200
@@ -355,7 +353,7 @@ async def test_sync_erp_populates_expected_delivery_date_on_create(realdb):
     from datetime import date
 
     org_id = realdb.info("a").org_id
-    await _set_org_erp(org_id, {"type": "mock", "integration_method": "direct"})
+    await _set_org_erp(realdb, org_id, {"type": "mock", "integration_method": "direct"})
 
     async with realdb.client(key="a", role="ap_manager") as c:
         resp = await c.post("/api/purchase-orders/sync-erp")
@@ -377,7 +375,7 @@ async def test_sync_erp_does_not_clobber_human_set_expected_delivery_date(realdb
     from datetime import date
 
     org_id = realdb.info("a").org_id
-    await _set_org_erp(org_id, {"type": "mock", "integration_method": "direct"})
+    await _set_org_erp(realdb, org_id, {"type": "mock", "integration_method": "direct"})
 
     # Pre-seed PO-2024-200 with a human-chosen expected date that differs from
     # the mock ERP's (2024-06-15).
@@ -412,7 +410,7 @@ async def test_sync_erp_backfills_missing_expected_delivery_date_on_existing_po(
     from datetime import date
 
     org_id = realdb.info("a").org_id
-    await _set_org_erp(org_id, {"type": "mock", "integration_method": "direct"})
+    await _set_org_erp(realdb, org_id, {"type": "mock", "integration_method": "direct"})
 
     # Pre-seed PO-2024-201 WITHOUT an expected date (e.g. created before the
     # ERP started supplying one); the mock ERP carries 2024-07-01 for it.
@@ -455,7 +453,7 @@ async def test_sync_erp_refreshes_stale_total_and_status_on_existing_po(realdb):
     from datetime import date
 
     org_id = realdb.info("a").org_id
-    await _set_org_erp(org_id, {"type": "mock", "integration_method": "direct"})
+    await _set_org_erp(realdb, org_id, {"type": "mock", "integration_method": "direct"})
 
     # Pre-seed PO-2024-200 as if it was amended down and later closed in our
     # DB before the ERP's amendment/cancellation caught up — a stale total and
@@ -499,7 +497,7 @@ async def test_sync_erp_refreshes_total_status_and_backfills_delivery_date_toget
     from datetime import date
 
     org_id = realdb.info("a").org_id
-    await _set_org_erp(org_id, {"type": "mock", "integration_method": "direct"})
+    await _set_org_erp(realdb, org_id, {"type": "mock", "integration_method": "direct"})
 
     # PO-2024-201 in the mock ERP is total=15000.00/status=open with a
     # promised delivery date of 2024-07-01. Pre-seed a stale total, a stale

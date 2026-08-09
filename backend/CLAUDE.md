@@ -209,42 +209,86 @@ collision it is.
 
 Exclusivity is therefore claimed, not assumed. On first use each process takes a
 **slot** — a Postgres session-level advisory lock — and uses the tenant pair
-named for it:
+(and, see below, the control-plane database) named for it:
 
-| Slot | Tenants |
-|------|---------|
-| 0 (first / only process) | `feoh_pytesta`, `feoh_pytestb` |
-| 1, 2, … (each further concurrent process) | `feoh_pytesta1`, `feoh_pytestb1`, … |
+| Slot | Tenants | Control-plane DB |
+|------|---------|-------------------|
+| 0 (first / only process) | `feoh_pytesta`, `feoh_pytestb` | `feohledger_pytest` |
+| 1, 2, … (each further concurrent process) | `feoh_pytesta1`, `feoh_pytestb1`, … | `feohledger_pytest1`, … |
+
+**The harness's `Organization`/`User`/`Role` rows live in their OWN per-slot
+control-plane database, never the real, shared `feohledger`** (`settings.database_url`)
+— unlike the tenant pair, this is true for slot 0 too. `control_db_name_for_slot`
+in `tests/conftest.py` derives the name from the configured control-plane DB
+(`<base>_pytest<slot>`), and every control-plane operation the harness performs
+— seeding roles/orgs/users in `_ensure_test_tenants`, `RealDB.control_sessionmaker()`,
+the `get_control_db` override in `RealDB.client()` — targets it instead. This is
+what closes a real defect (see `docs/known-issues.md`): a locally-running dev
+backend's background sweeps (e.g. `extraction_reaper.run_reaper_loop`) enumerate
+**every** `Organization` row in whatever database `settings.database_url` names,
+with no filter. When the harness's test orgs lived there too, a dev server
+sweeping the real control plane would discover and mutate them mid-test — stray
+`TRUNCATE` stalls and invoices flipped to `failed` out from under a running
+assertion. Giving every slot (0 included) its own control-plane database makes
+the harness's tenants invisible to any server pointed at the default one. It
+also removes the last cross-process contention: two concurrent slots no longer
+share the control plane's unique constraints (org slugs, user emails) either.
 
 Consequences worth knowing:
 
-- **Nothing changes for the common path.** A lone `pytest` run — and every CI
-  shard, each with its own Postgres — takes slot 0 and uses exactly the
-  historical databases. No extra databases, no measurable extra time.
-- **A second concurrent run just works.** It provisions its own pair on first use
-  (one-off, per session) and cannot disturb the first. Run several agents or
-  terminals at once without coordinating.
+- **The common path pays a small, one-time-per-process cost, not a per-test
+  one.** A lone `pytest` run — and every CI shard, each with its own fresh
+  Postgres — still takes slot 0 and reuses the historical tenant names, but
+  (like the tenant pair) it also provisions/self-heals its own
+  `feohledger_pytest` the first time any test in the process requests `realdb`.
+  Measured: roughly 2-3 extra seconds on that first call, not per test —
+  negligible against a multi-thousand-test suite's total wall-clock.
+- **A second concurrent run just works.** It provisions its own tenant pair
+  *and* its own control-plane database on first use (one-off, per session) and
+  cannot disturb the first. Run several agents or terminals at once without
+  coordinating.
 - **Crash-safe, nothing to clean up.** Postgres releases the lock when the
-  holding connection dies, so a killed run frees its slot; the databases are
-  reused by the next process to claim it.
-- **Schema drift self-heals at session start** (issue #219). Because the pair
-  is long-lived and provisioned via `create_all(checkfirst=True)` — which never
-  adds a column to an existing table — a pair predating a model change used to
-  stay silently stale until something read the missing column. The harness now
-  drops and recreates each pre-existing tenant DB's schema from the current
-  `Base.metadata` once per pytest session (on the first `_ensure_test_tenants`
-  call, keyed like the slot claim), so a local pair can never lag the ORM.
-  Fresh provisioning (CI shards, a new slot) skips the rebuild — it's already
-  current by construction. Guarded by `test_realdb_harness.py`.
+  holding connection dies, so a killed run frees its slot; the databases
+  (tenant pair and control-plane DB alike) are reused by the next process to
+  claim it.
+- **Schema drift self-heals at session start** (issue #219) — for the tenant
+  pair AND, the same way, for the per-slot control-plane database. Because
+  they're long-lived and provisioned via `create_all(checkfirst=True)` — which
+  never adds a column to an existing table — a database predating a later
+  model change used to stay (or, absent this fix, would stay) silently stale
+  until something read the missing column. The harness drops and recreates
+  each pre-existing database's schema from the current `Base.metadata` once per
+  pytest session (on the first `_ensure_test_tenants` call, keyed like the slot
+  claim, via the shared `_rebuild_pytest_schema` helper), so a local slot can
+  never lag the ORM. Fresh provisioning (CI shards, a new slot) skips the
+  rebuild — it's already current by construction. Guarded by
+  `test_realdb_harness.py`.
 - **Never hardcode a test tenant's slug or a seeded login** — they carry the slot
   number. Use `realdb.info("a").slug` / `realdb.email("a", "admin")`.
-- Any control-plane row a test creates needs a unique value per slot (derive it
-  from the slug or a uuid), or two concurrent runs collide on the shared
-  `feohledger` unique constraints.
+- A control-plane row a test creates still needs a unique value per SESSION
+  within its own slot's database (derive it from the slug or a uuid) — that
+  database is long-lived across separate pytest invocations of the same slot,
+  even though it's no longer shared with any other slot.
 
 The harness resets tenant tables plus `Organization.settings` / `parent_org_id`.
 It does **not** delete extra control-plane `users` rows a test creates — those
 accumulate, so a test must not assume a fixed user count for a test org.
+
+**The literal default `settings.database_url` still gets its own baseline**
+(`_ensure_default_control_schema`, once per process) — CONTROL_TABLES schema
+plus the four seeded system roles, but never any Organization/User/UserRole
+row. CI's backend-test job never runs Alembic migrations against `feohledger`
+(the Postgres service just creates the empty database); before the per-slot
+control DB existed, slot 0 *was* that literal connection string, so its
+ordinary bootstrap incidentally satisfied this. `test_tenant_provisioning.py`
+deliberately exercises the real `settings.database_url` production path
+end-to-end (self-contained — it creates and cleans up its own org/user rows),
+and this harness's own isolation regression test needs the `organizations`
+table to exist so "no matching row" actually proves isolation instead of
+erroring on a missing table. Locally this is a no-op against a real, migrated
+`feohledger` (`create_all(checkfirst=True)` + `ON CONFLICT DO NOTHING`); it
+only does real work against a genuinely fresh Postgres (CI, or a from-scratch
+local instance).
 
 `tests/test_realdb_harness.py` guards both properties.
 
@@ -691,7 +735,9 @@ deterministic `visa ****4242`, Stripe POSTs `/v1/setup_intents` + GETs
 `.plan_price_ids`, no migration), mid-period proration
 (`services/billing/proration.py`, pure Decimal, `ROUND_HALF_UP` 2 dp), and the
 plan-change endpoint (`POST /api/billing/change-plan`, admin/cfo, idempotent +
-audited), and the invoices/receipts list endpoint (`GET /api/billing/invoices`,
+audited), the `GET /api/billing/plans` catalog endpoint (admin/cfo, active
+plans only, cheapest first — the plan-change picker's data source), and the
+invoices/receipts list endpoint (`GET /api/billing/invoices`,
 admin/cfo, money as exact strings, graceful empty-list on no-customer /
 unconfigured), and the payment-method endpoint (`POST
 /api/billing/payment-method/setup-intent` + `GET /api/billing/payment-methods`,
@@ -699,7 +745,12 @@ admin/cfo, PII-safe card metadata only, graceful not-configured / empty on
 no-customer / unconfigured) are shipped; the invoices/receipts + payment-method
 UI ships on `/billing` (`frontend/src/routes/billing/` — saved-cards list +
 add/replace-card SetupIntent flow with a deployed-only Stripe Elements seam),
-only the live-Stripe plan-change UI is later. See `docs/billing.md`.
+and so does the **live plan-change UI** — a `Modal` picker over `GET
+/api/billing/plans` → an "applies immediately, prorates the current period"
+notice (there is no preview-only mode on the backend) → `POST
+/api/billing/change-plan` on confirm → the result view renders the real
+returned proration via `<Money>` (or a clean no-op message when `changed`
+comes back `false`). See `docs/billing.md`.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|

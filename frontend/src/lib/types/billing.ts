@@ -136,3 +136,34 @@ export interface BillingSetupIntentResponse {
 	/** Provider-side SetupIntent id. Null when not configured. */
 	setup_intent_id: string | null;
 }
+
+/** The sellable plan catalog (active plans only). Mirrors `GET /api/billing/plans`
+ *  (`backend/app/api/billing.py`) — the data source for the plan-change picker. */
+export interface BillingPlansResponse {
+	/** Active plans, cheapest first. */
+	plans: BillingPlan[];
+}
+
+/**
+ * Mid-period proration for a plan change — an exact decimal STRING. Positive =
+ * extra charge (upgrade), negative = credit (downgrade), `"0.00"` = no change /
+ * same plan. Mirrors `POST /api/billing/change-plan`'s `ProrationView`.
+ */
+export interface BillingPlanChangeProration {
+	amount: string;
+	unused_days: number;
+	period_days: number;
+}
+
+/**
+ * Result of `POST /api/billing/change-plan`. This call APPLIES the change —
+ * there is no preview-only mode on the backend — so `changed` distinguishes a
+ * real mutation from the idempotent no-op of "changing" to the plan the org is
+ * already on (no mutation, zero proration).
+ */
+export interface BillingPlanChangeResponse {
+	changed: boolean;
+	old_plan_code: string;
+	new_plan_code: string;
+	proration: BillingPlanChangeProration;
+}

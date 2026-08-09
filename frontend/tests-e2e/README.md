@@ -73,7 +73,8 @@ Start the local e2e backend with both set (CI uses these exact values):
 tests-e2e/
 ├── playwright.config.ts             config; webServer boots `pnpm dev`; workers default 4
 ├── fixtures/
-│   └── helpers.ts                   per-worker fixtures + signIn / tenantPsql / etc.
+│   ├── helpers.ts                   per-worker fixtures + signIn / tenantPsql / etc.
+│   └── globalSetup.ts               pre-run guard — see "Workflow shape guard" below
 ├── a11y/                            axe-core accessibility regression guard (WCAG 2.2 AA)
 ├── auth/                            login, signup, RBAC, tenant isolation
 ├── admin/                           user lifecycle, bulk-delete, custom roles
@@ -119,6 +120,27 @@ assertion; reuse it when adding a route to the guard. Automated tooling only
 covers the machine-detectable criteria — the manual screen-reader passes and
 the conformance docs (`docs/accessibility.md`, `docs/accessibility-vpat.md`)
 cover the rest.
+
+## Workflow shape guard (`fixtures/globalSetup.ts`)
+
+Runs once, in the main process, before any test/worker starts (wired via
+`playwright.config.ts`'s `globalSetup`). It asserts every tenant (`acme`,
+`techflow`, `e2e1..N`) has exactly one `is_default=true` workflow definition,
+`is_active=true`, with its `approval` + `erp_export` steps enabled — the
+shape `backend/scripts/seed.py` creates.
+
+This exists because the workflow-mutating specs (`workflows/*.spec.ts`,
+`workflow-builder.spec.ts`) flip a definition's `is_active` / step `enabled`
+flags mid-test and restore them in a `finally` block — reliable against a
+normal test failure, but not against a killed process or a timed-out test
+whose continuation never gets scheduled. On a long-lived local dev database
+that can leave a tenant stranded on a disabled definition, which then
+surfaces as a confusing 409 in some *unrelated* later spec. The guard fails
+fast, at the start of the run, naming the exact tenant and field — see
+`docs/known-issues.md` for the full incident writeup.
+
+Skip it (e.g. exercising one non-tenant spec by hand against an unseeded DB)
+with `FEOH_E2E_SKIP_WORKFLOW_SHAPE_CHECK=true`.
 
 ## Local dev loop
 
@@ -282,10 +304,12 @@ import `NO_TENANT_BASE` and use that).
 
 ## Storage-state (future)
 
-The auth-storage-state pattern (sign each user in once during
-globalSetup, persist to `.auth/<user>.json`, then
-`test.use({ storageState })` per spec) is the standard Playwright
-pattern for fast authenticated tests. It's not wired here yet —
-login is fast enough that the per-spec inline `signInAndWait` is
-fine. Add the globalSetup back when login latency becomes the
-bottleneck.
+The auth-storage-state pattern (sign each user in once, persist to
+`.auth/<user>.json`, then `test.use({ storageState })` per spec) is
+already the default (`fixtures/helpers.ts::_ensureAdminStorageState`),
+just lazy per-worker rather than precomputed for every seeded user
+up front — login is fast enough that this is fine. A `globalSetup`
+now exists (`fixtures/globalSetup.ts`, see "Workflow shape guard"
+above) but for an unrelated pre-run assertion; if per-user
+storage-state precompute is ever worth doing, extend that same file
+rather than adding a second `globalSetup` — Playwright only runs one.

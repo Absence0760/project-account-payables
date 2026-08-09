@@ -39,13 +39,9 @@ async def _restore_settings(realdb):
     TRUNCATE does NOT reset — it only truncates tenant tables), so we
     restore it after the test to avoid leaking ERP config into siblings.
     """
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
-    from app.config import settings as cfg
     from app.models.organization import Organization
 
-    engine = create_async_engine(cfg.database_url)
-    mk = async_sessionmaker(engine, expire_on_commit=False)
+    mk = realdb.control_sessionmaker()
 
     async def _set(key: str, value):
         async with mk() as s:
@@ -79,7 +75,6 @@ async def _restore_settings(realdb):
                 ).scalar_one()
                 org.settings = v
                 await s.commit()
-        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------
