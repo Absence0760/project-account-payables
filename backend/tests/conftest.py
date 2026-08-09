@@ -515,6 +515,96 @@ def control_db_name_for_slot(slot: int) -> str:
     return f"{_base_control_db_name()}_pytest{suffix}"
 
 
+_DEFAULT_CONTROL_SCHEMA_READY = False
+
+
+async def _ensure_default_control_schema() -> None:
+    """Ensure the literal default control-plane DB (``settings.database_url``
+    itself — a developer's real, long-lived local ``feohledger``, or CI's
+    freshly-created-but-schema-less one) has its CONTROL_TABLES AND the four
+    seeded system roles. NEVER any Organization / User / UserRole row.
+
+    Before the per-slot control-plane DB existed, slot 0 WAS this literal
+    connection string, so slot 0's own ordinary bootstrap in
+    `_ensure_test_tenants` — `create_all(checkfirst=True)` AND the system-role
+    seed — incidentally satisfied this too. CI's backend-test job never runs
+    Alembic migrations against `feohledger` in the test job — the Postgres
+    service just creates the empty database via `POSTGRES_DB=feohledger` (see
+    `.github/workflows/ci.yml`) — so with every slot now on its own database,
+    nothing bootstraps the literal default there anymore on a genuinely fresh
+    Postgres. Locally this never surfaced because a long-lived dev Postgres
+    already has `feohledger` fully migrated (schema) and seeded (roles, via
+    `scripts/seed.py` or an earlier pytest run), masking the gap — it only
+    showed up in CI, where every run starts from a truly empty database.
+
+    Two things legitimately need this regardless of any per-slot database:
+    `test_tenant_provisioning.py`'s own end-to-end `provision_tenant()`
+    coverage (which deliberately exercises the REAL `settings.database_url`
+    production path — self-contained, creates and cleans up its own org/user
+    rows there on purpose, see that file's module docstring — but production
+    `provision_tenant` looks up the seeded "admin" `Role` by name to grant it,
+    and a dedicated test asserts a second "admin" system role collides with
+    the seeded one) and this harness's own isolation regression test
+    (`test_default_control_plane_cannot_see_a_harness_organization`, which
+    needs the `organizations` table to exist so a "no matching row" result
+    actually PROVES isolation, rather than the query erroring out on a table
+    that was never created).
+
+    Built from `_base_control_db_name()` (memoized on the TRUE original value)
+    rather than a live `settings.database_url` read, so this is correct
+    regardless of when it first runs relative to a test that legitimately
+    redirects that global (see `_base_control_db_name`'s own docstring) —
+    `_make_tenant_url` only ever swaps the trailing db-name segment, so it
+    reconstructs the identical host/port/credentials either way.
+
+    NEVER drops or rebuilds anything (unlike `_rebuild_pytest_schema`) — this
+    can be a developer's real local database with real production data, so
+    the schema step is strictly additive/idempotent (`create_all
+    (checkfirst=True)`, exactly the same call the per-slot control DB
+    bootstrap already makes) and the role seed is `ON CONFLICT DO NOTHING`
+    against the same `uq_roles_system_name` partial unique index
+    `_ensure_test_tenants` already relies on — never touches a row that
+    exists. Still writes NO Organization/User/UserRole row, so a session on
+    this literal default still can't see any harness test org.
+    """
+    global _DEFAULT_CONTROL_SCHEMA_READY
+    if _DEFAULT_CONTROL_SCHEMA_READY:
+        return
+    import uuid
+
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.api.deps import ALL_ROLES
+    from app.database import _make_tenant_url
+    from app.models import Base
+    from app.models.user import Role
+    from app.services.tenant_provisioning import CONTROL_TABLES
+
+    engine = create_async_engine(_make_tenant_url(_base_control_db_name()))
+    try:
+        async with engine.begin() as conn:
+            ctrl_tables = [t for n, t in Base.metadata.tables.items() if n in CONTROL_TABLES]
+            await conn.run_sync(
+                lambda c: Base.metadata.create_all(c, tables=ctrl_tables, checkfirst=True)
+            )
+
+        mk = async_sessionmaker(engine, expire_on_commit=False)
+        async with mk() as s:
+            await s.execute(
+                pg_insert(Role)
+                .values([{"id": uuid.uuid4(), "name": name} for name in ALL_ROLES])
+                .on_conflict_do_nothing(
+                    index_elements=[Role.name],
+                    index_where=Role.organization_id.is_(None),
+                )
+            )
+            await s.commit()
+    finally:
+        await engine.dispose()
+    _DEFAULT_CONTROL_SCHEMA_READY = True
+
+
 def role_email(slug: str, role: str) -> str:
     """The seeded login for a role in a test tenant. Single source of truth —
     tests must derive it from here rather than hardcoding a slug, which changes
@@ -564,6 +654,12 @@ async def _ensure_test_tenants() -> dict:
     from app.utils.passwords import pwd_context
 
     slot = _claim_realdb_slot()
+
+    # The literal default control-plane DB needs its (empty) CONTROL_TABLES
+    # schema too — see `_ensure_default_control_schema`'s docstring for why
+    # this is a separate, additional guarantee from the per-slot DB below, not
+    # a duplicate of it.
+    await _ensure_default_control_schema()
 
     # This slot's OWN control-plane database — never the shared
     # `settings.database_url` (`feohledger`). See `control_db_name_for_slot`

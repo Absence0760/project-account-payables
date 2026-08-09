@@ -274,6 +274,22 @@ The harness resets tenant tables plus `Organization.settings` / `parent_org_id`.
 It does **not** delete extra control-plane `users` rows a test creates — those
 accumulate, so a test must not assume a fixed user count for a test org.
 
+**The literal default `settings.database_url` still gets its own baseline**
+(`_ensure_default_control_schema`, once per process) — CONTROL_TABLES schema
+plus the four seeded system roles, but never any Organization/User/UserRole
+row. CI's backend-test job never runs Alembic migrations against `feohledger`
+(the Postgres service just creates the empty database); before the per-slot
+control DB existed, slot 0 *was* that literal connection string, so its
+ordinary bootstrap incidentally satisfied this. `test_tenant_provisioning.py`
+deliberately exercises the real `settings.database_url` production path
+end-to-end (self-contained — it creates and cleans up its own org/user rows),
+and this harness's own isolation regression test needs the `organizations`
+table to exist so "no matching row" actually proves isolation instead of
+erroring on a missing table. Locally this is a no-op against a real, migrated
+`feohledger` (`create_all(checkfirst=True)` + `ON CONFLICT DO NOTHING`); it
+only does real work against a genuinely fresh Postgres (CI, or a from-scratch
+local instance).
+
 `tests/test_realdb_harness.py` guards both properties.
 
 ## Project structure
