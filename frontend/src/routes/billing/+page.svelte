@@ -4,11 +4,14 @@
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import KpiCard from '$lib/components/ui/KpiCard.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
+	import Modal from '$lib/components/ui/Modal.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import SubscriptionBadge from '$lib/components/ui/SubscriptionBadge.svelte';
 	import {
+		changeBillingPlan,
 		getBillingInvoices,
 		getBillingPaymentMethods,
+		getBillingPlans,
 		getBillingSubscription,
 		startBillingSetupIntent
 	} from '$lib/api/billing';
@@ -18,6 +21,8 @@
 		BillingInvoice,
 		BillingInvoiceStatus,
 		BillingPaymentMethod,
+		BillingPlan,
+		BillingPlanChangeResponse,
 		BillingSubscriptionResponse
 	} from '$lib/types/billing';
 	import { formatDate } from '$lib/utils/time';
@@ -136,6 +141,67 @@
 		cardSetup = { state: 'idle', message: null };
 	}
 
+	// Plan-change flow. `POST /api/billing/change-plan` APPLIES the change on
+	// the spot — there is no preview-only mode on the backend — so the modal
+	// says so before the confirm click, then shows the real proration the
+	// response returns. Idempotent: re-"changing" to the current plan comes
+	// back `changed: false` with a zero proration, rendered as a clean no-op
+	// rather than an error.
+	let showChangePlan = $state(false);
+	let availablePlans = $state<BillingPlan[]>([]);
+	let plansLoading = $state(false);
+	let plansError = $state<string | null>(null);
+	let selectedPlanCode = $state<string | null>(null);
+	let changingPlan = $state(false);
+	let changeError = $state<string | null>(null);
+	let changeResult = $state<BillingPlanChangeResponse | null>(null);
+
+	async function loadAvailablePlans() {
+		plansLoading = true;
+		plansError = null;
+		try {
+			availablePlans = (await getBillingPlans()).plans;
+		} catch (e) {
+			plansError = e instanceof Error ? e.message : m('billing.plan.changeModal.loadError');
+		} finally {
+			plansLoading = false;
+		}
+	}
+
+	function openChangePlan() {
+		showChangePlan = true;
+		selectedPlanCode = null;
+		changeError = null;
+		changeResult = null;
+		loadAvailablePlans();
+	}
+
+	function closeChangePlan() {
+		showChangePlan = false;
+	}
+
+	async function confirmPlanChange() {
+		if (!selectedPlanCode) return;
+		changingPlan = true;
+		changeError = null;
+		try {
+			changeResult = await changeBillingPlan(selectedPlanCode);
+			// Refresh the plan/usage surface behind the modal so it reflects the
+			// new plan by the time the user closes the dialog.
+			await load();
+		} catch (e) {
+			changeError = e instanceof Error ? e.message : m('billing.plan.changeModal.changeFailed');
+		} finally {
+			changingPlan = false;
+		}
+	}
+
+	/** Display name for a plan code the picker already fetched, falling back to
+	 *  the bare code if the list has since moved on (defensive, not expected). */
+	function planName(code: string): string {
+		return availablePlans.find((p) => p.code === code)?.name ?? code;
+	}
+
 	$effect(() => {
 		// Only fetch once we know the role is allowed (avoids a guaranteed 403
 		// for the clerk/manager before the redirect fires).
@@ -169,6 +235,15 @@
 	const plan = $derived(data?.plan ?? null);
 	const subscription = $derived(data?.subscription ?? null);
 	const hasSubscription = $derived(plan !== null && subscription !== null);
+
+	/** Currency for the proration figure — the target plan's own currency,
+	 *  falling back to the (now-current) plan's currency defensively. */
+	const changedPlanCurrency = $derived(
+		changeResult
+			? (availablePlans.find((p) => p.code === changeResult!.new_plan_code)?.currency ??
+					plan?.currency)
+			: undefined
+	);
 
 	/** Whole-number usage counter rendered defensively (the API sends strings). */
 	function asCount(n: string | undefined): string {
@@ -289,11 +364,15 @@
 				</div>
 			{/if}
 
-			<!-- Plan-change rides the live-Stripe plan-change path (later frontend
-			     slice); surfaced disabled so it reads complete without implying an
-			     unwired action. The payment-method action is wired below. -->
 			<div class="actions">
-				<button type="button" class="btn" disabled title={m('billing.plan.comingSoon')}>{m('billing.plan.changePlan')}</button>
+				<button
+					type="button"
+					class="btn"
+					onclick={openChangePlan}
+					data-testid="billing-change-plan"
+				>
+					{m('billing.plan.changePlan')}
+				</button>
 				<a class="link" href="mailto:billing@example.com">{m('billing.plan.changeContact')}</a>
 			</div>
 		</section>
@@ -459,6 +538,123 @@
 	{/if}
 </PageHeader>
 
+<!-- Plan-change dialog. `POST /api/billing/change-plan` applies the move on the
+     spot (no preview mode on the backend), so the confirm step says so plainly;
+     the result state then renders the REAL proration the response returned
+     (or a clean no-op message when `changed` is false). -->
+<Modal
+	open={showChangePlan}
+	ariaLabel={m('billing.plan.changeModal.aria')}
+	title={changeResult
+		? m('billing.plan.changeModal.successHeading')
+		: m('billing.plan.changeModal.selectHeading')}
+	onclose={closeChangePlan}
+>
+	{#if changeResult}
+		<div class="change-result" data-testid="billing-plan-change-result">
+			{#if changeResult.changed}
+				<p>
+					{m('billing.plan.changeModal.successChanged', {
+						plan: planName(changeResult.new_plan_code)
+					})}
+				</p>
+				<dl class="proration">
+					<dt>{m('billing.plan.changeModal.prorationLabel')}</dt>
+					<dd>
+						<Money
+							amount={changeResult.proration.amount}
+							currency={changedPlanCurrency}
+							accounting
+						/>
+					</dd>
+				</dl>
+				<p class="hint">{m('billing.plan.changeModal.prorationHint')}</p>
+			{:else}
+				<p data-testid="billing-plan-change-noop">
+					{m('billing.plan.changeModal.successNoop', {
+						plan: planName(changeResult.new_plan_code)
+					})}
+				</p>
+			{/if}
+			<div class="modal-footer">
+				<button type="button" class="btn-primary" onclick={closeChangePlan}>
+					{m('billing.plan.changeModal.done')}
+				</button>
+			</div>
+		</div>
+	{:else}
+		<form
+			onsubmit={(e) => {
+				e.preventDefault();
+				confirmPlanChange();
+			}}
+		>
+			{#if plansLoading}
+				<p class="state">{m('billing.plan.changeModal.loading')}</p>
+			{:else if plansError}
+				<div class="state error" role="alert">
+					<p>{plansError}</p>
+					<button type="button" class="btn" onclick={loadAvailablePlans}>
+						{m('billing.retry')}
+					</button>
+				</div>
+			{:else if availablePlans.length === 0}
+				<p class="state">{m('billing.plan.changeModal.empty')}</p>
+			{:else}
+				<fieldset class="plan-options">
+					<legend>{m('billing.plan.changeModal.legend')}</legend>
+					{#each availablePlans as p (p.code)}
+						{@const isCurrent = plan?.code === p.code}
+						<label class="plan-option" class:selected={selectedPlanCode === p.code}>
+							<input
+								type="radio"
+								name="plan-code"
+								value={p.code}
+								checked={selectedPlanCode === p.code}
+								disabled={isCurrent}
+								onchange={() => (selectedPlanCode = p.code)}
+								aria-label={m('billing.plan.changeModal.selectAria', { name: p.name })}
+							/>
+							<span class="plan-option-name">
+								{p.name}
+								{#if isCurrent}
+									<span class="current-pill">{m('billing.plan.changeModal.currentBadge')}</span>
+								{/if}
+							</span>
+							<span class="plan-option-price">
+								<Money amount={p.monthly_price} currency={p.currency} />
+								<span class="per">{m('billing.plan.perMonth')}</span>
+							</span>
+						</label>
+					{/each}
+				</fieldset>
+
+				{#if changeError}
+					<div class="state error" role="alert">{changeError}</div>
+				{/if}
+
+				<p class="apply-notice">{m('billing.plan.changeModal.applyNotice')}</p>
+
+				<div class="modal-footer">
+					<button type="button" class="btn-cancel" onclick={closeChangePlan}>
+						{m('common.cancel')}
+					</button>
+					<button
+						type="submit"
+						class="btn-primary"
+						disabled={!selectedPlanCode || changingPlan}
+						data-testid="billing-change-plan-confirm"
+					>
+						{changingPlan
+							? m('billing.plan.changeModal.changing')
+							: m('billing.plan.changeModal.changeButton')}
+					</button>
+				</div>
+			{/if}
+		</form>
+	{/if}
+</Modal>
+
 <style>
 	.state {
 		color: var(--text-muted, #94a3b8);
@@ -562,6 +758,101 @@
 		border-radius: 12px;
 		font-size: 0.8rem;
 		text-transform: capitalize;
+	}
+
+	/* Plan-change modal: picker fieldset + result panel. */
+	.plan-options {
+		border: none;
+		padding: 0;
+		margin: 0 0 1rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.plan-options legend {
+		font-size: 0.75rem;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted, #94a3b8);
+		padding: 0 0 0.5rem;
+	}
+
+	.plan-option {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		border: 1px solid var(--border, #2a3350);
+		border-radius: 8px;
+		padding: 0.65rem 0.85rem;
+		cursor: pointer;
+	}
+
+	.plan-option:has(input:disabled) {
+		cursor: default;
+		opacity: 0.6;
+	}
+
+	.plan-option.selected {
+		border-color: var(--accent, #638cff);
+	}
+
+	.plan-option-name {
+		flex: 1;
+		font-weight: 600;
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+
+	.plan-option-price {
+		white-space: nowrap;
+		font-weight: 600;
+	}
+
+	.current-pill {
+		background: rgba(148, 163, 184, 0.18);
+		color: #94a3b8;
+		padding: 2px 8px;
+		border-radius: 10px;
+		font-size: 0.7rem;
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+		font-weight: 600;
+	}
+
+	.apply-notice {
+		font-size: 0.85rem;
+		color: var(--text-muted, #94a3b8);
+		margin: 0 0 1rem;
+	}
+
+	.change-result .proration {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 1rem;
+		background: var(--surface-2, #232b44);
+		border: 1px solid var(--border, #2a3350);
+		border-radius: 8px;
+		padding: 0.75rem 1rem;
+		margin: 0.75rem 0;
+	}
+
+	.change-result .proration dt {
+		color: var(--text-muted, #94a3b8);
+		font-size: 0.85rem;
+	}
+
+	.change-result .proration dd {
+		margin: 0;
+		font-weight: 600;
+		font-size: 1.1rem;
+	}
+
+	.change-result .hint {
+		font-size: 0.85rem;
+		color: var(--text-muted, #94a3b8);
 	}
 
 	.actions {

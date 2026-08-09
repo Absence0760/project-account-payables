@@ -6,6 +6,8 @@ import { api } from '$lib/api';
 import type {
 	BillingInvoicesResponse,
 	BillingPaymentMethodsResponse,
+	BillingPlanChangeResponse,
+	BillingPlansResponse,
 	BillingSetupIntentResponse,
 	BillingSubscriptionResponse
 } from '$lib/types/billing';
@@ -37,4 +39,18 @@ export function getBillingPaymentMethods(): Promise<BillingPaymentMethodsRespons
  *  `configured=false` + a null secret, never an error. */
 export function startBillingSetupIntent(): Promise<BillingSetupIntentResponse> {
 	return api.post<BillingSetupIntentResponse>('/api/billing/payment-method/setup-intent', {});
+}
+
+/** The sellable plan catalog (active plans, cheapest first) — the plan-change
+ *  picker's data source. admin/cfo only. */
+export function getBillingPlans(): Promise<BillingPlansResponse> {
+	return api.get<BillingPlansResponse>('/api/billing/plans');
+}
+
+/** Move the org's live subscription to `planCode`, prorated mid-period.
+ *  admin/cfo only. This APPLIES the change immediately — there is no preview —
+ *  and is idempotent: changing to the plan the org is already on succeeds with
+ *  `changed: false` and a zero proration rather than an error. */
+export function changeBillingPlan(planCode: string): Promise<BillingPlanChangeResponse> {
+	return api.post<BillingPlanChangeResponse>('/api/billing/change-plan', { plan_code: planCode });
 }
