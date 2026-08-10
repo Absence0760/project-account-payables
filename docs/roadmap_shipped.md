@@ -6,7 +6,7 @@ is summarized — the full original entry, its checkbox detail, and its competit
 notes are preserved, because that detail is what makes the archive useful when
 someone asks "does the platform already do X?".
 
-**Read this before building.** 40 of 51 roadmap sections are here. Prior art for
+**Read this before building.** 41 of 51 roadmap sections are here. Prior art for
 most capabilities — matching, payments, e-invoicing, procurement, RBAC — lives in
 this file and in `backend/docs/`.
 
@@ -480,6 +480,41 @@ See `backend/docs/report-builder.md`.
 - [x] Country-specific tax rules engine — data-driven `services/international_tax/country_rules.py`; new countries are config, not code
 
 **Competitors:** Tipalti (1099 + W-8BEN + VAT), Bill.com (1099 e-filing), Basware (global VAT, 60+ countries), Medius (EU e-invoicing mandates)
+
+---
+
+### Multi-Language UI (Internationalization / i18n)
+**Status:** Done — **web runtime + full starter locale set shipped**: `frontend/src/lib/i18n/` (locale negotiation, typed `en` catalogue + the full `de/fr/es/pt-BR/ja` set as lazy chunks, lazy loader registry, reactive `m()`/`setLocale()`/`initLocale()`, ICU plurals, `<html lang/dir>`, locale picker with endonyms, `messages_parity` vitest) with the shell/nav + **dashboard** + **invoices list** + **payments** + **vendors** + **exceptions** + **notifications** + **contracts** + **recurring** + **organization settings** + **cfo/analytics** + **expenses** (incl. the **`ExpenseModal`** + **`PolicyModal`** dialogs) + the **procurement routes** (**requisitions** + **intake** + **catalogs** + **budgets** + **purchase-orders** + **goods-receipts**) + the **procurement create/edit modals** (`RequisitionModal` + `IntakeModal` + `CatalogModal`/`PunchoutModal` + `BudgetModal` + `ContractModal` + `RecurringModal`) + **positive-pay** + the **supplier portal** (every `routes/portal/**` page) + the **authentication & onboarding routes** (`login` + `login/mfa` + `login/{sso,saml}-callback` + `signup` + `change-password` + `verify`, `auth.*` namespace) + the **admin section** (the **Users & Roles** page + its `UsersPanel`/`RolesPanel`, **API Keys**, **Webhooks**, and **Partner / reseller admin**, `admin.*` namespace) extracted; `formatMoney` **and per-row dates** follow the active locale (the shared `utils/time.ts::formatDate` is locale-aware and drives every route/component's dates — **the date-localization slice is closed**: the 16 `.svelte` files that used to call `toLocaleDateString` inline now all route through `formatDate`). The mobile ARB track is complete at the screen level (every `mobile/lib/screens/*` uses `AppLocalizations`). **All web routes + their feature modals are now extracted** — including the workflows, audit, tax, discounts, credit-memos, vendor-statements (incl. the `VendorStatementReconModal` create/diff dialog), assistant, billing, and experiments routes; server-side email localization is **shipped**. See `frontend/CLAUDE.md` → i18n.
+
+The data layer is already internationalized (multi-currency rollups, locale-aware `Intl` money/date formatting, country tax rules, e-invoicing) alongside the presentation layer, closing the loop for genuine international reach (EU mandates, LATAM, APAC, MENA). Basware/Medius ship 20+ UI languages; Tipalti and Bill.com localize the supplier-facing surfaces. Starter set: `en, de, fr, es, pt-BR, ja` (the six [`../project-running`](../../project-running) already ships), with the RTL switch-point in place for a later `ar`/`he`.
+
+**Web (SvelteKit, `frontend/`):**
+- [x] i18n runtime under `frontend/src/lib/i18n/` — client-side locale detection on first mount (stored choice → `navigator.languages` → English), reactive `m(key, params)` lookup, `<html lang/dir>` applied. **No `Accept-Language` SSR hook** — the frontend is adapter-static (GitHub Pages), so detection must be client-side
+- [x] English statically bundled (fallback dict + prerender default); every other locale a dynamic `import()` chunk via a typed loader registry, so a single-locale visitor downloads only their strings — i18n adds ~nothing to the initial payload (`catalogues.ts`: `en` static, `de/fr/es/pt-BR/ja` lazy `import()`)
+- [x] Compile-time + runtime parity: `Messages = typeof en` + `satisfies Messages` per locale (missing/extra key = type error); a `messages_parity` vitest validating every locale is loadable, complete, non-empty, and placeholder-faithful (covers all six locales via `SUPPORTED_LOCALES`)
+- [x] ICU inline plurals (`{n, plural, one {…} other {…}}`) resolved via `Intl.PluralRules` for the active locale — not `fooOne`/`fooOther` key pairs (keeps web and mobile plural shapes identical) — e.g. the invoices `selected` count + showing-all string
+- [x] Locale picker in settings/shell (endonyms — each language in its own script: English / Deutsch / Français / Español / Português (Brasil) / 日本語), choice persisted to `localStorage`
+- [x] Active locale drives the existing `Intl.NumberFormat`/`Intl.DateTimeFormat` formatters (`<Money>` / `formatMoney()`) so numbers, currency, and dates all localize together
+- [x] RTL switch-point (`dirForLocale`) wired to `<html dir>`; audit CSS for logical properties so an `ar`/`he` catalogue drops in with no further layout plumbing (switch-point present + unit-tested; no RTL catalogue ships yet)
+- [x] Incremental string extraction — shell/nav first, then route-by-route; every route and feature modal is now extracted
+- [x] Date-localization sweep — every remaining inline `toLocaleDateString` call site in the procurement / portal / admin lists now routes through the locale-aware `utils/time.ts::formatDate`
+
+**Mobile (Flutter, `mobile/`):**
+- [x] Standard Flutter `gen-l10n` + `intl` + `.arb` catalogues (idiomatic path — plural/placeholder/ICU + `AppLocalizations.of(context)`), committed (non-synthetic) output under `mobile/lib/l10n/gen/`, same six locales (en, de, fr, es, pt-BR, ja; a base `pt` fallback accompanies `pt_BR` as gen-l10n requires). Coverage: nav + dashboard + invoices list + settings + notifications + vendors + exceptions + payments history + approvals + capture + advanced-search + invoice detail/edit (+ sub-widgets) + payment queue/runs + login + MFA + admin users + org settings + workflows (the full screen set is now extracted). See `mobile/CLAUDE.md` → i18n
+- [x] Per-device locale via `LocaleStore` (`stores/locale_store.dart`, secure-storage-persisted, never account-roamed) → `MaterialApp.locale` (a `ListenableBuilder` in `main.dart` re-localizes live); endonym picker + "System default" in the Settings screen
+- [x] ARB key-parity test (`test/l10n/arb_parity_test.dart`) mirroring the web `messages_parity` — key-complete, non-empty, placeholder-faithful (set-based, so a 1-arm `ja` plural matches a 2-arm `en` one); plus a live locale-switch widget test (`test/l10n/locale_switch_test.dart`)
+
+**Server-side (FastAPI, `backend/`):**
+- [x] Localized outbound email — DB-synced `locale` preference on `User` (control plane) + `VendorUser` (tenant-scoped), migration `0059` (existence-guarded, runs on both control + every tenant DB; nullable → English fallback). Consumed by a per-locale email catalogue (`app/services/email_adapters/email_catalogue.py`, same six locales as web/mobile) with English fallback per key. Covers the `email_adapters` surfaces: signup/welcome (locale captured at `/signup/start`, stashed in the `EmailVerification.meta`, reused by the welcome email), invoice notifications (employee via `notification_dispatch` + supplier via `vendor_notifications`, rendered per recipient in their locale), supplier-chat portal-link email (catalogue-routed, English default — no per-user locale at that surface). Set via `PATCH /api/auth/me` (employee) + `PATCH /api/portal/auth/me` (vendor), each validating against the supported set (422 on unknown). **Deferred:** the frontend language-picker → backend write (owned by the frontend track) — the backend endpoint + persistence are in place. See `backend/docs/notifications.md` § Localized email
+- [x] Email catalogue parity test (`tests/test_email_catalogue.py` — every locale resolves every key, no empty strings, placeholder-faithful vs English); deep links + brand chrome stay locale-independent — only copy changes (placeholders carry the data unchanged across locales)
+- [x] DB `locale` pref kept **separate** from the per-device UI locale — it means "what language to email this person in" (account-level), written from the UI and read by the email-render path ONLY; never returned to drive in-app UI (documented in `backend/docs/notifications.md` § Localized email)
+
+**Pointers from `../project-running`** (it shipped exactly this — three translation surfaces kept in lockstep by parity tests, no shared source because TS/Dart/Python can't import one catalogue):
+- Web runtime to model on: `apps/web/src/lib/i18n/` — `locale.ts` (pure negotiation: `SUPPORTED_LOCALES`, `negotiateLocale`, `dirForLocale`, `parseAcceptLanguage`), `messages.ts` (`Messages = typeof en`), `catalogues.ts` (typed lazy-loader registry), `store.svelte.ts` (reactive `m()` + `setLocale` + `initLocale`), `interpolate.ts` (ICU plural + `{placeholder}` substitution), `messages_parity.test.ts`, and `locales/*.ts`
+- Decision records spelling out the *why* and the traps to avoid: `docs/architecture/decisions.md` §108 (web client-side + lazy catalogue), §113 (mobile gen-l10n/ARB + per-device locale), §120 (server-side email localization from a DB-synced pref — the one place locale leaves the device)
+- Reuse the design wholesale; the only AP-specific delta is that **two** identities email-localize (internal `User` and supplier-portal `VendorUser`) and the email catalogue lives in Python (`backend/app/services/email_adapters/`), not Go
+
+**Competitors:** Basware / Medius (20+ UI languages, EU-mandate-driven), Tipalti & Bill.com (localized supplier portals), SAP Ariba / Coupa (full enterprise localization)
 
 ---
 

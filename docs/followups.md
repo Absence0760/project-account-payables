@@ -34,29 +34,26 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#251](https://github.com/Absence0760/project-account-payables/issues/251)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-08-06 against `701a0c1c`. Two docs-drift items from
-the first pass (stale Expense Management and Supplier Portal statuses) were
-**closed** by the roadmap split rather than carried — their durable fix was the
-split itself.
+**Last reconciled:** 2026-08-10 against `9d9daabb`. Closed since the prior pass:
+the AI Cash-Flow Copilot Phase 3 core (draft-run / capture-discounts / enact
+affordance — shipped in #258, only its already-deferred sub-bucket remains
+below), the i18n date-localization slice (shipped in #258 — verified zero
+remaining `toLocaleDateString` call sites outside `utils/time.ts`), all three
+in-source TODOs (verified removed from source), and all three diagnosed
+defects in [known-issues.md](known-issues.md) (all now fixed/resolved — the
+"Diagnosed defects awaiting a fix" section is retired until something new
+lands there).
 
 ---
 
 ## (c) Feature work — sized and unstarted
 
-### AI Cash-Flow Copilot — Phase 3 (draft-only enactment)
+### AI Cash-Flow Copilot — Phase 3 deferred bucket
 
-The only explicitly-planned unshipped feature. Phases 1–2 shipped (read-only cash
-Q&A, `propose_payment_plan`, the display-only `PlanCard`); the plan card has no
-enact affordance.
-
-- [ ] `POST /api/cash-flow/plans/{id}/draft-run` — idempotent draft payment-run
-      creation. Execute stays CFO-gated; the copilot's boundary
-      ([decisions §18](decisions.md)) holds — a draft run moves nothing.
-- [ ] `POST /api/cash-flow/plans/{id}/capture-discounts` — status-only accept.
-- [ ] Human-confirmed + audited on both paths; enact affordance on
-      `PlanCard.svelte`.
-
-Deferred within the same track, listed so they aren't lost:
+Phases 1–3 core shipped (read-only cash Q&A, `propose_payment_plan` +
+`PlanCard`, and draft-run/capture-discounts enactment — see
+[roadmap.md](roadmap.md) § AI Cash-Flow Copilot). Only the
+originally-deferred sub-bucket from that same feature remains:
 
 - [ ] Saved plans / plan-vs-actual (`CashPlan` model + migration)
 - [ ] Opening-balance provenance surfacing
@@ -66,30 +63,6 @@ Deferred within the same track, listed so they aren't lost:
 **Trigger:** next feature slice. Nothing blocks it.
 Refs: [roadmap.md](roadmap.md) § AI Cash-Flow Copilot,
 [cash-flow-copilot.md](cash-flow-copilot.md).
-
-### i18n — the date-localization slice
-
-16 `.svelte` files still call `toLocaleDateString` inline instead of the
-locale-aware `frontend/src/lib/utils/time.ts::formatDate`, so those dates ignore
-the active locale. Last open item on the i18n track; every string catalogue and
-every route/modal extraction has shipped.
-
-- [ ] Routes — `purchase-orders`, `goods-receipts`, `requisitions`, `contracts`,
-      `tax`, `positive-pay`, `recurring`, `organization`, `profile`, `billing`
-- [ ] Components — `modals/InvoiceModal`, `modals/VendorModal`,
-      `modals/PositivePayModal`, `chat/SupplierChatThread`,
-      `exceptions/AgentDashboard`, `assistant/ToolResultView`
-
-`utils/time.ts` and `utils/time.test.ts` are the implementation and its test —
-they legitimately call `toLocaleDateString` and are out of scope.
-
-**Why deferred:** batched deliberately rather than dribbled across unrelated PRs,
-since it's one mechanical sweep with one guard.
-**Trigger:** any PR that touches date rendering, or a standalone sweep.
-**Durable fix:** route all of them through `formatDate` and add a source-scan
-guard so a new inline `toLocaleDateString` in `routes/`/`components/` fails the
-suite — otherwise the class reopens.
-Ref: [roadmap.md](roadmap.md) § Internationalization.
 
 ### Vendor statement reconciliation — PDF intake
 
@@ -104,39 +77,6 @@ arrives as a PDF still has to be transcribed by hand.
 extraction adapters properly is a real slice rather than a bolt-on.
 **Trigger:** a pilot tenant whose suppliers send PDF statements.
 Ref: [vendor-statement-reconciliation.md](../backend/docs/vendor-statement-reconciliation.md) § Deferred.
-
-### In-source TODOs
-
-- [ ] `backend/app/api/vendors.py:1014` — add `list_vendors()` to the
-      `ErpAdapter` interface. Currently the sync path works around its absence.
-- [ ] `mobile/lib/services/push_service.dart:49` — send the device token to the
-      backend for targeted push. **Blocked with the FCM/APNs credentials below**;
-      the local half is what's sized here.
-- [ ] `mobile/lib/services/push_service.dart:99` — deep-link a notification tap
-      to the specific invoice (`message.data['invoice_id']`).
-
----
-
-## (c) Diagnosed defects awaiting a fix
-
-Full write-ups — root cause, evidence, blast radius, recommended fix — live in
-[known-issues.md](known-issues.md). Listed here only so the ledger is complete.
-
-- [x] ~~**Read-after-write race on every mutating endpoint.**~~ **Fixed
-      2026-08-06** — `commit_before_response` moves the success-path commit onto
-      the exit stack FastAPI unwinds before sending, so a `201` is no longer
-      returned for an uncommitted write. See [decisions.md §20](decisions.md);
-      regression coverage in `backend/tests/test_commit_before_response.py`.
-      *(Pruned from this list on the next pass.)*
-- [x] ~~**Workflow-mutating e2e specs can strand a tenant on a disabled
-      workflow definition.**~~ **Resolved 2026-08-08** — audit found every
-      mutating spec already restores state via `try/finally` or a throwaway
-      definition; added the missing piece, a `globalSetup` guard
-      (`frontend/tests-e2e/fixtures/globalSetup.ts`) that asserts every
-      tenant's default workflow shape before any test runs. See
-      [known-issues.md](known-issues.md). *(Pruned from this list on the next
-      pass.)*
-- [ ] A dev backend on the same Postgres mutates the pytest tenant DBs mid-test.
 
 ---
 
@@ -167,7 +107,9 @@ as oversights.
       Ref: [billing.md](../backend/docs/billing.md).
 - [ ] **Mobile push (FCM + APNs)** — a Firebase project,
       `google-services.json` / `GoogleService-Info.plist`, and an APNs auth key.
-      Unblocks both `push_service.dart` TODOs.
+      Device-token registration + notification-tap deep-linking are shipped
+      (`push_service.dart`); what's blocked is the push-*sending* adapter
+      itself, which needs these credentials to build against.
 - [ ] **Manual screen-reader device pass** — VoiceOver / NVDA / TalkBack. The
       procedure is documented and repeatable; it needs real AT hardware, so it
       cannot run in CI. The automated axe-core + `meetsGuideline` guards ship.
