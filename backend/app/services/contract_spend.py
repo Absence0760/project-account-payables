@@ -6,7 +6,10 @@ spend summary: invoiced total, count, and how that sits against the contract's
 ``Numeric`` ``amount`` column and is handled as ``Decimal`` here; only the API
 response coerces to float (matching every other money field on the wire).
 
-Rejected invoices are excluded — a rejected bill never became real spend.
+Rejected invoices are excluded — a rejected bill never became real spend. The
+sum is also scoped to the contract's own ``currency`` — same as
+``budget_service``'s rollups, the legs never convert, so mixing currencies
+would add unlike face values and could misreport ``over_limit``.
 """
 
 from decimal import Decimal
@@ -28,6 +31,7 @@ async def compute_spend_summary(db: AsyncSession, contract: Contract) -> Contrac
             ).where(
                 Invoice.contract_id == contract.id,
                 Invoice.status != InvoiceStatus.rejected,
+                Invoice.currency == contract.currency,
             )
         )
     ).one()

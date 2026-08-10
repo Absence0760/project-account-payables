@@ -12,7 +12,11 @@ Checks (all advisory unless the contract is ``not_to_exceed``):
   * spend recorded after the contract's ``end_date`` (expired) or before its
     ``start_date``
   * cumulative linked spend over the contract's ``spend_limit`` — ``error``
-    severity when ``not_to_exceed``, else ``warning``
+    severity when ``not_to_exceed``, else ``warning``. The cumulative sum is
+    scoped to the contract's own ``currency`` (never add unlike face values —
+    same rule as ``contract_spend`` / ``budget_service``); an invoice in a
+    different currency than the contract cannot itself be summed against the
+    limit, so it skips this specific check rather than comparing unlike money.
   * invoice vendor differs from the contract vendor
   * invoice GL account outside the contract's ``terms.allowed_gl_accounts``
 """
@@ -101,13 +105,21 @@ async def evaluate_contract_compliance(
         )
 
     # --- cumulative spend over limit --------------------------------------
-    if contract.spend_limit is not None and invoice.amount is not None:
+    # Skip entirely when the invoice's own currency differs from the
+    # contract's — it can't be validly added to a same-currency prior sum
+    # and compared against a limit denominated in yet another currency.
+    if (
+        contract.spend_limit is not None
+        and invoice.amount is not None
+        and (invoice.currency or "USD") == contract.currency
+    ):
         prior = (
             await db.execute(
                 select(func.coalesce(func.sum(Invoice.amount), 0)).where(
                     Invoice.contract_id == contract.id,
                     Invoice.id != invoice.id,
                     Invoice.status != InvoiceStatus.rejected,
+                    Invoice.currency == contract.currency,
                 )
             )
         ).scalar()

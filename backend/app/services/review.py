@@ -86,6 +86,8 @@ async def _enforce_approval_thresholds(
                 vendor_id=vendor_id,
                 exclude_invoice_id=invoice.id,
                 window_days=structuring_window_days,
+                currency=getattr(invoice, "currency", None) or "USD",
+                entity_id=getattr(invoice, "entity_id", None),
             )
             aggregate_amount = amount + recent_spend
 

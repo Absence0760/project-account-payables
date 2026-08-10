@@ -180,6 +180,103 @@ async def test_spend_summary_over_limit(realdb):
     assert detail["spend"]["over_limit"] is True
 
 
+async def test_spend_summary_excludes_foreign_currency_invoices(realdb):
+    """A USD contract never sums a linked invoice denominated in another
+    currency into its spend rollup — the legs don't convert."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id)
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        created = (await _create_contract(c, vendor_id, spend_limit="1000.00")).json()
+        contract_id = created["id"]
+
+    async with mk() as s:
+        s.add(
+            Invoice(
+                organization_id=org_id,
+                invoice_number=f"INV-{uuid.uuid4().hex[:6]}",
+                vendor_name="Globex Industrial",
+                amount=Decimal("300.00"),
+                currency="USD",
+                status=InvoiceStatus.approved,
+                vendor_id=uuid.UUID(vendor_id),
+                contract_id=uuid.UUID(contract_id),
+            )
+        )
+        s.add(
+            Invoice(
+                organization_id=org_id,
+                invoice_number=f"INV-{uuid.uuid4().hex[:6]}",
+                vendor_name="Globex Industrial",
+                amount=Decimal("900.00"),
+                currency="EUR",
+                status=InvoiceStatus.approved,
+                vendor_id=uuid.UUID(vendor_id),
+                contract_id=uuid.UUID(contract_id),
+            )
+        )
+        await s.commit()
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        detail = (await c.get(f"/api/contracts/{contract_id}")).json()
+    assert detail["spend"]["invoiced_total"] == 300.0  # EUR row excluded, not added as 900
+    assert detail["spend"]["invoice_count"] == 1
+    assert detail["spend"]["over_limit"] is False
+
+
+async def test_compliance_over_limit_excludes_foreign_currency(realdb):
+    """The not-to-exceed compliance check never raises a false ``error``
+    finding from a foreign-currency invoice inflating the cumulative sum."""
+    from app.services.contract_compliance import evaluate_contract_compliance
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id)
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        created = (
+            await _create_contract(c, vendor_id, spend_limit="1000.00", not_to_exceed=True)
+        ).json()
+        contract_id = uuid.UUID(created["id"])
+
+    async with mk() as s:
+        # A prior EUR invoice that must not count toward the USD limit.
+        s.add(
+            Invoice(
+                organization_id=org_id,
+                invoice_number=f"INV-{uuid.uuid4().hex[:6]}",
+                vendor_name="Globex Industrial",
+                amount=Decimal("900.00"),
+                currency="EUR",
+                status=InvoiceStatus.approved,
+                vendor_id=uuid.UUID(vendor_id),
+                contract_id=contract_id,
+            )
+        )
+        # The invoice under evaluation: $300 USD, well under the $1000 limit.
+        new_invoice = Invoice(
+            organization_id=org_id,
+            invoice_number=f"INV-{uuid.uuid4().hex[:6]}",
+            vendor_name="Globex Industrial",
+            amount=Decimal("300.00"),
+            currency="USD",
+            status=InvoiceStatus.new,
+            vendor_id=uuid.UUID(vendor_id),
+            contract_id=contract_id,
+        )
+        s.add(new_invoice)
+        await s.commit()
+        await s.refresh(new_invoice)
+
+    async with mk() as s:
+        invoice = (
+            await s.execute(select(Invoice).where(Invoice.id == new_invoice.id))
+        ).scalar_one()
+        findings = await evaluate_contract_compliance(s, invoice)
+    assert not any("exceeds contract" in f["message"] for f in findings)
+
+
 # ---------------------------------------------------------------------------
 # update
 # ---------------------------------------------------------------------------

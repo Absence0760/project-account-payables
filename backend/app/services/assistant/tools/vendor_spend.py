@@ -3,6 +3,14 @@
 Wraps ``services.analytics.compute_supplier_concentration``. The committed-status
 set is lifted from ``app/api/analytics.py`` (imported, not duplicated). All sums
 are ``Numeric``/``Decimal``.
+
+Rolled into the org's reporting currency (not a naive SUM across currencies —
+the same fix `app/api/analytics.py`'s supplier-concentration queries already
+carry, via `reporting_amount_for_row`/`vendor_rollup_to_reporting_currency`):
+a vendor billing in more than one currency, or a tenant with vendors in
+different currencies, used to add e.g. USD + EUR amounts as if they were one
+currency and hand the mixed total to the assistant labeled with a single
+currency code.
 """
 
 from __future__ import annotations
@@ -11,7 +19,7 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.analytics import _COMMITTED_STATUSES
@@ -23,6 +31,7 @@ from app.services.assistant.tools.schemas import (
     VendorSpendResult,
     VendorSpendRow,
 )
+from app.services.currency_conversion import reporting_amount_for_row
 from app.tenant import apply_entity_scope
 
 _PERIOD_LABELS = {
@@ -63,29 +72,42 @@ async def get_vendor_spend(
 ) -> VendorSpendResult:
     today = datetime.now(UTC).date()
     start = _period_start(params.period, today)
+    currency = await resolve_org_currency(org_id, control_db)
 
     stmt = (
         select(
             Invoice.vendor_id,
             Invoice.vendor_name,
-            func.sum(Invoice.amount).label("total"),
+            Invoice.amount,
+            Invoice.currency,
+            Invoice.reporting_amount,
+            Invoice.reporting_currency,
         )
         .where(Invoice.status.in_(_COMMITTED_STATUSES))
         .where(Invoice.invoice_date >= start)
-        .group_by(Invoice.vendor_id, Invoice.vendor_name)
     )
     stmt = apply_entity_scope(stmt, Invoice, entity_id)
     rows = (await db.execute(stmt)).all()
 
+    # Convert each row into the reporting currency BEFORE grouping by vendor —
+    # summing raw `amount` across vendors/rows would add unlike face values.
+    by_vendor: dict[tuple[str | None, str], Decimal] = {}
+    for vendor_id, vendor_name, amount, inv_currency, rep_amount, rep_currency in rows:
+        converted, _unconverted = reporting_amount_for_row(
+            amount=Decimal(str(amount or 0)),
+            currency=inv_currency,
+            reporting_currency=currency,
+            persisted_reporting_currency=rep_currency,
+            persisted_reporting_amount=rep_amount,
+        )
+        key = (str(vendor_id) if vendor_id else None, vendor_name or "")
+        by_vendor[key] = by_vendor.get(key, Decimal("0")) + converted
+
     # Shape into the dicts compute_supplier_concentration expects, sorted desc.
     vendor_spend = sorted(
         (
-            {
-                "vendor": vendor_name or "",
-                "vendor_id": str(vendor_id) if vendor_id else None,
-                "amount": Decimal(str(total or "0")),
-            }
-            for vendor_id, vendor_name, total in rows
+            {"vendor": vendor_name, "vendor_id": vendor_id, "amount": amount}
+            for (vendor_id, vendor_name), amount in by_vendor.items()
         ),
         key=lambda r: r["amount"],
         reverse=True,
@@ -93,8 +115,6 @@ async def get_vendor_spend(
 
     snapshot = compute_supplier_concentration(vendor_spend)
     total_spend = snapshot.total_spend
-
-    currency = await resolve_org_currency(org_id, control_db)
 
     out_rows: list[VendorSpendRow] = []
     for r in vendor_spend[: params.top_n]:
