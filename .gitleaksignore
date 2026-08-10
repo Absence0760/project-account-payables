@@ -19,3 +19,17 @@
 # TOML-configured allowlist's own logic, not gitleaks' fingerprint check.
 e528965cee45f3b60a1d922de2db051ada7245e3:backend/tests/test_admin_user_management.py:generic-api-key:145
 89aa901aa6fdb7c0ae07a1d3ac698d534cd83c55:backend/tests/test_admin_user_management.py:generic-api-key:147
+
+# Prose in a DOCSTRING, not a credential. `stripe_billing.verify_webhook`'s
+# docstring walks through the Stripe-Signature verification scheme, and the
+# flagged line is the sentence listing its fail-closed branches. generic-api-key
+# fires on an English keyword there plus the surrounding prose. There is no
+# literal to allowlist by regex (a regex over sentence fragments would be both
+# fragile and far too broad), and the line has since moved within the file, so
+# it is reachable only at the commit that introduced it — which is exactly the
+# case this file's header reserves for a fingerprint.
+#
+# NB: do not quote that sentence verbatim in this comment. Reproducing it here
+# re-trips the identical rule against THIS file, which is how the first attempt
+# at this entry failed.
+1dc50de72172c1a1c0a055a15551db3728f052ca:backend/app/services/billing_adapters/stripe_billing.py:generic-api-key:193
