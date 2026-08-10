@@ -24,8 +24,10 @@ function controlPsql(query: string): string {
  * PAN-reveal (`GET /api/cards/{id}/details`) — the PII path.
  *
  * Invariants exercised:
- *  - role-gated: only admin / ap_manager may reveal full card details;
- *    ap_clerk is 403'd.
+ *  - role-gated: admin / ap_manager / cfo may reveal full card details
+ *    (the route's `require_roles` decorator is the single source of
+ *    truth — see backend/app/api/cards.py::get_card_details); ap_clerk
+ *    is 403'd.
  *  - every reveal writes a `card.details_viewed` audit row carrying ONLY
  *    `last_four` — never the full PAN / CVV (PII stays out of the trail).
  *  - the response returns the full number FROM the adapter (mock here) and
@@ -99,6 +101,21 @@ test.describe('card PAN reveal (PII path)', () => {
 			expect(details.last_four).toBe('4242');
 			expect(audit).not.toMatch(/4242424242424242/);
 			expect(audit).not.toMatch(/"123"/);
+		} finally {
+			purge(cardId);
+		}
+	});
+
+	test('cfo can reveal card details', async ({ page, tenantCfo }) => {
+		const cardId = seedCard();
+		try {
+			await signInAndWait(page, tenantCfo);
+			const headers = await authedTenantHeaders(page);
+			const resp = await page.request.get(`${API_BASE}/api/cards/${cardId}/details`, { headers });
+			expect(resp.status()).toBe(200);
+			const body = (await resp.json()) as { card_number: string; cvv: string };
+			expect(body.card_number).toBe('4242424242424242');
+			expect(body.cvv).toBe('123');
 		} finally {
 			purge(cardId);
 		}

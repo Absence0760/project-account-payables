@@ -462,14 +462,7 @@ async def get_card_details(
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
-    """Retrieve full card details. Restricted to admin/manager roles. Audit-logged."""
-    # Role check — only admin and ap_manager can see full card details
-    user_roles = {r.name for r in user.roles}
-    if not user_roles & {"admin", "ap_manager"}:
-        raise HTTPException(
-            status_code=403, detail="Only admins and AP managers can view card details"
-        )
-
+    """Retrieve full card details. Restricted to admin/ap_manager/cfo. Audit-logged."""
     result = await db.execute(select(VirtualCard).where(VirtualCard.id == card_id))
     card = result.scalar_one_or_none()
     if not card:
