@@ -258,12 +258,15 @@ async def _screen_best_effort(
                 check_type=check_type,
                 actor_id=actor_id,
             )
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        # Log the exception type, never the message/traceback. A sanctions
+        # adapter's error string could embed a vendor identifier; interpolating
+        # `exc` (or exc_info=True) would push that into the log sink (invariant #7).
         logger.warning(
-            "Sanctions screen failed for vendor=%s (check_type=%s) — vendor write preserved",
+            "Sanctions screen failed for vendor=%s (check_type=%s) — vendor write preserved: %s",
             vendor.id,
             check_type,
-            exc_info=True,
+            exc.__class__.__name__,
         )
 
 
@@ -805,7 +808,14 @@ async def screen_vendor(
             actor_id=user.id,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Manual sanctions screen failed for vendor=%s", vendor.id, exc_info=True)
+        # Log the exception type, never the message/traceback. A sanctions
+        # adapter's error string could embed a vendor identifier; interpolating
+        # `exc` (or exc_info=True) would push that into the log sink (invariant #7).
+        logger.warning(
+            "Manual sanctions screen failed for vendor=%s: %s",
+            vendor.id,
+            exc.__class__.__name__,
+        )
         raise HTTPException(status_code=502, detail="Sanctions provider screening failed") from exc
 
     await db.commit()
