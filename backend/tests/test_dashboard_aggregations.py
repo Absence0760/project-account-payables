@@ -240,8 +240,11 @@ async def test_upcoming_total_amount_sums_in_decimal_not_accumulated_float():
     dashboard consumes directly instead of folding the per-row floats itself
     (mobile issue #189). Regression case: three amounts whose classic binary
     float representations don't add up cleanly (0.1 + 0.2 style drift) must
-    still sum to an exact total when accumulated in Decimal and converted to
-    float exactly once, rather than accumulated as float across N adds."""
+    still sum to an exact total when accumulated in Decimal.
+
+    The endpoint itself now stays Decimal end to end (issue #279) — the
+    float hop happens exactly once, at JSON-serialization time, via
+    `DashboardResponse`'s `MoneyAmount` fields, not inside this function."""
     import uuid
 
     today = date.today()
@@ -252,31 +255,35 @@ async def test_upcoming_total_amount_sums_in_decimal_not_accumulated_float():
     ]
     db = _mk_db(*_full_results(upcoming=upcoming_rows))
     result = await get_dashboard(db=db, org=_org(), user=_user())
-    assert result["upcoming_total_amount"] == 60.6
-    # Exact to the cent — no float-accumulation artifact like 60.599999999999994.
-    assert round(result["upcoming_total_amount"], 2) == result["upcoming_total_amount"]
+    assert isinstance(result["upcoming_total_amount"], Decimal)
+    # Exact to the cent, in Decimal — no binary-float accumulation artifact
+    # like 60.599999999999994.
+    assert result["upcoming_total_amount"] == Decimal("60.60")
 
 
 @pytest.mark.asyncio
 async def test_upcoming_total_amount_is_zero_when_no_upcoming_invoices():
     db = _mk_db(*_full_results())
     result = await get_dashboard(db=db, org=_org(), user=_user())
-    assert result["upcoming_total_amount"] == 0.0
+    assert result["upcoming_total_amount"] == Decimal("0")
 
 
 # ---------------------------------------------------------------------------
-# Money sums — every aggregate must be float for JSON serialization,
-# but the underlying SUM must NOT have been coerced through float
-# arithmetic at the Python layer (we accept Decimal in, float out).
+# Money sums — every aggregate stays `Decimal` all the way out of this
+# function (issue #279); the float hop for JSON happens once, at the wire
+# boundary, via `DashboardResponse`'s `MoneyAmount`/`OptionalMoneyAmount`
+# annotations — never inside `get_dashboard` itself.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_payment_totals_pass_through_as_float():
-    """Decimal coming from SQLAlchemy must serialize as float so the
-    JSON response is well-formed. The cast happens at the dict-build
-    step — a regression that forgot the cast would emit a Decimal
-    object and crash JSON encoding at the FastAPI layer."""
+async def test_payment_totals_stay_decimal():
+    """Money fields coming from SQLAlchemy (`Numeric` columns) must stay
+    `Decimal` all the way through the function — never cast to `float` at
+    the dict-build step (that's the project's `float`-for-currency
+    anti-pattern, see docs/decisions.md's money invariant). A regression
+    that reintroduced a bare `float(...)` cast would flip these
+    `isinstance` checks."""
     db = _mk_db(
         *_full_results(
             paid=Decimal("12345.67"),
@@ -285,10 +292,12 @@ async def test_payment_totals_pass_through_as_float():
         )
     )
     result = await get_dashboard(db=db, org=_org(), user=_user())
-    assert isinstance(result["total_paid"], float)
-    assert result["total_paid"] == 12345.67
-    assert result["total_pending"] == 8900.50
-    assert result["total_rebates"] == 123.45
+    assert isinstance(result["total_paid"], Decimal)
+    assert isinstance(result["total_pending"], Decimal)
+    assert isinstance(result["total_rebates"], Decimal)
+    assert result["total_paid"] == Decimal("12345.67")
+    assert result["total_pending"] == Decimal("8900.50")
+    assert result["total_rebates"] == Decimal("123.45")
 
 
 @pytest.mark.asyncio
@@ -299,9 +308,9 @@ async def test_totals_default_to_zero_when_db_returns_zero_rows():
     db = _mk_db(*_full_results())
     result = await get_dashboard(db=db, org=_org(), user=_user())
     assert result["total_invoices"] == 0
-    assert result["total_amount"] == 0.0
-    assert result["total_paid"] == 0.0
-    assert result["total_pending"] == 0.0
+    assert result["total_amount"] == Decimal("0")
+    assert result["total_paid"] == Decimal("0")
+    assert result["total_pending"] == Decimal("0")
     assert result["pipeline"] == {}
     assert result["vendor_spend"] == []
     assert result["upcoming_payments"] == []
@@ -309,7 +318,7 @@ async def test_totals_default_to_zero_when_db_returns_zero_rows():
     assert result["touchless_rate"] == 0
     # Reporting rollup is present even on an empty tenant.
     assert result["reporting"]["reporting_currency"] == "USD"
-    assert result["reporting"]["total_amount"] == 0.0
+    assert result["reporting"]["total_amount"] == Decimal("0")
     assert result["reporting"]["by_currency"] == []
 
 
@@ -337,16 +346,16 @@ async def test_reporting_rollup_collapses_mixed_currencies_into_one_total():
     org = _org(settings={"reporting_currency": "USD"})
     result = await get_dashboard(db=db, org=org, user=_user())
 
-    assert result["total_amount"] == 2000.0  # legacy naive SUM unchanged
+    assert result["total_amount"] == Decimal("2000.00")  # legacy naive SUM unchanged
     rep = result["reporting"]
     assert rep["reporting_currency"] == "USD"
     # 1000 (USD 1:1) + 1086.96 (EUR locked) = 2086.96
-    assert rep["total_amount"] == 2086.96
+    assert rep["total_amount"] == Decimal("2086.96")
     assert rep["total_count"] == 2
     assert rep["unconverted_count"] == 0
     by_cur = {e["currency"]: e for e in rep["by_currency"]}
-    assert by_cur["EUR"]["reporting_amount"] == 1086.96
-    assert by_cur["USD"]["reporting_amount"] == 1000.0
+    assert by_cur["EUR"]["reporting_amount"] == Decimal("1086.96")
+    assert by_cur["USD"]["reporting_amount"] == Decimal("1000.00")
 
 
 @pytest.mark.asyncio
@@ -364,4 +373,4 @@ async def test_reporting_rollup_flags_foreign_rows_without_a_rate_lock():
     result = await get_dashboard(db=db, org=_org(), user=_user())
     rep = result["reporting"]
     assert rep["unconverted_count"] == 1
-    assert rep["total_amount"] == 800.0  # GBP falls through at face value
+    assert rep["total_amount"] == Decimal("800.00")  # GBP falls through at face value

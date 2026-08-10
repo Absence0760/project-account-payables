@@ -16,6 +16,7 @@ from app.models.organization import Organization
 from app.models.payment import Payment
 from app.models.user import User
 from app.models.virtual_card import CardRebate, VirtualCard
+from app.schemas.dashboard import DashboardResponse
 from app.services.analytics import OPEN_AP_STATUSES
 from app.services.currency_conversion import (
     resolve_reporting_currency,
@@ -52,7 +53,7 @@ class SimpleNamespaceDiscount:
     paid_before_discount_date: bool
 
 
-@router.get("")
+@router.get("", response_model=DashboardResponse)
 async def get_dashboard(
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
@@ -180,12 +181,13 @@ async def get_dashboard(
         ],
         reporting_currency=reporting_currency,
     )
-    vendor_spend = [{"vendor": e.vendor, "amount": float(e.amount)} for e in vendor_entries[:10]]
+    vendor_spend = [{"vendor": e.vendor, "amount": e.amount} for e in vendor_entries[:10]]
 
     # Aging buckets — boundaries are days past the due date:
     # current (not yet due) / 1-30 / 31-60 / 61-90 / 90+.
     # Accumulate in Decimal (money is never summed in float — many small floats
-    # drift), then convert to float at the response boundary.
+    # drift) and stay Decimal in the response — `DashboardResponse`'s
+    # `MoneyAmount` fields do the float hop once, at JSON-serialization time.
     aging_dec = {
         "current": Decimal("0"),
         "days_30": Decimal("0"),
@@ -220,7 +222,7 @@ async def get_dashboard(
     )
     for bucket, total in aging_rows.all():
         aging_dec[bucket] = Decimal(str(total))
-    aging = {k: float(v) for k, v in aging_dec.items()}
+    aging = aging_dec
 
     # Monthly trend (last 6 months) — bucket by calendar month in SQL rather
     # than streaming every recent invoice into Python. Summing amounts in the
@@ -239,7 +241,7 @@ async def get_dashboard(
         )
     )
     monthly_trend = [
-        {"month": month, "count": count, "amount": float(amount)}
+        {"month": month, "count": count, "amount": Decimal(str(amount))}
         for month, count, amount in trend_rows.all()
     ]
 
@@ -273,17 +275,18 @@ async def get_dashboard(
             "id": str(r[0]),
             "invoice_number": r[1],
             "vendor_name": r[2],
-            "amount": float(r[3]),
+            "amount": r[3],
             "due_date": r[4].isoformat() if r[4] else None,
             "is_overdue": r[4] < today if r[4] else False,
         }
         for r in _upcoming_rows_all
     ]
-    # Sum in Decimal (each r[3] is already a Decimal off the Numeric column),
-    # then convert once at the response boundary — never fold the per-item
-    # floats above, which is exactly the client-side bug this mirrors
-    # (mobile issue #189: summing already-lossy floats accumulates drift).
-    upcoming_total_amount = float(sum((r[3] for r in _upcoming_rows_all), Decimal("0")))
+    # Sum in Decimal (each r[3] is already a Decimal off the Numeric column)
+    # and stay Decimal — never fold the per-item floats above, which is
+    # exactly the client-side bug this mirrors (mobile issue #189: summing
+    # already-lossy floats accumulates drift). The float hop happens once,
+    # at JSON-serialization time, via `DashboardResponse`'s `MoneyAmount`.
+    upcoming_total_amount = sum((r[3] for r in _upcoming_rows_all), Decimal("0"))
 
     # Touchless rate — share of invoices that cleared review straight through
     # (reached approved-or-beyond) out of every invoice that has finished the
@@ -312,7 +315,7 @@ async def get_dashboard(
             select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.status == "completed")
         )
     )
-    total_paid = float(paid_q.scalar() or 0)
+    total_paid = Decimal(str(paid_q.scalar() or 0))
 
     pending_q = await db.execute(
         _pay(
@@ -321,7 +324,7 @@ async def get_dashboard(
             )
         )
     )
-    total_pending = float(pending_q.scalar() or 0)
+    total_pending = Decimal(str(pending_q.scalar() or 0))
 
     # Rebates. CardRebate carries no entity_id of its own — join to
     # VirtualCard (which does, via EntityMixin) so switching the entity
@@ -337,9 +340,9 @@ async def get_dashboard(
                 entity_id,
             )
         )
-        total_rebates = float(rebate_q.scalar() or 0)
+        total_rebates = Decimal(str(rebate_q.scalar() or 0))
     except Exception:
-        total_rebates = 0.0
+        total_rebates = Decimal("0")
         await db.rollback()
 
     # Stale approvals (waiting > 3 days)
@@ -498,19 +501,19 @@ async def get_dashboard(
 
     return {
         "total_invoices": total_invoices or 0,
-        "total_amount": float(total_amount),
+        "total_amount": Decimal(str(total_amount)),
         # Currency-aware rollup of the whole invoice book into ONE reporting
         # currency, plus the per-currency split so the UI can show the mix.
         "reporting": {
             "reporting_currency": rollup.reporting_currency,
-            "total_amount": float(rollup.total_reporting_amount),
+            "total_amount": rollup.total_reporting_amount,
             "total_count": rollup.total_count,
             "unconverted_count": rollup.unconverted_count,
             "by_currency": [
                 {
                     "currency": e.currency,
-                    "original_amount": float(e.original_amount),
-                    "reporting_amount": float(e.reporting_amount),
+                    "original_amount": e.original_amount,
+                    "reporting_amount": e.reporting_amount,
                     "count": e.count,
                     "unconverted_count": e.unconverted_count,
                 }
@@ -553,8 +556,8 @@ async def get_dashboard(
             "eligible_count": discount.eligible_count,
             "captured_count": discount.captured_count,
             "missed_count": discount.missed_count,
-            "captured_amount": float(discount.captured_amount),
-            "missed_amount": float(discount.missed_amount),
+            "captured_amount": discount.captured_amount,
+            "missed_amount": discount.missed_amount,
             "capture_rate_pct": float(discount.capture_rate_pct),
         },
     }
