@@ -140,6 +140,9 @@ async def _seed_invoice(
     invoice_date=None,
     due_date=None,
     vendor_id=None,
+    currency="USD",
+    reporting_currency=None,
+    reporting_amount=None,
 ):
     from app.models.invoice import Invoice
 
@@ -151,7 +154,9 @@ async def _seed_invoice(
         vendor_name=vendor_name,
         vendor_id=vendor_id,
         amount=Decimal(str(amount)),
-        currency="USD",
+        currency=currency,
+        reporting_currency=reporting_currency,
+        reporting_amount=Decimal(str(reporting_amount)) if reporting_amount is not None else None,
         status=status,
         invoice_date=invoice_date or date.today(),
         due_date=due_date,
@@ -242,6 +247,56 @@ async def test_vendor_spend_tool_never_aggregates_other_tenant(realdb):
     names = {v.vendor_name for v in res.vendors}
     assert names == {"OnlyA"}
     assert res.total_spend == Decimal("500.00")
+
+
+async def test_vendor_spend_tool_never_mixes_currencies(realdb):
+    """A vendor's EUR invoice contributes its rate-LOCKED reporting-currency
+    equivalent, not its raw face value, to the USD total — mirroring how a
+    real invoice gets `reporting_amount` materialized by
+    `invoice_warnings._refresh_reporting_amount` on every save."""
+    from app.services.assistant.tools.schemas import VendorSpendParams
+    from app.services.assistant.tools.vendor_spend import get_vendor_spend
+
+    a = realdb.info("a")
+    mk_a = realdb.sessionmaker("a")
+    async with mk_a() as sa:
+        ent_a = await _default_entity_id(sa, a.org_id)
+        await _seed_invoice(
+            sa,
+            a.org_id,
+            ent_a,
+            number="CUR-1",
+            vendor_name="MixedCo",
+            amount="500.00",
+            currency="USD",
+        )
+        # A materialized EUR invoice: 900.00 EUR locked at 990.00 USD — the
+        # old code ignored reporting_amount and summed the raw 900.00 as if
+        # it were USD, giving a wrong 1400.00 total instead of 1490.00.
+        await _seed_invoice(
+            sa,
+            a.org_id,
+            ent_a,
+            number="CUR-2",
+            vendor_name="MixedCo",
+            amount="900.00",
+            currency="EUR",
+            reporting_currency="USD",
+            reporting_amount="990.00",
+        )
+        await sa.commit()
+
+    async with mk_a() as sa:
+        res = await get_vendor_spend(
+            sa,
+            org_id=a.org_id,
+            entity_id=None,
+            current_user_id=a.users["admin"],
+            params=VendorSpendParams(period="ytd"),
+        )
+    assert res.currency == "USD"
+    assert res.total_spend == Decimal("1490.00")
+    assert res.vendors[0].amount == Decimal("1490.00")
 
 
 async def test_chat_endpoint_cross_tenant_probe(realdb):
