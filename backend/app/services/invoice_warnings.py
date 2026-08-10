@@ -362,7 +362,11 @@ async def refresh_warnings(
             # Statistical amount anomaly. Pull last N approved invoice
             # amounts; if the new one is more than `sigma` above the
             # mean, flag. Only kicks in once we have enough history —
-            # otherwise every second invoice is "anomalous."
+            # otherwise every second invoice is "anomalous." The history is
+            # scoped to the evaluated invoice's own currency — mixing
+            # currencies into one mean/stdev would both misfire (a normal
+            # foreign-currency invoice reads as a huge outlier) and mask
+            # real anomalies (a mixed-currency history inflates stdev).
             if cfg["stat_anomaly_enabled"] and invoice.amount:
                 hist_q = await db.execute(
                     select(Invoice.amount)
@@ -378,6 +382,7 @@ async def refresh_warnings(
                             ]
                         ),
                         Invoice.amount.isnot(None),
+                        Invoice.currency == (invoice.currency or "USD"),
                     )
                     .order_by(Invoice.created_at.desc())
                     .limit(20)
