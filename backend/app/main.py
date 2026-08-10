@@ -95,6 +95,11 @@ async def lifespan(app: FastAPI):
                 "FEOH_PEPPOL_INBOUND_SIGNING_SECRET must be set when "
                 "FEOH_PEPPOL_INBOUND_ENABLED is true"
             )
+        if settings.punchout_provider != "mock" and not settings.punchout_return_signing_secret:
+            raise RuntimeError(
+                "FEOH_PUNCHOUT_RETURN_SIGNING_SECRET must be set when "
+                "FEOH_PUNCHOUT_PROVIDER is not 'mock'"
+            )
         if settings.billing_webhook_enabled and settings.billing_provider == "mock":
             raise RuntimeError(
                 "FEOH_BILLING_PROVIDER must not be 'mock' when FEOH_BILLING_WEBHOOK_ENABLED "
