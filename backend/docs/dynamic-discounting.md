@@ -117,16 +117,24 @@ every place a `Payment` reaches `completed` in `app/api/payments.py`:
   until the provider calls back)
 
 Both call the shared `_capture_discount_offers` helper, which resolves any
-still-`accepted` **invoice-scoped** `DiscountOffer` on the settled invoice
-and checks whether `Payment.amount` **exactly** equals that offer's accepted
-tier's discounted payoff (`base_amount - discount_savings(base_amount,
-accepted_tier)`, both cent-quantized the same way). A match calls
-`mark_captured` and writes a `discount_offer.captured` audit row
-(`actor_id` is the executing user on the synchronous legs, `None` — a
-system/processor event — on the webhook leg, matching the existing
-`payment.completed` webhook audit convention). A non-matching amount leaves
-the offer `accepted` rather than guessing — a false capture would misreport
-savings exactly like the original missing-caller bug, just inverted.
+still-`accepted` **invoice-scoped** `DiscountOffer` on the settled invoice and
+first checks the offer's `currency` against the invoice's own `currency`
+(case-insensitive) — `POST /api/discounts/offers` lets the caller set an
+explicit `currency` independent of the invoice (falling back to
+`invoice.currency` only when omitted, `api/discounts.py::create_offer`), and
+`Payment.amount` is always denominated in the invoice's currency, so a
+currency-mismatched offer's `base_amount` (still defaulted from the invoice's
+bare number) could otherwise numerically coincide with an unrelated payment
+and be falsely captured. Only once currency matches does it check whether
+`Payment.amount` **exactly** equals that offer's accepted tier's discounted
+payoff (`base_amount - discount_savings(base_amount, accepted_tier)`, both
+cent-quantized the same way). A match calls `mark_captured` and writes a
+`discount_offer.captured` audit row (`actor_id` is the executing user on the
+synchronous legs, `None` — a system/processor event — on the webhook leg,
+matching the existing `payment.completed` webhook audit convention). A
+non-matching currency or amount leaves the offer `accepted` rather than
+guessing — a false capture would misreport savings exactly like the original
+missing-caller bug, just inverted.
 
 **Vendor-scoped bulk offers are intentionally out of scope here.** A bulk
 offer's `base_amount` is the summed open balance across several invoices, so
@@ -230,7 +238,9 @@ portal nav.
 - `test_discount_capture.py` — the capture wiring (real-DB, end to end through
   `POST /api/payments/runs` + `.../execute`): a payment settled at the exact
   discounted payoff captures the offer + updates the dashboard; a payment
-  settled at the full amount does NOT falsely capture; repeat calls to
+  settled at the full amount does NOT falsely capture; a currency-mismatched
+  offer (explicit `currency` diverging from its own invoice) does NOT falsely
+  capture even when the numbers numerically coincide; repeat calls to
   `capture_offers_for_settled_payment` are idempotent (no double-count, no
   error on an already-`captured` offer).
 - `frontend/tests-e2e/discounts/money-path.spec.ts` — live-stack e2e asserting

@@ -1348,7 +1348,11 @@ async def _capture_discount_offers(
         from app.services.discount_capture import capture_offers_for_settled_payment
 
         captured = await capture_offers_for_settled_payment(
-            db, invoice_id=invoice.id, payment_amount=payment.amount, now=now
+            db,
+            invoice_id=invoice.id,
+            payment_amount=payment.amount,
+            invoice_currency=invoice.currency,
+            now=now,
         )
         if not captured:
             return

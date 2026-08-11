@@ -40,6 +40,7 @@ async def capture_offers_for_settled_payment(
     *,
     invoice_id: uuid.UUID,
     payment_amount: Decimal,
+    invoice_currency: str,
     now: datetime,
 ) -> list[DiscountOffer]:
     """Capture any ``accepted`` invoice-scoped ``DiscountOffer`` on
@@ -52,6 +53,21 @@ async def capture_offers_for_settled_payment(
     BE that offer's settlement; guessing would misattribute savings, so those
     are left ``accepted`` for a future reconciliation pass rather than
     auto-captured here.
+
+    **Currency is checked before amount.** `POST /api/discounts/offers` lets
+    the caller set an explicit ``currency`` independent of the invoice
+    (falling back to ``invoice.currency`` only when omitted — see
+    ``api/discounts.py::create_offer``), so an offer's currency can diverge
+    from its own invoice's (data-entry mistake, or a currency-mismatched
+    negotiation). ``Payment.amount`` is always denominated in the invoice's
+    own currency. Without this check, a numeric coincidence between
+    ``payment_amount`` and a differently-denominated offer's discounted
+    payoff would be treated as proof of a discounted settlement and
+    permanently mark it ``captured`` — the same misreporting-to-the-CFO risk
+    the amount-exactness rule below guards against, just via a currency
+    mismatch instead of a rounding one. Comparison is case-insensitive
+    (``.upper()`` both sides) to match the uppercasing every write path
+    already applies (`discounts.py`, `discount_auto_trigger.py`).
 
     The match is an EXACT cent comparison — ``payment_amount`` against
     ``offer.base_amount - discount_savings(base_amount, accepted_tier)``,
@@ -84,9 +100,22 @@ async def capture_offers_for_settled_payment(
         return []
 
     paid = Decimal(payment_amount).quantize(_CENTS)
+    invoice_ccy = (invoice_currency or "").upper()
     captured: list[DiscountOffer] = []
     for offer in offers:
         if not offer.accepted_tier:
+            continue
+        if (offer.currency or "").upper() != invoice_ccy:
+            # Currency mismatch between the offer and its own invoice — never
+            # attribute a numeric coincidence across currencies to a real
+            # discounted settlement. See the docstring above.
+            logger.warning(
+                "discount offer %s currency (%s) does not match its invoice's "
+                "currency (%s); skipping capture match",
+                offer.id,
+                offer.currency,
+                invoice_currency,
+            )
             continue
         savings = offers_svc.discount_savings(offer.base_amount, offer.accepted_tier)
         discounted_payoff = (offer.base_amount - savings).quantize(_CENTS)

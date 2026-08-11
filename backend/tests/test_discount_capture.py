@@ -8,7 +8,10 @@ caller, wired into `app/api/payments.py::_execute_single_payment` (both the
 adapter-completed leg and the virtual-card leg) and the async webhook-driven
 completion path. It recognizes a settled `Payment` whose amount EXACTLY
 equals an `accepted` invoice-scoped offer's discounted payoff
-(`base_amount - discount_savings(...)`) and calls `mark_captured`.
+(`base_amount - discount_savings(...)`), AND whose currency matches the
+offer's own `currency` (checked first — an invoice-scoped offer's currency
+can diverge from its invoice's, see `test_currency_mismatched_offer_...`
+below), and calls `mark_captured`.
 
 The realistic way AP actually pays the discounted amount today is via the
 existing credit-memo netting `create_payment_run_for_invoices` already does
@@ -16,9 +19,9 @@ existing credit-memo netting `create_payment_run_for_invoices` already does
 the discount amount nets `Payment.amount` down to exactly the discounted
 payoff. This suite drives that same path end to end through
 `POST /api/payments/runs` + `.../execute` (mock adapter, synchronous
-`completed`) and asserts the offer is captured — plus a control proving a
-full-amount settlement does NOT falsely capture, and a direct idempotency
-check on the service function itself.
+`completed`) and asserts the offer is captured — plus controls proving a
+full-amount settlement and a currency-mismatched offer do NOT falsely
+capture, and a direct idempotency check on the service function itself.
 
 Runs against the opt-in `realdb` fixture (skips without `pnpm db:up`).
 """
@@ -213,6 +216,78 @@ async def test_settlement_at_full_amount_does_not_falsely_capture(realdb):
         assert offer.captured_at is None
 
 
+async def test_currency_mismatched_offer_does_not_falsely_capture(realdb):
+    """A code-review finding on this same fix: `POST /api/discounts/offers`
+    lets the caller set an explicit `currency` independent of the invoice
+    (`api/discounts.py::create_offer` only falls back to `invoice.currency`
+    when the body omits one) — so an invoice-scoped offer's `currency` can
+    diverge from its own invoice's. `Payment.amount` is always denominated in
+    the INVOICE's currency. Here the offer is minted with `currency: "EUR"`
+    on a USD invoice; its `base_amount` still defaults from the invoice's
+    bare number (1000.00), so a USD payment landing on the numerically
+    identical discounted payoff (980.00) must NOT be treated as proof of a
+    real discounted settlement — that would misattribute EUR savings to a
+    USD payment purely from a numeric coincidence across currencies."""
+    info = realdb.info("a")
+    mk = realdb.sessionmaker("a")
+    org_id = info.org_id
+    _, invoice_id = await _seed_vendor_and_approved_invoice(
+        mk, org_id, number="DISC-CAP-004", amount=Decimal("1000.00")
+    )
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        offer_resp = await c.post(
+            "/api/discounts/offers",
+            json={
+                "scope": "invoice",
+                "invoice_id": invoice_id,
+                "currency": "EUR",  # diverges from the invoice's USD
+                "tiers": [{"days": 10, "percent": "2.00"}],
+            },
+        )
+        assert offer_resp.status_code == 201, offer_resp.text
+        assert offer_resp.json()["currency"] == "EUR"
+        offer_id = offer_resp.json()["id"]
+
+        accept_resp = await c.post(f"/api/discounts/offers/{offer_id}/accept", json={})
+        assert accept_resp.status_code == 200, accept_resp.text
+
+        # Same $20 credit-memo netting as the happy-path test — nets the USD
+        # payment down to 980.00, numerically identical to the (EUR-labeled)
+        # offer's discounted payoff, but denominated in a different currency.
+        memo_resp = await c.post(
+            "/api/credit-memos",
+            json={
+                "memo_number": "CM-DISC-CAP-4",
+                "vendor_id": (await c.get(f"/api/invoices/{invoice_id}")).json()["vendor_id"],
+                "amount": "20.00",
+                "invoice_id": invoice_id,
+            },
+        )
+        assert memo_resp.status_code == 201, memo_resp.text
+
+        run_resp = await c.post(
+            "/api/payments/runs",
+            json={"items": [{"invoice_id": invoice_id, "method": "ach"}]},
+        )
+        assert run_resp.status_code == 201, run_resp.text
+        assert run_resp.json()["total_amount"] == "980.00"
+        run_id = run_resp.json()["id"]
+
+    async with realdb.client(key="a", role="admin") as exec_c:
+        exec_resp = await exec_c.post(f"/api/payments/runs/{run_id}/execute")
+    assert exec_resp.status_code == 200, exec_resp.text
+    assert exec_resp.json()["payments_completed"] == 1
+
+    async with mk() as s:
+        offer = (
+            await s.execute(select(DiscountOffer).where(DiscountOffer.id == uuid.UUID(offer_id)))
+        ).scalar_one()
+        assert offer.status == "accepted"  # untouched — currency mismatch refused the match
+        assert offer.captured_amount is None
+        assert offer.captured_at is None
+
+
 async def test_capture_is_idempotent_on_repeat_settlement(realdb):
     """A repeat call for the same settlement (a retry, or a reconciliation
     re-run touching the same invoice/payment) must not double-count the
@@ -246,7 +321,11 @@ async def test_capture_is_idempotent_on_repeat_settlement(realdb):
     # First settlement recognition: captures the offer.
     async with mk() as s:
         first = await capture_offers_for_settled_payment(
-            s, invoice_id=uuid.UUID(invoice_id), payment_amount=Decimal("980.00"), now=now
+            s,
+            invoice_id=uuid.UUID(invoice_id),
+            payment_amount=Decimal("980.00"),
+            invoice_currency="USD",
+            now=now,
         )
         await s.commit()
     assert len(first) == 1
@@ -260,6 +339,7 @@ async def test_capture_is_idempotent_on_repeat_settlement(realdb):
             s,
             invoice_id=uuid.UUID(invoice_id),
             payment_amount=Decimal("980.00"),
+            invoice_currency="USD",
             now=datetime.now(UTC),
         )
         await s.commit()
