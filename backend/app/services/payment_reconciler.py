@@ -288,11 +288,15 @@ async def run_reconciler_loop() -> None:
                 await reconcile_once()
             except Exception as exc:  # noqa: BLE001
                 # Log the class, not the message — see the note on the inner
-                # per-payment catch above (PII-out-of-logs invariant).
+                # per-payment catch above (PII-out-of-logs invariant). No
+                # `exc_info=True` either: the stdlib logging module appends
+                # the full traceback (including `str(exc)`) regardless of
+                # what the format string names, so passing it would leak the
+                # very text this discipline exists to keep out of the log
+                # sink. Mirrors `payment_erp_sync.py` / `discount_auto_trigger.py`.
                 logger.error(
                     "[payment-reconciler] sweep raised: %s",
                     exc.__class__.__name__,
-                    exc_info=True,
                 )
             await asyncio.sleep(interval)
     except asyncio.CancelledError:
