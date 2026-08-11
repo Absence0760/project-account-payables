@@ -66,8 +66,8 @@ async def capture_offers_for_settled_payment(
     permanently mark it ``captured`` — the same misreporting-to-the-CFO risk
     the amount-exactness rule below guards against, just via a currency
     mismatch instead of a rounding one. Comparison is case-insensitive
-    (``.upper()`` both sides) to match the uppercasing every write path
-    already applies (`discounts.py`, `discount_auto_trigger.py`).
+    (``.upper()`` both sides) to match the uppercasing `discounts.py`
+    already applies when it resolves an offer's currency.
 
     The match is an EXACT cent comparison — ``payment_amount`` against
     ``offer.base_amount - discount_savings(base_amount, accepted_tier)``,
