@@ -403,6 +403,8 @@ https://app.com/api/payments/webhook/{tenant_slug}/{provider}
 
 Tenant is encoded in the path (no `X-Tenant-Slug` header needed — processors don't always support custom headers). The adapter verifies the signature; bad signatures, unknown events, and missing payments all return `204` silently to avoid leaking probing information.
 
+Before any of that, the handler bounds the body against `payment_webhook_max_bytes` (default 4 MiB) — a declared `Content-Length` over the cap rejects without ever awaiting `request.body()`, and the actual read is re-checked in case the header lied or was absent (chunked transfer). The HMAC check happens inside `adapter.parse_webhook`, well after this point, so the cap is what stops an unauthenticated caller from having an arbitrarily large payload buffered fully into memory (memory-exhaustion DoS on a public route) — mirrors `erp_webhook` / `peppol_inbound` / `cards.card_webhook`.
+
 #### Adding a new processor (Stripe Treasury, Increase, Column, …)
 
 1. Copy `mock_adapter.py`, implement the four methods.

@@ -618,6 +618,14 @@ from Lithic / Nium, not a logged-in user) and verified by HMAC over the
 raw body against the owning tenant's
 `Organization.settings.cards.webhook_signing_secret`. The handler:
 
+0. bounds the body against `card_webhook_max_bytes` (default 4 MiB) BEFORE
+   buffering it — a declared `Content-Length` over the cap rejects without
+   ever awaiting `request.body()`, and the actual read is re-checked in case
+   the header lied or was absent (chunked transfer). The HMAC check can't run
+   until the owning tenant is identified from the parsed body, so this is
+   what stops an unauthenticated caller from having an arbitrarily large
+   payload buffered fully into memory (memory-exhaustion DoS on a public
+   route) — mirrors `erp_webhook` / `peppol_inbound` / `payment_webhook`,
 1. parses `card_token` + `event_id` from the provider-specific body,
 2. finds the owning tenant by `provider_card_id` AND `VirtualCard.card_provider
    == {provider}` (the URL path segment is a filter, not just a hint for
