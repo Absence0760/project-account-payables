@@ -102,7 +102,7 @@ def _invoice(*, status=InvoiceStatus.approved, vendor_id=None, organization_id=N
     )
 
 
-def _mock_db(*, run, payments, invoice_by_id):
+def _mock_db(*, run, payments, invoice_by_id, completing_payment_ids=None):
     """Build a DB session whose execute() returns the right shape for
     each query the executor issues:
       1. `select(PaymentRun).where(PaymentRun.id == run_id)` → scalar
@@ -111,10 +111,14 @@ def _mock_db(*, run, payments, invoice_by_id):
       3. Per payment: `select(Invoice).where(Invoice.id == ...)` →
          scalar. If the invoice has `vendor_id` set, the executor also
          runs `select(Vendor.bank_details).where(...)`; enqueue a None
-         bank result only in that case.
+         bank result only in that case. A payment named in
+         `completing_payment_ids` (the caller knows its adapter mock will
+         return `completed`) gets one more mocked (empty-scalars) result for
+         `_capture_discount_offers`'s own `DiscountOffer` lookup (issue #280).
       4. Final rollup `select(Payment).where(payment_run_id == run_id)`
          (no status filter) → scalars().all(), same rows.
     """
+    completing_payment_ids = completing_payment_ids or set()
     run_result = MagicMock()
     run_result.scalar_one_or_none = MagicMock(return_value=run)
 
@@ -141,6 +145,12 @@ def _mock_db(*, run, payments, invoice_by_id):
                 return_value=SimpleNamespace(id=inv.vendor_id, name="Acme Corp")
             )
             per_pay_results.append(ven_res)
+        if p.id in completing_payment_ids:
+            discount_res = MagicMock()
+            discount_scalars = MagicMock()
+            discount_scalars.all = MagicMock(return_value=[])
+            discount_res.scalars = MagicMock(return_value=discount_scalars)
+            per_pay_results.append(discount_res)
 
     rollup_result = MagicMock()
     rollup_scalars = MagicMock()
@@ -203,7 +213,9 @@ async def test_run_rolls_up_to_completed_when_all_payments_settle_synchronously(
     run = _run()
     p1, p2 = _payment(), _payment()
     invoices = {str(p1.invoice_id): _invoice(), str(p2.invoice_id): _invoice()}
-    db = _mock_db(run=run, payments=[p1, p2], invoice_by_id=invoices)
+    db = _mock_db(
+        run=run, payments=[p1, p2], invoice_by_id=invoices, completing_payment_ids={p1.id, p2.id}
+    )
 
     with (
         patch(
@@ -267,7 +279,9 @@ async def test_run_rolls_up_to_partial_on_mixed_outcomes():
     run = _run()
     p1, p2 = _payment(), _payment()
     invoices = {str(p1.invoice_id): _invoice(), str(p2.invoice_id): _invoice()}
-    db = _mock_db(run=run, payments=[p1, p2], invoice_by_id=invoices)
+    db = _mock_db(
+        run=run, payments=[p1, p2], invoice_by_id=invoices, completing_payment_ids={p1.id}
+    )
 
     with (
         patch(
@@ -335,7 +349,7 @@ async def test_payment_fields_hydrate_from_adapter_result():
     run = _run()
     p = _payment()
     invoices = {str(p.invoice_id): _invoice()}
-    db = _mock_db(run=run, payments=[p], invoice_by_id=invoices)
+    db = _mock_db(run=run, payments=[p], invoice_by_id=invoices, completing_payment_ids={p.id})
 
     before = datetime.now(UTC)
     with (

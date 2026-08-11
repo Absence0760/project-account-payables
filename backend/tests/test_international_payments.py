@@ -429,7 +429,7 @@ def _user():
     return SimpleNamespace(id=uuid.uuid4(), full_name="Tester", roles=["admin"])
 
 
-def _mock_db(*, run, payment, invoice, vendor_bank, compliance_vendor=None):
+def _mock_db(*, run, payment, invoice, vendor_bank, compliance_vendor=None, completes=False):
     """Build the execute-sequence the executor walks through:
     1. run lookup
     2. pending-payments fan-out
@@ -440,13 +440,19 @@ def _mock_db(*, run, payment, invoice, vendor_bank, compliance_vendor=None):
        the international branch — see `compliance_vendor`)
     6. compliance trailing-12m spend SUM (only on the international
        branch).
-    7. final rollup payments SELECT (same row).
+    7. if `completes`: one more (empty-scalars) result for
+       `_capture_discount_offers`'s own `DiscountOffer` lookup — fires
+       whenever the adapter settles the payment `completed` (issue #280).
+    8. final rollup payments SELECT (same row).
 
     Pass `compliance_vendor` as the vendor SimpleNamespace the
     compliance step should see; default is a KYC-verified vendor
     using the same bank_details and country as the invoice. Pass
     `compliance_vendor=False` to skip enqueuing the compliance
-    queries entirely (for non-international paths)."""
+    queries entirely (for non-international paths). Pass
+    `completes=True` when the test's adapter mock settles the payment
+    `completed` (default `False` matches the failure-path tests, which
+    never reach the adapter)."""
     run_res = MagicMock()
     run_res.scalar_one_or_none = MagicMock(return_value=run)
     pay_res = MagicMock()
@@ -474,6 +480,13 @@ def _mock_db(*, run, payment, invoice, vendor_bank, compliance_vendor=None):
         spend_res = MagicMock()
         spend_res.scalar = MagicMock(return_value=Decimal("0"))
         queue.extend([vendor_lookup_res, spend_res])
+
+    if completes:
+        discount_res = MagicMock()
+        discount_scalars = MagicMock()
+        discount_scalars.all = MagicMock(return_value=[])
+        discount_res.scalars = MagicMock(return_value=discount_scalars)
+        queue.append(discount_res)
 
     rollup_res = MagicMock()
     rollup_scalars = MagicMock()
@@ -505,7 +518,7 @@ async def test_execute_payment_run_locks_fx_and_populates_intl_fields_for_eur_in
         "swift_bic": _VALID_DEUTSCHE_BIC,
         "country": "DE",
     }
-    db = _mock_db(run=run, payment=pay, invoice=inv, vendor_bank=bank)
+    db = _mock_db(run=run, payment=pay, invoice=inv, vendor_bank=bank, completes=True)
 
     adapter = MagicMock()
     adapter.provider_name = "mock"
@@ -569,7 +582,7 @@ async def test_execute_payment_run_with_eur_home_org_and_de_invoice_uses_sepa():
     pay = _payment(method=None)
     inv = _eur_invoice()
     bank = {"iban": _VALID_DE_IBAN, "country": "DE"}
-    db = _mock_db(run=run, payment=pay, invoice=inv, vendor_bank=bank)
+    db = _mock_db(run=run, payment=pay, invoice=inv, vendor_bank=bank, completes=True)
 
     adapter = MagicMock()
     adapter.provider_name = "mock"
