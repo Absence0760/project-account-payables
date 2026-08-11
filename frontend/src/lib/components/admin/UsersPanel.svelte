@@ -40,6 +40,9 @@
 
 	let search = $state('');
 	let searchTimer: ReturnType<typeof setTimeout> | null = null;
+	// Guards the search-effect below against firing its own redundant
+	// fetch on mount — see the comment there.
+	let searchEffectRan = false;
 
 	$effect(() => {
 		adminStore.fetchUsers();
@@ -49,6 +52,23 @@
 	$effect(() => {
 		// React to search changes; debounce to avoid hammering the API.
 		const q = search;
+		// A Svelte `$effect` runs once on mount regardless of whether its
+		// tracked value actually changed, so without this guard this effect
+		// ALSO schedules a fetch (with search='') ~250ms after mount — on
+		// top of the unconditional, immediate fetch the effect above just
+		// issued. That redundant fetch is a real race, not just a wasted
+		// request: `adminStore.fetchUsers()` always *replaces* the list
+		// (never merges), so if a user creates/deletes a row in that
+		// ~250ms window, the delayed duplicate GET can resolve afterward
+		// and silently overwrite the just-mutated list with a stale,
+		// page-1-only snapshot — the "table shows N rows instead of M"
+		// flake. The mount effect above already covers the initial
+		// (unfiltered) load, so skip this effect's very first run and only
+		// debounce-fetch on a genuine search-value change thereafter.
+		if (!searchEffectRan) {
+			searchEffectRan = true;
+			return;
+		}
 		if (searchTimer) clearTimeout(searchTimer);
 		searchTimer = setTimeout(() => {
 			adminStore.fetchUsers({ search: q });

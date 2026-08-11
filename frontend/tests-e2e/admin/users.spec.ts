@@ -23,7 +23,20 @@ async function deleteUser(page: import('@playwright/test').Page, id: string) {
 test.describe('/admin user lifecycle', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/admin');
-		await expect(page.locator('table tbody tr').first()).toBeVisible();
+		// `table tbody tr` alone is satisfied by DataTable's own loading-state
+		// placeholder row ("No users found." — isEmpty is true until the fetch
+		// resolves, same markup shape as a genuine empty result), so it isn't
+		// proof the real user list has loaded. `networkidle` (the convention
+		// already used by the sibling `search-pagination.spec.ts` beforeEach
+		// for this same page) waits for the actual GET /api/admin/users to
+		// complete. Without it, a slow/loaded runner can let a test start
+		// interacting (and read `table tbody tr`'s count as "before") while
+		// the initial fetch is still in flight; when that fetch — or the
+		// admin panel's own debounced search refetch — finally resolves after
+		// a subsequent create/delete, it replaces the whole list wholesale and
+		// stomps the just-mutated state, producing an unrelated row count
+		// ("table shows N rows instead of M").
+		await page.waitForLoadState('networkidle');
 	});
 
 	test('Create User submit is disabled while empty + creates a user on submit', async ({
