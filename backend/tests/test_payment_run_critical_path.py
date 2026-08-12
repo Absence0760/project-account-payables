@@ -674,13 +674,22 @@ async def test_approve_run_stamps_cfo_and_writes_audit():
 # ---------------------------------------------------------------------------
 
 
-def _execute_db(run, payments, invoice_by_id, vendor_by_invoice=None):
+def _execute_db(run, payments, invoice_by_id, vendor_by_invoice=None, completing_payment_ids=None):
     """DB mock for `execute_payment_run`: run SELECT, pending-payments
     SELECT, then per-payment invoice SELECT — and, for any invoice carrying a
     `vendor_id`, the compliance gate's follow-on Vendor SELECT — then the
     final rollup SELECT over every payment on the run. Mirrors `_mock_db` in
-    test_payment_run_flow.py but inline so this file stays standalone."""
+    test_payment_run_flow.py but inline so this file stays standalone.
+
+    `completing_payment_ids` (default: none) names payments the caller expects
+    to reach a `completed` adapter result — `_execute_single_payment` follows
+    that with `_capture_discount_offers`'s own `DiscountOffer` lookup (issue
+    #280), so those get one more mocked (empty-scalars) result appended after
+    their vendor lookup. A payment that holds/fails before the adapter call
+    (e.g. the no-screenable-vendor compliance hold) never reaches it — leave
+    such payments out of the set."""
     vendor_by_invoice = vendor_by_invoice or {}
+    completing_payment_ids = completing_payment_ids or set()
     run_result = MagicMock()
     run_result.scalar_one_or_none = MagicMock(return_value=run)
 
@@ -708,6 +717,12 @@ def _execute_db(run, payments, invoice_by_id, vendor_by_invoice=None):
                 return_value=vendor_by_invoice.get(str(p.invoice_id))
             )
             per_pay_results.append(ven_res)
+        if p.id in completing_payment_ids:
+            discount_res = MagicMock()
+            discount_scalars = MagicMock()
+            discount_scalars.all = MagicMock(return_value=[])
+            discount_res.scalars = MagicMock(return_value=discount_scalars)
+            per_pay_results.append(discount_res)
 
     rollup_result = MagicMock()
     rollup_scalars = MagicMock()
@@ -835,7 +850,11 @@ async def test_over_threshold_run_blocks_execute_then_proceeds_after_cfo_approva
     vendor = SimpleNamespace(id=inv.vendor_id, name="Acme Corp")
     invoices = {str(p.invoice_id): inv}
     exec_db = _execute_db(
-        approved_run, [p], invoices, vendor_by_invoice={str(p.invoice_id): vendor}
+        approved_run,
+        [p],
+        invoices,
+        vendor_by_invoice={str(p.invoice_id): vendor},
+        completing_payment_ids={p.id},
     )
     adapter = _adapter()
 
@@ -893,7 +912,13 @@ async def test_execute_transitions_invoice_via_transition_invoice_not_bare_assig
     invoice.vendor_id = uuid.uuid4()
     vendor = SimpleNamespace(id=invoice.vendor_id, name="Acme Corp")
     invoices = {str(p.invoice_id): invoice}
-    db = _execute_db(run, [p], invoices, vendor_by_invoice={str(p.invoice_id): vendor})
+    db = _execute_db(
+        run,
+        [p],
+        invoices,
+        vendor_by_invoice={str(p.invoice_id): vendor},
+        completing_payment_ids={p.id},
+    )
     adapter = _adapter()
 
     with (

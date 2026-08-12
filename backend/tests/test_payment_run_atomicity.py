@@ -103,10 +103,26 @@ def _clear_compliance():
     return SimpleNamespace(verdict="allow", reasons=[])
 
 
-def _queue_db(*, run, pending_payments, invoice_by_payment, rollup_payments, vendor_by_payment):
+def _queue_db(
+    *,
+    run,
+    pending_payments,
+    invoice_by_payment,
+    rollup_payments,
+    vendor_by_payment,
+    completing_payment_ids: set | None = None,
+):
     """Build the execute-sequence: run lookup, pending-payments lookup, then
     per-payment (invoice, bank_details, compliance-vendor) triples in order,
-    then the final rollup lookup over every payment on the run."""
+    then the final rollup lookup over every payment on the run.
+
+    `completing_payment_ids` names the payments this test expects the adapter
+    to settle `completed` — `_execute_single_payment` follows a completed
+    adapter result with `_capture_discount_offers`' own `DiscountOffer`
+    lookup (issue #280's capture wiring), so those payments get one more
+    mocked (empty-scalars — no discount offer to match) result appended right
+    after their vendor lookup, keeping the side_effect sequence aligned with
+    what the handler actually calls."""
     run_result = MagicMock()
     run_result.scalar_one_or_none = MagicMock(return_value=run)
 
@@ -129,6 +145,13 @@ def _queue_db(*, run, pending_payments, invoice_by_payment, rollup_payments, ven
         ven_res = MagicMock()
         ven_res.scalar_one_or_none = MagicMock(return_value=vendor_by_payment[p.id])
         per_pay_results.append(ven_res)
+
+        if completing_payment_ids and p.id in completing_payment_ids:
+            discount_res = MagicMock()
+            discount_scalars = MagicMock()
+            discount_scalars.all = MagicMock(return_value=[])
+            discount_res.scalars = MagicMock(return_value=discount_scalars)
+            per_pay_results.append(discount_res)
 
     rollup_result = MagicMock()
     rollup_scalars = MagicMock()
@@ -171,6 +194,7 @@ async def test_unexpected_adapter_error_fails_only_that_payment():
         invoice_by_payment={bad_payment.id: bad_invoice, good_payment.id: good_invoice},
         rollup_payments=[bad_payment, good_payment],
         vendor_by_payment={bad_payment.id: vendor_bad, good_payment.id: vendor_good},
+        completing_payment_ids={good_payment.id},
     )
 
     call_count = 0
@@ -299,6 +323,7 @@ async def test_each_payment_commits_durably_before_the_next_is_attempted():
         invoice_by_payment=invoices,
         rollup_payments=payments,
         vendor_by_payment=vendors,
+        completing_payment_ids={p.id for p in payments},
     )
 
     adapter = MagicMock()
@@ -355,6 +380,7 @@ async def test_resume_only_dispatches_still_pending_payments():
         invoice_by_payment={still_pending.id: pending_invoice},
         rollup_payments=[already_done, still_pending],
         vendor_by_payment={still_pending.id: vendor},
+        completing_payment_ids={still_pending.id},
     )
 
     adapter = MagicMock()

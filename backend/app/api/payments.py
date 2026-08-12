@@ -1302,6 +1302,89 @@ async def _open_compliance_hold_exception(
     )
 
 
+async def _capture_discount_offers(
+    db: AsyncSession,
+    *,
+    org: Organization,
+    payment: Payment,
+    actor_id: uuid.UUID | None,
+    now: datetime,
+    invoice: Invoice | None = None,
+) -> None:
+    """Recognize `payment` settling its invoice at a discounted payoff and
+    capture any matching `accepted` `DiscountOffer` — the wiring
+    `discount_offers.mark_captured` was missing (issue #280): without a
+    caller, `captured_amount`/`captured_at` never got set and the
+    captured-savings KPI always read 0 even when discounts were genuinely
+    accepted and paid at the discounted amount.
+
+    Called from every path a `Payment` reaches `completed` — the synchronous
+    adapter/card leg (`_execute_single_payment`, which already has the
+    `Invoice` loaded and passes it in) and the async webhook-driven
+    completion (`payment_webhook`, which does not — pass `invoice=None` and
+    this resolves it from `payment.invoice_id`) — so a discount is
+    recognized whether the rail confirms instantly or days later. No invoice
+    found is a no-op (nothing to match against); a payment amount that
+    doesn't match a discounted payoff exactly is also a no-op (see
+    `discount_capture.capture_offers_for_settled_payment`).
+
+    Best-effort, like the vendor card-notify email below: this labels a
+    payment that already, definitely settled with a bookkeeping fact
+    (realized discount savings) — it must never be the reason a payment
+    that DID move money fails to record that it moved (or, on the webhook
+    path, the reason a webhook delivery 5xxs and gets needlessly retried).
+    The invoice lookup lives INSIDE the try for exactly that reason. A
+    failure here is logged (class only — no invoice/vendor PII) and
+    swallowed rather than propagated, mirroring `notify_vendor_of_card`'s
+    own safety net.
+    """
+    try:
+        if invoice is None:
+            inv_result = await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
+            invoice = inv_result.scalar_one_or_none()
+        if invoice is None:
+            return
+
+        from app.services.discount_capture import capture_offers_for_settled_payment
+
+        captured = await capture_offers_for_settled_payment(
+            db,
+            invoice_id=invoice.id,
+            payment_amount=payment.amount,
+            invoice_currency=invoice.currency,
+            now=now,
+        )
+        if not captured:
+            return
+
+        from app.services.audit_dispatch import dispatch_audit
+
+        for offer in captured:
+            await dispatch_audit(
+                db,
+                correlation_id=payment.correlation_id or invoice.id,
+                organization_id=org.id,
+                actor_id=actor_id,
+                action="discount_offer.captured",
+                entity_type="discount_offer",
+                entity_id=offer.id,
+                details={
+                    "invoice_id": str(invoice.id),
+                    "payment_id": str(payment.id),
+                    "captured_amount": str(offer.captured_amount),
+                },
+            )
+    except Exception as exc:  # noqa: BLE001
+        # Log the exception CLASS only, never the message (PII-out-of-logs
+        # invariant — mirrors payment_erp_sync.py's own discipline). Never
+        # `payment.invoice_id` either — best-effort but still no PII risk.
+        logger.warning(
+            "discount-offer capture failed for payment=%s: %s; payment settlement unaffected",
+            payment.id,
+            exc.__class__.__name__,
+        )
+
+
 async def _execute_single_payment(
     db: AsyncSession,
     *,
@@ -1458,6 +1541,9 @@ async def _execute_single_payment(
         payment.completed_at = now
         payment.submitted_at = now
         payment.reference = f"CARD-{card.card_provider.upper()}-{card.last_four or '????'}"
+        await _capture_discount_offers(
+            db, org=org, invoice=invoice, payment=payment, actor_id=user.id, now=now
+        )
         if invoice.status.value in (
             "approved",
             "sent_to_erp",
@@ -1652,6 +1738,9 @@ async def _execute_single_payment(
     if result_obj.status == PaymentStatus.completed:
         payment.status = "completed"
         payment.completed_at = now
+        await _capture_discount_offers(
+            db, org=org, invoice=invoice, payment=payment, actor_id=user.id, now=now
+        )
         if invoice and invoice.status.value in (
             "approved",
             "sent_to_erp",
@@ -2189,6 +2278,21 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
                     ),
                 },
             )
+
+            # A real (non-mock) rail typically confirms via THIS webhook, not
+            # the synchronous leg of `_execute_single_payment` — ACH/wire sit
+            # `submitted`/`processing` until the processor calls back. This is
+            # the settlement moment for those payments, so it's also where an
+            # accepted discount offer paid at its discounted payoff gets
+            # recognized (mirrors the synchronous completion leg's call).
+            if payment.status == "completed":
+                await _capture_discount_offers(
+                    db,
+                    org=org,
+                    payment=payment,
+                    actor_id=None,
+                    now=payment.completed_at or datetime.now(UTC),
+                )
 
             run_id = payment.payment_run_id if payment.status == "completed" else None
             await db.commit()

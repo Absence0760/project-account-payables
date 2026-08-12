@@ -101,6 +101,76 @@ entity-scoped; lifecycle guards return `409`. Percent / ROI fields serialize as
 JSON **numbers** (matching the frontend `number`-typed contract) while staying
 `Decimal` in Python.
 
+## Capture — from `accepted` to `captured`
+
+`discount_offers.mark_captured` is the only code that sets
+`captured_amount`/`captured_at` and transitions `accepted → captured`, but it
+is a pure mutator — something has to notice "this payment settling this
+invoice IS the discounted payoff" and call it. That caller is
+`services/discount_capture.capture_offers_for_settled_payment`, wired into
+every place a `Payment` reaches `completed` in `app/api/payments.py`:
+
+- `_execute_single_payment`'s synchronous adapter-completed leg and its
+  virtual-card leg (mock adapter, or any processor that confirms inline)
+- the async webhook-driven completion in `payment_webhook` (the realistic
+  path for a live ACH/wire processor, which sits `submitted`/`processing`
+  until the provider calls back)
+
+Both call the shared `_capture_discount_offers` helper, which resolves any
+still-`accepted` **invoice-scoped** `DiscountOffer` on the settled invoice and
+first checks the offer's `currency` against the invoice's own `currency`
+(case-insensitive) — `POST /api/discounts/offers` lets the caller set an
+explicit `currency` independent of the invoice (falling back to
+`invoice.currency` only when omitted, `api/discounts.py::create_offer`), and
+`Payment.amount` is always denominated in the invoice's currency, so a
+currency-mismatched offer's `base_amount` (still defaulted from the invoice's
+bare number) could otherwise numerically coincide with an unrelated payment
+and be falsely captured. Only once currency matches does it check whether
+`Payment.amount` **exactly** equals that offer's accepted tier's discounted
+payoff (`base_amount - discount_savings(base_amount, accepted_tier)`, both
+cent-quantized the same way). A match calls `mark_captured` and writes a
+`discount_offer.captured` audit row (`actor_id` is the executing user on the
+synchronous legs, `None` — a system/processor event — on the webhook leg,
+matching the existing `payment.completed` webhook audit convention). A
+non-matching currency or amount leaves the offer `accepted` rather than
+guessing — a false capture would misreport savings exactly like the original
+missing-caller bug, just inverted.
+
+**Vendor-scoped bulk offers are intentionally out of scope here.** A bulk
+offer's `base_amount` is the summed open balance across several invoices, so
+no single invoice's payment can be proven to BE that offer's settlement;
+those are left `accepted` for a future reconciliation pass rather than
+attributed to whichever invoice happened to pay first.
+
+**How AP actually pays the discounted amount today**: nothing in the payment
+run path automatically nets a `DiscountOffer`'s discount off `Payment.amount`
+— `create_payment_run_for_invoices` only nets *applied credit memos*. Paying
+at the discounted payoff means recording a credit memo for the discount
+amount (or otherwise adjusting the invoice) before scheduling the payment, so
+the existing credit-memo-netting math lands `Payment.amount` on the
+discounted figure. See `tests/test_discount_capture.py` for the exact flow.
+
+**Idempotent**: `capture_offers_for_settled_payment` only queries offers
+currently `accepted`, so a retried settlement or a reconciliation re-run over
+the same invoice/payment finds nothing left to capture — never double-counts,
+never raises on an already-`captured` offer. `mark_captured`'s own status
+guard is a second backstop against a genuine race between two settlement
+paths. **Best-effort**: the whole capture attempt (including resolving the
+invoice on the webhook leg) runs inside a try/except in
+`_capture_discount_offers` — a failure here is logged (exception class only)
+and swallowed, never the reason a payment that DID settle fails to record
+that it settled, or the reason a webhook delivery 5xxs and gets needlessly
+retried.
+
+**`GET /api/dashboard`'s `discount_capture` KPI is a different feature and is
+NOT affected by this.** It rolls up `PaymentSchedule.discount_percent` /
+`discount_date` — the *static* "2/10 net 30" term captured at invoice
+creation (see the module docstring) — via
+`services/analytics.compute_discount_capture`, entirely independent of
+`DiscountOffer`. Only `GET /api/discounts/dashboard`'s `captured_amount` /
+`captured_count` (summed straight off `DiscountOffer.captured_amount`) reads
+the fix in this section.
+
 ### Supplier portal (`/api/portal/discount-offers`)
 
 The same offers are surfaced to the **vendor** so a supplier can accept an
@@ -165,6 +235,14 @@ portal nav.
   (real-DB): vendor scoping (own vendor + own invoices, never another vendor),
   per-tier savings, accept flips status without creating a `Payment`/`PaymentRun`,
   double-accept 409, foreign/unknown offer 404, auth-required.
+- `test_discount_capture.py` — the capture wiring (real-DB, end to end through
+  `POST /api/payments/runs` + `.../execute`): a payment settled at the exact
+  discounted payoff captures the offer + updates the dashboard; a payment
+  settled at the full amount does NOT falsely capture; a currency-mismatched
+  offer (explicit `currency` diverging from its own invoice) does NOT falsely
+  capture even when the numbers numerically coincide; repeat calls to
+  `capture_offers_for_settled_payment` are idempotent (no double-count, no
+  error on an already-`captured` offer).
 - `frontend/tests-e2e/discounts/money-path.spec.ts` — live-stack e2e asserting
   the exact savings/ROI/APR Decimal values, best-vs-explicit tier selection,
   accept idempotency (double-accept is a safe 409, no double-count), the
