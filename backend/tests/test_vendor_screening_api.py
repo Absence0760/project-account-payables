@@ -20,17 +20,25 @@ adapter needs no key: the fixture names "Sanctioned Test Entity" /
 
 from __future__ import annotations
 
+import logging
 import uuid
 from decimal import Decimal
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import select
 
+from app.api import vendors as vendors_module
 from app.models.sanctions_check import SanctionsCheck
 from app.models.vendor import Vendor
 from app.services.compliance import check_payment_compliance
 
 TENANT = "a"
+
+# A sentinel standing in for the vendor identifier / partial banking value a
+# sanctions-adapter error can carry in ``str(exc)``. It must never reach a log
+# record (PII-out-of-logs invariant) — only the exception CLASS may.
+_PII_SENTINEL = "SECRET_VENDOR_IDENTIFIER_123"
 
 
 @pytest.fixture
@@ -170,6 +178,67 @@ async def test_manual_screen_missing_vendor_404(realdb):
     async with realdb.client(key=TENANT, role="admin") as client:
         resp = await client.post(f"/api/vendors/{uuid.uuid4()}/screen")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_manual_screen_adapter_failure_logs_exception_class_not_message(realdb, caplog):
+    """A sanctions-adapter failure on manual re-screen surfaces as a 502 and
+    logs the exception CLASS only — the raw message (which could carry a
+    vendor identifier) must never land in the log, honouring the
+    PII-out-of-logs invariant (see issue #277)."""
+    async with realdb.client(key=TENANT, role="admin") as client:
+        created = await client.post(
+            "/api/vendors", json={"name": "Adapter Failure Vendor", "code": "AFV-1"}
+        )
+        vendor_id = created.json()["id"]
+
+        with (
+            patch.object(
+                vendors_module,
+                "screen_vendor_record",
+                AsyncMock(side_effect=RuntimeError(_PII_SENTINEL)),
+            ),
+            caplog.at_level(logging.WARNING, logger=vendors_module.logger.name),
+        ):
+            resp = await client.post(f"/api/vendors/{vendor_id}/screen")
+
+    assert resp.status_code == 502
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings, "expected a WARNING log for the failed manual screen"
+    for record in caplog.records:
+        assert _PII_SENTINEL not in record.getMessage()
+        assert record.exc_info is None, "exc_info=True would dump the raw traceback/message"
+    assert any("RuntimeError" in r.getMessage() for r in warnings)
+
+
+@pytest.mark.asyncio
+async def test_best_effort_screen_failure_logs_exception_class_not_message(realdb, caplog):
+    """`_screen_best_effort` (the create/update path's swallowed screen) must
+    log the exception CLASS only too — not `exc_info=True` — on a sanctions-
+    adapter failure. The vendor write itself must still succeed (best-effort:
+    a provider outage never blocks vendor create/update). See issue #277."""
+    with (
+        patch.object(
+            vendors_module,
+            "screen_vendor_record",
+            AsyncMock(side_effect=RuntimeError(_PII_SENTINEL)),
+        ),
+        caplog.at_level(logging.WARNING, logger=vendors_module.logger.name),
+    ):
+        async with realdb.client(key=TENANT, role="admin") as client:
+            resp = await client.post(
+                "/api/vendors", json={"name": "Best Effort Failure Vendor", "code": "BEF-1"}
+            )
+
+    assert resp.status_code == 201, resp.text
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings, "expected a WARNING log for the failed best-effort screen"
+    for record in caplog.records:
+        assert _PII_SENTINEL not in record.getMessage()
+        assert record.exc_info is None, "exc_info=True would dump the raw traceback/message"
+    assert any("RuntimeError" in r.getMessage() for r in warnings)
 
 
 # ---------------------------------------------------------------------------
