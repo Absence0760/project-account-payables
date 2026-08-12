@@ -796,3 +796,84 @@ async def test_webhook_keeps_claim_on_success(_autouse_fake_redis):
     db.commit.assert_called_once()
     # Claim retained → a redelivery of evt_ok is already-processed (deduped).
     assert await is_event_already_processed("modern_treasury", "evt_ok") is True
+
+
+# ---------------------------------------------------------------------------
+# Body-size cap (memory-exhaustion DoS on a public route)
+#
+# `payment_webhook` used to `await request.body()` with no size cap, ahead of
+# even the `mock`-provider check and tenant/HMAC resolution — an
+# unauthenticated attacker could POST an arbitrarily large body and have it
+# buffered fully into memory before anything ever rejected it. The guard
+# bounds the body in two phases, mirroring `erp_webhook`/`peppol_inbound`:
+# reject on a declared Content-Length over the cap BEFORE reading the body at
+# all, then re-check the actual read length in case the header lied or was
+# absent (e.g. chunked transfer).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_content_length_over_cap_rejects_before_body_read(monkeypatch):
+    """A declared Content-Length over the cap must reject WITHOUT ever
+    awaiting `request.body()` — the whole point is bounding memory before
+    anything is buffered."""
+    from app.api.payments import payment_webhook
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "payment_webhook_max_bytes", 1024)
+    request = _fake_request(b"", {"content-length": "999999"})
+
+    result = await payment_webhook(tenant_slug="acme", provider="modern_treasury", request=request)
+
+    assert result is None  # silent 204, not a raised exception
+    request.body.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_content_length_malformed_rejects_before_body_read(monkeypatch):
+    """A non-integer Content-Length header must also reject before reading —
+    a malformed header shouldn't fall through to an unbounded read."""
+    from app.api.payments import payment_webhook
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "payment_webhook_max_bytes", 1024)
+    request = _fake_request(b"", {"content-length": "not-a-number"})
+
+    result = await payment_webhook(tenant_slug="acme", provider="modern_treasury", request=request)
+
+    assert result is None
+    request.body.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_oversized_body_without_content_length_rejects_after_read(monkeypatch):
+    """Simulates chunked transfer (no Content-Length header): the body is
+    read once, then rejected by the post-read length check."""
+    from app.api.payments import payment_webhook
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "payment_webhook_max_bytes", 1024)
+    big_body = b"x" * 2048
+    request = _fake_request(big_body, {})
+
+    result = await payment_webhook(tenant_slug="acme", provider="modern_treasury", request=request)
+
+    assert result is None
+    request.body.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_content_length_understates_actual_size_still_rejects(monkeypatch):
+    """A Content-Length header that lies (understates the real body) must
+    still be caught by the post-read re-check, not trusted blindly."""
+    from app.api.payments import payment_webhook
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "payment_webhook_max_bytes", 1024)
+    big_body = b"x" * 2048
+    request = _fake_request(big_body, {"content-length": "10"})
+
+    result = await payment_webhook(tenant_slug="acme", provider="modern_treasury", request=request)
+
+    assert result is None
+    request.body.assert_awaited_once()

@@ -1,5 +1,6 @@
 """Virtual card endpoints — generate, list, cancel, webhook."""
 
+import logging
 import uuid
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -33,6 +34,8 @@ from app.schemas.virtual_card import (
     RebateResponse,
 )
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/cards", tags=["cards"])
 
@@ -590,7 +593,29 @@ async def card_webhook(provider: str, request: Request):
     failure returns 204 silently. Leaking the difference would help
     an attacker probe for valid tokens.
     """
+    # Bound the body BEFORE buffering it. The HMAC check below can't run
+    # until the owning tenant is identified from the parsed body, so an
+    # unauthenticated attacker could otherwise POST an arbitrarily large
+    # payload and have it read fully into memory before anything rejects it
+    # (memory-exhaustion DoS on a public route). Reject on the declared
+    # Content-Length when present, and re-check the actual read in case the
+    # header lied / was absent (chunked). Provider settlement payloads are a
+    # few KB; cap defaults to a few MB.
+    max_bytes = settings.card_webhook_max_bytes
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > max_bytes:
+                logger.warning("Card webhook rejected: body exceeds size cap")
+                return
+        except ValueError:
+            logger.warning("Card webhook rejected: invalid content-length")
+            return
+
     raw_body = await request.body()
+    if len(raw_body) > max_bytes:
+        logger.warning("Card webhook rejected: body exceeds size cap")
+        return
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001

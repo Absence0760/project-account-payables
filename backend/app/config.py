@@ -605,6 +605,20 @@ class Settings(BaseSettings):
     # buffered / parsed.
     email_intake_max_bytes: int = 4 * 1024 * 1024
 
+    # Card-provider webhook (`POST /api/cards/webhook/{provider}`, public — HMAC
+    # is verified only after the owning tenant is identified from the body).
+    # Same memory-exhaustion guard as the ERP webhook above: bound the body
+    # before it's buffered at all. Lithic/Nium settlement payloads are a few
+    # KB; a few-MB ceiling never truncates a real one.
+    card_webhook_max_bytes: int = 4 * 1024 * 1024
+
+    # Payment-processor webhook (`POST /api/payments/webhook/{tenant_slug}/
+    # {provider}`, public, HMAC verified inside the adapter's `parse_webhook`).
+    # Same memory-exhaustion guard — bound the body before it's buffered, ahead
+    # of the mock-provider check and tenant/HMAC resolution. Processor status
+    # payloads are small JSON; a few-MB ceiling never truncates a real one.
+    payment_webhook_max_bytes: int = 4 * 1024 * 1024
+
     # Punch-out catalogs (live cXML/OCI round-trips). Local-first: the in-process
     # `mock` adapter is the default so `pnpm dev` runs the whole punch-out flow
     # (setup → start URL → returned cart → convert-to-requisition) without an

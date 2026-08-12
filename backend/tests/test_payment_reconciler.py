@@ -643,9 +643,12 @@ async def test_run_reconciler_loop_survives_a_failed_sweep():
 
 @pytest.mark.asyncio
 async def test_run_reconciler_loop_failure_logs_exception_class_not_message(caplog):
-    """The long-lived loop's top-level catch logs the exception CLASS only
-    (with exc_info for the traceback) — a processor SDK error string can
-    carry a partial account number, which must never land in the log sink."""
+    """The long-lived loop's top-level catch logs the exception CLASS only —
+    NO `exc_info` — a processor SDK error string can carry a partial account
+    number, which must never land in the log sink. `exc_info=True` would leak
+    it via the appended traceback even though the format string only names
+    the class, so this checks the traceback text too, not just the formatted
+    message."""
 
     async def flaky():
         raise RuntimeError(_PII_SENTINEL)
@@ -667,4 +670,8 @@ async def test_run_reconciler_loop_failure_logs_exception_class_not_message(capl
     assert errors, "expected an ERROR log for the failed sweep"
     for record in errors:
         assert _PII_SENTINEL not in record.getMessage()
+        # No exc_info means no traceback text is attached to the record —
+        # the previous regression (exc_info=True) would fail these two.
+        assert record.exc_info is None
+        assert not record.exc_text
     assert any("RuntimeError" in r.getMessage() for r in errors)

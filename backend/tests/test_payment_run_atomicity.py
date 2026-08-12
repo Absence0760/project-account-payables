@@ -213,6 +213,74 @@ async def test_unexpected_adapter_error_fails_only_that_payment():
     assert result["payments_failed"] == 1
 
 
+# ---------------------------------------------------------------------------
+# The dispatch-loop failure path must log/store the exception CLASS only —
+# never the raw message. A live FX/sanctions/processor adapter can embed a
+# partial account number, IBAN, or PAN in its error string (PII/banking-data-
+# out-of-logs invariant); `logger.exception(...)` used to attach the full
+# traceback (including `str(exc)`) and `failure_reason` used to interpolate
+# the raw exception text straight into the DB.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_failure_logs_and_stores_class_name_only(caplog):
+    """A processor exception carrying sensitive text in its message must
+    never reach the log record or `Payment.failure_reason` — only the
+    exception's class name may appear in either place."""
+    import logging
+
+    from app.api.payments import execute_payment_run
+
+    run = _run()
+    bad_payment = _payment(amount=Decimal("100.00"))
+    bad_invoice = _invoice(amount=Decimal("100.00"))
+    vendor_bad = SimpleNamespace(id=bad_invoice.vendor_id, name="Vendor Bad")
+
+    db = _queue_db(
+        run=run,
+        pending_payments=[bad_payment],
+        invoice_by_payment={bad_payment.id: bad_invoice},
+        rollup_payments=[bad_payment],
+        vendor_by_payment={bad_payment.id: vendor_bad},
+    )
+
+    sensitive_message = "processor rejected account IBAN DE89370400440532013000"
+
+    async def _create_payment(payload):
+        raise RuntimeError(sensitive_message)
+
+    adapter = MagicMock()
+    adapter.provider_name = "mock"
+    adapter.create_payment = _create_payment
+
+    with (
+        patch("app.api.payments.get_payment_adapter", return_value=adapter),
+        patch("app.services.payment_erp_sync.dispatch_payment_sync", AsyncMock()),
+        patch("app.api.payments.transition_invoice", new_callable=AsyncMock),
+        patch(
+            "app.services.compliance.check_payment_compliance",
+            new_callable=AsyncMock,
+            return_value=_clear_compliance(),
+        ),
+        caplog.at_level(logging.WARNING, logger="app.api.payments"),
+    ):
+        await execute_payment_run(run_id=run.id, db=db, org=_org(), user=_user())
+
+    # The DB column: exact class-name-only shape, never the raw message.
+    assert bad_payment.failure_reason == "unexpected_error:RuntimeError"
+    assert sensitive_message not in bad_payment.failure_reason
+
+    # The log sink: the class name is logged, the raw message and any
+    # traceback text are not. `logger.exception`/`exc_info=True` would have
+    # attached the traceback (and therefore `sensitive_message`) regardless
+    # of what the format string names — catch that regression too.
+    full_log_text = "\n".join(r.getMessage() + (r.exc_text or "") for r in caplog.records)
+    assert "RuntimeError" in full_log_text
+    assert sensitive_message not in full_log_text
+    assert all(r.exc_info is None for r in caplog.records)
+
+
 @pytest.mark.asyncio
 async def test_each_payment_commits_durably_before_the_next_is_attempted():
     """The session must commit after EACH payment (not once for the whole

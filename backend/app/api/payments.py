@@ -1751,11 +1751,19 @@ async def _dispatch_run_payments(
             # Recording THIS payment as failed — instead of letting the
             # exception unwind the whole request — is what keeps the other
             # payments in this run from being lost to a rollback.
-            logger.exception(
-                "payment %s raised during payment-run dispatch; marking failed", payment.id
+            #
+            # Log the exception TYPE only, never `str(exc)` / `exc_info` — a
+            # live FX/sanctions/processor adapter can embed a partial account
+            # number, IBAN, or PAN in its error string, and that must never
+            # reach the log sink or this row (PII/banking-data-out-of-logs
+            # invariant). Mirrors `card_issuance.py` / `payment_erp_sync.py`.
+            logger.warning(
+                "payment %s raised during payment-run dispatch; marking failed: %s",
+                payment.id,
+                exc.__class__.__name__,
             )
             payment.status = "failed"
-            payment.failure_reason = f"unexpected_error: {exc}"
+            payment.failure_reason = f"unexpected_error:{exc.__class__.__name__}"
             payment.completed_at = now
 
         # Append-only audit trail for the money-movement event (project
@@ -2014,9 +2022,32 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
     """
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
+    from app.config import settings as app_settings
     from app.database import control_session_factory, get_tenant_engine
 
+    # Bound the body BEFORE buffering it. The HMAC check happens inside
+    # adapter.parse_webhook, well after this point, so an unauthenticated
+    # attacker could otherwise POST an arbitrarily large payload and have it
+    # read fully into memory before anything rejects it (memory-exhaustion
+    # DoS on a public route). Reject on the declared Content-Length when
+    # present, and re-check the actual read in case the header lied / was
+    # absent (chunked). Processor status payloads are small JSON; cap
+    # defaults to a few MB.
+    max_bytes = app_settings.payment_webhook_max_bytes
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > max_bytes:
+                logger.warning("Payment webhook rejected: body exceeds size cap")
+                return
+        except ValueError:
+            logger.warning("Payment webhook rejected: invalid content-length")
+            return
+
     body = await request.body()
+    if len(body) > max_bytes:
+        logger.warning("Payment webhook rejected: body exceeds size cap")
+        return
     headers = {k: v for k, v in request.headers.items()}
 
     # The `mock` adapter's `parse_webhook` performs NO signature verification
