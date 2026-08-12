@@ -630,6 +630,14 @@ gate entirely. A configured-but-unparseable threshold fails **closed** — the r
 is created `requires_cfo_approval=True` and the misconfiguration is logged
 (PII-free) for an admin to correct, rather than silently disabling the control.
 
+`PaymentRun.total_amount` is a single bare `Numeric` column with no currency
+of its own, so `create_payment_run_for_invoices` refuses (422) a batch whose
+invoices don't all share one currency — summing a USD and a EUR invoice into
+one total would misfire (or fail to fire) this gate on a face-value
+coincidence across currencies. Each `Payment` still settles independently in
+its own invoice's currency at execution time; this only constrains what one
+run can report a single total for.
+
 ### Financial-integrity exception gate
 
 Independently of the CFO threshold, `create_payment_run` refuses any invoice
