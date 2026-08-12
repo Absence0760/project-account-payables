@@ -78,7 +78,7 @@ extraction adapters properly is a real slice rather than a bolt-on.
 **Trigger:** a pilot tenant whose suppliers send PDF statements.
 Ref: [vendor-statement-reconciliation.md](../backend/docs/vendor-statement-reconciliation.md) § Deferred.
 
-### Mount-time double-fetch race — audit the sibling list pages
+### Mount-time double-fetch race — invoices/vendors' local-mutation bypass
 
 `frontend/src/lib/components/admin/UsersPanel.svelte` had two `$effect`s that
 both called `adminStore.fetchUsers()` on mount — the search-debounce effect
@@ -89,27 +89,44 @@ of the two fetches resolved last could silently clobber an optimistic
 create/delete with a stale snapshot — a real, user-visible race, not a test
 flake (root-caused and fixed via `/flake-doctor`, PR #286).
 
-The same search-effect-fires-on-mount *pattern* was found (grep, not
-independently verified) on several other list pages: `invoices`, `budgets`,
-`catalogs`, `contracts`, `expenses`, `purchase-orders`, `payments`, `intake`,
-`positive-pay`, `requisitions`, `vendor-statements`, `recurring`.
-`vendors/+page.svelte` already carries a fix for this exact class from a
-prior pass — these are the ones that may have regressed or never received
-it.
+An independently-verified `/bug-hunt` sibling sweep (each page's actual
+`$effect` blocks read, not just grepped) found the identical pattern —
+unguarded duplicate mount fetch + a local-only mutation splice with no
+sequencer — on four more pages, now fixed the same way (`searchEffectRan`
+guard): **`budgets`, `contracts`, `intake`, `recurring`**. Six other pages
+were checked and confirmed NOT at risk: `catalogs` and `expenses` only ever
+have one fetch-triggering effect; `purchase-orders` has the double-fetch
+shape but no local-mutation entry point yet (latent, not exploitable
+today); `payments`, `positive-pay`, `requisitions`, `vendor-statements` each
+have a request sequencer and/or route every mutation through a full
+sequencer-protected refetch, closing the race from a different angle.
 
-- [ ] For each page above: confirm the double-fetch actually exists (some may
-      already guard it, or use a single combined effect), and if so whether
-      it's genuinely user-visibly racy the way `admin/users` was (needs a
-      mutation — create/delete/edit — that can land while the redundant fetch
-      is in flight; a read-only list page with no local mutation isn't at
-      risk the same way). Fix only the ones that are real, same pattern as
-      `UsersPanel.svelte`'s `searchEffectRan` guard.
+**Still open — a narrower variant on `invoices` and `vendors`:** both pages
+already carry a request sequencer (`createRequestSequencer()`) that correctly
+resolves fetch-vs-fetch ordering, so the `UsersPanel`-style guard doesn't
+apply to them. But each has **local-mutation helpers that bypass the
+sequencer entirely**: `invoiceStore.update()` / `patchLocal()` (used by
+`InvoiceModal`'s save/approve/reject/file-attach) and `vendors/+page.svelte`'s
+`applyVendorUpdate()` (bank-detail edit, screening, risk-recompute,
+block/unblock) mutate the list directly without calling
+`fetchSequence.start()`. A still-in-flight mount-time fetch — the sequencer
+only drops it if a *newer sequenced fetch* supersedes it, which these local
+mutations never trigger — can resolve after one of these edits and overwrite
+it with a stale pre-edit snapshot.
 
-**Why deferred:** each page needs its own before/after mutation-count
-assertion to confirm it's actually racy before spending a fix on it — sweeping
-all twelve blind risks either false fixes or missed ones.
-**Trigger:** next `/flake-doctor` or `/bug-hunt` pass touching the frontend
-list pages, or a bug report on one of the sibling pages.
+- [ ] Route `invoiceStore.update()`/`patchLocal()` and
+      `vendors/+page.svelte`'s `applyVendorUpdate()` through the same
+      sequencer their pages already use (mark the local mutation as
+      superseding any in-flight fetch, or have it call
+      `fetchSequence.start()`/mark-latest before applying), so a stale
+      redundant fetch can never clobber a local edit either.
+
+**Why deferred:** this is a different code shape from the four just fixed
+(threading state through an existing sequencer rather than adding a mount
+guard) and touches two higher-traffic pages — worth its own focused pass
+rather than folding into the mechanical sibling-sweep fix.
+**Trigger:** next `/flake-doctor` or `/bug-hunt` pass touching `invoices` or
+`vendors`, or a bug report matching this symptom on either page.
 Ref: `reviews/flake-admin-users.md` (gitignored — regenerate via
 `/flake-doctor` if consulting this again after the file has aged out).
 
