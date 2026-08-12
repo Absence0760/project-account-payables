@@ -72,9 +72,23 @@
 		replaceState(`${url.pathname}${url.search}`, {});
 	}
 
+	// `searchEffectRan` skips this effect's own mount-time run: a Svelte
+	// `$effect` always fires once immediately regardless of whether its
+	// tracked value actually changed, so without the guard this queued a
+	// SECOND, redundant fetch ~300ms after the statusFilter effect below
+	// already loaded the page once. `contractStore.fetch()` replaces the
+	// list wholesale, so if a create/edit lands in that window, the
+	// delayed duplicate can resolve afterward and silently clobber it
+	// with a stale snapshot — same class of bug fixed in UsersPanel.svelte
+	// (#286).
 	let searchTimer: ReturnType<typeof setTimeout>;
+	let searchEffectRan = false;
 	$effect(() => {
 		search;
+		if (!searchEffectRan) {
+			searchEffectRan = true;
+			return;
+		}
 		clearTimeout(searchTimer);
 		searchTimer = setTimeout(() => {
 			syncUrl();
