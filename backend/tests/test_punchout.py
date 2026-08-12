@@ -429,3 +429,62 @@ async def test_tenant_isolation_session_not_visible_cross_tenant(realdb):
         sid = (await c.post(f"/api/catalogs/{cid}/punchout/start")).json()["session_id"]
     async with realdb.client(key="b", role="ap_manager") as c:
         assert (await c.get(f"/api/catalogs/punchout/sessions/{sid}")).status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Boot guard — a deployed env (FEOH_DEBUG=false) may not run a live punch-out
+# provider without a return-signing secret configured: `_verify_return_signature`
+# falls back to `bool(settings.debug)` when the secret is empty, which fails
+# closed today only because `settings.debug` defaults False — this guard makes
+# a misconfigured live deploy fail loudly at boot instead of silently rejecting
+# every supplier cart return. Mirrors the PEPPOL-inbound / email-intake /
+# billing boot guards in `app/main.py::lifespan`.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_boot_refuses_live_provider_without_return_secret(monkeypatch):
+    from app.config import settings
+    from app.main import lifespan
+
+    monkeypatch.setattr(settings, "debug", False)
+    monkeypatch.setattr(settings, "secret_key", "a-real-non-default-secret-value")
+    monkeypatch.setattr(settings, "punchout_provider", "cxml")
+    monkeypatch.setattr(settings, "punchout_return_signing_secret", "")
+
+    with pytest.raises(RuntimeError, match="FEOH_PUNCHOUT_RETURN_SIGNING_SECRET"):
+        async with lifespan(object()):  # pragma: no cover - never enters body
+            pass
+
+
+@pytest.mark.asyncio
+async def test_boot_allows_mock_provider_without_return_secret(monkeypatch):
+    """The documented local-first default: mock provider + no secret (both
+    defaults) must never trip the guard — a fresh `pnpm dev` clone boots fine."""
+    from app.config import settings
+    from app.main import lifespan
+
+    monkeypatch.setattr(settings, "debug", False)
+    monkeypatch.setattr(settings, "secret_key", "a-real-non-default-secret-value")
+    monkeypatch.setattr(settings, "punchout_provider", "mock")
+    monkeypatch.setattr(settings, "punchout_return_signing_secret", "")
+    monkeypatch.setattr(settings, "extraction_reaper_enabled", False)
+
+    async with lifespan(object()):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_boot_allows_live_provider_with_return_secret(monkeypatch):
+    """A deployed env with a real provider + secret configured is unaffected."""
+    from app.config import settings
+    from app.main import lifespan
+
+    monkeypatch.setattr(settings, "debug", False)
+    monkeypatch.setattr(settings, "secret_key", "a-real-non-default-secret-value")
+    monkeypatch.setattr(settings, "punchout_provider", "cxml")
+    monkeypatch.setattr(settings, "punchout_return_signing_secret", _DEV_SECRET)
+    monkeypatch.setattr(settings, "extraction_reaper_enabled", False)
+
+    async with lifespan(object()):
+        pass

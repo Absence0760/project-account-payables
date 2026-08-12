@@ -207,7 +207,10 @@ It mirrors the PEPPOL inbound webhook posture exactly:
   (`FEOH_PUNCHOUT_RETURN_SIGNING_SECRET`; verified via the shared
   `webhook_security.verify_hmac_sha256`). An empty secret falls back to
   `FEOH_DEBUG` (local-dev convenience — the BuyerCookie match is then the sole
-  gate); deployed envs set the real secret via sops,
+  gate); deployed envs set the real secret via sops. Boot refuses
+  (`app/main.py::lifespan`, `FEOH_DEBUG=false`) if `FEOH_PUNCHOUT_PROVIDER` is
+  live (non-`mock`) without the secret set — mirrors the PEPPOL-inbound boot
+  guard,
 - the tenant is in the **URL path** (never a spoofable header),
 - the **BuyerCookie** (in the body, cross-checked against the query string)
   correlates the cart to exactly one **pending** session — a redelivery onto an
@@ -221,7 +224,7 @@ It mirrors the PEPPOL inbound webhook posture exactly:
 |----------|---------|---------|
 | `FEOH_PUNCHOUT_PROVIDER` | `mock` | Adapter — `mock` (in-process default) \| `cxml`. Per-org override `Organization.settings.punchout.provider`. |
 | `FEOH_PUNCHOUT_SHARED_SECRET` | (empty) | cXML supplier credential — **no hardcoded fallback**; sops in deployed. Per-org override `…punchout.shared_secret`. |
-| `FEOH_PUNCHOUT_RETURN_SIGNING_SECRET` | (empty) | HMAC key the supplier signs the cart-return POST with. No hardcoded fallback; the committed `.env.development` sets a NON-secret dev value. |
+| `FEOH_PUNCHOUT_RETURN_SIGNING_SECRET` | (empty) | HMAC key the supplier signs the cart-return POST with — **no hardcoded fallback**; boot refuses if `FEOH_PUNCHOUT_PROVIDER` is live (non-`mock`) without it; the committed `.env.development` sets a NON-secret dev value. |
 | `FEOH_PUNCHOUT_RETURN_MAX_BYTES` | `4194304` | Hard cap on the cart-return body before parsing. |
 
 ## Frontend
