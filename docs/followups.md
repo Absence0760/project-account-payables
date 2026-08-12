@@ -78,6 +78,41 @@ extraction adapters properly is a real slice rather than a bolt-on.
 **Trigger:** a pilot tenant whose suppliers send PDF statements.
 Ref: [vendor-statement-reconciliation.md](../backend/docs/vendor-statement-reconciliation.md) § Deferred.
 
+### Mount-time double-fetch race — audit the sibling list pages
+
+`frontend/src/lib/components/admin/UsersPanel.svelte` had two `$effect`s that
+both called `adminStore.fetchUsers()` on mount — the search-debounce effect
+fired an unguarded duplicate ~250ms after the immediate one (a Svelte
+`$effect` always runs once on mount regardless of whether its tracked value
+changed). Because the store always *replaces* the list wholesale, whichever
+of the two fetches resolved last could silently clobber an optimistic
+create/delete with a stale snapshot — a real, user-visible race, not a test
+flake (root-caused and fixed via `/flake-doctor`, PR #286).
+
+The same search-effect-fires-on-mount *pattern* was found (grep, not
+independently verified) on several other list pages: `invoices`, `budgets`,
+`catalogs`, `contracts`, `expenses`, `purchase-orders`, `payments`, `intake`,
+`positive-pay`, `requisitions`, `vendor-statements`, `recurring`.
+`vendors/+page.svelte` already carries a fix for this exact class from a
+prior pass — these are the ones that may have regressed or never received
+it.
+
+- [ ] For each page above: confirm the double-fetch actually exists (some may
+      already guard it, or use a single combined effect), and if so whether
+      it's genuinely user-visibly racy the way `admin/users` was (needs a
+      mutation — create/delete/edit — that can land while the redundant fetch
+      is in flight; a read-only list page with no local mutation isn't at
+      risk the same way). Fix only the ones that are real, same pattern as
+      `UsersPanel.svelte`'s `searchEffectRan` guard.
+
+**Why deferred:** each page needs its own before/after mutation-count
+assertion to confirm it's actually racy before spending a fix on it — sweeping
+all twelve blind risks either false fixes or missed ones.
+**Trigger:** next `/flake-doctor` or `/bug-hunt` pass touching the frontend
+list pages, or a bug report on one of the sibling pages.
+Ref: `reviews/flake-admin-users.md` (gitignored — regenerate via
+`/flake-doctor` if consulting this again after the file has aged out).
+
 ---
 
 ## (a) Blocked on external credentials, accounts, or hardware
