@@ -113,7 +113,7 @@
 	// below already loaded the page once. `load()` replaces `budgets`
 	// wholesale, so if a create/edit lands in that window, the delayed
 	// duplicate can resolve afterward and silently clobber it with a stale
-	// snapshot — the same class of bug fixed in UsersPanel.svelte (#286).
+	// snapshot — the same class of bug fixed in UsersPanel.svelte.
 	let searchTimer: ReturnType<typeof setTimeout>;
 	let searchEffectRan = false;
 	$effect(() => {

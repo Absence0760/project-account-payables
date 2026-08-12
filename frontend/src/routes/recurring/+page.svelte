@@ -119,7 +119,7 @@
 	// below already loaded the page once. `load()` replaces `templates`
 	// wholesale, so if a create/edit lands in that window, the delayed
 	// duplicate can resolve afterward and silently clobber it with a
-	// stale snapshot — same class of bug fixed in UsersPanel.svelte (#286).
+	// stale snapshot — same class of bug fixed in UsersPanel.svelte.
 	let searchTimer: ReturnType<typeof setTimeout>;
 	let searchEffectRan = false;
 	$effect(() => {
