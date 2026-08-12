@@ -372,7 +372,7 @@ If the supplier portal is implemented, vendors can:
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/cards` | List virtual cards (filterable by status, vendor, date) |
-| `GET` | `/api/cards/{id}/details` | Get full card number + CVV (audit logged) |
+| `GET` | `/api/cards/{id}/details` | Get full card number + CVV (admin/ap_manager/cfo, audit logged — see § Security) |
 | `POST` | `/api/cards/generate` | Generate cards for selected invoices |
 | `POST` | `/api/cards/{id}/cancel` | Cancel an unused card |
 | `POST` | `/api/cards/webhook/{provider}` | Receive charge/settlement webhooks (public-by-design, HMAC-gated) |
@@ -403,6 +403,13 @@ yet — API-only, mirroring `/bank-reconciliation`.
 
 ## Security
 
+- **PAN-reveal role gate**: `GET /api/cards/{id}/details` is `require_roles(admin, ap_manager, cfo)`
+  at the route decorator — the single source of truth (matches every other
+  endpoint in `cards.py`, including the money-adjacent rebate `confirm`/
+  `mark-paid` mutations). `ap_clerk` is refused. This is consistent with the
+  read/write split elsewhere in the codebase (e.g. `positive_pay._READ_ROLES`
+  includes `cfo`, `_WRITE_ROLES` doesn't) — `cfo` gets read access to
+  sensitive financial data, including PAN reveal, as an oversight role.
 - Full card numbers are only shown on explicit request (with audit log entry)
 - Card details are never stored in our database — retrieved from provider on demand
 - **The vendor-facing PAN reveal is single-use under concurrency.**
