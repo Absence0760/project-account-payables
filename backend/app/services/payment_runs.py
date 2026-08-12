@@ -139,6 +139,25 @@ async def create_payment_run_for_invoices(
     if len(invoices) != len(invoice_ids):
         raise HTTPException(status_code=404, detail="One or more invoices not found")
 
+    # Refuse a run spanning more than one currency. `PaymentRun.total_amount`
+    # (and the CFO-threshold comparison below) is a single bare `Numeric`
+    # column with no currency of its own — summing a USD invoice and a EUR
+    # invoice into it would produce a number that isn't denominated in
+    # anything real, and could misfire (or fail to fire) the CFO gate on a
+    # face-value coincidence across currencies. Each `Payment` still settles
+    # independently in its own invoice's currency at execution time
+    # (`_execute_single_payment` reads `invoice.currency` per payment) — this
+    # only constrains what one BATCH can report a single total for.
+    currencies = {invoices[iid].currency or "USD" for iid in invoice_ids}
+    if len(currencies) > 1:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "All invoices in a payment run must share the same currency "
+                f"(found: {', '.join(sorted(currencies))})."
+            ),
+        )
+
     not_payable = [
         inv.invoice_number
         for inv in invoices.values()

@@ -76,9 +76,22 @@
 		void loadPos();
 	});
 
+	// `filterEffectRan` skips this effect's own mount-time run: a Svelte
+	// `$effect` always fires once immediately regardless of whether its
+	// tracked values actually changed, so without the guard this queued a
+	// SECOND, redundant `loadPos()` ~250ms after the effect above already
+	// loaded the page once. `loadPos()` replaces `pos` wholesale, so a
+	// `syncFromErp()` or `loadMore()` click inside that window could be
+	// overwritten by the delayed duplicate resolving afterward — same class
+	// of bug fixed in UsersPanel.svelte.
+	let filterEffectRan = false;
 	$effect(() => {
 		const q = search;
 		const s = statusFilter;
+		if (!filterEffectRan) {
+			filterEffectRan = true;
+			return;
+		}
 		if (searchTimer) clearTimeout(searchTimer);
 		searchTimer = setTimeout(() => {
 			void loadPos({ search: q, status: s });
