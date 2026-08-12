@@ -92,14 +92,17 @@ flake (root-caused and fixed via `/flake-doctor`, PR #286).
 An independently-verified `/bug-hunt` sibling sweep (each page's actual
 `$effect` blocks read, not just grepped) found the identical pattern —
 unguarded duplicate mount fetch + a local-only mutation splice with no
-sequencer — on four more pages, now fixed the same way (`searchEffectRan`
-guard): **`budgets`, `contracts`, `intake`, `recurring`**. Six other pages
-were checked and confirmed NOT at risk: `catalogs` and `expenses` only ever
-have one fetch-triggering effect; `purchase-orders` has the double-fetch
-shape but no local-mutation entry point yet (latent, not exploitable
-today); `payments`, `positive-pay`, `requisitions`, `vendor-statements` each
-have a request sequencer and/or route every mutation through a full
-sequencer-protected refetch, closing the race from a different angle.
+sequencer — on five more pages, now fixed the same way (a guard skipping
+the second effect's own mount-time run): **`budgets`, `contracts`, `intake`,
+`recurring`, and `purchase-orders`** (the last caught in code review, missed
+by the initial sweep — narrower blast radius since it's read-only/ERP-synced
+with no local-splice mutation, but `syncFromErp()`/`loadMore()` could still
+be overwritten by the delayed duplicate). Five other pages were checked and
+confirmed NOT at risk: `catalogs` and `expenses` only ever have one
+fetch-triggering effect; `payments`, `positive-pay`, `requisitions`,
+`vendor-statements` each have a request sequencer and/or route every
+mutation through a full sequencer-protected refetch, closing the race from
+a different angle.
 
 **Still open — a narrower variant on `invoices` and `vendors`:** both pages
 already carry a request sequencer (`createRequestSequencer()`) that correctly
