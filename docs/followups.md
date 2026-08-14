@@ -225,3 +225,29 @@ as oversights.
 
 ---
 
+## (c bis) Trust-boundary round — deferred
+
+### `tenantSlugUsage` vitest guard is red on `main`
+
+`frontend/src/lib/tenantSlugUsage.test.ts` asserts `InvoiceModal.svelte`
+contains `import { getTenantSlug }`. The modal no longer derives a tenant slug
+at all (it goes through `$lib/api`), so the guard fails on a file that is
+*more* correct than when the guard was written — a stale source-scan, not an
+app defect. **Durable fix:** narrow the guard to the sites that still build
+headers by hand, or drop the site from `SITES` if none remain.
+**Trigger:** next change touching `InvoiceModal.svelte` or the frontend unit
+suite (it is the only red test in `pnpm test:unit`).
+
+### Playwright cover for the `/profile` Signed-in devices panel
+
+Backend session visibility + revocation is covered by pytest
+(`tests/test_auth_sessions.py`, `tests/test_session_management.py`); the UI
+panel has no e2e. The natural spec — sign in twice, revoke-others from the
+second, confirm the first token bounces to `/login` — needs the full dev stack
+on the shared `:7777`/`:8000` ports, which was not safe to claim during a
+multi-session round. **Durable fix:** add
+`frontend/tests-e2e/auth/sessions.spec.ts` alongside `signout.spec.ts` (same
+fresh-sign-in `storageState` treatment — revocation invalidates the worker's
+cached JWT). **Trigger:** next e2e pass with the stack already up.
+
+---
