@@ -10,8 +10,12 @@ to forget, no partial coverage.
 What it does, in order:
   1. constructs the ``Exception`` row from the caller's fields,
   2. ``db.add()`` + ``flush()`` so the row has its server-side ``id`` (the
-     webhook ``event_key``, so a re-run dedupes on the exception id), and
-  3. fires a **best-effort** ``exception.raised`` emit — wrapped so a webhook
+     webhook ``event_key``, so a re-run dedupes on the exception id),
+  3. writes the append-only ``exception.raised`` ``audit_log`` row via
+     ``services/exception_lifecycle.record_raised`` — NOT best-effort: an
+     exception is a control event, and the mutable ``exceptions`` row is not
+     the SOX trail (see that module's docstring), and
+  4. fires a **best-effort** ``exception.raised`` emit — wrapped so a webhook
      failure can NEVER break exception creation or the invoice mutation that
      triggered it (same contract as the ``transition_invoice`` emit hook). The
      emit itself is a silent no-op when ``FEOH_WEBHOOKS_ENABLED`` is off.
@@ -76,6 +80,13 @@ async def create_exception(
     # event_key / dedupe key). Stays within the caller's transaction — a later
     # rollback in the caller still rolls this back too.
     await db.flush()
+
+    # Append-only control-event row. Written inside the caller's transaction so
+    # it rolls back with the exception it describes — an audit row for an
+    # exception that never existed would be worse than none.
+    from app.services.exception_lifecycle import record_raised
+
+    await record_raised(db, exception=exc, invoice=invoice)
 
     try:
         from app.services.webhooks import emit_exception_raised

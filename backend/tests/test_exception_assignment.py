@@ -38,6 +38,20 @@ def _capture_db():
     return db
 
 
+def _added_exception(db):
+    """The `Exception` row `_ensure_exception` persisted.
+
+    Creating an exception now adds TWO rows in one call — the exception itself
+    and its append-only `exception.raised` audit row (see
+    services/exception_lifecycle) — so a test must name which one it means
+    rather than reading whichever `db.add` happened to be last."""
+    from app.models.exception import Exception as APException
+
+    rows = [call.args[0] for call in db.add.call_args_list if isinstance(call.args[0], APException)]
+    assert len(rows) == 1, f"expected exactly one persisted Exception, got {len(rows)}"
+    return rows[0]
+
+
 def test_ensure_exception_writes_due_at_when_org_sla_set():
     from app.services.invoice_warnings import _ensure_exception
 
@@ -47,7 +61,7 @@ def test_ensure_exception_writes_due_at_when_org_sla_set():
 
     asyncio.run(_ensure_exception(db, inv, "fraud_flag", "warning", "x", org_settings=org_settings))
 
-    persisted = db.add.call_args.args[0]
+    persisted = _added_exception(db)
     assert persisted.due_at is not None
     # Within ~5s of (now + 4h) — wall-clock tolerance.
     delta = persisted.due_at - datetime.now(UTC)
@@ -67,7 +81,7 @@ def test_ensure_exception_per_type_sla_overrides_default():
     }
     asyncio.run(_ensure_exception(db, inv, "fraud_flag", "error", "x", org_settings=org_settings))
 
-    persisted = db.add.call_args.args[0]
+    persisted = _added_exception(db)
     delta = persisted.due_at - datetime.now(UTC)
     assert timedelta(hours=1, minutes=59) < delta < timedelta(hours=2, minutes=1)
 
@@ -81,7 +95,7 @@ def test_ensure_exception_no_sla_leaves_due_at_null():
     db = _capture_db()
     asyncio.run(_ensure_exception(db, inv, "duplicate", "warning", "x"))
 
-    persisted = db.add.call_args.args[0]
+    persisted = _added_exception(db)
     assert persisted.due_at is None
 
 
@@ -94,7 +108,7 @@ def test_ensure_exception_auto_assigns_user_when_routing_set():
     org_settings = {"exceptions": {"auto_assign_by_type": {"fraud_flag": str(target)}}}
     asyncio.run(_ensure_exception(db, inv, "fraud_flag", "warning", "x", org_settings=org_settings))
 
-    persisted = db.add.call_args.args[0]
+    persisted = _added_exception(db)
     assert persisted.assigned_to_user_id == target
 
 
@@ -108,7 +122,7 @@ def test_ensure_exception_skips_invalid_assignee_uuid():
     org_settings = {"exceptions": {"auto_assign_by_type": {"fraud_flag": "not-a-uuid"}}}
 
     asyncio.run(_ensure_exception(db, inv, "fraud_flag", "warning", "x", org_settings=org_settings))
-    persisted = db.add.call_args.args[0]
+    persisted = _added_exception(db)
     assert persisted.assigned_to_user_id is None
 
 
