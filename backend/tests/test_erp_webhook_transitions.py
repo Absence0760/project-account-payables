@@ -69,7 +69,16 @@ def _fake_tenant_session_factory(invoice, *, existing_recon_count: int = 0):
     re-fetch via ``get_invoice_for_update`` (issue #141) — both returning the
     same invoice; the reconciliation path issues a THIRD ``execute`` — the
     open-``erp_reconciliation``-exception dedup count — which returns
-    ``existing_recon_count``."""
+    ``existing_recon_count``.
+
+    The ``side_effect`` list is exact, so a stand-in invoice that omits a field
+    a real ``Invoice`` always carries can silently add a fourth ``execute`` and
+    exhaust it — the handler swallows the resulting error and the test fails on
+    a missing commit rather than on the real cause. Every invoice stand-in in
+    this file therefore carries ``correlation_id``: it is what the exception's
+    ``exception.raised`` audit row files under (services/exception_lifecycle),
+    and the fallback lookup only exists for the invoice-less / id-only callers.
+    """
     invoice_result = MagicMock()
     invoice_result.scalar_one_or_none = MagicMock(return_value=invoice)
     count_result = MagicMock()
@@ -188,7 +197,9 @@ async def test_forbidden_void_while_advanced_opens_reconciliation_exception(fake
     from app.models.exception import Exception as APException
 
     org = _org_with_erp_secret("erp-secret")
-    invoice = SimpleNamespace(id=uuid.uuid4(), status=InvoiceStatus.posted_in_erp)
+    invoice = SimpleNamespace(
+        id=uuid.uuid4(), correlation_id=uuid.uuid4(), status=InvoiceStatus.posted_in_erp
+    )
 
     result, db, transition_calls = await _post(
         org=org, invoice=invoice, status_value="voided", event_id="ev_void"
@@ -223,7 +234,9 @@ async def test_forbidden_void_skips_when_open_reconciliation_exists(fake_redis):
     from app.models.exception import Exception as APException
 
     org = _org_with_erp_secret("erp-secret")
-    invoice = SimpleNamespace(id=uuid.uuid4(), status=InvoiceStatus.payment_scheduled)
+    invoice = SimpleNamespace(
+        id=uuid.uuid4(), correlation_id=uuid.uuid4(), status=InvoiceStatus.payment_scheduled
+    )
 
     result, db, transition_calls = await _post(
         org=org,
@@ -249,14 +262,18 @@ async def test_void_redelivery_is_event_deduped_no_second_exception(fake_redis):
 
     org = _org_with_erp_secret("erp-secret")
 
-    first_inv = SimpleNamespace(id=uuid.uuid4(), status=InvoiceStatus.paid)
+    first_inv = SimpleNamespace(
+        id=uuid.uuid4(), correlation_id=uuid.uuid4(), status=InvoiceStatus.paid
+    )
     r1, db1, _ = await _post(org=org, invoice=first_inv, status_value="voided", event_id="ev_dup")
     assert r1 is None
     added1 = [a.args[0] for a in db1.add.call_args_list if isinstance(a.args[0], APException)]
     assert len(added1) == 1  # first delivery flags it
 
     # Redelivery with the same event id → deduped before the tenant DB is opened.
-    second_inv = SimpleNamespace(id=uuid.uuid4(), status=InvoiceStatus.paid)
+    second_inv = SimpleNamespace(
+        id=uuid.uuid4(), correlation_id=uuid.uuid4(), status=InvoiceStatus.paid
+    )
     r2, db2, _ = await _post(org=org, invoice=second_inv, status_value="voided", event_id="ev_dup")
     assert r2 is None
     db2.add.assert_not_called()  # never reached exception creation
@@ -270,7 +287,9 @@ async def test_forbidden_nonvoid_transition_is_pure_silent_204(fake_redis):
     is a NON-void forbidden transition it must stay a PURE silent no-op — no
     transition AND no reconciliation exception (that would be noise)."""
     org = _org_with_erp_secret("erp-secret")
-    invoice = SimpleNamespace(id=uuid.uuid4(), status=InvoiceStatus.posted_in_erp)
+    invoice = SimpleNamespace(
+        id=uuid.uuid4(), correlation_id=uuid.uuid4(), status=InvoiceStatus.posted_in_erp
+    )
 
     result, db, transition_calls = await _post(
         org=org, invoice=invoice, status_value="paidInFull", event_id="ev_paid"
@@ -443,7 +462,9 @@ async def test_dedup_claim_released_when_transition_raises(fake_redis):
     from app.services.webhook_security import is_event_already_processed
 
     org = _org_with_erp_secret("erp-secret")
-    invoice = SimpleNamespace(id=uuid.uuid4(), status=InvoiceStatus.sent_to_erp)
+    invoice = SimpleNamespace(
+        id=uuid.uuid4(), correlation_id=uuid.uuid4(), status=InvoiceStatus.sent_to_erp
+    )
 
     tenant_factory, db = _fake_tenant_session_factory(invoice)
 
@@ -491,7 +512,9 @@ async def test_invoice_fetch_uses_row_lock(fake_redis):
     from app.api.erp_webhook import erp_webhook
 
     org = _org_with_erp_secret("erp-secret")
-    invoice = SimpleNamespace(id=uuid.uuid4(), status=InvoiceStatus.sent_to_erp)
+    invoice = SimpleNamespace(
+        id=uuid.uuid4(), correlation_id=uuid.uuid4(), status=InvoiceStatus.sent_to_erp
+    )
     tenant_factory, db = _fake_tenant_session_factory(invoice)
 
     async def _capture(_db, inv, target, *, action_name, details):
