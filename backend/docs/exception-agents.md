@@ -5,6 +5,10 @@ either auto-resolves it (mutating the invoice through the same audited path a
 human would use) or escalates it to a human. Tenant-scoped, append-only
 decision log, local-first (no LLM key required), opt-in per org.
 
+The queue spine both agents and humans run on — how an exception is opened,
+routed and closed, and the append-only `exception.*` audit rows every one of
+those events writes — is [exception-lifecycle.md](exception-lifecycle.md).
+
 **Status:** two fully-implemented resolvers for `po_mismatch` (small amount
 mismatch + missing-PO auto-link) behind one dispatcher, plus a GL-coding resolver
 for `missing_data` behind its own dispatcher; the remaining exception types are
@@ -98,9 +102,19 @@ mutates state itself.
    untouched), commit, return.
 3. `resolver.evaluate(...)` → `AgentEvaluation`.
 4. `can_resolve = recommended == auto_resolved AND confidence >= threshold`.
-   - If yes: `resolver.apply(...)` (writes audit rows), mark the exception
-     `resolved` (with `time_to_resolution_seconds`, `resolved_by = "AP Agent"`).
-   - If no: set exception `status = escalated`.
+   - If yes: `resolver.apply(...)` (writes audit rows), then resolve the
+     exception through the **shared** queue chokepoint
+     `services/exception_lifecycle.record_decision` — the same one
+     `api/exceptions` uses — which stamps `time_to_resolution_seconds` +
+     `resolved_by = "AP Agent"` and writes the append-only
+     `exception.resolved` row (`via: "agent"`, `actor_id` = the human who
+     triggered the run).
+   - If no: escalate through that same chokepoint (`exception.escalated`).
+     The evaluation rationale lands on the exception row, so the human picking
+     it up reads why in the queue, not only in the `AgentDecision` log.
+     Escalation deliberately does NOT stamp `resolved_by` / `resolved_at` — see
+     [exception-lifecycle.md](exception-lifecycle.md) § Escalation is not a
+     resolution.
    - If `apply` raises `NotApprovable` (invoice not in `ready_for_review`):
      downgrade to `escalated`, nothing was committed.
 5. Persist one `AgentDecision`, commit.

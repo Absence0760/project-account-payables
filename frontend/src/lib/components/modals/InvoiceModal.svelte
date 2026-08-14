@@ -73,6 +73,15 @@
 		'invoice.file_deleted': 'invoices.modal.action.fileDeleted',
 		'audit.viewed': 'invoices.modal.action.auditViewed',
 		'audit.exported': 'invoices.modal.action.auditExported',
+		// Exception-queue events. They are correlation-keyed to the invoice
+		// (backend services/exception_lifecycle), so they arrive in this same
+		// timeline — a raised duplicate / fraud flag is why the invoice stalled,
+		// and clearing it is what let it move.
+		'exception.raised': 'invoices.modal.action.exceptionRaised',
+		'exception.resolved': 'invoices.modal.action.exceptionResolved',
+		'exception.escalated': 'invoices.modal.action.exceptionEscalated',
+		'exception.dismissed': 'invoices.modal.action.exceptionDismissed',
+		'exception.assigned': 'invoices.modal.action.exceptionAssigned',
 		'chat_message_posted': 'invoices.modal.action.chatPosted',
 		'chat_thread_resolved': 'invoices.modal.action.chatResolved',
 		'chat_thread_reopened': 'invoices.modal.action.chatReopened',

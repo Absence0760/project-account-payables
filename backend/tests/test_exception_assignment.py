@@ -1,7 +1,7 @@
 """Tests for the exception-queue improvements:
   - SLA + auto-assignment baked in at creation (`_ensure_exception`)
-  - `_apply_resolution` computes time_to_resolution_seconds in
-    terminal states only
+  - `exception_lifecycle.apply_resolution` computes
+    time_to_resolution_seconds in terminal states only
   - Response shape (`_exception_dict`) carries SLA + overdue flags
 
 End-to-end coverage of the new endpoints (assign, bulk/resolve) lives
@@ -38,6 +38,20 @@ def _capture_db():
     return db
 
 
+def _added_exception(db):
+    """The `Exception` row `_ensure_exception` persisted.
+
+    Creating an exception now adds TWO rows in one call — the exception itself
+    and its append-only `exception.raised` audit row (see
+    services/exception_lifecycle) — so a test must name which one it means
+    rather than reading whichever `db.add` happened to be last."""
+    from app.models.exception import Exception as APException
+
+    rows = [call.args[0] for call in db.add.call_args_list if isinstance(call.args[0], APException)]
+    assert len(rows) == 1, f"expected exactly one persisted Exception, got {len(rows)}"
+    return rows[0]
+
+
 def test_ensure_exception_writes_due_at_when_org_sla_set():
     from app.services.invoice_warnings import _ensure_exception
 
@@ -47,7 +61,7 @@ def test_ensure_exception_writes_due_at_when_org_sla_set():
 
     asyncio.run(_ensure_exception(db, inv, "fraud_flag", "warning", "x", org_settings=org_settings))
 
-    persisted = db.add.call_args.args[0]
+    persisted = _added_exception(db)
     assert persisted.due_at is not None
     # Within ~5s of (now + 4h) — wall-clock tolerance.
     delta = persisted.due_at - datetime.now(UTC)
@@ -67,7 +81,7 @@ def test_ensure_exception_per_type_sla_overrides_default():
     }
     asyncio.run(_ensure_exception(db, inv, "fraud_flag", "error", "x", org_settings=org_settings))
 
-    persisted = db.add.call_args.args[0]
+    persisted = _added_exception(db)
     delta = persisted.due_at - datetime.now(UTC)
     assert timedelta(hours=1, minutes=59) < delta < timedelta(hours=2, minutes=1)
 
@@ -81,7 +95,7 @@ def test_ensure_exception_no_sla_leaves_due_at_null():
     db = _capture_db()
     asyncio.run(_ensure_exception(db, inv, "duplicate", "warning", "x"))
 
-    persisted = db.add.call_args.args[0]
+    persisted = _added_exception(db)
     assert persisted.due_at is None
 
 
@@ -94,7 +108,7 @@ def test_ensure_exception_auto_assigns_user_when_routing_set():
     org_settings = {"exceptions": {"auto_assign_by_type": {"fraud_flag": str(target)}}}
     asyncio.run(_ensure_exception(db, inv, "fraud_flag", "warning", "x", org_settings=org_settings))
 
-    persisted = db.add.call_args.args[0]
+    persisted = _added_exception(db)
     assert persisted.assigned_to_user_id == target
 
 
@@ -108,7 +122,7 @@ def test_ensure_exception_skips_invalid_assignee_uuid():
     org_settings = {"exceptions": {"auto_assign_by_type": {"fraud_flag": "not-a-uuid"}}}
 
     asyncio.run(_ensure_exception(db, inv, "fraud_flag", "warning", "x", org_settings=org_settings))
-    persisted = db.add.call_args.args[0]
+    persisted = _added_exception(db)
     assert persisted.assigned_to_user_id is None
 
 
@@ -126,11 +140,11 @@ def test_ensure_exception_no_op_when_already_open():
     db.add.assert_not_called()
 
 
-# ---------- _apply_resolution: time-to-resolution computation -------------
+# ---------- apply_resolution: time-to-resolution computation --------------
 
 
 def _exception(*, status="open", created_at=None):
-    """Stand-in with the columns _apply_resolution touches."""
+    """Stand-in with the columns apply_resolution touches."""
     return SimpleNamespace(
         id=uuid.uuid4(),
         status=status,
@@ -143,10 +157,10 @@ def _exception(*, status="open", created_at=None):
 
 
 def test_apply_resolution_resolved_writes_time_to_resolution():
-    from app.api.exceptions import _apply_resolution
+    from app.services.exception_lifecycle import apply_resolution
 
     exc = _exception(created_at=datetime.now(UTC) - timedelta(hours=2, minutes=30))
-    _apply_resolution(exc, "resolve", "rule tuned", "Demo Admin")
+    apply_resolution(exc, "resolve", "rule tuned", "Demo Admin")
 
     assert exc.status == "resolved"
     assert exc.resolved_by == "Demo Admin"
@@ -156,10 +170,10 @@ def test_apply_resolution_resolved_writes_time_to_resolution():
 
 def test_apply_resolution_dismissed_writes_time_to_resolution():
     """Dismiss is a terminal state too — the SLA clock stops here."""
-    from app.api.exceptions import _apply_resolution
+    from app.services.exception_lifecycle import apply_resolution
 
     exc = _exception(created_at=datetime.now(UTC) - timedelta(hours=1))
-    _apply_resolution(exc, "dismiss", "false positive", "Demo Admin")
+    apply_resolution(exc, "dismiss", "false positive", "Demo Admin")
     assert exc.status == "dismissed"
     assert exc.time_to_resolution_seconds is not None
 
@@ -167,14 +181,33 @@ def test_apply_resolution_dismissed_writes_time_to_resolution():
 def test_apply_resolution_escalate_does_not_close_sla_clock():
     """Escalation is intermediate — the original SLA still applies
     once a downstream resolver acts. Don't burn the
-    time_to_resolution slot."""
-    from app.api.exceptions import _apply_resolution
+    time_to_resolution slot, and don't claim the row was resolved:
+    a still-open exception advertising a resolver + a resolution
+    timestamp misleads an auditor. Who escalated and when lives on
+    the immutable `exception.escalated` audit row instead."""
+    from app.services.exception_lifecycle import apply_resolution
 
     exc = _exception(created_at=datetime.now(UTC) - timedelta(hours=1))
-    _apply_resolution(exc, "escalate", "needs CFO", "Demo Manager")
+    apply_resolution(exc, "escalate", "needs CFO", "Demo Manager")
 
     assert exc.status == "escalated"
     assert exc.time_to_resolution_seconds is None
+    # The reason IS kept — the next human reads it in the queue.
+    assert exc.resolution == "needs CFO"
+    assert exc.resolved_by is None
+    assert exc.resolved_at is None
+
+
+def test_apply_resolution_rejects_unknown_action():
+    """The service raises ValueError; the API layer maps it to 400."""
+    import pytest
+
+    from app.services.exception_lifecycle import apply_resolution
+
+    exc = _exception()
+    with pytest.raises(ValueError, match="Unknown action"):
+        apply_resolution(exc, "obliterate", "x", "Demo Admin")
+    assert exc.status == "open", "a rejected action must not half-mutate the row"
 
 
 # ---------- _exception_dict: SLA / overdue surface ------------------------

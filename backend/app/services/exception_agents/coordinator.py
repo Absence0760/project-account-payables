@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -23,8 +22,13 @@ from app.services.exception_agents.base import (
 )
 from app.services.exception_agents.registry import get_resolver
 from app.services.exception_agents.resolvers.amount_mismatch import NotApprovable
+from app.services.exception_lifecycle import record_decision
 
 logger = logging.getLogger(__name__)
+
+#: What the queue shows as `resolved_by` for an agent decision. The audit row's
+#: `actor_id` still names the human who triggered the run.
+AGENT_ACTOR_NAME = "AP Agent"
 
 
 class ExceptionNotActionable(Exception):  # noqa: N818
@@ -63,9 +67,12 @@ async def run_agent(
       3. resolver.evaluate(...) → AgentEvaluation (no mutation).
       4. If recommended==auto_resolved AND confidence >= threshold:
            resolver.apply(...) mutates + writes audit_log rows;
-           mark the exception resolved (writes time_to_resolution).
+           resolve the exception through the SHARED queue chokepoint
+           (services/exception_lifecycle.record_decision — the same one the
+           human queue uses, so bookkeeping and the append-only
+           `exception.resolved` audit row can't drift between the two).
          else:
-           escalate the exception (status=escalated).
+           escalate through that same chokepoint (status=escalated).
       5. Persist ONE AgentDecision row (always) and commit.
     """
     # Serialize concurrent runs on the same exception: take a row lock and
@@ -130,7 +137,13 @@ async def run_agent(
     # guarantees actor_roles is populated before any resolver.apply runs, so the
     # leaf resolvers thread it straight through without a hardcoded fallback.
     if can_resolve and not actor_roles:
-        exception.status = "escalated"
+        await _escalate(
+            db,
+            exception,
+            invoice,
+            actor_id,
+            "Auto-resolution withheld: the triggering actor's roles are unknown.",
+        )
         decision = _record(
             db,
             exception,
@@ -168,7 +181,13 @@ async def run_agent(
                 invoice.id,
                 exc.status,
             )
-            exception.status = "escalated"
+            await _escalate(
+                db,
+                exception,
+                invoice,
+                actor_id,
+                f"Could not auto-approve: invoice is '{exc.status}', not ready_for_review.",
+            )
             decision = _record(
                 db,
                 exception,
@@ -186,10 +205,26 @@ async def run_agent(
             await db.commit()
             return AgentRunResult(decision=decision, exception=exception)
 
-        _mark_exception_resolved(exception, evaluation.rationale)
+        await record_decision(
+            db,
+            exception=exception,
+            action="resolve",
+            resolution=evaluation.rationale or "Auto-resolved by the AP agent.",
+            actor_id=actor_id,
+            actor_name=AGENT_ACTOR_NAME,
+            invoice=invoice,
+            via="agent",
+        )
         action = ACTION_AUTO_RESOLVED
     else:
-        exception.status = "escalated"
+        await _escalate(
+            db,
+            exception,
+            invoice,
+            actor_id,
+            evaluation.rationale
+            or "Confidence below the org's autonomy threshold; escalated to a human.",
+        )
         action = ACTION_ESCALATED
 
     decision = _record(
@@ -207,16 +242,29 @@ async def run_agent(
     return AgentRunResult(decision=decision, exception=exception)
 
 
-def _mark_exception_resolved(exc: APException, rationale: str) -> None:
-    """Mirror api/exceptions._apply_resolution for the terminal-state bookkeeping
-    so agent resolutions and human resolutions look identical to the queue."""
-    now = datetime.now(UTC)
-    exc.status = "resolved"
-    exc.resolution = rationale
-    exc.resolved_by = "AP Agent"
-    exc.resolved_at = now
-    if exc.created_at is not None:
-        exc.time_to_resolution_seconds = int((now - exc.created_at).total_seconds())
+async def _escalate(
+    db: AsyncSession,
+    exception: APException,
+    invoice: Invoice,
+    actor_id: uuid.UUID,
+    rationale: str,
+) -> None:
+    """Escalate through the shared queue chokepoint.
+
+    Same bookkeeping + append-only audit row a human escalation writes — which
+    also means the rationale now lands on the exception row itself, so the human
+    picking the escalation up reads WHY in the queue instead of only in the
+    AgentDecision log."""
+    await record_decision(
+        db,
+        exception=exception,
+        action="escalate",
+        resolution=rationale,
+        actor_id=actor_id,
+        actor_name=AGENT_ACTOR_NAME,
+        invoice=invoice,
+        via="agent",
+    )
 
 
 def _record(
