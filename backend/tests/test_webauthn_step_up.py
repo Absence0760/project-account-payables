@@ -380,7 +380,7 @@ async def test_step_up_assertion_cannot_be_replayed_as_a_login():
                 body=WebAuthnAuthFinishRequest(
                     challenge_token=mfa.create_challenge_token(user.id), credential=assertion
                 ),
-                request=SimpleNamespace(client=SimpleNamespace(host="1.2.3.4")),
+                request=SimpleNamespace(client=SimpleNamespace(host="1.2.3.4"), headers={}),
                 db=_LoginVerifyDB(user=user, cred=cred),
             )
     assert exc.value.status_code == 401
@@ -405,7 +405,7 @@ async def test_login_assertion_cannot_satisfy_a_step_up():
     ):
         login_start = await auth_mod.passkey_authenticate_start(
             body=WebAuthnAuthStartRequest(challenge_token=mfa.create_challenge_token(user.id)),
-            request=SimpleNamespace(client=SimpleNamespace(host="1.2.3.4")),
+            request=SimpleNamespace(client=SimpleNamespace(host="1.2.3.4"), headers={}),
             db=db,
         )
         login_assertion = json.loads(

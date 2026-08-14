@@ -410,7 +410,13 @@ async def saml_acs(request: Request, db: AsyncSession = Depends(get_control_db))
     user = await jit_provision(db, org, email, sub, config.provider, {"name": name})
 
     token, jti = create_access_token_with_jti(user.id, user.organization_id)
-    await register_session(user.id, jti)
+    await register_session(
+        user.id,
+        jti,
+        ip=ip,
+        user_agent=request.headers.get("user-agent"),
+        method=f"saml:{config.provider}",
+    )
     await dispatch_auth_audit(
         organization_id=org.id,
         actor_id=user.id,

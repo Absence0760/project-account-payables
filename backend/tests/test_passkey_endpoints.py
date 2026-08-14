@@ -94,7 +94,7 @@ async def test_passkey_authenticate_start_refused_when_master_switch_off():
     from app.schemas.auth import WebAuthnAuthStartRequest
 
     db = AsyncMock()
-    req = SimpleNamespace(client=SimpleNamespace(host="1.2.3.4"))
+    req = SimpleNamespace(client=SimpleNamespace(host="1.2.3.4"), headers={})
     with (
         patch("app.api.auth.settings.mfa_enabled", False),
         patch("app.api.auth.check_rate_limit", new=AsyncMock()),
@@ -185,7 +185,7 @@ async def test_full_passkey_register_then_authenticate(_pin_settings_and_redis):
         # 3. authenticate start → options for the stored credential
         auth_start = await auth_mod.passkey_authenticate_start(
             body=WebAuthnAuthStartRequest(challenge_token=challenge_token),
-            request=SimpleNamespace(client=SimpleNamespace(host="1.2.3.4")),
+            request=SimpleNamespace(client=SimpleNamespace(host="1.2.3.4"), headers={}),
             db=auth_db,
         )
         assertion = soft.get(_challenge_from_options(json.dumps(auth_start.options)))
@@ -196,7 +196,7 @@ async def test_full_passkey_register_then_authenticate(_pin_settings_and_redis):
             body=WebAuthnAuthFinishRequest(
                 challenge_token=challenge_token, credential=json.loads(assertion)
             ),
-            request=SimpleNamespace(client=SimpleNamespace(host="1.2.3.4")),
+            request=SimpleNamespace(client=SimpleNamespace(host="1.2.3.4"), headers={}),
             db=verify_db,
         )
 
@@ -250,7 +250,7 @@ async def test_authenticate_verify_unknown_credential_is_401(_pin_settings_and_r
                     challenge_token=challenge_token,
                     credential={"id": "deadbeef", "rawId": "deadbeef", "response": {}},
                 ),
-                request=SimpleNamespace(client=SimpleNamespace(host="1.2.3.4")),
+                request=SimpleNamespace(client=SimpleNamespace(host="1.2.3.4"), headers={}),
                 db=db,
             )
     assert exc.value.status_code == 401

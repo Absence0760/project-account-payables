@@ -88,8 +88,8 @@ async def test_login_success_writes_audit_and_registers_session():
     async def _fake_audit(**kwargs):
         calls.append(kwargs)
 
-    async def _fake_register(user_id, jti):
-        calls.append({"register_session": (user_id, jti)})
+    async def _fake_register(user_id, jti, **kwargs):
+        calls.append({"register_session": (user_id, jti), "session_meta": kwargs})
 
     with (
         patch.object(auth_mod, "dispatch_auth_audit", _fake_audit),
@@ -227,8 +227,8 @@ async def test_mfa_verify_success_writes_audit_and_registers_session():
     async def _fake_audit(**kwargs):
         calls.append(kwargs)
 
-    async def _fake_register(user_id, jti):
-        calls.append({"register_session": (user_id, jti)})
+    async def _fake_register(user_id, jti, **kwargs):
+        calls.append({"register_session": (user_id, jti), "session_meta": kwargs})
 
     challenge = mfa_svc.create_challenge_token(user.id)
     code = pyotp.TOTP(user.mfa_secret).now()
