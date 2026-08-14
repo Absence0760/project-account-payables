@@ -34,15 +34,24 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#251](https://github.com/Absence0760/project-account-payables/issues/251)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-08-10 against `9d9daabb`. Closed since the prior pass:
-the AI Cash-Flow Copilot Phase 3 core (draft-run / capture-discounts / enact
-affordance — shipped in #258, only its already-deferred sub-bucket remains
-below), the i18n date-localization slice (shipped in #258 — verified zero
-remaining `toLocaleDateString` call sites outside `utils/time.ts`), all three
-in-source TODOs (verified removed from source), and all three diagnosed
-defects in [known-issues.md](known-issues.md) (all now fixed/resolved — the
-"Diagnosed defects awaiting a fix" section is retired until something new
-lands there).
+**Last reconciled:** 2026-08-14 against `improve-round-critical-areas`. Closed
+since the prior pass: the whole **Money path** batch (all eight items — entity
+scope on every by-id payment/run route, the `pending_compliance` UI dead end,
+run failure visibility + retry, credit-memo netting on the standalone path,
+the draft-run Positive Pay guard, bank matching on status + currency, statement
+upload idempotency + size cap, and the one-payment-one-bank-transaction unique
+index in migration `0081`) and the whole **Trust-boundary** batch (the stale
+`tenantSlugUsage` guard, and Playwright cover for the `/profile` Signed-in
+devices panel). Nothing from either was carried forward.
+
+Closed in the pass before that: the AI Cash-Flow Copilot Phase 3 core
+(draft-run / capture-discounts / enact affordance — shipped in #258, only its
+already-deferred sub-bucket remains below), the i18n date-localization slice
+(shipped in #258 — verified zero remaining `toLocaleDateString` call sites
+outside `utils/time.ts`), all three in-source TODOs (verified removed from
+source), and all three diagnosed defects in
+[known-issues.md](known-issues.md) (all now fixed/resolved — the "Diagnosed
+defects awaiting a fix" section is retired until something new lands there).
 
 ---
 
@@ -223,107 +232,3 @@ as oversights.
       header documents the full rationale.
       **Trigger:** when regenerating locks by hand becomes a recurring
       irritation — not on any fixed schedule.
-
----
-
-## (c bis) Trust-boundary round — deferred
-
-### `tenantSlugUsage` vitest guard is red on `main`
-
-`frontend/src/lib/tenantSlugUsage.test.ts` asserts `InvoiceModal.svelte`
-contains `import { getTenantSlug }`. The modal no longer derives a tenant slug
-at all (it goes through `$lib/api`), so the guard fails on a file that is
-*more* correct than when the guard was written — a stale source-scan, not an
-app defect. **Durable fix:** narrow the guard to the sites that still build
-headers by hand, or drop the site from `SITES` if none remain.
-**Trigger:** next change touching `InvoiceModal.svelte` or the frontend unit
-suite (it is the only red test in `pnpm test:unit`).
-
-### Playwright cover for the `/profile` Signed-in devices panel
-
-Backend session visibility + revocation is covered by pytest
-(`tests/test_auth_sessions.py`, `tests/test_session_management.py`); the UI
-panel has no e2e. The natural spec — sign in twice, revoke-others from the
-second, confirm the first token bounces to `/login` — needs the full dev stack
-on the shared `:7777`/`:8000` ports, which was not safe to claim during a
-multi-session round. **Durable fix:** add
-`frontend/tests-e2e/auth/sessions.spec.ts` alongside `signout.spec.ts` (same
-fresh-sign-in `storageState` treatment — revocation invalidates the worker's
-cached JWT). **Trigger:** next e2e pass with the stack already up.
-
----
-
-## Money path — surfaced by an `/improve-round` survey, not yet fixed
-
-Each was verified by reading the code; none is speculative. Grouped here so
-they are picked up as a batch rather than rediscovered one at a time.
-
-- [ ] **Entity scope missing on every payment detail/mutation route.**
-      `api/payments.py` scopes list / queue / summary / counts / runs-list /
-      run-create by `X-Entity-ID`, but `get_payment`, `void_payment`, the two
-      compliance handlers, `get_payment_run`, `approve`, `cancel`, `execute`
-      and `resume` are all unscoped — so a user with entity A selected can act
-      on entity B's money by id. Same tenant, different subsidiary. **Durable
-      fix:** a `_get_scoped_*` helper applying `apply_entity_scope`, mirroring
-      `api/positive_pay.py::_get_scoped_file` which already does this on the
-      sibling treasury router. **Trigger:** next round touching
-      `api/payments.py`; treat as the highest-priority item here.
-- [ ] **`pending_compliance` is a dead end in the UI.** The status is absent
-      from `frontend/src/lib/types/payment.ts`, so it has no chip, no filter
-      and renders as a blank badge; `canVoid()` excludes it; and the two
-      purpose-built exits (`POST /payments/{id}/compliance/{release,dismiss}`)
-      have zero frontend callers. Meanwhile the invoice stays `approved` and
-      re-enters the queue, but `uq_payments_one_live_per_invoice` rejects a new
-      run for it with a message naming no invoice. **Durable fix:** add the
-      status to the frontend enum + chips, wire the two endpoints into the
-      payment row's actions, and name the offending invoices in the 409.
-- [ ] **A payment run doesn't show why anything failed, and there is no
-      retry.** `failure_reason` exists on the model and is populated on every
-      failure path, but is absent from `PaymentResponse` and the run-detail
-      payload; the partial-failure counts are only a transient toast; `partial`
-      / `executing` / `cancelled` are missing from `PaymentRunStatus`.
-      **Durable fix:** add `failure_reason` (+ `submitted_at` /
-      `completed_at` / `provider`) to the read surface, persist the run rollup,
-      complete the status enum, and add a per-run "retry the failed ones".
-- [ ] **`POST /api/payments` (standalone) ignores applied credit memos.**
-      `services/payment_runs.py` nets them (`inv.amount - already_applied`);
-      the standalone endpoint pays `invoice.amount` and 422s any other amount,
-      so the correct net figure cannot be submitted. Currently unreachable (no
-      client calls it) but documented in `api-reference.md`. **Durable fix:**
-      route it through the same netting helper.
-- [ ] **Positive Pay check-issue file can be generated for a *draft* run.**
-      `generate_check_issue` never checks `run.status`; on a draft every
-      payment is `pending` with `reference IS NULL`, so `issued_map` persists
-      empty — and the endpoint is idempotent per `(run, bank_format)`, so it
-      can't be regenerated after execution. `POST /{id}/process-return` then
-      classifies every presented cheque `not_on_file` → a flood of false
-      `fraud_flag` exceptions on real payments. **Durable fix:** 422 when
-      `run.executed_at is None`, and filter the picker in
-      `PositivePayModal.svelte` to executed runs.
-- [ ] **Bank-statement matcher ignores payment status and currency.** A bank
-      debit can auto-match at confidence 100 to a payment our books call
-      `failed`, `voided` or `pending` — the discrepancy reconciliation exists
-      to surface, converted into a match. `BankTransaction.currency` is never
-      compared either, so a €1,000 debit matches a $1,000 payment. **Durable
-      fix:** filter candidates by status and compare currency, mirroring the
-      `amount_mismatch` classification rather than silently refusing to match.
-- [ ] **`POST /api/bank-reconciliation/upload` has no idempotency and no size
-      cap.** No content hash (contrast `PositivePayFile.content_hash`), no
-      `(org, account, period)` uniqueness, and `await file.read()` buffers the
-      whole upload. A double-click creates a duplicate statement that reports
-      `matched_count = 0` (every payment is already claimed), which reads as
-      "nothing reconciled" rather than "you imported this twice". **Durable
-      fix:** hash the body, dedupe on `(org, account_identifier, hash)`, and
-      cap the read.
-- [ ] **No unique index behind "one payment, one bank transaction".**
-      `/resolve` now row-locks the payment and the matcher keeps a `claimed`
-      set, but two concurrent `/upload`s can still both claim one payment, and
-      existing data may already hold duplicates. **Durable fix:** a partial
-      unique index on `bank_transactions.matched_payment_id WHERE
-      matched_payment_id IS NOT NULL`, in the same shape as
-      `uq_payments_one_live_per_invoice`. Needs a migration *and* a decision on
-      what to do with any pre-existing duplicates, which is why it isn't folded
-      into the lock fix. **Trigger:** next `/safe-migration` pass on the tenant
-      schema.
-
----
