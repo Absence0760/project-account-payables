@@ -81,8 +81,34 @@ class PaymentRunRollup:
         return "completed"
 
 
+def superseded_payment_ids(payments: Iterable[Payment]) -> set[uuid.UUID]:
+    """Ids of run payments that a LATER attempt on the same run replaced.
+
+    ``/retry-failed`` never re-arms a failed payment in place — it books a NEW
+    ``Payment`` row carrying ``retry_of_payment_id``, leaving attempt #1 as the
+    immutable record of a failure that really happened (see
+    ``api/payments.retry_failed_payments``). So a run legitimately holds several
+    rows for one invoice, and only the newest one describes where that invoice
+    actually stands. Every rollup filters through here first; without it a fully
+    recovered run would report `partial` forever and keep offering a retry that
+    could only ever be skipped.
+    """
+    return {p.retry_of_payment_id for p in payments if p.retry_of_payment_id is not None}
+
+
+def active_run_payments(payments: Iterable[Payment]) -> list[Payment]:
+    """A run's payments with every superseded earlier attempt filtered out."""
+    rows = list(payments)
+    superseded = superseded_payment_ids(rows)
+    return [p for p in rows if p.id not in superseded]
+
+
 def rollup_payment_statuses(statuses: Iterable[str | None]) -> PaymentRunRollup:
-    """Bucket a run's payment statuses into a `PaymentRunRollup`."""
+    """Bucket a run's payment statuses into a `PaymentRunRollup`.
+
+    Callers hand this the ACTIVE payments only (`active_run_payments`) — a
+    superseded retry attempt is history, not an outcome.
+    """
     total = completed = failed = in_flight = pending = 0
     for status in statuses:
         total += 1
@@ -101,6 +127,127 @@ def rollup_payment_statuses(statuses: Iterable[str | None]) -> PaymentRunRollup:
         in_flight=in_flight,
         pending=pending,
     )
+
+
+# ── Is a failed payment safe to re-attempt? ──────────────────────────────
+#
+# `Payment.correlation_id` is the PROCESSOR's idempotency key, not a local trace
+# id: `payment_adapters/base.py` says so, and it is sent as `Idempotency-Key` by
+# column / dwolla / stripe_treasury / increase, as `idempotency_key=` by
+# modern_treasury, and as a 48h Redis `SET NX` slot by checkeeper (explicitly so
+# a retry can't print a second physical cheque). A retry books a NEW payment row
+# with a NEW correlation id — a genuinely new order — which is exactly right
+# when the first order never existed, and exactly how an invoice gets paid twice
+# when it did.
+#
+# So the question a retry has to answer per payment is not "did this fail?" but
+# "can we PROVE the processor never accepted an order for it?". Only then is
+# re-sending safe.
+RETRY_SAFE = "deterministic"
+IN_DOUBT = "in_doubt"
+
+# Failure reasons this codebase produces BEFORE any request could reach the
+# processor. Everything else is in-doubt — including reasons we don't recognise
+# (a future adapter, a legacy row), which is the fail-closed default.
+#
+# Deliberately NOT here:
+#   `unexpected_error:*`      the dispatcher swallowed an exception; a read
+#                             timeout after the processor accepted looks
+#                             identical to one before it
+#   `*_transport_error:*`     the request may have been received and actioned
+#   `*_api_error:*`           the provider answered — a 5xx can still have
+#                             created the order
+#   `checkeeper_duplicate_suppressed`
+#                             the 48h slot was already claimed, i.e. a cheque
+#                             for this order was very likely already printed
+#   `adapter_error:*` (cards) the card provider may have minted a card we never
+#                             recorded
+#   reconciler_max_age_exceeded*
+#                             a genuinely `submitted` payment (real money in
+#                             flight) the reconciler gave up waiting on
+_RETRY_SAFE_FAILURE_PREFIXES = (
+    # We refused it ourselves, before the adapter was ever called.
+    "compliance_refusal:",
+    "compliance_dismissed",
+    "international_payment_error:",
+    # Card leg: no card was minted (a provider-side `adapter_error:` reason
+    # replaces this string and is deliberately absent from this list).
+    "card_issuance_conflict",
+    "card_issuance_failed",
+    "cards_not_enabled",
+    # dwolla's unsupported-method refusal: "method 'wire' is not supported…"
+    "method '",
+)
+
+# Per-adapter pre-flight refusals — checked before any HTTP call is made.
+_RETRY_SAFE_FAILURE_SUFFIXES = (
+    "_not_configured",
+    "_no_counterparty",
+    "_no_external_account",
+    "_no_destination_funding_source",
+    "_missing_mailing_address",
+    # checkeeper: Redis was down so it refused to issue WITHOUT a dedup guard.
+    "_idempotency_unavailable",
+)
+
+
+def classify_payment_failure(*, failure_reason: str | None, provider_payment_id: str | None) -> str:
+    """Is this failed payment safe to re-attempt under a fresh idempotency key?
+
+    Returns ``RETRY_SAFE`` only when we can prove no order was created at the
+    processor; ``IN_DOUBT`` otherwise. Pure — no DB, no clock.
+
+    A populated ``provider_payment_id`` outranks the reason entirely: every
+    adapter here returns a handle only from a create call that SUCCEEDED, so
+    holding one means an order exists over there and its true outcome has to be
+    reconciled (or the payment voided) by a human before any re-send.
+    """
+    if provider_payment_id:
+        return IN_DOUBT
+    reason = (failure_reason or "").strip()
+    if not reason:
+        return IN_DOUBT
+    if reason.startswith(_RETRY_SAFE_FAILURE_PREFIXES):
+        return RETRY_SAFE
+    if reason.endswith(_RETRY_SAFE_FAILURE_SUFFIXES):
+        return RETRY_SAFE
+    return IN_DOUBT
+
+
+def is_retry_safe(payment: Payment) -> bool:
+    """`classify_payment_failure` over a `Payment` row."""
+    return (
+        classify_payment_failure(
+            failure_reason=payment.failure_reason,
+            provider_payment_id=payment.provider_payment_id,
+        )
+        == RETRY_SAFE
+    )
+
+
+async def blocked_invoice_ids(db: AsyncSession, invoice_ids: list[uuid.UUID]) -> set[uuid.UUID]:
+    """Which of ``invoice_ids`` carry an UNRESOLVED payment-blocking exception.
+
+    `PAYMENT_BLOCKING_EXCEPTION_TYPES` (duplicate / fraud_flag /
+    line_total_mismatch) are `error`-severity financial-integrity flags that
+    invoice approval does NOT gate on, so a run must refuse them and so must
+    anything that re-dispatches money later — a `fraud_flag` raised between run
+    creation and a `/retry-failed` days afterwards (a BEC bank-detail swap, an
+    altered cheque off a Positive Pay return) has to stop the re-send. Shared by
+    both callers precisely so they can't drift.
+    """
+    from app.api.payments import PAYMENT_BLOCKING_EXCEPTION_TYPES
+
+    if not invoice_ids:
+        return set()
+    rows = await db.execute(
+        select(InvoiceException.invoice_id).where(
+            InvoiceException.invoice_id.in_(invoice_ids),
+            InvoiceException.exception_type.in_(PAYMENT_BLOCKING_EXCEPTION_TYPES),
+            InvoiceException.status.notin_(("resolved", "dismissed")),
+        )
+    )
+    return {iid for iid in rows.scalars().all() if iid is not None}
 
 
 async def applied_credit_total(db: AsyncSession, invoice_id: uuid.UUID) -> Decimal:
@@ -245,7 +392,7 @@ async def create_payment_run_for_invoices(
     # api/payments.py's shared status/exception-type constants). Mirrors the
     # existing lazy-import pattern api/cards.py already uses for the same
     # constant.
-    from app.api.payments import PAYABLE_INVOICE_STATUSES, PAYMENT_BLOCKING_EXCEPTION_TYPES
+    from app.api.payments import PAYABLE_INVOICE_STATUSES
 
     if not items:
         raise HTTPException(status_code=422, detail="At least one invoice is required")
@@ -292,14 +439,7 @@ async def create_payment_run_for_invoices(
             detail=f"Invoice(s) not approved for payment: {', '.join(not_payable)}",
         )
 
-    blocking_res = await db.execute(
-        select(InvoiceException.invoice_id).where(
-            InvoiceException.invoice_id.in_(invoice_ids),
-            InvoiceException.exception_type.in_(PAYMENT_BLOCKING_EXCEPTION_TYPES),
-            InvoiceException.status.notin_(("resolved", "dismissed")),
-        )
-    )
-    blocked_ids = set(blocking_res.scalars().all())
+    blocked_ids = await blocked_invoice_ids(db, invoice_ids)
     if blocked_ids:
         blocked_numbers = [
             inv.invoice_number for iid, inv in invoices.items() if iid in blocked_ids

@@ -411,6 +411,7 @@ async def test_get_run_detail_serialises_money_as_strings_not_floats():
         reference=None,
         provider=None,
         failure_reason=None,
+        retry_of_payment_id=None,
         submitted_at=None,
         completed_at=None,
     )
@@ -773,6 +774,7 @@ def _payment(amount: Decimal = Decimal("10000.00")):
         submitted_at=None,
         completed_at=None,
         failure_reason=None,
+        retry_of_payment_id=None,
         correlation_id=uuid.uuid4(),
         source_currency=None,
         source_amount=None,

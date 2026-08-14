@@ -110,12 +110,20 @@ class ModernTreasuryAdapter(PaymentAdapter):
     # PaymentAdapter interface
 
     async def create_payment(self, payload: PaymentPayload) -> PaymentResult:
+        # Both pre-flight refusals below follow the failure-reason convention the
+        # other adapters use (`method '…' is not supported by …` / a bare
+        # `<provider>_no_counterparty` code) rather than free prose. That is what
+        # `services/payment_runs.classify_payment_failure` reads to decide a
+        # failed payment is safe for `/retry-failed` to re-attempt: neither of
+        # these ever reached Modern Treasury, so no order can exist there. Prose
+        # here classifies as UNRECOGNISED — fail-closed, but it would leave every
+        # such failure needing a manual reconcile on the flagship live rail.
         if payload.method not in self.supported_methods:
             return PaymentResult(
                 success=False,
                 status=PaymentStatus.failed,
                 failure_reason=(
-                    f"Method '{payload.method}' is not supported by Modern Treasury "
+                    f"method '{payload.method}' is not supported by Modern Treasury "
                     f"(supports: {', '.join(self.supported_methods)})"
                 ),
             )
@@ -124,14 +132,12 @@ class ModernTreasuryAdapter(PaymentAdapter):
         if not counterparty_id:
             # Without a counterparty we can't address the payment. Return a
             # structured failure so the orchestrator can record it on the
-            # Payment row instead of throwing.
+            # Payment row instead of throwing. (Set `vendor_bank.counterparty_id`
+            # on the vendor record to resolve it.)
             return PaymentResult(
                 success=False,
                 status=PaymentStatus.failed,
-                failure_reason=(
-                    "Vendor has no Modern Treasury counterparty configured — set "
-                    "`vendor_bank.counterparty_id` in the vendor record"
-                ),
+                failure_reason="modern_treasury_no_counterparty",
             )
 
         # Modern Treasury expects amounts in the lowest currency unit (cents).
