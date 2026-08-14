@@ -175,7 +175,7 @@ def settlement_amount_and_currency(payment, invoice_currency: str | None) -> tup
     """
     source_amount = getattr(payment, "source_amount", None)
     source_currency = getattr(payment, "source_currency", None)
-    if source_amount is not None and source_currency:
+    if source_amount is not None and source_currency not in (None, ""):
         return Decimal(source_amount), str(source_currency).upper()
     return Decimal(payment.amount), (invoice_currency or "").strip().upper()
 
@@ -184,11 +184,18 @@ def settlement_amount_sql():
     """SQL mirror of :func:`settlement_amount_and_currency`'s amount half.
 
     Kept adjacent to the Python definition so an aggregate over the whole set
-    and a per-row response can't disagree about what the bank debited.
+    and a per-row response can't disagree about what the bank debited. The
+    predicate is written to be *structurally* identical to the Python one —
+    including the empty-string case — rather than merely equivalent for the
+    values `services.international_payments` happens to write today.
     """
     return case(
         (
-            and_(Payment.source_amount.is_not(None), Payment.source_currency.is_not(None)),
+            and_(
+                Payment.source_amount.is_not(None),
+                Payment.source_currency.is_not(None),
+                Payment.source_currency != "",
+            ),
             Payment.source_amount,
         ),
         else_=Payment.amount,

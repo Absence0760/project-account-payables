@@ -286,6 +286,79 @@ async def test_a_different_file_on_the_same_account_still_imports(realdb):
     assert second.json()["id"] != first.json()["id"]
 
 
+async def test_two_concurrent_uploads_cannot_both_claim_one_payment(realdb):
+    """The handler's retry loop, driven for real.
+
+    Two DIFFERENT statements uploaded at once, each carrying a line that
+    references the SAME payment. Each request's matcher builds its `claimed`
+    set before the other commits, so both believe the payment is free — the one
+    guard the application layer cannot win. `uq_bank_transactions_matched_payment`
+    settles it, and the loser rolls back and re-runs its whole import rather
+    than 500ing and losing every other line on its file: on the second pass its
+    matcher sees the winner's claim and leaves that line unmatched.
+
+    Asserted on the durable outcome: both files imported, exactly one claimant.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    payment_id = await _add_payment(mk, org_id, amount="909.00", provider_payment_id="TRACE-RACE")
+
+    async def _upload(tag: str):
+        body = _csv(
+            "Date,Amount,Reference,Description",
+            f"{_TODAY.isoformat()},-909.00,TRACE-RACE,Wire {tag}",
+            # A second, unrelated line — the point of retrying rather than
+            # 500ing is that the loser doesn't lose THIS one too.
+            f"{_TODAY.isoformat()},-{tag}.00,,Other line {tag}",
+        )
+        async with realdb.client(key="a", role="ap_manager") as client:
+            resp = await client.post(
+                "/api/bank-reconciliation/upload",
+                data={
+                    "account_identifier": f"Race ****{tag}",
+                    "period_start": (_TODAY - timedelta(days=30)).isoformat(),
+                    "period_end": _TODAY.isoformat(),
+                },
+                files={"file": (f"statement-{tag}.csv", body, "text/csv")},
+            )
+            return resp.status_code, resp.json()
+
+    results = await asyncio.gather(_upload("11"), _upload("22"))
+    codes = sorted(code for code, _ in results)
+    assert codes == [201, 201], f"both imports should land, got {codes}"
+
+    # Both files kept all their lines — the loser re-ran, it didn't lose the file.
+    for _, body in results:
+        assert body["transaction_count"] == 2
+        assert len(body["transactions"]) == 2
+
+    async with mk() as s:
+        claimants = (
+            (
+                await s.execute(
+                    select(BankTransaction).where(
+                        BankTransaction.matched_payment_id == uuid.UUID(payment_id)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(claimants) == 1, "one payment was claimed by two bank transactions"
+        # And exactly one audit row per statement — a retried attempt must not
+        # double-audit the import.
+        audits = (
+            (
+                await s.execute(
+                    select(AuditLog).where(AuditLog.action == "bank_reconciliation.imported")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(audits) == 2, f"expected one audit row per statement, got {len(audits)}"
+
+
 async def test_upload_over_the_size_cap_is_rejected(realdb):
     """`await file.read()` was unbounded, so any authenticated manager could
     buffer an arbitrarily large body into process memory before a single check

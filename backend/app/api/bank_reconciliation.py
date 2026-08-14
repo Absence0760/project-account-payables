@@ -359,13 +359,13 @@ async def upload_statement(
     content_hash = hashlib.sha256(raw).hexdigest()
 
     # Two passes at most. The retry exists because BOTH races this handler can
-    # lose are decided at COMMIT by a unique index: a concurrent identical
-    # upload (the content-hash slot) and a concurrent different upload that
-    # claims the same payment (`uq_bank_transactions_matched_payment`). Rolling
-    # back and re-running the whole import re-reads both — the duplicate check
-    # below now sees the winner, and the matcher's `claimed` set now sees its
-    # claims — so the loser resolves cleanly instead of 500ing and losing every
-    # other line on the file.
+    # lose are decided by a unique index: a concurrent identical upload (the
+    # content-hash slot) and a concurrent different upload that claims the same
+    # payment (`uq_bank_transactions_matched_payment`). Rolling back and
+    # re-running the whole import re-reads both — the duplicate check below now
+    # sees the winner, and the matcher's `claimed` set now sees its claims — so
+    # the loser resolves cleanly instead of 500ing and losing every other line
+    # on the file.
     for attempt in (1, 2):
         existing = await _statement_by_hash(db, org_id, account_identifier, content_hash)
         if existing is not None:
@@ -390,15 +390,33 @@ async def upload_statement(
             raise HTTPException(status_code=422, detail=str(e)) from e
         statement.content_hash = content_hash
 
-        db.add(statement)
-        await db.flush()  # assign statement.id before stamping the children
+        try:
+            db.add(statement)
+            await db.flush()  # claims the hash slot; assigns statement.id
 
-        for tx in transactions:
-            tx.statement_id = statement.id
-        db.add_all(transactions)
+            for tx in transactions:
+                tx.statement_id = statement.id
+            db.add_all(transactions)
 
-        counts = await match_statement_transactions(db, transactions)
-        statement.matched_count = counts["matched"]
+            counts = await match_statement_transactions(db, transactions)
+            statement.matched_count = counts["matched"]
+            # Push the match UPDATEs now, so `uq_bank_transactions_matched_payment`
+            # has had its say BEFORE anything irreversible happens. That matters
+            # because `dispatch_audit` is only transactional in `local` mode —
+            # under `FEOH_AUDIT_MODE=lambda` it enqueues an SQS message
+            # immediately, and a losing attempt would otherwise have already
+            # announced a statement id that then rolled away. Mirrors
+            # `positive_pay.generate_check_issue`, which likewise settles its
+            # idempotency slot at a flush before auditing.
+            await db.flush()
+        except IntegrityError:
+            await db.rollback()
+            if attempt == 2:
+                raise HTTPException(
+                    status_code=409,
+                    detail="This statement is being imported concurrently. Retry in a moment.",
+                ) from None
+            continue
 
         await dispatch_audit(
             db,
@@ -414,19 +432,18 @@ async def upload_statement(
                 **counts,
             },
         )
-        try:
-            await db.commit()
-        except IntegrityError:
-            await db.rollback()
-            if attempt == 2:
-                raise HTTPException(
-                    status_code=409,
-                    detail="This statement is being imported concurrently. Retry in a moment.",
-                ) from None
-            continue
-
+        # Every INSERT/UPDATE already went to the DB at the flush above, so both
+        # unique indexes have passed; this cannot now fail on one of them.
+        await db.commit()
         await db.refresh(statement)
         return await _detail_response(db, statement)
+
+    # Unreachable: attempt 2 either returns or raises above. Present so a future
+    # edit to the loop bounds can't silently fall out with no response.
+    raise HTTPException(
+        status_code=409,
+        detail="This statement is being imported concurrently. Retry in a moment.",
+    )
 
 
 # --------------------------------------------------------------------------- #
