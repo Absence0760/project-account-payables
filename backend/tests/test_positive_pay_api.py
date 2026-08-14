@@ -294,6 +294,73 @@ async def test_generate_check_issue_404_unknown_run(realdb):
     assert resp.status_code == 404
 
 
+async def _add_draft_check_run(mk, org_id, *, invoice_id, amount="1000.00"):
+    """A DRAFT payment run: no `executed_at`, and its cheque payment is still
+    `pending` with a NULL reference — i.e. nothing has been issued to anyone."""
+    async with mk() as s:
+        entity_id = await _default_entity_id(s)
+        run = PaymentRun(
+            organization_id=org_id,
+            entity_id=entity_id,
+            status="draft",
+            total_amount=Decimal(amount),
+            executed_at=None,
+        )
+        s.add(run)
+        await s.flush()
+        pay = Payment(
+            entity_id=entity_id,
+            invoice_id=uuid.UUID(invoice_id),
+            payment_run_id=run.id,
+            amount=Decimal(amount),
+            method="check",
+            status="pending",
+            reference=None,
+        )
+        s.add(pay)
+        await s.commit()
+        await s.refresh(run)
+        return str(run.id)
+
+
+async def test_generate_check_issue_refuses_an_unexecuted_run(realdb):
+    """A draft run has issued no cheques: its payments are `pending` with no
+    reference, so the file's `issued_map` would persist EMPTY — and since the
+    (run, format) slot is claimed for good, it could never be regenerated after
+    execution. Return processing would then classify every genuinely-issued
+    cheque `not_on_file` and raise a fraud_flag against it. 422, and nothing
+    persisted."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _set_check_account(realdb, org_id)
+    try:
+        vendor_id = await _add_vendor(mk, org_id)
+        invoice_id = await _add_invoice(
+            mk, org_id, vendor_id=vendor_id, invoice_number="INV-DRAFT-1"
+        )
+        run_id = await _add_draft_check_run(mk, org_id, invoice_id=invoice_id)
+
+        async with realdb.client(key="a", role="ap_manager") as c:
+            resp = await c.post(
+                f"/api/positive-pay/payment-runs/{run_id}/check-issue", json={"bank_format": "csv"}
+            )
+        assert resp.status_code == 422, resp.text
+        assert "executed" in resp.json()["detail"].lower()
+
+        # No file row (and therefore no permanently-claimed idempotency slot).
+        async with mk() as s:
+            from app.models.positive_pay import PositivePayFile
+
+            count = (
+                await s.execute(
+                    select(func.count()).where(PositivePayFile.payment_run_id == uuid.UUID(run_id))
+                )
+            ).scalar()
+            assert count == 0
+    finally:
+        await _clear_settings(realdb, org_id)
+
+
 # ---------------------------------------------------------------------------
 # list / detail / download + cross-tenant gate
 # ---------------------------------------------------------------------------
