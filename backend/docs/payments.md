@@ -282,6 +282,21 @@ confirmed-stuck one (see the row-lock double-execute guard above). An
 operator calls `/resume` only after confirming the run has made no progress
 for an implausible amount of time.
 
+### The live-payment 409 names the invoices
+
+`uq_payments_one_live_per_invoice` is the DB-level backstop that stops an
+invoice from carrying two live payments. When a run trips it the operator got
+"One or more invoices already have a live payment scheduled." — which
+identifies nothing; on a forty-invoice Friday run, bisecting the selection by
+hand was the only way forward. The 409 now names the offending invoice
+**numbers** (the identifier the row was selected by, and PII-free) and says what
+to do about them.
+
+Naming them requires the session to still be usable after the `IntegrityError`,
+so `create_payment_run_for_invoices` now always wraps its inserts in a savepoint
+— it used to do that only on the copilot's `plan_id` path, and on the manual
+path the poisoned session was precisely why the message could not say more.
+
 ### Credit memos are netted on BOTH money paths
 
 Applying a credit memo is the whole point of the feature: it must reduce what

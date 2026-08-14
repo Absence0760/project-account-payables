@@ -150,22 +150,48 @@ class PaymentRunCreationResult:
 
 
 @asynccontextmanager
-async def _maybe_savepoint(db: AsyncSession, *, use_savepoint: bool):
-    """``db.begin_nested()`` when ``use_savepoint``, otherwise a plain no-op.
+async def _savepoint(db: AsyncSession):
+    """A savepoint around the run + payment inserts.
 
-    Only the ``plan_id``-bearing (copilot) path needs the savepoint — it's
-    what keeps the outer transaction usable after an ``IntegrityError`` so
-    the plan_id race can be re-queried and its winner returned (see
-    ``create_payment_run_for_invoices``). The plain manual-run path
-    (``plan_id=None``, ``POST /api/payments/runs``) never re-queries after a
-    failed flush — it just raises — so it keeps its original unwrapped shape
-    exactly, unchanged from before this module existed.
+    Both callers need the outer transaction to stay usable after an
+    ``IntegrityError`` so they can go back to the database and say something
+    useful about it: the copilot path re-queries the ``plan_id`` race's winner,
+    and BOTH paths re-query which invoices are actually holding the live
+    payment that the ``uq_payments_one_live_per_invoice`` index rejected. Without
+    the savepoint the session is poisoned at that point and the only honest
+    thing left to say is "one or more invoices" — which is exactly the
+    unactionable 409 this replaced.
     """
-    if use_savepoint:
-        async with db.begin_nested():
-            yield
-    else:
+    async with db.begin_nested():
         yield
+
+
+async def _live_payment_invoice_numbers(
+    db: AsyncSession, invoice_ids: list[uuid.UUID]
+) -> list[str]:
+    """Invoice numbers among ``invoice_ids`` that already hold a LIVE payment.
+
+    "Live" is the same definition the ``uq_payments_one_live_per_invoice``
+    partial index uses — anything not in
+    ``api/payments.LIVE_PAYMENT_TERMINAL_STATUSES`` — so this names exactly the
+    rows that caused the insert to be rejected. Invoice NUMBER, not vendor or
+    amount: it is the identifier the operator selected the row by, and it
+    carries no PII.
+    """
+    from app.api.payments import LIVE_PAYMENT_TERMINAL_STATUSES
+
+    if not invoice_ids:
+        return []
+    rows = await db.execute(
+        select(Invoice.invoice_number)
+        .join(Payment, Payment.invoice_id == Invoice.id)
+        .where(
+            Invoice.id.in_(invoice_ids),
+            Payment.status.notin_(LIVE_PAYMENT_TERMINAL_STATUSES),
+        )
+        .distinct()
+    )
+    return sorted(n for n in rows.scalars().all() if n)
 
 
 async def _existing_run_for_plan(db: AsyncSession, plan_id: str) -> PaymentRunCreationResult | None:
@@ -325,15 +351,15 @@ async def create_payment_run_for_invoices(
         plan_id=plan_id,
     )
 
-    # A savepoint around the insert (copilot path only — see
-    # `_maybe_savepoint`): on IntegrityError (the payments-per-invoice
-    # backstop, OR — when `plan_id` is set — a concurrent duplicate
-    # draft-run request racing this one for the SAME plan_id via the partial
-    # unique index on payment_runs.plan_id) we need the outer transaction to
-    # stay usable so we can re-query for the plan_id race's winner. Mirrors
-    # api/payments.py::create_payment's savepoint idiom.
+    # A savepoint around the insert: on IntegrityError (the
+    # payments-per-invoice backstop, OR — when `plan_id` is set — a concurrent
+    # duplicate draft-run request racing this one for the SAME plan_id via the
+    # partial unique index on payment_runs.plan_id) the outer transaction has
+    # to stay usable so we can go back to the database, both to re-query the
+    # plan_id race's winner and to NAME the invoices already holding a live
+    # payment. Mirrors api/payments.py::create_payment's savepoint idiom.
     try:
-        async with _maybe_savepoint(db, use_savepoint=plan_id is not None):
+        async with _savepoint(db):
             db.add(run)
             await db.flush()
             for item in items:
@@ -354,6 +380,19 @@ async def create_payment_run_for_invoices(
             existing_result = await _existing_run_for_plan(db, plan_id)
             if existing_result is not None:
                 return existing_result
+        # Name the offending invoices. "One or more invoices already have a
+        # live payment scheduled" identified nothing: on a 40-invoice run the
+        # operator had no way to tell which row to drop, and the only route
+        # forward was bisecting the selection by hand.
+        blocked = await _live_payment_invoice_numbers(db, invoice_ids)
+        if blocked:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Invoice(s) already have a live payment scheduled — remove them from "
+                    f"the run, or void the existing payment first: {', '.join(blocked)}"
+                ),
+            ) from exc
         raise HTTPException(
             status_code=409,
             detail="One or more invoices already have a live payment scheduled.",
