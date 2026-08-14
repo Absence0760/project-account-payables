@@ -41,6 +41,7 @@ from app.schemas.payment import (
     PaymentRunResponse,
 )
 from app.services.audit_access import log_access
+from app.services.exception_lifecycle import record_decision
 from app.services.payment_adapters import (
     PaymentPayload,
     PaymentStatus,
@@ -681,16 +682,31 @@ async def void_payment(
 
 
 async def _resolve_compliance_hold_exception(
-    db: AsyncSession, *, invoice_id: uuid.UUID, actor_name: str, resolution: str
+    db: AsyncSession,
+    *,
+    invoice: Invoice,
+    actor_id: uuid.UUID,
+    actor_name: str,
+    resolution: str,
 ) -> None:
     """Resolve the open `payment_compliance_hold` exception for an invoice,
-    if one exists. Mirrors `api/exceptions.py::_apply_resolution`'s field
-    set (status/resolution/resolved_by/resolved_at/time_to_resolution) —
-    duplicated rather than cross-imported from that router module, same as
-    every other router in this codebase keeps its own small mutators."""
+    if one exists.
+
+    Delegates to `services/exception_lifecycle.record_decision` — the same
+    chokepoint the human queue and the autonomous agents go through — so this
+    decision writes the append-only `exception.resolved` row too. Releasing a
+    compliance hold is precisely the sign-off that lets held money move, which
+    makes it the last decision that should have lived only on the mutable
+    `exceptions` row.
+
+    Both callers keep the `resolve` verb (not `dismiss`): a dismissed *payment*
+    still means a human cleared the hold, and the queue's status semantics
+    predate this. The rationale — `released` vs `dismissed: <reason>` — is what
+    distinguishes them, on the immutable row as well as the exception.
+    """
     result = await db.execute(
         select(APException).where(
-            APException.invoice_id == invoice_id,
+            APException.invoice_id == invoice.id,
             APException.exception_type == "payment_compliance_hold",
             APException.status == "open",
         )
@@ -698,13 +714,15 @@ async def _resolve_compliance_hold_exception(
     exc = result.scalar_one_or_none()
     if exc is None:
         return
-    now = datetime.now(UTC)
-    exc.status = "resolved"
-    exc.resolution = resolution
-    exc.resolved_by = actor_name
-    exc.resolved_at = now
-    if exc.created_at is not None:
-        exc.time_to_resolution_seconds = int((now - exc.created_at).total_seconds())
+    await record_decision(
+        db,
+        exception=exc,
+        action="resolve",
+        resolution=resolution,
+        actor_id=actor_id,
+        actor_name=actor_name,
+        invoice=invoice,
+    )
 
 
 class DismissComplianceHoldRequest(BaseModel):
@@ -774,7 +792,11 @@ async def release_compliance_hold(
     # payments keep it open (re-running /release again does nothing new).
     if payment.status != "pending_compliance" and invoice is not None:
         await _resolve_compliance_hold_exception(
-            db, invoice_id=invoice.id, actor_name=user.full_name, resolution="released"
+            db,
+            invoice=invoice,
+            actor_id=user.id,
+            actor_name=user.full_name,
+            resolution="released",
         )
 
     await db.commit()
@@ -833,7 +855,8 @@ async def dismiss_compliance_hold(
     if invoice is not None:
         await _resolve_compliance_hold_exception(
             db,
-            invoice_id=invoice.id,
+            invoice=invoice,
+            actor_id=user.id,
             actor_name=user.full_name,
             resolution=f"dismissed: {body.reason}",
         )

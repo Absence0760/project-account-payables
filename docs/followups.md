@@ -134,30 +134,6 @@ Ref: `reviews/flake-admin-users.md` (gitignored — regenerate via
 `/flake-doctor` if consulting this again after the file has aged out).
 
 
-### `payment_compliance_hold` resolution bypasses the exception chokepoint
-
-`backend/app/api/payments.py::_resolve_compliance_hold_exception` carries its
-own copy of the exception-resolution bookkeeping (status / resolution /
-resolved_by / resolved_at / time_to_resolution) and writes **no**
-`exception.resolved` audit row. Its docstring says it is "duplicated rather than
-cross-imported from that router module" — which was correct when the only other
-copy lived in a router, but no longer is: the bookkeeping + its append-only
-audit row now live in the service `app/services/exception_lifecycle.py`, and
-both the human queue (`api/exceptions`) and the agent coordinator go through
-`record_decision`. Consequence: releasing or dismissing a sanctions/KYC hold
-flips the exception with no immutable trace of *that* flip (the payment action
-itself IS separately audited), and the third copy can drift from the other two —
-it already would have missed the escalate-is-not-a-resolution correction.
-
-**Durable fix:** call
-`services/exception_lifecycle.record_decision(db, exception=exc, action="resolve",
-resolution=…, actor_id=user.id, actor_name=user.full_name)` and delete the local
-mutator. Two call sites (`/compliance/release`, `/compliance/dismiss`); no
-schema change; covered by extending `backend/tests/test_exception_audit_trail.py`.
-**Trigger:** next change that touches the compliance-hold path — it was left out
-of the exception-audit round only because `api/payments.py` was owned by a
-concurrent session at the time. *(c) sized, unstarted.*
-
 ---
 
 ## (a) Blocked on external credentials, accounts, or hardware

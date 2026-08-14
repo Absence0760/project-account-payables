@@ -89,17 +89,23 @@ groups that exception's raise / assign / resolve rows together.
   text that can name a vendor, the row already holds it, and the trail gains
   nothing by duplicating it.
 
-## One chokepoint, two callers
+## One chokepoint, three callers
 
 `exception_lifecycle.record_decision` both applies the bookkeeping and writes
-the row. Both deciders go through it:
+the row. Every decider goes through it:
 
 - `api/exceptions.py` — `POST /{id}/resolve` and `POST /bulk/resolve`
 - `services/exception_agents/coordinator.py` — auto-resolve and every escalate
   path
+- `api/payments.py::_resolve_compliance_hold_exception` — the sanctions/KYC
+  `payment_compliance_hold` cleared by `POST /payments/{id}/compliance/release`
+  or `/dismiss`. It keeps the `resolve` verb in both cases: a dismissed
+  *payment* still means a human cleared the hold, and `resolution`
+  (`released` vs `dismissed: <reason>`) is what distinguishes them.
 
-Previously these were two copies (the coordinator's helper carried a comment
-saying it was mirroring the API's), and neither wrote an audit row.
+Previously these were three copies (the coordinator's helper carried a comment
+saying it was mirroring the API's; the payments one said the same), and none
+wrote an audit row.
 `correlation_ids_for` resolves a whole batch's correlations in one query so a
 bulk action doesn't fire one lookup per row.
 
