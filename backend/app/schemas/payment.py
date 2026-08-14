@@ -48,7 +48,12 @@ PAYMENT_RUN_STATUSES = [s.value for s in PaymentRunStatus]
 
 class PaymentCreate(BaseModel):
     invoice_id: str
-    amount: Decimal = Field(..., ge=0)
+    # Optional, and only ever a cross-check: the server binds the payment to
+    # the invoice amount net of applied credit memos and 422s a value that
+    # disagrees (see `api/payments.create_payment`). Required-ness here was a
+    # trap once netting landed — a caller that knows the invoice amount but not
+    # its credits had no figure it could legally send.
+    amount: Decimal | None = Field(default=None, ge=0)
     method: PaymentMethod | None = None
     reference: str | None = Field(default=None, max_length=255)
     payment_run_id: str | None = None

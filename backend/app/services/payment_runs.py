@@ -103,6 +103,36 @@ def rollup_payment_statuses(statuses: Iterable[str | None]) -> PaymentRunRollup:
     )
 
 
+async def applied_credit_total(db: AsyncSession, invoice_id: uuid.UUID) -> Decimal:
+    """Sum of the credit memos already APPLIED against an invoice."""
+    return (
+        await db.execute(
+            select(func.coalesce(func.sum(CreditMemo.amount), Decimal("0"))).where(
+                CreditMemo.invoice_id == invoice_id,
+                CreditMemo.status == "applied",
+            )
+        )
+    ).scalar_one()
+
+
+async def net_payable_amount(db: AsyncSession, invoice: Invoice) -> Decimal:
+    """What a payment against ``invoice`` should actually move.
+
+    Applying a credit memo is the whole point of the feature: it must reduce
+    what the vendor is paid. Both money paths go through here — the payment-run
+    builder below and the standalone ``POST /api/payments`` — so the two can't
+    disagree about what an invoice is worth. The standalone endpoint used to
+    pay ``invoice.amount`` flat and 422 any other figure, which meant a credited
+    invoice paid the FULL pre-credit amount there and the correct net figure
+    could not even be submitted.
+
+    ``credit_memos.py``'s own over-application guard (apply refuses a memo that
+    would exceed the invoice's remaining creditable balance) is what guarantees
+    this can never go negative.
+    """
+    return (invoice.amount or Decimal("0")) - await applied_credit_total(db, invoice.id)
+
+
 @dataclass(frozen=True)
 class PaymentRunItemInput:
     invoice_id: uuid.UUID
@@ -261,15 +291,7 @@ async def create_payment_run_for_invoices(
     total = Decimal("0")
     for item in items:
         inv = invoices[item.invoice_id]
-        already_applied = (
-            await db.execute(
-                select(func.coalesce(func.sum(CreditMemo.amount), Decimal("0"))).where(
-                    CreditMemo.invoice_id == inv.id,
-                    CreditMemo.status == "applied",
-                )
-            )
-        ).scalar_one()
-        net_amount = inv.amount - already_applied
+        net_amount = await net_payable_amount(db, inv)
         net_amounts[item.invoice_id] = net_amount
         total += net_amount
 

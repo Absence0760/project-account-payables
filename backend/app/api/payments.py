@@ -51,6 +51,7 @@ from app.services.payment_controls import check_run_segregation
 from app.services.payment_runs import (
     PaymentRunItemInput,
     create_payment_run_for_invoices,
+    net_payable_amount,
     rollup_payment_statuses,
 )
 from app.services.workflow_engine import transition_invoice
@@ -955,15 +956,26 @@ async def create_payment(
     if invoice.status not in PAYABLE_INVOICE_STATUSES:
         raise HTTPException(status_code=409, detail="Invoice is not approved for payment")
 
-    # The payment amount is the approved invoice amount — never a caller-supplied
-    # value. Trusting `body.amount` let an actor book a $99,999 payment against a
-    # $500 approved invoice (the run-based path at create_payment_run already
-    # binds to `inv.amount`; this standalone path must match it). If a value is
-    # supplied it must equal the invoice amount, else 422.
-    if body.amount is not None and Decimal(str(body.amount)) != (invoice.amount or Decimal("0")):
+    # The payment amount is the invoice amount NET OF APPLIED CREDIT MEMOS —
+    # never a caller-supplied value. Trusting `body.amount` let an actor book a
+    # $99,999 payment against a $500 approved invoice, so the figure is bound
+    # server-side; but binding it to the raw `invoice.amount` made this path
+    # ignore credit memos entirely, paying the vendor the full pre-credit
+    # amount AND 422ing the correct net figure if a caller tried to submit it.
+    # `net_payable_amount` is the same helper the run builder uses, so the two
+    # money paths can't disagree about what an invoice is worth.
+    net_amount = await net_payable_amount(db, invoice)
+    if net_amount <= 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Invoice is fully covered by applied credit memos — nothing to pay",
+        )
+    if body.amount is not None and Decimal(str(body.amount)) != net_amount:
         raise HTTPException(
             status_code=422,
-            detail="Payment amount must equal the approved invoice amount",
+            detail=(
+                "Payment amount must equal the approved invoice amount net of applied credit memos"
+            ),
         )
 
     # CFO sign-off gate — the same `payments.cfo_approval_above` threshold the
@@ -993,8 +1005,11 @@ async def create_payment(
             requires_cfo = True
         else:
             # Strict `>` matches the setting name; a threshold of 0/negative
-            # means "no gate" — same semantics as create_payment_run.
-            if cfo_threshold > 0 and invoice.amount > cfo_threshold:
+            # means "no gate" — same semantics as create_payment_run. The
+            # comparison is against the NET amount, i.e. the money that
+            # actually moves, exactly as create_payment_run compares its
+            # credit-netted total.
+            if cfo_threshold > 0 and net_amount > cfo_threshold:
                 requires_cfo = True
 
     if requires_cfo:
@@ -1020,7 +1035,7 @@ async def create_payment(
         invoice_id=invoice.id,
         # Payment follows the invoice's entity (multi-entity Phase 2).
         entity_id=invoice.entity_id,
-        amount=invoice.amount,
+        amount=net_amount,
         method=body.method.value if body.method else None,
         reference=body.reference,
         payment_run_id=uuid.UUID(body.payment_run_id) if body.payment_run_id else None,

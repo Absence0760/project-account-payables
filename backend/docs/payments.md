@@ -282,6 +282,37 @@ confirmed-stuck one (see the row-lock double-execute guard above). An
 operator calls `/resume` only after confirming the run has made no progress
 for an implausible amount of time.
 
+### Credit memos are netted on BOTH money paths
+
+Applying a credit memo is the whole point of the feature: it must reduce what
+the vendor is actually paid. The payment-run builder has netted applied memos
+off each payment since that fix landed — but `POST /api/payments`, the
+standalone path, did not. It bound the payment to a bare `invoice.amount` and
+422'd any other figure, so a credited invoice paid the vendor the **full
+pre-credit amount** there, and a caller who knew the correct net figure could
+not even submit it. Every guard around *applying* a memo (vendor match,
+currency match, no over-application) was solid, and none of it mattered on that
+path.
+
+Both paths now call `services/payment_runs.net_payable_amount(db, invoice)` —
+`invoice.amount` minus the sum of its `applied` credit memos — so they can't
+disagree about what an invoice is worth. Consequences on the standalone
+endpoint:
+
+- `PaymentCreate.amount` is now **optional**. When supplied it is only a
+  cross-check against the net figure; the server never trusts it as the amount
+  (that guard is what stops a $99,999 payment against a $500 invoice).
+- The CFO-approval threshold compares the **net** amount — the money that
+  actually moves — exactly as `create_payment_run` compares its netted total.
+- A fully-credited invoice is refused with **409**: nothing is owed, and a
+  zero-amount payment row would be a money record for money that never moves.
+
+`credit_memos.py`'s own over-application guard (apply refuses a memo that would
+exceed the invoice's remaining creditable balance) is what guarantees the net
+can never go negative. Pinned by
+`tests/test_payment_create_credit_memo_netting.py` (standalone) and
+`tests/test_payment_run_credit_memo_netting.py` (runs).
+
 ### Why a payment failed, and retrying it
 
 `Payment.failure_reason` is written on every failure path — compliance refusal,
@@ -595,7 +626,7 @@ Matching payments against bank statement entries:
 |---|---|---|
 | `GET` | `/api/payments` | List payments (paginated, filterable) |
 | `GET` | `/api/payments/{id}` | Get single payment |
-| `POST` | `/api/payments` | Create individual payment |
+| `POST` | `/api/payments` | Create individual (standalone) payment. The amount is bound server-side to the invoice amount **net of applied credit memos**; `amount` in the body is optional and only a cross-check (422 on disagreement). See § Credit memos are netted on BOTH money paths. |
 | `GET` | `/api/payments/runs/` | List payment runs |
 | `POST` | `/api/payments/runs` | Create a payment run (draft) |
 | `GET` | `/api/payments/runs/{id}` | Get payment run with its payments |
