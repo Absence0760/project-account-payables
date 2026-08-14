@@ -18,7 +18,10 @@ Covered here:
     actor, and a bulk action writes one per row;
   * an autonomous agent decision writes the SAME row shape, marked ``via:agent``;
   * the whole lifecycle survives a later mutation of the exception row — that's
-    the point of putting it in ``audit_log``.
+    the point of putting it in ``audit_log``;
+  * assignment is audited too, id-only;
+  * every mutating endpoint is entity-scoped exactly like the reads, so a
+    subsidiary's queue can't be cleared (or enumerated) from another entity.
 
 Uses the real-Postgres harness so the rows are read back from the same tenant DB
 the API writes to.
@@ -468,3 +471,107 @@ async def test_agent_escalation_is_audited_and_leaves_its_reason_on_the_row(real
         assert row.resolved_by is None
         assert row.resolved_at is None
         assert row.time_to_resolution_seconds is None
+
+
+# ---------------------------------------------------------------------------
+# assignment
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_assignment_is_audited_by_id_only(realdb):
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    inv = await _make_invoice(mk, org_id, number="INV-EXCAUDIT-050")
+    exc_id = await _open_exception(mk, org_id, inv)
+    assignee = realdb.info(TENANT).users["ap_manager"]
+
+    async with realdb.client(key=TENANT, role="admin") as c:
+        res = await c.post(f"/api/exceptions/{exc_id}/assign", json={"user_id": str(assignee)})
+        assert res.status_code == 200, res.text
+        unassign = await c.post(f"/api/exceptions/{exc_id}/assign", json={"user_id": None})
+        assert unassign.status_code == 200, unassign.text
+
+    rows = await _audit_rows(mk, correlation_id=inv.correlation_id, action="exception.assigned")
+    assert len(rows) == 2
+    assert rows[0].details["assigned_to_user_id"] == str(assignee)
+    assert rows[1].details["assigned_to_user_id"] is None
+    # Names are resolvable from the control plane; the trail keeps ids.
+    assert all("assigned_to" not in r.details for r in rows)
+    assert all(r.actor_id == realdb.info(TENANT).users["admin"] for r in rows)
+
+
+# ---------------------------------------------------------------------------
+# entity scoping on the MUTATING endpoints
+# ---------------------------------------------------------------------------
+
+
+async def _second_entity(c) -> str:
+    slug = f"exc-audit-{uuid.uuid4().hex[:8]}"
+    res = await c.post("/api/entities", json={"name": "Sub Co", "slug": slug})
+    assert res.status_code == 201, res.text
+    return res.json()["id"]
+
+
+async def _stamp_entity(mk, exc_id, entity_id):
+    from app.models.exception import Exception as APException
+
+    async with mk() as s:
+        row = await s.get(APException, exc_id)
+        row.entity_id = uuid.UUID(entity_id)
+        await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_resolve_and_assign_are_entity_scoped(realdb):
+    """An exception belonging to another subsidiary must be unreachable by id
+    from the selected entity — the same opaque 404 the detail read gives, not a
+    silent cross-entity write. `duplicate` blocks a payment run, so a
+    cross-entity clear would move money the caller can't even see."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    inv = await _make_invoice(mk, org_id, number="INV-EXCAUDIT-060")
+    exc_id = await _open_exception(mk, org_id, inv)
+
+    async with realdb.client(key=TENANT, role="admin") as c:
+        other = await _second_entity(c)
+        default_id = next(e["id"] for e in (await c.get("/api/entities")).json() if e["is_default"])
+        await _stamp_entity(mk, exc_id, other)
+
+        headers = {"X-Entity-ID": default_id}
+        blocked = await c.post(
+            f"/api/exceptions/{exc_id}/resolve",
+            json={"action": "resolve", "resolution": "not mine to clear"},
+            headers=headers,
+        )
+        assert blocked.status_code == 404
+        # Indistinguishable from the (already-scoped) detail read's answer.
+        assert (await c.get(f"/api/exceptions/{exc_id}", headers=headers)).status_code == 404
+
+        blocked_assign = await c.post(
+            f"/api/exceptions/{exc_id}/assign",
+            json={"user_id": str(realdb.info(TENANT).users["ap_manager"])},
+            headers=headers,
+        )
+        assert blocked_assign.status_code == 404
+
+        bulk = await c.post(
+            "/api/exceptions/bulk/resolve",
+            json={"ids": [str(exc_id)], "action": "dismiss", "resolution": "sweep"},
+            headers=headers,
+        )
+        assert bulk.status_code == 200, bulk.text
+        body = bulk.json()
+        assert body["updated"] == 0
+        assert body["skipped"] == [{"id": str(exc_id), "reason": "not_found"}]
+
+        # Selecting the owning entity works — the scope is a filter, not a block.
+        allowed = await c.post(
+            f"/api/exceptions/{exc_id}/resolve",
+            json={"action": "resolve", "resolution": "cleared by the owning entity"},
+            headers={"X-Entity-ID": other},
+        )
+        assert allowed.status_code == 200, allowed.text
+
+    rows = await _audit_rows(mk, correlation_id=inv.correlation_id, action="exception.resolved")
+    assert len(rows) == 1, "only the in-scope decision happened, and it is audited"

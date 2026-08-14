@@ -18,6 +18,7 @@ from app.services.exception_lifecycle import (
     ACTIONABLE_STATUSES,
     RESOLUTION_ACTIONS,
     correlation_ids_for,
+    record_assignment,
     record_decision,
 )
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant_db
@@ -206,10 +207,15 @@ async def bulk_resolve(
     body: BulkResolveRequest,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Resolve / escalate / dismiss many exceptions at once. Common
     pattern: bulk-dismiss the duplicate-detection backlog after a
     semantic-dedup tuning pass.
+
+    Entity-scoped like the list/detail reads: an id outside the selected
+    entity is indistinguishable from an id that doesn't exist, so a bulk
+    call can't be used to enumerate — or clear — another subsidiary's queue.
 
     Per-row failures (already resolved, unknown id) come back in
     `skipped` with a reason — same partial-success contract as the
@@ -222,7 +228,17 @@ async def bulk_resolve(
     except ValueError as exc_:
         raise HTTPException(status_code=400, detail=f"Invalid id: {exc_}") from exc_
 
-    rows = (await db.execute(select(APException).where(APException.id.in_(ids)))).scalars().all()
+    rows = (
+        (
+            await db.execute(
+                apply_entity_scope(
+                    select(APException).where(APException.id.in_(ids)), APException, entity_id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
     seen_ids = {row.id for row in rows}
 
     updated = 0
@@ -260,8 +276,19 @@ async def resolve_exception(
     body: ResolveRequest,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    result = await db.execute(select(APException).where(APException.id == exception_id))
+    """Resolve / escalate / dismiss one exception.
+
+    Entity-scoped like the detail read — an out-of-scope id is the same opaque
+    404. This is a payment-integrity control (`duplicate` / `fraud_flag` /
+    `line_total_mismatch` block a payment run), so it must not be reachable
+    across subsidiaries by id alone."""
+    result = await db.execute(
+        apply_entity_scope(
+            select(APException).where(APException.id == exception_id), APException, entity_id
+        )
+    )
     exc = result.scalar_one_or_none()
     if not exc:
         raise HTTPException(status_code=404, detail="Exception not found")
@@ -301,10 +328,18 @@ async def assign_exception(
     db: AsyncSession = Depends(get_tenant_db),
     ctrl_db: AsyncSession = Depends(get_control_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Assign (or unassign by passing user_id=null) an open exception
-    to a specific user. The user must belong to the same organization."""
-    result = await db.execute(select(APException).where(APException.id == exception_id))
+    to a specific user. The user must belong to the same organization.
+
+    Entity-scoped like the detail read (out-of-scope id → the same opaque 404)
+    and audited: routing a control to a named owner is part of the trail."""
+    result = await db.execute(
+        apply_entity_scope(
+            select(APException).where(APException.id == exception_id), APException, entity_id
+        )
+    )
     exc = result.scalar_one_or_none()
     if not exc:
         raise HTTPException(status_code=404, detail="Exception not found")
@@ -333,8 +368,19 @@ async def assign_exception(
         exc.assigned_to_user_id = None
         exc.assigned_to = None
 
+    inv = None
+    if exc.invoice_id is not None:
+        inv = (
+            await db.execute(select(Invoice).where(Invoice.id == exc.invoice_id))
+        ).scalar_one_or_none()
+
+    await record_assignment(
+        db,
+        exception=exc,
+        assigned_to_user_id=exc.assigned_to_user_id,
+        actor_id=user.id,
+        invoice=inv,
+    )
     await db.commit()
 
-    inv_result = await db.execute(select(Invoice).where(Invoice.id == exc.invoice_id))
-    inv = inv_result.scalar_one_or_none()
     return _exception_dict(exc, inv)
