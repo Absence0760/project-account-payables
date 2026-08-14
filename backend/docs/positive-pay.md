@@ -60,6 +60,22 @@ exact: `total_amount` is `Numeric(18, 2)` — never float.
 The file-type / status string constants live on the model (`FILE_TYPE_*`,
 `STATUS_*`).
 
+### The run must have executed (422)
+
+`POST .../check-issue` refuses a run whose `executed_at` is NULL. A draft run
+has issued nothing: its payments are still `pending` with a NULL `reference`, so
+`build_check_issue_items` yields no items and the file's `meta["issued_map"]`
+persists **empty**. Combined with the idempotency slot below — claimed for good
+on first generation — that empty snapshot could never be regenerated once the
+run did execute, and `POST .../process-return` would classify every genuinely
+issued cheque `not_on_file`, raising a `fraud_flag` Exception against each real
+payment. The guard runs *before* the idempotency lookup, so an unexecuted run
+can neither mint such a file nor be handed one back.
+
+A file generated against a draft run **before** this guard existed is unusable
+for the same reason (empty `issued_map`, permanently-claimed slot): delete it
+with `DELETE /api/positive-pay/{id}` and regenerate once the run has executed.
+
 ### Idempotency
 
 The partial unique index
@@ -176,7 +192,7 @@ entity-scoped.
 
 | Method + path | Purpose |
 |---|---|
-| `POST /positive-pay/payment-runs/{run_id}/check-issue` | Generate the check-issue file for a payment run (`bank_format?` body, default `csv`). **Idempotent** on (run, format): returns the existing file 200, else renders + stores + persists 201. |
+| `POST /positive-pay/payment-runs/{run_id}/check-issue` | Generate the check-issue file for a payment run (`bank_format?` body, default `csv`). **422 unless the run has executed** (see below). **Idempotent** on (run, format): returns the existing file 200, else renders + stores + persists 201. |
 | `POST /positive-pay/ach-authorization` | Generate a standalone ACH debit-authorization file for the org (`bank_format?`). 201. |
 | `GET /positive-pay` | List files (filters: `file_type`, `status`; paginated `page` / `page_size`), entity-scoped. |
 | `GET /positive-pay/{file_id}` | Detail. |

@@ -19,7 +19,9 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.models.bank_reconciliation import BankStatement, BankTransaction
 from app.models.entity import Entity
@@ -27,6 +29,7 @@ from app.models.invoice import Invoice, InvoiceStatus
 from app.models.payment import Payment
 from app.models.vendor import Vendor
 from app.models.workflow import AuditLog
+from app.services.csv_import import MAX_CSV_IMPORT_SIZE
 
 _TODAY = date.today()
 
@@ -46,6 +49,8 @@ async def _add_payment(
     reference=None,
     submitted_at=None,
     vendor_name="Acme Supplies",
+    status="completed",
+    currency="USD",
 ) -> str:
     async with mk() as s:
         entity_id = await _default_entity_id(s)
@@ -59,7 +64,7 @@ async def _add_payment(
             vendor_name=vendor_name,
             vendor_id=vendor.id,
             amount=Decimal(amount),
-            currency="USD",
+            currency=currency,
             invoice_date=_TODAY,
             due_date=_TODAY + timedelta(days=30),
             status=InvoiceStatus.paid,
@@ -71,7 +76,7 @@ async def _add_payment(
             entity_id=entity_id,
             amount=Decimal(amount),
             method="ach",
-            status="completed",
+            status=status,
             provider_payment_id=provider_payment_id,
             reference=reference,
             submitted_at=submitted_at or datetime.now(UTC),
@@ -179,6 +184,197 @@ async def test_upload_malformed_csv_returns_422(realdb):
             files={"file": ("bad.csv", b"not,a,valid,header\r\n", "text/csv")},
         )
     assert resp.status_code == 422, resp.text
+
+
+# ---------------------------------------------------------------------------
+# Import idempotency + upload size cap
+# ---------------------------------------------------------------------------
+
+
+async def test_uploading_the_same_file_twice_returns_the_first_statement(realdb):
+    """A double-click / retried upload used to create a SECOND statement whose
+    `matched_count` was 0 — every payment on it had already been claimed by the
+    first import — so the duplicate read as "this statement didn't reconcile"
+    rather than "you imported this twice". Deduped on
+    (org, account_identifier, sha256(body)): the retry gets the original back
+    with 200, and only one row exists."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    payment_id = await _add_payment(mk, org_id, amount="512.00", provider_payment_id="TRACE-DUP1")
+
+    account = f"Dedupe ****{uuid.uuid4().hex[:4]}"
+    csv_body = _csv(
+        "Date,Amount,Reference,Description",
+        f"{_TODAY.isoformat()},-512.00,TRACE-DUP1,Vendor ACH",
+    )
+    payload = {
+        "account_identifier": account,
+        "period_start": (_TODAY - timedelta(days=30)).isoformat(),
+        "period_end": _TODAY.isoformat(),
+    }
+    async with realdb.client(key="a", role="ap_manager") as c:
+        first = await c.post(
+            "/api/bank-reconciliation/upload",
+            data=payload,
+            files={"file": ("statement.csv", csv_body, "text/csv")},
+        )
+        second = await c.post(
+            "/api/bank-reconciliation/upload",
+            data=payload,
+            files={"file": ("statement.csv", csv_body, "text/csv")},
+        )
+
+    assert first.status_code == 201, first.text
+    assert second.status_code == 200, second.text
+    assert second.json()["id"] == first.json()["id"]
+    # The idempotent reply is the REAL result, not a hollow zero-match echo.
+    assert second.json()["matched_count"] == 1
+    assert second.json()["transactions"][0]["matched_payment_id"] == payment_id
+
+    async with mk() as s:
+        rows = (
+            (
+                await s.execute(
+                    select(BankStatement).where(BankStatement.account_identifier == account)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1
+        assert rows[0].content_hash is not None
+
+
+async def test_a_different_file_on_the_same_account_still_imports(realdb):
+    """Dedupe is on the file's CONTENT, not the account: a genuine second
+    statement for the same account (next period) must still import."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _add_payment(mk, org_id, amount="61.00")
+
+    account = f"Dedupe ****{uuid.uuid4().hex[:4]}"
+    payload = {
+        "account_identifier": account,
+        "period_start": (_TODAY - timedelta(days=30)).isoformat(),
+        "period_end": _TODAY.isoformat(),
+    }
+    async with realdb.client(key="a", role="ap_manager") as c:
+        first = await c.post(
+            "/api/bank-reconciliation/upload",
+            data=payload,
+            files={
+                "file": (
+                    "jan.csv",
+                    _csv("Date,Amount,Description", f"{_TODAY.isoformat()},-61.00,January"),
+                    "text/csv",
+                )
+            },
+        )
+        second = await c.post(
+            "/api/bank-reconciliation/upload",
+            data=payload,
+            files={
+                "file": (
+                    "feb.csv",
+                    _csv("Date,Amount,Description", f"{_TODAY.isoformat()},-62.00,February"),
+                    "text/csv",
+                )
+            },
+        )
+    assert first.status_code == 201, first.text
+    assert second.status_code == 201, second.text
+    assert second.json()["id"] != first.json()["id"]
+
+
+async def test_two_concurrent_uploads_cannot_both_claim_one_payment(realdb):
+    """The handler's retry loop, driven for real.
+
+    Two DIFFERENT statements uploaded at once, each carrying a line that
+    references the SAME payment. Each request's matcher builds its `claimed`
+    set before the other commits, so both believe the payment is free — the one
+    guard the application layer cannot win. `uq_bank_transactions_matched_payment`
+    settles it, and the loser rolls back and re-runs its whole import rather
+    than 500ing and losing every other line on its file: on the second pass its
+    matcher sees the winner's claim and leaves that line unmatched.
+
+    Asserted on the durable outcome: both files imported, exactly one claimant.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    payment_id = await _add_payment(mk, org_id, amount="909.00", provider_payment_id="TRACE-RACE")
+
+    async def _upload(tag: str):
+        body = _csv(
+            "Date,Amount,Reference,Description",
+            f"{_TODAY.isoformat()},-909.00,TRACE-RACE,Wire {tag}",
+            # A second, unrelated line — the point of retrying rather than
+            # 500ing is that the loser doesn't lose THIS one too.
+            f"{_TODAY.isoformat()},-{tag}.00,,Other line {tag}",
+        )
+        async with realdb.client(key="a", role="ap_manager") as client:
+            resp = await client.post(
+                "/api/bank-reconciliation/upload",
+                data={
+                    "account_identifier": f"Race ****{tag}",
+                    "period_start": (_TODAY - timedelta(days=30)).isoformat(),
+                    "period_end": _TODAY.isoformat(),
+                },
+                files={"file": (f"statement-{tag}.csv", body, "text/csv")},
+            )
+            return resp.status_code, resp.json()
+
+    results = await asyncio.gather(_upload("11"), _upload("22"))
+    codes = sorted(code for code, _ in results)
+    assert codes == [201, 201], f"both imports should land, got {codes}"
+
+    # Both files kept all their lines — the loser re-ran, it didn't lose the file.
+    for _, body in results:
+        assert body["transaction_count"] == 2
+        assert len(body["transactions"]) == 2
+
+    async with mk() as s:
+        claimants = (
+            (
+                await s.execute(
+                    select(BankTransaction).where(
+                        BankTransaction.matched_payment_id == uuid.UUID(payment_id)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(claimants) == 1, "one payment was claimed by two bank transactions"
+        # And exactly one audit row per statement — a retried attempt must not
+        # double-audit the import.
+        audits = (
+            (
+                await s.execute(
+                    select(AuditLog).where(AuditLog.action == "bank_reconciliation.imported")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(audits) == 2, f"expected one audit row per statement, got {len(audits)}"
+
+
+async def test_upload_over_the_size_cap_is_rejected(realdb):
+    """`await file.read()` was unbounded, so any authenticated manager could
+    buffer an arbitrarily large body into process memory before a single check
+    ran. The read is now capped and aborts mid-stream."""
+    oversized = b"Date,Amount,Description\r\n" + (b"x" * (MAX_CSV_IMPORT_SIZE + 1024))
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/bank-reconciliation/upload",
+            data={
+                "account_identifier": "Operating ****9020",
+                "period_start": (_TODAY - timedelta(days=30)).isoformat(),
+                "period_end": _TODAY.isoformat(),
+            },
+            files={"file": ("huge.csv", oversized, "text/csv")},
+        )
+    assert resp.status_code == 413, resp.text
 
 
 # ---------------------------------------------------------------------------
@@ -581,6 +777,139 @@ async def test_manual_resolve_cannot_stamp_a_wrong_amount_as_reconciled(realdb):
         assert audit.details["variance_amount"] == "99899.00"
 
 
+async def test_upload_flags_a_debit_against_a_failed_payment_as_status_conflict(realdb):
+    """End-to-end proof of the second half of the matcher fix. The bank moved
+    money on a line carrying the trace number of a payment our books call
+    `failed` — our records and the bank's disagree about whether it went out at
+    all. That used to come back `provider_id` / confidence 100 / reconciled,
+    converting the discrepancy into a sign-off. It must stay linked but
+    classified `status_conflict`, out of `matched_count`, and visible on the
+    statement's `discrepancy_count` and in `/outstanding`."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    payment_id = await _add_payment(
+        mk, org_id, amount="640.00", provider_payment_id="TRACE-SC1", status="failed"
+    )
+
+    csv_body = _csv(
+        "Date,Amount,Reference,Description",
+        f"{_TODAY.isoformat()},-640.00,TRACE-SC1,Wire out",
+    )
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/bank-reconciliation/upload",
+            data={
+                "account_identifier": "Operating ****9010",
+                "period_start": (_TODAY - timedelta(days=30)).isoformat(),
+                "period_end": _TODAY.isoformat(),
+            },
+            files={"file": ("statement.csv", csv_body, "text/csv")},
+        )
+        assert resp.status_code == 201, resp.text
+        outstanding = await c.get("/api/bank-reconciliation/outstanding")
+
+    body = resp.json()
+    assert body["matched_count"] == 0
+    assert body["amount_mismatch_count"] == 0  # the amounts DO agree
+    assert body["discrepancy_count"] == 1
+
+    tx = body["transactions"][0]
+    assert tx["matched_payment_id"] == payment_id
+    assert tx["match_method"] == "status_conflict"
+    assert tx["is_reconciled"] is False
+    assert tx["matched_payment_status"] == "failed"
+
+    # Linked lines drop out of `unmatched_debits` and a `failed` payment was
+    # never in `uncleared_payments` — the discrepancy bucket is the ONLY place
+    # this can surface, so it has to be there.
+    row = next(d for d in outstanding.json()["discrepancies"] if d["payment_id"] == payment_id)
+    assert row["classification"] == "status_conflict"
+    assert row["payment_status"] == "failed"
+    assert row["variance_amount"] is None  # the amounts agree; nothing to report
+
+
+async def test_upload_flags_a_debit_in_another_currency_as_currency_mismatch(realdb):
+    """`BankTransaction.currency` was never compared, so a EUR 1,000 debit
+    reconciled a USD 1,000 payment — two different sums of money signed off as
+    one. Linked (the reference identifies it) but `currency_mismatch`, and NO
+    variance is reported: subtracting across currencies isn't money."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    payment_id = await _add_payment(
+        mk, org_id, amount="1000.00", provider_payment_id="TRACE-CC1", currency="USD"
+    )
+
+    csv_body = _csv(
+        "Date,Amount,Reference,Description",
+        f"{_TODAY.isoformat()},-1000.00,TRACE-CC1,SEPA out",
+    )
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/bank-reconciliation/upload",
+            data={
+                "account_identifier": "Operating ****9011",
+                "period_start": (_TODAY - timedelta(days=30)).isoformat(),
+                "period_end": _TODAY.isoformat(),
+                "currency": "EUR",
+            },
+            files={"file": ("statement.csv", csv_body, "text/csv")},
+        )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["matched_count"] == 0
+    assert body["discrepancy_count"] == 1
+
+    tx = body["transactions"][0]
+    assert tx["matched_payment_id"] == payment_id
+    assert tx["match_method"] == "currency_mismatch"
+    assert tx["is_reconciled"] is False
+    assert tx["currency"] == "EUR"
+    assert tx["matched_payment_currency"] == "USD"
+    assert tx["variance_amount"] is None
+
+
+async def test_manual_resolve_cannot_stamp_a_failed_payment_as_reconciled(realdb):
+    """The manual path runs the SAME classifier as the matcher, so a clerk
+    cannot resolve a bank line onto a payment our books say never went out and
+    have it counted as cleared."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    payment_id = await _add_payment(mk, org_id, amount="333.00", status="voided")
+
+    csv_body = _csv(
+        "Date,Amount,Description",
+        f"{_TODAY.isoformat()},-333.00,Mystery debit",
+    )
+    async with realdb.client(key="a", role="ap_manager") as c:
+        up = await c.post(
+            "/api/bank-reconciliation/upload",
+            data={
+                "account_identifier": "Operating ****9012",
+                "period_start": (_TODAY - timedelta(days=30)).isoformat(),
+                "period_end": _TODAY.isoformat(),
+            },
+            files={"file": ("statement.csv", csv_body, "text/csv")},
+        )
+        assert up.status_code == 201, up.text
+        # The auto-matcher refused it outright (a heuristic never links a
+        # non-dispatched payment), so the line arrives unmatched.
+        assert up.json()["transactions"][0]["matched_payment_id"] is None
+        stmt_id = up.json()["id"]
+        tx_id = up.json()["transactions"][0]["id"]
+
+        resolved = await c.post(
+            f"/api/bank-reconciliation/{stmt_id}/transactions/{tx_id}/resolve",
+            json={"matched_payment_id": payment_id},
+        )
+
+    assert resolved.status_code == 200, resolved.text
+    tx = resolved.json()["transactions"][0]
+    assert tx["matched_payment_id"] == payment_id
+    assert tx["match_method"] == "status_conflict"
+    assert tx["is_reconciled"] is False
+    assert resolved.json()["matched_count"] == 0
+
+
 async def test_duplicate_payment_reference_does_not_500_the_import(realdb):
     """`Payment.reference` carries no unique constraint and the virtual-card
     path stamps a derived, deliberately non-unique value. The reference lookup
@@ -670,7 +999,8 @@ async def test_outstanding_reports_uncleared_unmatched_and_mismatched(realdb):
     # Accounted for in the mismatch bucket — must not be double-reported.
     assert mismatched_id not in uncleared_ids
 
-    mismatch = next(m for m in body["amount_mismatches"] if m["payment_id"] == mismatched_id)
+    mismatch = next(m for m in body["discrepancies"] if m["payment_id"] == mismatched_id)
+    assert mismatch["classification"] == "amount_mismatch"
     assert Decimal(str(mismatch["bank_amount"])) == Decimal("275.50")
     assert Decimal(str(mismatch["payment_amount"])) == Decimal("200.00")
     assert Decimal(str(mismatch["variance_amount"])) == Decimal("75.50")
@@ -850,6 +1180,66 @@ async def test_concurrent_resolve_cannot_claim_one_payment_twice(realdb):
             .all()
         )
         assert len(claimants) == 1, "one payment was claimed by two bank transactions"
+
+
+async def test_a_second_claim_on_one_payment_is_impossible_at_the_db_layer(realdb):
+    """The application enforces "one payment, one bank transaction" twice — the
+    matcher's `claimed` set and `/resolve`'s row-locked check — but neither
+    survives two concurrent `/upload`s, which each read their `claimed` set
+    before either commits. `uq_bank_transactions_matched_payment` (migration
+    0081) is the backstop, and this asserts it exists and BITES: a direct write
+    that bypasses every application check still cannot persist a second
+    claimant."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    payment_id = await _add_payment(mk, org_id, amount="77.00", provider_payment_id="TRACE-UQ1")
+
+    csv_body = _csv(
+        "Date,Amount,Reference,Description",
+        f"{_TODAY.isoformat()},-77.00,TRACE-UQ1,Claimed",
+        f"{_TODAY.isoformat()},-77.00,,Second line",
+    )
+    async with realdb.client(key="a", role="ap_manager") as c:
+        up = await c.post(
+            "/api/bank-reconciliation/upload",
+            data={
+                "account_identifier": "Operating ****9030",
+                "period_start": (_TODAY - timedelta(days=30)).isoformat(),
+                "period_end": _TODAY.isoformat(),
+            },
+            files={"file": ("statement.csv", csv_body, "text/csv")},
+        )
+    assert up.status_code == 201, up.text
+    rows = up.json()["transactions"]
+    claimed = next(t for t in rows if t["matched_payment_id"] == payment_id)
+    free = next(t for t in rows if t["matched_payment_id"] is None)
+    assert claimed["id"] != free["id"]
+
+    # Straight to the DB, past the router's checks entirely.
+    async with mk() as s:
+        tx = (
+            await s.execute(
+                select(BankTransaction).where(BankTransaction.id == uuid.UUID(free["id"]))
+            )
+        ).scalar_one()
+        tx.matched_payment_id = uuid.UUID(payment_id)
+        with pytest.raises(IntegrityError):
+            await s.commit()
+        await s.rollback()
+
+    async with mk() as s:
+        claimants = (
+            (
+                await s.execute(
+                    select(BankTransaction).where(
+                        BankTransaction.matched_payment_id == uuid.UUID(payment_id)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(claimants) == 1
 
 
 async def test_outstanding_readable_by_ap_clerk(realdb):

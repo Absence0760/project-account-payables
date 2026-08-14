@@ -30,15 +30,22 @@ Two units under test:
          outcome bucketing
        - a reference hit whose AMOUNT differs from the payment's is
          classified `amount_mismatch` — linked but never reconciled
+       - a reference hit whose CURRENCY differs is `currency_mismatch`,
+         and one against a payment our books say never went out is
+         `status_conflict` — both linked, neither reconciled
+       - the heuristics (amount+date, fuzzy vendor) refuse a
+         non-dispatched or wrong-currency payment as a candidate
+         outright, rather than inventing a discrepancy from a
+         coincidence
        - an AMBIGUOUS reference (two payments carry it) is treated as
          no reference match, not as a crash
 
 A regression that mis-counted matched / unmatched is a soft fail
 (operations annoyance). A regression that matched the wrong payment
 is a hard fail — it credits the wrong invoice and breaks GL. A
-regression that reports an amount-mismatched line as reconciled is
-worse still: it signs off on money that left the account at an amount
-nobody authorised.
+regression that reports a discrepancy line as reconciled is worse
+still: it signs off on money that left the account at an amount, in a
+currency, or against a payment nobody authorised.
 """
 
 from __future__ import annotations
@@ -53,14 +60,21 @@ import pytest
 
 from app.services.bank_reconciliation import (
     MATCH_METHOD_AMOUNT_MISMATCH,
+    MATCH_METHOD_CURRENCY_MISMATCH,
     MATCH_METHOD_PROVIDER_ID,
+    MATCH_METHOD_STATUS_CONFLICT,
     StatementImportError,
+    classify_discrepancy,
     is_amount_mismatch,
     is_reconciled,
     match_statement_transactions,
     match_variance,
     parse_csv_statement,
+    settlement_amount_and_currency,
 )
+
+# The zero-discrepancy baseline every outcome-count assertion starts from.
+_NO_DISCREPANCIES = {"amount_mismatch": 0, "currency_mismatch": 0, "status_conflict": 0}
 
 
 def _csv(*lines: str) -> bytes:
@@ -291,12 +305,14 @@ def _tx(
     counterparty=None,
     direction="debit",
     organization_id=None,
+    currency="USD",
 ):
     return SimpleNamespace(
         id=uuid.uuid4(),
         organization_id=organization_id or uuid.uuid4(),
         transaction_date=date_ or date(2026, 5, 1),
         amount=amount,
+        currency=currency,
         direction=direction,
         reference=reference,
         counterparty_name=counterparty,
@@ -315,11 +331,21 @@ def _payment(
     provider_payment_id=None,
     reference=None,
     invoice_id=None,
+    status="completed",
+    source_amount=None,
+    source_currency=None,
 ):
     return SimpleNamespace(
         id=uuid.uuid4(),
         invoice_id=invoice_id or uuid.uuid4(),
         amount=amount,
+        # Default `completed`: a payment our books say went to the bank, which
+        # is what every pre-existing matching case assumes.
+        status=status,
+        # The FX leg. NULL on a domestic payment — then the settlement pair is
+        # (`amount`, the invoice's currency).
+        source_amount=source_amount,
+        source_currency=source_currency,
         submitted_at=submitted_at,
         completed_at=None,
         created_at=submitted_at,
@@ -328,8 +354,8 @@ def _payment(
     )
 
 
-def _invoice(*, vendor_name="Acme Corp", id_=None):
-    return SimpleNamespace(id=id_ or uuid.uuid4(), vendor_name=vendor_name)
+def _invoice(*, vendor_name="Acme Corp", id_=None, currency="USD"):
+    return SimpleNamespace(id=id_ or uuid.uuid4(), vendor_name=vendor_name, currency=currency)
 
 
 def _as_list(value) -> list:
@@ -426,7 +452,7 @@ async def test_match_by_provider_payment_id_wins_with_full_confidence():
         "matched": 1,
         "unmatched": 0,
         "skipped_credit": 0,
-        "amount_mismatch": 0,
+        **_NO_DISCREPANCIES,
     }
     assert tx.matched_payment_id == payment.id
     assert tx.match_method == "provider_id"
@@ -468,7 +494,7 @@ async def test_match_skips_credit_transactions():
         "matched": 0,
         "unmatched": 0,
         "skipped_credit": 1,
-        "amount_mismatch": 0,
+        **_NO_DISCREPANCIES,
     }
     assert tx.matched_payment_id is None
 
@@ -579,7 +605,7 @@ async def test_match_returns_full_outcome_counts():
         "matched": 2,
         "unmatched": 1,
         "skipped_credit": 1,
-        "amount_mismatch": 0,
+        **_NO_DISCREPANCIES,
     }
 
 
@@ -609,7 +635,7 @@ async def test_match_does_not_double_claim_a_payment_within_one_batch():
         "matched": 1,
         "unmatched": 1,
         "skipped_credit": 0,
-        "amount_mismatch": 0,
+        **_NO_DISCREPANCIES,
     }
     assert tx1.matched_payment_id == payment.id
     assert tx2.matched_payment_id is None
@@ -634,7 +660,7 @@ async def test_match_does_not_reclaim_a_payment_already_matched_by_a_prior_state
         "matched": 0,
         "unmatched": 1,
         "skipped_credit": 0,
-        "amount_mismatch": 0,
+        **_NO_DISCREPANCIES,
     }
     assert tx.matched_payment_id is None
 
@@ -665,14 +691,91 @@ def test_is_amount_mismatch_uses_a_one_cent_tolerance():
     assert is_amount_mismatch(Decimal("50000.00"), Decimal("5000.00"))
 
 
-def test_is_reconciled_excludes_amount_mismatch():
-    """A linked-but-mismatched line must never roll into `matched_count` —
-    that would report the discrepancy as cleared."""
+def test_is_reconciled_excludes_every_discrepancy_class():
+    """A linked-but-unreconciled line must never roll into `matched_count` —
+    that would report the discrepancy as cleared. All three classes, so adding
+    one without teaching the rollup about it fails here."""
     pid = uuid.uuid4()
     assert is_reconciled(MATCH_METHOD_PROVIDER_ID, pid)
     assert is_reconciled("manual", pid)
     assert not is_reconciled(MATCH_METHOD_AMOUNT_MISMATCH, pid)
+    assert not is_reconciled(MATCH_METHOD_CURRENCY_MISMATCH, pid)
+    assert not is_reconciled(MATCH_METHOD_STATUS_CONFLICT, pid)
     assert not is_reconciled(None, None)
+
+
+# ---------------------------------------------------------------------------
+# The settlement pair + the discrepancy classifier (pure).
+# ---------------------------------------------------------------------------
+
+
+def test_settlement_pair_is_the_amount_that_left_the_account():
+    """A domestic payment settles at `Payment.amount` in the invoice's
+    currency; one with an FX leg settles at the home-currency `source_amount` /
+    `source_currency` the rate was locked against. Comparing a bank line to the
+    wrong half of that pair either flags every international payment as a
+    phantom discrepancy or reconciles it at a number that never left the
+    account."""
+    domestic = _payment(amount=Decimal("1000.00"))
+    assert settlement_amount_and_currency(domestic, "USD") == (Decimal("1000.00"), "USD")
+
+    # EUR 1,000 invoice paid from a USD account at 0.92 → USD 1,086.96 leaves.
+    fx = _payment(
+        amount=Decimal("1000.00"),
+        source_amount=Decimal("1086.96"),
+        source_currency="usd",
+    )
+    assert settlement_amount_and_currency(fx, "EUR") == (Decimal("1086.96"), "USD")
+
+    # No invoice row to read → currency unknown, never guessed.
+    assert settlement_amount_and_currency(domestic, None) == (Decimal("1000.00"), "")
+
+
+def test_classify_discrepancy_precedence_and_clean_case():
+    """Currency → amount → status. A currency mismatch outranks the amount
+    check because the two figures aren't comparable at all; an unknown currency
+    on either side skips only the currency test, so missing data can never
+    manufacture a discrepancy."""
+    clean = dict(
+        bank_amount=Decimal("100.00"),
+        bank_currency="USD",
+        payment_amount=Decimal("100.00"),
+        payment_currency="USD",
+        payment_status="completed",
+    )
+    assert classify_discrepancy(**clean) is None
+    assert (
+        classify_discrepancy(**{**clean, "bank_currency": "EUR"}) == MATCH_METHOD_CURRENCY_MISMATCH
+    )
+    # Currency wins over an amount gap AND over a bad status.
+    assert (
+        classify_discrepancy(
+            **{
+                **clean,
+                "bank_currency": "EUR",
+                "bank_amount": Decimal("900.00"),
+                "payment_status": "failed",
+            }
+        )
+        == MATCH_METHOD_CURRENCY_MISMATCH
+    )
+    # Amount wins over status.
+    assert (
+        classify_discrepancy(
+            **{**clean, "bank_amount": Decimal("900.00"), "payment_status": "failed"}
+        )
+        == MATCH_METHOD_AMOUNT_MISMATCH
+    )
+    for status in ("failed", "voided", "cancelled", "pending", "pending_compliance"):
+        assert (
+            classify_discrepancy(**{**clean, "payment_status": status})
+            == MATCH_METHOD_STATUS_CONFLICT
+        )
+    for status in ("completed", "submitted", "processing"):
+        assert classify_discrepancy(**{**clean, "payment_status": status}) is None
+    # Unknown currency on either side → the currency test is skipped, not failed.
+    assert classify_discrepancy(**{**clean, "payment_currency": ""}) is None
+    assert classify_discrepancy(**{**clean, "bank_currency": None}) is None
 
 
 @pytest.mark.asyncio
@@ -698,6 +801,7 @@ async def test_reference_hit_with_different_amount_is_amount_mismatch_not_matche
         "matched": 0,
         "unmatched": 0,
         "skipped_credit": 0,
+        **_NO_DISCREPANCIES,
         "amount_mismatch": 1,
     }
     assert tx.matched_payment_id == payment.id  # linked, so it is traceable
@@ -722,6 +826,121 @@ async def test_amount_mismatch_still_claims_the_payment():
     assert counts["matched"] == 0
     assert mismatched.matched_payment_id == payment.id
     assert later.matched_payment_id is None
+
+
+@pytest.mark.asyncio
+async def test_reference_hit_against_a_non_dispatched_payment_is_status_conflict():
+    """A bank debit carrying the trace number of a payment our books call
+    `failed` means money left the account against something we believe never
+    went out — the exact discrepancy reconciliation exists to surface. The
+    matcher used to ignore `Payment.status` entirely and stamp this
+    `provider_id` / confidence 100 / matched, converting the discrepancy into a
+    clean reconciliation. It must stay LINKED but classified `status_conflict`
+    and excluded from the reconciled count."""
+    payment = _payment(amount=Decimal("100.00"), provider_payment_id="TRACE-SC", status="failed")
+    tx = _tx(reference="TRACE-SC", amount=Decimal("100.00"))
+    db = _mock_db(by_provider_id={"TRACE-SC": payment})
+
+    counts = await match_statement_transactions(db, [tx])
+
+    assert counts == {
+        "matched": 0,
+        "unmatched": 0,
+        "skipped_credit": 0,
+        **_NO_DISCREPANCIES,
+        "status_conflict": 1,
+    }
+    assert tx.matched_payment_id == payment.id  # linked, so it is traceable
+    assert tx.match_method == MATCH_METHOD_STATUS_CONFLICT
+    assert not is_reconciled(tx.match_method, tx.matched_payment_id)
+
+
+@pytest.mark.asyncio
+async def test_reference_hit_in_a_different_currency_is_currency_mismatch():
+    """`BankTransaction.currency` was never compared, so a €1,000 debit matched
+    a $1,000 payment at confidence 100 — two different sums of money reported
+    as one cleared payment. Linked (the reference does identify it) but
+    classified `currency_mismatch`, never reconciled."""
+    invoice_id = uuid.uuid4()
+    payment = _payment(
+        amount=Decimal("1000.00"), provider_payment_id="TRACE-CC", invoice_id=invoice_id
+    )
+    invoice = _invoice(id_=invoice_id, currency="USD")
+    tx = _tx(reference="TRACE-CC", amount=Decimal("1000.00"), currency="EUR")
+    db = _mock_db(by_provider_id={"TRACE-CC": payment}, invoices=[invoice])
+
+    counts = await match_statement_transactions(db, [tx])
+
+    assert counts["currency_mismatch"] == 1
+    assert counts["matched"] == 0
+    assert tx.matched_payment_id == payment.id
+    assert tx.match_method == MATCH_METHOD_CURRENCY_MISMATCH
+    assert not is_reconciled(tx.match_method, tx.matched_payment_id)
+
+
+@pytest.mark.asyncio
+async def test_reference_hit_on_an_fx_payment_reconciles_against_its_source_leg():
+    """An international payment leaves the account in the HOME currency at
+    `source_amount`. Comparing the bank line to `Payment.amount` (the invoice
+    currency) instead would flag every such payment as a phantom discrepancy —
+    the false-positive flood that makes a real one invisible."""
+    invoice_id = uuid.uuid4()
+    payment = _payment(
+        amount=Decimal("1000.00"),  # EUR invoice
+        source_amount=Decimal("1086.96"),  # USD actually debited
+        source_currency="USD",
+        provider_payment_id="TRACE-FX",
+        invoice_id=invoice_id,
+    )
+    db = _mock_db(
+        by_provider_id={"TRACE-FX": payment},
+        invoices=[_invoice(id_=invoice_id, currency="EUR")],
+    )
+    tx = _tx(reference="TRACE-FX", amount=Decimal("1086.96"), currency="USD")
+
+    counts = await match_statement_transactions(db, [tx])
+
+    assert counts["matched"] == 1
+    assert counts["currency_mismatch"] == 0
+    assert counts["amount_mismatch"] == 0
+    assert tx.match_method == MATCH_METHOD_PROVIDER_ID
+
+
+@pytest.mark.asyncio
+async def test_amount_date_strategy_ignores_a_non_dispatched_payment():
+    """The heuristics have no identity proof — only a coincidence of amount and
+    date — so a payment our books say never went out is not a candidate at all.
+    Linking one would fabricate a `status_conflict` out of a coincidence, which
+    is worse than leaving the line unmatched for a human."""
+    payment = _payment(
+        amount=Decimal("100"), submitted_at=datetime(2026, 5, 1, tzinfo=UTC), status="voided"
+    )
+    tx = _tx(amount=Decimal("100"), date_=date(2026, 5, 3))
+    db = _mock_db(payments=[payment])
+
+    counts = await match_statement_transactions(db, [tx])
+
+    assert counts["unmatched"] == 1
+    assert tx.matched_payment_id is None
+
+
+@pytest.mark.asyncio
+async def test_amount_date_strategy_ignores_a_wrong_currency_payment():
+    """Same refusal on the currency axis: a €100 debit is not the clearing of a
+    $100 payment, however well the dates line up."""
+    invoice_id = uuid.uuid4()
+    payment = _payment(
+        amount=Decimal("100"),
+        submitted_at=datetime(2026, 5, 1, tzinfo=UTC),
+        invoice_id=invoice_id,
+    )
+    db = _mock_db(payments=[payment], invoices=[_invoice(id_=invoice_id, currency="USD")])
+    tx = _tx(amount=Decimal("100"), date_=date(2026, 5, 3), currency="EUR")
+
+    counts = await match_statement_transactions(db, [tx])
+
+    assert counts["unmatched"] == 1
+    assert tx.matched_payment_id is None
 
 
 @pytest.mark.asyncio

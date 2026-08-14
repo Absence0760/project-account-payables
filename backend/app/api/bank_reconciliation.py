@@ -20,13 +20,25 @@ books — mirrors how ``GLAccount`` treats an unscoped row as shared.
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
-from sqlalchemy import Date, cast, func, or_, select
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
+from sqlalchemy import Date, case, cast, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -42,10 +54,10 @@ from app.models.invoice import Invoice
 from app.models.payment import Payment
 from app.models.user import User
 from app.schemas.bank_reconciliation import (
-    AmountMismatchResponse,
     BankStatementListResponse,
     BankStatementResponse,
     BankTransactionResponse,
+    DiscrepancyResponse,
     OutstandingItemsResponse,
     TransactionResolveRequest,
     UnclearedPaymentResponse,
@@ -53,15 +65,20 @@ from app.schemas.bank_reconciliation import (
 )
 from app.services.audit_dispatch import dispatch_audit
 from app.services.bank_reconciliation import (
+    EXPECTED_TO_CLEAR_STATUSES,
     MATCH_METHOD_AMOUNT_MISMATCH,
     MATCH_METHOD_MANUAL,
+    UNRECONCILED_MATCH_METHODS,
     StatementImportError,
-    is_amount_mismatch,
+    classify_discrepancy,
     is_reconciled,
     match_statement_transactions,
     match_variance,
     parse_csv_statement,
+    settlement_amount_and_currency,
+    settlement_amount_sql,
 )
+from app.services.csv_import import MAX_CSV_IMPORT_SIZE
 from app.tenant import get_tenant_db
 
 router = APIRouter(prefix="/bank-reconciliation", tags=["bank-reconciliation"])
@@ -97,9 +114,16 @@ async def _get_scoped(
 @dataclass(frozen=True)
 class _PaymentContext:
     """The matched payment's fields a transaction row needs to render. Fetched
-    in one join so a statement's transactions never fan out into an N+1."""
+    in one join so a statement's transactions never fan out into an N+1.
+
+    ``amount`` / ``currency`` are the SETTLEMENT pair — what the bank account
+    was actually debited (`services.bank_reconciliation
+    .settlement_amount_and_currency`), which is the FX leg's home-currency
+    figure for an international payment and ``Payment.amount`` otherwise."""
 
     amount: Decimal
+    currency: str
+    status: str
     invoice_number: str | None
 
 
@@ -108,21 +132,40 @@ async def _matched_payment_context(
 ) -> dict[uuid.UUID, _PaymentContext]:
     """One query → {payment_id: _PaymentContext} for every matched transaction
     — joins through Payment.invoice_id since a BankTransaction only stores the
-    payment FK. The payment's own amount comes back too, so the variance on an
-    `amount_mismatch` row is computable without a second request."""
+    payment FK. The payment's settlement amount + currency and its own status
+    come back too, so every discrepancy class is explainable from the row
+    without a second request."""
     payment_ids = {t.matched_payment_id for t in transactions if t.matched_payment_id is not None}
     if not payment_ids:
         return {}
     rows = (
         await db.execute(
-            select(Payment.id, Payment.amount, Invoice.invoice_number)
+            select(Payment, Invoice.invoice_number, Invoice.currency)
             .join(Invoice, Invoice.id == Payment.invoice_id)
             .where(Payment.id.in_(payment_ids))
         )
     ).all()
-    return {
-        pid: _PaymentContext(amount=amount, invoice_number=number) for pid, amount, number in rows
-    }
+    out: dict[uuid.UUID, _PaymentContext] = {}
+    for payment, number, invoice_currency in rows:
+        amount, currency = settlement_amount_and_currency(payment, invoice_currency)
+        out[payment.id] = _PaymentContext(
+            amount=amount,
+            currency=currency,
+            status=payment.status,
+            invoice_number=number,
+        )
+    return out
+
+
+def _comparable_variance(
+    bank_amount: Decimal, bank_currency: str | None, ctx: _PaymentContext
+) -> Decimal | None:
+    """The signed gap, or ``None`` when the two sides aren't in the same
+    currency. Subtracting €1,000 from $1,000 produces a number, not a fact."""
+    bank_ccy = (bank_currency or "").strip().upper()
+    if bank_ccy and ctx.currency and bank_ccy != ctx.currency:
+        return None
+    return match_variance(bank_amount, ctx.amount)
 
 
 def _tx_to_response(
@@ -145,13 +188,15 @@ def _tx_to_response(
         match_confidence=float(tx.match_confidence) if tx.match_confidence is not None else None,
         matched_at=tx.matched_at.isoformat() if tx.matched_at else None,
         matched_payment_amount=ctx.amount if ctx else None,
-        variance_amount=match_variance(tx.amount, ctx.amount) if ctx else None,
+        matched_payment_currency=ctx.currency or None if ctx else None,
+        matched_payment_status=ctx.status if ctx else None,
+        variance_amount=_comparable_variance(tx.amount, tx.currency, ctx) if ctx else None,
         is_reconciled=is_reconciled(tx.match_method, tx.matched_payment_id),
     )
 
 
 def _statement_to_response(
-    stmt: BankStatement, *, amount_mismatch_count: int = 0
+    stmt: BankStatement, *, amount_mismatch_count: int = 0, discrepancy_count: int = 0
 ) -> BankStatementResponse:
     return BankStatementResponse(
         id=str(stmt.id),
@@ -166,31 +211,43 @@ def _statement_to_response(
         transaction_count=stmt.transaction_count,
         matched_count=stmt.matched_count,
         amount_mismatch_count=amount_mismatch_count,
+        discrepancy_count=discrepancy_count,
         imported_at=stmt.imported_at.isoformat() if stmt.imported_at else "",
         created_at=stmt.created_at.isoformat() if stmt.created_at else "",
         transactions=None,
     )
 
 
-async def _amount_mismatch_counts(
+async def _discrepancy_counts(
     db: AsyncSession, statement_ids: list[uuid.UUID]
-) -> dict[uuid.UUID, int]:
-    """One grouped query → {statement_id: amount_mismatch count} for a whole
-    page of statements. A discrepancy a user has to open each statement to
-    notice is a discrepancy nobody notices, so the list carries it too."""
+) -> dict[uuid.UUID, tuple[int, int]]:
+    """One grouped query → {statement_id: (amount_mismatch, all_discrepancies)}
+    for a whole page of statements. A discrepancy a user has to open each
+    statement to notice is a discrepancy nobody notices, so the list carries
+    both: the amount-mismatch subset (the fraud-shaped one) and every
+    linked-but-unreconciled line."""
     if not statement_ids:
         return {}
     rows = (
         await db.execute(
-            select(BankTransaction.statement_id, func.count())
+            select(
+                BankTransaction.statement_id,
+                func.count(),
+                func.sum(
+                    case(
+                        (BankTransaction.match_method == MATCH_METHOD_AMOUNT_MISMATCH, 1),
+                        else_=0,
+                    )
+                ),
+            )
             .where(
                 BankTransaction.statement_id.in_(statement_ids),
-                BankTransaction.match_method == MATCH_METHOD_AMOUNT_MISMATCH,
+                BankTransaction.match_method.in_(UNRECONCILED_MATCH_METHODS),
             )
             .group_by(BankTransaction.statement_id)
         )
     ).all()
-    return {sid: count for sid, count in rows}
+    return {sid: (int(mismatches or 0), int(total)) for sid, total, mismatches in rows}
 
 
 async def _recompute_matched_count(db: AsyncSession, stmt: BankStatement) -> None:
@@ -226,6 +283,7 @@ async def _detail_response(db: AsyncSession, stmt: BankStatement) -> BankStateme
         amount_mismatch_count=sum(
             1 for r in rows if r.match_method == MATCH_METHOD_AMOUNT_MISMATCH
         ),
+        discrepancy_count=sum(1 for r in rows if r.match_method in UNRECONCILED_MATCH_METHODS),
     )
     resp.transactions = rows
     return resp
@@ -235,9 +293,48 @@ async def _detail_response(db: AsyncSession, stmt: BankStatement) -> BankStateme
 # Import
 # --------------------------------------------------------------------------- #
 
+# Read the upload in bounded chunks rather than one `await file.read()`: an
+# unbounded read lets any authenticated manager (or a stuck client) buffer an
+# arbitrarily large body into process memory before a single check runs.
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+async def _read_capped(file: UploadFile, limit: int) -> bytes:
+    """Buffer the upload, aborting the moment it exceeds ``limit``.
+
+    Bounded at ``limit + one chunk``, unlike a read-then-measure — by the time
+    ``len(raw) > limit`` can be evaluated, the memory has already been spent.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await file.read(_UPLOAD_CHUNK_BYTES):
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(
+                status_code=413,
+                detail=f"CSV exceeds maximum size of {limit // (1024 * 1024)} MB",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def _statement_by_hash(
+    db: AsyncSession, org_id: uuid.UUID, account_identifier: str, content_hash: str
+) -> BankStatement | None:
+    return (
+        await db.execute(
+            select(BankStatement).where(
+                BankStatement.organization_id == org_id,
+                BankStatement.account_identifier == account_identifier,
+                BankStatement.content_hash == content_hash,
+            )
+        )
+    ).scalar_one_or_none()
+
 
 @router.post("/upload", response_model=BankStatementResponse, status_code=status.HTTP_201_CREATED)
 async def upload_statement(
+    response: Response,
     file: UploadFile = File(...),
     account_identifier: str = Form(...),
     period_start: date = Form(...),
@@ -247,51 +344,106 @@ async def upload_statement(
     user: User = Depends(require_roles(*_WRITE_ROLES)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
-    raw = await file.read()
-    try:
-        statement, transactions = parse_csv_statement(
-            raw_csv=raw,
+    """Import a bank statement CSV.
+
+    **Idempotent** on ``(org, account_identifier, sha256(body))``: re-uploading
+    the same file for the same account returns the existing statement with 200
+    rather than creating a second one. A duplicate import would match nothing —
+    the first import already claimed every payment on it — and so would report
+    ``matched_count = 0``, which reads as "this didn't reconcile" rather than
+    "you imported this twice". Backed by the partial unique index
+    ``uq_bank_statements_org_account_hash`` (migration 0080), the same shape
+    Positive Pay uses for its per-(run, format) slot.
+    """
+    raw = await _read_capped(file, MAX_CSV_IMPORT_SIZE)
+    content_hash = hashlib.sha256(raw).hexdigest()
+
+    # Two passes at most. The retry exists because BOTH races this handler can
+    # lose are decided by a unique index: a concurrent identical upload (the
+    # content-hash slot) and a concurrent different upload that claims the same
+    # payment (`uq_bank_transactions_matched_payment`). Rolling back and
+    # re-running the whole import re-reads both — the duplicate check below now
+    # sees the winner, and the matcher's `claimed` set now sees its claims — so
+    # the loser resolves cleanly instead of 500ing and losing every other line
+    # on the file.
+    for attempt in (1, 2):
+        existing = await _statement_by_hash(db, org_id, account_identifier, content_hash)
+        if existing is not None:
+            response.status_code = status.HTTP_200_OK
+            return await _detail_response(db, existing)
+
+        try:
+            statement, transactions = parse_csv_statement(
+                raw_csv=raw,
+                organization_id=org_id,
+                account_identifier=account_identifier,
+                period_start=period_start,
+                period_end=period_end,
+                currency=currency,
+                imported_by=user.id,
+                # Raw-file storage (the uploaded statement → S3) is deferred,
+                # same as vendor-statement-recon's CSV intake; keep file_key
+                # NULL for now. See docs § Deferred.
+                file_key=None,
+            )
+        except StatementImportError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        statement.content_hash = content_hash
+
+        try:
+            db.add(statement)
+            await db.flush()  # claims the hash slot; assigns statement.id
+
+            for tx in transactions:
+                tx.statement_id = statement.id
+            db.add_all(transactions)
+
+            counts = await match_statement_transactions(db, transactions)
+            statement.matched_count = counts["matched"]
+            # Push the match UPDATEs now, so `uq_bank_transactions_matched_payment`
+            # has had its say BEFORE anything irreversible happens. That matters
+            # because `dispatch_audit` is only transactional in `local` mode —
+            # under `FEOH_AUDIT_MODE=lambda` it enqueues an SQS message
+            # immediately, and a losing attempt would otherwise have already
+            # announced a statement id that then rolled away. Mirrors
+            # `positive_pay.generate_check_issue`, which likewise settles its
+            # idempotency slot at a flush before auditing.
+            await db.flush()
+        except IntegrityError:
+            await db.rollback()
+            if attempt == 2:
+                raise HTTPException(
+                    status_code=409,
+                    detail="This statement is being imported concurrently. Retry in a moment.",
+                ) from None
+            continue
+
+        await dispatch_audit(
+            db,
+            correlation_id=uuid.uuid4(),
             organization_id=org_id,
-            account_identifier=account_identifier,
-            period_start=period_start,
-            period_end=period_end,
-            currency=currency,
-            imported_by=user.id,
-            # Raw-file storage (the uploaded statement → S3) is deferred,
-            # same as vendor-statement-recon's CSV intake; keep file_key
-            # NULL for now. See docs § Deferred.
-            file_key=None,
+            actor_id=user.id,
+            action="bank_reconciliation.imported",
+            entity_type="bank_statement",
+            entity_id=statement.id,
+            details={
+                "account_identifier": account_identifier,
+                "transaction_count": statement.transaction_count,
+                **counts,
+            },
         )
-    except StatementImportError as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
+        # Every INSERT/UPDATE already went to the DB at the flush above, so both
+        # unique indexes have passed; this cannot now fail on one of them.
+        await db.commit()
+        await db.refresh(statement)
+        return await _detail_response(db, statement)
 
-    db.add(statement)
-    await db.flush()  # assign statement.id before stamping the children
-
-    for tx in transactions:
-        tx.statement_id = statement.id
-    db.add_all(transactions)
-
-    counts = await match_statement_transactions(db, transactions)
-    statement.matched_count = counts["matched"]
-
-    await dispatch_audit(
-        db,
-        correlation_id=uuid.uuid4(),
-        organization_id=org_id,
-        actor_id=user.id,
-        action="bank_reconciliation.imported",
-        entity_type="bank_statement",
-        entity_id=statement.id,
-        details={
-            "account_identifier": account_identifier,
-            "transaction_count": statement.transaction_count,
-            **counts,
-        },
+    # Unreachable: attempt 2 either returns or raises above. Present so a future
+    # edit to the loop bounds can't silently fall out with no response.
+    raise HTTPException(
+        status_code=409,
+        detail="This statement is being imported concurrently. Retry in a moment.",
     )
-    await db.commit()
-    await db.refresh(statement)
-    return await _detail_response(db, statement)
 
 
 # --------------------------------------------------------------------------- #
@@ -319,10 +471,14 @@ async def list_statements(
         .limit(page_size)
     )
     rows = list((await db.execute(query)).scalars().all())
-    mismatch_counts = await _amount_mismatch_counts(db, [r.id for r in rows])
+    counts = await _discrepancy_counts(db, [r.id for r in rows])
     return BankStatementListResponse(
         items=[
-            _statement_to_response(r, amount_mismatch_count=mismatch_counts.get(r.id, 0))
+            _statement_to_response(
+                r,
+                amount_mismatch_count=counts.get(r.id, (0, 0))[0],
+                discrepancy_count=counts.get(r.id, (0, 0))[1],
+            )
             for r in rows
         ],
         total=total,
@@ -341,10 +497,10 @@ async def list_statements(
 
 
 # Statuses where our books assert the money has been handed to the bank, so a
-# corresponding debit is expected. `pending` has not been dispatched;
-# `failed`/`cancelled`/`voided` are terminal non-payments; `pending_compliance`
-# is held BEFORE the adapter call. None of those should read as outstanding.
-_EXPECTED_TO_CLEAR_STATUSES = ("completed", "submitted", "processing")
+# corresponding debit is expected — `services.bank_reconciliation
+# .EXPECTED_TO_CLEAR_STATUSES`, the same definition the matcher uses to decide
+# which payments a heuristic may consider and the classifier uses to raise a
+# `status_conflict`. One list, so "outstanding" and "matchable" can't drift.
 
 
 @router.get("/outstanding", response_model=OutstandingItemsResponse)
@@ -372,11 +528,18 @@ async def outstanding_items(
       * ``uncleared_payments``  — we say it went out, no bank line claims it.
       * ``unmatched_debits``    — money left the account with no payment behind
                                   it (the never-issued-cheque shape).
-      * ``amount_mismatches``   — identified, but the bank moved a different
-                                  amount. Positive variance = they took more.
+      * ``discrepancies``       — identified, but it does not reconcile: the
+                                  bank moved a different ``amount_mismatch``
+                                  (positive variance = they took more), a
+                                  different ``currency_mismatch``, or moved it
+                                  against a payment our books say never went
+                                  out (``status_conflict``). Each row carries
+                                  its ``classification``.
 
-    A payment linked to an ``amount_mismatch`` line is NOT uncleared — it is
-    accounted for, in the mismatch bucket — so it appears exactly once.
+    A payment linked to a discrepancy line is NOT uncleared — it is accounted
+    for, in the discrepancy bucket — so it appears exactly once. Every linked
+    line therefore lands in exactly one of the three buckets or none: nothing a
+    reviewer needs to see can hide between them.
 
     Each bucket runs a SQL aggregate for its count + exact ``Decimal`` total
     and a separate ``LIMIT``-ed row query, so ``?limit`` truncates the rows
@@ -405,7 +568,7 @@ async def outstanding_items(
     # `days_outstanding` with it — by a day.
     sent_on_expr = cast(func.timezone("UTC", sent_at_expr), Date)
     uncleared_where = (
-        Payment.status.in_(_EXPECTED_TO_CLEAR_STATUSES),
+        Payment.status.in_(EXPECTED_TO_CLEAR_STATUSES),
         Payment.id.not_in(claimed_subq),
         # A row with no usable timestamp at all can't be aged out — surface it
         # rather than hide it behind a filter it can never satisfy.
@@ -494,61 +657,95 @@ async def outstanding_items(
         for tx, account_identifier in unmatched_rows
     ]
 
-    # ---- Bucket 3: identified, but the bank moved a different amount ------
-    # Inner-joined to Payment, so the variance is computed by the database from
-    # both sides — never from a float, and never from a stale copy.
-    mismatch_where = (
+    # ---- Bucket 3: identified, but it doesn't reconcile --------------------
+    # Inner-joined to Payment, so both sides come from the database — never
+    # from a float, and never from a stale copy. Covers every discrepancy
+    # class, not just the amount one: a `currency_mismatch` / `status_conflict`
+    # line is linked (so it has dropped out of bucket 2) and its payment is
+    # accounted for (so it is out of bucket 1) — leaving this the only place it
+    # can surface at all.
+    settled_amount = settlement_amount_sql()
+    discrepancy_where = (
         BankStatement.organization_id == org_id,
         BankTransaction.direction == "debit",
-        BankTransaction.match_method == MATCH_METHOD_AMOUNT_MISMATCH,
+        BankTransaction.match_method.in_(UNRECONCILED_MATCH_METHODS),
     )
     # Same join set as the row query below (Invoice included, though the
     # aggregate reads nothing from it) so the count can never disagree with the
-    # list it heads.
-    mismatch_count, variance_sum = (
+    # list it heads. The net variance deliberately sums the AMOUNT-mismatch
+    # subset only: a cross-currency subtraction isn't money, and a
+    # `status_conflict` line agrees on the amount by definition.
+    discrepancy_count, variance_sum = (
         await db.execute(
-            select(func.count(), func.sum(BankTransaction.amount - Payment.amount))
+            select(
+                func.count(),
+                func.sum(
+                    case(
+                        (
+                            BankTransaction.match_method == MATCH_METHOD_AMOUNT_MISMATCH,
+                            BankTransaction.amount - settled_amount,
+                        ),
+                        else_=Decimal("0.00"),
+                    )
+                ),
+            )
             .select_from(BankTransaction)
             .join(BankStatement, BankStatement.id == BankTransaction.statement_id)
             .join(Payment, Payment.id == BankTransaction.matched_payment_id)
             .join(Invoice, Invoice.id == Payment.invoice_id)
-            .where(*mismatch_where)
+            .where(*discrepancy_where)
         )
     ).one()
     net_variance = variance_sum if variance_sum is not None else Decimal("0.00")
 
-    mismatch_rows = (
+    # The row query selects the Payment itself and derives the settlement pair
+    # through the SAME pure helper the matcher used, so a listed row can never
+    # describe the payment differently from how it was classified.
+    discrepancy_rows = (
         await db.execute(
             select(
                 BankTransaction,
                 BankStatement.account_identifier,
-                Payment.amount,
+                Payment,
+                Invoice.currency,
                 Invoice.invoice_number,
             )
             .join(BankStatement, BankStatement.id == BankTransaction.statement_id)
             .join(Payment, Payment.id == BankTransaction.matched_payment_id)
             .join(Invoice, Invoice.id == Payment.invoice_id)
-            .where(*mismatch_where)
+            .where(*discrepancy_where)
             .order_by(BankTransaction.transaction_date.desc())
             .limit(limit)
         )
     ).all()
 
-    mismatches = [
-        AmountMismatchResponse(
-            transaction_id=str(tx.id),
-            statement_id=str(tx.statement_id),
-            account_identifier=account_identifier,
-            transaction_date=tx.transaction_date.isoformat(),
-            bank_amount=tx.amount,
-            payment_amount=payment_amount,
-            variance_amount=match_variance(tx.amount, payment_amount),
-            payment_id=str(tx.matched_payment_id),
-            invoice_number=invoice_number,
-            counterparty_name=tx.counterparty_name,
+    discrepancies = []
+    for tx, account_identifier, payment, invoice_currency, invoice_number in discrepancy_rows:
+        payment_amount, payment_currency = settlement_amount_and_currency(payment, invoice_currency)
+        discrepancies.append(
+            DiscrepancyResponse(
+                transaction_id=str(tx.id),
+                statement_id=str(tx.statement_id),
+                account_identifier=account_identifier,
+                transaction_date=tx.transaction_date.isoformat(),
+                classification=tx.match_method or "",
+                bank_amount=tx.amount,
+                bank_currency=tx.currency,
+                payment_amount=payment_amount,
+                payment_currency=payment_currency or None,
+                payment_status=payment.status,
+                # Only meaningful for the amount class: a cross-currency gap
+                # isn't money, and a status conflict agrees on the amount.
+                variance_amount=(
+                    match_variance(tx.amount, payment_amount)
+                    if tx.match_method == MATCH_METHOD_AMOUNT_MISMATCH
+                    else None
+                ),
+                payment_id=str(tx.matched_payment_id),
+                invoice_number=invoice_number,
+                counterparty_name=tx.counterparty_name,
+            )
         )
-        for tx, account_identifier, payment_amount, invoice_number in mismatch_rows
-    ]
 
     return OutstandingItemsResponse(
         as_of=today.isoformat(),
@@ -559,8 +756,8 @@ async def outstanding_items(
         unmatched_debits=unmatched,
         unmatched_debit_count=unmatched_count,
         unmatched_debit_total=unmatched_total,
-        amount_mismatches=mismatches,
-        amount_mismatch_count=mismatch_count,
+        discrepancies=discrepancies,
+        discrepancy_count=discrepancy_count,
         amount_mismatch_net_variance=net_variance,
     )
 
@@ -626,10 +823,12 @@ async def resolve_transaction(
         # Without this check a clerk could manually point two different
         # transactions at the same payment, double-counting it as cleared.
         #
-        # `.first()` on a LIMIT 1, not `scalar_one_or_none()`: there is no
-        # unique index behind this invariant, so pre-existing data can already
-        # hold more than one claimant, and asking for exactly-one would 500 on
-        # the very rows this check exists to reject.
+        # `.first()` on a LIMIT 1, not `scalar_one_or_none()`: asking for
+        # exactly-one would 500 on precisely the rows this check exists to
+        # reject. (Migration 0081's partial unique index now makes a duplicate
+        # unpersistable, and clears any that predate it — but the check stays
+        # the FRIENDLY path: it returns a 409 a client can act on instead of
+        # letting the index raise an IntegrityError at commit.)
         other = (
             (
                 await db.execute(
@@ -650,19 +849,29 @@ async def resolve_transaction(
                 detail="This payment is already matched to another bank transaction.",
             )
         tx.matched_payment_id = payment.id
-        # The classification is DERIVED from the two amounts, never asserted by
-        # the caller: a human pointing a $10 bank line at a $10,000 payment is
-        # telling us which payment it is, not that the amounts agree. Stamping
-        # it "manual, confidence 100" would let a clerk click straight past the
-        # altered-amount signal the auto-matcher raises.
+        # The classification is DERIVED from the payment itself, never asserted
+        # by the caller: a human pointing a $10 bank line at a $10,000 payment
+        # is telling us which payment it is, not that it reconciles. Stamping it
+        # "manual, confidence 100" would let a clerk click straight past the
+        # altered-amount / wrong-currency / never-dispatched signals the
+        # auto-matcher raises — so both paths run the SAME classifier.
+        invoice_currency = (
+            await db.execute(select(Invoice.currency).where(Invoice.id == payment.invoice_id))
+        ).scalar_one_or_none()
+        settled_amount, settled_currency = settlement_amount_and_currency(payment, invoice_currency)
         tx.match_method = (
-            MATCH_METHOD_AMOUNT_MISMATCH
-            if is_amount_mismatch(tx.amount, payment.amount)
-            else MATCH_METHOD_MANUAL
+            classify_discrepancy(
+                bank_amount=tx.amount,
+                bank_currency=tx.currency,
+                payment_amount=settled_amount,
+                payment_currency=settled_currency,
+                payment_status=payment.status,
+            )
+            or MATCH_METHOD_MANUAL
         )
         tx.match_confidence = _MANUAL_MATCH_CONFIDENCE
         tx.matched_at = datetime.now(UTC)
-        variance_str = str(match_variance(tx.amount, payment.amount))
+        variance_str = str(match_variance(tx.amount, settled_amount))
     else:
         tx.matched_payment_id = None
         tx.match_method = None
@@ -688,7 +897,18 @@ async def resolve_transaction(
             "variance_amount": variance_str,
         },
     )
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # `uq_bank_transactions_matched_payment` (migration 0081) had the last
+        # word: someone else claimed this payment between our row lock and our
+        # commit. Same 409 as the pre-check, so a caller never has to
+        # distinguish which layer refused.
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="This payment is already matched to another bank transaction.",
+        ) from None
     await db.refresh(stmt)
     return await _detail_response(db, stmt)
 
