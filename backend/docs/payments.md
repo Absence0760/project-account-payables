@@ -198,6 +198,31 @@ lifecycle with no second human. The control mirrors the invoice-approval
 than an explicit `false` keeps the secure default). A legacy run with a NULL
 `initiated_by` is never blocked (nothing to compare against).
 
+### Every run-state endpoint row-locks
+
+`POST /runs/{id}/approve`, `/execute`, `/resume` and `/cancel` all read the
+run with `SELECT ... FOR UPDATE`, and `POST /payments/{id}/void` (plus the two
+compliance handlers) lock the payment the same way. The lock is not
+belt-and-braces on any of them — each guards a distinct double-spend or
+double-record race, and a plain `SELECT` there means two requests both pass
+the status guard.
+
+`/cancel` was the exception, and the most dangerous one, because it is the
+endpoint that **deletes** the run's child `Payment` rows. `/execute` locks,
+flips the run to `executing`, then commits — releasing the lock — *before* its
+adapter loop, so an unlocked `/cancel` that had already read `draft` sailed
+past the guard and deleted the very payments being handed to the processor.
+Both outcomes were reproducible against the unfixed code: the canceller
+winning outright (payments deleted, adapter never called, the run reporting
+success having paid nothing) and the rows vanishing mid-dispatch (real money
+out, no `Payment` record, run reads `cancelled`). Pinned by
+`tests/test_payment_concurrency.py::test_cancel_racing_execute_cannot_delete_dispatched_payments`
+— BUG D in that file's header.
+
+**Adding a run- or payment-state endpoint? Lock the row.** The file's existing
+handlers each carry a comment naming the race their lock prevents; follow the
+pattern rather than assuming the status guard alone is enough.
+
 ### Execution atomicity + resuming a stuck run
 
 `execute_payment_run`'s per-payment loop is durable, not all-or-nothing: each
