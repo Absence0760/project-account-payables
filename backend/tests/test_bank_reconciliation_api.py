@@ -703,6 +703,33 @@ async def test_outstanding_older_than_days_excludes_recent_payments(realdb):
     assert resp.json()["older_than_days"] == 30
 
 
+async def test_outstanding_older_than_days_boundary_is_inclusive(realdb):
+    """The boundary itself, not just a comfortable margin either side: a
+    payment sent exactly N days ago IS outstanding at `older_than_days=N`, and
+    one sent a day later is not. The filter runs in SQL against a UTC-
+    normalised date, so an off-by-one here would silently drop or add a day's
+    worth of items from a close report."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    now = datetime.now(UTC)
+    on_boundary = await _add_payment(
+        mk, org_id, amount="7001.00", submitted_at=now - timedelta(days=10)
+    )
+    inside_boundary = await _add_payment(
+        mk, org_id, amount="7002.00", submitted_at=now - timedelta(days=9)
+    )
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.get("/api/bank-reconciliation/outstanding?older_than_days=10")
+
+    ids = {p["payment_id"] for p in resp.json()["uncleared_payments"]}
+    assert on_boundary in ids, "a payment sent exactly N days ago must be outstanding"
+    assert inside_boundary not in ids
+
+    row = next(p for p in resp.json()["uncleared_payments"] if p["payment_id"] == on_boundary)
+    assert row["days_outstanding"] == 10
+
+
 async def test_outstanding_excludes_a_cleanly_reconciled_payment(realdb):
     """A payment a statement genuinely cleared must drop out of the outstanding
     list entirely — otherwise the report never shrinks and stops being read."""

@@ -397,7 +397,13 @@ async def outstanding_items(
     # the LIMIT all run in the database — an org with a large unreconciled
     # backlog must not pull every qualifying row into memory just to total it.
     sent_at_expr = func.coalesce(Payment.submitted_at, Payment.completed_at, Payment.created_at)
-    sent_on_expr = cast(sent_at_expr, Date)
+    # Normalise to the UTC calendar date explicitly rather than casting a
+    # `timestamptz` straight to `date`, which resolves against the Postgres
+    # session `timezone` GUC. `cutoff` and `today` are both derived from
+    # `datetime.now(UTC)`, so a server session on a non-UTC zone would compare
+    # a local-calendar date against a UTC one and shift the boundary — and
+    # `days_outstanding` with it — by a day.
+    sent_on_expr = cast(func.timezone("UTC", sent_at_expr), Date)
     uncleared_where = (
         Payment.status.in_(_EXPECTED_TO_CLEAR_STATUSES),
         Payment.id.not_in(claimed_subq),
