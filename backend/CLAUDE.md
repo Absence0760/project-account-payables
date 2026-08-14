@@ -42,6 +42,7 @@ Deep-dive docs live in `backend/docs/`:
 | Email + in-app notifications | `docs/notifications.md` |
 | Email approval (approve/reject from the email, no login) | `docs/email-approval.md` |
 | Slack interactive approval (approve/reject from Slack buttons, no login) | `docs/slack-approval.md` |
+| Exception queue lifecycle + its append-only audit trail | `docs/exception-lifecycle.md` |
 | Exception agents (autonomous resolution) | `docs/exception-agents.md` |
 | Adaptive AI workflows | `docs/adaptive-workflows.md` |
 | Data enrichment (auto-fill, price variance, vendor scoring) | `docs/data-enrichment.md` |
@@ -898,6 +899,8 @@ The three `webhook_*_secret` fields are HMAC keys used by the inbound webhook ha
 ## Exception types
 
 `duplicate`, `po_mismatch`, `fraud_flag`, `extraction_failed`, `unverified_vendor`, `review_rejected`, `amount_exceeded`, `missing_data`, `quality_hold`, `contract_noncompliant`, `erp_reconciliation`, `line_total_mismatch`, `payment_compliance_hold`
+
+**Every lifecycle event is audited.** `services/exception_lifecycle` is the single chokepoint: `create_exception` writes `exception.raised`, and the human queue (`api/exceptions`) and the agent coordinator both resolve/escalate/dismiss through `record_decision`, which writes `exception.resolved` / `.escalated` / `.dismissed` (+ `exception.assigned` on routing). Rows are correlation-keyed to the **invoice**, so they land on its SOX trail; an invoice-less exception self-correlates on its own id. `details` is PII-lean and carries a `payment_blocking` flag derived from `api/payments.PAYMENT_BLOCKING_EXCEPTION_TYPES` itself — clearing a `duplicate` / `fraud_flag` / `line_total_mismatch` is the human sign-off that lets a payment run proceed, and the mutable `exceptions` row (single-valued, not WORM-shipped, no append-only trigger) can't be that record. Escalation records the note but never stamps `resolved_by` / `resolved_at`. Every `/api/exceptions` mutation is entity-scoped like the reads. See `docs/exception-lifecycle.md`.
 
 Severity: `error`, `warning`, `info`. Auto-detected by `invoice_warnings.py`. `erp_reconciliation` is opened by the ERP webhook (`api/erp_webhook.py`) when the ERP reports an invoice VOIDED/CANCELLED that we already advanced past the point where `→ failed` is a legal transition (`sent_to_erp` / `posted_in_erp` / `payment_scheduled` / `paid`) — money may be in flight, so it is flagged for human reconciliation instead of auto-transitioned (idempotent per open exception, PII-free description). `payment_compliance_hold` is opened by `api/payments.py` whenever `_execute_single_payment` parks a payment at `pending_compliance` (no screenable vendor, or the sanctions/KYC adapter itself returns a `hold` verdict) — dedup'd per `(invoice_id, "payment_compliance_hold", "open")` so a retried execution never double-opens it, and resolved by `POST /api/payments/{id}/compliance/release` or `/dismiss`. See `backend/docs/payments.md` § Sanctions / compliance hold resolution.
 
