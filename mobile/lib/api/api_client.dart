@@ -131,7 +131,12 @@ class ApiClient {
           .get(uri, headers: _headers)
           .timeout(_timeout);
       debugPrint('[API] GET $path → ${response.statusCode}');
-      return _handleResponse(response);
+      // `await` inside the try, not a bare `return` of the future: returning
+      // it unawaited hands the future to the caller and unwinds the try
+      // first, so the catch below never saw an ApiException / decode failure
+      // — i.e. the failure log was dead for exactly the responses it exists
+      // for. (Dart's `unawaited_return_in_try_block` lint flags this.)
+      return await _handleResponse(response);
     } catch (e) {
       debugPrint('[API] GET $path FAILED: $e');
       rethrow;
@@ -163,7 +168,8 @@ class ApiClient {
           )
           .timeout(_timeout);
       debugPrint('[API] POST $path → ${response.statusCode}');
-      return _handleResponse(response);
+      // Awaited for the same reason as [get] — see the note there.
+      return await _handleResponse(response);
     } catch (e) {
       debugPrint('[API] POST $path FAILED: $e');
       rethrow;
