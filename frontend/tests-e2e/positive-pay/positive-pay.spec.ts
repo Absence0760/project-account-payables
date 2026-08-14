@@ -64,6 +64,82 @@ test.describe('/positive-pay (admin)', () => {
 		await expect(dialog.getByLabel('Bank format')).toBeVisible();
 	});
 
+	/**
+	 * The run picker must never offer a run that has not executed.
+	 *
+	 * A check-issue file generated from a draft persists an EMPTY issued map,
+	 * and generation is idempotent per (run, bank_format) — so it can never be
+	 * regenerated after the run executes. Every cheque the bank later presents
+	 * then classifies `not_on_file` and raises a false `fraud_flag` exception
+	 * against a real payment. The picker is the only door to that state.
+	 *
+	 * The runs list is stubbed rather than seeded: the assertion is about which
+	 * runs the UI offers, and a fixed draft/executed pair makes it exact without
+	 * creating or executing a real payment run (money-moving) in the tenant.
+	 */
+	const DRAFT_RUN_ID = '11111111-1111-4111-8111-111111111111';
+	const EXECUTED_RUN_ID = '22222222-2222-4222-8222-222222222222';
+
+	async function stubRuns(
+		page: import('@playwright/test').Page,
+		items: Array<Record<string, unknown>>
+	) {
+		await page.route(
+			(url) => url.pathname === '/api/payments/runs/',
+			(route) => route.fulfill({ json: { items, total: items.length } })
+		);
+	}
+
+	test('the run picker offers executed runs only — never a draft', async ({ page }) => {
+		await stubRuns(page, [
+			{ id: DRAFT_RUN_ID, status: 'draft', executed_at: null, total_amount: 1000 },
+			{
+				id: EXECUTED_RUN_ID,
+				status: 'completed',
+				executed_at: '2026-01-15T10:00:00Z',
+				total_amount: 2500
+			}
+		]);
+
+		await page.getByRole('button', { name: '+ Generate file' }).click();
+		const dialog = page.getByRole('dialog', { name: 'Generate positive pay file' });
+		await expect(dialog).toBeVisible();
+
+		// File type defaults to check_issue, so the run control is already shown.
+		// `exact` matters: the File-type select's accessible name folds in its
+		// option text ("Check issue (per payment run)"), which substring-matches.
+		const select = dialog.getByLabel('Payment run', { exact: true });
+		await expect(select).toBeVisible();
+
+		// The executed run is selectable; the draft is not present at all.
+		await expect(select.locator(`option[value="${EXECUTED_RUN_ID}"]`)).toHaveCount(1);
+		await expect(select.locator(`option[value="${DRAFT_RUN_ID}"]`)).toHaveCount(0);
+		// Placeholder + the one executed run, and nothing else.
+		await expect(select.locator('option')).toHaveCount(2);
+	});
+
+	test('with only draft runs the picker explains itself instead of accepting one', async ({
+		page
+	}) => {
+		// The pre-fix fallback was a free-text run-id box whenever the list came
+		// back empty — which is exactly the state a draft-only tenant is in, so a
+		// draft id could still be typed straight back in. Loaded-but-empty must
+		// therefore be a dead end, not a text input.
+		await stubRuns(page, [
+			{ id: DRAFT_RUN_ID, status: 'draft', executed_at: null, total_amount: 1000 }
+		]);
+
+		await page.getByRole('button', { name: '+ Generate file' }).click();
+		const dialog = page.getByRole('dialog', { name: 'Generate positive pay file' });
+		await expect(dialog).toBeVisible();
+
+		await expect(dialog.getByTestId('no-executed-runs')).toBeVisible();
+		await expect(dialog.getByLabel('Payment run', { exact: true })).toHaveCount(0);
+		await expect(dialog.getByLabel('Payment run id', { exact: true })).toHaveCount(0);
+		// And nothing can be submitted — Generate stays disabled.
+		await expect(dialog.getByRole('button', { name: 'Generate' })).toBeDisabled();
+	});
+
 	test('the file total renders in the stored per-file currency, not a hardcoded USD', async ({
 		page
 	}) => {
