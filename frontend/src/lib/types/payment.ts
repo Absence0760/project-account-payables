@@ -1,5 +1,12 @@
+// Mirrors the statuses the backend actually persists on `payments.status`.
+// `pending_compliance` is the parking state the sanctions/KYC gate
+// (`services/compliance.check_payment_compliance`) leaves a payment in — it
+// must be listed here or the History badge renders blank (no label) and the
+// status has no filter chip, which is how a held payment stayed invisible.
+// Its two exits are `POST /api/payments/{id}/compliance/{release,dismiss}`.
 export type PaymentStatus =
 	| 'pending'
+	| 'pending_compliance'
 	| 'submitted'
 	| 'processing'
 	| 'completed'
@@ -9,6 +16,7 @@ export type PaymentStatus =
 
 export const PAYMENT_STATUSES: PaymentStatus[] = [
 	'pending',
+	'pending_compliance',
 	'submitted',
 	'processing',
 	'completed',
@@ -19,6 +27,7 @@ export const PAYMENT_STATUSES: PaymentStatus[] = [
 
 export const PAYMENT_STATUS_LABELS: Record<PaymentStatus, string> = {
 	pending: 'Pending',
+	pending_compliance: 'Compliance Hold',
 	submitted: 'Submitted',
 	processing: 'Processing',
 	completed: 'Completed',

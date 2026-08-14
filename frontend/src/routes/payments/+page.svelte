@@ -20,7 +20,7 @@
 	import { formatDate } from '$lib/utils/time';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
-	import { PERM_PAYMENT_VOID } from '$lib/types/admin';
+	import { PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID } from '$lib/types/admin';
 	import { m } from '$lib/i18n/store.svelte';
 	import { untrack } from 'svelte';
 
@@ -240,10 +240,100 @@
 		// Server-side gate: require_permission(payment.void) — defaults to
 		// admin/cfo, but a custom role can be granted it. Status: anything that
 		// isn't already terminal-by-failure.
+		//
+		// `pending_compliance` is deliberately NOT offered here: nothing ever
+		// reached the processor, so there is no rail to reverse. Its purpose-built
+		// exits are Release / Dismiss below, which also close the
+		// `payment_compliance_hold` exception the hold opened — a void would not.
 		if (auth.user && auth.can(PERM_PAYMENT_VOID)) {
 			return p.status === 'completed' || p.status === 'submitted' || p.status === 'processing';
 		}
 		return false;
+	}
+
+	// --- Compliance hold (pending_compliance) --------------------------------
+	// A payment the sanctions/KYC gate parked at `pending_compliance` has two
+	// server-side exits, each behind the permission that matches what it does:
+	//   * release  → re-runs the SAME compliance-then-adapter path and can move
+	//                money, so `payment.execute` (mirrors POST .../execute).
+	//   * dismiss  → gives up, flips to `failed`, moves nothing, so
+	//                `payment.void` (mirrors POST .../void).
+	// Both 409 outside `pending_compliance`; hiding them elsewhere keeps the row
+	// honest, and the backend enforces regardless.
+	type ComplianceMode = 'release' | 'dismiss';
+	let complianceTarget = $state<Payment | null>(null);
+	let complianceMode = $state<ComplianceMode>('release');
+	let complianceReason = $state('');
+	let complianceBusy = $state(false);
+
+	function canReleaseHold(p: Payment): boolean {
+		return (
+			p.status === 'pending_compliance' && !!auth.user && auth.can(PERM_PAYMENT_EXECUTE)
+		);
+	}
+
+	function canDismissHold(p: Payment): boolean {
+		return p.status === 'pending_compliance' && !!auth.user && auth.can(PERM_PAYMENT_VOID);
+	}
+
+	function openCompliance(p: Payment, mode: ComplianceMode) {
+		complianceTarget = p;
+		complianceMode = mode;
+		complianceReason = '';
+	}
+
+	function closeCompliance() {
+		complianceTarget = null;
+		complianceReason = '';
+	}
+
+	async function refreshAfterCompliance() {
+		await Promise.all([
+			loadSummary(),
+			loadQueue(),
+			paymentStore.fetch(buildParams()), // noqa: raw-fetch-in-component — store method; routes through api.get
+			fetchPaymentCounts()
+		]);
+	}
+
+	async function commitCompliance() {
+		if (!complianceTarget) return;
+		const id = complianceTarget.id;
+		const mode = complianceMode;
+		const reason = complianceReason.trim();
+		if (mode === 'dismiss' && !reason) {
+			toast(m('payments.compliance.reasonRequired'), 'error');
+			return;
+		}
+		complianceBusy = true;
+		try {
+			if (mode === 'release') {
+				// The response carries the REAL post-release status: the backend
+				// re-runs the gate, so a payment whose hold hasn't actually cleared
+				// comes back still `pending_compliance`. Report what happened
+				// instead of claiming success — this is never a bypass.
+				const updated = await api.post<Payment>(`/api/payments/${id}/compliance/release`, {});
+				toast(
+					updated.status === 'pending_compliance'
+						? m('payments.compliance.release.stillHeld')
+						: m('payments.compliance.release.released'),
+					updated.status === 'pending_compliance' ? 'error' : 'success'
+				);
+			} else {
+				await api.post<Payment>(`/api/payments/${id}/compliance/dismiss`, { reason });
+				toast(m('payments.compliance.dismiss.done'), 'success');
+			}
+			closeCompliance();
+			await refreshAfterCompliance();
+		} catch (err) {
+			const fallback =
+				mode === 'release'
+					? m('payments.compliance.release.failed')
+					: m('payments.compliance.dismiss.failed');
+			toast(err instanceof Error ? err.message : fallback, 'error');
+		} finally {
+			complianceBusy = false;
+		}
 	}
 
 	async function downloadRemittance(p: Payment) {
@@ -692,6 +782,16 @@
 							{#if p.status === 'completed'}
 								<RowAction onclick={() => downloadRemittance(p)}>{m('payments.history.remittance')}</RowAction>
 							{/if}
+							{#if canReleaseHold(p)}
+								<RowAction variant="accent" onclick={() => openCompliance(p, 'release')}>
+									{m('payments.history.complianceRelease')}
+								</RowAction>
+							{/if}
+							{#if canDismissHold(p)}
+								<RowAction variant="danger" onclick={() => openCompliance(p, 'dismiss')}>
+									{m('payments.history.complianceDismiss')}
+								</RowAction>
+							{/if}
 							{#if canVoid(p)}
 								<RowAction variant="danger" onclick={() => openVoid(p)}>{m('payments.history.void')}</RowAction>
 							{/if}
@@ -908,6 +1008,67 @@
 	{/if}
 </Modal>
 
+<!-- Compliance-hold resolution. Confirm-then-act like the void dialog above:
+     release re-runs the gate (and can dispatch money), dismiss gives up on the
+     payment — neither should be a single stray click on a table row. -->
+<Modal
+	open={complianceTarget !== null}
+	ariaLabel="Resolve compliance hold"
+	title={complianceMode === 'release'
+		? m('payments.compliance.release.title')
+		: m('payments.compliance.dismiss.title')}
+	onclose={closeCompliance}
+>
+	{#if complianceTarget}
+		<p class="modal-hint">
+			<strong>{complianceTarget.invoice_number ?? complianceTarget.id.slice(0, 8)}</strong>
+			{#if complianceTarget.vendor_name}· {complianceTarget.vendor_name}{/if}
+			· {formatCurrency(complianceTarget.amount)}
+		</p>
+		<p class="modal-warn">
+			{complianceMode === 'release'
+				? m('payments.compliance.release.warning')
+				: m('payments.compliance.dismiss.warning')}
+		</p>
+		<form onsubmit={(e) => { e.preventDefault(); commitCompliance(); }}>
+			{#if complianceMode === 'dismiss'}
+				<label>
+					<span>{m('payments.compliance.reason')}</span>
+					<input
+						type="text"
+						bind:value={complianceReason}
+						placeholder={m('payments.compliance.reasonPlaceholder')}
+						maxlength="1000"
+						autofocus
+					/>
+				</label>
+			{/if}
+			<div class="modal-footer">
+				<button type="button" class="btn-cancel" onclick={closeCompliance}>
+					{m('common.cancel')}
+				</button>
+				{#if complianceMode === 'release'}
+					<button type="submit" class="btn-pay" disabled={complianceBusy}>
+						{complianceBusy
+							? m('payments.compliance.release.busy')
+							: m('payments.compliance.release.confirm')}
+					</button>
+				{:else}
+					<button
+						type="submit"
+						class="btn-danger"
+						disabled={complianceBusy || !complianceReason.trim()}
+					>
+						{complianceBusy
+							? m('payments.compliance.dismiss.busy')
+							: m('payments.compliance.dismiss.confirm')}
+					</button>
+				{/if}
+			</div>
+		</form>
+	{/if}
+</Modal>
+
 <style>
 	/* Page-specific styling; shared design-system CSS lives in app.css. */
 
@@ -1053,6 +1214,13 @@
 	.badge.pending {
 		background: rgba(255, 180, 50, 0.15);
 		color: #d4940a;
+	}
+
+	/* Held by the sanctions/KYC gate — an attention state, not a failure.
+	   Amber-red so it reads as "needs a human", distinct from `failed`. */
+	.badge.pending_compliance {
+		background: rgba(224, 120, 40, 0.15);
+		color: #c96a14;
 	}
 
 	.badge.processing {

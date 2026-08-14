@@ -57,6 +57,12 @@
 	let bankFormat = $state<BankFormat>('csv');
 	let runId = $state('');
 	let runs = $state<RunOption[]>([]);
+	// True once the runs list has been fetched successfully. Distinguishes
+	// "loaded, and this tenant has no executed run" (→ explain why, offer
+	// nothing to pick) from "the fetch failed" (→ fall back to typing an id).
+	// Without the flag both collapse to an empty list and the fallback input
+	// would quietly reopen the draft-run hole this filter closes.
+	let runsLoaded = $state(false);
 	let saving = $state(false);
 
 	// --- Return-processing sub-form (detail mode) ---
@@ -74,9 +80,18 @@
 	async function loadRuns() {
 		try {
 			const data = await api.get<{ items: RunOption[] }>('/api/payments/runs/?page_size=100');
-			runs = data.items ?? [];
+			// Only an EXECUTED run has actually issued cheques. A check-issue file
+			// generated from a draft persists an EMPTY issued map — and generation is
+			// idempotent per (run, bank_format), so it can never be regenerated once
+			// the run executes. Every cheque the bank later presents then classifies
+			// `not_on_file`, i.e. real payments get flooded with false `fraud_flag`
+			// exceptions. Offering a draft here is the only way to reach that state,
+			// so the picker refuses to offer one.
+			runs = (data.items ?? []).filter((r) => !!r.executed_at);
+			runsLoaded = true;
 		} catch {
-			/* non-critical — manager can still type a run id */
+			/* non-critical — manager can still type a run id; the backend refuses
+			   an unexecuted one. `runsLoaded` stays false so the fallback shows. */
 		}
 	}
 
@@ -196,16 +211,20 @@
 					<label class="full-width">
 						<span>Payment run <em class="required">*</em></span>
 						{#if runs.length > 0}
-							<select bind:value={runId} required disabled={!canEdit}>
+							<select bind:value={runId} required disabled={!canEdit} aria-label="Payment run">
 								<option value="">Select a payment run…</option>
 								{#each runs as run (run.id)}
 									<option value={run.id}>
-										{run.id.slice(0, 8)} · {run.status}{run.executed_at
-											? ` · ${formatDate(run.executed_at)}`
-											: ''}
+										{run.id.slice(0, 8)} · {run.status} · {formatDate(run.executed_at)}
 									</option>
 								{/each}
 							</select>
+						{:else if runsLoaded}
+							<p class="field-note" data-testid="no-executed-runs">
+								No executed payment runs yet. A check-issue file lists the cheques a run
+								actually issued, so the run has to be executed before its file can be
+								generated.
+							</p>
 						{:else}
 							<input
 								type="text"
@@ -223,7 +242,8 @@
 			<p class="intake-hint">
 				{#if fileType === 'check_issue'}
 					Renders every cheque in the selected run into the bank's Positive Pay format.
-					Generation is idempotent per (run, format) — re-running returns the existing file.
+					Only executed runs are listed — a draft has issued no cheques. Generation is
+					idempotent per (run, format) — re-running returns the existing file.
 				{:else}
 					Lists every active vendor with ACH bank details as an authorized originator for
 					debit-block filtering.
@@ -498,6 +518,19 @@
 	.form-grid select:disabled {
 		opacity: 0.7;
 		cursor: not-allowed;
+	}
+
+	/* Stands in for the run <select> when the tenant has no executed run —
+	   there is nothing legitimate to pick, so say why instead of showing an
+	   empty control (or a free-text box a draft id could be typed into). */
+	.field-note {
+		font-size: 0.78rem;
+		color: var(--text-muted);
+		margin: 0;
+		padding: 7px 9px;
+		border: 1px dashed var(--border);
+		border-radius: 5px;
+		background: var(--bg);
 	}
 
 	.intake-hint {
