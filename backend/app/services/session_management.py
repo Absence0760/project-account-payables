@@ -111,9 +111,35 @@ def _clip(value: str | None) -> str | None:
     return value[:_MAX_STORED_LEN]
 
 
-def _encode_meta(*, ip: str | None, device: str | None, method: str | None) -> str | None:
+def _encode_meta(
+    *, ip: str | None, device: str | None, method: str | None, ttl_seconds: int
+) -> str:
     payload = {k: v for k, v in (("ip", ip), ("device", device), ("method", method)) if v}
-    return json.dumps(payload, separators=(",", ":")) if payload else None
+    # The token lifetime IN FORCE AT SIGN-IN, recorded per session. Deriving a
+    # session's expiry from the *current* setting instead would mean that
+    # shortening `FEOH_ACCESS_TOKEN_EXPIRE_MINUTES` makes every session minted
+    # under the old value look already-expired — so `list_sessions` would prune
+    # them while their tokens keep authenticating, leaving a live session the
+    # user can neither see nor revoke. That is precisely the failure this
+    # feature exists to prevent.
+    payload["ttl"] = str(ttl_seconds)
+    return json.dumps(payload, separators=(",", ":"))
+
+
+def _session_ttl(detail: dict[str, str], fallback: int) -> int:
+    """The lifetime recorded for this session, or the current default.
+
+    The fallback covers a session tracked before the `ttl` field existed, and
+    any value that didn't survive the round trip intact.
+    """
+    raw = detail.get("ttl")
+    if raw is None:
+        return fallback
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return fallback
+    return value if value > 0 else fallback
 
 
 def _decode_meta(raw: str | None) -> dict[str, str]:
@@ -162,6 +188,7 @@ async def register_session(
             ip=_clip(ip),
             device=_clip(describe_user_agent(user_agent)),
             method=_clip(method),
+            ttl_seconds=ttl,
         ),
     )
     for evicted_jti in evicted:
@@ -191,8 +218,12 @@ async def list_sessions(user_id: uuid.UUID) -> list[SessionInfo]:
     is refreshed on *every* sign-in, so a set kept alive by recent logins can
     outlive the individual tokens inside it — listing those would show phantom
     sessions the user cannot meaningfully revoke.
+
+    Expiry is judged against the lifetime recorded FOR THAT SESSION, not the
+    current setting, so changing `FEOH_ACCESS_TOKEN_EXPIRE_MINUTES` can't prune
+    a session whose token is still authenticating (see `_encode_meta`).
     """
-    ttl = _access_token_ttl_seconds()
+    default_ttl = _access_token_ttl_seconds()
     now = datetime.now(UTC)
     tracked = await get_active_sessions_with_scores(user_id)
     if not tracked:
@@ -202,12 +233,12 @@ async def list_sessions(user_id: uuid.UUID) -> list[SessionInfo]:
     live: list[SessionInfo] = []
     stale: list[str] = []
     for jti, issued_at in tracked:
+        detail = _decode_meta(meta.get(jti))
         created_at = datetime.fromtimestamp(issued_at, tz=UTC)
-        expires_at = datetime.fromtimestamp(issued_at + ttl, tz=UTC)
+        expires_at = datetime.fromtimestamp(issued_at + _session_ttl(detail, default_ttl), tz=UTC)
         if expires_at <= now:
             stale.append(jti)
             continue
-        detail = _decode_meta(meta.get(jti))
         live.append(
             SessionInfo(
                 jti=jti,

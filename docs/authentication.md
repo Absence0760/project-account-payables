@@ -85,6 +85,8 @@ The sorted set carries a TTL equal to the access-token lifetime, refreshed on ev
 
 Because the TTL is refreshed on *every* login, a set kept alive by recent sign-ins can outlive the individual tokens inside it. `list_sessions` therefore treats an entry whose `issued_at + access-token lifetime` has passed as expired: it is pruned (from both the set and the metadata hash) rather than listed. Pruning does **not** blocklist — there is nothing left to revoke.
 
+The lifetime used is the one **recorded for that session at sign-in**, not the current setting. Shortening `FEOH_ACCESS_TOKEN_EXPIRE_MINUTES` would otherwise make every session minted under the old value look already-expired, pruning it while its token keeps authenticating — leaving a live session the user can neither see nor revoke, which is precisely what this surface exists to prevent. A session tracked before the field existed falls back to the current default.
+
 ### Session metadata
 
 Alongside the sorted set, each sign-in writes a small JSON record into a companion hash (`session_meta:<user_id>`, field = JTI) holding the client IP, a coarse device label, and the sign-in method (`password`, `password+mfa:totp`, `sso:<provider>`, `saml:<provider>`). Both structures are torn down together — an evicted, logged-out, revoked or pruned session loses its metadata in the same operation, so the descriptive layer can never outlive the membership it describes.

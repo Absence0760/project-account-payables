@@ -261,6 +261,10 @@
 
 	let sessions = $state<ActiveSession[] | null>(null);
 	let sessionsLoaded = $state(false);
+	// A failed fetch must NOT read as "no other sessions are signed in" — on a
+	// security screen that reassurance would be a lie, and the user would stop
+	// looking for the session they came here to kill.
+	let sessionsError = $state(false);
 	let armedSessionId = $state<string | null>(null);
 	let armedRevokeOthers = $state(false);
 	let sessionBusy = $state(false);
@@ -274,8 +278,10 @@
 	async function loadSessions() {
 		try {
 			sessions = await auth.listSessions();
+			sessionsError = false;
 		} catch {
-			sessions = [];
+			sessions = null;
+			sessionsError = true;
 		} finally {
 			sessionsLoaded = true;
 		}
@@ -654,6 +660,13 @@
 
 			{#if !sessionsLoaded}
 				<p class="hint">Loading…</p>
+			{:else if sessionsError}
+				<p class="warn">
+					Couldn't load your sessions, so we can't say what's signed in right now.
+				</p>
+				<div class="actions">
+					<button type="button" class="secondary" onclick={loadSessions}>Try again</button>
+				</div>
 			{:else if sessions && sessions.length > 0}
 				<ul class="entry-list">
 					{#each sessions as s (s.id)}

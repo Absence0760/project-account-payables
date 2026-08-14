@@ -503,6 +503,56 @@ def test_list_sessions_prunes_expired_entries(fake_redis):
     assert f"token:blocked:{stale}" not in fake_redis.strings
 
 
+def test_list_sessions_uses_the_ttl_recorded_at_sign_in(fake_redis):
+    """Shortening FEOH_ACCESS_TOKEN_EXPIRE_MINUTES must not prune a session
+    whose token is still authenticating — that would leave a live session the
+    user can neither see nor revoke, the exact failure this feature prevents."""
+    from app.services import session_management
+
+    user_id = uuid.uuid4()
+    jti = str(uuid.uuid4())
+    with patch("app.services.session_management.settings") as fake:
+        fake.max_concurrent_sessions = 0
+        fake.access_token_expire_minutes = 60  # minted under a 60-minute token
+        asyncio.run(session_management.register_session(user_id, jti, ip="1.1.1.1"))
+
+    # Backdate 40 minutes: past a 10-minute lifetime, well inside the 60 it holds.
+    key = f"active_jtis:{user_id}"
+    fake_redis.zsets[key] = [(time.time() - 2400, m) for (_, m) in fake_redis.zsets[key]]
+
+    with patch("app.services.session_management.settings") as fake:
+        fake.access_token_expire_minutes = 10  # operator shortened it since
+        sessions = asyncio.run(session_management.list_sessions(user_id))
+
+    assert [s.jti for s in sessions] == [jti]
+    assert f"token:blocked:{jti}" not in fake_redis.strings
+
+
+def test_list_sessions_falls_back_when_the_recorded_ttl_is_unusable(fake_redis):
+    """A session tracked before the ttl field existed — or one whose value
+    didn't survive the round trip — is judged against the current default."""
+    from app.redis import track_session
+    from app.services import session_management
+
+    user_id = uuid.uuid4()
+    legacy, garbage = str(uuid.uuid4()), str(uuid.uuid4())
+    asyncio.run(
+        track_session(user_id, legacy, ttl_seconds=1800, max_sessions=0, meta='{"ip":"1.1.1.1"}')
+    )
+    asyncio.run(
+        track_session(user_id, garbage, ttl_seconds=1800, max_sessions=0, meta='{"ttl":"soon"}')
+    )
+    key = f"active_jtis:{user_id}"
+    fake_redis.zsets[key] = [(time.time() - 3600, m) for (_, m) in fake_redis.zsets[key]]
+
+    with patch("app.services.session_management.settings") as fake:
+        fake.access_token_expire_minutes = 30
+        sessions = asyncio.run(session_management.list_sessions(user_id))
+
+    # Both are an hour old, so the 30-minute default expires them.
+    assert sessions == []
+
+
 def test_list_sessions_returns_newest_first(fake_redis):
     from app.redis import track_session
     from app.services import session_management
