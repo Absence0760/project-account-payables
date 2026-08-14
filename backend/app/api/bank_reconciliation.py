@@ -21,7 +21,8 @@ books — mirrors how ``GLAccount`` treats an unscoped row as shared.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, date, datetime
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
@@ -41,15 +42,24 @@ from app.models.invoice import Invoice
 from app.models.payment import Payment
 from app.models.user import User
 from app.schemas.bank_reconciliation import (
+    AmountMismatchResponse,
     BankStatementListResponse,
     BankStatementResponse,
     BankTransactionResponse,
+    OutstandingItemsResponse,
     TransactionResolveRequest,
+    UnclearedPaymentResponse,
+    UnmatchedDebitResponse,
 )
 from app.services.audit_dispatch import dispatch_audit
 from app.services.bank_reconciliation import (
+    MATCH_METHOD_AMOUNT_MISMATCH,
+    MATCH_METHOD_MANUAL,
     StatementImportError,
+    is_amount_mismatch,
+    is_reconciled,
     match_statement_transactions,
+    match_variance,
     parse_csv_statement,
 )
 from app.tenant import get_tenant_db
@@ -84,28 +94,41 @@ async def _get_scoped(
     return stmt
 
 
-async def _matched_invoice_numbers(
+@dataclass(frozen=True)
+class _PaymentContext:
+    """The matched payment's fields a transaction row needs to render. Fetched
+    in one join so a statement's transactions never fan out into an N+1."""
+
+    amount: Decimal
+    invoice_number: str | None
+
+
+async def _matched_payment_context(
     db: AsyncSession, transactions: list[BankTransaction]
-) -> dict[uuid.UUID, str]:
-    """One query → {payment_id: invoice_number} for every matched transaction
-    (no N+1) — joins through Payment.invoice_id since a BankTransaction only
-    stores the payment FK."""
+) -> dict[uuid.UUID, _PaymentContext]:
+    """One query → {payment_id: _PaymentContext} for every matched transaction
+    — joins through Payment.invoice_id since a BankTransaction only stores the
+    payment FK. The payment's own amount comes back too, so the variance on an
+    `amount_mismatch` row is computable without a second request."""
     payment_ids = {t.matched_payment_id for t in transactions if t.matched_payment_id is not None}
     if not payment_ids:
         return {}
     rows = (
         await db.execute(
-            select(Payment.id, Invoice.invoice_number)
+            select(Payment.id, Payment.amount, Invoice.invoice_number)
             .join(Invoice, Invoice.id == Payment.invoice_id)
             .where(Payment.id.in_(payment_ids))
         )
     ).all()
-    return {pid: number for pid, number in rows}
+    return {
+        pid: _PaymentContext(amount=amount, invoice_number=number) for pid, amount, number in rows
+    }
 
 
 def _tx_to_response(
-    tx: BankTransaction, matched_numbers: dict[uuid.UUID, str]
+    tx: BankTransaction, payment_ctx: dict[uuid.UUID, _PaymentContext]
 ) -> BankTransactionResponse:
+    ctx = payment_ctx.get(tx.matched_payment_id) if tx.matched_payment_id else None
     return BankTransactionResponse(
         id=str(tx.id),
         transaction_date=tx.transaction_date.isoformat(),
@@ -117,17 +140,18 @@ def _tx_to_response(
         reference=tx.reference,
         direction=tx.direction,
         matched_payment_id=str(tx.matched_payment_id) if tx.matched_payment_id else None,
-        matched_invoice_number=(
-            matched_numbers.get(tx.matched_payment_id) if tx.matched_payment_id else None
-        ),
+        matched_invoice_number=ctx.invoice_number if ctx else None,
         match_method=tx.match_method,
         match_confidence=float(tx.match_confidence) if tx.match_confidence is not None else None,
         matched_at=tx.matched_at.isoformat() if tx.matched_at else None,
+        matched_payment_amount=ctx.amount if ctx else None,
+        variance_amount=match_variance(tx.amount, ctx.amount) if ctx else None,
+        is_reconciled=is_reconciled(tx.match_method, tx.matched_payment_id),
     )
 
 
 def _statement_to_response(
-    stmt: BankStatement, *, transactions: list[BankTransaction] | None = None
+    stmt: BankStatement, *, amount_mismatch_count: int = 0
 ) -> BankStatementResponse:
     return BankStatementResponse(
         id=str(stmt.id),
@@ -141,9 +165,45 @@ def _statement_to_response(
         closing_balance=stmt.closing_balance,
         transaction_count=stmt.transaction_count,
         matched_count=stmt.matched_count,
+        amount_mismatch_count=amount_mismatch_count,
         imported_at=stmt.imported_at.isoformat() if stmt.imported_at else "",
         created_at=stmt.created_at.isoformat() if stmt.created_at else "",
         transactions=None,
+    )
+
+
+async def _amount_mismatch_counts(
+    db: AsyncSession, statement_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, int]:
+    """One grouped query → {statement_id: amount_mismatch count} for a whole
+    page of statements. A discrepancy a user has to open each statement to
+    notice is a discrepancy nobody notices, so the list carries it too."""
+    if not statement_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(BankTransaction.statement_id, func.count())
+            .where(
+                BankTransaction.statement_id.in_(statement_ids),
+                BankTransaction.match_method == MATCH_METHOD_AMOUNT_MISMATCH,
+            )
+            .group_by(BankTransaction.statement_id)
+        )
+    ).all()
+    return {sid: count for sid, count in rows}
+
+
+async def _recompute_matched_count(db: AsyncSession, stmt: BankStatement) -> None:
+    """Refresh the denormalised rollup from the full transaction set, counting
+    RECONCILED lines only (`is_reconciled`) — an `amount_mismatch` is linked to
+    a payment but has not cleared."""
+    all_tx = list(
+        (await db.execute(select(BankTransaction).where(BankTransaction.statement_id == stmt.id)))
+        .scalars()
+        .all()
+    )
+    stmt.matched_count = sum(
+        1 for t in all_tx if is_reconciled(t.match_method, t.matched_payment_id)
     )
 
 
@@ -159,9 +219,15 @@ async def _detail_response(db: AsyncSession, stmt: BankStatement) -> BankStateme
         .scalars()
         .all()
     )
-    matched_numbers = await _matched_invoice_numbers(db, transactions)
-    resp = _statement_to_response(stmt)
-    resp.transactions = [_tx_to_response(t, matched_numbers) for t in transactions]
+    payment_ctx = await _matched_payment_context(db, transactions)
+    rows = [_tx_to_response(t, payment_ctx) for t in transactions]
+    resp = _statement_to_response(
+        stmt,
+        amount_mismatch_count=sum(
+            1 for r in rows if r.match_method == MATCH_METHOD_AMOUNT_MISMATCH
+        ),
+    )
+    resp.transactions = rows
     return resp
 
 
@@ -253,11 +319,208 @@ async def list_statements(
         .limit(page_size)
     )
     rows = list((await db.execute(query)).scalars().all())
+    mismatch_counts = await _amount_mismatch_counts(db, [r.id for r in rows])
     return BankStatementListResponse(
-        items=[_statement_to_response(r) for r in rows],
+        items=[
+            _statement_to_response(r, amount_mismatch_count=mismatch_counts.get(r.id, 0))
+            for r in rows
+        ],
         total=total,
         page=page,
         page_size=page_size,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Outstanding items — the org-wide close view
+# --------------------------------------------------------------------------- #
+#
+# Declared BEFORE `/{statement_id}`: FastAPI matches routes in declaration
+# order and `statement_id: uuid.UUID` would 422 on the literal "outstanding"
+# rather than falling through.
+
+
+# Statuses where our books assert the money has been handed to the bank, so a
+# corresponding debit is expected. `pending` has not been dispatched;
+# `failed`/`cancelled`/`voided` are terminal non-payments; `pending_compliance`
+# is held BEFORE the adapter call. None of those should read as outstanding.
+_EXPECTED_TO_CLEAR_STATUSES = ("completed", "submitted", "processing")
+
+
+@router.get("/outstanding", response_model=OutstandingItemsResponse)
+async def outstanding_items(
+    older_than_days: int = Query(
+        0,
+        ge=0,
+        le=3650,
+        description="Only report payments sent at least this many days ago.",
+    ),
+    limit: int = Query(200, ge=1, le=1000),
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(*_READ_ROLES)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """The three buckets a bank-reconciliation worksheet closes a period on.
+
+    Per-statement detail answers "did this file reconcile"; nothing answered
+    "across everything we have imported, what has still not cleared" — the
+    question month-end actually asks. Computed on read from the existing
+    `BankTransaction.matched_payment_id` link, so there is no stored clearance
+    column to drift out of sync when a payment is later voided or a match
+    re-pointed.
+
+      * ``uncleared_payments``  — we say it went out, no bank line claims it.
+      * ``unmatched_debits``    — money left the account with no payment behind
+                                  it (the never-issued-cheque shape).
+      * ``amount_mismatches``   — identified, but the bank moved a different
+                                  amount. Positive variance = they took more.
+
+    A payment linked to an ``amount_mismatch`` line is NOT uncleared — it is
+    accounted for, in the mismatch bucket — so it appears exactly once.
+    """
+    today = datetime.now(UTC).date()
+    cutoff = today - timedelta(days=older_than_days)
+
+    claimed_subq = select(BankTransaction.matched_payment_id).where(
+        BankTransaction.matched_payment_id.is_not(None)
+    )
+
+    # ---- Bucket 1: payments no bank line claims ---------------------------
+    uncleared_rows = (
+        await db.execute(
+            select(Payment, Invoice.invoice_number, Invoice.vendor_name)
+            .join(Invoice, Invoice.id == Payment.invoice_id)
+            .where(
+                Payment.status.in_(_EXPECTED_TO_CLEAR_STATUSES),
+                Payment.id.not_in(claimed_subq),
+            )
+            .order_by(Payment.created_at)
+        )
+    ).all()
+
+    uncleared: list[UnclearedPaymentResponse] = []
+    uncleared_total = Decimal("0.00")
+    uncleared_count = 0
+    for payment, invoice_number, vendor_name in uncleared_rows:
+        # Same fallback chain the matcher's date window uses, so "outstanding
+        # since" and "matchable around" agree on when we consider it sent.
+        sent_at = payment.submitted_at or payment.completed_at or payment.created_at
+        sent_on = sent_at.date() if isinstance(sent_at, datetime) else sent_at
+        if sent_on is not None and sent_on > cutoff:
+            continue
+        # Counts + totals cover EVERY outstanding payment; only the row list is
+        # capped at `limit`, so a truncated page never understates the money.
+        uncleared_count += 1
+        uncleared_total += payment.amount
+        if len(uncleared) < limit:
+            uncleared.append(
+                UnclearedPaymentResponse(
+                    payment_id=str(payment.id),
+                    invoice_id=str(payment.invoice_id),
+                    invoice_number=invoice_number,
+                    vendor_name=vendor_name,
+                    amount=payment.amount,
+                    method=payment.method,
+                    status=payment.status,
+                    sent_on=sent_on.isoformat() if sent_on else None,
+                    days_outstanding=(today - sent_on).days if sent_on else None,
+                )
+            )
+    # ---- Buckets 2 + 3: bank lines needing attention -----------------------
+    attention_rows = (
+        await db.execute(
+            select(BankTransaction, BankStatement.account_identifier)
+            .join(BankStatement, BankStatement.id == BankTransaction.statement_id)
+            .where(
+                BankStatement.organization_id == org_id,
+                BankTransaction.direction == "debit",
+                (BankTransaction.matched_payment_id.is_(None))
+                | (BankTransaction.match_method == MATCH_METHOD_AMOUNT_MISMATCH),
+            )
+            .order_by(BankTransaction.transaction_date.desc())
+        )
+    ).all()
+
+    mismatch_payment_ids = {
+        tx.matched_payment_id
+        for tx, _ in attention_rows
+        if tx.match_method == MATCH_METHOD_AMOUNT_MISMATCH and tx.matched_payment_id is not None
+    }
+    mismatch_ctx: dict[uuid.UUID, _PaymentContext] = {}
+    if mismatch_payment_ids:
+        ctx_rows = (
+            await db.execute(
+                select(Payment.id, Payment.amount, Invoice.invoice_number)
+                .join(Invoice, Invoice.id == Payment.invoice_id)
+                .where(Payment.id.in_(mismatch_payment_ids))
+            )
+        ).all()
+        mismatch_ctx = {
+            pid: _PaymentContext(amount=amount, invoice_number=number)
+            for pid, amount, number in ctx_rows
+        }
+
+    unmatched: list[UnmatchedDebitResponse] = []
+    unmatched_total = Decimal("0.00")
+    unmatched_count = 0
+    mismatches: list[AmountMismatchResponse] = []
+    mismatch_count = 0
+    net_variance = Decimal("0.00")
+
+    for tx, account_identifier in attention_rows:
+        if tx.matched_payment_id is None:
+            unmatched_count += 1
+            unmatched_total += tx.amount
+            if len(unmatched) < limit:
+                unmatched.append(
+                    UnmatchedDebitResponse(
+                        transaction_id=str(tx.id),
+                        statement_id=str(tx.statement_id),
+                        account_identifier=account_identifier,
+                        transaction_date=tx.transaction_date.isoformat(),
+                        amount=tx.amount,
+                        currency=tx.currency,
+                        counterparty_name=tx.counterparty_name,
+                        reference=tx.reference,
+                        description=tx.description,
+                    )
+                )
+            continue
+
+        ctx = mismatch_ctx.get(tx.matched_payment_id)
+        if ctx is None:
+            continue
+        variance = match_variance(tx.amount, ctx.amount)
+        mismatch_count += 1
+        net_variance += variance
+        if len(mismatches) < limit:
+            mismatches.append(
+                AmountMismatchResponse(
+                    transaction_id=str(tx.id),
+                    statement_id=str(tx.statement_id),
+                    account_identifier=account_identifier,
+                    transaction_date=tx.transaction_date.isoformat(),
+                    bank_amount=tx.amount,
+                    payment_amount=ctx.amount,
+                    variance_amount=variance,
+                    payment_id=str(tx.matched_payment_id),
+                    invoice_number=ctx.invoice_number,
+                    counterparty_name=tx.counterparty_name,
+                )
+            )
+
+    return OutstandingItemsResponse(
+        as_of=today.isoformat(),
+        older_than_days=older_than_days,
+        uncleared_payments=uncleared,
+        uncleared_count=uncleared_count,
+        uncleared_total=uncleared_total,
+        unmatched_debits=unmatched,
+        unmatched_debit_count=unmatched_count,
+        unmatched_debit_total=unmatched_total,
+        amount_mismatches=mismatches,
+        amount_mismatch_count=mismatch_count,
+        amount_mismatch_net_variance=net_variance,
     )
 
 
@@ -299,6 +562,7 @@ async def resolve_transaction(
     if tx is None:
         raise HTTPException(status_code=404, detail="Bank transaction not found")
 
+    variance_str: str | None = None
     if body.matched_payment_id is not None:
         payment_id = uuid.UUID(body.matched_payment_id)
         payment = (
@@ -325,22 +589,26 @@ async def resolve_transaction(
                 detail="This payment is already matched to another bank transaction.",
             )
         tx.matched_payment_id = payment.id
-        tx.match_method = "manual"
+        # The classification is DERIVED from the two amounts, never asserted by
+        # the caller: a human pointing a $10 bank line at a $10,000 payment is
+        # telling us which payment it is, not that the amounts agree. Stamping
+        # it "manual, confidence 100" would let a clerk click straight past the
+        # altered-amount signal the auto-matcher raises.
+        tx.match_method = (
+            MATCH_METHOD_AMOUNT_MISMATCH
+            if is_amount_mismatch(tx.amount, payment.amount)
+            else MATCH_METHOD_MANUAL
+        )
         tx.match_confidence = _MANUAL_MATCH_CONFIDENCE
         tx.matched_at = datetime.now(UTC)
+        variance_str = str(match_variance(tx.amount, payment.amount))
     else:
         tx.matched_payment_id = None
         tx.match_method = None
         tx.match_confidence = None
         tx.matched_at = None
 
-    # Recompute the denormalised rollup from the full transaction set.
-    all_tx = list(
-        (await db.execute(select(BankTransaction).where(BankTransaction.statement_id == stmt.id)))
-        .scalars()
-        .all()
-    )
-    stmt.matched_count = sum(1 for t in all_tx if t.matched_payment_id is not None)
+    await _recompute_matched_count(db, stmt)
 
     await dispatch_audit(
         db,
@@ -353,6 +621,10 @@ async def resolve_transaction(
         details={
             "transaction_id": str(tx.id),
             "matched_payment_id": body.matched_payment_id,
+            # Exact string, never float — the audit row is the durable record
+            # of a discrepancy a human accepted responsibility for.
+            "match_method": tx.match_method,
+            "variance_amount": variance_str,
         },
     )
     await db.commit()
