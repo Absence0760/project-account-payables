@@ -353,31 +353,101 @@ Now:
 run (`draft` → use `/execute`; `executing` → use `/resume`). Same
 `payment.execute` permission, the same maker-checker `check_run_segregation`,
 and the same CFO-threshold gate as `/execute` — skipping any of those would
-make retry a way around all three. It re-arms only payments in `failed` /
-`cancelled` back to `pending`, then re-drives the run through the same
+make retry a way around all three. It books a second attempt for the failed
+payments it judges safe, then re-drives the run through the same
 `_dispatch_run_payments` loop, so anything already `completed` / `submitted` /
 `processing` / `pending_compliance` is never re-sent to the processor.
 
-Three details worth knowing:
+#### A retry books a NEW payment; it never re-arms the old one
 
-- **A re-armed payment gets a fresh `correlation_id`.** That value is the
-  processor's idempotency key; reusing it would make a rail that honours it
-  replay the original failure instead of actually retrying. `provider_payment_id`
-  is cleared for the mirror-image reason — a late webhook for the dead attempt
-  would otherwise land on the re-armed row (which is `pending` again, i.e.
-  inside the webhook's overwritable allowlist) and fail it a second time.
-- **Two payments are skipped, not re-armed:** the invoice is no longer payable
-  (voided / re-rejected / already `done`), or the invoice has since acquired
-  another LIVE payment — re-arming would put two live claims on one invoice,
-  which is what `uq_payments_one_live_per_invoice` exists to prevent. Both are
-  reported back as `skip_reasons`; a savepoint per re-arm is the backstop for
-  the same conflict arriving as a race.
-- **Idempotency** comes from the run claim: the row is locked and flipped to
-  `executing` before anything is re-armed, so a double-click blocks on the lock
-  and then 409s against the non-retryable status.
+`Payment.correlation_id` is the **processor's idempotency key**, not a local
+trace id: `payment_adapters/base.py` says so, `column` / `dwolla` /
+`stripe_treasury` / `increase` send it as `Idempotency-Key`, `modern_treasury`
+as `idempotency_key=`, and `checkeeper` burns it into a 48-hour Redis `SET NX`
+slot explicitly so a retry can't print a second physical cheque.
 
-Every re-arm writes a `payment.retried` audit row carrying the failure reason
-it replaced, plus one `payment_run.retried` row for the batch. Pinned by
+A re-attempt is genuinely a new order, so it needs a new key. Minting one onto
+the *failed row* — which is what this endpoint originally did — also meant
+clearing that row's `failure_reason`, `provider_payment_id`, `submitted_at` and
+`completed_at`: it destroyed the only handles anyone had for reconciling
+attempt #1 with the processor, and overwrote two regulated money timestamps.
+
+So attempt #1 is never written to at all. Attempt #2 is an **INSERT** on the
+same run carrying `retry_of_payment_id` (migration `0080`, tenant-scoped),
+which the `payments` rollups use to count the **latest attempt per invoice**
+(`services/payment_runs.active_run_payments`) rather than every row ever — all
+three call sites (`_dispatch_run_payments`, the run detail, the runs list) go
+through it, so a fully recovered run reports `completed` instead of `partial`
+forever. `failed` / `cancelled` sit outside `uq_payments_one_live_per_invoice`,
+which is what lets the second row claim the invoice's live-payment slot; a
+savepoint per insert is the backstop for a conflict arriving as a race. The
+superseded attempt stays visible on the run detail — an operator has to be able
+to see that an invoice took two goes — it just isn't counted twice.
+
+#### Only a failure we can prove never reached the processor is re-attempted
+
+`services/payment_runs.classify_payment_failure` (pure, unit-tested) is the
+gate. A failed payment is **in doubt** — and skipped as `needs_reconciliation`
+for a human to void or reconcile — when any of these hold:
+
+| Signal | Why it's in doubt |
+|--------|-------------------|
+| `provider_payment_id` populated | An order exists at the processor; every adapter here returns a handle only from a create call that succeeded. |
+| `unexpected_error:*` | The dispatcher swallowed an exception. A read timeout *after* the processor accepted looks identical to one before it. |
+| `*_transport_error:*` | The request may well have been received and actioned before the connection died. |
+| `*_api_error:*` | The provider answered — a 5xx can still have created the order. |
+| `reconciler_max_age_exceeded*` | A genuinely `submitted` payment, real money in flight, that `payment_reconciler` gave up waiting on. **This is the case that made the old re-arm a double-pay.** |
+| `checkeeper_duplicate_suppressed` | The 48-hour print slot was already claimed — a cheque for this order was very likely already printed. |
+| `adapter_error:*` (card leg) | The card provider may have minted a card we never recorded. |
+| blank / unrecognised reason | Fail-closed: a future adapter or a legacy row is not waved through. |
+
+Everything else — our own `compliance_refusal:` / `compliance_dismissed` /
+`international_payment_error:`, the card leg's `card_issuance_*` /
+`cards_not_enabled`, and each adapter's pre-flight refusals (`*_not_configured`,
+`*_no_counterparty`, `*_no_external_account`,
+`*_no_destination_funding_source`, `*_missing_mailing_address`,
+`*_idempotency_unavailable`, `method '…' is not supported by …`) — provably
+never left this process, so re-sending is safe.
+
+**Adapter authors:** a *pre-flight* refusal must use one of those codes, not
+free prose, or it classifies as unrecognised and can never be auto-retried.
+Modern Treasury's two pre-flight refusals were prose and were normalised for
+exactly this reason.
+
+#### The other skip reasons
+
+Every skip is reported back in `skip_reasons`; nothing skipped is mutated or
+re-sent.
+
+- `invoice_not_payable` — the invoice is voided, re-rejected or already `done`,
+  so paying it would move money against something nobody currently approves.
+- `invoice_has_blocking_exception` — an unresolved
+  `PAYMENT_BLOCKING_EXCEPTION_TYPES` flag (`duplicate` / `fraud_flag` /
+  `line_total_mismatch`). Run creation refuses these outright; this endpoint
+  re-dispatches money days or weeks later, so a `fraud_flag` raised in the
+  interim (a BEC bank-detail swap, an altered or never-issued cheque off a
+  Positive Pay return) has to stop the re-send here too. Both callers share
+  `services/payment_runs.blocked_invoice_ids` so they can't drift.
+- `net_amount_changed` — a credit memo applied while the payment sat `failed`
+  (`credit_memos.py` gates on neither invoice status nor an existing payment)
+  means the failed row's `amount` is no longer what the vendor is owed. The
+  retry re-derives `net_payable_amount` and **skips**; the amount is never
+  silently adjusted, so the operator builds a fresh run through the full gate
+  set.
+- `invoice_has_live_payment` — the invoice has since acquired another live
+  payment.
+
+`retryable_failures` on the run detail counts only failures the endpoint will
+actually re-attempt, so the retry button can never offer an action that could
+only be skipped.
+
+**Idempotency** comes from the run claim: the row is locked and flipped to
+`executing` before anything is booked, so a double-click blocks on the lock and
+then 409s against the non-retryable status.
+
+Every retry writes a `payment.retried` audit row naming **both** payment ids
+(the superseded attempt and its successor) plus the failure reason it replaced,
+and one `payment_run.retried` row for the batch. Pinned by
 `tests/test_payment_run_retry.py`.
 
 ### The `virtual_card` leg — converging on an invoice's existing card
@@ -647,7 +717,7 @@ Matching payments against bank statement entries:
 | `GET` | `/api/payments/runs/{id}` | Get payment run with its payments |
 | `POST` | `/api/payments/runs/{id}/execute` | Execute the payment run + trigger ERP sync. `draft`-only — a run stuck `executing` (worker crash mid-run) is resumed via the endpoint below, not this one. |
 | `POST` | `/api/payments/runs/{id}/resume` | Resume a run stuck in `executing` — re-dispatches only its still-`pending` payments; anything already `completed`/`failed`/`submitted`/`processing`/`pending_compliance` from before the crash is left untouched. Same `payment.execute` permission gate as `/execute`. |
-| `POST` | `/api/payments/runs/{id}/retry-failed` | Re-attempt only the FAILED payments of a `partial`/`failed` run. Never re-dispatches a payment that already succeeded; skips an invoice that is no longer payable or already has another live payment. Same `payment.execute` gate, segregation check and CFO threshold as `/execute`. See § Why a payment failed, and retrying it. |
+| `POST` | `/api/payments/runs/{id}/retry-failed` | Re-attempt the safely-retryable FAILED payments of a `partial`/`failed` run by booking a NEW attempt row (the failed row is never mutated). Never re-dispatches a payment that already succeeded, nor one whose fate at the processor is unknown (`needs_reconciliation`); also skips an invoice that is unpayable, carries an unresolved duplicate/fraud/line-total exception, has since been credited, or already has another live payment. Same `payment.execute` gate, segregation check and CFO threshold as `/execute`. See § Why a payment failed, and retrying it. |
 | `POST` | `/api/payments/runs/{id}/cancel` | Cancel a draft run — deletes its child payment rows so the invoices return to the queue, and flips the run to `cancelled`. |
 | `GET` | `/api/payments/queue` | List invoices ready for payment |
 | `GET` | `/api/payments/summary` | KPIs: total paid, pending, queue count, rebates. Requires a `control_db` dependency because `CardRebate` is a control-plane model; the rebate query includes a try/except fallback returning `0.0` if the `card_rebates` table doesn't exist yet. |
