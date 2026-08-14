@@ -74,7 +74,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.payment import Payment, PaymentRun
@@ -125,6 +125,36 @@ async def _seed_invoice(session_mk, org_id: uuid.UUID, *, amount: Decimal) -> Si
         )
         await s.commit()
     return SimpleNamespace(id=inv_id, correlation_id=corr, vendor_id=vendor_id)
+
+
+async def _wait_for_lock_waiter(session_mk, *, timeout: float = 15.0) -> bool:
+    """Block until Postgres reports another backend in this database waiting on
+    a lock, then return True (False if `timeout` elapses first).
+
+    Asked of the server's own wait state — `pg_stat_activity.wait_event_type`,
+    from an independent session — rather than slept for, so a test that needs
+    "the second racer is now queued behind the first" waits on the real signal
+    instead of hoping a fixed delay was long enough. Connecting as `postgres`
+    (dev and CI both do) makes every backend's wait state visible.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        async with session_mk() as s:
+            waiting = (
+                await s.execute(
+                    text(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE datname = current_database() "
+                        "AND pid <> pg_backend_pid() "
+                        "AND wait_event_type = 'Lock'"
+                    )
+                )
+            ).scalar_one()
+        if waiting:
+            return True
+        await asyncio.sleep(0.05)
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +517,15 @@ async def test_cancel_racing_execute_cannot_delete_dispatched_payments(realdb):
     `executing`, and 409s before deleting anything. Asserted on the durable
     outcome, not on timing: the adapter is still called exactly once AND the
     payment row survives with the processor's result on it.
+
+    Unlike BUG A/B/C — two calls to the SAME endpoint, where either racer
+    winning proves the point — the two racers here are different endpoints and
+    only one ordering exercises the fix. So the ordering is pinned rather than
+    left to the scheduler: /execute is held inside its locked transaction
+    (`_gated_get_scoped_run`) until Postgres itself reports the canceller
+    queued behind the lock.
     """
+    from app.api import payments as payments_api
     from app.api.payments import cancel_payment_run, execute_payment_run
 
     info = realdb.info("a")
@@ -543,6 +581,36 @@ async def test_cancel_racing_execute_cannot_delete_dispatched_payments(realdb):
 
     adapter = SimpleNamespace(provider_name="mock", create_payment=_counting_create_payment)
 
+    lock_held = asyncio.Event()  # /execute now holds the run row's FOR UPDATE lock
+    release_execute = asyncio.Event()  # …and the canceller is queued behind it
+    real_get_scoped_run = payments_api._get_scoped_run
+    gated = False
+
+    async def _gated_get_scoped_run(*args, **kwargs):
+        """Pin the interleaving this test exists for: the canceller arriving
+        while /execute already holds the run's row lock.
+
+        Firing both coroutines at `asyncio.gather` does not order them — it
+        only schedules them, and whichever session reaches `SELECT ... FOR
+        UPDATE` first wins. Both outcomes are correct (the loser 409s either
+        way), so an assertion written for one arm fails outright when the
+        scheduler picks the other — which is how this test went red on CI with
+        `create_payment called 0x`. Worse, the canceller-wins arm exercises
+        nothing: the UNFIXED cancel produces exactly the same result, because
+        it reaches the still-`draft` run before /execute claims it. Holding
+        /execute inside its locked transaction until the canceller has queued
+        behind the lock makes the race deterministic AND keeps it a real guard
+        — an unlocked cancel reads `draft` right through this window and
+        deletes the payments being dispatched.
+        """
+        nonlocal gated
+        run_row = await real_get_scoped_run(*args, **kwargs)
+        if not gated:  # the first caller through is /execute
+            gated = True
+            lock_held.set()
+            await release_execute.wait()
+        return run_row
+
     async def _execute_once():
         async with realdb.sessionmaker("a")() as db:
             try:
@@ -579,6 +647,7 @@ async def test_cancel_racing_execute_cannot_delete_dispatched_payments(realdb):
 
     with (
         patch("app.api.payments.get_payment_adapter", return_value=adapter),
+        patch("app.api.payments._get_scoped_run", new=_gated_get_scoped_run),
         patch("app.api.payments.transition_invoice", new_callable=AsyncMock) as ti,
         patch("app.services.payment_erp_sync.dispatch_payment_sync", new_callable=AsyncMock),
         patch(
@@ -588,8 +657,19 @@ async def test_cancel_racing_execute_cannot_delete_dispatched_payments(realdb):
         ),
     ):
         ti.return_value = inv
-        results = await asyncio.gather(_execute_once(), _cancel_once())
+        exec_task = asyncio.create_task(_execute_once())
+        await asyncio.wait_for(lock_held.wait(), timeout=15)
+        cancel_task = asyncio.create_task(_cancel_once())
+        # Postgres' own wait state is the signal that the canceller is
+        # contending for the run row — poll it, never sleep a guess.
+        canceller_queued = await _wait_for_lock_waiter(realdb.sessionmaker("a"))
+        release_execute.set()
+        results = await asyncio.gather(exec_task, cancel_task)
 
+    assert canceller_queued, (
+        "the canceller never queued behind /execute's row lock — it read the "
+        "run unlocked, which is the race this test guards"
+    )
     assert call_count == 1, f"adapter.create_payment called {call_count}x"
     # The canceller must have lost — it cannot cancel a run already executing.
     assert ("http", 409) in results, f"expected the canceller to 409, got {results}"
