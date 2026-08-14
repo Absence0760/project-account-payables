@@ -233,6 +233,14 @@ _ACTION_PHRASES = {
     "invoice.resubmitted": "resubmitted for review",
     "invoice.erp_submitted": "sent to ERP",
     "invoice.completed": "marked complete",
+    # Exception-queue events. These now reach the invoice's trail (they are
+    # correlation-keyed to it — see services/exception_lifecycle), and a reviewer
+    # catching up needs them: a duplicate / fraud flag is why the invoice
+    # stalled, and clearing one is what let it move.
+    "exception.raised": "flagged",
+    "exception.resolved": "had its exception cleared",
+    "exception.escalated": "had its exception escalated",
+    "exception.dismissed": "had its exception dismissed",
 }
 
 
@@ -277,6 +285,17 @@ def build_template_summary(
         phrase = _ACTION_PHRASES.get(e.action)
         if not phrase:
             continue
+        if e.action.startswith("exception."):
+            # Name the exception type — "flagged (duplicate)" reads as the
+            # reason the invoice stalled; a bare "flagged" doesn't.
+            exception_type = e.details.get("exception_type")
+            if exception_type:
+                phrase = f"{phrase} ({exception_type})"
+            if e.action != "exception.raised" and e.actor_name:
+                phrase = f"{phrase} by {e.actor_name}"
+            phrases.append(phrase)
+            continue
+
         to_status = e.details.get("to_status") or e.details.get("status")
         if e.action in ("invoice.approved", "invoice.rejected") and e.actor_name:
             phrase = f"{phrase} by {e.actor_name}"

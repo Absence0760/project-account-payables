@@ -65,8 +65,16 @@ def _events():
             created_at="2026-05-01T10:06:00+00:00",
             details={"fields_corrected": ["amount"]},
         ),
+        # Real exception-queue actions (services/exception_lifecycle) — these
+        # are correlation-keyed to the invoice, so they land on its trail.
         AuditEvent(
-            action="invoice.exception_resolved",
+            action="exception.raised",
+            actor_name=None,
+            created_at="2026-05-01T10:06:30+00:00",
+            details={"exception_type": "po_mismatch"},
+        ),
+        AuditEvent(
+            action="exception.resolved",
             actor_name="Manny Manager",
             created_at="2026-05-01T10:07:00+00:00",
             details={"exception_type": "po_mismatch", "resolution": "approved variance"},
@@ -174,6 +182,10 @@ def test_template_summary_is_deterministic_and_covers_events():
     # actor attribution for approval
     assert "Manny Manager" in a.text
     assert "sent to ERP" in a.text
+    # Exception activity is why an invoice stalls — the reviewer catching up
+    # needs to see it named, and who cleared it.
+    assert "flagged (po_mismatch)" in a.text
+    assert "had its exception cleared (po_mismatch) by Manny Manager" in a.text
     # confidence clause
     assert a.confidence_context is not None
     assert "95%" in a.confidence_context
