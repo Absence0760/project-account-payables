@@ -198,6 +198,33 @@ lifecycle with no second human. The control mirrors the invoice-approval
 than an explicit `false` keeps the secure default). A legacy run with a NULL
 `initiated_by` is never blocked (nothing to compare against).
 
+### Every by-id route is entity-scoped
+
+Multi-entity Phase 2 scopes reads and writes by the `X-Entity-ID` header. The
+list surfaces (`GET /payments`, `/queue`, `/summary`, `/counts`, `/runs/`) have
+honoured it since that landed, but every **by-id** route used to resolve its
+row on the primary key alone — `GET /payments/{id}`, `/{id}/remittance`,
+`POST /{id}/void`, `/{id}/compliance/{release,dismiss}`, `POST /payments`,
+`GET /runs/{id}`, and `POST /runs/{id}/{approve,cancel,execute,retry-failed,resume}`.
+Inside one tenant that let a user with subsidiary A selected read, void,
+release, CFO-approve and execute subsidiary B's money simply by knowing the id:
+the entity selector was advisory on exactly the routes that move money.
+
+`_get_scoped_payment` / `_get_scoped_run` in `api/payments.py` are the fix,
+mirroring `api/positive_pay.py::_get_scoped_file` on the sibling treasury
+router. Two properties matter:
+
+- **Opaque 404.** An out-of-scope id returns the same `Payment not found` /
+  `Payment run not found` as one that doesn't exist — never a 403 — so the
+  response can't be used to enumerate another subsidiary's payments.
+- **The row locks are unchanged.** The scope predicate is one more `WHERE`
+  clause on the same `SELECT ... FOR UPDATE`; pass `for_update=True` on the
+  mutating callers (see the section below).
+
+The consolidated view (no header, or `X-Entity-ID: all`) still sees every
+entity's rows, so single-entity tenants and pre-multi-entity API consumers are
+unaffected. Pinned by `tests/test_payment_entity_scope.py`.
+
 ### Every run-state endpoint row-locks
 
 `POST /runs/{id}/approve`, `/execute`, `/resume` and `/cancel` all read the

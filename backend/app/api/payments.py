@@ -120,6 +120,64 @@ async def _find_live_payment(db: AsyncSession, invoice_id: uuid.UUID) -> Payment
     return result.scalar_one_or_none()
 
 
+async def _get_scoped_payment(
+    db: AsyncSession,
+    payment_id: uuid.UUID,
+    entity_id: uuid.UUID | None,
+    *,
+    for_update: bool = False,
+) -> Payment:
+    """Fetch one `Payment` **within the caller's selected entity**, or 404.
+
+    Multi-entity Phase 2 scopes reads/writes by the `X-Entity-ID` header, and
+    the list / queue / summary / counts endpoints all honour it — but every
+    by-id detail and mutation route used to resolve the row on `Payment.id`
+    alone. Inside one tenant that let a user with subsidiary A selected void,
+    release, or read subsidiary B's payment simply by knowing its id: the
+    entity selector became advisory on exactly the routes that move money.
+
+    Mirrors `api/positive_pay.py::_get_scoped_file` on the sibling treasury
+    router, including its **opaque 404** — an out-of-scope id is
+    indistinguishable from one that doesn't exist, so the response can't be
+    used to enumerate another entity's payments. `for_update` keeps the
+    existing `SELECT ... FOR UPDATE` row locks on the mutating callers (the
+    scope predicate is just another WHERE clause; the lock is unchanged).
+    """
+    query = apply_entity_scope(select(Payment).where(Payment.id == payment_id), Payment, entity_id)
+    if for_update:
+        query = query.with_for_update()
+    row = (await db.execute(query)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    return row
+
+
+async def _get_scoped_run(
+    db: AsyncSession,
+    run_id: uuid.UUID,
+    entity_id: uuid.UUID | None,
+    *,
+    for_update: bool = False,
+) -> PaymentRun:
+    """Fetch one `PaymentRun` within the caller's selected entity, or 404.
+
+    Same rationale (and the same opaque 404) as `_get_scoped_payment`:
+    `GET /runs/` is entity-scoped and `POST /runs` stamps the write entity, so
+    a run detail / approve / cancel / execute / resume that resolved on
+    `PaymentRun.id` alone let one subsidiary's operator CFO-approve and execute
+    another subsidiary's run.
+    """
+    query = apply_entity_scope(
+        select(PaymentRun).where(PaymentRun.id == run_id), PaymentRun, entity_id
+    )
+    if for_update:
+        query = query.with_for_update()
+    row = (await db.execute(query)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Payment run not found")
+    return row
+
+
 # ── Individual Payments ──────────────────────────────────────────────
 
 
@@ -395,6 +453,7 @@ async def get_payment_remittance(
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Return a single-page remittance-advice PDF for the payment.
 
@@ -410,15 +469,10 @@ async def get_payment_remittance(
         render_remittance_pdf,
     )
 
-    result = await db.execute(
-        select(Payment, Invoice)
-        .outerjoin(Invoice, Payment.invoice_id == Invoice.id)
-        .where(Payment.id == payment_id)
-    )
-    row = result.one_or_none()
-    if not row:
-        raise HTTPException(status_code=404, detail="Payment not found")
-    payment, invoice = row
+    payment = await _get_scoped_payment(db, payment_id, entity_id)
+    invoice = (
+        await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
+    ).scalar_one_or_none()
 
     company = (org.settings or {}).get("company") or {}
 
@@ -461,16 +515,10 @@ async def get_payment(
     payment_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    result = await db.execute(
-        select(Payment, Invoice)
-        .outerjoin(Invoice, Payment.invoice_id == Invoice.id)
-        .where(Payment.id == payment_id)
-    )
-    row = result.one_or_none()
-    if not row:
-        raise HTTPException(status_code=404, detail="Payment not found")
-    p, inv = row
+    p = await _get_scoped_payment(db, payment_id, entity_id)
+    inv = (await db.execute(select(Invoice).where(Invoice.id == p.invoice_id))).scalar_one_or_none()
 
     # SOX access-control auditing: a payment detail is a regulated money record.
     # Record the view (no banking values enter the audit details). Payment rows
@@ -575,6 +623,7 @@ async def void_payment(
     org: Organization = Depends(get_tenant),
     # Defaults map to admin/cfo (unchanged) — see ROLE_DEFAULT_PERMISSIONS.
     user: User = Depends(require_permission(PERM_PAYMENT_VOID)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Void a completed or in-flight payment.
 
@@ -593,10 +642,7 @@ async def void_payment(
     # terminal status and 409s before touching the adapter. The Invoice is
     # fetched separately — Postgres can't `FOR UPDATE` the nullable side of
     # an outer join, and we don't need to lock the invoice here.
-    result = await db.execute(select(Payment).where(Payment.id == payment_id).with_for_update())
-    payment = result.scalar_one_or_none()
-    if not payment:
-        raise HTTPException(status_code=404, detail="Payment not found")
+    payment = await _get_scoped_payment(db, payment_id, entity_id, for_update=True)
 
     if payment.status in ("voided", "cancelled"):
         raise HTTPException(status_code=409, detail=f"Payment already {payment.status}")
@@ -737,6 +783,7 @@ async def release_compliance_hold(
     # Releasing dispatches the payment to the processor exactly like
     # /execute — same money-moving permission.
     user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Re-run compliance + dispatch for a payment stuck in `pending_compliance`.
 
@@ -750,10 +797,7 @@ async def release_compliance_hold(
     condition hasn't actually changed) stays `pending_compliance` and the
     response reflects that, rather than silently forcing money to move.
     """
-    result = await db.execute(select(Payment).where(Payment.id == payment_id).with_for_update())
-    payment = result.scalar_one_or_none()
-    if not payment:
-        raise HTTPException(status_code=404, detail="Payment not found")
+    payment = await _get_scoped_payment(db, payment_id, entity_id, for_update=True)
     if payment.status != "pending_compliance":
         raise HTTPException(
             status_code=409,
@@ -813,15 +857,13 @@ async def dismiss_compliance_hold(
     # Dismissing moves no money (nothing ever settled) — a treasury decision
     # to give up on this payment, same gate as void.
     user: User = Depends(require_permission(PERM_PAYMENT_VOID)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Give up on a payment stuck in `pending_compliance` — flips it to
     `failed` without ever reaching the processor. AP has reviewed the hold
     (e.g. a genuine sanctions match, or a decision to pay this vendor a
     different way) and decided this payment should not proceed as-is."""
-    result = await db.execute(select(Payment).where(Payment.id == payment_id).with_for_update())
-    payment = result.scalar_one_or_none()
-    if not payment:
-        raise HTTPException(status_code=404, detail="Payment not found")
+    payment = await _get_scoped_payment(db, payment_id, entity_id, for_update=True)
     if payment.status != "pending_compliance":
         raise HTTPException(
             status_code=409,
@@ -876,6 +918,7 @@ async def create_payment(
     # that strips payment.execute from a custom role must not retain a back door
     # to book money here. (System roles resolve identically via the default map.)
     user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     # Verify invoice exists and has cleared approval. Recording a payment
     # against a pre-approval invoice (new/pending/ready_for_review/rejected/
@@ -890,8 +933,17 @@ async def create_payment(
     # pay with no audit distinction). The `uq_payments_one_live_per_invoice`
     # partial index (migration 0074) is the DB-level backstop for any path the
     # row lock can't cover (e.g. an overlapping payment run).
+    #
+    # The lookup is entity-scoped like every other by-id money route on this
+    # router: with subsidiary A selected, an invoice belonging to subsidiary B
+    # is the same opaque 404 as one that doesn't exist — booking a payment
+    # against it would put A's operator on B's money.
     inv_result = await db.execute(
-        select(Invoice).where(Invoice.id == uuid.UUID(body.invoice_id)).with_for_update()
+        apply_entity_scope(
+            select(Invoice).where(Invoice.id == uuid.UUID(body.invoice_id)),
+            Invoice,
+            entity_id,
+        ).with_for_update()
     )
     invoice = inv_result.scalar_one_or_none()
     if not invoice:
@@ -1116,12 +1168,10 @@ async def get_payment_run(
     run_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Get a payment run with its individual payments."""
-    result = await db.execute(select(PaymentRun).where(PaymentRun.id == run_id))
-    run = result.scalar_one_or_none()
-    if not run:
-        raise HTTPException(status_code=404, detail="Payment run not found")
+    run = await _get_scoped_run(db, run_id, entity_id)
 
     # Get payments in this run with invoice details
     pay_result = await db.execute(
@@ -1165,6 +1215,7 @@ async def approve_payment_run(
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """CFO sign-off on a draft run. Only valid from `draft` AND
     `requires_cfo_approval=True`. After this lands, /execute will accept
@@ -1174,10 +1225,7 @@ async def approve_payment_run(
     # wins cfo_approved_by and a duplicate `payment_run.cfo_approved` audit row
     # lands, breaking non-repudiation of the money-control gate. The lock
     # serialises them so the second sees the first's commit and 409s.
-    result = await db.execute(select(PaymentRun).where(PaymentRun.id == run_id).with_for_update())
-    run = result.scalar_one_or_none()
-    if not run:
-        raise HTTPException(status_code=404, detail="Payment run not found")
+    run = await _get_scoped_run(db, run_id, entity_id, for_update=True)
     if run.status != "draft":
         raise HTTPException(
             status_code=409,
@@ -1231,6 +1279,7 @@ async def cancel_payment_run(
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Cancel a draft run before it executes. Only valid from `draft`;
     flips the run to `cancelled` and removes its child payment rows so
@@ -1244,10 +1293,7 @@ async def cancel_payment_run(
     # no longer exist, under a run that reads `cancelled`. With the lock the
     # canceller blocks until /execute commits, re-reads `executing`, and 409s
     # before deleting anything.
-    result = await db.execute(select(PaymentRun).where(PaymentRun.id == run_id).with_for_update())
-    run = result.scalar_one_or_none()
-    if not run:
-        raise HTTPException(status_code=404, detail="Payment run not found")
+    run = await _get_scoped_run(db, run_id, entity_id, for_update=True)
     if run.status != "draft":
         raise HTTPException(
             status_code=409,
@@ -1988,6 +2034,7 @@ async def execute_payment_run(
     # The money-moving end of the payment SoD split. Defaults map to
     # admin/ap_manager/cfo (unchanged); split from run-approval / bank-change.
     user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Execute a draft payment run via the configured payment adapter.
 
@@ -2017,10 +2064,7 @@ async def execute_payment_run(
     # adapter call itself is also idempotency-keyed via
     # `PaymentPayload.correlation_id` — defense in depth for processors that
     # honor it, e.g. Modern Treasury / Column.)
-    result = await db.execute(select(PaymentRun).where(PaymentRun.id == run_id).with_for_update())
-    run = result.scalar_one_or_none()
-    if not run:
-        raise HTTPException(status_code=404, detail="Payment run not found")
+    run = await _get_scoped_run(db, run_id, entity_id, for_update=True)
     if run.status != "draft":
         raise HTTPException(
             status_code=409, detail=f"Can only execute 'draft' runs, not '{run.status}'"
@@ -2061,6 +2105,7 @@ async def resume_payment_run(
     org: Organization = Depends(get_tenant),
     # Resuming can dispatch real payments exactly like /execute — same gate.
     user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Resume a payment run stuck in `executing` — e.g. the worker process
     crashed partway through `execute_payment_run`'s per-payment loop.
@@ -2080,10 +2125,7 @@ async def resume_payment_run(
     run is actually stuck (no progress for an implausible amount of time),
     not as a matter of course.
     """
-    result = await db.execute(select(PaymentRun).where(PaymentRun.id == run_id).with_for_update())
-    run = result.scalar_one_or_none()
-    if not run:
-        raise HTTPException(status_code=404, detail="Payment run not found")
+    run = await _get_scoped_run(db, run_id, entity_id, for_update=True)
     if run.status != "executing":
         raise HTTPException(
             status_code=409,
