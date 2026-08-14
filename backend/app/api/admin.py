@@ -559,6 +559,48 @@ async def _user_reference_counts(db_name: str, user_id: uuid.UUID) -> UserDelete
         )
 
 
+class RevokeSessionsResponse(BaseModel):
+    """How many of the target's sessions the force-logout ended."""
+
+    revoked: int
+
+
+@router.post("/users/{user_id}/revoke-sessions", response_model=RevokeSessionsResponse)
+async def revoke_user_sessions_endpoint(
+    user_id: uuid.UUID,
+    db: AsyncSession = Depends(get_control_db),
+    current_user: User = Depends(require_permission(PERM_USER_MANAGE)),
+    org_id: uuid.UUID = Depends(get_org_id),
+) -> RevokeSessionsResponse:
+    """Force-log-out a user without touching their account.
+
+    Forced logout already happens as a *side effect* of a role change, a
+    password reset and deactivation — but incident response often needs it on
+    its own ("this laptop was stolen; keep the account, kill the sessions").
+    Making an admin deactivate-and-reactivate to get there means the account
+    spends the window locked out and the audit trail records a suspension that
+    never happened.
+
+    Org-scoped: a user outside the caller's org is the same 404 as a missing
+    one. Idempotent — with nothing signed in it reports ``revoked: 0``.
+    """
+    target = (
+        await db.execute(select(User).where(User.id == user_id, User.organization_id == org_id))
+    ).scalar_one_or_none()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    revoked = await revoke_user_sessions(user_id)
+    await dispatch_auth_audit(
+        organization_id=org_id,
+        actor_id=current_user.id,
+        action="user.sessions_revoked",
+        entity_id=user_id,
+        details={"revoked": len(revoked)},
+    )
+    return RevokeSessionsResponse(revoked=len(revoked))
+
+
 @router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_user(
     user_id: uuid.UUID,
