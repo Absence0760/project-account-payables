@@ -22,11 +22,24 @@ class PaymentMethod(StrEnum):
 
 
 class PaymentRunStatus(StrEnum):
+    """Every status `PaymentRun.status` can actually hold.
+
+    `executing`, `partial` and `cancelled` were missing even though the code
+    has always written them: `/runs/{id}/execute` claims a run by flipping it
+    to `executing`, `_dispatch_run_payments` rolls up to `partial` when some
+    payments succeeded and some failed, and `/runs/{id}/cancel` writes
+    `cancelled`. An enum that can't name three of the eight real values is a
+    filter/validation surface that silently disagrees with the table.
+    """
+
     draft = "draft"
+    executing = "executing"
     submitted = "submitted"
     processing = "processing"
+    partial = "partial"
     completed = "completed"
     failed = "failed"
+    cancelled = "cancelled"
 
 
 PAYMENT_STATUSES = [s.value for s in PaymentStatus]
@@ -53,6 +66,19 @@ class PaymentResponse(BaseModel):
     created_at: str
     updated_at: str | None
 
+    # Why this payment failed, and when it moved. `Payment.failure_reason` has
+    # existed (and been populated on every failure path — compliance refusal,
+    # card-issuance failure, adapter error, void, webhook failure) since the
+    # model was written, but it never reached the read surface: a run could
+    # report "2 failed" and the UI had no way to say why, so the operator's
+    # only recourse was the server log. Readable by the payments roles
+    # (admin / ap_manager / cfo), who can already read vendor bank details —
+    # this is not a new exposure class.
+    provider: str | None = None
+    failure_reason: str | None = None
+    submitted_at: str | None = None
+    completed_at: str | None = None
+
     # Joined fields from invoice
     vendor_name: str | None = None
     invoice_number: str | None = None
@@ -78,6 +104,10 @@ class PaymentResponse(BaseModel):
             reference=p.reference,
             created_at=p.created_at.isoformat() if p.created_at else "",
             updated_at=p.updated_at.isoformat() if p.updated_at else None,
+            provider=p.provider,
+            failure_reason=p.failure_reason,
+            submitted_at=p.submitted_at.isoformat() if p.submitted_at else None,
+            completed_at=p.completed_at.isoformat() if p.completed_at else None,
             vendor_name=invoice.vendor_name if invoice else None,
             invoice_number=invoice.invoice_number if invoice else None,
             card_last_four=card.last_four if card else None,
@@ -102,10 +132,31 @@ class PaymentRunResponse(BaseModel):
     created_at: str
     payment_count: int = 0
 
+    # Per-outcome tallies over the run's own payments. `partial` alone doesn't
+    # tell an operator whether one payment failed or forty, and the counts used
+    # to exist only in the transient response body of the /execute call that
+    # produced them — reload the page and they were gone. Derived on read from
+    # the child `Payment` rows (no stored running total, matching the budget
+    # service's compute-on-read posture), so they can never drift from the
+    # payments they summarise.
+    payments_completed: int = 0
+    payments_failed: int = 0
+    payments_in_flight: int = 0
+    payments_pending: int = 0
+
     model_config = {"from_attributes": True}
 
     @classmethod
-    def from_db(cls, pr, payment_count: int = 0) -> "PaymentRunResponse":
+    def from_db(
+        cls,
+        pr,
+        payment_count: int = 0,
+        *,
+        completed: int = 0,
+        failed: int = 0,
+        in_flight: int = 0,
+        pending: int = 0,
+    ) -> "PaymentRunResponse":
         return cls(
             id=str(pr.id),
             status=pr.status,
@@ -114,6 +165,10 @@ class PaymentRunResponse(BaseModel):
             executed_at=pr.executed_at.isoformat() if pr.executed_at else None,
             created_at=pr.created_at.isoformat() if pr.created_at else "",
             payment_count=payment_count,
+            payments_completed=completed,
+            payments_failed=failed,
+            payments_in_flight=in_flight,
+            payments_pending=pending,
         )
 
 

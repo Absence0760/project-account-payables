@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from decimal import Decimal
@@ -34,6 +35,72 @@ from app.models.payment import Payment, PaymentRun
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
+
+
+# What each `Payment.status` means to its run's rollup. Declared once because
+# three call sites bucket the same statuses: the execute/resume/retry
+# dispatcher (`api/payments.py::_dispatch_run_payments`, which is what
+# *persists* `run.status`), the run-detail read, and the runs list. A status
+# added to one bucket but not the others is exactly how a run comes to report
+# an outcome its own payments don't support.
+#
+# `pending` is deliberately its own bucket and NOT part of the run-status
+# derivation: a `pending` payment is one nothing has attempted yet, which is
+# the normal state of a `draft` run and the resumable state of a crashed one.
+RUN_PAYMENT_COMPLETED_STATUSES = ("completed",)
+RUN_PAYMENT_FAILED_STATUSES = ("failed", "cancelled")
+RUN_PAYMENT_IN_FLIGHT_STATUSES = ("submitted", "processing", "pending_compliance")
+RUN_PAYMENT_PENDING_STATUSES = ("pending",)
+
+
+@dataclass(frozen=True)
+class PaymentRunRollup:
+    """Per-outcome tallies over one run's payments, plus the run status they
+    add up to. Pure — no DB, no clock."""
+
+    total: int = 0
+    completed: int = 0
+    failed: int = 0
+    in_flight: int = 0
+    pending: int = 0
+
+    @property
+    def run_status(self) -> str:
+        """The `PaymentRun.status` these payment outcomes imply.
+
+        Preserves the exact precedence the dispatcher has always used: all-fail
+        → `failed`, any-fail-with-a-survivor → `partial`, anything still in
+        flight → `submitted`, otherwise `completed`.
+        """
+        if self.failed and not (self.completed or self.in_flight):
+            return "failed"
+        if self.failed:
+            return "partial"
+        if self.in_flight:
+            return "submitted"
+        return "completed"
+
+
+def rollup_payment_statuses(statuses: Iterable[str | None]) -> PaymentRunRollup:
+    """Bucket a run's payment statuses into a `PaymentRunRollup`."""
+    total = completed = failed = in_flight = pending = 0
+    for status in statuses:
+        total += 1
+        if status in RUN_PAYMENT_COMPLETED_STATUSES:
+            completed += 1
+        elif status in RUN_PAYMENT_FAILED_STATUSES:
+            failed += 1
+        elif status in RUN_PAYMENT_IN_FLIGHT_STATUSES:
+            in_flight += 1
+        elif status in RUN_PAYMENT_PENDING_STATUSES:
+            pending += 1
+    return PaymentRunRollup(
+        total=total,
+        completed=completed,
+        failed=failed,
+        in_flight=in_flight,
+        pending=pending,
+    )
 
 
 @dataclass(frozen=True)

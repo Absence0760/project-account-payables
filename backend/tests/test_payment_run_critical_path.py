@@ -398,6 +398,10 @@ async def test_get_run_detail_serialises_money_as_strings_not_floats():
         method="ach",
         status="pending",
         reference=None,
+        provider=None,
+        failure_reason=None,
+        submitted_at=None,
+        completed_at=None,
     )
     inv = _invoice(amount=Decimal("250.00"))
 
