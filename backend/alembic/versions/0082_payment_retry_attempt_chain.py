@@ -18,8 +18,8 @@ written to at all; this column is the link between the two rows and is what
 lets a run's rollup count the LATEST attempt per invoice instead of every row
 ever (``services/payment_runs.active_run_payments``).
 
-Revision ID: 0080_payment_retry_attempt_chain
-Revises: 0079_payment_run_plan_id
+Revision ID: 0082_payment_retry_attempt_chain
+Revises: 0081_one_bank_tx_per_payment
 Create Date: 2026-08-14
 
 TENANT DB ONLY: ``payments`` is tenant-scoped. The upgrade is gated on the
@@ -36,8 +36,8 @@ from sqlalchemy import text
 
 from alembic import op
 
-revision = "0080_payment_retry_attempt_chain"
-down_revision = "0079_payment_run_plan_id"
+revision = "0082_payment_retry_attempt_chain"
+down_revision = "0081_one_bank_tx_per_payment"
 branch_labels = None
 depends_on = None
 
