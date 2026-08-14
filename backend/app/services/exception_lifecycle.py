@@ -44,6 +44,7 @@ audit trail gains nothing by duplicating it.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -104,11 +105,18 @@ def apply_resolution(
 ) -> str:
     """Mutate ``exc`` for a queue ``action`` and return the resulting status.
 
-    Pure bookkeeping — no I/O, no audit row, no commit. ``time_to_resolution``
-    is computed once, on the trip to a terminal state; ``escalated`` is
-    non-terminal so it leaves the field blank until a follow-up resolve/dismiss
-    lands. Callers that need the audit row use :func:`record_decision`, which
-    wraps this.
+    Pure bookkeeping — no I/O, no audit row, no commit. Callers that need the
+    audit row use :func:`record_decision`, which wraps this.
+
+    ``escalate`` is **not** a resolution. It records the decision note (so the
+    human picking the escalation up reads why it was raised) but leaves
+    ``resolved_by`` / ``resolved_at`` / ``time_to_resolution_seconds`` alone —
+    a still-open row that advertises a resolver and a resolution timestamp is
+    exactly the kind of thing that misleads an auditor, and the SLA clock is
+    still running. Who escalated, and when, is on the immutable
+    ``exception.escalated`` audit row instead, which is the right place for it.
+    ``time_to_resolution`` is therefore computed once, on the trip to a genuinely
+    terminal state (resolve / dismiss).
 
     Raises ``ValueError`` on an unknown action — the API layer maps that to 400.
     """
@@ -119,9 +127,12 @@ def apply_resolution(
     stamp = now or datetime.now(UTC)
     exc.status = new_status
     exc.resolution = resolution
+    if action == "escalate":
+        return new_status
+
     exc.resolved_by = actor_name
     exc.resolved_at = stamp
-    if action in ("resolve", "dismiss") and exc.created_at is not None:
+    if exc.created_at is not None:
         exc.time_to_resolution_seconds = int((stamp - exc.created_at).total_seconds())
     return new_status
 
@@ -151,6 +162,31 @@ async def _correlation_id(
     return exception.id
 
 
+async def correlation_ids_for(
+    db: AsyncSession,
+    exceptions: Sequence[APException],
+) -> dict[uuid.UUID, uuid.UUID]:
+    """``{exception_id: correlation_id}`` for a batch, in ONE query.
+
+    Bulk callers (``POST /api/exceptions/bulk/resolve``) pass the result through
+    to :func:`record_decision` so a 200-row bulk action doesn't fire 200 extra
+    correlation lookups. Same rule as the single-row path: the invoice's
+    correlation when there is one, else the exception's own id.
+    """
+    invoice_ids = {e.invoice_id for e in exceptions if e.invoice_id is not None}
+    by_invoice: dict[uuid.UUID, uuid.UUID] = {}
+    if invoice_ids:
+        rows = (
+            await db.execute(
+                select(Invoice.id, Invoice.correlation_id).where(Invoice.id.in_(invoice_ids))
+            )
+        ).all()
+        by_invoice = {inv_id: corr for inv_id, corr in rows if corr}
+    return {
+        e.id: (by_invoice.get(e.invoice_id) if e.invoice_id else None) or e.id for e in exceptions
+    }
+
+
 def _base_details(exception: APException) -> dict:
     return {
         "exception_id": str(exception.id),
@@ -169,10 +205,11 @@ async def _write(
     action: str,
     actor_id: uuid.UUID | None,
     details: dict,
+    correlation_id: uuid.UUID | None = None,
 ) -> None:
     await dispatch_audit(
         db,
-        correlation_id=await _correlation_id(db, exception, invoice),
+        correlation_id=correlation_id or await _correlation_id(db, exception, invoice),
         organization_id=exception.organization_id,
         actor_id=actor_id,
         action=action,
@@ -217,6 +254,7 @@ async def record_decision(
     actor_name: str,
     invoice: Invoice | None = None,
     via: str | None = None,
+    correlation_id: uuid.UUID | None = None,
 ) -> str:
     """Apply a queue decision AND write its append-only audit row.
 
@@ -227,6 +265,8 @@ async def record_decision(
 
     ``via`` marks a non-interactive decider (``"agent"``); the row's
     ``actor_id`` still names the human who triggered the run.
+    ``correlation_id`` lets a bulk caller supply a pre-resolved correlation (see
+    :func:`correlation_ids_for`) instead of paying a lookup per row.
     """
     old_status = exception.status
     new_status = apply_resolution(exception, action, resolution, actor_name)
@@ -248,6 +288,7 @@ async def record_decision(
         action=RESOLUTION_ACTIONS[action],
         actor_id=actor_id,
         details=details,
+        correlation_id=correlation_id,
     )
     return new_status
 

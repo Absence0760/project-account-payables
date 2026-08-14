@@ -28,6 +28,9 @@ def _exception():
         id=uuid.uuid4(),
         status="open",
         exception_type="po_mismatch",
+        # `record_decision` reads these for the append-only audit row it writes
+        # on every resolve/escalate (services/exception_lifecycle).
+        severity="warning",
         organization_id=uuid.uuid4(),
         invoice_id=uuid.uuid4(),
         created_at=None,
@@ -54,7 +57,7 @@ def _mock_db(exc, invoice):
 @pytest.mark.asyncio
 async def test_actor_roles_threaded_into_resolver_apply():
     exc = _exception()
-    invoice = SimpleNamespace(id=exc.invoice_id, entity_id=None)
+    invoice = SimpleNamespace(id=exc.invoice_id, entity_id=None, correlation_id=uuid.uuid4())
     db = _mock_db(exc, invoice)
 
     captured: dict = {}
@@ -96,7 +99,7 @@ async def test_missing_actor_roles_fails_closed_to_escalation():
     """A run whose actor roles are unknown must NOT self-approve on a fabricated
     set — it escalates. The resolver's ``apply`` is never reached."""
     exc = _exception()
-    invoice = SimpleNamespace(id=exc.invoice_id, entity_id=None)
+    invoice = SimpleNamespace(id=exc.invoice_id, entity_id=None, correlation_id=uuid.uuid4())
     db = _mock_db(exc, invoice)
 
     apply_called = False

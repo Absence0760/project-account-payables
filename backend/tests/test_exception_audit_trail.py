@@ -13,7 +13,12 @@ Covered here:
   * an invoice-less exception (Positive Pay never-issued cheque) still audits,
     self-correlated;
   * the ``payment_blocking`` flag tracks the real payment-run gate;
-  * ``details`` carries no generated description text.
+  * ``details`` carries no generated description text;
+  * a human resolve / escalate / dismiss over the API writes its row, naming the
+    actor, and a bulk action writes one per row;
+  * an autonomous agent decision writes the SAME row shape, marked ``via:agent``;
+  * the whole lifecycle survives a later mutation of the exception row — that's
+    the point of putting it in ``audit_log``.
 
 Uses the real-Postgres harness so the rows are read back from the same tenant DB
 the API writes to.
@@ -175,3 +180,291 @@ async def test_invoice_less_exception_audits_under_its_own_correlation(realdb):
     assert rows[0].entity_id == exc_id
     assert rows[0].details["invoice_id"] is None
     assert rows[0].details["payment_blocking"] is True
+
+
+# ---------------------------------------------------------------------------
+# human decisions over the API
+# ---------------------------------------------------------------------------
+
+
+async def _open_exception(mk, org_id, invoice, *, exception_type="duplicate"):
+    from app.services.exception_service import create_exception
+
+    async with mk() as s:
+        row = await s.get(Invoice, invoice.id)
+        exc = await create_exception(
+            s,
+            exception_type=exception_type,
+            severity="error",
+            description="detector output",
+            organization_id=org_id,
+            invoice=row,
+        )
+        exc_id = exc.id
+        await s.commit()
+    return exc_id
+
+
+@pytest.mark.asyncio
+async def test_resolving_over_the_api_audits_the_decision_and_names_the_actor(realdb):
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    inv = await _make_invoice(mk, org_id, number="INV-EXCAUDIT-010")
+    exc_id = await _open_exception(mk, org_id, inv)
+    actor_id = realdb.info(TENANT).users["admin"]
+
+    async with realdb.client(key=TENANT, role="admin") as c:
+        res = await c.post(
+            f"/api/exceptions/{exc_id}/resolve",
+            json={"action": "resolve", "resolution": "Confirmed distinct PO; not a duplicate."},
+        )
+        assert res.status_code == 200, res.text
+
+    rows = await _audit_rows(mk, correlation_id=inv.correlation_id, action="exception.resolved")
+    assert len(rows) == 1
+    entry = rows[0]
+    assert entry.entity_type == "exception"
+    assert entry.entity_id == exc_id
+    assert entry.actor_id == actor_id, "the human who cleared the payment block is named"
+
+    details = entry.details
+    assert details["old_status"] == "open"
+    assert details["new_status"] == "resolved"
+    assert details["payment_blocking"] is True
+    assert details["resolution"] == "Confirmed distinct PO; not a duplicate."
+    assert details["time_to_resolution_seconds"] >= 0
+    assert "via" not in details, "a human decision is not marked as agent-made"
+
+
+@pytest.mark.asyncio
+async def test_escalate_then_resolve_keeps_both_deciders_in_the_trail(realdb):
+    """The mutable exceptions row only remembers the LAST decision — this is
+    exactly why the trail lives in audit_log."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    inv = await _make_invoice(mk, org_id, number="INV-EXCAUDIT-011")
+    exc_id = await _open_exception(mk, org_id, inv, exception_type="fraud_flag")
+
+    async with realdb.client(key=TENANT, role="ap_manager") as c:
+        first = await c.post(
+            f"/api/exceptions/{exc_id}/resolve",
+            json={"action": "escalate", "resolution": "Bank details changed last week."},
+        )
+        assert first.status_code == 200, first.text
+    async with realdb.client(key=TENANT, role="admin") as c:
+        second = await c.post(
+            f"/api/exceptions/{exc_id}/resolve",
+            json={"action": "dismiss", "resolution": "Verified by callback to a known number."},
+        )
+        assert second.status_code == 200, second.text
+
+    async with mk() as s:
+        from app.models.exception import Exception as APException
+
+        row = await s.get(APException, exc_id)
+        # The row itself has lost the escalation entirely.
+        assert row.status == "dismissed"
+        assert row.resolution == "Verified by callback to a known number."
+
+    escalations = await _audit_rows(
+        mk, correlation_id=inv.correlation_id, action="exception.escalated"
+    )
+    dismissals = await _audit_rows(
+        mk, correlation_id=inv.correlation_id, action="exception.dismissed"
+    )
+    assert len(escalations) == 1
+    assert escalations[0].details["resolution"] == "Bank details changed last week."
+    assert escalations[0].actor_id == realdb.info(TENANT).users["ap_manager"]
+    # Escalation is non-terminal, so the SLA clock is still running.
+    assert "time_to_resolution_seconds" not in escalations[0].details
+    assert len(dismissals) == 1
+    assert dismissals[0].details["old_status"] == "escalated"
+    assert dismissals[0].actor_id == realdb.info(TENANT).users["admin"]
+
+
+@pytest.mark.asyncio
+async def test_bulk_resolve_audits_every_row(realdb):
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    inv_a = await _make_invoice(mk, org_id, number="INV-EXCAUDIT-020")
+    inv_b = await _make_invoice(mk, org_id, number="INV-EXCAUDIT-021")
+    exc_a = await _open_exception(mk, org_id, inv_a)
+    exc_b = await _open_exception(mk, org_id, inv_b)
+
+    async with realdb.client(key=TENANT, role="admin") as c:
+        res = await c.post(
+            "/api/exceptions/bulk/resolve",
+            json={
+                "ids": [str(exc_a), str(exc_b)],
+                "action": "dismiss",
+                "resolution": "Semantic-dedup tuning pass",
+            },
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["updated"] == 2
+
+    for inv, exc_id in ((inv_a, exc_a), (inv_b, exc_b)):
+        rows = await _audit_rows(
+            mk, correlation_id=inv.correlation_id, action="exception.dismissed"
+        )
+        assert len(rows) == 1, "each bulk row gets its own audit entry"
+        assert rows[0].entity_id == exc_id
+
+
+@pytest.mark.asyncio
+async def test_resolution_note_is_capped_in_the_audit_row(realdb):
+    """The exception row keeps the full note; the immutable JSONB is bounded."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    inv = await _make_invoice(mk, org_id, number="INV-EXCAUDIT-030")
+    exc_id = await _open_exception(mk, org_id, inv)
+    long_note = "x" * 2000
+
+    async with realdb.client(key=TENANT, role="admin") as c:
+        res = await c.post(
+            f"/api/exceptions/{exc_id}/resolve",
+            json={"action": "resolve", "resolution": long_note},
+        )
+        assert res.status_code == 200, res.text
+
+    rows = await _audit_rows(mk, correlation_id=inv.correlation_id, action="exception.resolved")
+    assert len(rows[0].details["resolution"]) == 500
+
+    async with mk() as s:
+        from app.models.exception import Exception as APException
+
+        assert len((await s.get(APException, exc_id)).resolution) == 2000
+
+
+# ---------------------------------------------------------------------------
+# agent decisions take the same path
+# ---------------------------------------------------------------------------
+
+
+async def _seed_agent_po_mismatch(mk, org_id, *, invoice_amount, po_total, number):
+    """An invoice in ready_for_review with a live PO to re-match against, a
+    workflow instance, and an OPEN po_mismatch exception."""
+    from app.models.invoice import InvoiceStatus
+    from app.models.procurement import PurchaseOrder
+    from app.services.exception_service import create_exception
+    from app.services.workflow_engine import create_workflow_instance
+
+    po_number = f"PO-{number}"
+    async with mk() as s:
+        s.add(
+            PurchaseOrder(
+                organization_id=org_id, po_number=po_number, total=po_total, status="open"
+            )
+        )
+        await s.commit()
+
+        inv = Invoice(
+            organization_id=org_id,
+            invoice_number=number,
+            vendor_name="Acme Hosting",
+            amount=invoice_amount,
+            status=InvoiceStatus.ready_for_review,
+            po_number=po_number,
+            po_match={"status": "matched", "po_total": str(po_total)},
+        )
+        s.add(inv)
+        await s.commit()
+        await s.refresh(inv)
+        await create_workflow_instance(s, inv)
+        exc = await create_exception(
+            s,
+            exception_type="po_mismatch",
+            severity="warning",
+            description="Amount mismatch vs PO",
+            organization_id=org_id,
+            invoice=inv,
+        )
+        await s.commit()
+        return inv.id, inv.correlation_id, exc.id
+
+
+@pytest.mark.asyncio
+async def test_agent_auto_resolution_writes_the_same_row_marked_via_agent(realdb):
+    from app.models.exception import Exception as APException
+    from app.services.exception_agents.base import ACTION_AUTO_RESOLVED
+    from app.services.exception_agents.coordinator import run_agent
+
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    actor_id = realdb.info(TENANT).users["ap_manager"]
+
+    # 1000.00 vs a 1010.00 PO → 0.99% variance, inside the balanced band.
+    _inv_id, corr, exc_id = await _seed_agent_po_mismatch(
+        mk,
+        org_id,
+        invoice_amount=Decimal("1000.00"),
+        po_total=Decimal("1010.00"),
+        number="INV-EXCAUDIT-040",
+    )
+
+    async with mk() as s:
+        exc = await s.get(APException, exc_id)
+        result = await run_agent(
+            s,
+            exception=exc,
+            actor_id=actor_id,
+            org_settings={"exception_agents": {"autonomy_level": "balanced"}},
+            actor_roles={"ap_manager"},
+        )
+        assert result.decision.action_taken == ACTION_AUTO_RESOLVED
+
+    rows = await _audit_rows(mk, correlation_id=corr, action="exception.resolved")
+    assert len(rows) == 1, "an agent resolution is auditable exactly like a human one"
+    details = rows[0].details
+    assert details["via"] == "agent"
+    assert details["new_status"] == "resolved"
+    # The row still names the human who triggered the run — the agent has no
+    # identity of its own to hold accountable.
+    assert rows[0].actor_id == actor_id
+
+
+@pytest.mark.asyncio
+async def test_agent_escalation_is_audited_and_leaves_its_reason_on_the_row(realdb):
+    from app.models.exception import Exception as APException
+    from app.services.exception_agents.base import ACTION_ESCALATED
+    from app.services.exception_agents.coordinator import run_agent
+
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    actor_id = realdb.info(TENANT).users["ap_manager"]
+
+    _inv_id, corr, exc_id = await _seed_agent_po_mismatch(
+        mk,
+        org_id,
+        invoice_amount=Decimal("1000.00"),
+        po_total=Decimal("1010.00"),
+        number="INV-EXCAUDIT-041",
+    )
+
+    async with mk() as s:
+        exc = await s.get(APException, exc_id)
+        # conservative == "off": the threshold is unreachable, so everything
+        # escalates regardless of confidence.
+        result = await run_agent(
+            s,
+            exception=exc,
+            actor_id=actor_id,
+            org_settings={"exception_agents": {"autonomy_level": "conservative"}},
+            actor_roles={"ap_manager"},
+        )
+        assert result.decision.action_taken == ACTION_ESCALATED
+
+    rows = await _audit_rows(mk, correlation_id=corr, action="exception.escalated")
+    assert len(rows) == 1
+    assert rows[0].details["via"] == "agent"
+    assert rows[0].details["new_status"] == "escalated"
+
+    async with mk() as s:
+        row = await s.get(APException, exc_id)
+        assert row.status == "escalated"
+        # The human picking this up now reads WHY in the queue itself, not only
+        # in the AgentDecision log — but nothing claims the row was resolved.
+        assert row.resolution
+        assert row.resolved_by is None
+        assert row.resolved_at is None
+        assert row.time_to_resolution_seconds is None
