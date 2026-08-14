@@ -20,6 +20,20 @@ Two responsibilities:
           uses (token Jaccard). Confidence is the Jaccard score
           scaled into 50–70.
 
+**Identity is not reconciliation.** Strategy (a) matches on a
+reference string alone, so it can identify a payment while the bank
+debited a *different amount* than we authorised — a wire that left at
+$50,000 against a $5,000 instruction, an altered cheque, a duplicated
+fee. That transaction is linked to its payment but classified
+`amount_mismatch`: the payment is claimed (so nothing else can match
+it) yet it is NOT counted as reconciled, and the signed variance
+(`match_variance`, positive = the bank took MORE than we authorised)
+is surfaced on the API. This mirrors the `amount_mismatch`
+classification the other two reconcilers already have —
+`positive_pay.classify_presented_items` (altered cheque) and
+`vendor_statement_recon` (statement line vs our ledger). Strategies
+(b) and (c) key off an exact amount, so only (a) can produce one.
+
 A transaction with NO match stays `matched_payment_id=NULL`. Today
 the AP team reviews unmatched transactions from the statement detail
 view (`GET /api/bank-reconciliation/{id}`) and resolves them by hand
@@ -80,6 +94,50 @@ _CONFIDENCE_AMOUNT_DATE = Decimal("80.00")
 _FUZZY_MIN_JACCARD = 0.5  # below this we don't even try
 _FUZZY_CONFIDENCE_BASE = Decimal("50.00")
 _FUZZY_CONFIDENCE_SPREAD = Decimal("20.00")
+
+# ``BankTransaction.match_method`` vocabulary. Named constants so the
+# router, the matcher and the tests can't drift on a string literal.
+MATCH_METHOD_PROVIDER_ID = "provider_id"
+MATCH_METHOD_AMOUNT_DATE = "amount_date"
+MATCH_METHOD_FUZZY_VENDOR = "fuzzy_vendor"
+MATCH_METHOD_MANUAL = "manual"
+# Identified (we know WHICH payment this bank line is) but the bank moved a
+# different amount than the payment authorises. Linked, never reconciled.
+MATCH_METHOD_AMOUNT_MISMATCH = "amount_mismatch"
+
+# How far the bank's amount may drift from the payment's before the line stops
+# counting as reconciled. One cent — the same tolerance
+# ``positive_pay.DEFAULT_AMOUNT_TOLERANCE`` uses for the altered-cheque call.
+AMOUNT_MATCH_TOLERANCE = Decimal("0.01")
+
+
+def match_variance(bank_amount: Decimal, payment_amount: Decimal) -> Decimal:
+    """Signed 2dp variance between what the bank moved and what the payment
+    authorises. **Positive means the bank took MORE than we authorised** —
+    the direction that matters for fraud. Pure ``Decimal``, never float."""
+    return (Decimal(bank_amount) - Decimal(payment_amount)).quantize(Decimal("0.01"))
+
+
+def is_amount_mismatch(
+    bank_amount: Decimal,
+    payment_amount: Decimal,
+    *,
+    tolerance: Decimal = AMOUNT_MATCH_TOLERANCE,
+) -> bool:
+    """True when the two amounts differ beyond ``tolerance``."""
+    return abs(match_variance(bank_amount, payment_amount)) > tolerance
+
+
+def is_reconciled(match_method: str | None, matched_payment_id: uuid.UUID | None) -> bool:
+    """Does this transaction count toward ``BankStatement.matched_count``?
+
+    Being linked to a payment is necessary but not sufficient: an
+    ``amount_mismatch`` line names its payment precisely *because* the amounts
+    disagree, so counting it as reconciled would report the discrepancy as
+    cleared. Single source of truth for the rollup — the matcher, the manual
+    ``/resolve`` recompute and the outstanding-items report all use it.
+    """
+    return matched_payment_id is not None and match_method != MATCH_METHOD_AMOUNT_MISMATCH
 
 
 # ---------------------------------------------------------------------------
@@ -356,13 +414,40 @@ async def _payment_by_reference(
     `reference`. The two columns store different but overlapping
     things — provider_payment_id is always the processor's ID;
     reference is whatever the processor returned (ACH trace number,
-    check number, etc.)."""
-    result = await db.execute(select(Payment).where(Payment.provider_payment_id == reference))
-    found = result.scalar_one_or_none()
-    if found is not None:
-        return found
-    result = await db.execute(select(Payment).where(Payment.reference == reference))
-    return result.scalar_one_or_none()
+    check number, etc.).
+
+    **Neither column is unique**, so this cannot use
+    ``scalar_one_or_none()``: `Payment.reference` is free text a caller
+    supplies on ``POST /api/payments`` and the virtual-card path stamps a
+    derived, deliberately non-unique value
+    (``payments.py`` → ``f"CARD-{provider}-{last_four}"``, which collapses to
+    ``CARD-LITHIC-????`` for every card with no last-four). A duplicated
+    reference therefore made SQLAlchemy raise ``MultipleResultsFound`` and
+    500 the whole statement import.
+
+    An ambiguous reference is treated as **no reference match**: it names more
+    than one payment, so it proves nothing, and the caller falls through to
+    the amount+date / fuzzy-vendor strategies. Picking one arbitrarily would
+    credit the wrong invoice — the same refusal the ambiguous-fuzzy branch
+    already makes.
+    """
+    for column in (Payment.provider_payment_id, Payment.reference):
+        # LIMIT 2 — we only need to know "exactly one" vs "more than one".
+        rows = list(
+            (await db.execute(select(Payment).where(column == reference).limit(2))).scalars().all()
+        )
+        if len(rows) == 1:
+            return rows[0]
+        if len(rows) > 1:
+            # PII-free: counts only, never the reference string itself.
+            logger.warning(
+                "[bank_reconciliation] reference matches %d payments on %s — "
+                "ambiguous, falling through to amount/date matching",
+                len(rows),
+                column.key,
+            )
+            return None
+    return None
 
 
 async def _fuzzy_vendor_match(
@@ -434,9 +519,11 @@ async def match_statement_transactions(
 
     Returns counts by outcome so the caller can summarise the result
     on the import API response: `{"matched": N, "unmatched": M,
-    "skipped_credit": K}`.
+    "skipped_credit": K, "amount_mismatch": V}`. `matched` counts only
+    genuinely RECONCILED lines — an `amount_mismatch` is linked to its
+    payment but lands in its own bucket (see the module docstring).
     """
-    counts = {"matched": 0, "unmatched": 0, "skipped_credit": 0}
+    counts = {"matched": 0, "unmatched": 0, "skipped_credit": 0, "amount_mismatch": 0}
 
     claimed: set[uuid.UUID] = set(
         (
@@ -457,13 +544,19 @@ async def match_statement_transactions(
 
         attempt: MatchAttempt | None = None
 
-        # Strategy 1: exact reference match.
+        # Strategy 1: exact reference match. The reference establishes WHICH
+        # payment this line is; the amounts then decide whether it reconciles.
+        # A same-reference line for a different amount is the altered-payment
+        # signal — link it, flag it, never count it as cleared.
         if tx.reference:
             found = await _payment_by_reference(db, tx.reference)
             if found is not None and found.id not in claimed:
+                mismatched = is_amount_mismatch(tx.amount, found.amount)
                 attempt = MatchAttempt(
                     payment_id=found.id,
-                    method="provider_id",
+                    method=(
+                        MATCH_METHOD_AMOUNT_MISMATCH if mismatched else MATCH_METHOD_PROVIDER_ID
+                    ),
                     confidence=_CONFIDENCE_PROVIDER_ID,
                 )
 
@@ -482,7 +575,7 @@ async def match_statement_transactions(
             if len(candidates) == 1:
                 attempt = MatchAttempt(
                     payment_id=candidates[0].id,
-                    method="amount_date",
+                    method=MATCH_METHOD_AMOUNT_DATE,
                     confidence=_CONFIDENCE_AMOUNT_DATE,
                 )
 
@@ -496,7 +589,7 @@ async def match_statement_transactions(
             if fuzzy is not None:
                 attempt = MatchAttempt(
                     payment_id=fuzzy[0].id,
-                    method="fuzzy_vendor",
+                    method=MATCH_METHOD_FUZZY_VENDOR,
                     confidence=fuzzy[1],
                 )
 
@@ -507,8 +600,13 @@ async def match_statement_transactions(
         tx.matched_payment_id = attempt.payment_id
         tx.match_method = attempt.method
         tx.match_confidence = attempt.confidence
+        # Claimed either way: an amount_mismatch line IS this payment's bank
+        # line, so no other transaction may also claim it.
         claimed.add(attempt.payment_id)
         tx.matched_at = datetime.now(UTC)
-        counts["matched"] += 1
+        if attempt.method == MATCH_METHOD_AMOUNT_MISMATCH:
+            counts["amount_mismatch"] += 1
+        else:
+            counts["matched"] += 1
 
     return counts
