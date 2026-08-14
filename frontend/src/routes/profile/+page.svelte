@@ -287,6 +287,18 @@
 		}
 	}
 
+	/** Retry wrapper — `loadSessions` can't reset `sessionsLoaded` itself (the
+	 * mount `$effect` keys off it and would re-fire), so the busy state carries
+	 * the feedback instead. */
+	async function retrySessions() {
+		sessionBusy = true;
+		try {
+			await loadSessions();
+		} finally {
+			sessionBusy = false;
+		}
+	}
+
 	const otherSessionCount = $derived((sessions ?? []).filter((s) => !s.current).length);
 
 	async function revokeSession(id: string) {
@@ -665,7 +677,9 @@
 					Couldn't load your sessions, so we can't say what's signed in right now.
 				</p>
 				<div class="actions">
-					<button type="button" class="secondary" onclick={loadSessions}>Try again</button>
+					<button type="button" class="secondary" disabled={sessionBusy} onclick={retrySessions}>
+						{sessionBusy ? 'Retrying…' : 'Try again'}
+					</button>
 				</div>
 			{:else if sessions && sessions.length > 0}
 				<ul class="entry-list">

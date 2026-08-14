@@ -87,6 +87,10 @@ Because the TTL is refreshed on *every* login, a set kept alive by recent sign-i
 
 The lifetime used is the one **recorded for that session at sign-in**, not the current setting. Shortening `FEOH_ACCESS_TOKEN_EXPIRE_MINUTES` would otherwise make every session minted under the old value look already-expired, pruning it while its token keeps authenticating — leaving a live session the user can neither see nor revoke, which is precisely what this surface exists to prevent. A session tracked before the field existed falls back to the current default.
 
+### How long a revoked token stays blocklisted
+
+A blocklist entry that expires **before** the JWT's own `exp` hands the revoked token straight back — the `is_token_blocked` check simply stops finding it. So the duration is not the current configured lifetime either: `session_management.blocklist_ttl_for(user_id)` derives it from the longest-lived session the user actually has, floored at the current default. Over-blocking is harmless (a Redis key outliving its token costs nothing); under-blocking is a revocation bypass, so this deliberately errs long. It is called *before* the revoke, while the records still exist, and is shared by all three revoke paths (self-service single, self-service others, admin forced logout). `POST /api/auth/logout` doesn't need it — it reads the token's own `exp` directly.
+
 ### Session metadata
 
 Alongside the sorted set, each sign-in writes a small JSON record into a companion hash (`session_meta:<user_id>`, field = JTI) holding the client IP, a coarse device label, and the sign-in method (`password`, `password+mfa:totp`, `sso:<provider>`, `saml:<provider>`). Both structures are torn down together — an evicted, logged-out, revoked or pruned session loses its metadata in the same operation, so the descriptive layer can never outlive the membership it describes.

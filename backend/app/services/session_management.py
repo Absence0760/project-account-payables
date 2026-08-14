@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -254,9 +255,40 @@ async def list_sessions(user_id: uuid.UUID) -> list[SessionInfo]:
     return live
 
 
+async def blocklist_ttl_for(user_id: uuid.UUID) -> int:
+    """How long a revoked token of this user's must stay blocklisted.
+
+    A blocklist entry that expires BEFORE the JWT's own ``exp`` hands the
+    "revoked" token straight back — the check in ``get_current_user`` simply
+    stops finding it. Deriving the duration from the *current*
+    ``FEOH_ACCESS_TOKEN_EXPIRE_MINUTES`` is therefore unsafe: shortening the
+    setting leaves every token minted under the old, longer value revocable in
+    name only, for the remainder of its original lifetime.
+
+    So the duration comes from the longest-lived session this user actually has
+    (each records the lifetime in force when it was minted), floored at the
+    current default so a user whose sessions predate that record is still
+    covered. Over-blocking is harmless — a Redis key outliving its token costs
+    nothing; under-blocking is a revocation bypass, so this deliberately errs
+    long. Call it BEFORE the revoke, while the records still exist.
+    """
+    default_ttl = _access_token_ttl_seconds()
+    tracked = await get_active_sessions_with_scores(user_id)
+    if not tracked:
+        return default_ttl
+    meta = await get_session_meta(user_id)
+    now = time.time()
+    longest = default_ttl
+    for jti, issued_at in tracked:
+        session_ttl = _session_ttl(_decode_meta(meta.get(jti)), default_ttl)
+        longest = max(longest, int(issued_at + session_ttl - now))
+    return longest
+
+
 async def revoke_one_session(user_id: uuid.UUID, jti: str) -> bool:
     """Blocklist a single session of this user. False when it isn't tracked."""
-    revoked = await revoke_session(user_id, jti, _access_token_ttl_seconds())
+    ttl = await blocklist_ttl_for(user_id)
+    revoked = await revoke_session(user_id, jti, ttl)
     if revoked:
         logger.info("Revoked 1 session for user %s", user_id)
     return revoked
@@ -269,7 +301,7 @@ async def revoke_other_sessions(user_id: uuid.UUID, keep_jti: str | None) -> lis
     session; passing ``None`` degrades to signing out everywhere including the
     caller, which is the safe direction if the current JTI can't be resolved.
     """
-    ttl = _access_token_ttl_seconds()
+    ttl = await blocklist_ttl_for(user_id)
     revoked = await revoke_all_sessions(user_id, ttl, except_jti=keep_jti)
     if revoked:
         logger.info("Revoked %d other session(s) for user %s", len(revoked), user_id)
@@ -283,7 +315,7 @@ async def revoke_user_sessions(user_id: uuid.UUID) -> list[str]:
     must no longer carry the old permissions (SOC 2 CC6.1 / CC6.2).
     Returns the JTIs that were revoked.
     """
-    ttl = _access_token_ttl_seconds()
+    ttl = await blocklist_ttl_for(user_id)
     revoked = await revoke_all_sessions(user_id, ttl)
     if revoked:
         logger.info("Revoked %d active session(s) for user %s", len(revoked), user_id)

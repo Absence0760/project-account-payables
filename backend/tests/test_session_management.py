@@ -591,6 +591,59 @@ def test_revoke_one_session_blocklists_and_forgets(fake_redis):
     assert kill not in fake_redis.hashes[f"session_meta:{user_id}"]
 
 
+def test_revoke_blocklists_past_the_tokens_own_expiry(fake_redis):
+    """A blocklist entry that expires BEFORE the JWT's own `exp` hands the
+    revoked token straight back. Shortening the configured lifetime must not
+    shorten the blocklist for tokens minted under the old, longer one."""
+    from app.services import session_management
+
+    user_id = uuid.uuid4()
+    doomed = str(uuid.uuid4())
+    with patch("app.services.session_management.settings") as fake:
+        fake.max_concurrent_sessions = 0
+        fake.access_token_expire_minutes = 60  # a 60-minute token
+        asyncio.run(session_management.register_session(user_id, doomed, ip="1.1.1.1"))
+
+    with patch("app.services.session_management.settings") as fake:
+        fake.access_token_expire_minutes = 10  # operator shortened it since
+        assert asyncio.run(session_management.revoke_one_session(user_id, doomed)) is True
+
+    # Must cover the token's real remaining life (~3600s), not the new 600s cap.
+    assert fake_redis.ttls[f"token:blocked:{doomed}"] > 3000
+
+
+def test_revoke_others_blocklists_past_the_tokens_own_expiry(fake_redis):
+    """Same guarantee on the bulk paths — 'sign out everywhere else' and the
+    admin forced logout both share `blocklist_ttl_for`."""
+    from app.services import session_management
+
+    user_id = uuid.uuid4()
+    mine, doomed = str(uuid.uuid4()), str(uuid.uuid4())
+    with patch("app.services.session_management.settings") as fake:
+        fake.max_concurrent_sessions = 0
+        fake.access_token_expire_minutes = 60
+        asyncio.run(session_management.register_session(user_id, doomed))
+        asyncio.run(session_management.register_session(user_id, mine))
+
+    with patch("app.services.session_management.settings") as fake:
+        fake.access_token_expire_minutes = 10
+        asyncio.run(session_management.revoke_other_sessions(user_id, mine))
+
+    assert fake_redis.ttls[f"token:blocked:{doomed}"] > 3000
+
+
+def test_blocklist_ttl_floors_at_the_current_default(fake_redis):
+    """A user with nothing tracked (or only shorter-lived sessions) still gets
+    at least the configured lifetime — over-blocking is the safe direction."""
+    from app.services import session_management
+
+    with patch("app.services.session_management.settings") as fake:
+        fake.access_token_expire_minutes = 30
+        ttl = asyncio.run(session_management.blocklist_ttl_for(uuid.uuid4()))
+
+    assert ttl == 30 * 60
+
+
 def test_revoke_one_session_refuses_another_users_jti(fake_redis):
     """Membership in the caller's own set IS the authorization check."""
     from app.redis import track_session
