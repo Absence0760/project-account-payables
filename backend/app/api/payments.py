@@ -1212,7 +1212,16 @@ async def cancel_payment_run(
     """Cancel a draft run before it executes. Only valid from `draft`;
     flips the run to `cancelled` and removes its child payment rows so
     the invoices return to the queue. Audit-logged."""
-    result = await db.execute(select(PaymentRun).where(PaymentRun.id == run_id))
+    # Row-lock the run, exactly like /approve, /execute and /resume. This one
+    # DELETES the child Payment rows, so an unlocked read is the worst version
+    # of the race: /execute takes the lock, flips the run to `executing`,
+    # commits (releasing it) and starts handing payments to the processor —
+    # while a /cancel that read `draft` before any of that proceeds to delete
+    # the very rows being dispatched. Real money then moves against rows that
+    # no longer exist, under a run that reads `cancelled`. With the lock the
+    # canceller blocks until /execute commits, re-reads `executing`, and 409s
+    # before deleting anything.
+    result = await db.execute(select(PaymentRun).where(PaymentRun.id == run_id).with_for_update())
     run = result.scalar_one_or_none()
     if not run:
         raise HTTPException(status_code=404, detail="Payment run not found")

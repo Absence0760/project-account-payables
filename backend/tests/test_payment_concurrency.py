@@ -42,6 +42,23 @@ Postgres ``SELECT ... FOR UPDATE`` actually serializes them.
           both racers, and both calls return 200 (resume has no run-lock
           loser to 409 — the race is per-payment, not per-run).
 
+  BUG D — ``cancel_payment_run`` racing ``execute_payment_run``. Cancel
+          read the run with a PLAIN SELECT while every sibling
+          money-control endpoint locks FOR UPDATE — and cancel is the
+          one that DELETES the child Payment rows. /execute locks,
+          flips the run to `executing` and commits (releasing the lock)
+          before its adapter loop, so a /cancel that read `draft`
+          beforehand was never blocked and went on to delete the very
+          payments being handed to the processor. Observed both ways
+          against the unfixed code: the canceller winning outright
+          (payment deleted, adapter never called, run reports success
+          with nothing paid) and the payment vanishing mid-dispatch.
+          The fix locks the run in cancel too, so the canceller blocks,
+          re-reads `executing`, and 409s before deleting anything.
+          Assertion: adapter called exactly once, the payment row
+          survives carrying the processor's result, and the run is not
+          `cancelled`.
+
 Requires the dev Postgres (``pnpm db:up``); skips otherwise, like every
 other ``realdb`` test.
 """
@@ -444,3 +461,136 @@ async def test_concurrent_void_calls_adapter_and_audits_exactly_once(realdb):
 
         pay = (await s.execute(select(Payment).where(Payment.id == payment_id))).scalar_one()
         assert pay.status == "voided"
+
+
+# ---------------------------------------------------------------------------
+# BUG D — cancel racing execute must not delete payments that are being paid
+# ---------------------------------------------------------------------------
+
+
+async def test_cancel_racing_execute_cannot_delete_dispatched_payments(realdb):
+    """`/runs/{id}/cancel` read the run with a plain SELECT while every sibling
+    money-control endpoint (/approve, /execute, /resume, /void) locks FOR
+    UPDATE — and cancel is the one that DELETES the child Payment rows.
+
+    The window: /execute takes the lock, re-checks `draft`, flips the run to
+    `executing` and commits (releasing the lock) before its adapter loop. A
+    /cancel that read `draft` before that commit was never blocked, so it
+    proceeded to delete the very payments being handed to the processor. Real
+    money moves, the Payment rows are gone, and the run reads `cancelled` — an
+    outgoing payment with no record of itself.
+
+    With the lock, the canceller blocks until /execute commits, re-reads
+    `executing`, and 409s before deleting anything. Asserted on the durable
+    outcome, not on timing: the adapter is still called exactly once AND the
+    payment row survives with the processor's result on it.
+    """
+    from app.api.payments import cancel_payment_run, execute_payment_run
+
+    info = realdb.info("a")
+    org_id = info.org_id
+    admin_id = info.users["admin"]
+    creator_id = info.users["ap_manager"]  # maker-checker: creator ≠ executor
+    mk = realdb.sessionmaker("a")
+
+    inv = await _seed_invoice(mk, org_id, amount=Decimal("900.00"))
+
+    run_id = uuid.uuid4()
+    payment_id = uuid.uuid4()
+    async with mk() as s:
+        s.add(
+            PaymentRun(
+                id=run_id,
+                organization_id=org_id,
+                status="draft",
+                total_amount=Decimal("900.00"),
+                initiated_by=creator_id,
+                requires_cfo_approval=False,
+            )
+        )
+        await s.flush()
+        s.add(
+            Payment(
+                id=payment_id,
+                invoice_id=inv.id,
+                payment_run_id=run_id,
+                amount=Decimal("900.00"),
+                method="ach",
+                status="pending",
+                correlation_id=inv.correlation_id,
+            )
+        )
+        await s.commit()
+
+    call_count = 0
+
+    async def _counting_create_payment(payload):
+        nonlocal call_count
+        call_count += 1
+        # Yield so the canceller coroutine gets to run mid-dispatch — the
+        # exact interleaving the unlocked read allowed.
+        await asyncio.sleep(0)
+        return SimpleNamespace(
+            success=True,
+            status=PaymentStatus.completed,
+            provider_payment_id="px_race",
+            reference="REF-race",
+            failure_reason=None,
+        )
+
+    adapter = SimpleNamespace(provider_name="mock", create_payment=_counting_create_payment)
+
+    async def _execute_once():
+        async with realdb.sessionmaker("a")() as db:
+            try:
+                return (
+                    "ok",
+                    await execute_payment_run(
+                        run_id=run_id, db=db, org=_org(org_id), user=_user(admin_id)
+                    ),
+                )
+            except HTTPException as exc:
+                await db.rollback()
+                return ("http", exc.status_code)
+
+    async def _cancel_once():
+        async with realdb.sessionmaker("a")() as db:
+            try:
+                return (
+                    "ok",
+                    await cancel_payment_run(
+                        run_id=run_id, db=db, org=_org(org_id), user=_user(admin_id)
+                    ),
+                )
+            except HTTPException as exc:
+                await db.rollback()
+                return ("http", exc.status_code)
+
+    with (
+        patch("app.api.payments.get_payment_adapter", return_value=adapter),
+        patch("app.api.payments.transition_invoice", new_callable=AsyncMock) as ti,
+        patch("app.services.payment_erp_sync.dispatch_payment_sync", new_callable=AsyncMock),
+        patch(
+            "app.services.compliance.check_payment_compliance",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(verdict="allow", reasons=[]),
+        ),
+    ):
+        ti.return_value = inv
+        results = await asyncio.gather(_execute_once(), _cancel_once())
+
+    assert call_count == 1, f"adapter.create_payment called {call_count}x"
+    # The canceller must have lost — it cannot cancel a run already executing.
+    assert ("http", 409) in results, f"expected the canceller to 409, got {results}"
+
+    async with mk() as s:
+        pay = (
+            await s.execute(select(Payment).where(Payment.id == payment_id))
+        ).scalar_one_or_none()
+        assert pay is not None, (
+            "the dispatched payment row was deleted out from under the processor"
+        )
+        assert pay.status == "completed"
+        assert pay.provider_payment_id == "px_race"
+        run = (await s.execute(select(PaymentRun).where(PaymentRun.id == run_id))).scalar_one()
+        assert run.status != "cancelled"
