@@ -89,6 +89,23 @@ class BankStatement(Base):
 class BankTransaction(Base):
     __tablename__ = "bank_transactions"
 
+    # One payment, one bank transaction. Two bank lines cannot both be "the"
+    # clearing of a single payment without double-counting it as reconciled.
+    # The application enforces it twice already — the matcher's `claimed` set
+    # and `/resolve`'s row-locked check — but neither survives two concurrent
+    # `/upload`s, which read their `claimed` sets before either commits. This
+    # partial unique index is the DB-level backstop; same shape as
+    # `uq_payments_one_live_per_invoice`. Partial because an UNMATCHED
+    # transaction (NULL) is the normal state and many rows share it.
+    __table_args__ = (
+        Index(
+            "uq_bank_transactions_matched_payment",
+            "matched_payment_id",
+            unique=True,
+            postgresql_where=text("matched_payment_id IS NOT NULL"),
+        ),
+    )
+
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     statement_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("bank_statements.id"), nullable=False

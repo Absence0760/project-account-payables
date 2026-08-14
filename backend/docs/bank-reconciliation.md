@@ -273,12 +273,24 @@ resolves pointing *different* transactions at the *same* payment both read
 "not claimed", both passed, and both committed. Pinned by
 `test_concurrent_resolve_cannot_claim_one_payment_twice`.
 
-The invariant has no unique index behind it, so existing data may already hold
-more than one claimant; the check reads with `LIMIT 1` rather than asking for
-exactly-one, which would 500 on precisely the rows it exists to reject. A
-partial unique index on `matched_payment_id` is the durable backstop — tracked
-in [followups.md](../../docs/followups.md), since it needs a migration and a
-decision about what to do with any pre-existing duplicates.
+**The DB has the last word.** Neither application guard survives two concurrent
+`POST /upload`s — each reads its `claimed` set before the other commits, so both
+pass and both write. The partial unique index
+`uq_bank_transactions_matched_payment ON (matched_payment_id) WHERE
+matched_payment_id IS NOT NULL` (migration `0081`) makes a second claimant
+unpersistable, whatever the path. The `LIMIT 1` pre-check stays as the
+*friendly* path: it returns a 409 a client can act on rather than letting the
+index raise at commit; `/resolve` maps a losing `IntegrityError` to the same 409,
+and `/upload` retries the import once (see § Import idempotency).
+
+**Pre-existing duplicates were resolved by that migration**, since the index
+could not otherwise be created: for each over-claimed payment it keeps the
+EARLIEST claimant (`created_at`, ties broken by `id`) and clears the rest back
+to unmatched, then recomputes the affected statements' `matched_count`. That
+direction is the conservative one — an un-matched transaction is *visible* (it
+shows on the statement detail view and in `/outstanding`'s `unmatched_debits`,
+where a human re-points it), whereas a wrong match is *silent*: it asserts a
+payment cleared when nothing proves it did.
 
 ## Match confidence semantics
 
@@ -342,6 +354,17 @@ something the transactions no longer support. (This mirrors how
 
 ## Migrations
 
+`0081_one_bank_tx_per_payment.py` (tenant DB only) — resolves any pre-existing
+over-claimed payments (keep the earliest claimant, clear the rest, recompute the
+affected `matched_count`s) and then creates the partial unique index
+`uq_bank_transactions_matched_payment` on `(matched_payment_id) WHERE
+matched_payment_id IS NOT NULL` — the DB-level backstop for § One payment, one
+bank transaction. Same shape as `uq_payments_one_live_per_invoice`. Gated on the
+table existing (no-ops on the control plane, fans out via
+`scripts/migrate_all_tenants.py`); idempotent (the cleanup is a no-op once no
+duplicates remain, `CREATE UNIQUE INDEX IF NOT EXISTS`). Fresh tenants get the
+index from `create_all` (declared on the model).
+
 `0080_bank_statement_content_hash.py` (tenant DB only) — adds
 `bank_statements.content_hash` (varchar 64, nullable) + the partial unique index
 `uq_bank_statements_org_account_hash` on
@@ -371,4 +394,4 @@ existing so it no-ops on the control plane and fans out via
 | File | Coverage |
 |---|---|
 | `tests/test_bank_reconciliation.py` | CSV sniffing (signed-amount + separate debit/credit; parenthesized negatives; comma + dollar-sign amounts; reference + counterparty pass-through; bad rows skipped); refusal paths (empty / header-only / missing columns / all-bad-rows / latin-1 fallback); matcher strategies (provider_id 100, amount_date 80, fuzzy_vendor 50–70, multi-candidate-no-fuzzy unmatched, credits skipped); outcome-count rollup; the three discrepancy classes (`match_variance` signed + exact, one-cent tolerance, `is_reconciled` excludes all three, `classify_discrepancy` precedence currency→amount→status, the settlement pair incl. the FX leg, a reference hit at the wrong amount / wrong currency / against a non-dispatched payment is linked-not-matched and still claims the payment, and the heuristics refuse such a payment as a candidate outright); ambiguous references on both lookup columns fall through instead of crashing |
-| `tests/test_bank_reconciliation_api.py` | The HTTP surface end-to-end against real test tenants: upload → persisted statement + matched transactions + audit row, credits skipped, malformed CSV → 422, import idempotency (the same file twice returns the first statement with 200 and only one row; a DIFFERENT file on the same account still imports) + the 10 MB upload cap → 413, list + detail (transactions omitted from list), manual resolve (set + clear, audited, `matched_count` recomputed), resolve against an unknown payment → 404, delete cascades transactions, RBAC (`ap_clerk` reads but can't upload/delete); the discrepancy classes end-to-end (upload flags an `amount_mismatch`, a `currency_mismatch` and a `status_conflict`; list surfaces `amount_mismatch_count` + `discrepancy_count`; manual resolve can't stamp a wrong amount or a `voided` payment as reconciled and audits the variance as an exact string; a duplicated `Payment.reference` no longer 500s the import); `/outstanding` (all three buckets, `older_than_days` filter, a cleanly reconciled payment drops out, no double-reporting of a mismatched payment, `?limit` truncates rows but never the counts/totals); two concurrent resolves can't both claim one payment |
+| `tests/test_bank_reconciliation_api.py` | The HTTP surface end-to-end against real test tenants: upload → persisted statement + matched transactions + audit row, credits skipped, malformed CSV → 422, import idempotency (the same file twice returns the first statement with 200 and only one row; a DIFFERENT file on the same account still imports) + the 10 MB upload cap → 413, list + detail (transactions omitted from list), manual resolve (set + clear, audited, `matched_count` recomputed), resolve against an unknown payment → 404, delete cascades transactions, RBAC (`ap_clerk` reads but can't upload/delete); the discrepancy classes end-to-end (upload flags an `amount_mismatch`, a `currency_mismatch` and a `status_conflict`; list surfaces `amount_mismatch_count` + `discrepancy_count`; manual resolve can't stamp a wrong amount or a `voided` payment as reconciled and audits the variance as an exact string; a duplicated `Payment.reference` no longer 500s the import); `/outstanding` (all three buckets, `older_than_days` filter, a cleanly reconciled payment drops out, no double-reporting of a mismatched payment, `?limit` truncates rows but never the counts/totals); two concurrent resolves can't both claim one payment, and a direct DB write that bypasses every application check still can't persist a second claimant (`uq_bank_transactions_matched_payment`) |

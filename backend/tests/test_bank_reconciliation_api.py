@@ -19,7 +19,9 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.models.bank_reconciliation import BankStatement, BankTransaction
 from app.models.entity import Entity
@@ -1105,6 +1107,66 @@ async def test_concurrent_resolve_cannot_claim_one_payment_twice(realdb):
             .all()
         )
         assert len(claimants) == 1, "one payment was claimed by two bank transactions"
+
+
+async def test_a_second_claim_on_one_payment_is_impossible_at_the_db_layer(realdb):
+    """The application enforces "one payment, one bank transaction" twice — the
+    matcher's `claimed` set and `/resolve`'s row-locked check — but neither
+    survives two concurrent `/upload`s, which each read their `claimed` set
+    before either commits. `uq_bank_transactions_matched_payment` (migration
+    0081) is the backstop, and this asserts it exists and BITES: a direct write
+    that bypasses every application check still cannot persist a second
+    claimant."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    payment_id = await _add_payment(mk, org_id, amount="77.00", provider_payment_id="TRACE-UQ1")
+
+    csv_body = _csv(
+        "Date,Amount,Reference,Description",
+        f"{_TODAY.isoformat()},-77.00,TRACE-UQ1,Claimed",
+        f"{_TODAY.isoformat()},-77.00,,Second line",
+    )
+    async with realdb.client(key="a", role="ap_manager") as c:
+        up = await c.post(
+            "/api/bank-reconciliation/upload",
+            data={
+                "account_identifier": "Operating ****9030",
+                "period_start": (_TODAY - timedelta(days=30)).isoformat(),
+                "period_end": _TODAY.isoformat(),
+            },
+            files={"file": ("statement.csv", csv_body, "text/csv")},
+        )
+    assert up.status_code == 201, up.text
+    rows = up.json()["transactions"]
+    claimed = next(t for t in rows if t["matched_payment_id"] == payment_id)
+    free = next(t for t in rows if t["matched_payment_id"] is None)
+    assert claimed["id"] != free["id"]
+
+    # Straight to the DB, past the router's checks entirely.
+    async with mk() as s:
+        tx = (
+            await s.execute(
+                select(BankTransaction).where(BankTransaction.id == uuid.UUID(free["id"]))
+            )
+        ).scalar_one()
+        tx.matched_payment_id = uuid.UUID(payment_id)
+        with pytest.raises(IntegrityError):
+            await s.commit()
+        await s.rollback()
+
+    async with mk() as s:
+        claimants = (
+            (
+                await s.execute(
+                    select(BankTransaction).where(
+                        BankTransaction.matched_payment_id == uuid.UUID(payment_id)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(claimants) == 1
 
 
 async def test_outstanding_readable_by_ap_clerk(realdb):

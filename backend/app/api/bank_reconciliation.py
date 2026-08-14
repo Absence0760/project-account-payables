@@ -806,10 +806,12 @@ async def resolve_transaction(
         # Without this check a clerk could manually point two different
         # transactions at the same payment, double-counting it as cleared.
         #
-        # `.first()` on a LIMIT 1, not `scalar_one_or_none()`: there is no
-        # unique index behind this invariant, so pre-existing data can already
-        # hold more than one claimant, and asking for exactly-one would 500 on
-        # the very rows this check exists to reject.
+        # `.first()` on a LIMIT 1, not `scalar_one_or_none()`: asking for
+        # exactly-one would 500 on precisely the rows this check exists to
+        # reject. (Migration 0081's partial unique index now makes a duplicate
+        # unpersistable, and clears any that predate it — but the check stays
+        # the FRIENDLY path: it returns a 409 a client can act on instead of
+        # letting the index raise an IntegrityError at commit.)
         other = (
             (
                 await db.execute(
@@ -878,7 +880,18 @@ async def resolve_transaction(
             "variance_amount": variance_str,
         },
     )
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # `uq_bank_transactions_matched_payment` (migration 0081) had the last
+        # word: someone else claimed this payment between our row lock and our
+        # commit. Same 409 as the pre-check, so a caller never has to
+        # distinguish which layer refused.
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="This payment is already matched to another bank transaction.",
+        ) from None
     await db.refresh(stmt)
     return await _detail_response(db, stmt)
 
