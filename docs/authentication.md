@@ -77,9 +77,43 @@ Configured by `FEOH_MAX_CONCURRENT_SESSIONS` (default `5`; set to `0` to disable
 
 `PATCH /api/admin/users/{id}` snapshots the target's role set before applying changes. If roles change or `is_active` flips from true to false, the admin path calls `revoke_user_sessions(user_id)`, which blocklists every tracked JTI and clears the set. `DELETE /api/admin/users/{id}` does the same on deletion so a tombstoned user can't keep calling the API.
 
+`POST /api/admin/users/{id}/revoke-sessions` is the same forced logout **on its own** — for incident response ("that laptop was stolen; keep the account, kill the sessions"), where the alternative was deactivate-and-reactivate, which locks the user out for the duration and records a suspension that never happened. Org-scoped (a user outside the caller's org is the same 404 as a missing one), gated on `user.manage`, idempotent, and audited as `user.sessions_revoked` with a count.
+
 ### Session set TTL
 
 The sorted set carries a TTL equal to the access-token lifetime, refreshed on every login. Inactive users' sets age out naturally — Redis never accumulates stale entries.
+
+Because the TTL is refreshed on *every* login, a set kept alive by recent sign-ins can outlive the individual tokens inside it. `list_sessions` therefore treats an entry whose `issued_at + access-token lifetime` has passed as expired: it is pruned (from both the set and the metadata hash) rather than listed. Pruning does **not** blocklist — there is nothing left to revoke.
+
+The lifetime used is the one **recorded for that session at sign-in**, not the current setting. Shortening `FEOH_ACCESS_TOKEN_EXPIRE_MINUTES` would otherwise make every session minted under the old value look already-expired, pruning it while its token keeps authenticating — leaving a live session the user can neither see nor revoke, which is precisely what this surface exists to prevent. A session tracked before the field existed falls back to the current default.
+
+### How long a revoked token stays blocklisted
+
+A blocklist entry that expires **before** the JWT's own `exp` hands the revoked token straight back — the `is_token_blocked` check simply stops finding it. So the duration is not the current configured lifetime either: `session_management.blocklist_ttl_for(user_id)` derives it from the longest-lived session the user actually has, floored at the current default. Over-blocking is harmless (a Redis key outliving its token costs nothing); under-blocking is a revocation bypass, so this deliberately errs long. It is called *before* the revoke, while the records still exist, and is shared by all three revoke paths (self-service single, self-service others, admin forced logout). `POST /api/auth/logout` doesn't need it — it reads the token's own `exp` directly.
+
+### Session metadata
+
+Alongside the sorted set, each sign-in writes a small JSON record into a companion hash (`session_meta:<user_id>`, field = JTI) holding the client IP, a coarse device label, and the sign-in method (`password`, `password+mfa:totp`, `sso:<provider>`, `saml:<provider>`). Both structures are torn down together — an evicted, logged-out, revoked or pruned session loses its metadata in the same operation, so the descriptive layer can never outlive the membership it describes.
+
+The device label comes from the pure `session_management.describe_user_agent`, which reduces a `User-Agent` to `"Chrome on macOS"`-style text. The **raw** User-Agent is never stored or logged — it is a high-entropy fingerprint, and the label is all the user needs to recognise their own devices. Anything unrecognisable (a CLI, a bot) records no label rather than a guess. The IP is clipped to 64 characters before storage.
+
+### Self-service session visibility + revocation
+
+The threat model throughout this document is a **leaked or stolen access token**. The account holder can now act on it directly:
+
+| Endpoint | What it does |
+|---|---|
+| `GET /api/auth/sessions` | The caller's own live sessions, newest first — JTI, sign-in time, expiry, IP, device label, method, and `current: true` on the session making the request. |
+| `DELETE /api/auth/sessions/{jti}` | Ends one of them. `404` when the JTI isn't in the caller's set — the same answer for "belongs to someone else" and "already gone", so it can't be used to probe whether a JTI is live elsewhere. |
+| `POST /api/auth/sessions/revoke-others` | Signs out everywhere except the current session. Idempotent — `revoked: 0` when nothing else is signed in. |
+
+Every operation is keyed on `user.id`, so membership in the caller's own set **is** the authorization check: a JTI from another account is unreachable, not merely refused. Revoking blocklists the JTI (the token stops authenticating on its next request), it does not merely forget it.
+
+There is deliberately **no step-up gate**: all three only ever *remove* access, and the person who needs them needs them fast. Revoking your own current session is allowed — it is equivalent to logging out, so the backend doesn't second-guess which row the user clicked. Both revoke paths write a PII-free `auth.session.revoked` audit row (`{scope, revoked}`); a refused revoke writes none.
+
+`get_current_user` stashes the requesting token's JTI on `user.session_jti` — the same transient-attribute pattern it uses for `effective_permissions` — which is how `current` is marked and how "sign out everywhere else" spares the caller. A caller whose JTI can't be resolved (a legacy token minted before the claim existed) fails toward *less* access: revoke-others signs out everywhere, including them.
+
+The UI is the **Signed-in devices** card on `/profile`, next to the MFA and passkey cards.
 
 ### Logout
 
@@ -96,6 +130,8 @@ Action names:
 | Successful password login | `auth.login.success` |
 | Failed password login (bad password / no password) | `auth.login.failure` |
 | Logout | `auth.logout` |
+| Self-service session revoke (one, or everywhere else) | `auth.session.revoked` — PII-free, records only `{scope: "single"\|"others", revoked: <count>}` |
+| Admin force-logout of another user | `user.sessions_revoked` — PII-free, records only the revoked count |
 | MFA challenge issued during login | `auth.mfa.challenge_issued` |
 | Successful MFA verify | `auth.mfa.verify.success` |
 | Failed MFA verify | `auth.mfa.verify.failure` |

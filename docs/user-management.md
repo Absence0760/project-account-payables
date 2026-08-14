@@ -72,6 +72,8 @@ Invited (active) --> Deactivated --> Reactivated --> ...
 - **Deactivated**: Cannot log in. Account preserved for audit trail. Can be reactivated.
 - **Deleted**: Permanently removed. Use for users who were created by mistake. Prefer deactivation for users who have activity in the system.
 
+**Forced logout is not a lifecycle state.** A role change, a password reset and deactivation each drop the target's live sessions as a side effect. When you want *only* that — a stolen laptop, a shared credential you've just rotated — use `POST /api/admin/users/:id/revoke-sessions`; deactivating and reactivating to achieve it locks the user out for the duration and leaves a suspension in the audit trail that never happened. See [`authentication.md`](authentication.md) § Session management.
+
 ## Self-Service
 
 Users can update their own profile via the sidebar profile popover:
@@ -91,6 +93,7 @@ Users cannot change their own email or roles.
 | GET | `/api/admin/roles` | List all available roles |
 | POST | `/api/admin/users` | Create a user (returns temp password) |
 | PATCH | `/api/admin/users/:id` | Update user name, email, roles, active status, or reset password |
+| POST | `/api/admin/users/:id/revoke-sessions` | Force-log-out a user without changing their account (`user.manage`, org-scoped, idempotent, audited) |
 | DELETE | `/api/admin/users/:id` | Permanently delete a user (cannot delete yourself) |
 
 ### Self-Service Endpoints
@@ -99,6 +102,9 @@ Users cannot change their own email or roles.
 |---|---|---|
 | GET | `/api/auth/me` | Get current user info |
 | PATCH | `/api/auth/me` | Update own name or password |
+| GET | `/api/auth/sessions` | List your own live sessions (device / IP / method, current one marked) |
+| DELETE | `/api/auth/sessions/:jti` | End one of your own sessions |
+| POST | `/api/auth/sessions/revoke-others` | Sign out everywhere except the current session |
 
 ### Request/Response Examples
 

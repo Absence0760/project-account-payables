@@ -10,6 +10,12 @@ pool = redis.ConnectionPool.from_url(settings.redis_url)
 
 BLOCKLIST_PREFIX = "token:blocked:"
 SESSION_SET_PREFIX = "active_jtis:"
+# Companion hash to the sorted set above: field = JTI, value = a small JSON
+# blob describing the session (IP, device label, sign-in method) so the user
+# can recognise their own sessions in the "where you're signed in" list. The
+# sorted set stays the authoritative membership/ordering structure — this hash
+# only decorates it, and every membership mutation keeps the two in step.
+SESSION_META_PREFIX = "session_meta:"
 
 
 async def get_redis() -> redis.Redis:
@@ -45,7 +51,21 @@ def _session_key(user_id) -> str:
     return f"{SESSION_SET_PREFIX}{user_id}"
 
 
-async def track_session(user_id, jti: str, ttl_seconds: int, max_sessions: int) -> list[str]:
+def _session_meta_key(user_id) -> str:
+    return f"{SESSION_META_PREFIX}{user_id}"
+
+
+def _decode(value) -> str:
+    return value.decode() if isinstance(value, bytes) else value
+
+
+async def track_session(
+    user_id,
+    jti: str,
+    ttl_seconds: int,
+    max_sessions: int,
+    meta: str | None = None,
+) -> list[str]:
     """Record a new session JTI for a user and enforce the concurrent-session cap.
 
     Returns the list of JTIs that were evicted (oldest-first) because the
@@ -53,9 +73,14 @@ async def track_session(user_id, jti: str, ttl_seconds: int, max_sessions: int) 
     evicted tokens stop authenticating immediately.
 
     If `max_sessions` is 0 or negative, no cap is enforced.
+
+    `meta` is an optional pre-serialised JSON blob describing the session. It
+    is stored in the companion hash under the same JTI and torn down with it,
+    so the descriptive layer can never outlive the membership it describes.
     """
     r = await get_redis()
     key = _session_key(user_id)
+    meta_key = _session_meta_key(user_id)
     now = time.time()
 
     # ZADD — score = issue time so ZRANGE returns oldest-first.
@@ -64,6 +89,9 @@ async def track_session(user_id, jti: str, ttl_seconds: int, max_sessions: int) 
     # Set is refreshed on every login, which is what we want — inactive users
     # have their set evicted by Redis automatically.
     await r.expire(key, ttl_seconds)
+    if meta is not None:
+        await r.hset(meta_key, jti, meta)
+        await r.expire(meta_key, ttl_seconds)
 
     evicted: list[str] = []
     if max_sessions and max_sessions > 0:
@@ -73,10 +101,10 @@ async def track_session(user_id, jti: str, ttl_seconds: int, max_sessions: int) 
             overflow = count - max_sessions
             members = await r.zrange(key, 0, overflow - 1)
             for m in members:
-                jti_str = m.decode() if isinstance(m, bytes) else m
-                evicted.append(jti_str)
+                evicted.append(_decode(m))
             if members:
                 await r.zrem(key, *members)
+                await r.hdel(meta_key, *evicted)
     return evicted
 
 
@@ -84,28 +112,93 @@ async def untrack_session(user_id, jti: str) -> None:
     """Remove a single JTI from the user's active set (called on logout)."""
     r = await get_redis()
     await r.zrem(_session_key(user_id), jti)
+    await r.hdel(_session_meta_key(user_id), jti)
 
 
 async def get_active_sessions(user_id) -> list[str]:
     """Return the JTIs currently tracked as active for the user."""
     r = await get_redis()
     members = await r.zrange(_session_key(user_id), 0, -1)
-    return [m.decode() if isinstance(m, bytes) else m for m in members]
+    return [_decode(m) for m in members]
 
 
-async def revoke_all_sessions(user_id, ttl_seconds: int) -> list[str]:
+async def get_active_sessions_with_scores(user_id) -> list[tuple[str, float]]:
+    """Return `(jti, issued_at_epoch)` for every tracked session, oldest first.
+
+    The score is the epoch seconds `track_session` stamped at sign-in, which is
+    what lets the caller derive a session's age and expiry without a second
+    lookup.
+    """
+    r = await get_redis()
+    rows = await r.zrange(_session_key(user_id), 0, -1, withscores=True)
+    return [(_decode(member), float(score)) for member, score in rows]
+
+
+async def get_session_meta(user_id) -> dict[str, str]:
+    """Return the raw per-JTI metadata blobs for a user (`{jti: json}`)."""
+    r = await get_redis()
+    raw = await r.hgetall(_session_meta_key(user_id))
+    return {_decode(k): _decode(v) for k, v in (raw or {}).items()}
+
+
+async def drop_sessions(user_id, jtis: list[str]) -> None:
+    """Forget sessions without blocklisting them.
+
+    Used to prune entries whose token already expired on its own — there is
+    nothing left to revoke, so adding them to the blocklist would only waste
+    keys. Blocklisting a *live* session is `revoke_session` / `block_token`.
+    """
+    if not jtis:
+        return
+    r = await get_redis()
+    await r.zrem(_session_key(user_id), *jtis)
+    await r.hdel(_session_meta_key(user_id), *jtis)
+
+
+async def revoke_session(user_id, jti: str, ttl_seconds: int) -> bool:
+    """Blocklist one tracked JTI and forget it. Returns False if not tracked.
+
+    The membership check is the authorization: a JTI is only ever revocable
+    through the set of the user it belongs to, so one user can never revoke
+    another's session even by guessing a JTI.
+    """
+    r = await get_redis()
+    removed = await r.zrem(_session_key(user_id), jti)
+    if not removed:
+        return False
+    await r.hdel(_session_meta_key(user_id), jti)
+    await r.setex(f"{BLOCKLIST_PREFIX}{jti}", ttl_seconds, "1")
+    return True
+
+
+async def revoke_all_sessions(
+    user_id, ttl_seconds: int, except_jti: str | None = None
+) -> list[str]:
     """Blocklist every active JTI for the user and clear the tracking set.
 
     Used on admin role change and account deactivation — SOC 2 expects an
     actor's active sessions to drop the moment their permissions change.
     Returns the list of JTIs that were revoked.
+
+    `except_jti` keeps one session alive (and tracked) — the "sign out
+    everywhere else" case, where signing the caller out too would be a
+    surprising side effect of a defensive action.
     """
     r = await get_redis()
     key = _session_key(user_id)
     members = await r.zrange(key, 0, -1)
-    jtis = [m.decode() if isinstance(m, bytes) else m for m in members]
+    jtis = [_decode(m) for m in members if _decode(m) != except_jti]
     for jti in jtis:
         await r.setex(f"{BLOCKLIST_PREFIX}{jti}", ttl_seconds, "1")
-    if jtis:
+    if not jtis:
+        return jtis
+    keeping = except_jti is not None and any(_decode(m) == except_jti for m in members)
+    if keeping:
+        await r.zrem(key, *jtis)
+        await r.hdel(_session_meta_key(user_id), *jtis)
+    else:
+        # Nothing survives — drop both keys outright rather than removing every
+        # member one by one.
         await r.delete(key)
+        await r.delete(_session_meta_key(user_id))
     return jtis

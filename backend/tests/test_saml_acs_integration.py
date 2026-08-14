@@ -117,7 +117,7 @@ def saml_wired(monkeypatch, idp_keypair):
     async def _jit(db, org_, email, sub, provider, claims):
         return _FakeUser(id=uuid.uuid4(), organization_id=org_.id)
 
-    async def _register(user_id, jti):
+    async def _register(user_id, jti, **kwargs):
         return None
 
     audits: list[dict] = []

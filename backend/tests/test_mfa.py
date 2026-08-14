@@ -281,7 +281,7 @@ async def test_verify_mfa_success_writes_audit_actions():
     async def _fake_audit(**kwargs):
         audit_calls.append(kwargs["action"])
 
-    async def _fake_register(user_id, jti):
+    async def _fake_register(user_id, jti, **kwargs):
         pass
 
     challenge = mfa_svc.create_challenge_token(user.id)
@@ -361,7 +361,7 @@ async def test_verify_mfa_challenge_token_rejects_replay():
     async def _fake_audit(**kwargs):
         pass
 
-    async def _fake_register(user_id, jti):
+    async def _fake_register(user_id, jti, **kwargs):
         pass
 
     challenge = mfa_svc.create_challenge_token(user.id)

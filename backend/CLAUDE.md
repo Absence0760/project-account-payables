@@ -827,6 +827,16 @@ Files: `*_dispatch.py` (router), `*_lambda.py` (Lambda handler).
 - Token payload: `sub` (user_id), `org` (org_id), `jti` (unique ID for blocklist)
 - `get_current_user()` — FastAPI dependency, returns User or 401
 - Logout adds `jti` to Redis blocklist with TTL matching token expiry
+- `get_current_user` also stashes the requesting `jti` on `user.session_jti` (transient, like `effective_permissions`) — that's what lets the session routes mark the caller's own entry and spare it from "sign out everywhere else"
+
+### Sessions (`services/session_management.py`, `app/redis.py`)
+
+Each sign-in registers its JTI in `active_jtis:<user_id>` (sorted set, scored by issue time) plus a companion metadata hash `session_meta:<user_id>` (IP, coarse device label from the pure `describe_user_agent`, sign-in method). The two are always mutated together, so a session's metadata can never outlive its membership. Beyond the concurrent cap (`FEOH_MAX_CONCURRENT_SESSIONS`) and the forced logout on role change / password reset / deactivation, this backs:
+
+- `GET /api/auth/sessions`, `DELETE /api/auth/sessions/{jti}`, `POST /api/auth/sessions/revoke-others` — the account holder's own remedy for a leaked token. Every op is keyed on `user.id`, so membership in the caller's set IS the authorization; a foreign JTI is the same opaque 404 as an unknown one. No step-up (they only remove access). Audited `auth.session.revoked`, PII-free.
+- `POST /api/admin/users/{id}/revoke-sessions` — standalone admin force-logout (`user.manage`, org-scoped, idempotent, audited `user.sessions_revoked`).
+
+`list_sessions` prunes entries whose token already expired (the set's TTL is refreshed on every login, so it can outlive the tokens inside it) without blocklisting them — there is nothing left to revoke. The **raw** User-Agent is never stored or logged. See `../docs/authentication.md` § Session management.
 
 ### RBAC (`require_roles`)
 
