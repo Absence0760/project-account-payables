@@ -14,6 +14,7 @@ itself is owned by the (separately tested) pure service.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -730,6 +731,102 @@ async def test_outstanding_excludes_a_cleanly_reconciled_payment(realdb):
     assert payment_id not in ids
 
 
-async def test_outstanding_requires_auth_and_allows_every_read_role(realdb):
+async def test_outstanding_limit_truncates_rows_but_never_the_totals(realdb):
+    """`?limit` exists to bound the payload, not the arithmetic. Counts and
+    totals come from SQL aggregates over the whole set, so a capped page can
+    never understate what is outstanding — a close report that quietly reports
+    less money than is really open is worse than no report."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    for amount in ("101.00", "102.00", "103.00"):
+        await _add_payment(mk, org_id, amount=amount)
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        capped = await c.get("/api/bank-reconciliation/outstanding?limit=1")
+        full = await c.get("/api/bank-reconciliation/outstanding")
+
+    assert capped.status_code == 200, capped.text
+    capped_body = capped.json()
+    full_body = full.json()
+    assert len(capped_body["uncleared_payments"]) == 1
+    assert len(full_body["uncleared_payments"]) > 1
+    # Same count, same money — only the row list differs.
+    assert capped_body["uncleared_count"] == full_body["uncleared_count"]
+    assert Decimal(str(capped_body["uncleared_total"])) == Decimal(
+        str(full_body["uncleared_total"])
+    )
+    # And the total is the exact sum of the payments, not a float approximation.
+    assert Decimal(str(capped_body["uncleared_total"])) >= Decimal("306.00")
+
+
+async def test_concurrent_resolve_cannot_claim_one_payment_twice(realdb):
+    """The "already matched to another transaction" guard is a read-then-write.
+    Two concurrent resolves pointing DIFFERENT transactions at the SAME payment
+    both read "not claimed", both pass, and both commit — the payment counts as
+    cleared twice, which is exactly the double-count the guard exists to stop.
+
+    The payment row is now locked FOR UPDATE before the check, so every
+    claimant serialises on it: the second blocks until the first commits, then
+    sees the claim and 409s. Asserted on the durable outcome — exactly one
+    transaction ends up holding the payment.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    payment_id = await _add_payment(mk, org_id, amount="55.00")
+
+    csv_body = _csv(
+        "Date,Amount,Description",
+        f"{_TODAY.isoformat()},-55.00,First line",
+        f"{_TODAY.isoformat()},-55.00,Second line",
+    )
+    async with realdb.client(key="a", role="ap_manager") as c:
+        up = await c.post(
+            "/api/bank-reconciliation/upload",
+            data={
+                "account_identifier": "Operating ****9008",
+                "period_start": (_TODAY - timedelta(days=30)).isoformat(),
+                "period_end": _TODAY.isoformat(),
+            },
+            files={"file": ("statement.csv", csv_body, "text/csv")},
+        )
+        assert up.status_code == 201, up.text
+        stmt_id = up.json()["id"]
+        tx_ids = [t["id"] for t in up.json()["transactions"]]
+        # Start from a clean slate so both transactions are free to claim.
+        for tx_id in tx_ids:
+            await c.post(
+                f"/api/bank-reconciliation/{stmt_id}/transactions/{tx_id}/resolve",
+                json={"matched_payment_id": None},
+            )
+
+    async def _claim(tx_id: str):
+        async with realdb.client(key="a", role="ap_manager") as client:
+            resp = await client.post(
+                f"/api/bank-reconciliation/{stmt_id}/transactions/{tx_id}/resolve",
+                json={"matched_payment_id": payment_id},
+            )
+            return resp.status_code
+
+    statuses = await asyncio.gather(_claim(tx_ids[0]), _claim(tx_ids[1]))
+    assert sorted(statuses) == [200, 409], f"expected one winner and one 409, got {statuses}"
+
+    async with mk() as s:
+        claimants = (
+            (
+                await s.execute(
+                    select(BankTransaction).where(
+                        BankTransaction.matched_payment_id == uuid.UUID(payment_id)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(claimants) == 1, "one payment was claimed by two bank transactions"
+
+
+async def test_outstanding_readable_by_ap_clerk(realdb):
+    """Read-role gated like the rest of the router. (`test_rbac.py`'s coverage
+    gate is what proves the route requires auth at all.)"""
     async with realdb.client(key="a", role="ap_clerk") as c:
         assert (await c.get("/api/bank-reconciliation/outstanding")).status_code == 200

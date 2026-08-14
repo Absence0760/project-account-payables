@@ -26,7 +26,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
-from sqlalchemy import func, select
+from sqlalchemy import Date, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -377,6 +377,11 @@ async def outstanding_items(
 
     A payment linked to an ``amount_mismatch`` line is NOT uncleared — it is
     accounted for, in the mismatch bucket — so it appears exactly once.
+
+    Each bucket runs a SQL aggregate for its count + exact ``Decimal`` total
+    and a separate ``LIMIT``-ed row query, so ``?limit`` truncates the rows
+    only and nothing unbounded is ever loaded into memory — a month-end close
+    on a large backlog is the exact shape this endpoint has to survive.
     """
     today = datetime.now(UTC).date()
     cutoff = today - timedelta(days=older_than_days)
@@ -386,128 +391,145 @@ async def outstanding_items(
     )
 
     # ---- Bucket 1: payments no bank line claims ---------------------------
+    # Same fallback chain the matcher's date window uses, so "outstanding
+    # since" and "matchable around" agree on when we consider a payment sent.
+    # Expressed in SQL rather than Python so the age filter, the aggregate and
+    # the LIMIT all run in the database — an org with a large unreconciled
+    # backlog must not pull every qualifying row into memory just to total it.
+    sent_at_expr = func.coalesce(Payment.submitted_at, Payment.completed_at, Payment.created_at)
+    sent_on_expr = cast(sent_at_expr, Date)
+    uncleared_where = (
+        Payment.status.in_(_EXPECTED_TO_CLEAR_STATUSES),
+        Payment.id.not_in(claimed_subq),
+        # A row with no usable timestamp at all can't be aged out — surface it
+        # rather than hide it behind a filter it can never satisfy.
+        or_(sent_at_expr.is_(None), sent_on_expr <= cutoff),
+    )
+
+    # Counts + totals cover EVERY outstanding payment; only the row list below
+    # is capped at `limit`, so a truncated page never understates the money.
+    uncleared_count, uncleared_sum = (
+        await db.execute(select(func.count(), func.sum(Payment.amount)).where(*uncleared_where))
+    ).one()
+    uncleared_total = uncleared_sum if uncleared_sum is not None else Decimal("0.00")
+
     uncleared_rows = (
         await db.execute(
-            select(Payment, Invoice.invoice_number, Invoice.vendor_name)
+            select(Payment, Invoice.invoice_number, Invoice.vendor_name, sent_on_expr)
             .join(Invoice, Invoice.id == Payment.invoice_id)
-            .where(
-                Payment.status.in_(_EXPECTED_TO_CLEAR_STATUSES),
-                Payment.id.not_in(claimed_subq),
-            )
+            .where(*uncleared_where)
             .order_by(Payment.created_at)
+            .limit(limit)
         )
     ).all()
 
-    uncleared: list[UnclearedPaymentResponse] = []
-    uncleared_total = Decimal("0.00")
-    uncleared_count = 0
-    for payment, invoice_number, vendor_name in uncleared_rows:
-        # Same fallback chain the matcher's date window uses, so "outstanding
-        # since" and "matchable around" agree on when we consider it sent.
-        sent_at = payment.submitted_at or payment.completed_at or payment.created_at
-        sent_on = sent_at.date() if isinstance(sent_at, datetime) else sent_at
-        if sent_on is not None and sent_on > cutoff:
-            continue
-        # Counts + totals cover EVERY outstanding payment; only the row list is
-        # capped at `limit`, so a truncated page never understates the money.
-        uncleared_count += 1
-        uncleared_total += payment.amount
-        if len(uncleared) < limit:
-            uncleared.append(
-                UnclearedPaymentResponse(
-                    payment_id=str(payment.id),
-                    invoice_id=str(payment.invoice_id),
-                    invoice_number=invoice_number,
-                    vendor_name=vendor_name,
-                    amount=payment.amount,
-                    method=payment.method,
-                    status=payment.status,
-                    sent_on=sent_on.isoformat() if sent_on else None,
-                    days_outstanding=(today - sent_on).days if sent_on else None,
-                )
-            )
-    # ---- Buckets 2 + 3: bank lines needing attention -----------------------
-    attention_rows = (
+    uncleared = [
+        UnclearedPaymentResponse(
+            payment_id=str(payment.id),
+            invoice_id=str(payment.invoice_id),
+            invoice_number=invoice_number,
+            vendor_name=vendor_name,
+            amount=payment.amount,
+            method=payment.method,
+            status=payment.status,
+            sent_on=sent_on.isoformat() if sent_on else None,
+            days_outstanding=(today - sent_on).days if sent_on else None,
+        )
+        for payment, invoice_number, vendor_name, sent_on in uncleared_rows
+    ]
+
+    # ---- Bucket 2: bank debits with no payment behind them ----------------
+    unmatched_where = (
+        BankStatement.organization_id == org_id,
+        BankTransaction.direction == "debit",
+        BankTransaction.matched_payment_id.is_(None),
+    )
+    unmatched_count, unmatched_sum = (
+        await db.execute(
+            select(func.count(), func.sum(BankTransaction.amount))
+            .select_from(BankTransaction)
+            .join(BankStatement, BankStatement.id == BankTransaction.statement_id)
+            .where(*unmatched_where)
+        )
+    ).one()
+    unmatched_total = unmatched_sum if unmatched_sum is not None else Decimal("0.00")
+
+    unmatched_rows = (
         await db.execute(
             select(BankTransaction, BankStatement.account_identifier)
             .join(BankStatement, BankStatement.id == BankTransaction.statement_id)
-            .where(
-                BankStatement.organization_id == org_id,
-                BankTransaction.direction == "debit",
-                (BankTransaction.matched_payment_id.is_(None))
-                | (BankTransaction.match_method == MATCH_METHOD_AMOUNT_MISMATCH),
-            )
+            .where(*unmatched_where)
             .order_by(BankTransaction.transaction_date.desc())
+            .limit(limit)
         )
     ).all()
 
-    mismatch_payment_ids = {
-        tx.matched_payment_id
-        for tx, _ in attention_rows
-        if tx.match_method == MATCH_METHOD_AMOUNT_MISMATCH and tx.matched_payment_id is not None
-    }
-    mismatch_ctx: dict[uuid.UUID, _PaymentContext] = {}
-    if mismatch_payment_ids:
-        ctx_rows = (
-            await db.execute(
-                select(Payment.id, Payment.amount, Invoice.invoice_number)
-                .join(Invoice, Invoice.id == Payment.invoice_id)
-                .where(Payment.id.in_(mismatch_payment_ids))
+    unmatched = [
+        UnmatchedDebitResponse(
+            transaction_id=str(tx.id),
+            statement_id=str(tx.statement_id),
+            account_identifier=account_identifier,
+            transaction_date=tx.transaction_date.isoformat(),
+            amount=tx.amount,
+            currency=tx.currency,
+            counterparty_name=tx.counterparty_name,
+            reference=tx.reference,
+            description=tx.description,
+        )
+        for tx, account_identifier in unmatched_rows
+    ]
+
+    # ---- Bucket 3: identified, but the bank moved a different amount ------
+    # Inner-joined to Payment, so the variance is computed by the database from
+    # both sides — never from a float, and never from a stale copy.
+    mismatch_where = (
+        BankStatement.organization_id == org_id,
+        BankTransaction.direction == "debit",
+        BankTransaction.match_method == MATCH_METHOD_AMOUNT_MISMATCH,
+    )
+    mismatch_count, variance_sum = (
+        await db.execute(
+            select(func.count(), func.sum(BankTransaction.amount - Payment.amount))
+            .select_from(BankTransaction)
+            .join(BankStatement, BankStatement.id == BankTransaction.statement_id)
+            .join(Payment, Payment.id == BankTransaction.matched_payment_id)
+            .where(*mismatch_where)
+        )
+    ).one()
+    net_variance = variance_sum if variance_sum is not None else Decimal("0.00")
+
+    mismatch_rows = (
+        await db.execute(
+            select(
+                BankTransaction,
+                BankStatement.account_identifier,
+                Payment.amount,
+                Invoice.invoice_number,
             )
-        ).all()
-        mismatch_ctx = {
-            pid: _PaymentContext(amount=amount, invoice_number=number)
-            for pid, amount, number in ctx_rows
-        }
+            .join(BankStatement, BankStatement.id == BankTransaction.statement_id)
+            .join(Payment, Payment.id == BankTransaction.matched_payment_id)
+            .join(Invoice, Invoice.id == Payment.invoice_id)
+            .where(*mismatch_where)
+            .order_by(BankTransaction.transaction_date.desc())
+            .limit(limit)
+        )
+    ).all()
 
-    unmatched: list[UnmatchedDebitResponse] = []
-    unmatched_total = Decimal("0.00")
-    unmatched_count = 0
-    mismatches: list[AmountMismatchResponse] = []
-    mismatch_count = 0
-    net_variance = Decimal("0.00")
-
-    for tx, account_identifier in attention_rows:
-        if tx.matched_payment_id is None:
-            unmatched_count += 1
-            unmatched_total += tx.amount
-            if len(unmatched) < limit:
-                unmatched.append(
-                    UnmatchedDebitResponse(
-                        transaction_id=str(tx.id),
-                        statement_id=str(tx.statement_id),
-                        account_identifier=account_identifier,
-                        transaction_date=tx.transaction_date.isoformat(),
-                        amount=tx.amount,
-                        currency=tx.currency,
-                        counterparty_name=tx.counterparty_name,
-                        reference=tx.reference,
-                        description=tx.description,
-                    )
-                )
-            continue
-
-        ctx = mismatch_ctx.get(tx.matched_payment_id)
-        if ctx is None:
-            continue
-        variance = match_variance(tx.amount, ctx.amount)
-        mismatch_count += 1
-        net_variance += variance
-        if len(mismatches) < limit:
-            mismatches.append(
-                AmountMismatchResponse(
-                    transaction_id=str(tx.id),
-                    statement_id=str(tx.statement_id),
-                    account_identifier=account_identifier,
-                    transaction_date=tx.transaction_date.isoformat(),
-                    bank_amount=tx.amount,
-                    payment_amount=ctx.amount,
-                    variance_amount=variance,
-                    payment_id=str(tx.matched_payment_id),
-                    invoice_number=ctx.invoice_number,
-                    counterparty_name=tx.counterparty_name,
-                )
-            )
+    mismatches = [
+        AmountMismatchResponse(
+            transaction_id=str(tx.id),
+            statement_id=str(tx.statement_id),
+            account_identifier=account_identifier,
+            transaction_date=tx.transaction_date.isoformat(),
+            bank_amount=tx.amount,
+            payment_amount=payment_amount,
+            variance_amount=match_variance(tx.amount, payment_amount),
+            payment_id=str(tx.matched_payment_id),
+            invoice_number=invoice_number,
+            counterparty_name=tx.counterparty_name,
+        )
+        for tx, account_identifier, payment_amount, invoice_number in mismatch_rows
+    ]
 
     return OutstandingItemsResponse(
         as_of=today.isoformat(),
@@ -565,8 +587,17 @@ async def resolve_transaction(
     variance_str: str | None = None
     if body.matched_payment_id is not None:
         payment_id = uuid.UUID(body.matched_payment_id)
+        # Row-lock the payment being claimed. The "already matched elsewhere"
+        # check below is a read-then-write, so two concurrent resolves pointing
+        # DIFFERENT transactions at the SAME payment both used to read "not
+        # claimed", both pass, and both commit — the payment ends up counted as
+        # cleared twice, which is precisely the double-count the check exists to
+        # prevent. Every claimant must take this lock first, so the second
+        # blocks until the first commits and then sees the claim. Mirrors the
+        # money-path convention in `api/payments.py` (`/approve`, `/execute`,
+        # `/cancel`, `/void` all lock the row they gate on).
         payment = (
-            await db.execute(select(Payment).where(Payment.id == payment_id))
+            await db.execute(select(Payment).where(Payment.id == payment_id).with_for_update())
         ).scalar_one_or_none()
         if payment is None:
             raise HTTPException(status_code=404, detail="Payment not found")
@@ -575,14 +606,25 @@ async def resolve_transaction(
         # services.bank_reconciliation.match_statement_transactions).
         # Without this check a clerk could manually point two different
         # transactions at the same payment, double-counting it as cleared.
+        #
+        # `.first()` on a LIMIT 1, not `scalar_one_or_none()`: there is no
+        # unique index behind this invariant, so pre-existing data can already
+        # hold more than one claimant, and asking for exactly-one would 500 on
+        # the very rows this check exists to reject.
         other = (
-            await db.execute(
-                select(BankTransaction.id).where(
-                    BankTransaction.matched_payment_id == payment_id,
-                    BankTransaction.id != tx.id,
+            (
+                await db.execute(
+                    select(BankTransaction.id)
+                    .where(
+                        BankTransaction.matched_payment_id == payment_id,
+                        BankTransaction.id != tx.id,
+                    )
+                    .limit(1)
                 )
             )
-        ).scalar_one_or_none()
+            .scalars()
+            .first()
+        )
         if other is not None:
             raise HTTPException(
                 status_code=409,

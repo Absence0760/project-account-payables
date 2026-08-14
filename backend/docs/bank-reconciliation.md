@@ -185,6 +185,29 @@ agree. A clerk therefore cannot click a $10 line into place as the clean
 clearing of a $10,000 payment — it lands `amount_mismatch`, and the audit row
 records the exact variance they accepted.
 
+### One payment, one bank transaction
+
+A `Payment` may be claimed by at most one `BankTransaction` — two bank lines
+cannot both be "the" clearing of a single payment without double-counting it
+as reconciled. The automatic matcher enforces it with its `claimed` set
+(seeded from every prior statement's matches, then grown within the batch);
+`/resolve` enforces it with an explicit check.
+
+That check is a read-then-write, so `/resolve` **row-locks the payment**
+(`SELECT ... FOR UPDATE`) before running it — mirroring the money-path
+convention in `api/payments.py`, where `/approve`, `/execute`, `/cancel` and
+`/void` all lock the row they gate on. Without the lock, two concurrent
+resolves pointing *different* transactions at the *same* payment both read
+"not claimed", both passed, and both committed. Pinned by
+`test_concurrent_resolve_cannot_claim_one_payment_twice`.
+
+The invariant has no unique index behind it, so existing data may already hold
+more than one claimant; the check reads with `LIMIT 1` rather than asking for
+exactly-one, which would 500 on precisely the rows it exists to reject. A
+partial unique index on `matched_payment_id` is the durable backstop — tracked
+in [followups.md](../../docs/followups.md), since it needs a migration and a
+decision about what to do with any pre-existing duplicates.
+
 ## Match confidence semantics
 
 Confidence scores how sure we are of the **identity** — which payment this
@@ -220,9 +243,17 @@ the matcher's date window uses, so "outstanding since" and "matchable around"
 agree on when we consider a payment sent.
 
 A payment linked to an `amount_mismatch` line is **not** uncleared: it is
-accounted for in the mismatch bucket, so it appears exactly once. `?limit=`
-caps the returned rows only — every count and total covers the full set, so a
-truncated page never understates the money.
+accounted for in the mismatch bucket, so it appears exactly once.
+
+`?limit=` caps the returned rows only — every count and total covers the full
+set, so a truncated page never understates the money. Each bucket therefore
+runs **two** queries: a SQL aggregate (`COUNT` + `SUM`, exact `Decimal`) over
+the whole set, and a separate `LIMIT`-ed row fetch. The age filter is SQL too
+(`COALESCE(submitted_at, completed_at, created_at)::date <= cutoff`), so
+nothing unbounded is loaded into memory — a month-end close on a large
+unreconciled backlog is the exact shape this endpoint has to survive. A row
+with no usable timestamp at all is surfaced rather than hidden behind a filter
+it could never satisfy.
 
 There is **no stored clearance column** on `Payment`. Clearance is derived
 from the existing `BankTransaction.matched_payment_id` link, so voiding a
@@ -251,4 +282,4 @@ something the transactions no longer support. (This mirrors how
 | File | Coverage |
 |---|---|
 | `tests/test_bank_reconciliation.py` | CSV sniffing (signed-amount + separate debit/credit; parenthesized negatives; comma + dollar-sign amounts; reference + counterparty pass-through; bad rows skipped); refusal paths (empty / header-only / missing columns / all-bad-rows / latin-1 fallback); matcher strategies (provider_id 100, amount_date 80, fuzzy_vendor 50–70, multi-candidate-no-fuzzy unmatched, credits skipped); outcome-count rollup; the `amount_mismatch` class (`match_variance` signed + exact, one-cent tolerance, `is_reconciled` excludes it, a reference hit at the wrong amount is linked-not-matched and still claims the payment); ambiguous references on both lookup columns fall through instead of crashing |
-| `tests/test_bank_reconciliation_api.py` | The HTTP surface end-to-end against real test tenants: upload → persisted statement + matched transactions + audit row, credits skipped, malformed CSV → 422, list + detail (transactions omitted from list), manual resolve (set + clear, audited, `matched_count` recomputed), resolve against an unknown payment → 404, delete cascades transactions, RBAC (`ap_clerk` reads but can't upload/delete); `amount_mismatch` end-to-end (upload flags it, list surfaces `amount_mismatch_count`, manual resolve can't stamp a wrong amount as reconciled and audits the variance as an exact string, a duplicated `Payment.reference` no longer 500s the import); `/outstanding` (all three buckets, `older_than_days` filter, a cleanly reconciled payment drops out, no double-reporting of a mismatched payment) |
+| `tests/test_bank_reconciliation_api.py` | The HTTP surface end-to-end against real test tenants: upload → persisted statement + matched transactions + audit row, credits skipped, malformed CSV → 422, list + detail (transactions omitted from list), manual resolve (set + clear, audited, `matched_count` recomputed), resolve against an unknown payment → 404, delete cascades transactions, RBAC (`ap_clerk` reads but can't upload/delete); `amount_mismatch` end-to-end (upload flags it, list surfaces `amount_mismatch_count`, manual resolve can't stamp a wrong amount as reconciled and audits the variance as an exact string, a duplicated `Payment.reference` no longer 500s the import); `/outstanding` (all three buckets, `older_than_days` filter, a cleanly reconciled payment drops out, no double-reporting of a mismatched payment, `?limit` truncates rows but never the counts/totals); two concurrent resolves can't both claim one payment |
