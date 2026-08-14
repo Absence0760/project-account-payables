@@ -46,6 +46,8 @@ async def _add_payment(
     reference=None,
     submitted_at=None,
     vendor_name="Acme Supplies",
+    status="completed",
+    currency="USD",
 ) -> str:
     async with mk() as s:
         entity_id = await _default_entity_id(s)
@@ -59,7 +61,7 @@ async def _add_payment(
             vendor_name=vendor_name,
             vendor_id=vendor.id,
             amount=Decimal(amount),
-            currency="USD",
+            currency=currency,
             invoice_date=_TODAY,
             due_date=_TODAY + timedelta(days=30),
             status=InvoiceStatus.paid,
@@ -71,7 +73,7 @@ async def _add_payment(
             entity_id=entity_id,
             amount=Decimal(amount),
             method="ach",
-            status="completed",
+            status=status,
             provider_payment_id=provider_payment_id,
             reference=reference,
             submitted_at=submitted_at or datetime.now(UTC),
@@ -581,6 +583,139 @@ async def test_manual_resolve_cannot_stamp_a_wrong_amount_as_reconciled(realdb):
         assert audit.details["variance_amount"] == "99899.00"
 
 
+async def test_upload_flags_a_debit_against_a_failed_payment_as_status_conflict(realdb):
+    """End-to-end proof of the second half of the matcher fix. The bank moved
+    money on a line carrying the trace number of a payment our books call
+    `failed` — our records and the bank's disagree about whether it went out at
+    all. That used to come back `provider_id` / confidence 100 / reconciled,
+    converting the discrepancy into a sign-off. It must stay linked but
+    classified `status_conflict`, out of `matched_count`, and visible on the
+    statement's `discrepancy_count` and in `/outstanding`."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    payment_id = await _add_payment(
+        mk, org_id, amount="640.00", provider_payment_id="TRACE-SC1", status="failed"
+    )
+
+    csv_body = _csv(
+        "Date,Amount,Reference,Description",
+        f"{_TODAY.isoformat()},-640.00,TRACE-SC1,Wire out",
+    )
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/bank-reconciliation/upload",
+            data={
+                "account_identifier": "Operating ****9010",
+                "period_start": (_TODAY - timedelta(days=30)).isoformat(),
+                "period_end": _TODAY.isoformat(),
+            },
+            files={"file": ("statement.csv", csv_body, "text/csv")},
+        )
+        assert resp.status_code == 201, resp.text
+        outstanding = await c.get("/api/bank-reconciliation/outstanding")
+
+    body = resp.json()
+    assert body["matched_count"] == 0
+    assert body["amount_mismatch_count"] == 0  # the amounts DO agree
+    assert body["discrepancy_count"] == 1
+
+    tx = body["transactions"][0]
+    assert tx["matched_payment_id"] == payment_id
+    assert tx["match_method"] == "status_conflict"
+    assert tx["is_reconciled"] is False
+    assert tx["matched_payment_status"] == "failed"
+
+    # Linked lines drop out of `unmatched_debits` and a `failed` payment was
+    # never in `uncleared_payments` — the discrepancy bucket is the ONLY place
+    # this can surface, so it has to be there.
+    row = next(d for d in outstanding.json()["discrepancies"] if d["payment_id"] == payment_id)
+    assert row["classification"] == "status_conflict"
+    assert row["payment_status"] == "failed"
+    assert row["variance_amount"] is None  # the amounts agree; nothing to report
+
+
+async def test_upload_flags_a_debit_in_another_currency_as_currency_mismatch(realdb):
+    """`BankTransaction.currency` was never compared, so a EUR 1,000 debit
+    reconciled a USD 1,000 payment — two different sums of money signed off as
+    one. Linked (the reference identifies it) but `currency_mismatch`, and NO
+    variance is reported: subtracting across currencies isn't money."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    payment_id = await _add_payment(
+        mk, org_id, amount="1000.00", provider_payment_id="TRACE-CC1", currency="USD"
+    )
+
+    csv_body = _csv(
+        "Date,Amount,Reference,Description",
+        f"{_TODAY.isoformat()},-1000.00,TRACE-CC1,SEPA out",
+    )
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/bank-reconciliation/upload",
+            data={
+                "account_identifier": "Operating ****9011",
+                "period_start": (_TODAY - timedelta(days=30)).isoformat(),
+                "period_end": _TODAY.isoformat(),
+                "currency": "EUR",
+            },
+            files={"file": ("statement.csv", csv_body, "text/csv")},
+        )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["matched_count"] == 0
+    assert body["discrepancy_count"] == 1
+
+    tx = body["transactions"][0]
+    assert tx["matched_payment_id"] == payment_id
+    assert tx["match_method"] == "currency_mismatch"
+    assert tx["is_reconciled"] is False
+    assert tx["currency"] == "EUR"
+    assert tx["matched_payment_currency"] == "USD"
+    assert tx["variance_amount"] is None
+
+
+async def test_manual_resolve_cannot_stamp_a_failed_payment_as_reconciled(realdb):
+    """The manual path runs the SAME classifier as the matcher, so a clerk
+    cannot resolve a bank line onto a payment our books say never went out and
+    have it counted as cleared."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    payment_id = await _add_payment(mk, org_id, amount="333.00", status="voided")
+
+    csv_body = _csv(
+        "Date,Amount,Description",
+        f"{_TODAY.isoformat()},-333.00,Mystery debit",
+    )
+    async with realdb.client(key="a", role="ap_manager") as c:
+        up = await c.post(
+            "/api/bank-reconciliation/upload",
+            data={
+                "account_identifier": "Operating ****9012",
+                "period_start": (_TODAY - timedelta(days=30)).isoformat(),
+                "period_end": _TODAY.isoformat(),
+            },
+            files={"file": ("statement.csv", csv_body, "text/csv")},
+        )
+        assert up.status_code == 201, up.text
+        # The auto-matcher refused it outright (a heuristic never links a
+        # non-dispatched payment), so the line arrives unmatched.
+        assert up.json()["transactions"][0]["matched_payment_id"] is None
+        stmt_id = up.json()["id"]
+        tx_id = up.json()["transactions"][0]["id"]
+
+        resolved = await c.post(
+            f"/api/bank-reconciliation/{stmt_id}/transactions/{tx_id}/resolve",
+            json={"matched_payment_id": payment_id},
+        )
+
+    assert resolved.status_code == 200, resolved.text
+    tx = resolved.json()["transactions"][0]
+    assert tx["matched_payment_id"] == payment_id
+    assert tx["match_method"] == "status_conflict"
+    assert tx["is_reconciled"] is False
+    assert resolved.json()["matched_count"] == 0
+
+
 async def test_duplicate_payment_reference_does_not_500_the_import(realdb):
     """`Payment.reference` carries no unique constraint and the virtual-card
     path stamps a derived, deliberately non-unique value. The reference lookup
@@ -670,7 +805,8 @@ async def test_outstanding_reports_uncleared_unmatched_and_mismatched(realdb):
     # Accounted for in the mismatch bucket — must not be double-reported.
     assert mismatched_id not in uncleared_ids
 
-    mismatch = next(m for m in body["amount_mismatches"] if m["payment_id"] == mismatched_id)
+    mismatch = next(m for m in body["discrepancies"] if m["payment_id"] == mismatched_id)
+    assert mismatch["classification"] == "amount_mismatch"
     assert Decimal(str(mismatch["bank_amount"])) == Decimal("275.50")
     assert Decimal(str(mismatch["payment_amount"])) == Decimal("200.00")
     assert Decimal(str(mismatch["variance_amount"])) == Decimal("75.50")

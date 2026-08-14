@@ -30,8 +30,8 @@ mutation writes a PII-free audit row (`bank_reconciliation.imported` /
 | `POST` | `/upload` | Multipart CSV upload (`file`, `account_identifier`, `period_start`, `period_end`, `currency`). Parses via `parse_csv_statement`, persists the statement + transactions, runs `match_statement_transactions`, returns the detail view. 422 on a malformed CSV (`StatementImportError`). |
 | `GET` | `` | List statements, paginated, optional `?account_identifier=` filter. |
 | `GET` | `/{id}` | Statement detail including every transaction (list omits transactions to avoid an N+1 payload on the index). |
-| `GET` | `/outstanding` | Org-wide close view: uncleared payments, unmatched bank debits, and amount mismatches. `?older_than_days=` (default 0) / `?limit=` (default 200). See below. |
-| `POST` | `/{id}/transactions/{tx_id}/resolve` | Manually set (`matched_payment_id: "<uuid>"`) or clear (`null`) a transaction's match — confidence 100 when set; `match_method` is `manual`, or `amount_mismatch` when the amounts disagree (see § Identity is not reconciliation). Recomputes the statement's `matched_count`. |
+| `GET` | `/outstanding` | Org-wide close view: uncleared payments, unmatched bank debits, and classified discrepancies. `?older_than_days=` (default 0) / `?limit=` (default 200). See below. |
+| `POST` | `/{id}/transactions/{tx_id}/resolve` | Manually set (`matched_payment_id: "<uuid>"`) or clear (`null`) a transaction's match — confidence 100 when set; `match_method` is `manual`, or the matching discrepancy class (`amount_mismatch` / `currency_mismatch` / `status_conflict`) when the payment doesn't reconcile — derived by the SAME `classify_discrepancy` the matcher uses (see § Identity is not reconciliation). Recomputes the statement's `matched_count`. |
 | `DELETE` | `/{id}` | Delete a statement; cascades its transactions. |
 
 `/outstanding` is declared **before** `/{statement_id}` in the router —
@@ -121,17 +121,37 @@ or amount is unparseable.
 mutates every `direction == "debit"` transaction in place, setting
 `matched_payment_id`, `match_method`, `match_confidence`, and
 `matched_at`. Returns counts: `{"matched": N, "unmatched": M,
-"skipped_credit": K, "amount_mismatch": V}`.
+"skipped_credit": K, "amount_mismatch": V, "currency_mismatch": W,
+"status_conflict": X}`.
 
 Three strategies, in order:
 
 | Order | Strategy | Method | Confidence | When |
 |---|---|---|---|---|
-| 1 | Exact ID | `provider_id` | 100 | Transaction `reference` matches `Payment.provider_payment_id` or `Payment.reference` **and the amounts agree** |
-| 2 | Amount + date | `amount_date` | 80 | Exactly one candidate Payment in the ±N-day window has the same amount |
-| 3 | Fuzzy vendor | `fuzzy_vendor` | 50–70 | Multiple candidates, disambiguated by Jaccard similarity between transaction's `counterparty_name` and the invoice's `vendor_name` (≥ 0.5 floor) |
+| 1 | Exact ID | `provider_id` | 100 | Transaction `reference` matches `Payment.provider_payment_id` or `Payment.reference` **and it reconciles** (amount, currency and the payment's own status all agree — otherwise it's one of the three discrepancy classes below) |
+| 2 | Amount + date | `amount_date` | 80 | Exactly one candidate Payment in the ±N-day window settles at the same **amount and currency**, and our books say it was dispatched |
+| 3 | Fuzzy vendor | `fuzzy_vendor` | 50–70 | Multiple such candidates, disambiguated by Jaccard similarity between transaction's `counterparty_name` and the invoice's `vendor_name` (≥ 0.5 floor) |
 
 Credits are skipped entirely — they're not payments we made.
+
+### The settlement pair — what a bank line is compared against
+
+The account is debited in the currency the money *leaves* in, and `Payment`
+carries no `currency` column of its own. `settlement_amount_and_currency`
+is the single definition:
+
+| Payment shape | Settles at | In currency |
+|---|---|---|
+| Domestic | `Payment.amount` | the invoice's `currency` |
+| FX leg (`source_amount` + `source_currency` set by `services/international_payments`) | `Payment.source_amount` | `Payment.source_currency` |
+
+Every comparison — the matcher's strategies, the discrepancy classifier, the
+manual `/resolve`, the per-row API response and the `/outstanding` aggregate
+(via the `settlement_amount_sql` mirror) — reads that one helper, so an
+international payment neither reconciles at a number that never left the
+account nor gets flagged as a phantom discrepancy. A currency that can't be
+established comes back `""` and the currency comparison is **skipped**:
+missing data must never manufacture a discrepancy.
 
 When strategies 2 and 3 both fail (multiple candidates, no fuzzy
 hit), the transaction stays unmatched. Better to leave unmatched
@@ -149,41 +169,64 @@ than picking one arbitrarily. (It previously used `scalar_one_or_none()`,
 which raised `MultipleResultsFound` and 500'd the entire import — every other
 line on the file lost with it.)
 
-## Identity is not reconciliation — the `amount_mismatch` class
+## Identity is not reconciliation — the three discrepancy classes
 
 Strategy 1 matches on a reference string, so it can identify a payment while
-the bank moved a **different amount** than we authorised: a wire that left at
-$50,000 against a $5,000 instruction, an altered cheque, a duplicated fee.
-That is the single discrepancy bank reconciliation exists to catch, and it
-used to come back as `provider_id` / confidence 100 / *matched*.
+the bank did something our books don't support. There are three such shapes,
+and each used to come back as `provider_id` / confidence 100 / *matched* —
+bank reconciliation actively signing off on the very thing it exists to catch:
 
-Such a line is now classified `amount_mismatch`:
+| `match_method` | The bank… | Example |
+|---|---|---|
+| `amount_mismatch` | moved a **different amount** than we authorised | a wire that left at $50,000 against a $5,000 instruction; an altered cheque; a duplicated fee |
+| `currency_mismatch` | moved a **different currency** than the payment settles in | a €1,000 debit against a $1,000 payment |
+| `status_conflict` | moved money against a payment our books say **never went out** | a debit carrying the trace number of a `failed` / `voided` / `cancelled` / still-`pending` payment |
 
-- It stays **linked** to its payment (`matched_payment_id` set), so the
-  discrepancy is traceable and no other transaction can claim that payment.
-- It is **not reconciled**. `BankStatement.matched_count` counts only lines
+They are collected in `UNRECONCILED_MATCH_METHODS`, and every such line:
+
+- stays **linked** to its payment (`matched_payment_id` set), so the
+  discrepancy is traceable and no other transaction can claim that payment;
+- is **not reconciled**. `BankStatement.matched_count` counts only lines
   passing `services.bank_reconciliation.is_reconciled` — the single predicate
   the matcher, the manual `/resolve` recompute and the outstanding-items
-  report all share.
-- `match_variance(bank_amount, payment_amount)` gives the signed 2dp `Decimal`
-  gap. **Positive means the bank took MORE than we authorised.** It is
-  computed on read from the two amounts already stored — no column, no
-  migration, nothing to drift.
-- The tolerance is one cent (`AMOUNT_MATCH_TOLERANCE`), the same band
-  `positive_pay.classify_presented_items` uses for its altered-cheque call.
+  report all share;
+- surfaces on `GET /outstanding`'s `discrepancies` bucket with its
+  `classification`, and in the statement's `discrepancy_count`.
 
-Strategies 2 and 3 key off an exact amount, so only strategy 1 can produce
-one. This gives bank reconciliation the `amount_mismatch` classification the
-other two reconcilers already have (`positive_pay` for cheques presented to
-the bank, `vendor_statement_recon` for a supplier's statement of open items).
+For `amount_mismatch`, `match_variance(bank_amount, settlement_amount)` gives
+the signed 2dp `Decimal` gap. **Positive means the bank took MORE than we
+authorised.** It is computed on read from the two amounts already stored — no
+column, no migration, nothing to drift. It is deliberately **NULL** on a
+`currency_mismatch` (subtracting across currencies isn't money) and on a
+`status_conflict` (the amounts agree by definition). The amount tolerance is
+one cent (`AMOUNT_MATCH_TOLERANCE`), the same band
+`positive_pay.classify_presented_items` uses for its altered-cheque call.
+
+`classify_discrepancy` is the one classifier, and its precedence is
+**currency → amount → status**: a currency mismatch makes the amount
+comparison meaningless, and an amount mismatch is the stronger fraud signal of
+the two that remain.
+
+**Only strategy 1 can produce a discrepancy.** Strategies 2 and 3 key off an
+exact settlement amount + currency and only consider payments in
+`EXPECTED_TO_CLEAR_STATUSES` (`completed` / `submitted` / `processing`) —
+the same list `/outstanding` uses to decide what is owed a bank line, so
+"outstanding" and "matchable" can't drift. A heuristic has no identity proof,
+only a coincidence of amount and date, so a non-dispatched or wrong-currency
+payment is simply **not a candidate**: fabricating a "discrepancy" out of a
+coincidence would be worse than leaving the line unmatched for a human. This
+gives bank reconciliation the classified-discrepancy treatment the other two
+reconcilers already have (`positive_pay` for cheques presented to the bank,
+`vendor_statement_recon` for a supplier's statement of open items).
 
 **The manual path is classified the same way.** `POST
-.../transactions/{id}/resolve` derives `match_method` from the amounts rather
+.../transactions/{id}/resolve` runs the SAME `classify_discrepancy` rather
 than trusting the caller: a human pointing a bank line at a payment is
-supplying an identity the matcher could not infer, not asserting the amounts
-agree. A clerk therefore cannot click a $10 line into place as the clean
-clearing of a $10,000 payment — it lands `amount_mismatch`, and the audit row
-records the exact variance they accepted.
+supplying an identity the matcher could not infer, not asserting that it
+reconciles. A clerk therefore cannot click a $10 line into place as the clean
+clearing of a $10,000 payment, nor resolve one onto a `voided` payment — it
+lands in the matching discrepancy class, and the audit row records the exact
+variance they accepted.
 
 ### One payment, one bank transaction
 
@@ -212,8 +255,8 @@ decision about what to do with any pre-existing duplicates.
 
 Confidence scores how sure we are of the **identity** — which payment this
 line is. Whether it *reconciled* is a separate question, answered by
-`is_reconciled` / the `amount_mismatch` class above, and a confidence-100
-line can still be unreconciled.
+`is_reconciled` / the discrepancy classes above, and a confidence-100 line
+can still be unreconciled.
 
 | Range | Treatment |
 |---|---|
@@ -232,9 +275,16 @@ worksheet, computed on read across every imported statement:
 
 | Bucket | Meaning |
 |---|---|
-| `uncleared_payments` | Our books say it went out; no bank line claims it. Payments in `completed` / `submitted` / `processing` only — `pending` was never dispatched, `failed`/`cancelled`/`voided` are terminal non-payments, and `pending_compliance` is held *before* the adapter call. |
+| `uncleared_payments` | Our books say it went out; no bank line claims it. Payments in `EXPECTED_TO_CLEAR_STATUSES` (`completed` / `submitted` / `processing`) only — `pending` was never dispatched, `failed`/`cancelled`/`voided` are terminal non-payments, and `pending_compliance` is held *before* the adapter call. |
 | `unmatched_debits` | Money left the account with no payment behind it — the never-issued-cheque shape. |
-| `amount_mismatches` | Identified, but the bank moved a different amount. Carries both sides plus the signed `variance_amount`. |
+| `discrepancies` | Identified, but it does not reconcile. Each row carries its `classification` (`amount_mismatch` / `currency_mismatch` / `status_conflict`), both amounts, both currencies, the payment's own status, and — for the amount class only — the signed `variance_amount`. |
+
+A linked line has already dropped out of `unmatched_debits`, and a discrepancy's
+payment is accounted for so it's out of `uncleared_payments` — which makes the
+discrepancy bucket the **only** place it can surface. That's why it covers all
+three classes rather than the amount one alone. `amount_mismatch_net_variance`
+still sums the amount-mismatch subset only, for the same reason the per-row
+variance is NULL on the other two.
 
 `?older_than_days=N` (default 0) reports only payments sent at least N days
 ago — a payment submitted this morning is not yet outstanding. Age is measured
@@ -242,8 +292,8 @@ off `submitted_at` → `completed_at` → `created_at`, the same fallback chain
 the matcher's date window uses, so "outstanding since" and "matchable around"
 agree on when we consider a payment sent.
 
-A payment linked to an `amount_mismatch` line is **not** uncleared: it is
-accounted for in the mismatch bucket, so it appears exactly once.
+A payment linked to a discrepancy line is **not** uncleared: it is accounted
+for in the discrepancy bucket, so it appears exactly once.
 
 `?limit=` caps the returned rows only — every count and total covers the full
 set, so a truncated page never understates the money. Each bucket therefore
@@ -281,5 +331,5 @@ something the transactions no longer support. (This mirrors how
 
 | File | Coverage |
 |---|---|
-| `tests/test_bank_reconciliation.py` | CSV sniffing (signed-amount + separate debit/credit; parenthesized negatives; comma + dollar-sign amounts; reference + counterparty pass-through; bad rows skipped); refusal paths (empty / header-only / missing columns / all-bad-rows / latin-1 fallback); matcher strategies (provider_id 100, amount_date 80, fuzzy_vendor 50–70, multi-candidate-no-fuzzy unmatched, credits skipped); outcome-count rollup; the `amount_mismatch` class (`match_variance` signed + exact, one-cent tolerance, `is_reconciled` excludes it, a reference hit at the wrong amount is linked-not-matched and still claims the payment); ambiguous references on both lookup columns fall through instead of crashing |
-| `tests/test_bank_reconciliation_api.py` | The HTTP surface end-to-end against real test tenants: upload → persisted statement + matched transactions + audit row, credits skipped, malformed CSV → 422, list + detail (transactions omitted from list), manual resolve (set + clear, audited, `matched_count` recomputed), resolve against an unknown payment → 404, delete cascades transactions, RBAC (`ap_clerk` reads but can't upload/delete); `amount_mismatch` end-to-end (upload flags it, list surfaces `amount_mismatch_count`, manual resolve can't stamp a wrong amount as reconciled and audits the variance as an exact string, a duplicated `Payment.reference` no longer 500s the import); `/outstanding` (all three buckets, `older_than_days` filter, a cleanly reconciled payment drops out, no double-reporting of a mismatched payment, `?limit` truncates rows but never the counts/totals); two concurrent resolves can't both claim one payment |
+| `tests/test_bank_reconciliation.py` | CSV sniffing (signed-amount + separate debit/credit; parenthesized negatives; comma + dollar-sign amounts; reference + counterparty pass-through; bad rows skipped); refusal paths (empty / header-only / missing columns / all-bad-rows / latin-1 fallback); matcher strategies (provider_id 100, amount_date 80, fuzzy_vendor 50–70, multi-candidate-no-fuzzy unmatched, credits skipped); outcome-count rollup; the three discrepancy classes (`match_variance` signed + exact, one-cent tolerance, `is_reconciled` excludes all three, `classify_discrepancy` precedence currency→amount→status, the settlement pair incl. the FX leg, a reference hit at the wrong amount / wrong currency / against a non-dispatched payment is linked-not-matched and still claims the payment, and the heuristics refuse such a payment as a candidate outright); ambiguous references on both lookup columns fall through instead of crashing |
+| `tests/test_bank_reconciliation_api.py` | The HTTP surface end-to-end against real test tenants: upload → persisted statement + matched transactions + audit row, credits skipped, malformed CSV → 422, list + detail (transactions omitted from list), manual resolve (set + clear, audited, `matched_count` recomputed), resolve against an unknown payment → 404, delete cascades transactions, RBAC (`ap_clerk` reads but can't upload/delete); the discrepancy classes end-to-end (upload flags an `amount_mismatch`, a `currency_mismatch` and a `status_conflict`; list surfaces `amount_mismatch_count` + `discrepancy_count`; manual resolve can't stamp a wrong amount or a `voided` payment as reconciled and audits the variance as an exact string; a duplicated `Payment.reference` no longer 500s the import); `/outstanding` (all three buckets, `older_than_days` filter, a cleanly reconciled payment drops out, no double-reporting of a mismatched payment, `?limit` truncates rows but never the counts/totals); two concurrent resolves can't both claim one payment |

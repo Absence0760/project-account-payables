@@ -30,16 +30,25 @@ class BankTransactionResponse(BaseModel):
     # Decimal-exact MoneyAmount annotation.
     match_confidence: float | None = None
     matched_at: str | None
-    # The matched payment's own amount, so a reviewer can see both sides of an
-    # `amount_mismatch` without a second request.
+    # What the bank account was debited for the matched payment — the FX leg's
+    # home-currency figure for an international payment, `Payment.amount`
+    # otherwise (`services.bank_reconciliation.settlement_amount_and_currency`).
+    # Lets a reviewer see both sides of a discrepancy without a second request.
     matched_payment_amount: OptionalMoneyAmount = None
+    # The currency that settlement amount is denominated in. NULL when it can't
+    # be established — which is also when the currency comparison is skipped.
+    matched_payment_currency: str | None = None
+    # The matched payment's own status — what makes a `status_conflict` row
+    # readable ("the bank moved money against a payment we call `failed`").
+    matched_payment_status: str | None = None
     # Signed gap between what the bank moved and what the payment authorises
     # (`services.bank_reconciliation.match_variance`). POSITIVE means the bank
     # took MORE than we authorised — the direction that matters for fraud.
-    # NULL when the transaction is unmatched.
+    # NULL when the transaction is unmatched, or when the two sides are in
+    # different currencies (subtracting across currencies isn't money).
     variance_amount: OptionalMoneyAmount = None
-    # False for an `amount_mismatch` line: linked to a payment, but the amounts
-    # disagree, so it has NOT cleared. Mirrors
+    # False for any discrepancy line (`amount_mismatch` / `currency_mismatch` /
+    # `status_conflict`): linked to a payment, but it has NOT cleared. Mirrors
     # `services.bank_reconciliation.is_reconciled`.
     is_reconciled: bool = False
 
@@ -55,12 +64,16 @@ class BankStatementResponse(BaseModel):
     opening_balance: OptionalMoneyAmount = None
     closing_balance: OptionalMoneyAmount = None
     transaction_count: int
-    # RECONCILED lines only — an `amount_mismatch` is linked but not cleared,
+    # RECONCILED lines only — a discrepancy line is linked but not cleared,
     # and counting it here would report the discrepancy as resolved.
     matched_count: int
     # Debits linked to a payment whose amount disagrees. Computed on read from
     # the transactions themselves — no stored column, no migration.
     amount_mismatch_count: int = 0
+    # Every linked-but-unreconciled line: the amount mismatches above PLUS
+    # `currency_mismatch` and `status_conflict`. The single "something on this
+    # statement needs a human" number.
+    discrepancy_count: int = 0
     imported_at: str
     created_at: str
     # Transactions are included on the detail response only (list omits them).
@@ -118,18 +131,30 @@ class UnmatchedDebitResponse(BaseModel):
     description: str | None = None
 
 
-class AmountMismatchResponse(BaseModel):
-    """A bank debit identified as one of our payments that moved a DIFFERENT
-    amount. The fraud/error bucket."""
+class DiscrepancyResponse(BaseModel):
+    """A bank debit we identified as one of our payments that does NOT
+    reconcile. The fraud/error bucket — `classification` says how it fails."""
 
     transaction_id: str
     statement_id: str
     account_identifier: str
     transaction_date: str
+    # `amount_mismatch` | `currency_mismatch` | `status_conflict`
+    # (`services.bank_reconciliation.UNRECONCILED_MATCH_METHODS`).
+    classification: str
     bank_amount: MoneyAmount
+    bank_currency: str
+    # What the bank account was debited for the payment — the FX leg's
+    # home-currency figure when it has one, `Payment.amount` otherwise.
     payment_amount: MoneyAmount
-    # Positive = the bank took MORE than we authorised.
-    variance_amount: MoneyAmount
+    payment_currency: str | None = None
+    # Our books' own status for the payment. A `status_conflict` row is one
+    # where this is NOT a dispatched status.
+    payment_status: str | None = None
+    # Positive = the bank took MORE than we authorised. Set for the
+    # `amount_mismatch` class only: a cross-currency gap isn't money, and a
+    # `status_conflict` agrees on the amount by definition.
+    variance_amount: OptionalMoneyAmount = None
     payment_id: str
     invoice_number: str | None = None
     counterparty_name: str | None = None
@@ -147,8 +172,10 @@ class OutstandingItemsResponse(BaseModel):
     unmatched_debits: list[UnmatchedDebitResponse]
     unmatched_debit_count: int
     unmatched_debit_total: MoneyAmount
-    amount_mismatches: list[AmountMismatchResponse]
-    amount_mismatch_count: int
-    # Signed sum of every variance. Positive = the bank has taken more than we
-    # authorised in aggregate.
+    # Every identified-but-unreconciled line, whatever its class.
+    discrepancies: list[DiscrepancyResponse]
+    discrepancy_count: int
+    # Signed sum of the AMOUNT-mismatch subset's variances. Positive = the bank
+    # has taken more than we authorised in aggregate. Deliberately not summed
+    # over the other classes: a cross-currency subtraction isn't money.
     amount_mismatch_net_variance: MoneyAmount
