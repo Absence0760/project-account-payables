@@ -27,7 +27,7 @@ mutation writes a PII-free audit row (`bank_reconciliation.imported` /
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/upload` | Multipart CSV upload (`file`, `account_identifier`, `period_start`, `period_end`, `currency`). Parses via `parse_csv_statement`, persists the statement + transactions, runs `match_statement_transactions`, returns the detail view. 422 on a malformed CSV (`StatementImportError`). |
+| `POST` | `/upload` | Multipart CSV upload (`file`, `account_identifier`, `period_start`, `period_end`, `currency`). Parses via `parse_csv_statement`, persists the statement + transactions, runs `match_statement_transactions`, returns the detail view (201). **Idempotent** on `(org, account_identifier, sha256(body))` — a repeat upload returns the existing statement with 200. 422 on a malformed CSV (`StatementImportError`); 413 over the 10 MB cap. |
 | `GET` | `` | List statements, paginated, optional `?account_identifier=` filter. |
 | `GET` | `/{id}` | Statement detail including every transaction (list omits transactions to avoid an N+1 payload on the index). |
 | `GET` | `/outstanding` | Org-wide close view: uncleared payments, unmatched bank debits, and classified discrepancies. `?older_than_days=` (default 0) / `?limit=` (default 200). See below. |
@@ -40,7 +40,36 @@ on the literal rather than falling through.
 
 Raw-file storage (the uploaded CSV → S3, for audit replay) is deferred —
 `file_key` is always `NULL` today, matching `vendor_statement_recon`'s CSV
-intake.
+intake. The file's **sha256 is** stored (`content_hash`), which is what makes
+the import idempotent below.
+
+### Import idempotency + the upload cap
+
+`POST /upload` hashes the raw body and dedupes on
+`(organization_id, account_identifier, content_hash)`, backed by the partial
+unique index `uq_bank_statements_org_account_hash` (migration `0080`). A
+double-click or a retried upload therefore returns the FIRST statement with
+200 instead of creating a second one.
+
+Why it matters: the duplicate import matches nothing — the first import already
+claimed every payment on the file (`match_statement_transactions`' `claimed`
+set) — so it lands with `matched_count = 0`, which a reviewer reads as "this
+statement didn't reconcile" rather than "you imported this twice". The index is
+partial so legacy rows (NULL hash, imported before `0080`) don't collide; their
+bytes were never stored, so no backfill is possible.
+
+The upload is read in **bounded chunks** and aborts with 413 past
+`csv_import.MAX_CSV_IMPORT_SIZE` (10 MB, the same cap the vendor / invoice /
+card-feed CSV imports use). A plain `await file.read()` has already spent the
+memory by the time its length can be checked.
+
+The handler makes at most **two** passes. Both races it can lose are decided at
+COMMIT by a unique index — a concurrent identical upload (the content-hash
+slot) and a concurrent different upload claiming the same payment
+(`uq_bank_transactions_matched_payment`) — so on `IntegrityError` it rolls back
+and re-runs the whole import once: the duplicate check then sees the winner and
+the matcher's `claimed` set sees its claims. A second failure is a 409. Without
+the retry the loser would 500 and lose every other line on its file.
 
 ## Deferred
 
@@ -311,7 +340,17 @@ payment or re-pointing a match cannot leave a denormalised flag asserting
 something the transactions no longer support. (This mirrors how
 `budget_service` computes spend on read rather than keeping a running total.)
 
-## Migration
+## Migrations
+
+`0080_bank_statement_content_hash.py` (tenant DB only) — adds
+`bank_statements.content_hash` (varchar 64, nullable) + the partial unique index
+`uq_bank_statements_org_account_hash` on
+`(organization_id, account_identifier, content_hash) WHERE content_hash IS NOT
+NULL`, the import-idempotency backstop described above. Gated on the table
+existing so it no-ops on the control plane and fans out via
+`scripts/migrate_all_tenants.py`; idempotent DDL (`ADD COLUMN IF NOT EXISTS` /
+`CREATE UNIQUE INDEX IF NOT EXISTS`). Fresh tenants get both from `create_all`
+(declared on the model).
 
 `0019_bank_reconciliation.py` (tenant DB only):
 
@@ -332,4 +371,4 @@ something the transactions no longer support. (This mirrors how
 | File | Coverage |
 |---|---|
 | `tests/test_bank_reconciliation.py` | CSV sniffing (signed-amount + separate debit/credit; parenthesized negatives; comma + dollar-sign amounts; reference + counterparty pass-through; bad rows skipped); refusal paths (empty / header-only / missing columns / all-bad-rows / latin-1 fallback); matcher strategies (provider_id 100, amount_date 80, fuzzy_vendor 50–70, multi-candidate-no-fuzzy unmatched, credits skipped); outcome-count rollup; the three discrepancy classes (`match_variance` signed + exact, one-cent tolerance, `is_reconciled` excludes all three, `classify_discrepancy` precedence currency→amount→status, the settlement pair incl. the FX leg, a reference hit at the wrong amount / wrong currency / against a non-dispatched payment is linked-not-matched and still claims the payment, and the heuristics refuse such a payment as a candidate outright); ambiguous references on both lookup columns fall through instead of crashing |
-| `tests/test_bank_reconciliation_api.py` | The HTTP surface end-to-end against real test tenants: upload → persisted statement + matched transactions + audit row, credits skipped, malformed CSV → 422, list + detail (transactions omitted from list), manual resolve (set + clear, audited, `matched_count` recomputed), resolve against an unknown payment → 404, delete cascades transactions, RBAC (`ap_clerk` reads but can't upload/delete); the discrepancy classes end-to-end (upload flags an `amount_mismatch`, a `currency_mismatch` and a `status_conflict`; list surfaces `amount_mismatch_count` + `discrepancy_count`; manual resolve can't stamp a wrong amount or a `voided` payment as reconciled and audits the variance as an exact string; a duplicated `Payment.reference` no longer 500s the import); `/outstanding` (all three buckets, `older_than_days` filter, a cleanly reconciled payment drops out, no double-reporting of a mismatched payment, `?limit` truncates rows but never the counts/totals); two concurrent resolves can't both claim one payment |
+| `tests/test_bank_reconciliation_api.py` | The HTTP surface end-to-end against real test tenants: upload → persisted statement + matched transactions + audit row, credits skipped, malformed CSV → 422, import idempotency (the same file twice returns the first statement with 200 and only one row; a DIFFERENT file on the same account still imports) + the 10 MB upload cap → 413, list + detail (transactions omitted from list), manual resolve (set + clear, audited, `matched_count` recomputed), resolve against an unknown payment → 404, delete cascades transactions, RBAC (`ap_clerk` reads but can't upload/delete); the discrepancy classes end-to-end (upload flags an `amount_mismatch`, a `currency_mismatch` and a `status_conflict`; list surfaces `amount_mismatch_count` + `discrepancy_count`; manual resolve can't stamp a wrong amount or a `voided` payment as reconciled and audits the variance as an exact string; a duplicated `Payment.reference` no longer 500s the import); `/outstanding` (all three buckets, `older_than_days` filter, a cleanly reconciled payment drops out, no double-reporting of a mismatched payment, `?limit` truncates rows but never the counts/totals); two concurrent resolves can't both claim one payment |

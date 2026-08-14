@@ -17,10 +17,12 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -30,6 +32,24 @@ from app.models.base import Base
 
 class BankStatement(Base):
     __tablename__ = "bank_statements"
+
+    # Import idempotency. The same file uploaded twice for the same account is
+    # the SAME statement, not a second one — and the second import reports
+    # `matched_count = 0` (every payment already claimed by the first), which
+    # reads as "nothing reconciled" rather than "you imported this twice".
+    # Partial so legacy rows (NULL hash, predating migration 0080) don't
+    # collide with each other. Mirrors `positive_pay_files`'
+    # `uq_positive_pay_run_format`.
+    __table_args__ = (
+        Index(
+            "uq_bank_statements_org_account_hash",
+            "organization_id",
+            "account_identifier",
+            "content_hash",
+            unique=True,
+            postgresql_where=text("content_hash IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
@@ -42,6 +62,11 @@ class BankStatement(Base):
     # One of 'csv' | 'ofx' | 'camt053'. The importer reads this to
     # pick the parser.
     source_format: Mapped[str] = mapped_column(String(20), nullable=False)
+    # sha256 hex of the uploaded file's raw bytes — the import-idempotency key
+    # (see `__table_args__`). NULL on rows created before migration 0080; the
+    # partial unique index exempts those. Same shape + purpose as
+    # `PositivePayFile.content_hash`.
+    content_hash: Mapped[str | None] = mapped_column(String(64))
     # S3 key for the original file — kept for audit replay.
     file_key: Mapped[str | None] = mapped_column(String(512))
     imported_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))

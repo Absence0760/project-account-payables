@@ -27,6 +27,7 @@ from app.models.invoice import Invoice, InvoiceStatus
 from app.models.payment import Payment
 from app.models.vendor import Vendor
 from app.models.workflow import AuditLog
+from app.services.csv_import import MAX_CSV_IMPORT_SIZE
 
 _TODAY = date.today()
 
@@ -181,6 +182,124 @@ async def test_upload_malformed_csv_returns_422(realdb):
             files={"file": ("bad.csv", b"not,a,valid,header\r\n", "text/csv")},
         )
     assert resp.status_code == 422, resp.text
+
+
+# ---------------------------------------------------------------------------
+# Import idempotency + upload size cap
+# ---------------------------------------------------------------------------
+
+
+async def test_uploading_the_same_file_twice_returns_the_first_statement(realdb):
+    """A double-click / retried upload used to create a SECOND statement whose
+    `matched_count` was 0 — every payment on it had already been claimed by the
+    first import — so the duplicate read as "this statement didn't reconcile"
+    rather than "you imported this twice". Deduped on
+    (org, account_identifier, sha256(body)): the retry gets the original back
+    with 200, and only one row exists."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    payment_id = await _add_payment(mk, org_id, amount="512.00", provider_payment_id="TRACE-DUP1")
+
+    account = f"Dedupe ****{uuid.uuid4().hex[:4]}"
+    csv_body = _csv(
+        "Date,Amount,Reference,Description",
+        f"{_TODAY.isoformat()},-512.00,TRACE-DUP1,Vendor ACH",
+    )
+    payload = {
+        "account_identifier": account,
+        "period_start": (_TODAY - timedelta(days=30)).isoformat(),
+        "period_end": _TODAY.isoformat(),
+    }
+    async with realdb.client(key="a", role="ap_manager") as c:
+        first = await c.post(
+            "/api/bank-reconciliation/upload",
+            data=payload,
+            files={"file": ("statement.csv", csv_body, "text/csv")},
+        )
+        second = await c.post(
+            "/api/bank-reconciliation/upload",
+            data=payload,
+            files={"file": ("statement.csv", csv_body, "text/csv")},
+        )
+
+    assert first.status_code == 201, first.text
+    assert second.status_code == 200, second.text
+    assert second.json()["id"] == first.json()["id"]
+    # The idempotent reply is the REAL result, not a hollow zero-match echo.
+    assert second.json()["matched_count"] == 1
+    assert second.json()["transactions"][0]["matched_payment_id"] == payment_id
+
+    async with mk() as s:
+        rows = (
+            (
+                await s.execute(
+                    select(BankStatement).where(BankStatement.account_identifier == account)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1
+        assert rows[0].content_hash is not None
+
+
+async def test_a_different_file_on_the_same_account_still_imports(realdb):
+    """Dedupe is on the file's CONTENT, not the account: a genuine second
+    statement for the same account (next period) must still import."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _add_payment(mk, org_id, amount="61.00")
+
+    account = f"Dedupe ****{uuid.uuid4().hex[:4]}"
+    payload = {
+        "account_identifier": account,
+        "period_start": (_TODAY - timedelta(days=30)).isoformat(),
+        "period_end": _TODAY.isoformat(),
+    }
+    async with realdb.client(key="a", role="ap_manager") as c:
+        first = await c.post(
+            "/api/bank-reconciliation/upload",
+            data=payload,
+            files={
+                "file": (
+                    "jan.csv",
+                    _csv("Date,Amount,Description", f"{_TODAY.isoformat()},-61.00,January"),
+                    "text/csv",
+                )
+            },
+        )
+        second = await c.post(
+            "/api/bank-reconciliation/upload",
+            data=payload,
+            files={
+                "file": (
+                    "feb.csv",
+                    _csv("Date,Amount,Description", f"{_TODAY.isoformat()},-62.00,February"),
+                    "text/csv",
+                )
+            },
+        )
+    assert first.status_code == 201, first.text
+    assert second.status_code == 201, second.text
+    assert second.json()["id"] != first.json()["id"]
+
+
+async def test_upload_over_the_size_cap_is_rejected(realdb):
+    """`await file.read()` was unbounded, so any authenticated manager could
+    buffer an arbitrarily large body into process memory before a single check
+    ran. The read is now capped and aborts mid-stream."""
+    oversized = b"Date,Amount,Description\r\n" + (b"x" * (MAX_CSV_IMPORT_SIZE + 1024))
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/bank-reconciliation/upload",
+            data={
+                "account_identifier": "Operating ****9020",
+                "period_start": (_TODAY - timedelta(days=30)).isoformat(),
+                "period_end": _TODAY.isoformat(),
+            },
+            files={"file": ("huge.csv", oversized, "text/csv")},
+        )
+    assert resp.status_code == 413, resp.text
 
 
 # ---------------------------------------------------------------------------

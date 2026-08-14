@@ -20,13 +20,25 @@ books — mirrors how ``GLAccount`` treats an unscoped row as shared.
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
 from sqlalchemy import Date, case, cast, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -66,6 +78,7 @@ from app.services.bank_reconciliation import (
     settlement_amount_and_currency,
     settlement_amount_sql,
 )
+from app.services.csv_import import MAX_CSV_IMPORT_SIZE
 from app.tenant import get_tenant_db
 
 router = APIRouter(prefix="/bank-reconciliation", tags=["bank-reconciliation"])
@@ -280,9 +293,48 @@ async def _detail_response(db: AsyncSession, stmt: BankStatement) -> BankStateme
 # Import
 # --------------------------------------------------------------------------- #
 
+# Read the upload in bounded chunks rather than one `await file.read()`: an
+# unbounded read lets any authenticated manager (or a stuck client) buffer an
+# arbitrarily large body into process memory before a single check runs.
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+async def _read_capped(file: UploadFile, limit: int) -> bytes:
+    """Buffer the upload, aborting the moment it exceeds ``limit``.
+
+    Bounded at ``limit + one chunk``, unlike a read-then-measure — by the time
+    ``len(raw) > limit`` can be evaluated, the memory has already been spent.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await file.read(_UPLOAD_CHUNK_BYTES):
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(
+                status_code=413,
+                detail=f"CSV exceeds maximum size of {limit // (1024 * 1024)} MB",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def _statement_by_hash(
+    db: AsyncSession, org_id: uuid.UUID, account_identifier: str, content_hash: str
+) -> BankStatement | None:
+    return (
+        await db.execute(
+            select(BankStatement).where(
+                BankStatement.organization_id == org_id,
+                BankStatement.account_identifier == account_identifier,
+                BankStatement.content_hash == content_hash,
+            )
+        )
+    ).scalar_one_or_none()
+
 
 @router.post("/upload", response_model=BankStatementResponse, status_code=status.HTTP_201_CREATED)
 async def upload_statement(
+    response: Response,
     file: UploadFile = File(...),
     account_identifier: str = Form(...),
     period_start: date = Form(...),
@@ -292,51 +344,89 @@ async def upload_statement(
     user: User = Depends(require_roles(*_WRITE_ROLES)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
-    raw = await file.read()
-    try:
-        statement, transactions = parse_csv_statement(
-            raw_csv=raw,
+    """Import a bank statement CSV.
+
+    **Idempotent** on ``(org, account_identifier, sha256(body))``: re-uploading
+    the same file for the same account returns the existing statement with 200
+    rather than creating a second one. A duplicate import would match nothing —
+    the first import already claimed every payment on it — and so would report
+    ``matched_count = 0``, which reads as "this didn't reconcile" rather than
+    "you imported this twice". Backed by the partial unique index
+    ``uq_bank_statements_org_account_hash`` (migration 0080), the same shape
+    Positive Pay uses for its per-(run, format) slot.
+    """
+    raw = await _read_capped(file, MAX_CSV_IMPORT_SIZE)
+    content_hash = hashlib.sha256(raw).hexdigest()
+
+    # Two passes at most. The retry exists because BOTH races this handler can
+    # lose are decided at COMMIT by a unique index: a concurrent identical
+    # upload (the content-hash slot) and a concurrent different upload that
+    # claims the same payment (`uq_bank_transactions_matched_payment`). Rolling
+    # back and re-running the whole import re-reads both — the duplicate check
+    # below now sees the winner, and the matcher's `claimed` set now sees its
+    # claims — so the loser resolves cleanly instead of 500ing and losing every
+    # other line on the file.
+    for attempt in (1, 2):
+        existing = await _statement_by_hash(db, org_id, account_identifier, content_hash)
+        if existing is not None:
+            response.status_code = status.HTTP_200_OK
+            return await _detail_response(db, existing)
+
+        try:
+            statement, transactions = parse_csv_statement(
+                raw_csv=raw,
+                organization_id=org_id,
+                account_identifier=account_identifier,
+                period_start=period_start,
+                period_end=period_end,
+                currency=currency,
+                imported_by=user.id,
+                # Raw-file storage (the uploaded statement → S3) is deferred,
+                # same as vendor-statement-recon's CSV intake; keep file_key
+                # NULL for now. See docs § Deferred.
+                file_key=None,
+            )
+        except StatementImportError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        statement.content_hash = content_hash
+
+        db.add(statement)
+        await db.flush()  # assign statement.id before stamping the children
+
+        for tx in transactions:
+            tx.statement_id = statement.id
+        db.add_all(transactions)
+
+        counts = await match_statement_transactions(db, transactions)
+        statement.matched_count = counts["matched"]
+
+        await dispatch_audit(
+            db,
+            correlation_id=uuid.uuid4(),
             organization_id=org_id,
-            account_identifier=account_identifier,
-            period_start=period_start,
-            period_end=period_end,
-            currency=currency,
-            imported_by=user.id,
-            # Raw-file storage (the uploaded statement → S3) is deferred,
-            # same as vendor-statement-recon's CSV intake; keep file_key
-            # NULL for now. See docs § Deferred.
-            file_key=None,
+            actor_id=user.id,
+            action="bank_reconciliation.imported",
+            entity_type="bank_statement",
+            entity_id=statement.id,
+            details={
+                "account_identifier": account_identifier,
+                "transaction_count": statement.transaction_count,
+                **counts,
+            },
         )
-    except StatementImportError as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            if attempt == 2:
+                raise HTTPException(
+                    status_code=409,
+                    detail="This statement is being imported concurrently. Retry in a moment.",
+                ) from None
+            continue
 
-    db.add(statement)
-    await db.flush()  # assign statement.id before stamping the children
-
-    for tx in transactions:
-        tx.statement_id = statement.id
-    db.add_all(transactions)
-
-    counts = await match_statement_transactions(db, transactions)
-    statement.matched_count = counts["matched"]
-
-    await dispatch_audit(
-        db,
-        correlation_id=uuid.uuid4(),
-        organization_id=org_id,
-        actor_id=user.id,
-        action="bank_reconciliation.imported",
-        entity_type="bank_statement",
-        entity_id=statement.id,
-        details={
-            "account_identifier": account_identifier,
-            "transaction_count": statement.transaction_count,
-            **counts,
-        },
-    )
-    await db.commit()
-    await db.refresh(statement)
-    return await _detail_response(db, statement)
+        await db.refresh(statement)
+        return await _detail_response(db, statement)
 
 
 # --------------------------------------------------------------------------- #
