@@ -107,6 +107,17 @@ class Payment(Base, EntityMixin, TimestampMixin):
     # Set on `failed` / `cancelled`. Free-form so we can preserve the
     # processor's exact error message for debugging.
     failure_reason: Mapped[str | None] = mapped_column(Text)
+    # Attempt chain. Set on a payment booked by `POST /runs/{id}/retry-failed`
+    # and points at the FAILED attempt it replaces. The retry never re-arms the
+    # old row in place — that row is the immutable record of a failure that
+    # really happened, and its `correlation_id` (the processor's idempotency
+    # key), `provider_payment_id` and regulated timestamps are the only handles
+    # anyone has for reconciling what attempt #1 actually did. This column is
+    # what lets the run rollup count the LATEST attempt per invoice instead of
+    # every row ever (see `services/payment_runs.active_run_payments`).
+    retry_of_payment_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("payments.id"), index=True
+    )
     # Lifecycle timestamps. `submitted_at` = sent to processor; `completed_at`
     # = terminal status reported. Lets us compute settlement latency for
     # ops dashboards without parsing audit logs.

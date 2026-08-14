@@ -71,6 +71,7 @@ def _payment(*, method="ach", amount: Decimal = Decimal("100.00")):
         submitted_at=None,
         completed_at=None,
         failure_reason=None,
+        retry_of_payment_id=None,
         correlation_id=uuid.uuid4(),
         # International fields (migration 0017) — None on domestic
         # same-currency payments, populated by the orchestrator on

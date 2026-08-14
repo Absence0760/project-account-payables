@@ -211,6 +211,7 @@ async def test_concurrent_execute_run_charges_adapter_exactly_once(realdb):
                     db=db,
                     org=_org(org_id),
                     user=_user(admin_id),
+                    entity_id=None,
                 )
                 await db.commit()
                 return ("ok", res)
@@ -330,6 +331,7 @@ async def test_concurrent_resume_charges_adapter_exactly_once(realdb):
                     db=db,
                     org=_org(org_id),
                     user=_user(admin_id),
+                    entity_id=None,
                 )
                 await db.commit()
                 return ("ok", res)
@@ -428,6 +430,7 @@ async def test_concurrent_void_calls_adapter_and_audits_exactly_once(realdb):
                     db=db,
                     org=_org(org_id),
                     user=_user(admin_id),
+                    entity_id=None,
                 )
                 return ("ok", res)
             except HTTPException as exc:
@@ -546,7 +549,11 @@ async def test_cancel_racing_execute_cannot_delete_dispatched_payments(realdb):
                 return (
                     "ok",
                     await execute_payment_run(
-                        run_id=run_id, db=db, org=_org(org_id), user=_user(admin_id)
+                        run_id=run_id,
+                        db=db,
+                        org=_org(org_id),
+                        user=_user(admin_id),
+                        entity_id=None,
                     ),
                 )
             except HTTPException as exc:
@@ -559,7 +566,11 @@ async def test_cancel_racing_execute_cannot_delete_dispatched_payments(realdb):
                 return (
                     "ok",
                     await cancel_payment_run(
-                        run_id=run_id, db=db, org=_org(org_id), user=_user(admin_id)
+                        run_id=run_id,
+                        db=db,
+                        org=_org(org_id),
+                        user=_user(admin_id),
+                        entity_id=None,
                     ),
                 )
             except HTTPException as exc:

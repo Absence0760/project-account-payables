@@ -89,6 +89,7 @@ def _payment(*, amount=Decimal("100.00"), status="pending"):
         submitted_at=None,
         completed_at=None,
         failure_reason=None,
+        retry_of_payment_id=None,
         correlation_id=uuid.uuid4(),
         source_currency=None,
         source_amount=None,

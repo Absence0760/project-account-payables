@@ -353,7 +353,7 @@ backend/
    - `GLAccount` — code, name, account_type, parent_code, erp_account_id
    - `PaymentRun` — status, total_amount, initiated_by, executed_at
    - `PaymentSchedule` — invoice_id, due_date, discount_date, discount_percent
-   - `Payment` — invoice_id, payment_run_id, amount, method (ach/wire/check/virtual_card), status
+   - `Payment` — invoice_id, payment_run_id, amount, method (ach/wire/check/virtual_card), status, `retry_of_payment_id` (self-FK, migration 0080 — `/runs/{id}/retry-failed` books a NEW attempt row pointing at the failed one it replaces and never mutates that row, because `correlation_id` is the PROCESSOR's idempotency key; run rollups count the latest attempt per invoice via `payment_runs.active_run_payments`. See `docs/payments.md` § Why a payment failed, and retrying it)
    - `VirtualCard` — invoice_id, card_provider (lithic/nium), provider_card_id, amount_limit, status
    - `CardRebate` — virtual_card_id, amount, rate, status (`pending`/`confirmed`/`paid_out`), period. Not in `CONTROL_TABLES` — fanned to every tenant DB like the rest, despite living in `app/models/virtual_card.py` alongside `VirtualCard`
    - `WorkflowDefinition` — name, steps_config (JSONB), is_active, is_default

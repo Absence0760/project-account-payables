@@ -210,7 +210,11 @@ async def test_pre_existing_live_card_does_not_break_the_payment_run(realdb):
     with _ambient_patches(patch.object(MockCardAdapter, "create_card", _spy)):
         async with realdb.sessionmaker(TENANT)() as db:
             res = await execute_payment_run(
-                run_id=run_id, db=db, org=_org(org_id), user=_user(info.users["admin"])
+                run_id=run_id,
+                db=db,
+                org=_org(org_id),
+                user=_user(info.users["admin"]),
+                entity_id=None,
             )
             await db.commit()
 
@@ -285,7 +289,11 @@ async def test_racing_card_insert_is_contained_and_the_run_still_rolls_up(realdb
     ):
         async with realdb.sessionmaker(TENANT)() as db:
             res = await execute_payment_run(
-                run_id=run_id, db=db, org=_org(org_id), user=_user(info.users["admin"])
+                run_id=run_id,
+                db=db,
+                org=_org(org_id),
+                user=_user(info.users["admin"]),
+                entity_id=None,
             )
             await db.commit()
 
@@ -422,7 +430,11 @@ async def test_spent_card_is_never_converged_onto(realdb):
     with _ambient_patches():
         async with realdb.sessionmaker(TENANT)() as db:
             res = await execute_payment_run(
-                run_id=run_id, db=db, org=_org(org_id), user=_user(info.users["admin"])
+                run_id=run_id,
+                db=db,
+                org=_org(org_id),
+                user=_user(info.users["admin"]),
+                entity_id=None,
             )
             await db.commit()
 
@@ -467,7 +479,11 @@ async def test_converged_payment_is_linked_to_the_card_it_settled_against(realdb
     with _ambient_patches():
         async with realdb.sessionmaker(TENANT)() as db:
             await execute_payment_run(
-                run_id=run_id, db=db, org=_org(org_id), user=_user(info.users["admin"])
+                run_id=run_id,
+                db=db,
+                org=_org(org_id),
+                user=_user(info.users["admin"]),
+                entity_id=None,
             )
             await db.commit()
 
@@ -508,7 +524,11 @@ async def test_payment_run_mint_writes_a_card_generated_audit_row(realdb):
     with _ambient_patches():
         async with realdb.sessionmaker(TENANT)() as db:
             await execute_payment_run(
-                run_id=run_id, db=db, org=_org(org_id), user=_user(info.users["admin"])
+                run_id=run_id,
+                db=db,
+                org=_org(org_id),
+                user=_user(info.users["admin"]),
+                entity_id=None,
             )
             await db.commit()
 
@@ -567,6 +587,7 @@ async def test_void_cancels_an_unspent_card_so_it_cannot_be_rediscovered(realdb)
                 db=db,
                 org=_org(org_id),
                 user=_user(info.users["admin"]),
+                entity_id=None,
             )
 
     async with mk() as s:
@@ -644,6 +665,7 @@ async def test_void_records_that_an_already_spent_card_could_not_be_cancelled(re
                 db=db,
                 org=_org(org_id),
                 user=_user(info.users["admin"]),
+                entity_id=None,
             )
 
     async with mk() as s:

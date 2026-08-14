@@ -36,6 +36,7 @@ AsyncSessions, matching the established pattern in the sibling files.
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -131,7 +132,17 @@ def _create_run_db(
     db.flush = AsyncMock()
     db.added = []
     db.add = MagicMock(side_effect=lambda obj: db.added.append(obj))
+    # The run + payment inserts run inside a savepoint (`db.begin_nested()`) so
+    # the session stays usable after an IntegrityError and can name the invoices
+    # already holding a live payment. A bare AsyncMock returns a coroutine here,
+    # not an async context manager — model the real session.
+    db.begin_nested = MagicMock(side_effect=lambda: _null_async_cm())
     return db
+
+
+@contextlib.asynccontextmanager
+async def _null_async_cm():
+    yield
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +409,11 @@ async def test_get_run_detail_serialises_money_as_strings_not_floats():
         method="ach",
         status="pending",
         reference=None,
+        provider=None,
+        failure_reason=None,
+        retry_of_payment_id=None,
+        submitted_at=None,
+        completed_at=None,
     )
     inv = _invoice(amount=Decimal("250.00"))
 
@@ -758,6 +774,7 @@ def _payment(amount: Decimal = Decimal("10000.00")):
         submitted_at=None,
         completed_at=None,
         failure_reason=None,
+        retry_of_payment_id=None,
         correlation_id=uuid.uuid4(),
         source_currency=None,
         source_amount=None,
