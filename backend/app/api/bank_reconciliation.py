@@ -414,8 +414,17 @@ async def outstanding_items(
 
     # Counts + totals cover EVERY outstanding payment; only the row list below
     # is capped at `limit`, so a truncated page never understates the money.
+    # The aggregate joins Invoice exactly like the row query does even though it
+    # reads no column from it: `Payment.invoice_id` is a NOT NULL FK so the join
+    # cannot drop a row today, but two query shapes that disagree about which
+    # rows qualify are how a count silently stops matching its own list.
     uncleared_count, uncleared_sum = (
-        await db.execute(select(func.count(), func.sum(Payment.amount)).where(*uncleared_where))
+        await db.execute(
+            select(func.count(), func.sum(Payment.amount))
+            .select_from(Payment)
+            .join(Invoice, Invoice.id == Payment.invoice_id)
+            .where(*uncleared_where)
+        )
     ).one()
     uncleared_total = uncleared_sum if uncleared_sum is not None else Decimal("0.00")
 
@@ -493,12 +502,16 @@ async def outstanding_items(
         BankTransaction.direction == "debit",
         BankTransaction.match_method == MATCH_METHOD_AMOUNT_MISMATCH,
     )
+    # Same join set as the row query below (Invoice included, though the
+    # aggregate reads nothing from it) so the count can never disagree with the
+    # list it heads.
     mismatch_count, variance_sum = (
         await db.execute(
             select(func.count(), func.sum(BankTransaction.amount - Payment.amount))
             .select_from(BankTransaction)
             .join(BankStatement, BankStatement.id == BankTransaction.statement_id)
             .join(Payment, Payment.id == BankTransaction.matched_payment_id)
+            .join(Invoice, Invoice.id == Payment.invoice_id)
             .where(*mismatch_where)
         )
     ).one()
