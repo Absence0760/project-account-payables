@@ -284,14 +284,23 @@ async def resolve_exception(
     404. This is a payment-integrity control (`duplicate` / `fraud_flag` /
     `line_total_mismatch` block a payment run), so it must not be reachable
     across subsidiaries by id alone."""
-    result = await db.execute(
-        apply_entity_scope(
-            select(APException).where(APException.id == exception_id), APException, entity_id
+    # Join the invoice in the SAME query the detail read uses: the audit row
+    # files under the invoice's correlation, so fetching it here costs nothing
+    # extra and saves `record_decision` a second round-trip.
+    row = (
+        await db.execute(
+            apply_entity_scope(
+                select(APException, Invoice).outerjoin(
+                    Invoice, APException.invoice_id == Invoice.id
+                ),
+                APException,
+                entity_id,
+            ).where(APException.id == exception_id)
         )
-    )
-    exc = result.scalar_one_or_none()
-    if not exc:
+    ).first()
+    if row is None:
         raise HTTPException(status_code=404, detail="Exception not found")
+    exc, inv = row
 
     if exc.status not in ACTIONABLE_STATUSES:
         raise HTTPException(status_code=409, detail=f"Cannot resolve from '{exc.status}' status")
@@ -304,6 +313,7 @@ async def resolve_exception(
             resolution=body.resolution,
             actor_id=user.id,
             actor_name=user.full_name,
+            invoice=inv,
         )
     except ValueError as exc_:
         raise HTTPException(status_code=400, detail=str(exc_)) from exc_
