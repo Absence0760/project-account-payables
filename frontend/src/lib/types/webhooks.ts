@@ -24,6 +24,11 @@ export interface WebhookSubscription {
 	active: boolean;
 	created_at: string | null;
 	updated_at: string | null;
+	/** When a rotation's overlap window closes — i.e. when the retiring secret
+	 *  stops signing `X-Webhook-Signature-Previous`. `null` when no rotation is
+	 *  in flight. The EXPIRY only: the retiring secret itself is never returned
+	 *  on a list/get read, same as the current one. */
+	previous_secret_expires_at: string | null;
 }
 
 /** The create response — one of only two places the full signing secret is

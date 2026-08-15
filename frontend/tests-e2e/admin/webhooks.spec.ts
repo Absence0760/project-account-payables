@@ -236,6 +236,15 @@ test.describe('/admin/webhooks (admin)', () => {
 		await expect(rotatedRow).toContainText(`${after?.secret_prefix}…`);
 		await expect(rotatedRow.getByTestId('overlap-pill')).toBeVisible();
 
+		// ...and it survives a reload, because the expiry comes off the listed
+		// row rather than page-local state. This is the case that matters: the
+		// admin walks away to paste the new secret into their receiver, comes
+		// back, and the window is still visibly open.
+		await page.reload();
+		await expect(
+			page.locator('tr', { hasText: name }).getByTestId('overlap-pill')
+		).toBeVisible();
+
 		await deleteSub(page, subId);
 	});
 

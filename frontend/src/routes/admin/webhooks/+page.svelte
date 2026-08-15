@@ -111,31 +111,25 @@
 	// admin is on this page pasting the new secret into their receiver. The
 	// durable fix is that field on the list response; tracked in
 	// docs/followups.md. Never holds a secret, only an expiry timestamp.
-	let overlapUntil = $state<Record<string, string>>({});
-
+	// The overlap window comes off the listed row (`previous_secret_expires_at`
+	// on GET /api/webhooks), so it survives a reload — which matters precisely
+	// when the admin has navigated away to paste the new secret into their
+	// receiver. Never a secret, only an expiry timestamp.
+	//
 	// The badge must disappear on its own when the window elapses, and a bare
 	// Date.now() read isn't reactive — so tick a clock while any window is open.
-	// The tick also drops closed windows, which keeps the map honest and makes
-	// the interval self-terminating: once nothing is in flight the map empties,
-	// the effect re-runs, and the timer is cleared rather than ticking for the
-	// rest of the page's life.
+	// The interval is self-terminating: once no row has a live window the
+	// effect re-runs and clears it rather than ticking for the page's life.
 	let clock = $state(Date.now());
 	$effect(() => {
-		if (Object.keys(overlapUntil).length === 0) return;
-		const t = setInterval(() => {
-			const now = Date.now();
-			clock = now;
-			const live = Object.fromEntries(
-				Object.entries(overlapUntil).filter(([, until]) => isOverlapLive(until, now))
-			);
-			if (Object.keys(live).length !== Object.keys(overlapUntil).length) overlapUntil = live;
-		}, 30_000);
+		if (!subs.some((s) => isOverlapLive(s.previous_secret_expires_at, clock))) return;
+		const t = setInterval(() => (clock = Date.now()), 30_000);
 		return () => clearInterval(t);
 	});
 
 	/** The live overlap expiry for a subscription, or null if none is running. */
-	function overlapActiveUntil(subId: string): string | null {
-		const until = overlapUntil[subId];
+	function overlapActiveUntil(sub: WebhookSubscription): string | null {
+		const until = sub.previous_secret_expires_at;
 		return until && isOverlapLive(until, clock) ? until : null;
 	}
 
@@ -271,15 +265,9 @@
 			rotating = null;
 			// Show the replacement exactly once.
 			rotated = result;
-			const next = { ...overlapUntil };
-			if (result.previous_secret_expires_at) {
-				next[subId] = result.previous_secret_expires_at;
-			} else {
-				// Hard cutover — drop any window an earlier rotation left showing.
-				delete next[subId];
-			}
-			overlapUntil = next;
-			// Re-list: the secret prefix on the row is now the new secret's.
+			// Re-list: the row now carries the new secret's prefix AND the
+			// authoritative overlap expiry (or null on a hard cutover), so the
+			// pill is driven by server state rather than a local guess.
 			await loadSubs();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : m('admin.webhooks.toast.rotateFailed'), 'error');
@@ -441,7 +429,7 @@
 			>
 				{#snippet body()}
 					{#each subs as sub (sub.id)}
-						{@const overlapEnds = overlapActiveUntil(sub.id)}
+						{@const overlapEnds = overlapActiveUntil(sub)}
 						<tr
 							class="clickable"
 							class:inactive={!sub.active}
@@ -652,7 +640,7 @@
 	onclose={closeRotate}
 >
 	{#if rotating}
-		{@const reRotating = overlapActiveUntil(rotating.id)}
+		{@const reRotating = overlapActiveUntil(rotating)}
 		<h2>{m('admin.webhooks.rotate.heading')}</h2>
 		<p class="modal-hint">{m('admin.webhooks.rotate.hint', { name: rotating.name })}</p>
 		{#if reRotating}
