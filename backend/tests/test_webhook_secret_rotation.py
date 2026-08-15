@@ -49,6 +49,7 @@ from app.services.webhooks.rotation import (
 )
 from app.services.webhooks.signing import generate_signing_secret, sign_payload
 
+
 @pytest.fixture(autouse=True)
 def _allow_test_targets(monkeypatch):
     """Same escape hatch the sibling `test_outbound_webhooks.py` uses: these
