@@ -142,6 +142,37 @@ rather than folding into the mechanical sibling-sweep fix.
 Ref: `reviews/flake-admin-users.md` (gitignored — regenerate via
 `/flake-doctor` if consulting this again after the file has aged out).
 
+### Outbound-webhook signing secret has no rotation path
+
+A `WebhookSubscription`'s HMAC signing secret is minted once at create time and
+shown once. Anyone holding it can forge a signed `invoice.approved` /
+`payment.settled` payload into the customer's receiver, so it is a credential
+with real blast radius — but the only remedy on a leak today is
+`DELETE /api/webhooks/{id}` + re-create, which changes the subscription id and
+CASCADE-deletes the whole delivery history. `docs/secrets-rotation.md` documents
+a self-serve rotation for the per-tenant SCIM bearer and OIDC client secret and
+says nothing about this one.
+
+- [ ] `POST /api/webhooks/{id}/rotate-secret` — mint a fresh secret, return it
+      exactly once (the create-time contract), keep the subscription id +
+      delivery history, audit `webhook_subscription.secret_rotated` PII-free.
+- [ ] Optional overlap window so a receiver can be reconfigured without
+      dropping in-flight deliveries: keep the previous secret alive for a
+      bounded period and emit its signature in a second header
+      (`X-Webhook-Signature-Previous`), leaving `X-Webhook-Signature` as the
+      current secret's so a non-rotating receiver's contract never changes.
+      Needs two nullable columns on `webhook_subscriptions`, so it is a
+      `/safe-migration` job, not a bolt-on.
+- [ ] Add the rotation to `docs/secrets-rotation.md` § per-tenant secrets.
+
+**Why deferred:** the no-overlap half is small, but shipping only that leaves
+the hard cutover a customer will actually hit; the overlap half needs a schema
+change and a documented receiver-side verification contract, which is its own
+slice.
+**Trigger:** the first tenant with a live outbound webhook, or any secret-leak
+incident. Surfaced while auditing the trust boundary (`/improve-round`).
+Ref: [public-api.md](../backend/docs/public-api.md) § Outbound webhooks.
+
 
 ---
 
