@@ -18,13 +18,18 @@ from decimal import Decimal
 import pytest
 
 from app.services.payment_settlement import (
+    COVERAGE_COVERED,
+    COVERAGE_SHORT,
+    COVERAGE_UNCERTAIN,
     OUTCOME_AMOUNT_MISMATCH,
     OUTCOME_CURRENCY_MISMATCH,
     OUTCOME_MATCHED,
     OUTCOME_UNVERIFIED,
+    REASON_NO_SETTLED_AMOUNT,
     SETTLEMENT_AMOUNT_TOLERANCE,
     build_authorized_legs,
     describe_discrepancy,
+    settlement_coverage,
     verify_settlement,
 )
 
@@ -332,3 +337,131 @@ def test_description_carries_no_pii():
     text = describe_discrepancy(v).lower()
     for banned in ("iban", "account", "routing", "tax", "swift"):
         assert banned not in text
+
+
+# ---------------------------------------------------------------------------
+# Coverage — does the recorded settlement discharge the invoice?
+# ---------------------------------------------------------------------------
+#
+# Distinct from the verdict above. `verify_settlement` answers "did the rail
+# report what we authorized?"; `settlement_coverage` answers "may the invoice
+# be marked paid?". They disagree on over-settlement, and that disagreement is
+# the point: too much moving is worth flagging but does not leave the vendor
+# short.
+
+
+def test_exact_settlement_covers():
+    c = settlement_coverage(
+        settled_amount=Decimal("500.00"),
+        settled_currency="USD",
+        target_amount=Decimal("500.00"),
+        target_currency="USD",
+    )
+    assert c.state == COVERAGE_COVERED
+    assert c.completes_invoice is True
+    assert c.shortfall is None
+
+
+def test_under_settlement_is_short_with_the_gap():
+    """The case the whole feature exists for: $250 moved against a $500
+    instruction must NOT let the invoice read as settled in full."""
+    c = settlement_coverage(
+        settled_amount=Decimal("250.00"),
+        settled_currency="USD",
+        target_amount=Decimal("500.00"),
+        target_currency="USD",
+    )
+    assert c.state == COVERAGE_SHORT
+    assert c.completes_invoice is False
+    assert c.shortfall == Decimal("250.00")
+
+
+def test_over_settlement_still_covers():
+    """Over-settlement is flagged by the verifier but discharges the payable —
+    the vendor is not short, so holding the invoice would strand it for no
+    protective reason."""
+    c = settlement_coverage(
+        settled_amount=Decimal("750.00"),
+        settled_currency="USD",
+        target_amount=Decimal("500.00"),
+        target_currency="USD",
+    )
+    assert c.completes_invoice is True
+    # ...and the verifier still calls it a discrepancy on the same numbers.
+    assert verify_settlement(
+        reported_amount=Decimal("750.00"),
+        reported_currency="USD",
+        target_amount=Decimal("500.00"),
+        target_currency="USD",
+    ).is_discrepancy
+
+
+def test_unreported_settlement_fails_open():
+    """NULL settled_amount must NOT hold the invoice.
+
+    This is the property that keeps an amount-free rail (Dwolla's bare
+    envelope) and every pre-0083 row from stranding. Absence is not evidence.
+    """
+    c = settlement_coverage(
+        settled_amount=None,
+        settled_currency=None,
+        target_amount=Decimal("500.00"),
+        target_currency="USD",
+    )
+    assert c.completes_invoice is True
+    assert c.reason == REASON_NO_SETTLED_AMOUNT
+
+
+def test_cent_shortfall_is_within_tolerance():
+    """One cent is the band all three reconcilers share — a rounding artifact
+    is not a shortfall."""
+    c = settlement_coverage(
+        settled_amount=Decimal("499.99"),
+        settled_currency="USD",
+        target_amount=Decimal("500.00"),
+        target_currency="USD",
+    )
+    assert c.completes_invoice is True
+
+
+def test_settling_the_source_leg_covers():
+    """A cross-currency payment settles on either side; the processor picks.
+    Reporting the source leg in the source currency is a full settlement."""
+    c = settlement_coverage(
+        settled_amount=Decimal("450.00"),
+        settled_currency="EUR",
+        target_amount=Decimal("500.00"),
+        target_currency="USD",
+        source_amount=Decimal("450.00"),
+        source_currency="EUR",
+    )
+    assert c.completes_invoice is True
+
+
+def test_short_against_every_leg_measures_the_smallest():
+    """The shortfall claimed is the least defensible one — measured against
+    the smallest authorized leg, not the largest."""
+    c = settlement_coverage(
+        settled_amount=Decimal("100.00"),
+        settled_currency=None,  # wildcard: compatible with both legs
+        target_amount=Decimal("500.00"),
+        target_currency="USD",
+        source_amount=Decimal("450.00"),
+        source_currency="EUR",
+    )
+    assert c.state == COVERAGE_SHORT
+    assert c.shortfall == Decimal("350.00")
+
+
+def test_unauthorized_currency_is_uncertain_not_covered():
+    """Money on a currency we never authorized cannot be called a settlement —
+    comparing across currencies without a rate would invent an answer."""
+    c = settlement_coverage(
+        settled_amount=Decimal("500.00"),
+        settled_currency="JPY",
+        target_amount=Decimal("500.00"),
+        target_currency="USD",
+    )
+    assert c.state == COVERAGE_UNCERTAIN
+    assert c.completes_invoice is False
+    assert c.shortfall is None

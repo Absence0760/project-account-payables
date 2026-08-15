@@ -260,6 +260,124 @@ def verify_settlement(
     )
 
 
+#: Coverage states — "does the settlement on record discharge the invoice?"
+#: Distinct from the verification OUTCOME above, which answers "did the rail
+#: report what we authorized?". The two differ on over-settlement: a processor
+#: that moved MORE than instructed is an ``amount_mismatch`` worth flagging, but
+#: the vendor is not short and the invoice IS discharged.
+COVERAGE_COVERED = "covered"
+COVERAGE_SHORT = "short"
+COVERAGE_UNCERTAIN = "uncertain"
+
+REASON_NO_SETTLED_AMOUNT = "no_settled_amount_on_record"
+REASON_SETTLED_SHORT = "settled_below_every_authorized_leg"
+REASON_COVERAGE_CURRENCY_UNKNOWN = "settled_currency_matches_no_authorized_leg"
+
+
+@dataclass(frozen=True)
+class SettlementCoverage:
+    """Whether the recorded settlement discharges the invoice.
+
+    ``shortfall`` is positive and 2dp — how far the settlement fell below the
+    most generous authorized leg — and is ``None`` unless the state is
+    ``short``.
+    """
+
+    state: str
+    reason: str | None = None
+    shortfall: Decimal | None = None
+
+    @property
+    def completes_invoice(self) -> bool:
+        """True when nothing on record contradicts the invoice being settled.
+
+        Deliberately phrased as the absence of contradiction rather than
+        positive proof: ``covered`` is also what an unreported settlement
+        returns. See ``settlement_coverage``.
+        """
+        return self.state == COVERAGE_COVERED
+
+
+def settlement_coverage(
+    *,
+    settled_amount: Decimal | None,
+    settled_currency: str | None,
+    target_amount: Decimal,
+    target_currency: str | None,
+    source_amount: Decimal | None = None,
+    source_currency: str | None = None,
+    tolerance: Decimal = SETTLEMENT_AMOUNT_TOLERANCE,
+) -> SettlementCoverage:
+    """Decide whether a recorded settlement discharges the invoice.
+
+    This is what lets ``payment_erp_sync`` hold an under-settled invoice short
+    of ``paid`` instead of closing it out as settled in full. It reads the
+    figure PERSISTED on the payment row (``Payment.settled_amount``), not a
+    live webhook event, so the condition is a durable fact about the payment
+    rather than the transient state of an exception a human is expected to
+    clear. That distinction is the whole reason the earlier attempt at this
+    hold had to be reverted: keyed on a resolvable flag, clearing the flag —
+    the correct response to an over-settlement — stranded the invoice
+    permanently, because nothing re-invokes the sweep that would then have
+    marked it paid.
+
+    States:
+
+    ``covered``
+        Some authorized leg is fully covered by what settled, **or** nothing
+        was ever reported. Fails OPEN on the absent case on purpose: NULL
+        means an amount-free rail (Dwolla's bare envelope) or a row predating
+        migration 0083, and treating "we don't know" as a shortfall would hold
+        every invoice those rails settle. Absence is not evidence — the same
+        posture ``verify_settlement`` takes with ``unverified``.
+
+    ``short``
+        A figure was reported and it falls below EVERY currency-compatible
+        authorized leg by more than ``tolerance``. The vendor is short; the
+        invoice must not read as settled in full.
+
+    ``uncertain``
+        A figure was reported in a currency matching no authorized leg. We
+        cannot say the invoice is covered — comparing across currencies
+        without a rate would be inventing an answer — so it holds like a
+        shortfall and a human reconciles.
+
+    Over-settlement is ``covered``: the vendor received at least what was
+    authorized, so the invoice is discharged. It is still flagged by
+    ``verify_settlement`` as an ``amount_mismatch`` — recording that too much
+    moved is a separate concern from whether the payable is satisfied.
+    """
+    if settled_amount is None:
+        return SettlementCoverage(state=COVERAGE_COVERED, reason=REASON_NO_SETTLED_AMOUNT)
+
+    legs = build_authorized_legs(
+        target_amount=target_amount,
+        target_currency=target_currency,
+        source_amount=source_amount,
+        source_currency=source_currency,
+    )
+    candidates = [leg for leg in legs if _same_currency(settled_currency, leg.currency)]
+    if not candidates:
+        return SettlementCoverage(state=COVERAGE_UNCERTAIN, reason=REASON_COVERAGE_CURRENCY_UNKNOWN)
+
+    settled = _q(settled_amount)
+    # Covering ANY authorized leg discharges the invoice — a cross-currency
+    # payment legitimately settles on either side, and the processor chooses
+    # which one it reports.
+    if any(settled >= leg.amount - tolerance for leg in candidates):
+        return SettlementCoverage(state=COVERAGE_COVERED)
+
+    # Short against every leg. Measure the gap against the SMALLEST one: that
+    # is the most generous reading of what was owed, so the shortfall reported
+    # is the least we can claim was missed.
+    smallest = min(leg.amount for leg in candidates)
+    return SettlementCoverage(
+        state=COVERAGE_SHORT,
+        reason=REASON_SETTLED_SHORT,
+        shortfall=_q(smallest - settled),
+    )
+
+
 def describe_discrepancy(verification: SettlementVerification) -> str:
     """One-line, PII-free summary for an ``Exception.description``.
 
