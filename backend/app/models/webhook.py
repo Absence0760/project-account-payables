@@ -76,6 +76,17 @@ class WebhookSubscription(Base, TimestampMixin):
     # Non-secret first segment shown in list/get responses so an admin can match
     # a subscription to the secret they copied at create time.
     secret_prefix: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Rotation overlap (migration 0084). While `previous_secret_expires_at` is
+    # in the future, the dispatcher ALSO signs each payload with
+    # `previous_signing_secret` and sends it as `X-Webhook-Signature-Previous`,
+    # so a receiver that accepts either header rotates with zero dropped
+    # deliveries. Both NULL is the ordinary state: no rotation in flight.
+    #
+    # The pair is only meaningful together — `webhooks/rotation.py` treats an
+    # elapsed expiry exactly like a NULL secret, so a stale window can never
+    # keep a retired key signing.
+    previous_signing_secret: Mapped[str | None] = mapped_column(String(128))
+    previous_secret_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 

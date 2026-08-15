@@ -163,10 +163,11 @@ async def test_delivery_success_marks_delivered(realdb, monkeypatch):
 
     captured: dict = {}
 
-    async def fake_post(target_url, body, signature, delivery):
+    async def fake_post(target_url, body, signature, delivery, previous_signature=None):
         captured["url"] = target_url
         captured["body"] = body
         captured["sig"] = signature
+        captured["prev_sig"] = previous_signature
         captured["event_id_header"] = delivery.event_id
         return 200
 
@@ -182,6 +183,8 @@ async def test_delivery_success_marks_delivered(realdb, monkeypatch):
             assert row.next_attempt_at is None
         # The signed body is exactly what the receiver would verify.
         assert captured["sig"] == sign_payload(sub.signing_secret, captured["body"])
+        # No rotation in flight -> no secondary header at all.
+        assert captured["prev_sig"] is None
     finally:
         await _cleanup(control_mk, sub.id)
 

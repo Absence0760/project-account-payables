@@ -111,6 +111,14 @@ Tenant admin self-serves rotation by re-calling `POST /api/organization/sso/scim
 
 Tenant admin updates the secret in their Okta/Entra app, then PATCHes `org.settings.sso.client_secret` via `PATCH /api/organization`. SSO handshakes after the change use the new secret. **No grace period** — coordinate with the IdP cutover.
 
+### Per-subscription outbound-webhook signing secret
+
+Tenant admin self-serves via `POST /api/webhooks/{id}/rotate-secret`. The new secret is shown once; the subscription keeps its id and its **entire delivery history** (unlike delete-and-recreate, which CASCADE-deletes the delivery log — recovering from a leak used to mean destroying the record of what had been delivered).
+
+**Unlike the two above, this one has a grace period.** By default the retiring secret keeps signing a second `X-Webhook-Signature-Previous` header for 60 minutes (max 1440), so a receiver that accepts either header rotates with zero dropped deliveries. Pass `overlap_minutes: 0` for a hard cutover when the secret is known-compromised and must stop verifying immediately.
+
+The receiver-side procedure — and the reason step 1 has to happen *before* you need it — is in [public-api.md](../backend/docs/public-api.md) § Rotating a signing secret. Audited as `webhook_subscription.secret_rotated`, recording the prefix and window, never either secret.
+
 ---
 
 ## Logging + audit
