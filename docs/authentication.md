@@ -119,6 +119,68 @@ The UI is the **Signed-in devices** card on `/profile`, next to the MFA and pass
 
 `POST /api/auth/logout` now both blocklists the current JTI **and** drops it from the tracking set (via `end_session`). A user who logs out gains a free slot under the concurrent-session cap for their next login.
 
+## Brute-force protection — two axes, not one
+
+Every credential-checking endpoint is throttled on **two independent axes**, both
+in `app/services/rate_limit.py`. Adding only one of them leaves a usable attack.
+
+**Per client IP** (`check_rate_limit`) — a plain request budget, 10/min on
+`/api/auth/login`, `/api/auth/mfa/verify` and their `/api/portal/auth` twins.
+Stops one host hammering an endpoint. It cannot see the commodity shape of a
+real password spray: one account, thousands of residential-proxy addresses,
+each staying comfortably under the cap.
+
+**Per identity** (`check_auth_failures` / `record_auth_failure` /
+`clear_auth_failures`) — a **failure** budget keyed on the identity being
+authenticated, so it is shared across every source address.
+
+| Surface | Bucket key | Budget |
+|---|---|---|
+| `POST /api/auth/login` | submitted email | 10 failures / 15 min |
+| `POST /api/auth/mfa/verify` | user id | 5 failures / 15 min |
+| `POST /api/portal/auth/login` | tenant slug + submitted email | 10 failures / 15 min |
+| `POST /api/portal/auth/mfa/challenge` | tenant slug + vendor-user id | 5 failures / 15 min |
+
+The second-factor rows are the load-bearing ones. A TOTP code is six digits
+(10^6), and an attacker who reaches `/mfa/verify` already holds the password —
+so they can mint fresh challenge tokens indefinitely and spread the guessing
+over as many addresses as they care to rent. Only a budget keyed on the account
+puts that keyspace out of reach.
+
+Four properties make this safe to put in front of a login form:
+
+- **Failures only.** `check_auth_failures` is read-only; only
+  `record_auth_failure` writes, and a correct credential calls
+  `clear_auth_failures`. Signing in correctly never accumulates a budget, and a
+  legitimate user is never penalised for earlier typos.
+- **Keyed on the *submitted* identifier, checked *before* the account lookup.**
+  An address with no account throttles identically to one that has an account,
+  so the 429 can't become the enumeration oracle the equalised-timing 401 path
+  exists to avoid.
+- **Hashed** (`auth_identity_key`, SHA-256, case/whitespace-normalised). An
+  email address never lands in the Redis keyspace, and varying the
+  capitalisation doesn't buy a fresh budget.
+- **Tenant-scoped on the portal.** A vendor address is unique only *within* a
+  tenant DB; keying on the address alone would let one tenant's traffic throttle
+  another tenant's supplier.
+
+**Accepted trade-off:** because the bucket is keyed on the identity, someone who
+knows an address can burn that account's *password* budget and delay a
+legitimate sign-in. It is a rolling window (never a sticky lock), it self-heals,
+and it does not touch the SSO or passkey paths — the same call every mainstream
+implementation makes, and strictly better than leaving the spray unbounded.
+
+Both axes honour the `FEOH_RATE_LIMIT_ENABLED` master switch (CI's e2e job turns
+it off — every shard's workers log in from one loopback address).
+
+Emailed MFA backup codes are capped separately, per **account**, at 10/hour
+(`EMAIL_OTP_PER_ACCOUNT_PER_HOUR`) on both surfaces: the per-IP limit there
+exists to stop the user's inbox being weaponised, and one valid challenge token
+replayed from rotating addresses walked straight past it.
+
+Separately, changing an existing second factor is throttled 5/min per **account**
+(`_throttle_step_up`) — see [Per-user enrollment](#per-user-enrollment).
+
 ## Auth event audit logging
 
 Every auth action writes a row to the tenant `audit_log` table via `app/services/audit_dispatch.py::dispatch_auth_audit`. Because auth endpoints run on the control-plane DB (where users live) but the audit log is tenant-scoped, the helper resolves the tenant DB from the user's `organization_id` and opens a short-lived session to write the row. Failures are caught + logged at WARN level — auth itself never errors because the audit write couldn't complete.
@@ -136,12 +198,15 @@ Action names:
 | Successful MFA verify | `auth.mfa.verify.success` |
 | Failed MFA verify | `auth.mfa.verify.failure` |
 | Failed step-up against a second-factor change (enroll / passkey register / passkey delete / disable) | `auth.mfa.step_up.failure` (employee) · `portal.mfa.step_up.failure` (supplier portal) — PII-free, records only the operation name |
+| Failed supplier-portal password login | `portal.login.failure` — records `{ip, reason}` (`bad_password` \| `no_password` \| `inactive`) and identifies the account by `entity_id`, never by address (a supplier contact's email is third-party PII we don't restate on every guess) |
 | Successful SSO login | `auth.sso.login.success` |
 | Failed SSO login (code exchange / ID token / domain blocked) | `auth.sso.login.failure` |
 | Successful SAML login | `auth.saml.login.success` |
 | Failed SAML login (assertion invalid / issuer / unsolicited / replay / domain blocked) | `auth.saml.login.failure` |
 
-Login-failure rows for unknown emails are dropped — without an `organization_id` there is no tenant DB to route to. Failures for known users carry the email, IP (when the client is reachable), and a machine-readable `reason`.
+Login-failure rows for unknown emails are dropped — without an `organization_id` there is no tenant DB to route to. Failures for known users carry the email, IP (when the client is reachable), and a machine-readable `reason`. (The supplier-portal twin, `portal.login.failure`, deliberately omits the address — see the action table above.)
+
+**Known, accepted asymmetry:** because an unknown address has no org, a rejection against it skips the audit write that a rejection against a *known* account performs, so the known-account path is a DB round-trip slower. In principle that is a timing signal an equalised 401 doesn't carry. It is accepted rather than fixed: the response itself (status *and* detail) is byte-identical either way, and the bcrypt call `dummy_verify()` exists to equalise — dominates every rejected-login response by orders of magnitude more than an audit INSERT. Dropping the row instead would mean losing the only record that an account is being attacked, which is the more valuable half.
 
 ### Database separation
 

@@ -323,6 +323,25 @@ money goes** until an AP admin explicitly approves it.
   compromised portal token can be revoked through the same mechanism.
 - **`typ` claim enforced symmetrically:** employee JWT → 401 on portal,
   vendor JWT → 401 on AP — verified in `test_supplier_portal.py`.
+- **Brute-force is throttled on two axes:** the per-IP request cap
+  (10/min) *and* a per-account failure budget — 10 failures / 15 min on
+  `/portal/auth/login`, 5 on `/portal/auth/mfa/challenge`. The per-IP cap
+  alone is blind to a spray distributed across rotating addresses, which
+  matters most on the second factor (six digits, and an attacker who gets
+  there already has the password). The bucket key is **tenant-scoped**
+  (`slug + identity`): a vendor address is unique only within a tenant DB,
+  so keying on the address alone would let one tenant's traffic throttle
+  another tenant's supplier. Full contract + the accepted DoS trade-off:
+  [`docs/authentication.md`](../../docs/authentication.md) §
+  Brute-force protection.
+- **A rejected sign-in is on the record:** `portal.login.failure` lands in
+  the tenant's `audit_log`, identifying the account by `entity_id` and
+  carrying `{ip, reason}` only — a supplier contact's address is
+  third-party PII and isn't restated on every guess. `reason` is
+  `bad_password` / `no_password` / `inactive`, so hammering a *deactivated*
+  supplier login is visible too. An address with no account writes nothing:
+  there is no org to resolve a tenant trail from, and a row would itself be
+  the enumeration signal the identical 401 exists to avoid.
 
 ## Invoice submission flow
 
