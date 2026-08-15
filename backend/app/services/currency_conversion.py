@@ -415,7 +415,8 @@ async def compute_unrealized_fx_gain_loss(
     rate locked when its reporting amount was materialized. The mark-to-market
     value is that same original-currency amount converted at *today's* rate. The
     difference is unrealized — it becomes realized only when the invoice is paid
-    (which is what `international_payments.compute_fx_gain_loss` measures). This
+    (which is what `international_payments.realized_fx_gain_loss_for_settlement`
+    measures, on the settlement audit row). This
     is the reporting-layer companion: same sign convention (a positive number is
     a gain — the liability in reporting terms shrank since booking).
 

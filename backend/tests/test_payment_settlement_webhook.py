@@ -133,8 +133,14 @@ def _payment(amount=Decimal("5000.00"), **overrides):
     return SimpleNamespace(**fields)
 
 
-def _invoice(currency="USD"):
-    return SimpleNamespace(id=uuid.uuid4(), entity_id=uuid.uuid4(), currency=currency)
+def _invoice(currency="USD", amount=Decimal("5000.00"), reporting_fx_rate=None):
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        entity_id=uuid.uuid4(),
+        currency=currency,
+        amount=amount,
+        reporting_fx_rate=reporting_fx_rate,
+    )
 
 
 def _adapter(*, amount, currency, status=PaymentStatus.completed, event_id="evt_1"):
@@ -447,3 +453,39 @@ async def test_a_failed_event_does_not_write_a_settled_figure():
 
     assert payment.status == "failed"
     assert payment.settled_amount is None
+
+
+# ---------------------------------------------------------------------------
+# Realized FX gain/loss — the settlement moment is where it becomes real
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_settlement_records_realized_fx_gain_loss_for_a_foreign_invoice():
+    """multi-currency.md said this happened when a foreign invoice settles.
+    Until now nothing computed it — the primitive had no production caller."""
+    payment = _payment(
+        amount=Decimal("1000.00"),
+        source_amount=Decimal("1050.00"),
+        source_currency="USD",
+    )
+    invoice = _invoice(currency="EUR", amount=Decimal("1000.00"), reporting_fx_rate=Decimal("1.10"))
+    tenant_factory, _ = _tenant_session_factory(payment, invoice)
+
+    mocks = await _run(_org(), _adapter(amount=Decimal("1000.00"), currency="EUR"), tenant_factory)
+
+    details = mocks["audit"].call_args.kwargs["details"]
+    # Accrued 1000 EUR * 1.10 = 1100 USD; paid 1050 USD -> a 50 USD gain.
+    assert details["realized_fx_gain_loss"] == "50.00"
+
+
+@pytest.mark.asyncio
+async def test_a_domestic_settlement_records_no_fx_figure_at_all():
+    """Absent, not zero — a zero would claim we measured an exposure that
+    doesn't exist."""
+    payment = _payment(amount=Decimal("5000.00"))
+    tenant_factory, _ = _tenant_session_factory(payment, _invoice())
+
+    mocks = await _run(_org(), _adapter(amount=Decimal("5000.00"), currency="USD"), tenant_factory)
+
+    assert "realized_fx_gain_loss" not in mocks["audit"].call_args.kwargs["details"]

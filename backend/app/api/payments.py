@@ -42,6 +42,7 @@ from app.schemas.payment import (
 )
 from app.services.audit_access import log_access
 from app.services.exception_lifecycle import record_decision
+from app.services.international_payments import realized_fx_gain_loss_for_settlement
 from app.services.payment_adapters import (
     PaymentPayload,
     PaymentStatus,
@@ -2865,6 +2866,7 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
             # queue entry on.
             settlement: SettlementVerification | None = None
             settled_invoice: Invoice | None = None
+            realized_fx: Decimal | None = None
             if payment.status == "completed":
                 settled_invoice = (
                     await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
@@ -2918,6 +2920,23 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
                     payment.settled_amount = settlement.settled_amount
                     payment.settled_currency = settlement.settled_currency
 
+                # Realized FX gain/loss, at the moment a foreign-currency
+                # invoice actually settles. The liability was accrued at the
+                # rate locked on the invoice when its reporting amount was
+                # materialized; what moved is `source_amount` in the home
+                # currency, and the difference is realized here and nowhere
+                # else. `None` for a domestic payment, an invoice with no
+                # accrual rate, or a same-currency settlement — a zero would
+                # claim we measured and found no exposure.
+                if settled_invoice is not None:
+                    realized_fx = realized_fx_gain_loss_for_settlement(
+                        invoice_amount=settled_invoice.amount,
+                        invoice_currency=settled_invoice.currency,
+                        reporting_fx_rate=settled_invoice.reporting_fx_rate,
+                        paid_source_amount=payment.source_amount,
+                        paid_source_currency=payment.source_currency,
+                    )
+
             # Append-only audit trail for the webhook-driven status transition.
             # This is the production money-movement event — the processor's
             # webhook is what flips a real payment to `completed`/`failed` and
@@ -2955,6 +2974,13 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
                     # and unverified alike — so a rail that reports no amount
                     # is a visible blind spot rather than a silent one.
                     **({"settlement": settlement.as_details()} if settlement else {}),
+                    # Exact decimal string, never a float. Absent (not zero)
+                    # when there is no FX exposure to measure.
+                    **(
+                        {"realized_fx_gain_loss": str(realized_fx)}
+                        if realized_fx is not None
+                        else {}
+                    ),
                 },
             )
 

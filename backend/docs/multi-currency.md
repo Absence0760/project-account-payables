@@ -8,7 +8,7 @@ This sits **on top of** the payment-level FX machinery — it does not replace i
 
 | Layer | Lives in | What it does | When the rate is locked |
 |---|---|---|---|
-| **Payment FX** (existing) | `services/international_payments.py`, `services/fx_adapters/` | Locks an FX rate on the `Payment` row at submission; computes **realized** gain/loss (`compute_fx_gain_loss`) when a foreign invoice settles. | At payment submission |
+| **Payment FX** (existing) | `services/international_payments.py`, `services/fx_adapters/` | Locks an FX rate on the `Payment` row at submission; computes **realized** gain/loss (`realized_fx_gain_loss_for_settlement`) when a foreign invoice settles, and records it on the settlement audit row. | At payment submission |
 | **Reporting FX** (this doc) | `services/currency_conversion.py` | Converts each invoice's `amount` into the org reporting currency, materializes the rate on the invoice row, rolls multi-currency volume into one total, computes **unrealized** gain/loss on open invoices. | When the invoice is created / mutated |
 | **Expense FX** | `services/expense_currency.py` | Converts each expense line into its **report's** currency (`expenses.converted_*`) so a report total isn't a cross-currency sum, and the report total into the **org reporting** currency (`expense_reports.reporting_*`) so the CFO threshold compares like with like. | Line: on attach / amount-or-currency edit / report-currency change. Report: at submit |
 | **Expense-policy thresholds** | `services/expense_policy.py` | Compares an expense against a policy's money thresholds **in the policy's `threshold_currency`**, so a €200 expense isn't judged against a USD 100 limit as bare numbers. | Never — it locks nothing. It **reuses** the line's existing lock (row above) and fails closed when none bridges the two currencies. |
@@ -137,7 +137,7 @@ reports the difference vs the booked (rate-locked) reporting amount.
   the open liability is worth **less** in reporting terms than when booked.
 - Same-currency invoices carry no FX exposure and are skipped.
 - It becomes **realized** only when the invoice is paid, which is what
-  `international_payments.compute_fx_gain_loss` measures — this is the
+  `international_payments.realized_fx_gain_loss_for_settlement` measures — this is the
   open-position companion.
 
 Open statuses considered: `approved`, `sending_to_erp`, `sent_to_erp`,

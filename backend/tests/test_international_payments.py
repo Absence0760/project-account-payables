@@ -276,7 +276,6 @@ def test_fx_gain_loss_positive_when_eur_weakens_between_booking_and_payment():
         paid_source_amount=Decimal("1086.96"),
         paid_source_currency="USD",
         fx_rate_at_invoice=Decimal("0.90"),
-        fx_rate_at_payment=Decimal("0.92"),
     )
     assert gain == Decimal("24.15")  # 1111.11 - 1086.96
 
@@ -290,7 +289,6 @@ def test_fx_gain_loss_negative_when_eur_strengthens():
         paid_source_amount=Decimal("1176.47"),
         paid_source_currency="USD",
         fx_rate_at_invoice=Decimal("0.90"),
-        fx_rate_at_payment=Decimal("0.85"),
     )
     assert loss == Decimal("-65.36")
 
@@ -304,7 +302,6 @@ def test_fx_gain_loss_zero_on_same_currency():
         paid_source_amount=Decimal("1000.00"),
         paid_source_currency="USD",
         fx_rate_at_invoice=Decimal("1.0"),
-        fx_rate_at_payment=Decimal("1.0"),
     ) == Decimal("0.00")
 
 
@@ -318,7 +315,6 @@ def test_fx_gain_loss_refuses_zero_invoice_rate():
             paid_source_amount=Decimal("1000.00"),
             paid_source_currency="USD",
             fx_rate_at_invoice=Decimal("0"),
-            fx_rate_at_payment=Decimal("0.92"),
         )
 
 
@@ -642,3 +638,90 @@ async def test_execute_payment_run_fails_payment_when_orchestrator_rejects_bank_
     assert "IBAN" in (pay.failure_reason or "")
     assert run.status == "failed"
     adapter.create_payment.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Realized FX gain/loss from persisted rows — the production entry point
+# ---------------------------------------------------------------------------
+#
+# `compute_fx_gain_loss` was pure, fully tested, and had NO production caller,
+# while multi-currency.md described it as computing realized gain/loss when a
+# foreign invoice settles. Two things made it unwireable, and both are fixed
+# here: it took an `fx_rate_at_payment` it never read (a caller could pass a
+# wrong rate and get no error), and its remaining rate parameter DIVIDES —
+# the inverse of `Invoice.reporting_fx_rate`, which is persisted to MULTIPLY.
+# Wiring the persisted rate straight in would have produced a badly wrong
+# number with no failure.
+
+
+def test_realized_fx_uses_the_persisted_multiplying_rate():
+    """€1,000 accrued at 1.10 USD/EUR = $1,100; we actually paid $1,050, so we
+    are $50 better off than booked — a gain."""
+    from app.services.international_payments import realized_fx_gain_loss_for_settlement
+
+    result = realized_fx_gain_loss_for_settlement(
+        invoice_amount=Decimal("1000.00"),
+        invoice_currency="EUR",
+        reporting_fx_rate=Decimal("1.10"),
+        paid_source_amount=Decimal("1050.00"),
+        paid_source_currency="USD",
+    )
+    assert result == Decimal("50.00")
+
+
+def test_realized_fx_is_negative_when_we_paid_more_than_accrued():
+    from app.services.international_payments import realized_fx_gain_loss_for_settlement
+
+    result = realized_fx_gain_loss_for_settlement(
+        invoice_amount=Decimal("1000.00"),
+        invoice_currency="EUR",
+        reporting_fx_rate=Decimal("1.10"),
+        paid_source_amount=Decimal("1180.00"),
+        paid_source_currency="USD",
+    )
+    assert result == Decimal("-80.00")
+
+
+def test_realized_fx_sign_matches_the_unrealized_half():
+    """A positive number is a gain in both halves of the same exposure — if
+    these ever disagreed, a period's realized and unrealized FX would offset
+    each other instead of adding up."""
+    from app.services.currency_conversion import _quantize_money
+    from app.services.international_payments import realized_fx_gain_loss_for_settlement
+
+    booked = _quantize_money(Decimal("1000.00") * Decimal("1.10"))
+    current = _quantize_money(Decimal("1000.00") * Decimal("1.05"))
+    unrealized = _quantize_money(booked - current)  # the currency_conversion formula
+    realized = realized_fx_gain_loss_for_settlement(
+        invoice_amount=Decimal("1000.00"),
+        invoice_currency="EUR",
+        reporting_fx_rate=Decimal("1.10"),
+        paid_source_amount=current,
+        paid_source_currency="USD",
+    )
+    assert realized == unrealized > 0
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "why"),
+    [
+        ({"paid_source_amount": None}, "domestic payment carries no home-currency leg"),
+        ({"reporting_fx_rate": None}, "invoice was never accrued at a rate"),
+        ({"reporting_fx_rate": Decimal("0")}, "a zero rate is not a rate"),
+        ({"invoice_currency": "USD"}, "same-currency settlement has no exposure"),
+    ],
+)
+def test_realized_fx_is_none_not_zero_when_there_is_nothing_to_measure(kwargs, why):
+    """Zero would assert 'we measured and found no gain or loss' — a different
+    claim from 'there is nothing to measure'."""
+    from app.services.international_payments import realized_fx_gain_loss_for_settlement
+
+    base = {
+        "invoice_amount": Decimal("1000.00"),
+        "invoice_currency": "EUR",
+        "reporting_fx_rate": Decimal("1.10"),
+        "paid_source_amount": Decimal("1050.00"),
+        "paid_source_currency": "USD",
+    }
+    base.update(kwargs)
+    assert realized_fx_gain_loss_for_settlement(**base) is None, why
