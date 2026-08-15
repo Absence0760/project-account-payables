@@ -749,6 +749,48 @@ async def test_upload_pdf_archives_the_source_document_for_download(realdb):
     assert "attachment" in got.headers["content-disposition"]
 
 
+async def test_storage_failure_does_not_cost_the_clerk_the_reconciliation(realdb, monkeypatch):
+    """Archiving the document is best-effort. A storage outage must not fail an
+    upload that already reconciled — but it must be visible, not swallowed."""
+    from app.services import storage as storage_mod
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id)
+    csv_body = b"invoice_number,date,amount\r\nSTORE-1,2026-06-01,750.00\r\n"
+
+    async def _explode(*args, **kwargs):
+        raise RuntimeError("minio is down")
+
+    monkeypatch.setattr(storage_mod, "upload_vendor_statement_file", _explode)
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/vendor-statements/upload",
+            data={"vendor_id": vendor_id, "statement_date": _TODAY.isoformat()},
+            files={"file": ("statement.csv", csv_body, "text/csv")},
+        )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["summary"]["line_count"] == 1
+    # The run stands; the client is told there is no document to fetch.
+    assert body["file_key"] is None
+    assert body["has_source_file"] is False
+
+    async with mk() as s:
+        run = (
+            await s.execute(
+                select(VendorStatementReconciliation).where(
+                    VendorStatementReconciliation.id == uuid.UUID(body["id"])
+                )
+            )
+        ).scalar_one()
+        assert run.meta["raw_file_stored"] is False
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        assert (await c.get(f"/api/vendor-statements/{body['id']}/file")).status_code == 404
+
+
 async def test_source_download_404s_when_nothing_was_archived(realdb):
     """A pasted-lines run has no document — the same opaque 404 as an unknown
     run, so the endpoint never enumerates."""
