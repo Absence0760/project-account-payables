@@ -58,6 +58,11 @@ from app.services.payment_runs import (
     rollup_payment_statuses,
     superseded_payment_ids,
 )
+from app.services.payment_settlement import (
+    SettlementVerification,
+    describe_discrepancy,
+    verify_settlement,
+)
 from app.services.workflow_engine import transition_invoice
 from app.tenant import (
     apply_entity_scope,
@@ -1467,6 +1472,59 @@ async def _open_compliance_hold_exception(
     )
 
 
+async def _open_settlement_mismatch_exception(
+    db: AsyncSession,
+    *,
+    payment: Payment,
+    invoice: Invoice | None,
+    org: Organization,
+    verification: SettlementVerification,
+) -> None:
+    """Raise a payment-blocking `fraud_flag` for a settlement that didn't
+    reconcile against what AP authorized.
+
+    `fraud_flag` deliberately, not a new taxonomy entry: it is exactly what
+    `api/positive_pay.py` raises for an ALTERED cheque — a payment instrument
+    presented at an amount we never wrote — and this is the electronic
+    equivalent, caught days earlier on rails where no cheque exists. It is
+    also in `PAYMENT_BLOCKING_EXCEPTION_TYPES`, so until a human resolves it
+    the invoice can't be swept into another payment run (which matters the
+    moment this payment is voided and the invoice returns to `approved`).
+
+    Dedupes on `(invoice_id, fraud_flag, open|escalated)` — the same rule
+    Positive Pay's own return processing uses. One open fraud flag on an
+    invoice is the signal; piling on a second adds noise, not information.
+    The description is PII-free (amounts, currency codes and the verdict —
+    the row already carries the invoice FK).
+    """
+    if invoice is None:
+        # A payment whose invoice row is gone still gets the audit row above;
+        # there is no queue entry to attach the flag to.
+        return
+    from app.services.exception_service import create_exception
+
+    already = (
+        await db.execute(
+            select(func.count()).where(
+                APException.invoice_id == invoice.id,
+                APException.exception_type == "fraud_flag",
+                APException.status.in_(["open", "escalated"]),
+            )
+        )
+    ).scalar() or 0
+    if already > 0:
+        return
+
+    await create_exception(
+        db,
+        exception_type="fraud_flag",
+        description=describe_discrepancy(verification),
+        organization_id=org.id,
+        severity="error",
+        invoice=invoice,
+    )
+
+
 async def _capture_discount_offers(
     db: AsyncSession,
     *,
@@ -1484,14 +1542,18 @@ async def _capture_discount_offers(
     accepted and paid at the discounted amount.
 
     Called from every path a `Payment` reaches `completed` — the synchronous
-    adapter/card leg (`_execute_single_payment`, which already has the
-    `Invoice` loaded and passes it in) and the async webhook-driven
-    completion (`payment_webhook`, which does not — pass `invoice=None` and
-    this resolves it from `payment.invoice_id`) — so a discount is
-    recognized whether the rail confirms instantly or days later. No invoice
-    found is a no-op (nothing to match against); a payment amount that
-    doesn't match a discounted payoff exactly is also a no-op (see
+    adapter/card leg (`_execute_single_payment`) and the async webhook-driven
+    completion (`payment_webhook`) — so a discount is recognized whether the
+    rail confirms instantly or days later. Both callers already hold the
+    `Invoice` and pass it in; `invoice=None` falls back to resolving it from
+    `payment.invoice_id` for any future caller that doesn't. No invoice found
+    is a no-op (nothing to match against); a payment amount that doesn't
+    match a discounted payoff exactly is also a no-op (see
     `discount_capture.capture_offers_for_settled_payment`).
+
+    NOT called when the settlement verifier flagged a discrepancy — the
+    payoff match runs against OUR authorized amount, which a divergent
+    settlement has just contradicted. See the call site in `payment_webhook`.
 
     Best-effort, like the vendor card-notify email below: this labels a
     payment that already, definitely settled with a bookkeeping fact
@@ -2521,6 +2583,15 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
     distinction would help an attacker probe for the right secret. Audit
     log captures the rejection.
 
+    A verified signature authenticates the SENDER, not the CONTENT: a
+    `completed` event proves the processor is talking to us about a payment
+    we know, never that it moved the amount AP authorized. Every completion
+    therefore runs `services/payment_settlement.verify_settlement` against
+    the reported amount + currency, and a divergence opens a
+    payment-blocking `fraud_flag` instead of being treated as a clean
+    settlement. See `backend/docs/payments.md` § Settlement-amount
+    verification.
+
     URL shape (configure in the processor's dashboard):
         https://app.com/api/payments/webhook/{tenant_slug}/{provider}
     """
@@ -2662,6 +2733,32 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
             if payment.status in ("completed", "failed", "cancelled"):
                 payment.completed_at = datetime.now(UTC)
 
+            # Settlement-amount verification. A `provider_payment_id` proves
+            # WHICH payment this event is about; it does not prove the
+            # processor moved the amount on the instruction. Only `completed`
+            # is checked — a `failed` / `cancelled` event moved no money, so
+            # whatever figure it echoes reconciles against nothing.
+            #
+            # The invoice is loaded once here and reused for the discount
+            # capture below (which used to fetch it itself): the target leg is
+            # denominated in the INVOICE's currency, which the Payment row
+            # doesn't carry, and a discrepancy needs the invoice to hang its
+            # queue entry on.
+            settlement: SettlementVerification | None = None
+            settled_invoice: Invoice | None = None
+            if payment.status == "completed":
+                settled_invoice = (
+                    await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
+                ).scalar_one_or_none()
+                settlement = verify_settlement(
+                    reported_amount=event.amount,
+                    reported_currency=event.currency,
+                    target_amount=payment.amount,
+                    target_currency=(settled_invoice.currency if settled_invoice else None),
+                    source_amount=payment.source_amount,
+                    source_currency=payment.source_currency,
+                )
+
             # Append-only audit trail for the webhook-driven status transition.
             # This is the production money-movement event — the processor's
             # webhook is what flips a real payment to `completed`/`failed` and
@@ -2691,6 +2788,14 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
                     "payment_run_id": (
                         str(payment.payment_run_id) if payment.payment_run_id else None
                     ),
+                    # The settlement verdict rides the SAME append-only row
+                    # that records the money moving. The exception row below
+                    # is mutable and gets resolved; this is the WORM-shipped
+                    # evidence of what the processor said it settled, and it
+                    # is written on every completion — matched, mismatched,
+                    # and unverified alike — so a rail that reports no amount
+                    # is a visible blind spot rather than a silent one.
+                    **({"settlement": settlement.as_details()} if settlement else {}),
                 },
             )
 
@@ -2699,15 +2804,38 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
             # `submitted`/`processing` until the processor calls back. This is
             # the settlement moment for those payments, so it's also where an
             # accepted discount offer paid at its discounted payoff gets
-            # recognized (mirrors the synchronous completion leg's call).
+            # recognized (mirrors the synchronous completion leg's call) —
+            # unless the settlement itself didn't reconcile.
             if payment.status == "completed":
-                await _capture_discount_offers(
-                    db,
-                    org=org,
-                    payment=payment,
-                    actor_id=None,
-                    now=payment.completed_at or datetime.now(UTC),
-                )
+                if settlement is not None and settlement.is_discrepancy:
+                    # Flag, and do NOT capture the discount: the payoff match
+                    # runs against `payment.amount` — OUR authorized figure,
+                    # which the rail has just contradicted — so capturing here
+                    # would permanently mark savings realized on a number in
+                    # dispute and misreport them to the CFO.
+                    #
+                    # The payment itself stays `completed`: money moved, and
+                    # refusing to record that does not un-move it. The control
+                    # is the blocking exception (mirroring how positive_pay
+                    # flags an altered cheque and bank_reconciliation flags a
+                    # divergent debit — both record and flag, neither rewrites
+                    # the settlement).
+                    await _open_settlement_mismatch_exception(
+                        db,
+                        payment=payment,
+                        invoice=settled_invoice,
+                        org=org,
+                        verification=settlement,
+                    )
+                else:
+                    await _capture_discount_offers(
+                        db,
+                        org=org,
+                        payment=payment,
+                        actor_id=None,
+                        now=payment.completed_at or datetime.now(UTC),
+                        invoice=settled_invoice,
+                    )
 
             run_id = payment.payment_run_id if payment.status == "completed" else None
             await db.commit()

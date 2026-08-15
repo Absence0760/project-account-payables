@@ -252,6 +252,7 @@ async def test_login_challenges_when_mfa_enrolled(mfa_on, monkeypatch):
     res = await portal_login(
         body=PortalLoginRequest(email=vu.email, password="pw"),
         request=MagicMock(),
+        slug="acme",
         db=db,
     )
     assert isinstance(res, PortalMFAChallengeResponse)
@@ -273,6 +274,7 @@ async def test_login_no_challenge_when_not_enrolled(mfa_on, monkeypatch):
     res = await portal_login(
         body=PortalLoginRequest(email=vu.email, password="pw"),
         request=MagicMock(),
+        slug="acme",
         db=db,
     )
     assert isinstance(res, PortalTokenResponse)
@@ -291,6 +293,7 @@ async def test_login_skips_mfa_when_master_switch_off(monkeypatch):
     res = await portal_login(
         body=PortalLoginRequest(email=vu.email, password="pw"),
         request=MagicMock(),
+        slug="acme",
         db=db,
     )
     assert isinstance(res, PortalTokenResponse)
@@ -308,6 +311,7 @@ async def test_challenge_verify_mints_access_token(mfa_on, monkeypatch):
     res = await portal_mfa_challenge(
         body=PortalMFAChallengeVerifyRequest(challenge_token=challenge, code=code),
         request=MagicMock(),
+        slug="acme",
         db=db,
     )
     assert isinstance(res, PortalTokenResponse)
@@ -331,6 +335,7 @@ async def test_challenge_verify_wrong_code_rejected(mfa_on, monkeypatch):
         await portal_mfa_challenge(
             body=PortalMFAChallengeVerifyRequest(challenge_token=challenge, code="000000"),
             request=MagicMock(),
+            slug="acme",
             db=db,
         )
     assert exc.value.status_code == 401
@@ -422,6 +427,7 @@ async def test_challenge_verify_email_method_mints_token(mfa_on, monkeypatch):
             challenge_token=challenge, code="654321", method="email"
         ),
         request=MagicMock(),
+        slug="acme",
         db=db,
     )
     assert isinstance(res, PortalTokenResponse)
@@ -449,6 +455,7 @@ async def test_challenge_verify_email_wrong_or_expired_code_rejected(mfa_on, mon
                 challenge_token=challenge, code="000000", method="email"
             ),
             request=MagicMock(),
+            slug="acme",
             db=db,
         )
     assert exc.value.status_code == 401
@@ -563,6 +570,7 @@ async def test_challenge_endpoint_rejects_employee_challenge_token(mfa_on, monke
         await portal_mfa_challenge(
             body=PortalMFAChallengeVerifyRequest(challenge_token=employee_challenge, code=code),
             request=MagicMock(),
+            slug="acme",
             db=db,
         )
     assert exc.value.status_code == 401

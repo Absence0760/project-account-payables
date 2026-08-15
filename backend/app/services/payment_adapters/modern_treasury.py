@@ -38,6 +38,7 @@ from app.services.payment_adapters.base import (
     PaymentResult,
     PaymentStatus,
     WebhookEvent,
+    minor_units_to_decimal,
 )
 from app.services.payment_adapters.dispatcher import register_payment_adapter
 
@@ -261,6 +262,11 @@ class ModernTreasuryAdapter(PaymentAdapter):
             reference=data.get("reference_number"),
             failure_reason=_failure_reason_from(data),
             occurred_at=payload.get("created_at") or datetime.now(UTC).isoformat(),
+            # What MT says it actually settled. Its payment_order resource
+            # carries `amount` in the lowest currency unit — the same scale
+            # `create_payment` sends — so the inverse conversion is symmetric.
+            amount=minor_units_to_decimal(data.get("amount")),
+            currency=(data.get("currency") or None),
             raw=payload,
         )
 

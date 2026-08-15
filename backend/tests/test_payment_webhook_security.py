@@ -48,13 +48,41 @@ def _ctrl_session_factory(org):
     return factory
 
 
-def _tenant_session_factory(payment):
+def _target_table(stmt) -> str:
+    """The table a `select(...)` reads from, or "" if it can't be resolved.
+
+    The settle path issues more than one query (Payment FOR UPDATE, then the
+    Invoice whose currency the settlement verifier compares against, then the
+    fraud_flag dedupe count), so a factory that returns one canned row for
+    every `execute` hands the Payment back as an Invoice. Dispatching on the
+    TABLE — not `column_descriptions[0]["entity"]`, which is empty for an
+    aggregate like `select(func.count())` — keeps the fake honest as the
+    handler grows.
+    """
+    try:
+        return stmt.get_final_froms()[0].name
+    except (AttributeError, IndexError, TypeError):
+        return ""
+
+
+def _tenant_session_factory(payment, invoice=None, open_exceptions=0):
     """Mock the tenant-DB session factory used to look up / mutate
     the Payment row."""
-    result = MagicMock()
-    result.scalar_one_or_none = MagicMock(return_value=payment)
+
+    def _execute(stmt, *args, **kwargs):
+        result = MagicMock()
+        table = _target_table(stmt)
+        if table == "invoices":
+            result.scalar_one_or_none = MagicMock(return_value=invoice)
+        elif table == "exceptions":
+            # The `_open_settlement_mismatch_exception` dedupe count.
+            result.scalar = MagicMock(return_value=open_exceptions)
+        else:
+            result.scalar_one_or_none = MagicMock(return_value=payment)
+        return result
+
     db = AsyncMock()
-    db.execute = AsyncMock(return_value=result)
+    db.execute = AsyncMock(side_effect=_execute)
     db.commit = AsyncMock()
     # `AsyncSession.add` is SYNCHRONOUS. AsyncMock auto-specs every attribute as
     # async, so leaving it makes `db.add(...)` (audit.py, on the settle path)
@@ -65,6 +93,67 @@ def _tenant_session_factory(payment):
     factory.return_value.__aenter__ = AsyncMock(return_value=db)
     factory.return_value.__aexit__ = AsyncMock(return_value=False)
     return factory, db
+
+
+def _payment(
+    *,
+    status="submitted",
+    amount=Decimal("500.00"),
+    provider_payment_id="px_1",
+    payment_run_id=None,
+    **overrides,
+):
+    """A Payment stand-in carrying every field the settle path reads.
+
+    Kept in one place so a new column the handler starts reading is added
+    once, not per test — a stale fixture that silently lacks an attribute is
+    how a mocked suite drifts away from the real row.
+    """
+    fields = {
+        "id": uuid.uuid4(),
+        "invoice_id": uuid.uuid4(),
+        "correlation_id": uuid.uuid4(),
+        "provider_payment_id": provider_payment_id,
+        "payment_run_id": payment_run_id,
+        "status": status,
+        "completed_at": None,
+        "reference": None,
+        "failure_reason": None,
+        "amount": amount,
+        "method": "ach",
+        # International legs — NULL on a domestic payment.
+        "source_amount": None,
+        "source_currency": None,
+    }
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+def _event(
+    *,
+    provider_payment_id="px_1",
+    event_id="evt_1",
+    status,
+    reference=None,
+    failure_reason=None,
+    amount=None,
+    currency=None,
+):
+    """A `WebhookEvent` stand-in. `amount`/`currency` default to None — the
+    `unverified` settlement branch — so a test opts in to the verification."""
+    return SimpleNamespace(
+        provider_payment_id=provider_payment_id,
+        event_id=event_id,
+        status=status,
+        reference=reference,
+        failure_reason=failure_reason,
+        amount=amount,
+        currency=currency,
+    )
+
+
+def _invoice(currency="USD"):
+    return SimpleNamespace(id=uuid.uuid4(), entity_id=uuid.uuid4(), currency=currency)
 
 
 def _org(slug="acme", provider="modern_treasury", webhook_secret="s3cret"):
@@ -506,32 +595,19 @@ async def test_webhook_only_touches_the_url_path_tenant_db():
     from app.services.payment_adapters import PaymentStatus
 
     org = _org(slug="acme")
-    payment = SimpleNamespace(
-        id=uuid.uuid4(),
-        provider_payment_id="px_3",
-        payment_run_id=None,
-        status="submitted",
-        completed_at=None,
-        reference=None,
-        failure_reason=None,
-        # Money-path fields the settle-path audit row reads off a real Payment.
-        correlation_id=uuid.uuid4(),
-        amount=Decimal("500.00"),
-        method="ach",
-    )
+    payment = _payment(provider_payment_id="px_3")
 
     adapter = MagicMock()
     adapter.parse_webhook = MagicMock(
-        return_value=SimpleNamespace(
+        return_value=_event(
             provider_payment_id="px_3",
             event_id="evt_3",
             status=PaymentStatus.completed,
             reference="REF-1",
-            failure_reason=None,
         )
     )
 
-    tenant_factory, db = _tenant_session_factory(payment)
+    tenant_factory, db = _tenant_session_factory(payment, invoice=_invoice())
     with (
         patch("app.database.control_session_factory", _ctrl_session_factory(org)),
         patch("app.api.payments.get_payment_adapter", return_value=adapter),
@@ -567,31 +643,25 @@ async def test_webhook_settle_writes_audit_row():
     from app.services.payment_adapters import PaymentStatus
 
     org = _org(slug="acme")
-    payment = SimpleNamespace(
-        id=uuid.uuid4(),
+    payment = _payment(
         provider_payment_id="px_settle",
         payment_run_id=uuid.uuid4(),
-        status="submitted",
-        completed_at=None,
-        reference=None,
-        failure_reason=None,
-        correlation_id=uuid.uuid4(),
         amount=Decimal("1234.56"),
-        method="ach",
     )
 
     adapter = MagicMock()
     adapter.parse_webhook = MagicMock(
-        return_value=SimpleNamespace(
+        return_value=_event(
             provider_payment_id="px_settle",
             event_id="evt_settle",
             status=PaymentStatus.completed,
             reference="REF-OK",
-            failure_reason=None,
+            amount=Decimal("1234.56"),
+            currency="USD",
         )
     )
 
-    tenant_factory, db = _tenant_session_factory(payment)
+    tenant_factory, db = _tenant_session_factory(payment, invoice=_invoice())
     with (
         patch("app.database.control_session_factory", _ctrl_session_factory(org)),
         patch("app.api.payments.get_payment_adapter", return_value=adapter),
@@ -623,6 +693,11 @@ async def test_webhook_settle_writes_audit_row():
     # PII-free: amount is the Decimal serialised to a string, no bank values.
     assert details["amount"] == "1234.56"
     assert "iban" not in details and "account" not in details
+    # The settlement verdict rides the same append-only row — this is the
+    # WORM-shipped evidence of what the processor said it moved.
+    assert details["settlement"]["outcome"] == "matched"
+    assert details["settlement"]["settled_amount"] == "1234.56"
+    assert details["settlement"]["authorized_amount"] == "1234.56"
 
 
 @pytest.mark.asyncio
@@ -696,31 +771,19 @@ async def test_webhook_releases_claim_when_db_block_raises(_autouse_fake_redis):
     from app.services.webhook_security import is_event_already_processed
 
     org = _org(slug="acme")
-    payment = SimpleNamespace(
-        id=uuid.uuid4(),
-        provider_payment_id="px_fail",
-        payment_run_id=None,
-        status="submitted",
-        completed_at=None,
-        reference=None,
-        failure_reason=None,
-        correlation_id=uuid.uuid4(),
-        amount=Decimal("42.00"),
-        method="ach",
-    )
+    payment = _payment(provider_payment_id="px_fail", amount=Decimal("42.00"))
 
     adapter = MagicMock()
     adapter.parse_webhook = MagicMock(
-        return_value=SimpleNamespace(
+        return_value=_event(
             provider_payment_id="px_fail",
             event_id="evt_fail",
             status=PaymentStatus.completed,
             reference="REF",
-            failure_reason=None,
         )
     )
 
-    tenant_factory, db = _tenant_session_factory(payment)
+    tenant_factory, db = _tenant_session_factory(payment, invoice=_invoice())
     with (
         patch("app.database.control_session_factory", _ctrl_session_factory(org)),
         patch("app.api.payments.get_payment_adapter", return_value=adapter),
@@ -754,31 +817,19 @@ async def test_webhook_keeps_claim_on_success(_autouse_fake_redis):
     from app.services.webhook_security import is_event_already_processed
 
     org = _org(slug="acme")
-    payment = SimpleNamespace(
-        id=uuid.uuid4(),
-        provider_payment_id="px_ok",
-        payment_run_id=None,
-        status="submitted",
-        completed_at=None,
-        reference=None,
-        failure_reason=None,
-        correlation_id=uuid.uuid4(),
-        amount=Decimal("42.00"),
-        method="ach",
-    )
+    payment = _payment(provider_payment_id="px_ok", amount=Decimal("42.00"))
 
     adapter = MagicMock()
     adapter.parse_webhook = MagicMock(
-        return_value=SimpleNamespace(
+        return_value=_event(
             provider_payment_id="px_ok",
             event_id="evt_ok",
             status=PaymentStatus.completed,
             reference="REF",
-            failure_reason=None,
         )
     )
 
-    tenant_factory, db = _tenant_session_factory(payment)
+    tenant_factory, db = _tenant_session_factory(payment, invoice=_invoice())
     with (
         patch("app.database.control_session_factory", _ctrl_session_factory(org)),
         patch("app.api.payments.get_payment_adapter", return_value=adapter),

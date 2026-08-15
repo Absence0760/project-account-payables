@@ -60,6 +60,37 @@ ACTION_ESCALATED = "exception.escalated"
 ACTION_DISMISSED = "exception.dismissed"
 ACTION_ASSIGNED = "exception.assigned"
 
+#: Every ``Exception.exception_type`` the platform raises. The column is a plain
+#: ``String(50)`` (no DB enum), so this tuple is the canonical roster the rest of
+#: the codebase measures itself against — the exception-queue label map keys off
+#: it, and ``tests/test_exception_type_labels`` fails if a type is raised
+#: anywhere in ``app/`` without appearing here. It lives in the lifecycle module
+#: rather than the model because this is where an exception's *behaviour*
+#: (payment-blocking, actionable, auditable) is already defined.
+EXCEPTION_TYPES: tuple[str, ...] = (
+    "duplicate",
+    "po_mismatch",
+    "fraud_flag",
+    "extraction_failed",
+    "unverified_vendor",
+    "review_rejected",
+    "amount_exceeded",
+    "missing_data",
+    "quality_hold",
+    "price_variance",
+    "contract_noncompliant",
+    "erp_reconciliation",
+    "line_total_mismatch",
+    "payment_compliance_hold",
+)
+
+#: Types on the roster that NOTHING in ``app/`` raises any more. They stay on the
+#: roster — and keep their queue label — because historical ``exceptions`` rows
+#: carrying them still exist and must not regress to rendering a raw key. Listing
+#: them explicitly is what lets the drift guard still fail on a *new* dead entry
+#: (a typo, or a raise site deleted without its roster entry).
+LEGACY_EXCEPTION_TYPES: frozenset[str] = frozenset({"amount_exceeded"})
+
 #: Queue verb → terminal/queue status the verb produces.
 RESOLUTION_STATUSES: dict[str, str] = {
     "resolve": "resolved",

@@ -345,3 +345,15 @@ def test_scrub_details_handles_empty(bad):
     from app.services.audit_summary import _scrub_details
 
     assert _scrub_details(bad) == {}
+
+
+@pytest.mark.parametrize("bad", [[1, 2, 3], ["to_status"], "a-string", 7])
+def test_scrub_details_handles_a_non_object_details_column(bad):
+    """`audit_log.details` is JSONB with no object-shape constraint, so a
+    non-object value can reach here from a hand-written / corrupted row. It must
+    scrub to nothing rather than index into it — `["to_status"]` would otherwise
+    pass the `key in details` membership test and then TypeError on lookup,
+    500ing the whole invoice's summary over one bad row."""
+    from app.services.audit_summary import _scrub_details
+
+    assert _scrub_details(bad) == {}

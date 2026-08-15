@@ -16,7 +16,7 @@ the audit trail GET-only.
 import io
 import uuid
 from datetime import UTC, date, datetime, time, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
@@ -36,7 +36,12 @@ from app.models.organization import Organization
 from app.models.user import User
 from app.models.workflow import AuditLog
 from app.schemas.audit import AuditExportEntry
-from app.services.approval_signature import verify_approval
+from app.services.approval_signature import (
+    VERDICT_INVALID,
+    VERDICT_UNSIGNED,
+    VERDICT_VALID,
+    check_approval_row,
+)
 from app.services.audit_access import log_access
 from app.services.audit_dispatch import dispatch_audit
 from app.services.audit_report_pdf import AuditReportContext, render_audit_report_pdf
@@ -47,11 +52,10 @@ from app.tenant import get_tenant_db
 router = APIRouter(prefix="/audit", tags=["audit"])
 
 
-async def _resolve_actors(
-    control_db: AsyncSession, entries: list[AuditLog]
+async def _actor_names(
+    control_db: AsyncSession, actor_ids: set[uuid.UUID]
 ) -> tuple[dict[str, str], dict[str, str]]:
-    """Return ({actor_id: name}, {actor_id: email}) from the control DB."""
-    actor_ids = {e.actor_id for e in entries if e.actor_id}
+    """Return ({actor_id: name}, {actor_id: email}) for a set of actor ids."""
     names: dict[str, str] = {}
     emails: dict[str, str] = {}
     if actor_ids:
@@ -60,6 +64,13 @@ async def _resolve_actors(
             names[str(u.id)] = u.full_name
             emails[str(u.id)] = u.email
     return names, emails
+
+
+async def _resolve_actors(
+    control_db: AsyncSession, entries: list[AuditLog]
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Return ({actor_id: name}, {actor_id: email}) from the control DB."""
+    return await _actor_names(control_db, {e.actor_id for e in entries if e.actor_id})
 
 
 def _entries_to_csv(entries: list[AuditExportEntry]) -> str:
@@ -214,6 +225,145 @@ async def export_audit_trail(
     return export
 
 
+@router.get("/verify-signatures")
+async def verify_signatures_for_period(
+    start: date | None = Query(None),
+    end: date | None = Query(None),
+    limit: int = Query(100, ge=1, le=1000, description="Cap on the findings list"),
+    db: AsyncSession = Depends(get_tenant_db),
+    control_db: AsyncSession = Depends(get_control_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_CFO)),
+):
+    """Population-level non-repudiation test over a date range.
+
+    The per-invoice check (``/audit/invoice/{id}/verify-signatures``) can only
+    answer "is THIS approval still intact" — which presumes you already know
+    which invoice to suspect. Testing the control the way an auditor actually
+    tests it (over a period's whole population of approvals) had no surface at
+    all, so a tampered ``invoice.approved`` row was in practice undetectable.
+
+    This sweeps every ``invoice.approved`` audit row in ``start``..``end``,
+    re-derives each signature against its invoice's **current** exact amount via
+    the same ``check_approval_row`` primitive, and returns population counts plus
+    a bounded list of the rows that did not verify. A clean run — ``invalid`` and
+    ``unsigned`` both zero — is the evidence; a non-zero count names exactly the
+    rows to investigate.
+
+    Rows are streamed (``yield_per``), so the counts cover the whole population
+    without materialising it. ``findings`` is capped by ``limit`` and flags
+    ``findings_truncated`` when there were more; the counts are never truncated.
+
+    ``unsigned`` is reported separately from ``invalid``: an approval written
+    before ``FEOH_APPROVAL_SIGNING_KEY`` was configured has nothing to verify and
+    is not evidence of tampering — but once signing IS configured, an unsigned
+    approval in the period is itself a finding, which is why it is listed rather
+    than merely counted.
+
+    Admin/CFO only (the auditor privilege), and itself audited (``audit.viewed``
+    carrying counts only — no invoice values enter the trail).
+    """
+    if start is None and end is None:
+        raise HTTPException(status_code=400, detail="Provide a start and/or end date")
+    if start is not None and end is not None and start > end:
+        raise HTTPException(status_code=400, detail="Invalid range")
+
+    # Join on `correlation_id`: it is UNIQUE on `invoices`, so one audit row
+    # maps to exactly one invoice — and it is the column the trail is filed
+    # under, so this is the same linkage the per-invoice read uses.
+    query = (
+        select(
+            AuditLog.id,
+            AuditLog.actor_id,
+            AuditLog.created_at,
+            AuditLog.details,
+            Invoice.id,
+            Invoice.invoice_number,
+            Invoice.amount,
+        )
+        .join(Invoice, Invoice.correlation_id == AuditLog.correlation_id)
+        .where(AuditLog.action == "invoice.approved")
+        .order_by(AuditLog.created_at)
+    )
+    if start is not None:
+        query = query.where(AuditLog.created_at >= datetime.combine(start, time.min, tzinfo=UTC))
+    if end is not None:
+        # Inclusive of the whole `end` day (mirrors /audit/export).
+        query = query.where(
+            AuditLog.created_at < datetime.combine(end + timedelta(days=1), time.min, tzinfo=UTC)
+        )
+
+    # Keyed off the verdict constants themselves so a renamed/added verdict is a
+    # KeyError at test time, never a silently-dropped row.
+    counts = dict.fromkeys((VERDICT_VALID, VERDICT_INVALID, VERDICT_UNSIGNED), 0)
+    invoice_ids: set[uuid.UUID] = set()
+    findings: list[dict] = []
+    findings_truncated = False
+
+    signing_key = settings.approval_signing_key
+    result = await db.stream(query.execution_options(yield_per=500))
+    async for row_id, actor_id, _created_at, details, inv_id, inv_number, inv_amount in result:
+        invoice_ids.add(inv_id)
+        check = check_approval_row(
+            details=details,
+            invoice_id=inv_id,
+            # Money stays exact — the digest was computed over a Decimal.
+            amount=Decimal(str(inv_amount or 0)),
+            actor_id=actor_id,
+            signing_key=signing_key,
+        )
+        counts[check.verdict] += 1
+        if check.verdict == VERDICT_VALID:
+            continue
+        if len(findings) >= limit:
+            findings_truncated = True
+            continue
+        findings.append(
+            {
+                "invoice_id": str(inv_id),
+                "invoice_number": inv_number,
+                "audit_row_id": str(row_id),
+                "actor_id": str(actor_id) if actor_id else None,
+                "signed_at": check.signed_at,
+                "verdict": check.verdict,
+            }
+        )
+
+    names, _emails = await _actor_names(
+        control_db, {uuid.UUID(f["actor_id"]) for f in findings if f["actor_id"]}
+    )
+    for finding in findings:
+        finding["actor"] = names.get(finding["actor_id"]) if finding["actor_id"] else None
+
+    checked = sum(counts.values())
+    await log_access(
+        db,
+        user=user,
+        organization_id=user.organization_id,
+        entity_type="audit",
+        entity_id=user.organization_id,
+        extra={
+            "scope": "range",
+            "verify_signatures": checked,
+            "invalid": counts[VERDICT_INVALID],
+            "unsigned": counts[VERDICT_UNSIGNED],
+        },
+    )
+    await db.commit()
+
+    return {
+        "start": start.isoformat() if start else None,
+        "end": end.isoformat() if end else None,
+        "signing_configured": bool(signing_key),
+        "invoices_covered": len(invoice_ids),
+        "approvals_checked": checked,
+        "valid": counts[VERDICT_VALID],
+        "invalid": counts[VERDICT_INVALID],
+        "unsigned": counts[VERDICT_UNSIGNED],
+        "findings": findings,
+        "findings_truncated": findings_truncated,
+    }
+
+
 @router.get("/invoice/{invoice_id}")
 async def get_invoice_audit_trail(
     invoice_id: uuid.UUID,
@@ -310,51 +460,23 @@ async def verify_invoice_signatures(
 
     results: list[dict] = []
     for row in rows:
-        sig = (row.details or {}).get("signature") if row.details else None
-        if not sig or not isinstance(sig, dict):
-            # An approval row written before signing was enabled has no block —
-            # report it as unsigned rather than invalid (nothing to verify).
-            results.append(
-                {
-                    "audit_row_id": str(row.id),
-                    "signed_at": None,
-                    "actor": names.get(str(row.actor_id)) if row.actor_id else None,
-                    "signed": False,
-                    "valid": False,
-                }
-            )
-            continue
-
-        signed_at_raw = sig.get("signed_at")
-        signed_at = None
-        if signed_at_raw:
-            try:
-                signed_at = datetime.fromisoformat(signed_at_raw)
-            except (ValueError, TypeError):
-                signed_at = None
-
-        valid = False
-        if signed_at is not None and row.actor_id is not None:
-            try:
-                valid = verify_approval(
-                    invoice_id=invoice.id,
-                    amount=current_amount,
-                    actor_id=row.actor_id,
-                    decision="approved",
-                    timestamp=signed_at,
-                    signature=sig.get("value"),
-                    signing_key=settings.approval_signing_key,
-                )
-            except (InvalidOperation, ValueError):
-                valid = False
-
+        # One shared definition of "does this row still verify" — the population
+        # sweep below calls the same primitive, so the two can't drift on what
+        # counts as unsigned vs tampered.
+        check = check_approval_row(
+            details=row.details,
+            invoice_id=invoice.id,
+            amount=current_amount,
+            actor_id=row.actor_id,
+            signing_key=settings.approval_signing_key,
+        )
         results.append(
             {
                 "audit_row_id": str(row.id),
-                "signed_at": signed_at_raw,
+                "signed_at": check.signed_at,
                 "actor": names.get(str(row.actor_id)) if row.actor_id else None,
-                "signed": True,
-                "valid": valid,
+                "signed": check.signed,
+                "valid": check.valid,
             }
         )
 

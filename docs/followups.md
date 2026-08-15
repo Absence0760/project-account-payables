@@ -142,6 +142,155 @@ rather than folding into the mechanical sibling-sweep fix.
 Ref: `reviews/flake-admin-users.md` (gitignored — regenerate via
 `/flake-doctor` if consulting this again after the file has aged out).
 
+### Settlement-amount verification — the two rails it can't reach
+
+`services/payment_settlement.verify_settlement` now compares the amount a
+processor says it settled against the amount AP authorized on every `completed`
+webhook, and flags a divergence as a payment-blocking `fraud_flag` (see
+[payments.md](../backend/docs/payments.md) § Settlement-amount verification).
+Six of the seven adapters report the figure. Two paths still settle
+`unverified` — deliberately fail-open, and recorded as such on the audit row
+rather than silently:
+
+- [ ] **Dwolla** — its webhook body is a bare `{id, topic, resourceId, _links}`
+      envelope; the transfer amount is only reachable by following
+      `_links.resource`. Durable fix: an async re-fetch of the transfer,
+      either in the handler after `parse_webhook` returns or via a
+      `PaymentAdapter.fetch_settlement(provider_payment_id)` capability the
+      handler calls only when `event.amount is None` — the latter also covers
+      any future adapter with the same shape.
+- [ ] **The reconciler backstop** (`services/payment_reconciler.py`) —
+      `PaymentAdapter.get_payment_status` returns a bare `PaymentStatus`, so a
+      payment settled by the sweep rather than a webhook carries no settlement
+      verdict. Durable fix: the same `fetch_settlement` capability, called from
+      the sweep's terminal-transition branch.
+
+**Why deferred:** both need a new adapter capability plus a network call on a
+path that is currently synchronous and network-free, which is a real slice
+rather than a bolt-on — and bank reconciliation
+([bank-reconciliation.md](../backend/docs/bank-reconciliation.md)) already
+classifies a divergent debit as `amount_mismatch`, so neither rail is
+unguarded, only guarded later.
+**Trigger:** a pilot tenant on Dwolla, or the reconciler being switched on in a
+deployed env (`FEOH_PAYMENT_RECONCILE_ENABLED`).
+
+### Under-settlement still closes the invoice out as fully paid
+
+`payment_settlement.verify_settlement` now catches a processor that settled a
+different amount than AP authorized and raises a payment-blocking `fraud_flag`
+(see [payments.md](../backend/docs/payments.md) § Settlement-amount
+verification). What it cannot do is say *how much* was settled: `Payment` has
+one `amount` and a status that is either terminal or not, with no
+representation of "settled for less than authorized". So an under-settlement
+(the processor moved $250 against a $500 instruction) leaves the payment
+legitimately `completed`, the invoice transitions to `paid`, and the ERP /
+aging report / 1099 YTD totals read it as settled in full while the vendor is
+short. The flag surfaces it; the invoice status does not.
+
+- [ ] Represent the settled amount on the `Payment` row (a
+      `settled_amount` `Numeric(15, 2)` + migration, written by the webhook
+      from the verifier's own figure), so an under-settlement can hold the
+      invoice short of `paid` and a partial can be reported as a partial.
+
+**Why deferred:** it needs a migration, which is `/safe-migration`'s risk
+profile, not `/improve-round`'s. Holding the invoice WITHOUT it was tried in
+this round and reverted: `payment_erp_sync._sync_payments` is the only code
+path that flips `payment_scheduled → paid` and nothing re-invokes it once the
+run's payments are all terminal, so an operator who resolved the flag — the
+correct response to an *over*-settlement — stranded the invoice permanently,
+never `paid` and never re-payable. A hold is only safe once the settled amount
+is on the row and a real release exists. The operator remedy meanwhile is
+`POST /api/payments/{id}/void` (it accepts a `paid` payment), which hands the
+invoice back to `approved` to be re-paid correctly — the only correct remedy
+regardless, since a partially-settled invoice can't be made whole by a status
+change.
+**Trigger:** the first real under-settlement in a deployed env, or any work
+that adds partial-payment support.
+
+### Minor-unit scaling assumes every currency has a 2-digit exponent
+
+Every minor-unit payment adapter (`modern_treasury`, `stripe_treasury`,
+`increase`, `column`) converts on submit with a flat `payload.amount * 100`,
+and `payment_adapters.base.minor_units_to_decimal` inverts it the same way.
+The pair is symmetric, so it cannot raise a phantom settlement mismatch — but
+it is symmetrically *wrong* for a currency whose ISO-4217 exponent isn't 2
+(JPY/KRW = 0; BHD/KWD/OMR = 3).
+
+- [ ] Resolve the minor-unit exponent per currency on BOTH legs — a shared
+      `exponent_for(currency)` used by each adapter's submit path and by
+      `minor_units_to_decimal` — so an amount is scaled the way the processor
+      actually reads it, and a genuine scale-off settlement on a non-cent
+      currency is caught rather than reading as `matched`.
+
+**Why deferred:** the `* 100` on submit predates the settlement verifier and
+would have to move with it; getting it wrong misprices a live payment by 100x,
+which is a worse failure than the verification gap it closes. No test
+currently exercises a non-2-exponent currency, and no shipped corridor routes
+one to these four adapters (Increase and Column are USD; the FX corridors go
+through `international_payments`).
+**Trigger:** the first tenant paying in JPY, KRW, or a 3-decimal Gulf currency
+through any minor-unit adapter.
+Ref: [payments.md](../backend/docs/payments.md) § Settlement-amount
+verification → Per-provider coverage.
+
+### Outbound-webhook signing secret has no rotation path
+
+A `WebhookSubscription`'s HMAC signing secret is minted once at create time and
+shown once. Anyone holding it can forge a signed `invoice.approved` /
+`payment.settled` payload into the customer's receiver, so it is a credential
+with real blast radius — but the only remedy on a leak today is
+`DELETE /api/webhooks/{id}` + re-create, which changes the subscription id and
+CASCADE-deletes the whole delivery history. `docs/secrets-rotation.md` documents
+a self-serve rotation for the per-tenant SCIM bearer and OIDC client secret and
+says nothing about this one.
+
+- [ ] `POST /api/webhooks/{id}/rotate-secret` — mint a fresh secret, return it
+      exactly once (the create-time contract), keep the subscription id +
+      delivery history, audit `webhook_subscription.secret_rotated` PII-free.
+- [ ] Optional overlap window so a receiver can be reconfigured without
+      dropping in-flight deliveries: keep the previous secret alive for a
+      bounded period and emit its signature in a second header
+      (`X-Webhook-Signature-Previous`), leaving `X-Webhook-Signature` as the
+      current secret's so a non-rotating receiver's contract never changes.
+      Needs two nullable columns on `webhook_subscriptions`, so it is a
+      `/safe-migration` job, not a bolt-on.
+- [ ] Add the rotation to `docs/secrets-rotation.md` § per-tenant secrets.
+
+**Why deferred:** the no-overlap half is small, but shipping only that leaves
+the hard cutover a customer will actually hit; the overlap half needs a schema
+change and a documented receiver-side verification contract, which is its own
+slice.
+**Trigger:** the first tenant with a live outbound webhook, or any secret-leak
+incident. Surfaced while auditing the trust boundary (`/improve-round`).
+Ref: [public-api.md](../backend/docs/public-api.md) § Outbound webhooks.
+
+### `compute_fx_gain_loss` is documented behaviour over an unwired function
+
+`services/international_payments.compute_fx_gain_loss` is pure, fully unit-
+tested, and has **no production caller** — every non-comment reference outside
+its own definition is a test. Meanwhile
+[multi-currency.md](../backend/docs/multi-currency.md) states it computes
+realized gain/loss when a foreign-currency invoice settles, and
+`api/analytics.py` names it in a comment as the reporting-layer counterpart.
+So the doc describes a behaviour the app does not perform: a tenant paying a
+foreign-currency invoice books no realized FX gain or loss anywhere.
+
+- [ ] Decide the resolution — wire it into the settlement path, or narrow the
+      doc to say it is an available primitive rather than active behaviour.
+      Wiring it is the larger half: the realized figure has nowhere to live,
+      so it needs a column on `Payment` (or a ledger row), which makes it a
+      `/safe-migration` job rather than a bolt-on.
+
+**Why deferred:** which way this resolves is a product call — whether realized
+FX gain/loss belongs in this product at all — not a mechanical fix, and the
+version worth having needs the same `Payment`-column slice as the
+under-settlement item above. Documenting it away without that decision would
+just move the drift.
+**Trigger:** the `Payment.settled_amount` migration above (same row, same
+slice), or the first tenant asking where their FX gain/loss is reported.
+Surfaced by the money-path `/improve-round` while auditing settlement.
+Ref: [multi-currency.md](../backend/docs/multi-currency.md).
+
 
 ---
 

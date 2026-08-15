@@ -114,7 +114,14 @@ every place a `Payment` reaches `completed` in `app/api/payments.py`:
   virtual-card leg (mock adapter, or any processor that confirms inline)
 - the async webhook-driven completion in `payment_webhook` (the realistic
   path for a live ACH/wire processor, which sits `submitted`/`processing`
-  until the provider calls back)
+  until the provider calls back) — **unless the settlement itself didn't
+  reconcile**: when `payment_settlement.verify_settlement` flags the
+  processor's reported amount as diverging from what AP authorized, the
+  capture is skipped and a payment-blocking `fraud_flag` opens instead. The
+  payoff match below runs against `Payment.amount` — our authorized figure,
+  which the rail has just contradicted — so capturing there would mark
+  savings realized on a number in dispute. See
+  [payments.md](payments.md) § Settlement-amount verification.
 
 Both call the shared `_capture_discount_offers` helper, which resolves any
 still-`accepted` **invoice-scoped** `DiscountOffer` on the settled invoice and

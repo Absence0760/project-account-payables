@@ -131,6 +131,30 @@ enumerate either. This matters for the same reason the audit row does: a
 cross-entity clear of a `duplicate` releases money the caller can't see in
 their own queue.
 
+## The type roster
+
+`exception_type` is a plain `String(50)` — there is no DB enum — so
+`exception_lifecycle.EXCEPTION_TYPES` is the canonical roster instead, sitting
+beside the rest of an exception's behaviour (payment-blocking, actionable,
+auditable). Two things key off it:
+
+- `api/exceptions.EXCEPTION_TYPE_LABELS` must cover it **exactly**. A missing
+  entry isn't a crash — the lookup falls back to the raw key — so the queue just
+  renders `line_total_mismatch` at an AP manager instead of "Line Total
+  Mismatch". That matters most for exactly the types it kept happening to:
+  payment-blocking ones, read under time pressure.
+- `LEGACY_EXCEPTION_TYPES` names roster members nothing raises any more. They
+  keep their seat and their label because historical rows still carry them;
+  declaring them explicitly is what lets the guard still fail on a *new* dead
+  entry.
+
+`tests/test_exception_type_labels.py` enforces both by **AST-scanning `app/`**
+for the type strings the code actually uses (the `exception_type=` keyword, the
+positional argument of `_ensure_exception`, and any `*_EXCEPTION_TYPE(S)`
+constant) rather than carrying a hand-maintained list. The list *was* the drift:
+the previous version of that guard passed for `line_total_mismatch`,
+`payment_compliance_hold` and `price_variance` while all three rendered raw.
+
 ## Where it surfaces
 
 - `GET /api/audit/invoice/{id}` and the auditor export — the events, in order,
@@ -149,3 +173,5 @@ dismiss / assign, the invoice-less correlation fallback, the
 (`via: agent`), the resolution-length cap, and entity scoping on every mutating
 endpoint. `backend/tests/test_exception_assignment.py` pins
 `apply_resolution`'s pure bookkeeping.
+`backend/tests/test_exception_type_labels.py` is the roster/label drift guard
+described above (pure — an AST walk over `app/`, no DB).

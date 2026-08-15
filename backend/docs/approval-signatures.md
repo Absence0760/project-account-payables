@@ -15,8 +15,26 @@ signature only proves they weren't tampered with.
 | Function | Purpose |
 |----------|---------|
 | `sign_approval(*, invoice_id, amount, actor_id, decision, timestamp, signing_key) -> str` | HMAC-SHA256 hex digest over the canonical payload. Empty key → `""` (signing skipped). |
-| `verify_approval(*, …, signature, signing_key) -> bool` | Constant-time (`hmac.compare_digest`) re-derive + compare. Empty key / empty signature / mismatch → `False` (never raises). |
+| `verify_approval(*, …, signature, signing_key) -> bool` | Constant-time (`hmac.compare_digest`) re-derive + compare. Empty key / missing, non-string, non-ASCII or empty signature / mismatch → `False` (never raises). |
 | `build_signature_detail(*, …, signing_key) -> dict \| None` | The `details["signature"]` block written on the audit row. `None` when no key. |
+| `check_approval_row(*, details, invoice_id, amount, actor_id, signing_key) -> SignatureCheck` | Verdict for ONE approval audit row: `valid` / `invalid` / `unsigned`. The single definition both verification endpoints call, so they can't drift on what a tampered row looks like. Never raises. |
+
+### Verdicts, and what each one claims
+
+| Row shape | Verdict | Why |
+|-----------|---------|-----|
+| digest re-derives | `valid` | the approval facts are unchanged |
+| digest doesn't re-derive; corrupt / missing / non-string `signed_at`; missing actor; **empty** `signature: {}`; a `value` that isn't an ASCII string | `invalid` | the row claims to be signed and isn't — a finding |
+| no `signature` key; `signature: null`; `details` is not a JSON object at all | `unsigned` | nothing to verify (predates signing, or the column was overwritten wholesale) |
+
+`details` is `JSONB` with **no shape constraint at any level**, so a
+hand-written value is reachable at every one of them — by exactly the direct-DB
+tamper this feature exists to catch. Every level is therefore shape-checked
+rather than allowed to raise: a non-object `details`, a non-object `signature`,
+a non-string `signed_at`, and a `value` that isn't an ASCII string (both cases
+`hmac.compare_digest` raises `TypeError` on) each resolve to a verdict. On the
+population sweep below, one corrupt row must surface as its own finding, not
+500 the whole period's control test and take the good rows' evidence with it.
 
 ### Canonical payload
 
@@ -80,6 +98,53 @@ already lives elsewhere on the row — the block stays PII-free).
   An approval row written before signing was enabled reports `signed: false`
   (nothing to verify) rather than `valid: false`.
 
+## Testing the control over a period (the population sweep)
+
+The per-invoice check answers "is THIS approval still intact" — which presumes
+you already know which invoice to suspect. That is not how the control is
+tested: an auditor tests a **population** (a quarter's approvals), and a
+tampered row nobody happens to open is, on that surface alone, undetectable.
+
+`GET /api/audit/verify-signatures?start=&end=[&limit=]` (`app/api/audit.py`,
+admin/CFO) is that surface. It sweeps every `invoice.approved` audit row in the
+range, joins each to its invoice on the UNIQUE `invoices.correlation_id`, and
+runs the same `check_approval_row` primitive against that invoice's **current**
+exact `amount`:
+
+```json
+{
+  "start": "2026-04-01", "end": "2026-06-30",
+  "signing_configured": true,
+  "invoices_covered": 412, "approvals_checked": 431,
+  "valid": 430, "invalid": 1, "unsigned": 0,
+  "findings": [
+    {"invoice_id": "…", "invoice_number": "INV-2231", "audit_row_id": "…",
+     "actor_id": "…", "actor": "A. Manager",
+     "signed_at": "2026-05-14T09:12:03+00:00", "verdict": "invalid"}
+  ],
+  "findings_truncated": false
+}
+```
+
+- **`invalid` vs `unsigned` are different claims.** `invalid` means the digest
+  no longer re-derives — the amount, the actor, or the timestamp changed after
+  the fact. `unsigned` means the row carries no signature block at all: an
+  approval written before `FEOH_APPROVAL_SIGNING_KEY` was configured has nothing
+  to verify and is not evidence of tampering. Both are listed (an unsigned
+  approval inside a period where signing IS configured is worth explaining), but
+  they are counted separately so a key-rollout backlog can't read as fraud.
+- **Counts are never truncated.** `limit` (default 100, max 1000) bounds the
+  `findings` array only and sets `findings_truncated`; the population counts
+  always cover the whole range. Rows are streamed (`yield_per`), so a large
+  period doesn't materialise in memory.
+- **A clean run is the evidence.** `invalid == 0 && unsigned == 0` over the
+  period is the control test passing; anything else names exactly the rows to
+  investigate, which the per-invoice endpoint then drills into.
+- `end` is whole-day inclusive (same convention as `/api/audit/export`); at
+  least one of `start`/`end` is required, and an inverted range is a generic
+  `400`. The sweep is itself audited (`audit.viewed`, `details` = scope +
+  counts, PII-free) and reads only the caller's own tenant DB.
+
 ## The signing key (`FEOH_APPROVAL_SIGNING_KEY`)
 
 | | |
@@ -100,7 +165,20 @@ it), so rotate deliberately, not casually.
 
 - Pure: sign/verify round-trip, tamper detection (amount / actor / timestamp),
   wrong-key, money-exactness (`100.00 == 100.0`), no-key fail-closed.
+- Pure (`check_approval_row`): the three verdicts, every "signed but corrupt"
+  shape (non-dict block, empty block, unparseable / non-string `signed_at`,
+  missing actor, no key), and a non-object `details` column — none of which may
+  raise.
 - Endpoint (real Postgres + ASGI app): valid signature verifies; a
   post-approval amount tamper → `valid: false`; access-audit row written; RBAC
   (clerk 403, no-auth 401); the full `review.approve_invoice` flow signs a row
   the endpoint then confirms valid.
+- Population sweep (real Postgres + ASGI app): a clean period reports zero
+  findings; a tampered row is found without naming the invoice up front;
+  `unsigned` is counted apart from `invalid`; the date range filters (and `end`
+  is whole-day inclusive); `limit` truncates `findings` but never the counts;
+  the access-audit row carries counts only; missing / inverted range → 400;
+  RBAC (clerk 403, no-auth 401); another tenant's approvals are invisible; and a
+  corrupt row — non-object `details`, or a malformed `signature.value` — is a
+  finding on both surfaces rather than a 500 that loses the rest of the
+  period's evidence.
