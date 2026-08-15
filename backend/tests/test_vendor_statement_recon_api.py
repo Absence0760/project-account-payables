@@ -15,10 +15,12 @@ import uuid
 from datetime import date, timedelta
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import select
 
 from app.models.entity import Entity
 from app.models.invoice import Invoice, InvoiceStatus
+from app.models.organization import Organization
 from app.models.vendor import Vendor
 from app.models.vendor_statement_recon import (
     VendorStatementReconciliation,
@@ -288,7 +290,11 @@ async def test_upload_csv_happy_path(realdb):
     assert resp.status_code == 201, resp.text
     body = resp.json()
     assert body["source_format"] == "csv"
-    assert body["file_key"] is None  # raw-file storage deferred
+    # The uploaded document is archived beside the run so the match can be
+    # audited against the original, not only against what we parsed.
+    assert body["has_source_file"] is True
+    assert body["file_key"].startswith(f"{org_id}/vendor-statements/{body['id']}/")
+    assert body["extraction"] is None  # no model read this — it was a CSV
     assert body["statement_reference"] == "STMT-Q2"
     classes = {ln["classification"] for ln in body["lines"]}
     assert "matched" in classes
@@ -623,3 +629,251 @@ async def test_clerk_cannot_create(realdb):
             },
         )
     assert resp.status_code == 403
+
+
+async def test_clerk_cannot_upload_a_statement(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id)
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        resp = await c.post(
+            "/api/vendor-statements/upload",
+            data={"vendor_id": vendor_id, "statement_date": _TODAY.isoformat()},
+            files={"file": ("s.csv", b"invoice,amount\nX,1\n", "text/csv")},
+        )
+    assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# PDF upload — routed through the extraction pipeline
+# ---------------------------------------------------------------------------
+
+
+def _statement_pdf(rows: list[str]) -> bytes:
+    """A real PDF carrying a text layer, so the `mock` adapter's offline reader
+    is exercised end to end rather than stubbed out."""
+    fitz = pytest.importorskip("fitz")
+    doc = fitz.open()
+    page = doc.new_page()
+    text = "Statement of Account\nInvoice     Date          Amount\n" + "\n".join(rows)
+    page.insert_text((40, 60), text, fontsize=9, fontname="cour")
+    return doc.tobytes()
+
+
+async def _set_extraction_provider(realdb, key: str, provider: str) -> None:
+    """Point the tenant's org at a specific extraction provider — `mock` is the
+    offline, credential-free reader, which is what makes this whole path
+    testable (and locally runnable) with no cloud account."""
+    org_id = realdb.info(key).org_id
+    async with realdb.control_sessionmaker()() as s:
+        org = (await s.execute(select(Organization).where(Organization.id == org_id))).scalar_one()
+        org.settings = {
+            **(org.settings or {}),
+            "extraction": {"program_type": "byok", "provider": provider},
+        }
+        await s.commit()
+
+
+async def test_upload_pdf_routes_through_extraction_and_reconciles(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _set_extraction_provider(realdb, "a", "mock")
+    vendor_id = await _add_vendor(mk, org_id)
+    await _add_invoice(mk, org_id, vendor_id=vendor_id, invoice_number="PDF-100", amount="1200.00")
+    await _add_invoice(mk, org_id, vendor_id=vendor_id, invoice_number="PDF-200", amount="2000.00")
+
+    pdf = _statement_pdf(
+        [
+            "PDF-100    2026-01-15    1,200.00",  # matches our ledger
+            "PDF-900    2026-01-20    500.00",  # supplier billed it, we have nothing
+            # PDF-200 omitted → missing on their side
+        ]
+    )
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/vendor-statements/upload",
+            data={"vendor_id": vendor_id, "statement_date": _TODAY.isoformat()},
+            files={"file": ("statement.pdf", pdf, "application/pdf")},
+        )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["source_format"] == "pdf"
+
+    by_class: dict[str, list] = {}
+    for ln in body["lines"]:
+        by_class.setdefault(ln["classification"], []).append(ln)
+    assert [ln["statement_invoice_number"] for ln in by_class["matched"]] == ["PDF-100"]
+    # Exact money survived the extractor → Decimal boundary (a "1,200.00" read
+    # off the page is 1200.00, not 1.0).
+    assert by_class["matched"][0]["statement_amount"] == 1200.0
+    assert [ln["statement_invoice_number"] for ln in by_class["missing_on_our_side"]] == ["PDF-900"]
+    assert [ln["matched_invoice_number"] for ln in by_class["missing_on_their_side"]] == ["PDF-200"]
+
+    # Provenance: a reviewer can see these lines were machine-read, and by what.
+    assert body["extraction"]["method"] == "ai_extraction"
+    assert body["extraction"]["provider"] == "mock"
+    assert body["extraction"]["line_count"] == 2
+    assert body["has_source_file"] is True
+
+    async with mk() as s:
+        audit = (
+            await s.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "vendor_statement_recon.created",
+                    AuditLog.entity_id == uuid.UUID(body["id"]),
+                )
+            )
+        ).scalar_one()
+        assert audit.details["source_format"] == "pdf"
+
+
+async def test_upload_pdf_archives_the_source_document_for_download(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _set_extraction_provider(realdb, "a", "mock")
+    vendor_id = await _add_vendor(mk, org_id)
+    pdf = _statement_pdf(["ARCH-1    2026-01-15    100.00"])
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        run_id = (
+            await c.post(
+                "/api/vendor-statements/upload",
+                data={"vendor_id": vendor_id, "statement_date": _TODAY.isoformat()},
+                files={"file": ("statement.pdf", pdf, "application/pdf")},
+            )
+        ).json()["id"]
+        got = await c.get(f"/api/vendor-statements/{run_id}/file")
+
+    assert got.status_code == 200, got.text
+    assert got.content == pdf
+    assert "attachment" in got.headers["content-disposition"]
+
+
+async def test_source_download_404s_when_nothing_was_archived(realdb):
+    """A pasted-lines run has no document — the same opaque 404 as an unknown
+    run, so the endpoint never enumerates."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id)
+    async with realdb.client(key="a", role="ap_manager") as c:
+        run_id = (
+            await c.post(
+                "/api/vendor-statements",
+                json={
+                    "vendor_id": vendor_id,
+                    "statement_date": _TODAY.isoformat(),
+                    "lines": [_line("NOFILE-1", "10.00")],
+                },
+            )
+        ).json()["id"]
+        resp = await c.get(f"/api/vendor-statements/{run_id}/file")
+    assert resp.status_code == 404
+
+
+async def test_source_download_is_tenant_scoped(realdb):
+    """Tenant B may not fetch tenant A's statement document — the run lookup is
+    tenant/entity-scoped, so a cross-tenant id is an ordinary 404."""
+    mk_a = realdb.sessionmaker("a")
+    org_a = realdb.info("a").org_id
+    await _set_extraction_provider(realdb, "a", "mock")
+    vendor_id = await _add_vendor(mk_a, org_a)
+    pdf = _statement_pdf(["XT-1    2026-01-15    100.00"])
+    async with realdb.client(key="a", role="ap_manager") as c:
+        run_id = (
+            await c.post(
+                "/api/vendor-statements/upload",
+                data={"vendor_id": vendor_id, "statement_date": _TODAY.isoformat()},
+                files={"file": ("statement.pdf", pdf, "application/pdf")},
+            )
+        ).json()["id"]
+
+    async with realdb.client(key="b", role="ap_manager") as c:
+        resp = await c.get(f"/api/vendor-statements/{run_id}/file")
+    assert resp.status_code == 404
+
+
+async def test_deleting_a_run_removes_its_archived_document(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _set_extraction_provider(realdb, "a", "mock")
+    vendor_id = await _add_vendor(mk, org_id)
+    pdf = _statement_pdf(["DELF-1    2026-01-15    100.00"])
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        created = (
+            await c.post(
+                "/api/vendor-statements/upload",
+                data={"vendor_id": vendor_id, "statement_date": _TODAY.isoformat()},
+                files={"file": ("statement.pdf", pdf, "application/pdf")},
+            )
+        ).json()
+        assert (await c.delete(f"/api/vendor-statements/{created['id']}")).status_code == 204
+
+    from botocore.exceptions import ClientError
+
+    from app.services import storage
+
+    with pytest.raises(ClientError):
+        storage.get_file(created["file_key"])
+
+
+async def test_upload_unreadable_pdf_refuses_instead_of_inventing_lines(realdb):
+    """A document the configured provider can't read must 422 — never a run
+    with fabricated open items, and never a run asserting the supplier listed
+    nothing (which reads as "we owe them nothing")."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _set_extraction_provider(realdb, "a", "mock")
+    vendor_id = await _add_vendor(mk, org_id)
+    unreadable = _statement_pdf([])  # header furniture only → no open-item rows
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/vendor-statements/upload",
+            data={"vendor_id": vendor_id, "statement_date": _TODAY.isoformat()},
+            files={"file": ("scan.pdf", unreadable, "application/pdf")},
+        )
+    assert resp.status_code == 422, resp.text
+    assert "CSV" in resp.json()["detail"]
+
+    async with mk() as s:
+        runs = (await s.execute(select(VendorStatementReconciliation))).scalars().all()
+        assert runs == []
+
+
+async def test_upload_pdf_refused_when_provider_cannot_read_statements(realdb):
+    """openai_vision hasn't implemented the capability — the upload is refused
+    with an actionable message rather than silently mis-read."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _set_extraction_provider(realdb, "a", "openai_vision")
+    vendor_id = await _add_vendor(mk, org_id)
+    pdf = _statement_pdf(["NOPE-1    2026-01-15    100.00"])
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/vendor-statements/upload",
+            data={"vendor_id": vendor_id, "statement_date": _TODAY.isoformat()},
+            files={"file": ("statement.pdf", pdf, "application/pdf")},
+        )
+    assert resp.status_code == 422, resp.text
+    assert "CSV" in resp.json()["detail"]
+
+
+async def test_pdf_posted_as_octet_stream_is_still_routed_to_extraction(realdb):
+    """A browser posting a PDF as application/octet-stream must not be fed to
+    the CSV parser — magic bytes decide."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _set_extraction_provider(realdb, "a", "mock")
+    vendor_id = await _add_vendor(mk, org_id)
+    pdf = _statement_pdf(["OCT-1    2026-01-15    100.00"])
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/vendor-statements/upload",
+            data={"vendor_id": vendor_id, "statement_date": _TODAY.isoformat()},
+            files={"file": ("statement.bin", pdf, "application/octet-stream")},
+        )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["source_format"] == "pdf"

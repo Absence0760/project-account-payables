@@ -15,11 +15,22 @@ entity-scoped (multi-entity). See
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,7 +43,9 @@ from app.api.deps import (
     require_roles,
 )
 from app.config import settings
+from app.database import get_control_db
 from app.models.invoice import Invoice, InvoiceStatus
+from app.models.organization import Organization
 from app.models.user import User
 from app.models.vendor import Vendor
 from app.models.vendor_statement_recon import (
@@ -45,6 +58,7 @@ from app.models.vendor_statement_recon import (
     RESOLUTION_UNRESOLVED,
     SOURCE_CSV,
     SOURCE_MANUAL,
+    SOURCE_PDF,
     STATUS_OPEN,
     STATUS_RESOLVED,
     VendorStatementReconciliation,
@@ -59,8 +73,11 @@ from app.schemas.vendor_statement_recon import (
     ReconciliationResponse,
     ReconciliationSummary,
     ReconLineResponse,
+    StatementExtractionMeta,
     StatementLineInput,
 )
+from app.services import storage
+from app.services import vendor_statement_extraction as extraction
 from app.services import vendor_statement_recon as recon
 from app.services.audit_dispatch import dispatch_audit
 from app.tenant import (
@@ -69,6 +86,8 @@ from app.tenant import (
     get_tenant_db,
     get_write_entity_id,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/vendor-statements", tags=["vendor-statements"])
 
@@ -138,6 +157,23 @@ def _line_to_response(
     )
 
 
+def _extraction_meta(run: VendorStatementReconciliation) -> StatementExtractionMeta | None:
+    """Surface how a machine-read run was read, so a reviewer can weigh it.
+
+    Only the PDF path writes this block; a CSV or pasted-lines run has no
+    provider and no confidence to report and returns ``None``.
+    """
+    block = (run.meta or {}).get("extraction")
+    if not isinstance(block, dict):
+        return None
+    return StatementExtractionMeta(
+        method=str(block.get("method") or ""),
+        provider=str(block.get("provider") or ""),
+        confidence=float(block.get("confidence") or 0.0),
+        line_count=int(block.get("line_count") or 0),
+    )
+
+
 def _run_to_response(
     run: VendorStatementReconciliation,
     *,
@@ -154,6 +190,8 @@ def _run_to_response(
         currency=run.currency,
         source_format=run.source_format,
         file_key=run.file_key,
+        has_source_file=bool(run.file_key),
+        extraction=_extraction_meta(run),
         status=run.status,
         notes=run.notes,
         summary=_summary_from_run(run),
@@ -191,6 +229,7 @@ async def _create_run(
     notes: str | None,
     source_format: str,
     statement_lines: list[recon.StatementLine],
+    meta: dict | None = None,
 ) -> VendorStatementReconciliation:
     """Shared persist path for both the manual and CSV intake routes.
 
@@ -248,9 +287,10 @@ async def _create_run(
         statement_reference=statement_reference,
         currency=(currency or "USD").upper(),
         source_format=source_format,
-        # Raw-file storage (the uploaded statement → S3) is deferred; keep
-        # file_key NULL for now. See docs § Deferred.
+        # Stamped by `_archive_source_file` after the flush below — the S3 key
+        # embeds the run id, so the row has to exist first.
         file_key=None,
+        meta=meta,
         status=STATUS_OPEN,
         statement_total=summary.statement_total,
         ledger_total=summary.ledger_total,
@@ -299,9 +339,49 @@ async def _create_run(
         action="vendor_statement_recon.created",
         entity_type="vendor_statement_reconciliation",
         entity_id=run.id,
-        details={"vendor_id": str(vendor_id), "line_count": summary.line_count},
+        details={
+            "vendor_id": str(vendor_id),
+            "line_count": summary.line_count,
+            "source_format": source_format,
+        },
     )
     return run
+
+
+async def _archive_source_file(
+    run: VendorStatementReconciliation,
+    *,
+    org_id: uuid.UUID,
+    content: bytes,
+    filename: str | None,
+    content_type: str | None,
+) -> None:
+    """Store the uploaded statement beside the run it produced, best-effort.
+
+    Stamps ``run.file_key`` on success. A storage hiccup must NOT cost the
+    clerk a reconciliation they just ran — the run's per-line ``raw`` JSONB
+    still holds everything the match was derived from — so a failure is logged
+    PII-free and recorded as ``meta.raw_file_stored = False`` rather than
+    silently swallowed or turned into a 500.
+    """
+    stored = False
+    try:
+        run.file_key = await storage.upload_vendor_statement_file(
+            org_id,
+            run.id,
+            content,
+            filename or "statement",
+            content_type or "application/octet-stream",
+        )
+        stored = True
+    except Exception:
+        logger.warning(
+            "vendor statement source file not archived",
+            extra={"reconciliation_id": str(run.id)},
+            exc_info=True,
+        )
+    # Reassign (don't mutate in place) so SQLAlchemy sees the JSONB change.
+    run.meta = {**(run.meta or {}), "raw_file_stored": stored}
 
 
 def _input_to_statement_line(line: StatementLineInput) -> recon.StatementLine:
@@ -377,15 +457,56 @@ async def upload_reconciliation(
     statement_reference: str | None = Form(None),
     currency: str = Form("USD"),
     db: AsyncSession = Depends(get_tenant_db),
+    ctrl_db: AsyncSession = Depends(get_control_db),
     user: User = Depends(require_roles(*_WRITE_ROLES)),
     org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
+    """Create a run from an uploaded supplier statement — CSV or PDF.
+
+    A PDF is routed through the org's own extraction pipeline (the same adapter
+    and the same platform/BYOK credential rule invoices use) rather than a
+    second parser; everything else goes to the deterministic CSV parser as
+    before. Detection is by magic bytes first, because a browser will happily
+    post a PDF as ``application/octet-stream`` and feeding one to the CSV parser
+    produces a baffling error instead of an extraction.
+
+    Either way the resulting statement lines go into the SAME pure
+    reconciliation engine, and the uploaded document is archived beside the run.
+    """
     raw = await file.read()
-    try:
-        statement_lines = recon.parse_statement_csv(raw)
-    except recon.StatementParseError as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
+    if len(raw) > storage.MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File exceeds maximum size of {storage.MAX_FILE_SIZE // (1024 * 1024)} MB",
+        )
+
+    meta: dict | None = None
+    if extraction.looks_like_pdf(raw, filename=file.filename, content_type=file.content_type):
+        org = (
+            await ctrl_db.execute(select(Organization).where(Organization.id == org_id))
+        ).scalar_one_or_none()
+        if org is None:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        try:
+            statement_lines, extraction_meta = await extraction.extract_statement_lines(
+                org_settings=org.settings or {},
+                file_bytes=raw,
+                file_key=file.filename or "",
+                mime_type="application/pdf",
+            )
+        except extraction.StatementExtractionError as e:
+            # `message` is a static, PII-free string keyed off the reason code —
+            # the provider's own error text stays in the log.
+            raise HTTPException(status_code=422, detail=e.message) from e
+        source_format = SOURCE_PDF
+        meta = {"extraction": extraction_meta}
+    else:
+        try:
+            statement_lines = recon.parse_statement_csv(raw)
+        except recon.StatementParseError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        source_format = SOURCE_CSV
 
     run = await _create_run(
         db,
@@ -397,8 +518,18 @@ async def upload_reconciliation(
         statement_reference=statement_reference,
         currency=currency,
         notes=None,
-        source_format=SOURCE_CSV,
+        source_format=source_format,
         statement_lines=statement_lines,
+        meta=meta,
+    )
+    # Only archive a document that actually produced a run — a rejected upload
+    # never reaches the bucket.
+    await _archive_source_file(
+        run,
+        org_id=org_id,
+        content=raw,
+        filename=file.filename,
+        content_type=file.content_type,
     )
     await db.commit()
     await db.refresh(run)
@@ -559,6 +690,35 @@ async def get_reconciliation(
     return await _detail_response(db, run)
 
 
+@router.get("/{recon_id}/file")
+async def download_source_statement(
+    recon_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(*_READ_ROLES)),
+    org_id: uuid.UUID = Depends(get_org_id),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Download the supplier document this run was built from.
+
+    The run is resolved through the entity-scoped tenant query first, so the
+    caller can only ever name a run in their own tenant; the stored key is then
+    re-checked against the caller's org prefix on the way out of storage
+    (belt-and-braces against a key that somehow lands wrong). A run with no
+    archived document is the same 404 as an unknown run — it never enumerates.
+    """
+    run = await _get_scoped(db, recon_id, entity_id)
+    if not run.file_key:
+        raise HTTPException(status_code=404, detail="No source statement stored for this run")
+
+    content, content_type = storage.get_file(run.file_key, expected_prefix=f"{org_id}/")
+    filename = run.file_key.rsplit("/", 1)[-1]
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 def _recompute_run_status(lines: list[VendorStatementReconLine]) -> str:
     """A run is `resolved` once no actionable line is still unresolved."""
     has_open_actionable = any(
@@ -651,5 +811,11 @@ async def delete_reconciliation(
         entity_id=run.id,
         details={"vendor_id": str(run.vendor_id) if run.vendor_id else None},
     )
+    file_key = run.file_key
     await db.delete(run)  # cascade removes the lines
     await db.commit()
+    # The archived supplier document outlives nothing — drop it once the run
+    # that justified keeping it is gone. `delete_file` is already best-effort
+    # and idempotent, so a storage hiccup can't fail a completed delete.
+    if file_key:
+        storage.delete_file(file_key)
