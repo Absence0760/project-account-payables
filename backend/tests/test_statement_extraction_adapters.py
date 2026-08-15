@@ -195,6 +195,48 @@ def test_scan_statement_text_handles_a_leading_row_counter():
     assert lines[0].amount == "850.50"
 
 
+@pytest.mark.parametrize(
+    ("row", "why"),
+    [
+        ("PO 4502  INV-1  2026-01-15  500.00", "a PO/reference column left of the invoice number"),
+        ("0-30  INV-1  2026-01-15  500.00", "an aging-bucket label left of it"),
+        ("4502  INV-1  2026-01-15  500.00", "a bare reference number left of it"),
+    ],
+)
+def test_scan_statement_text_skips_a_second_identifier_column(row, why):
+    """Two identifier-shaped tokens left of the amount means the match key is a
+    guess, so the row is skipped.
+
+    Taking the FIRST one booked the PO/aging label as the invoice number. The
+    AMOUNT was read correctly in every one of these, which is why the two
+    earlier money-column fixes didn't catch it — the failure is a misrouted
+    reconciliation, not a wrong figure, and it is only softened (not removed) by
+    the engine's amount+date fallback.
+    """
+    assert scan_statement_text(row) == [], why
+
+
+@pytest.mark.parametrize(
+    ("row", "number", "amount"),
+    [
+        # The guard must not swallow the layouts that legitimately carry a
+        # digits-only token beside the amount.
+        ("100234  2026-01-15  500.00", "100234", "500.00"),  # all-digit invoice no.
+        ("INV-1  2026-01-15  1200", "INV-1", "1200"),  # no-cents amount
+        ("100234  2026-01-15  1200", "100234", "1200"),  # both at once
+        ("Net 30  INV-7  2026-01-15  1,200.00", "INV-7", "1,200.00"),  # terms column
+        ("1  INV-1002  01/20/2026  850.50", "INV-1002", "850.50"),  # row counter
+    ],
+)
+def test_scan_statement_text_still_reads_one_identifier_rows(row, number, amount):
+    """The other direction: an identifier-shaped guard that demanded a letter,
+    or that counted the amount itself, would break each of these."""
+    lines = scan_statement_text(row)
+    assert len(lines) == 1, row
+    assert lines[0].invoice_number == number
+    assert lines[0].amount == amount
+
+
 def test_scan_statement_text_handles_a_row_with_no_date_column():
     lines = scan_statement_text("INV-7001   4200.00")
     assert len(lines) == 1

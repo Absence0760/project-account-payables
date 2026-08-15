@@ -167,6 +167,20 @@ def _is_amount(token: str) -> bool:
     return bool(_AMOUNT_TOKEN.match(token))
 
 
+def _is_identifier_candidate(token: str) -> bool:
+    """Could this token be the row's invoice reference?
+
+    Digit-bearing (a reference always carries digits) but not a bare short run
+    — a leading row counter (``1``, ``2``) or a terms figure (``Net 30``) is
+    digits without being an identifier. Deliberately shape-only: an all-digit
+    invoice number is real, so this cannot demand a letter. Telling a real
+    reference from a PO number is what the caller's exactly-one rule does.
+    """
+    if not any(ch.isdigit() for ch in token):
+        return False
+    return not (token.isdigit() and len(token) < 4)
+
+
 def _is_money(token: str) -> bool:
     """Is this token unambiguously MONEY, rather than merely a number?
 
@@ -229,14 +243,14 @@ def scan_statement_text(text: str) -> list[StatementLineExtraction]:
 
         date_idx = next((i for i, t in enumerate(tokens) if _DATE_TOKEN.match(t)), None)
 
-        number_idx = None
-        for i, token in enumerate(tokens):
-            if i == date_idx or not any(ch.isdigit() for ch in token):
-                continue
-            if token.isdigit() and len(token) < 4:
-                continue
-            number_idx = i
-            break
+        number_idx = next(
+            (
+                i
+                for i, token in enumerate(tokens)
+                if i != date_idx and _is_identifier_candidate(token)
+            ),
+            None,
+        )
         if number_idx is None:
             continue
 
@@ -249,6 +263,27 @@ def scan_statement_text(text: str) -> list[StatementLineExtraction]:
         if len(candidates) != 1:
             continue
         amount_idx = candidates[0]
+
+        # ...and exactly ONE identifier-shaped token may sit to its LEFT, or the
+        # row is skipped. Same reasoning as the money rule above, applied to the
+        # match key instead of the figure: a PO/reference column or an aging
+        # label prints left of the invoice number and is identical in shape to
+        # it, so taking the FIRST one silently books the wrong key —
+        #
+        #   PO 4502  INV-1  2026-01-15  500.00   -> booked as invoice "4502"
+        #   0-30     INV-1  2026-01-15  500.00   -> booked as invoice "0-30"
+        #
+        # Neither misreads the AMOUNT, which is why the two earlier column fixes
+        # didn't catch them; both misroute the reconciliation. A wrong key is
+        # softer than a wrong balance only while the amount+date fallback
+        # happens to land — outside the date window, or on an amount collision,
+        # it produces exactly the false discrepancy this reader exists to avoid.
+        # Ambiguity resolves to skipping here too.
+        identifiers = [
+            i for i in range(amount_idx) if i != date_idx and _is_identifier_candidate(tokens[i])
+        ]
+        if len(identifiers) != 1:
+            continue
 
         # ...and nothing numeric may sit to the RIGHT of it. Position is the
         # only shape-independent signal separating the two mixed layouts:
