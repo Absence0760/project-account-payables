@@ -15,6 +15,12 @@ Covered here:
     two properties that make it safe to sit in front of a login form: an
     unknown address throttles identically (no existence oracle), and a correct
     password clears the budget.
+  - the same wiring on the supplier portal (`app/api/portal_auth.py`), whose
+    buckets are additionally tenant-scoped.
+
+Both surfaces live here rather than in a `test_portal_*` twin: they are two
+call sites of ONE contract, and splitting them would mean maintaining a second
+copy of the Redis fake and letting the two halves drift.
 """
 
 from __future__ import annotations
@@ -480,3 +486,165 @@ async def test_mfa_verify_success_clears_the_budget(fake_redis, monkeypatch):
         limit=MFA_FAILURE_LIMIT,
         window_seconds=900,
     )
+
+
+# ---------------------------------------------------------------------------
+# Wiring — supplier portal
+# ---------------------------------------------------------------------------
+
+
+def _vendor_user(*, mfa_enabled=False, mfa_secret=None):
+    vu = MagicMock()
+    vu.id = uuid.uuid4()
+    vu.email = "supplier@example.com"
+    vu.vendor_id = uuid.uuid4()
+    vu.organization_id = uuid.uuid4()
+    vu.is_active = True
+    vu.hashed_password = "$2b$12$fake"
+    vu.must_change_password = False
+    vu.mfa_enabled = mfa_enabled
+    vu.mfa_secret = mfa_secret
+    return vu
+
+
+def _portal_db(vu):
+    db = MagicMock()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = vu
+    db.execute = AsyncMock(return_value=result)
+    db.commit = AsyncMock()
+    return db
+
+
+@pytest.mark.asyncio
+async def test_portal_login_throttles_per_account(fake_redis, monkeypatch):
+    from app.api import portal_auth
+    from app.schemas.portal import PortalLoginRequest
+    from app.services.rate_limit import LOGIN_FAILURE_LIMIT
+
+    monkeypatch.setattr(portal_auth, "dispatch_auth_audit", AsyncMock())
+    monkeypatch.setattr(portal_auth.pwd_context, "verify", lambda *_a, **_k: False)
+
+    vu = _vendor_user()
+    body = PortalLoginRequest(email=vu.email, password="wrong-password")
+
+    for i in range(LOGIN_FAILURE_LIMIT):
+        with pytest.raises(HTTPException) as exc:
+            await portal_auth.portal_login(
+                body=body,
+                request=_fake_request(ip=f"198.51.100.{i}"),
+                slug="acme",
+                db=_portal_db(vu),
+            )
+        assert exc.value.status_code == 401
+
+    with pytest.raises(HTTPException) as exc:
+        await portal_auth.portal_login(
+            body=body,
+            request=_fake_request(ip="198.51.100.250"),
+            slug="acme",
+            db=_portal_db(vu),
+        )
+    assert exc.value.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_portal_login_budget_is_tenant_scoped(fake_redis, monkeypatch):
+    """A vendor address is unique only WITHIN a tenant DB. Keyed on the address
+    alone, one tenant's traffic would throttle another tenant's supplier."""
+    from app.api import portal_auth
+    from app.schemas.portal import PortalLoginRequest
+    from app.services.rate_limit import LOGIN_FAILURE_LIMIT
+
+    monkeypatch.setattr(portal_auth, "dispatch_auth_audit", AsyncMock())
+    monkeypatch.setattr(portal_auth.pwd_context, "verify", lambda *_a, **_k: False)
+
+    vu = _vendor_user()
+    body = PortalLoginRequest(email=vu.email, password="wrong-password")
+
+    for i in range(LOGIN_FAILURE_LIMIT):
+        with pytest.raises(HTTPException):
+            await portal_auth.portal_login(
+                body=body,
+                request=_fake_request(ip=f"198.51.100.{i}"),
+                slug="acme",
+                db=_portal_db(vu),
+            )
+
+    # Same address, different tenant — untouched budget, so still a 401.
+    with pytest.raises(HTTPException) as exc:
+        await portal_auth.portal_login(
+            body=body,
+            request=_fake_request(),
+            slug="techflow",
+            db=_portal_db(vu),
+        )
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_portal_login_records_a_failure_audit_row(fake_redis, monkeypatch):
+    """A supplier brute-force used to leave no trace at all."""
+    from app.api import portal_auth
+    from app.schemas.portal import PortalLoginRequest
+
+    audit = AsyncMock()
+    monkeypatch.setattr(portal_auth, "dispatch_auth_audit", audit)
+    monkeypatch.setattr(portal_auth.pwd_context, "verify", lambda *_a, **_k: False)
+
+    vu = _vendor_user()
+    with pytest.raises(HTTPException):
+        await portal_auth.portal_login(
+            body=PortalLoginRequest(email=vu.email, password="wrong-password"),
+            request=_fake_request(),
+            slug="acme",
+            db=_portal_db(vu),
+        )
+
+    audit.assert_awaited_once()
+    kwargs = audit.await_args.kwargs
+    assert kwargs["action"] == "portal.login.failure"
+    assert kwargs["entity_id"] == vu.id
+    # PII-lean: the supplier contact's address is not restated on every guess.
+    assert vu.email not in str(kwargs["details"])
+
+
+@pytest.mark.asyncio
+async def test_portal_mfa_verify_throttles_totp_guessing(fake_redis, monkeypatch):
+    from app.api import portal_auth
+    from app.schemas.portal import PortalMFAChallengeVerifyRequest
+    from app.services.rate_limit import MFA_FAILURE_LIMIT
+
+    monkeypatch.setattr(portal_auth, "dispatch_auth_audit", AsyncMock())
+    monkeypatch.setattr(portal_auth.settings, "mfa_enabled", True)
+
+    vu = _vendor_user(mfa_enabled=True, mfa_secret="SECRET")
+
+    claims = MagicMock()
+    claims.subject_id = vu.id
+    claims.jti = "challenge-jti"
+    monkeypatch.setattr(
+        portal_auth.mfa, "decode_vendor_challenge_token", AsyncMock(return_value=claims)
+    )
+    monkeypatch.setattr(portal_auth.mfa, "verify_totp", AsyncMock(return_value=False))
+
+    body = PortalMFAChallengeVerifyRequest(challenge_token="tok", code="000000")
+
+    for i in range(MFA_FAILURE_LIMIT):
+        with pytest.raises(HTTPException) as exc:
+            await portal_auth.portal_mfa_challenge(
+                body=body,
+                request=_fake_request(ip=f"198.51.100.{i}"),
+                slug="acme",
+                db=_portal_db(vu),
+            )
+        assert exc.value.status_code == 401
+
+    with pytest.raises(HTTPException) as exc:
+        await portal_auth.portal_mfa_challenge(
+            body=body,
+            request=_fake_request(ip="198.51.100.250"),
+            slug="acme",
+            db=_portal_db(vu),
+        )
+    assert exc.value.status_code == 429

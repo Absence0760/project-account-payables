@@ -251,6 +251,7 @@ async def test_portal_login_unknown_email_and_wrong_password_raise_same_status()
         await portal_login(
             body=PortalLoginRequest(email="noone@nowhere.test", password="x"),
             request=_fake_request(),
+            slug="acme",
             db=_db_returning_user(None),
         )
 
@@ -259,6 +260,10 @@ async def test_portal_login_unknown_email_and_wrong_password_raise_same_status()
         id=uuid.uuid4(),
         email="real@vendor.test",
         vendor_id=uuid.uuid4(),
+        # A rejected sign-in now writes `portal.login.failure` into this org's
+        # trail, so the stand-in needs the column the dispatcher resolves the
+        # tenant DB from. `None` exercises the legacy-row skip.
+        organization_id=None,
         is_active=True,
         hashed_password=_HASH_OF_CORRECTPW1,
         must_change_password=False,
@@ -267,6 +272,7 @@ async def test_portal_login_unknown_email_and_wrong_password_raise_same_status()
         await portal_login(
             body=PortalLoginRequest(email="real@vendor.test", password="wrong-12"),
             request=_fake_request(),
+            slug="acme",
             db=_db_returning_user(vu),
         )
 
@@ -285,6 +291,7 @@ async def test_portal_login_unknown_email_runs_dummy_verify():
             await portal_auth.portal_login(
                 body=PortalLoginRequest(email="noone@nowhere.test", password="x"),
                 request=_fake_request(),
+                slug="acme",
                 db=_db_returning_user(None),
             )
     dv.assert_called_once()
@@ -301,6 +308,7 @@ async def test_portal_login_does_not_echo_password_in_detail():
         await portal_login(
             body=PortalLoginRequest(email="real@vendor.test", password=secret),
             request=_fake_request(),
+            slug="acme",
             db=_db_returning_user(None),
         )
     assert secret not in (exc.value.detail or "")

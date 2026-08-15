@@ -35,8 +35,20 @@ from app.schemas.portal import (
 from app.services import mfa
 from app.services.audit_dispatch import dispatch_auth_audit
 from app.services.email_adapters import EmailMessage, get_email_adapter, is_supported_locale
-from app.services.rate_limit import check_rate_limit
-from app.tenant import get_tenant_db
+from app.services.rate_limit import (
+    EMAIL_OTP_PER_ACCOUNT_PER_HOUR,
+    LOGIN_FAILURE_LIMIT,
+    LOGIN_FAILURE_WINDOW_SECONDS,
+    MFA_FAILURE_LIMIT,
+    MFA_FAILURE_WINDOW_SECONDS,
+    auth_identity_key,
+    check_auth_failures,
+    check_rate_limit,
+    clear_auth_failures,
+    record_auth_failure,
+    resolve_client_ip,
+)
+from app.tenant import get_tenant_db, get_tenant_slug
 from app.utils.passwords import (
     PasswordError,
     dummy_verify,
@@ -66,10 +78,37 @@ async def _send_vendor_email_otp(vu: VendorUser, code: str) -> None:
     await adapter.send(msg)
 
 
+async def _audit_portal_login_failure(vu: VendorUser, *, ip: str) -> None:
+    """Record a rejected supplier sign-in.
+
+    PII-lean by construction: the account is identified by id, so a supplier
+    contact's address is not restated into the trail on every guess. Skipped
+    for a legacy row with no `organization_id` (the dispatcher resolves the
+    tenant DB from it); `dispatch_auth_audit` swallows its own failures, so
+    this never breaks the request either way.
+
+    Reached only once the account is known, which is the same shape the
+    employee twin already ships: an unknown address has no org and so no
+    tenant trail to write into. The enumeration guard that matters — identical
+    status + detail, and `dummy_verify` equalising the bcrypt cost that
+    dominates the response — is unaffected.
+    """
+    if not vu.organization_id:
+        return
+    await dispatch_auth_audit(
+        organization_id=vu.organization_id,
+        actor_id=None,
+        action="portal.login.failure",
+        entity_id=vu.id,
+        details={"ip": ip, "reason": "bad_password"},
+    )
+
+
 @router.post("/login")
 async def portal_login(
     body: PortalLoginRequest,
     request: Request,
+    slug: str = Depends(get_tenant_slug),
     db: AsyncSession = Depends(get_tenant_db),
 ) -> PortalTokenResponse | PortalMFAChallengeResponse:
     """Exchange email+password for a portal access token. The `X-Tenant-Slug`
@@ -80,6 +119,22 @@ async def portal_login(
     on), returns a short-lived `PortalMFAChallengeResponse` instead of the
     access token; the browser then completes `/portal/auth/mfa/challenge`."""
     await check_rate_limit("portal_auth_login", request, limit=10, window_seconds=60)
+    # Per-ACCOUNT brake, mirroring the employee twin — the per-IP cap above is
+    # blind to a spray distributed across rotating addresses. Keyed on the
+    # SUBMITTED address BEFORE the lookup so an unknown one throttles
+    # identically (the 429 must not become the enumeration oracle the
+    # equalised-timing 401 below exists to avoid), and scoped by tenant slug
+    # because a vendor address is only unique WITHIN a tenant DB — keying on
+    # the address alone would let one tenant's traffic throttle another
+    # tenant's supplier.
+    identity = auth_identity_key(slug, body.email)
+    await check_auth_failures(
+        "portal_login",
+        identity,
+        limit=LOGIN_FAILURE_LIMIT,
+        window_seconds=LOGIN_FAILURE_WINDOW_SECONDS,
+    )
+    ip = resolve_client_ip(request) or "unknown"
     result = await db.execute(select(VendorUser).where(VendorUser.email == body.email))
     vu = result.scalar_one_or_none()
 
@@ -87,9 +142,22 @@ async def portal_login(
         # Equalize timing with the wrong-password path so the response time
         # doesn't reveal whether a vendor account exists (enumeration).
         dummy_verify()
+        await record_auth_failure(
+            "portal_login", identity, window_seconds=LOGIN_FAILURE_WINDOW_SECONDS
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if not pwd_context.verify(body.password, vu.hashed_password):
+        await record_auth_failure(
+            "portal_login", identity, window_seconds=LOGIN_FAILURE_WINDOW_SECONDS
+        )
+        # Until now a brute-force against a supplier account left no trace at
+        # all — the employee twin has written `auth.login.failure` since it was
+        # built. PII-lean: the vendor user is identified by id, so the trail
+        # doesn't restate the supplier contact's address.
+        await _audit_portal_login_failure(vu, ip=ip)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+    await clear_auth_failures("portal_login", identity)
 
     vu.last_login_at = datetime.now(UTC)
     await db.commit()
@@ -260,6 +328,16 @@ async def portal_request_email_otp(
     if not vu or not vu.is_active or not vu.mfa_enabled:
         return
 
+    # Per-ACCOUNT cap on the mail we actually send — the per-IP limit above
+    # can't stop one valid challenge token replayed from rotating addresses
+    # bombing the supplier's inbox. Mirrors the employee twin.
+    await check_rate_limit(
+        "portal_auth_mfa_email_account",
+        limit=EMAIL_OTP_PER_ACCOUNT_PER_HOUR,
+        window_seconds=3600,
+        subject=str(vu.id),
+    )
+
     code = await mfa.issue_vendor_email_otp(vu.id)
     await _send_vendor_email_otp(vu, code)
 
@@ -268,6 +346,7 @@ async def portal_request_email_otp(
 async def portal_mfa_challenge(
     body: PortalMFAChallengeVerifyRequest,
     request: Request,
+    slug: str = Depends(get_tenant_slug),
     db: AsyncSession = Depends(get_tenant_db),
 ) -> PortalTokenResponse:
     """Trade the login-issued challenge token + a valid code for a real vendor
@@ -296,12 +375,32 @@ async def portal_mfa_challenge(
     if not vu.mfa_enabled or not vu.mfa_secret:
         raise HTTPException(status_code=400, detail="MFA not enrolled for this account")
 
+    # Per-ACCOUNT brake on the second factor, mirroring the employee twin: an
+    # attacker here already holds the supplier's password and can mint fresh
+    # challenge tokens, so only a budget keyed on the account puts the 10^6
+    # TOTP keyspace out of reach. Tenant-scoped like the login bucket.
+    mfa_identity = auth_identity_key(slug, str(vu.id))
+    await check_auth_failures(
+        "portal_mfa",
+        mfa_identity,
+        limit=MFA_FAILURE_LIMIT,
+        window_seconds=MFA_FAILURE_WINDOW_SECONDS,
+    )
+
     if body.method == "email":
         if not await mfa.verify_vendor_email_otp(vu.id, body.code):
+            await record_auth_failure(
+                "portal_mfa", mfa_identity, window_seconds=MFA_FAILURE_WINDOW_SECONDS
+            )
             raise HTTPException(status_code=401, detail="Invalid or expired code")
     else:
         if not await mfa.verify_totp(vu.mfa_secret, body.code):
+            await record_auth_failure(
+                "portal_mfa", mfa_identity, window_seconds=MFA_FAILURE_WINDOW_SECONDS
+            )
             raise HTTPException(status_code=401, detail="Invalid code")
+
+    await clear_auth_failures("portal_mfa", mfa_identity)
 
     # Single-use: burn the challenge token now that the factor is verified so
     # it can't be replayed to mint a second session (issue #162).
