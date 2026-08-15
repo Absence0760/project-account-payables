@@ -97,8 +97,14 @@ _SAFE_DETAIL_KEYS = frozenset(
 
 
 def _scrub_details(details: dict | None) -> dict:
-    """Keep only whitelisted, non-PII detail keys."""
-    if not details:
+    """Keep only whitelisted, non-PII detail keys.
+
+    ``audit_log.details`` is ``JSONB`` with no object-shape constraint, so a
+    non-object value can be present on a hand-written / corrupted row. Treat it
+    as carrying nothing rather than indexing into it — a bad row must not 500
+    the invoice's summary.
+    """
+    if not isinstance(details, dict):
         return {}
     scrubbed: dict = {}
     for key in _SAFE_DETAIL_KEYS:

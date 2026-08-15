@@ -165,6 +165,40 @@ def test_check_row_unsigned(details):
     assert check.signed_at is None
 
 
+@pytest.mark.parametrize("details", [[1, 2, 3], "a-string", 7, True])
+def test_check_row_survives_a_non_object_details_column(details):
+    """`audit_log.details` is JSONB with no object-shape constraint, so a
+    non-object value is reachable — by exactly the direct-DB tamper this feature
+    exists to catch. It must read as "no block", never raise: on the population
+    sweep one bad row would otherwise 500 the whole period's control test."""
+    facts = _facts()
+    check = check_approval_row(
+        details=details,
+        invoice_id=facts["invoice_id"],
+        amount=facts["amount"],
+        actor_id=facts["actor_id"],
+        signing_key=KEY,
+    )
+    assert check.verdict == sig.VERDICT_UNSIGNED
+
+
+def test_check_row_empty_signature_block_is_invalid_not_unsigned():
+    """A row that carries the `signature` key but nothing inside it has had its
+    signature STRIPPED — that is a finding, not a row predating signing. (This
+    is a deliberate tightening of the per-invoice endpoint's old behaviour,
+    which read an empty block as `unsigned`.)"""
+    facts = _facts()
+    check = check_approval_row(
+        details={"signature": {}},
+        invoice_id=facts["invoice_id"],
+        amount=facts["amount"],
+        actor_id=facts["actor_id"],
+        signing_key=KEY,
+    )
+    assert check.verdict == sig.VERDICT_INVALID
+    assert check.signed is True
+
+
 def test_check_row_detects_amount_tamper():
     facts = _facts()
     check = check_approval_row(
@@ -652,6 +686,64 @@ async def test_sweep_writes_access_audit_with_counts_only(realdb, monkeypatch):
     assert row.details["invalid"] == 0
     # PII-free: counts + scope only, no invoice number / vendor / amount.
     assert set(row.details) == {"scope", "verify_signatures", "invalid", "unsigned"}
+
+
+@pytest.mark.asyncio
+async def test_one_corrupt_row_does_not_take_down_the_whole_control_test(realdb, monkeypatch):
+    """`audit_log.details` is JSONB with no object-shape constraint. A row whose
+    details are a JSON array must surface as a finding on both surfaces — not
+    500 the sweep and take the rest of the period's evidence with it."""
+    from app.config import settings as cfg
+
+    monkeypatch.setattr(cfg, "approval_signing_key", "sweep-key")
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor = realdb.info("a").users["ap_manager"]
+    await _seed_signed_approval(mk, org_id, amount=Decimal("8.00"), actor_id=actor, key="sweep-key")
+
+    corrupt_corr = uuid.uuid4()
+    corrupt_inv = uuid.uuid4()
+    async with mk() as s:
+        s.add(
+            Invoice(
+                id=corrupt_inv,
+                organization_id=org_id,
+                correlation_id=corrupt_corr,
+                invoice_number=f"INV-{uuid.uuid4().hex[:8]}",
+                vendor_name="Acme",
+                amount=Decimal("8.00"),
+                status=InvoiceStatus.approved,
+            )
+        )
+        s.add(
+            AuditLog(
+                correlation_id=corrupt_corr,
+                organization_id=org_id,
+                actor_id=actor,
+                action="invoice.approved",
+                entity_type="invoice",
+                entity_id=corrupt_inv,
+                details=[1, 2, 3],  # not a JSON object
+            )
+        )
+        await s.commit()
+
+    async with realdb.client(key="a", role="admin") as c:
+        sweep = await c.get(SWEEP, params=_today_range())
+        single = await c.get(f"/api/audit/invoice/{corrupt_inv}/verify-signatures")
+
+    assert sweep.status_code == 200
+    body = sweep.json()
+    assert body["approvals_checked"] == 2
+    assert body["valid"] == 1  # the good row's evidence survives
+    assert body["unsigned"] == 1
+    assert body["findings"][0]["invoice_id"] == str(corrupt_inv)
+
+    assert single.status_code == 200
+    approval = single.json()["approvals"][0]
+    assert approval["signed"] is False
+    assert approval["valid"] is False
+    assert approval["signed_at"] is None
 
 
 @pytest.mark.asyncio

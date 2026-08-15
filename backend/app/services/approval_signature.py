@@ -227,11 +227,21 @@ def check_approval_row(
     point: a post-approval amount tamper must break the digest), and the row's
     ``actor_id``.
 
-    Never raises: a malformed block, an unparseable ``signed_at``, a missing
-    actor, or a bad digest all land on ``invalid`` — fail-closed, so a
-    corrupted row surfaces as a finding rather than a 500 that hides it.
+    Never raises: a malformed ``details`` column, a malformed block, an
+    unparseable ``signed_at``, a missing actor, or a bad digest all land on a
+    verdict — fail-closed, so a corrupted row surfaces as a finding rather than
+    a 500 that hides it. That matters most on the population sweep, where one
+    bad row would otherwise take down the whole period's control test.
+
+    ``details`` is ``JSONB`` with no object-shape constraint, so a non-object
+    value (array / scalar, reachable by exactly the direct-DB tamper this
+    feature exists to catch) is treated as carrying no block.
+
+    An **empty** ``signature`` block reads as ``invalid``, not ``unsigned``: a
+    row that has the key but nothing in it is a stripped signature, which is a
+    finding, not a row that predates signing.
     """
-    sig = (details or {}).get("signature")
+    sig = details.get("signature") if isinstance(details, dict) else None
     if not isinstance(sig, dict):
         return SignatureCheck(VERDICT_UNSIGNED)
 

@@ -35,7 +35,10 @@ from app.services.exception_lifecycle import EXCEPTION_TYPES, LEGACY_EXCEPTION_T
 APP_DIR = Path(__file__).resolve().parents[1] / "app"
 
 #: Call sites that pass an exception type as a bare positional string. Keyed by
-#: callee name → the 0-based index of that argument.
+#: callee name → the 0-based index of that argument. Every other raise site in
+#: the tree uses the `exception_type=` keyword, which needs no entry here — but
+#: a NEW helper that takes the type positionally must be registered, or its
+#: raise sites are invisible to this scan.
 _POSITIONAL_TYPE_ARGS = {"_ensure_exception": 2}
 
 
