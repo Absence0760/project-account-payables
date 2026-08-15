@@ -17,6 +17,7 @@ from app.database import _make_tenant_url
 from app.models.invoice import Invoice
 from app.models.organization import Organization
 from app.models.payment import Payment
+from app.services.payment_settlement import settlement_coverage
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,7 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> None:
 
                 synced = 0
                 skipped = 0
+                held = 0
                 failed = 0
                 for payment, invoice in rows:
                     try:
@@ -120,6 +122,45 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> None:
 
                         # Update invoice status to paid if currently payment_scheduled
                         if invoice and invoice.status.value == "payment_scheduled":
+                            # ...but only if what the rail actually settled
+                            # discharges the invoice. A processor that moved
+                            # $250 against a $500 instruction leaves the vendor
+                            # short; marking the invoice `paid` here would tell
+                            # the ERP, the aging report and the 1099 YTD totals
+                            # it was settled in full.
+                            #
+                            # This reads the figure PERSISTED on the payment row
+                            # (migration 0083), not the transient state of an
+                            # exception. That distinction is why the earlier
+                            # attempt at this hold had to be reverted: keyed on
+                            # a resolvable flag, clearing the flag — the correct
+                            # response to an over-settlement — stranded the
+                            # invoice permanently, because nothing re-invokes
+                            # this sweep once a run's payments are terminal.
+                            # A shortfall on the row does not evaporate, and it
+                            # has two real exits: accept it as final
+                            # (`POST /api/payments/{id}/settlement/accept`) or
+                            # void and re-pay (`POST /api/payments/{id}/void`,
+                            # which accepts a `payment_scheduled` invoice).
+                            coverage = settlement_coverage(
+                                settled_amount=payment.settled_amount,
+                                settled_currency=payment.settled_currency,
+                                target_amount=payment.amount,
+                                target_currency=invoice.currency,
+                                source_amount=payment.source_amount,
+                                source_currency=payment.source_currency,
+                            )
+                            if not coverage.completes_invoice:
+                                logger.info(
+                                    "[payment-sync] holding invoice for payment %s: "
+                                    "settlement %s (shortfall %s)",
+                                    payment.id,
+                                    coverage.state,
+                                    coverage.shortfall,
+                                )
+                                held += 1
+                                continue
+
                             from app.models.invoice import InvoiceStatus
                             from app.services.workflow_engine import transition_invoice
 
@@ -147,10 +188,12 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> None:
 
                 await db.commit()
                 logger.info(
-                    "[payment-sync] run %s: %d synced, %d skipped (in-flight), %d failed",
+                    "[payment-sync] run %s: %d synced, %d skipped (in-flight), "
+                    "%d held (settlement short/uncertain), %d failed",
                     run_id,
                     synced,
                     skipped,
+                    held,
                     failed,
                 )
 

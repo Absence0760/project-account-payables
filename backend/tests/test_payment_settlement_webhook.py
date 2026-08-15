@@ -124,6 +124,10 @@ def _payment(amount=Decimal("5000.00"), **overrides):
         "method": "wire",
         "source_amount": None,
         "source_currency": None,
+        # Start NULL, as a freshly-submitted row does — so a test asserting
+        # "an amount-free rail leaves these alone" is actually meaningful.
+        "settled_amount": None,
+        "settled_currency": None,
     }
     fields.update(overrides)
     return SimpleNamespace(**fields)
@@ -380,3 +384,66 @@ async def test_missing_invoice_row_still_settles_and_audits_without_a_queue_entr
     db.commit.assert_awaited_once()
     mocks["exception"].assert_not_awaited()
     assert mocks["audit"].call_args.kwargs["details"]["settlement"]["outcome"] == "amount_mismatch"
+
+
+# ---------------------------------------------------------------------------
+# Persisting the settled figure (migration 0083)
+# ---------------------------------------------------------------------------
+#
+# The audit row above is the immutable evidence. These pin the queryable money
+# state the ERP sync later reads to decide whether the invoice may be marked
+# `paid` (`payment_settlement.settlement_coverage`).
+
+
+@pytest.mark.asyncio
+async def test_settled_figure_is_persisted_on_the_payment_row():
+    payment = _payment(amount=Decimal("5000.00"))
+    tenant_factory, _ = _tenant_session_factory(payment, _invoice())
+
+    await _run(_org(), _adapter(amount=Decimal("4200.00"), currency="USD"), tenant_factory)
+
+    assert payment.settled_amount == Decimal("4200.00")
+    assert payment.settled_currency == "USD"
+
+
+@pytest.mark.asyncio
+async def test_a_clean_settlement_is_persisted_too():
+    """Not only discrepancies — the sync needs a figure on every completion to
+    tell "covered" apart from "never reported"."""
+    payment = _payment(amount=Decimal("5000.00"))
+    tenant_factory, _ = _tenant_session_factory(payment, _invoice())
+
+    await _run(_org(), _adapter(amount=Decimal("5000.00"), currency="USD"), tenant_factory)
+
+    assert payment.settled_amount == Decimal("5000.00")
+
+
+@pytest.mark.asyncio
+async def test_amount_free_rail_leaves_the_columns_null_not_zero():
+    """Dwolla's bare envelope. NULL means "no figure on record" and fails OPEN
+    in the coverage check; a 0 would read as a total shortfall and hold the
+    invoice forever."""
+    payment = _payment(amount=Decimal("5000.00"))
+    tenant_factory, _ = _tenant_session_factory(payment, _invoice())
+
+    await _run(_org(), _adapter(amount=None, currency=None), tenant_factory)
+
+    assert payment.settled_amount is None
+    assert payment.settled_currency is None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_event_does_not_write_a_settled_figure():
+    """A `failed` event moved no money, so whatever figure it echoes
+    reconciles against nothing and must not land as a settlement."""
+    payment = _payment(amount=Decimal("5000.00"))
+    tenant_factory, _ = _tenant_session_factory(payment, _invoice())
+
+    await _run(
+        _org(),
+        _adapter(amount=Decimal("5000.00"), currency="USD", status=PaymentStatus.failed),
+        tenant_factory,
+    )
+
+    assert payment.status == "failed"
+    assert payment.settled_amount is None
