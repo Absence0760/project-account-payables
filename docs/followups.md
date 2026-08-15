@@ -174,6 +174,39 @@ unguarded, only guarded later.
 **Trigger:** a pilot tenant on Dwolla, or the reconciler being switched on in a
 deployed env (`FEOH_PAYMENT_RECONCILE_ENABLED`).
 
+### Under-settlement still closes the invoice out as fully paid
+
+`payment_settlement.verify_settlement` now catches a processor that settled a
+different amount than AP authorized and raises a payment-blocking `fraud_flag`
+(see [payments.md](../backend/docs/payments.md) § Settlement-amount
+verification). What it cannot do is say *how much* was settled: `Payment` has
+one `amount` and a status that is either terminal or not, with no
+representation of "settled for less than authorized". So an under-settlement
+(the processor moved $250 against a $500 instruction) leaves the payment
+legitimately `completed`, the invoice transitions to `paid`, and the ERP /
+aging report / 1099 YTD totals read it as settled in full while the vendor is
+short. The flag surfaces it; the invoice status does not.
+
+- [ ] Represent the settled amount on the `Payment` row (a
+      `settled_amount` `Numeric(15, 2)` + migration, written by the webhook
+      from the verifier's own figure), so an under-settlement can hold the
+      invoice short of `paid` and a partial can be reported as a partial.
+
+**Why deferred:** it needs a migration, which is `/safe-migration`'s risk
+profile, not `/improve-round`'s. Holding the invoice WITHOUT it was tried in
+this round and reverted: `payment_erp_sync._sync_payments` is the only code
+path that flips `payment_scheduled → paid` and nothing re-invokes it once the
+run's payments are all terminal, so an operator who resolved the flag — the
+correct response to an *over*-settlement — stranded the invoice permanently,
+never `paid` and never re-payable. A hold is only safe once the settled amount
+is on the row and a real release exists. The operator remedy meanwhile is
+`POST /api/payments/{id}/void` (it accepts a `paid` payment), which hands the
+invoice back to `approved` to be re-paid correctly — the only correct remedy
+regardless, since a partially-settled invoice can't be made whole by a status
+change.
+**Trigger:** the first real under-settlement in a deployed env, or any work
+that adds partial-payment support.
+
 ### Minor-unit scaling assumes every currency has a 2-digit exponent
 
 Every minor-unit payment adapter (`modern_treasury`, `stripe_treasury`,

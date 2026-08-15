@@ -86,35 +86,8 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> None:
                 )
                 rows = result.all()
 
-                # Which of these invoices carry an UNRESOLVED payment-blocking
-                # exception (`duplicate` / `fraud_flag` / `line_total_mismatch`).
-                # Closing an invoice out as `paid` is the last irreversible step
-                # in the money path: it is what the ERP, the aging report, the
-                # dashboards and the 1099 YTD totals all read as "this was
-                # settled in full". A settlement the processor reported at an
-                # amount AP never authorized raises exactly such a flag
-                # (`api/payments.py::_open_settlement_mismatch_exception`), and
-                # an UNDER-settlement is the case that bites: the payment row is
-                # legitimately `completed` and half the money moved, so without
-                # this gate the invoice is marked fully paid, the vendor is
-                # shorted, and a `paid` invoice never re-enters a payment run to
-                # collect the rest.
-                #
-                # Reuses `payment_runs.blocked_invoice_ids` — the same helper
-                # `POST /runs` and `/retry-failed` gate on — so the rule can't
-                # drift: an exception class that blocks money going OUT also
-                # blocks the books being closed on money that already went.
-                # The payment itself is still pushed to the ERP (it happened);
-                # only the invoice's terminal transition waits for the human.
-                from app.services.payment_runs import blocked_invoice_ids
-
-                blocked = await blocked_invoice_ids(
-                    db, [inv.id for _payment, inv in rows if inv is not None]
-                )
-
                 synced = 0
                 skipped = 0
-                held = 0
                 failed = 0
                 for payment, invoice in rows:
                     try:
@@ -147,36 +120,17 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> None:
 
                         # Update invoice status to paid if currently payment_scheduled
                         if invoice and invoice.status.value == "payment_scheduled":
-                            if invoice.id in blocked:
-                                # Held, not skipped: the payment settled, but the
-                                # invoice can't be declared paid while a
-                                # financial-integrity flag on it is unresolved.
-                                # It waits at `payment_scheduled` — the same
-                                # posture the `erp_reconciliation` exception
-                                # takes when money may be in flight — until a
-                                # human works the exception queue and either
-                                # clears the flag or voids the payment (which
-                                # hands the invoice back to `approved` to be
-                                # re-paid at the right amount). PII-free: ids
-                                # only, no vendor / invoice number / amount.
-                                held += 1
-                                logger.info(
-                                    "[payment-sync] invoice %s held at payment_scheduled: "
-                                    "unresolved payment-blocking exception",
-                                    invoice.id,
-                                )
-                            else:
-                                from app.models.invoice import InvoiceStatus
-                                from app.services.workflow_engine import transition_invoice
+                            from app.models.invoice import InvoiceStatus
+                            from app.services.workflow_engine import transition_invoice
 
-                                await transition_invoice(
-                                    db,
-                                    invoice,
-                                    InvoiceStatus.paid,
-                                    actor_id=None,
-                                    action_name="invoice.paid_via_erp_sync",
-                                    details={"payment_id": str(payment.id)},
-                                )
+                            await transition_invoice(
+                                db,
+                                invoice,
+                                InvoiceStatus.paid,
+                                actor_id=None,
+                                action_name="invoice.paid_via_erp_sync",
+                                details={"payment_id": str(payment.id)},
+                            )
 
                         synced += 1
 
@@ -193,12 +147,10 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> None:
 
                 await db.commit()
                 logger.info(
-                    "[payment-sync] run %s: %d synced, %d skipped (in-flight), "
-                    "%d held (unresolved payment-blocking exception), %d failed",
+                    "[payment-sync] run %s: %d synced, %d skipped (in-flight), %d failed",
                     run_id,
                     synced,
                     skipped,
-                    held,
                     failed,
                 )
 

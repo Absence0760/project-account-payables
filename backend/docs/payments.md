@@ -694,35 +694,37 @@ MORE than we authorized**, matching `bank_reconciliation.match_variance`.
   offer's discounted payoff against `payment.amount` — our authorized figure,
   which the rail has just contradicted — so capturing would permanently mark
   savings realized on a number that is in dispute and misreport them to the CFO.
-- The **invoice is NOT closed out as `paid`** — see below.
+- The **ERP sync still runs**, and the invoice still transitions to `paid`.
+  `positive_pay` and `bank_reconciliation` both record-and-flag without
+  rewriting the settlement, and this matches them. Suppressing the dispatch at
+  the webhook would also be leaky — any sibling payment's webhook
+  re-dispatches the sync for the whole run.
 
-##### The invoice waits at `payment_scheduled`
+##### Known limit: an under-settlement still reads as fully paid
 
-Marking an invoice `paid` is the last irreversible step in the money path:
-it's what the ERP, the aging report, the dashboards and the 1099 YTD totals
-all read as "settled in full". An **under**-settlement is the case that bites
-— the payment row is legitimately `completed` and half the money moved, so
-closing the invoice out shorts the vendor with no way to collect the rest
-(a `paid` invoice never re-enters a payment run).
+`Payment` has no representation of "settled for less than authorized" — one
+`amount`, and a status that is either terminal or not. So on an
+**under**-settlement (the processor moved $250 against a $500 instruction)
+the payment is legitimately `completed`, the invoice transitions to `paid`,
+and the ERP / aging report / 1099 YTD totals all read it as settled in full
+even though the vendor is short. The `fraud_flag` is what surfaces it; the
+invoice status does not.
 
-The gate lives in `services/payment_erp_sync.py::_sync_payments`, at the
-`transition_invoice(..., paid, ...)` call itself rather than at the webhook
-that raised the flag. That placement is load-bearing: a run can hold several
-payments, and **any** sibling payment's webhook re-dispatches the sync for the
-whole run — suppressing the dispatch at the webhook would be leaky, while
-gating the transition holds regardless of which webhook triggered it. It
-reuses `payment_runs.blocked_invoice_ids`, the same helper `POST /runs` and
-`/retry-failed` gate on, so an exception class that blocks money going **out**
-also blocks the books being closed on money that already went — the two rules
-can't drift.
+The operator's remedy is `POST /api/payments/{id}/void`, which accepts a
+`paid` payment as well as a `payment_scheduled` one and hands the invoice back
+to `approved` to be re-paid at the right amount. That is the only correct
+remedy regardless of the invoice's status, because a partially-settled invoice
+cannot be made whole by a status change.
 
-The payment itself is still pushed to the ERP (it happened); only the
-invoice's terminal transition waits. The invoice sits at `payment_scheduled`
-with the `fraud_flag` in the exception queue — the same posture the
-`erp_reconciliation` exception takes when money may be in flight — until a
-human either clears the flag (the next sync for that run marks it paid) or
-voids the payment via `POST /api/payments/{id}/void`, which hands the invoice
-back to `approved` to be re-paid at the right amount.
+Holding the invoice at `payment_scheduled` instead was tried and reverted: the
+only code path that flips `payment_scheduled → paid` is
+`payment_erp_sync._sync_payments`, and nothing re-invokes it once the run's
+payments are all terminal — so an operator who resolved the flag (the correct
+response to an **over**-settlement) stranded the invoice permanently, never
+`paid` and never re-payable, with no signal anything was wrong. A hold is only
+safe once there is a real release, and the durable fix for both is the same:
+represent the settled amount on the `Payment` row. That needs a migration —
+tracked in [followups.md](../../docs/followups.md) § Under-settlement.
 
 **Per-provider coverage.** `WebhookEvent.amount` is in MAJOR units.
 Modern Treasury, Stripe, Increase and Column exchange minor units;
@@ -832,13 +834,10 @@ Execute Payment Run (response sent immediately)
   marking the in-flight one's invoice `paid` would claim money moved before
   the rail confirmed it (and pre-empt the webhook's own `paid` transition).
   The webhook handler re-dispatches the sync once the in-flight payment settles.
-- **An invoice carrying an unresolved payment-blocking exception is HELD** at
-  `payment_scheduled` (counted separately from `skipped` in the sweep's log
-  line). Reuses `payment_runs.blocked_invoice_ids` — the same
-  `PAYMENT_BLOCKING_EXCEPTION_TYPES` tuple run creation and `/retry-failed`
-  refuse. The payment is still pushed to the ERP; only the invoice's terminal
-  transition waits for the human. See § Settlement-amount verification → The
-  invoice waits at `payment_scheduled`.
+- **This is the only code path that flips `payment_scheduled → paid`**, and
+  nothing re-invokes it once every payment in the run is terminal. Anything
+  that wants to defer that transition therefore needs its own release
+  mechanism first — see § Settlement-amount verification → Known limit.
 - Sync runs async — **doesn't block** the payment run response
 - Uses the same background thread pattern as extraction dispatch (fresh DB engines per thread)
 - If no ERP is configured, sync is skipped silently
