@@ -155,9 +155,18 @@ def minor_units_to_decimal(raw: object) -> Decimal | None:
     """Convert a processor's minor-unit amount (cents) to an exact `Decimal`.
 
     The inverse of the `amount * 100` every minor-unit adapter applies on
-    submit, so the round-trip is symmetric by construction — a currency whose
-    exponent isn't 2 is mis-scaled identically in both directions and can
-    never produce a phantom settlement mismatch.
+    submit, so the round-trip is symmetric: no false POSITIVE. A currency
+    whose ISO-4217 exponent isn't 2 (JPY/KRW = 0, BHD/KWD/OMR = 3) is
+    mis-scaled identically in both directions, so it can't produce a phantom
+    settlement mismatch.
+
+    It cuts the other way too, and that is the honest limit of this helper:
+    if a processor honours the currency's REAL exponent rather than echoing
+    our own scaling, a genuine scale-off settlement on such a currency reads
+    as `matched` instead of being caught. The fix is a per-currency exponent
+    on both legs — the `* 100` on submit predates this helper and would move
+    with it — and it is only worth doing when the platform actually settles
+    in a non-cent currency. Tracked in `docs/followups.md`.
 
     Returns None for anything unparseable (a missing key, `null`, a string
     the provider didn't promise): the settlement verifier treats "no reported

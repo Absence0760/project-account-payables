@@ -174,6 +174,32 @@ unguarded, only guarded later.
 **Trigger:** a pilot tenant on Dwolla, or the reconciler being switched on in a
 deployed env (`FEOH_PAYMENT_RECONCILE_ENABLED`).
 
+### Minor-unit scaling assumes every currency has a 2-digit exponent
+
+Every minor-unit payment adapter (`modern_treasury`, `stripe_treasury`,
+`increase`, `column`) converts on submit with a flat `payload.amount * 100`,
+and `payment_adapters.base.minor_units_to_decimal` inverts it the same way.
+The pair is symmetric, so it cannot raise a phantom settlement mismatch — but
+it is symmetrically *wrong* for a currency whose ISO-4217 exponent isn't 2
+(JPY/KRW = 0; BHD/KWD/OMR = 3).
+
+- [ ] Resolve the minor-unit exponent per currency on BOTH legs — a shared
+      `exponent_for(currency)` used by each adapter's submit path and by
+      `minor_units_to_decimal` — so an amount is scaled the way the processor
+      actually reads it, and a genuine scale-off settlement on a non-cent
+      currency is caught rather than reading as `matched`.
+
+**Why deferred:** the `* 100` on submit predates the settlement verifier and
+would have to move with it; getting it wrong misprices a live payment by 100x,
+which is a worse failure than the verification gap it closes. No test
+currently exercises a non-2-exponent currency, and no shipped corridor routes
+one to these four adapters (Increase and Column are USD; the FX corridors go
+through `international_payments`).
+**Trigger:** the first tenant paying in JPY, KRW, or a 3-decimal Gulf currency
+through any minor-unit adapter.
+Ref: [payments.md](../backend/docs/payments.md) § Settlement-amount
+verification → Per-provider coverage.
+
 
 ---
 

@@ -728,9 +728,15 @@ back to `approved` to be re-paid at the right amount.
 Modern Treasury, Stripe, Increase and Column exchange minor units;
 `payment_adapters.base.minor_units_to_decimal` is the exact inverse of the
 `amount * 100` their own `create_payment` applies, so the round-trip is
-symmetric by construction and a currency whose exponent isn't 2 is mis-scaled
-identically in both directions rather than producing a phantom mismatch.
-Checkeeper and `mock` exchange major-unit decimal strings.
+symmetric and a currency whose exponent isn't 2 is mis-scaled identically in
+both directions rather than producing a phantom mismatch. The same symmetry is
+the helper's honest limit: if a processor honours the currency's *real*
+ISO-4217 exponent (JPY/KRW = 0, BHD/KWD/OMR = 3) rather than echoing our
+scaling, a genuine scale-off on such a currency reads as `matched`. Fixing
+that means a per-currency exponent on both legs — tracked in
+[followups.md](../../docs/followups.md) § Minor-unit scaling, since the `* 100`
+on submit predates the verifier and would move with it. Checkeeper and `mock`
+exchange major-unit decimal strings and are unaffected.
 
 | Provider | Field(s) read | Verified? |
 |---|---|---|
