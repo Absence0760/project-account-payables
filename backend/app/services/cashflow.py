@@ -1,8 +1,8 @@
 """Cash-position helpers — bank-balance auto-sync + persisted alert thresholds.
 
-Two pieces backing the cash-position dashboard (`GET /api/analytics/cash_position`
-and the threshold GET/PUT), kept out of `api/analytics.py` so the route file
-stays SQL-and-shaping only:
+Three pieces backing the cash-position dashboard (`GET /api/analytics/cash_position`
+and the threshold GET/PUT) and the cash-flow copilot, kept out of
+`api/analytics.py` so the route file stays SQL-and-shaping only:
 
 1. ``fetch_provider_balance`` — best-effort read of the org's funding-account
    balance from its configured payment adapter's optional ``get_balance``
@@ -12,7 +12,12 @@ stays SQL-and-shaping only:
    adapter returns a deterministic figure, so `pnpm dev` needs no real bank
    credential.
 
-2. ``resolve_cash_thresholds`` / ``store_cash_thresholds`` — read/normalise the
+2. ``resolve_opening_balance`` — the whole resolution CHAIN (explicit → provider
+   auto-sync → persisted settings → zero) plus its provenance, in one place so
+   every consumer resolves the same number the same way and can say where it
+   came from.
+
+3. ``resolve_cash_thresholds`` / ``store_cash_thresholds`` — read/normalise the
    per-org alert thresholds persisted on ``Organization.settings.cashflow``
    (JSON — no migration). The cash-position endpoint reads the persisted
    ``min_balance_threshold`` when the request doesn't override it.
@@ -74,6 +79,126 @@ async def fetch_provider_balance(payment_config: dict | None) -> ProviderBalance
         currency=result.currency,
         provider=adapter.provider_name,
         account_ref=result.account_ref,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Opening-balance resolution + provenance
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class OpeningBalance:
+    """The opening balance a cash-position curve starts from, *plus where it
+    came from*.
+
+    A projected shortfall is only actionable if the reader can tell whether the
+    starting figure is a live bank balance, a number someone typed into
+    settings months ago, or the ``0`` we assume when neither exists — so the
+    provenance travels with the amount rather than being reconstructed by each
+    caller.
+
+    ``currency`` is the org's reporting currency, i.e. the currency the whole
+    curve (and every outflow subtracted from it) is denominated in — see
+    ``resolve_opening_balance`` for why a provider balance in any OTHER
+    currency is refused rather than mixed in.
+    """
+
+    amount: Decimal
+    source: str  # "explicit" | "provider" | "settings" | "none"
+    currency: str
+    provider: str | None = None  # adapter name, when source == "provider"
+    account_ref: str | None = None  # opaque account label — never an account number
+    # Set to "currency_mismatch" when a live provider balance WAS available but
+    # was refused because its account is denominated in another currency. The
+    # amount then comes from the next link in the chain; this field is what
+    # stops that fallback from looking like "no bank is connected".
+    provider_skipped: str | None = None
+
+
+def _normalize_currency(code: str | None) -> str | None:
+    if not isinstance(code, str):
+        return None
+    normalized = code.strip().upper()
+    return normalized or None
+
+
+async def resolve_opening_balance(
+    *,
+    org_settings: dict | None,
+    reporting_currency: str,
+    explicit_opening: Decimal | None = None,
+    use_provider: bool = True,
+) -> OpeningBalance:
+    """Resolve the cash-position opening balance, first hit wins:
+
+    1. ``explicit_opening`` — a bring-your-own figure from the caller.
+    2. The org's payment provider's live funding-account balance, when the org
+       has a payments provider configured and its adapter supports the optional
+       ``get_balance`` capability (``use_provider=False`` skips this).
+    3. ``Organization.settings.cashflow.opening_balance`` — a persisted BYO figure.
+    4. ``0``.
+
+    **A provider balance denominated in a currency other than the org's
+    reporting currency is refused** (falling through to 3/4 with
+    ``provider_skipped="currency_mismatch"``). Every outflow subtracted from
+    the opening balance is expressed in the reporting currency, so seeding the
+    curve from, say, a EUR operating account while the org reports in USD
+    produces a running balance that is silently a mixture of two currencies —
+    and the shortfall alerts / plan proposals priced off it would be wrong by
+    the exchange rate. Converting is not an option either: an FX rate fetched
+    on a read would make the curve non-deterministic and unreproducible
+    (docs/decisions.md §18), and the fix an operator actually needs is to set
+    the reporting currency or a BYO opening balance, not to have us guess.
+
+    Never raises: a malformed persisted value degrades to the next link, and
+    ``fetch_provider_balance`` already swallows a bank-link outage.
+    """
+    settings_dict = org_settings or {}
+    currency = _normalize_currency(reporting_currency) or "USD"
+
+    if explicit_opening is not None:
+        return OpeningBalance(amount=explicit_opening, source="explicit", currency=currency)
+
+    provider_skipped: str | None = None
+    payments_config = settings_dict.get("payments")
+    if use_provider and payments_config:
+        provider_balance = await fetch_provider_balance(payments_config)
+        if provider_balance is not None:
+            account_currency = _normalize_currency(provider_balance.currency)
+            if account_currency == currency:
+                return OpeningBalance(
+                    amount=provider_balance.amount,
+                    source="provider",
+                    currency=currency,
+                    provider=provider_balance.provider,
+                    account_ref=provider_balance.account_ref,
+                )
+            provider_skipped = "currency_mismatch"
+            # Currency codes are not PII; the balance figure and the account
+            # reference deliberately stay out of the log line.
+            logger.warning(
+                "cash-position: ignoring provider opening balance — funding account is "
+                "denominated in %s but the org reports in %s",
+                account_currency or "unknown",
+                currency,
+            )
+
+    stored = (settings_dict.get("cashflow") or {}).get("opening_balance")
+    stored_amount = _coerce_decimal(stored)
+    if stored_amount is not None:
+        return OpeningBalance(
+            amount=stored_amount,
+            source="settings",
+            currency=currency,
+            provider_skipped=provider_skipped,
+        )
+
+    return OpeningBalance(
+        amount=Decimal("0"),
+        source="none",
+        currency=currency,
+        provider_skipped=provider_skipped,
     )
 
 
