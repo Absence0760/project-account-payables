@@ -102,6 +102,8 @@ _LEDGER_EXCLUDED_STATUSES = (InvoiceStatus.paid, InvoiceStatus.done)
 # the run is `resolved` and they're what `close-readiness` sums.
 _ACTIONABLE_CLASSES = (_CLASS_MISSING_OUR_SIDE, _CLASS_AMOUNT_MISMATCH)
 
+_TOO_LARGE = f"File exceeds maximum size of {storage.MAX_FILE_SIZE // (1024 * 1024)} MB"
+
 
 # --------------------------------------------------------------------------- #
 # Helpers
@@ -474,12 +476,15 @@ async def upload_reconciliation(
     Either way the resulting statement lines go into the SAME pure
     reconciliation engine, and the uploaded document is archived beside the run.
     """
+    # Check the declared size BEFORE reading — `.read()` pulls the whole upload
+    # into memory, so checking only afterwards lets an oversized post cost the
+    # memory anyway. The post-read check stays as the authority (`.size` is
+    # client-influenced) and is what actually enforces the cap.
+    if file.size is not None and file.size > storage.MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail=_TOO_LARGE)
     raw = await file.read()
     if len(raw) > storage.MAX_FILE_SIZE:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File exceeds maximum size of {storage.MAX_FILE_SIZE // (1024 * 1024)} MB",
-        )
+        raise HTTPException(status_code=413, detail=_TOO_LARGE)
 
     meta: dict | None = None
     if extraction.looks_like_pdf(raw, filename=file.filename, content_type=file.content_type):

@@ -860,6 +860,31 @@ async def test_upload_pdf_refused_when_provider_cannot_read_statements(realdb):
     assert "CSV" in resp.json()["detail"]
 
 
+async def test_oversized_upload_is_refused_before_any_extraction_call(realdb, monkeypatch):
+    """The cap is enforced ahead of the provider call, so an oversized post
+    never becomes a paid extraction (or a 25 MB provider request)."""
+    from app.services import storage as storage_mod
+    from app.services import vendor_statement_extraction as vse
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id)
+    monkeypatch.setattr(storage_mod, "MAX_FILE_SIZE", 64)
+
+    async def _boom(**kwargs):  # pragma: no cover - must never run
+        raise AssertionError("extraction must not be reached for an oversized upload")
+
+    monkeypatch.setattr(vse, "extract_statement_lines", _boom)
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/vendor-statements/upload",
+            data={"vendor_id": vendor_id, "statement_date": _TODAY.isoformat()},
+            files={"file": ("big.pdf", b"%PDF-1.4" + b"x" * 512, "application/pdf")},
+        )
+    assert resp.status_code == 413, resp.text
+
+
 async def test_pdf_posted_as_octet_stream_is_still_routed_to_extraction(realdb):
     """A browser posting a PDF as application/octet-stream must not be fed to
     the CSV parser — magic bytes decide."""
