@@ -83,7 +83,5 @@ def upgrade() -> None:
 def downgrade() -> None:
     if not _is_control_db():
         return
-    op.execute(
-        "ALTER TABLE webhook_subscriptions DROP COLUMN IF EXISTS previous_secret_expires_at"
-    )
+    op.execute("ALTER TABLE webhook_subscriptions DROP COLUMN IF EXISTS previous_secret_expires_at")
     op.execute("ALTER TABLE webhook_subscriptions DROP COLUMN IF EXISTS previous_signing_secret")
