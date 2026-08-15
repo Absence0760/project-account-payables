@@ -25,6 +25,11 @@ from app.tenant import apply_entity_scope, get_entity_id, get_tenant_db
 
 router = APIRouter(prefix="/exceptions", tags=["exceptions"])
 
+#: Friendly label per ``Exception.exception_type`` for the queue UI. Must cover
+#: ``exception_lifecycle.EXCEPTION_TYPES`` exactly — a missing entry silently
+#: renders the raw snake_case key, and two of these types are the ones that block
+#: a payment run, so the queue must not label them like debug output.
+#: ``tests/test_exception_type_labels`` is the guard.
 EXCEPTION_TYPE_LABELS = {
     "duplicate": "Duplicate Invoice",
     "po_mismatch": "PO Mismatch",
@@ -35,8 +40,11 @@ EXCEPTION_TYPE_LABELS = {
     "amount_exceeded": "Amount Exceeded",
     "missing_data": "Missing Data",
     "quality_hold": "Quality Hold",
+    "price_variance": "Price Variance",
     "contract_noncompliant": "Contract Non-Compliant",
     "erp_reconciliation": "ERP Reconciliation",
+    "line_total_mismatch": "Line Total Mismatch",
+    "payment_compliance_hold": "Compliance Hold",
 }
 
 
