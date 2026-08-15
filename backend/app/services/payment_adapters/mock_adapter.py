@@ -134,11 +134,14 @@ class MockPaymentAdapter(PaymentAdapter):
             reference=payload.get("reference"),
             failure_reason=payload.get("failure_reason"),
             occurred_at=datetime.now(UTC).isoformat(),
-            # MAJOR units, like the real decimal-string rails. Optional so the
-            # existing fixtures keep reading `unverified`; supplying it is how
-            # a local run or a test exercises the settlement-mismatch branch
-            # with no processor account (guard rail 7 — every external
-            # behaviour has a local equivalent).
+            # MAJOR units, like the real decimal-string rails. Optional so a
+            # fixture that omits it keeps reading `unverified`; supplying it is
+            # how a test exercises the settlement-mismatch branch with no
+            # processor account (guard rail 7 — every external behaviour has a
+            # local equivalent). The public webhook ROUTE rejects
+            # `provider == "mock"` outright, so this is reached by calling the
+            # adapter directly, which is the only way mock webhooks ever
+            # arrive anyway.
             amount=parse_amount(payload.get("amount")),
             currency=(payload.get("currency") or None),
             raw=payload,
