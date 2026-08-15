@@ -264,6 +264,33 @@ slice.
 incident. Surfaced while auditing the trust boundary (`/improve-round`).
 Ref: [public-api.md](../backend/docs/public-api.md) § Outbound webhooks.
 
+### `compute_fx_gain_loss` is documented behaviour over an unwired function
+
+`services/international_payments.compute_fx_gain_loss` is pure, fully unit-
+tested, and has **no production caller** — every non-comment reference outside
+its own definition is a test. Meanwhile
+[multi-currency.md](../backend/docs/multi-currency.md) states it computes
+realized gain/loss when a foreign-currency invoice settles, and
+`api/analytics.py` names it in a comment as the reporting-layer counterpart.
+So the doc describes a behaviour the app does not perform: a tenant paying a
+foreign-currency invoice books no realized FX gain or loss anywhere.
+
+- [ ] Decide the resolution — wire it into the settlement path, or narrow the
+      doc to say it is an available primitive rather than active behaviour.
+      Wiring it is the larger half: the realized figure has nowhere to live,
+      so it needs a column on `Payment` (or a ledger row), which makes it a
+      `/safe-migration` job rather than a bolt-on.
+
+**Why deferred:** which way this resolves is a product call — whether realized
+FX gain/loss belongs in this product at all — not a mechanical fix, and the
+version worth having needs the same `Payment`-column slice as the
+under-settlement item above. Documenting it away without that decision would
+just move the drift.
+**Trigger:** the `Payment.settled_amount` migration above (same row, same
+slice), or the first tenant asking where their FX gain/loss is reported.
+Surfaced by the money-path `/improve-round` while auditing settlement.
+Ref: [multi-currency.md](../backend/docs/multi-currency.md).
+
 
 ---
 
