@@ -50,7 +50,19 @@ from app.services.email_adapters import (
     get_email_adapter,
     is_supported_locale,
 )
-from app.services.rate_limit import check_rate_limit, resolve_client_ip
+from app.services.rate_limit import (
+    EMAIL_OTP_PER_ACCOUNT_PER_HOUR,
+    LOGIN_FAILURE_LIMIT,
+    LOGIN_FAILURE_WINDOW_SECONDS,
+    MFA_FAILURE_LIMIT,
+    MFA_FAILURE_WINDOW_SECONDS,
+    auth_identity_key,
+    check_auth_failures,
+    check_rate_limit,
+    clear_auth_failures,
+    record_auth_failure,
+    resolve_client_ip,
+)
 from app.services.session_management import (
     SessionInfo,
     end_session,
@@ -203,6 +215,18 @@ async def login(
     # for a fat-fingering human (refreshing the page, retrying after a typo)
     # and low enough to make online brute-forcing untenable.
     await check_rate_limit("auth_login", request, limit=10, window_seconds=60)
+    # Per-ACCOUNT brake. The per-IP cap above is blind to the commodity shape of
+    # a password spray — one account, thousands of residential-proxy addresses,
+    # each well under 10/min. This budget is keyed on the SUBMITTED address and
+    # checked BEFORE the lookup, so an address with no account throttles
+    # identically and the 429 can't be used to enumerate accounts.
+    identity = auth_identity_key(body.email)
+    await check_auth_failures(
+        "auth_login",
+        identity,
+        limit=LOGIN_FAILURE_LIMIT,
+        window_seconds=LOGIN_FAILURE_WINDOW_SECONDS,
+    )
     ip = _client_ip(request)
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
@@ -211,6 +235,9 @@ async def login(
         # Equalize timing with the wrong-password path below so the response
         # time doesn't reveal whether the email has an account (enumeration).
         dummy_verify()
+        await record_auth_failure(
+            "auth_login", identity, window_seconds=LOGIN_FAILURE_WINDOW_SECONDS
+        )
         # Failed login for an unknown user — still audit-log so abuse is
         # visible. Without an organization_id we can't pick a tenant DB,
         # so the write is simply dropped (logged at WARN inside the helper).
@@ -223,6 +250,9 @@ async def login(
             )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if not pwd_context.verify(body.password, user.hashed_password):
+        await record_auth_failure(
+            "auth_login", identity, window_seconds=LOGIN_FAILURE_WINDOW_SECONDS
+        )
         await dispatch_auth_audit(
             organization_id=user.organization_id,
             actor_id=None,
@@ -230,6 +260,12 @@ async def login(
             details={"email": body.email, "ip": ip, "reason": "bad_password"},
         )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+    # The password checked out — wipe the budget so earlier typos (or someone
+    # else's spray against this address) can never keep the real owner out. The
+    # SSO-only refusal below is a policy rejection, not a credential one, so it
+    # deliberately lands after this.
+    await clear_auth_failures("auth_login", identity)
 
     org = await _load_user_org(db, user.organization_id)
 
@@ -332,6 +368,18 @@ async def request_email_otp(
         # Don't leak which UUIDs exist — return 204 anyway.
         return
 
+    # The per-IP cap above can't protect the inbox the comment claims to
+    # protect: an attacker holding one valid challenge token can rotate source
+    # addresses and bomb the victim indefinitely. Cap the mail we send per
+    # ACCOUNT as well. Generous enough for a real user re-requesting a code
+    # that hasn't arrived yet.
+    await check_rate_limit(
+        "auth_mfa_email_account",
+        limit=EMAIL_OTP_PER_ACCOUNT_PER_HOUR,
+        window_seconds=3600,
+        subject=str(user.id),
+    )
+
     code = await mfa.issue_email_otp(user.id)
     await _send_email_otp(user, code)
 
@@ -360,10 +408,26 @@ async def verify_mfa(
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="Invalid challenge")
 
+    # Per-ACCOUNT brake on the second factor. The per-IP cap above is the wrong
+    # axis here: an attacker at this point already holds the password, so they
+    # can mint fresh challenge tokens at will and spread the guessing across as
+    # many addresses as they like. Only a budget keyed on the account puts a
+    # 10^6 TOTP keyspace out of reach.
+    mfa_identity = auth_identity_key(str(user.id))
+    await check_auth_failures(
+        "auth_mfa",
+        mfa_identity,
+        limit=MFA_FAILURE_LIMIT,
+        window_seconds=MFA_FAILURE_WINDOW_SECONDS,
+    )
+
     if body.method == "totp":
         if not user.mfa_enabled or not user.mfa_secret:
             raise HTTPException(status_code=400, detail="TOTP not enrolled for this account")
         if not await mfa.verify_totp(user.mfa_secret, body.code):
+            await record_auth_failure(
+                "auth_mfa", mfa_identity, window_seconds=MFA_FAILURE_WINDOW_SECONDS
+            )
             await dispatch_auth_audit(
                 organization_id=user.organization_id,
                 actor_id=user.id,
@@ -374,6 +438,9 @@ async def verify_mfa(
             raise HTTPException(status_code=401, detail="Invalid code")
     elif body.method == "email":
         if not await mfa.verify_email_otp(user.id, body.code):
+            await record_auth_failure(
+                "auth_mfa", mfa_identity, window_seconds=MFA_FAILURE_WINDOW_SECONDS
+            )
             await dispatch_auth_audit(
                 organization_id=user.organization_id,
                 actor_id=user.id,
@@ -382,6 +449,8 @@ async def verify_mfa(
                 details={"method": "email", "ip": ip},
             )
             raise HTTPException(status_code=401, detail="Invalid or expired code")
+
+    await clear_auth_failures("auth_mfa", mfa_identity)
 
     # Single-use: burn the challenge token now that the factor is verified so
     # it can't be replayed to mint a second session from one password check
