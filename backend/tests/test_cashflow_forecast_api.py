@@ -343,6 +343,37 @@ async def test_cash_position_falls_back_to_settings_when_provider_unsupported(re
         await _set_org_settings(realdb, "a", _clear)
 
 
+async def test_cash_position_rejects_a_malformed_opening_balance_param(realdb):
+    """A bad value the CLIENT sent is a client error — still the 400
+    `_parse_decimal_param` has always raised, unchanged by the move to the
+    shared resolver (the query param is parsed at the call site precisely so
+    this boundary survives)."""
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.get("/api/analytics/cash_position?opening_balance=not-a-number")
+    assert resp.status_code == 400
+
+
+async def test_cash_position_degrades_on_a_corrupt_persisted_balance(realdb):
+    """A corrupt value in the org's OWN stored settings is not the caller's
+    fault, so it must not 422 the dashboard — the chain falls through to the
+    next link and the UI prompts for a balance, matching how
+    `resolve_cash_thresholds` already treats a corrupt stored threshold."""
+
+    def _set(settings):
+        settings["cashflow"] = {"opening_balance": "not-a-number"}
+
+    await _set_org_settings(realdb, "a", _set)
+    try:
+        async with realdb.client(key="a", role="cfo") as c:
+            resp = await c.get("/api/analytics/cash_position")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["opening_balance"] == 0.0
+        assert body["opening_balance_source"] == "none"
+    finally:
+        await _set_org_settings(realdb, "a", lambda s: s.pop("cashflow", None))
+
+
 async def test_cash_position_reads_persisted_threshold(realdb):
     """When the request passes no min_balance_threshold, the endpoint reads the
     org's persisted threshold and flags / collects breaches accordingly."""
