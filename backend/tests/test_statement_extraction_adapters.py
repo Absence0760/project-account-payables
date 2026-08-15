@@ -236,13 +236,33 @@ def test_scan_statement_text_accepts_a_lone_whole_number_balance():
         "INV-1001   2026-01-15   1,200.00   0.00",
         # No cents anywhere and two unlabelled integer columns.
         "INV-7001   2026-01-15   45   4200",
+        # MIXED: one decimal token and one bare integer to its RIGHT — an
+        # invoice-amount + balance-due row whose balance happens to be a round
+        # figure. Counting only within the money bucket would call this
+        # unambiguous and return 1200.00, the invoice amount, not the balance.
+        "INV-8   2026-03-01   1200.00   800",
+        # Same shape with a "days past due" trailing column.
+        "INV-9   2026-03-01   1,200.00   45",
     ],
 )
-def test_scan_statement_text_skips_a_row_with_more_than_one_money_column(row):
-    """Two money columns is a guess, and a guessed open balance is wrong money
-    presented as fact. Skipping leaves our invoice visible as
-    `missing_on_their_side` — a difference the clerk chases."""
+def test_scan_statement_text_skips_a_row_with_a_second_numeric_column(row):
+    """A second numeric column to the right of the balance is a guess, and a
+    guessed open balance is wrong money presented as fact. Skipping leaves our
+    invoice visible as `missing_on_their_side` — a difference the clerk
+    chases."""
     assert scan_statement_text(row) == []
+
+
+def test_scan_statement_text_keeps_a_bare_integer_column_left_of_the_balance():
+    """The counterpart of the rule above: `Net 30` / `45 days` print BEFORE the
+    balance and must NOT cause a skip — position is what separates a terms
+    column from a second money column, since their shapes are identical."""
+    assert [ln.amount for ln in scan_statement_text("INV-1  2026-01-15  Net 30  1,200.00")] == [
+        "1,200.00"
+    ]
+    assert [ln.amount for ln in scan_statement_text("INV-2  2026-01-15  45  1,200.00")] == [
+        "1,200.00"
+    ]
 
 
 # --------------------------------------------------------------------------- #

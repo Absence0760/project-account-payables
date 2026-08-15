@@ -476,10 +476,14 @@ async def upload_reconciliation(
     Either way the resulting statement lines go into the SAME pure
     reconciliation engine, and the uploaded document is archived beside the run.
     """
-    # Check the declared size BEFORE reading — `.read()` pulls the whole upload
-    # into memory, so checking only afterwards lets an oversized post cost the
-    # memory anyway. The post-read check stays as the authority (`.size` is
-    # client-influenced) and is what actually enforces the cap.
+    # Check the size BEFORE reading — `.read()` pulls the whole upload into a
+    # second in-memory copy, so checking only afterwards pays that cost anyway
+    # and, on the PDF path, would already be on its way to a provider call.
+    # Starlette counts `.size` from the bytes it actually wrote while parsing
+    # the multipart body (not a client header), so it is trustworthy; the
+    # unconditional post-read length check below stays regardless, since
+    # `.size` is Optional and this must not depend on the framework populating
+    # it.
     if file.size is not None and file.size > storage.MAX_FILE_SIZE:
         raise HTTPException(status_code=413, detail=_TOO_LARGE)
     raw = await file.read()

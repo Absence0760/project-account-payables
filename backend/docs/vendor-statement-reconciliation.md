@@ -328,18 +328,33 @@ reader can't drift.
 #### The offline reader skips rather than guesses
 
 `scan_statement_text` reads a row as `identifier [date] amount`, and takes the
-amount only when the row has **exactly one** money column after the identifier
-(a lone amount-shaped integer counts, for a statement that prints no cents).
-Two money columns means `number date invoice-amount balance-due` or
-`number date balance aging-bucket`, and nothing on the row says which is the
-open balance; a bare integer between the date and the balance is a terms
-(`Net 30`) or aging-days (`45`) column, not money.
+amount only when **both** hold:
 
-Picking one anyway would produce a plausible figure that may be the wrong one —
-a wrong open balance presented as fact. Skipping is loud instead: our invoice
-for that row lands as `missing_on_their_side`, a difference the clerk sees and
-chases. A multi-column or aging-bucket statement is the case this reader can't
-resolve honestly; the answer there is a vision provider.
+1. the row has **exactly one** money column after the identifier — money being a
+   token with cents, a thousands separator, or a currency symbol (a lone
+   amount-shaped integer counts, for a statement that prints no cents);
+2. **nothing amount-shaped sits to the right of it.**
+
+Rule 1 alone isn't enough, and the reason is worth stating because the two
+layouts look identical in shape:
+
+```
+INV-1  2026-01-15  Net 30    1,200.00     -> read 1,200.00
+INV-1  2026-01-15  1200.00   800          -> skipped
+```
+
+`30` and `800` are both bare integers. What separates them is **position**: a
+payment-terms or aging-days column prints *before* the balance, a second money
+column (`invoice-amount` + `balance-due`, or `balance` + aging bucket) prints
+*after* it — and only the second makes which figure is open ambiguous. Counting
+candidates within the money bucket alone would call that second row unambiguous
+and return `1200.00`, the invoice amount rather than the open balance.
+
+Picking a column anyway would produce a plausible figure that may be the wrong
+one — a wrong open balance presented as fact. Skipping is loud instead: our
+invoice for that row lands as `missing_on_their_side`, a difference the clerk
+sees and chases. A multi-column or aging-bucket statement is the case this
+reader can't resolve honestly; the answer there is a vision provider.
 
 ### Money crosses the boundary as a string
 

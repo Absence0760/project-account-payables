@@ -197,6 +197,10 @@ def scan_statement_text(text: str) -> list[StatementLineExtraction]:
     2. the amount is the row's one unambiguous MONEY token after it (see
        :func:`_is_money`). **Exactly one, or the row is skipped.** Falling back
        to a lone amount-shaped integer covers a statement that prints no cents.
+    3. nothing amount-shaped may sit to the RIGHT of that amount, or the row is
+       skipped — a terms (``Net 30``) or aging-days column prints BEFORE the
+       balance, a second money column AFTER it, and the two are identical in
+       shape, so position is what tells them apart.
 
     Ordering is what does the filtering. ``Total 1,800.50`` and
     ``Balance forward 500.00`` take the money token as their identifier and
@@ -245,6 +249,19 @@ def scan_statement_text(text: str) -> list[StatementLineExtraction]:
         if len(candidates) != 1:
             continue
         amount_idx = candidates[0]
+
+        # ...and nothing numeric may sit to the RIGHT of it. Position is the
+        # only shape-independent signal separating the two mixed layouts:
+        #
+        #   INV-1  2026-01-15  Net 30    1,200.00   <- terms/aging, LEFT: fine
+        #   INV-1  2026-01-15  1200.00   800        <- second column, RIGHT: skip
+        #
+        # The bare integer in both is identical in shape ("30" vs "800"), so
+        # "not money" alone can't tell them apart. But a terms or aging-days
+        # column is printed BEFORE the balance and a second money column AFTER
+        # it, and only the second one makes which figure is open ambiguous.
+        if any(_is_amount(tokens[i]) for i in trailing if i > amount_idx):
+            continue
 
         lines.append(
             StatementLineExtraction(
