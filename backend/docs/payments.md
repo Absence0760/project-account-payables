@@ -700,45 +700,65 @@ MORE than we authorized**, matching `bank_reconciliation.match_variance`.
   the webhook would also be leaky — any sibling payment's webhook
   re-dispatches the sync for the whole run.
 
-##### Known limit: an under-settlement still reads as fully paid
+##### An under-settlement holds the invoice short of `paid`
 
-`Payment` has no representation of "settled for less than authorized" — one
-`amount`, and a status that is either terminal or not. So on an
-**under**-settlement (the processor moved $250 against a $500 instruction)
-the payment is legitimately `completed`, the invoice transitions to `paid`,
-and the ERP / aging report / 1099 YTD totals all read it as settled in full
-even though the vendor is short. The `fraud_flag` is what surfaces it; the
-invoice status does not.
+`Payment` records both figures: `amount` is what AP **authorized**,
+`settled_amount` / `settled_currency` (migration `0083`) is what the rail says
+it **moved**. That distinction is what lets the ERP sync answer a question it
+previously couldn't — *may this invoice be marked paid?* — separately from the
+verifier's *did the rail report what we authorized?*.
 
-The operator's remedy is `POST /api/payments/{id}/void`, which accepts a
-`paid` payment as well as a `payment_scheduled` one and hands the invoice back
-to `approved` to be re-paid at the right amount. That is the only correct
-remedy regardless of the invoice's status, because a partially-settled invoice
-cannot be made whole by a status change.
+`payment_settlement.settlement_coverage` is the pure classifier:
 
-Holding the invoice at `payment_scheduled` instead was tried and reverted: the
-only code path that flips `payment_scheduled → paid` is
-`payment_erp_sync._sync_payments`, and nothing re-invokes it once the run's
-payments are all terminal — so an operator who resolved the flag (the correct
-response to an **over**-settlement) stranded the invoice permanently, never
-`paid` and never re-payable, with no signal anything was wrong. A hold is only
-safe once there is a real release, and the durable fix for both is the same:
-represent the settled amount on the `Payment` row. That needs a migration —
-tracked in [followups.md](../../docs/followups.md) § Under-settlement.
+| State | When | Effect |
+|---|---|---|
+| `covered` | some authorized leg is satisfied, **or** nothing was ever reported | invoice proceeds to `paid` |
+| `short` | a figure was reported and falls below every currency-compatible leg by more than a cent | invoice held at `payment_scheduled` |
+| `uncertain` | reported in a currency matching no authorized leg | invoice held at `payment_scheduled` |
 
-**Per-provider coverage.** `WebhookEvent.amount` is in MAJOR units.
-Modern Treasury, Stripe, Increase and Column exchange minor units;
-`payment_adapters.base.minor_units_to_decimal` is the exact inverse of the
-`amount * 100` their own `create_payment` applies, so the round-trip is
-symmetric and a currency whose exponent isn't 2 is mis-scaled identically in
-both directions rather than producing a phantom mismatch. The same symmetry is
-the helper's honest limit: if a processor honours the currency's *real*
-ISO-4217 exponent (JPY/KRW = 0, BHD/KWD/OMR = 3) rather than echoing our
-scaling, a genuine scale-off on such a currency reads as `matched`. Fixing
-that means a per-currency exponent on both legs — tracked in
-[followups.md](../../docs/followups.md) § Minor-unit scaling, since the `* 100`
-on submit predates the verifier and would move with it. Checkeeper and `mock`
-exchange major-unit decimal strings and are unaffected.
+Over-settlement is `covered`: the vendor is not short, so the payable is
+discharged even though the verifier still raises `amount_mismatch` on the same
+numbers. And a NULL `settled_amount` is `covered` — it means an amount-free
+rail or a row predating `0083`, and treating "we don't know" as a shortfall
+would hold every invoice those rails settle. Absence is not evidence, exactly
+as the verifier treats a missing amount as `unverified`.
+
+**A held invoice has two exits**, and having them is what makes the hold safe:
+
+| Exit | Endpoint | Result |
+|---|---|---|
+| Accept the shortfall as final | `POST /api/payments/{id}/settlement/accept` (`payment.execute`, requires a `reason`) | invoice → `paid`, reason + figures on the append-only trail |
+| Reject the settlement | `POST /api/payments/{id}/void` (`payment.void`) | invoice → `approved`, re-payable at the right amount |
+
+`accept` refuses (409) when the settlement already covers the invoice, so it
+can't become a general "force to paid" lever, and when the payment never
+reached `completed`. It deliberately does **not** resolve the `fraud_flag`:
+unlike `payment_compliance_hold`, which only the compliance path raises,
+`fraud_flag` is shared with Positive Pay's altered-cheque detection, so
+clearing "the open one" could silently close an unrelated fraud finding. The
+exception queue stays the separate human sign-off.
+
+> **Why the earlier attempt was reverted.** A first version held the invoice
+> keyed on the open exception rather than on a persisted figure. Because
+> `payment_erp_sync._sync_payments` is the only writer of
+> `payment_scheduled → paid` and nothing re-invokes it once a run's payments
+> are terminal, an operator who cleared the flag — the correct response to an
+> over-settlement — stranded the invoice permanently. The condition is now a
+> durable fact on the row, and both exits above are tested
+> (`tests/test_payment_settlement_hold.py`).
+
+**Per-provider coverage.** `WebhookEvent.amount` is in MAJOR units. Modern
+Treasury, Stripe, Increase and Column exchange minor units;
+`payment_adapters.base.to_minor_units` / `minor_units_to_decimal` are exact
+inverses of each other and both resolve the currency's **real ISO-4217
+exponent** (2 almost everywhere; 0 for JPY/KRW/CLP…, 3 for BHD/KWD/OMR…). They
+were a flat `* 100` / `/ 100` pair: symmetric, so it could never raise a
+phantom mismatch, but symmetrically wrong off-cent — a JPY payment was sent at
+100× the intended amount and a Gulf-dinar one at a tenth, and a genuine
+scale-off on those currencies read as `matched`. Both legs moved together,
+because fixing the parse side alone would have turned a symmetric error into a
+real mispricing. Checkeeper and `mock` exchange major-unit decimal strings and
+are unaffected.
 
 | Provider | Field(s) read | Verified? |
 |---|---|---|
@@ -748,26 +768,42 @@ exchange major-unit decimal strings and are unaffected.
 | `column` | `data.amount` (minor), `data.currency_code` | yes |
 | `checkeeper` | `check.amount` (major string), `check.currency` | yes |
 | `mock` | `amount` / `currency` when supplied | yes (local-first) |
-| `dwolla` | — | **no** — see below |
+| `dwolla` | — (envelope carries none) | yes, via `fetch_settlement` |
 
-Dwolla's event body is a bare `{id, topic, resourceId, _links}` envelope; the
-transfer's amount is only reachable by following `_links.resource`, which the
-synchronous signature-verification path must not do. Its events therefore read
-`unverified` — an honest blind spot recorded on the audit row rather than a
-manufactured discrepancy. Closing it means an async re-fetch of the transfer;
-until then bank reconciliation remains the downstream net for that rail. The
-conversion helpers return `None` (not `Decimal("0")`) for anything
-unparseable, precisely so an absent figure can never read as a total
-under-settlement.
+**`fetch_settlement` — the pull counterpart.** Dwolla's event body is a bare
+`{id, topic, resourceId, _links}` envelope; the transfer's amount is only
+reachable by following `_links.resource`, which the synchronous
+signature-verification path must not do. And the reconciler backstop
+(`services/payment_reconciler.py`) has the same gap for a different reason —
+`PaymentAdapter.get_payment_status` returns a bare `PaymentStatus` by design —
+so the very case it exists for (the webhook never arrived) had the least
+evidence. Both settled `unverified`.
 
-The reconciler backstop (`services/payment_reconciler.py`) can't verify the
-amount: `PaymentAdapter.get_payment_status` returns a bare `PaymentStatus` by
-design. A payment settled by the reconciler rather than a webhook therefore
-carries no settlement verdict; bank reconciliation is its net.
+`PaymentAdapter.fetch_settlement(provider_payment_id) -> SettlementReport` is
+the optional capability that closes them. It follows exactly the contract
+`get_balance` established: the base implementation returns
+`available=False, unavailable_reason="not_supported"`, so an adapter that never
+implements it is unaffected and the verdict stays `unverified` rather than
+becoming an invented one.
 
-**Tests:** `tests/test_payment_settlement.py` (the verdict table),
-`tests/test_payment_settlement_adapters.py` (per-provider extraction),
-`tests/test_payment_settlement_webhook.py` (handler behaviour).
+Two call sites, both **guarded**, because a settlement fetch must never break
+the webhook that is recording money movement nor halt the sweep:
+
+- the webhook handler, only when the event carried no amount (no redundant
+  call on rails that already report it); and
+- the reconciler, whenever it is the thing that settled the payment.
+
+Any failure — no capability, transport error, unparseable body — leaves the
+settlement exactly where it was. The conversion helpers likewise return `None`
+(never `Decimal("0")`) for anything unparseable, so an absent figure can never
+read as a total under-settlement.
+
+**Tests:** `tests/test_payment_settlement.py` (the verdict table + the coverage
+classifier), `tests/test_payment_settlement_adapters.py` (per-provider
+extraction + the minor-unit exponent round-trip),
+`tests/test_payment_settlement_webhook.py` (handler behaviour),
+`tests/test_payment_settlement_hold.py` (the hold and both its exits, DB-backed),
+`tests/test_payment_fetch_settlement.py` (the capability + both call sites).
 
 #### Webhook URL
 
@@ -837,7 +873,11 @@ Execute Payment Run (response sent immediately)
 - **This is the only code path that flips `payment_scheduled → paid`**, and
   nothing re-invokes it once every payment in the run is terminal. Anything
   that wants to defer that transition therefore needs its own release
-  mechanism first — see § Settlement-amount verification → Known limit.
+  mechanism first — the settlement hold has two (accept / void); see
+  § Settlement-amount verification → An under-settlement holds the invoice
+  short of `paid`.
+- **A completed payment whose settlement doesn't cover the invoice is held
+  here**, not marked `paid`, and counted separately in the sync's log line.
 - Sync runs async — **doesn't block** the payment run response
 - Uses the same background thread pattern as extraction dispatch (fresh DB engines per thread)
 - If no ERP is configured, sync is skipped silently
@@ -875,6 +915,7 @@ Matching payments against bank statement entries:
 | `POST` | `/api/payments/{id}/void` | Void a pending/completed payment. Reverses a `virtual_card` payment's card at the provider too — see § Voiding a card payment cancels the card. |
 | `POST` | `/api/payments/{id}/compliance/release` | Re-run compliance-then-adapter for a payment stuck `pending_compliance`. `payment.execute`-gated, 409 outside that status. See § Sanctions / compliance hold resolution. |
 | `POST` | `/api/payments/{id}/compliance/dismiss` | Give up on a payment stuck `pending_compliance` — flips it to `failed` with a required `{reason}`, never reaches the adapter. `payment.void`-gated, 409 outside that status. See § Sanctions / compliance hold resolution. |
+| `POST` | `/api/payments/{id}/settlement/accept` | Accept a short / unverifiable settlement as final and release the held invoice to `paid`, recording the required `{reason}` + figures on the append-only trail. `payment.execute`-gated; 409 when the payment isn't `completed` or when its settlement already covers the invoice. See § An under-settlement holds the invoice short of `paid`. |
 
 **Query parameters for `GET /api/payments`:**
 
