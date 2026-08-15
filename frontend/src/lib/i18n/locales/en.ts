@@ -2139,6 +2139,11 @@ export const en = {
 	'admin.webhooks.statusInactive': 'Inactive',
 	'admin.webhooks.row.delete': 'Delete',
 	'admin.webhooks.row.confirm': 'Confirm',
+	'admin.webhooks.row.rotate': 'Rotate secret',
+	'admin.webhooks.rotateAria': 'Rotate signing secret for {name}',
+	'admin.webhooks.overlapPill': 'Previous secret until {time}',
+	'admin.webhooks.overlapTitle':
+		'A rotation is in flight: the retiring secret still signs the X-Webhook-Signature-Previous header until this time.',
 	'admin.webhooks.deliveries': 'Deliveries',
 	'admin.webhooks.filter.all': 'All',
 	'admin.webhooks.filter.pending': 'Pending',
@@ -2165,6 +2170,32 @@ export const en = {
 	'admin.webhooks.toast.deleteFailed': 'Failed to delete webhook',
 	'admin.webhooks.toast.requeued': 'Delivery re-queued',
 	'admin.webhooks.toast.redeliverFailed': 'Failed to redeliver',
+	'admin.webhooks.toast.rotateFailed': 'Failed to rotate signing secret',
+	'admin.webhooks.rotate.aria': 'Rotate signing secret',
+	'admin.webhooks.rotate.heading': 'Rotate signing secret',
+	'admin.webhooks.rotate.hint':
+		'Mints a replacement signing secret for {name}, keeping this webhook and its whole delivery history. The new secret is shown only once.',
+	'admin.webhooks.rotate.overlapLegend': 'Overlap window',
+	'admin.webhooks.rotate.overlapHint':
+		'How long the retiring secret keeps signing a second X-Webhook-Signature-Previous header. A receiver that accepts either header rotates with no dropped deliveries.',
+	'admin.webhooks.rotate.overlap.cutover': 'Compromised — cut over now',
+	'admin.webhooks.rotate.overlap.15m': '15 minutes',
+	'admin.webhooks.rotate.overlap.1h': '1 hour (default)',
+	'admin.webhooks.rotate.overlap.4h': '4 hours',
+	'admin.webhooks.rotate.overlap.24h': '24 hours',
+	'admin.webhooks.rotate.cutoverWarning':
+		'No overlap: the current secret stops verifying on the very next delivery. Deliveries will fail until your receiver holds the new secret.',
+	'admin.webhooks.rotate.rotate': 'Rotate secret',
+	'admin.webhooks.rotate.rotating': 'Rotating…',
+	'admin.webhooks.rotated.aria': 'Signing secret rotated',
+	'admin.webhooks.rotated.heading': 'Signing secret rotated',
+	'admin.webhooks.rotated.warningStrong': 'Copy this signing secret now.',
+	'admin.webhooks.rotated.warning':
+		'For security it is shown only once and can never be retrieved again. If you lose it, rotate again.',
+	'admin.webhooks.rotated.overlapNote':
+		'The previous secret keeps signing the X-Webhook-Signature-Previous header until {time}. Install the new secret in your receiver before then.',
+	'admin.webhooks.rotated.cutoverNote':
+		'No overlap window — the previous secret stopped verifying immediately. Install the new secret in your receiver now.',
 	'admin.webhooks.create.aria': 'Create webhook',
 	'admin.webhooks.create.heading': 'Create webhook',
 	'admin.webhooks.create.hintPre': 'We POST signed JSON to the target URL each time a subscribed event fires. The signing secret is minted now and shown',

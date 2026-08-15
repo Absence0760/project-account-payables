@@ -2106,6 +2106,11 @@ export const messages = {
 	'admin.webhooks.statusInactive': 'Inativo',
 	'admin.webhooks.row.delete': 'Excluir',
 	'admin.webhooks.row.confirm': 'Confirmar',
+	'admin.webhooks.row.rotate': 'Rotacionar segredo',
+	'admin.webhooks.rotateAria': 'Rotacionar o segredo de assinatura de {name}',
+	'admin.webhooks.overlapPill': 'Segredo anterior até {time}',
+	'admin.webhooks.overlapTitle':
+		'Há uma rotação em andamento: o segredo antigo ainda assina o cabeçalho X-Webhook-Signature-Previous até este horário.',
 	'admin.webhooks.deliveries': 'Entregas',
 	'admin.webhooks.filter.all': 'Todas',
 	'admin.webhooks.filter.pending': 'Pendentes',
@@ -2132,6 +2137,32 @@ export const messages = {
 	'admin.webhooks.toast.deleteFailed': 'Falha ao excluir o webhook',
 	'admin.webhooks.toast.requeued': 'Entrega recolocada na fila',
 	'admin.webhooks.toast.redeliverFailed': 'Falha ao reenviar',
+	'admin.webhooks.toast.rotateFailed': 'Falha ao rotacionar o segredo de assinatura',
+	'admin.webhooks.rotate.aria': 'Rotacionar o segredo de assinatura',
+	'admin.webhooks.rotate.heading': 'Rotacionar o segredo de assinatura',
+	'admin.webhooks.rotate.hint':
+		'Gera um segredo de assinatura substituto para {name}, mantendo este webhook e todo o seu histórico de entregas. O novo segredo é exibido apenas uma vez.',
+	'admin.webhooks.rotate.overlapLegend': 'Janela de sobreposição',
+	'admin.webhooks.rotate.overlapHint':
+		'Por quanto tempo o segredo antigo continua assinando um segundo cabeçalho X-Webhook-Signature-Previous. Um receptor que aceite qualquer um dos cabeçalhos faz a rotação sem perder entregas.',
+	'admin.webhooks.rotate.overlap.cutover': 'Comprometido — trocar agora',
+	'admin.webhooks.rotate.overlap.15m': '15 minutos',
+	'admin.webhooks.rotate.overlap.1h': '1 hora (padrão)',
+	'admin.webhooks.rotate.overlap.4h': '4 horas',
+	'admin.webhooks.rotate.overlap.24h': '24 horas',
+	'admin.webhooks.rotate.cutoverWarning':
+		'Sem sobreposição: o segredo atual deixa de verificar já na próxima entrega. As entregas falharão até que o seu receptor tenha o novo segredo.',
+	'admin.webhooks.rotate.rotate': 'Rotacionar segredo',
+	'admin.webhooks.rotate.rotating': 'Rotacionando…',
+	'admin.webhooks.rotated.aria': 'Segredo de assinatura rotacionado',
+	'admin.webhooks.rotated.heading': 'Segredo de assinatura rotacionado',
+	'admin.webhooks.rotated.warningStrong': 'Copie este segredo de assinatura agora.',
+	'admin.webhooks.rotated.warning':
+		'Por segurança, ele é exibido apenas uma vez e nunca poderá ser recuperado. Se você perdê-lo, rotacione novamente.',
+	'admin.webhooks.rotated.overlapNote':
+		'O segredo anterior continua assinando o cabeçalho X-Webhook-Signature-Previous até {time}. Instale o novo segredo no seu receptor antes disso.',
+	'admin.webhooks.rotated.cutoverNote':
+		'Sem janela de sobreposição — o segredo anterior parou de verificar imediatamente. Instale o novo segredo no seu receptor agora.',
 	'admin.webhooks.create.aria': 'Criar webhook',
 	'admin.webhooks.create.heading': 'Criar webhook',
 	'admin.webhooks.create.hintPre': 'Enviamos JSON assinado por POST para a URL de destino sempre que um evento inscrito é disparado. O segredo de assinatura é gerado agora e exibido',

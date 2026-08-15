@@ -2094,6 +2094,11 @@ export const messages = {
 	'admin.webhooks.statusInactive': '無効',
 	'admin.webhooks.row.delete': '削除',
 	'admin.webhooks.row.confirm': '確認',
+	'admin.webhooks.row.rotate': 'シークレットをローテーション',
+	'admin.webhooks.rotateAria': '{name} の署名シークレットをローテーション',
+	'admin.webhooks.overlapPill': '旧シークレットは {time} まで有効',
+	'admin.webhooks.overlapTitle':
+		'ローテーション実行中です。旧シークレットはこの時刻まで X-Webhook-Signature-Previous ヘッダーに署名し続けます。',
 	'admin.webhooks.deliveries': '配信',
 	'admin.webhooks.filter.all': 'すべて',
 	'admin.webhooks.filter.pending': '保留中',
@@ -2120,6 +2125,32 @@ export const messages = {
 	'admin.webhooks.toast.deleteFailed': 'Webhook の削除に失敗しました',
 	'admin.webhooks.toast.requeued': '配信を再キューに追加しました',
 	'admin.webhooks.toast.redeliverFailed': '再配信に失敗しました',
+	'admin.webhooks.toast.rotateFailed': '署名シークレットのローテーションに失敗しました',
+	'admin.webhooks.rotate.aria': '署名シークレットのローテーション',
+	'admin.webhooks.rotate.heading': '署名シークレットのローテーション',
+	'admin.webhooks.rotate.hint':
+		'{name} の署名シークレットを新しく発行します。この Webhook と配信履歴はそのまま保持されます。新しいシークレットは一度しか表示されません。',
+	'admin.webhooks.rotate.overlapLegend': '重複期間',
+	'admin.webhooks.rotate.overlapHint':
+		'旧シークレットが 2 つ目の X-Webhook-Signature-Previous ヘッダーに署名し続ける期間です。どちらのヘッダーでも検証する受信側なら、配信を落とさずに切り替えられます。',
+	'admin.webhooks.rotate.overlap.cutover': '漏洩 — 直ちに切り替える',
+	'admin.webhooks.rotate.overlap.15m': '15 分',
+	'admin.webhooks.rotate.overlap.1h': '1 時間（既定）',
+	'admin.webhooks.rotate.overlap.4h': '4 時間',
+	'admin.webhooks.rotate.overlap.24h': '24 時間',
+	'admin.webhooks.rotate.cutoverWarning':
+		'重複期間なし: 現在のシークレットは次の配信から検証されなくなります。受信側に新しいシークレットを設定するまで配信は失敗します。',
+	'admin.webhooks.rotate.rotate': 'シークレットをローテーション',
+	'admin.webhooks.rotate.rotating': 'ローテーション中…',
+	'admin.webhooks.rotated.aria': '署名シークレットをローテーションしました',
+	'admin.webhooks.rotated.heading': '署名シークレットをローテーションしました',
+	'admin.webhooks.rotated.warningStrong': 'この署名シークレットを今すぐコピーしてください。',
+	'admin.webhooks.rotated.warning':
+		'セキュリティのため一度しか表示されず、後から取得することはできません。紛失した場合は再度ローテーションしてください。',
+	'admin.webhooks.rotated.overlapNote':
+		'旧シークレットは {time} まで X-Webhook-Signature-Previous ヘッダーに署名し続けます。それまでに受信側へ新しいシークレットを設定してください。',
+	'admin.webhooks.rotated.cutoverNote':
+		'重複期間はありません — 旧シークレットは直ちに検証されなくなりました。今すぐ受信側へ新しいシークレットを設定してください。',
 	'admin.webhooks.create.aria': 'Webhook を作成',
 	'admin.webhooks.create.heading': 'Webhook を作成',
 	'admin.webhooks.create.hintPre': '購読しているイベントが発生するたびに、ターゲット URL に署名付き JSON を POST します。署名シークレットは今作成され、',

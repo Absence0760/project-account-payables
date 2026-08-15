@@ -17,6 +17,7 @@
 		listWebhookSubscriptions,
 		createWebhookSubscription,
 		updateWebhookSubscription,
+		rotateWebhookSecret,
 		deleteWebhookSubscription,
 		listWebhookDeliveries,
 		redeliverWebhookDelivery
@@ -25,8 +26,14 @@
 		WEBHOOK_EVENT_TYPES,
 		type WebhookSubscription,
 		type WebhookSubscriptionCreated,
+		type WebhookSecretRotated,
 		type WebhookDelivery
 	} from '$lib/types/webhooks';
+	import {
+		OVERLAP_CHOICES,
+		OVERLAP_DEFAULT_MINUTES,
+		isOverlapLive
+	} from '$lib/utils/webhookRotation';
 
 	// RBAC: the backend gates every /api/webhooks endpoint to admin only and
 	// 403s the rest. Wait for `auth.user` to resolve before redirecting so we
@@ -76,6 +83,63 @@
 
 	// Delete confirm (armed two-click on the row action).
 	let confirmDeleteId = $state<string | null>(null);
+
+	// ── Secret rotation ──────────────────────────────────────────────────────
+	// Rotating mints a replacement signing secret while KEEPING the subscription
+	// id — and therefore its whole delivery history. That matters because the
+	// only other route off a leaked secret is Delete + re-create, which CASCADEs
+	// the delivery log away: recovering from a leak would mean destroying the
+	// record of what had been delivered. Delete must not be the easier
+	// affordance during an incident.
+	//
+	// Confirm-then-act via a dialog rather than the armed two-click the Delete
+	// row action uses: the rotation needs an overlap choice, and the picker has
+	// to live somewhere. The dialog IS the confirmation step.
+	let rotating = $state<WebhookSubscription | null>(null);
+	let rotateOverlap = $state(OVERLAP_DEFAULT_MINUTES);
+	let rotateSaving = $state(false);
+
+	// The replacement secret, shown exactly once — same contract as `minted`.
+	let rotated = $state<WebhookSecretRotated | null>(null);
+
+	// Subscription id → the instant the retiring secret stops signing, so an
+	// admin can see a rotation is mid-flight rather than guessing.
+	//
+	// In memory only, and deliberately: `GET /api/webhooks` does not return
+	// `previous_secret_expires_at`, so a reload has nothing to rebuild this
+	// from. It still earns its place — the window matters exactly while the
+	// admin is on this page pasting the new secret into their receiver. The
+	// durable fix is that field on the list response; tracked in
+	// docs/followups.md. Never holds a secret, only an expiry timestamp.
+	let overlapUntil = $state<Record<string, string>>({});
+
+	// The badge must disappear on its own when the window elapses, and a bare
+	// Date.now() read isn't reactive — so tick a clock while any window is open.
+	let clock = $state(Date.now());
+	$effect(() => {
+		if (Object.keys(overlapUntil).length === 0) return;
+		const t = setInterval(() => (clock = Date.now()), 30_000);
+		return () => clearInterval(t);
+	});
+
+	/** The live overlap expiry for a subscription, or null if none is running. */
+	function overlapActiveUntil(subId: string): string | null {
+		const until = overlapUntil[subId];
+		return until && isOverlapLive(until, clock) ? until : null;
+	}
+
+	// Short date + time: a 24-hour window can end tomorrow, so a bare clock time
+	// would be ambiguous about which day the old secret dies.
+	const OVERLAP_TIME_OPTS: Intl.DateTimeFormatOptions = {
+		month: 'short',
+		day: 'numeric',
+		hour: 'numeric',
+		minute: '2-digit'
+	};
+
+	function formatOverlapEnd(iso: string): string {
+		return formatDate(iso, '', OVERLAP_TIME_OPTS);
+	}
 
 	async function loadSubs() {
 		subsLoading = true;
@@ -166,6 +230,46 @@
 		} finally {
 			editSaving = false;
 		}
+	}
+
+	function openRotate(sub: WebhookSubscription) {
+		// Un-arm a pending Delete — the window-click handler that normally does
+		// this ignores clicks inside `.row-action`, and leaving Delete armed
+		// behind the rotate dialog is a loaded gun.
+		confirmDeleteId = null;
+		rotating = sub;
+		rotateOverlap = OVERLAP_DEFAULT_MINUTES;
+	}
+
+	async function handleRotate() {
+		if (!rotating) return;
+		const subId = rotating.id;
+		rotateSaving = true;
+		try {
+			const result = await rotateWebhookSecret(subId, rotateOverlap);
+			rotating = null;
+			// Show the replacement exactly once.
+			rotated = result;
+			const next = { ...overlapUntil };
+			if (result.previous_secret_expires_at) {
+				next[subId] = result.previous_secret_expires_at;
+			} else {
+				// Hard cutover — drop any window an earlier rotation left showing.
+				delete next[subId];
+			}
+			overlapUntil = next;
+			// Re-list: the secret prefix on the row is now the new secret's.
+			await loadSubs();
+		} catch (e) {
+			toast(e instanceof Error ? e.message : m('admin.webhooks.toast.rotateFailed'), 'error');
+		} finally {
+			rotateSaving = false;
+		}
+	}
+
+	function dismissRotated() {
+		// Drop the secret from memory the moment the reveal closes.
+		rotated = null;
 	}
 
 	async function handleDelete(id: string) {
@@ -316,6 +420,7 @@
 			>
 				{#snippet body()}
 					{#each subs as sub (sub.id)}
+						{@const overlapEnds = overlapActiveUntil(sub.id)}
 						<tr
 							class="clickable"
 							class:inactive={!sub.active}
@@ -330,7 +435,18 @@
 							</td>
 							<td class="url-cell" title={sub.target_url}>{sub.target_url}</td>
 							<td class="events-cell">{sub.event_types.join(', ')}</td>
-							<td class="mono">{sub.secret_prefix}…</td>
+							<td class="mono">
+								{sub.secret_prefix}…
+								{#if overlapEnds}
+									<span
+										class="overlap-pill"
+										data-testid="overlap-pill"
+										title={m('admin.webhooks.overlapTitle')}
+									>
+										{m('admin.webhooks.overlapPill', { time: formatOverlapEnd(overlapEnds) })}
+									</span>
+								{/if}
+							</td>
 							<td>{formatDate(sub.created_at)}</td>
 							<td>
 								{#if sub.active}
@@ -340,6 +456,15 @@
 								{/if}
 							</td>
 							<td class="actions">
+								<RowAction
+									ariaLabel={m('admin.webhooks.rotateAria', { name: sub.name })}
+									onclick={(e) => {
+										e.stopPropagation();
+										openRotate(sub);
+									}}
+								>
+									{m('admin.webhooks.row.rotate')}
+								</RowAction>
 								<RowAction
 									variant="danger"
 									armed={confirmDeleteId === sub.id}
@@ -498,6 +623,93 @@
 	onclose={dismissMinted}
 />
 
+<!-- Rotate signing secret — confirm + overlap picker -->
+<Modal
+	open={rotating !== null}
+	ariaLabel={m('admin.webhooks.rotate.aria')}
+	width="md"
+	onclose={() => (rotating = null)}
+>
+	{#if rotating}
+		<h2>{m('admin.webhooks.rotate.heading')}</h2>
+		<p class="modal-hint">{m('admin.webhooks.rotate.hint', { name: rotating.name })}</p>
+		<form
+			onsubmit={(e) => {
+				e.preventDefault();
+				handleRotate();
+			}}
+		>
+			<fieldset class="events-field">
+				<legend>{m('admin.webhooks.rotate.overlapLegend')}</legend>
+				<p class="field-hint">{m('admin.webhooks.rotate.overlapHint')}</p>
+				{#each OVERLAP_CHOICES as choice (choice.minutes)}
+					<label class="checkbox-line">
+						<input
+							type="radio"
+							name="overlap-minutes"
+							checked={rotateOverlap === choice.minutes}
+							onchange={() => (rotateOverlap = choice.minutes)}
+						/>
+						<span>{m(choice.labelKey)}</span>
+					</label>
+				{/each}
+			</fieldset>
+			{#if rotateOverlap === 0}
+				<div class="cutover-warning" role="alert" data-testid="cutover-warning">
+					{m('admin.webhooks.rotate.cutoverWarning')}
+				</div>
+			{/if}
+			<div class="modal-footer">
+				<button type="button" class="btn-cancel" onclick={() => (rotating = null)}
+					>{m('common.cancel')}</button
+				>
+				<button type="submit" class="btn-primary" disabled={rotateSaving}>
+					{rotateSaving ? m('admin.webhooks.rotate.rotating') : m('admin.webhooks.rotate.rotate')}
+				</button>
+			</div>
+		</form>
+	{/if}
+</Modal>
+
+<!-- One-time signing-secret reveal (rotation) -->
+<SecretReveal
+	open={rotated !== null}
+	ariaLabel={m('admin.webhooks.rotated.aria')}
+	heading={m('admin.webhooks.rotated.heading')}
+	warningStrong={m('admin.webhooks.rotated.warningStrong')}
+	warning={m('admin.webhooks.rotated.warning')}
+	secret={rotated?.signing_secret ?? ''}
+	testId="rotated-secret"
+	copyLabel={m('admin.webhooks.reveal.copy')}
+	copiedLabel={m('admin.webhooks.reveal.copied')}
+	copiedToast={m('admin.webhooks.toast.secretCopied')}
+	copyFailedToast={m('admin.webhooks.toast.copyFailed')}
+	doneLabel={m('admin.webhooks.reveal.done')}
+	meta={rotated
+		? [
+				{ label: m('admin.webhooks.reveal.name'), value: rotated.subscription.name },
+				{
+					label: m('admin.webhooks.reveal.prefix'),
+					value: `${rotated.subscription.secret_prefix}…`,
+					mono: true
+				}
+			]
+		: []}
+	onclose={dismissRotated}
+>
+	{#snippet note()}
+		{#if rotated}
+			<p class="overlap-note" data-testid="rotation-overlap-note">
+				{rotated.previous_secret_expires_at
+					? m('admin.webhooks.rotated.overlapNote', {
+							time: formatOverlapEnd(rotated.previous_secret_expires_at)
+						})
+					: m('admin.webhooks.rotated.cutoverNote')}
+			</p>
+		{/if}
+	{/snippet}
+</SecretReveal>
+
 <!-- Edit webhook modal -->
 <Modal open={editing !== null} ariaLabel={m('admin.webhooks.edit.aria')} width="md" onclose={() => (editing = null)}>
 	{#if editing}
@@ -619,6 +831,50 @@
 
 	tr.inactive td:not(.actions) {
 		opacity: 0.6;
+	}
+
+	/* "A rotation is mid-flight" signal on the secret cell. Amber, matching the
+	   `pending` status pill — it's a transient state, not an error. */
+	.overlap-pill {
+		display: inline-block;
+		margin-left: 6px;
+		padding: 2px 8px;
+		border-radius: 10px;
+		background: rgba(255, 180, 50, 0.15);
+		color: #d4940a;
+		font-family:
+			-apple-system,
+			BlinkMacSystemFont,
+			'Segoe UI',
+			Roboto,
+			sans-serif;
+		font-size: 0.7rem;
+		font-weight: 600;
+		white-space: nowrap;
+	}
+
+	.field-hint {
+		margin: 0 0 0.5rem;
+		color: var(--text-muted);
+		font-size: 0.8rem;
+	}
+
+	/* Hard cutover is the destructive option — deliveries fail until the
+	   receiver holds the new secret — so it gets the red treatment, not amber. */
+	.cutover-warning {
+		background: rgba(240, 70, 70, 0.12);
+		border: 1px solid rgba(240, 70, 70, 0.35);
+		color: #f06464;
+		border-radius: 8px;
+		padding: 0.75rem 1rem;
+		font-size: 0.85rem;
+		margin: 0.75rem 0 0;
+	}
+
+	.overlap-note {
+		margin: 0 0 0.75rem;
+		color: var(--text-muted);
+		font-size: 0.8rem;
 	}
 
 	.events-field {

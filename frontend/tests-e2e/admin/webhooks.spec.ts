@@ -14,6 +14,7 @@ import {
  *  - POST   /api/webhooks                          → create (signing secret returned ONCE)
  *  - GET    /api/webhooks                          → list (prefix + metadata only)
  *  - PATCH  /api/webhooks/{id}                     → edit
+ *  - POST   /api/webhooks/{id}/rotate-secret       → rotate (new secret ONCE, keeps id + history)
  *  - DELETE /api/webhooks/{id}                     → delete (CASCADEs deliveries)
  *  - GET    /api/webhooks/deliveries               → delivery log (status filter, paginated)
  *  - POST   /api/webhooks/deliveries/{id}/redeliver → re-enqueue a failed/dead delivery (409 if delivered)
@@ -37,6 +38,48 @@ interface SubscriptionResponse {
 	event_types: string[];
 	secret_prefix: string;
 	active: boolean;
+}
+
+interface DeliveryResponse {
+	id: string;
+	subscription_id: string;
+	event_id: string;
+	status: string;
+}
+
+/** Seed a `failed` delivery straight into the control DB. Deliveries are
+ *  normally produced by the dispatch sweep, which is off in dev. */
+async function seedFailedDelivery(
+	page: import('@playwright/test').Page,
+	subId: string,
+	eventId: string
+) {
+	const headers = await apiHeaders(page);
+	const orgId = (
+		await (await page.request.get(`${API_BASE}/api/auth/me`, { headers })).json()
+	)?.organization_id as string | undefined;
+
+	const { execFileSync } = await import('node:child_process');
+	execFileSync(
+		'psql',
+		[
+			'-h',
+			'localhost',
+			'-U',
+			'postgres',
+			'-p',
+			'5432',
+			'-d',
+			'feohledger',
+			'-c',
+			`INSERT INTO webhook_deliveries
+			   (id, subscription_id, organization_id, event_id, event_type, payload, status, attempt_count)
+			 VALUES
+			   (gen_random_uuid(), '${subId}', '${orgId}', '${eventId}', 'invoice.approved',
+			    '{}'::jsonb, 'failed', 1);`
+		],
+		{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: ['ignore', 'pipe', 'pipe'] }
+	);
 }
 
 /** Best-effort cleanup: delete a subscription we created in a test. */
@@ -119,6 +162,114 @@ test.describe('/admin/webhooks (admin)', () => {
 		if (created) await deleteSub(page, created.id);
 	});
 
+	test('rotate mints a new secret, keeps the subscription id + its delivery history', async ({
+		page
+	}) => {
+		const name = `e2e-rot-${Date.now()}`;
+		const created = await createSub(page, name);
+		const subId = created.subscription.id;
+		const originalSecret = created.signing_secret;
+		const originalPrefix = created.subscription.secret_prefix;
+
+		// The whole reason rotation exists: Delete + re-create CASCADEs the
+		// delivery log away, so recovering from a leaked secret used to mean
+		// destroying the record of what had been delivered. Seed a delivery so
+		// the test can prove rotation preserves it.
+		const eventId = `e2e-rot-evt-${Date.now()}`;
+		await seedFailedDelivery(page, subId, eventId);
+
+		await page.goto('/admin/webhooks');
+		const row = page.locator('tr', { hasText: name });
+		await expect(row).toBeVisible();
+
+		await row.getByRole('button', { name: `Rotate signing secret for ${name}` }).click();
+		const dialog = page.getByRole('dialog', { name: 'Rotate signing secret' });
+		await expect(dialog).toBeVisible();
+		// The backend's own default is pre-selected, and the destructive
+		// hard-cutover warning is absent until that option is picked.
+		await expect(dialog.getByRole('radio', { name: '1 hour (default)' })).toBeChecked();
+		await expect(dialog.getByTestId('cutover-warning')).toHaveCount(0);
+		await dialog.getByRole('button', { name: 'Rotate secret' }).click();
+
+		// The replacement is revealed exactly once — and it is a genuinely new
+		// secret, not the one we already hold.
+		const reveal = page.getByRole('dialog', { name: 'Signing secret rotated' });
+		await expect(reveal).toBeVisible({ timeout: 10_000 });
+		const shown = reveal.getByTestId('rotated-secret');
+		await expect(shown).toBeVisible();
+		const newSecret = (await shown.textContent())?.trim() ?? '';
+		expect(newSecret.length).toBeGreaterThan(16);
+		expect(newSecret).not.toBe(originalSecret);
+		await expect(reveal.getByText(/shown only once/i)).toBeVisible();
+		await expect(reveal.getByRole('button', { name: 'Copy' })).toBeVisible();
+		// The overlap window is stated, not left to guess.
+		await expect(reveal.getByTestId('rotation-overlap-note')).toContainText(
+			'X-Webhook-Signature-Previous'
+		);
+
+		// Dismiss — the secret must be gone (never re-shown, never echoed).
+		await reveal.getByRole('button', { name: 'Done' }).click();
+		await expect(reveal).toBeHidden();
+		await expect(page.getByTestId('rotated-secret')).toHaveCount(0);
+		await expect(page.getByText(newSecret)).toHaveCount(0);
+
+		// Server-side: SAME subscription id, a new prefix, and the delivery row
+		// still there. This is the assertion the feature exists for.
+		const headers = await apiHeaders(page);
+		const list = (await (
+			await page.request.get(`${API_BASE}/api/webhooks`, { headers })
+		).json()) as SubscriptionResponse[];
+		const after = list.find((s) => s.id === subId);
+		expect(after).toBeDefined();
+		expect(after?.secret_prefix).not.toBe(originalPrefix);
+
+		const deliveries = (await (
+			await page.request.get(`${API_BASE}/api/webhooks/deliveries?subscription_id=${subId}`, {
+				headers
+			})
+		).json()) as DeliveryResponse[];
+		expect(deliveries.some((d) => d.event_id === eventId)).toBe(true);
+
+		// The row re-rendered onto the new prefix and shows the rotation is
+		// mid-flight rather than leaving the admin to guess.
+		const rotatedRow = page.locator('tr', { hasText: name });
+		await expect(rotatedRow).toContainText(`${after?.secret_prefix}…`);
+		await expect(rotatedRow.getByTestId('overlap-pill')).toBeVisible();
+
+		await deleteSub(page, subId);
+	});
+
+	test('the hard-cutover option warns first and rotates with no overlap window', async ({
+		page
+	}) => {
+		const name = `e2e-cut-${Date.now()}`;
+		const created = await createSub(page, name);
+		const subId = created.subscription.id;
+
+		await page.goto('/admin/webhooks');
+		const row = page.locator('tr', { hasText: name });
+		await expect(row).toBeVisible();
+
+		await row.getByRole('button', { name: `Rotate signing secret for ${name}` }).click();
+		const dialog = page.getByRole('dialog', { name: 'Rotate signing secret' });
+		await dialog.getByRole('radio', { name: /Compromised/ }).check();
+		// Picking the cutover surfaces its consequence BEFORE committing:
+		// deliveries fail until the receiver holds the new secret.
+		await expect(dialog.getByTestId('cutover-warning')).toBeVisible();
+		await dialog.getByRole('button', { name: 'Rotate secret' }).click();
+
+		const reveal = page.getByRole('dialog', { name: 'Signing secret rotated' });
+		await expect(reveal).toBeVisible({ timeout: 10_000 });
+		await expect(reveal.getByTestId('rotation-overlap-note')).toContainText(/no overlap window/i);
+		await reveal.getByRole('button', { name: 'Done' }).click();
+		await expect(reveal).toBeHidden();
+
+		// No overlap → nothing is mid-flight, so no badge.
+		await expect(page.locator('tr', { hasText: name }).getByTestId('overlap-pill')).toHaveCount(0);
+
+		await deleteSub(page, subId);
+	});
+
 	test('delete removes the subscription (armed two-click)', async ({ page }) => {
 		const name = `e2e-del-${Date.now()}`;
 		const created = await createSub(page, name);
@@ -172,32 +323,7 @@ test.describe('/admin/webhooks (admin)', () => {
 
 		// Seed a FAILED delivery directly in the control DB so a status pill renders.
 		const eventId = `e2e-lbl-${Date.now()}`;
-		const headers = await apiHeaders(page);
-		const orgId = (await (
-			await page.request.get(`${API_BASE}/api/auth/me`, { headers })
-		).json())?.organization_id as string | undefined;
-
-		const { execFileSync } = await import('node:child_process');
-		execFileSync(
-			'psql',
-			[
-				'-h',
-				'localhost',
-				'-U',
-				'postgres',
-				'-p',
-				'5432',
-				'-d',
-				'feohledger',
-				'-c',
-				`INSERT INTO webhook_deliveries
-				   (id, subscription_id, organization_id, event_id, event_type, payload, status, attempt_count)
-				 VALUES
-				   (gen_random_uuid(), '${subId}', '${orgId}', '${eventId}', 'invoice.approved',
-				    '{}'::jsonb, 'failed', 1);`
-			],
-			{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: ['ignore', 'pipe', 'pipe'] }
-		);
+		await seedFailedDelivery(page, subId, eventId);
 
 		await page.goto('/admin/webhooks?status=failed');
 		const row = page.locator('tr', { hasText: eventId });
@@ -218,36 +344,9 @@ test.describe('/admin/webhooks (admin)', () => {
 		const subId = created.subscription.id;
 
 		// Seed a FAILED delivery directly in the control DB so a Redeliver action
-		// is rendered. (Deliveries are normally produced by the dispatch sweep,
-		// which is off in dev.)
+		// is rendered.
 		const eventId = `e2e-evt-${Date.now()}`;
-		const headers = await apiHeaders(page);
-		const orgId = (await (
-			await page.request.get(`${API_BASE}/api/auth/me`, { headers })
-		).json())?.organization_id as string | undefined;
-
-		// Insert via the control DB (webhook tables are control-plane).
-		const { execFileSync } = await import('node:child_process');
-		execFileSync(
-			'psql',
-			[
-				'-h',
-				'localhost',
-				'-U',
-				'postgres',
-				'-p',
-				'5432',
-				'-d',
-				'feohledger',
-				'-c',
-				`INSERT INTO webhook_deliveries
-				   (id, subscription_id, organization_id, event_id, event_type, payload, status, attempt_count)
-				 VALUES
-				   (gen_random_uuid(), '${subId}', '${orgId}', '${eventId}', 'invoice.approved',
-				    '{}'::jsonb, 'failed', 1);`
-			],
-			{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: ['ignore', 'pipe', 'pipe'] }
-		);
+		await seedFailedDelivery(page, subId, eventId);
 
 		await page.goto('/admin/webhooks?status=failed');
 		const row = page.locator('tr', { hasText: eventId });

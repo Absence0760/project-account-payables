@@ -2075,6 +2075,11 @@ export const messages = {
 	'admin.webhooks.statusInactive': 'Inactif',
 	'admin.webhooks.row.delete': 'Supprimer',
 	'admin.webhooks.row.confirm': 'Confirmer',
+	'admin.webhooks.row.rotate': 'Renouveler le secret',
+	'admin.webhooks.rotateAria': 'Renouveler le secret de signature de {name}',
+	'admin.webhooks.overlapPill': 'Secret précédent jusqu’à {time}',
+	'admin.webhooks.overlapTitle':
+		'Un renouvellement est en cours : le secret sortant signe encore l’en-tête X-Webhook-Signature-Previous jusqu’à cette heure.',
 	'admin.webhooks.deliveries': 'Livraisons',
 	'admin.webhooks.filter.all': 'Toutes',
 	'admin.webhooks.filter.pending': 'En attente',
@@ -2101,6 +2106,32 @@ export const messages = {
 	'admin.webhooks.toast.deleteFailed': 'Échec de la suppression du webhook',
 	'admin.webhooks.toast.requeued': 'Livraison remise en file',
 	'admin.webhooks.toast.redeliverFailed': 'Échec du renvoi',
+	'admin.webhooks.toast.rotateFailed': 'Échec du renouvellement du secret de signature',
+	'admin.webhooks.rotate.aria': 'Renouveler le secret de signature',
+	'admin.webhooks.rotate.heading': 'Renouveler le secret de signature',
+	'admin.webhooks.rotate.hint':
+		'Génère un secret de signature de remplacement pour {name}, en conservant ce webhook et tout son historique de livraisons. Le nouveau secret n’est affiché qu’une seule fois.',
+	'admin.webhooks.rotate.overlapLegend': 'Fenêtre de chevauchement',
+	'admin.webhooks.rotate.overlapHint':
+		'Durée pendant laquelle le secret sortant continue de signer un second en-tête X-Webhook-Signature-Previous. Un récepteur qui accepte l’un ou l’autre en-tête effectue la rotation sans perdre de livraisons.',
+	'admin.webhooks.rotate.overlap.cutover': 'Compromis — basculer maintenant',
+	'admin.webhooks.rotate.overlap.15m': '15 minutes',
+	'admin.webhooks.rotate.overlap.1h': '1 heure (par défaut)',
+	'admin.webhooks.rotate.overlap.4h': '4 heures',
+	'admin.webhooks.rotate.overlap.24h': '24 heures',
+	'admin.webhooks.rotate.cutoverWarning':
+		'Aucun chevauchement : le secret actuel cesse de vérifier dès la livraison suivante. Les livraisons échoueront tant que votre récepteur n’aura pas le nouveau secret.',
+	'admin.webhooks.rotate.rotate': 'Renouveler le secret',
+	'admin.webhooks.rotate.rotating': 'Renouvellement…',
+	'admin.webhooks.rotated.aria': 'Secret de signature renouvelé',
+	'admin.webhooks.rotated.heading': 'Secret de signature renouvelé',
+	'admin.webhooks.rotated.warningStrong': 'Copiez ce secret de signature maintenant.',
+	'admin.webhooks.rotated.warning':
+		'Pour des raisons de sécurité, il n’est affiché qu’une seule fois et ne pourra jamais être récupéré. Si vous le perdez, renouvelez-le à nouveau.',
+	'admin.webhooks.rotated.overlapNote':
+		'Le secret précédent continue de signer l’en-tête X-Webhook-Signature-Previous jusqu’à {time}. Installez le nouveau secret dans votre récepteur avant cette échéance.',
+	'admin.webhooks.rotated.cutoverNote':
+		'Aucune fenêtre de chevauchement — le secret précédent a immédiatement cessé de vérifier. Installez le nouveau secret dans votre récepteur dès maintenant.',
 	'admin.webhooks.create.aria': 'Créer un webhook',
 	'admin.webhooks.create.heading': 'Créer un webhook',
 	'admin.webhooks.create.hintPre': 'Nous envoyons un JSON signé par POST à l\'URL cible à chaque déclenchement d\'un événement abonné. Le secret de signature est généré maintenant et affiché',

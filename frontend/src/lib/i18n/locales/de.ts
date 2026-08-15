@@ -2076,6 +2076,11 @@ export const messages = {
 	'admin.webhooks.statusInactive': 'Inaktiv',
 	'admin.webhooks.row.delete': 'Löschen',
 	'admin.webhooks.row.confirm': 'Bestätigen',
+	'admin.webhooks.row.rotate': 'Secret rotieren',
+	'admin.webhooks.rotateAria': 'Signatur-Secret für {name} rotieren',
+	'admin.webhooks.overlapPill': 'Vorheriges Secret bis {time}',
+	'admin.webhooks.overlapTitle':
+		'Eine Rotation läuft: Das ausscheidende Secret signiert bis zu diesem Zeitpunkt weiterhin den Header X-Webhook-Signature-Previous.',
 	'admin.webhooks.deliveries': 'Zustellungen',
 	'admin.webhooks.filter.all': 'Alle',
 	'admin.webhooks.filter.pending': 'Ausstehend',
@@ -2102,6 +2107,32 @@ export const messages = {
 	'admin.webhooks.toast.deleteFailed': 'Webhook konnte nicht gelöscht werden',
 	'admin.webhooks.toast.requeued': 'Zustellung erneut eingereiht',
 	'admin.webhooks.toast.redeliverFailed': 'Erneute Zustellung fehlgeschlagen',
+	'admin.webhooks.toast.rotateFailed': 'Signatur-Secret konnte nicht rotiert werden',
+	'admin.webhooks.rotate.aria': 'Signatur-Secret rotieren',
+	'admin.webhooks.rotate.heading': 'Signatur-Secret rotieren',
+	'admin.webhooks.rotate.hint':
+		'Erzeugt ein neues Signatur-Secret für {name} und behält diesen Webhook samt vollständigem Zustellungsverlauf. Das neue Secret wird nur einmal angezeigt.',
+	'admin.webhooks.rotate.overlapLegend': 'Überlappungsfenster',
+	'admin.webhooks.rotate.overlapHint':
+		'Wie lange das ausscheidende Secret einen zweiten Header X-Webhook-Signature-Previous signiert. Ein Empfänger, der beide Header akzeptiert, rotiert ohne verlorene Zustellungen.',
+	'admin.webhooks.rotate.overlap.cutover': 'Kompromittiert — sofort umstellen',
+	'admin.webhooks.rotate.overlap.15m': '15 Minuten',
+	'admin.webhooks.rotate.overlap.1h': '1 Stunde (Standard)',
+	'admin.webhooks.rotate.overlap.4h': '4 Stunden',
+	'admin.webhooks.rotate.overlap.24h': '24 Stunden',
+	'admin.webhooks.rotate.cutoverWarning':
+		'Keine Überlappung: Das aktuelle Secret verifiziert schon ab der nächsten Zustellung nicht mehr. Zustellungen schlagen fehl, bis Ihr Empfänger das neue Secret hat.',
+	'admin.webhooks.rotate.rotate': 'Secret rotieren',
+	'admin.webhooks.rotate.rotating': 'Wird rotiert…',
+	'admin.webhooks.rotated.aria': 'Signatur-Secret rotiert',
+	'admin.webhooks.rotated.heading': 'Signatur-Secret rotiert',
+	'admin.webhooks.rotated.warningStrong': 'Kopieren Sie dieses Signatur-Secret jetzt.',
+	'admin.webhooks.rotated.warning':
+		'Aus Sicherheitsgründen wird es nur einmal angezeigt und kann nie wieder abgerufen werden. Falls Sie es verlieren, rotieren Sie erneut.',
+	'admin.webhooks.rotated.overlapNote':
+		'Das vorherige Secret signiert den Header X-Webhook-Signature-Previous noch bis {time}. Hinterlegen Sie das neue Secret vorher in Ihrem Empfänger.',
+	'admin.webhooks.rotated.cutoverNote':
+		'Kein Überlappungsfenster — das vorherige Secret verifiziert sofort nicht mehr. Hinterlegen Sie das neue Secret jetzt in Ihrem Empfänger.',
 	'admin.webhooks.create.aria': 'Webhook erstellen',
 	'admin.webhooks.create.heading': 'Webhook erstellen',
 	'admin.webhooks.create.hintPre': 'Wir senden bei jedem abonnierten Ereignis signiertes JSON per POST an die Ziel-URL. Das Signaturgeheimnis wird jetzt erstellt und',
