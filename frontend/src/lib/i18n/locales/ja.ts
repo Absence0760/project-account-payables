@@ -2130,6 +2130,8 @@ export const messages = {
 	'admin.webhooks.rotate.heading': '署名シークレットのローテーション',
 	'admin.webhooks.rotate.hint':
 		'{name} の署名シークレットを新しく発行します。この Webhook と配信履歴はそのまま保持されます。新しいシークレットは一度しか表示されません。',
+	'admin.webhooks.rotate.reRotateWarning':
+		'{time} まで有効なローテーションがすでに進行中です。保持される旧シークレットは 1 つだけのため、ここで再度ローテーションすると、どの重複期間を選んでも元のシークレットを使い続けている受信側は直ちに遮断されます。',
 	'admin.webhooks.rotate.overlapLegend': '重複期間',
 	'admin.webhooks.rotate.overlapHint':
 		'旧シークレットが 2 つ目の X-Webhook-Signature-Previous ヘッダーに署名し続ける期間です。どちらのヘッダーでも検証する受信側なら、配信を落とさずに切り替えられます。',

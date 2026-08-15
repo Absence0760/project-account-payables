@@ -239,32 +239,65 @@ test.describe('/admin/webhooks (admin)', () => {
 		await deleteSub(page, subId);
 	});
 
-	test('the hard-cutover option warns first and rotates with no overlap window', async ({
+	test('a hard cutover warns first, clears the in-flight pill, and each reveal starts un-copied', async ({
 		page
 	}) => {
 		const name = `e2e-cut-${Date.now()}`;
 		const created = await createSub(page, name);
 		const subId = created.subscription.id;
 
+		// The reveal's Copy button writes to the clipboard; without this the
+		// component's failure path toasts instead of acknowledging.
+		await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+
 		await page.goto('/admin/webhooks');
 		const row = page.locator('tr', { hasText: name });
 		await expect(row).toBeVisible();
-
-		await row.getByRole('button', { name: `Rotate signing secret for ${name}` }).click();
 		const dialog = page.getByRole('dialog', { name: 'Rotate signing secret' });
+		const reveal = page.getByRole('dialog', { name: 'Signing secret rotated' });
+
+		// ── First rotation: a real overlap window, so a pill is on the row ──
+		await row.getByRole('button', { name: `Rotate signing secret for ${name}` }).click();
+		await expect(dialog).toBeVisible();
+		// Nothing is in flight yet, so no re-rotation warning.
+		await expect(dialog.getByTestId('rerotate-warning')).toHaveCount(0);
+		await dialog.getByRole('radio', { name: '15 minutes' }).check();
+		await dialog.getByRole('button', { name: 'Rotate secret' }).click();
+
+		await expect(reveal).toBeVisible({ timeout: 10_000 });
+		// Copying acknowledges — the behaviour SecretReveal now owns.
+		await reveal.getByRole('button', { name: 'Copy' }).click();
+		await expect(reveal.getByRole('button', { name: 'Copied' })).toBeVisible();
+		await reveal.getByRole('button', { name: 'Done' }).click();
+		await expect(reveal).toBeHidden();
+		await expect(page.locator('tr', { hasText: name }).getByTestId('overlap-pill')).toBeVisible();
+
+		// ── Second rotation: hard cutover ──
+		await page
+			.locator('tr', { hasText: name })
+			.getByRole('button', { name: `Rotate signing secret for ${name}` })
+			.click();
+		await expect(dialog).toBeVisible();
+		// Re-rotating during a live window evicts the secret that window was
+		// protecting — the backend keeps only one previous-secret slot — so the
+		// dialog says so before anything is committed.
+		await expect(dialog.getByTestId('rerotate-warning')).toBeVisible();
 		await dialog.getByRole('radio', { name: /Compromised/ }).check();
-		// Picking the cutover surfaces its consequence BEFORE committing:
-		// deliveries fail until the receiver holds the new secret.
+		// Picking the cutover surfaces its own consequence too: deliveries fail
+		// until the receiver holds the new secret.
 		await expect(dialog.getByTestId('cutover-warning')).toBeVisible();
 		await dialog.getByRole('button', { name: 'Rotate secret' }).click();
 
-		const reveal = page.getByRole('dialog', { name: 'Signing secret rotated' });
 		await expect(reveal).toBeVisible({ timeout: 10_000 });
+		// The acknowledgement resets between reveals — this one has not been
+		// copied yet, so it must not open reading "Copied".
+		await expect(reveal.getByRole('button', { name: 'Copy' })).toBeVisible();
+		await expect(reveal.getByRole('button', { name: 'Copied' })).toHaveCount(0);
 		await expect(reveal.getByTestId('rotation-overlap-note')).toContainText(/no overlap window/i);
 		await reveal.getByRole('button', { name: 'Done' }).click();
 		await expect(reveal).toBeHidden();
 
-		// No overlap → nothing is mid-flight, so no badge.
+		// A cutover ends the window, so the pill the first rotation raised is gone.
 		await expect(page.locator('tr', { hasText: name }).getByTestId('overlap-pill')).toHaveCount(0);
 
 		await deleteSub(page, subId);

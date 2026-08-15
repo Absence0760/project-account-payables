@@ -2142,6 +2142,8 @@ export const messages = {
 	'admin.webhooks.rotate.heading': 'Rotar el secreto de firma',
 	'admin.webhooks.rotate.hint':
 		'Genera un secreto de firma de reemplazo para {name}, conservando este webhook y todo su historial de entregas. El nuevo secreto se muestra una sola vez.',
+	'admin.webhooks.rotate.reRotateWarning':
+		'Ya hay una rotación en curso hasta {time}. Solo se conserva un secreto anterior, así que rotar de nuevo ahora dejará fuera a cualquier receptor que siga usando el secreto original, sea cual sea la ventana que elijas.',
 	'admin.webhooks.rotate.overlapLegend': 'Ventana de solapamiento',
 	'admin.webhooks.rotate.overlapHint':
 		'Cuánto tiempo el secreto saliente sigue firmando una segunda cabecera X-Webhook-Signature-Previous. Un receptor que acepte cualquiera de las dos cabeceras rota sin perder entregas.',

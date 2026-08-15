@@ -2111,6 +2111,8 @@ export const messages = {
 	'admin.webhooks.rotate.heading': 'Renouveler le secret de signature',
 	'admin.webhooks.rotate.hint':
 		'Génère un secret de signature de remplacement pour {name}, en conservant ce webhook et tout son historique de livraisons. Le nouveau secret n’est affiché qu’une seule fois.',
+	'admin.webhooks.rotate.reRotateWarning':
+		'Un renouvellement est déjà en cours jusqu’à {time}. Un seul secret précédent est conservé : renouveler à nouveau maintenant coupera tout récepteur utilisant encore le secret d’origine, quelle que soit la fenêtre choisie.',
 	'admin.webhooks.rotate.overlapLegend': 'Fenêtre de chevauchement',
 	'admin.webhooks.rotate.overlapHint':
 		'Durée pendant laquelle le secret sortant continue de signer un second en-tête X-Webhook-Signature-Previous. Un récepteur qui accepte l’un ou l’autre en-tête effectue la rotation sans perdre de livraisons.',

@@ -115,10 +115,21 @@
 
 	// The badge must disappear on its own when the window elapses, and a bare
 	// Date.now() read isn't reactive — so tick a clock while any window is open.
+	// The tick also drops closed windows, which keeps the map honest and makes
+	// the interval self-terminating: once nothing is in flight the map empties,
+	// the effect re-runs, and the timer is cleared rather than ticking for the
+	// rest of the page's life.
 	let clock = $state(Date.now());
 	$effect(() => {
 		if (Object.keys(overlapUntil).length === 0) return;
-		const t = setInterval(() => (clock = Date.now()), 30_000);
+		const t = setInterval(() => {
+			const now = Date.now();
+			clock = now;
+			const live = Object.fromEntries(
+				Object.entries(overlapUntil).filter(([, until]) => isOverlapLive(until, now))
+			);
+			if (Object.keys(live).length !== Object.keys(overlapUntil).length) overlapUntil = live;
+		}, 30_000);
 		return () => clearInterval(t);
 	});
 
@@ -230,6 +241,16 @@
 		} finally {
 			editSaving = false;
 		}
+	}
+
+	function closeRotate() {
+		// Closing does NOT cancel an in-flight rotation — by the time we could
+		// react the backend has already minted the replacement, and the reveal is
+		// the ONLY place it is ever shown. Dismissing mid-request would strand the
+		// admin with a rotated secret they never saw and a receiver still on the
+		// old one, so the dialog holds until the request settles.
+		if (rotateSaving) return;
+		rotating = null;
 	}
 
 	function openRotate(sub: WebhookSubscription) {
@@ -628,11 +649,20 @@
 	open={rotating !== null}
 	ariaLabel={m('admin.webhooks.rotate.aria')}
 	width="md"
-	onclose={() => (rotating = null)}
+	onclose={closeRotate}
 >
 	{#if rotating}
+		{@const reRotating = overlapActiveUntil(rotating.id)}
 		<h2>{m('admin.webhooks.rotate.heading')}</h2>
 		<p class="modal-hint">{m('admin.webhooks.rotate.hint', { name: rotating.name })}</p>
+		{#if reRotating}
+			<!-- The backend keeps ONE previous-secret slot, so rotating again now
+			     evicts the secret that window was protecting: a receiver still on
+			     the original is cut off immediately, whatever window is chosen. -->
+			<div class="cutover-warning" role="alert" data-testid="rerotate-warning">
+				{m('admin.webhooks.rotate.reRotateWarning', { time: formatOverlapEnd(reRotating) })}
+			</div>
+		{/if}
 		<form
 			onsubmit={(e) => {
 				e.preventDefault();
@@ -660,7 +690,7 @@
 				</div>
 			{/if}
 			<div class="modal-footer">
-				<button type="button" class="btn-cancel" onclick={() => (rotating = null)}
+				<button type="button" class="btn-cancel" onclick={closeRotate} disabled={rotateSaving}
 					>{m('common.cancel')}</button
 				>
 				<button type="submit" class="btn-primary" disabled={rotateSaving}>

@@ -2112,6 +2112,8 @@ export const messages = {
 	'admin.webhooks.rotate.heading': 'Signatur-Secret rotieren',
 	'admin.webhooks.rotate.hint':
 		'Erzeugt ein neues Signatur-Secret für {name} und behält diesen Webhook samt vollständigem Zustellungsverlauf. Das neue Secret wird nur einmal angezeigt.',
+	'admin.webhooks.rotate.reRotateWarning':
+		'Eine Rotation läuft bereits bis {time}. Es wird nur ein vorheriges Secret vorgehalten — eine erneute Rotation jetzt sperrt jeden Empfänger aus, der noch das ursprüngliche Secret verwendet, unabhängig vom gewählten Fenster.',
 	'admin.webhooks.rotate.overlapLegend': 'Überlappungsfenster',
 	'admin.webhooks.rotate.overlapHint':
 		'Wie lange das ausscheidende Secret einen zweiten Header X-Webhook-Signature-Previous signiert. Ein Empfänger, der beide Header akzeptiert, rotiert ohne verlorene Zustellungen.',

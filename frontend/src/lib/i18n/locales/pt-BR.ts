@@ -2142,6 +2142,8 @@ export const messages = {
 	'admin.webhooks.rotate.heading': 'Rotacionar o segredo de assinatura',
 	'admin.webhooks.rotate.hint':
 		'Gera um segredo de assinatura substituto para {name}, mantendo este webhook e todo o seu histórico de entregas. O novo segredo é exibido apenas uma vez.',
+	'admin.webhooks.rotate.reRotateWarning':
+		'Já há uma rotação em andamento até {time}. Apenas um segredo anterior é mantido, então rotacionar de novo agora corta qualquer receptor que ainda use o segredo original, seja qual for a janela escolhida.',
 	'admin.webhooks.rotate.overlapLegend': 'Janela de sobreposição',
 	'admin.webhooks.rotate.overlapHint':
 		'Por quanto tempo o segredo antigo continua assinando um segundo cabeçalho X-Webhook-Signature-Previous. Um receptor que aceite qualquer um dos cabeçalhos faz a rotação sem perder entregas.',

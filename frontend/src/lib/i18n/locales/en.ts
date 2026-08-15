@@ -2175,6 +2175,8 @@ export const en = {
 	'admin.webhooks.rotate.heading': 'Rotate signing secret',
 	'admin.webhooks.rotate.hint':
 		'Mints a replacement signing secret for {name}, keeping this webhook and its whole delivery history. The new secret is shown only once.',
+	'admin.webhooks.rotate.reRotateWarning':
+		'A rotation is already in flight until {time}. Only one previous secret is kept, so rotating again now cuts off any receiver still using the original secret — whichever window you pick.',
 	'admin.webhooks.rotate.overlapLegend': 'Overlap window',
 	'admin.webhooks.rotate.overlapHint':
 		'How long the retiring secret keeps signing a second X-Webhook-Signature-Previous header. A receiver that accepts either header rotates with no dropped deliveries.',
