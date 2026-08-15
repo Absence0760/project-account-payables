@@ -151,6 +151,41 @@ class BalanceResult:
     unavailable_reason: str | None = None
 
 
+def minor_units_to_decimal(raw: object) -> Decimal | None:
+    """Convert a processor's minor-unit amount (cents) to an exact `Decimal`.
+
+    The inverse of the `amount * 100` every minor-unit adapter applies on
+    submit, so the round-trip is symmetric by construction — a currency whose
+    exponent isn't 2 is mis-scaled identically in both directions and can
+    never produce a phantom settlement mismatch.
+
+    Returns None for anything unparseable (a missing key, `null`, a string
+    the provider didn't promise): the settlement verifier treats "no reported
+    amount" as `unverified`, never as evidence of a discrepancy, so a
+    tolerant parse here is the fail-open branch and not a swallowed error.
+    """
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        return (Decimal(str(raw)) / Decimal("100")).quantize(Decimal("0.01"))
+    except (ArithmeticError, ValueError):
+        return None
+
+
+def parse_amount(raw: object) -> Decimal | None:
+    """Parse a processor's major-unit amount (a decimal string or number).
+
+    Same tolerant contract as `minor_units_to_decimal` — see its docstring
+    for why an unparseable value is None rather than a raise.
+    """
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        return Decimal(str(raw)).quantize(Decimal("0.01"))
+    except (ArithmeticError, ValueError):
+        return None
+
+
 @dataclass
 class WebhookEvent:
     """Normalised representation of a webhook from the processor.
@@ -165,6 +200,17 @@ class WebhookEvent:
     before mutating state. Adapters that don't expose a stable event id
     should fall back to a composite key (e.g. ``f"{payment_id}:{status}"``)
     that's unique per state transition.
+
+    ``amount`` / ``currency`` are what the processor says it actually
+    SETTLED, in major units — the evidence
+    `services.payment_settlement.verify_settlement` compares against the
+    amount AP authorized before the handler treats a `completed` event as a
+    clean settlement. Both stay ``None`` for a provider whose status webhook
+    genuinely doesn't carry the figure (Dwolla's transfer events are a bare
+    `{topic, resourceId}`); that reads as `unverified`, never as a
+    discrepancy. Adapters converting from minor units should use
+    ``minor_units_to_decimal`` so the round-trip stays symmetric with what
+    they sent on submit.
     """
 
     provider_payment_id: str
@@ -173,6 +219,8 @@ class WebhookEvent:
     reference: str | None = None
     failure_reason: str | None = None
     occurred_at: str | None = None  # ISO8601, processor's timestamp
+    amount: Decimal | None = None  # settled amount, MAJOR units
+    currency: str | None = None  # ISO-4217, as reported
     raw: dict = field(default_factory=dict)
 
 

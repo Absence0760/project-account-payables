@@ -234,6 +234,15 @@ class DwollaAdapter(PaymentAdapter):
             "transfer_cancelled": PaymentStatus.cancelled,
         }.get(topic, PaymentStatus.submitted)
         event_id = event.get("id") or f"{provider_payment_id}:{topic}"
+        # No settled `amount` / `currency`: a Dwolla event body is a bare
+        # `{id, topic, resourceId, _links}` envelope — the transfer's amount
+        # is only available by following `_links.resource`, which this
+        # signature-verification path deliberately does not do (it is
+        # synchronous and must not make a network call). The settlement
+        # verifier reads that as `unverified` — an honest blind spot recorded
+        # on the audit row — rather than inventing a discrepancy. Closing it
+        # means an async re-fetch of the transfer; the downstream net remains
+        # bank reconciliation.
         return WebhookEvent(
             provider_payment_id=provider_payment_id,
             status=status,

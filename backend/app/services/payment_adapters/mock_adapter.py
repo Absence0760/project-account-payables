@@ -22,6 +22,7 @@ from app.services.payment_adapters.base import (
     PaymentResult,
     PaymentStatus,
     WebhookEvent,
+    parse_amount,
 )
 from app.services.payment_adapters.dispatcher import register_payment_adapter
 
@@ -133,6 +134,13 @@ class MockPaymentAdapter(PaymentAdapter):
             reference=payload.get("reference"),
             failure_reason=payload.get("failure_reason"),
             occurred_at=datetime.now(UTC).isoformat(),
+            # MAJOR units, like the real decimal-string rails. Optional so the
+            # existing fixtures keep reading `unverified`; supplying it is how
+            # a local run or a test exercises the settlement-mismatch branch
+            # with no processor account (guard rail 7 — every external
+            # behaviour has a local equivalent).
+            amount=parse_amount(payload.get("amount")),
+            currency=(payload.get("currency") or None),
             raw=payload,
         )
 

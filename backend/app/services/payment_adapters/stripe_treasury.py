@@ -44,6 +44,7 @@ from app.services.payment_adapters.base import (
     PaymentResult,
     PaymentStatus,
     WebhookEvent,
+    minor_units_to_decimal,
 )
 from app.services.payment_adapters.dispatcher import register_payment_adapter
 
@@ -269,6 +270,12 @@ class StripeTreasuryAdapter(PaymentAdapter):
             reference=obj.get("transaction"),
             failure_reason=(obj.get("returned_details") or {}).get("code"),
             occurred_at=event.get("created") and str(event["created"]),
+            # What Stripe says it actually settled. OutboundPayment.amount is
+            # in the smallest currency unit — the same scale `create_payment`
+            # sends — and `currency` comes back lowercase (the verifier
+            # compares case-insensitively).
+            amount=minor_units_to_decimal(obj.get("amount")),
+            currency=(obj.get("currency") or None),
             raw=event,
         )
 

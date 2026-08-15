@@ -42,6 +42,7 @@ from app.services.payment_adapters.base import (
     PaymentResult,
     PaymentStatus,
     WebhookEvent,
+    minor_units_to_decimal,
 )
 from app.services.payment_adapters.dispatcher import register_payment_adapter
 
@@ -254,6 +255,12 @@ class IncreaseAdapter(PaymentAdapter):
             reference=obj.get("transaction_id"),
             failure_reason=(obj.get("decline") or {}).get("reason"),
             occurred_at=event.get("created_at"),
+            # What Increase says it actually settled. Transfer amounts come
+            # back in minor units, the same scale `create_payment` sends;
+            # `currency` is present on wire transfers and absent on ACH
+            # (USD-only), and an absent currency is a wildcard to the verifier.
+            amount=minor_units_to_decimal(obj.get("amount")),
+            currency=(obj.get("currency") or None),
             raw=event,
         )
 

@@ -32,6 +32,7 @@ from app.services.payment_adapters.base import (
     PaymentResult,
     PaymentStatus,
     WebhookEvent,
+    minor_units_to_decimal,
 )
 from app.services.payment_adapters.dispatcher import register_payment_adapter
 
@@ -213,6 +214,11 @@ class ColumnAdapter(PaymentAdapter):
             reference=obj.get("trace_number"),
             failure_reason=obj.get("return_reason"),
             occurred_at=event.get("created_at"),
+            # What Column says it actually settled. Transfer `amount` is in
+            # minor units (the scale `create_payment` sends) and the currency
+            # field is `currency_code`, matching the submit body.
+            amount=minor_units_to_decimal(obj.get("amount")),
+            currency=(obj.get("currency_code") or None),
             raw=event,
         )
 
