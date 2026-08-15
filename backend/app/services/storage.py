@@ -266,6 +266,47 @@ async def upload_chat_file(
     return file_key, safe_name, content_type, len(content)
 
 
+async def upload_vendor_statement_file(
+    org_id: uuid.UUID,
+    reconciliation_id: uuid.UUID,
+    content: bytes,
+    filename: str,
+    content_type: str,
+) -> str:
+    """Archive the supplier statement a reconciliation run was built from.
+
+    Returns the ``file_key``. The key is
+    ``<org_id>/vendor-statements/<reconciliation_id>/<safe-filename>`` — the
+    leading ``org_id`` segment is the cross-tenant download gate (the run's
+    download endpoint refuses a key whose first segment isn't the caller's
+    org), mirroring the invoice / contract / positive-pay paths.
+
+    Why store it at all: a run's per-line ``raw`` JSONB preserves what we
+    PARSED, which is enough to replay the match but not to answer "did we read
+    the supplier's document correctly?" — the question an auditor or a disputed
+    balance actually raises. The original document is the only answer to that,
+    and it matters most on the PDF path, where a model did the reading.
+
+    Takes already-read bytes rather than an ``UploadFile`` because the caller
+    has parsed them first: nothing is archived until the statement has produced
+    a run, so a junk upload never lands in the bucket.
+    """
+    if len(content) > MAX_FILE_SIZE:
+        raise ValueError(f"File exceeds maximum size of {MAX_FILE_SIZE // (1024 * 1024)} MB")
+
+    file_key = f"{org_id}/vendor-statements/{reconciliation_id}/{_safe_filename(filename)}"
+
+    client = _get_client()
+    _ensure_bucket(client)
+    client.put_object(
+        Bucket=settings.s3_bucket,
+        Key=file_key,
+        Body=content,
+        ContentType=content_type or "application/octet-stream",
+    )
+    return file_key
+
+
 async def upload_positive_pay_file(
     org_id: uuid.UUID,
     file_id: uuid.UUID,

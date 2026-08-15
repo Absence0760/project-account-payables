@@ -4,12 +4,18 @@ import uuid
 from datetime import date, timedelta
 
 from app.services.extraction_adapters.base import (
+    STATEMENT_REASON_EMPTY_FILE,
+    STATEMENT_REASON_NO_LINES,
+    STATEMENT_REASON_NO_TEXT_LAYER,
     ExtractedField,
     ExtractedLineItem,
     ExtractionAdapter,
     ExtractionResult,
+    StatementExtractionResult,
+    pdf_text_layer,
 )
 from app.services.extraction_adapters.dispatcher import register_extraction_adapter
+from app.services.extraction_adapters.statement_extraction import scan_statement_text
 
 
 @register_extraction_adapter("mock")
@@ -55,6 +61,59 @@ class MockExtractionAdapter(ExtractionAdapter):
                 ),
             ],
             provider="mock",
+        )
+
+    async def extract_statement(
+        self,
+        file_bytes: bytes = b"",
+        file_key: str = "",
+        mime_type: str = "application/pdf",
+    ) -> StatementExtractionResult:
+        """Read a supplier statement offline — no network, no credential.
+
+        Unlike :meth:`extract`, this does NOT return a fixture: a fabricated
+        open item is money a clerk would then chase, and the reconciliation run
+        it lands in is a review queue, not a demo. It reads the document's own
+        text layer and gives up loudly when there isn't one (a scan needs a
+        vision provider). That's what makes `pnpm dev` able to run the whole
+        PDF-statement path against a real supplier PDF with nothing configured.
+        """
+        if not file_bytes:
+            return StatementExtractionResult(
+                available=True, provider=self.provider_name, reason=STATEMENT_REASON_EMPTY_FILE
+            )
+
+        is_pdf = (
+            mime_type == "application/pdf"
+            or file_key.lower().endswith(".pdf")
+            or file_bytes[:5] == b"%PDF-"
+        )
+        if is_pdf:
+            text = pdf_text_layer(file_bytes)
+        else:
+            try:
+                text = file_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                text = None
+
+        if not text or not text.strip():
+            return StatementExtractionResult(
+                available=True, provider=self.provider_name, reason=STATEMENT_REASON_NO_TEXT_LAYER
+            )
+
+        lines = scan_statement_text(text)
+        if not lines:
+            return StatementExtractionResult(
+                available=True, provider=self.provider_name, reason=STATEMENT_REASON_NO_LINES
+            )
+
+        confidences = [ln.confidence for ln in lines]
+        return StatementExtractionResult(
+            available=True,
+            success=True,
+            lines=lines,
+            overall_confidence=sum(confidences) / len(confidences),
+            provider=self.provider_name,
         )
 
     async def test_connection(self) -> bool:

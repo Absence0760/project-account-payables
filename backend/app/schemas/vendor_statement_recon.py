@@ -70,6 +70,21 @@ class ReconciliationSummary(BaseModel):
     ledger_total: OptionalMoneyAmount = None
 
 
+class StatementExtractionMeta(BaseModel):
+    """Provenance for a run whose lines were MACHINE-READ off a PDF.
+
+    A reviewer clearing these lines is clearing a model's reading of a
+    document, not a supplier's typed CSV — so which provider read it and how
+    confident it was travels with the run. ``None`` on the CSV / pasted-lines
+    paths, which have neither.
+    """
+
+    method: str
+    provider: str
+    confidence: float
+    line_count: int
+
+
 class ReconciliationResponse(BaseModel):
     id: str
     vendor_id: str | None
@@ -79,6 +94,10 @@ class ReconciliationResponse(BaseModel):
     currency: str
     source_format: str
     file_key: str | None
+    # The archived supplier document is fetched by run id, never by key — the
+    # flag is what a client needs; the key is an internal detail.
+    has_source_file: bool = False
+    extraction: StatementExtractionMeta | None = None
     status: str
     notes: str | None
     summary: ReconciliationSummary

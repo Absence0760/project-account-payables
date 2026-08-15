@@ -49,15 +49,15 @@ One reconciliation run for one vendor, as of one `statement_date`.
 | `statement_date` | date | "As of" date the statement covers. Required. |
 | `statement_reference` | varchar(120) | The supplier's own statement number / reference, when present. |
 | `currency` | varchar(3) | Default `USD`. |
-| `source_format` | varchar(20) | `manual` (pasted lines, default) \| `csv` (uploaded file) \| `pdf` (reserved — see Deferred). |
-| `file_key` | varchar(512) | S3 key of the uploaded statement, kept for audit replay. **Always NULL today** — raw-file storage is deferred (see Deferred). |
+| `source_format` | varchar(20) | `manual` (pasted lines, default) \| `csv` (uploaded file) \| `pdf` (read through the extraction pipeline — see PDF intake). |
+| `file_key` | varchar(512) | S3 key of the uploaded statement, kept for audit replay. Stamped on both upload paths (NULL for the pasted-lines path, which has no document). |
 | `status` | varchar(20) | Run review status — `open` until every actionable line is cleared, then `resolved`. Indexed. |
 | `statement_total` | numeric(18,2) | The statement's claimed open balance (sum of statement-origin lines). |
 | `ledger_total` | numeric(18,2) | Our matched ledger total (sum of the invoices we matched). |
 | `line_count` / `matched_count` / `amount_mismatch_count` / `missing_our_side_count` / `missing_their_side_count` | integer | Denormalised outcome rollup, so the list view needs no per-line scan. |
 | `notes` | varchar(500) | |
 | `created_by` | uuid | The actor who created the run (plain UUID, no cross-DB FK). |
-| `meta` | jsonb | Free-form bag. No PII / banking data. |
+| `meta` | jsonb | Free-form bag. No PII / banking data. Carries `extraction` (provider / confidence / line_count) on a PDF run and `raw_file_stored` on both upload paths. |
 | `entity_id` | uuid FK → entities | From `EntityMixin`; lines inherit it. |
 | `created_at` / `updated_at` | timestamptz | From `TimestampMixin`. |
 
@@ -220,10 +220,11 @@ is entity-scoped.
 | Method + path | Purpose |
 |---|---|
 | `POST /vendor-statements` | Create a run from a pasted/normalised list of lines (`source_format = manual`) |
-| `POST /vendor-statements/upload` | Create a run from an uploaded statement CSV (`multipart/form-data`: `file` + `vendor_id` + `statement_date` + optional `statement_reference` / `currency`); `source_format = csv`; 422 on a structurally-bad CSV |
+| `POST /vendor-statements/upload` | Create a run from an uploaded statement **CSV or PDF** (`multipart/form-data`: `file` + `vendor_id` + `statement_date` + optional `statement_reference` / `currency`). A PDF routes through the extraction pipeline (`source_format = pdf`), anything else through the CSV parser (`source_format = csv`); 422 on a structurally-bad CSV or an unreadable statement, 413 over the size cap |
 | `GET /vendor-statements` | List runs (filters: `vendor_id`, `status`; paginated `page` / `page_size`). Omits lines |
 | `GET /vendor-statements/close-readiness` | Period-close gate (see below). Declared **before** `/{recon_id}` so the literal path wins |
 | `GET /vendor-statements/{recon_id}` | Detail — the run + all its lines (with each matched invoice's number, fetched in one query, no N+1) |
+| `GET /vendor-statements/{recon_id}/file` | Download the archived supplier document this run was built from. Read roles; entity-scoped run lookup **and** an org-prefix check on the stored key; the same opaque 404 for an unknown run and a run with no document |
 | `POST /vendor-statements/{recon_id}/lines/{line_id}/resolve` | Resolve / ignore / re-open one line (`resolution_status` ∈ `resolved` / `ignored` / `unresolved`, optional note); recomputes the run status |
 | `DELETE /vendor-statements/{recon_id}` | Delete the run (cascade removes its lines) |
 
@@ -276,7 +277,8 @@ per-request via `?materiality=` (≥ 0). It's parsed through `str()` into a
 
 ## Intake paths
 
-Two ways to get a supplier's statement into a run:
+Three ways to get a supplier's statement into a run — all of which end at the
+same pure `reconcile` engine:
 
 1. **Manual / pasted lines** — `POST /vendor-statements` with a JSON
    `lines: [{invoice_number, invoice_date, amount, status}]` body. The UI's
@@ -285,12 +287,136 @@ Two ways to get a supplier's statement into a run:
    file. `parse_statement_csv` does the forgiving header sniff;
    `source_format = csv`; a structurally-unparseable CSV returns 422 with the
    parser's message.
+3. **PDF upload** — the same endpoint with a PDF; `source_format = pdf`. See
+   below.
 
-**Honest scope note:** the uploaded raw file is **not** stored today —
-`file_key` is always written `NULL` (raw-file storage to S3 is deferred). The
-`pdf` source format and a PDF-via-extraction intake path are reserved on the
-model but not implemented. The `raw` JSONB on each line preserves the parsed
-statement line for audit replay regardless.
+## PDF intake
+
+Many suppliers send the statement as a PDF, and until this shipped it had to be
+transcribed by hand. A PDF now routes through the **existing AI-extraction
+pipeline** — the org's own configured adapter, resolved by the same
+platform-vs-BYOK rules invoices use — rather than a second parser with its own
+provider config and its own failure modes.
+
+### The adapter capability
+
+`ExtractionAdapter.extract_statement(file_bytes, file_key, mime_type)` is an
+**optional** capability sitting beside `extract`, the same shape as
+`PaymentAdapter.get_balance` / `fetch_settlement`: the base returns
+`available=False, reason="not_supported"`, so an adapter that can't read a
+statement says so instead of returning an empty success.
+
+It is a separate method rather than a reuse of `extract` because the documents
+are genuinely different shapes. `ExtractionResult` models ONE invoice — a header
+plus `ExtractedLineItem`s that carry description / quantity / unit price. A
+statement is MANY open items for one supplier, and the two fields reconciliation
+matches on — the per-row **invoice number** and **date** — have nowhere to live
+on an `ExtractedLineItem`. Forcing the statement through that shape would have
+meant smuggling the invoice number into `item_code`, and losing the date.
+
+| Adapter | `extract_statement` |
+|---|---|
+| `mock` | Deterministic offline reader — no network, no credential. Pulls the document's text layer (PyMuPDF) and scans `number [date] amount` rows (`statement_extraction.scan_statement_text`). One money column per row, or it skips the row — see below. |
+| `claude_vision` | Sends the shared statement prompt down the same document channel `extract` uses. |
+| `ollama` | Same prompt against a **local** model — text mode when the PDF has a text layer, page images when it doesn't. The no-cloud path for a scanned statement. |
+| `openai_vision`, `aws_textract`, `einvoice` | Inherit the honest `not_supported` default. |
+
+The prompt and the JSON→dataclass parser are shared
+(`extraction_adapters/statement_extraction.py`), so the hosted and the local
+reader can't drift.
+
+#### The offline reader skips rather than guesses
+
+`scan_statement_text` reads a row as `identifier [date] amount`, and takes the
+amount only when **both** hold:
+
+1. the row has **exactly one** money column after the identifier — money being a
+   token with cents, a thousands separator, or a currency symbol (a lone
+   amount-shaped integer counts, for a statement that prints no cents);
+2. **nothing amount-shaped sits to the right of it.**
+
+Rule 1 alone isn't enough, and the reason is worth stating because the two
+layouts look identical in shape:
+
+```
+INV-1  2026-01-15  Net 30    1,200.00     -> read 1,200.00
+INV-1  2026-01-15  1200.00   800          -> skipped
+```
+
+`30` and `800` are both bare integers. What separates them is **position**: a
+payment-terms or aging-days column prints *before* the balance, a second money
+column (`invoice-amount` + `balance-due`, or `balance` + aging bucket) prints
+*after* it — and only the second makes which figure is open ambiguous. Counting
+candidates within the money bucket alone would call that second row unambiguous
+and return `1200.00`, the invoice amount rather than the open balance.
+
+Picking a column anyway would produce a plausible figure that may be the wrong
+one — a wrong open balance presented as fact. Skipping is loud instead: our
+invoice for that row lands as `missing_on_their_side`, a difference the clerk
+sees and chases. A multi-column or aging-bucket statement is the case this
+reader can't resolve honestly; the answer there is a vision provider.
+
+### Money crosses the boundary as a string
+
+An adapter returns `StatementLineExtraction` with **raw strings** —
+`amount="(250.00)"`, `invoice_date="01/20/2026"`. `vendor_statement_extraction`
+normalises them with the engine's own `parse_amount` / `parse_date` (public for
+exactly this reason), so a model's output and a CSV cell become `Decimal` /
+`date` by identical rules and neither ever passes through a float.
+
+### Fail closed
+
+Every failure path raises `StatementExtractionError` → **422**, and no run is
+created:
+
+| Reason | When |
+|---|---|
+| `not_supported` | The org's provider hasn't implemented the capability |
+| `empty_file` | Zero-byte upload |
+| `no_text_layer` | A scan the configured provider couldn't read |
+| `no_lines_found` | Readable, but no open items on it |
+| `provider_error` | Transport / non-200 / an adapter that raised |
+| `unreadable_response` | The provider returned something that isn't the agreed shape |
+
+The reason codes are PII-free by construction and map to static user-facing
+messages. An adapter's own `error` text — which can echo a provider response
+body, key material included — is **logged and never surfaced**.
+
+Two refusals are worth calling out because the tempting alternative is worse:
+
+- The `mock` adapter does **not** fall back to a fixture when a PDF has no text
+  layer, unlike its `extract` twin. A fabricated open item on this feature is
+  money a clerk then chases a supplier for.
+- An adapter that reports success but yields no usable row is a refusal, not an
+  empty run. A run with zero statement lines asserts the supplier listed
+  nothing — which reads as "we owe them nothing".
+
+### Provenance
+
+A PDF run records `meta.extraction` (`method` / `provider` / `confidence` /
+`line_count`), surfaced on the response as `extraction`, and each line's `raw`
+JSONB carries `source: "extraction"` plus that line's own confidence. A reviewer
+clearing these lines is clearing a machine's reading of a document, and the
+response says so; a CSV / pasted-lines run returns `extraction: null`.
+
+## Raw-file storage
+
+Both upload paths archive the uploaded document to S3/MinIO
+(`storage.upload_vendor_statement_file` → `<org_id>/vendor-statements/<run_id>/
+<safe-filename>`) and stamp `file_key`; `GET /vendor-statements/{id}/file`
+serves it back. The leading `org_id` segment is the cross-tenant gate, the same
+scheme as the invoice / contract / positive-pay files.
+
+The per-line `raw` JSONB preserves what we **parsed**, which is enough to replay
+the match — but not to answer *"did we read the supplier's document
+correctly?"*, which is the question a disputed balance actually raises, and it
+matters most on the PDF path where a model did the reading.
+
+Archiving is **best-effort**: a storage hiccup logs PII-free and records
+`meta.raw_file_stored = false` rather than failing the request, because it must
+not cost a clerk a reconciliation they just ran. Only a document that produced a
+run is archived, so a rejected upload never reaches the bucket; deleting a run
+drops the object.
 
 ## Migration
 
@@ -307,8 +433,19 @@ statement line for audit replay regardless.
 
 No new external dependency and no new `pnpm` script. There is no background
 sweep — reconciliation is entirely user-triggered — so `pnpm dev` runs the whole
-feature (create from pasted lines or CSV, review the line queue, resolve lines,
-check close-readiness) with no cloud credential and nothing to enable.
+feature (create from pasted lines, CSV **or PDF**, review the line queue,
+resolve lines, check close-readiness) with no cloud credential and nothing to
+enable.
+
+PDF intake stays local-first through the `mock` adapter's deterministic
+text-layer reader: point the org at `settings.extraction = {program_type:
+"byok", provider: "mock"}` and a real supplier PDF (any ERP-generated statement
+carries a text layer) reconciles on the laptop with no key anywhere. A *scanned*
+statement genuinely needs a model — `pnpm ollama:up` plus `provider: "ollama"`
+is the no-cloud answer, same as it is for invoice extraction. The default
+platform provider is `claude_vision`, which needs a key like every other
+extraction path; without one the upload is refused with an actionable message
+rather than mis-read.
 
 ## Seed data
 
@@ -323,13 +460,19 @@ org), like the rest of `seed_extras`.
 
 ## Deferred / future work
 
-- **PDF statement extraction.** Many suppliers send statements as a PDF, not a
-  CSV. Reuse the existing AI-extraction pipeline (`services/extraction`) to turn
-  a PDF statement into `StatementLine`s, then feed the same `reconcile` engine.
-  The `pdf` source format is already reserved on the model.
-- **Raw-file storage.** Store the uploaded statement (CSV/PDF) to S3 and stamp
-  `file_key`, so a run can be audited against the original document. The column
-  exists; only the upload-to-S3 wiring is deferred.
+- **No upload UI.** `/vendor-statements` is a create-from-pasted-lines page; the
+  CSV upload endpoint never had a UI either, and the PDF one inherits that gap.
+  The whole upload surface (file picker → vendor / statement-date form → the run
+  detail, plus a "download the source statement" link) is one page-level change
+  and is tracked in `docs/followups.md`.
+- **Multi-money-column layouts on the offline reader.** `scan_statement_text`
+  reads a row only when it has exactly one money column after the identifier,
+  so an `invoice-amount + balance-due` statement or one with current/30/60/90
+  aging buckets yields nothing from it (see § The offline reader skips rather
+  than guesses). That's deliberate — the alternative is a wrong open balance —
+  but it does mean the credential-free local path covers the simple layout
+  only. The answer for the rest is a vision provider (`ollama` locally,
+  `claude_vision` deployed), which reads the table properly.
 - **Auto-create invoice on resolve.** When a clerk resolves a
   `missing_on_our_side` line, optionally kick off invoice intake pre-filled from
   the statement line (number / amount / date), closing the loop from "supplier
