@@ -230,16 +230,32 @@ async def list_subscriptions(
 
 
 async def _get_owned_subscription(
-    db: AsyncSession, sub_id: uuid.UUID, org_id: uuid.UUID
+    db: AsyncSession, sub_id: uuid.UUID, org_id: uuid.UUID, *, for_update: bool = False
 ) -> WebhookSubscription:
-    row = (
-        await db.execute(
-            select(WebhookSubscription).where(
-                WebhookSubscription.id == sub_id,
-                WebhookSubscription.organization_id == org_id,
-            )
+    stmt = (
+        select(WebhookSubscription)
+        .where(
+            WebhookSubscription.id == sub_id,
+            WebhookSubscription.organization_id == org_id,
         )
-    ).scalar_one_or_none()
+        .execution_options(populate_existing=True)
+    )
+    # Lock the row for a mutation whose new state is DERIVED from the current
+    # one — rotation carries the existing `signing_secret` into
+    # `previous_signing_secret`. Two concurrent rotations (a double-click, or
+    # two admins racing during incident response to a suspected leak — exactly
+    # when this endpoint gets used) would otherwise both read the same current
+    # secret, mint different replacements, and the second commit would silently
+    # overwrite the first. The losing admin was handed a secret in their
+    # response that was never persisted, so their receiver gets configured with
+    # a key that will never verify and nothing surfaces the error.
+    #
+    # Serialized, the loser's secret becomes the PREVIOUS one instead — still
+    # signing the overlap header, so their receiver keeps working through the
+    # window rather than breaking silently.
+    if for_update:
+        stmt = stmt.with_for_update()
+    row = (await db.execute(stmt)).scalar_one_or_none()
     if row is None:
         # Same 404 for wrong-org and missing so we don't enumerate another
         # tenant's subscription ids.
@@ -337,7 +353,7 @@ async def rotate_subscription_secret(
     compromised. See `backend/docs/public-api.md` § Rotating a signing secret
     for the receiver-side procedure.
     """
-    row = await _get_owned_subscription(db, sub_id, org.id)
+    row = await _get_owned_subscription(db, sub_id, org.id, for_update=True)
     result = rotate_secret(
         current_secret=row.signing_secret,
         now=datetime.now(UTC),

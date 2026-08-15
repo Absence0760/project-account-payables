@@ -51,6 +51,36 @@ from app.services.webhooks.signing import generate_signing_secret, sign_payload
 
 
 @pytest.fixture(autouse=True)
+async def _reap_subscriptions_this_file_creates(realdb):
+    """Delete any subscription this file's tests leave behind.
+
+    The `realdb` harness resets tenant tables but deliberately does NOT delete
+    extra CONTROL-plane rows a test creates (see backend/CLAUDE.md § Test
+    databases) — and `webhook_subscriptions` is control-plane. The tests below
+    create subscriptions through the API, so without this they accumulate in a
+    database that outlives the session and inflate any later test that COUNTS
+    subscriptions matching an event — which is exactly how
+    `test_outbound_webhooks.py::test_emit_enqueues_one_per_matching_active_sub_and_dedupes`
+    started failing when the two files ran together.
+
+    Snapshot-and-diff rather than a blanket delete, so this can only ever reap
+    rows these tests are responsible for.
+    """
+    control_mk = realdb.control_sessionmaker()
+    async with control_mk() as s:
+        before = set((await s.execute(select(WebhookSubscription.id))).scalars().all())
+    yield
+    async with control_mk() as s:
+        after = set((await s.execute(select(WebhookSubscription.id))).scalars().all())
+        for sub_id in after - before:
+            await s.execute(
+                delete(WebhookDelivery).where(WebhookDelivery.subscription_id == sub_id)
+            )
+            await s.execute(delete(WebhookSubscription).where(WebhookSubscription.id == sub_id))
+        await s.commit()
+
+
+@pytest.fixture(autouse=True)
 def _allow_test_targets(monkeypatch):
     """Same escape hatch the sibling `test_outbound_webhooks.py` uses: these
     tests point at a non-resolvable `example.test` target and stub the HTTP
@@ -409,3 +439,42 @@ async def test_rotation_defaults_to_the_documented_overlap(realdb):
         <= delta
         <= timedelta(minutes=DEFAULT_OVERLAP_MINUTES + 1)
     )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_rotations_lose_no_secret(realdb):
+    """Two admins racing during incident response must not silently break one.
+
+    Rotation derives its new state from the CURRENT secret (it carries it into
+    `previous_signing_secret`). Without a row lock both calls read the same
+    current secret, mint different replacements, and the second commit
+    overwrites the first — leaving the losing admin holding a secret from a
+    200 response that was never persisted, so their receiver is configured with
+    a key that will never verify and nothing surfaces the error.
+
+    Serialized by `FOR UPDATE`, the loser's secret becomes the PREVIOUS one
+    instead: still signing the overlap header, so their receiver keeps working
+    through the window. Asserting set-equality is the precise claim — every
+    secret handed out is accounted for on the row, in one slot or the other.
+    """
+    import asyncio
+
+    async with realdb.client(key="a", role="admin") as client:
+        sub_id, _ = await _create_subscription(client)
+        first, second = await asyncio.gather(
+            client.post(f"/api/webhooks/{sub_id}/rotate-secret", json={}),
+            client.post(f"/api/webhooks/{sub_id}/rotate-secret", json={}),
+        )
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    handed_out = {first.json()["signing_secret"], second.json()["signing_secret"]}
+    assert len(handed_out) == 2, "each rotation must mint a distinct secret"
+
+    async with realdb.control_sessionmaker()() as s:
+        row = (
+            await s.execute(
+                select(WebhookSubscription).where(WebhookSubscription.id == uuid.UUID(sub_id))
+            )
+        ).scalar_one()
+    assert {row.signing_secret, row.previous_signing_secret} == handed_out
