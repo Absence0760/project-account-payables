@@ -12,6 +12,65 @@ goes to [decisions.md](decisions.md).
 
 ---
 
+## `GET /api/analytics/cash_position` still seeds a foreign-currency bank balance
+
+**Diagnosed 2026-08-15** while shipping the cash-flow copilot's opening-balance
+provenance. Not a regression — this is the original defect, still live on the
+one surface that wasn't migrated.
+
+**Root cause.** The opening-balance resolution chain (explicit → payment-provider
+bank sync → persisted `settings.cashflow.opening_balance` → 0) existed twice:
+inline in `backend/app/api/analytics.py::get_cash_position`, and again in the
+copilot tools. Both took the payment adapter's `BalanceResult.amount` and used
+it regardless of its `currency`. Every outflow subtracted from that balance is
+denominated in the **org's reporting currency**, so an org reporting in USD
+whose funding account is in EUR gets a running balance that is silently a
+mixture of two currencies — and the breach flags / `breaches[]` shortfall
+figures priced off it are wrong by the exchange rate.
+
+The copilot half is **fixed**: the chain now lives once in
+`backend/app/services/cashflow.py::resolve_opening_balance`, which refuses a
+provider balance whose currency differs from the reporting currency and reports
+`provider_skipped="currency_mismatch"` so the fallback can't be mistaken for
+"no bank is connected". `backend/tests/test_cash_flow_opening_balance.py` pins
+it. `api/analytics.py` was deliberately left on its own inline copy in that
+change (a shared CFO endpoint, mid-flight concurrent work on the same tree) and
+is now the only caller without the guard.
+
+**Blast radius.** Only orgs that (a) have a payments provider configured whose
+adapter implements the optional `get_balance`, and (b) hold that funding account
+in a currency other than their reporting currency. The number is displayed, not
+acted on automatically — no money moves off it — but it drives the `/cfo` page's
+shortfall warning, so it can prompt a wrong treasury decision. The mock adapter
+returns USD, so local dev and every default-configured org are unaffected.
+
+**Recommended fix.** Delete the inline chain in
+`api/analytics.py::get_cash_position` and call `resolve_opening_balance`
+(mapping the existing `seed_balance` query param to `use_provider`). Three knock-on
+edits, all small and all part of the same change:
+
+1. The endpoint's `opening_balance_source` value for an explicit query param is
+   `"query"` where the shared resolver says `"explicit"`. Unify on `"explicit"` —
+   it is the same concept under two names, and the `cashFlow.chart.source.explicit`
+   i18n key already exists in every locale while `…source.query` does not.
+2. `frontend/src/lib/types/analytics.ts::CashPosition.opening_balance_source` is
+   typed `'query' | 'settings' | 'none'` — already missing `'provider'`, which the
+   endpoint has returned since the bank auto-sync shipped. Widen it to the
+   resolver's four values and add the `opening_balance_currency` /
+   `opening_balance_provider_skipped` fields.
+3. `backend/tests/test_cashflow_forecast_api.py` asserts `== "query"` in two
+   places; update both, and add a case for the refused foreign-currency balance.
+
+**Why not fixed in the same change:** the copilot round that found it was scoped
+to the copilot's own paths, and this is a visible behaviour change (a EUR balance
+a CFO can see today would stop seeding the curve) on a shared dashboard endpoint,
+landed while sibling sessions were editing the same tree. It wants its own commit
+with the frontend type + test updates alongside it.
+**Trigger:** the next change touching `api/analytics.py`'s cash-position block,
+or the first tenant configured with a non-reporting-currency funding account.
+
+---
+
 ## ~~Read-after-write race on every mutating endpoint~~ — FIXED 2026-08-06
 
 **Resolved** by `commit_before_response` (`backend/app/database.py`), applied by
