@@ -139,6 +139,17 @@ class SubscriptionResponse(BaseModel):
     active: bool
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    # When a rotation's overlap window closes — i.e. when the retiring secret
+    # stops signing `X-Webhook-Signature-Previous`. NULL when no rotation is in
+    # flight, which is the ordinary state.
+    #
+    # The EXPIRY only, never `previous_signing_secret`: this response is the
+    # list/get surface, and the whole point of the create/rotate contract is
+    # that a secret is shown exactly once. Surfacing the timestamp lets an admin
+    # see a rotation is mid-flight after a page reload — without it the UI can
+    # only remember the window for the life of one page view, which is precisely
+    # when someone is away pasting the new secret into another system.
+    previous_secret_expires_at: datetime | None = None
 
 
 class SubscriptionCreatedResponse(BaseModel):

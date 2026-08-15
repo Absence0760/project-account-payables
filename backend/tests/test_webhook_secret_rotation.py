@@ -479,3 +479,40 @@ async def test_concurrent_rotations_lose_no_secret(realdb):
             )
         ).scalar_one()
     assert {row.signing_secret, row.previous_signing_secret} == handed_out
+
+
+@pytest.mark.asyncio
+async def test_list_surfaces_the_overlap_expiry_so_a_reload_keeps_it(realdb):
+    """The list surface carries the expiry — the EXPIRY only, never the secret.
+
+    Without it the admin UI can only remember an in-flight rotation for the life
+    of one page view, which is exactly when someone is away pasting the new
+    secret into another system. A reload would silently drop the signal that the
+    old secret is still being honoured.
+    """
+    async with realdb.client(key="a", role="admin") as client:
+        sub_id, _ = await _create_subscription(client)
+        before = (await client.get("/api/webhooks")).json()
+        rotated = await client.post(
+            f"/api/webhooks/{sub_id}/rotate-secret", json={"overlap_minutes": 30}
+        )
+        after = (await client.get("/api/webhooks")).json()
+
+    # No rotation in flight -> null, the ordinary state.
+    assert next(s for s in before if s["id"] == sub_id)["previous_secret_expires_at"] is None
+
+    row = next(s for s in after if s["id"] == sub_id)
+    assert row["previous_secret_expires_at"] == rotated.json()["previous_secret_expires_at"]
+    # ...and the retiring secret itself is still nowhere on this surface.
+    assert "previous_signing_secret" not in row
+    assert "signing_secret" not in row
+
+
+@pytest.mark.asyncio
+async def test_hard_cutover_leaves_no_overlap_on_the_list(realdb):
+    async with realdb.client(key="a", role="admin") as client:
+        sub_id, _ = await _create_subscription(client)
+        await client.post(f"/api/webhooks/{sub_id}/rotate-secret", json={"overlap_minutes": 0})
+        listed = (await client.get("/api/webhooks")).json()
+
+    assert next(s for s in listed if s["id"] == sub_id)["previous_secret_expires_at"] is None
