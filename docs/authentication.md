@@ -204,7 +204,9 @@ Action names:
 | Successful SAML login | `auth.saml.login.success` |
 | Failed SAML login (assertion invalid / issuer / unsolicited / replay / domain blocked) | `auth.saml.login.failure` |
 
-Login-failure rows for unknown emails are dropped — without an `organization_id` there is no tenant DB to route to. Failures for known users carry the email, IP (when the client is reachable), and a machine-readable `reason`.
+Login-failure rows for unknown emails are dropped — without an `organization_id` there is no tenant DB to route to. Failures for known users carry the email, IP (when the client is reachable), and a machine-readable `reason`. (The supplier-portal twin, `portal.login.failure`, deliberately omits the address — see the action table above.)
+
+**Known, accepted asymmetry:** because an unknown address has no org, a rejection against it skips the audit write that a rejection against a *known* account performs, so the known-account path is a DB round-trip slower. In principle that is a timing signal an equalised 401 doesn't carry. It is accepted rather than fixed: the response itself (status *and* detail) is byte-identical either way, and the bcrypt call `dummy_verify()` exists to equalise — dominates every rejected-login response by orders of magnitude more than an audit INSERT. Dropping the row instead would mean losing the only record that an account is being attacked, which is the more valuable half.
 
 ### Database separation
 
