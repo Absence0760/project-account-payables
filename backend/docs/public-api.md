@@ -288,6 +288,56 @@ hex digest), sent in `X-Webhook-Signature`; the receiver re-derives it the same
 way. Headers also carry `X-Webhook-Event-Id` + `X-Webhook-Event-Type` so the
 receiver can dedupe.
 
+### Rotating a signing secret
+
+`POST /api/webhooks/{id}/rotate-secret` mints a replacement and returns it
+**once**, keeping the subscription id — and therefore its whole delivery
+history. Before this existed, the only remedy for a leaked secret was
+`DELETE` + re-create, which CASCADE-deletes every delivery row: recovering from
+a leak meant destroying the record of what had been delivered.
+
+The awkward part is the instant in between. With one signature header you
+cannot satisfy a receiver still configured with the old secret and one already
+holding the new one, so a rotation opens a bounded **overlap window**:
+
+| Header | When | Signed with |
+|---|---|---|
+| `X-Webhook-Signature` | always | the **current** secret |
+| `X-Webhook-Signature-Previous` | only while the window is open | the **retiring** secret |
+
+The primary header is always the live key, so an existing receiver's contract
+never changes meaning.
+
+**Receiver-side procedure — do step 1 before you ever need to rotate:**
+
+1. Make verification accept **either** header (match the body's HMAC against
+   your configured secret, and treat a match on either as valid). This is
+   additive and a no-op while no rotation is in flight.
+2. `POST /api/webhooks/{id}/rotate-secret` — default overlap
+   `60` minutes, max `1440`. Copy the returned secret.
+3. Install the new secret in your receiver. Deliveries keep verifying via the
+   secondary header throughout.
+4. When the window elapses the secondary header simply stops being sent. No
+   second call is needed.
+
+A receiver that skips step 1 and reads only the primary header is no worse off
+than a hard swap: it pastes the new secret and its downtime is bounded by how
+fast it does so.
+
+**`overlap_minutes: 0` is a deliberate hard cutover** — the right choice when
+the secret is known-compromised and must stop verifying on the very next
+delivery. Out-of-range values are refused (`422`) rather than clamped: silently
+shortening a window drops deliveries the caller relied on, and silently
+lengthening one keeps a key they wanted dead alive.
+
+The expiry rule lives in one place, `webhooks/rotation.previous_secret_if_live`,
+read by both the dispatcher and the API: a previous secret signs only when both
+columns are set **and** the expiry is still in the future, so a half-written or
+never-cleaned row can't leave a retired key signing. Columns are
+`previous_signing_secret` / `previous_secret_expires_at` (migration `0084`,
+control-plane only). The audit row (`webhook_subscription.secret_rotated`)
+records the prefix and the window — never either secret.
+
 ### Payload
 
 ```jsonc
@@ -428,6 +478,7 @@ writes a PII-free audit row (`webhook_subscription.created/updated/deleted`,
 | `POST` | `/api/webhooks` | Create a subscription. Validates http(s) URL + known event types + the [SSRF target guard](#target-url-ssrf-guard). Returns the `signing_secret` **once**. |
 | `GET` | `/api/webhooks` | List this org's subscriptions (metadata only — never the full secret). |
 | `PATCH` | `/api/webhooks/{id}` | Update name / target_url / event_types / active. A new `target_url` passes the same [SSRF target guard](#target-url-ssrf-guard). |
+| `POST` | `/api/webhooks/{id}/rotate-secret` | Mint a replacement signing secret, keeping the subscription id + delivery history. Returns the new secret **once**. Optional `{overlap_minutes}` (default 60, max 1440; `0` = hard cutover) keeps the retiring secret signing `X-Webhook-Signature-Previous` — see [Rotating a signing secret](#rotating-a-signing-secret). |
 | `DELETE` | `/api/webhooks/{id}` | Delete (CASCADE removes its deliveries). 404 (opaque) for wrong-org. |
 | `GET` | `/api/webhooks/deliveries` | List deliveries (org-scoped), filter `subscription_id` / `status`, paginated. |
 | `POST` | `/api/webhooks/deliveries/{id}/redeliver` | Re-enqueue a `failed`/`dead` delivery (resets the counter) and attempt inline. `409` on an already-`delivered` row (would double-fire). |
