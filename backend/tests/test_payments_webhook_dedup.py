@@ -43,12 +43,27 @@ def _ctrl_session_factory(org):
     return factory
 
 
-def _tenant_session_factory(payment):
-    result = MagicMock()
-    result.scalar_one_or_none = MagicMock(return_value=payment)
+def _tenant_session_factory(payment, invoice=None):
+    """Dispatch by the statement's ORM entity — the settle path queries the
+    Payment and then the Invoice whose currency the settlement verifier
+    compares against, so a single canned result would hand the Payment back
+    as an Invoice."""
+
+    def _execute(stmt, *args, **kwargs):
+        result = MagicMock()
+        try:
+            table = stmt.get_final_froms()[0].name
+        except (AttributeError, IndexError, TypeError):
+            table = ""
+        result.scalar_one_or_none = MagicMock(
+            return_value=invoice if table == "invoices" else payment
+        )
+        return result
+
     db = AsyncMock()
-    db.execute = AsyncMock(return_value=result)
+    db.execute = AsyncMock(side_effect=_execute)
     db.commit = AsyncMock()
+    db.add = MagicMock()
     factory = MagicMock()
     factory.return_value.__aenter__ = AsyncMock(return_value=db)
     factory.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -67,6 +82,7 @@ def _org(slug="acme", provider="modern_treasury"):
 def _in_flight_payment():
     return SimpleNamespace(
         id=uuid.uuid4(),
+        invoice_id=uuid.uuid4(),
         provider_payment_id="px_1",
         payment_run_id=uuid.uuid4(),
         correlation_id=uuid.uuid4(),
@@ -76,7 +92,14 @@ def _in_flight_payment():
         completed_at=None,
         reference=None,
         failure_reason=None,
+        # International legs — NULL on a domestic payment.
+        source_amount=None,
+        source_currency=None,
     )
+
+
+def _invoice(currency="USD"):
+    return SimpleNamespace(id=uuid.uuid4(), entity_id=uuid.uuid4(), currency=currency)
 
 
 @pytest.mark.asyncio
@@ -100,10 +123,12 @@ async def test_empty_event_id_skips_redis_dedup_explicitly_and_warns(caplog):
             status=PaymentStatus.completed,
             reference="REF-1",
             failure_reason=None,
+            amount=Decimal("100.00"),
+            currency="USD",
         )
     )
 
-    tenant_factory, db = _tenant_session_factory(payment)
+    tenant_factory, db = _tenant_session_factory(payment, invoice=_invoice())
 
     with (
         patch("app.database.control_session_factory", _ctrl_session_factory(org)),
@@ -147,10 +172,12 @@ async def test_populated_event_id_still_deduped():
             status=PaymentStatus.completed,
             reference="REF-1",
             failure_reason=None,
+            amount=Decimal("100.00"),
+            currency="USD",
         )
     )
 
-    tenant_factory, db = _tenant_session_factory(_in_flight_payment())
+    tenant_factory, db = _tenant_session_factory(_in_flight_payment(), invoice=_invoice())
 
     with (
         patch("app.database.control_session_factory", _ctrl_session_factory(org)),

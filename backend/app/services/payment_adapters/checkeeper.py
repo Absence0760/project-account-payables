@@ -39,6 +39,7 @@ from app.services.payment_adapters.base import (
     PaymentResult,
     PaymentStatus,
     WebhookEvent,
+    parse_amount,
 )
 from app.services.payment_adapters.dispatcher import register_payment_adapter
 
@@ -253,6 +254,14 @@ class CheckeeperAdapter(PaymentAdapter):
             reference=obj.get("check_number"),
             failure_reason=obj.get("failure_code"),
             occurred_at=event.get("created_at"),
+            # The face value Checkeeper printed. Unlike the card/ACH rails it
+            # exchanges MAJOR-unit decimal strings (see `create_payment`), so
+            # this parses rather than de-scales. A cheque whose cleared amount
+            # differs from the issued one is the classic altered-cheque case —
+            # the same call `positive_pay.classify_presented_items` makes from
+            # the bank's presented-items file, made here at issue time.
+            amount=parse_amount(obj.get("amount")),
+            currency=(obj.get("currency") or None),
             raw=event,
         )
 
