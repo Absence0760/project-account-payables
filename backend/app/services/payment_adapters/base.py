@@ -260,6 +260,37 @@ def parse_amount(raw: object) -> Decimal | None:
 
 
 @dataclass
+class SettlementReport:
+    """What the processor says it settled, fetched on demand.
+
+    The pull counterpart to the push figure on ``WebhookEvent``. Two paths in
+    the money system know a payment completed but never learn the amount:
+
+    * a rail whose status webhook is a bare envelope (Dwolla's
+      ``{id, topic, resourceId, _links}`` — the figure is only reachable by
+      following ``_links.resource``, which the synchronous
+      signature-verification path must not do); and
+    * ``payment_reconciler``, the backstop for a webhook that never arrived,
+      whose ``get_payment_status`` returns a bare status by design.
+
+    Both therefore settle ``unverified``. This closes that by letting the
+    caller ask.
+
+    ``available`` is the load-bearing field, exactly as on ``BalanceResult``:
+    an adapter with no way to report a settled figure returns
+    ``available=False`` and the caller leaves the verdict ``unverified``
+    rather than inventing one. Implementations catch transport failures and
+    return ``available=False`` instead of raising — a settlement fetch must
+    never break the webhook or the sweep that called it.
+    """
+
+    available: bool
+    amount: Decimal | None = None
+    currency: str | None = None
+    unavailable_reason: str | None = None
+
+
+@dataclass
 class WebhookEvent:
     """Normalised representation of a webhook from the processor.
 
@@ -342,6 +373,23 @@ class PaymentAdapter:
         outcome on the audit row.
         """
         return False
+
+    async def fetch_settlement(self, provider_payment_id: str) -> SettlementReport:
+        """Re-fetch what the processor actually settled for one payment.
+
+        OPTIONAL capability — the default returns
+        ``SettlementReport(available=False, unavailable_reason="not_supported")``
+        so adapters whose webhook already carries the figure (and any that
+        genuinely can't report one) are unaffected, and the caller leaves the
+        settlement ``unverified`` rather than inventing a verdict.
+
+        Best-effort by contract, like ``get_balance``: implementations catch
+        transport failures and return ``available=False`` rather than raise.
+        Both call sites — the webhook handler's fallback and the reconciler
+        backstop — additionally guard the call, so a settlement fetch can
+        never break a webhook or halt a sweep.
+        """
+        return SettlementReport(available=False, unavailable_reason="not_supported")
 
     async def get_balance(self) -> BalanceResult:
         """Report the current available balance on the org's funding account.

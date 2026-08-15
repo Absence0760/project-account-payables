@@ -37,7 +37,9 @@ from app.services.payment_adapters.base import (
     PaymentPayload,
     PaymentResult,
     PaymentStatus,
+    SettlementReport,
     WebhookEvent,
+    parse_amount,
 )
 from app.services.payment_adapters.dispatcher import register_payment_adapter
 
@@ -202,6 +204,56 @@ class DwollaAdapter(PaymentAdapter):
         if response.status_code >= 400:
             return PaymentStatus.failed
         return _STATUS_MAP.get(response.json().get("status", ""), PaymentStatus.submitted)
+
+    async def fetch_settlement(self, provider_payment_id: str) -> SettlementReport:
+        """Follow the transfer resource for the figure the webhook omits.
+
+        This is the async re-fetch `parse_webhook` deliberately cannot do: it
+        is synchronous and on the signature-verification path, so it must not
+        make a network call. The webhook handler calls this afterwards, and so
+        does the reconciler backstop, both guarded — a failure here leaves the
+        settlement `unverified`, which is exactly where it was before.
+
+        Dwolla reports amounts as decimal strings (`{"value": "125.00",
+        "currency": "USD"}`), not minor units, so no exponent scaling applies.
+        """
+        token = await self._get_token()
+        if not token:
+            return SettlementReport(available=False, unavailable_reason="dwolla_not_configured")
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.dwollav1.hal+json",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+                response = await client.get(
+                    f"{self._base()}/transfers/{provider_payment_id}",
+                    headers=headers,
+                )
+        except httpx.RequestError as exc:
+            # Class name only — a transport error string can carry the URL.
+            return SettlementReport(
+                available=False,
+                unavailable_reason=f"dwolla_transport_error:{exc.__class__.__name__}",
+            )
+        if response.status_code >= 400:
+            return SettlementReport(
+                available=False,
+                unavailable_reason=f"dwolla_api_error:{response.status_code}",
+            )
+        try:
+            body = response.json() or {}
+        except ValueError:
+            return SettlementReport(available=False, unavailable_reason="dwolla_unparseable_body")
+
+        amount = parse_amount((body.get("amount") or {}).get("value"))
+        if amount is None:
+            return SettlementReport(available=False, unavailable_reason="dwolla_no_amount")
+        return SettlementReport(
+            available=True,
+            amount=amount,
+            currency=((body.get("amount") or {}).get("currency") or None),
+        )
 
     def parse_webhook(self, headers: dict, body: bytes) -> WebhookEvent | None:
         if not self.webhook_secret:

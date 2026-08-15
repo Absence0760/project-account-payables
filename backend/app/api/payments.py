@@ -2869,9 +2869,36 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
                 settled_invoice = (
                     await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
                 ).scalar_one_or_none()
+                # A rail whose event body carries no figure (Dwolla's bare
+                # `{id, topic, resourceId}` envelope) gets one more chance
+                # before we record a blind spot: ask the processor. This is
+                # the async re-fetch `parse_webhook` deliberately cannot do —
+                # that path is synchronous and on the signature-verification
+                # line, so it must not make a network call.
+                #
+                # Guarded on every axis. An adapter without the capability
+                # returns `available=False` from the base implementation, and
+                # any failure at all leaves the settlement exactly where it
+                # was — `unverified` — because a settlement fetch must never
+                # break the webhook that is recording money movement.
+                reported_amount, reported_currency = event.amount, event.currency
+                if reported_amount is None and payment.provider_payment_id:
+                    try:
+                        report = await adapter.fetch_settlement(payment.provider_payment_id)
+                    except Exception as exc:  # noqa: BLE001 - best-effort by contract
+                        logger.warning(
+                            "settlement fetch failed for payment=%s: %s",
+                            payment.id,
+                            exc.__class__.__name__,
+                        )
+                    else:
+                        if report.available and report.amount is not None:
+                            reported_amount = report.amount
+                            reported_currency = report.currency
+
                 settlement = verify_settlement(
-                    reported_amount=event.amount,
-                    reported_currency=event.currency,
+                    reported_amount=reported_amount,
+                    reported_currency=reported_currency,
                     target_amount=payment.amount,
                     target_currency=(settled_invoice.currency if settled_invoice else None),
                     source_amount=payment.source_amount,
