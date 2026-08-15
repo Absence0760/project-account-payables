@@ -121,19 +121,32 @@ one-time-secret reveal) and deserves its own pass rather than being bolted on.
 engineer, or the next `/polish-ui` pass touching `/admin`.
 Ref: [public-api.md](../backend/docs/public-api.md) § Rotating a signing secret.
 
-### Vendor statement reconciliation — PDF intake
+### Vendor statement reconciliation — statement upload UI
 
-CSV upload and the manual pasted-lines path both ship. A supplier statement that
-arrives as a PDF still has to be transcribed by hand.
+PDF-via-extraction intake and raw-file storage both **shipped**: a PDF upload
+routes through the org's own extraction adapter (`ExtractionAdapter.extract_statement`,
+an optional capability implemented on `mock` / `claude_vision` / `ollama`), the
+uploaded document is archived to S3 and served back by
+`GET /api/vendor-statements/{id}/file`, and `file_key` is no longer written NULL.
 
-- [ ] PDF-via-extraction statement intake + raw-file storage — route the PDF
-      through the existing extraction pipeline rather than adding a second
-      parser.
+What's left is the surface, not the pipeline: `/vendor-statements` is a
+create-from-pasted-lines page with no file picker at all — the CSV endpoint
+never had one either, and the PDF one inherits that gap. Today both are
+API-only.
 
-**Why deferred:** the CSV/manual paths cover the common case, and reusing the
-extraction adapters properly is a real slice rather than a bolt-on.
-**Trigger:** a pilot tenant whose suppliers send PDF statements.
-Ref: [vendor-statement-reconciliation.md](../backend/docs/vendor-statement-reconciliation.md) § Deferred.
+- [ ] Statement upload UI on `/vendor-statements` — file picker (CSV or PDF) →
+      vendor / statement-date / reference form → the run detail; surface the
+      run's `extraction` provenance block and a "download the source statement"
+      link when `has_source_file` is true; map the 422 reason messages onto the
+      form.
+
+**Why deferred:** the backend round that closed PDF intake was scoped to the
+adapter capability, the bridge service, the route and raw-file storage; the page
+is a different surface with its own patterns and deserves its own pass rather
+than being bolted on.
+**Trigger:** the first tenant expected to upload a statement without an
+engineer, or the next `/polish-ui` pass touching `/vendor-statements`.
+Ref: [vendor-statement-reconciliation.md](../backend/docs/vendor-statement-reconciliation.md) § PDF intake.
 
 ### Mount-time double-fetch race — invoices/vendors' local-mutation bypass
 
