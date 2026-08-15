@@ -198,7 +198,7 @@ Action names:
 | Successful MFA verify | `auth.mfa.verify.success` |
 | Failed MFA verify | `auth.mfa.verify.failure` |
 | Failed step-up against a second-factor change (enroll / passkey register / passkey delete / disable) | `auth.mfa.step_up.failure` (employee) · `portal.mfa.step_up.failure` (supplier portal) — PII-free, records only the operation name |
-| Failed supplier-portal password login | `portal.login.failure` — records `{ip, reason}` and identifies the account by `entity_id`, never by address (a supplier contact's email is third-party PII we don't restate on every guess) |
+| Failed supplier-portal password login | `portal.login.failure` — records `{ip, reason}` (`bad_password` \| `no_password` \| `inactive`) and identifies the account by `entity_id`, never by address (a supplier contact's email is third-party PII we don't restate on every guess) |
 | Successful SSO login | `auth.sso.login.success` |
 | Failed SSO login (code exchange / ID token / domain blocked) | `auth.sso.login.failure` |
 | Successful SAML login | `auth.saml.login.success` |

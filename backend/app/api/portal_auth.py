@@ -78,8 +78,12 @@ async def _send_vendor_email_otp(vu: VendorUser, code: str) -> None:
     await adapter.send(msg)
 
 
-async def _audit_portal_login_failure(vu: VendorUser, *, ip: str) -> None:
+async def _audit_portal_login_failure(vu: VendorUser, *, ip: str, reason: str) -> None:
     """Record a rejected supplier sign-in.
+
+    ``reason`` is one of a fixed set of literals (`bad_password`,
+    `no_password`, `inactive`) — machine-readable for the tenant's admins and
+    never derived from anything the caller supplied.
 
     PII-lean by construction: the account is identified by id, so a supplier
     contact's address is not restated into the trail on every guess. Skipped
@@ -100,7 +104,7 @@ async def _audit_portal_login_failure(vu: VendorUser, *, ip: str) -> None:
         actor_id=None,
         action="portal.login.failure",
         entity_id=vu.id,
-        details={"ip": ip, "reason": "bad_password"},
+        details={"ip": ip, "reason": reason},
     )
 
 
@@ -145,6 +149,14 @@ async def portal_login(
         await record_auth_failure(
             "portal_login", identity, window_seconds=LOGIN_FAILURE_WINDOW_SECONDS
         )
+        # A rejection against an account we CAN identify is auditable; a truly
+        # unknown address has no org and so no tenant trail to write into. Same
+        # split the employee twin makes. Someone hammering a deactivated
+        # supplier login is exactly what an admin wants to see.
+        if vu is not None:
+            await _audit_portal_login_failure(
+                vu, ip=ip, reason="no_password" if not vu.hashed_password else "inactive"
+            )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if not pwd_context.verify(body.password, vu.hashed_password):
         await record_auth_failure(
@@ -154,7 +166,7 @@ async def portal_login(
         # all — the employee twin has written `auth.login.failure` since it was
         # built. PII-lean: the vendor user is identified by id, so the trail
         # doesn't restate the supplier contact's address.
-        await _audit_portal_login_failure(vu, ip=ip)
+        await _audit_portal_login_failure(vu, ip=ip, reason="bad_password")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
     await clear_auth_failures("portal_login", identity)

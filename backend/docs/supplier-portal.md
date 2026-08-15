@@ -337,7 +337,11 @@ money goes** until an AP admin explicitly approves it.
 - **A rejected sign-in is on the record:** `portal.login.failure` lands in
   the tenant's `audit_log`, identifying the account by `entity_id` and
   carrying `{ip, reason}` only — a supplier contact's address is
-  third-party PII and isn't restated on every guess.
+  third-party PII and isn't restated on every guess. `reason` is
+  `bad_password` / `no_password` / `inactive`, so hammering a *deactivated*
+  supplier login is visible too. An address with no account writes nothing:
+  there is no org to resolve a tenant trail from, and a row would itself be
+  the enumeration signal the identical 401 exists to avoid.
 
 ## Invoice submission flow
 

@@ -605,8 +605,58 @@ async def test_portal_login_records_a_failure_audit_row(fake_redis, monkeypatch)
     kwargs = audit.await_args.kwargs
     assert kwargs["action"] == "portal.login.failure"
     assert kwargs["entity_id"] == vu.id
+    assert kwargs["details"]["reason"] == "bad_password"
     # PII-lean: the supplier contact's address is not restated on every guess.
     assert vu.email not in str(kwargs["details"])
+
+
+@pytest.mark.asyncio
+async def test_portal_login_audits_a_deactivated_account_too(fake_redis, monkeypatch):
+    """Someone hammering a deactivated supplier login is exactly what an admin
+    wants to see. The rejection branch is merged (missing / no password /
+    inactive), so it's easy to audit only the wrong-password case and leave
+    this one silent."""
+    from app.api import portal_auth
+    from app.schemas.portal import PortalLoginRequest
+
+    audit = AsyncMock()
+    monkeypatch.setattr(portal_auth, "dispatch_auth_audit", audit)
+
+    vu = _vendor_user()
+    vu.is_active = False
+
+    with pytest.raises(HTTPException) as exc:
+        await portal_auth.portal_login(
+            body=PortalLoginRequest(email=vu.email, password="whatever-123"),
+            request=_fake_request(),
+            slug="acme",
+            db=_portal_db(vu),
+        )
+    assert exc.value.status_code == 401
+
+    audit.assert_awaited_once()
+    assert audit.await_args.kwargs["details"]["reason"] == "inactive"
+
+
+@pytest.mark.asyncio
+async def test_portal_login_stays_silent_for_an_unknown_address(fake_redis, monkeypatch):
+    """No account means no org, so there is no tenant trail to write into —
+    and writing one would be the enumeration signal the 401 avoids."""
+    from app.api import portal_auth
+    from app.schemas.portal import PortalLoginRequest
+
+    audit = AsyncMock()
+    monkeypatch.setattr(portal_auth, "dispatch_auth_audit", audit)
+
+    with pytest.raises(HTTPException):
+        await portal_auth.portal_login(
+            body=PortalLoginRequest(email="nobody@example.com", password="whatever-123"),
+            request=_fake_request(),
+            slug="acme",
+            db=_portal_db(None),
+        )
+
+    audit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
