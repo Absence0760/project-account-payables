@@ -274,9 +274,48 @@ async def test_cash_position_query_balance_beats_provider(realdb):
         assert resp.status_code == 200
         body = resp.json()
         assert body["opening_balance"] == 1000.0
-        assert body["opening_balance_source"] == "query"
+        # `explicit` (not `query`) — this endpoint now shares the copilot's
+        # resolution chain, so the four source values have one vocabulary.
+        assert body["opening_balance_source"] == "explicit"
     finally:
         await _set_org_settings(realdb, "a", lambda s: s.pop("payments", None))
+
+
+async def test_cash_position_refuses_a_foreign_currency_provider_balance(realdb):
+    """A funding account denominated in something other than the org's reporting
+    currency must NOT seed the curve — every outflow subtracted from it here is
+    in the reporting currency, so mixing them makes the running balance a silent
+    two-currency figure. The chain falls through and says why."""
+
+    def _set(settings):
+        settings["payments"] = {
+            "provider": "mock",
+            "balance": "9999.99",
+            "balance_currency": "EUR",
+        }
+        settings["reporting_currency"] = "USD"
+        settings["cashflow"] = {"opening_balance": "4321"}
+
+    await _set_org_settings(realdb, "a", _set)
+    try:
+        async with realdb.client(key="a", role="cfo") as c:
+            resp = await c.get("/api/analytics/cash_position")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["opening_balance"] == 4321.0
+        assert body["opening_balance_source"] == "settings"
+        # The refusal is visible — otherwise indistinguishable from "no bank".
+        assert body["opening_balance_provider_skipped"] == "currency_mismatch"
+        # The curve is always denominated in the reporting currency.
+        assert body["opening_balance_currency"] == "USD"
+    finally:
+
+        def _clear(settings):
+            settings.pop("payments", None)
+            settings.pop("cashflow", None)
+            settings.pop("reporting_currency", None)
+
+        await _set_org_settings(realdb, "a", _clear)
 
 
 async def test_cash_position_falls_back_to_settings_when_provider_unsupported(realdb):
@@ -413,7 +452,7 @@ async def test_cash_position_with_opening_balance_and_breach(realdb):
     assert resp.status_code == 200
     body = resp.json()
     assert body["opening_balance"] == 1000.0
-    assert body["opening_balance_source"] == "query"
+    assert body["opening_balance_source"] == "explicit"
     assert body["periods"][0]["closing"] == 200.0
     assert body["periods"][0]["below_threshold"] is True
     assert len(body["breaches"]) == 1

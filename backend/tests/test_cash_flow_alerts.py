@@ -87,6 +87,61 @@ def test_alert_audience_matches_the_copilot_read_gate():
 
 
 # ---------------------------------------------------------------------------
+# The alerted-period marker (services/cashflow.py) — pure
+# ---------------------------------------------------------------------------
+# Mirrors the threshold-helper tests in `test_cashflow_balance.py`: these two
+# share `Organization.settings.cashflow` with `store_cash_thresholds`, so the
+# same "merge, never clobber, never mutate in place" guarantee has to hold or
+# the sweep's marker write would silently drop a threshold (or vice versa).
+
+
+def test_marker_round_trips():
+    from app.services.cashflow import resolve_shortfall_alert_period, store_shortfall_alert_period
+
+    out = store_shortfall_alert_period(None, period="2026-W05", sent_on="2026-01-01")
+    assert resolve_shortfall_alert_period(out) == "2026-W05"
+    assert out["cashflow"]["shortfall_alert"]["sent_on"] == "2026-01-01"
+
+
+def test_marker_preserves_other_settings_and_does_not_mutate_input():
+    from app.services.cashflow import resolve_cash_thresholds, store_shortfall_alert_period
+
+    existing = {
+        "cashflow": {"min_balance_threshold": "1000.00", "opening_balance": "5000"},
+        "brand": {"product_name": "X"},
+    }
+    out = store_shortfall_alert_period(existing, period="2026-W09")
+    # The threshold IS the sweep's opt-in — dropping it here would silently
+    # unsubscribe the org the moment it was alerted.
+    assert resolve_cash_thresholds(out).min_balance_threshold == Decimal("1000.00")
+    assert out["cashflow"]["opening_balance"] == "5000"
+    assert out["brand"]["product_name"] == "X"
+    assert "shortfall_alert" not in existing["cashflow"]
+
+
+def test_marker_none_clears_the_key_and_keeps_the_rest():
+    from app.services.cashflow import resolve_shortfall_alert_period, store_shortfall_alert_period
+
+    existing = {"cashflow": {"shortfall_alert": {"period": "2026-W05"}, "opening_balance": "1"}}
+    out = store_shortfall_alert_period(existing, period=None)
+    assert "shortfall_alert" not in out["cashflow"]
+    assert out["cashflow"]["opening_balance"] == "1"
+    assert resolve_shortfall_alert_period(out) is None
+
+
+def test_marker_read_tolerates_a_malformed_block():
+    """A corrupt settings blob must not stop the sweep — it reads as
+    "never alerted", so the org gets an alert rather than none."""
+    from app.services.cashflow import resolve_shortfall_alert_period
+
+    assert resolve_shortfall_alert_period(None) is None
+    assert resolve_shortfall_alert_period({"cashflow": "nonsense"}) is None
+    assert resolve_shortfall_alert_period({"cashflow": {"shortfall_alert": "nope"}}) is None
+    assert resolve_shortfall_alert_period({"cashflow": {"shortfall_alert": {}}}) is None
+    assert resolve_shortfall_alert_period({"cashflow": {"shortfall_alert": {"period": ""}}}) is None
+
+
+# ---------------------------------------------------------------------------
 # run_shortfall_alerts_once — multi-org fan-out (mocked)
 # ---------------------------------------------------------------------------
 

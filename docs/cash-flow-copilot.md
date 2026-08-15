@@ -401,9 +401,12 @@ design-only — everything else on this page is shipped.
    to persist a proposal and later compare it to what actually got paid. Deferred
    until there's demand; v1 plans are stateless/re-derivable.
 2. ~~**Opening-balance source.**~~ **SHIPPED.** The resolution chain lives in
-   `services/cashflow.py::resolve_opening_balance` (one owner, shared by the
-   copilot tools and the §14 alert sweep) and returns an `OpeningBalance`
-   carrying its own provenance: `source`
+   `services/cashflow.py::resolve_opening_balance` — **one owner, and all three
+   consumers go through it**: the copilot tools, the §14 alert sweep, and
+   `GET /api/analytics/cash_position` (the `/cfo` dashboard's chart, which had
+   its own duplicate inline copy). A copilot answer, an alert email, and the
+   dashboard therefore cannot start from a different number. It returns an
+   `OpeningBalance` carrying its own provenance: `source`
    (`explicit` | `provider` | `settings` | `none`), plus the `provider` name and
    the adapter's opaque `account_ref` when a bank sync supplied it — so the
    copilot can say "from your Modern Treasury operating account" rather than
@@ -426,6 +429,13 @@ design-only — everything else on this page is shipped.
    unreproducible (§3, `decisions.md` §18), and the fix an operator needs is to
    set a reporting currency or a BYO opening balance, not for us to guess. A
    blank / unknown provider currency fails closed the same way.
+
+   `GET /api/analytics/cash_position` now returns the same provenance
+   (`opening_balance_source` / `_currency` / `_provider` /
+   `_provider_skipped`). Its explicit-override source value changed from
+   `"query"` to `"explicit"` — the two names always meant the same thing, and
+   the `cashFlow.chart.source.explicit` i18n key already existed in every
+   locale while `…source.query` never did.
 3. **Multi-entity consolidation.** Phase 1 honors `X-Entity-ID` (per-entity
    view). A "show me consolidated cash across all subsidiaries" mode would ignore
    the header like `GET /analytics/by-entity` does — a small follow-up. (The
