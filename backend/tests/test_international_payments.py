@@ -662,6 +662,7 @@ def test_realized_fx_uses_the_persisted_multiplying_rate():
     result = realized_fx_gain_loss_for_settlement(
         invoice_amount=Decimal("1000.00"),
         invoice_currency="EUR",
+        reporting_currency="USD",
         reporting_fx_rate=Decimal("1.10"),
         paid_source_amount=Decimal("1050.00"),
         paid_source_currency="USD",
@@ -675,6 +676,7 @@ def test_realized_fx_is_negative_when_we_paid_more_than_accrued():
     result = realized_fx_gain_loss_for_settlement(
         invoice_amount=Decimal("1000.00"),
         invoice_currency="EUR",
+        reporting_currency="USD",
         reporting_fx_rate=Decimal("1.10"),
         paid_source_amount=Decimal("1180.00"),
         paid_source_currency="USD",
@@ -695,6 +697,7 @@ def test_realized_fx_sign_matches_the_unrealized_half():
     realized = realized_fx_gain_loss_for_settlement(
         invoice_amount=Decimal("1000.00"),
         invoice_currency="EUR",
+        reporting_currency="USD",
         reporting_fx_rate=Decimal("1.10"),
         paid_source_amount=current,
         paid_source_currency="USD",
@@ -719,9 +722,64 @@ def test_realized_fx_is_none_not_zero_when_there_is_nothing_to_measure(kwargs, w
     base = {
         "invoice_amount": Decimal("1000.00"),
         "invoice_currency": "EUR",
+        "reporting_currency": "USD",
         "reporting_fx_rate": Decimal("1.10"),
         "paid_source_amount": Decimal("1050.00"),
         "paid_source_currency": "USD",
     }
     base.update(kwargs)
     assert realized_fx_gain_loss_for_settlement(**base) is None, why
+
+
+def test_realized_fx_refuses_to_subtract_two_different_currencies():
+    """The accrual and the outflow are denominated by DIFFERENT org settings.
+
+    `Invoice.reporting_currency` resolves from `settings.reporting_currency`
+    first; `Payment.source_currency` comes strictly from
+    `settings.payments.home_currency`. Both are independently admin-settable,
+    so an org doing group reporting in USD while funding vendor payments from a
+    GBP account has an accrual in USD and an outflow in GBP. Subtracting them
+    would put a confidently wrong number on an immutable audit row.
+    """
+    from app.services.international_payments import realized_fx_gain_loss_for_settlement
+
+    result = realized_fx_gain_loss_for_settlement(
+        invoice_amount=Decimal("1000.00"),
+        invoice_currency="EUR",
+        reporting_currency="USD",  # invoice accrued in USD...
+        reporting_fx_rate=Decimal("1.10"),
+        paid_source_amount=Decimal("880.00"),
+        paid_source_currency="GBP",  # ...but funded from a GBP account
+    )
+    assert result is None
+
+
+def test_realized_fx_requires_a_reporting_currency_to_compare_against():
+    """An invoice with a rate but no recorded reporting currency can't be
+    proven to match the outflow — fail open rather than assume."""
+    from app.services.international_payments import realized_fx_gain_loss_for_settlement
+
+    assert (
+        realized_fx_gain_loss_for_settlement(
+            invoice_amount=Decimal("1000.00"),
+            invoice_currency="EUR",
+            reporting_currency=None,
+            reporting_fx_rate=Decimal("1.10"),
+            paid_source_amount=Decimal("1050.00"),
+            paid_source_currency="USD",
+        )
+        is None
+    )
+
+
+def test_realized_fx_currency_match_is_case_and_whitespace_insensitive():
+    from app.services.international_payments import realized_fx_gain_loss_for_settlement
+
+    assert realized_fx_gain_loss_for_settlement(
+        invoice_amount=Decimal("1000.00"),
+        invoice_currency="EUR",
+        reporting_currency=" usd ",
+        reporting_fx_rate=Decimal("1.10"),
+        paid_source_amount=Decimal("1050.00"),
+        paid_source_currency="USD",
+    ) == Decimal("50.00")

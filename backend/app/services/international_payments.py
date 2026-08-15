@@ -221,6 +221,7 @@ def realized_fx_gain_loss_for_settlement(
     *,
     invoice_amount: Decimal,
     invoice_currency: str | None,
+    reporting_currency: str | None,
     reporting_fx_rate: Decimal | None,
     paid_source_amount: Decimal | None,
     paid_source_currency: str | None,
@@ -238,10 +239,21 @@ def realized_fx_gain_loss_for_settlement(
       it into `compute_fx_gain_loss`'s dividing convention.
     * `Payment.source_amount` — what actually moved in the home currency.
 
+    **The two must be denominated in the same currency, and that is not
+    guaranteed.** `Invoice.reporting_currency` comes from
+    `currency_conversion.resolve_reporting_currency`, which prefers
+    `settings.reporting_currency`; `Payment.source_currency` comes strictly
+    from `settings.payments.home_currency`. Both are independently
+    admin-settable, so an org reporting in USD while funding vendor payments
+    from a GBP account has an accrual in USD and an outflow in GBP. Subtracting
+    those would produce a confidently wrong number written onto an immutable
+    audit row — so the currencies are compared, and a mismatch returns `None`.
+
     Returns `None` — not zero — whenever the figure is not meaningful: a
-    domestic payment with no FX leg, a missing accrual rate, or a same-currency
-    settlement. Zero would assert "we measured, and there was no gain or loss",
-    which is a different claim from "there is nothing to measure".
+    domestic payment with no FX leg, a missing accrual rate, a same-currency
+    settlement, or an accrual and an outflow denominated differently. Zero
+    would assert "we measured, and there was no gain or loss", which is a
+    different claim from "there is nothing to measure".
     """
     if paid_source_amount is None or reporting_fx_rate is None:
         return None
@@ -250,6 +262,15 @@ def realized_fx_gain_loss_for_settlement(
     if invoice_currency and paid_source_currency:
         if invoice_currency.upper() == paid_source_currency.upper():
             return None
+    # The accrual is denominated in the invoice's reporting currency; the
+    # outflow in the payment's source currency. Comparing them requires that
+    # they be the same currency — we will not bridge them with a rate here,
+    # because inventing one is exactly the kind of silent wrongness this
+    # function exists to avoid.
+    if not reporting_currency or not paid_source_currency:
+        return None
+    if reporting_currency.strip().upper() != paid_source_currency.strip().upper():
+        return None
     accrued = _quantize_money(invoice_amount * reporting_fx_rate)
     return _gain_loss(accrued=accrued, paid_home_amount=paid_source_amount)
 

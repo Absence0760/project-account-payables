@@ -1000,6 +1000,16 @@ async def accept_settlement(
             ),
         )
 
+    # Nothing to release — checked BEFORE the audit dispatch so a repeat call
+    # never even stages a second `payment.settlement_accepted` row. Refusing
+    # keeps a retry from letting an operator re-justify the same acceptance
+    # indefinitely on the immutable trail; the first call's row is the record.
+    if invoice is None or invoice.status.value != "payment_scheduled":
+        raise HTTPException(
+            status_code=409,
+            detail="No held invoice to release for this payment.",
+        )
+
     from app.services.audit_dispatch import dispatch_audit
 
     await dispatch_audit(
@@ -1024,18 +1034,14 @@ async def accept_settlement(
         },
     )
 
-    if invoice is not None and invoice.status.value == "payment_scheduled":
-        from app.models.invoice import InvoiceStatus
-        from app.services.workflow_engine import transition_invoice
-
-        await transition_invoice(
-            db,
-            invoice,
-            InvoiceStatus.paid,
-            actor_id=user.id,
-            action_name="invoice.paid_via_settlement_acceptance",
-            details={"payment_id": str(payment.id), "coverage": coverage.state},
-        )
+    await transition_invoice(
+        db,
+        invoice,
+        InvoiceStatus.paid,
+        actor_id=user.id,
+        action_name="invoice.paid_via_settlement_acceptance",
+        details={"payment_id": str(payment.id), "coverage": coverage.state},
+    )
 
     await db.commit()
     await db.refresh(payment)
@@ -2932,6 +2938,7 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
                     realized_fx = realized_fx_gain_loss_for_settlement(
                         invoice_amount=settled_invoice.amount,
                         invoice_currency=settled_invoice.currency,
+                        reporting_currency=settled_invoice.reporting_currency,
                         reporting_fx_rate=settled_invoice.reporting_fx_rate,
                         paid_source_amount=payment.source_amount,
                         paid_source_currency=payment.source_currency,

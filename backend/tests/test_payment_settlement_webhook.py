@@ -133,13 +133,19 @@ def _payment(amount=Decimal("5000.00"), **overrides):
     return SimpleNamespace(**fields)
 
 
-def _invoice(currency="USD", amount=Decimal("5000.00"), reporting_fx_rate=None):
+def _invoice(
+    currency="USD",
+    amount=Decimal("5000.00"),
+    reporting_fx_rate=None,
+    reporting_currency="USD",
+):
     return SimpleNamespace(
         id=uuid.uuid4(),
         entity_id=uuid.uuid4(),
         currency=currency,
         amount=amount,
         reporting_fx_rate=reporting_fx_rate,
+        reporting_currency=reporting_currency,
     )
 
 
@@ -487,5 +493,29 @@ async def test_a_domestic_settlement_records_no_fx_figure_at_all():
     tenant_factory, _ = _tenant_session_factory(payment, _invoice())
 
     mocks = await _run(_org(), _adapter(amount=Decimal("5000.00"), currency="USD"), tenant_factory)
+
+    assert "realized_fx_gain_loss" not in mocks["audit"].call_args.kwargs["details"]
+
+
+@pytest.mark.asyncio
+async def test_no_fx_figure_when_the_accrual_and_the_outflow_use_different_currencies():
+    """Group reporting in USD, vendor payments funded from GBP. The accrual and
+    the outflow are denominated by two independently-settable org settings, so
+    subtracting them would write a confidently wrong number onto the immutable
+    audit row."""
+    payment = _payment(
+        amount=Decimal("1000.00"),
+        source_amount=Decimal("880.00"),
+        source_currency="GBP",
+    )
+    invoice = _invoice(
+        currency="EUR",
+        amount=Decimal("1000.00"),
+        reporting_fx_rate=Decimal("1.10"),
+        reporting_currency="USD",
+    )
+    tenant_factory, _ = _tenant_session_factory(payment, invoice)
+
+    mocks = await _run(_org(), _adapter(amount=Decimal("1000.00"), currency="EUR"), tenant_factory)
 
     assert "realized_fx_gain_loss" not in mocks["audit"].call_args.kwargs["details"]

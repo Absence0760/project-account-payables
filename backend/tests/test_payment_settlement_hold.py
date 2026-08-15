@@ -420,3 +420,94 @@ async def test_accept_leaves_the_fraud_flag_for_the_exception_queue(realdb):
             )
         ).scalar_one()
     assert still_open == 1
+
+
+@pytest.mark.asyncio
+async def test_accept_refuses_a_second_time(realdb):
+    """The first call's audit row is the record. A retry must not let an
+    operator re-justify the same acceptance on the immutable trail."""
+    await _set_org_erp(realdb, TENANT, {"type": "mock", "integration_method": "direct"})
+    run_id, invoice_id, payment_id = await _seed_run(
+        realdb,
+        TENANT,
+        amount=Decimal("500.00"),
+        settled_amount=Decimal("250.00"),
+        settled_currency="USD",
+    )
+    await _sync_payments(run_id, realdb.info(TENANT).org_id)
+
+    async with realdb.client(key=TENANT, role="admin") as client:
+        first = await client.post(
+            f"/api/payments/{payment_id}/settlement/accept",
+            json={"reason": "Vendor agreed."},
+        )
+        second = await client.post(
+            f"/api/payments/{payment_id}/settlement/accept",
+            json={"reason": "changed my mind about why"},
+        )
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 409, second.text
+    assert await _invoice_status(realdb, TENANT, invoice_id) == InvoiceStatus.paid
+
+    # Exactly one acceptance on the trail, carrying the FIRST reason.
+    mk = realdb.sessionmaker(TENANT)
+    async with mk() as s:
+        rows = (
+            (
+                await s.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "payment.settlement_accepted",
+                        AuditLog.entity_id == payment_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(rows) == 1
+    assert rows[0].details["reason"] == "Vendor agreed."
+
+
+@pytest.mark.asyncio
+async def test_accept_response_shows_what_was_settled(realdb):
+    """Without the settled figures on the read surface, an operator seeing a
+    `completed` payment whose invoice is held has no way to tell why."""
+    await _set_org_erp(realdb, TENANT, {"type": "mock", "integration_method": "direct"})
+    run_id, _, payment_id = await _seed_run(
+        realdb,
+        TENANT,
+        amount=Decimal("500.00"),
+        settled_amount=Decimal("250.00"),
+        settled_currency="USD",
+    )
+    await _sync_payments(run_id, realdb.info(TENANT).org_id)
+
+    async with realdb.client(key=TENANT, role="admin") as client:
+        resp = await client.post(
+            f"/api/payments/{payment_id}/settlement/accept",
+            json={"reason": "Vendor agreed."},
+        )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # `OptionalMoneyAmount` — the same JSON-number wire encoding every other
+    # money field on this schema uses (`schemas/money.py` documents why, and
+    # `PaymentRunResponse.total_amount` is the precedent). The in-Python value
+    # stays `Decimal`; only the JSON hop converts.
+    assert body["settled_amount"] == 250.00
+    assert body["settled_currency"] == "USD"
+    assert body["amount"] == 500.00
+
+
+@pytest.mark.asyncio
+async def test_unreported_settlement_serializes_as_null_not_zero(realdb):
+    """`None` on the read surface means "no rail reported a figure" — a 0 here
+    would read as a total shortfall."""
+    _, _, payment_id = await _seed_run(realdb, TENANT, amount=Decimal("500.00"))
+
+    async with realdb.client(key=TENANT, role="admin") as client:
+        resp = await client.get(f"/api/payments/{payment_id}")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["settled_amount"] is None

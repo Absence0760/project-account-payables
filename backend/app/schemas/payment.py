@@ -84,6 +84,19 @@ class PaymentResponse(BaseModel):
     submitted_at: str | None = None
     completed_at: str | None = None
 
+    # What the PROCESSOR says it moved, beside `amount` which is what AP
+    # AUTHORIZED (migration 0083). Without these on the read surface an
+    # operator seeing a `completed` payment whose invoice is stuck at
+    # `payment_scheduled` has no way to tell why — the shortfall would only be
+    # visible by cross-referencing the audit log or a `fraud_flag` exception
+    # that doesn't name the figures. Same reasoning as `failure_reason` above,
+    # and the same audience.
+    #
+    # `None` here means no rail ever reported a figure, NOT zero — see
+    # `payment_settlement.settlement_coverage`.
+    settled_amount: OptionalMoneyAmount = None
+    settled_currency: str | None = None
+
     # Joined fields from invoice
     vendor_name: str | None = None
     invoice_number: str | None = None
@@ -113,6 +126,8 @@ class PaymentResponse(BaseModel):
             failure_reason=p.failure_reason,
             submitted_at=p.submitted_at.isoformat() if p.submitted_at else None,
             completed_at=p.completed_at.isoformat() if p.completed_at else None,
+            settled_amount=getattr(p, "settled_amount", None),
+            settled_currency=getattr(p, "settled_currency", None),
             vendor_name=invoice.vendor_name if invoice else None,
             invoice_number=invoice.invoice_number if invoice else None,
             card_last_four=card.last_four if card else None,
