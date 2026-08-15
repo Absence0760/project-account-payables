@@ -611,16 +611,130 @@ Per-org config lives at `Organization.settings.payments`:
 adapter.create_payment(payload)            adapter.parse_webhook(headers, body)
         │                                          │
         ▼                                          ▼
- PaymentResult{status, provider_payment_id}    WebhookEvent{provider_payment_id, status}
-        │                                          │
-        ▼                                          ▼
- Payment row gets:                          Payment row gets:
-   provider, provider_payment_id,            status (only if not already terminal),
-   reference, status,                        reference, failure_reason,
-   submitted_at                              completed_at (on terminal)
+ PaymentResult{status, provider_payment_id}    WebhookEvent{provider_payment_id,
+        │                                                  status, amount, currency}
+        ▼                                          │
+ Payment row gets:                                 ▼
+   provider, provider_payment_id,            Payment row gets:
+   reference, status,                          status (only if not already terminal),
+   submitted_at                                reference, failure_reason,
+                                               completed_at (on terminal)
+                                                   │
+                                                   ▼
+                                             verify_settlement(...) — see below
 ```
 
 The orchestrator never auto-completes — only the adapter response (mock) or a webhook (real processor) flips a payment to `completed`. This prevents the platform from claiming money has moved when it hasn't.
+
+#### Settlement-amount verification
+
+A verified HMAC authenticates the **sender**, not the **content**. A signed
+`completed` event proves the processor is talking to us about a payment we
+know; it does not prove the processor moved the amount on the instruction.
+Until this check existed, the handler took the status at face value — it
+stamped the regulated `completed_at`, captured any accepted early-pay discount
+off *our* authorized number, and handed the run to the ERP sync, with no
+comparison against what AP authorized. A wire that left at $50,000 against a
+$5,000 instruction, a partial settlement, or a mis-mapped provider integration
+all reconciled clean, and the only net was a bank statement someone had to
+remember to upload days later.
+
+Identity is not reconciliation. The two reconcilers further downstream already
+make exactly this call:
+
+| Where | Signal | Divergent amount becomes |
+|---|---|---|
+| `positive_pay.classify_presented_items` | cheque found by number | `amount_mismatch` — an ALTERED cheque |
+| `bank_reconciliation.classify_discrepancy` | bank line carrying our own trace reference | `amount_mismatch` — linked, excluded from `matched_count` |
+| **`payment_settlement.verify_settlement`** | **processor webhook** | **`amount_mismatch` / `currency_mismatch` → `fraud_flag`** |
+
+`services/payment_settlement.py` is pure (no DB, no clock, no I/O) and runs on
+every `completed` event. `failed` / `cancelled` events are not verified — no
+money moved, so whatever figure they echo reconciles against nothing.
+
+**Two authorized legs, not one.** A cross-currency payment debits
+`Payment.source_amount` in the org's home currency and credits `Payment.amount`
+in the invoice's currency, and different processors report different sides.
+Reporting *either* leg is a match; a third number is not. The target leg's
+currency is the invoice's (the `Payment` row doesn't carry one), so the handler
+loads the invoice once and reuses it for the discount capture.
+
+| Outcome | When | What the handler does |
+|---|---|---|
+| `matched` | within one cent of an authorized leg whose currency is compatible | unchanged: capture the discount, hand the run to the ERP sync |
+| `amount_mismatch` | a currency-compatible leg exists, none within tolerance | open a `fraud_flag`, skip the discount capture |
+| `currency_mismatch` | the reported currency matches no authorized leg | open a `fraud_flag`, skip the discount capture |
+| `unverified` | the provider's webhook carried no amount | unchanged, but the blind spot is recorded on the audit row |
+
+Tolerance is one cent — the same band `positive_pay.DEFAULT_AMOUNT_TOLERANCE`
+and `bank_reconciliation.AMOUNT_MATCH_TOLERANCE` use. Three reconcilers
+disagreeing about what "the same amount" means is how a discrepancy hides in
+the gap. `variance` is signed and 2 dp: **positive means the processor moved
+MORE than we authorized**, matching `bank_reconciliation.match_variance`.
+
+**What a discrepancy does, and deliberately does not, do.**
+
+- The payment still records as `completed` with its `completed_at`. Money
+  moved; refusing to record that does not un-move it, and a payment silently
+  parked in `submitted` forever is strictly worse.
+- The verdict rides the **same append-only audit row** that records the money
+  moving (`details.settlement`), on every completion — matched, mismatched and
+  unverified alike. That row is WORM-shipped; the exception row is mutable and
+  gets resolved.
+- A payment-blocking **`fraud_flag`** opens on the invoice. Deliberately not a
+  new exception type: this is the electronic equivalent of the ALTERED cheque
+  `api/positive_pay.py` already flags, and `fraud_flag` is in
+  `PAYMENT_BLOCKING_EXCEPTION_TYPES`, so the invoice can't be swept into
+  another payment run until a human clears it — which is what matters the
+  moment this payment is voided and the invoice returns to `approved`. Deduped
+  on `(invoice_id, fraud_flag, open|escalated)`, the same rule Positive Pay's
+  own return processing uses.
+- The **discount capture is skipped**.
+  `discount_capture.capture_offers_for_settled_payment` matches an accepted
+  offer's discounted payoff against `payment.amount` — our authorized figure,
+  which the rail has just contradicted — so capturing would permanently mark
+  savings realized on a number that is in dispute and misreport them to the CFO.
+- The **ERP sync still runs**. `positive_pay` and `bank_reconciliation` both
+  record-and-flag without rewriting the settlement, and this matches them.
+  Suppressing it would also be leaky: a sibling payment's webhook re-dispatches
+  the sync for the whole run.
+
+**Per-provider coverage.** `WebhookEvent.amount` is in MAJOR units.
+Modern Treasury, Stripe, Increase and Column exchange minor units;
+`payment_adapters.base.minor_units_to_decimal` is the exact inverse of the
+`amount * 100` their own `create_payment` applies, so the round-trip is
+symmetric by construction and a currency whose exponent isn't 2 is mis-scaled
+identically in both directions rather than producing a phantom mismatch.
+Checkeeper and `mock` exchange major-unit decimal strings.
+
+| Provider | Field(s) read | Verified? |
+|---|---|---|
+| `modern_treasury` | `data.amount` (minor), `data.currency` | yes |
+| `stripe_treasury` | `data.object.amount` (minor), `.currency` (lowercase) | yes |
+| `increase` | `associated_object.amount` (minor), `.currency` | yes |
+| `column` | `data.amount` (minor), `data.currency_code` | yes |
+| `checkeeper` | `check.amount` (major string), `check.currency` | yes |
+| `mock` | `amount` / `currency` when supplied | yes (local-first) |
+| `dwolla` | — | **no** — see below |
+
+Dwolla's event body is a bare `{id, topic, resourceId, _links}` envelope; the
+transfer's amount is only reachable by following `_links.resource`, which the
+synchronous signature-verification path must not do. Its events therefore read
+`unverified` — an honest blind spot recorded on the audit row rather than a
+manufactured discrepancy. Closing it means an async re-fetch of the transfer;
+until then bank reconciliation remains the downstream net for that rail. The
+conversion helpers return `None` (not `Decimal("0")`) for anything
+unparseable, precisely so an absent figure can never read as a total
+under-settlement.
+
+The reconciler backstop (`services/payment_reconciler.py`) can't verify the
+amount: `PaymentAdapter.get_payment_status` returns a bare `PaymentStatus` by
+design. A payment settled by the reconciler rather than a webhook therefore
+carries no settlement verdict; bank reconciliation is its net.
+
+**Tests:** `tests/test_payment_settlement.py` (the verdict table),
+`tests/test_payment_settlement_adapters.py` (per-provider extraction),
+`tests/test_payment_settlement_webhook.py` (handler behaviour).
 
 #### Webhook URL
 
@@ -827,7 +941,7 @@ Decimal `amount` as a string, and the reference — never bank/account values.
 | Action | Trigger | Entity |
 |---|---|---|
 | `payment_run.executed` | A run is executed (`POST /runs/{id}/execute`); rolls up `payments_completed` / `_in_flight` / `_failed` / `cards_issued` + `total_amount` | `payment_run` |
-| `payment.completed` | A child payment settled (mock adapter or, in prod, a webhook) | `payment` |
+| `payment.completed` | A child payment settled (mock adapter or, in prod, a webhook). A webhook-driven completion also carries `details.settlement` — the settlement-amount verdict (`matched` / `amount_mismatch` / `currency_mismatch` / `unverified`) with the settled + authorized amounts as exact strings and the signed variance. See § Settlement-amount verification | `payment` |
 | `payment.failed` | A child payment failed during execution | `payment` |
 | `payment.submitted` / `payment.processing` | A child payment is in flight awaiting the processor webhook | `payment` |
 | `payment.pending_compliance` | A child payment held by the sanctions/KYC gate | `payment` |
@@ -883,7 +997,7 @@ between the manual and copilot-driven paths:
 | Type | What it would let through |
 |------|---------------------------|
 | `duplicate` | the same invoice approved and paid twice |
-| `fraud_flag` | a bank-detail swap, rush payment, statistical anomaly, or an altered / never-issued cheque from a Positive Pay return |
+| `fraud_flag` | a bank-detail swap, rush payment, statistical anomaly, an altered / never-issued cheque from a Positive Pay return, or a processor settlement that didn't reconcile against what AP authorized (§ Settlement-amount verification) |
 | `line_total_mismatch` | a header `amount` that openly disagrees with the invoice's own line items — the run pays the header, and the header is never silently recomputed from the lines (see `line-total-reconciliation.md`) |
 
 Each is raised as an `error`-severity advisory flag, and **approval does not gate
@@ -903,10 +1017,13 @@ directions (a `po_mismatch`, which is advisory here, must not block).
 ## Code Structure
 
 ```
-backend/app/api/payments.py              # All payment endpoints (CRUD, runs, queue, summary)
-backend/app/models/payment.py            # Payment, PaymentRun, PaymentSchedule models
-backend/app/schemas/payment.py           # Pydantic schemas
-backend/app/services/payment_erp_sync.py # Async ERP sync after payment execution
+backend/app/api/payments.py                # All payment endpoints (CRUD, runs, queue, summary)
+backend/app/models/payment.py              # Payment, PaymentRun, PaymentSchedule models
+backend/app/schemas/payment.py             # Pydantic schemas
+backend/app/services/payment_runs.py       # Shared run-creation validation + rollups
+backend/app/services/payment_settlement.py # Pure settlement-amount verifier (webhook)
+backend/app/services/payment_reconciler.py # Backstop polling for missing webhooks
+backend/app/services/payment_erp_sync.py   # Async ERP sync after payment execution
 ```
 
 ## Implementation Status
