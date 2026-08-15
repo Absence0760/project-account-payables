@@ -108,6 +108,15 @@ def test_empty_signature_fails_closed():
     assert verify_approval(signing_key=KEY, signature="", **_facts()) is False
 
 
+@pytest.mark.parametrize("bad", [[1, 2, 3], {"nested": 1}, 7, True, "sígnature"])
+def test_malformed_signature_value_fails_closed_without_raising(bad):
+    """The stored digest comes out of an unconstrained JSONB column, and
+    `hmac.compare_digest` raises TypeError on a non-str AND on a non-ASCII str.
+    A truthy-but-malformed value must read as "does not verify" — otherwise a
+    single hand-written row takes down every caller that reads it."""
+    assert verify_approval(signing_key=KEY, signature=bad, **_facts()) is False
+
+
 def test_build_signature_detail_shape():
     block = build_signature_detail(signing_key=KEY, **_facts())
     assert block["alg"] == sig.SIGNATURE_ALG
@@ -180,6 +189,23 @@ def test_check_row_survives_a_non_object_details_column(details):
         signing_key=KEY,
     )
     assert check.verdict == sig.VERDICT_UNSIGNED
+
+
+@pytest.mark.parametrize("bad", [[1, 2, 3], {"nested": 1}, 7, True, "sígnature"])
+def test_check_row_survives_a_malformed_signature_value(bad):
+    """Same JSONB-tamper vector one level deeper: the block is a dict and the
+    timestamp parses, but `value` is not a usable digest. It is a finding."""
+    facts = _facts()
+    details = {"signature": {"value": bad, "signed_at": facts["timestamp"].isoformat()}}
+    check = check_approval_row(
+        details=details,
+        invoice_id=facts["invoice_id"],
+        amount=facts["amount"],
+        actor_id=facts["actor_id"],
+        signing_key=KEY,
+    )
+    assert check.verdict == sig.VERDICT_INVALID
+    assert check.signed is True
 
 
 def test_check_row_empty_signature_block_is_invalid_not_unsigned():
@@ -688,27 +714,17 @@ async def test_sweep_writes_access_audit_with_counts_only(realdb, monkeypatch):
     assert set(row.details) == {"scope", "verify_signatures", "invalid", "unsigned"}
 
 
-@pytest.mark.asyncio
-async def test_one_corrupt_row_does_not_take_down_the_whole_control_test(realdb, monkeypatch):
-    """`audit_log.details` is JSONB with no object-shape constraint. A row whose
-    details are a JSON array must surface as a finding on both surfaces — not
-    500 the sweep and take the rest of the period's evidence with it."""
-    from app.config import settings as cfg
-
-    monkeypatch.setattr(cfg, "approval_signing_key", "sweep-key")
-    mk = realdb.sessionmaker("a")
-    org_id = realdb.info("a").org_id
-    actor = realdb.info("a").users["ap_manager"]
-    await _seed_signed_approval(mk, org_id, amount=Decimal("8.00"), actor_id=actor, key="sweep-key")
-
-    corrupt_corr = uuid.uuid4()
-    corrupt_inv = uuid.uuid4()
+async def _seed_corrupt_approval(mk, org_id, *, actor_id: uuid.UUID, details) -> uuid.UUID:
+    """Seed an approved invoice + an `invoice.approved` row with hand-written
+    `details` — the direct-DB tamper the verification surfaces exist to catch."""
+    corr = uuid.uuid4()
+    inv_id = uuid.uuid4()
     async with mk() as s:
         s.add(
             Invoice(
-                id=corrupt_inv,
+                id=inv_id,
                 organization_id=org_id,
-                correlation_id=corrupt_corr,
+                correlation_id=corr,
                 invoice_number=f"INV-{uuid.uuid4().hex[:8]}",
                 vendor_name="Acme",
                 amount=Decimal("8.00"),
@@ -717,16 +733,44 @@ async def test_one_corrupt_row_does_not_take_down_the_whole_control_test(realdb,
         )
         s.add(
             AuditLog(
-                correlation_id=corrupt_corr,
+                correlation_id=corr,
                 organization_id=org_id,
-                actor_id=actor,
+                actor_id=actor_id,
                 action="invoice.approved",
                 entity_type="invoice",
-                entity_id=corrupt_inv,
-                details=[1, 2, 3],  # not a JSON object
+                entity_id=inv_id,
+                details=details,
             )
         )
         await s.commit()
+    return inv_id
+
+
+@pytest.mark.parametrize(
+    ("details", "expected_bucket"),
+    [
+        # `details` itself is not a JSON object.
+        ([1, 2, 3], "unsigned"),
+        # The block is well-formed except for a digest that isn't a digest.
+        ({"signature": {"value": ["forged"], "signed_at": "2026-06-17T12:00:00+00:00"}}, "invalid"),
+    ],
+    ids=["non_object_details", "malformed_signature_value"],
+)
+@pytest.mark.asyncio
+async def test_one_corrupt_row_does_not_take_down_the_whole_control_test(
+    realdb, monkeypatch, details, expected_bucket
+):
+    """`audit_log.details` is JSONB with no shape constraint at any level. A
+    corrupt row must surface as its own finding on BOTH surfaces — not 500 the
+    sweep and take the rest of the period's evidence down with it."""
+    from app.config import settings as cfg
+
+    monkeypatch.setattr(cfg, "approval_signing_key", "sweep-key")
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor = realdb.info("a").users["ap_manager"]
+    await _seed_signed_approval(mk, org_id, amount=Decimal("8.00"), actor_id=actor, key="sweep-key")
+    corrupt_inv = await _seed_corrupt_approval(mk, org_id, actor_id=actor, details=details)
 
     async with realdb.client(key="a", role="admin") as c:
         sweep = await c.get(SWEEP, params=_today_range())
@@ -736,14 +780,14 @@ async def test_one_corrupt_row_does_not_take_down_the_whole_control_test(realdb,
     body = sweep.json()
     assert body["approvals_checked"] == 2
     assert body["valid"] == 1  # the good row's evidence survives
-    assert body["unsigned"] == 1
+    assert body[expected_bucket] == 1
     assert body["findings"][0]["invoice_id"] == str(corrupt_inv)
+    assert body["findings"][0]["verdict"] == expected_bucket
 
     assert single.status_code == 200
     approval = single.json()["approvals"][0]
-    assert approval["signed"] is False
     assert approval["valid"] is False
-    assert approval["signed_at"] is None
+    assert approval["signed"] is (expected_bucket == "invalid")
 
 
 @pytest.mark.asyncio

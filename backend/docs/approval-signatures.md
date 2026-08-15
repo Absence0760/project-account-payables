@@ -15,7 +15,7 @@ signature only proves they weren't tampered with.
 | Function | Purpose |
 |----------|---------|
 | `sign_approval(*, invoice_id, amount, actor_id, decision, timestamp, signing_key) -> str` | HMAC-SHA256 hex digest over the canonical payload. Empty key → `""` (signing skipped). |
-| `verify_approval(*, …, signature, signing_key) -> bool` | Constant-time (`hmac.compare_digest`) re-derive + compare. Empty key / empty signature / mismatch → `False` (never raises). |
+| `verify_approval(*, …, signature, signing_key) -> bool` | Constant-time (`hmac.compare_digest`) re-derive + compare. Empty key / missing, non-string, non-ASCII or empty signature / mismatch → `False` (never raises). |
 | `build_signature_detail(*, …, signing_key) -> dict \| None` | The `details["signature"]` block written on the audit row. `None` when no key. |
 | `check_approval_row(*, details, invoice_id, amount, actor_id, signing_key) -> SignatureCheck` | Verdict for ONE approval audit row: `valid` / `invalid` / `unsigned`. The single definition both verification endpoints call, so they can't drift on what a tampered row looks like. Never raises. |
 
@@ -24,14 +24,17 @@ signature only proves they weren't tampered with.
 | Row shape | Verdict | Why |
 |-----------|---------|-----|
 | digest re-derives | `valid` | the approval facts are unchanged |
-| digest doesn't re-derive; corrupt / missing `signed_at`; missing actor; **empty** `signature: {}` | `invalid` | the row claims to be signed and isn't — a finding |
+| digest doesn't re-derive; corrupt / missing / non-string `signed_at`; missing actor; **empty** `signature: {}`; a `value` that isn't an ASCII string | `invalid` | the row claims to be signed and isn't — a finding |
 | no `signature` key; `signature: null`; `details` is not a JSON object at all | `unsigned` | nothing to verify (predates signing, or the column was overwritten wholesale) |
 
-`details` is `JSONB` with no object-shape constraint, so a non-object value is
-reachable — by exactly the direct-DB tamper this feature exists to catch. It is
-read as "no block" rather than allowed to raise: on the population sweep below,
-one corrupt row must surface as its own finding, not 500 the whole period's
-control test and take the good rows' evidence with it.
+`details` is `JSONB` with **no shape constraint at any level**, so a
+hand-written value is reachable at every one of them — by exactly the direct-DB
+tamper this feature exists to catch. Every level is therefore shape-checked
+rather than allowed to raise: a non-object `details`, a non-object `signature`,
+a non-string `signed_at`, and a `value` that isn't an ASCII string (both cases
+`hmac.compare_digest` raises `TypeError` on) each resolve to a verdict. On the
+population sweep below, one corrupt row must surface as its own finding, not
+500 the whole period's control test and take the good rows' evidence with it.
 
 ### Canonical payload
 
@@ -175,6 +178,7 @@ it), so rotate deliberately, not casually.
   `unsigned` is counted apart from `invalid`; the date range filters (and `end`
   is whole-day inclusive); `limit` truncates `findings` but never the counts;
   the access-audit row carries counts only; missing / inverted range → 400;
-  RBAC (clerk 403, no-auth 401); another tenant's approvals are invisible; and
-  a row with a non-object `details` column is a finding on both surfaces rather
-  than a 500 that loses the rest of the period's evidence.
+  RBAC (clerk 403, no-auth 401); another tenant's approvals are invisible; and a
+  corrupt row — non-object `details`, or a malformed `signature.value` — is a
+  finding on both surfaces rather than a 500 that loses the rest of the
+  period's evidence.

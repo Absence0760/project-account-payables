@@ -131,8 +131,17 @@ def verify_approval(
     never raises — on an empty key, an empty/missing signature, or any mismatch,
     so a tampered amount/actor/timestamp surfaces as ``valid: False`` rather than
     an error.
+
+    The stored signature comes out of a JSONB column with no shape constraint,
+    so it is shape-checked before it reaches ``compare_digest``, which raises
+    ``TypeError`` on a non-``str`` and on a non-ASCII ``str``. A hand-written
+    value of ``["forged"]`` or ``"sígnature"`` must read as "does not verify",
+    not take down the caller — the whole contract of this function is that a
+    tampered row is a finding, never an exception.
     """
-    if not signing_key or not signature:
+    if not signing_key or not isinstance(signature, str):
+        return False
+    if not signature or not signature.isascii():
         return False
     try:
         expected = sign_approval(
