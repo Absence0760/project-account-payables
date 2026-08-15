@@ -167,6 +167,23 @@ def _is_amount(token: str) -> bool:
     return bool(_AMOUNT_TOKEN.match(token))
 
 
+def _is_money(token: str) -> bool:
+    """Is this token unambiguously MONEY, rather than merely a number?
+
+    Money on a statement carries a decimal fraction, a thousands separator, or a
+    currency symbol. A bare integer does not: on a real statement row the bare
+    integers are the payment-terms column (``Net 30``) and the aging-days column
+    (``45``), both of which sit *before* the balance. Taking the first
+    amount-shaped token without this distinction reads ``INV-1 2026-01-15 Net 30
+    1,200.00`` as a 30.00 open item — silently wrong money, which is worse on
+    this feature than no line at all.
+    """
+    if not _AMOUNT_TOKEN.match(token):
+        return False
+    core = token.strip("()+-")
+    return "." in core or any(sym in core for sym in "$€£,")
+
+
 def scan_statement_text(text: str) -> list[StatementLineExtraction]:
     """Read ``number [date] amount`` rows out of a statement's text layer.
 
@@ -177,17 +194,25 @@ def scan_statement_text(text: str) -> list[StatementLineExtraction]:
        isn't a bare run of fewer than four digits (that's a row counter or a
        page number, never an invoice reference — while ``1001`` legitimately
        is one);
-    2. the amount is the first money token *after* it.
+    2. the amount is the row's one unambiguous MONEY token after it (see
+       :func:`_is_money`). **Exactly one, or the row is skipped.** Falling back
+       to a lone amount-shaped integer covers a statement that prints no cents.
 
     Ordering is what does the filtering. ``Total 1,800.50`` and
     ``Balance forward 500.00`` take the money token as their identifier and
     then find nothing after it; ``Page 1 of 2``'s only digits are bare short
     runs; the column header has no digits at all.
 
-    The amount taken is the FIRST money column after the identifier — the open
-    balance in the common three-column layout. A statement with aging buckets
-    (current / 30 / 60 / 90) is exactly the case this reader cannot resolve
-    honestly, and the answer there is a vision provider, not a smarter guess.
+    **Why "exactly one" and not "the first".** A row with two money columns is
+    ``number date invoice-amount balance-due`` or ``number date balance
+    aging-bucket`` — and nothing on the row says which. Picking either produces
+    a plausible figure that may be the wrong one, and a wrong open balance is
+    exactly the failure this reader must not have. Skipping is loud instead:
+    our own invoice for that row surfaces as ``missing_on_their_side``, a
+    difference the clerk sees and chases. Every ambiguity here resolves to
+    skipping. A multi-column or aging-bucket statement is the case this reader
+    cannot resolve honestly, and the answer there is a vision provider
+    (``ollama`` locally, ``claude_vision`` deployed), not a smarter guess.
     """
     lines: list[StatementLineExtraction] = []
     for physical in text.splitlines():
@@ -211,16 +236,15 @@ def scan_statement_text(text: str) -> list[StatementLineExtraction]:
         if number_idx is None:
             continue
 
-        amount_idx = next(
-            (
-                i
-                for i in range(number_idx + 1, len(tokens))
-                if i != date_idx and _is_amount(tokens[i])
-            ),
-            None,
-        )
-        if amount_idx is None:
+        trailing = [i for i in range(number_idx + 1, len(tokens)) if i != date_idx]
+        # Unambiguous money first; a lone amount-shaped integer only when the
+        # row printed no cents at all. Either way: exactly one, or skip.
+        candidates = [i for i in trailing if _is_money(tokens[i])] or [
+            i for i in trailing if _is_amount(tokens[i])
+        ]
+        if len(candidates) != 1:
             continue
+        amount_idx = candidates[0]
 
         lines.append(
             StatementLineExtraction(

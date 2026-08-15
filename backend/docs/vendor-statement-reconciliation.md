@@ -316,7 +316,7 @@ meant smuggling the invoice number into `item_code`, and losing the date.
 
 | Adapter | `extract_statement` |
 |---|---|
-| `mock` | Deterministic offline reader — no network, no credential. Pulls the document's text layer (PyMuPDF) and scans `number [date] amount` rows (`statement_extraction.scan_statement_text`). |
+| `mock` | Deterministic offline reader — no network, no credential. Pulls the document's text layer (PyMuPDF) and scans `number [date] amount` rows (`statement_extraction.scan_statement_text`). One money column per row, or it skips the row — see below. |
 | `claude_vision` | Sends the shared statement prompt down the same document channel `extract` uses. |
 | `ollama` | Same prompt against a **local** model — text mode when the PDF has a text layer, page images when it doesn't. The no-cloud path for a scanned statement. |
 | `openai_vision`, `aws_textract`, `einvoice` | Inherit the honest `not_supported` default. |
@@ -324,6 +324,22 @@ meant smuggling the invoice number into `item_code`, and losing the date.
 The prompt and the JSON→dataclass parser are shared
 (`extraction_adapters/statement_extraction.py`), so the hosted and the local
 reader can't drift.
+
+#### The offline reader skips rather than guesses
+
+`scan_statement_text` reads a row as `identifier [date] amount`, and takes the
+amount only when the row has **exactly one** money column after the identifier
+(a lone amount-shaped integer counts, for a statement that prints no cents).
+Two money columns means `number date invoice-amount balance-due` or
+`number date balance aging-bucket`, and nothing on the row says which is the
+open balance; a bare integer between the date and the balance is a terms
+(`Net 30`) or aging-days (`45`) column, not money.
+
+Picking one anyway would produce a plausible figure that may be the wrong one —
+a wrong open balance presented as fact. Skipping is loud instead: our invoice
+for that row lands as `missing_on_their_side`, a difference the clerk sees and
+chases. A multi-column or aging-bucket statement is the case this reader can't
+resolve honestly; the answer there is a vision provider.
 
 ### Money crosses the boundary as a string
 
@@ -434,12 +450,14 @@ org), like the rest of `seed_extras`.
   The whole upload surface (file picker → vendor / statement-date form → the run
   detail, plus a "download the source statement" link) is one page-level change
   and is tracked in `docs/followups.md`.
-- **Aging-bucket layouts on the offline reader.** `scan_statement_text` takes
-  the first money column after the identifier, which is the open balance in the
-  common three-column layout but not on a statement with current/30/60/90
-  buckets. It gives up rather than guessing; the answer for those is a vision
-  provider (`ollama` locally, `claude_vision` deployed), which reads the table
-  properly.
+- **Multi-money-column layouts on the offline reader.** `scan_statement_text`
+  reads a row only when it has exactly one money column after the identifier,
+  so an `invoice-amount + balance-due` statement or one with current/30/60/90
+  aging buckets yields nothing from it (see § The offline reader skips rather
+  than guesses). That's deliberate — the alternative is a wrong open balance —
+  but it does mean the credential-free local path covers the simple layout
+  only. The answer for the rest is a vision provider (`ollama` locally,
+  `claude_vision` deployed), which reads the table properly.
 - **Auto-create invoice on resolve.** When a clerk resolves a
   `missing_on_our_side` line, optionally kick off invoice intake pre-filled from
   the statement line (number / amount / date), closing the loop from "supplier

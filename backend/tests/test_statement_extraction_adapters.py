@@ -202,6 +202,49 @@ def test_scan_statement_text_handles_a_row_with_no_date_column():
     assert lines[0].invoice_date is None
 
 
+@pytest.mark.parametrize(
+    "row",
+    [
+        # A payment-terms column between the date and the balance.
+        "INV-1001    2026-01-15    Net 30    1,200.00",
+        # An aging-days column in the same place.
+        "INV-1001    2026-01-15    45    1,200.00",
+    ],
+)
+def test_scan_statement_text_does_not_read_a_bare_integer_column_as_the_balance(row):
+    """`Net 30` / `45 days` are amount-SHAPED but are not money. Reading one as
+    the open balance is silently wrong money — the one outcome this reader must
+    never produce."""
+    lines = scan_statement_text(row)
+    assert len(lines) == 1
+    assert lines[0].amount == "1,200.00"
+
+
+def test_scan_statement_text_accepts_a_lone_whole_number_balance():
+    """A statement that prints no cents still reconciles when the row is
+    unambiguous."""
+    lines = scan_statement_text("INV-7001   2026-01-15   4200")
+    assert [ln.amount for ln in lines] == ["4200"]
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        # invoice-amount + balance-due: nothing on the row says which is open.
+        "INV-1001   2026-01-15   1,200.00   950.00",
+        # balance + a trailing aging bucket.
+        "INV-1001   2026-01-15   1,200.00   0.00",
+        # No cents anywhere and two unlabelled integer columns.
+        "INV-7001   2026-01-15   45   4200",
+    ],
+)
+def test_scan_statement_text_skips_a_row_with_more_than_one_money_column(row):
+    """Two money columns is a guess, and a guessed open balance is wrong money
+    presented as fact. Skipping leaves our invoice visible as
+    `missing_on_their_side` — a difference the clerk chases."""
+    assert scan_statement_text(row) == []
+
+
 # --------------------------------------------------------------------------- #
 # mock adapter — the offline, credential-free path
 # --------------------------------------------------------------------------- #
