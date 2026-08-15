@@ -119,3 +119,37 @@ def render_contract_renewal(
         "Review it for renewal."
     )
     return RenderedNotification(title=title, body_text=body, body_html=f"<p>{body}</p>")
+
+
+def render_cash_shortfall(
+    *,
+    period: str,
+    closing: Decimal,
+    threshold: Decimal,
+    shortfall: Decimal,
+    currency: str,
+    breach_count: int,
+) -> RenderedNotification:
+    """Render the projected-cash-shortfall notification (PII-free).
+
+    Like `render_contract_renewal`, this carries its own context rather than an
+    invoice one, so the dispatcher passes it through pre-rendered. Every figure
+    formats straight off the `Decimal` — money never round-trips through float
+    on its way into an email.
+
+    The numbers are org-level aggregates (a projected closing balance, the
+    configured minimum), never per-vendor or per-invoice detail, so nothing
+    PII-bearing reaches the message.
+    """
+    more = (
+        ""
+        if breach_count <= 1
+        else f" {breach_count} periods in the forecast close below the minimum."
+    )
+    title = f"Projected cash shortfall in {period}"
+    body = (
+        f"Your projected cash balance closes at {currency} {closing:,.2f} in {period} — "
+        f"{currency} {shortfall:,.2f} below your {currency} {threshold:,.2f} minimum."
+        f"{more} Review the cash-flow forecast before scheduling more payments."
+    )
+    return RenderedNotification(title=title, body_text=body, body_html=f"<p>{body}</p>")

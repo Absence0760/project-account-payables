@@ -9,6 +9,7 @@ from decimal import Decimal
 import pytest
 
 from app.models.notification import (
+    EVENT_CASH_SHORTFALL_PROJECTED,
     EVENT_CONTRACT_RENEWAL_DUE,
     EVENT_INVOICE_APPROVED,
     EVENT_INVOICE_ASSIGNED,
@@ -19,6 +20,7 @@ from app.models.notification import (
 from app.services.notification_templates import (
     InvoiceContext,
     render,
+    render_cash_shortfall,
     render_contract_renewal,
 )
 
@@ -56,6 +58,22 @@ def test_every_event_renders():
             assert rendered.title
             assert rendered.body_text
             assert "MSA-2026-007" in rendered.body_text
+            continue
+        if event_type == EVENT_CASH_SHORTFALL_PROJECTED:
+            # Same shape as contract renewal: an org-level cash context, not an
+            # invoice one, so it is pre-rendered and handed to
+            # notify_event(rendered=...) rather than flowing through render().
+            rendered = render_cash_shortfall(
+                period="2026-W05",
+                closing=Decimal("-8000.00"),
+                threshold=Decimal("1000.00"),
+                shortfall=Decimal("9000.00"),
+                currency="USD",
+                breach_count=3,
+            )
+            assert rendered.title
+            assert rendered.body_text
+            assert "2026-W05" in rendered.body_text
             continue
         rendered = render(event_type, _ctx())
         assert rendered.title

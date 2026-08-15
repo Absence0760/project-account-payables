@@ -260,3 +260,49 @@ def store_cash_thresholds(settings: dict | None, thresholds: CashThresholds) -> 
         cashflow["min_balance_threshold"] = str(thresholds.min_balance_threshold)
     new_settings["cashflow"] = cashflow
     return new_settings
+
+
+# ---------------------------------------------------------------------------
+# Projected-shortfall alert marker (Organization.settings.cashflow)
+# ---------------------------------------------------------------------------
+#
+# The `cash_flow_alerts` sweep records WHICH forecast period it last alerted an
+# org about, so a standing shortfall is announced once instead of every tick.
+# Same JSON block + same "preserve the other keys" discipline as the thresholds
+# above — the shape of `settings.cashflow` has exactly one owner, this module.
+
+
+def resolve_shortfall_alert_period(settings: dict | None) -> str | None:
+    """The forecast period key the shortfall sweep last alerted this org about.
+
+    ``None`` = never alerted, or the shortfall previously cleared. Tolerant of a
+    missing/malformed block (a corrupt settings blob must not stop the sweep)."""
+    cashflow = (settings or {}).get("cashflow")
+    if not isinstance(cashflow, dict):
+        return None
+    marker = cashflow.get("shortfall_alert")
+    if not isinstance(marker, dict):
+        return None
+    period = marker.get("period")
+    return period if isinstance(period, str) and period else None
+
+
+def store_shortfall_alert_period(
+    settings: dict | None, *, period: str | None, sent_on: str | None = None
+) -> dict:
+    """Return a NEW settings dict recording the alerted period under
+    ``cashflow.shortfall_alert``.
+
+    ``period=None`` clears the marker — the projected shortfall resolved, so the
+    alert re-arms and the org is told again if it comes back."""
+    new_settings = dict(settings or {})
+    cashflow = dict(new_settings.get("cashflow") or {})
+    if period is None:
+        cashflow.pop("shortfall_alert", None)
+    else:
+        marker: dict[str, str] = {"period": period}
+        if sent_on:
+            marker["sent_on"] = sent_on
+        cashflow["shortfall_alert"] = marker
+    new_settings["cashflow"] = cashflow
+    return new_settings
