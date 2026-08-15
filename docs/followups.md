@@ -142,6 +142,38 @@ rather than folding into the mechanical sibling-sweep fix.
 Ref: `reviews/flake-admin-users.md` (gitignored — regenerate via
 `/flake-doctor` if consulting this again after the file has aged out).
 
+### Settlement-amount verification — the two rails it can't reach
+
+`services/payment_settlement.verify_settlement` now compares the amount a
+processor says it settled against the amount AP authorized on every `completed`
+webhook, and flags a divergence as a payment-blocking `fraud_flag` (see
+[payments.md](../backend/docs/payments.md) § Settlement-amount verification).
+Six of the seven adapters report the figure. Two paths still settle
+`unverified` — deliberately fail-open, and recorded as such on the audit row
+rather than silently:
+
+- [ ] **Dwolla** — its webhook body is a bare `{id, topic, resourceId, _links}`
+      envelope; the transfer amount is only reachable by following
+      `_links.resource`. Durable fix: an async re-fetch of the transfer,
+      either in the handler after `parse_webhook` returns or via a
+      `PaymentAdapter.fetch_settlement(provider_payment_id)` capability the
+      handler calls only when `event.amount is None` — the latter also covers
+      any future adapter with the same shape.
+- [ ] **The reconciler backstop** (`services/payment_reconciler.py`) —
+      `PaymentAdapter.get_payment_status` returns a bare `PaymentStatus`, so a
+      payment settled by the sweep rather than a webhook carries no settlement
+      verdict. Durable fix: the same `fetch_settlement` capability, called from
+      the sweep's terminal-transition branch.
+
+**Why deferred:** both need a new adapter capability plus a network call on a
+path that is currently synchronous and network-free, which is a real slice
+rather than a bolt-on — and bank reconciliation
+([bank-reconciliation.md](../backend/docs/bank-reconciliation.md)) already
+classifies a divergent debit as `amount_mismatch`, so neither rail is
+unguarded, only guarded later.
+**Trigger:** a pilot tenant on Dwolla, or the reconciler being switched on in a
+deployed env (`FEOH_PAYMENT_RECONCILE_ENABLED`).
+
 
 ---
 
