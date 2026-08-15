@@ -165,6 +165,10 @@ async def test_void_payment_returns_invoice_to_approved_via_transition_invoice()
         completed_at=None,
         failure_reason=None,
         provider=None,
+        # A real Payment row always carries these (migration 0083); the
+        # response schema reads them directly, like every sibling field.
+        settled_amount=None,
+        settled_currency=None,
     )
     invoice = SimpleNamespace(
         id=uuid.uuid4(),
@@ -244,6 +248,10 @@ async def test_void_audit_records_real_previous_status_and_decimal_amount():
         completed_at=None,
         failure_reason=None,
         provider=None,
+        # A real Payment row always carries these (migration 0083); the
+        # response schema reads them directly, like every sibling field.
+        settled_amount=None,
+        settled_currency=None,
     )
     invoice = SimpleNamespace(
         id=uuid.uuid4(),

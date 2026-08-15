@@ -124,6 +124,21 @@ class Payment(Base, EntityMixin, TimestampMixin):
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # What the PROCESSOR said it actually settled, as reported on its webhook
+    # (or re-fetched via `PaymentAdapter.fetch_settlement` for a rail whose
+    # event body carries no amount). `amount` above is the AUTHORIZATION — what
+    # AP instructed; this is the settlement — what the rail says it moved. The
+    # two are compared by `services/payment_settlement.verify_settlement`.
+    #
+    # NULL is meaningful and is NOT zero: no processor ever reported a figure
+    # for this payment (an amount-free rail, or a row predating migration
+    # 0083). `settlement_coverage` treats NULL as "nothing indicates a
+    # shortfall" and fails OPEN — the same posture the verifier takes toward an
+    # absent amount — which is what stops an amount-free rail from holding
+    # every invoice it settles.
+    settled_amount: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
+    settled_currency: Mapped[str | None] = mapped_column(String(3))
+
     # International / multi-currency. NULL on domestic same-currency
     # payments; populated by `services.international_payments` when
     # the corridor needs an FX leg. See migration 0017.

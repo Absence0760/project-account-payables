@@ -33,7 +33,7 @@ import hmac
 import json
 import logging
 import time
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 
 import httpx
 
@@ -45,6 +45,7 @@ from app.services.payment_adapters.base import (
     PaymentStatus,
     WebhookEvent,
     minor_units_to_decimal,
+    to_minor_units,
 )
 from app.services.payment_adapters.dispatcher import register_payment_adapter
 
@@ -110,12 +111,13 @@ class StripeTreasuryAdapter(PaymentAdapter):
             )
 
         # Stripe expects integer minor-units. We persist Decimal but
-        # the wire format is cents. ROUND_HALF_UP (not Decimal's default
-        # banker's rounding) matches the rest of the money path — e.g.
-        # international_payments — so a .x5 minor cent never rounds *down*.
-        amount_minor = int(
-            (payload.amount * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-        )
+        # the wire format is the currency's smallest unit. `to_minor_units`
+        # resolves its ISO-4217 exponent rather than assuming cents, and rounds
+        # ROUND_HALF_UP (not Decimal's default banker's rounding) to match the
+        # rest of the money path — e.g. international_payments — so a .x5 minor
+        # cent never rounds *down*. Exact inverse of the
+        # `minor_units_to_decimal` in `parse_webhook`.
+        amount_minor = to_minor_units(payload.amount, payload.currency)
         network = "us_domestic_wire" if payload.method == "wire" else "ach"
 
         # External-account ID lives on vendor_bank.counterparty_id by
@@ -274,8 +276,8 @@ class StripeTreasuryAdapter(PaymentAdapter):
             # in the smallest currency unit — the same scale `create_payment`
             # sends — and `currency` comes back lowercase (the verifier
             # compares case-insensitively).
-            amount=minor_units_to_decimal(obj.get("amount")),
             currency=(obj.get("currency") or None),
+            amount=minor_units_to_decimal(obj.get("amount"), obj.get("currency")),
             raw=event,
         )
 

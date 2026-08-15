@@ -42,6 +42,7 @@ from app.schemas.payment import (
 )
 from app.services.audit_access import log_access
 from app.services.exception_lifecycle import record_decision
+from app.services.international_payments import realized_fx_gain_loss_for_settlement
 from app.services.payment_adapters import (
     PaymentPayload,
     PaymentStatus,
@@ -61,6 +62,7 @@ from app.services.payment_runs import (
 from app.services.payment_settlement import (
     SettlementVerification,
     describe_discrepancy,
+    settlement_coverage,
     verify_settlement,
 )
 from app.services.workflow_engine import transition_invoice
@@ -916,6 +918,130 @@ async def dismiss_compliance_hold(
             actor_name=user.full_name,
             resolution=f"dismissed: {body.reason}",
         )
+
+    await db.commit()
+    await db.refresh(payment)
+    return PaymentResponse.from_db(payment, invoice)
+
+
+class AcceptSettlementRequest(BaseModel):
+    reason: str = Field(..., min_length=1, max_length=1000)
+
+
+@router.post("/{payment_id}/settlement/accept", response_model=PaymentResponse)
+async def accept_settlement(
+    payment_id: uuid.UUID,
+    body: AcceptSettlementRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    # Declaring a short settlement final closes the payable out — the same
+    # money-state authority as executing or voiding a payment.
+    user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Accept a short / unverifiable settlement as final and release the invoice.
+
+    This is the release path that makes the ERP-sync hold safe to ship. When
+    the rail settles less than AP authorized (or in a currency we never
+    authorized), `settlement_coverage` says the invoice is not discharged and
+    `payment_erp_sync` leaves it at `payment_scheduled` rather than reporting
+    it settled in full. Without an exit that would be a permanent strand — the
+    exact defect that forced the first attempt at this hold to be reverted,
+    because nothing re-invokes that sweep once a run's payments are terminal.
+
+    There are two legitimate exits and this is the one that keeps the money
+    where it landed:
+
+    * **Accept** (here) — the shortfall is agreed with the vendor, or the
+      remainder is being handled outside this invoice. The invoice moves to
+      `paid` and the `reason` is recorded on the immutable trail.
+    * **Void** (`POST /api/payments/{id}/void`) — the settlement is wrong. The
+      invoice returns to `approved` to be re-paid correctly. That path already
+      accepts a `payment_scheduled` invoice, so it works while held.
+
+    Deliberately does NOT resolve the `fraud_flag` the settlement discrepancy
+    raised. Unlike `payment_compliance_hold` — a type only the compliance path
+    ever raises — `fraud_flag` is shared with Positive Pay's altered-cheque
+    detection, so clearing "the open one" here could silently close an
+    unrelated fraud finding. The exception queue stays the separate human
+    sign-off, and it writes its own append-only row when someone makes it.
+    """
+    payment = await _get_scoped_payment(db, payment_id, entity_id, for_update=True)
+
+    # Only a settlement that actually happened can be accepted.
+    if payment.status != "completed":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Can only accept the settlement of a 'completed' payment, not '{payment.status}'"
+            ),
+        )
+
+    invoice = (
+        await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
+    ).scalar_one_or_none()
+
+    coverage = settlement_coverage(
+        settled_amount=payment.settled_amount,
+        settled_currency=payment.settled_currency,
+        target_amount=payment.amount,
+        target_currency=(invoice.currency if invoice else None),
+        source_amount=payment.source_amount,
+        source_currency=payment.source_currency,
+    )
+    # Nothing to accept. Refusing rather than no-op'ing keeps this endpoint
+    # from becoming a general-purpose "force the invoice to paid" lever: a
+    # fully-covered payment reaches `paid` through the ordinary sync.
+    if coverage.completes_invoice:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This payment's settlement already covers the invoice; there is nothing to accept."
+            ),
+        )
+
+    # Nothing to release — checked BEFORE the audit dispatch so a repeat call
+    # never even stages a second `payment.settlement_accepted` row. Refusing
+    # keeps a retry from letting an operator re-justify the same acceptance
+    # indefinitely on the immutable trail; the first call's row is the record.
+    if invoice is None or invoice.status.value != "payment_scheduled":
+        raise HTTPException(
+            status_code=409,
+            detail="No held invoice to release for this payment.",
+        )
+
+    from app.services.audit_dispatch import dispatch_audit
+
+    await dispatch_audit(
+        db,
+        correlation_id=payment.correlation_id or uuid.uuid4(),
+        organization_id=org.id,
+        actor_id=user.id,
+        action="payment.settlement_accepted",
+        entity_type="payment",
+        entity_id=payment.id,
+        details={
+            "reason": body.reason,
+            "coverage": coverage.state,
+            # Money as exact decimal strings, never float. PII-free — amounts,
+            # currency codes and the verdict only.
+            "shortfall": (None if coverage.shortfall is None else str(coverage.shortfall)),
+            "authorized_amount": str(payment.amount),
+            "settled_amount": (
+                None if payment.settled_amount is None else str(payment.settled_amount)
+            ),
+            "settled_currency": payment.settled_currency,
+        },
+    )
+
+    await transition_invoice(
+        db,
+        invoice,
+        InvoiceStatus.paid,
+        actor_id=user.id,
+        action_name="invoice.paid_via_settlement_acceptance",
+        details={"payment_id": str(payment.id), "coverage": coverage.state},
+    )
 
     await db.commit()
     await db.refresh(payment)
@@ -2746,18 +2872,77 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
             # queue entry on.
             settlement: SettlementVerification | None = None
             settled_invoice: Invoice | None = None
+            realized_fx: Decimal | None = None
             if payment.status == "completed":
                 settled_invoice = (
                     await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
                 ).scalar_one_or_none()
+                # A rail whose event body carries no figure (Dwolla's bare
+                # `{id, topic, resourceId}` envelope) gets one more chance
+                # before we record a blind spot: ask the processor. This is
+                # the async re-fetch `parse_webhook` deliberately cannot do —
+                # that path is synchronous and on the signature-verification
+                # line, so it must not make a network call.
+                #
+                # Guarded on every axis. An adapter without the capability
+                # returns `available=False` from the base implementation, and
+                # any failure at all leaves the settlement exactly where it
+                # was — `unverified` — because a settlement fetch must never
+                # break the webhook that is recording money movement.
+                reported_amount, reported_currency = event.amount, event.currency
+                if reported_amount is None and payment.provider_payment_id:
+                    try:
+                        report = await adapter.fetch_settlement(payment.provider_payment_id)
+                    except Exception as exc:  # noqa: BLE001 - best-effort by contract
+                        logger.warning(
+                            "settlement fetch failed for payment=%s: %s",
+                            payment.id,
+                            exc.__class__.__name__,
+                        )
+                    else:
+                        if report.available and report.amount is not None:
+                            reported_amount = report.amount
+                            reported_currency = report.currency
+
                 settlement = verify_settlement(
-                    reported_amount=event.amount,
-                    reported_currency=event.currency,
+                    reported_amount=reported_amount,
+                    reported_currency=reported_currency,
                     target_amount=payment.amount,
                     target_currency=(settled_invoice.currency if settled_invoice else None),
                     source_amount=payment.source_amount,
                     source_currency=payment.source_currency,
                 )
+                # Persist what the rail says it moved, beside what AP
+                # authorized. The audit row below is the immutable evidence;
+                # this is the queryable money state the ERP sync reads to
+                # decide whether the invoice may be marked `paid`
+                # (`payment_settlement.settlement_coverage`).
+                #
+                # A rail that reported nothing leaves the columns NULL rather
+                # than writing a zero: NULL means "no figure on record" and
+                # fails OPEN in the coverage check, while a 0 would read as a
+                # total shortfall and hold every such invoice forever.
+                if settlement.settled_amount is not None:
+                    payment.settled_amount = settlement.settled_amount
+                    payment.settled_currency = settlement.settled_currency
+
+                # Realized FX gain/loss, at the moment a foreign-currency
+                # invoice actually settles. The liability was accrued at the
+                # rate locked on the invoice when its reporting amount was
+                # materialized; what moved is `source_amount` in the home
+                # currency, and the difference is realized here and nowhere
+                # else. `None` for a domestic payment, an invoice with no
+                # accrual rate, or a same-currency settlement — a zero would
+                # claim we measured and found no exposure.
+                if settled_invoice is not None:
+                    realized_fx = realized_fx_gain_loss_for_settlement(
+                        invoice_amount=settled_invoice.amount,
+                        invoice_currency=settled_invoice.currency,
+                        reporting_currency=settled_invoice.reporting_currency,
+                        reporting_fx_rate=settled_invoice.reporting_fx_rate,
+                        paid_source_amount=payment.source_amount,
+                        paid_source_currency=payment.source_currency,
+                    )
 
             # Append-only audit trail for the webhook-driven status transition.
             # This is the production money-movement event — the processor's
@@ -2796,6 +2981,13 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
                     # and unverified alike — so a rail that reports no amount
                     # is a visible blind spot rather than a silent one.
                     **({"settlement": settlement.as_details()} if settlement else {}),
+                    # Exact decimal string, never a float. Absent (not zero)
+                    # when there is no FX exposure to measure.
+                    **(
+                        {"realized_fx_gain_loss": str(realized_fx)}
+                        if realized_fx is not None
+                        else {}
+                    ),
                 },
             )
 

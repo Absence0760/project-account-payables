@@ -770,7 +770,7 @@ async def get_cfo_analytics(
 
     # ----- Unrealized FX gain/loss on OPEN foreign-currency invoices -----
     # Realized FX gain/loss is measured at payment time by
-    # `international_payments.compute_fx_gain_loss`. This is the reporting-layer
+    # `international_payments.realized_fx_gain_loss_for_settlement`. This is the reporting-layer
     # companion: for approved-but-unpaid foreign invoices we mark the open
     # liability to today's rate and report the difference vs the booked
     # (rate-locked) reporting amount. One FX call per distinct foreign currency;

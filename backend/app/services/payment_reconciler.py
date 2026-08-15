@@ -44,6 +44,39 @@ class ReconcileResult:
     failures: int = 0  # tenants we couldn't reach
 
 
+async def _settle_from_poll(*, payment, adapter) -> None:
+    """Record what the processor settled for a payment THIS sweep completed.
+
+    ``get_payment_status`` returns a bare ``PaymentStatus`` by design, so a
+    payment resolved by the backstop reached ``completed`` with no settled
+    figure on record — and the coverage check fails open on NULL, so its
+    invoice would be discharged on a settlement nobody verified. Precisely the
+    case the backstop exists for (the webhook never arrived) was the case with
+    the least evidence.
+
+    Best-effort on every axis, like every other optional-capability call: an
+    adapter without ``fetch_settlement`` reports ``available=False``, and any
+    failure leaves the columns NULL — exactly where they already were. A
+    settlement fetch must never halt the sweep.
+    """
+    if not getattr(payment, "provider_payment_id", None):
+        return
+    try:
+        report = await adapter.fetch_settlement(payment.provider_payment_id)
+    except Exception as exc:  # noqa: BLE001 - best-effort by contract
+        # Class only, never the message — a processor SDK error string can
+        # embed partial account data (PII-out-of-logs invariant).
+        logger.info(
+            "[payment-reconciler] settlement fetch raised on %s: %s",
+            payment.id,
+            exc.__class__.__name__,
+        )
+        return
+    if report.available and report.amount is not None:
+        payment.settled_amount = report.amount
+        payment.settled_currency = report.currency
+
+
 async def _audit_reconcile_transition(
     db,
     *,
@@ -243,6 +276,8 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
                     payment.status = upstream.value
                     payment.completed_at = now
                     resolved += 1
+                    if payment.status == "completed":
+                        await _settle_from_poll(payment=payment, adapter=adapter)
                     if payment.status == "completed" and payment.payment_run_id:
                         runs_to_sync.add(payment.payment_run_id)
                     await _audit_reconcile_transition(

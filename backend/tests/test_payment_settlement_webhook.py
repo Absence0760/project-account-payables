@@ -124,13 +124,29 @@ def _payment(amount=Decimal("5000.00"), **overrides):
         "method": "wire",
         "source_amount": None,
         "source_currency": None,
+        # Start NULL, as a freshly-submitted row does — so a test asserting
+        # "an amount-free rail leaves these alone" is actually meaningful.
+        "settled_amount": None,
+        "settled_currency": None,
     }
     fields.update(overrides)
     return SimpleNamespace(**fields)
 
 
-def _invoice(currency="USD"):
-    return SimpleNamespace(id=uuid.uuid4(), entity_id=uuid.uuid4(), currency=currency)
+def _invoice(
+    currency="USD",
+    amount=Decimal("5000.00"),
+    reporting_fx_rate=None,
+    reporting_currency="USD",
+):
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        entity_id=uuid.uuid4(),
+        currency=currency,
+        amount=amount,
+        reporting_fx_rate=reporting_fx_rate,
+        reporting_currency=reporting_currency,
+    )
 
 
 def _adapter(*, amount, currency, status=PaymentStatus.completed, event_id="evt_1"):
@@ -380,3 +396,126 @@ async def test_missing_invoice_row_still_settles_and_audits_without_a_queue_entr
     db.commit.assert_awaited_once()
     mocks["exception"].assert_not_awaited()
     assert mocks["audit"].call_args.kwargs["details"]["settlement"]["outcome"] == "amount_mismatch"
+
+
+# ---------------------------------------------------------------------------
+# Persisting the settled figure (migration 0083)
+# ---------------------------------------------------------------------------
+#
+# The audit row above is the immutable evidence. These pin the queryable money
+# state the ERP sync later reads to decide whether the invoice may be marked
+# `paid` (`payment_settlement.settlement_coverage`).
+
+
+@pytest.mark.asyncio
+async def test_settled_figure_is_persisted_on_the_payment_row():
+    payment = _payment(amount=Decimal("5000.00"))
+    tenant_factory, _ = _tenant_session_factory(payment, _invoice())
+
+    await _run(_org(), _adapter(amount=Decimal("4200.00"), currency="USD"), tenant_factory)
+
+    assert payment.settled_amount == Decimal("4200.00")
+    assert payment.settled_currency == "USD"
+
+
+@pytest.mark.asyncio
+async def test_a_clean_settlement_is_persisted_too():
+    """Not only discrepancies — the sync needs a figure on every completion to
+    tell "covered" apart from "never reported"."""
+    payment = _payment(amount=Decimal("5000.00"))
+    tenant_factory, _ = _tenant_session_factory(payment, _invoice())
+
+    await _run(_org(), _adapter(amount=Decimal("5000.00"), currency="USD"), tenant_factory)
+
+    assert payment.settled_amount == Decimal("5000.00")
+
+
+@pytest.mark.asyncio
+async def test_amount_free_rail_leaves_the_columns_null_not_zero():
+    """Dwolla's bare envelope. NULL means "no figure on record" and fails OPEN
+    in the coverage check; a 0 would read as a total shortfall and hold the
+    invoice forever."""
+    payment = _payment(amount=Decimal("5000.00"))
+    tenant_factory, _ = _tenant_session_factory(payment, _invoice())
+
+    await _run(_org(), _adapter(amount=None, currency=None), tenant_factory)
+
+    assert payment.settled_amount is None
+    assert payment.settled_currency is None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_event_does_not_write_a_settled_figure():
+    """A `failed` event moved no money, so whatever figure it echoes
+    reconciles against nothing and must not land as a settlement."""
+    payment = _payment(amount=Decimal("5000.00"))
+    tenant_factory, _ = _tenant_session_factory(payment, _invoice())
+
+    await _run(
+        _org(),
+        _adapter(amount=Decimal("5000.00"), currency="USD", status=PaymentStatus.failed),
+        tenant_factory,
+    )
+
+    assert payment.status == "failed"
+    assert payment.settled_amount is None
+
+
+# ---------------------------------------------------------------------------
+# Realized FX gain/loss — the settlement moment is where it becomes real
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_settlement_records_realized_fx_gain_loss_for_a_foreign_invoice():
+    """multi-currency.md said this happened when a foreign invoice settles.
+    Until now nothing computed it — the primitive had no production caller."""
+    payment = _payment(
+        amount=Decimal("1000.00"),
+        source_amount=Decimal("1050.00"),
+        source_currency="USD",
+    )
+    invoice = _invoice(currency="EUR", amount=Decimal("1000.00"), reporting_fx_rate=Decimal("1.10"))
+    tenant_factory, _ = _tenant_session_factory(payment, invoice)
+
+    mocks = await _run(_org(), _adapter(amount=Decimal("1000.00"), currency="EUR"), tenant_factory)
+
+    details = mocks["audit"].call_args.kwargs["details"]
+    # Accrued 1000 EUR * 1.10 = 1100 USD; paid 1050 USD -> a 50 USD gain.
+    assert details["realized_fx_gain_loss"] == "50.00"
+
+
+@pytest.mark.asyncio
+async def test_a_domestic_settlement_records_no_fx_figure_at_all():
+    """Absent, not zero — a zero would claim we measured an exposure that
+    doesn't exist."""
+    payment = _payment(amount=Decimal("5000.00"))
+    tenant_factory, _ = _tenant_session_factory(payment, _invoice())
+
+    mocks = await _run(_org(), _adapter(amount=Decimal("5000.00"), currency="USD"), tenant_factory)
+
+    assert "realized_fx_gain_loss" not in mocks["audit"].call_args.kwargs["details"]
+
+
+@pytest.mark.asyncio
+async def test_no_fx_figure_when_the_accrual_and_the_outflow_use_different_currencies():
+    """Group reporting in USD, vendor payments funded from GBP. The accrual and
+    the outflow are denominated by two independently-settable org settings, so
+    subtracting them would write a confidently wrong number onto the immutable
+    audit row."""
+    payment = _payment(
+        amount=Decimal("1000.00"),
+        source_amount=Decimal("880.00"),
+        source_currency="GBP",
+    )
+    invoice = _invoice(
+        currency="EUR",
+        amount=Decimal("1000.00"),
+        reporting_fx_rate=Decimal("1.10"),
+        reporting_currency="USD",
+    )
+    tenant_factory, _ = _tenant_session_factory(payment, invoice)
+
+    mocks = await _run(_org(), _adapter(amount=Decimal("1000.00"), currency="EUR"), tenant_factory)
+
+    assert "realized_fx_gain_loss" not in mocks["audit"].call_args.kwargs["details"]

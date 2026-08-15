@@ -353,7 +353,7 @@ backend/
    - `GLAccount` — code, name, account_type, parent_code, erp_account_id
    - `PaymentRun` — status, total_amount, initiated_by, executed_at
    - `PaymentSchedule` — invoice_id, due_date, discount_date, discount_percent
-   - `Payment` — invoice_id, payment_run_id, amount, method (ach/wire/check/virtual_card), status, `retry_of_payment_id` (self-FK, migration 0080 — `/runs/{id}/retry-failed` books a NEW attempt row pointing at the failed one it replaces and never mutates that row, because `correlation_id` is the PROCESSOR's idempotency key; run rollups count the latest attempt per invoice via `payment_runs.active_run_payments`. See `docs/payments.md` § Why a payment failed, and retrying it)
+   - `Payment` — invoice_id, payment_run_id, amount, method (ach/wire/check/virtual_card), status, `retry_of_payment_id` (self-FK, migration 0080 — `/runs/{id}/retry-failed` books a NEW attempt row pointing at the failed one it replaces and never mutates that row, because `correlation_id` is the PROCESSOR's idempotency key; run rollups count the latest attempt per invoice via `payment_runs.active_run_payments`. See `docs/payments.md` § Why a payment failed, and retrying it), `settled_amount` / `settled_currency` (migration 0083 — what the PROCESSOR says it moved, beside `amount` which is what AP AUTHORIZED. NULL is meaningful and is not zero: no rail ever reported a figure, which `payment_settlement.settlement_coverage` reads as "nothing indicates a shortfall" and fails OPEN, so an amount-free rail can't hold every invoice it settles. See `docs/payments.md` § Settlement-amount verification)
    - `VirtualCard` — invoice_id, card_provider (lithic/nium), provider_card_id, amount_limit, status
    - `CardRebate` — virtual_card_id, amount, rate, status (`pending`/`confirmed`/`paid_out`), period. Not in `CONTROL_TABLES` — fanned to every tenant DB like the rest, despite living in `app/models/virtual_card.py` alongside `VirtualCard`
    - `WorkflowDefinition` — name, steps_config (JSONB), is_active, is_default
@@ -522,9 +522,27 @@ class MyAdapter(PaymentAdapter):
     async def get_payment_status(self, provider_payment_id: str) -> PaymentStatus: ...
     def parse_webhook(self, headers: dict, body: bytes) -> WebhookEvent | None: ...
     async def test_connection(self) -> bool: ...
+    # OPTIONAL — base returns available=False, exactly like get_balance:
+    async def fetch_settlement(self, provider_payment_id: str) -> SettlementReport: ...
 ```
 
 Registered: `mock`, `modern_treasury`, `stripe_treasury`, `increase`, `column`, `dwolla` (ACH only), `checkeeper` (check printing).
+
+`fetch_settlement` is the **pull** counterpart to the settled amount a webhook
+pushes on `WebhookEvent`. Two paths knew a payment completed but never its
+amount — Dwolla (a bare `{id, topic, resourceId}` envelope; the figure needs an
+async re-fetch the synchronous signature path must not make) and the reconciler
+backstop (`get_payment_status` returns a bare status by design) — so both
+settled `unverified`. Implemented for `dwolla` + `mock`; called by the webhook
+handler only when the event carried no amount, and by the reconciler whenever
+it settles a payment. Both call sites are guarded: any failure leaves the
+verdict `unverified`, never breaking the webhook or halting the sweep.
+
+Minor-unit amounts go through `base.to_minor_units` / `minor_units_to_decimal`,
+which are exact inverses and resolve the currency's **real ISO-4217 exponent**
+(0 for JPY/KRW, 3 for BHD/KWD/OMR, 2 otherwise). Both legs must always move
+together — they were a symmetric flat `* 100` pair, and fixing only the parse
+side would turn a symmetric error into a live 100x mispricing.
 
 `execute_payment_run` dispatches via the adapter; webhook handler at `/api/payments/webhook/{tenant_slug}/{provider}` drives the `submitted → completed/failed` transition. Tenant comes from the URL path (no JWT, no header). Idempotent on the payment's `correlation_id`.
 

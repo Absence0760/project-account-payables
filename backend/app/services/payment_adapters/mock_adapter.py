@@ -21,6 +21,7 @@ from app.services.payment_adapters.base import (
     PaymentPayload,
     PaymentResult,
     PaymentStatus,
+    SettlementReport,
     WebhookEvent,
     parse_amount,
 )
@@ -165,6 +166,26 @@ class MockPaymentAdapter(PaymentAdapter):
             amount=Decimal(str(raw)),
             currency=self.config.get("balance_currency", "USD"),
             account_ref="mock-operating",
+        )
+
+    async def fetch_settlement(self, provider_payment_id: str) -> SettlementReport:
+        """Deterministic settled figure for local dev / tests.
+
+        Mirrors `get_balance`'s config hooks so a test can inject a specific
+        amount — including one that DIFFERS from the authorization, which is
+        how the reconciler's under-settlement path gets exercised locally —
+        or `settlement_available: false` to simulate a processor without the
+        capability, without stubbing HTTP or subclassing.
+        """
+        if self.config.get("settlement_available") is False:
+            return SettlementReport(available=False, unavailable_reason="disabled_in_config")
+        raw = self.config.get("settled_amount")
+        if raw is None:
+            return SettlementReport(available=False, unavailable_reason="not_configured")
+        return SettlementReport(
+            available=True,
+            amount=Decimal(str(raw)),
+            currency=self.config.get("settled_currency", "USD"),
         )
 
     async def test_connection(self) -> bool:

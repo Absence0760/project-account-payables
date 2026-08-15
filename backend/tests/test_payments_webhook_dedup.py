@@ -98,8 +98,24 @@ def _in_flight_payment():
     )
 
 
-def _invoice(currency="USD"):
-    return SimpleNamespace(id=uuid.uuid4(), entity_id=uuid.uuid4(), currency=currency)
+def _invoice(
+    currency="USD", amount=Decimal("5000.00"), reporting_currency="USD", reporting_fx_rate=None
+):
+    """Models the Invoice columns the webhook handler actually reads.
+
+    `amount` / `reporting_currency` / `reporting_fx_rate` feed the realized-FX
+    figure recorded on the settlement audit row; a real ORM row always carries
+    them, so omitting them here made the fake diverge from production rather
+    than exercise it.
+    """
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        entity_id=uuid.uuid4(),
+        currency=currency,
+        amount=amount,
+        reporting_currency=reporting_currency,
+        reporting_fx_rate=reporting_fx_rate,
+    )
 
 
 @pytest.mark.asyncio

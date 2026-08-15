@@ -175,7 +175,6 @@ def compute_fx_gain_loss(
     paid_source_amount: Decimal,
     paid_source_currency: str,
     fx_rate_at_invoice: Decimal,
-    fx_rate_at_payment: Decimal,
 ) -> Decimal:
     """Compute the realized FX gain/loss for a foreign-currency
     invoice that has now been paid.
@@ -190,16 +189,90 @@ def compute_fx_gain_loss(
 
     Same currency → 0 regardless of rate inputs (defensive against
     a caller passing a stale rate by mistake).
+
+    NOTE the rate convention: `fx_rate_at_invoice` is INVOICE-currency units
+    per one home-currency unit, because the accrual divides by it. That is the
+    inverse of `Invoice.reporting_fx_rate`, which `currency_conversion`
+    persists as reporting units per one invoice-currency unit and MULTIPLIES
+    by. Callers holding a persisted row want
+    `realized_fx_gain_loss_for_settlement` below, which speaks the persisted
+    convention directly instead of inviting a silent inversion.
     """
     if invoice_currency.upper() == paid_source_currency.upper():
         return Decimal("0.00")
     if fx_rate_at_invoice <= 0:
         raise ValueError("fx_rate_at_invoice must be positive")
     accrued = _quantize_money(invoice_amount / fx_rate_at_invoice)
-    realized = _quantize_money(paid_source_amount)
-    # Positive when paid_source_amount < accrued — we paid less than
-    # we booked → gain. Sign convention matches GAAP / IFRS.
-    return _quantize_money(accrued - realized)
+    return _gain_loss(accrued=accrued, paid_home_amount=paid_source_amount)
+
+
+def _gain_loss(*, accrued: Decimal, paid_home_amount: Decimal) -> Decimal:
+    """Positive when we paid LESS than we accrued → a gain.
+
+    Sign convention matches GAAP / IFRS, and matches
+    `currency_conversion.compute_unrealized_fx_gain_loss` so the realized and
+    unrealized halves of the same exposure never read with opposite signs.
+    Shared so the two entry points below can't drift.
+    """
+    return _quantize_money(accrued - _quantize_money(paid_home_amount))
+
+
+def realized_fx_gain_loss_for_settlement(
+    *,
+    invoice_amount: Decimal,
+    invoice_currency: str | None,
+    reporting_currency: str | None,
+    reporting_fx_rate: Decimal | None,
+    paid_source_amount: Decimal | None,
+    paid_source_currency: str | None,
+) -> Decimal | None:
+    """Realized FX gain/loss for one settled payment, from persisted row values.
+
+    The production entry point, and the reason this module's realized half is
+    no longer documented behaviour over an unwired function. It takes exactly
+    what the rows already carry, so it needs no migration and no FX call:
+
+    * `Invoice.reporting_fx_rate` — the rate locked when the invoice's
+      reporting amount was materialized, i.e. the rate the liability was
+      ACCRUED at. It multiplies (reporting units per invoice-currency unit),
+      which is why this function exists rather than letting each caller invert
+      it into `compute_fx_gain_loss`'s dividing convention.
+    * `Payment.source_amount` — what actually moved in the home currency.
+
+    **The two must be denominated in the same currency, and that is not
+    guaranteed.** `Invoice.reporting_currency` comes from
+    `currency_conversion.resolve_reporting_currency`, which prefers
+    `settings.reporting_currency`; `Payment.source_currency` comes strictly
+    from `settings.payments.home_currency`. Both are independently
+    admin-settable, so an org reporting in USD while funding vendor payments
+    from a GBP account has an accrual in USD and an outflow in GBP. Subtracting
+    those would produce a confidently wrong number written onto an immutable
+    audit row — so the currencies are compared, and a mismatch returns `None`.
+
+    Returns `None` — not zero — whenever the figure is not meaningful: a
+    domestic payment with no FX leg, a missing accrual rate, a same-currency
+    settlement, or an accrual and an outflow denominated differently. Zero
+    would assert "we measured, and there was no gain or loss", which is a
+    different claim from "there is nothing to measure".
+    """
+    if paid_source_amount is None or reporting_fx_rate is None:
+        return None
+    if reporting_fx_rate <= 0:
+        return None
+    if invoice_currency and paid_source_currency:
+        if invoice_currency.upper() == paid_source_currency.upper():
+            return None
+    # The accrual is denominated in the invoice's reporting currency; the
+    # outflow in the payment's source currency. Comparing them requires that
+    # they be the same currency — we will not bridge them with a rate here,
+    # because inventing one is exactly the kind of silent wrongness this
+    # function exists to avoid.
+    if not reporting_currency or not paid_source_currency:
+        return None
+    if reporting_currency.strip().upper() != paid_source_currency.strip().upper():
+        return None
+    accrued = _quantize_money(invoice_amount * reporting_fx_rate)
+    return _gain_loss(accrued=accrued, paid_home_amount=paid_source_amount)
 
 
 def is_international_payment(payment: Payment) -> bool:
