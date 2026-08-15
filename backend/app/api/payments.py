@@ -2804,16 +2804,15 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
             # `submitted`/`processing` until the processor calls back. This is
             # the settlement moment for those payments, so it's also where an
             # accepted discount offer paid at its discounted payoff gets
-            # recognized (mirrors the synchronous completion leg's call).
+            # recognized (mirrors the synchronous completion leg's call) —
+            # unless the settlement itself didn't reconcile.
             if payment.status == "completed":
                 if settlement is not None and settlement.is_discrepancy:
-                    # Do NOT capture the discount. `capture_offers_for_settled_
-                    # payment` matches an accepted offer's discounted payoff
-                    # against `payment.amount` — OUR authorized figure, not the
-                    # one the processor reported — so on a divergent settlement
-                    # it would permanently mark savings "captured" on the
-                    # strength of a number the rail just contradicted, and
-                    # misreport realized savings to the CFO.
+                    # Flag, and do NOT capture the discount: the payoff match
+                    # runs against `payment.amount` — OUR authorized figure,
+                    # which the rail has just contradicted — so capturing here
+                    # would permanently mark savings realized on a number in
+                    # dispute and misreport them to the CFO.
                     #
                     # The payment itself stays `completed`: money moved, and
                     # refusing to record that does not un-move it. The control
