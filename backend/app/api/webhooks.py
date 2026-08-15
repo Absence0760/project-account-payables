@@ -34,6 +34,12 @@ from app.models.webhook import (
     WebhookSubscription,
 )
 from app.services.audit_dispatch import dispatch_auth_audit
+from app.services.webhooks.rotation import (
+    DEFAULT_OVERLAP_MINUTES,
+    MAX_OVERLAP_MINUTES,
+    MIN_OVERLAP_MINUTES,
+    rotate_secret,
+)
 from app.services.webhooks.signing import generate_signing_secret
 from app.services.webhooks.url_guard import (
     REJECT_DETAIL,
@@ -278,6 +284,93 @@ async def update_subscription(
             details=changed,
         )
     return SubscriptionResponse.model_validate(row)
+
+
+class RotateSecretRequest(BaseModel):
+    """How long the retiring secret keeps signing the secondary header.
+
+    `0` is a deliberate, documented choice — a hard cutover for a
+    known-compromised secret, where the old key must stop working immediately
+    and a few rejected deliveries are the point rather than a cost.
+    """
+
+    overlap_minutes: int = Field(
+        default=DEFAULT_OVERLAP_MINUTES,
+        ge=MIN_OVERLAP_MINUTES,
+        le=MAX_OVERLAP_MINUTES,
+    )
+
+
+class SecretRotatedResponse(BaseModel):
+    """The rotate response — the only other place a signing secret is returned."""
+
+    subscription: SubscriptionResponse
+    signing_secret: str
+    #: When the retiring secret stops signing. `None` on a hard cutover — it
+    #: already has.
+    previous_secret_expires_at: datetime | None = None
+
+
+@router.post("/{sub_id}/rotate-secret", response_model=SecretRotatedResponse)
+async def rotate_subscription_secret(
+    sub_id: uuid.UUID,
+    body: RotateSecretRequest,
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
+    db: AsyncSession = Depends(get_control_db),
+) -> SecretRotatedResponse:
+    """Replace a subscription's signing secret, keeping its id and history.
+
+    The secret is the customer's verification key, and anyone holding it can
+    forge a signed `invoice.approved` / `payment.settled` payload into their
+    receiver. Before this the only remedy on a leak was DELETE + re-create,
+    which changes the subscription id and CASCADE-deletes the entire delivery
+    log — so recovering from a leak meant destroying the evidence of what had
+    been delivered.
+
+    Returns the new secret EXACTLY ONCE, mirroring the create-time contract.
+
+    By default the retiring secret keeps signing a second
+    `X-Webhook-Signature-Previous` header for `overlap_minutes`, so a receiver
+    that accepts either header rotates with no dropped deliveries. Pass
+    `overlap_minutes: 0` for a hard cutover when the old secret is known
+    compromised. See `backend/docs/public-api.md` § Rotating a signing secret
+    for the receiver-side procedure.
+    """
+    row = await _get_owned_subscription(db, sub_id, org.id)
+    result = rotate_secret(
+        current_secret=row.signing_secret,
+        now=datetime.now(UTC),
+        overlap_minutes=body.overlap_minutes,
+    )
+    row.signing_secret = result.plaintext_secret
+    row.secret_prefix = result.secret_prefix
+    row.previous_signing_secret = result.previous_secret
+    row.previous_secret_expires_at = result.previous_expires_at
+    await db.commit()
+    await db.refresh(row)
+
+    # PII-free AND secret-free: the prefix is the non-secret label, and the
+    # overlap is recorded so an auditor can see how long the retired key stayed
+    # valid. Neither the old nor the new secret ever enters the trail.
+    await dispatch_auth_audit(
+        organization_id=org.id,
+        actor_id=user.id,
+        action="webhook_subscription.secret_rotated",
+        entity_id=row.id,
+        details={
+            "secret_prefix": row.secret_prefix,
+            "overlap_minutes": body.overlap_minutes,
+            "previous_secret_expires_at": (
+                result.previous_expires_at.isoformat() if result.previous_expires_at else None
+            ),
+        },
+    )
+    return SecretRotatedResponse(
+        subscription=SubscriptionResponse.model_validate(row),
+        signing_secret=result.plaintext_secret,
+        previous_secret_expires_at=result.previous_expires_at,
+    )
 
 
 @router.delete("/{sub_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -38,6 +38,10 @@ from app.models.webhook import (
     WebhookDelivery,
     WebhookSubscription,
 )
+from app.services.webhooks.rotation import (
+    PREVIOUS_SIGNATURE_HEADER,
+    previous_secret_if_live,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,16 +55,29 @@ def _next_backoff(attempt_count: int) -> timedelta:
     return timedelta(seconds=BACKOFF_BASE_SECONDS * (2 ** max(0, attempt_count - 1)))
 
 
-async def _post(target_url: str, body: bytes, signature: str, delivery: WebhookDelivery) -> int:
+async def _post(
+    target_url: str,
+    body: bytes,
+    signature: str,
+    delivery: WebhookDelivery,
+    previous_signature: str | None = None,
+) -> int:
     """POST the signed body. Returns the HTTP status code; raises on transport
     error (timeout / connection refused) so the caller classifies it as a no-code
     failure."""
     headers = {
         "Content-Type": "application/json",
+        # Always the CURRENT secret's signature — a receiver's existing contract
+        # never changes meaning, even mid-rotation.
         "X-Webhook-Signature": signature,
         "X-Webhook-Event-Id": delivery.event_id,
         "X-Webhook-Event-Type": delivery.event_type,
     }
+    if previous_signature is not None:
+        # Only while a rotation overlap window is open. A receiver that accepts
+        # either header rotates with zero dropped deliveries; one that reads
+        # only the primary header simply ignores this.
+        headers[PREVIOUS_SIGNATURE_HEADER] = previous_signature
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
         resp = await client.post(target_url, content=body, headers=headers)
         return resp.status_code
@@ -94,6 +111,16 @@ async def process_delivery(db: AsyncSession, delivery: WebhookDelivery) -> Webho
     body = json.dumps(delivery.payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     signature = sign_payload(sub.signing_secret, body)
 
+    # Mid-rotation, the retiring secret signs a second header so a receiver that
+    # hasn't switched yet still verifies. `previous_secret_if_live` owns the
+    # expiry rule (an elapsed window reads as no previous secret at all), so a
+    # row left stale can never keep a retired key signing.
+    retiring = previous_secret_if_live(
+        previous_secret=sub.previous_signing_secret,
+        previous_expires_at=sub.previous_secret_expires_at,
+    )
+    previous_signature = sign_payload(retiring, body) if retiring else None
+
     from app.services.webhooks.url_guard import (
         WebhookTargetNotAllowed,
         ensure_public_webhook_target,
@@ -108,7 +135,7 @@ async def process_delivery(db: AsyncSession, delivery: WebhookDelivery) -> Webho
         # so a DNS record that flipped to a private/loopback/metadata address
         # after create (TOCTOU / DNS rebinding) is refused, not POSTed to.
         await ensure_public_webhook_target(sub.target_url)
-        code = await _post(sub.target_url, body, signature, delivery)
+        code = await _post(sub.target_url, body, signature, delivery, previous_signature)
         ok = 200 <= code < 300
     except WebhookTargetNotAllowed:
         # PII-free by design: delivery id + event type only — never the URL,
