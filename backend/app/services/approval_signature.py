@@ -28,12 +28,21 @@ import hashlib
 import hmac
 import json
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 # The HMAC algorithm label persisted alongside the digest, so a future
 # key/algorithm migration can be versioned without re-reading every row blind.
 SIGNATURE_ALG = "HMAC-SHA256"
+
+#: Verdicts :func:`check_approval_row` can return for one approval audit row.
+#: ``unsigned`` is deliberately distinct from ``invalid``: a row written before
+#: signing was switched on has nothing to verify, whereas a row that carries a
+#: digest which no longer re-derives is evidence of a tamper.
+VERDICT_VALID = "valid"
+VERDICT_INVALID = "invalid"
+VERDICT_UNSIGNED = "unsigned"
 
 # Canonical, stable order of the fields that go into the signed payload. The
 # order is load-bearing — both sign and verify must serialise identically — so
@@ -172,3 +181,85 @@ def build_signature_detail(
         "signed_fields": SIGNED_FIELDS,
         "signed_at": timestamp.isoformat(),
     }
+
+
+@dataclass(frozen=True)
+class SignatureCheck:
+    """Verdict for ONE ``invoice.approved`` audit row.
+
+    ``signed_at`` is echoed back verbatim (the raw string off the row) so a
+    caller can show what the row claims even when that claim is what failed to
+    parse.
+    """
+
+    verdict: str
+    signed_at: str | None = None
+
+    @property
+    def signed(self) -> bool:
+        """The row carries a signature block at all."""
+        return self.verdict != VERDICT_UNSIGNED
+
+    @property
+    def valid(self) -> bool:
+        """The digest re-derived to the stored value."""
+        return self.verdict == VERDICT_VALID
+
+
+def check_approval_row(
+    *,
+    details: dict | None,
+    invoice_id: uuid.UUID,
+    amount: Decimal,
+    actor_id: uuid.UUID | None,
+    signing_key: str,
+    decision: str = "approved",
+) -> SignatureCheck:
+    """Re-derive and compare the signature on one approval audit row.
+
+    The single definition of "does this approval row still verify", shared by
+    the per-invoice check (``GET /api/audit/invoice/{id}/verify-signatures``)
+    and the period-wide population sweep (``GET /api/audit/verify-signatures``)
+    so the two can never disagree about what a tampered row looks like.
+
+    Pure — the caller supplies the row's ``details`` JSONB, the invoice's
+    **current** exact ``amount`` (verifying against the live value is the whole
+    point: a post-approval amount tamper must break the digest), and the row's
+    ``actor_id``.
+
+    Never raises: a malformed block, an unparseable ``signed_at``, a missing
+    actor, or a bad digest all land on ``invalid`` — fail-closed, so a
+    corrupted row surfaces as a finding rather than a 500 that hides it.
+    """
+    sig = (details or {}).get("signature")
+    if not isinstance(sig, dict):
+        return SignatureCheck(VERDICT_UNSIGNED)
+
+    raw = sig.get("signed_at")
+    # Only a string is echoed back — a non-string `signed_at` is itself
+    # corruption, and the response contract keeps this field JSON-string-or-null.
+    signed_at_raw = raw if isinstance(raw, str) else None
+    signed_at: datetime | None = None
+    if signed_at_raw is not None:
+        try:
+            signed_at = datetime.fromisoformat(signed_at_raw)
+        except ValueError:
+            signed_at = None
+
+    if signed_at is None or actor_id is None:
+        return SignatureCheck(VERDICT_INVALID, signed_at_raw)
+
+    try:
+        ok = verify_approval(
+            invoice_id=invoice_id,
+            amount=amount,
+            actor_id=actor_id,
+            decision=decision,
+            timestamp=signed_at,
+            signature=sig.get("value"),
+            signing_key=signing_key,
+        )
+    except (InvalidOperation, ValueError):
+        ok = False
+
+    return SignatureCheck(VERDICT_VALID if ok else VERDICT_INVALID, signed_at_raw)
