@@ -31,6 +31,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import delete, select
 
 from app.models.webhook import (
@@ -50,7 +51,7 @@ from app.services.webhooks.rotation import (
 from app.services.webhooks.signing import generate_signing_secret, sign_payload
 
 
-@pytest.fixture(autouse=True)
+@pytest_asyncio.fixture(autouse=True)
 async def _reap_subscriptions_this_file_creates(realdb):
     """Delete any subscription this file's tests leave behind.
 
