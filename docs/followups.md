@@ -95,6 +95,32 @@ originally-deferred sub-bucket from that same feature remains:
 Refs: [roadmap.md](roadmap.md) § AI Cash-Flow Copilot,
 [cash-flow-copilot.md](cash-flow-copilot.md).
 
+### Outbound-webhook secret rotation is API-only — no admin UI
+
+`POST /api/webhooks/{id}/rotate-secret` ships with its overlap window, docs and
+tests, but `frontend/src/routes/admin/webhooks/+page.svelte` has no control for
+it — the page can create, edit and delete a subscription, so an admin who needs
+to rotate a leaked secret has to reach for the API while a Delete button (which
+CASCADE-deletes the delivery history) sits right there in the UI. That's the
+wrong affordance to be the easy one during an incident.
+
+- [ ] Add a rotate action to the subscription row: confirm-then-act like the
+      existing armed two-click Delete, an overlap picker (default 60 min, plus
+      an explicit "compromised — cut over now" = 0 option), and a
+      show-once secret panel reusing whatever the create flow already does for
+      the one-time secret reveal.
+- [ ] Surface an "overlap active until …" badge while
+      `previous_secret_expires_at` is in the future, so an admin can see a
+      rotation is mid-flight rather than guessing.
+
+**Why deferred:** the backend round that closed the rotation follow-up was
+scoped to the endpoint + overlap + docs (what that item actually listed); the
+UI is a different surface with its own patterns (`Modal`, `RowAction`, the
+one-time-secret reveal) and deserves its own pass rather than being bolted on.
+**Trigger:** the first tenant expected to self-serve a rotation without an
+engineer, or the next `/polish-ui` pass touching `/admin`.
+Ref: [public-api.md](../backend/docs/public-api.md) § Rotating a signing secret.
+
 ### Vendor statement reconciliation — PDF intake
 
 CSV upload and the manual pasted-lines path both ship. A supplier statement that
