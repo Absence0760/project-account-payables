@@ -271,3 +271,99 @@ def test_missing_amount_key_never_becomes_zero_on_a_minor_unit_rail():
 
     assert event is not None
     assert event.amount is None
+
+
+# ---------------------------------------------------------------------------
+# Minor-unit exponent — both legs, or neither
+# ---------------------------------------------------------------------------
+#
+# Every minor-unit adapter used to scale by a flat `* 100` on submit, and
+# `minor_units_to_decimal` inverted it the same way. Symmetric, so it could
+# never raise a phantom settlement mismatch — but symmetrically WRONG for a
+# currency whose ISO-4217 exponent isn't 2. ¥5,000 went out as 500,000 minor
+# units (a 100x overpayment) and 5 KWD as 500 fils instead of 5,000 (a 10x
+# underpayment), and a genuine scale-off on such a currency read as `matched`.
+#
+# Fixing one leg alone would have converted a symmetric error into a real
+# mispricing, which is why the deferral said both must move together. These
+# tests are what hold them together.
+
+
+@pytest.mark.parametrize(
+    ("currency", "expected"),
+    [
+        ("USD", 2),
+        ("usd", 2),  # case-insensitive
+        ("EUR", 2),
+        ("JPY", 0),
+        ("KRW", 0),
+        ("CLP", 0),
+        ("BHD", 3),
+        ("KWD", 3),
+        ("OMR", 3),
+        ("ZZZ", 2),  # unknown -> the near-universal default
+        (None, 2),  # absent -> same
+    ],
+)
+def test_exponent_resolution(currency, expected):
+    from app.services.payment_adapters.base import exponent_for
+
+    assert exponent_for(currency) == expected
+
+
+@pytest.mark.parametrize(
+    ("amount", "currency", "expected_minor"),
+    [
+        (Decimal("19.99"), "USD", 1999),
+        (Decimal("5000.00"), "USD", 500000),
+        # The headline bugs: a zero-exponent currency was inflated 100x...
+        (Decimal("5000"), "JPY", 5000),
+        (Decimal("100"), "KRW", 100),
+        # ...and a three-exponent currency was deflated 10x.
+        (Decimal("5.000"), "KWD", 5000),
+        (Decimal("1.500"), "BHD", 1500),
+    ],
+)
+def test_submit_scaling_honours_the_currency(amount, currency, expected_minor):
+    from app.services.payment_adapters.base import to_minor_units
+
+    assert to_minor_units(amount, currency) == expected_minor
+
+
+@pytest.mark.parametrize("currency", ["USD", "EUR", "JPY", "KRW", "KWD", "BHD", "ZZZ"])
+@pytest.mark.parametrize("amount", [Decimal("1"), Decimal("100"), Decimal("5000")])
+def test_round_trip_is_symmetric_for_every_exponent(currency, amount):
+    """The property the settlement verifier depends on: what we send, parsed
+    back, is what we sent. A break here is a phantom mismatch on every payment
+    in that currency."""
+    from app.services.payment_adapters.base import minor_units_to_decimal, to_minor_units
+
+    minor = to_minor_units(amount, currency)
+    assert minor_units_to_decimal(minor, currency) == amount
+
+
+def test_half_up_rounding_is_preserved():
+    """A .x5 minor unit must not round *down* — consistent with
+    international_payments and the rest of the money path."""
+    from app.services.payment_adapters.base import to_minor_units
+
+    assert to_minor_units(Decimal("0.005"), "USD") == 1
+    assert to_minor_units(Decimal("0.0005"), "KWD") == 1
+
+
+def test_parse_without_a_currency_still_assumes_cents():
+    """A webhook body that omits the currency must keep parsing rather than
+    failing — the caller passes it whenever the payload carries it."""
+    from app.services.payment_adapters.base import minor_units_to_decimal
+
+    assert minor_units_to_decimal(1999) == Decimal("19.99")
+
+
+def test_unparseable_amount_is_still_none():
+    """Unchanged fail-open contract: 'no reported amount' is `unverified` to
+    the verifier, never evidence of a discrepancy."""
+    from app.services.payment_adapters.base import minor_units_to_decimal
+
+    assert minor_units_to_decimal(None, "USD") is None
+    assert minor_units_to_decimal(True, "USD") is None
+    assert minor_units_to_decimal("not-a-number", "USD") is None

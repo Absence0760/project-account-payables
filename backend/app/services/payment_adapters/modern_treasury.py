@@ -28,7 +28,6 @@ import hmac
 import json
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal
 
 import httpx
 
@@ -39,6 +38,7 @@ from app.services.payment_adapters.base import (
     PaymentStatus,
     WebhookEvent,
     minor_units_to_decimal,
+    to_minor_units,
 )
 from app.services.payment_adapters.dispatcher import register_payment_adapter
 
@@ -141,9 +141,13 @@ class ModernTreasuryAdapter(PaymentAdapter):
                 failure_reason="modern_treasury_no_counterparty",
             )
 
-        # Modern Treasury expects amounts in the lowest currency unit (cents).
-        # Decimal arithmetic prevents float drift on amounts like 19.99.
-        amount_cents = int((payload.amount * Decimal("100")).quantize(Decimal("1")))
+        # Modern Treasury expects amounts in the currency's lowest unit.
+        # `to_minor_units` resolves the ISO-4217 exponent (2 for USD/EUR, 0 for
+        # JPY/KRW, 3 for the Gulf dinars) rather than assuming cents — and it
+        # is the exact inverse of what `parse_webhook` uses below, so a clean
+        # settlement can never read as a mismatch. Decimal arithmetic
+        # throughout prevents float drift on amounts like 19.99.
+        amount_cents = to_minor_units(payload.amount, payload.currency)
 
         body = {
             "type": payload.method,
@@ -265,8 +269,8 @@ class ModernTreasuryAdapter(PaymentAdapter):
             # What MT says it actually settled. Its payment_order resource
             # carries `amount` in the lowest currency unit — the same scale
             # `create_payment` sends — so the inverse conversion is symmetric.
-            amount=minor_units_to_decimal(data.get("amount")),
             currency=(data.get("currency") or None),
+            amount=minor_units_to_decimal(data.get("amount"), data.get("currency")),
             raw=payload,
         )
 

@@ -16,8 +16,10 @@ from app.services.payment_adapters.base import (
     PaymentResult,
     PaymentStatus,
     WebhookEvent,
+    exponent_for,
     minor_units_to_decimal,
     parse_amount,
+    to_minor_units,
 )
 from app.services.payment_adapters.dispatcher import (
     get_payment_adapter,
@@ -35,7 +37,9 @@ __all__ = [
     "WebhookEvent",
     "get_payment_adapter",
     "list_available_providers",
+    "exponent_for",
     "minor_units_to_decimal",
+    "to_minor_units",
     "parse_amount",
     "register_payment_adapter",
 ]

@@ -31,7 +31,7 @@ import hmac
 import json
 import logging
 import time
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 
 import httpx
 
@@ -43,6 +43,7 @@ from app.services.payment_adapters.base import (
     PaymentStatus,
     WebhookEvent,
     minor_units_to_decimal,
+    to_minor_units,
 )
 from app.services.payment_adapters.dispatcher import register_payment_adapter
 
@@ -119,12 +120,12 @@ class IncreaseAdapter(PaymentAdapter):
                 failure_reason="increase_no_external_account",
             )
 
-        # ROUND_HALF_UP for the minor-unit conversion (not Decimal's default
+        # `to_minor_units` resolves the currency's ISO-4217 exponent instead of
+        # assuming cents, and rounds ROUND_HALF_UP (not Decimal's default
         # banker's rounding) — consistent with international_payments and the
-        # rest of the money path so a .x5 cent never rounds down.
-        amount_minor = int(
-            (payload.amount * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-        )
+        # rest of the money path so a .x5 cent never rounds down. Exact inverse
+        # of the `minor_units_to_decimal` in `parse_webhook`.
+        amount_minor = to_minor_units(payload.amount, payload.currency)
         body = {
             "account_id": self.account_id,
             "amount": amount_minor,
@@ -259,8 +260,8 @@ class IncreaseAdapter(PaymentAdapter):
             # back in minor units, the same scale `create_payment` sends;
             # `currency` is present on wire transfers and absent on ACH
             # (USD-only), and an absent currency is a wildcard to the verifier.
-            amount=minor_units_to_decimal(obj.get("amount")),
             currency=(obj.get("currency") or None),
+            amount=minor_units_to_decimal(obj.get("amount"), obj.get("currency")),
             raw=event,
         )
 

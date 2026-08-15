@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 
 class PaymentStatus(enum.StrEnum):
@@ -151,22 +151,85 @@ class BalanceResult:
     unavailable_reason: str | None = None
 
 
-def minor_units_to_decimal(raw: object) -> Decimal | None:
-    """Convert a processor's minor-unit amount (cents) to an exact `Decimal`.
+#: ISO-4217 currencies whose minor unit is NOT 1/100. Everything absent here
+#: uses the near-universal exponent of 2, so this table only carries the
+#: exceptions — a full currency list would be dead weight that drifts.
+#:
+#: Exponent 0: the major unit IS the minor unit. ¥100 is sent as `100`, not
+#: `10000`. Exponent 3: a thousandth (Kuwaiti fils, Bahraini fils, Omani
+#: baisa) — 1 KWD is sent as `1000`.
+_MINOR_UNIT_EXPONENTS: dict[str, int] = {
+    # exponent 0
+    "BIF": 0,
+    "CLP": 0,
+    "DJF": 0,
+    "GNF": 0,
+    "ISK": 0,
+    "JPY": 0,
+    "KMF": 0,
+    "KRW": 0,
+    "PYG": 0,
+    "RWF": 0,
+    "UGX": 0,
+    "UYI": 0,
+    "VND": 0,
+    "VUV": 0,
+    "XAF": 0,
+    "XOF": 0,
+    "XPF": 0,
+    # exponent 3
+    "BHD": 3,
+    "IQD": 3,
+    "JOD": 3,
+    "KWD": 3,
+    "LYD": 3,
+    "OMR": 3,
+    "TND": 3,
+}
 
-    The inverse of the `amount * 100` every minor-unit adapter applies on
-    submit, so the round-trip is symmetric: no false POSITIVE. A currency
-    whose ISO-4217 exponent isn't 2 (JPY/KRW = 0, BHD/KWD/OMR = 3) is
-    mis-scaled identically in both directions, so it can't produce a phantom
-    settlement mismatch.
+DEFAULT_MINOR_UNIT_EXPONENT = 2
 
-    It cuts the other way too, and that is the honest limit of this helper:
-    if a processor honours the currency's REAL exponent rather than echoing
-    our own scaling, a genuine scale-off settlement on such a currency reads
-    as `matched` instead of being caught. The fix is a per-currency exponent
-    on both legs — the `* 100` on submit predates this helper and would move
-    with it — and it is only worth doing when the platform actually settles
-    in a non-cent currency. Tracked in `docs/followups.md`.
+
+def exponent_for(currency: str | None) -> int:
+    """How many minor units make one major unit of `currency`, as a power of 10.
+
+    Unknown or absent currency falls back to 2 — the overwhelmingly common
+    case, and the behaviour every caller had before this table existed.
+    """
+    if not currency:
+        return DEFAULT_MINOR_UNIT_EXPONENT
+    return _MINOR_UNIT_EXPONENTS.get(currency.strip().upper(), DEFAULT_MINOR_UNIT_EXPONENT)
+
+
+def _scale(exponent: int) -> Decimal:
+    return Decimal(10) ** exponent
+
+
+def to_minor_units(amount: Decimal, currency: str | None) -> int:
+    """Scale a major-unit amount into the processor's minor units.
+
+    The submit-side half of the pair. Both halves MUST resolve the exponent
+    the same way: they were `* 100` and `/ 100` unconditionally, which is
+    symmetric (so it could never raise a phantom settlement mismatch) but
+    symmetrically WRONG for a currency whose exponent isn't 2 — ¥5,000 went
+    out as 500,000 minor units, a 100x overpayment, and 5 KWD went out as 500
+    fils instead of 5,000, a 10x underpayment. Changing one side alone would
+    have turned that into a real mispricing, which is why the two moved
+    together.
+    """
+    scaled = amount * _scale(exponent_for(currency))
+    return int(scaled.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def minor_units_to_decimal(raw: object, currency: str | None = None) -> Decimal | None:
+    """Convert a processor's minor-unit amount to an exact `Decimal`.
+
+    The exact inverse of `to_minor_units` for the same currency, so the
+    round-trip is symmetric and a clean settlement can never read as a
+    mismatch. `currency` is optional only so a caller that genuinely doesn't
+    know it (a webhook body that omits the field) still parses under the
+    common exponent of 2 rather than failing; pass it whenever the payload
+    carries it.
 
     Returns None for anything unparseable (a missing key, `null`, a string
     the provider didn't promise): the settlement verifier treats "no reported
@@ -175,8 +238,9 @@ def minor_units_to_decimal(raw: object) -> Decimal | None:
     """
     if raw is None or isinstance(raw, bool):
         return None
+    exponent = exponent_for(currency)
     try:
-        return (Decimal(str(raw)) / Decimal("100")).quantize(Decimal("0.01"))
+        return (Decimal(str(raw)) / _scale(exponent)).quantize(Decimal(1).scaleb(-exponent))
     except (ArithmeticError, ValueError):
         return None
 

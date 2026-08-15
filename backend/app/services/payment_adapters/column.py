@@ -21,7 +21,7 @@ import hashlib
 import hmac
 import json
 import logging
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 
 import httpx
 
@@ -33,6 +33,7 @@ from app.services.payment_adapters.base import (
     PaymentStatus,
     WebhookEvent,
     minor_units_to_decimal,
+    to_minor_units,
 )
 from app.services.payment_adapters.dispatcher import register_payment_adapter
 
@@ -109,12 +110,12 @@ class ColumnAdapter(PaymentAdapter):
                 failure_reason="column_no_counterparty",
             )
 
-        # ROUND_HALF_UP for the minor-unit conversion (not Decimal's default
+        # `to_minor_units` resolves the currency's ISO-4217 exponent instead of
+        # assuming cents, and rounds ROUND_HALF_UP (not Decimal's default
         # banker's rounding) — consistent with international_payments and the
-        # rest of the money path so a .x5 cent never rounds down.
-        amount_minor = int(
-            (payload.amount * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-        )
+        # rest of the money path so a .x5 cent never rounds down. Exact inverse
+        # of the `minor_units_to_decimal` in `parse_webhook`.
+        amount_minor = to_minor_units(payload.amount, payload.currency)
         # Column uses `same_day` flag for SDA; default to standard.
         body = {
             "amount": amount_minor,
@@ -217,8 +218,8 @@ class ColumnAdapter(PaymentAdapter):
             # What Column says it actually settled. Transfer `amount` is in
             # minor units (the scale `create_payment` sends) and the currency
             # field is `currency_code`, matching the submit body.
-            amount=minor_units_to_decimal(obj.get("amount")),
             currency=(obj.get("currency_code") or None),
+            amount=minor_units_to_decimal(obj.get("amount"), obj.get("currency_code")),
             raw=event,
         )
 
