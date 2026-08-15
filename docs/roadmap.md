@@ -63,7 +63,7 @@ SOC 2 Type I (design) → Type II (operating over time) is the table-stakes secu
 - [x] Vulnerability scanning in CI — Dependabot (shipped) + CodeQL SAST (Python + JS) + Trivy on the backend container, weekly + on push (`.github/workflows/security.yml`)
 - [x] RBAC enforcement at API layer (separate roadmap item — already done)
 - [x] MFA support + org-level enforcement (separate roadmap item — already done)
-- [x] Session management — per-user concurrent session cap (Redis sorted set, `FEOH_MAX_CONCURRENT_SESSIONS`), forced logout on role change / deactivation (`services.session_management.revoke_user_sessions`)
+- [x] Session management — per-user concurrent session cap (Redis sorted set, `FEOH_MAX_CONCURRENT_SESSIONS`), forced logout on role change / deactivation (`services.session_management.revoke_user_sessions`), standalone admin force-logout (`POST /api/admin/users/{id}/revoke-sessions`), and self-service session visibility + revocation (`GET /api/auth/sessions`, `DELETE .../{jti}`, `POST .../revoke-others` + the `/profile` Signed-in devices card)
 - [x] Centralized audit log shipping — background shipper loop + adapters (CloudWatch Logs + S3 Object Lock) at `backend/app/services/audit_log_shipper.py` + `services/audit_shipping/`. See `backend/docs/audit-log-shipping.md`.
 - [x] Auth event audit log — login/logout/MFA/SSO events written via `app/services/audit_dispatch.py::dispatch_auth_audit` into the tenant `audit_log` table
 - [x] HSTS header + security-header middleware (`backend/app/main.py` `SecurityHeadersMiddleware`, gated on `FEOH_HSTS_ENABLED`); TLS smoke script at `backend/scripts/verify_tls.py`

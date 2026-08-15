@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from decimal import Decimal
@@ -36,6 +37,249 @@ from app.models.user import User
 logger = logging.getLogger(__name__)
 
 
+# What each `Payment.status` means to its run's rollup. Declared once because
+# three call sites bucket the same statuses: the execute/resume/retry
+# dispatcher (`api/payments.py::_dispatch_run_payments`, which is what
+# *persists* `run.status`), the run-detail read, and the runs list. A status
+# added to one bucket but not the others is exactly how a run comes to report
+# an outcome its own payments don't support.
+#
+# `pending` is deliberately its own bucket and NOT part of the run-status
+# derivation: a `pending` payment is one nothing has attempted yet, which is
+# the normal state of a `draft` run and the resumable state of a crashed one.
+RUN_PAYMENT_COMPLETED_STATUSES = ("completed",)
+RUN_PAYMENT_FAILED_STATUSES = ("failed", "cancelled")
+RUN_PAYMENT_IN_FLIGHT_STATUSES = ("submitted", "processing", "pending_compliance")
+RUN_PAYMENT_PENDING_STATUSES = ("pending",)
+
+
+@dataclass(frozen=True)
+class PaymentRunRollup:
+    """Per-outcome tallies over one run's payments, plus the run status they
+    add up to. Pure — no DB, no clock."""
+
+    total: int = 0
+    completed: int = 0
+    failed: int = 0
+    in_flight: int = 0
+    pending: int = 0
+
+    @property
+    def run_status(self) -> str:
+        """The `PaymentRun.status` these payment outcomes imply.
+
+        Preserves the exact precedence the dispatcher has always used: all-fail
+        → `failed`, any-fail-with-a-survivor → `partial`, anything still in
+        flight → `submitted`, otherwise `completed`.
+        """
+        if self.failed and not (self.completed or self.in_flight):
+            return "failed"
+        if self.failed:
+            return "partial"
+        if self.in_flight:
+            return "submitted"
+        return "completed"
+
+
+def superseded_payment_ids(payments: Iterable[Payment]) -> set[uuid.UUID]:
+    """Ids of run payments that a LATER attempt on the same run replaced.
+
+    ``/retry-failed`` never re-arms a failed payment in place — it books a NEW
+    ``Payment`` row carrying ``retry_of_payment_id``, leaving attempt #1 as the
+    immutable record of a failure that really happened (see
+    ``api/payments.retry_failed_payments``). So a run legitimately holds several
+    rows for one invoice, and only the newest one describes where that invoice
+    actually stands. Every rollup filters through here first; without it a fully
+    recovered run would report `partial` forever and keep offering a retry that
+    could only ever be skipped.
+    """
+    return {p.retry_of_payment_id for p in payments if p.retry_of_payment_id is not None}
+
+
+def active_run_payments(payments: Iterable[Payment]) -> list[Payment]:
+    """A run's payments with every superseded earlier attempt filtered out."""
+    rows = list(payments)
+    superseded = superseded_payment_ids(rows)
+    return [p for p in rows if p.id not in superseded]
+
+
+def rollup_payment_statuses(statuses: Iterable[str | None]) -> PaymentRunRollup:
+    """Bucket a run's payment statuses into a `PaymentRunRollup`.
+
+    Callers hand this the ACTIVE payments only (`active_run_payments`) — a
+    superseded retry attempt is history, not an outcome.
+    """
+    total = completed = failed = in_flight = pending = 0
+    for status in statuses:
+        total += 1
+        if status in RUN_PAYMENT_COMPLETED_STATUSES:
+            completed += 1
+        elif status in RUN_PAYMENT_FAILED_STATUSES:
+            failed += 1
+        elif status in RUN_PAYMENT_IN_FLIGHT_STATUSES:
+            in_flight += 1
+        elif status in RUN_PAYMENT_PENDING_STATUSES:
+            pending += 1
+    return PaymentRunRollup(
+        total=total,
+        completed=completed,
+        failed=failed,
+        in_flight=in_flight,
+        pending=pending,
+    )
+
+
+# ── Is a failed payment safe to re-attempt? ──────────────────────────────
+#
+# `Payment.correlation_id` is the PROCESSOR's idempotency key, not a local trace
+# id: `payment_adapters/base.py` says so, and it is sent as `Idempotency-Key` by
+# column / dwolla / stripe_treasury / increase, as `idempotency_key=` by
+# modern_treasury, and as a 48h Redis `SET NX` slot by checkeeper (explicitly so
+# a retry can't print a second physical cheque). A retry books a NEW payment row
+# with a NEW correlation id — a genuinely new order — which is exactly right
+# when the first order never existed, and exactly how an invoice gets paid twice
+# when it did.
+#
+# So the question a retry has to answer per payment is not "did this fail?" but
+# "can we PROVE the processor never accepted an order for it?". Only then is
+# re-sending safe.
+RETRY_SAFE = "deterministic"
+IN_DOUBT = "in_doubt"
+
+# Failure reasons this codebase produces BEFORE any request could reach the
+# processor. Everything else is in-doubt — including reasons we don't recognise
+# (a future adapter, a legacy row), which is the fail-closed default.
+#
+# Deliberately NOT here:
+#   `unexpected_error:*`      the dispatcher swallowed an exception; a read
+#                             timeout after the processor accepted looks
+#                             identical to one before it
+#   `*_transport_error:*`     the request may have been received and actioned
+#   `*_api_error:*`           the provider answered — a 5xx can still have
+#                             created the order
+#   `checkeeper_duplicate_suppressed`
+#                             the 48h slot was already claimed, i.e. a cheque
+#                             for this order was very likely already printed
+#   `adapter_error:*` (cards) the card provider may have minted a card we never
+#                             recorded
+#   reconciler_max_age_exceeded*
+#                             a genuinely `submitted` payment (real money in
+#                             flight) the reconciler gave up waiting on
+_RETRY_SAFE_FAILURE_PREFIXES = (
+    # We refused it ourselves, before the adapter was ever called.
+    "compliance_refusal:",
+    "compliance_dismissed",
+    "international_payment_error:",
+    # Card leg: no card was minted (a provider-side `adapter_error:` reason
+    # replaces this string and is deliberately absent from this list).
+    "card_issuance_conflict",
+    "card_issuance_failed",
+    "cards_not_enabled",
+    # dwolla's unsupported-method refusal: "method 'wire' is not supported…"
+    "method '",
+)
+
+# Per-adapter pre-flight refusals — checked before any HTTP call is made.
+_RETRY_SAFE_FAILURE_SUFFIXES = (
+    "_not_configured",
+    "_no_counterparty",
+    "_no_external_account",
+    "_no_destination_funding_source",
+    "_missing_mailing_address",
+    # checkeeper: Redis was down so it refused to issue WITHOUT a dedup guard.
+    "_idempotency_unavailable",
+)
+
+
+def classify_payment_failure(*, failure_reason: str | None, provider_payment_id: str | None) -> str:
+    """Is this failed payment safe to re-attempt under a fresh idempotency key?
+
+    Returns ``RETRY_SAFE`` only when we can prove no order was created at the
+    processor; ``IN_DOUBT`` otherwise. Pure — no DB, no clock.
+
+    A populated ``provider_payment_id`` outranks the reason entirely: every
+    adapter here returns a handle only from a create call that SUCCEEDED, so
+    holding one means an order exists over there and its true outcome has to be
+    reconciled (or the payment voided) by a human before any re-send.
+    """
+    if provider_payment_id:
+        return IN_DOUBT
+    reason = (failure_reason or "").strip()
+    if not reason:
+        return IN_DOUBT
+    if reason.startswith(_RETRY_SAFE_FAILURE_PREFIXES):
+        return RETRY_SAFE
+    if reason.endswith(_RETRY_SAFE_FAILURE_SUFFIXES):
+        return RETRY_SAFE
+    return IN_DOUBT
+
+
+def is_retry_safe(payment: Payment) -> bool:
+    """`classify_payment_failure` over a `Payment` row."""
+    return (
+        classify_payment_failure(
+            failure_reason=payment.failure_reason,
+            provider_payment_id=payment.provider_payment_id,
+        )
+        == RETRY_SAFE
+    )
+
+
+async def blocked_invoice_ids(db: AsyncSession, invoice_ids: list[uuid.UUID]) -> set[uuid.UUID]:
+    """Which of ``invoice_ids`` carry an UNRESOLVED payment-blocking exception.
+
+    `PAYMENT_BLOCKING_EXCEPTION_TYPES` (duplicate / fraud_flag /
+    line_total_mismatch) are `error`-severity financial-integrity flags that
+    invoice approval does NOT gate on, so a run must refuse them and so must
+    anything that re-dispatches money later — a `fraud_flag` raised between run
+    creation and a `/retry-failed` days afterwards (a BEC bank-detail swap, an
+    altered cheque off a Positive Pay return) has to stop the re-send. Shared by
+    both callers precisely so they can't drift.
+    """
+    from app.api.payments import PAYMENT_BLOCKING_EXCEPTION_TYPES
+
+    if not invoice_ids:
+        return set()
+    rows = await db.execute(
+        select(InvoiceException.invoice_id).where(
+            InvoiceException.invoice_id.in_(invoice_ids),
+            InvoiceException.exception_type.in_(PAYMENT_BLOCKING_EXCEPTION_TYPES),
+            InvoiceException.status.notin_(("resolved", "dismissed")),
+        )
+    )
+    return {iid for iid in rows.scalars().all() if iid is not None}
+
+
+async def applied_credit_total(db: AsyncSession, invoice_id: uuid.UUID) -> Decimal:
+    """Sum of the credit memos already APPLIED against an invoice."""
+    return (
+        await db.execute(
+            select(func.coalesce(func.sum(CreditMemo.amount), Decimal("0"))).where(
+                CreditMemo.invoice_id == invoice_id,
+                CreditMemo.status == "applied",
+            )
+        )
+    ).scalar_one()
+
+
+async def net_payable_amount(db: AsyncSession, invoice: Invoice) -> Decimal:
+    """What a payment against ``invoice`` should actually move.
+
+    Applying a credit memo is the whole point of the feature: it must reduce
+    what the vendor is paid. Both money paths go through here — the payment-run
+    builder below and the standalone ``POST /api/payments`` — so the two can't
+    disagree about what an invoice is worth. The standalone endpoint used to
+    pay ``invoice.amount`` flat and 422 any other figure, which meant a credited
+    invoice paid the FULL pre-credit amount there and the correct net figure
+    could not even be submitted.
+
+    ``credit_memos.py``'s own over-application guard (apply refuses a memo that
+    would exceed the invoice's remaining creditable balance) is what guarantees
+    this can never go negative.
+    """
+    return (invoice.amount or Decimal("0")) - await applied_credit_total(db, invoice.id)
+
+
 @dataclass(frozen=True)
 class PaymentRunItemInput:
     invoice_id: uuid.UUID
@@ -53,22 +297,48 @@ class PaymentRunCreationResult:
 
 
 @asynccontextmanager
-async def _maybe_savepoint(db: AsyncSession, *, use_savepoint: bool):
-    """``db.begin_nested()`` when ``use_savepoint``, otherwise a plain no-op.
+async def _savepoint(db: AsyncSession):
+    """A savepoint around the run + payment inserts.
 
-    Only the ``plan_id``-bearing (copilot) path needs the savepoint — it's
-    what keeps the outer transaction usable after an ``IntegrityError`` so
-    the plan_id race can be re-queried and its winner returned (see
-    ``create_payment_run_for_invoices``). The plain manual-run path
-    (``plan_id=None``, ``POST /api/payments/runs``) never re-queries after a
-    failed flush — it just raises — so it keeps its original unwrapped shape
-    exactly, unchanged from before this module existed.
+    Both callers need the outer transaction to stay usable after an
+    ``IntegrityError`` so they can go back to the database and say something
+    useful about it: the copilot path re-queries the ``plan_id`` race's winner,
+    and BOTH paths re-query which invoices are actually holding the live
+    payment that the ``uq_payments_one_live_per_invoice`` index rejected. Without
+    the savepoint the session is poisoned at that point and the only honest
+    thing left to say is "one or more invoices" — which is exactly the
+    unactionable 409 this replaced.
     """
-    if use_savepoint:
-        async with db.begin_nested():
-            yield
-    else:
+    async with db.begin_nested():
         yield
+
+
+async def _live_payment_invoice_numbers(
+    db: AsyncSession, invoice_ids: list[uuid.UUID]
+) -> list[str]:
+    """Invoice numbers among ``invoice_ids`` that already hold a LIVE payment.
+
+    "Live" is the same definition the ``uq_payments_one_live_per_invoice``
+    partial index uses — anything not in
+    ``api/payments.LIVE_PAYMENT_TERMINAL_STATUSES`` — so this names exactly the
+    rows that caused the insert to be rejected. Invoice NUMBER, not vendor or
+    amount: it is the identifier the operator selected the row by, and it
+    carries no PII.
+    """
+    from app.api.payments import LIVE_PAYMENT_TERMINAL_STATUSES
+
+    if not invoice_ids:
+        return []
+    rows = await db.execute(
+        select(Invoice.invoice_number)
+        .join(Payment, Payment.invoice_id == Invoice.id)
+        .where(
+            Invoice.id.in_(invoice_ids),
+            Payment.status.notin_(LIVE_PAYMENT_TERMINAL_STATUSES),
+        )
+        .distinct()
+    )
+    return sorted(n for n in rows.scalars().all() if n)
 
 
 async def _existing_run_for_plan(db: AsyncSession, plan_id: str) -> PaymentRunCreationResult | None:
@@ -122,7 +392,7 @@ async def create_payment_run_for_invoices(
     # api/payments.py's shared status/exception-type constants). Mirrors the
     # existing lazy-import pattern api/cards.py already uses for the same
     # constant.
-    from app.api.payments import PAYABLE_INVOICE_STATUSES, PAYMENT_BLOCKING_EXCEPTION_TYPES
+    from app.api.payments import PAYABLE_INVOICE_STATUSES
 
     if not items:
         raise HTTPException(status_code=422, detail="At least one invoice is required")
@@ -169,14 +439,7 @@ async def create_payment_run_for_invoices(
             detail=f"Invoice(s) not approved for payment: {', '.join(not_payable)}",
         )
 
-    blocking_res = await db.execute(
-        select(InvoiceException.invoice_id).where(
-            InvoiceException.invoice_id.in_(invoice_ids),
-            InvoiceException.exception_type.in_(PAYMENT_BLOCKING_EXCEPTION_TYPES),
-            InvoiceException.status.notin_(("resolved", "dismissed")),
-        )
-    )
-    blocked_ids = set(blocking_res.scalars().all())
+    blocked_ids = await blocked_invoice_ids(db, invoice_ids)
     if blocked_ids:
         blocked_numbers = [
             inv.invoice_number for iid, inv in invoices.items() if iid in blocked_ids
@@ -194,15 +457,7 @@ async def create_payment_run_for_invoices(
     total = Decimal("0")
     for item in items:
         inv = invoices[item.invoice_id]
-        already_applied = (
-            await db.execute(
-                select(func.coalesce(func.sum(CreditMemo.amount), Decimal("0"))).where(
-                    CreditMemo.invoice_id == inv.id,
-                    CreditMemo.status == "applied",
-                )
-            )
-        ).scalar_one()
-        net_amount = inv.amount - already_applied
+        net_amount = await net_payable_amount(db, inv)
         net_amounts[item.invoice_id] = net_amount
         total += net_amount
 
@@ -236,15 +491,15 @@ async def create_payment_run_for_invoices(
         plan_id=plan_id,
     )
 
-    # A savepoint around the insert (copilot path only — see
-    # `_maybe_savepoint`): on IntegrityError (the payments-per-invoice
-    # backstop, OR — when `plan_id` is set — a concurrent duplicate
-    # draft-run request racing this one for the SAME plan_id via the partial
-    # unique index on payment_runs.plan_id) we need the outer transaction to
-    # stay usable so we can re-query for the plan_id race's winner. Mirrors
-    # api/payments.py::create_payment's savepoint idiom.
+    # A savepoint around the insert: on IntegrityError (the
+    # payments-per-invoice backstop, OR — when `plan_id` is set — a concurrent
+    # duplicate draft-run request racing this one for the SAME plan_id via the
+    # partial unique index on payment_runs.plan_id) the outer transaction has
+    # to stay usable so we can go back to the database, both to re-query the
+    # plan_id race's winner and to NAME the invoices already holding a live
+    # payment. Mirrors api/payments.py::create_payment's savepoint idiom.
     try:
-        async with _maybe_savepoint(db, use_savepoint=plan_id is not None):
+        async with _savepoint(db):
             db.add(run)
             await db.flush()
             for item in items:
@@ -265,6 +520,19 @@ async def create_payment_run_for_invoices(
             existing_result = await _existing_run_for_plan(db, plan_id)
             if existing_result is not None:
                 return existing_result
+        # Name the offending invoices. "One or more invoices already have a
+        # live payment scheduled" identified nothing: on a 40-invoice run the
+        # operator had no way to tell which row to drop, and the only route
+        # forward was bisecting the selection by hand.
+        blocked = await _live_payment_invoice_numbers(db, invoice_ids)
+        if blocked:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Invoice(s) already have a live payment scheduled — remove them from "
+                    f"the run, or void the existing payment first: {', '.join(blocked)}"
+                ),
+            ) from exc
         raise HTTPException(
             status_code=409,
             detail="One or more invoices already have a live payment scheduled.",

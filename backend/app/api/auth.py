@@ -30,6 +30,8 @@ from app.schemas.auth import (
     MFAEnrollVerifyRequest,
     MFAStepUpRequest,
     MFAVerifyRequest,
+    SessionResponse,
+    SessionRevokeResponse,
     TokenResponse,
     UpdateProfileRequest,
     UserResponse,
@@ -49,7 +51,14 @@ from app.services.email_adapters import (
     is_supported_locale,
 )
 from app.services.rate_limit import check_rate_limit, resolve_client_ip
-from app.services.session_management import end_session, register_session
+from app.services.session_management import (
+    SessionInfo,
+    end_session,
+    list_sessions,
+    register_session,
+    revoke_one_session,
+    revoke_other_sessions,
+)
 from app.services.sso import is_sso_only
 from app.utils.passwords import (
     PasswordError,
@@ -171,6 +180,12 @@ def _client_ip(request: Request | None) -> str | None:
     return resolve_client_ip(request)
 
 
+def _user_agent(request: Request | None) -> str | None:
+    # Only ever passed to `describe_user_agent`, which reduces it to a coarse
+    # label — the raw string is never stored or logged.
+    return request.headers.get("user-agent") if request is not None else None
+
+
 # ---------------------------------------------------------------------------
 # Login + MFA flow
 # ---------------------------------------------------------------------------
@@ -280,7 +295,7 @@ async def login(
         )
 
     token, jti = create_access_token_with_jti(user.id, user.organization_id)
-    await register_session(user.id, jti)
+    await register_session(user.id, jti, ip=ip, user_agent=_user_agent(request), method="password")
     await dispatch_auth_audit(
         organization_id=user.organization_id,
         actor_id=user.id,
@@ -374,7 +389,13 @@ async def verify_mfa(
     await mfa.consume_challenge_token(claims.jti)
 
     token, jti = create_access_token_with_jti(user.id, user.organization_id)
-    await register_session(user.id, jti)
+    await register_session(
+        user.id,
+        jti,
+        ip=ip,
+        user_agent=_user_agent(request),
+        method=f"password+mfa:{body.method}",
+    )
     await dispatch_auth_audit(
         organization_id=user.organization_id,
         actor_id=user.id,
@@ -909,7 +930,13 @@ async def passkey_authenticate_finish(
     await mfa.consume_challenge_token(claims.jti)
 
     token, jti = create_access_token_with_jti(user.id, user.organization_id)
-    await register_session(user.id, jti)
+    await register_session(
+        user.id,
+        jti,
+        ip=ip,
+        user_agent=_user_agent(request),
+        method="password+mfa:passkey",
+    )
     await dispatch_auth_audit(
         organization_id=user.organization_id,
         actor_id=user.id,
@@ -971,6 +998,81 @@ async def logout(request: Request, authorization: str = Header()):
                 )
             except (ValueError, TypeError):
                 pass
+
+
+# ---------------------------------------------------------------------------
+# Active sessions — "where you're signed in" + self-service revocation
+#
+# The threat this closes is the one the rest of this module keeps naming: a
+# leaked or stolen access token. Until now the ONLY remedy was an admin
+# deactivating the account or changing its roles, because the tracking set was
+# invisible to the person whose account it described. These three routes hand
+# that control back to the account holder — read your own sessions, end one,
+# or end every other one. Never another user's: every operation is scoped to
+# `user.id`, so the JTI in the path is a handle within the caller's own set and
+# nothing else.
+#
+# No step-up gate on purpose: all three only ever REMOVE access, so requiring a
+# second factor would slow down the one action a compromised user needs fastest.
+# ---------------------------------------------------------------------------
+
+
+def _session_to_response(info: SessionInfo, current_jti: str | None) -> SessionResponse:
+    return SessionResponse(
+        id=info.jti,
+        created_at=info.created_at,
+        expires_at=info.expires_at,
+        ip=info.ip,
+        device=info.device,
+        method=info.method,
+        current=current_jti is not None and info.jti == current_jti,
+    )
+
+
+@router.get("/sessions", response_model=list[SessionResponse])
+async def list_my_sessions(user: User = Depends(get_current_user)):
+    """List the caller's own live sessions, newest first."""
+    sessions = await list_sessions(user.id)
+    current_jti = getattr(user, "session_jti", None)
+    return [_session_to_response(s, current_jti) for s in sessions]
+
+
+@router.delete("/sessions/{jti}", response_model=SessionRevokeResponse)
+async def revoke_my_session(jti: str, user: User = Depends(get_current_user)):
+    """End one of the caller's own sessions.
+
+    404 when the JTI isn't in the caller's set — the same answer for "belongs
+    to someone else" and "already gone", so the response can't be used to probe
+    whether a JTI is live on another account.
+    """
+    if not await revoke_one_session(user.id, jti):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    await dispatch_auth_audit(
+        organization_id=user.organization_id,
+        actor_id=user.id,
+        action="auth.session.revoked",
+        entity_id=user.id,
+        details={"scope": "single", "revoked": 1},
+    )
+    return SessionRevokeResponse(revoked=1)
+
+
+@router.post("/sessions/revoke-others", response_model=SessionRevokeResponse)
+async def revoke_my_other_sessions(user: User = Depends(get_current_user)):
+    """Sign out everywhere except the session making this request.
+
+    Idempotent: with nothing else signed in it reports `revoked: 0` rather than
+    failing — the caller's intent ("only this device is signed in") already holds.
+    """
+    revoked = await revoke_other_sessions(user.id, getattr(user, "session_jti", None))
+    await dispatch_auth_audit(
+        organization_id=user.organization_id,
+        actor_id=user.id,
+        action="auth.session.revoked",
+        entity_id=user.id,
+        details={"scope": "others", "revoked": len(revoked)},
+    )
+    return SessionRevokeResponse(revoked=len(revoked))
 
 
 @router.get("/me", response_model=UserResponse)

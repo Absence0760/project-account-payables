@@ -36,6 +36,11 @@ def _invoice(**overrides):
         id=uuid.uuid4(),
         organization_id=uuid.uuid4(),
         entity_id=uuid.uuid4(),  # multi-entity P2: exception inherits invoice entity
+        # A real Invoice always carries one, and the exception-lifecycle audit
+        # row files under it (services/exception_lifecycle). Without it here the
+        # stand-in silently drove the DB-lookup fallback against a mock session
+        # instead of the path production takes.
+        correlation_id=uuid.uuid4(),
         vendor_id=None,
         vendor_name="Acme Corp",
         invoice_number="INV-1",

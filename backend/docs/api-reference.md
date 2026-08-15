@@ -71,8 +71,13 @@ and `/cards/rebates` (whose `total` is a money sum, not a row count).
 | `GET`   | `/api/auth/me`               | * | Get current user (roles, `must_change_password`, `mfa_enabled`, `mfa_required_by_org`) |
 | `PATCH` | `/api/auth/me`               | * | Update own name or password                                        |
 | `POST`  | `/api/auth/change-password`  | * | Set a new password (clears `must_change_password`)                 |
+| `GET`   | `/api/auth/sessions`         | * | The caller's own live sessions, newest first — `{id (jti), created_at, expires_at, ip, device, method, current}`. Expired-but-tracked entries are pruned, not listed. |
+| `DELETE`| `/api/auth/sessions/{jti}`   | * | End one of the caller's own sessions (blocklists the JTI). Opaque 404 for a JTI that isn't the caller's — same answer as one already gone. Returns `{revoked: 1}`. |
+| `POST`  | `/api/auth/sessions/revoke-others` | * | Sign out everywhere except the current session. Idempotent (`{revoked: 0}` when there's nothing else). |
 
 Auth endpoints do **not** require the `X-Tenant-Slug` header.
+
+The three session endpoints are scoped to the caller's own account — membership in their session set *is* the authorization check. No step-up gate: they only ever remove access. Both revokes write a PII-free `auth.session.revoked` audit row. See [`docs/authentication.md`](../../docs/authentication.md) § Session management.
 
 ## MFA
 
@@ -361,6 +366,7 @@ All require `admin`.
 | `GET`    | `/api/admin/roles`       | List all available roles |
 | `POST`   | `/api/admin/users`       | Create user (returns temp password) |
 | `PATCH`  | `/api/admin/users/{id}`  | Update user (name, email, roles, password, active) |
+| `POST`   | `/api/admin/users/{id}/revoke-sessions` | Force-log-out a user without changing their account. Org-scoped (foreign user → 404), idempotent, audited `user.sessions_revoked` |
 | `DELETE` | `/api/admin/users/{id}`  | Permanently delete a user |
 
 ## ERP Inbound Webhook

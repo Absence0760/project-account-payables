@@ -27,6 +27,20 @@ export interface StepUpProof {
 	assertion?: unknown;
 }
 
+/** One live sign-in on this account. `id` is the token's session handle — the
+ * only thing the revoke endpoint accepts — and `current` marks the session
+ * making the request, which the UI must never offer up for casual removal.
+ * `ip` / `device` / `method` are best-effort and may be null. */
+export interface ActiveSession {
+	id: string;
+	created_at: string;
+	expires_at: string;
+	ip: string | null;
+	device: string | null;
+	method: string | null;
+	current: boolean;
+}
+
 interface User {
 	id: string;
 	email: string;
@@ -172,6 +186,26 @@ function createAuthStore() {
 		await fetchUser();
 	}
 
+	// --- Active sessions ("where you're signed in") -----------------------
+	//
+	// The remedy for a token you believe is compromised. All three are scoped
+	// server-side to the calling account, so there is nothing to pass but the
+	// session handle.
+
+	async function listSessions(): Promise<ActiveSession[]> {
+		return api.get<ActiveSession[]>('/api/auth/sessions');
+	}
+
+	async function revokeSession(id: string): Promise<void> {
+		await api.delete(`/api/auth/sessions/${id}`);
+	}
+
+	/** Sign out everywhere except this device. Returns how many ended. */
+	async function revokeOtherSessions(): Promise<number> {
+		const res = await api.post<{ revoked: number }>('/api/auth/sessions/revoke-others', {});
+		return res.revoked;
+	}
+
 	async function fetchUser() {
 		try {
 			user = await api.get<User>('/api/auth/me');
@@ -230,6 +264,9 @@ function createAuthStore() {
 		passkeyStepUp,
 		registerPasskey,
 		deletePasskey,
+		listSessions,
+		revokeSession,
+		revokeOtherSessions,
 		logout,
 		fetchUser,
 		hasRole,

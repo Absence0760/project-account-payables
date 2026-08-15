@@ -104,9 +104,9 @@ holds the legal basis and we process under the
 | **Our role** | Processor for the customer's users; controller for our own security telemetry. |
 | **Legal basis** | Customer's: contract (Art. 6(1)(b)); legitimate interests in account security (Art. 6(1)(f)). Ours: legal obligation/legitimate interests for security and SOX/SOC 2 controls. |
 | **Categories of data subjects** | All platform users (customer staff, our staff) and supplier-portal users. |
-| **Categories of personal data** | Login identifiers/email, hashed passwords (`bcrypt_sha256` — never plaintext), MFA secrets/enrolment state, JWT/session identifiers, IP and timestamps in audit rows, approval signatures. |
-| **Recipients / sub-processors** | Identity providers (SSO/SCIM), Redis (token blocklist — self-hosted), centralized audit-log WORM sink (CloudWatch / S3 Object Lock) — see [`docs/sub-processors.md`](sub-processors.md). |
-| **Retention** | Session/blocklist entries expire with the token; audit/security rows are append-only and retained per the audit-retention class. See [`backend/docs/retention.md`](../backend/docs/retention.md). |
+| **Categories of personal data** | Login identifiers/email, hashed passwords (`bcrypt_sha256` — never plaintext), MFA secrets/enrolment state, JWT/session identifiers, IP and timestamps in audit rows, per-session sign-in IP + a coarse device label (e.g. "Chrome on macOS" — the raw `User-Agent` is never stored) shown back to the account holder on `/profile`, approval signatures. |
+| **Recipients / sub-processors** | Identity providers (SSO/SCIM), Redis (token blocklist + session records — self-hosted, never a third party), centralized audit-log WORM sink (CloudWatch / S3 Object Lock) — see [`docs/sub-processors.md`](sub-processors.md). |
+| **Retention** | Session/blocklist entries expire with the token; the per-session IP + device record is torn down with the session it describes (revoke, logout, eviction, expiry) and never outlives the access-token lifetime; audit/security rows are append-only and retained per the audit-retention class. See [`backend/docs/retention.md`](../backend/docs/retention.md). |
 | **International transfers** | Per the customer's data-residency tier and any SSO provider's region; SCCs/IDTA where applicable. See [`docs/data-residency.md`](data-residency.md). |
 
 ---

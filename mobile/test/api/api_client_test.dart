@@ -8,9 +8,14 @@
 // timeout: ...)` (a test-only seam — see api_client.dart) so these tests
 // don't burn 10 real seconds per case.
 
+// The `error logging` group at the bottom covers a second defect in the same
+// file: get/post returned `_handleResponse(response)` unawaited from inside
+// their try block, so the catch never ran for a 4xx/5xx.
+//
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -115,6 +120,66 @@ void main() {
       );
 
       await expectLater(ApiClient().delete('/things/1'), completes);
+    });
+  });
+
+  // `get` and `post` wrap their call in try/catch purely to log the failure
+  // before rethrowing — but they returned `_handleResponse(response)` without
+  // awaiting it, which unwinds the try and hands the still-pending future to
+  // the caller. Every error _handleResponse raises (ApiException on 4xx/5xx,
+  // a decode failure on a malformed body) therefore bypassed the catch, and
+  // the diagnostic never fired for the exact responses it exists for. The
+  // exception still reached the caller, so only the log was lost — which is
+  // why nothing else caught it. Dart's `unawaited_return_in_try_block` lint
+  // (new in the analyzer CI runs) flags the shape; these pin the behaviour.
+  group('error logging', () {
+    final logged = <String>[];
+    late DebugPrintCallback originalDebugPrint;
+
+    setUp(() {
+      logged.clear();
+      originalDebugPrint = debugPrint;
+      debugPrint = (String? message, {int? wrapWidth}) {
+        if (message != null) logged.add(message);
+      };
+    });
+
+    tearDown(() {
+      debugPrint = originalDebugPrint;
+    });
+
+    test('get logs the failure when the backend returns 500', () async {
+      ApiClient().debugConfigure(
+        client: MockClient((req) async => http.Response('boom', 500)),
+        timeout: const Duration(milliseconds: 50),
+      );
+
+      await expectLater(
+        ApiClient().get('/things'),
+        throwsA(isA<ApiException>()),
+      );
+      expect(
+        logged.any((m) => m.startsWith('[API] GET /things FAILED:')),
+        isTrue,
+        reason: 'the catch block never ran for the error response',
+      );
+    });
+
+    test('post logs the failure when the backend returns 500', () async {
+      ApiClient().debugConfigure(
+        client: MockClient((req) async => http.Response('boom', 500)),
+        timeout: const Duration(milliseconds: 50),
+      );
+
+      await expectLater(
+        ApiClient().post('/things', {'name': 'x'}),
+        throwsA(isA<ApiException>()),
+      );
+      expect(
+        logged.any((m) => m.startsWith('[API] POST /things FAILED:')),
+        isTrue,
+        reason: 'the catch block never ran for the error response',
+      );
     });
   });
 }

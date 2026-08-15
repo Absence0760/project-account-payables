@@ -173,7 +173,7 @@
 
 	// --- Passkeys (WebAuthn) — an additional MFA factor ----------------------
 	import { isWebAuthnSupported } from '$lib/webauthn';
-	import type { Passkey, StepUpProof } from '$lib/stores/auth.svelte';
+	import type { ActiveSession, Passkey, StepUpProof } from '$lib/stores/auth.svelte';
 	import { formatDate } from '$lib/utils/time';
 
 	let passkeys = $state<Passkey[] | null>(null);
@@ -251,6 +251,103 @@
 		} catch (err) {
 			toast(err instanceof Error ? err.message : 'Failed to remove passkey', 'error');
 		}
+	}
+
+	// --- Active sessions ----------------------------------------------------
+	// The recovery path for a session you don't recognise. Revocation is armed
+	// two-click (the same pattern as the API-key row action) rather than a
+	// confirm dialog — signing a device out is reversible by signing back in,
+	// but it shouldn't happen on a stray click either.
+
+	let sessions = $state<ActiveSession[] | null>(null);
+	let sessionsLoaded = $state(false);
+	// A failed fetch must NOT read as "no other sessions are signed in" — on a
+	// security screen that reassurance would be a lie, and the user would stop
+	// looking for the session they came here to kill.
+	let sessionsError = $state(false);
+	let armedSessionId = $state<string | null>(null);
+	let armedRevokeOthers = $state(false);
+	let sessionBusy = $state(false);
+
+	$effect(() => {
+		if (!sessionsLoaded) {
+			void loadSessions();
+		}
+	});
+
+	async function loadSessions() {
+		try {
+			sessions = await auth.listSessions();
+			sessionsError = false;
+		} catch {
+			sessions = null;
+			sessionsError = true;
+		} finally {
+			sessionsLoaded = true;
+		}
+	}
+
+	/** Retry wrapper — `loadSessions` can't reset `sessionsLoaded` itself (the
+	 * mount `$effect` keys off it and would re-fire), so the busy state carries
+	 * the feedback instead. */
+	async function retrySessions() {
+		sessionBusy = true;
+		try {
+			await loadSessions();
+		} finally {
+			sessionBusy = false;
+		}
+	}
+
+	const otherSessionCount = $derived((sessions ?? []).filter((s) => !s.current).length);
+
+	async function revokeSession(id: string) {
+		sessionBusy = true;
+		try {
+			await auth.revokeSession(id);
+			armedSessionId = null;
+			await loadSessions();
+			toast('Signed that device out', 'success');
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Failed to sign that device out', 'error');
+		} finally {
+			sessionBusy = false;
+		}
+	}
+
+	async function revokeOtherSessions() {
+		sessionBusy = true;
+		try {
+			const revoked = await auth.revokeOtherSessions();
+			armedRevokeOthers = false;
+			await loadSessions();
+			toast(
+				revoked === 1 ? 'Signed 1 other session out' : `Signed ${revoked} other sessions out`,
+				'success',
+			);
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Failed to sign other sessions out', 'error');
+		} finally {
+			sessionBusy = false;
+		}
+	}
+
+	function sessionLabel(s: ActiveSession): string {
+		return s.device ?? 'Unrecognised device';
+	}
+
+	function sessionDetail(s: ActiveSession): string {
+		const parts = [
+			`Signed in ${formatDate(s.created_at, '—', {
+				month: 'short',
+				day: 'numeric',
+				hour: 'numeric',
+				minute: '2-digit',
+			})}`,
+		];
+		if (s.ip) parts.push(s.ip);
+		if (s.method) parts.push(s.method);
+		return parts.join(' · ');
 	}
 
 	// Display-language picker. `currentLocale()` reads the reactive i18n rune,
@@ -506,13 +603,13 @@
 				{/if}
 
 				{#if passkeys && passkeys.length > 0}
-					<ul class="passkey-list">
+					<ul class="entry-list">
 						{#each passkeys as pk (pk.id)}
 							<li>
-								<div class="passkey-meta">
-									<span class="passkey-name">{pk.name}</span>
+								<div class="entry-meta">
+									<span class="entry-name">{pk.name}</span>
 									{#if pk.last_used_at}
-										<span class="passkey-sub">
+										<span class="entry-sub">
 											Last used {formatDate(pk.last_used_at, '—', {
 												year: 'numeric',
 												month: 'numeric',
@@ -520,7 +617,7 @@
 											})}
 										</span>
 									{:else}
-										<span class="passkey-sub">Never used</span>
+										<span class="entry-sub">Never used</span>
 									{/if}
 								</div>
 								<button
@@ -562,6 +659,81 @@
 						</button>
 					</div>
 				</form>
+			{/if}
+		</section>
+
+		<section class="card">
+			<h2>Signed-in devices</h2>
+			<p class="hint">
+				Every browser or app currently signed in to your account. If you don't
+				recognise one — or you signed in on a device you no longer have — sign
+				it out here. It stops working immediately.
+			</p>
+
+			{#if !sessionsLoaded}
+				<p class="hint">Loading…</p>
+			{:else if sessionsError}
+				<p class="warn">
+					Couldn't load your sessions, so we can't say what's signed in right now.
+				</p>
+				<div class="actions">
+					<button type="button" class="secondary" disabled={sessionBusy} onclick={retrySessions}>
+						{sessionBusy ? 'Retrying…' : 'Try again'}
+					</button>
+				</div>
+			{:else if sessions && sessions.length > 0}
+				<ul class="entry-list">
+					{#each sessions as s (s.id)}
+						<li>
+							<div class="entry-meta">
+								<span class="entry-name">
+									{sessionLabel(s)}
+									{#if s.current}<span class="badge">This device</span>{/if}
+								</span>
+								<span class="entry-sub">{sessionDetail(s)}</span>
+							</div>
+							{#if !s.current}
+								<button
+									type="button"
+									class="danger small"
+									disabled={sessionBusy}
+									onclick={() => {
+										if (armedSessionId === s.id) {
+											revokeSession(s.id);
+										} else {
+											armedSessionId = s.id;
+										}
+									}}
+								>
+									{armedSessionId === s.id ? 'Confirm sign out' : 'Sign out'}
+								</button>
+							{/if}
+						</li>
+					{/each}
+				</ul>
+
+				{#if otherSessionCount > 0}
+					<div class="actions">
+						<button
+							type="button"
+							class="danger"
+							disabled={sessionBusy}
+							onclick={() => {
+								if (armedRevokeOthers) {
+									revokeOtherSessions();
+								} else {
+									armedRevokeOthers = true;
+								}
+							}}
+						>
+							{armedRevokeOthers
+								? `Confirm — sign out ${otherSessionCount} other ${otherSessionCount === 1 ? 'session' : 'sessions'}`
+								: 'Sign out everywhere else'}
+						</button>
+					</div>
+				{/if}
+			{:else}
+				<div class="status disabled">No other sessions are signed in.</div>
 			{/if}
 		</section>
 
@@ -823,7 +995,7 @@
 		font-size: 0.8rem;
 	}
 
-	.passkey-list {
+	.entry-list {
 		list-style: none;
 		margin: 0 0 16px;
 		padding: 0;
@@ -832,7 +1004,7 @@
 		gap: 8px;
 	}
 
-	.passkey-list li {
+	.entry-list li {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
@@ -843,20 +1015,33 @@
 		background: var(--bg);
 	}
 
-	.passkey-meta {
+	.entry-meta {
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
 	}
 
-	.passkey-name {
+	.entry-name {
 		font-weight: 600;
 		color: var(--text);
 	}
 
-	.passkey-sub {
+	.entry-sub {
 		font-size: 0.78rem;
 		color: var(--text-muted);
+	}
+
+	.badge {
+		margin-left: 8px;
+		padding: 1px 8px;
+		border-radius: 999px;
+		font-size: 0.7rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--accent);
+		background: color-mix(in srgb, var(--accent) 14%, transparent);
+		border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
 	}
 
 	.prefs-table {

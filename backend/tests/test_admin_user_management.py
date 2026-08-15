@@ -330,3 +330,84 @@ async def test_admin_role_crud_audits(realdb):
     assert actions == ["role.created", "role.updated", "role.deleted"]
     assert rows[1].details["changed_fields"] == ["description"]
     assert rows[2].details["name"] == role_name
+
+
+# --------------------------------------------------------------------------
+# Standalone force-logout — `POST /api/admin/users/{id}/revoke-sessions`.
+# Forced logout already rides along with a role change / password reset /
+# deactivation, but incident response needs it on its own: keep the account,
+# kill the sessions. Without this an admin has to deactivate-and-reactivate,
+# locking the user out and recording a suspension that never happened.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_admin_revoke_sessions_endpoint_forces_logout(realdb, monkeypatch):
+    calls: list = []
+
+    async def _fake_revoke(user_id):
+        calls.append(user_id)
+        return ["jti-1", "jti-2"]
+
+    monkeypatch.setattr("app.api.admin.revoke_user_sessions", _fake_revoke)
+
+    target_id = realdb.info("a").users["ap_clerk"]
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post(f"/api/admin/users/{target_id}/revoke-sessions")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"revoked": 2}
+    assert calls == [target_id]
+
+    tmk = realdb.sessionmaker("a")
+    async with tmk() as s:
+        row = (
+            await s.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "user.sessions_revoked",
+                    AuditLog.entity_id == target_id,
+                )
+            )
+        ).scalar_one()
+    assert row.actor_id == realdb.info("a").users["admin"]
+    assert row.details == {"revoked": 2}
+
+
+@pytest.mark.asyncio
+async def test_admin_revoke_sessions_refuses_a_user_from_another_org(realdb, monkeypatch):
+    """Org-scoped: tenant B's user is a 404 to tenant A's admin, and no
+    revocation runs — otherwise the endpoint would be a cross-tenant kill switch."""
+    calls: list = []
+
+    async def _fake_revoke(user_id):
+        calls.append(user_id)
+        return []
+
+    monkeypatch.setattr("app.api.admin.revoke_user_sessions", _fake_revoke)
+
+    foreign_id = realdb.info("b").users["admin"]
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post(f"/api/admin/users/{foreign_id}/revoke-sessions")
+
+    assert resp.status_code == 404
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_admin_revoke_sessions_requires_user_manage(realdb, monkeypatch):
+    """Ending someone else's session is a user-administration action, not
+    something any authenticated employee may do to a colleague."""
+    calls: list = []
+
+    async def _fake_revoke(user_id):
+        calls.append(user_id)
+        return []
+
+    monkeypatch.setattr("app.api.admin.revoke_user_sessions", _fake_revoke)
+
+    target_id = realdb.info("a").users["admin"]
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        resp = await c.post(f"/api/admin/users/{target_id}/revoke-sessions")
+
+    assert resp.status_code == 403
+    assert calls == []

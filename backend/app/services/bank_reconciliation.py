@@ -20,6 +20,38 @@ Two responsibilities:
           uses (token Jaccard). Confidence is the Jaccard score
           scaled into 50–70.
 
+**Identity is not reconciliation.** Strategy (a) matches on a
+reference string alone, so it can identify a payment while the bank
+did something our books don't support:
+
+  * a *different amount* than we authorised — a wire that left at
+    $50,000 against a $5,000 instruction, an altered cheque, a
+    duplicated fee → `amount_mismatch`;
+  * a *different currency* than the payment settles in — a €1,000
+    debit against a $1,000 payment → `currency_mismatch`;
+  * a payment our books say never went out at all (`failed`,
+    `voided`, `cancelled`, still `pending`) → `status_conflict`.
+
+Each of those is linked to its payment (so nothing else can claim it)
+yet NOT counted as reconciled, and the signed variance
+(`match_variance`, positive = the bank took MORE than we authorised)
+is surfaced on the API. This mirrors the `amount_mismatch`
+classification the other two reconcilers already have —
+`positive_pay.classify_presented_items` (altered cheque) and
+`vendor_statement_recon` (statement line vs our ledger). Strategies
+(b) and (c) key off an exact amount + currency and only consider
+payments our books say were dispatched, so only (a) can produce one:
+a heuristic has no identity proof, and inventing a "discrepancy" out
+of a coincidence would be worse than leaving the line unmatched.
+
+**What "the payment's amount" means to a bank line.** The account is
+debited in the currency the money *leaves* in. For a domestic payment
+that's `Payment.amount` in the invoice's currency; for one carrying an
+FX leg it's `Payment.source_amount` in `Payment.source_currency`
+(`services.international_payments` locks both at submission). The
+`settlement_amount_and_currency` helper is the single definition of
+that pair — `settlement_amount_sql` is its SQL mirror for aggregates.
+
 A transaction with NO match stays `matched_payment_id=NULL`. Today
 the AP team reviews unmatched transactions from the statement detail
 view (`GET /api/bank-reconciliation/{id}`) and resolves them by hand
@@ -40,8 +72,9 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from typing import NamedTuple
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.bank_reconciliation import BankStatement, BankTransaction
@@ -80,6 +113,155 @@ _CONFIDENCE_AMOUNT_DATE = Decimal("80.00")
 _FUZZY_MIN_JACCARD = 0.5  # below this we don't even try
 _FUZZY_CONFIDENCE_BASE = Decimal("50.00")
 _FUZZY_CONFIDENCE_SPREAD = Decimal("20.00")
+
+# ``BankTransaction.match_method`` vocabulary. Named constants so the
+# router, the matcher and the tests can't drift on a string literal.
+MATCH_METHOD_PROVIDER_ID = "provider_id"
+MATCH_METHOD_AMOUNT_DATE = "amount_date"
+MATCH_METHOD_FUZZY_VENDOR = "fuzzy_vendor"
+MATCH_METHOD_MANUAL = "manual"
+# The three DISCREPANCY classes. Each means "we know WHICH payment this bank
+# line is, and it does not reconcile" — linked, never counted as cleared.
+# Identified, but the bank moved a different amount than the payment authorises.
+MATCH_METHOD_AMOUNT_MISMATCH = "amount_mismatch"
+# Identified, but the bank moved a different CURRENCY than the payment settles
+# in. The amounts are then not comparable at all, so this outranks the amount
+# check: a €1,000 debit against a $1,000 payment is not a clean clearing.
+MATCH_METHOD_CURRENCY_MISMATCH = "currency_mismatch"
+# Identified, amount + currency agree, but our books say this payment never
+# went out (``failed`` / ``voided`` / ``cancelled`` / still ``pending`` /
+# ``pending_compliance``). Money left the account against a payment we do not
+# consider dispatched — the exact discrepancy reconciliation exists to surface.
+MATCH_METHOD_STATUS_CONFLICT = "status_conflict"
+
+# Every method that means "linked but NOT reconciled". Single source of truth
+# for ``is_reconciled`` and for the API's discrepancy views.
+UNRECONCILED_MATCH_METHODS = frozenset(
+    {
+        MATCH_METHOD_AMOUNT_MISMATCH,
+        MATCH_METHOD_CURRENCY_MISMATCH,
+        MATCH_METHOD_STATUS_CONFLICT,
+    }
+)
+
+# Payment statuses where our books assert the money was handed to the bank, so
+# a corresponding debit is expected. ``pending`` was never dispatched;
+# ``failed`` / ``cancelled`` / ``voided`` are terminal non-payments; and
+# ``pending_compliance`` is held BEFORE the adapter call. Shared by the matcher
+# (a heuristic only considers these), the discrepancy classifier, and the
+# outstanding-items report — one definition, three readers.
+EXPECTED_TO_CLEAR_STATUSES = ("completed", "submitted", "processing")
+
+# How far the bank's amount may drift from the payment's before the line stops
+# counting as reconciled. One cent — the same tolerance
+# ``positive_pay.DEFAULT_AMOUNT_TOLERANCE`` uses for the altered-cheque call.
+AMOUNT_MATCH_TOLERANCE = Decimal("0.01")
+
+
+def settlement_amount_and_currency(payment, invoice_currency: str | None) -> tuple[Decimal, str]:
+    """What the bank account was actually debited for this payment.
+
+    A domestic payment leaves the account at ``Payment.amount``, denominated in
+    the invoice's currency (``prepare_international_payment`` stamps
+    ``amount=invoice.amount``, "paid in invoice currency"). One carrying an FX
+    leg leaves it at ``source_amount`` in ``source_currency`` — the home-currency
+    figure the rate was locked against. Reconciliation compares a bank line
+    against THAT pair, so an international payment neither silently reconciles
+    at the wrong number nor gets flagged as a phantom discrepancy.
+
+    The currency comes back ``""`` when it can't be established (no invoice
+    row / no FX stamp). Callers treat that as *unknown* and skip the currency
+    comparison rather than inventing a mismatch out of missing data.
+    """
+    source_amount = getattr(payment, "source_amount", None)
+    source_currency = getattr(payment, "source_currency", None)
+    if source_amount is not None and source_currency not in (None, ""):
+        return Decimal(source_amount), str(source_currency).upper()
+    return Decimal(payment.amount), (invoice_currency or "").strip().upper()
+
+
+def settlement_amount_sql():
+    """SQL mirror of :func:`settlement_amount_and_currency`'s amount half.
+
+    Kept adjacent to the Python definition so an aggregate over the whole set
+    and a per-row response can't disagree about what the bank debited. The
+    predicate is written to be *structurally* identical to the Python one —
+    including the empty-string case — rather than merely equivalent for the
+    values `services.international_payments` happens to write today.
+    """
+    return case(
+        (
+            and_(
+                Payment.source_amount.is_not(None),
+                Payment.source_currency.is_not(None),
+                Payment.source_currency != "",
+            ),
+            Payment.source_amount,
+        ),
+        else_=Payment.amount,
+    )
+
+
+def classify_discrepancy(
+    *,
+    bank_amount: Decimal,
+    bank_currency: str | None,
+    payment_amount: Decimal,
+    payment_currency: str | None,
+    payment_status: str | None,
+) -> str | None:
+    """Given an IDENTIFIED payment, does this bank line reconcile?
+
+    Returns the discrepancy ``match_method`` (one of
+    :data:`UNRECONCILED_MATCH_METHODS`) or ``None`` when the line genuinely
+    clears. Pure. The single classifier behind BOTH the automatic matcher's
+    reference strategy and the manual ``/resolve`` path, so a human cannot land
+    a classification the matcher would never produce.
+
+    Precedence is currency → amount → status: a currency mismatch makes the
+    amount comparison meaningless, and an amount mismatch is the stronger fraud
+    signal of the remaining two. An unknown currency on either side skips the
+    currency check only — missing data must not manufacture a discrepancy.
+    """
+    bank_ccy = (bank_currency or "").strip().upper()
+    pay_ccy = (payment_currency or "").strip().upper()
+    if bank_ccy and pay_ccy and bank_ccy != pay_ccy:
+        return MATCH_METHOD_CURRENCY_MISMATCH
+    if is_amount_mismatch(bank_amount, payment_amount):
+        return MATCH_METHOD_AMOUNT_MISMATCH
+    if (payment_status or "") not in EXPECTED_TO_CLEAR_STATUSES:
+        return MATCH_METHOD_STATUS_CONFLICT
+    return None
+
+
+def match_variance(bank_amount: Decimal, payment_amount: Decimal) -> Decimal:
+    """Signed 2dp variance between what the bank moved and what the payment
+    authorises. **Positive means the bank took MORE than we authorised** —
+    the direction that matters for fraud. Pure ``Decimal``, never float."""
+    return (Decimal(bank_amount) - Decimal(payment_amount)).quantize(Decimal("0.01"))
+
+
+def is_amount_mismatch(
+    bank_amount: Decimal,
+    payment_amount: Decimal,
+    *,
+    tolerance: Decimal = AMOUNT_MATCH_TOLERANCE,
+) -> bool:
+    """True when the two amounts differ beyond ``tolerance``."""
+    return abs(match_variance(bank_amount, payment_amount)) > tolerance
+
+
+def is_reconciled(match_method: str | None, matched_payment_id: uuid.UUID | None) -> bool:
+    """Does this transaction count toward ``BankStatement.matched_count``?
+
+    Being linked to a payment is necessary but not sufficient: a discrepancy
+    line names its payment precisely *because* something about it disagrees
+    (amount, currency, or our own record of whether it ever went out), so
+    counting it as reconciled would report the discrepancy as cleared. Single
+    source of truth for the rollup — the matcher, the manual ``/resolve``
+    recompute and the outstanding-items report all use it.
+    """
+    return matched_payment_id is not None and match_method not in UNRECONCILED_MATCH_METHODS
 
 
 # ---------------------------------------------------------------------------
@@ -313,18 +495,31 @@ async def _candidate_payments_in_window(
     transaction_date: date,
     window_days: int,
 ) -> list[Payment]:
-    """Pull payments whose amount equals the transaction's amount and
-    whose `submitted_at` (fallback: `completed_at`, fallback:
-    `created_at`) falls within `window_days` of `transaction_date`.
-    The window check is done in Python — a SQL `BETWEEN` against a
-    nullable timestamp set ends up clumsy across SQLite (tests) and
-    Postgres (prod)."""
+    """Pull payments the bank could plausibly have debited for this line.
+
+    The SQL half selects rows whose settlement amount equals the transaction's
+    — ``Payment.amount`` for a domestic payment, ``source_amount`` for one with
+    an FX leg (see :func:`settlement_amount_and_currency`) — and whose status
+    says we actually dispatched them (:data:`EXPECTED_TO_CLEAR_STATUSES`). A
+    ``failed`` / ``voided`` / still-``pending`` payment is deliberately NOT a
+    candidate here: this strategy has no identity proof, only a coincidence of
+    amount and date, so linking one would fabricate a discrepancy rather than
+    report a real one. The reference strategy — which DOES have identity proof
+    — is where a non-dispatched payment surfaces, as ``status_conflict``.
+
+    The date-window check stays in Python: a SQL ``BETWEEN`` against a nullable
+    timestamp set ends up clumsy across SQLite (tests) and Postgres (prod). The
+    status filter is re-applied there too so the guarantee doesn't depend on
+    which half of the query enforces it.
+    """
     floor = transaction_date - timedelta(days=window_days)
     ceiling = transaction_date + timedelta(days=window_days)
     result = await db.execute(
         select(Payment).where(
             and_(
-                Payment.amount == amount,
+                # Domestic (amount) OR the FX leg's home-currency figure.
+                or_(Payment.amount == amount, Payment.source_amount == amount),
+                Payment.status.in_(EXPECTED_TO_CLEAR_STATUSES),
                 # Restrict by org via the invoice join — the
                 # Payment.organization_id column doesn't exist
                 # directly; payments are tenant-scoped via the DB.
@@ -336,6 +531,8 @@ async def _candidate_payments_in_window(
     payments = result.scalars().all()
     out: list[Payment] = []
     for p in payments:
+        if getattr(p, "status", None) not in EXPECTED_TO_CLEAR_STATUSES:
+            continue
         ts = p.submitted_at or p.completed_at or p.created_at  # type: ignore[attr-defined]
         if ts is None:
             continue
@@ -348,6 +545,67 @@ async def _candidate_payments_in_window(
     return out
 
 
+class _InvoiceFacts(NamedTuple):
+    """The two invoice-side facts reconciliation needs that don't live on the
+    ``Payment`` row: the currency its ``amount`` is denominated in, and the
+    vendor name the fuzzy strategy disambiguates on. ``currency`` is ``""``
+    when unknown."""
+
+    currency: str
+    vendor_name: str | None
+
+
+_UNKNOWN_INVOICE = _InvoiceFacts(currency="", vendor_name=None)
+
+
+async def _load_invoice_facts(
+    db: AsyncSession,
+    invoice_ids: Iterable[uuid.UUID],
+    cache: dict[uuid.UUID, _InvoiceFacts],
+) -> None:
+    """Fill ``cache`` for every id it doesn't already hold, in ONE query.
+
+    Shared by the currency comparison and the fuzzy-vendor strategy so a
+    statement's transactions never fan out into an invoice-per-payment N+1, and
+    so both read the same row. An id with no invoice row lands as
+    :data:`_UNKNOWN_INVOICE` (cached, so it is never re-queried).
+    """
+    missing = [i for i in dict.fromkeys(invoice_ids) if i is not None and i not in cache]
+    if not missing:
+        return
+    rows = (await db.execute(select(Invoice).where(Invoice.id.in_(missing)))).scalars().all()
+    found = {
+        inv.id: _InvoiceFacts(
+            currency=(inv.currency or "").strip().upper(),
+            vendor_name=inv.vendor_name,
+        )
+        for inv in rows
+    }
+    for invoice_id in missing:
+        cache[invoice_id] = found.get(invoice_id, _UNKNOWN_INVOICE)
+
+
+def _settles_as(
+    payment: Payment,
+    invoice_facts: dict[uuid.UUID, _InvoiceFacts],
+    *,
+    amount: Decimal,
+    currency: str | None,
+) -> bool:
+    """Could this payment be the bank line's exact clearing?
+
+    Exact settlement amount AND a matching currency. An unknown currency on
+    either side is not disqualifying — the heuristic then rests on the amount +
+    date coincidence alone, exactly as it did before currencies were compared.
+    """
+    facts = invoice_facts.get(payment.invoice_id, _UNKNOWN_INVOICE)
+    settled_amount, settled_currency = settlement_amount_and_currency(payment, facts.currency)
+    if settled_amount != amount:
+        return False
+    bank_currency = (currency or "").strip().upper()
+    return not settled_currency or not bank_currency or settled_currency == bank_currency
+
+
 async def _payment_by_reference(
     db: AsyncSession,
     reference: str,
@@ -356,44 +614,68 @@ async def _payment_by_reference(
     `reference`. The two columns store different but overlapping
     things — provider_payment_id is always the processor's ID;
     reference is whatever the processor returned (ACH trace number,
-    check number, etc.)."""
-    result = await db.execute(select(Payment).where(Payment.provider_payment_id == reference))
-    found = result.scalar_one_or_none()
-    if found is not None:
-        return found
-    result = await db.execute(select(Payment).where(Payment.reference == reference))
-    return result.scalar_one_or_none()
+    check number, etc.).
+
+    **Neither column is unique**, so this cannot use
+    ``scalar_one_or_none()``: `Payment.reference` is free text a caller
+    supplies on ``POST /api/payments`` and the virtual-card path stamps a
+    derived, deliberately non-unique value
+    (``payments.py`` → ``f"CARD-{provider}-{last_four}"``, which collapses to
+    ``CARD-LITHIC-????`` for every card with no last-four). A duplicated
+    reference therefore made SQLAlchemy raise ``MultipleResultsFound`` and
+    500 the whole statement import.
+
+    An ambiguous reference is treated as **no reference match**: it names more
+    than one payment, so it proves nothing, and the caller falls through to
+    the amount+date / fuzzy-vendor strategies. Picking one arbitrarily would
+    credit the wrong invoice — the same refusal the ambiguous-fuzzy branch
+    already makes.
+    """
+    for column in (Payment.provider_payment_id, Payment.reference):
+        # LIMIT 2 — we only need to know "exactly one" vs "more than one".
+        rows = list(
+            (await db.execute(select(Payment).where(column == reference).limit(2))).scalars().all()
+        )
+        if len(rows) == 1:
+            return rows[0]
+        if len(rows) > 1:
+            # PII-free: counts only, never the reference string itself.
+            logger.warning(
+                "[bank_reconciliation] reference matches %d payments on %s — "
+                "ambiguous, falling through to amount/date matching",
+                len(rows),
+                column.key,
+            )
+            return None
+    return None
 
 
-async def _fuzzy_vendor_match(
-    db: AsyncSession,
+def _fuzzy_vendor_match(
     *,
     candidates: list[Payment],
     counterparty_name: str,
+    invoice_facts: dict[uuid.UUID, _InvoiceFacts],
 ) -> tuple[Payment, Decimal] | None:
     """Of the amount+date-window candidates, pick the one whose
     invoice's `vendor_name` best matches the bank transaction's
     `counterparty_name`. Returns (payment, confidence) or None when
-    no candidate scores above the floor."""
+    no candidate scores above the floor.
+
+    Pure: the caller has already loaded every candidate's invoice into
+    ``invoice_facts`` (:func:`_load_invoice_facts`), which the currency
+    comparison needs anyway — so this no longer re-queries them."""
     if not candidates or not counterparty_name:
         return None
     cp_key = _normalize(counterparty_name)
     if not cp_key:
         return None
 
-    # Fetch the candidate invoices in one query.
-    invoice_ids = [c.invoice_id for c in candidates]
-    inv_rows = (
-        (await db.execute(select(Invoice).where(Invoice.id.in_(invoice_ids)))).scalars().all()
-    )
-    by_id = {inv.id: inv for inv in inv_rows}
-
     best: tuple[Payment, Decimal] | None = None
     for payment in candidates:
-        inv = by_id.get(payment.invoice_id)
-        if inv is None or not inv.vendor_name:
+        facts = invoice_facts.get(payment.invoice_id, _UNKNOWN_INVOICE)
+        if not facts.vendor_name:
             continue
-        score = _similarity(cp_key, _normalize(inv.vendor_name))
+        score = _similarity(cp_key, _normalize(facts.vendor_name))
         if score < _FUZZY_MIN_JACCARD:
             continue
         # Map jaccard 0.5–1.0 → confidence 50–70.
@@ -434,9 +716,19 @@ async def match_statement_transactions(
 
     Returns counts by outcome so the caller can summarise the result
     on the import API response: `{"matched": N, "unmatched": M,
-    "skipped_credit": K}`.
+    "skipped_credit": K, "amount_mismatch": V, "currency_mismatch": W,
+    "status_conflict": X}`. `matched` counts only genuinely RECONCILED
+    lines — each discrepancy class is linked to its payment but lands in
+    its own bucket (see the module docstring).
     """
-    counts = {"matched": 0, "unmatched": 0, "skipped_credit": 0}
+    counts = {
+        "matched": 0,
+        "unmatched": 0,
+        "skipped_credit": 0,
+        "amount_mismatch": 0,
+        "currency_mismatch": 0,
+        "status_conflict": 0,
+    }
 
     claimed: set[uuid.UUID] = set(
         (
@@ -449,6 +741,9 @@ async def match_statement_transactions(
         .scalars()
         .all()
     )
+    # Invoice currency + vendor name per payment, loaded once and reused across
+    # the batch (both the currency comparison and the fuzzy strategy read it).
+    invoice_facts: dict[uuid.UUID, _InvoiceFacts] = {}
 
     for tx in transactions:
         if tx.direction != "debit":
@@ -457,13 +752,30 @@ async def match_statement_transactions(
 
         attempt: MatchAttempt | None = None
 
-        # Strategy 1: exact reference match.
+        # Strategy 1: exact reference match. The reference establishes WHICH
+        # payment this line is; amount, currency and the payment's own status
+        # then decide whether it reconciles. A same-reference line for a
+        # different amount / currency, or against a payment our books say never
+        # went out, is the discrepancy signal — link it, classify it, never
+        # count it as cleared.
         if tx.reference:
             found = await _payment_by_reference(db, tx.reference)
             if found is not None and found.id not in claimed:
+                await _load_invoice_facts(db, [found.invoice_id], invoice_facts)
+                facts = invoice_facts.get(found.invoice_id, _UNKNOWN_INVOICE)
+                settled_amount, settled_currency = settlement_amount_and_currency(
+                    found, facts.currency
+                )
+                discrepancy = classify_discrepancy(
+                    bank_amount=tx.amount,
+                    bank_currency=tx.currency,
+                    payment_amount=settled_amount,
+                    payment_currency=settled_currency,
+                    payment_status=getattr(found, "status", None),
+                )
                 attempt = MatchAttempt(
                     payment_id=found.id,
-                    method="provider_id",
+                    method=discrepancy or MATCH_METHOD_PROVIDER_ID,
                     confidence=_CONFIDENCE_PROVIDER_ID,
                 )
 
@@ -479,24 +791,33 @@ async def match_statement_transactions(
                 window_days=window_days,
             )
             candidates = [c for c in candidates if c.id not in claimed]
+            # The currency has to agree too: a €1,000 debit is not the clearing
+            # of a $1,000 payment. Unknown on either side → the amount+date
+            # coincidence stands on its own (missing data can't disqualify).
+            await _load_invoice_facts(db, [c.invoice_id for c in candidates], invoice_facts)
+            candidates = [
+                c
+                for c in candidates
+                if _settles_as(c, invoice_facts, amount=tx.amount, currency=tx.currency)
+            ]
             if len(candidates) == 1:
                 attempt = MatchAttempt(
                     payment_id=candidates[0].id,
-                    method="amount_date",
+                    method=MATCH_METHOD_AMOUNT_DATE,
                     confidence=_CONFIDENCE_AMOUNT_DATE,
                 )
 
         # Strategy 3: fuzzy vendor — disambiguate amount+date ties.
         if attempt is None and candidates and tx.counterparty_name:
-            fuzzy = await _fuzzy_vendor_match(
-                db,
+            fuzzy = _fuzzy_vendor_match(
                 candidates=candidates,
                 counterparty_name=tx.counterparty_name,
+                invoice_facts=invoice_facts,
             )
             if fuzzy is not None:
                 attempt = MatchAttempt(
                     payment_id=fuzzy[0].id,
-                    method="fuzzy_vendor",
+                    method=MATCH_METHOD_FUZZY_VENDOR,
                     confidence=fuzzy[1],
                 )
 
@@ -507,8 +828,13 @@ async def match_statement_transactions(
         tx.matched_payment_id = attempt.payment_id
         tx.match_method = attempt.method
         tx.match_confidence = attempt.confidence
+        # Claimed either way: a discrepancy line IS this payment's bank line,
+        # so no other transaction may also claim it.
         claimed.add(attempt.payment_id)
         tx.matched_at = datetime.now(UTC)
-        counts["matched"] += 1
+        if attempt.method in UNRECONCILED_MATCH_METHODS:
+            counts[attempt.method] += 1
+        else:
+            counts["matched"] += 1
 
     return counts

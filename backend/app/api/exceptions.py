@@ -14,6 +14,13 @@ from app.database import get_control_db
 from app.models.exception import Exception as APException
 from app.models.invoice import Invoice
 from app.models.user import User
+from app.services.exception_lifecycle import (
+    ACTIONABLE_STATUSES,
+    RESOLUTION_ACTIONS,
+    correlation_ids_for,
+    record_assignment,
+    record_decision,
+)
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant_db
 
 router = APIRouter(prefix="/exceptions", tags=["exceptions"])
@@ -38,7 +45,7 @@ def _exception_dict(exc: APException, inv: Invoice | None) -> dict:
     the queue UI consumes. Centralised so the list, assign, and bulk
     handlers all return the same shape."""
     now = datetime.now(UTC)
-    is_overdue = bool(exc.due_at and exc.status in ("open", "escalated") and exc.due_at < now)
+    is_overdue = bool(exc.due_at and exc.status in ACTIONABLE_STATUSES and exc.due_at < now)
     time_to_resolution_hours = (
         round(exc.time_to_resolution_seconds / 3600, 2)
         if exc.time_to_resolution_seconds is not None
@@ -178,30 +185,6 @@ class ResolveRequest(BaseModel):
     action: str = "resolve"  # resolve, escalate, dismiss
 
 
-def _apply_resolution(exc: APException, action: str, resolution: str, actor_name: str) -> None:
-    """Mutate the exception for `action`. Computes time-to-resolution
-    when it lands in a terminal state. Caller commits the session."""
-    if action == "resolve":
-        exc.status = "resolved"
-    elif action == "escalate":
-        exc.status = "escalated"
-    elif action == "dismiss":
-        exc.status = "dismissed"
-    else:
-        raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
-
-    now = datetime.now(UTC)
-    exc.resolution = resolution
-    exc.resolved_by = actor_name
-    exc.resolved_at = now
-    if action in ("resolve", "dismiss") and exc.created_at is not None:
-        # Compute SLA observance once, on the trip to a terminal
-        # state. `escalated` is non-terminal — leaves the field blank
-        # until a follow-up resolve/dismiss lands.
-        delta = now - exc.created_at
-        exc.time_to_resolution_seconds = int(delta.total_seconds())
-
-
 # ---------- Bulk resolve --------------------------------------------------
 # Registered BEFORE the parameterised `/{exception_id}/resolve` so the
 # literal `/bulk/resolve` path doesn't get matched as exception_id="bulk"
@@ -224,15 +207,20 @@ async def bulk_resolve(
     body: BulkResolveRequest,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Resolve / escalate / dismiss many exceptions at once. Common
     pattern: bulk-dismiss the duplicate-detection backlog after a
     semantic-dedup tuning pass.
 
+    Entity-scoped like the list/detail reads: an id outside the selected
+    entity is indistinguishable from an id that doesn't exist, so a bulk
+    call can't be used to enumerate — or clear — another subsidiary's queue.
+
     Per-row failures (already resolved, unknown id) come back in
     `skipped` with a reason — same partial-success contract as the
     invoice bulk endpoints."""
-    if body.action not in ("resolve", "escalate", "dismiss"):
+    if body.action not in RESOLUTION_ACTIONS:
         raise HTTPException(status_code=400, detail=f"Unknown action: {body.action}")
 
     try:
@@ -240,7 +228,17 @@ async def bulk_resolve(
     except ValueError as exc_:
         raise HTTPException(status_code=400, detail=f"Invalid id: {exc_}") from exc_
 
-    rows = (await db.execute(select(APException).where(APException.id.in_(ids)))).scalars().all()
+    rows = (
+        (
+            await db.execute(
+                apply_entity_scope(
+                    select(APException).where(APException.id.in_(ids)), APException, entity_id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
     seen_ids = {row.id for row in rows}
 
     updated = 0
@@ -249,11 +247,23 @@ async def bulk_resolve(
         if missing not in seen_ids:
             skipped.append({"id": str(missing), "reason": "not_found"})
 
+    # One correlation lookup for the whole batch — a 200-row bulk action must
+    # not fire 200 extra queries just to file its audit rows.
+    correlations = await correlation_ids_for(db, rows)
+
     for exc in rows:
-        if exc.status not in ("open", "escalated"):
+        if exc.status not in ACTIONABLE_STATUSES:
             skipped.append({"id": str(exc.id), "reason": f"already_{exc.status}"})
             continue
-        _apply_resolution(exc, body.action, body.resolution, user.full_name)
+        await record_decision(
+            db,
+            exception=exc,
+            action=body.action,
+            resolution=body.resolution,
+            actor_id=user.id,
+            actor_name=user.full_name,
+            correlation_id=correlations.get(exc.id),
+        )
         updated += 1
 
     await db.commit()
@@ -266,16 +276,47 @@ async def resolve_exception(
     body: ResolveRequest,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    result = await db.execute(select(APException).where(APException.id == exception_id))
-    exc = result.scalar_one_or_none()
-    if not exc:
-        raise HTTPException(status_code=404, detail="Exception not found")
+    """Resolve / escalate / dismiss one exception.
 
-    if exc.status not in ("open", "escalated"):
+    Entity-scoped like the detail read — an out-of-scope id is the same opaque
+    404. This is a payment-integrity control (`duplicate` / `fraud_flag` /
+    `line_total_mismatch` block a payment run), so it must not be reachable
+    across subsidiaries by id alone."""
+    # Join the invoice in the SAME query the detail read uses: the audit row
+    # files under the invoice's correlation, so fetching it here costs nothing
+    # extra and saves `record_decision` a second round-trip.
+    row = (
+        await db.execute(
+            apply_entity_scope(
+                select(APException, Invoice).outerjoin(
+                    Invoice, APException.invoice_id == Invoice.id
+                ),
+                APException,
+                entity_id,
+            ).where(APException.id == exception_id)
+        )
+    ).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Exception not found")
+    exc, inv = row
+
+    if exc.status not in ACTIONABLE_STATUSES:
         raise HTTPException(status_code=409, detail=f"Cannot resolve from '{exc.status}' status")
 
-    _apply_resolution(exc, body.action, body.resolution, user.full_name)
+    try:
+        await record_decision(
+            db,
+            exception=exc,
+            action=body.action,
+            resolution=body.resolution,
+            actor_id=user.id,
+            actor_name=user.full_name,
+            invoice=inv,
+        )
+    except ValueError as exc_:
+        raise HTTPException(status_code=400, detail=str(exc_)) from exc_
     await db.commit()
 
     return {"id": str(exc.id), "status": exc.status, "message": f"Exception {body.action}d"}
@@ -297,14 +338,22 @@ async def assign_exception(
     db: AsyncSession = Depends(get_tenant_db),
     ctrl_db: AsyncSession = Depends(get_control_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Assign (or unassign by passing user_id=null) an open exception
-    to a specific user. The user must belong to the same organization."""
-    result = await db.execute(select(APException).where(APException.id == exception_id))
+    to a specific user. The user must belong to the same organization.
+
+    Entity-scoped like the detail read (out-of-scope id → the same opaque 404)
+    and audited: routing a control to a named owner is part of the trail."""
+    result = await db.execute(
+        apply_entity_scope(
+            select(APException).where(APException.id == exception_id), APException, entity_id
+        )
+    )
     exc = result.scalar_one_or_none()
     if not exc:
         raise HTTPException(status_code=404, detail="Exception not found")
-    if exc.status not in ("open", "escalated"):
+    if exc.status not in ACTIONABLE_STATUSES:
         raise HTTPException(status_code=409, detail=f"Cannot assign from '{exc.status}' status")
 
     if body.user_id:
@@ -329,8 +378,19 @@ async def assign_exception(
         exc.assigned_to_user_id = None
         exc.assigned_to = None
 
+    inv = None
+    if exc.invoice_id is not None:
+        inv = (
+            await db.execute(select(Invoice).where(Invoice.id == exc.invoice_id))
+        ).scalar_one_or_none()
+
+    await record_assignment(
+        db,
+        exception=exc,
+        assigned_to_user_id=exc.assigned_to_user_id,
+        actor_id=user.id,
+        invoice=inv,
+    )
     await db.commit()
 
-    inv_result = await db.execute(select(Invoice).where(Invoice.id == exc.invoice_id))
-    inv = inv_result.scalar_one_or_none()
     return _exception_dict(exc, inv)

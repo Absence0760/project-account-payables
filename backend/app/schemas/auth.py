@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -188,3 +190,30 @@ class UpdateProfileRequest(BaseModel):
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(..., min_length=1)
     new_password: str = Field(..., min_length=12, max_length=128)
+
+
+class SessionResponse(BaseModel):
+    """One of the caller's own live sign-ins.
+
+    `id` is the token's JTI — an opaque session handle, not a credential (the
+    JWT itself never leaves the client that holds it), and the only thing the
+    revoke endpoint accepts. `ip` / `device` / `method` are best-effort: a
+    session recorded before this shipped, or one from a client that sent no
+    User-Agent, simply reports nulls rather than a guess.
+    """
+
+    id: str
+    created_at: datetime
+    expires_at: datetime
+    ip: str | None = None
+    device: str | None = None
+    method: str | None = None
+    # True for the session making this request — the one the UI must not
+    # invite the user to kill by accident.
+    current: bool = False
+
+
+class SessionRevokeResponse(BaseModel):
+    """How many sessions the revoke actually ended."""
+
+    revoked: int

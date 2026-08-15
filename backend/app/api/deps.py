@@ -143,6 +143,13 @@ async def get_current_user(
     from app.api.permissions import effective_permissions
 
     user.effective_permissions = effective_permissions(user.roles)
+    # The JTI of the token that authenticated THIS request, stashed the same
+    # transient way. The session endpoints need it to mark the caller's own
+    # entry as current and to exclude it from "sign out everywhere else" —
+    # re-decoding the header inside those handlers would duplicate the
+    # blocklist/type checks already done above. `None` for a legacy token
+    # minted before the claim existed.
+    user.session_jti = jti
     return user
 
 

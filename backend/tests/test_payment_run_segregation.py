@@ -162,7 +162,9 @@ async def test_execute_refuses_the_user_who_created_the_run(realdb):
 
     async with realdb.sessionmaker("a")() as db:
         with pytest.raises(HTTPException) as ei:
-            await execute_payment_run(run_id=run_id, db=db, org=_org(org_id), user=_user(creator))
+            await execute_payment_run(
+                run_id=run_id, db=db, org=_org(org_id), user=_user(creator), entity_id=None
+            )
     assert ei.value.status_code == 403
     assert "execute" in ei.value.detail
 
@@ -189,7 +191,11 @@ async def test_execute_proceeds_for_a_different_actor(realdb):
             patch("app.services.payment_erp_sync.dispatch_payment_sync", new_callable=AsyncMock),
         ):
             res = await execute_payment_run(
-                run_id=run_id, db=db, org=_org(org_id), user=_user(info.users["admin"])
+                run_id=run_id,
+                db=db,
+                org=_org(org_id),
+                user=_user(info.users["admin"]),
+                entity_id=None,
             )
     assert res["status"] in ("completed", "submitted", "partial")
 
@@ -214,7 +220,7 @@ async def test_execute_opt_out_allows_same_actor(realdb):
             patch("app.services.payment_erp_sync.dispatch_payment_sync", new_callable=AsyncMock),
         ):
             res = await execute_payment_run(
-                run_id=run_id, db=db, org=opted_out, user=_user(creator)
+                run_id=run_id, db=db, org=opted_out, user=_user(creator), entity_id=None
             )
     # Same actor, but the org opted out → execution proceeds.
     assert res["status"] in ("completed", "submitted", "partial")
@@ -232,7 +238,9 @@ async def test_cfo_approve_refuses_the_user_who_created_the_run(realdb):
 
     async with realdb.sessionmaker("a")() as db:
         with pytest.raises(HTTPException) as ei:
-            await approve_payment_run(run_id=run_id, db=db, org=_org(org_id), user=_user(creator))
+            await approve_payment_run(
+                run_id=run_id, db=db, org=_org(org_id), user=_user(creator), entity_id=None
+            )
     assert ei.value.status_code == 403
     assert "approve" in ei.value.detail
 
@@ -260,7 +268,9 @@ async def test_resume_refuses_the_user_who_created_the_run(realdb):
 
     async with realdb.sessionmaker("a")() as db:
         with pytest.raises(HTTPException) as ei:
-            await resume_payment_run(run_id=run_id, db=db, org=_org(org_id), user=_user(creator))
+            await resume_payment_run(
+                run_id=run_id, db=db, org=_org(org_id), user=_user(creator), entity_id=None
+            )
     assert ei.value.status_code == 403
     assert "execute" in ei.value.detail
 
@@ -291,7 +301,11 @@ async def test_resume_proceeds_for_a_different_actor(realdb):
             patch("app.services.payment_erp_sync.dispatch_payment_sync", new_callable=AsyncMock),
         ):
             res = await resume_payment_run(
-                run_id=run_id, db=db, org=_org(org_id), user=_user(info.users["admin"])
+                run_id=run_id,
+                db=db,
+                org=_org(org_id),
+                user=_user(info.users["admin"]),
+                entity_id=None,
             )
     assert res["status"] in ("completed", "submitted", "partial")
 

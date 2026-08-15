@@ -36,6 +36,7 @@ from app.models.exception import Exception as APException
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.payment import Payment
 from app.models.vendor import Vendor
+from app.models.workflow import AuditLog
 
 pytestmark = pytest.mark.asyncio
 
@@ -237,3 +238,75 @@ async def test_release_and_dismiss_409_on_a_non_held_payment(realdb):
         )
     assert release_resp.status_code == 409, release_resp.text
     assert dismiss_resp.status_code == 409, dismiss_resp.text
+
+
+async def test_clearing_the_hold_writes_the_append_only_audit_row(realdb):
+    """Clearing a compliance hold is the sign-off that releases held money, so
+    it must leave a row on the invoice's SOX trail — not only on the mutable
+    `exceptions` row, which the next decision overwrites.
+
+    This path used to carry its own copy of the resolution bookkeeping and
+    wrote no audit row at all; it now goes through
+    `services/exception_lifecycle.record_decision`, the same chokepoint the
+    human queue and the autonomous agents use.
+    """
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    invoice_id = await _seed_unscreenable_invoice(mk, org_id, number="PCH-005", amount="750.00")
+
+    async with realdb.client(key=TENANT, role="admin") as admin_client:
+        async with realdb.client(key=TENANT, role="ap_manager") as mgr_client:
+            await _create_and_execute_run(admin_client, mgr_client, invoice_id)
+
+        async with mk() as s:
+            payment_id = (
+                await s.execute(select(Payment.id).where(Payment.invoice_id == invoice_id))
+            ).scalar_one()
+
+        dismiss_resp = await admin_client.post(
+            f"/api/payments/{payment_id}/compliance/dismiss",
+            json={"reason": "sanctions match confirmed by counsel"},
+        )
+    assert dismiss_resp.status_code == 200, dismiss_resp.text
+
+    async with mk() as s:
+        invoice = (await s.execute(select(Invoice).where(Invoice.id == invoice_id))).scalar_one()
+        exc = (
+            await s.execute(
+                select(APException).where(
+                    APException.invoice_id == invoice_id,
+                    APException.exception_type == "payment_compliance_hold",
+                )
+            )
+        ).scalar_one()
+
+        # Delegating must not have changed what the queue row ends up saying.
+        assert exc.status == "resolved"
+        assert exc.resolved_by is not None
+        assert exc.resolved_at is not None
+
+        rows = (
+            (
+                await s.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "exception.resolved",
+                        AuditLog.entity_id == exc.id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert len(rows) == 1, "exactly one immutable row per decision"
+    row = rows[0]
+    # Correlated to the INVOICE so it lands beside invoice.approved on the
+    # trail an auditor pulls, not orphaned under the exception's own id.
+    assert row.correlation_id == invoice.correlation_id
+    assert row.actor_id is not None, "the decision must name who made it"
+    assert row.details["exception_type"] == "payment_compliance_hold"
+    assert row.details["old_status"] == "open"
+    assert row.details["new_status"] == "resolved"
+    assert "sanctions match confirmed by counsel" in row.details["resolution"]
+    # PII-lean: the generated description can name the vendor; it is not copied.
+    assert "Unlinked Vendor Co" not in str(row.details)

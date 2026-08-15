@@ -42,6 +42,23 @@ Postgres ``SELECT ... FOR UPDATE`` actually serializes them.
           both racers, and both calls return 200 (resume has no run-lock
           loser to 409 — the race is per-payment, not per-run).
 
+  BUG D — ``cancel_payment_run`` racing ``execute_payment_run``. Cancel
+          read the run with a PLAIN SELECT while every sibling
+          money-control endpoint locks FOR UPDATE — and cancel is the
+          one that DELETES the child Payment rows. /execute locks,
+          flips the run to `executing` and commits (releasing the lock)
+          before its adapter loop, so a /cancel that read `draft`
+          beforehand was never blocked and went on to delete the very
+          payments being handed to the processor. Observed both ways
+          against the unfixed code: the canceller winning outright
+          (payment deleted, adapter never called, run reports success
+          with nothing paid) and the payment vanishing mid-dispatch.
+          The fix locks the run in cancel too, so the canceller blocks,
+          re-reads `executing`, and 409s before deleting anything.
+          Assertion: adapter called exactly once, the payment row
+          survives carrying the processor's result, and the run is not
+          `cancelled`.
+
 Requires the dev Postgres (``pnpm db:up``); skips otherwise, like every
 other ``realdb`` test.
 """
@@ -57,7 +74,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.payment import Payment, PaymentRun
@@ -108,6 +125,36 @@ async def _seed_invoice(session_mk, org_id: uuid.UUID, *, amount: Decimal) -> Si
         )
         await s.commit()
     return SimpleNamespace(id=inv_id, correlation_id=corr, vendor_id=vendor_id)
+
+
+async def _wait_for_lock_waiter(session_mk, *, timeout: float = 15.0) -> bool:
+    """Block until Postgres reports another backend in this database waiting on
+    a lock, then return True (False if `timeout` elapses first).
+
+    Asked of the server's own wait state — `pg_stat_activity.wait_event_type`,
+    from an independent session — rather than slept for, so a test that needs
+    "the second racer is now queued behind the first" waits on the real signal
+    instead of hoping a fixed delay was long enough. Connecting as `postgres`
+    (dev and CI both do) makes every backend's wait state visible.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        async with session_mk() as s:
+            waiting = (
+                await s.execute(
+                    text(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE datname = current_database() "
+                        "AND pid <> pg_backend_pid() "
+                        "AND wait_event_type = 'Lock'"
+                    )
+                )
+            ).scalar_one()
+        if waiting:
+            return True
+        await asyncio.sleep(0.05)
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +241,7 @@ async def test_concurrent_execute_run_charges_adapter_exactly_once(realdb):
                     db=db,
                     org=_org(org_id),
                     user=_user(admin_id),
+                    entity_id=None,
                 )
                 await db.commit()
                 return ("ok", res)
@@ -313,6 +361,7 @@ async def test_concurrent_resume_charges_adapter_exactly_once(realdb):
                     db=db,
                     org=_org(org_id),
                     user=_user(admin_id),
+                    entity_id=None,
                 )
                 await db.commit()
                 return ("ok", res)
@@ -411,6 +460,7 @@ async def test_concurrent_void_calls_adapter_and_audits_exactly_once(realdb):
                     db=db,
                     org=_org(org_id),
                     user=_user(admin_id),
+                    entity_id=None,
                 )
                 return ("ok", res)
             except HTTPException as exc:
@@ -444,3 +494,194 @@ async def test_concurrent_void_calls_adapter_and_audits_exactly_once(realdb):
 
         pay = (await s.execute(select(Payment).where(Payment.id == payment_id))).scalar_one()
         assert pay.status == "voided"
+
+
+# ---------------------------------------------------------------------------
+# BUG D — cancel racing execute must not delete payments that are being paid
+# ---------------------------------------------------------------------------
+
+
+async def test_cancel_racing_execute_cannot_delete_dispatched_payments(realdb):
+    """`/runs/{id}/cancel` read the run with a plain SELECT while every sibling
+    money-control endpoint (/approve, /execute, /resume, /void) locks FOR
+    UPDATE — and cancel is the one that DELETES the child Payment rows.
+
+    The window: /execute takes the lock, re-checks `draft`, flips the run to
+    `executing` and commits (releasing the lock) before its adapter loop. A
+    /cancel that read `draft` before that commit was never blocked, so it
+    proceeded to delete the very payments being handed to the processor. Real
+    money moves, the Payment rows are gone, and the run reads `cancelled` — an
+    outgoing payment with no record of itself.
+
+    With the lock, the canceller blocks until /execute commits, re-reads
+    `executing`, and 409s before deleting anything. Asserted on the durable
+    outcome, not on timing: the adapter is still called exactly once AND the
+    payment row survives with the processor's result on it.
+
+    Unlike BUG A/B/C — two calls to the SAME endpoint, where either racer
+    winning proves the point — the two racers here are different endpoints and
+    only one ordering exercises the fix. So the ordering is pinned rather than
+    left to the scheduler: /execute is held inside its locked transaction
+    (`_gated_get_scoped_run`) until Postgres itself reports the canceller
+    queued behind the lock.
+    """
+    from app.api import payments as payments_api
+    from app.api.payments import cancel_payment_run, execute_payment_run
+
+    info = realdb.info("a")
+    org_id = info.org_id
+    admin_id = info.users["admin"]
+    creator_id = info.users["ap_manager"]  # maker-checker: creator ≠ executor
+    mk = realdb.sessionmaker("a")
+
+    inv = await _seed_invoice(mk, org_id, amount=Decimal("900.00"))
+
+    run_id = uuid.uuid4()
+    payment_id = uuid.uuid4()
+    async with mk() as s:
+        s.add(
+            PaymentRun(
+                id=run_id,
+                organization_id=org_id,
+                status="draft",
+                total_amount=Decimal("900.00"),
+                initiated_by=creator_id,
+                requires_cfo_approval=False,
+            )
+        )
+        await s.flush()
+        s.add(
+            Payment(
+                id=payment_id,
+                invoice_id=inv.id,
+                payment_run_id=run_id,
+                amount=Decimal("900.00"),
+                method="ach",
+                status="pending",
+                correlation_id=inv.correlation_id,
+            )
+        )
+        await s.commit()
+
+    call_count = 0
+
+    async def _counting_create_payment(payload):
+        nonlocal call_count
+        call_count += 1
+        # Yield so the canceller coroutine gets to run mid-dispatch — the
+        # exact interleaving the unlocked read allowed.
+        await asyncio.sleep(0)
+        return SimpleNamespace(
+            success=True,
+            status=PaymentStatus.completed,
+            provider_payment_id="px_race",
+            reference="REF-race",
+            failure_reason=None,
+        )
+
+    adapter = SimpleNamespace(provider_name="mock", create_payment=_counting_create_payment)
+
+    lock_held = asyncio.Event()  # /execute now holds the run row's FOR UPDATE lock
+    release_execute = asyncio.Event()  # …and the canceller is queued behind it
+    real_get_scoped_run = payments_api._get_scoped_run
+    gated = False
+
+    async def _gated_get_scoped_run(*args, **kwargs):
+        """Pin the interleaving this test exists for: the canceller arriving
+        while /execute already holds the run's row lock.
+
+        Firing both coroutines at `asyncio.gather` does not order them — it
+        only schedules them, and whichever session reaches `SELECT ... FOR
+        UPDATE` first wins. Both outcomes are correct (the loser 409s either
+        way), so an assertion written for one arm fails outright when the
+        scheduler picks the other — which is how this test went red on CI with
+        `create_payment called 0x`. Worse, the canceller-wins arm exercises
+        nothing: the UNFIXED cancel produces exactly the same result, because
+        it reaches the still-`draft` run before /execute claims it. Holding
+        /execute inside its locked transaction until the canceller has queued
+        behind the lock makes the race deterministic AND keeps it a real guard
+        — an unlocked cancel reads `draft` right through this window and
+        deletes the payments being dispatched.
+        """
+        nonlocal gated
+        run_row = await real_get_scoped_run(*args, **kwargs)
+        if not gated:  # the first caller through is /execute
+            gated = True
+            lock_held.set()
+            await release_execute.wait()
+        return run_row
+
+    async def _execute_once():
+        async with realdb.sessionmaker("a")() as db:
+            try:
+                return (
+                    "ok",
+                    await execute_payment_run(
+                        run_id=run_id,
+                        db=db,
+                        org=_org(org_id),
+                        user=_user(admin_id),
+                        entity_id=None,
+                    ),
+                )
+            except HTTPException as exc:
+                await db.rollback()
+                return ("http", exc.status_code)
+
+    async def _cancel_once():
+        async with realdb.sessionmaker("a")() as db:
+            try:
+                return (
+                    "ok",
+                    await cancel_payment_run(
+                        run_id=run_id,
+                        db=db,
+                        org=_org(org_id),
+                        user=_user(admin_id),
+                        entity_id=None,
+                    ),
+                )
+            except HTTPException as exc:
+                await db.rollback()
+                return ("http", exc.status_code)
+
+    with (
+        patch("app.api.payments.get_payment_adapter", return_value=adapter),
+        patch("app.api.payments._get_scoped_run", new=_gated_get_scoped_run),
+        patch("app.api.payments.transition_invoice", new_callable=AsyncMock) as ti,
+        patch("app.services.payment_erp_sync.dispatch_payment_sync", new_callable=AsyncMock),
+        patch(
+            "app.services.compliance.check_payment_compliance",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(verdict="allow", reasons=[]),
+        ),
+    ):
+        ti.return_value = inv
+        exec_task = asyncio.create_task(_execute_once())
+        await asyncio.wait_for(lock_held.wait(), timeout=15)
+        cancel_task = asyncio.create_task(_cancel_once())
+        # Postgres' own wait state is the signal that the canceller is
+        # contending for the run row — poll it, never sleep a guess.
+        canceller_queued = await _wait_for_lock_waiter(realdb.sessionmaker("a"))
+        release_execute.set()
+        results = await asyncio.gather(exec_task, cancel_task)
+
+    assert canceller_queued, (
+        "the canceller never queued behind /execute's row lock — it read the "
+        "run unlocked, which is the race this test guards"
+    )
+    assert call_count == 1, f"adapter.create_payment called {call_count}x"
+    # The canceller must have lost — it cannot cancel a run already executing.
+    assert ("http", 409) in results, f"expected the canceller to 409, got {results}"
+
+    async with mk() as s:
+        pay = (
+            await s.execute(select(Payment).where(Payment.id == payment_id))
+        ).scalar_one_or_none()
+        assert pay is not None, (
+            "the dispatched payment row was deleted out from under the processor"
+        )
+        assert pay.status == "completed"
+        assert pay.provider_payment_id == "px_race"
+        run = (await s.execute(select(PaymentRun).where(PaymentRun.id == run_id))).scalar_one()
+        assert run.status != "cancelled"

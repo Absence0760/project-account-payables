@@ -41,13 +41,23 @@ from app.schemas.payment import (
     PaymentRunResponse,
 )
 from app.services.audit_access import log_access
+from app.services.exception_lifecycle import record_decision
 from app.services.payment_adapters import (
     PaymentPayload,
     PaymentStatus,
     get_payment_adapter,
 )
 from app.services.payment_controls import check_run_segregation
-from app.services.payment_runs import PaymentRunItemInput, create_payment_run_for_invoices
+from app.services.payment_runs import (
+    PaymentRunItemInput,
+    active_run_payments,
+    blocked_invoice_ids,
+    create_payment_run_for_invoices,
+    is_retry_safe,
+    net_payable_amount,
+    rollup_payment_statuses,
+    superseded_payment_ids,
+)
 from app.services.workflow_engine import transition_invoice
 from app.tenant import (
     apply_entity_scope,
@@ -117,6 +127,64 @@ async def _find_live_payment(db: AsyncSession, invoice_id: uuid.UUID) -> Payment
         .limit(1)
     )
     return result.scalar_one_or_none()
+
+
+async def _get_scoped_payment(
+    db: AsyncSession,
+    payment_id: uuid.UUID,
+    entity_id: uuid.UUID | None,
+    *,
+    for_update: bool = False,
+) -> Payment:
+    """Fetch one `Payment` **within the caller's selected entity**, or 404.
+
+    Multi-entity Phase 2 scopes reads/writes by the `X-Entity-ID` header, and
+    the list / queue / summary / counts endpoints all honour it — but every
+    by-id detail and mutation route used to resolve the row on `Payment.id`
+    alone. Inside one tenant that let a user with subsidiary A selected void,
+    release, or read subsidiary B's payment simply by knowing its id: the
+    entity selector became advisory on exactly the routes that move money.
+
+    Mirrors `api/positive_pay.py::_get_scoped_file` on the sibling treasury
+    router, including its **opaque 404** — an out-of-scope id is
+    indistinguishable from one that doesn't exist, so the response can't be
+    used to enumerate another entity's payments. `for_update` keeps the
+    existing `SELECT ... FOR UPDATE` row locks on the mutating callers (the
+    scope predicate is just another WHERE clause; the lock is unchanged).
+    """
+    query = apply_entity_scope(select(Payment).where(Payment.id == payment_id), Payment, entity_id)
+    if for_update:
+        query = query.with_for_update()
+    row = (await db.execute(query)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    return row
+
+
+async def _get_scoped_run(
+    db: AsyncSession,
+    run_id: uuid.UUID,
+    entity_id: uuid.UUID | None,
+    *,
+    for_update: bool = False,
+) -> PaymentRun:
+    """Fetch one `PaymentRun` within the caller's selected entity, or 404.
+
+    Same rationale (and the same opaque 404) as `_get_scoped_payment`:
+    `GET /runs/` is entity-scoped and `POST /runs` stamps the write entity, so
+    a run detail / approve / cancel / execute / resume that resolved on
+    `PaymentRun.id` alone let one subsidiary's operator CFO-approve and execute
+    another subsidiary's run.
+    """
+    query = apply_entity_scope(
+        select(PaymentRun).where(PaymentRun.id == run_id), PaymentRun, entity_id
+    )
+    if for_update:
+        query = query.with_for_update()
+    row = (await db.execute(query)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Payment run not found")
+    return row
 
 
 # ── Individual Payments ──────────────────────────────────────────────
@@ -394,6 +462,7 @@ async def get_payment_remittance(
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Return a single-page remittance-advice PDF for the payment.
 
@@ -409,15 +478,10 @@ async def get_payment_remittance(
         render_remittance_pdf,
     )
 
-    result = await db.execute(
-        select(Payment, Invoice)
-        .outerjoin(Invoice, Payment.invoice_id == Invoice.id)
-        .where(Payment.id == payment_id)
-    )
-    row = result.one_or_none()
-    if not row:
-        raise HTTPException(status_code=404, detail="Payment not found")
-    payment, invoice = row
+    payment = await _get_scoped_payment(db, payment_id, entity_id)
+    invoice = (
+        await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
+    ).scalar_one_or_none()
 
     company = (org.settings or {}).get("company") or {}
 
@@ -460,16 +524,10 @@ async def get_payment(
     payment_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    result = await db.execute(
-        select(Payment, Invoice)
-        .outerjoin(Invoice, Payment.invoice_id == Invoice.id)
-        .where(Payment.id == payment_id)
-    )
-    row = result.one_or_none()
-    if not row:
-        raise HTTPException(status_code=404, detail="Payment not found")
-    p, inv = row
+    p = await _get_scoped_payment(db, payment_id, entity_id)
+    inv = (await db.execute(select(Invoice).where(Invoice.id == p.invoice_id))).scalar_one_or_none()
 
     # SOX access-control auditing: a payment detail is a regulated money record.
     # Record the view (no banking values enter the audit details). Payment rows
@@ -574,6 +632,7 @@ async def void_payment(
     org: Organization = Depends(get_tenant),
     # Defaults map to admin/cfo (unchanged) — see ROLE_DEFAULT_PERMISSIONS.
     user: User = Depends(require_permission(PERM_PAYMENT_VOID)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Void a completed or in-flight payment.
 
@@ -592,10 +651,7 @@ async def void_payment(
     # terminal status and 409s before touching the adapter. The Invoice is
     # fetched separately — Postgres can't `FOR UPDATE` the nullable side of
     # an outer join, and we don't need to lock the invoice here.
-    result = await db.execute(select(Payment).where(Payment.id == payment_id).with_for_update())
-    payment = result.scalar_one_or_none()
-    if not payment:
-        raise HTTPException(status_code=404, detail="Payment not found")
+    payment = await _get_scoped_payment(db, payment_id, entity_id, for_update=True)
 
     if payment.status in ("voided", "cancelled"):
         raise HTTPException(status_code=409, detail=f"Payment already {payment.status}")
@@ -681,16 +737,31 @@ async def void_payment(
 
 
 async def _resolve_compliance_hold_exception(
-    db: AsyncSession, *, invoice_id: uuid.UUID, actor_name: str, resolution: str
+    db: AsyncSession,
+    *,
+    invoice: Invoice,
+    actor_id: uuid.UUID,
+    actor_name: str,
+    resolution: str,
 ) -> None:
     """Resolve the open `payment_compliance_hold` exception for an invoice,
-    if one exists. Mirrors `api/exceptions.py::_apply_resolution`'s field
-    set (status/resolution/resolved_by/resolved_at/time_to_resolution) —
-    duplicated rather than cross-imported from that router module, same as
-    every other router in this codebase keeps its own small mutators."""
+    if one exists.
+
+    Delegates to `services/exception_lifecycle.record_decision` — the same
+    chokepoint the human queue and the autonomous agents go through — so this
+    decision writes the append-only `exception.resolved` row too. Releasing a
+    compliance hold is precisely the sign-off that lets held money move, which
+    makes it the last decision that should have lived only on the mutable
+    `exceptions` row.
+
+    Both callers keep the `resolve` verb (not `dismiss`): a dismissed *payment*
+    still means a human cleared the hold, and the queue's status semantics
+    predate this. The rationale — `released` vs `dismissed: <reason>` — is what
+    distinguishes them, on the immutable row as well as the exception.
+    """
     result = await db.execute(
         select(APException).where(
-            APException.invoice_id == invoice_id,
+            APException.invoice_id == invoice.id,
             APException.exception_type == "payment_compliance_hold",
             APException.status == "open",
         )
@@ -698,13 +769,15 @@ async def _resolve_compliance_hold_exception(
     exc = result.scalar_one_or_none()
     if exc is None:
         return
-    now = datetime.now(UTC)
-    exc.status = "resolved"
-    exc.resolution = resolution
-    exc.resolved_by = actor_name
-    exc.resolved_at = now
-    if exc.created_at is not None:
-        exc.time_to_resolution_seconds = int((now - exc.created_at).total_seconds())
+    await record_decision(
+        db,
+        exception=exc,
+        action="resolve",
+        resolution=resolution,
+        actor_id=actor_id,
+        actor_name=actor_name,
+        invoice=invoice,
+    )
 
 
 class DismissComplianceHoldRequest(BaseModel):
@@ -719,6 +792,7 @@ async def release_compliance_hold(
     # Releasing dispatches the payment to the processor exactly like
     # /execute — same money-moving permission.
     user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Re-run compliance + dispatch for a payment stuck in `pending_compliance`.
 
@@ -732,10 +806,7 @@ async def release_compliance_hold(
     condition hasn't actually changed) stays `pending_compliance` and the
     response reflects that, rather than silently forcing money to move.
     """
-    result = await db.execute(select(Payment).where(Payment.id == payment_id).with_for_update())
-    payment = result.scalar_one_or_none()
-    if not payment:
-        raise HTTPException(status_code=404, detail="Payment not found")
+    payment = await _get_scoped_payment(db, payment_id, entity_id, for_update=True)
     if payment.status != "pending_compliance":
         raise HTTPException(
             status_code=409,
@@ -774,7 +845,11 @@ async def release_compliance_hold(
     # payments keep it open (re-running /release again does nothing new).
     if payment.status != "pending_compliance" and invoice is not None:
         await _resolve_compliance_hold_exception(
-            db, invoice_id=invoice.id, actor_name=user.full_name, resolution="released"
+            db,
+            invoice=invoice,
+            actor_id=user.id,
+            actor_name=user.full_name,
+            resolution="released",
         )
 
     await db.commit()
@@ -791,15 +866,13 @@ async def dismiss_compliance_hold(
     # Dismissing moves no money (nothing ever settled) — a treasury decision
     # to give up on this payment, same gate as void.
     user: User = Depends(require_permission(PERM_PAYMENT_VOID)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Give up on a payment stuck in `pending_compliance` — flips it to
     `failed` without ever reaching the processor. AP has reviewed the hold
     (e.g. a genuine sanctions match, or a decision to pay this vendor a
     different way) and decided this payment should not proceed as-is."""
-    result = await db.execute(select(Payment).where(Payment.id == payment_id).with_for_update())
-    payment = result.scalar_one_or_none()
-    if not payment:
-        raise HTTPException(status_code=404, detail="Payment not found")
+    payment = await _get_scoped_payment(db, payment_id, entity_id, for_update=True)
     if payment.status != "pending_compliance":
         raise HTTPException(
             status_code=409,
@@ -833,7 +906,8 @@ async def dismiss_compliance_hold(
     if invoice is not None:
         await _resolve_compliance_hold_exception(
             db,
-            invoice_id=invoice.id,
+            invoice=invoice,
+            actor_id=user.id,
             actor_name=user.full_name,
             resolution=f"dismissed: {body.reason}",
         )
@@ -853,6 +927,7 @@ async def create_payment(
     # that strips payment.execute from a custom role must not retain a back door
     # to book money here. (System roles resolve identically via the default map.)
     user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     # Verify invoice exists and has cleared approval. Recording a payment
     # against a pre-approval invoice (new/pending/ready_for_review/rejected/
@@ -867,8 +942,17 @@ async def create_payment(
     # pay with no audit distinction). The `uq_payments_one_live_per_invoice`
     # partial index (migration 0074) is the DB-level backstop for any path the
     # row lock can't cover (e.g. an overlapping payment run).
+    #
+    # The lookup is entity-scoped like every other by-id money route on this
+    # router: with subsidiary A selected, an invoice belonging to subsidiary B
+    # is the same opaque 404 as one that doesn't exist — booking a payment
+    # against it would put A's operator on B's money.
     inv_result = await db.execute(
-        select(Invoice).where(Invoice.id == uuid.UUID(body.invoice_id)).with_for_update()
+        apply_entity_scope(
+            select(Invoice).where(Invoice.id == uuid.UUID(body.invoice_id)),
+            Invoice,
+            entity_id,
+        ).with_for_update()
     )
     invoice = inv_result.scalar_one_or_none()
     if not invoice:
@@ -876,15 +960,26 @@ async def create_payment(
     if invoice.status not in PAYABLE_INVOICE_STATUSES:
         raise HTTPException(status_code=409, detail="Invoice is not approved for payment")
 
-    # The payment amount is the approved invoice amount — never a caller-supplied
-    # value. Trusting `body.amount` let an actor book a $99,999 payment against a
-    # $500 approved invoice (the run-based path at create_payment_run already
-    # binds to `inv.amount`; this standalone path must match it). If a value is
-    # supplied it must equal the invoice amount, else 422.
-    if body.amount is not None and Decimal(str(body.amount)) != (invoice.amount or Decimal("0")):
+    # The payment amount is the invoice amount NET OF APPLIED CREDIT MEMOS —
+    # never a caller-supplied value. Trusting `body.amount` let an actor book a
+    # $99,999 payment against a $500 approved invoice, so the figure is bound
+    # server-side; but binding it to the raw `invoice.amount` made this path
+    # ignore credit memos entirely, paying the vendor the full pre-credit
+    # amount AND 422ing the correct net figure if a caller tried to submit it.
+    # `net_payable_amount` is the same helper the run builder uses, so the two
+    # money paths can't disagree about what an invoice is worth.
+    net_amount = await net_payable_amount(db, invoice)
+    if net_amount <= 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Invoice is fully covered by applied credit memos — nothing to pay",
+        )
+    if body.amount is not None and Decimal(str(body.amount)) != net_amount:
         raise HTTPException(
             status_code=422,
-            detail="Payment amount must equal the approved invoice amount",
+            detail=(
+                "Payment amount must equal the approved invoice amount net of applied credit memos"
+            ),
         )
 
     # CFO sign-off gate — the same `payments.cfo_approval_above` threshold the
@@ -914,8 +1009,11 @@ async def create_payment(
             requires_cfo = True
         else:
             # Strict `>` matches the setting name; a threshold of 0/negative
-            # means "no gate" — same semantics as create_payment_run.
-            if cfo_threshold > 0 and invoice.amount > cfo_threshold:
+            # means "no gate" — same semantics as create_payment_run. The
+            # comparison is against the NET amount, i.e. the money that
+            # actually moves, exactly as create_payment_run compares its
+            # credit-netted total.
+            if cfo_threshold > 0 and net_amount > cfo_threshold:
                 requires_cfo = True
 
     if requires_cfo:
@@ -941,7 +1039,7 @@ async def create_payment(
         invoice_id=invoice.id,
         # Payment follows the invoice's entity (multi-entity Phase 2).
         entity_id=invoice.entity_id,
-        amount=invoice.amount,
+        amount=net_amount,
         method=body.method.value if body.method else None,
         reference=body.reference,
         payment_run_id=uuid.UUID(body.payment_run_id) if body.payment_run_id else None,
@@ -1015,14 +1113,45 @@ async def list_payment_runs(
     result = await db.execute(query)
     runs = result.scalars().all()
 
-    # Get payment counts per run
+    # Per-run outcome tallies in ONE grouped query, not a count per run (this
+    # was an N+1). The rollup is what makes a `partial` row actionable in the
+    # list — "3 of 12 failed" instead of a bare status word.
+    run_ids = [run.id for run in runs]
+    per_run: dict[uuid.UUID, list[str | None]] = {rid: [] for rid in run_ids}
+    if run_ids:
+        # Exclude any attempt a later retry on these runs superseded, matching
+        # `services/payment_runs.active_run_payments` (the run detail and the
+        # dispatcher's own rollup both go through it). Expressed as a subquery
+        # rather than in Python so this stays the single grouped query it was
+        # built to be, not an N+1.
+        superseded_q = select(Payment.retry_of_payment_id).where(
+            Payment.payment_run_id.in_(run_ids),
+            Payment.retry_of_payment_id.isnot(None),
+        )
+        status_rows = await db.execute(
+            select(Payment.payment_run_id, Payment.status, func.count())
+            .where(
+                Payment.payment_run_id.in_(run_ids),
+                Payment.id.notin_(superseded_q),
+            )
+            .group_by(Payment.payment_run_id, Payment.status)
+        )
+        for pay_run_id, pay_status, n in status_rows.all():
+            per_run[pay_run_id].extend([pay_status] * int(n))
+
     items = []
     for run in runs:
-        count_result = await db.execute(
-            select(func.count()).where(Payment.payment_run_id == run.id)
+        rollup = rollup_payment_statuses(per_run.get(run.id, ()))
+        items.append(
+            PaymentRunResponse.from_db(
+                run,
+                rollup.total,
+                completed=rollup.completed,
+                failed=rollup.failed,
+                in_flight=rollup.in_flight,
+                pending=rollup.pending,
+            )
         )
-        count = count_result.scalar() or 0
-        items.append(PaymentRunResponse.from_db(run, count))
 
     return PaymentRunListResponse(
         items=items,
@@ -1093,19 +1222,27 @@ async def get_payment_run(
     run_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    """Get a payment run with its individual payments."""
-    result = await db.execute(select(PaymentRun).where(PaymentRun.id == run_id))
-    run = result.scalar_one_or_none()
-    if not run:
-        raise HTTPException(status_code=404, detail="Payment run not found")
+    """Get a payment run with its individual payments.
+
+    Each payment carries its own `failure_reason` (plus `provider` and the two
+    lifecycle timestamps) and the run carries the per-outcome rollup, so a
+    `partial` run explains itself: which payments failed, and why. Before this,
+    the counts existed only in the transient response of the `/execute` call
+    that produced them and `failure_reason` never left the database — a reload
+    lost both, and the operator's only recourse was the server log.
+    """
+    run = await _get_scoped_run(db, run_id, entity_id)
 
     # Get payments in this run with invoice details
     pay_result = await db.execute(
         select(Payment, Invoice)
         .outerjoin(Invoice, Payment.invoice_id == Invoice.id)
         .where(Payment.payment_run_id == run_id)
+        .order_by(Payment.created_at.asc())
     )
+    rows = pay_result.all()
     payments = [
         {
             "id": str(p.id),
@@ -1117,9 +1254,19 @@ async def get_payment_run(
             "method": p.method,
             "status": p.status,
             "reference": p.reference,
+            "provider": p.provider,
+            "failure_reason": p.failure_reason,
+            "submitted_at": p.submitted_at.isoformat() if p.submitted_at else None,
+            "completed_at": p.completed_at.isoformat() if p.completed_at else None,
         }
-        for p, inv in pay_result.all()
+        for p, inv in rows
     ]
+    # The rollup counts the LATEST attempt per invoice — a superseded retry
+    # attempt is still listed above (an operator has to be able to see that an
+    # invoice took two goes) but must not be counted twice, or a fully
+    # recovered run would read `partial` forever.
+    active = active_run_payments(p for p, _ in rows)
+    rollup = rollup_payment_statuses(p.status for p in active)
 
     return {
         "id": str(run.id),
@@ -1132,6 +1279,19 @@ async def get_payment_run(
         "requires_cfo_approval": run.requires_cfo_approval,
         "cfo_approved_by": str(run.cfo_approved_by) if run.cfo_approved_by else None,
         "cfo_approved_at": run.cfo_approved_at.isoformat() if run.cfo_approved_at else None,
+        "payment_count": rollup.total,
+        "payments_completed": rollup.completed,
+        "payments_failed": rollup.failed,
+        "payments_in_flight": rollup.in_flight,
+        "payments_pending": rollup.pending,
+        # Failures `/runs/{id}/retry-failed` will ACTUALLY re-attempt — what
+        # the retry button gates on. A failure we can't prove never reached the
+        # processor (`is_retry_safe`) is excluded: the endpoint would only skip
+        # it as `needs_reconciliation`, and offering a button that can't act is
+        # how an operator ends up hunting for a second way to force the payment.
+        "retryable_failures": sum(
+            1 for p in active if p.status in RETRYABLE_PAYMENT_STATUSES and is_retry_safe(p)
+        ),
         "payments": payments,
     }
 
@@ -1142,6 +1302,7 @@ async def approve_payment_run(
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """CFO sign-off on a draft run. Only valid from `draft` AND
     `requires_cfo_approval=True`. After this lands, /execute will accept
@@ -1151,10 +1312,7 @@ async def approve_payment_run(
     # wins cfo_approved_by and a duplicate `payment_run.cfo_approved` audit row
     # lands, breaking non-repudiation of the money-control gate. The lock
     # serialises them so the second sees the first's commit and 409s.
-    result = await db.execute(select(PaymentRun).where(PaymentRun.id == run_id).with_for_update())
-    run = result.scalar_one_or_none()
-    if not run:
-        raise HTTPException(status_code=404, detail="Payment run not found")
+    run = await _get_scoped_run(db, run_id, entity_id, for_update=True)
     if run.status != "draft":
         raise HTTPException(
             status_code=409,
@@ -1208,14 +1366,21 @@ async def cancel_payment_run(
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Cancel a draft run before it executes. Only valid from `draft`;
     flips the run to `cancelled` and removes its child payment rows so
     the invoices return to the queue. Audit-logged."""
-    result = await db.execute(select(PaymentRun).where(PaymentRun.id == run_id))
-    run = result.scalar_one_or_none()
-    if not run:
-        raise HTTPException(status_code=404, detail="Payment run not found")
+    # Row-lock the run, exactly like /approve, /execute and /resume. This one
+    # DELETES the child Payment rows, so an unlocked read is the worst version
+    # of the race: /execute takes the lock, flips the run to `executing`,
+    # commits (releasing it) and starts handing payments to the processor —
+    # while a /cancel that read `draft` before any of that proceeds to delete
+    # the very rows being dispatched. Real money then moves against rows that
+    # no longer exist, under a run that reads `cancelled`. With the lock the
+    # canceller blocks until /execute commits, re-reads `executing`, and 409s
+    # before deleting anything.
+    run = await _get_scoped_run(db, run_id, entity_id, for_update=True)
     if run.status != "draft":
         raise HTTPException(
             status_code=409,
@@ -1886,25 +2051,19 @@ async def _dispatch_run_payments(
     # resumed run's final status/counts reflect the whole run, not only the
     # subset that was still pending when this call started.
     all_result = await db.execute(select(Payment).where(Payment.payment_run_id == run_id))
-    all_payments = all_result.scalars().all()
-    completed = sum(1 for p in all_payments if p.status == "completed")
-    failed = sum(1 for p in all_payments if p.status in ("failed", "cancelled"))
-    in_flight = sum(
-        1 for p in all_payments if p.status in ("submitted", "processing", "pending_compliance")
-    )
+    # A retried invoice carries several rows on this run; only the newest
+    # attempt describes its outcome (see `active_run_payments`).
+    all_payments = active_run_payments(all_result.scalars().all())
+    # Bucketing + the status precedence live in `services/payment_runs` so the
+    # status this PERSISTS and the rollup the run-detail / runs-list reads
+    # REPORT can't drift apart.
+    rollup = rollup_payment_statuses(p.status for p in all_payments)
+    completed, failed, in_flight = rollup.completed, rollup.failed, rollup.in_flight
     cards_issued = sum(
         1 for p in all_payments if p.method == "virtual_card" and p.status == "completed"
     )
 
-    # Run status reflects the rollup of its payments.
-    if failed and not (completed or in_flight):
-        run.status = "failed"
-    elif failed:
-        run.status = "partial"
-    elif in_flight:
-        run.status = "submitted"
-    else:
-        run.status = "completed"
+    run.status = rollup.run_status
     run.executed_at = now
 
     await dispatch_audit(
@@ -1956,6 +2115,7 @@ async def execute_payment_run(
     # The money-moving end of the payment SoD split. Defaults map to
     # admin/ap_manager/cfo (unchanged); split from run-approval / bank-change.
     user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Execute a draft payment run via the configured payment adapter.
 
@@ -1985,10 +2145,7 @@ async def execute_payment_run(
     # adapter call itself is also idempotency-keyed via
     # `PaymentPayload.correlation_id` — defense in depth for processors that
     # honor it, e.g. Modern Treasury / Column.)
-    result = await db.execute(select(PaymentRun).where(PaymentRun.id == run_id).with_for_update())
-    run = result.scalar_one_or_none()
-    if not run:
-        raise HTTPException(status_code=404, detail="Payment run not found")
+    run = await _get_scoped_run(db, run_id, entity_id, for_update=True)
     if run.status != "draft":
         raise HTTPException(
             status_code=409, detail=f"Can only execute 'draft' runs, not '{run.status}'"
@@ -2029,6 +2186,7 @@ async def resume_payment_run(
     org: Organization = Depends(get_tenant),
     # Resuming can dispatch real payments exactly like /execute — same gate.
     user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Resume a payment run stuck in `executing` — e.g. the worker process
     crashed partway through `execute_payment_run`'s per-payment loop.
@@ -2048,10 +2206,7 @@ async def resume_payment_run(
     run is actually stuck (no progress for an implausible amount of time),
     not as a matter of course.
     """
-    result = await db.execute(select(PaymentRun).where(PaymentRun.id == run_id).with_for_update())
-    run = result.scalar_one_or_none()
-    if not run:
-        raise HTTPException(status_code=404, detail="Payment run not found")
+    run = await _get_scoped_run(db, run_id, entity_id, for_update=True)
     if run.status != "executing":
         raise HTTPException(
             status_code=409,
@@ -2073,6 +2228,266 @@ async def resume_payment_run(
     await db.commit()
 
     return await _dispatch_run_payments(db, run=run, run_id=run_id, org=org, user=user)
+
+
+# Statuses a payment must be in for `/retry-failed` to consider re-attempting
+# it. Both are terminal *failures*, and both are excluded from
+# `uq_payments_one_live_per_invoice` — which is what lets the retry book a
+# SECOND payment row against the same invoice at all. Being in one of these is
+# necessary but nowhere near sufficient: `classify_payment_failure` still has to
+# prove no order was created at the processor (see the endpoint docstring).
+RETRYABLE_PAYMENT_STATUSES = ("failed", "cancelled")
+
+# The run statuses that can carry a failed payment worth re-attempting. A
+# `draft` run has never been dispatched (use `/execute`), an `executing` one is
+# either mid-flight or crashed (use `/resume`), and a `cancelled` one has no
+# payments left at all.
+RETRYABLE_RUN_STATUSES = ("partial", "failed")
+
+
+@router.post("/runs/{run_id}/retry-failed")
+async def retry_failed_payments(
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    # Re-attempting dispatches real payments exactly like /execute — same gate.
+    user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Re-attempt the safely-retryable FAILED payments of a `partial`/`failed` run.
+
+    A payment run's failures were previously a dead end: the run settled on
+    `partial`, and the only way forward was to hand-build a second run.
+
+    **A retry books a NEW payment, it never re-arms the old one.**
+    `Payment.correlation_id` is the PROCESSOR's idempotency key (see
+    `payment_adapters/base.py`), so a re-attempt is genuinely a new order and
+    needs a new one. Minting it onto the failed row — as this endpoint first
+    did — also meant clearing `failure_reason`, `provider_payment_id`,
+    `submitted_at` and `completed_at`, destroying the only handles anyone had
+    for reconciling attempt #1 with the processor and overwriting two regulated
+    money timestamps. Attempt #1 is therefore never written to at all; attempt
+    #2 is an INSERT on the same run carrying `retry_of_payment_id`, and the run
+    rollup counts the latest attempt per invoice
+    (`services/payment_runs.active_run_payments`). `failed`/`cancelled` are
+    outside `uq_payments_one_live_per_invoice`, so the second row is free to
+    claim the invoice's live-payment slot.
+
+    **What is re-attempted, and what is not.** Anything already `completed`,
+    `submitted`, `processing` or `pending_compliance` is left exactly as it is
+    and is never re-sent — the same guarantee `/resume` makes. A payment in
+    `RETRYABLE_PAYMENT_STATUSES` is *skipped* (never re-sent, never mutated),
+    with the reason surfaced in `skip_reasons`, when:
+
+    - `invoice_not_payable` — the invoice is voided, re-rejected or already
+      `done`, so paying it would move money against something nobody currently
+      approves;
+    - `invoice_has_blocking_exception` — an unresolved
+      `PAYMENT_BLOCKING_EXCEPTION_TYPES` flag (duplicate / fraud_flag /
+      line_total_mismatch). Run creation refuses these outright; this endpoint
+      re-dispatches money days or weeks later, so a `fraud_flag` raised in the
+      interim (a BEC bank-detail swap, an altered cheque off a Positive Pay
+      return) has to stop the re-send here too. Same shared query
+      (`payment_runs.blocked_invoice_ids`) so the two can't drift;
+    - `needs_reconciliation` — we cannot prove the processor never accepted the
+      original order (`classify_payment_failure`): a populated
+      `provider_payment_id`, an `unexpected_error:*` / `*_transport_error:*` /
+      `*_api_error:*` / `reconciler_max_age_exceeded*` reason, or any reason
+      we don't recognise. Re-sending these under a fresh idempotency key is how
+      one invoice gets paid twice. A human voids or reconciles first;
+    - `net_amount_changed` — a credit memo applied since the run was built
+      means the failed row's `amount` is no longer what the vendor is owed
+      (`payment_runs.net_payable_amount`). The amount is never silently
+      adjusted — a fresh run re-derives it through the full gate set;
+    - `invoice_has_live_payment` — the invoice has since acquired another live
+      payment. The savepoint around each insert is the backstop for the same
+      conflict arriving as a race.
+
+    **Idempotency.** The run is row-locked and claimed (`→ executing`) before
+    anything is booked, so a double-click / concurrent retry blocks on the lock
+    and then 409s against the non-retryable status — it can't produce a second
+    dispatch pass. `_dispatch_run_payments` then re-locks each payment and skips
+    any that is no longer `pending`.
+    """
+    run = await _get_scoped_run(db, run_id, entity_id, for_update=True)
+    if run.status not in RETRYABLE_RUN_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Can only retry a run that finished with failures "
+                f"({' or '.join(RETRYABLE_RUN_STATUSES)}), not '{run.status}'"
+            ),
+        )
+    # Re-attempting moves money exactly like /execute — same maker-checker gate
+    # and the same CFO threshold. Skipping either here would turn `/retry-failed`
+    # into a way around both.
+    check_run_segregation(
+        run.initiated_by,
+        user.id,
+        (org.settings or {}).get("payments"),
+        action="execute",
+    )
+    if run.requires_cfo_approval and run.cfo_approved_at is None:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This run exceeds the org's CFO-approval threshold and is awaiting "
+                "sign-off from a user with the CFO role."
+            ),
+        )
+
+    all_run_payments = (
+        (await db.execute(select(Payment).where(Payment.payment_run_id == run_id))).scalars().all()
+    )
+    # An earlier attempt a previous retry already replaced is history — its
+    # successor is what describes where the invoice stands.
+    superseded = superseded_payment_ids(all_run_payments)
+    failed_payments = [
+        p
+        for p in all_run_payments
+        if p.status in RETRYABLE_PAYMENT_STATUSES and p.id not in superseded
+    ]
+
+    # Which of those invoices can legitimately take another attempt. Every gate
+    # `create_payment_run_for_invoices` applies at run-creation time is re-run
+    # here, because this endpoint dispatches real money days or weeks later and
+    # nothing guarantees the world stayed still.
+    invoice_ids = [p.invoice_id for p in failed_payments]
+    invoices: dict[uuid.UUID, Invoice] = {}
+    payable_ids: set[uuid.UUID] = set()
+    blocked_ids: set[uuid.UUID] = set()
+    occupied_ids: set[uuid.UUID] = set()
+    if invoice_ids:
+        invoices = {
+            inv.id: inv
+            for inv in (await db.execute(select(Invoice).where(Invoice.id.in_(invoice_ids))))
+            .scalars()
+            .all()
+        }
+        payable_ids = {
+            iid for iid, inv in invoices.items() if inv.status.value in PAYABLE_INVOICE_STATUSES
+        }
+        blocked_ids = await blocked_invoice_ids(db, invoice_ids)
+        occupied_ids = set(
+            (
+                await db.execute(
+                    select(Payment.invoice_id).where(
+                        Payment.invoice_id.in_(invoice_ids),
+                        Payment.status.notin_(LIVE_PAYMENT_TERMINAL_STATUSES),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    retried = 0
+    skipped: list[str] = []
+    for payment in failed_payments:
+        if payment.invoice_id not in payable_ids:
+            skipped.append("invoice_not_payable")
+            continue
+        if payment.invoice_id in blocked_ids:
+            skipped.append("invoice_has_blocking_exception")
+            continue
+        if not is_retry_safe(payment):
+            # We can't prove the processor never took the original order. A
+            # fresh idempotency key here is a second real payment, not a retry.
+            skipped.append("needs_reconciliation")
+            continue
+        if payment.invoice_id in occupied_ids:
+            skipped.append("invoice_has_live_payment")
+            continue
+        # What the invoice is worth NOW. A credit memo applied while this sat
+        # `failed` (credit_memos.py gates on neither invoice status nor an
+        # existing payment) makes the failed row's amount stale; pay it and the
+        # vendor is overpaid by the credit.
+        net_amount = await net_payable_amount(db, invoices[payment.invoice_id])
+        if net_amount != payment.amount:
+            skipped.append("net_amount_changed")
+            continue
+
+        retry_payment = Payment(
+            invoice_id=payment.invoice_id,
+            entity_id=payment.entity_id,
+            payment_run_id=run.id,
+            amount=net_amount,
+            method=payment.method,
+            status="pending",
+            # A new order at the processor, so a new idempotency key. The
+            # failed attempt keeps its own — it is the only handle anyone has
+            # for reconciling what that attempt did.
+            correlation_id=uuid.uuid4(),
+            retry_of_payment_id=payment.id,
+        )
+        try:
+            # Savepoint per insert: the live-payment unique index is the
+            # backstop for a conflict that appeared between the pre-check above
+            # and this flush. Containing it keeps the outer transaction usable
+            # so the remaining payments can still be re-attempted.
+            async with db.begin_nested():
+                db.add(retry_payment)
+                await db.flush()
+        except IntegrityError:
+            db.expunge(retry_payment)
+            skipped.append("invoice_has_live_payment")
+            continue
+        retried += 1
+
+        from app.services.audit_dispatch import dispatch_audit
+
+        # Links BOTH rows: `entity_id` is attempt #1 (the row whose meaning
+        # changed — it is now superseded) and `retry_payment_id` names its
+        # successor, so an auditor can walk the chain from either end. PII-free:
+        # ids, the Decimal amount as a string, the rail, and the previous
+        # failure reason (a processor error code, never account data).
+        await dispatch_audit(
+            db,
+            correlation_id=retry_payment.correlation_id or run.id,
+            organization_id=org.id,
+            actor_id=user.id,
+            action="payment.retried",
+            entity_type="payment",
+            entity_id=payment.id,
+            details={
+                "payment_run_id": str(run.id),
+                "payment_id": str(payment.id),
+                "retry_payment_id": str(retry_payment.id),
+                "amount": str(retry_payment.amount),
+                "method": retry_payment.method,
+                "previous_failure_reason": payment.failure_reason,
+            },
+        )
+
+    from app.services.audit_dispatch import dispatch_audit
+
+    await dispatch_audit(
+        db,
+        correlation_id=run.id,
+        organization_id=org.id,
+        actor_id=user.id,
+        action="payment_run.retried",
+        entity_type="payment_run",
+        entity_id=run.id,
+        details={
+            "payments_retried": retried,
+            "payments_skipped": len(skipped),
+            "skip_reasons": sorted(set(skipped)),
+            "previous_status": run.status,
+        },
+    )
+
+    # Claim the run before dispatching, exactly like /execute: the commit
+    # releases the row lock, and any concurrent retry/execute/resume that was
+    # blocked on it wakes to `executing` and 409s.
+    run.status = "executing"
+    await db.commit()
+
+    result = await _dispatch_run_payments(db, run=run, run_id=run_id, org=org, user=user)
+    result["payments_retried"] = retried
+    result["payments_skipped"] = len(skipped)
+    result["skip_reasons"] = sorted(set(skipped))
+    return result
 
 
 def _execute_message(

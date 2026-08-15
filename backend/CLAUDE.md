@@ -42,6 +42,7 @@ Deep-dive docs live in `backend/docs/`:
 | Email + in-app notifications | `docs/notifications.md` |
 | Email approval (approve/reject from the email, no login) | `docs/email-approval.md` |
 | Slack interactive approval (approve/reject from Slack buttons, no login) | `docs/slack-approval.md` |
+| Exception queue lifecycle + its append-only audit trail | `docs/exception-lifecycle.md` |
 | Exception agents (autonomous resolution) | `docs/exception-agents.md` |
 | Adaptive AI workflows | `docs/adaptive-workflows.md` |
 | Data enrichment (auto-fill, price variance, vendor scoring) | `docs/data-enrichment.md` |
@@ -352,7 +353,7 @@ backend/
    - `GLAccount` — code, name, account_type, parent_code, erp_account_id
    - `PaymentRun` — status, total_amount, initiated_by, executed_at
    - `PaymentSchedule` — invoice_id, due_date, discount_date, discount_percent
-   - `Payment` — invoice_id, payment_run_id, amount, method (ach/wire/check/virtual_card), status
+   - `Payment` — invoice_id, payment_run_id, amount, method (ach/wire/check/virtual_card), status, `retry_of_payment_id` (self-FK, migration 0080 — `/runs/{id}/retry-failed` books a NEW attempt row pointing at the failed one it replaces and never mutates that row, because `correlation_id` is the PROCESSOR's idempotency key; run rollups count the latest attempt per invoice via `payment_runs.active_run_payments`. See `docs/payments.md` § Why a payment failed, and retrying it)
    - `VirtualCard` — invoice_id, card_provider (lithic/nium), provider_card_id, amount_limit, status
    - `CardRebate` — virtual_card_id, amount, rate, status (`pending`/`confirmed`/`paid_out`), period. Not in `CONTROL_TABLES` — fanned to every tenant DB like the rest, despite living in `app/models/virtual_card.py` alongside `VirtualCard`
    - `WorkflowDefinition` — name, steps_config (JSONB), is_active, is_default
@@ -827,6 +828,16 @@ Files: `*_dispatch.py` (router), `*_lambda.py` (Lambda handler).
 - Token payload: `sub` (user_id), `org` (org_id), `jti` (unique ID for blocklist)
 - `get_current_user()` — FastAPI dependency, returns User or 401
 - Logout adds `jti` to Redis blocklist with TTL matching token expiry
+- `get_current_user` also stashes the requesting `jti` on `user.session_jti` (transient, like `effective_permissions`) — that's what lets the session routes mark the caller's own entry and spare it from "sign out everywhere else"
+
+### Sessions (`services/session_management.py`, `app/redis.py`)
+
+Each sign-in registers its JTI in `active_jtis:<user_id>` (sorted set, scored by issue time) plus a companion metadata hash `session_meta:<user_id>` (IP, coarse device label from the pure `describe_user_agent`, sign-in method). The two are always mutated together, so a session's metadata can never outlive its membership. Beyond the concurrent cap (`FEOH_MAX_CONCURRENT_SESSIONS`) and the forced logout on role change / password reset / deactivation, this backs:
+
+- `GET /api/auth/sessions`, `DELETE /api/auth/sessions/{jti}`, `POST /api/auth/sessions/revoke-others` — the account holder's own remedy for a leaked token. Every op is keyed on `user.id`, so membership in the caller's set IS the authorization; a foreign JTI is the same opaque 404 as an unknown one. No step-up (they only remove access). Audited `auth.session.revoked`, PII-free.
+- `POST /api/admin/users/{id}/revoke-sessions` — standalone admin force-logout (`user.manage`, org-scoped, idempotent, audited `user.sessions_revoked`).
+
+`list_sessions` prunes entries whose token already expired (the set's TTL is refreshed on every login, so it can outlive the tokens inside it) without blocklisting them — there is nothing left to revoke. The **raw** User-Agent is never stored or logged. See `../docs/authentication.md` § Session management.
 
 ### RBAC (`require_roles`)
 
@@ -898,6 +909,8 @@ The three `webhook_*_secret` fields are HMAC keys used by the inbound webhook ha
 ## Exception types
 
 `duplicate`, `po_mismatch`, `fraud_flag`, `extraction_failed`, `unverified_vendor`, `review_rejected`, `amount_exceeded`, `missing_data`, `quality_hold`, `contract_noncompliant`, `erp_reconciliation`, `line_total_mismatch`, `payment_compliance_hold`
+
+**Every lifecycle event is audited.** `services/exception_lifecycle` is the single chokepoint: `create_exception` writes `exception.raised`, and the human queue (`api/exceptions`), the agent coordinator, and the compliance-hold release/dismiss path (`api/payments.py::_resolve_compliance_hold_exception`) all resolve/escalate/dismiss through `record_decision`, which writes `exception.resolved` / `.escalated` / `.dismissed` (+ `exception.assigned` on routing). Rows are correlation-keyed to the **invoice**, so they land on its SOX trail; an invoice-less exception self-correlates on its own id. `details` is PII-lean and carries a `payment_blocking` flag derived from `api/payments.PAYMENT_BLOCKING_EXCEPTION_TYPES` itself — clearing a `duplicate` / `fraud_flag` / `line_total_mismatch` is the human sign-off that lets a payment run proceed, and the mutable `exceptions` row (single-valued, not WORM-shipped, no append-only trigger) can't be that record. Escalation records the note but never stamps `resolved_by` / `resolved_at`. Every `/api/exceptions` mutation is entity-scoped like the reads. See `docs/exception-lifecycle.md`.
 
 Severity: `error`, `warning`, `info`. Auto-detected by `invoice_warnings.py`. `erp_reconciliation` is opened by the ERP webhook (`api/erp_webhook.py`) when the ERP reports an invoice VOIDED/CANCELLED that we already advanced past the point where `→ failed` is a legal transition (`sent_to_erp` / `posted_in_erp` / `payment_scheduled` / `paid`) — money may be in flight, so it is flagged for human reconciliation instead of auto-transitioned (idempotent per open exception, PII-free description). `payment_compliance_hold` is opened by `api/payments.py` whenever `_execute_single_payment` parks a payment at `pending_compliance` (no screenable vendor, or the sanctions/KYC adapter itself returns a `hold` verdict) — dedup'd per `(invoice_id, "payment_compliance_hold", "open")` so a retried execution never double-opens it, and resolved by `POST /api/payments/{id}/compliance/release` or `/dismiss`. See `backend/docs/payments.md` § Sanctions / compliance hold resolution.
 

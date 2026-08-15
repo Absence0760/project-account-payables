@@ -170,10 +170,10 @@ async def generate_check_issue(
 ):
     """Generate the check-issue Positive Pay file for a payment run.
 
-    Idempotent: if a file already exists for ``(run_id, bank_format)`` it is
-    returned with 200 (no second file). Otherwise the run's cheque payments are
-    rendered via the requested bank formatter, stored in MinIO, and a metadata
-    row is persisted (201).
+    The run must have **executed**: 422 otherwise. Idempotent: if a file already
+    exists for ``(run_id, bank_format)`` it is returned with 200 (no second
+    file). Otherwise the run's cheque payments are rendered via the requested
+    bank formatter, stored in MinIO, and a metadata row is persisted (201).
     """
     bank_format = body.bank_format or "csv"
 
@@ -186,6 +186,26 @@ async def generate_check_issue(
     ).scalar_one_or_none()
     if run is None:
         raise HTTPException(status_code=404, detail="Payment run not found")
+
+    # A run that hasn't executed has issued NOTHING. Its payments are still
+    # `pending` with a NULL `reference`, so `build_check_issue_items` yields an
+    # EMPTY `issued_map` — and because the (run, format) slot is claimed for
+    # good by `uq_positive_pay_run_format`, that empty snapshot can never be
+    # regenerated once the run does execute. Return processing then classifies
+    # every cheque the bank presents as `not_on_file` and floods the queue with
+    # fraud_flag Exceptions against real, legitimately-issued payments. Refuse
+    # up front — before the idempotency lookup, so an unexecuted run can neither
+    # mint nor hand back such a file. (A file generated against a draft run
+    # BEFORE this guard existed is unusable for the same reason: delete it via
+    # `DELETE /api/positive-pay/{id}` and regenerate once the run has executed.)
+    if run.executed_at is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Payment run has not been executed — no cheques have been issued yet. "
+                "Generate the check-issue file after the run executes."
+            ),
+        )
 
     # Idempotency: one check-issue file per (run, format) — return the existing.
     existing = (

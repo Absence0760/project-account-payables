@@ -161,8 +161,10 @@ async def test_void_payment_returns_invoice_to_approved_via_transition_invoice()
         correlation_id=uuid.uuid4(),
         created_at=now,
         updated_at=now,
+        submitted_at=None,
         completed_at=None,
         failure_reason=None,
+        provider=None,
     )
     invoice = SimpleNamespace(
         id=uuid.uuid4(),
@@ -238,8 +240,10 @@ async def test_void_audit_records_real_previous_status_and_decimal_amount():
         correlation_id=uuid.uuid4(),
         created_at=now,
         updated_at=now,
+        submitted_at=None,
         completed_at=None,
         failure_reason=None,
+        provider=None,
     )
     invoice = SimpleNamespace(
         id=uuid.uuid4(),

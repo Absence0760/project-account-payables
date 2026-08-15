@@ -55,15 +55,24 @@ A payment run is a batch of payments executed together. Think of it as "the Frid
 | initiated_by | UUID | User who created/executed the run |
 | executed_at | DateTime | When the run was executed |
 
-**Payment Run Statuses:**
+**Payment Run Statuses:** (the full set — `schemas/payment.py::PaymentRunStatus`)
 
 | Status | Meaning |
 |---|---|
 | `draft` | Created, invoices selected but not yet submitted |
-| `submitted` | Approved for processing |
+| `executing` | Claimed by `/execute`; the per-payment dispatch loop is running |
+| `submitted` | At least one payment is in flight, waiting on a processor webhook |
 | `processing` | Payments are being executed (async) |
-| `completed` | All payments in the run succeeded |
-| `failed` | One or more payments failed |
+| `partial` | At least one payment succeeded AND at least one failed |
+| `completed` | Every payment in the run succeeded |
+| `failed` | Every payment failed |
+| `cancelled` | A draft run cancelled before execution; its payment rows were deleted |
+
+The bucketing and the precedence that turns payment outcomes into a run status
+live in ONE place — `services/payment_runs.py::rollup_payment_statuses` /
+`PaymentRunRollup.run_status` — shared by the dispatcher that *persists*
+`run.status` and by the run-detail / runs-list reads that *report* it, so the
+two can't drift.
 
 ### Payment
 
@@ -198,6 +207,58 @@ lifecycle with no second human. The control mirrors the invoice-approval
 than an explicit `false` keeps the secure default). A legacy run with a NULL
 `initiated_by` is never blocked (nothing to compare against).
 
+### Every by-id route is entity-scoped
+
+Multi-entity Phase 2 scopes reads and writes by the `X-Entity-ID` header. The
+list surfaces (`GET /payments`, `/queue`, `/summary`, `/counts`, `/runs/`) have
+honoured it since that landed, but every **by-id** route used to resolve its
+row on the primary key alone — `GET /payments/{id}`, `/{id}/remittance`,
+`POST /{id}/void`, `/{id}/compliance/{release,dismiss}`, `POST /payments`,
+`GET /runs/{id}`, and `POST /runs/{id}/{approve,cancel,execute,retry-failed,resume}`.
+Inside one tenant that let a user with subsidiary A selected read, void,
+release, CFO-approve and execute subsidiary B's money simply by knowing the id:
+the entity selector was advisory on exactly the routes that move money.
+
+`_get_scoped_payment` / `_get_scoped_run` in `api/payments.py` are the fix,
+mirroring `api/positive_pay.py::_get_scoped_file` on the sibling treasury
+router. Two properties matter:
+
+- **Opaque 404.** An out-of-scope id returns the same `Payment not found` /
+  `Payment run not found` as one that doesn't exist — never a 403 — so the
+  response can't be used to enumerate another subsidiary's payments.
+- **The row locks are unchanged.** The scope predicate is one more `WHERE`
+  clause on the same `SELECT ... FOR UPDATE`; pass `for_update=True` on the
+  mutating callers (see the section below).
+
+The consolidated view (no header, or `X-Entity-ID: all`) still sees every
+entity's rows, so single-entity tenants and pre-multi-entity API consumers are
+unaffected. Pinned by `tests/test_payment_entity_scope.py`.
+
+### Every run-state endpoint row-locks
+
+`POST /runs/{id}/approve`, `/execute`, `/resume` and `/cancel` all read the
+run with `SELECT ... FOR UPDATE`, and `POST /payments/{id}/void` (plus the two
+compliance handlers) lock the payment the same way. The lock is not
+belt-and-braces on any of them — each guards a distinct double-spend or
+double-record race, and a plain `SELECT` there means two requests both pass
+the status guard.
+
+`/cancel` was the exception, and the most dangerous one, because it is the
+endpoint that **deletes** the run's child `Payment` rows. `/execute` locks,
+flips the run to `executing`, then commits — releasing the lock — *before* its
+adapter loop, so an unlocked `/cancel` that had already read `draft` sailed
+past the guard and deleted the very payments being handed to the processor.
+Both outcomes were reproducible against the unfixed code: the canceller
+winning outright (payments deleted, adapter never called, the run reporting
+success having paid nothing) and the rows vanishing mid-dispatch (real money
+out, no `Payment` record, run reads `cancelled`). Pinned by
+`tests/test_payment_concurrency.py::test_cancel_racing_execute_cannot_delete_dispatched_payments`
+— BUG D in that file's header.
+
+**Adding a run- or payment-state endpoint? Lock the row.** The file's existing
+handlers each carry a comment naming the race their lock prevents; follow the
+pattern rather than assuming the status guard alone is enough.
+
 ### Execution atomicity + resuming a stuck run
 
 `execute_payment_run`'s per-payment loop is durable, not all-or-nothing: each
@@ -220,6 +281,174 @@ concurrent call race an actively-running execution instead of only a
 confirmed-stuck one (see the row-lock double-execute guard above). An
 operator calls `/resume` only after confirming the run has made no progress
 for an implausible amount of time.
+
+### The live-payment 409 names the invoices
+
+`uq_payments_one_live_per_invoice` is the DB-level backstop that stops an
+invoice from carrying two live payments. When a run trips it the operator got
+"One or more invoices already have a live payment scheduled." — which
+identifies nothing; on a forty-invoice Friday run, bisecting the selection by
+hand was the only way forward. The 409 now names the offending invoice
+**numbers** (the identifier the row was selected by, and PII-free) and says what
+to do about them.
+
+Naming them requires the session to still be usable after the `IntegrityError`,
+so `create_payment_run_for_invoices` now always wraps its inserts in a savepoint
+— it used to do that only on the copilot's `plan_id` path, and on the manual
+path the poisoned session was precisely why the message could not say more.
+
+### Credit memos are netted on BOTH money paths
+
+Applying a credit memo is the whole point of the feature: it must reduce what
+the vendor is actually paid. The payment-run builder has netted applied memos
+off each payment since that fix landed — but `POST /api/payments`, the
+standalone path, did not. It bound the payment to a bare `invoice.amount` and
+422'd any other figure, so a credited invoice paid the vendor the **full
+pre-credit amount** there, and a caller who knew the correct net figure could
+not even submit it. Every guard around *applying* a memo (vendor match,
+currency match, no over-application) was solid, and none of it mattered on that
+path.
+
+Both paths now call `services/payment_runs.net_payable_amount(db, invoice)` —
+`invoice.amount` minus the sum of its `applied` credit memos — so they can't
+disagree about what an invoice is worth. Consequences on the standalone
+endpoint:
+
+- `PaymentCreate.amount` is now **optional**. When supplied it is only a
+  cross-check against the net figure; the server never trusts it as the amount
+  (that guard is what stops a $99,999 payment against a $500 invoice).
+- The CFO-approval threshold compares the **net** amount — the money that
+  actually moves — exactly as `create_payment_run` compares its netted total.
+- A fully-credited invoice is refused with **409**: nothing is owed, and a
+  zero-amount payment row would be a money record for money that never moves.
+
+`credit_memos.py`'s own over-application guard (apply refuses a memo that would
+exceed the invoice's remaining creditable balance) is what guarantees the net
+can never go negative. Pinned by
+`tests/test_payment_create_credit_memo_netting.py` (standalone) and
+`tests/test_payment_run_credit_memo_netting.py` (runs).
+
+### Why a payment failed, and retrying it
+
+`Payment.failure_reason` is written on every failure path — compliance refusal,
+card-issuance failure, an adapter raising, a void, a webhook-reported failure —
+but for a long time it never left the database, and the partial-failure counts
+existed only in the transient response body of the `/execute` call that
+produced them. Reload the page and a `partial` run was a bare status word with
+no way to ask "which ones, and why?" except reading the server log.
+
+Now:
+
+- `PaymentResponse` and the run-detail payments carry `failure_reason`,
+  `provider`, `submitted_at`, `completed_at`.
+- The run detail and the runs list carry the per-outcome rollup
+  (`payments_completed` / `payments_failed` / `payments_in_flight` /
+  `payments_pending`), **derived on read** from the child `Payment` rows — no
+  stored running total, so it can't drift from the payments it summarises. (The
+  runs list computes all of them in one grouped query; it used to issue a count
+  per run.)
+- `POST /runs/{id}/retry-failed` re-attempts them.
+
+**`/retry-failed` in one paragraph.** Accepted only on a `partial` / `failed`
+run (`draft` → use `/execute`; `executing` → use `/resume`). Same
+`payment.execute` permission, the same maker-checker `check_run_segregation`,
+and the same CFO-threshold gate as `/execute` — skipping any of those would
+make retry a way around all three. It books a second attempt for the failed
+payments it judges safe, then re-drives the run through the same
+`_dispatch_run_payments` loop, so anything already `completed` / `submitted` /
+`processing` / `pending_compliance` is never re-sent to the processor.
+
+#### A retry books a NEW payment; it never re-arms the old one
+
+`Payment.correlation_id` is the **processor's idempotency key**, not a local
+trace id: `payment_adapters/base.py` says so, `column` / `dwolla` /
+`stripe_treasury` / `increase` send it as `Idempotency-Key`, `modern_treasury`
+as `idempotency_key=`, and `checkeeper` burns it into a 48-hour Redis `SET NX`
+slot explicitly so a retry can't print a second physical cheque.
+
+A re-attempt is genuinely a new order, so it needs a new key. Minting one onto
+the *failed row* — which is what this endpoint originally did — also meant
+clearing that row's `failure_reason`, `provider_payment_id`, `submitted_at` and
+`completed_at`: it destroyed the only handles anyone had for reconciling
+attempt #1 with the processor, and overwrote two regulated money timestamps.
+
+So attempt #1 is never written to at all. Attempt #2 is an **INSERT** on the
+same run carrying `retry_of_payment_id` (migration `0080`, tenant-scoped),
+which the `payments` rollups use to count the **latest attempt per invoice**
+(`services/payment_runs.active_run_payments`) rather than every row ever — all
+three call sites (`_dispatch_run_payments`, the run detail, the runs list) go
+through it, so a fully recovered run reports `completed` instead of `partial`
+forever. `failed` / `cancelled` sit outside `uq_payments_one_live_per_invoice`,
+which is what lets the second row claim the invoice's live-payment slot; a
+savepoint per insert is the backstop for a conflict arriving as a race. The
+superseded attempt stays visible on the run detail — an operator has to be able
+to see that an invoice took two goes — it just isn't counted twice.
+
+#### Only a failure we can prove never reached the processor is re-attempted
+
+`services/payment_runs.classify_payment_failure` (pure, unit-tested) is the
+gate. A failed payment is **in doubt** — and skipped as `needs_reconciliation`
+for a human to void or reconcile — when any of these hold:
+
+| Signal | Why it's in doubt |
+|--------|-------------------|
+| `provider_payment_id` populated | An order exists at the processor; every adapter here returns a handle only from a create call that succeeded. |
+| `unexpected_error:*` | The dispatcher swallowed an exception. A read timeout *after* the processor accepted looks identical to one before it. |
+| `*_transport_error:*` | The request may well have been received and actioned before the connection died. |
+| `*_api_error:*` | The provider answered — a 5xx can still have created the order. |
+| `reconciler_max_age_exceeded*` | A genuinely `submitted` payment, real money in flight, that `payment_reconciler` gave up waiting on. **This is the case that made the old re-arm a double-pay.** |
+| `checkeeper_duplicate_suppressed` | The 48-hour print slot was already claimed — a cheque for this order was very likely already printed. |
+| `adapter_error:*` (card leg) | The card provider may have minted a card we never recorded. |
+| blank / unrecognised reason | Fail-closed: a future adapter or a legacy row is not waved through. |
+
+Everything else — our own `compliance_refusal:` / `compliance_dismissed` /
+`international_payment_error:`, the card leg's `card_issuance_*` /
+`cards_not_enabled`, and each adapter's pre-flight refusals (`*_not_configured`,
+`*_no_counterparty`, `*_no_external_account`,
+`*_no_destination_funding_source`, `*_missing_mailing_address`,
+`*_idempotency_unavailable`, `method '…' is not supported by …`) — provably
+never left this process, so re-sending is safe.
+
+**Adapter authors:** a *pre-flight* refusal must use one of those codes, not
+free prose, or it classifies as unrecognised and can never be auto-retried.
+Modern Treasury's two pre-flight refusals were prose and were normalised for
+exactly this reason.
+
+#### The other skip reasons
+
+Every skip is reported back in `skip_reasons`; nothing skipped is mutated or
+re-sent.
+
+- `invoice_not_payable` — the invoice is voided, re-rejected or already `done`,
+  so paying it would move money against something nobody currently approves.
+- `invoice_has_blocking_exception` — an unresolved
+  `PAYMENT_BLOCKING_EXCEPTION_TYPES` flag (`duplicate` / `fraud_flag` /
+  `line_total_mismatch`). Run creation refuses these outright; this endpoint
+  re-dispatches money days or weeks later, so a `fraud_flag` raised in the
+  interim (a BEC bank-detail swap, an altered or never-issued cheque off a
+  Positive Pay return) has to stop the re-send here too. Both callers share
+  `services/payment_runs.blocked_invoice_ids` so they can't drift.
+- `net_amount_changed` — a credit memo applied while the payment sat `failed`
+  (`credit_memos.py` gates on neither invoice status nor an existing payment)
+  means the failed row's `amount` is no longer what the vendor is owed. The
+  retry re-derives `net_payable_amount` and **skips**; the amount is never
+  silently adjusted, so the operator builds a fresh run through the full gate
+  set.
+- `invoice_has_live_payment` — the invoice has since acquired another live
+  payment.
+
+`retryable_failures` on the run detail counts only failures the endpoint will
+actually re-attempt, so the retry button can never offer an action that could
+only be skipped.
+
+**Idempotency** comes from the run claim: the row is locked and flipped to
+`executing` before anything is booked, so a double-click blocks on the lock and
+then 409s against the non-retryable status.
+
+Every retry writes a `payment.retried` audit row naming **both** payment ids
+(the superseded attempt and its successor) plus the failure reason it replaced,
+and one `payment_run.retried` row for the batch. Pinned by
+`tests/test_payment_run_retry.py`.
 
 ### The `virtual_card` leg — converging on an invoice's existing card
 
@@ -482,12 +711,14 @@ Matching payments against bank statement entries:
 |---|---|---|
 | `GET` | `/api/payments` | List payments (paginated, filterable) |
 | `GET` | `/api/payments/{id}` | Get single payment |
-| `POST` | `/api/payments` | Create individual payment |
+| `POST` | `/api/payments` | Create individual (standalone) payment. The amount is bound server-side to the invoice amount **net of applied credit memos**; `amount` in the body is optional and only a cross-check (422 on disagreement). See § Credit memos are netted on BOTH money paths. |
 | `GET` | `/api/payments/runs/` | List payment runs |
 | `POST` | `/api/payments/runs` | Create a payment run (draft) |
 | `GET` | `/api/payments/runs/{id}` | Get payment run with its payments |
 | `POST` | `/api/payments/runs/{id}/execute` | Execute the payment run + trigger ERP sync. `draft`-only — a run stuck `executing` (worker crash mid-run) is resumed via the endpoint below, not this one. |
 | `POST` | `/api/payments/runs/{id}/resume` | Resume a run stuck in `executing` — re-dispatches only its still-`pending` payments; anything already `completed`/`failed`/`submitted`/`processing`/`pending_compliance` from before the crash is left untouched. Same `payment.execute` permission gate as `/execute`. |
+| `POST` | `/api/payments/runs/{id}/retry-failed` | Re-attempt the safely-retryable FAILED payments of a `partial`/`failed` run by booking a NEW attempt row (the failed row is never mutated). Never re-dispatches a payment that already succeeded, nor one whose fate at the processor is unknown (`needs_reconciliation`); also skips an invoice that is unpayable, carries an unresolved duplicate/fraud/line-total exception, has since been credited, or already has another live payment. Same `payment.execute` gate, segregation check and CFO threshold as `/execute`. See § Why a payment failed, and retrying it. |
+| `POST` | `/api/payments/runs/{id}/cancel` | Cancel a draft run — deletes its child payment rows so the invoices return to the queue, and flips the run to `cancelled`. |
 | `GET` | `/api/payments/queue` | List invoices ready for payment |
 | `GET` | `/api/payments/summary` | KPIs: total paid, pending, queue count, rebates. Requires a `control_db` dependency because `CardRebate` is a control-plane model; the rebate query includes a try/except fallback returning `0.0` if the `card_rebates` table doesn't exist yet. |
 | `POST` | `/api/payments/{id}/void` | Void a pending/completed payment. Reverses a `virtual_card` payment's card at the provider too — see § Voiding a card payment cancels the card. |
@@ -522,7 +753,6 @@ Matching payments against bank statement entries:
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/payments/runs/{id}/cancel` | Cancel a draft run |
 | `GET` | `/api/payments/schedules` | List payment schedules with discount info |
 | `PATCH` | `/api/payments/{id}` | Update payment (status, reference) |
 

@@ -34,15 +34,24 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#251](https://github.com/Absence0760/project-account-payables/issues/251)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-08-10 against `9d9daabb`. Closed since the prior pass:
-the AI Cash-Flow Copilot Phase 3 core (draft-run / capture-discounts / enact
-affordance — shipped in #258, only its already-deferred sub-bucket remains
-below), the i18n date-localization slice (shipped in #258 — verified zero
-remaining `toLocaleDateString` call sites outside `utils/time.ts`), all three
-in-source TODOs (verified removed from source), and all three diagnosed
-defects in [known-issues.md](known-issues.md) (all now fixed/resolved — the
-"Diagnosed defects awaiting a fix" section is retired until something new
-lands there).
+**Last reconciled:** 2026-08-14 against `improve-round-critical-areas`. Closed
+since the prior pass: the whole **Money path** batch (all eight items — entity
+scope on every by-id payment/run route, the `pending_compliance` UI dead end,
+run failure visibility + retry, credit-memo netting on the standalone path,
+the draft-run Positive Pay guard, bank matching on status + currency, statement
+upload idempotency + size cap, and the one-payment-one-bank-transaction unique
+index in migration `0081`) and the whole **Trust-boundary** batch (the stale
+`tenantSlugUsage` guard, and Playwright cover for the `/profile` Signed-in
+devices panel). Nothing from either was carried forward.
+
+Closed in the pass before that: the AI Cash-Flow Copilot Phase 3 core
+(draft-run / capture-discounts / enact affordance — shipped in #258, only its
+already-deferred sub-bucket remains below), the i18n date-localization slice
+(shipped in #258 — verified zero remaining `toLocaleDateString` call sites
+outside `utils/time.ts`), all three in-source TODOs (verified removed from
+source), and all three diagnosed defects in
+[known-issues.md](known-issues.md) (all now fixed/resolved — the "Diagnosed
+defects awaiting a fix" section is retired until something new lands there).
 
 ---
 
@@ -133,6 +142,7 @@ rather than folding into the mechanical sibling-sweep fix.
 Ref: `reviews/flake-admin-users.md` (gitignored — regenerate via
 `/flake-doctor` if consulting this again after the file has aged out).
 
+
 ---
 
 ## (a) Blocked on external credentials, accounts, or hardware
@@ -222,6 +232,3 @@ as oversights.
       header documents the full rationale.
       **Trigger:** when regenerating locks by hand becomes a recurring
       irritation — not on any fixed schedule.
-
----
-
