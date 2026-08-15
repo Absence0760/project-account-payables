@@ -95,30 +95,38 @@ originally-deferred sub-bucket from that same feature remains:
 Refs: [roadmap.md](roadmap.md) § AI Cash-Flow Copilot,
 [cash-flow-copilot.md](cash-flow-copilot.md).
 
-### Outbound-webhook secret rotation is API-only — no admin UI
+### Webhook overlap badge doesn't survive a reload — `SubscriptionResponse` omits the expiry
 
-`POST /api/webhooks/{id}/rotate-secret` ships with its overlap window, docs and
-tests, but `frontend/src/routes/admin/webhooks/+page.svelte` has no control for
-it — the page can create, edit and delete a subscription, so an admin who needs
-to rotate a leaked secret has to reach for the API while a Delete button (which
-CASCADE-deletes the delivery history) sits right there in the UI. That's the
-wrong affordance to be the easy one during an incident.
+The `/admin/webhooks` rotation UI ships: a Rotate-secret row action, a
+confirm dialog carrying the overlap picker (including the explicit
+"Compromised — cut over now" hard cutover), the one-time reveal of the
+replacement secret, and a `Previous secret until …` pill while the retiring
+secret is still signing.
 
-- [ ] Add a rotate action to the subscription row: confirm-then-act like the
-      existing armed two-click Delete, an overlap picker (default 60 min, plus
-      an explicit "compromised — cut over now" = 0 option), and a
-      show-once secret panel reusing whatever the create flow already does for
-      the one-time secret reveal.
-- [ ] Surface an "overlap active until …" badge while
-      `previous_secret_expires_at` is in the future, so an admin can see a
-      rotation is mid-flight rather than guessing.
+That pill is **session-scoped**, and only because it has to be.
+`GET /api/webhooks` returns `SubscriptionResponse`, which carries
+`secret_prefix` but **not** `previous_secret_expires_at` — the field exists on
+the row (migration `0084`) and on the rotate response, but never on a list
+read. So the frontend holds the expiry in memory from the rotation it just
+performed, and a page reload loses the badge even though the window is still
+open. An admin who reloads mid-rotation can't tell whether the old secret is
+still verifying.
 
-**Why deferred:** the backend round that closed the rotation follow-up was
-scoped to the endpoint + overlap + docs (what that item actually listed); the
-UI is a different surface with its own patterns (`Modal`, `RowAction`, the
-one-time-secret reveal) and deserves its own pass rather than being bolted on.
-**Trigger:** the first tenant expected to self-serve a rotation without an
-engineer, or the next `/polish-ui` pass touching `/admin`.
+- [ ] Add `previous_secret_expires_at: datetime | None` to
+      `SubscriptionResponse` in `backend/app/api/webhooks.py` (it is an expiry
+      timestamp, not a secret — `previous_signing_secret` itself must stay off
+      the wire), then drop the in-memory `overlapUntil` map in
+      `frontend/src/routes/admin/webhooks/+page.svelte` and read the field off
+      the listed row instead. `$lib/utils/webhookRotation.isOverlapLive` is
+      already the shared predicate and doesn't change.
+
+**Why deferred:** the round that built the UI was frontend-scoped by
+assignment and explicitly not permitted to change the backend contract; the
+badge is genuinely useful in the session where it matters (the admin is on the
+page pasting the new secret into their receiver), so shipping the UI without
+it would have been the worse trade.
+**Trigger:** the next backend touch on `webhooks.py` — it is a one-field
+change plus its `test_webhooks.py` assertion.
 Ref: [public-api.md](../backend/docs/public-api.md) § Rotating a signing secret.
 
 ### Vendor statement reconciliation — PDF intake
