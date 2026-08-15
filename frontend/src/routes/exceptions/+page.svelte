@@ -85,6 +85,11 @@
 	// clear WCAG 1.4.3 (4.5:1) on that tint — #e04040 (3.68) and #8b5cf6
 	// (3.60) fail; their lighter siblings #f06464 (4.76) / #a78bfa (5.27)
 	// pass. Amber #d4940a (5.51) already passes.
+	// Must cover the backend roster (`services/exception_lifecycle.EXCEPTION_TYPES`);
+	// a missing key falls back to grey, which reads as "unclassified" next to
+	// every colour-coded sibling — worst on the types that BLOCK a payment run.
+	// Reuse a tone already in this map rather than introducing one: each was
+	// picked against the contrast rule above.
 	const TYPE_COLORS: Record<string, string> = {
 		duplicate: '#a78bfa',
 		po_mismatch: '#d4940a',
@@ -95,8 +100,11 @@
 		amount_exceeded: '#f06464',
 		missing_data: '#d4940a',
 		quality_hold: '#f06464',
+		price_variance: '#d4940a',
 		erp_reconciliation: '#f06464',
 		contract_noncompliant: '#f06464',
+		line_total_mismatch: '#f06464',
+		payment_compliance_hold: '#f06464',
 	};
 
 	const SEVERITY_COLORS: Record<string, string> = {
