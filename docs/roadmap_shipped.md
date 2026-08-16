@@ -6,7 +6,7 @@ is summarized — the full original entry, its checkbox detail, and its competit
 notes are preserved, because that detail is what makes the archive useful when
 someone asks "does the platform already do X?".
 
-**Read this before building.** 41 of 51 roadmap sections are here. Prior art for
+**Read this before building.** 43 of 51 roadmap sections are here. Prior art for
 most capabilities — matching, payments, e-invoicing, procurement, RBAC — lives in
 this file and in `backend/docs/`.
 
@@ -379,6 +379,23 @@ Shipped: a `PositivePayFile` model + migration 0048 (tenant-gated + fans out; id
 - [x] Generation is idempotent per run + audited; account/routing numbers stay out of logs and error bodies (PII invariant)
 
 **Competitors:** Coupa Pay, Tipalti, AvidXchange (positive pay as a treasury-controls feature)
+
+---
+
+### Vendor Statement Reconciliation
+**Status:** Done — pure engine in `backend/app/services/vendor_statement_recon.py`, `/api/vendor-statements` router, `/vendor-statements` frontend route, migration 0047. See `backend/docs/vendor-statement-reconciliation.md`.
+
+Distinct from bank reconciliation (cleared payments ↔ bank lines): this reconciles a **supplier's statement of open items** against our AP ledger to catch missing invoices, double-posted bills, mis-applied credits, and stale balances before month-end close. A core AP-clerk task that's entirely manual today.
+
+- [x] Statement intake — CSV upload (forgiving header sniff, mirrors the bank-rec CSV parser) + manual pasted-lines path, parsed into a normalized list of `{invoice_number, invoice_date, amount, status}` line items, vendor-scoped
+- [x] PDF intake via the org's own extraction adapter (`ExtractionAdapter.extract_statement`, an optional capability on `mock` / `claude_vision` / `ollama`) + raw-file storage — the uploaded document is archived to S3 and served back by `GET /api/vendor-statements/{id}/file`. The offline `mock` reader **skips rather than guesses** an ambiguous row; every failure is a fail-closed 422 with a PII-free reason, never a partial run
+- [x] Reconciliation engine (`services/vendor_statement_recon.py`, pure) — matches statement lines to our `Invoice` rows by normalized invoice number → amount+date-window fallback; classifies each as *matched* / *amount mismatch* (within/over a tolerance) / *missing on our side* (supplier billed, we never received) / *missing on their side* (we have an open invoice they omitted)
+- [x] Persist a `VendorStatementReconciliation` run + `VendorStatementReconLine` results (migration 0047, tenant-gated + fans out); the actionable rows (missing-on-our-side + amount-mismatch) surface as the per-run review queue feeding invoice intake. *(Design note: they're recon **lines**, not `Exception` rows — a deliberate choice for their per-line resolve/ignore lifecycle and side-by-side diff. Migration 0049 has since made `Exception.invoice_id` nullable for the Positive Pay feature, so the "we have no invoice" constraint no longer applies, but recon lines remain the right model here. See the doc.)*
+- [x] Frontend reconciliation view (`/vendor-statements`) — upload / manual create, side-by-side statement-vs-ledger diff, per-line resolve/ignore; every mutation RBAC-gated + audited (`vendor_statement_recon.created` / `.line_resolved` / `.deleted`)
+- [x] Statement upload UI — an explicit intake-mode choice (type the lines / upload a CSV-or-PDF file), the backend's 422 refusal reason rendered as a persistent inline alert on the form, and on the run detail a source pill, the `extraction` provenance block (adapter / confidence / open items read, plus what the skip-rather-than-guess rule means for the diff below it) and a download of the archived supplier document
+- [x] Period close tie-in — `GET /api/vendor-statements/close-readiness` flags vendors whose most-recent open run carries a material (over `FEOH_STATEMENT_RECON_MATERIALITY_DEFAULT`, `?materiality=` override) unreconciled balance
+
+**Competitors:** Tipalti, Basware, Medius (statement reconciliation in close workflows); most SMB tools lack it — a differentiator down-market
 
 ---
 

@@ -651,3 +651,131 @@ guard, which refuses to *build* a release against placeholder endpoints. That
 repo ships mobile/watch binaries where a bad endpoint is unrecoverable after
 store submission; here the frontend redeploys in minutes and the backend reads
 its config at runtime from sops. The guard would cost more than it protects.
+
+## 22. A one-shot money-path sweep owes its failures a row and an exit
+
+**Decided:** 2026-08-15
+
+`services/payment_erp_sync` is the only code path that flips an invoice
+`payment_scheduled → paid`. It is dispatched exactly twice, both fire-and-forget
+onto a detached thread after a terminal event (run execute, payment webhook),
+and **nothing re-invokes it** for a payment that is already `completed` — the
+reconciler backstop only re-dispatches payments it moves *out* of
+`submitted`/`processing`.
+
+That makes it unlike every other background sweep in this repo. A tick of
+`contract_renewal` or `vendor_rescreen` that fails is retried on the next tick;
+a leg of this one that fails is permanent. The money has moved, the invoice
+never advances, the ERP is never told, and the invoice's aging and 1099 YTD
+totals are wrong from then on. Its only trace was a `logger.warning` carrying an
+exception class name and a per-run counter that died with the thread.
+
+Three calls behind the fix:
+
+**Reuse `erp_reconciliation`, don't mint a type.** A failed leg means "the ERP
+and our ledger disagree and a human must reconcile" — precisely what
+`api/erp_webhook` already raises that type for when the ERP reports a void on an
+invoice we've advanced past. A new type would have needed a roster entry, a
+queue label, a payment-blocking decision, and would have split one situation
+across two names in the queue an AP manager works.
+
+**Commit per leg, not per run.** The loop ran every payment in one transaction
+with a single commit at the end. A leg failing with a *DB* error poisoned that
+transaction, so the final commit raised, the outer handler rolled back, and the
+run's successful transitions were discarded too — a strictly worse outcome than
+the failure itself, and equally silent. There is no cross-leg invariant to keep
+atomic (each payment discharges its own invoice), so per-leg commits cost
+nothing and remove the cascade. Each leg re-reads its own rows by id, because
+after a rollback the ORM objects the next leg would hold are expired, and
+touching one from async SQLAlchemy is a `MissingGreenlet`, not a clean failure.
+
+**The retry endpoint awaits the pass instead of dispatching the thread.** The
+two production call sites are fire-and-forget because they run at the tail of a
+request that must not block on the ERP. A human clicking "retry" on a strand
+wants the *answer*, so `POST /api/payments/runs/{run_id}/sync-erp` awaits
+`_sync_payments` and returns its real per-leg counts. Same code path, so the two
+can't diverge.
+
+That synchronous retry is also what turned the missing row lock from theoretical
+into real, and forced two follow-on details. The pass now takes the invoice
+`FOR UPDATE` before the status check, like every other status transition here —
+a manual retry can overlap the background thread a webhook just dispatched for
+the same run, and two unlocked readers would both see `payment_scheduled` and
+both transition, writing a duplicate audit row and a duplicate "invoice paid"
+notification (which, unlike the outbound-webhook emit keyed on the invoice id,
+has no dedupe). And the result grew a second counter: `synced` counts legs whose
+ERP-facing work completed, which stays true for a settled payment whose invoice
+is already `paid`, so it can't answer the operator's actual question.
+`transitioned` does. Redefining `synced` was rejected because once the real
+`adapter.post_payment()` lands, re-pushing an already-`paid` invoice's payment is
+still work done.
+
+**Deliberately not done:** auto-resolving the exception when the retry succeeds.
+`erp_reconciliation` is shared with the ERP-void path, so closing "the open one"
+could silently clear an unrelated reconciliation — the same reasoning
+`POST /api/payments/{id}/settlement/accept` records for `fraud_flag`. Also not
+done: making `/void` an exit. The money moved; voiding returns the invoice to
+`approved`, where it invites a second payment. That the settlement *hold* has
+accept-or-void as its two exits and this state has neither is exactly why the
+retry endpoint had to exist.
+
+**Trade-off:** a commit per payment instead of one per run — more round-trips on
+a background thread, in exchange for never discarding a settled payment's
+recorded state. And a repeatedly-failing leg now writes one exception row per
+invoice rather than none; the de-dupe on an already-open/escalated row is what
+keeps a retry loop from flooding the queue.
+
+---
+
+## 23. A stale list response is discarded, never merged onto a local edit
+
+**Decided:** 2026-08-15
+
+The list surfaces (`/invoices`, `/vendors`, `/payments`) fetch a page and
+replace the whole array. Some of them also edit one row *in place* with no
+fetch — the invoice modal's save / file attach, and on `/vendors` a
+re-screen, a risk recompute, a block/unblock or an enrichment apply. (Not a
+bank-detail save: that one stages a dual-control change request and applies
+nothing locally.) Both things can be happening at once: a mount fetch, a
+debounced search or a filter-chip fetch is still in flight when the user
+approves the invoice they have open.
+If that fetch resolves afterwards it holds a snapshot the server took
+*before* the edit, and putting it into state silently reverts the edit — the
+user watches their approval undo itself. `createRequestSequencer` closed the
+fetch-vs-fetch half of this, but a local edit issues no request, so its
+counter never moved and the in-flight fetch stayed "latest".
+
+`supersedeInFlight()` closes it: every request issued up to the moment of the
+edit becomes un-committable. Two calls worth recording:
+
+**The superseded response is dropped, not merged.** The tempting alternative
+is to re-apply the local edit on top of the arriving response — "newest data
+plus my change". It isn't sound. The response is a whole-row snapshot from
+before the edit, so overlaying the edited fields still publishes stale values
+for every *other* field on that row, and for a row the server changed for an
+unrelated reason in the same window. Dropping it leaves the list showing
+pre-fetch data plus the edit — consistent, if briefly behind — and the next
+sequenced fetch (a filter change, the modal close, a reload) reconciles. In
+practice every call site mutates from an open modal, so the user cannot have
+changed a filter concurrently; nothing they asked for is lost.
+
+**"Can I commit this?" and "am I the newest request?" became two questions.**
+They used to be one predicate, `isLatest`. A local edit makes them diverge: the
+in-flight fetch is still the newest *request* (nothing newer was issued) but
+must no longer commit. The `finally` that clears the `loading` flag has to read
+the request question — `isCurrentRequest` — or the spinner stays on forever
+after a local edit, with no later request coming to clear it. The vendors
+load-error toast reads it for the same reason: a superseded request still
+failed, and only a newer *fetch* makes its failure someone else's to report.
+
+**Trade-off:** a fetch issued in the same window as the edit is dropped even
+though it might have included the edit, costing one redundant round trip's
+worth of freshness. The alternative — assuming it is fresh enough — is exactly
+the bug. Conservative is correct here: the cost of dropping a good response is
+a slightly stale list; the cost of committing a stale one is losing a
+financial edit the user believes they made.
+
+**Not adopted:** tracking per-field pending patches (a mutation overlay, à la
+an optimistic-update cache). It solves the merge case properly but needs a
+patch log, invalidation rules, and a rollback path on a failed mutation — a
+lot of machinery for surfaces whose mutations already happen behind a modal.

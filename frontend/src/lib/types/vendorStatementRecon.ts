@@ -15,6 +15,23 @@ export const RECON_STATUS_LABELS: Record<ReconStatus, string> = {
 	resolved: 'Resolved'
 };
 
+// --- Intake source --------------------------------------------------------
+
+// How the run's statement lines got here. `manual` = typed into the lines
+// editor; `csv` = a deterministic parse of an uploaded CSV; `pdf` = MACHINE-READ
+// off an uploaded document by the org's extraction adapter. The distinction is
+// not cosmetic: a reviewer clearing a `pdf` run's lines is clearing a model's
+// reading of a document, which is why the provenance block exists.
+export type ReconSourceFormat = 'manual' | 'csv' | 'pdf';
+
+// Data-value map, English by the established convention (see the status /
+// classification maps above).
+export const RECON_SOURCE_FORMAT_LABELS: Record<ReconSourceFormat, string> = {
+	manual: 'Entered by hand',
+	csv: 'CSV upload',
+	pdf: 'PDF (machine-read)'
+};
+
 // --- Line classification --------------------------------------------------
 
 export type ReconClassification =
@@ -69,6 +86,20 @@ export interface ReconSummary {
 	ledger_total: number | null;
 }
 
+// Provenance for a run whose lines were MACHINE-READ off a PDF. Present only on
+// the PDF intake path; `null` for CSV / pasted-lines runs, which have neither a
+// provider nor a confidence to report.
+export interface StatementExtractionMeta {
+	method: string;
+	provider: string;
+	// 0..1 as the adapter reported it — render through `formatExtractionConfidence`.
+	confidence: number;
+	// How many open items the reader actually accepted off the document. NOT the
+	// run's line count: the run also carries `missing_on_their_side` rows built
+	// from our own ledger.
+	line_count: number;
+}
+
 export interface Reconciliation {
 	id: string;
 	vendor_id: string | null;
@@ -78,6 +109,10 @@ export interface Reconciliation {
 	currency: string;
 	source_format: string;
 	file_key: string | null;
+	// Whether the supplier's own document was archived alongside the run —
+	// fetched by run id via `GET /{id}/file`, never by key.
+	has_source_file: boolean;
+	extraction: StatementExtractionMeta | null;
 	status: ReconStatus;
 	notes: string | null;
 	summary: ReconSummary;
@@ -138,4 +173,49 @@ export interface CloseReadinessResponse {
 	materiality_threshold: number;
 	blocking_vendors: CloseReadinessVendor[];
 	is_close_ready: boolean;
+}
+
+// --- Pure display helpers -------------------------------------------------
+
+/**
+ * Render an adapter's 0..1 confidence as a whole percentage.
+ *
+ * Defensive because the figure crosses a network boundary: a missing / NaN /
+ * non-numeric value renders the placeholder rather than `NaN%`, and an
+ * out-of-range value is clamped rather than shown as `140%` — a reviewer
+ * weighing a machine's reading must never be handed a nonsense number.
+ * Deliberately NOT locale-formatted: it is a provenance qualifier, not a
+ * measured figure, and it must not be confused with money.
+ */
+export function formatExtractionConfidence(
+	confidence: number | null | undefined,
+	placeholder = '—'
+): string {
+	if (typeof confidence !== 'number' || !Number.isFinite(confidence)) return placeholder;
+	const clamped = Math.min(1, Math.max(0, confidence));
+	return `${Math.round(clamped * 100)}%`;
+}
+
+/** Were this run's lines read off a document by an extraction adapter? */
+export function isMachineRead(recon: Pick<Reconciliation, 'extraction'>): boolean {
+	return recon.extraction !== null && recon.extraction !== undefined;
+}
+
+/**
+ * Filename to save the archived supplier document under.
+ *
+ * Composed from the run's own metadata rather than parsed out of `file_key` —
+ * the key is an internal storage detail (the API returns the `has_source_file`
+ * flag precisely so a client needn't reach into it), and `source_format` already
+ * says which document shape was uploaded.
+ */
+export function sourceStatementFilename(
+	recon: Pick<Reconciliation, 'source_format' | 'statement_date' | 'vendor_name'>
+): string {
+	const ext = recon.source_format === 'pdf' ? 'pdf' : 'csv';
+	const vendor = (recon.vendor_name ?? 'vendor')
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, '-')
+		.replace(/^-+|-+$/g, '');
+	return `statement-${vendor || 'vendor'}-${recon.statement_date}.${ext}`;
 }

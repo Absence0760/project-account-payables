@@ -111,6 +111,22 @@ tenant, re-screens active vendors whose `last_screened_at` is NULL or older than
 `FEOH_VENDOR_RESCREEN_AFTER_DAYS`, and notifies AP managers when a vendor newly
 flips to `match` / `review`. Disabled by default (`FEOH_VENDOR_RESCREEN_ENABLED`).
 
+**Each vendor is screened and committed on its own**, and a vendor whose screen
+raises is logged (exception CLASS only), counted in `RescreenResult.vendor_failures`,
+and skipped — the tenant's remaining vendors carry on.
+
+That is a correctness requirement, not a nicety. The loop previously had no
+per-vendor guard and committed once per tenant, and `screen_vendor_record` has
+no internal `except`. So one vendor whose screen raised (adapter transport
+error, a bad credential, one malformed row) aborted the whole tenant sweep
+*before* the commit: not even the vendors already screened on that tick got
+their `last_screened_at` advanced. Every one of them stayed due, the same poison
+vendor was re-selected on the next tick, and the sweep made **zero progress
+forever** — a sanctions-compliance control silently not running, with nothing
+surfacing staleness (`GET /api/vendors/screening/review-queue` only *orders* by
+`last_screened_at`). `vendor_failures` is counted apart from `failures`
+(whole-tenant sweep aborts) so the two can't be confused in the sweep's log line.
+
 ## Risk scoring
 
 `services/vendor_risk_scoring.py` blends three PII-free signals into a 0–100

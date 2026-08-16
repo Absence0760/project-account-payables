@@ -12,6 +12,92 @@ goes to [decisions.md](decisions.md).
 
 ---
 
+## A non-generatable recurring template silently skips every period
+
+**Found:** 2026-08-15, in the background-sweep survey behind the
+`payment_erp_sync` / `vendor_rescreen` fixes.
+
+`services/recurring_invoices.generate_one` returns `None` for a template missing
+`amount` or `vendor_name`, logging a `WARNING` and nothing else. The sweep's
+"defensive" cursor advance then rolls `next_run_on` forward **anyway**
+(`recurring_invoices.py`, the `if template.next_run_on is not None and
+template.next_run_on <= run_on:` block near the end of `_sweep_tenant`).
+
+The guard itself is right — it exists so a template that can't generate can't
+spin the sweep forever. What's missing is the other half: the template stays
+`active`, `generated_count` never moves, `last_generated_at` never updates, and
+nothing surfaces the skip. Month after month, a subscription invoice that a
+tenant believes is being raised into the approval queue simply isn't, and the
+only trace is a log line. `GET /api/recurring/{id}/history` shows an empty run
+history that is indistinguishable from "nothing due yet".
+
+**Same file, second issue:** `_sweep_tenant` has no per-template guard and a
+single commit at the end, so one template that raises aborts that tenant's whole
+tick and discards the invoices already generated on it — the identical shape
+fixed in `services/vendor_rescreen` (per-item re-read by id + per-item commit +
+a counted, logged skip) and in `services/payment_erp_sync`. Fix both together.
+
+**Recommended fix.** Persist the skip rather than only logging it: stamp a
+reason on the template (a `meta`/settings-JSON marker needs no migration) and
+either pause the template after N consecutive non-generatable periods — the
+shape `services/scheduled_reports` already uses (`last_run_status` /
+`last_run_error` / auto-disable at 5 consecutive failures) — or raise it into
+the notification path AP managers already read. Then apply the per-template
+guard + per-template commit.
+
+---
+
+## A tenant with no ERP configured never gets an invoice to `paid`
+
+**Found:** 2026-08-15, while fixing the ERP sync-back's failed-leg strand.
+
+`services/payment_erp_sync._sync_payments` returns early when the org has no
+`settings.erp`:
+
+```python
+erp_config = (org.settings or {}).get("erp")
+if not erp_config:
+    logger.info("[payment-sync] no ERP configured for org %s, skipping sync", org_id)
+    return PaymentSyncResult()
+```
+
+That early return skips the **whole pass**, including the part that has nothing
+to do with an ERP: advancing `payment_scheduled → paid` for a payment the rail
+actually settled. And this module is the only automatic path that makes that
+transition. The other two writers of `InvoiceStatus.paid` are
+`POST /api/payments/{id}/settlement/accept` (a manual short-settlement release)
+and `api/erp_webhook` (which by definition requires an ERP).
+
+**Blast radius.** For an org that pays without an ERP — the "direct schedule, no
+ERP" branch the state machine explicitly supports (`approved →
+payment_scheduled` with no `sending_to_erp` leg) — every settled invoice sits at
+`payment_scheduled` indefinitely. Downstream that means the aging report, the
+`/dashboard` pipeline, the vendor's payment history, and the 1099 YTD totals all
+under-count paid spend, and `retention_sweep` never sees the invoice as
+archivable (`done`/`paid`). The payment row itself is correct throughout, so
+nothing looks wrong from the payments page — which is what makes it easy to
+miss.
+
+**Why it wasn't fixed here.** The current behaviour is *asserted*, with an
+explanatory docstring, by
+`backend/tests/test_payment_erp_sync.py::test_sync_skips_when_no_erp_configured`.
+Flipping it changes when invoices reach `paid` for a whole class of tenants, so
+it needs that test's intent revisited rather than a drive-by edit inside an
+unrelated round.
+
+**Recommended fix.** Narrow the gate to what it actually guards. The ERP config
+is only needed to resolve the adapter (`get_erp_adapter(erp_config)`), and the
+"push to ERP" step is presently a `logger.info` placeholder — so the gate is
+currently skipping the invoice transition and nothing else. Move the check so it
+guards adapter resolution and the (future) push, and let the leg loop run
+either way; the leg already skips any payment that isn't `completed` and any
+invoice that isn't `payment_scheduled`, so a no-ERP tenant would simply get its
+invoices marked `paid` on settlement. Update the test above to assert the new
+contract (no adapter call, invoice still advances) and note the change in
+`backend/docs/payments.md` § ERP Payment Sync.
+
+---
+
 ## ~~Read-after-write race on every mutating endpoint~~ — FIXED 2026-08-06
 
 **Resolved** by `commit_before_response` (`backend/app/database.py`), applied by

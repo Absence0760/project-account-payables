@@ -881,9 +881,73 @@ Execute Payment Run (response sent immediately)
 - Sync runs async — **doesn't block** the payment run response
 - Uses the same background thread pattern as extraction dispatch (fresh DB engines per thread)
 - If no ERP is configured, sync is skipped silently
-- Failed syncs are logged for retry (manual retry endpoint planned)
 
 **Files:** `backend/app/services/payment_erp_sync.py`
+
+#### A failed leg is a strand, and it is visible
+
+Because nothing re-invokes this sync for a payment that is already `completed`,
+a leg that *fails* is not "retried next tick" — it is permanent. The money has
+moved, but the invoice stays `payment_scheduled`, the ERP is never told, and the
+invoice's aging and 1099 YTD totals are wrong from then on.
+
+That used to be invisible: a `logger.warning` carrying an exception class name
+and a per-run `failed` counter that died with the background thread. No
+exception row, no notification, no persisted marker.
+
+Two things changed:
+
+- **Every failed leg opens a de-duped `erp_reconciliation` exception** naming
+  the payment, the run, and the retry endpoint, so the strand lands in the queue
+  an AP manager already works. `erp_reconciliation` is the type
+  `api/erp_webhook` already raises for "the ERP and our ledger disagree and a
+  human must reconcile" — the same situation, so no new taxonomy entry. The
+  description is PII-free (identifiers, the failure's exception *class*, the
+  invoice's current status) — never the raw error message, which can embed
+  partial account data.
+- **Each leg commits on its own.** The loop used to run every payment inside one
+  transaction with a single commit at the end; a leg that failed with a DB error
+  poisoned that transaction, so the final commit raised, the outer handler
+  rolled back, and the run's *successful* `payment_scheduled → paid` transitions
+  were discarded too — silently, with nothing to re-invoke them. Each leg now
+  re-reads its own rows by id (so no leg is left holding ORM state expired by
+  another leg's rollback) and commits independently.
+
+**The exit is `POST /api/payments/runs/{run_id}/sync-erp`** — an explicit,
+audited (`payment_run.erp_sync_retried`) re-run of the same pass, `payment.execute`-gated
+and entity-scoped, which *awaits* the pass and returns its real per-leg counts
+instead of "queued". It is idempotent by construction, not by a claim: the pass
+skips every payment that isn't `completed` and every invoice that isn't
+`payment_scheduled`, so a repeat call writes no second transition. It moves no
+money — it only reports money that already moved. 409 when the run has no
+settled payment to sync.
+
+**Read `transitioned`, not `synced`, to answer "did this recover anything".**
+`synced` counts legs whose ERP-facing work completed, and stays true for a
+settled payment whose invoice was already `paid` — so a repeat call reports the
+same `synced` count with `transitioned: 0`. (Once the real `adapter.post_payment()`
+lands, re-pushing an already-`paid` invoice's payment is still work done, which
+is why the two counters are separate rather than one being redefined.)
+
+**The invoice is taken `FOR UPDATE` before the status check**, like every other
+status transition in the codebase. The retry endpoint awaits the pass
+synchronously, so a manual retry can overlap the background thread a webhook
+just dispatched for the same run; two unlocked readers would both see
+`payment_scheduled`, both clear the coverage check, and both transition — a
+duplicate audit row and a duplicate "invoice paid" notification, which (unlike
+the outbound-webhook emit, keyed on the invoice id) has no dedupe.
+
+**Voiding is not an exit for this state.** `POST /api/payments/{id}/void`
+returns the invoice to `approved`, which invites a second payment for money that
+already left. That asymmetry with the `held` (short-settlement) path — a
+deliberate hold, which *does* have accept-or-void as its two exits — is why the
+retry endpoint exists.
+
+The endpoint deliberately does **not** resolve the `erp_reconciliation`
+exception on success. That type is shared with the ERP-void path in
+`api/erp_webhook`, so auto-closing "the open one" could silently clear an
+unrelated reconciliation — the same reasoning `POST /{id}/settlement/accept`
+documents for `fraud_flag`. The human closes it after confirming.
 
 ### 5. Reconciliation (Future)
 
@@ -909,6 +973,7 @@ Matching payments against bank statement entries:
 | `POST` | `/api/payments/runs/{id}/execute` | Execute the payment run + trigger ERP sync. `draft`-only — a run stuck `executing` (worker crash mid-run) is resumed via the endpoint below, not this one. |
 | `POST` | `/api/payments/runs/{id}/resume` | Resume a run stuck in `executing` — re-dispatches only its still-`pending` payments; anything already `completed`/`failed`/`submitted`/`processing`/`pending_compliance` from before the crash is left untouched. Same `payment.execute` permission gate as `/execute`. |
 | `POST` | `/api/payments/runs/{id}/retry-failed` | Re-attempt the safely-retryable FAILED payments of a `partial`/`failed` run by booking a NEW attempt row (the failed row is never mutated). Never re-dispatches a payment that already succeeded, nor one whose fate at the processor is unknown (`needs_reconciliation`); also skips an invoice that is unpayable, carries an unresolved duplicate/fraud/line-total exception, has since been credited, or already has another live payment. Same `payment.execute` gate, segregation check and CFO threshold as `/execute`. See § Why a payment failed, and retrying it. |
+| `POST` | `/api/payments/runs/{id}/sync-erp` | Re-run the ERP sync-back for a run whose settled payments didn't land — the exit for an invoice stranded at `payment_scheduled` after a failed sync leg. Awaits the pass and returns its `synced`/`transitioned`/`skipped`/`held`/`failed` counts (read `transitioned` for "did this recover anything"); idempotent by construction; moves no money. `payment.execute`-gated, entity-scoped, audited `payment_run.erp_sync_retried`. 409 when the run has no settled payment. See § ERP Payment Sync → A failed leg is a strand, and it is visible. |
 | `POST` | `/api/payments/runs/{id}/cancel` | Cancel a draft run — deletes its child payment rows so the invoices return to the queue, and flips the run to `cancelled`. |
 | `GET` | `/api/payments/queue` | List invoices ready for payment |
 | `GET` | `/api/payments/summary` | KPIs: total paid, pending, queue count, rebates. Requires a `control_db` dependency because `CardRebate` is a control-plane model; the rebate query includes a try/except fallback returning `0.0` if the `card_rebates` table doesn't exist yet. |

@@ -34,22 +34,61 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#251](https://github.com/Absence0760/project-account-payables/issues/251)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-08-15 against `improve/round-followup-closeout` — a
-three-agent round that closed the three remaining tracked items. **Webhook
-secret rotation is now reachable from `/admin/webhooks`** (row action → overlap
-picker → one-time reveal), and its overlap badge survives a reload now that
-`SubscriptionResponse` carries the expiry. **Vendor statements accept a PDF**,
-routed through the org's own extraction adapter as an optional
-`extract_statement` capability rather than a second parser, with the source
-document archived. **The cash-flow copilot gained a proactive
-shortfall-alert sweep**; its opening-balance-provenance bullet turned out to be
-already shipped, and closing it surfaced a real defect underneath — the provider
-balance's CURRENCY was dropped, so a USD-reporting org with a EUR account got a
-running balance that was silently a two-currency mixture. That is fixed and the
-CFO endpoint now shares the same resolution chain.
+**Last reconciled:** 2026-08-15 against `improve/round-followup-batch-2` — a
+three-agent round that closed the two remaining actionable `(c)` items and
+shipped one backend improvement chosen by survey.
 
-Two new entries below replace them, both surfaced by this round's reviews rather
-than by the work itself.
+**The vendor-statement upload UI closed** — but the entry's premise ("no file
+picker at all") was stale; a picker existed and already took CSV and PDF. The
+real defects were sharper: the two intakes competed silently (a file beat typed
+lines, and `notes` was dropped on the upload path the endpoint doesn't accept it
+on), the backend's PII-free 422 refusals — the actionable half of a reader that
+*skips rather than guesses* — went to a fading toast, `has_source_file` /
+`extraction` were never typed client-side, and an empty pasted editor created a
+run asserting the supplier had listed nothing. Intake is now an explicit mode
+choice, refusals render as a persistent inline alert, and the run detail carries
+a source pill, the `extraction` provenance block and a download of the archived
+supplier document. That was the last open item in the Vendor Statement
+Reconciliation roadmap section, which moved to
+[roadmap_shipped.md](roadmap_shipped.md). It surfaced two new items below — the
+keyless-dev-box extraction fallback, and the reader's uncounted skipped rows.
+
+**The invoices/vendors local-mutation race closed** — the fix went into the
+shared `createRequestSequencer()` primitive rather than being hand-rolled per
+page, splitting the old single `isLatest` predicate into `canCommit` (may this
+response be written?) and `isCurrentRequest` (is this still the newest request?)
+so a `finally` clearing a loading flag doesn't hang forever once a local edit
+supersedes an in-flight fetch. Rationale in [decisions.md](decisions.md) §23.
+The exhaustive sweep it prompted found the far larger remainder — eighteen list
+surfaces with no sequencing at all — and a separate `/assistant` defect, both
+new entries below.
+
+**The ERP sync-back's failures became visible and recoverable** —
+`services/payment_erp_sync` is the only path that flips an invoice
+`payment_scheduled → paid`, is dispatched one-shot after a terminal event and is
+never re-invoked for an already-`completed` payment, so a failed leg left the
+money moved and the invoice stranded forever behind a log line. Worse, one
+shared transaction meant a leg failing on a DB error rolled back the run's
+*successful* transitions too. Each leg now commits independently, every failure
+opens a de-duped PII-free `erp_reconciliation` exception, and
+`POST /api/payments/runs/{run_id}/sync-erp` is the audited retry exit.
+Rationale in [decisions.md](decisions.md) §22. Two sibling fixes rode along (a
+fail-open `quote_payment` base default, and a head-of-line stall in
+`vendor_rescreen`); the systemic remainder — every sweep discarding its own
+failure count — is a new entry below.
+
+Closed in the pass before that, against `improve/round-followup-closeout`: the
+three tracked items of that round. **Webhook secret rotation became reachable
+from `/admin/webhooks`** (row action → overlap picker → one-time reveal), with
+its overlap badge surviving a reload now that `SubscriptionResponse` carries the
+expiry. **Vendor statements began accepting a PDF**, routed through the org's own
+extraction adapter as an optional `extract_statement` capability rather than a
+second parser, with the source document archived. **The cash-flow copilot gained
+a proactive shortfall-alert sweep**; its opening-balance-provenance bullet turned
+out to be already shipped, and closing it surfaced a real defect underneath — the
+provider balance's CURRENCY was dropped, so a USD-reporting org with a EUR
+account got a running balance that was silently a two-currency mixture. That is
+fixed and the CFO endpoint now shares the same resolution chain.
 
 Closed in the pass before that, against
 `feat/settled-amount-and-money-path-followups`: the entire
@@ -88,6 +127,82 @@ defects awaiting a fix" section is retired until something new lands there).
 
 ## (c) Feature work — sized and unstarted
 
+### Every background sweep throws away its own failure count
+
+All fourteen long-lived sweeps started in `backend/app/main.py`'s lifespan share
+one shape:
+
+```python
+while True:
+    try:
+        await <sweep>_once()          # <-- return value DISCARDED
+    except Exception as exc:
+        logger.error("[x] sweep raised: %s", exc.__class__.__name__)
+    await asyncio.sleep(interval)
+```
+
+Twelve of them already return a result dataclass carrying a `failures: int`
+(`extraction_reaper`, `audit_log_shipper`, `approval_escalation`,
+`payment_reconciler`, `contract_renewal`, `vendor_rescreen`,
+`discount_auto_trigger`, `qms_sync`, `recurring_invoices`, `retention_sweep`,
+`scheduled_reports`, `cash_flow_alerts`) — and **every loop discards it at the
+call site**. The counter's only consumer is a conditional aggregate
+`logger.info` inside `*_once` itself. It is never persisted, never exposed, never
+alerted on. There is also no supervision (`asyncio.Task` with no
+`add_done_callback`, no restart) and `GET /api/health` returns a static `ok`
+that says nothing about whether any sweep is alive or progressing.
+
+Consequence: a sink that has been misconfigured for months (the `audit_shipping`
+adapters raise by design so rows stay unshipped and retry forever — the SOC 2
+WORM evidence trail simply isn't leaving the tenant DB) looks identical to one
+running clean.
+
+- [ ] Read the `failures` count in each loop and turn it into queryable state —
+      the two sweeps that already model failure as state are the pattern:
+      `scheduled_reports` persists `last_run_status` / `last_run_error` and
+      auto-disables after 5 consecutive failures, and `webhook_deliveries` keeps
+      per-row status + attempt count. A per-sweep run row (or a settings-JSON
+      marker, no migration needed) plus a non-zero-streak signal would convert
+      ten of these from invisible to detectable.
+
+**Why deferred:** surfaced by the survey behind this round's `payment_erp_sync`
+and `vendor_rescreen` fixes, which closed the two *specific* cases where an
+invisible failure also lost work or blocked progress. This entry is the
+remaining *systemic* observability gap — it touches fourteen files and wants one
+consistent mechanism decided first, not fourteen ad-hoc ones.
+**Trigger:** the next operability/observability pass, or the first deployed
+environment where a sweep is suspected of not running.
+Ref: `backend/CLAUDE.md` § Key background services.
+
+### Two adapter families ship code no caller reaches
+
+Both are latent traps rather than live defects — nothing calls them today — but
+each would misbehave for whoever wires it up first:
+
+- [ ] **`services/corridor_quotes.compare_quotes` has no production caller.**
+      The multi-provider price optimizer is fully built and documented
+      (`backend/docs/international-payments.md` § Multi-route quote
+      optimization) but `grep` finds no call site outside its own module.
+      Its base-class fail-open bug — an adapter with no fee schedule winning
+      every auction with a fabricated free/instant quote — was fixed this round
+      (`PaymentAdapter.quote_payment` now returns `no_quote_endpoint`), so
+      wiring it up is now safe; what's missing is the wiring, plus
+      `modern_treasury`'s real fee table so it isn't skipped.
+- [ ] **`services/financing_adapters` has no caller, and `c2fo.py` breaks its
+      own Protocol.** `base.py`'s contract says an implementation returns an
+      ineligible `FinancingQuote` rather than raising; `C2FOAdapter.quote` and
+      `.request_funding` both `raise NotImplementedError`. The `mock` sibling
+      returns real quotes. Unreachable today, so it fails no test — and it will
+      surface as a 500 for the first caller instead of the documented graceful
+      "not eligible".
+
+**Why deferred:** both are wiring/product decisions (where in the payment flow a
+corridor auction runs; whether supply-chain financing is offered at all), not
+defects in shipped behaviour.
+**Trigger:** the first slice that consumes either family.
+Ref: `backend/docs/international-payments.md`,
+`backend/docs/dynamic-discounting.md`.
+
 ### AI Cash-Flow Copilot — Phase 3 deferred bucket
 
 Phases 1–3 core shipped (read-only cash Q&A, `propose_payment_plan` +
@@ -102,32 +217,65 @@ originally-deferred sub-bucket from that same feature remains:
 Refs: [roadmap.md](roadmap.md) § AI Cash-Flow Copilot,
 [cash-flow-copilot.md](cash-flow-copilot.md).
 
-### Vendor statement reconciliation — statement upload UI
+### PDF statement intake can't run on the committed local defaults
 
-PDF-via-extraction intake and raw-file storage both **shipped**: a PDF upload
-routes through the org's own extraction adapter (`ExtractionAdapter.extract_statement`,
-an optional capability implemented on `mock` / `claude_vision` / `ollama`), the
-uploaded document is archived to S3 and served back by
-`GET /api/vendor-statements/{id}/file`, and `file_key` is no longer written NULL.
+The offline `mock` statement reader exists precisely so `pnpm dev` can exercise
+the whole PDF-statement path with no cloud credential — but nothing routes to it
+by default. `extraction._resolve_extraction_config` hardcodes
+`provider: "claude_vision"` for `program_type: "platform"` (the default when an
+org sets no `settings.extraction`, which is every seeded tenant), **regardless of
+whether `FEOH_ANTHROPIC_API_KEY` is set**. So a PDF statement uploaded on a fresh
+clone makes an outbound call to `api.anthropic.com` with an empty key and comes
+back `provider_error` — the UI now explains that clearly, but the local-first
+promise (guard rail 7) isn't kept for this path, and only hand-editing an org's
+`settings.extraction` to `{program_type: "byok", provider: "mock"}` reaches the
+offline reader.
 
-What's left is the surface, not the pipeline: `/vendor-statements` is a
-create-from-pasted-lines page with no file picker at all — the CSV endpoint
-never had one either, and the PDF one inherits that gap. Today both are
-API-only.
+This is not statement-specific: the same resolution governs invoice extraction,
+which is why it's a wider change than a statement round should make.
 
-- [ ] Statement upload UI on `/vendor-statements` — file picker (CSV or PDF) →
-      vendor / statement-date / reference form → the run detail; surface the
-      run's `extraction` provenance block and a "download the source statement"
-      link when `has_source_file` is true; map the 422 reason messages onto the
-      form.
+- [ ] Make platform mode fall back to `mock` when no platform key is configured
+      (or introduce `FEOH_EXTRACTION_PROVIDER` with a `mock` default in
+      `backend/.env.development`), so a keyless dev box never makes an outbound
+      extraction call. Whichever shape wins must keep a *deployed* env with a key
+      on `claude_vision` unchanged, and needs pytest coverage of the keyless
+      resolution.
 
-**Why deferred:** the backend round that closed PDF intake was scoped to the
-adapter capability, the bridge service, the route and raw-file storage; the page
-is a different surface with its own patterns and deserves its own pass rather
-than being bolted on.
-**Trigger:** the first tenant expected to upload a statement without an
-engineer, or the next `/polish-ui` pass touching `/vendor-statements`.
-Ref: [vendor-statement-reconciliation.md](../backend/docs/vendor-statement-reconciliation.md) § PDF intake.
+**Why deferred:** it changes adapter selection for the whole extraction path
+(invoices included), not just statements — a different blast radius from the
+`/vendor-statements` UI round that surfaced it.
+**Trigger:** the next extraction-config change, or the first report of a dev box
+making unexpected outbound calls.
+Refs: `backend/app/services/extraction.py::_resolve_extraction_config`,
+[vendor-statement-reconciliation.md](../backend/docs/vendor-statement-reconciliation.md) § PDF intake.
+
+### The statement reader skips rows without saying how many
+
+`scan_statement_text` deliberately skips a row it can't read unambiguously (a
+second money column, a second identifier column) rather than booking a
+plausible-but-wrong figure — the right call, documented at length. But nothing
+counts those skips: `meta.extraction` records `line_count` (rows *accepted*) and
+no skip figure, so a clerk whose aging-bucket statement lost half its rows sees a
+short run with no signal that anything was dropped. The new provenance panel
+explains the *rule* and names the accepted count, which is as far as the data
+goes today.
+
+- [ ] Report a skipped-row count (or the skipped rows' raw text) from
+      `scan_statement_text` → `StatementExtractionResult` → `meta.extraction`, so
+      the provenance panel can say "N rows were skipped as ambiguous" and offer
+      the CSV/vision alternative in context.
+
+**Why deferred:** an *honest* count is a design problem, not a plumbing one. The
+reader skips blank lines, column headers, page furniture, subtotals and genuinely
+ambiguous open-item rows through the same path, and counting all of them would
+report noise ("47 rows skipped" on a clean two-page statement) that is worse than
+silence. Separating "looked like an open item but was ambiguous" from "was never
+a row" is exactly the judgment the reader refuses to make elsewhere, so it needs
+its own thought and its own pure-function tests.
+**Trigger:** the first support case where a machine-read run came back
+suspiciously short, or the next pass on `statement_extraction.py`.
+Refs: `backend/app/services/extraction_adapters/statement_extraction.py`,
+[vendor-statement-reconciliation.md](../backend/docs/vendor-statement-reconciliation.md) § The offline reader skips rather than guesses.
 
 ### `/cfo` can't tell a skipped provider balance from no bank at all
 
@@ -151,7 +299,7 @@ This is the reporting half and belongs with a `/cfo` pass.
 or the next UI pass on `/cfo`.
 Ref: [cash-flow-copilot.md](cash-flow-copilot.md) § Opening balance.
 
-### The axe a11y guard doesn't cover any `/admin` route
+### The axe a11y guard doesn't cover `/admin` or `/vendor-statements`
 
 `frontend/tests-e2e/a11y/axe.spec.ts` covers dashboard / invoices / vendors /
 payments / exceptions / login / portal. **No `/admin` route is in it** — not
@@ -160,71 +308,95 @@ Those pages carry dialogs, armed two-click destructive actions and one-time
 secret reveals, which is exactly the surface where a focus-management or
 labelling regression is most costly, and the guard would not catch it.
 
-- [ ] Add the `/admin` routes to the axe spec's route list (they reuse the
-      shared `ui/` primitives, so the expectation is that they pass as-is; if
-      one doesn't, that IS the finding).
+`/vendor-statements` is missing too, and its create modal has since gained a
+radio `fieldset`/`legend` intake picker, a file input and a persistent
+`role="alert"` refusal region — new interactive controls with no axe pass.
 
-**Why deferred:** surfaced while adding the webhook rotation UI. Widening a
-shared guard spec at the end of an unrelated round is the wrong moment — a new
-failure there would be indistinguishable from a regression the round caused.
+- [ ] Add the `/admin` routes and `/vendor-statements` to the axe spec's route
+      list (they reuse the shared `ui/` primitives, so the expectation is that
+      they pass as-is; if one doesn't, that IS the finding).
+
+**Why deferred:** surfaced while adding the webhook rotation UI, and again while
+adding the statement upload UI. Widening a shared guard spec at the end of an
+unrelated round is the wrong moment — a new failure there would be
+indistinguishable from a regression the round caused. (Both rounds ran in
+parallel worktrees, where a shared spec is also the file most likely to
+conflict.)
 **Trigger:** the next `/audit:accessibility` or `/polish-ui` pass touching
-`/admin`.
+`/admin` or `/vendor-statements`.
 Ref: [accessibility.md](accessibility.md).
 
-### Mount-time double-fetch race — invoices/vendors' local-mutation bypass
+### Every other list surface is still unsequenced — a local edit races its fetch
 
-`frontend/src/lib/components/admin/UsersPanel.svelte` had two `$effect`s that
-both called `adminStore.fetchUsers()` on mount — the search-debounce effect
-fired an unguarded duplicate ~250ms after the immediate one (a Svelte
-`$effect` always runs once on mount regardless of whether its tracked value
-changed). Because the store always *replaces* the list wholesale, whichever
-of the two fetches resolved last could silently clobber an optimistic
-create/delete with a stale snapshot — a real, user-visible race, not a test
-flake (root-caused and fixed via `/flake-doctor`, PR #286).
+`frontend/src/lib/utils/requestSequence.ts` grew `supersedeInFlight()` so a
+row edited in place can't be reverted by a fetch that was already in flight,
+and `/invoices` + `/vendors` were wired to it. A sibling sweep afterwards —
+every `+page.svelte` and list store **read**, not grepped — found that **no
+other list surface has sequencing of any kind**: not `createRequestSequencer`,
+not a hand-rolled token counter, not an `AbortController`. Eighteen of them
+both replace the list wholesale from a fetch *and* edit a row locally with no
+fetch, which is exactly the clobber just fixed.
 
-An independently-verified `/bug-hunt` sibling sweep (each page's actual
-`$effect` blocks read, not just grepped) found the identical pattern —
-unguarded duplicate mount fetch + a local-only mutation splice with no
-sequencer — on five more pages, now fixed the same way (a guard skipping
-the second effect's own mount-time run): **`budgets`, `contracts`, `intake`,
-`recurring`, and `purchase-orders`** (the last caught in code review, missed
-by the initial sweep — narrower blast radius since it's read-only/ERP-synced
-with no local-splice mutation, but `syncFromErp()`/`loadMore()` could still
-be overwritten by the delayed duplicate). Five other pages were checked and
-confirmed NOT at risk: `catalogs` and `expenses` only ever have one
-fetch-triggering effect; `payments`, `positive-pay`, `requisitions`,
-`vendor-statements` each have a request sequencer and/or route every
-mutation through a full sequencer-protected refetch, closing the race from
-a different angle.
+Racing: the `contracts`, `expenses`, `notifications`, `admin` (users + roles)
+and `workflows` stores; the `discounts`, `positive-pay`, `recurring`,
+`budgets`, `intake`, `requisitions`, `catalogs` (delete only),
+`vendor-statements`, `vendors/screening` (its Refresh button is the second
+trigger) and `workflows/[id]` routes; the policies and pre-approvals
+sub-lists on `expenses`; and `InvoiceModal`'s line-item list.
+`VendorConsolidationModal` was checked and is the one provably safe surface —
+mount-only fetch, no create path.
 
-**Still open — a narrower variant on `invoices` and `vendors`:** both pages
-already carry a request sequencer (`createRequestSequencer()`) that correctly
-resolves fetch-vs-fetch ordering, so the `UsersPanel`-style guard doesn't
-apply to them. But each has **local-mutation helpers that bypass the
-sequencer entirely**: `invoiceStore.update()` / `patchLocal()` (used by
-`InvoiceModal`'s save/approve/reject/file-attach) and `vendors/+page.svelte`'s
-`applyVendorUpdate()` (bank-detail edit, screening, risk-recompute,
-block/unblock) mutate the list directly without calling
-`fetchSequence.start()`. A still-in-flight mount-time fetch — the sequencer
-only drops it if a *newer sequenced fetch* supersedes it, which these local
-mutations never trigger — can resolve after one of these edits and overwrite
-it with a stale pre-edit snapshot.
+Two details worth keeping, because they defeat the obvious dismissals:
 
-- [ ] Route `invoiceStore.update()`/`patchLocal()` and
-      `vendors/+page.svelte`'s `applyVendorUpdate()` through the same
-      sequencer their pages already use (mark the local mutation as
-      superseding any in-flight fetch, or have it call
-      `fetchSequence.start()`/mark-latest before applying), so a stale
-      redundant fetch can never clobber a local edit either.
+- **A create/prepend path needs no existing row.** "The mount fetch must have
+  landed before there's a row to mutate" closes the race for edit/delete but
+  not for New/Add, which is live while the first GET is still out.
+- **The `untrack()` fix from issue #168 never reached four of these pages.**
+  On `contracts`, `recurring`, `budgets` and `intake` the filter `$effect`
+  calls `buildParams()`, which reads `search` directly — Svelte tracks that
+  transitively, so every keystroke fires an immediate undebounced fetch
+  *alongside* the 300 ms debounced one: two concurrent loads, either able to
+  clobber. Those pages' `searchEffectRan` guards cover the duplicate **mount**
+  fetch only and do nothing here.
 
-**Why deferred:** this is a different code shape from the four just fixed
-(threading state through an existing sequencer rather than adding a mount
-guard) and touches two higher-traffic pages — worth its own focused pass
-rather than folding into the mechanical sibling-sweep fix.
-**Trigger:** next `/flake-doctor` or `/bug-hunt` pass touching `invoices` or
-`vendors`, or a bug report matching this symptom on either page.
-Ref: `reviews/flake-admin-users.md` (gitignored — regenerate via
-`/flake-doctor` if consulting this again after the file has aged out).
+- [ ] Adopt `createRequestSequencer` on each surface above (`start` →
+      `canCommit` → `isCurrentRequest`, plus `supersedeInFlight()` in the
+      local-mutation helper). The primitive and the pattern doc
+      (`frontend/CLAUDE.md` § Sequencing list fetches) now exist for this.
+- [ ] Apply `untrack(() => search)` to the four filter effects above.
+
+**Why deferred:** the round that built the primitive ran in a worktree fenced
+to `/invoices` + `/vendors` while two other agents held `/cfo`,
+`/vendor-statements` and the a11y specs — several surfaces above sit in their
+files, so an eighteen-file sweep from here would have collided on merge.
+Nothing about the fix is unknown; it is mechanical per surface.
+**Trigger:** the next frontend round that has the whole app to itself, or any
+page above being edited for another reason — fix it there and then, rather
+than recopying the pattern.
+Ref: [decisions.md](decisions.md) §23.
+
+### `/assistant` loses a message — and overwrites another — if you send while a thread loads
+
+`openConversation` (`frontend/src/routes/assistant/+page.svelte:65`) opens
+with `if (busy) return` but never sets `busy = true`; only `send()` does. The
+composer therefore stays live while the conversation GET is in flight. Send
+in that window and `send()` pushes the user and placeholder-assistant bubbles
+and captures `assistantIdx` against the current array; the GET then resolves
+and replaces `messages` wholesale, dropping both; `applyFinal` (:90) writes
+the model's answer into `messages[assistantIdx]` of the **new** array. The
+answer doesn't just go missing — it lands on top of an unrelated historical
+message.
+
+- [ ] Hold `busy` for the duration of `openConversation` (its own dead guard
+      shows that was the intent), and resolve the placeholder by identity
+      rather than by captured index, so a replaced array can't misdirect the
+      write.
+
+**Why deferred:** found by the sibling sweep above, not by the round's own
+change, and `/assistant` was outside that round's worktree fence. It is a
+display-integrity bug on a read-only surface — it moves no money and writes
+nothing server-side — so it did not warrant breaking the fence.
+**Trigger:** the next `/assistant` change, or the sequencer sweep above.
 
 ---
 
