@@ -18,7 +18,12 @@ from sqlalchemy import select
 
 from app.models.workflow import AuditLog
 from app.services.data_residency import (
+    ALIGNMENT_ALIGNED,
+    ALIGNMENT_MISALIGNED,
+    ALIGNMENT_UNKNOWN,
     DEFAULT_REGION,
+    REASON_DEPLOYED_REGION_UNRECOGNISED,
+    REASON_DEPLOYED_REGION_UNSET,
     REGION_PLACEMENT,
     SUPPORTED_REGIONS,
     check_residency_alignment,
@@ -61,12 +66,59 @@ def test_every_supported_region_has_placement():
 def test_alignment_check_is_advisory():
     org = _org({"residency": {"region": "eu"}})
     aligned = check_residency_alignment(org, "eu")
-    assert aligned["aligned"] is True
+    assert aligned.status == ALIGNMENT_ALIGNED
+    assert aligned.aligned is True
+    assert aligned.reason is None
 
     mismatched = check_residency_alignment(org, "us")
-    assert mismatched["aligned"] is False
-    assert mismatched["configured_region"] == "eu"
-    assert mismatched["deployed_region"] == "us"
+    assert mismatched.status == ALIGNMENT_MISALIGNED
+    assert mismatched.aligned is False
+    assert mismatched.configured_region == "eu"
+    assert mismatched.deployed_region == "us"
+
+
+def test_alignment_normalizes_the_declared_region():
+    """Whitespace / case in the env value is operator sloppiness, not a mismatch."""
+    org = _org({"residency": {"region": "eu"}})
+    assert check_residency_alignment(org, "  EU \n").status == ALIGNMENT_ALIGNED
+
+
+@pytest.mark.parametrize("declared", [None, "", "   "])
+def test_alignment_is_unknown_when_no_region_is_declared(declared):
+    """An unset deployed region must never read as `aligned` — the whole point.
+
+    Defaulting the comparison to DEFAULT_REGION would tell an EU-pinned tenant
+    its commitment is honoured on the strength of nobody having said otherwise.
+    """
+    org = _org({"residency": {"region": "eu"}})
+    verdict = check_residency_alignment(org, declared)
+    assert verdict.status == ALIGNMENT_UNKNOWN
+    assert verdict.aligned is None
+    assert verdict.deployed_region is None
+    assert verdict.reason == REASON_DEPLOYED_REGION_UNSET
+    # Still reports what the tenant asked for — unknown is about US, not them.
+    assert verdict.configured_region == "eu"
+
+
+def test_alignment_is_unknown_when_declared_region_is_unrecognised():
+    """A typo'd token (`eu-central-1` for `eu`) reports unknown, not misaligned.
+
+    Comparing literally would mark every tenant misaligned off one bad env
+    value, burying the tenants that genuinely are.
+    """
+    org = _org({"residency": {"region": "us"}})
+    verdict = check_residency_alignment(org, "eu-central-1")
+    assert verdict.status == ALIGNMENT_UNKNOWN
+    assert verdict.aligned is None
+    assert verdict.deployed_region is None
+    assert verdict.reason == REASON_DEPLOYED_REGION_UNRECOGNISED
+
+
+def test_alignment_uses_the_default_region_for_an_unpinned_tenant():
+    """An org with no residency block is genuinely resident in the default region."""
+    verdict = check_residency_alignment(_org({}), DEFAULT_REGION)
+    assert verdict.status == ALIGNMENT_ALIGNED
+    assert verdict.configured_region == DEFAULT_REGION
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +173,68 @@ async def test_put_residency_updates_and_audits(realdb):
         )
     assert rows
     assert rows[-1].details["region"]["new"] == "eu"
+
+
+@pytest.mark.asyncio
+async def test_get_reports_alignment_against_the_declared_region(realdb, monkeypatch):
+    """The advisory verdict reaches the API — the gap this endpoint used to have."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "deployed_region", "us")
+
+    async with realdb.client(key="a", role="admin") as c:
+        await c.put("/api/organization/data-residency", json={"region": "us"})
+        resp = await c.get("/api/organization/data-residency")
+    assert resp.status_code == 200
+    alignment = resp.json()["alignment"]
+    assert alignment["status"] == ALIGNMENT_ALIGNED
+    assert alignment["aligned"] is True
+    assert alignment["deployed_region"] == "us"
+    assert alignment["reason"] is None
+
+    # Pinning elsewhere flips the verdict — reported on the PUT response itself,
+    # so the admin sees it at the moment they make the commitment.
+    async with realdb.client(key="a", role="admin") as c:
+        put = await c.put("/api/organization/data-residency", json={"region": "eu"})
+    assert put.status_code == 200
+    put_alignment = put.json()["alignment"]
+    assert put_alignment["status"] == ALIGNMENT_MISALIGNED
+    assert put_alignment["aligned"] is False
+    assert put_alignment["deployed_region"] == "us"
+
+
+@pytest.mark.asyncio
+async def test_get_reports_unknown_when_no_deployed_region_is_declared(realdb, monkeypatch):
+    """No declaration → `unknown` / `null`, never a reassuring `aligned: true`."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "deployed_region", "")
+
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.get("/api/organization/data-residency")
+    assert resp.status_code == 200
+    alignment = resp.json()["alignment"]
+    assert alignment["status"] == ALIGNMENT_UNKNOWN
+    assert alignment["aligned"] is None
+    assert alignment["deployed_region"] is None
+    assert alignment["reason"] == REASON_DEPLOYED_REGION_UNSET
+
+
+@pytest.mark.asyncio
+async def test_alignment_never_blocks_the_read(realdb, monkeypatch):
+    """Advisory means advisory: a misaligned tenant still gets a 200 + its config."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "deployed_region", "au")
+
+    async with realdb.client(key="a", role="admin") as c:
+        await c.put("/api/organization/data-residency", json={"region": "eu"})
+        resp = await c.get("/api/organization/data-residency")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["region"] == "eu"
+    assert body["placement"] == REGION_PLACEMENT["eu"]
+    assert body["alignment"]["status"] == ALIGNMENT_MISALIGNED
 
 
 @pytest.mark.asyncio

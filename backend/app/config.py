@@ -791,6 +791,22 @@ class Settings(BaseSettings):
     # common SOX / IRS records-retention baseline.
     retention_default_months: int = 84
 
+    # Data residency (GDPR/CCPA) — the region THIS stack is deployed in, as
+    # declared by the operator. A fact about the deployment, not about any
+    # tenant (a tenant's *configured* region lives on
+    # `Organization.settings.residency.region`), which is why it is env rather
+    # than settings-JSON. One of `SUPPORTED_REGIONS` in
+    # `services/data_residency.py` (`us`/`eu`/`uk`/`ca`/`au`).
+    #
+    # Empty is the honest default and means "unknown / cannot attest": the
+    # alignment surfaced on GET /api/organization/data-residency reports
+    # `status: "unknown"` with `aligned: null`, never a reassuring `true`
+    # nobody verified. It is deliberately NOT validated at boot — the value is
+    # advisory (nothing routes or blocks on it), and refusing to start over an
+    # advisory field would trade a wrong answer for an outage; an unrecognised
+    # value reports `unknown` with a reason instead. See docs/data-residency.md.
+    deployed_region: str = ""
+
     # App
     # Default is `False` so a deploy that forgets to set `FEOH_DEBUG` does not
     # ship FastAPI tracebacks (internal paths, env names) to clients. Local

@@ -14,6 +14,12 @@ The region is stored on the existing ``Organization.settings`` JSONB column at
 module constant, not an env var, so the single-region reality stays codified
 here until multi-region infra ships.
 
+Where the stack *actually* runs is the separate, operator-declared
+``FEOH_DEPLOYED_REGION`` — a fact about the deployment, not about any tenant, so
+it belongs in env rather than in a tenant's settings.
+:func:`check_residency_alignment` compares the two and is **advisory only**: it
+reports, and nothing in the request path may branch on its verdict.
+
 See ``docs/data-residency.md`` for the full model and the future multi-region
 plan.
 """
@@ -21,6 +27,7 @@ plan.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -125,29 +132,109 @@ def get_region_placement(region: str) -> dict[str, str]:
     return REGION_PLACEMENT.get(region, REGION_PLACEMENT[DEFAULT_REGION])
 
 
-def check_residency_alignment(org: Organization, deployed_region: str) -> dict[str, object]:
+# The three alignment verdicts. `unknown` is a first-class state, not an error:
+# the operator has not told us where the stack runs, so we cannot attest either
+# way — and saying so is strictly better than the reassuring-but-unfounded
+# "aligned" a defaulted comparison would produce.
+ALIGNMENT_ALIGNED = "aligned"
+ALIGNMENT_MISALIGNED = "misaligned"
+ALIGNMENT_UNKNOWN = "unknown"
+
+# Why an alignment verdict is `unknown`. Stable tokens (the UI maps them to
+# copy); both are operator-configuration states, never tenant data.
+REASON_DEPLOYED_REGION_UNSET = "deployed_region_unset"
+REASON_DEPLOYED_REGION_UNRECOGNISED = "deployed_region_unrecognised"
+
+
+@dataclass(frozen=True)
+class ResidencyAlignment:
+    """Verdict of the advisory configured-vs-deployed region comparison.
+
+    ``aligned`` is deliberately tri-state (`True` / `False` / `None`): `None`
+    goes with ``status == "unknown"`` so a caller that reads only this field
+    can never mistake "we don't know" for "yes". ``reason`` names *why* it is
+    unknown so the answer is actionable rather than merely honest.
+    """
+
+    status: str
+    aligned: bool | None
+    configured_region: str
+    deployed_region: str | None
+    reason: str | None = None
+
+
+def check_residency_alignment(org: Organization, deployed_region: str | None) -> ResidencyAlignment:
     """Advisory check: is the tenant's configured region the one we're deployed in?
 
-    Reports — never blocks — a mismatch between a tenant's *configured* residency
-    region and the region the stack is *actually* deployed in. Until multi-region
-    infra exists the whole platform is single-region, so a tenant pinned to `eu`
-    while the stack runs in `us` is out of alignment and should be flagged for an
-    operator (a data-residency commitment we're not yet honouring). Pure +
-    side-effect-free apart from a WARNING log on mismatch; callers decide what to
-    do with the result.
+    Reports — **never blocks** — a mismatch between a tenant's *configured*
+    residency region and the region the stack is *actually* deployed in. Until
+    multi-region infra exists the whole platform is single-region, so a tenant
+    pinned to `eu` while the stack runs in `us` is out of alignment and should be
+    flagged for an operator (a data-residency commitment we're not yet
+    honouring).
+
+    ``deployed_region`` is operator configuration (``FEOH_DEPLOYED_REGION``), and
+    two of its states are *not* a comparison:
+
+    * **unset** — nobody has declared where this stack runs. Answering `aligned`
+      by defaulting it to :data:`DEFAULT_REGION` would hand an EU tenant a green
+      light nothing verified, so the verdict is ``unknown``.
+    * **unrecognised** — set to something outside :data:`SUPPORTED_REGIONS`
+      (`eu-central-1` for `eu`, say). Comparing literally would report *every*
+      tenant as misaligned off one typo, which buries the real signal; the
+      verdict is ``unknown`` and the reason names the misconfiguration. This is
+      deliberately not a boot refusal: the value is advisory, and refusing to
+      start over an advisory field trades a wrong answer for an outage.
+
+    Pure + side-effect-free apart from a WARNING log on a genuine mismatch or a
+    misconfigured value (PII-free — region tokens and the org id only). Callers
+    decide what to do with the result; nothing in the request path may branch on
+    it beyond reporting.
     """
     configured = resolve_region(org)
-    aligned = configured == deployed_region
-    if not aligned:
-        logger.warning(
-            "Data-residency misalignment: org %s configured for region '%s' but "
-            "stack is deployed in region '%s'",
-            getattr(org, "id", "?"),
-            configured,
-            deployed_region,
+    normalized = (deployed_region or "").strip().lower()
+
+    if not normalized:
+        return ResidencyAlignment(
+            status=ALIGNMENT_UNKNOWN,
+            aligned=None,
+            configured_region=configured,
+            deployed_region=None,
+            reason=REASON_DEPLOYED_REGION_UNSET,
         )
-    return {
-        "aligned": aligned,
-        "configured_region": configured,
-        "deployed_region": deployed_region,
-    }
+
+    if not is_supported_region(normalized):
+        logger.warning(
+            "Data-residency alignment unknown: FEOH_DEPLOYED_REGION is not one of "
+            "the supported region tokens %s, so no tenant's residency can be attested",
+            list(SUPPORTED_REGIONS),
+        )
+        return ResidencyAlignment(
+            status=ALIGNMENT_UNKNOWN,
+            aligned=None,
+            configured_region=configured,
+            deployed_region=None,
+            reason=REASON_DEPLOYED_REGION_UNRECOGNISED,
+        )
+
+    if configured == normalized:
+        return ResidencyAlignment(
+            status=ALIGNMENT_ALIGNED,
+            aligned=True,
+            configured_region=configured,
+            deployed_region=normalized,
+        )
+
+    logger.warning(
+        "Data-residency misalignment: org %s configured for region '%s' but "
+        "stack is deployed in region '%s'",
+        getattr(org, "id", "?"),
+        configured,
+        normalized,
+    )
+    return ResidencyAlignment(
+        status=ALIGNMENT_MISALIGNED,
+        aligned=False,
+        configured_region=configured,
+        deployed_region=normalized,
+    )
