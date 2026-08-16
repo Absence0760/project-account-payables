@@ -34,6 +34,16 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#251](https://github.com/Absence0760/project-account-payables/issues/251)
 for the tracker view. Keep the two reconciled when either moves.
 
+**Vendor-statement upload UI closed 2026-08-15** — `/vendor-statements` now has
+an explicit intake-mode choice (type the lines / upload a CSV or PDF), renders
+the backend's 422 refusal reason as a persistent inline alert instead of a fading
+toast, and surfaces the run's source pill, `extraction` provenance block and a
+download of the archived supplier document. That was the last open item in the
+Vendor Statement Reconciliation roadmap section, which moved to
+[roadmap_shipped.md](roadmap_shipped.md). Building it surfaced two new items
+below — the keyless-dev-box extraction fallback, and the reader's uncounted
+skipped rows.
+
 **Last reconciled:** 2026-08-15 against `improve/round-followup-closeout` — a
 three-agent round that closed the three remaining tracked items. **Webhook
 secret rotation is now reachable from `/admin/webhooks`** (row action → overlap
@@ -102,32 +112,65 @@ originally-deferred sub-bucket from that same feature remains:
 Refs: [roadmap.md](roadmap.md) § AI Cash-Flow Copilot,
 [cash-flow-copilot.md](cash-flow-copilot.md).
 
-### Vendor statement reconciliation — statement upload UI
+### PDF statement intake can't run on the committed local defaults
 
-PDF-via-extraction intake and raw-file storage both **shipped**: a PDF upload
-routes through the org's own extraction adapter (`ExtractionAdapter.extract_statement`,
-an optional capability implemented on `mock` / `claude_vision` / `ollama`), the
-uploaded document is archived to S3 and served back by
-`GET /api/vendor-statements/{id}/file`, and `file_key` is no longer written NULL.
+The offline `mock` statement reader exists precisely so `pnpm dev` can exercise
+the whole PDF-statement path with no cloud credential — but nothing routes to it
+by default. `extraction._resolve_extraction_config` hardcodes
+`provider: "claude_vision"` for `program_type: "platform"` (the default when an
+org sets no `settings.extraction`, which is every seeded tenant), **regardless of
+whether `FEOH_ANTHROPIC_API_KEY` is set**. So a PDF statement uploaded on a fresh
+clone makes an outbound call to `api.anthropic.com` with an empty key and comes
+back `provider_error` — the UI now explains that clearly, but the local-first
+promise (guard rail 7) isn't kept for this path, and only hand-editing an org's
+`settings.extraction` to `{program_type: "byok", provider: "mock"}` reaches the
+offline reader.
 
-What's left is the surface, not the pipeline: `/vendor-statements` is a
-create-from-pasted-lines page with no file picker at all — the CSV endpoint
-never had one either, and the PDF one inherits that gap. Today both are
-API-only.
+This is not statement-specific: the same resolution governs invoice extraction,
+which is why it's a wider change than a statement round should make.
 
-- [ ] Statement upload UI on `/vendor-statements` — file picker (CSV or PDF) →
-      vendor / statement-date / reference form → the run detail; surface the
-      run's `extraction` provenance block and a "download the source statement"
-      link when `has_source_file` is true; map the 422 reason messages onto the
-      form.
+- [ ] Make platform mode fall back to `mock` when no platform key is configured
+      (or introduce `FEOH_EXTRACTION_PROVIDER` with a `mock` default in
+      `backend/.env.development`), so a keyless dev box never makes an outbound
+      extraction call. Whichever shape wins must keep a *deployed* env with a key
+      on `claude_vision` unchanged, and needs pytest coverage of the keyless
+      resolution.
 
-**Why deferred:** the backend round that closed PDF intake was scoped to the
-adapter capability, the bridge service, the route and raw-file storage; the page
-is a different surface with its own patterns and deserves its own pass rather
-than being bolted on.
-**Trigger:** the first tenant expected to upload a statement without an
-engineer, or the next `/polish-ui` pass touching `/vendor-statements`.
-Ref: [vendor-statement-reconciliation.md](../backend/docs/vendor-statement-reconciliation.md) § PDF intake.
+**Why deferred:** it changes adapter selection for the whole extraction path
+(invoices included), not just statements — a different blast radius from the
+`/vendor-statements` UI round that surfaced it.
+**Trigger:** the next extraction-config change, or the first report of a dev box
+making unexpected outbound calls.
+Refs: `backend/app/services/extraction.py::_resolve_extraction_config`,
+[vendor-statement-reconciliation.md](../backend/docs/vendor-statement-reconciliation.md) § PDF intake.
+
+### The statement reader skips rows without saying how many
+
+`scan_statement_text` deliberately skips a row it can't read unambiguously (a
+second money column, a second identifier column) rather than booking a
+plausible-but-wrong figure — the right call, documented at length. But nothing
+counts those skips: `meta.extraction` records `line_count` (rows *accepted*) and
+no skip figure, so a clerk whose aging-bucket statement lost half its rows sees a
+short run with no signal that anything was dropped. The new provenance panel
+explains the *rule* and names the accepted count, which is as far as the data
+goes today.
+
+- [ ] Report a skipped-row count (or the skipped rows' raw text) from
+      `scan_statement_text` → `StatementExtractionResult` → `meta.extraction`, so
+      the provenance panel can say "N rows were skipped as ambiguous" and offer
+      the CSV/vision alternative in context.
+
+**Why deferred:** an *honest* count is a design problem, not a plumbing one. The
+reader skips blank lines, column headers, page furniture, subtotals and genuinely
+ambiguous open-item rows through the same path, and counting all of them would
+report noise ("47 rows skipped" on a clean two-page statement) that is worse than
+silence. Separating "looked like an open item but was ambiguous" from "was never
+a row" is exactly the judgment the reader refuses to make elsewhere, so it needs
+its own thought and its own pure-function tests.
+**Trigger:** the first support case where a machine-read run came back
+suspiciously short, or the next pass on `statement_extraction.py`.
+Refs: `backend/app/services/extraction_adapters/statement_extraction.py`,
+[vendor-statement-reconciliation.md](../backend/docs/vendor-statement-reconciliation.md) § The offline reader skips rather than guesses.
 
 ### `/cfo` can't tell a skipped provider balance from no bank at all
 

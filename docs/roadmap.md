@@ -7,7 +7,7 @@ status names exactly what, and every one of those items is tracked with its
 category, durable fix, and trigger in [followups.md](followups.md).
 
 Fully-shipped areas were moved to [roadmap_shipped.md](roadmap_shipped.md) —
-verbatim, nothing summarized away. 41 of the 51 sections live there. Look for
+verbatim, nothing summarized away. 43 of the 51 sections live there. Look for
 prior art in the archive before assuming a capability doesn't exist.
 
 **Related:** diagnosed-but-unfixed defects in
@@ -26,24 +26,6 @@ paragraph in `decisions.md` and link it.
 section to `roadmap_shipped.md` in the same commit. That is the discipline that
 keeps this file honest — a stale "In progress" status survived unnoticed here
 for weeks precisely because it was buried in 1131 lines of shipped prose.
-
----
-
-## Priority 3: Payments
-
-### Vendor Statement Reconciliation
-**Status:** Done (CSV + manual intake; PDF-via-extraction deferred) — pure engine in `backend/app/services/vendor_statement_recon.py`, `/api/vendor-statements` router, `/vendor-statements` frontend route, migration 0047. See `backend/docs/vendor-statement-reconciliation.md`.
-**Open:** PDF-via-extraction statement intake + raw-file storage. CSV and manual intake ship. *(c) sized, unstarted.* Tracked in [followups.md](followups.md).
-
-Distinct from bank reconciliation (cleared payments ↔ bank lines): this reconciles a **supplier's statement of open items** against our AP ledger to catch missing invoices, double-posted bills, mis-applied credits, and stale balances before month-end close. A core AP-clerk task that's entirely manual today.
-
-- [x] Statement intake — CSV upload (forgiving header sniff, mirrors the bank-rec CSV parser) + manual pasted-lines path, parsed into a normalized list of `{invoice_number, invoice_date, amount, status}` line items, vendor-scoped. *(PDF-via-extraction + raw-file storage deferred — see the doc's Deferred section.)*
-- [x] Reconciliation engine (`services/vendor_statement_recon.py`, pure) — matches statement lines to our `Invoice` rows by normalized invoice number → amount+date-window fallback; classifies each as *matched* / *amount mismatch* (within/over a tolerance) / *missing on our side* (supplier billed, we never received) / *missing on their side* (we have an open invoice they omitted)
-- [x] Persist a `VendorStatementReconciliation` run + `VendorStatementReconLine` results (migration 0047, tenant-gated + fans out); the actionable rows (missing-on-our-side + amount-mismatch) surface as the per-run review queue feeding invoice intake. *(Design note: they're recon **lines**, not `Exception` rows — a deliberate choice for their per-line resolve/ignore lifecycle and side-by-side diff. Migration 0049 has since made `Exception.invoice_id` nullable for the Positive Pay feature, so the "we have no invoice" constraint no longer applies, but recon lines remain the right model here. See the doc.)*
-- [x] Frontend reconciliation view (`/vendor-statements`) — upload / manual create, side-by-side statement-vs-ledger diff, per-line resolve/ignore; every mutation RBAC-gated + audited (`vendor_statement_recon.created` / `.line_resolved` / `.deleted`)
-- [x] Period close tie-in — `GET /api/vendor-statements/close-readiness` flags vendors whose most-recent open run carries a material (over `FEOH_STATEMENT_RECON_MATERIALITY_DEFAULT`, `?materiality=` override) unreconciled balance
-
-**Competitors:** Tipalti, Basware, Medius (statement reconciliation in close workflows); most SMB tools lack it — a differentiator down-market
 
 ---
 
