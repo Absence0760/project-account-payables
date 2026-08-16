@@ -32,6 +32,7 @@
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
 	import { untrack } from 'svelte';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 
 	// Intake is broad-access — anyone in the org can raise / read / cancel.
 	const canCreate = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk', 'cfo'));
@@ -97,16 +98,29 @@
 		replaceState(`${url.pathname}${url.search}`, {});
 	}
 
+	// Sequences `load` (latest-issued wins) so a slow response for an earlier
+	// filter can't land after a faster later one. `upsert` / `onDelete` edit the
+	// list in place with no fetch of their own, so they retire whatever is in
+	// flight first — a raised request needs no pre-existing row, so it races
+	// even the first load. See `frontend/CLAUDE.md` § Sequencing list fetches.
+	const fetchSequence = createRequestSequencer();
+
 	async function load() {
+		const token = fetchSequence.start();
 		loading = true;
 		try {
 			const res = await listIntake({ ...buildParams(), page_size: 50 });
+			// Superseded by a newer load, or by a local create/lifecycle edit.
+			if (!fetchSequence.canCommit(token)) return;
 			items = res.items;
 			total = res.total;
 		} catch (err) {
+			// `isCurrentRequest`, not `canCommit`: a load superseded by a local
+			// edit still failed, and no newer load is coming to report it.
+			if (!fetchSequence.isCurrentRequest(token)) return;
 			toast(err instanceof Error ? err.message : m('intake.toast.loadFailed'), 'error');
 		} finally {
-			loading = false;
+			if (fetchSequence.isCurrentRequest(token)) loading = false;
 		}
 	}
 
@@ -148,6 +162,7 @@
 	});
 
 	function upsert(i: IntakeRequest) {
+		fetchSequence.supersedeInFlight();
 		const idx = items.findIndex((x) => x.id === i.id);
 		if (idx >= 0) items = items.map((x) => (x.id === i.id ? i : x));
 		else items = [i, ...items];
@@ -157,6 +172,7 @@
 	async function onDelete(id: string) {
 		try {
 			await apiDelete(id);
+			fetchSequence.supersedeInFlight();
 			items = items.filter((x) => x.id !== id);
 			total = Math.max(0, total - 1);
 			toast(m('intake.toast.deleted'), 'success');

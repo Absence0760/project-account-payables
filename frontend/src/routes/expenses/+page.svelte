@@ -70,6 +70,7 @@
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
 	import { untrack } from 'svelte';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { m } from '$lib/i18n/store.svelte';
 
 	const canCreate = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk'));
@@ -277,14 +278,28 @@
 	let reportBusy = $state(false);
 	let attachId = $state('');
 
+	// One sequencer per sub-list on this page (reports / policies / pre-approvals
+	// / card transactions), never one shared counter: they are four independent
+	// requests, and a shared counter would let a tab switch mark another list's
+	// in-flight response un-committable and blank it. The expenses tab itself is
+	// sequenced inside `expenseStore`. See `frontend/CLAUDE.md` § Sequencing list
+	// fetches.
+	//
+	// Reports has no local-mutation helper — every submit/approve/reject/attach
+	// re-fetches through `loadReports()` — so it needs no `supersedeInFlight()`;
+	// the sequencer here only stops two of those refreshes landing out of order.
+	const reportsSequence = createRequestSequencer();
+
 	async function loadReports() {
+		const token = reportsSequence.start();
 		reportsLoading = true;
 		try {
 			const res = await listExpenseReports({ page_size: 50 });
+			if (!reportsSequence.canCommit(token)) return;
 			reports = res.items;
 			reportsTotal = res.total;
 		} finally {
-			reportsLoading = false;
+			if (reportsSequence.isCurrentRequest(token)) reportsLoading = false;
 		}
 	}
 
@@ -477,14 +492,26 @@
 	let editingPolicy = $state<ExpensePolicy | null>(null);
 	let confirmDeletePolicyId = $state<string | null>(null);
 
+	// `onPolicySaved` / `deletePolicy` edit the list in place with no fetch of
+	// their own — and a newly created policy needs no pre-existing row, so it
+	// races even the tab's first load.
+	const policiesSequence = createRequestSequencer();
+
 	async function loadPolicies() {
+		const token = policiesSequence.start();
 		policiesLoading = true;
 		try {
-			policies = await listPolicies();
+			const loaded = await listPolicies();
+			// Superseded by a newer load, or by a local create/edit/delete.
+			if (!policiesSequence.canCommit(token)) return;
+			policies = loaded;
 		} catch (err) {
+			// `isCurrentRequest`, not `canCommit`: a load superseded by a local
+			// edit still failed, and no newer load is coming to report it.
+			if (!policiesSequence.isCurrentRequest(token)) return;
 			toast(err instanceof Error ? err.message : m('expenses.policies.toast.loadFailed'), 'error');
 		} finally {
-			policiesLoading = false;
+			if (policiesSequence.isCurrentRequest(token)) policiesLoading = false;
 		}
 	}
 
@@ -493,6 +520,7 @@
 	});
 
 	function onPolicySaved(p: ExpensePolicy) {
+		policiesSequence.supersedeInFlight();
 		const idx = policies.findIndex((x) => x.id === p.id);
 		if (idx >= 0) policies = policies.map((x) => (x.id === p.id ? p : x));
 		else policies = [p, ...policies];
@@ -501,6 +529,7 @@
 	async function deletePolicy(id: string) {
 		try {
 			await apiDeletePolicy(id);
+			policiesSequence.supersedeInFlight();
 			policies = policies.filter((p) => p.id !== id);
 			toast(m('expenses.policies.toast.deleted'), 'success');
 		} catch (err) {
@@ -530,15 +559,25 @@
 		}))
 	]);
 
+	// `approvePa` / `rejectPa` rewrite a row in place with no fetch of their own.
+	const preapprovalsSequence = createRequestSequencer();
+
 	async function loadPreapprovals() {
+		const token = preapprovalsSequence.start();
 		preapprovalsLoading = true;
 		try {
 			const params = preapprovalStatus !== 'all' ? { status: preapprovalStatus } : {};
-			preapprovals = await listPreapprovals(params);
+			const loaded = await listPreapprovals(params);
+			// Superseded by a newer load, or by a local approve/reject.
+			if (!preapprovalsSequence.canCommit(token)) return;
+			preapprovals = loaded;
 		} catch (err) {
+			// `isCurrentRequest`, not `canCommit`: a load superseded by a local
+			// edit still failed, and no newer load is coming to report it.
+			if (!preapprovalsSequence.isCurrentRequest(token)) return;
 			toast(err instanceof Error ? err.message : m('expenses.preapprovals.toast.loadFailed'), 'error');
 		} finally {
-			preapprovalsLoading = false;
+			if (preapprovalsSequence.isCurrentRequest(token)) preapprovalsLoading = false;
 		}
 	}
 
@@ -592,6 +631,7 @@
 	async function approvePa(pa: ExpensePreapproval) {
 		try {
 			const updated = await approvePreapproval(pa.id);
+			preapprovalsSequence.supersedeInFlight();
 			preapprovals = preapprovals.map((p) => (p.id === pa.id ? updated : p));
 			toast(m('expenses.preapprovals.toast.approved'), 'success');
 		} catch (err) {
@@ -602,6 +642,7 @@
 	async function rejectPa(pa: ExpensePreapproval) {
 		try {
 			const updated = await rejectPreapproval(pa.id);
+			preapprovalsSequence.supersedeInFlight();
 			preapprovals = preapprovals.map((p) => (p.id === pa.id ? updated : p));
 			toast(m('expenses.preapprovals.toast.rejected'), 'success');
 		} catch (err) {
@@ -636,17 +677,26 @@
 		cardTxns.filter((t) => t.reconciliation_status === 'matched').length
 	);
 
+	// Like reports, the cards tab has no local-mutation helper — import / sync /
+	// match / unmatch / ignore all re-fetch through `loadCardTxns()` — so it
+	// needs no `supersedeInFlight()`; the sequencer stops a filter flip and a
+	// post-mutation refresh landing out of order.
+	const cardsSequence = createRequestSequencer();
+
 	async function loadCardTxns() {
+		const token = cardsSequence.start();
 		cardsLoading = true;
 		try {
 			const params = reconFilter !== 'all' ? { reconciliation_status: reconFilter } : {};
 			const res = await listCardTransactions({ ...params, page_size: 50 });
+			if (!cardsSequence.canCommit(token)) return;
 			cardTxns = res.items;
 			cardsTotal = res.total;
 		} catch (err) {
+			if (!cardsSequence.isCurrentRequest(token)) return;
 			toast(err instanceof Error ? err.message : m('expenses.cards.toast.loadFailed'), 'error');
 		} finally {
-			cardsLoading = false;
+			if (cardsSequence.isCurrentRequest(token)) cardsLoading = false;
 		}
 	}
 

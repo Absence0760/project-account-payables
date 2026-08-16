@@ -31,6 +31,7 @@
 	import { replaceState } from '$app/navigation';
 	import { untrack } from 'svelte';
 	import { formatDate } from '$lib/utils/time';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 
 	const canCreate = $derived(auth.isManager);
 
@@ -94,21 +95,37 @@
 		replaceState(`${url.pathname}${url.search}`, {});
 	}
 
+	// Sequences `load` (filter change and load-more alike — one shared counter,
+	// latest-issued wins). `upsert` edits the list in place with no fetch of its
+	// own, so it retires whatever is in flight first: otherwise a pause/resume/
+	// end — or a brand-new template, which needs no pre-existing row and so
+	// races even the first load — is reverted by the load already out.
+	// See `frontend/CLAUDE.md` § Sequencing list fetches.
+	const fetchSequence = createRequestSequencer();
+
 	async function load(opts: { append?: boolean } = {}) {
 		const nextPage = opts.append ? pageNum + 1 : 1;
+		const token = fetchSequence.start();
 		if (opts.append) loadingMore = true;
 		else loading = true;
 		try {
 			const data = await listRecurring({ ...buildParams(), page: nextPage, page_size: PAGE_SIZE });
+			// Superseded by a newer load, or by a local edit.
+			if (!fetchSequence.canCommit(token)) return;
 			templates = opts.append ? appendUnique(templates, data.items) : data.items;
 			total = data.total;
 			pageNum = nextPage;
 		} catch (e) {
+			// `isCurrentRequest`, not `canCommit`: a load superseded by a local
+			// edit still failed, and no newer load is coming to report it.
+			if (!fetchSequence.isCurrentRequest(token)) return;
 			if (!opts.append) templates = [];
 			toast(e instanceof Error ? e.message : m('recurring.toast.loadFailed'), 'error');
 		} finally {
-			loading = false;
-			loadingMore = false;
+			if (fetchSequence.isCurrentRequest(token)) {
+				loading = false;
+				loadingMore = false;
+			}
 		}
 	}
 
@@ -186,6 +203,9 @@
 	}
 
 	function upsert(t: RecurringTemplate) {
+		// Retire every load issued before this mutation landed — their responses
+		// predate it and would revert the row (or drop a just-created one).
+		fetchSequence.supersedeInFlight();
 		const idx = templates.findIndex((x) => x.id === t.id);
 		if (idx === -1) {
 			templates = [t, ...templates];

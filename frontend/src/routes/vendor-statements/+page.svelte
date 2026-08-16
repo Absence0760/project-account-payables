@@ -27,6 +27,7 @@
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
 	import { untrack } from 'svelte';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 
 	const canCreate = $derived(auth.isManager);
 
@@ -104,8 +105,16 @@
 		replaceState(`${url.pathname}${url.search}`, {});
 	}
 
+	// Sequences `load` (filter change and load-more alike — one shared counter,
+	// latest-issued wins). `upsert` / `deleteRecon` edit the list in place with
+	// no fetch of their own, so they retire whatever is in flight first: a run
+	// created from an uploaded statement needs no pre-existing row, so it races
+	// even the first load. See `frontend/CLAUDE.md` § Sequencing list fetches.
+	const fetchSequence = createRequestSequencer();
+
 	async function load(opts: { append?: boolean } = {}) {
 		const nextPage = opts.append ? pageNum + 1 : 1;
+		const token = fetchSequence.start();
 		if (opts.append) loadingMore = true;
 		else loading = true;
 		try {
@@ -114,15 +123,22 @@
 				page: nextPage,
 				page_size: PAGE_SIZE
 			});
+			// Superseded by a newer load, or by a local create/resolve/delete.
+			if (!fetchSequence.canCommit(token)) return;
 			recons = opts.append ? appendUnique(recons, data.items) : data.items;
 			total = data.total;
 			pageNum = nextPage;
 		} catch (e) {
+			// `isCurrentRequest`, not `canCommit`: a load superseded by a local
+			// edit still failed, and no newer load is coming to report it.
+			if (!fetchSequence.isCurrentRequest(token)) return;
 			if (!opts.append) recons = [];
 			toast(e instanceof Error ? e.message : m('vendorStatements.toast.loadFailed'), 'error');
 		} finally {
-			loading = false;
-			loadingMore = false;
+			if (fetchSequence.isCurrentRequest(token)) {
+				loading = false;
+				loadingMore = false;
+			}
 		}
 	}
 
@@ -196,6 +212,7 @@
 	}
 
 	function upsert(r: Reconciliation) {
+		fetchSequence.supersedeInFlight();
 		const idx = recons.findIndex((x) => x.id === r.id);
 		if (idx === -1) {
 			recons = [r, ...recons];
@@ -224,6 +241,7 @@
 		busyId = r.id;
 		try {
 			await deleteReconciliation(r.id);
+			fetchSequence.supersedeInFlight();
 			recons = recons.filter((x) => x.id !== r.id);
 			total = Math.max(0, total - 1);
 			toast(m('vendorStatements.toast.deleted'), 'success');

@@ -30,6 +30,7 @@
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
 	import { onMount, untrack } from 'svelte';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { formatDate } from '$lib/utils/time';
 
 	const canCreate = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk'));
@@ -97,18 +98,32 @@
 		replaceState(`${url.pathname}${url.search}`, {});
 	}
 
+	// Sequences `load` (latest-issued wins) so a slow response for an earlier
+	// status filter can't land after a faster later one. `onSaved` / `replaceRow`
+	// / `doDelete` edit the list in place with no fetch of their own, so they
+	// retire whatever is in flight first — a new requisition needs no
+	// pre-existing row, so it races even the first load. See
+	// `frontend/CLAUDE.md` § Sequencing list fetches.
+	const fetchSequence = createRequestSequencer();
+
 	async function load() {
+		const token = fetchSequence.start();
 		loading = true;
 		try {
 			const params: { status?: string; page_size: number } = { page_size: 100 };
 			if (statusFilter !== 'all') params.status = statusFilter;
 			const res = await listRequisitions(params);
+			// Superseded by a newer load, or by a local create/lifecycle edit.
+			if (!fetchSequence.canCommit(token)) return;
 			requisitions = res.items;
 			total = res.total;
 		} catch (err) {
+			// `isCurrentRequest`, not `canCommit`: a load superseded by a local
+			// edit still failed, and no newer load is coming to report it.
+			if (!fetchSequence.isCurrentRequest(token)) return;
 			toast(err instanceof Error ? err.message : m('requisitions.toast.loadFailed'), 'error');
 		} finally {
-			loading = false;
+			if (fetchSequence.isCurrentRequest(token)) loading = false;
 		}
 	}
 
@@ -151,6 +166,7 @@
 	}
 
 	function onSaved(r: Requisition) {
+		fetchSequence.supersedeInFlight();
 		const idx = requisitions.findIndex((x) => x.id === r.id);
 		if (idx >= 0) requisitions = requisitions.map((x) => (x.id === r.id ? r : x));
 		else {
@@ -161,6 +177,7 @@
 	}
 
 	function replaceRow(r: Requisition) {
+		fetchSequence.supersedeInFlight();
 		requisitions = requisitions.map((x) => (x.id === r.id ? r : x));
 		if (editing && editing.id === r.id) editing = r;
 	}
@@ -216,6 +233,7 @@
 	async function doDelete(id: string) {
 		try {
 			await apiDelete(id);
+			fetchSequence.supersedeInFlight();
 			requisitions = requisitions.filter((r) => r.id !== id);
 			total = Math.max(0, total - 1);
 			toast(m('requisitions.toast.deleted'), 'success');

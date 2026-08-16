@@ -24,6 +24,7 @@
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
 	import { untrack } from 'svelte';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 
 	// Mutations are admin / cfo only (financial config).
 	const canManage = $derived(auth.hasAnyRole('admin', 'cfo'));
@@ -90,16 +91,30 @@
 		replaceState(`${url.pathname}${url.search}`, {});
 	}
 
+	// Sequences `load` (latest-issued wins) so a slow response for an earlier
+	// filter can't land after a faster later one. `onSaved` / `deleteBudget`
+	// edit the list in place with no fetch of their own, so they retire whatever
+	// is in flight first — a brand-new budget needs no pre-existing row, so it
+	// races even the first load. See `frontend/CLAUDE.md` § Sequencing list
+	// fetches.
+	const fetchSequence = createRequestSequencer();
+
 	async function load() {
+		const token = fetchSequence.start();
 		loading = true;
 		try {
 			const res = await listBudgets({ ...buildParams(), page_size: 50 });
+			// Superseded by a newer load, or by a local create/edit/delete.
+			if (!fetchSequence.canCommit(token)) return;
 			budgets = res.items;
 			total = res.total;
 		} catch (err) {
+			// `isCurrentRequest`, not `canCommit`: a load superseded by a local
+			// edit still failed, and no newer load is coming to report it.
+			if (!fetchSequence.isCurrentRequest(token)) return;
 			toast(err instanceof Error ? err.message : m('budgets.toast.loadFailed'), 'error');
 		} finally {
-			loading = false;
+			if (fetchSequence.isCurrentRequest(token)) loading = false;
 		}
 	}
 
@@ -140,6 +155,7 @@
 	});
 
 	function onSaved(b: Budget) {
+		fetchSequence.supersedeInFlight();
 		const idx = budgets.findIndex((x) => x.id === b.id);
 		if (idx >= 0) budgets = budgets.map((x) => (x.id === b.id ? b : x));
 		else {
@@ -152,6 +168,7 @@
 	async function deleteBudget(id: string) {
 		try {
 			await apiDeleteBudget(id);
+			fetchSequence.supersedeInFlight();
 			budgets = budgets.filter((b) => b.id !== id);
 			total = Math.max(0, total - 1);
 			toast(m('budgets.toast.deleted'), 'success');

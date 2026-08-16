@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { PositivePayFile } from '$lib/types/positivePay';
 	import { appendUnique } from '$lib/utils/pagination';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import {
 		POSITIVE_PAY_FILE_TYPE_LABELS,
 		POSITIVE_PAY_STATUS_LABELS
@@ -103,8 +104,17 @@
 		replaceState(`${url.pathname}${url.search}`, {});
 	}
 
+	// Sequences `load` (filter change and load-more alike — one shared counter,
+	// latest-issued wins). `upsert` / `deleteFile` edit the list in place with no
+	// fetch of their own, so they retire whatever is in flight first: a generated
+	// file is otherwise dropped by the load that was already out — and a generate
+	// needs no pre-existing row, so it races even the first load. See
+	// `frontend/CLAUDE.md` § Sequencing list fetches.
+	const fetchSequence = createRequestSequencer();
+
 	async function load(opts: { append?: boolean } = {}) {
 		const nextPage = opts.append ? pageNum + 1 : 1;
+		const token = fetchSequence.start();
 		if (opts.append) loadingMore = true;
 		else loading = true;
 		try {
@@ -113,15 +123,22 @@
 				page: nextPage,
 				page_size: PAGE_SIZE
 			});
+			// Superseded by a newer load, or by a local generate/delete.
+			if (!fetchSequence.canCommit(token)) return;
 			files = opts.append ? appendUnique(files, data.items) : data.items;
 			total = data.total;
 			pageNum = nextPage;
 		} catch (e) {
+			// `isCurrentRequest`, not `canCommit`: a load superseded by a local
+			// edit still failed, and no newer load is coming to report it.
+			if (!fetchSequence.isCurrentRequest(token)) return;
 			if (!opts.append) files = [];
 			toast(e instanceof Error ? e.message : m('positivePay.toast.loadFailed'), 'error');
 		} finally {
-			loading = false;
-			loadingMore = false;
+			if (fetchSequence.isCurrentRequest(token)) {
+				loading = false;
+				loadingMore = false;
+			}
 		}
 	}
 
@@ -173,6 +190,9 @@
 	}
 
 	function upsert(f: PositivePayFile) {
+		// Retire every load issued before this file existed — their responses
+		// predate it and would drop it back out of the list.
+		fetchSequence.supersedeInFlight();
 		const idx = files.findIndex((x) => x.id === f.id);
 		if (idx === -1) {
 			files = [f, ...files];
@@ -200,6 +220,7 @@
 		busyId = f.id;
 		try {
 			await deletePositivePayFile(f.id);
+			fetchSequence.supersedeInFlight();
 			files = files.filter((x) => x.id !== f.id);
 			total = Math.max(0, total - 1);
 			toast(m('positivePay.toast.deleted'), 'success');

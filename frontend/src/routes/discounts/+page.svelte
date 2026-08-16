@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { appendUnique } from '$lib/utils/pagination';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { formatMoney } from '$lib/utils/money';
@@ -112,11 +113,25 @@
 		{ key: 'missed', label: m('discounts.chip.missed') }
 	]);
 
+	// Two sequencers: the offers list and the KPI dashboard are separate
+	// requests, and each accept/decline re-fires the dashboard, so two of those
+	// can resolve out of order. Sharing one counter would let a dashboard
+	// refresh mark an in-flight offers load un-committable and blank the table.
+	// `confirmAccept`/`decline` edit a row in place with no fetch, so they
+	// supersede the offers sequencer first. See `frontend/CLAUDE.md`
+	// § Sequencing list fetches.
+	const offersSequence = createRequestSequencer();
+	const dashboardSequence = createRequestSequencer();
+
 	async function loadDashboard() {
+		const token = dashboardSequence.start();
 		try {
-			dashboard = await getDiscountDashboard();
+			const data = await getDiscountDashboard();
+			if (!dashboardSequence.canCommit(token)) return;
+			dashboard = data;
 		} catch (e) {
 			// The KPI row is best-effort — a failure here shouldn't blank the table.
+			if (!dashboardSequence.isCurrentRequest(token)) return;
 			dashboard = null;
 			if (!error) error = e instanceof Error ? e.message : m('discounts.error.dashboard');
 		}
@@ -124,6 +139,7 @@
 
 	async function loadOffers(opts: { append?: boolean } = {}) {
 		const nextPage = opts.append ? page + 1 : 1;
+		const token = offersSequence.start();
 		if (opts.append) loadingMore = true;
 		else loading = true;
 		try {
@@ -132,16 +148,23 @@
 				page: nextPage,
 				pageSize: PAGE_SIZE
 			});
+			// Superseded by a newer load, or by a local accept/decline.
+			if (!offersSequence.canCommit(token)) return;
 			offers = opts.append ? appendUnique(offers, data.items) : data.items;
 			total = data.total;
 			page = nextPage;
 			error = null;
 		} catch (e) {
+			// `isCurrentRequest`, not `canCommit`: a load superseded by a local
+			// edit still failed, and no newer load is coming to report it.
+			if (!offersSequence.isCurrentRequest(token)) return;
 			error = e instanceof Error ? e.message : m('discounts.error.offers');
 			if (!opts.append) offers = [];
 		} finally {
-			loading = false;
-			loadingMore = false;
+			if (offersSequence.isCurrentRequest(token)) {
+				loading = false;
+				loadingMore = false;
+			}
 		}
 	}
 
@@ -177,6 +200,9 @@
 				acceptTarget.id,
 				selectedTierDays ?? undefined
 			);
+			// A load already in flight read this offer BEFORE the accept landed,
+			// so its response would revert the row to `offered`. Retire it.
+			offersSequence.supersedeInFlight();
 			offers = offers.map((o) => (o.id === updated.id ? updated : o));
 			toast(m('discounts.toast.accepted'), 'success');
 			acceptTarget = null;
@@ -200,6 +226,7 @@
 		declining = true;
 		try {
 			const updated = await declineDiscountOffer(o.id);
+			offersSequence.supersedeInFlight();
 			offers = offers.map((x) => (x.id === updated.id ? updated : x));
 			toast(m('discounts.toast.declined'), 'success');
 			confirmDeclineId = null;
