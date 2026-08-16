@@ -857,6 +857,10 @@ export const messages = {
 	'cfo.position.title': 'Position de trésorerie',
 	'cfo.position.enterOpening': 'Saisissez un solde bancaire d\'ouverture ci-dessus pour projeter la position de trésorerie courante.',
 	'cfo.position.breach': '{n, plural, one {⚠ # période projette en dessous de votre alerte de solde minimum.} other {⚠ # périodes projettent en dessous de votre alerte de solde minimum.}}',
+	'cfo.position.providerSkippedCurrency':
+		'Le solde de votre banque connectée n’a pas été utilisé : ce compte est tenu dans une devise différente de votre devise de reporting {currency}, et amorcer la projection à partir de lui ferait de chaque solde courant ci-dessous un mélange de deux devises. Les chiffres partent de votre solde d’ouverture enregistré. Alignez la devise de reporting sur le compte, ou saisissez un solde d’ouverture ci-dessus.',
+	'cfo.position.providerSkipped':
+		'Le solde de votre banque connectée n’a pas été utilisé : la projection ci-dessous n’en part donc pas. Les chiffres partent de votre solde d’ouverture enregistré.',
 	'cfo.position.colPeriod': 'Période',
 	'cfo.position.colOpening': 'Ouverture',
 	'cfo.position.colOutflow': 'Sortie',
@@ -2939,6 +2943,8 @@ export const messages = {
 		'Lu automatiquement par {provider} avec une confiance de {confidence} — {n, plural, one {# poste ouvert relevé} other {# postes ouverts relevés}} sur le document.',
 	'vendorStatements.modal.provenanceSkipNote':
 		'Une ligne que le lecteur ne pouvait pas lire sans ambiguïté a été ignorée plutôt que devinée : notre facture correspondante apparaît ci-dessous comme un écart à traiter.',
+	'vendorStatements.modal.provenanceSkipped':
+		'{n, plural, one {# ligne a été ignorée} other {# lignes ont été ignorées}} car ambiguë(s) — le lecteur a vu un poste ouvert qu’il ne pouvait pas lire sans deviner (une deuxième colonne de montant, une deuxième colonne de référence). L’écart ci-dessous est incomplet d’autant de lignes fournisseur, donc nos factures correspondantes apparaissent comme des écarts à traiter. Importez le relevé en CSV, ou configurez un fournisseur de vision, pour les lire.',
 	'vendorStatements.modal.provenanceCsv': 'Analysé directement depuis le CSV importé.',
 	'vendorStatements.modal.downloadSource': 'Télécharger le relevé d’origine',
 	'vendorStatements.modal.downloadingSource': 'Téléchargement…',

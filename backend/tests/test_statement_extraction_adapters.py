@@ -163,7 +163,8 @@ def test_parse_statement_payload_never_emits_a_float():
 
 
 def test_scan_statement_text_reads_rows_and_skips_furniture():
-    lines = scan_statement_text(_STATEMENT_TEXT)
+    scan = scan_statement_text(_STATEMENT_TEXT)
+    lines = scan.lines
     assert [ln.invoice_number for ln in lines] == ["INV-1001", "INV-1002", "INV-1003"]
     assert [ln.amount for ln in lines] == ["1,200.00", "$850.50", "(250.00)"]
     assert [ln.invoice_date for ln in lines] == ["2026-01-15", "01/20/2026", "2026-02-01"]
@@ -182,14 +183,21 @@ def test_scan_statement_text_reads_rows_and_skips_furniture():
         "Globex Industrial",
         "Statement date: 2026-02-28",
         "",
+        # The aging statement's footer — a money reference followed by FOUR
+        # figures. No real open item is printed that way, so it is furniture.
+        "Total  1,200.00  850.50  410.00  2,460.50",
     ],
 )
 def test_scan_statement_text_rejects_non_item_rows(row):
-    assert scan_statement_text(row) == []
+    scan = scan_statement_text(row)
+    assert scan.lines == []
+    # ...and NOT counted as an ambiguous skip. These lines never looked like an
+    # open item, so reporting them would be the noise the split exists to avoid.
+    assert scan.ambiguous_skips == 0
 
 
 def test_scan_statement_text_handles_a_leading_row_counter():
-    lines = scan_statement_text("1  INV-1002  01/20/2026  850.50")
+    lines = scan_statement_text("1  INV-1002  01/20/2026  850.50").lines
     assert len(lines) == 1
     assert lines[0].invoice_number == "INV-1002"
     assert lines[0].amount == "850.50"
@@ -213,7 +221,10 @@ def test_scan_statement_text_skips_a_second_identifier_column(row, why):
     reconciliation, not a wrong figure, and it is only softened (not removed) by
     the engine's amount+date fallback.
     """
-    assert scan_statement_text(row) == [], why
+    scan = scan_statement_text(row)
+    assert scan.lines == [], why
+    # This row DID look like an open item — it is the class a clerk must see.
+    assert scan.ambiguous_skips == 1, why
 
 
 @pytest.mark.parametrize(
@@ -231,14 +242,16 @@ def test_scan_statement_text_skips_a_second_identifier_column(row, why):
 def test_scan_statement_text_still_reads_one_identifier_rows(row, number, amount):
     """The other direction: an identifier-shaped guard that demanded a letter,
     or that counted the amount itself, would break each of these."""
-    lines = scan_statement_text(row)
+    scan = scan_statement_text(row)
+    lines = scan.lines
     assert len(lines) == 1, row
+    assert scan.ambiguous_skips == 0, row
     assert lines[0].invoice_number == number
     assert lines[0].amount == amount
 
 
 def test_scan_statement_text_handles_a_row_with_no_date_column():
-    lines = scan_statement_text("INV-7001   4200.00")
+    lines = scan_statement_text("INV-7001   4200.00").lines
     assert len(lines) == 1
     assert lines[0].invoice_number == "INV-7001"
     assert lines[0].invoice_date is None
@@ -257,7 +270,7 @@ def test_scan_statement_text_does_not_read_a_bare_integer_column_as_the_balance(
     """`Net 30` / `45 days` are amount-SHAPED but are not money. Reading one as
     the open balance is silently wrong money — the one outcome this reader must
     never produce."""
-    lines = scan_statement_text(row)
+    lines = scan_statement_text(row).lines
     assert len(lines) == 1
     assert lines[0].amount == "1,200.00"
 
@@ -265,7 +278,7 @@ def test_scan_statement_text_does_not_read_a_bare_integer_column_as_the_balance(
 def test_scan_statement_text_accepts_a_lone_whole_number_balance():
     """A statement that prints no cents still reconciles when the row is
     unambiguous."""
-    lines = scan_statement_text("INV-7001   2026-01-15   4200")
+    lines = scan_statement_text("INV-7001   2026-01-15   4200").lines
     assert [ln.amount for ln in lines] == ["4200"]
 
 
@@ -292,19 +305,203 @@ def test_scan_statement_text_skips_a_row_with_a_second_numeric_column(row):
     guessed open balance is wrong money presented as fact. Skipping leaves our
     invoice visible as `missing_on_their_side` — a difference the clerk
     chases."""
-    assert scan_statement_text(row) == []
+    scan = scan_statement_text(row)
+    assert scan.lines == []
+    assert scan.ambiguous_skips == 1
+
+
+# --------------------------------------------------------------------------- #
+# Skip classification — "looked like an open item but was ambiguous" vs
+# "was never a row". Only the first class is reported; see `StatementScan`.
+# --------------------------------------------------------------------------- #
+
+# A realistic aging-bucket statement: every data row prints Current / 1-30 /
+# 31-60 / Total, so nothing on the row says which figure is the open balance.
+# This is the layout the offline reader cannot resolve honestly.
+_AGING_STATEMENT_TEXT = """\
+Initech Supplies Ltd
+Statement of Open Items
+Statement date: 2026-03-31
+
+Invoice     Date          Current     1-30        31-60       Total
+INV-2001    2026-03-05    1,200.00    0.00        0.00        1,200.00
+INV-2002    2026-02-18    0.00        850.50      0.00        850.50
+INV-2003    2026-01-22    0.00        0.00        410.00      410.00
+
+Total                     1,200.00    850.50      410.00      2,460.50
+Page 1 of 1
+"""
+
+# Two money columns per row (invoice amount + balance due) — the other common
+# layout the reader refuses, and one accepted row alongside them so the count
+# is provably per-row rather than per-document.
+_MIXED_STATEMENT_TEXT = """\
+Invoice     Date          Amount      Balance
+INV-3001    2026-03-05    1,200.00    900.00
+INV-3002    2026-03-06    850.50      850.50
+INV-3003    2026-03-07    410.00
+"""
+
+
+def test_a_clean_statement_reports_no_ambiguous_skips():
+    """The bar the count has to clear: silence on a document it read fully.
+
+    A counter that fired on blank lines, the vendor block, the column header,
+    the total and the page footer would report six skips here — noise that
+    trains a reviewer to ignore the number entirely.
+    """
+    scan = scan_statement_text(_STATEMENT_TEXT)
+    assert len(scan.lines) == 3
+    assert scan.ambiguous_skips == 0
+
+
+def test_an_aging_bucket_statement_reports_every_refused_row():
+    """The case the count exists for: the run comes back empty and says why.
+
+    Three open items are on this document and none is bookable. Without the
+    count the clerk sees a run built entirely from our own ledger and no signal
+    that the supplier's side was ever read.
+    """
+    scan = scan_statement_text(_AGING_STATEMENT_TEXT)
+    assert scan.lines == []
+    assert scan.ambiguous_skips == 3
+
+
+def test_a_partially_readable_statement_counts_only_the_refused_rows():
+    scan = scan_statement_text(_MIXED_STATEMENT_TEXT)
+    assert [ln.invoice_number for ln in scan.lines] == ["INV-3003"]
+    assert scan.ambiguous_skips == 2
+
+
+def test_a_money_reference_is_never_booked_as_an_invoice_number():
+    """A row whose reference is itself a figure is never accepted.
+
+    `Current: 1,200.00  Past due: 850.00` used to be: the first money token
+    became the "invoice number" and the second the balance, booking a fabricated
+    open item no ledger row can ever match. That is invented money — the outcome
+    this reader exists not to produce — and it is worse than a skip.
+    """
+    for row in (
+        "Current: 1,200.00  Past due: 850.00",
+        "Subtotal 1,200.00 Total 2,050.50",
+        "Total  1,200.00  850.50  410.00  2,460.50",
+        "Total                     1,800.50",
+    ):
+        assert scan_statement_text(row).lines == [], row
+
+
+@pytest.mark.parametrize(
+    ("row", "expected", "why"),
+    [
+        # Exactly one figure follows the money reference — the shape a real open
+        # item has, so refusing it has to be announced.
+        ("Current: 1,200.00  Past due: 850.00", 1, "summary block"),
+        ("Subtotal 1,200.00 Total 2,050.50", 1, "two labelled figures"),
+        # Nothing follows: a plain total line, never an open item.
+        ("Total                     1,800.50", 0, "statement total"),
+        ("Balance forward           500.00", 0, "balance forward"),
+        # Four figures follow: an aging footer. Counting it would inflate every
+        # aging statement's figure by one — a footer masquerading as a lost row.
+        ("Total  1,200.00  850.50  410.00  2,460.50", 0, "aging footer"),
+    ],
+)
+def test_a_money_reference_is_reported_only_when_the_row_looked_like_an_item(row, expected, why):
+    """The verdict is deferred to where the row's shape is known.
+
+    Refusing a money-referenced row is right either way, but refusing it
+    *silently* is only right when nothing on the row claimed to be an open item.
+    """
+    assert scan_statement_text(row).ambiguous_skips == expected, why
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "INV-1001",  # the common prefixed form
+        "100234",  # all-digit — no cents, no separator, so not money
+        "1200",
+        "0012345678",  # zero-padded
+        "INV/2026/001",  # slash-separated
+        "2026-001",  # year-sequence, hyphenated
+        "2026.001",  # year-sequence, THREE decimals — money allows at most two
+        "FR-2026-01",
+        "SI-2026.01",  # prefixed, so the decimal can't make it money-shaped
+        "#4502",
+        "A100.50",  # a letter anywhere disqualifies it as money
+        "1.234,56",  # European decimal comma — not the money shape either
+    ],
+)
+def test_a_real_invoice_reference_survives_the_money_test(reference):
+    """The counterpart, over the reference formats suppliers actually use.
+
+    A dropped supplier row becomes a false `missing_on_their_side` difference,
+    so the money test has to stay narrow. It does: it needs cents, a thousands
+    separator, or a currency symbol on a bare numeric token.
+    """
+    row = f"{reference}  2026-01-15  500.00"
+    scan = scan_statement_text(row)
+    assert [ln.invoice_number for ln in scan.lines] == [reference], row
+    assert scan.ambiguous_skips == 0, row
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "2026.01",  # year.sequence
+        "5001.01",  # revision / split-invoice suffix
+        "24.05",
+        "1,234",  # thousands separator
+    ],
+)
+def test_a_numeric_reference_shaped_like_money_is_refused_but_reported(reference):
+    """The shapes the rule genuinely costs us — refused, and never silently.
+
+    A bare, prefix-less, purely numeric reference carrying cents or a thousands
+    separator is indistinguishable from the first column of a summary block, and
+    this reader resolves every ambiguity by skipping. But a real supplier does
+    use `5001.01`, so dropping it quietly would cost a clerk a genuine open item
+    with nothing to chase — the whole failure mode `ambiguous_skips` exists to
+    close. It is therefore counted: the run says N rows were skipped and points
+    at the CSV / vision alternative that can read them.
+    See `docs/vendor-statement-reconciliation.md` § The cost, named.
+    """
+    scan = scan_statement_text(f"{reference}  2026-01-15  500.00")
+    assert scan.lines == []
+    assert scan.ambiguous_skips == 1
+
+
+def test_furniture_around_ambiguous_rows_stays_uncounted():
+    """The two classes travel through the same loop and must not blur.
+
+    Same ambiguous rows as above, wrapped in the header/total/footer furniture a
+    real page carries — the count must not move.
+    """
+    bare = scan_statement_text(
+        "INV-4001   2026-03-05   1,200.00   900.00\nINV-4002   2026-03-06   850.50   800.00"
+    )
+    padded = scan_statement_text(
+        "Acme Supply Co\n"
+        "Statement of Open Items\n"
+        "\n"
+        "Invoice     Date         Amount      Balance\n"
+        "INV-4001   2026-03-05   1,200.00   900.00\n"
+        "INV-4002   2026-03-06   850.50   800.00\n"
+        "\n"
+        "Total                                1,700.00\n"
+        "Page 1 of 2\n"
+    )
+    assert bare.ambiguous_skips == 2
+    assert padded.ambiguous_skips == bare.ambiguous_skips
 
 
 def test_scan_statement_text_keeps_a_bare_integer_column_left_of_the_balance():
     """The counterpart of the rule above: `Net 30` / `45 days` print BEFORE the
     balance and must NOT cause a skip — position is what separates a terms
     column from a second money column, since their shapes are identical."""
-    assert [ln.amount for ln in scan_statement_text("INV-1  2026-01-15  Net 30  1,200.00")] == [
-        "1,200.00"
-    ]
-    assert [ln.amount for ln in scan_statement_text("INV-2  2026-01-15  45  1,200.00")] == [
-        "1,200.00"
-    ]
+    for row in ("INV-1  2026-01-15  Net 30  1,200.00", "INV-2  2026-01-15  45  1,200.00"):
+        scan = scan_statement_text(row)
+        assert [ln.amount for ln in scan.lines] == ["1,200.00"], row
+        assert scan.ambiguous_skips == 0, row
 
 
 # --------------------------------------------------------------------------- #

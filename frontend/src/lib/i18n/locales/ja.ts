@@ -853,6 +853,10 @@ export const messages = {
 	'cfo.position.title': '現金ポジション',
 	'cfo.position.enterOpening': '上に期初の銀行残高を入力すると、現金ポジションの推移を予測できます。',
 	'cfo.position.breach': '{n, plural, other {⚠ # 期間が最低残高アラートを下回る見込みです。}}',
+	'cfo.position.providerSkippedCurrency':
+		'連携中の銀行残高は使用されていません。その資金口座はレポート通貨（{currency}）とは異なる通貨で保有されており、そこから予測を開始すると下の各時点残高が2つの通貨の混在になってしまいます。数値は保存済みの期首残高から開始しています。レポート通貨を口座に合わせるか、上で期首残高を入力してください。',
+	'cfo.position.providerSkipped':
+		'連携中の銀行残高は使用されていないため、下の予測はそこから開始していません。数値は保存済みの期首残高から開始しています。',
 	'cfo.position.colPeriod': '期間',
 	'cfo.position.colOpening': '期初',
 	'cfo.position.colOutflow': '支出',
@@ -2959,6 +2963,8 @@ export const messages = {
 		'{provider} が信頼度 {confidence} で自動読み取りしました — 文書から{n, plural, other {#件}}の未決済項目を取得。',
 	'vendorStatements.modal.provenanceSkipNote':
 		'明確に読み取れなかった行は推測せずにスキップされたため、該当する当社の請求書は下に確認すべき差異として表示されます。',
+	'vendorStatements.modal.provenanceSkipped':
+		'{n, plural, other {#行}}が曖昧としてスキップされました。読み取り側は未決済項目を認識しましたが、推測なしには読み取れませんでした（金額列が2つある、参照列が2つあるなど）。下の差異はその行数分だけ不足しているため、該当する当社の請求書は確認すべき差異として表示されます。読み取るには、明細書をCSVでアップロードするか、ビジョンプロバイダーを設定してください。',
 	'vendorStatements.modal.provenanceCsv': 'アップロードされたCSVから直接読み取りました。',
 	'vendorStatements.modal.downloadSource': '元の明細書をダウンロード',
 	'vendorStatements.modal.downloadingSource': 'ダウンロード中…',

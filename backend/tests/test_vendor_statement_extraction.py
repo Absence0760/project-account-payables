@@ -156,8 +156,25 @@ async def test_extract_statement_lines_happy_path(monkeypatch):
         "provider": "stub",
         "confidence": 0.9,
         "line_count": 1,
+        # A model-backed adapter isn't asked to report its own skips, so 0 here
+        # honestly means "not measured" rather than "read everything".
+        "skipped_ambiguous": 0,
     }
     assert adapter.seen["file_key"] == "k.pdf"
+
+
+async def test_extract_statement_lines_carries_the_ambiguous_skip_count(monkeypatch):
+    """The offline reader's refused rows reach the run's provenance meta.
+
+    Without this the clerk sees a short run and no signal that the supplier's
+    own rows were read and declined.
+    """
+    result = _ok([StatementLineExtraction("INV-1", "2026-01-15", "1200.00")])
+    result.skipped_ambiguous = 3
+    _use(monkeypatch, _StubAdapter(result))
+    _lines, meta = await vse.extract_statement_lines(org_settings={}, file_bytes=b"%PDF-1.4")
+    assert meta["line_count"] == 1
+    assert meta["skipped_ambiguous"] == 3
 
 
 async def test_unsupported_provider_refuses_instead_of_creating_an_empty_run(monkeypatch):
@@ -240,6 +257,27 @@ def test_resolve_uses_the_orgs_byok_provider():
     assert adapter.provider_name == "mock"
 
 
-def test_resolve_defaults_to_the_platform_provider():
+def test_resolve_defaults_to_the_platform_provider(monkeypatch):
+    """Platform mode with a key resolves to the platform adapter, as it always has."""
+    from app.services import extraction as ext
+
+    monkeypatch.setattr(ext.settings, "extraction_provider", "")
+    monkeypatch.setattr(ext.settings, "anthropic_api_key", "sk-ant-real-key")
     adapter = vse.resolve_statement_adapter({})
     assert adapter.provider_name == "claude_vision"
+
+
+def test_resolve_falls_back_to_the_offline_reader_on_a_keyless_dev_box(monkeypatch):
+    """The local-first half: no platform key locally → the offline text reader.
+
+    This is what makes a PDF statement upload work on a fresh clone; before it,
+    the same upload POSTed to api.anthropic.com with an empty key. Precedence
+    itself is covered by `test_extraction_provider_resolution.py`.
+    """
+    from app.services import extraction as ext
+
+    monkeypatch.setattr(ext.settings, "extraction_provider", "")
+    monkeypatch.setattr(ext.settings, "anthropic_api_key", "")
+    monkeypatch.setattr(ext.settings, "environment", "development")
+    adapter = vse.resolve_statement_adapter({})
+    assert adapter.provider_name == "mock"

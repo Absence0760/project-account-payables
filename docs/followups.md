@@ -34,9 +34,11 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#251](https://github.com/Absence0760/project-account-payables/issues/251)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-08-15 against `improve/round-followup-batch-2` — a
-three-agent round that closed the two remaining actionable `(c)` items and
-shipped one backend improvement chosen by survey.
+**Last reconciled:** 2026-08-16 against `improve/round-batch-3` — a three-agent
+round that closed **every remaining actionable `(c)` item**. What is left in
+this file is the `(a)` credential-blocked set, the `(b)` operator steps, and two
+`(c)` entries that are product calls rather than work (an unwired adapter family
+and the copilot's saved-plans bucket). This file is the shortest it has been.
 
 **The vendor-statement upload UI closed** — but the entry's premise ("no file
 picker at all") was stale; a picker existed and already took CSV and PDF. The
@@ -50,8 +52,9 @@ choice, refusals render as a persistent inline alert, and the run detail carries
 a source pill, the `extraction` provenance block and a download of the archived
 supplier document. That was the last open item in the Vendor Statement
 Reconciliation roadmap section, which moved to
-[roadmap_shipped.md](roadmap_shipped.md). It surfaced two new items below — the
-keyless-dev-box extraction fallback, and the reader's uncounted skipped rows.
+[roadmap_shipped.md](roadmap_shipped.md). It surfaced two new items — the
+keyless-dev-box extraction fallback, and the reader's uncounted skipped rows —
+**both of which are now closed too** (see the extraction paragraph below).
 
 **The invoices/vendors local-mutation race closed** — the fix went into the
 shared `createRequestSequencer()` primitive rather than being hand-rolled per
@@ -92,7 +95,66 @@ opens a de-duped PII-free `erp_reconciliation` exception, and
 Rationale in [decisions.md](decisions.md) §22. Two sibling fixes rode along (a
 fail-open `quote_payment` base default, and a head-of-line stall in
 `vendor_rescreen`); the systemic remainder — every sweep discarding its own
-failure count — is a new entry below.
+failure count — became its own entry, **now closed** (next paragraph).
+
+**Every background sweep's failure count became state.** All fourteen
+long-lived sweeps carried a private copy of the same loop body and discarded the
+result their `*_once()` returned; twelve of those results already carried a
+`failures: int` that nothing read. There was no supervision either
+(`asyncio.create_task` with no `add_done_callback`), so a sweep whose loop died
+was gone for the life of the process with nothing saying so — an
+`audit_shipping` sink misconfigured for months, its SOC 2 WORM evidence never
+leaving the tenant DB, looked exactly like one running clean. The fix is the
+single mechanism the entry asked for rather than fourteen ad-hoc ones:
+`services/sweep_health.py` owns the loop *body* (`run_sweep_loop`), so the
+outcome is recorded by construction and the bodies can't drift again. A tick
+that completes reporting `failures > 0` counts as failed — modelling only "did
+it raise" would have left the motivating case invisible — and a tick that hangs
+inside `*_once` is reported `stalled` rather than sitting in `running` looking
+healthy. Supervision goes through `start_sweep()`, with an AST scan failing the
+suite if a raw `create_task` returns. Admin-gated `GET /api/health/sweeps`
+reports it; public `GET /api/health` is unchanged, deliberately, so a
+misconfigured sink can't become a rolling restart loop. Rationale in
+[decisions.md](decisions.md) §24. It also fixed a real PII leak found along the
+way: eight loops passed `exc_info=True` / `logger.exception`, which appends the
+whole traceback regardless of the format string — `payment_reconciler` had
+diagnosed that in a comment and fixed it for itself alone.
+
+**Platform extraction stopped calling out from a keyless dev box, and the
+statement reader started admitting what it refuses.**
+`_resolve_extraction_config` hardcoded `claude_vision` for platform mode — the
+default for every seeded tenant — *regardless* of whether
+`FEOH_ANTHROPIC_API_KEY` was set, so a fresh clone POSTed to `api.anthropic.com`
+with an empty key on every extraction, breaking guard rail 7 for the whole
+extraction path rather than just statements. The new pure
+`resolve_platform_provider` resolves explicit `FEOH_EXTRACTION_PROVIDER` → a
+configured key → `claude_vision` (the deployed path, byte-identical) → keyless
+and non-deployed → `mock`. A keyless *deployed* env deliberately does **not**
+fall back: `mock.extract` returns a fabricated invoice at 0.95 confidence, inside
+the band that can auto-approve, so a lost credential would start booking invented
+payables against real vendors. An unregistered `FEOH_EXTRACTION_PROVIDER` is
+refused at boot, because the dispatcher silently falls back to `mock` on an
+unknown name and the new env var would otherwise have made a typo a route to the
+fixture adapter. Rationale in [decisions.md](decisions.md) §26. Separately,
+`scan_statement_text` now classifies each skip where it happens — "not a row"
+(blank lines, headers, page furniture, subtotals) stays silent, "ambiguous"
+(a second money column, a second reference column) is counted and surfaced
+through `meta.extraction` — which is the honest split the entry said was the
+actual design problem: a clean statement reports 0, an aging statement reports
+one per data row. Building it surfaced a pre-existing mis-accept, where
+`Current: 1,200.00  Past due: 850.00` was booked as an open item with invoice
+number `1,200.00`; that is fixed, and the refusal is announced rather than
+silent whenever the row has an open item's shape.
+
+**Two reporting gaps closed with them.** `/cfo` now distinguishes "we have a
+bank balance but declined to use it" (`opening_balance_provider_skipped`, e.g.
+`currency_mismatch`) from "no bank is connected" — the API already carried the
+reason and the page rendered only `source === 'none'`, so the two looked
+identical on the surface where the number is actually read. And the axe
+accessibility guard gained all four `/admin` routes plus `/vendor-statements`
+(list and create modal) — the surface carrying dialogs, armed two-click
+destructive actions and one-time secret reveals, which is exactly where a
+focus-management regression is most costly and where the guard was silent.
 
 Closed in the pass before that, against `improve/round-followup-closeout`: the
 three tracked items of that round. **Webhook secret rotation became reachable
@@ -186,115 +248,6 @@ originally-deferred sub-bucket from that same feature remains:
 **Trigger:** next feature slice. Nothing blocks it.
 Refs: [roadmap.md](roadmap.md) § AI Cash-Flow Copilot,
 [cash-flow-copilot.md](cash-flow-copilot.md).
-
-### PDF statement intake can't run on the committed local defaults
-
-The offline `mock` statement reader exists precisely so `pnpm dev` can exercise
-the whole PDF-statement path with no cloud credential — but nothing routes to it
-by default. `extraction._resolve_extraction_config` hardcodes
-`provider: "claude_vision"` for `program_type: "platform"` (the default when an
-org sets no `settings.extraction`, which is every seeded tenant), **regardless of
-whether `FEOH_ANTHROPIC_API_KEY` is set**. So a PDF statement uploaded on a fresh
-clone makes an outbound call to `api.anthropic.com` with an empty key and comes
-back `provider_error` — the UI now explains that clearly, but the local-first
-promise (guard rail 7) isn't kept for this path, and only hand-editing an org's
-`settings.extraction` to `{program_type: "byok", provider: "mock"}` reaches the
-offline reader.
-
-This is not statement-specific: the same resolution governs invoice extraction,
-which is why it's a wider change than a statement round should make.
-
-- [ ] Make platform mode fall back to `mock` when no platform key is configured
-      (or introduce `FEOH_EXTRACTION_PROVIDER` with a `mock` default in
-      `backend/.env.development`), so a keyless dev box never makes an outbound
-      extraction call. Whichever shape wins must keep a *deployed* env with a key
-      on `claude_vision` unchanged, and needs pytest coverage of the keyless
-      resolution.
-
-**Why deferred:** it changes adapter selection for the whole extraction path
-(invoices included), not just statements — a different blast radius from the
-`/vendor-statements` UI round that surfaced it.
-**Trigger:** the next extraction-config change, or the first report of a dev box
-making unexpected outbound calls.
-Refs: `backend/app/services/extraction.py::_resolve_extraction_config`,
-[vendor-statement-reconciliation.md](../backend/docs/vendor-statement-reconciliation.md) § PDF intake.
-
-### The statement reader skips rows without saying how many
-
-`scan_statement_text` deliberately skips a row it can't read unambiguously (a
-second money column, a second identifier column) rather than booking a
-plausible-but-wrong figure — the right call, documented at length. But nothing
-counts those skips: `meta.extraction` records `line_count` (rows *accepted*) and
-no skip figure, so a clerk whose aging-bucket statement lost half its rows sees a
-short run with no signal that anything was dropped. The new provenance panel
-explains the *rule* and names the accepted count, which is as far as the data
-goes today.
-
-- [ ] Report a skipped-row count (or the skipped rows' raw text) from
-      `scan_statement_text` → `StatementExtractionResult` → `meta.extraction`, so
-      the provenance panel can say "N rows were skipped as ambiguous" and offer
-      the CSV/vision alternative in context.
-
-**Why deferred:** an *honest* count is a design problem, not a plumbing one. The
-reader skips blank lines, column headers, page furniture, subtotals and genuinely
-ambiguous open-item rows through the same path, and counting all of them would
-report noise ("47 rows skipped" on a clean two-page statement) that is worse than
-silence. Separating "looked like an open item but was ambiguous" from "was never
-a row" is exactly the judgment the reader refuses to make elsewhere, so it needs
-its own thought and its own pure-function tests.
-**Trigger:** the first support case where a machine-read run came back
-suspiciously short, or the next pass on `statement_extraction.py`.
-Refs: `backend/app/services/extraction_adapters/statement_extraction.py`,
-[vendor-statement-reconciliation.md](../backend/docs/vendor-statement-reconciliation.md) § The offline reader skips rather than guesses.
-
-### `/cfo` can't tell a skipped provider balance from no bank at all
-
-`GET /api/analytics/cash-position` now returns `opening_balance_provider_skipped`
-(e.g. `currency_mismatch`, when the payment adapter reports a balance in a
-currency other than the org's reporting currency and the chain refuses it rather
-than mixing two currencies into one running balance). The `/cfo` dashboard
-renders only `opening_balance_source === 'none'`, so **"we have a bank balance
-but declined to use it"** and **"no bank is connected"** look identical on the
-page. The copilot's chat narration is currently the only place a human sees the
-difference — on the surface where the number is actually read, the reason is
-invisible.
-
-- [ ] Render the skip reason distinctly on the cash-position card (the API
-      already carries it — this is display only, no backend work).
-
-**Why deferred:** surfaced by the code review of the cash-flow round, whose
-scope was the backend correctness bug (the wrong money figure), which is closed.
-This is the reporting half and belongs with a `/cfo` pass.
-**Trigger:** the first org that connects a foreign-currency operating account,
-or the next UI pass on `/cfo`.
-Ref: [cash-flow-copilot.md](cash-flow-copilot.md) § Opening balance.
-
-### The axe a11y guard doesn't cover `/admin` or `/vendor-statements`
-
-`frontend/tests-e2e/a11y/axe.spec.ts` covers dashboard / invoices / vendors /
-payments / exceptions / login / portal. **No `/admin` route is in it** — not
-`/admin` itself, not `/admin/api-keys`, `/admin/webhooks`, or `/admin/partner`.
-Those pages carry dialogs, armed two-click destructive actions and one-time
-secret reveals, which is exactly the surface where a focus-management or
-labelling regression is most costly, and the guard would not catch it.
-
-`/vendor-statements` is missing too, and its create modal has since gained a
-radio `fieldset`/`legend` intake picker, a file input and a persistent
-`role="alert"` refusal region — new interactive controls with no axe pass.
-
-- [ ] Add the `/admin` routes and `/vendor-statements` to the axe spec's route
-      list (they reuse the shared `ui/` primitives, so the expectation is that
-      they pass as-is; if one doesn't, that IS the finding).
-
-**Why deferred:** surfaced while adding the webhook rotation UI, and again while
-adding the statement upload UI. Widening a shared guard spec at the end of an
-unrelated round is the wrong moment — a new failure there would be
-indistinguishable from a regression the round caused. (Both rounds ran in
-parallel worktrees, where a shared spec is also the file most likely to
-conflict.)
-**Trigger:** the next `/audit:accessibility` or `/polish-ui` pass touching
-`/admin` or `/vendor-statements`.
-Ref: [accessibility.md](accessibility.md).
 
 ---
 

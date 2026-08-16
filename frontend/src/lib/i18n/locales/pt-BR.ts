@@ -858,6 +858,10 @@ export const messages = {
 	'cfo.position.title': 'Posição de caixa',
 	'cfo.position.enterOpening': 'Insira um saldo bancário inicial acima para projetar a posição de caixa em andamento.',
 	'cfo.position.breach': '{n, plural, one {⚠ # período projeta abaixo do seu alerta de saldo mínimo.} other {⚠ # períodos projetam abaixo do seu alerta de saldo mínimo.}}',
+	'cfo.position.providerSkippedCurrency':
+		'O saldo do seu banco conectado não foi usado: essa conta é mantida em uma moeda diferente da sua moeda de relatório {currency}, e partir dela faria com que cada saldo corrente abaixo fosse uma mistura de duas moedas. Os números partem do seu saldo inicial salvo. Ajuste a moeda de relatório à da conta, ou informe um saldo inicial acima.',
+	'cfo.position.providerSkipped':
+		'O saldo do seu banco conectado não foi usado, então a projeção abaixo não parte dele. Os números partem do seu saldo inicial salvo.',
 	'cfo.position.colPeriod': 'Período',
 	'cfo.position.colOpening': 'Abertura',
 	'cfo.position.colOutflow': 'Saída',
@@ -2970,6 +2974,8 @@ export const messages = {
 		'Lido automaticamente por {provider} com {confidence} de confiança — {n, plural, one {# item em aberto extraído} other {# itens em aberto extraídos}} do documento.',
 	'vendorStatements.modal.provenanceSkipNote':
 		'Uma linha que o leitor não conseguiu ler sem ambiguidade foi ignorada em vez de adivinhada, então a nossa nota correspondente aparece abaixo como uma diferença a apurar.',
+	'vendorStatements.modal.provenanceSkipped':
+		'{n, plural, one {# linha foi ignorada} other {# linhas foram ignoradas}} por ambiguidade: o leitor viu um item em aberto que não conseguia ler sem adivinhar (uma segunda coluna de valor, uma segunda coluna de referência). A comparação abaixo está incompleta nessa mesma quantidade de linhas do fornecedor, então as nossas notas correspondentes aparecem como diferenças a apurar. Envie o extrato como CSV, ou configure um provedor de visão, para lê-las.',
 	'vendorStatements.modal.provenanceCsv': 'Lido diretamente do CSV enviado.',
 	'vendorStatements.modal.downloadSource': 'Baixar o extrato original',
 	'vendorStatements.modal.downloadingSource': 'Baixando…',

@@ -28,17 +28,42 @@ import { expectNoA11yViolations } from './axe-helper';
  * Authenticated surfaces — the core invoice → approve → pay flow plus a
  * representative sample of the rest of the app shell. Each navigates as the
  * worker's admin (default storage state) and asserts axe-clean.
+ *
+ * `ready` is the page's own `<h1>`, waited on **in addition to** the sidebar.
+ * The sidebar renders before a route's own fetch resolves, so on a page that
+ * loads its data (every `/admin` route, `/vendor-statements`) the sidebar alone
+ * would let axe scan a loading frame — passing on markup no user ever sees.
+ * Omit it for the routes that render their shell synchronously.
  */
-const AUTHED_ROUTES = [
+const AUTHED_ROUTES: { path: string; name: string; ready?: string }[] = [
 	{ path: '/', name: 'dashboard' },
 	{ path: '/invoices', name: 'invoices list' },
 	{ path: '/vendors', name: 'vendors list' },
 	{ path: '/payments', name: 'payments' },
-	{ path: '/exceptions', name: 'exceptions queue' }
-] as const;
+	{ path: '/exceptions', name: 'exceptions queue' },
+	// The `/admin` section carries the app's densest cluster of a11y-sensitive
+	// controls — modal dialogs, armed two-click destructive actions, and
+	// one-time secret reveals whose focus management is the only thing standing
+	// between a user and a credential they can never see again. It had no axe
+	// coverage at all, which is exactly where a labelling or focus regression is
+	// most costly and least likely to be noticed.
+	{ path: '/admin', name: 'admin users', ready: 'Users & Roles' },
+	{ path: '/admin?tab=roles', name: 'admin roles', ready: 'Custom roles' },
+	{ path: '/admin/api-keys', name: 'admin API keys', ready: 'API Keys' },
+	{ path: '/admin/webhooks', name: 'admin webhooks', ready: 'Webhooks' },
+	// A standalone (non-partner) tenant renders the "not a partner" empty state
+	// here; the heading is present either way, so the scan is meaningful for
+	// both shapes.
+	{ path: '/admin/partner', name: 'admin partner', ready: 'Partner Admin' },
+	// Its create modal has since gained a radio fieldset/legend intake picker, a
+	// file input and a persistent role="alert" refusal region — new interactive
+	// controls that had never seen an axe pass. (The list page is scanned here;
+	// the modal itself is covered by the dedicated test below.)
+	{ path: '/vendor-statements', name: 'vendor statements', ready: 'Statements' }
+];
 
 test.describe('accessibility — authenticated app (WCAG 2.2 AA)', () => {
-	for (const { path, name } of AUTHED_ROUTES) {
+	for (const { path, name, ready } of AUTHED_ROUTES) {
 		test(`${name} (${path}) has no axe violations`, async ({ page }) => {
 			await page.goto(path);
 			// The sidebar means we're inside the authenticated app shell;
@@ -46,9 +71,35 @@ test.describe('accessibility — authenticated app (WCAG 2.2 AA)', () => {
 			// mid-redirect / pre-hydration frame.
 			await expect(page.locator('aside.sidebar').first()).toBeVisible();
 			await expect(page).not.toHaveURL(/\/login/);
+			if (ready) {
+				// `exact` because several of these headings are substrings of
+				// another on the same page ("Webhooks" vs "Webhook deliveries").
+				await expect(page.getByRole('heading', { name: ready, exact: true })).toBeVisible();
+			}
 			await expectNoA11yViolations(page);
 		});
 	}
+
+	test('vendor-statement create modal (open state) has no axe violations', async ({ page }) => {
+		// The modal, not the list, is where this surface's interactive controls
+		// live: a radio fieldset/legend intake picker, a file input, and a
+		// persistent role="alert" region the backend's refusal message lands in.
+		// Scanning only the list would report the page clean while every one of
+		// those went unchecked.
+		await page.goto('/vendor-statements');
+		await expect(page.getByRole('heading', { name: 'Statements', exact: true })).toBeVisible();
+		await page.getByRole('button', { name: '+ New reconciliation' }).click();
+
+		// Same dialog + control selectors the dedicated recon spec uses, so the
+		// two can't drift apart on a label change.
+		const modal = page.getByRole('dialog', { name: 'New vendor statement reconciliation' });
+		await expect(modal).toBeVisible();
+		// The vendor picker is populated from a fetch — wait for it so the scan
+		// covers the fully rendered form rather than a half-built one.
+		await expect(modal.getByLabel('Vendor')).toBeVisible();
+
+		await expectNoA11yViolations(page);
+	});
 
 	test('invoice detail modal (open state) has no axe violations', async ({ page }) => {
 		// The invoice detail modal is the most interactive authenticated

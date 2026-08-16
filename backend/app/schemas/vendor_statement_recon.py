@@ -83,6 +83,12 @@ class StatementExtractionMeta(BaseModel):
     provider: str
     confidence: float
     line_count: int
+    # Rows the reader saw as an open item but refused to book because it could
+    # not resolve them (two money columns, a second reference column). NOT a
+    # count of every skipped line — headers, totals and page furniture are
+    # skipped silently, and counting those would report noise. Defaulted so a
+    # run persisted before this field existed still deserialises.
+    skipped_ambiguous: int = 0
 
 
 class ReconciliationResponse(BaseModel):

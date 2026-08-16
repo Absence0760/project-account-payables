@@ -11,6 +11,7 @@
 		RECON_CLASSIFICATION_LABELS,
 		RECON_RESOLUTION_LABELS,
 		RECON_SOURCE_FORMAT_LABELS,
+		ambiguousSkipCount,
 		formatExtractionConfidence,
 		isMachineRead,
 		sourceStatementFilename
@@ -464,7 +465,20 @@
 							n: detail.extraction.line_count
 						})}
 					</p>
-					<p class="prov-note">{m('vendorStatements.modal.provenanceSkipNote')}</p>
+					{#if ambiguousSkipCount(detail.extraction) > 0}
+						<!-- The reader saw these rows and refused to book them, so the
+						     diff below is short by exactly this many supplier rows.
+						     `role="alert"` because it changes what the diff means: our
+						     invoices for the skipped rows show as `missing_on_their
+						     _side` and would otherwise read as a real discrepancy. -->
+						<p class="prov-skipped" role="alert" data-testid="statement-skipped-rows">
+							{m('vendorStatements.modal.provenanceSkipped', {
+								n: ambiguousSkipCount(detail.extraction)
+							})}
+						</p>
+					{:else}
+						<p class="prov-note">{m('vendorStatements.modal.provenanceSkipNote')}</p>
+					{/if}
 				{:else if detail.source_format === 'csv'}
 					<p class="prov-line">{m('vendorStatements.modal.provenanceCsv')}</p>
 				{/if}
@@ -660,6 +674,14 @@
 		margin: 0;
 		font-size: 0.74rem;
 		color: var(--text-muted);
+	}
+	/* Louder than `.prov-note`: this one says the diff below is incomplete, not
+	   merely how the reader behaves. Amber, matching the warning tone used for
+	   the `amount_mismatch` stat chip. */
+	.prov-skipped {
+		margin: 0;
+		font-size: 0.76rem;
+		color: #d4940a;
 	}
 	.prov-download {
 		margin-top: 4px;

@@ -8,6 +8,7 @@
 	import { formatPeriod } from '$lib/utils/time';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { m } from '$lib/i18n/store.svelte';
+	import { openingBalanceSkipKey } from './openingBalanceNotice';
 	import type {
 		CashflowForecast,
 		CashflowGranularity,
@@ -29,6 +30,14 @@
 	function fmt(n: number): string {
 		return formatMoney(n, { currency: orgCurrency.currency, whole: true });
 	}
+
+	// `opening_balance_provider_skipped` means a live bank balance EXISTED and the
+	// resolution chain refused it, so the curve starts from the next link down.
+	// The mapping (and its deliberate speak-anyway fallback) is the pure
+	// `openingBalanceNotice` helper, unit-tested beside this page.
+	let openingSkipReasonKey = $derived(
+		openingBalanceSkipKey(position?.opening_balance_provider_skipped)
+	);
 
 	async function load() {
 		loading = true;
@@ -221,6 +230,15 @@
 		{#if position}
 			<div class="chart-card">
 				<h2>{m('cfo.position.title')}</h2>
+				<!-- "We have a bank balance and declined to use it" and "no bank is
+				     connected" are different facts with different remedies, and the
+				     page used to render both as the same enter-an-opening-balance
+				     hint. The API already carries the reason; this is display only. -->
+				{#if openingSkipReasonKey}
+					<p class="cf-skipped" role="alert" data-testid="opening-balance-skipped">
+						{m(openingSkipReasonKey, { currency: position.opening_balance_currency })}
+					</p>
+				{/if}
 				{#if position.opening_balance_source === 'none'}
 					<p class="cf-hint">{m('cfo.position.enterOpening')}</p>
 				{/if}
@@ -426,9 +444,17 @@
 		margin-top: 4px;
 	}
 	.cf-hint,
-	.cf-breach {
+	.cf-breach,
+	.cf-skipped {
 		font-size: 0.85rem;
 		margin: 0 0 12px;
+	}
+	/* Amber, not red: the projection is still usable — it just isn't seeded from
+	   the bank. Distinct from `.cf-hint` so "we declined your balance" can't be
+	   read as the ordinary "enter an opening balance" prompt. */
+	.cf-skipped {
+		color: #d4940a;
+		font-weight: 600;
 	}
 	.cf-breach {
 		color: #e04040;
