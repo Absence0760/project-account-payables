@@ -2418,6 +2418,100 @@ async def resume_payment_run(
     return await _dispatch_run_payments(db, run=run, run_id=run_id, org=org, user=user)
 
 
+@router.post("/runs/{run_id}/sync-erp")
+async def retry_run_erp_sync(
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    # Re-running the sync can flip invoices `payment_scheduled → paid` — the
+    # same money-state authority as executing a run or accepting a short
+    # settlement, so the same gate.
+    user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Re-run the ERP sync-back for a run whose settled payments didn't land.
+
+    This is the **exit for a stranded invoice**. `services/payment_erp_sync` is
+    the only path that flips `payment_scheduled → paid`, and it is dispatched
+    exactly once per terminal event (run execute, payment webhook) —
+    fire-and-forget onto a detached thread. If a leg fails there, the money has
+    already moved but the invoice never advances, the ERP is never told, and
+    **nothing re-invokes the sync**, because the reconciler backstop only
+    re-dispatches payments it moves out of `submitted`/`processing`.
+
+    Voiding is not an exit for that state: `POST /{payment_id}/void` returns the
+    invoice to `approved`, which invites a second payment for money that already
+    left. So the strand gets an explicit, audited re-run instead.
+
+    A failed leg now also opens a de-duped `erp_reconciliation` exception naming
+    this endpoint, so the operator reaches it from the queue rather than having
+    to know the run id. Deliberately does NOT resolve that exception on success
+    — `erp_reconciliation` is shared with the ERP-void path in
+    `api/erp_webhook`, so auto-closing "the open one" could silently clear an
+    unrelated reconciliation (the same reasoning `POST /{id}/settlement/accept`
+    documents for `fraud_flag`). The human closes it after confirming.
+
+    **Idempotent by construction, not by a claim**: the pass skips every payment
+    that isn't `completed` and every invoice that isn't `payment_scheduled`, so
+    a repeat call after a successful re-run writes no second transition. It
+    moves no money — it only reports money that already moved.
+
+    Read `transitioned`, not `synced`, to answer "did this recover anything".
+    `synced` counts legs whose ERP-facing work completed, which stays TRUE for a
+    settled payment whose invoice was already `paid` — so a repeat call reports
+    the same `synced` count and `transitioned: 0`.
+
+    Unlike the two dispatch sites this one AWAITS the pass, so the response
+    carries the real per-leg counts instead of "queued".
+    """
+    from app.services.audit_dispatch import dispatch_audit
+    from app.services.payment_erp_sync import _sync_payments
+
+    run = await _get_scoped_run(db, run_id, entity_id)
+    settled = (
+        await db.execute(
+            select(func.count())
+            .select_from(Payment)
+            .where(Payment.payment_run_id == run.id, Payment.status == "completed")
+        )
+    ).scalar() or 0
+    if settled == 0:
+        raise HTTPException(
+            status_code=409,
+            detail="This run has no settled payments to sync to the ERP.",
+        )
+
+    await dispatch_audit(
+        db,
+        correlation_id=run.id,
+        organization_id=org.id,
+        actor_id=user.id,
+        action="payment_run.erp_sync_retried",
+        entity_type="payment_run",
+        entity_id=run.id,
+        details={"status": run.status, "settled_payments": settled},
+    )
+    # Read what the pass needs off the ORM row BEFORE committing, so this
+    # doesn't quietly depend on the session's `expire_on_commit=False` — an
+    # expired attribute read from async SQLAlchemy is an implicit lazy load,
+    # i.e. a MissingGreenlet rather than a clean failure.
+    run_org_id = uuid.UUID(str(run.organization_id))
+    run_ref = str(run.id)
+    # Commit (and release the request session's transaction) BEFORE the pass —
+    # it opens its own tenant session and updates the same invoice rows.
+    await db.commit()
+
+    result = await _sync_payments(run_id, run_org_id)
+    return {
+        "id": run_ref,
+        "synced": result.synced,
+        "transitioned": result.transitioned,
+        "skipped": result.skipped,
+        "held": result.held,
+        "failed": result.failed,
+    }
+
+
 # Statuses a payment must be in for `/retry-failed` to consider re-attempting
 # it. Both are terminal *failures*, and both are excluded from
 # `uq_payments_one_live_per_invoice` — which is what lets the retry book a

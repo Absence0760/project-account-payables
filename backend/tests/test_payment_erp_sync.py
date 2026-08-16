@@ -20,6 +20,7 @@ import pytest
 from sqlalchemy import func, select
 
 from app.config import settings
+from app.models.exception import Exception as APException
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.payment import Payment, PaymentRun
 from app.models.workflow import AuditLog
@@ -329,3 +330,409 @@ async def test_sync_logs_exception_class_not_message_on_failure(realdb, caplog):
             f"PII leaked into log: {record.getMessage()}"
         )
     assert any("RuntimeError" in r.getMessage() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# A failed leg is a STRAND — it must be visible, and it must not take its
+# siblings down with it.
+#
+# `_sync_payments` is the only path that flips `payment_scheduled → paid`, and
+# nothing re-invokes it for a payment that is already `completed`. So a leg that
+# raises leaves the money moved and the invoice never advancing — permanently.
+# ---------------------------------------------------------------------------
+
+
+async def _open_erp_reconciliation_rows(realdb, key: str, invoice_id: uuid.UUID) -> list:
+    mk = realdb.sessionmaker(key)
+    async with mk() as s:
+        return list(
+            (
+                await s.execute(
+                    select(APException).where(
+                        APException.invoice_id == invoice_id,
+                        APException.exception_type == "erp_reconciliation",
+                        APException.status == "open",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+async def test_failed_leg_opens_an_erp_reconciliation_exception(realdb):
+    """The money moved; the invoice didn't advance. Before this, the only trace
+    was a WARNING line and a counter that died with the background thread — no
+    row, no notification, nothing an AP manager could act on."""
+    await _set_org_erp(realdb, "a", {"type": "mock", "integration_method": "direct"})
+    run_id, invoice_id = await _seed_run(realdb, "a")
+
+    with patch(
+        "app.services.workflow_engine.transition_invoice",
+        AsyncMock(side_effect=RuntimeError("erp exploded")),
+    ):
+        result = await _sync_payments(run_id, realdb.info("a").org_id)
+
+    assert result.failed == 1
+    assert result.synced == 0
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        inv = (await s.execute(select(Invoice).where(Invoice.id == invoice_id))).scalar_one()
+    assert inv.status == InvoiceStatus.payment_scheduled, "leg failed, so no false `paid`"
+
+    rows = await _open_erp_reconciliation_rows(realdb, "a", invoice_id)
+    assert len(rows) == 1, "the strand must be visible in the exception queue"
+    exc_row = rows[0]
+    assert exc_row.severity == "error"
+    # PII-free + actionable: identifiers, the failure CLASS, and the exit.
+    assert "RuntimeError" in exc_row.description
+    assert "erp exploded" not in exc_row.description
+    assert f"/api/payments/runs/{run_id}/sync-erp" in exc_row.description
+
+
+async def test_failed_leg_exception_is_deduped_across_retries(realdb):
+    """A second failed pass must not pile up a second open row for the same
+    invoice — the queue would fill with duplicates of one strand."""
+    await _set_org_erp(realdb, "a", {"type": "mock", "integration_method": "direct"})
+    run_id, invoice_id = await _seed_run(realdb, "a")
+
+    for _ in range(2):
+        with patch(
+            "app.services.workflow_engine.transition_invoice",
+            AsyncMock(side_effect=RuntimeError("erp exploded")),
+        ):
+            await _sync_payments(run_id, realdb.info("a").org_id)
+
+    rows = await _open_erp_reconciliation_rows(realdb, "a", invoice_id)
+    assert len(rows) == 1
+
+
+async def test_failed_leg_does_not_discard_a_sibling_leg_that_already_synced(realdb):
+    """Regression: one failing leg used to roll back the WHOLE run.
+
+    Every leg ran inside one transaction with a single commit at the end. A leg
+    that failed with a real DB error poisoned that transaction, so the final
+    commit raised, the outer handler rolled back — and the run's *successful*
+    `payment_scheduled → paid` transitions were discarded too, silently, with
+    nothing to re-invoke them. Legs are now committed independently.
+
+    The payment ids are fixed so the SUCCEEDING leg is processed first (legs are
+    ordered by `Payment.id`): that is the ordering the old code lost work in.
+    """
+    from sqlalchemy import text
+
+    from app.services import workflow_engine
+
+    await _set_org_erp(realdb, "a", {"type": "mock", "integration_method": "direct"})
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    run_id = uuid.uuid4()
+    inv_ok = uuid.uuid4()
+    inv_bad = uuid.uuid4()
+    async with mk() as s:
+        s.add(PaymentRun(id=run_id, status="completed", organization_id=org_id))
+        for iid, num in ((inv_ok, "INV-OK"), (inv_bad, "INV-BAD")):
+            s.add(
+                Invoice(
+                    id=iid,
+                    invoice_number=num,
+                    vendor_name="V",
+                    amount=Decimal("40.00"),
+                    status=InvoiceStatus.payment_scheduled,
+                    organization_id=org_id,
+                )
+            )
+        await s.flush()
+        # uuid(int=1) sorts before uuid(int=2), so the good leg runs first.
+        s.add(
+            Payment(
+                id=uuid.UUID(int=1),
+                invoice_id=inv_ok,
+                payment_run_id=run_id,
+                amount=Decimal("40.00"),
+                method="ach",
+                status="completed",
+            )
+        )
+        s.add(
+            Payment(
+                id=uuid.UUID(int=2),
+                invoice_id=inv_bad,
+                payment_run_id=run_id,
+                amount=Decimal("40.00"),
+                method="ach",
+                status="completed",
+            )
+        )
+        await s.commit()
+
+    real_transition = workflow_engine.transition_invoice
+
+    async def _explode_on_bad(db, invoice, *args, **kwargs):
+        if invoice.id == inv_bad:
+            # A genuine DB-level error — the shape that poisons the surrounding
+            # transaction. A bare Python raise would not reproduce the bug.
+            await db.execute(text("SELECT 1 / 0"))
+        return await real_transition(db, invoice, *args, **kwargs)
+
+    with patch("app.services.workflow_engine.transition_invoice", _explode_on_bad):
+        result = await _sync_payments(run_id, org_id)
+
+    assert result.synced == 1
+    assert result.failed == 1
+
+    async with mk() as s:
+        ok = (await s.execute(select(Invoice).where(Invoice.id == inv_ok))).scalar_one()
+        bad = (await s.execute(select(Invoice).where(Invoice.id == inv_bad))).scalar_one()
+    assert ok.status == InvoiceStatus.paid, "a later failure must not undo an earlier success"
+    assert bad.status == InvoiceStatus.payment_scheduled
+    assert len(await _open_erp_reconciliation_rows(realdb, "a", inv_bad)) == 1
+    assert await _open_erp_reconciliation_rows(realdb, "a", inv_ok) == []
+
+
+# ---------------------------------------------------------------------------
+# The exit — POST /api/payments/runs/{run_id}/sync-erp
+# ---------------------------------------------------------------------------
+
+
+async def test_retry_endpoint_recovers_a_stranded_invoice(realdb):
+    """The strand's only legitimate exit. `/void` is not one — the money moved,
+    and voiding returns the invoice to `approved` where it invites a second
+    payment."""
+    await _set_org_erp(realdb, "a", {"type": "mock", "integration_method": "direct"})
+    run_id, invoice_id = await _seed_run(realdb, "a")
+
+    with patch(
+        "app.services.workflow_engine.transition_invoice",
+        AsyncMock(side_effect=RuntimeError("erp exploded")),
+    ):
+        await _sync_payments(run_id, realdb.info("a").org_id)
+
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post(f"/api/payments/runs/{run_id}/sync-erp")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["synced"] == 1
+    assert body["transitioned"] == 1, "the strand actually recovered"
+    assert body["failed"] == 0
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        inv = (await s.execute(select(Invoice).where(Invoice.id == invoice_id))).scalar_one()
+        actions = (await s.execute(select(AuditLog.action))).scalars().all()
+    assert inv.status == InvoiceStatus.paid
+    assert "payment_run.erp_sync_retried" in actions
+
+
+async def test_retry_endpoint_is_idempotent(realdb):
+    """A second call after a successful re-run must not write a second `paid`
+    transition — the pass skips invoices already past `payment_scheduled`.
+
+    Also pins the two counters apart: `synced` counts legs whose ERP-facing work
+    completed (still 1 on the repeat, because the payment is still `completed`),
+    while `transitioned` counts invoices this pass actually moved — the number
+    that answers "did the retry recover anything", and the one that must read 0.
+    """
+    await _set_org_erp(realdb, "a", {"type": "mock", "integration_method": "direct"})
+    run_id, invoice_id = await _seed_run(realdb, "a")
+
+    async with realdb.client(key="a", role="admin") as c:
+        first = await c.post(f"/api/payments/runs/{run_id}/sync-erp")
+        second = await c.post(f"/api/payments/runs/{run_id}/sync-erp")
+    assert first.status_code == 200, first.text
+    assert first.json()["synced"] == 1
+    assert first.json()["transitioned"] == 1
+    assert second.status_code == 200, second.text
+    assert second.json()["synced"] == 1, "the leg still ran — the payment is still completed"
+    assert second.json()["transitioned"] == 0, "but nothing advanced the second time"
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        paid_rows = (
+            (
+                await s.execute(
+                    select(AuditLog).where(AuditLog.action == "invoice.paid_via_erp_sync")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        inv = (await s.execute(select(Invoice).where(Invoice.id == invoice_id))).scalar_one()
+    assert inv.status == InvoiceStatus.paid
+    assert len(paid_rows) == 1, "a repeat call must not write a second paid transition"
+
+
+async def test_two_concurrent_passes_transition_the_invoice_once(realdb):
+    """The retry endpoint awaits the pass synchronously, so a manual retry can
+    overlap the background thread a webhook just dispatched for the same run.
+
+    Without a row lock both passes read `payment_scheduled`, both clear the
+    coverage check, and both call `transition_invoice` — a duplicate
+    `invoice.paid_via_erp_sync` audit row and a duplicate "invoice paid"
+    notification (which, unlike the outbound-webhook emit, carries no dedupe
+    key). The invoice is taken FOR UPDATE, so the second pass re-reads it after
+    the lock is granted, sees `paid`, and falls through.
+    """
+    import asyncio
+
+    await _set_org_erp(realdb, "a", {"type": "mock", "integration_method": "direct"})
+    run_id, invoice_id = await _seed_run(realdb, "a")
+    org_id = realdb.info("a").org_id
+
+    first, second = await asyncio.gather(
+        _sync_payments(run_id, org_id),
+        _sync_payments(run_id, org_id),
+    )
+
+    # Both legs ran (the payment is `completed` for both), but exactly one
+    # of them moved the invoice.
+    assert first.synced == 1 and second.synced == 1
+    assert first.transitioned + second.transitioned == 1
+    assert first.failed == 0 and second.failed == 0
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        inv = (await s.execute(select(Invoice).where(Invoice.id == invoice_id))).scalar_one()
+        paid_rows = (
+            await s.execute(
+                select(func.count())
+                .select_from(AuditLog)
+                .where(AuditLog.action == "invoice.paid_via_erp_sync")
+            )
+        ).scalar_one()
+    assert inv.status == InvoiceStatus.paid
+    assert paid_rows == 1, "two concurrent passes must not both write the paid transition"
+
+
+async def test_a_held_leg_releases_its_lock_and_its_siblings_still_sync(realdb):
+    """A short-settled leg holds its invoice at `payment_scheduled` — but it
+    took the row FOR UPDATE to decide that, so it must release before returning.
+
+    Otherwise the lock lives until the session's next commit, i.e. for the rest
+    of the run's legs, blocking any concurrent writer of a held invoice —
+    including its own `POST /{id}/settlement/accept` release path, the very
+    thing an operator reaches for next.
+    """
+    await _set_org_erp(realdb, "a", {"type": "mock", "integration_method": "direct"})
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    run_id = uuid.uuid4()
+    inv_short = uuid.uuid4()
+    inv_full = uuid.uuid4()
+    async with mk() as s:
+        s.add(PaymentRun(id=run_id, status="completed", organization_id=org_id))
+        for iid, num in ((inv_short, "INV-SHORT"), (inv_full, "INV-FULL")):
+            s.add(
+                Invoice(
+                    id=iid,
+                    invoice_number=num,
+                    vendor_name="V",
+                    amount=Decimal("500.00"),
+                    currency="USD",
+                    status=InvoiceStatus.payment_scheduled,
+                    organization_id=org_id,
+                )
+            )
+        await s.flush()
+        # uuid(int=1) sorts first: the HELD leg runs before the syncing one, so
+        # a lock it failed to release would still be held when the next leg runs.
+        s.add(
+            Payment(
+                id=uuid.UUID(int=1),
+                invoice_id=inv_short,
+                payment_run_id=run_id,
+                amount=Decimal("500.00"),
+                method="ach",
+                status="completed",
+                settled_amount=Decimal("250.00"),
+                settled_currency="USD",
+            )
+        )
+        s.add(
+            Payment(
+                id=uuid.UUID(int=2),
+                invoice_id=inv_full,
+                payment_run_id=run_id,
+                amount=Decimal("500.00"),
+                method="ach",
+                status="completed",
+                settled_amount=Decimal("500.00"),
+                settled_currency="USD",
+            )
+        )
+        await s.commit()
+
+    result = await _sync_payments(run_id, org_id)
+
+    assert result.held == 1
+    assert result.synced == 1
+    assert result.transitioned == 1
+
+    async with mk() as s:
+        short = (await s.execute(select(Invoice).where(Invoice.id == inv_short))).scalar_one()
+        full = (await s.execute(select(Invoice).where(Invoice.id == inv_full))).scalar_one()
+    assert short.status == InvoiceStatus.payment_scheduled, "an under-settled invoice is held"
+    assert full.status == InvoiceStatus.paid
+
+    # The held invoice's row is free: a fresh session can take it FOR UPDATE
+    # without waiting, which is what the accept/void release paths need.
+    async with mk() as s:
+        locked = (
+            await s.execute(
+                select(Invoice.id).where(Invoice.id == inv_short).with_for_update(nowait=True)
+            )
+        ).scalar_one()
+        assert locked == inv_short
+        await s.rollback()
+
+
+async def test_retry_endpoint_409s_when_no_payment_settled(realdb):
+    """Nothing settled means nothing to report to the ERP — refuse rather than
+    silently reporting a zero-count success."""
+    await _set_org_erp(realdb, "a", {"type": "mock", "integration_method": "direct"})
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    run_id = uuid.uuid4()
+    invoice_id = uuid.uuid4()
+    async with mk() as s:
+        s.add(PaymentRun(id=run_id, status="submitted", organization_id=org_id))
+        s.add(
+            Invoice(
+                id=invoice_id,
+                invoice_number="INV-FLIGHT-ONLY",
+                vendor_name="V",
+                amount=Decimal("12.00"),
+                status=InvoiceStatus.payment_scheduled,
+                organization_id=org_id,
+            )
+        )
+        await s.flush()
+        s.add(
+            Payment(
+                invoice_id=invoice_id,
+                payment_run_id=run_id,
+                amount=Decimal("12.00"),
+                method="ach",
+                status="submitted",
+            )
+        )
+        await s.commit()
+
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post(f"/api/payments/runs/{run_id}/sync-erp")
+    assert resp.status_code == 409, resp.text
+
+
+async def test_retry_endpoint_404s_for_another_tenants_run(realdb):
+    """Tenant isolation at the data layer: tenant "b"'s client must not be able
+    to trigger a sync for tenant "a"'s run."""
+    await _set_org_erp(realdb, "a", {"type": "mock", "integration_method": "direct"})
+    run_id, _invoice_id = await _seed_run(realdb, "a")
+
+    async with realdb.client(key="b", role="admin") as c:
+        resp = await c.post(f"/api/payments/runs/{run_id}/sync-erp")
+    assert resp.status_code == 404, resp.text

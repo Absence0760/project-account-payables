@@ -76,9 +76,29 @@ zero providers can quote the requested corridor; the caller fails
 the payment with `failure_reason="no_eligible_corridor"`.
 
 Per-payment adapters implement `quote_payment(payload) -> CorridorQuote`.
-The default base-class implementation reports `available=True` iff
-the payload's method is in `supported_methods`, with zero fees;
-concrete adapters override with their real fee schedule.
+It is an **optional capability that fails closed**: the base-class
+implementation reports `available=False` with
+`unavailable_reason="no_quote_endpoint"`, so a processor whose real
+fee schedule we don't hold is *skipped* by the auction. Concrete
+adapters override it with their published pricing.
+
+That default used to be permissive — `available=True` with
+`flat_fee=0`, `pct_fee=0` and `eta_business_days=0` for any supported
+method. Since `_rank` orders on realised cost then ETA, an adapter
+inheriting it beat every sibling publishing a real fee on **both**
+`cheapest` and `fastest`, unconditionally, and `savings_vs_runner_up`
+reported an invented saving against it — money routed on numbers
+nobody supplied. `modern_treasury` is the adapter that inherits the
+default; adding its fee table is what un-skips it.
+
+`tests/test_payment_adapter_capabilities.py` is the drift guard for
+this and the other three optional `PaymentAdapter` capabilities
+(`get_balance`, `fetch_settlement`, `void_payment`): a newly
+registered processor must either implement each one or be listed
+there as deliberately not implementing it, with the consequence for
+the caller written down. Registering an adapter that silently
+inherits all four is otherwise invisible — the inherited code
+"works" in every case.
 
 ## KYC / AML compliance
 
