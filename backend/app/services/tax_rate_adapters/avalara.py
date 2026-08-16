@@ -52,4 +52,11 @@ class AvalaraTaxRateAdapter:
         )
 
     async def test_connection(self) -> bool:
-        return bool(self.account_id and self.license_key)
+        # Fail closed, like `qms_adapters/generic_qms`: credentials alone are not
+        # a healthy connection while `get_rate` — the only method this contract
+        # exists for — cannot answer. Reporting True here told an operator the
+        # provider was ready and left the failure to surface on the first real
+        # rate lookup, under-collecting or blocking tax at that point instead of
+        # at configuration time. A live implementation returns True from a cheap
+        # authenticated GET once `get_rate` is real.
+        return False

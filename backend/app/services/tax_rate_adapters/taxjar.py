@@ -47,4 +47,8 @@ class TaxJarTaxRateAdapter:
         )
 
     async def test_connection(self) -> bool:
-        return bool(self.api_token)
+        # Fail closed, like `qms_adapters/generic_qms` and the Avalara skeleton:
+        # a token is not a working integration while `get_rate` still raises.
+        # A live implementation returns True from a cheap authenticated GET once
+        # `get_rate` is real.
+        return False
