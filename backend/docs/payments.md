@@ -922,6 +922,21 @@ skips every payment that isn't `completed` and every invoice that isn't
 money — it only reports money that already moved. 409 when the run has no
 settled payment to sync.
 
+**Read `transitioned`, not `synced`, to answer "did this recover anything".**
+`synced` counts legs whose ERP-facing work completed, and stays true for a
+settled payment whose invoice was already `paid` — so a repeat call reports the
+same `synced` count with `transitioned: 0`. (Once the real `adapter.post_payment()`
+lands, re-pushing an already-`paid` invoice's payment is still work done, which
+is why the two counters are separate rather than one being redefined.)
+
+**The invoice is taken `FOR UPDATE` before the status check**, like every other
+status transition in the codebase. The retry endpoint awaits the pass
+synchronously, so a manual retry can overlap the background thread a webhook
+just dispatched for the same run; two unlocked readers would both see
+`payment_scheduled`, both clear the coverage check, and both transition — a
+duplicate audit row and a duplicate "invoice paid" notification, which (unlike
+the outbound-webhook emit, keyed on the invoice id) has no dedupe.
+
 **Voiding is not an exit for this state.** `POST /api/payments/{id}/void`
 returns the invoice to `approved`, which invites a second payment for money that
 already left. That asymmetry with the `held` (short-settlement) path — a
@@ -958,7 +973,7 @@ Matching payments against bank statement entries:
 | `POST` | `/api/payments/runs/{id}/execute` | Execute the payment run + trigger ERP sync. `draft`-only — a run stuck `executing` (worker crash mid-run) is resumed via the endpoint below, not this one. |
 | `POST` | `/api/payments/runs/{id}/resume` | Resume a run stuck in `executing` — re-dispatches only its still-`pending` payments; anything already `completed`/`failed`/`submitted`/`processing`/`pending_compliance` from before the crash is left untouched. Same `payment.execute` permission gate as `/execute`. |
 | `POST` | `/api/payments/runs/{id}/retry-failed` | Re-attempt the safely-retryable FAILED payments of a `partial`/`failed` run by booking a NEW attempt row (the failed row is never mutated). Never re-dispatches a payment that already succeeded, nor one whose fate at the processor is unknown (`needs_reconciliation`); also skips an invoice that is unpayable, carries an unresolved duplicate/fraud/line-total exception, has since been credited, or already has another live payment. Same `payment.execute` gate, segregation check and CFO threshold as `/execute`. See § Why a payment failed, and retrying it. |
-| `POST` | `/api/payments/runs/{id}/sync-erp` | Re-run the ERP sync-back for a run whose settled payments didn't land — the exit for an invoice stranded at `payment_scheduled` after a failed sync leg. Awaits the pass and returns its `synced`/`skipped`/`held`/`failed` counts; idempotent by construction; moves no money. `payment.execute`-gated, entity-scoped, audited `payment_run.erp_sync_retried`. 409 when the run has no settled payment. See § ERP Payment Sync → A failed leg is a strand, and it is visible. |
+| `POST` | `/api/payments/runs/{id}/sync-erp` | Re-run the ERP sync-back for a run whose settled payments didn't land — the exit for an invoice stranded at `payment_scheduled` after a failed sync leg. Awaits the pass and returns its `synced`/`transitioned`/`skipped`/`held`/`failed` counts (read `transitioned` for "did this recover anything"); idempotent by construction; moves no money. `payment.execute`-gated, entity-scoped, audited `payment_run.erp_sync_retried`. 409 when the run has no settled payment. See § ERP Payment Sync → A failed leg is a strand, and it is visible. |
 | `POST` | `/api/payments/runs/{id}/cancel` | Cancel a draft run — deletes its child payment rows so the invoices return to the queue, and flips the run to `cancelled`. |
 | `GET` | `/api/payments/queue` | List invoices ready for payment |
 | `GET` | `/api/payments/summary` | KPIs: total paid, pending, queue count, rebates. Requires a `control_db` dependency because `CardRebate` is a control-plane model; the rebate query includes a try/except fallback returning `0.0` if the `card_rebates` table doesn't exist yet. |

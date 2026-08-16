@@ -2453,8 +2453,13 @@ async def retry_run_erp_sync(
 
     **Idempotent by construction, not by a claim**: the pass skips every payment
     that isn't `completed` and every invoice that isn't `payment_scheduled`, so
-    a repeat call after a successful re-run is a no-op that reports
-    `synced: 0`. It moves no money — it only reports money that already moved.
+    a repeat call after a successful re-run writes no second transition. It
+    moves no money — it only reports money that already moved.
+
+    Read `transitioned`, not `synced`, to answer "did this recover anything".
+    `synced` counts legs whose ERP-facing work completed, which stays TRUE for a
+    settled payment whose invoice was already `paid` — so a repeat call reports
+    the same `synced` count and `transitioned: 0`.
 
     Unlike the two dispatch sites this one AWAITS the pass, so the response
     carries the real per-leg counts instead of "queued".
@@ -2486,14 +2491,21 @@ async def retry_run_erp_sync(
         entity_id=run.id,
         details={"status": run.status, "settled_payments": settled},
     )
+    # Read what the pass needs off the ORM row BEFORE committing, so this
+    # doesn't quietly depend on the session's `expire_on_commit=False` — an
+    # expired attribute read from async SQLAlchemy is an implicit lazy load,
+    # i.e. a MissingGreenlet rather than a clean failure.
+    run_org_id = uuid.UUID(str(run.organization_id))
+    run_ref = str(run.id)
     # Commit (and release the request session's transaction) BEFORE the pass —
     # it opens its own tenant session and updates the same invoice rows.
     await db.commit()
 
-    result = await _sync_payments(run_id, uuid.UUID(str(run.organization_id)))
+    result = await _sync_payments(run_id, run_org_id)
     return {
-        "id": str(run.id),
+        "id": run_ref,
         "synced": result.synced,
+        "transitioned": result.transitioned,
         "skipped": result.skipped,
         "held": result.held,
         "failed": result.failed,

@@ -515,6 +515,7 @@ async def test_retry_endpoint_recovers_a_stranded_invoice(realdb):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["synced"] == 1
+    assert body["transitioned"] == 1, "the strand actually recovered"
     assert body["failed"] == 0
 
     mk = realdb.sessionmaker("a")
@@ -527,7 +528,13 @@ async def test_retry_endpoint_recovers_a_stranded_invoice(realdb):
 
 async def test_retry_endpoint_is_idempotent(realdb):
     """A second call after a successful re-run must not write a second `paid`
-    transition — the pass skips invoices already past `payment_scheduled`."""
+    transition — the pass skips invoices already past `payment_scheduled`.
+
+    Also pins the two counters apart: `synced` counts legs whose ERP-facing work
+    completed (still 1 on the repeat, because the payment is still `completed`),
+    while `transitioned` counts invoices this pass actually moved — the number
+    that answers "did the retry recover anything", and the one that must read 0.
+    """
     await _set_org_erp(realdb, "a", {"type": "mock", "integration_method": "direct"})
     run_id, invoice_id = await _seed_run(realdb, "a")
 
@@ -536,7 +543,10 @@ async def test_retry_endpoint_is_idempotent(realdb):
         second = await c.post(f"/api/payments/runs/{run_id}/sync-erp")
     assert first.status_code == 200, first.text
     assert first.json()["synced"] == 1
+    assert first.json()["transitioned"] == 1
     assert second.status_code == 200, second.text
+    assert second.json()["synced"] == 1, "the leg still ran — the payment is still completed"
+    assert second.json()["transitioned"] == 0, "but nothing advanced the second time"
 
     mk = realdb.sessionmaker("a")
     async with mk() as s:
@@ -552,6 +562,48 @@ async def test_retry_endpoint_is_idempotent(realdb):
         inv = (await s.execute(select(Invoice).where(Invoice.id == invoice_id))).scalar_one()
     assert inv.status == InvoiceStatus.paid
     assert len(paid_rows) == 1, "a repeat call must not write a second paid transition"
+
+
+async def test_two_concurrent_passes_transition_the_invoice_once(realdb):
+    """The retry endpoint awaits the pass synchronously, so a manual retry can
+    overlap the background thread a webhook just dispatched for the same run.
+
+    Without a row lock both passes read `payment_scheduled`, both clear the
+    coverage check, and both call `transition_invoice` — a duplicate
+    `invoice.paid_via_erp_sync` audit row and a duplicate "invoice paid"
+    notification (which, unlike the outbound-webhook emit, carries no dedupe
+    key). The invoice is taken FOR UPDATE, so the second pass re-reads it after
+    the lock is granted, sees `paid`, and falls through.
+    """
+    import asyncio
+
+    await _set_org_erp(realdb, "a", {"type": "mock", "integration_method": "direct"})
+    run_id, invoice_id = await _seed_run(realdb, "a")
+    org_id = realdb.info("a").org_id
+
+    first, second = await asyncio.gather(
+        _sync_payments(run_id, org_id),
+        _sync_payments(run_id, org_id),
+    )
+
+    # Both legs ran (the payment is `completed` for both), but exactly one
+    # of them moved the invoice.
+    assert first.synced == 1 and second.synced == 1
+    assert first.transitioned + second.transitioned == 1
+    assert first.failed == 0 and second.failed == 0
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        inv = (await s.execute(select(Invoice).where(Invoice.id == invoice_id))).scalar_one()
+        paid_rows = (
+            await s.execute(
+                select(func.count())
+                .select_from(AuditLog)
+                .where(AuditLog.action == "invoice.paid_via_erp_sync")
+            )
+        ).scalar_one()
+    assert inv.status == InvoiceStatus.paid
+    assert paid_rows == 1, "two concurrent passes must not both write the paid transition"
 
 
 async def test_retry_endpoint_409s_when_no_payment_settled(realdb):

@@ -82,7 +82,13 @@ class PaymentSyncResult:
     invisibility the exception rows now cover.
     """
 
+    #: Legs whose ERP-facing work completed. TRUE for a settled payment whose
+    #: invoice was ALREADY `paid`, so a re-run reports the same count as the
+    #: first pass — this counts legs that ran, not work that changed anything.
     synced: int = 0
+    #: Invoices this pass actually moved `payment_scheduled → paid`. The number
+    #: an operator retrying a strand is asking about; `0` on a repeat call.
+    transitioned: int = 0
     skipped: int = 0
     held: int = 0
     failed: int = 0
@@ -160,6 +166,7 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> PaymentSyncRes
 async def _sync_run_legs(db, *, run_id: uuid.UUID, org_id: uuid.UUID) -> PaymentSyncResult:
     """Run one leg per payment in the run, each independently committed."""
     counts = {_SYNCED: 0, _SKIPPED: 0, _HELD: 0, _FAILED: 0}
+    transitioned = 0
     try:
         # Select ids only. Each leg re-reads its own rows, so a leg that rolls
         # back can never leave the NEXT leg holding ORM objects its rollback
@@ -176,8 +183,11 @@ async def _sync_run_legs(db, *, run_id: uuid.UUID, org_id: uuid.UUID) -> Payment
         )
 
         for payment_id in payment_ids:
-            outcome = await _sync_one_leg(db, payment_id=payment_id, run_id=run_id, org_id=org_id)
+            outcome, moved = await _sync_one_leg(
+                db, payment_id=payment_id, run_id=run_id, org_id=org_id
+            )
             counts[outcome] += 1
+            transitioned += int(moved)
 
     except Exception as exc:
         # Last-resort net around the leg loop itself (e.g. the id query failed).
@@ -186,12 +196,13 @@ async def _sync_run_legs(db, *, run_id: uuid.UUID, org_id: uuid.UUID) -> Payment
         # invariant). Legs that already committed keep their work.
         logger.warning("[payment-sync] error for run %s: %s", run_id, exc.__class__.__name__)
 
-    result = PaymentSyncResult(**counts)
+    result = PaymentSyncResult(**counts, transitioned=transitioned)
     logger.info(
-        "[payment-sync] run %s: %d synced, %d skipped (in-flight), "
-        "%d held (settlement short/uncertain), %d failed",
+        "[payment-sync] run %s: %d synced (%d invoice(s) moved to paid), "
+        "%d skipped (in-flight), %d held (settlement short/uncertain), %d failed",
         run_id,
         result.synced,
+        result.transitioned,
         result.skipped,
         result.held,
         result.failed,
@@ -199,8 +210,17 @@ async def _sync_run_legs(db, *, run_id: uuid.UUID, org_id: uuid.UUID) -> Payment
     return result
 
 
-async def _sync_one_leg(db, *, payment_id: uuid.UUID, run_id: uuid.UUID, org_id: uuid.UUID) -> str:
-    """Sync one payment, committing on its own. Returns the outcome key.
+async def _sync_one_leg(
+    db, *, payment_id: uuid.UUID, run_id: uuid.UUID, org_id: uuid.UUID
+) -> tuple[str, bool]:
+    """Sync one payment, committing on its own.
+
+    Returns ``(outcome_key, invoice_moved_to_paid)``. The second element is
+    separate because ``_SYNCED`` means "this leg's ERP-facing work completed",
+    which is TRUE for a settled payment whose invoice is already `paid` — a
+    re-run reports the same `synced` count as the first pass. Only
+    ``transitioned`` answers "did anything actually advance", which is the
+    question the manual retry endpoint's caller is asking.
 
     Committing per leg is deliberate: an earlier leg's successful
     ``payment_scheduled → paid`` transition must not be discarded because a
@@ -210,7 +230,7 @@ async def _sync_one_leg(db, *, payment_id: uuid.UUID, run_id: uuid.UUID, org_id:
     try:
         payment = await db.get(Payment, payment_id)
         if payment is None:  # pragma: no cover — deleted between select and get
-            return _SKIPPED
+            return _SKIPPED, False
 
         # A run can hold a mix of settled and in-flight payments (e.g. one ACH
         # `completed` by the mock adapter alongside one `submitted` awaiting the
@@ -221,9 +241,30 @@ async def _sync_one_leg(db, *, payment_id: uuid.UUID, run_id: uuid.UUID, org_id:
         # an invoice already in `paid`). The webhook handler triggers a fresh ERP
         # sync once the in-flight payment settles.
         if payment.status != "completed":
-            return _SKIPPED
+            return _SKIPPED, False
 
-        invoice = await db.get(Invoice, payment.invoice_id) if payment.invoice_id else None
+        # Row-lock the invoice before deciding whether to transition it —
+        # backend/CLAUDE.md § Conventions: every status transition takes the row
+        # FOR UPDATE. The window is real, not theoretical: the manual retry
+        # endpoint awaits this pass synchronously, so it can overlap the
+        # background thread a webhook just dispatched for the same run. Two
+        # unlocked readers would both see `payment_scheduled`, both pass the
+        # coverage check, and both transition — a duplicate audit row and a
+        # duplicate "invoice paid" notification (which, unlike the outbound
+        # webhook emit, has no dedupe key). Under READ COMMITTED the second
+        # reader re-reads the row after the lock is granted, so it sees `paid`
+        # and falls through.
+        #
+        # Not `workflow_engine.get_invoice_for_update`: that raises an
+        # HTTPException on a miss (wrong shape for a background sweep) and
+        # eager-loads `extraction_results`, which nothing here renders.
+        invoice = None
+        if payment.invoice_id:
+            invoice = (
+                await db.execute(
+                    select(Invoice).where(Invoice.id == payment.invoice_id).with_for_update()
+                )
+            ).scalar_one_or_none()
 
         # In production, this would call adapter.post_payment(). For now, log
         # and mark as synced. Amount is not PII; goes through the module logger
@@ -238,6 +279,7 @@ async def _sync_one_leg(db, *, payment_id: uuid.UUID, run_id: uuid.UUID, org_id:
         )
 
         # Update invoice status to paid if currently payment_scheduled
+        moved = False
         if invoice and invoice.status.value == "payment_scheduled":
             # ...but only if what the rail actually settled discharges the
             # invoice. A processor that moved $250 against a $500 instruction
@@ -270,7 +312,7 @@ async def _sync_one_leg(db, *, payment_id: uuid.UUID, run_id: uuid.UUID, org_id:
                     coverage.state,
                     coverage.shortfall,
                 )
-                return _HELD
+                return _HELD, False
 
             from app.models.invoice import InvoiceStatus
             from app.services.workflow_engine import transition_invoice
@@ -283,9 +325,10 @@ async def _sync_one_leg(db, *, payment_id: uuid.UUID, run_id: uuid.UUID, org_id:
                 action_name="invoice.paid_via_erp_sync",
                 details={"payment_id": str(payment.id)},
             )
+            moved = True
 
         await db.commit()
-        return _SYNCED
+        return _SYNCED, moved
 
     except Exception as exc:
         # Log the exception CLASS only, not the message — a processor/ERP SDK
@@ -304,7 +347,7 @@ async def _sync_one_leg(db, *, payment_id: uuid.UUID, run_id: uuid.UUID, org_id:
             org_id=org_id,
             failure=exc.__class__.__name__,
         )
-        return _FAILED
+        return _FAILED, False
 
 
 async def _flag_sync_failure(

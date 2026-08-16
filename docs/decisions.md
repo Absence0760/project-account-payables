@@ -696,6 +696,20 @@ wants the *answer*, so `POST /api/payments/runs/{run_id}/sync-erp` awaits
 `_sync_payments` and returns its real per-leg counts. Same code path, so the two
 can't diverge.
 
+That synchronous retry is also what turned the missing row lock from theoretical
+into real, and forced two follow-on details. The pass now takes the invoice
+`FOR UPDATE` before the status check, like every other status transition here —
+a manual retry can overlap the background thread a webhook just dispatched for
+the same run, and two unlocked readers would both see `payment_scheduled` and
+both transition, writing a duplicate audit row and a duplicate "invoice paid"
+notification (which, unlike the outbound-webhook emit keyed on the invoice id,
+has no dedupe). And the result grew a second counter: `synced` counts legs whose
+ERP-facing work completed, which stays true for a settled payment whose invoice
+is already `paid`, so it can't answer the operator's actual question.
+`transitioned` does. Redefining `synced` was rejected because once the real
+`adapter.post_payment()` lands, re-pushing an already-`paid` invoice's payment is
+still work done.
+
 **Deliberately not done:** auto-resolving the exception when the retry succeeds.
 `erp_reconciliation` is shared with the ERP-void path, so closing "the open one"
 could silently clear an unrelated reconciliation — the same reasoning
