@@ -439,7 +439,8 @@ A list surface that can have a request in flight while something else
 changes the list wires **`createRequestSequencer()`**
 (`$lib/utils/requestSequence.ts`) — `stores/invoices.svelte.ts`,
 `stores/payments.svelte.ts` and `routes/vendors/+page.svelte` do today.
-It answers two separate questions, and conflating them is a bug both ways:
+It answers two separate questions about a response — and takes one call that
+retires in-flight requests. Conflating the two questions is a bug both ways:
 
 ```ts
 const fetchSequence = createRequestSequencer();
