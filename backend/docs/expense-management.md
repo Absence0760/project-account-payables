@@ -31,8 +31,8 @@ mapped to `varchar` columns (`native_enum=False`). All five live in
 | Table | Model | Purpose |
 |-------|-------|---------|
 | `expense_reports` | `ExpenseReport` | A grouping of expenses an employee submits for approval + reimbursement. `report_number`, `title`, `employee_user_id` (control-plane User id, no cross-DB FK), `status` (draft → submitted → pending_approval → approved/rejected → reimbursed/cancelled), `submitted_at`/`approved_at`/`approved_by`, `total_amount` (recomputed from attached expenses, denominated in `currency`), `currency`, `reporting_currency`/`reporting_amount`/`reporting_fx_rate`/`reporting_fx_locked_at` (the total re-expressed in the org reporting currency, rate locked at submit — what the CFO gate compares), `notes`. |
-| `expenses` | `Expense` | A single expense line. `report_id` (nullable — an expense can exist before being grouped), `expense_date`, `merchant`, `category`, `description`, `amount`, `currency`, `converted_currency`/`converted_amount`/`converted_fx_rate`/`converted_fx_locked_at` (the line re-expressed in the owning report's currency, rate locked on attach/edit), `gl_account_id` (FK → `gl_accounts`), `receipt_file_key`, `payment_method` (out_of_pocket / corporate_card / virtual_card), `card_transaction_id`, `policy_violations` (JSONB list), `status`, `reimbursable`, `mileage_miles`. |
-| `expense_policies` | `ExpensePolicy` | A reimbursement policy. `name`, `active`, `category` (NULL = all), `threshold_currency` (the unit **every** money threshold below is denominated in; NULL = the org's reporting currency — migration `0077`), `per_diem_amount`/`per_diem_currency` (the latter descriptive only, kept in step with `threshold_currency`), `mileage_rate` (per mile), `category_limit`, `requires_preapproval_above`, `requires_receipt_above`, `rules` (JSONB). *Defined in WF1; enforced in WF3.* |
+| `expenses` | `Expense` | A single expense line. `report_id` (nullable — an expense can exist before being grouped), `expense_date`, `merchant`, `category`, `description`, `amount`, `currency`, `converted_currency`/`converted_amount`/`converted_fx_rate`/`converted_fx_locked_at` (the line re-expressed in the owning report's currency, rate locked on attach/edit), `gl_account_id` (FK → `gl_accounts`), `receipt_file_key`, `payment_method` (out_of_pocket / corporate_card / virtual_card), `card_transaction_id`, `policy_violations` (JSONB list), `status`, `reimbursable`, `mileage_miles` (distance driven; NULL = not a trip, which is what makes the mileage rule skippable per line). |
+| `expense_policies` | `ExpensePolicy` | A reimbursement policy. `name`, `active`, `category` (NULL = all), `threshold_currency` (the unit **every** money threshold below is denominated in; NULL = the org's reporting currency — migration `0077`), `per_diem_amount`/`per_diem_currency` (the latter descriptive only, kept in step with `threshold_currency`), `mileage_rate` (per mile), `category_limit`, `requires_preapproval_above`, `requires_receipt_above`, `rules` (JSONB). Every one of these is read by the WF3 engine — `mileage_rate` was the last one that wasn't, and is now enforced as `mileage_amount_mismatch` (below). |
 | `corporate_card_transactions` | `CorporateCardTransaction` | A card transaction feed row reconciled to an expense. `card_ref`, `card_last_four`, `virtual_card_id` (FK → `virtual_cards`), `txn_date`/`posted_date`, `merchant`, `amount`, `currency`, `external_txn_id` (provider id, drives import idempotency), `matched_expense_id`, `reconciliation_status` (unmatched/matched/ignored), `import_batch`, `raw` (JSONB). *Model in WF1; import/reconcile in WF4.* |
 | `expense_preapprovals` | `ExpensePreapproval` | A spend pre-approval raised before an expense is incurred. `requester_user_id`, `title`, `estimated_amount`, `currency`, `category`, `justification`, `status` (pending/approved/rejected), `decided_by`/`decided_at`, `expense_report_id`. *Model in WF1; gating in WF3.* |
 
@@ -149,13 +149,19 @@ approved `ExpensePreapproval` coverage) from the tenant DB and hands them in:
   Rules: `category_limit` exceeded; `receipt_required` (over
   `requires_receipt_above` and no `receipt_file_key` — **blocking**);
   `preapproval_required` (over `requires_preapproval_above` with no approved
-  pre-approval covering it — **blocking**); `per_diem_exceeded`. All comparisons
-  are `Decimal`, and all of them are **currency-aware** — see below.
+  pre-approval covering it — **blocking**); `per_diem_exceeded`;
+  `mileage_amount_mismatch` (see below). All comparisons are `Decimal`, and all
+  of them are **currency-aware** — see below.
 - `threshold_currency_for(policy, default_currency)` → the unit a policy's money
   thresholds are read in.
-- `mileage_reimbursement(expense, policies)` → `Decimal`
-  (`mileage_miles * mileage_rate` from the first applicable policy with a rate;
-  denominated in that policy's threshold currency).
+- `resolve_mileage_expectation(expense, policies, default_threshold_currency=…)`
+  → `MileageExpectation | None` — the **single owner** of what a logged trip is
+  worth: `{policy_id, currency, miles, rate, amount, rounded}`. `None` when the
+  expense logs no positive `mileage_miles` or no applicable policy carries a
+  usable rate.
+- `mileage_reimbursement(expense, policies)` → `Decimal` — the amount-only view,
+  delegating to the resolver so the two can't drift. A bare `Decimal` carries no
+  unit; prefer the resolver when the currency matters.
 - `evaluate_report(report, expenses, policies, preapproval_amount_by_expense=…,
   default_threshold_currency=…)` → aggregate violations, each tagged with its
   source `expense_id`.
@@ -167,6 +173,54 @@ comparison?, expense_currency?, expense_id?}` (advisory, PII-free — amounts an
 ISO codes only). `evaluate_expense` is wired into expense **create**, **PATCH**,
 and **receipt upload** as a best-effort refresh of `Expense.policy_violations`
 (a policy-engine error never breaks the write).
+
+#### Mileage — the rate is enforced, not just declared
+
+`ExpensePolicy.mileage_rate` was settable from WF1 and read by nothing:
+`mileage_reimbursement` had no caller outside its unit test, so an admin could
+set $0.67/mile, an employee log 120 miles, and the reimbursable amount be
+whatever free-text `amount` they typed. `evaluate_expense` now raises
+**`mileage_amount_mismatch`** when the two disagree.
+
+- **The rule.** An expense with positive `mileage_miles` and an applicable
+  policy carrying a `mileage_rate > 0` is expected to claim `miles × rate`,
+  quantized to 2 dp `ROUND_HALF_UP`. A claim more than `MILEAGE_TOLERANCE`
+  (one cent — the same slack the settlement-amount check uses) away from that
+  is flagged. The product carries up to 6 dp while the claim is stored at 2, so
+  without the slack a legitimate half-up-vs-down rounding difference would flag.
+- **Both directions.** An over-claim is the money leak; an under-claim costs the
+  company nothing but still means one of the two numbers the employee typed is
+  wrong (a slipped decimal, a miskeyed odometer). The message says which way.
+- **Advisory, not blocking.** The two `BLOCKING_CODES` are both *missing
+  evidence the submitter can supply* — attach the receipt, get the pre-approval
+  — so a 422 at submit is actionable. A mileage mismatch is a disagreement
+  between two numbers already supplied, and which one is wrong is a human
+  judgement (the rate changed mid-period, the line bundles a toll, the claim is
+  deliberately under the entitlement). Blocking would strand a legitimate claim
+  with no in-app override, so the flag rides into the approver's view instead,
+  carrying the exact expected figure.
+- **One per expense.** Unlike `category_limit` (each policy is its own ceiling,
+  so each can be breached), a mileage rate is *the* rate. Two applicable
+  policies with different rates is a misconfiguration, and raising two
+  contradictory expectations would be worse than picking one, so the violation
+  reads `resolve_mileage_expectation` — first applicable policy with a usable
+  rate — exactly as `mileage_reimbursement` does.
+- **A `0.0000` rate counts as unset.** `mileage_rate` is nullable, so NULL is
+  how "we don't reimburse mileage" is expressed; a literal zero is far more
+  likely a form artifact. Treating it as unset also stops a zero-rate policy
+  shadowing a later one that carries a real rate, and stops every trip in the
+  tenant flagging against an entitlement of nothing.
+- **Currency-aware and fail-closed**, like every other threshold: the rate is
+  denominated in the policy's `threshold_currency`, and the claim is expressed
+  in it only through a rate a write path already locked. When nothing bridges
+  the two the violation is raised anyway, tagged `comparison: "unresolved"` —
+  advisory, so this flags for review rather than demanding anything.
+
+The violation carries `limit` (the expected amount), `actual` (the claim),
+`currency`, plus `miles` and `rate` as exact strings so an approver UI can show
+the working without re-deriving it. `mileage_miles` is settable from the web UI
+(`ExpenseModal`) as well as the API — before this it was API-only, which is the
+other reason the rate could never bite.
 
 #### Threshold currency — what a policy's numbers mean
 
@@ -382,7 +436,10 @@ the currency-matched pre-approval cover check. All deterministic against the
 
 `backend/tests/test_expense_policy.py` (WF3, pure/DB-free) — the policy engine:
 category limits, receipt-required, pre-approval-required (+ coverage), per-diem,
-category matching (NULL = all), the active flag, mileage reimbursement (Decimal),
+category matching (NULL = all), the active flag, mileage reimbursement (Decimal) **and its enforcement** (the expectation's unit + working, a
+zero rate treated as unset, over/under-claim, one-cent slack, advisory not
+blocking, first-applicable rate, category/active scope, compared in the rate
+currency, failing closed when it can't be, PII-free),
 report aggregation, the blocking-subset filter, and the **currency dimension**:
 `threshold_currency_for` resolution, a €200 EUR expense NOT judged against a USD
 100 limit as bare numbers, a locked ¥10 000 → $64.94 conversion clearing a USD
@@ -407,6 +464,10 @@ self-blocked by segregation; a different manager approving; the CFO threshold
 following, `EUROS` → 422, omitted → NULL); and the defect end-to-end on the real
 write path — a ¥10 000 JPY expense flagged `unresolved` against USD thresholds
 while unattached, then clean once attaching it to a USD report locks a rate.
+Plus the mileage rule reaching that same write path: an over-claim flagged on
+`POST /api/expenses` naming the entitled figure and cleared by a corrective
+PATCH, the flag surviving into the approver's view without blocking submit, and
+a rate-less policy leaving a logged trip unjudged.
 
 `backend/tests/test_expense_cards.py` (WF4, `realdb`) — CSV import (rows land,
 exact `Numeric` round-trip, shared `import_batch`) + dedupe-skip (re-import and
