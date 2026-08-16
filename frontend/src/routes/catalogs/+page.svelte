@@ -23,6 +23,7 @@
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { goto } from '$app/navigation';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { m } from '$lib/i18n/store.svelte';
 
 	const canCreate = $derived(auth.isManager); // admin | ap_manager
@@ -70,7 +71,16 @@
 
 	let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
+	// Sequences `load` (latest-issued wins) so a slow response for an earlier
+	// search term can't land after a faster later one. `handleDelete` drops a row
+	// in place with no fetch of its own, so it retires whatever is in flight
+	// first — otherwise the deleted catalog reappears when the load already out
+	// resolves. (`onSaved` refetches, so it needs no supersede.) See
+	// `frontend/CLAUDE.md` § Sequencing list fetches.
+	const fetchSequence = createRequestSequencer();
+
 	async function load() {
+		const token = fetchSequence.start();
 		loading = true;
 		try {
 			const params: {
@@ -83,12 +93,17 @@
 			if (typeFilter === 'preferred') params.is_preferred = true;
 			else if (typeFilter !== 'all') params.catalog_type = typeFilter;
 			const res = await listCatalogs(params);
+			// Superseded by a newer load, or by a local delete.
+			if (!fetchSequence.canCommit(token)) return;
 			catalogs = res.items;
 			total = res.total;
 		} catch (err) {
+			// `isCurrentRequest`, not `canCommit`: a load superseded by a local
+			// delete still failed, and no newer load is coming to report it.
+			if (!fetchSequence.isCurrentRequest(token)) return;
 			toast(err instanceof Error ? err.message : m('catalogs.toast.loadFailed'), 'error');
 		} finally {
-			loading = false;
+			if (fetchSequence.isCurrentRequest(token)) loading = false;
 		}
 	}
 
@@ -124,6 +139,7 @@
 		}
 		try {
 			await apiDeleteCatalog(id);
+			fetchSequence.supersedeInFlight();
 			catalogs = catalogs.filter((c) => c.id !== id);
 			total = Math.max(0, total - 1);
 			toast(m('catalogs.toast.deleted'), 'success');

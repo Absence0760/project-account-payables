@@ -60,7 +60,6 @@ See ``docs/cash-flow-copilot.md`` §12.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from dataclasses import dataclass
@@ -89,6 +88,7 @@ from app.services.cashflow import (
 from app.services.currency_conversion import resolve_reporting_currency
 from app.services.notification_dispatch import notify_event, resolve_role_user_ids
 from app.services.notification_templates import render_cash_shortfall
+from app.services.sweep_health import SWEEP_CASHFLOW_SHORTFALL, run_sweep_loop
 
 logger = logging.getLogger(__name__)
 
@@ -307,20 +307,12 @@ async def run_shortfall_alerts_once(*, today: date | None = None) -> ShortfallAl
 
 
 async def run_shortfall_alerts_loop() -> None:
-    """Long-lived loop started in ``main.lifespan``; cancelled on shutdown."""
-    interval = settings.cashflow_shortfall_alerts_interval_seconds
-    logger.info("[cashflow-shortfall] started; interval=%ds", interval)
-    try:
-        while True:
-            try:
-                await run_shortfall_alerts_once()
-            except Exception as exc:  # noqa: BLE001
-                logger.error(
-                    "[cashflow-shortfall] sweep raised: %s",
-                    exc.__class__.__name__,
-                    exc_info=True,
-                )
-            await asyncio.sleep(interval)
-    except asyncio.CancelledError:
-        logger.info("[cashflow-shortfall] shutting down")
-        raise
+    """Long-lived loop started in ``main.lifespan``; cancelled on shutdown.
+    Body is the shared ``sweep_health.run_sweep_loop``."""
+    await run_sweep_loop(
+        SWEEP_CASHFLOW_SHORTFALL,
+        lambda: run_shortfall_alerts_once(),
+        interval_seconds=settings.cashflow_shortfall_alerts_interval_seconds,
+        log=logger,
+        log_prefix="[cashflow-shortfall]",
+    )

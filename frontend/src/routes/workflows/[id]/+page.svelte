@@ -4,6 +4,7 @@
 	import { workflowStore } from '$lib/stores/workflows.svelte';
 	import { adminStore } from '$lib/stores/admin.svelte';
 	import { api } from '$lib/api';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import ApprovalMatrixEditor from '$lib/components/modals/ApprovalMatrixEditor.svelte';
@@ -91,16 +92,37 @@
 		}
 	}
 
+	// Sequences `loadWorkflow`. The canvas is an editor over the fetched
+	// definition, and every edit below is applied locally with no fetch of its
+	// own — so a GET still in flight (the mount load, or the one the `id`
+	// `$effect` re-fires) resolves afterwards holding the pre-edit definition
+	// and silently wipes the edits, leaving `dirty` set on a canvas that no
+	// longer shows them. `markDirty()` retires the in-flight load before every
+	// such edit. See `frontend/CLAUDE.md` § Sequencing list fetches.
+	const loadSequence = createRequestSequencer();
+
+	/** Apply a local edit to the canvas: retire any in-flight load first (its
+	 *  response predates the edit), then flag the unsaved-changes guard. */
+	function markDirty() {
+		loadSequence.supersedeInFlight();
+		dirty = true;
+	}
+
 	async function loadWorkflow(wfId: string) {
+		const token = loadSequence.start();
 		try {
 			const wf = await workflowStore.getById(wfId);
+			// Superseded by a newer load, or by a local canvas edit.
+			if (!loadSequence.canCommit(token)) return;
 			workflow = wf;
 			steps = structuredClone(wf.steps_config?.steps ?? []);
 			nameInput = wf.name;
 			descInput = wf.description ?? '';
 			selectedIndex = 0;
 		} catch {
-			toast(m('workflows.builder.toast.notFound'), 'error');
+			// `isCurrentRequest`, not `canCommit`: a load superseded by a local
+			// edit still failed, and no newer load is coming to report it.
+			if (loadSequence.isCurrentRequest(token)) toast(m('workflows.builder.toast.notFound'), 'error');
 		}
 	}
 
@@ -124,7 +146,7 @@
 		const next = renumber([...steps, makeStep(type)]);
 		steps = next;
 		selectedIndex = next.length - 1;
-		dirty = true;
+		markDirty();
 	}
 
 	function addStepAt(type: WorkflowStepType, index: number) {
@@ -133,7 +155,7 @@
 		arr.splice(clamped, 0, makeStep(type));
 		steps = renumber(arr);
 		selectedIndex = clamped;
-		dirty = true;
+		markDirty();
 	}
 
 	function reorderStep(from: number, to: number) {
@@ -143,36 +165,36 @@
 		arr.splice(to, 0, moved);
 		steps = renumber(arr);
 		selectedIndex = to;
-		dirty = true;
+		markDirty();
 	}
 
 	function removeStep(index: number) {
 		if (steps.length <= 1) return;
 		steps = renumber(steps.filter((_, i) => i !== index));
 		if (selectedIndex >= steps.length) selectedIndex = steps.length - 1;
-		dirty = true;
+		markDirty();
 	}
 
 	function toggleStep(index: number) {
 		steps = steps.map((s, i) => (i === index ? { ...s, enabled: !s.enabled } : s));
-		dirty = true;
+		markDirty();
 	}
 
 	function updateStepField(index: number, field: 'name' | 'enabled', value: unknown) {
 		steps = steps.map((s, i) => (i === index ? { ...s, [field]: value } : s));
-		dirty = true;
+		markDirty();
 	}
 
 	function updateStepConfig(index: number, key: string, value: unknown) {
 		steps = steps.map((s, i) =>
 			i === index ? { ...s, config: { ...s.config, [key]: value } } : s
 		);
-		dirty = true;
+		markDirty();
 	}
 
 	function replaceStepConfig(index: number, config: StepConfig) {
 		steps = steps.map((s, i) => (i === index ? { ...s, config } : s));
-		dirty = true;
+		markDirty();
 	}
 
 	function handleWindowClick(e: MouseEvent) {
@@ -235,8 +257,8 @@
 						type="text"
 						aria-label={m('workflows.builder.aria.workflowName')}
 						bind:value={nameInput}
-						onblur={() => { editingName = false; dirty = true; }}
-						onkeydown={(e) => { if (e.key === 'Enter') { editingName = false; dirty = true; } }}
+						onblur={() => { editingName = false; markDirty(); }}
+						onkeydown={(e) => { if (e.key === 'Enter') { editingName = false; markDirty(); } }}
 					/>
 				{:else}
 					<h1 class="page-title">
@@ -273,7 +295,7 @@
 				aria-label={m('workflows.builder.aria.workflowDescription')}
 				placeholder={m('workflows.builder.descriptionPlaceholder')}
 				bind:value={descInput}
-				oninput={() => (dirty = true)}
+				oninput={() => markDirty()}
 			/>
 		</div>
 

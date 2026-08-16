@@ -104,6 +104,49 @@ def test_normalize_parses_money_and_dates_exactly():
     assert lines[1].invoice_date == date(2026, 1, 20)
 
 
+def test_normalize_reads_a_european_statement_under_one_document_convention():
+    """The convention is resolved across the whole document, not per line.
+
+    `1.200` is ambiguous alone — a thousands group or a three-decimal value —
+    but the sibling `1.234,56` proves the statement is European, so it reads as
+    1200 rather than 1.2. And `850,00` is 850.00, not the 85000 the old
+    unconditional comma-strip produced.
+    """
+    lines = vse.normalize_extracted_lines(
+        _ok(
+            [
+                StatementLineExtraction("INV-1", "15.01.2026", "1.234,56", "open", 0.9),
+                StatementLineExtraction("INV-2", "20.01.2026", "850,00", None, 0.9),
+                StatementLineExtraction("INV-3", "01.02.2026", "1.200", None, 0.9),
+                StatementLineExtraction("INV-4", "05.02.2026", "(250,00)", None, 0.9),
+            ]
+        )
+    )
+    assert [ln.amount for ln in lines] == [
+        Decimal("1234.56"),
+        Decimal("850.00"),
+        Decimal("1200"),
+        Decimal("-250.00"),
+    ]
+    assert all(isinstance(ln.amount, Decimal) for ln in lines)
+    assert lines[0].invoice_date == date(2026, 1, 15)
+    assert lines[1].invoice_date == date(2026, 1, 20)
+
+
+def test_normalize_us_statement_is_unaffected_by_the_convention_pass():
+    """The same document-level pass must leave the US reading exactly as it was
+    — `1,200` is 1200, not 1.2."""
+    lines = vse.normalize_extracted_lines(
+        _ok(
+            [
+                StatementLineExtraction("INV-1", "2026-01-15", "1,234.56", None, 0.9),
+                StatementLineExtraction("INV-2", "2026-01-20", "1,200", None, 0.9),
+            ]
+        )
+    )
+    assert [ln.amount for ln in lines] == [Decimal("1234.56"), Decimal("1200")]
+
+
 def test_normalize_keeps_a_line_whose_date_is_unreadable():
     """A date we can't parse must not cost us the line — the engine's second
     matching leg tolerates a missing date, but it can't match a line we
@@ -156,8 +199,25 @@ async def test_extract_statement_lines_happy_path(monkeypatch):
         "provider": "stub",
         "confidence": 0.9,
         "line_count": 1,
+        # A model-backed adapter isn't asked to report its own skips, so 0 here
+        # honestly means "not measured" rather than "read everything".
+        "skipped_ambiguous": 0,
     }
     assert adapter.seen["file_key"] == "k.pdf"
+
+
+async def test_extract_statement_lines_carries_the_ambiguous_skip_count(monkeypatch):
+    """The offline reader's refused rows reach the run's provenance meta.
+
+    Without this the clerk sees a short run and no signal that the supplier's
+    own rows were read and declined.
+    """
+    result = _ok([StatementLineExtraction("INV-1", "2026-01-15", "1200.00")])
+    result.skipped_ambiguous = 3
+    _use(monkeypatch, _StubAdapter(result))
+    _lines, meta = await vse.extract_statement_lines(org_settings={}, file_bytes=b"%PDF-1.4")
+    assert meta["line_count"] == 1
+    assert meta["skipped_ambiguous"] == 3
 
 
 async def test_unsupported_provider_refuses_instead_of_creating_an_empty_run(monkeypatch):
@@ -240,6 +300,27 @@ def test_resolve_uses_the_orgs_byok_provider():
     assert adapter.provider_name == "mock"
 
 
-def test_resolve_defaults_to_the_platform_provider():
+def test_resolve_defaults_to_the_platform_provider(monkeypatch):
+    """Platform mode with a key resolves to the platform adapter, as it always has."""
+    from app.services import extraction as ext
+
+    monkeypatch.setattr(ext.settings, "extraction_provider", "")
+    monkeypatch.setattr(ext.settings, "anthropic_api_key", "sk-ant-real-key")
     adapter = vse.resolve_statement_adapter({})
     assert adapter.provider_name == "claude_vision"
+
+
+def test_resolve_falls_back_to_the_offline_reader_on_a_keyless_dev_box(monkeypatch):
+    """The local-first half: no platform key locally → the offline text reader.
+
+    This is what makes a PDF statement upload work on a fresh clone; before it,
+    the same upload POSTed to api.anthropic.com with an empty key. Precedence
+    itself is covered by `test_extraction_provider_resolution.py`.
+    """
+    from app.services import extraction as ext
+
+    monkeypatch.setattr(ext.settings, "extraction_provider", "")
+    monkeypatch.setattr(ext.settings, "anthropic_api_key", "")
+    monkeypatch.setattr(ext.settings, "environment", "development")
+    adapter = vse.resolve_statement_adapter({})
+    assert adapter.provider_name == "mock"

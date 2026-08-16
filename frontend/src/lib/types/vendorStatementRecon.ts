@@ -98,6 +98,12 @@ export interface StatementExtractionMeta {
 	// run's line count: the run also carries `missing_on_their_side` rows built
 	// from our own ledger.
 	line_count: number;
+	// How many rows the reader recognised as an open item but REFUSED to book
+	// because it could not resolve them (a second money column, a second
+	// reference column). Deliberately not a count of every skipped line —
+	// headers, totals and page furniture are skipped silently. Optional because
+	// runs created before the reader counted them carry no such key.
+	skipped_ambiguous?: number;
 }
 
 export interface Reconciliation {
@@ -199,6 +205,23 @@ export function formatExtractionConfidence(
 /** Were this run's lines read off a document by an extraction adapter? */
 export function isMachineRead(recon: Pick<Reconciliation, 'extraction'>): boolean {
 	return recon.extraction !== null && recon.extraction !== undefined;
+}
+
+/**
+ * How many supplier rows the reader saw but refused to book, or `0`.
+ *
+ * Crosses a network boundary and is absent on runs created before the reader
+ * counted its skips, so anything that isn't a finite non-negative integer reads
+ * as zero — the panel must never announce `NaN rows were skipped`, and must not
+ * announce a skip warning on a run that simply predates the field. Rounded
+ * rather than trusted: a count is not a measured figure.
+ */
+export function ambiguousSkipCount(
+	extraction: StatementExtractionMeta | null | undefined
+): number {
+	const raw = extraction?.skipped_ambiguous;
+	if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return 0;
+	return Math.round(raw);
 }
 
 /**

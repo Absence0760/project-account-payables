@@ -18,7 +18,6 @@ services/approval_escalation.py — same async-loop shape.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -31,6 +30,7 @@ from app.database import _make_tenant_url, control_session_factory
 from app.models.organization import Organization
 from app.models.payment import Payment
 from app.services.payment_adapters import PaymentStatus, get_payment_adapter
+from app.services.sweep_health import SWEEP_PAYMENT_RECONCILER, run_sweep_loop
 
 logger = logging.getLogger(__name__)
 
@@ -314,26 +314,19 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
 
 async def run_reconciler_loop() -> None:
     """Long-lived loop. Started in `main.lifespan` on app startup,
-    cancelled on shutdown."""
-    interval = settings.payment_reconcile_interval_seconds
-    logger.info("[payment-reconciler] started; interval=%ds", interval)
-    try:
-        while True:
-            try:
-                await reconcile_once()
-            except Exception as exc:  # noqa: BLE001
-                # Log the class, not the message — see the note on the inner
-                # per-payment catch above (PII-out-of-logs invariant). No
-                # `exc_info=True` either: the stdlib logging module appends
-                # the full traceback (including `str(exc)`) regardless of
-                # what the format string names, so passing it would leak the
-                # very text this discipline exists to keep out of the log
-                # sink. Mirrors `payment_erp_sync.py` / `discount_auto_trigger.py`.
-                logger.error(
-                    "[payment-reconciler] sweep raised: %s",
-                    exc.__class__.__name__,
-                )
-            await asyncio.sleep(interval)
-    except asyncio.CancelledError:
-        logger.info("[payment-reconciler] shutting down")
-        raise
+    cancelled on shutdown.
+
+    The body is the shared `sweep_health.run_sweep_loop`, which logs the
+    exception CLASS with no `exc_info` — the posture this loop already had and
+    which is now uniform across all fourteen sweeps: the stdlib logging module
+    appends the full traceback (including `str(exc)`) regardless of what the
+    format string names, so passing `exc_info` would leak the very text the
+    PII-out-of-logs invariant exists to keep out of the sink.
+    """
+    await run_sweep_loop(
+        SWEEP_PAYMENT_RECONCILER,
+        lambda: reconcile_once(),
+        interval_seconds=settings.payment_reconcile_interval_seconds,
+        log=logger,
+        log_prefix="[payment-reconciler]",
+    )

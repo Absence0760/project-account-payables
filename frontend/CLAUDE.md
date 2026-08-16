@@ -435,10 +435,18 @@ items, then a centred Load More button below the table:
 
 ### Sequencing list fetches (`createRequestSequencer`)
 
-A list surface that can have a request in flight while something else
+Every list surface that can have a request in flight while something else
 changes the list wires **`createRequestSequencer()`**
-(`$lib/utils/requestSequence.ts`) — `stores/invoices.svelte.ts`,
-`stores/payments.svelte.ts` and `routes/vendors/+page.svelte` do today.
+(`$lib/utils/requestSequence.ts`). This is now the whole app, not a handful of
+pages: the list stores (`invoices`, `payments`, `contracts`, `expenses`,
+`notifications`, `admin`, `workflows`), the list routes (`vendors`,
+`vendors/screening`, `discounts`, `positive-pay`, `recurring`, `budgets`,
+`intake`, `requisitions`, `catalogs`, `vendor-statements`, the four sub-lists
+on `expenses`, the `workflows/[id]` builder canvas) and `InvoiceModal`'s
+line-item editor. **A new list surface wires it too** — don't hand-roll a
+second mechanism, and don't leave it out because the page "only" edits a row
+after the first load has landed (see the create/prepend note below).
+
 It answers two separate questions about a response — and takes one call that
 retires in-flight requests. Conflating the two questions is a bug both ways:
 
@@ -466,6 +474,14 @@ async function fetch(params) {
   issued? Use it in the `finally` for the `loading` flag and for any
   load-error toast. Reading `canCommit` there leaves the spinner stuck on
   forever after a local edit, because no newer request exists to clear it.
+- **`wasSupersededByEdit(token)`** — did a *local edit* retire this request?
+  The third question, and only a **write** asks it. A save that PUTs the list
+  and then re-reads it takes a token too, but its post-condition is narrower
+  than a read's: only an edit invalidates what it sent. Reading `canCommit`
+  there makes an unrelated newer read look like a conflict — which is how
+  `InvoiceModal.saveLineItems` first shipped, leaving its dirty flag (and so
+  the Save button) stuck on whenever an extraction poll's own reload landed
+  mid-save.
 - **`supersedeInFlight()`** — call it **immediately before** any helper
   that edits the list in place with no fetch of its own
   (`invoiceStore.update` / `patchLocal`, the vendors page's
@@ -480,6 +496,34 @@ The superseded response is discarded, never merged — see
 sound. A store with no local-mutation helper (every mutation re-fetches
 through the sequencer, like `paymentStore`) needs no `supersedeInFlight`
 call; say so in a comment rather than leaving the next reader to derive it.
+
+Three things the sweep across the app settled, worth not re-deriving:
+
+- **A create/prepend path needs no existing row.** "The mount fetch must have
+  landed before there's a row to mutate" closes the race for edit and delete
+  but *not* for New/Add, which is live while the first GET is still out. Every
+  `upsert()` that can prepend an unseen row — `createUser`, `createFromTemplate`,
+  a generated Positive Pay file — supersedes for that reason alone.
+- **One sequencer per independent list, never one shared counter.** A page or
+  store holding several lists (the `admin` store's users vs roles, the
+  `notifications` store's list vs its 60s unread-count poll, `expenses`' four
+  tabs, `discounts`' offers vs KPI dashboard) gives each its own. Sharing one
+  would let an unrelated request mark another list's in-flight response
+  un-committable and blank it. A local edit that writes state BOTH lists load
+  (a mark-read, which moves `unread`) supersedes both.
+- **An editor over a fetched list is the same surface.** The `workflows/[id]`
+  canvas and `InvoiceModal`'s line-item table hold unsaved user edits, so a
+  load resolving mid-edit doesn't just revert a row — it wipes work while the
+  dirty flag stays set on something the user can no longer see. Both route
+  every edit through a `markDirty()` that supersedes first.
+
+**Related, and the other half of the same bug:** a filter `$effect` that calls
+a `buildParams()` / `syncUrl()` helper reading `search` ends up depending on
+`search` (Svelte tracks reads transitively through called functions), so every
+keystroke fires an immediate un-debounced load *alongside* the debounced one.
+Read `search` via `untrack(() => search)` in the params-builder, and untrack
+`syncUrl()` wholesale — it is a writer of URL state, never a dependency
+source. `tests-e2e/reactivity/search-debounce-race.spec.ts` is the guard.
 
 ### Status filter chips
 

@@ -140,6 +140,15 @@ export interface TextSearchResult {
 /** A chat message as rendered in the UI. The in-progress assistant message
  *  accumulates `content` from `delta` frames and `tools` from `tool` frames. */
 export interface UiMessage {
+	/** Stable client-side identity for this bubble, assigned when it is
+	 *  created. A turn in flight resolves its own placeholder by this id and
+	 *  NEVER by a captured array index: `messages` can be replaced wholesale
+	 *  while the turn is streaming (opening a saved conversation), and an index
+	 *  into the old array then addresses an unrelated historical message — so
+	 *  the model's answer doesn't merely vanish, it overwrites something else.
+	 *  Not a server id: assistant messages exist here before the backend has
+	 *  named them. */
+	id: string;
 	role: 'user' | 'assistant';
 	content: string;
 	tools: ToolInvocation[];

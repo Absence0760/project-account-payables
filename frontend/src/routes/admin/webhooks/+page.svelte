@@ -786,7 +786,11 @@
 	}
 
 	.page-hint code {
-		background: var(--surface-2, #232b44);
+		background: var(--surface-2);
+		/* Not inherited from .page-hint: --text-muted on --surface-2 is 4.34:1,
+		   below the 4.5:1 bar. A code literal is the emphasized token in the
+		   sentence anyway, so muted was also backwards. */
+		color: var(--text);
 		padding: 1px 5px;
 		border-radius: 4px;
 		font-size: 0.8em;

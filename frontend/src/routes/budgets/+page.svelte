@@ -24,6 +24,7 @@
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
 	import { untrack } from 'svelte';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 
 	// Mutations are admin / cfo only (financial config).
 	const canManage = $derived(auth.hasAnyRole('admin', 'cfo'));
@@ -71,35 +72,67 @@
 	// per-budget currencies may differ).
 	const totalAllocated = $derived(budgets.reduce((sum, b) => sum + (Number.isFinite(b.amount) ? b.amount : 0), 0));
 
+	// `untrack` on the `search` read: buildParams() is called from `load()`,
+	// which the filter `$effect` below calls directly — and Svelte tracks reads
+	// transitively through called functions, so a plain read here would make
+	// that effect depend on `search` and re-fire it on every keystroke,
+	// un-debounced, racing the dedicated 300ms timer (issue #168). `untrack`
+	// still reads the CURRENT value, so the request carries the live search
+	// term; it just stops the read registering as the caller's dependency.
 	function buildParams() {
 		const params: { dimension?: string; search?: string } = {};
 		if (dimensionFilter !== 'all') params.dimension = dimensionFilter;
-		if (search.trim()) params.search = search.trim();
+		const currentSearch = untrack(() => search);
+		if (currentSearch.trim()) params.search = currentSearch.trim();
 		return params;
 	}
 
-	// Read the URL untracked — syncUrl() writes it via replaceState inside a
-	// filter $effect; a tracked $page.url read would self-trigger the effect
-	// (Svelte effect_update_depth_exceeded loop).
+	// Reflect the live filter state into the URL. EVERY read in here is
+	// untracked, `$page.url` included, because syncUrl() is a WRITER called
+	// from the filter `$effect`s below — not a source of dependencies:
+	//   - the URL read would self-trigger the effect that writes it via
+	//     replaceState (Svelte effect_update_depth_exceeded);
+	//   - a tracked `search` read would make every filter effect depend on
+	//     `search`, so each keystroke re-fired it: an immediate, un-debounced
+	//     load racing the dedicated 300ms debounce timer. That is issue #168,
+	//     fixed on /invoices, /payments and /vendors but never carried to this
+	//     page. Each effect declares the filters it actually depends on by
+	//     reading them directly, so nothing here needs to be tracked.
 	function syncUrl() {
-		const url = new URL(untrack(() => $page.url));
-		if (dimensionFilter !== 'all') url.searchParams.set('dimension', dimensionFilter);
-		else url.searchParams.delete('dimension');
-		if (search.trim()) url.searchParams.set('search', search.trim());
-		else url.searchParams.delete('search');
-		replaceState(`${url.pathname}${url.search}`, {});
+		untrack(() => {
+			const url = new URL($page.url);
+			if (dimensionFilter !== 'all') url.searchParams.set('dimension', dimensionFilter);
+			else url.searchParams.delete('dimension');
+			if (search.trim()) url.searchParams.set('search', search.trim());
+			else url.searchParams.delete('search');
+			replaceState(`${url.pathname}${url.search}`, {});
+		});
 	}
 
+	// Sequences `load` (latest-issued wins) so a slow response for an earlier
+	// filter can't land after a faster later one. `onSaved` / `deleteBudget`
+	// edit the list in place with no fetch of their own, so they retire whatever
+	// is in flight first — a brand-new budget needs no pre-existing row, so it
+	// races even the first load. See `frontend/CLAUDE.md` § Sequencing list
+	// fetches.
+	const fetchSequence = createRequestSequencer();
+
 	async function load() {
+		const token = fetchSequence.start();
 		loading = true;
 		try {
 			const res = await listBudgets({ ...buildParams(), page_size: 50 });
+			// Superseded by a newer load, or by a local create/edit/delete.
+			if (!fetchSequence.canCommit(token)) return;
 			budgets = res.items;
 			total = res.total;
 		} catch (err) {
+			// `isCurrentRequest`, not `canCommit`: a load superseded by a local
+			// edit still failed, and no newer load is coming to report it.
+			if (!fetchSequence.isCurrentRequest(token)) return;
 			toast(err instanceof Error ? err.message : m('budgets.toast.loadFailed'), 'error');
 		} finally {
-			loading = false;
+			if (fetchSequence.isCurrentRequest(token)) loading = false;
 		}
 	}
 
@@ -140,6 +173,7 @@
 	});
 
 	function onSaved(b: Budget) {
+		fetchSequence.supersedeInFlight();
 		const idx = budgets.findIndex((x) => x.id === b.id);
 		if (idx >= 0) budgets = budgets.map((x) => (x.id === b.id ? b : x));
 		else {
@@ -152,6 +186,7 @@
 	async function deleteBudget(id: string) {
 		try {
 			await apiDeleteBudget(id);
+			fetchSequence.supersedeInFlight();
 			budgets = budgets.filter((b) => b.id !== id);
 			total = Math.max(0, total - 1);
 			toast(m('budgets.toast.deleted'), 'success');

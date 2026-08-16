@@ -890,6 +890,10 @@ export const en = {
 	'cfo.position.title': 'Cash position',
 	'cfo.position.enterOpening': 'Enter an opening bank balance above to project the running cash position.',
 	'cfo.position.breach': '{n, plural, one {⚠ # period projects below your minimum-balance alert.} other {⚠ # periods project below your minimum-balance alert.}}',
+	'cfo.position.providerSkippedCurrency':
+		'Your connected bank balance was not used: that funding account is held in a different currency than your {currency} reporting currency, and seeding the projection from it would make every running balance below a mixture of two currencies. The figures start from your saved opening balance instead. Set the reporting currency to match the account, or enter an opening balance above.',
+	'cfo.position.providerSkipped':
+		'Your connected bank balance was not used, so the projection below does not start from it. The figures start from your saved opening balance instead.',
 	'cfo.position.colPeriod': 'Period',
 	'cfo.position.colOpening': 'Opening',
 	'cfo.position.colOutflow': 'Outflow',
@@ -3003,6 +3007,8 @@ export const en = {
 		'Machine-read by {provider} at {confidence} confidence — {n, plural, one {# open item} other {# open items}} taken off the document.',
 	'vendorStatements.modal.provenanceSkipNote':
 		'A row the reader could not read unambiguously was skipped rather than guessed, so our invoice for it appears below as a difference to chase.',
+	'vendorStatements.modal.provenanceSkipped':
+		'{n, plural, one {# row was} other {# rows were}} skipped as ambiguous — the reader saw an open item it could not read without guessing (a second amount column, a second reference column). The diff below is short by that many supplier rows, so our invoices for them appear as differences to chase. Upload the statement as a CSV, or configure a vision provider, to read them.',
 	'vendorStatements.modal.provenanceCsv': 'Parsed directly from the uploaded CSV.',
 	'vendorStatements.modal.downloadSource': 'Download the source statement',
 	'vendorStatements.modal.downloadingSource': 'Downloading…',

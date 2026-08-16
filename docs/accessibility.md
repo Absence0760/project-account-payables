@@ -36,8 +36,10 @@ kinds of human review:
    accessibility regression guard at `frontend/tests-e2e/a11y/axe.spec.ts`. It
    runs [`axe-core`](https://github.com/dequelabs/axe-core) (via
    `@axe-core/playwright`) against the key authenticated surfaces (dashboard,
-   invoices list, vendors, payments, exceptions, the invoice detail modal) and
-   the two unauthenticated login surfaces (AP login, supplier portal login),
+   invoices list, vendors, payments, exceptions, the invoice detail modal, the
+   whole `/admin` section — Users & Roles, API Keys, Webhooks, Partner Admin —
+   plus `/vendor-statements` and its create modal) and the two unauthenticated
+   login surfaces (AP login, supplier portal login),
    asserting **zero violations** at the WCAG 2.0 / 2.1 / 2.2 Level A + AA tag
    set (`wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`, `wcag22aa`). It runs on
    every push as part of the normal e2e job, so a change that reintroduces a
@@ -45,6 +47,18 @@ kinds of human review:
    broken landmark/heading structure, undersized target) fails CI. Run it
    locally with `pnpm test:e2e:a11y` (needs the local stack up — see
    `frontend/tests-e2e/README.md`).
+
+   The `/admin` routes were added because that section holds the app's densest
+   cluster of a11y-sensitive controls — modal dialogs, armed two-click
+   destructive actions, and one-time secret reveals whose focus management is
+   the only thing between a user and a credential they can never see again —
+   and had no coverage at all. Each route in the list can carry a `ready`
+   heading the spec waits on **in addition to** the sidebar: these pages fetch
+   before they render, and the sidebar alone would let axe scan a loading frame
+   and pass on markup no user ever sees. `/vendor-statements` is scanned as a
+   list *and* with its create modal open, since the radio `fieldset`/`legend`
+   intake picker, the file input and the persistent `role="alert"` refusal
+   region all live in the dialog.
 2. **Navigability tests (web).** `frontend/tests-e2e/a11y/screen-reader.spec.ts`
    asserts the structural semantics a screen-reader/keyboard user relies on:
    skip link + named landmarks + a single `<h1>`, no positive tabindex, 320px

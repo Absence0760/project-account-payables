@@ -39,7 +39,6 @@ See ``backend/docs/dynamic-discounting.md``.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
@@ -63,6 +62,7 @@ from app.models.payment import PaymentSchedule
 from app.services.audit_dispatch import dispatch_audit
 from app.services.discount_offers import best_tier_for_date, expire_if_past
 from app.services.discount_roi import compute_roi, days_between
+from app.services.sweep_health import SWEEP_DISCOUNT_AUTO_TRIGGER, run_sweep_loop
 
 logger = logging.getLogger(__name__)
 
@@ -280,16 +280,12 @@ async def _sweep_tenant(
 
 
 async def run_discount_optimization_loop() -> None:
-    """Long-lived loop started in ``main.lifespan``; cancelled on shutdown."""
-    interval = settings.discount_optimization_interval_seconds
-    logger.info("[discount-auto-trigger] started; interval=%ds", interval)
-    try:
-        while True:
-            try:
-                await run_auto_trigger_once()
-            except Exception as exc:  # noqa: BLE001
-                logger.error("[discount-auto-trigger] sweep raised: %s", exc.__class__.__name__)
-            await asyncio.sleep(interval)
-    except asyncio.CancelledError:
-        logger.info("[discount-auto-trigger] shutting down")
-        raise
+    """Long-lived loop started in ``main.lifespan``; cancelled on shutdown.
+    Body is the shared ``sweep_health.run_sweep_loop``."""
+    await run_sweep_loop(
+        SWEEP_DISCOUNT_AUTO_TRIGGER,
+        lambda: run_auto_trigger_once(),
+        interval_seconds=settings.discount_optimization_interval_seconds,
+        log=logger,
+        log_prefix="[discount-auto-trigger]",
+    )

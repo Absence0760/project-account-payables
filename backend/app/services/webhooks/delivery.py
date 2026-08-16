@@ -19,7 +19,6 @@ or the response body.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import uuid
@@ -225,16 +224,26 @@ async def run_webhook_delivery_loop() -> None:
     every other background sweep. The immediate emit attempt handles the happy
     path; this loop is the durable backstop for retries + anything queued while
     no event loop was available.
+
+    Body is the shared ``sweep_health.run_sweep_loop``. ``deliver_due`` returns
+    the number of deliveries attempted, which the runner records as a count; a
+    delivery's own failure is already durable per-row (``status`` +
+    ``attempt_count``, queryable via ``GET /api/webhooks/deliveries``), so this
+    sweep contributes no ``failures`` counter — only "did the tick itself
+    raise". The old ``logger.exception`` is replaced for the same reason as in
+    the dunning sweep: it attached ``str(exc)`` to the record.
     """
     from app.database import control_session_factory
+    from app.services.sweep_health import SWEEP_WEBHOOK_DELIVERY, run_sweep_loop
 
-    logger.info("[webhooks] delivery sweep started")
-    while True:
-        try:
-            async with control_session_factory() as db:
-                await deliver_due(db)
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 — a sweep error must not kill the loop
-            logger.exception("[webhooks] delivery sweep tick failed")
-        await asyncio.sleep(settings.webhooks_delivery_interval_seconds)
+    async def tick() -> int:
+        async with control_session_factory() as db:
+            return await deliver_due(db)
+
+    await run_sweep_loop(
+        SWEEP_WEBHOOK_DELIVERY,
+        tick,
+        interval_seconds=settings.webhooks_delivery_interval_seconds,
+        log=logger,
+        log_prefix="[webhooks]",
+    )

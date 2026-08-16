@@ -178,6 +178,16 @@ class StatementExtractionResult:
     success: bool = False
     lines: list[StatementLineExtraction] = field(default_factory=list)
     overall_confidence: float = 0.0
+    # How many rows the reader recognised as an open item but REFUSED to book
+    # because it couldn't resolve them unambiguously (a second money column, a
+    # second reference column). Deliberately NOT a count of every line skipped:
+    # blank lines, column headers, page furniture and totals go through the same
+    # skip path, and counting those would report "47 rows skipped" on a clean
+    # two-page statement — noise worse than silence. A count, never the rows'
+    # text: the figure is what a reviewer acts on, and the text is supplier data.
+    # Only the offline reader populates this; a model-backed adapter is not asked
+    # to report its own skips, so it stays 0 there (honestly "not measured").
+    skipped_ambiguous: int = 0
     provider: str = ""
     # PII-free code from the STATEMENT_REASON_* set — safe to map to a message.
     reason: str | None = None

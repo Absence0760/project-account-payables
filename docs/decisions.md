@@ -779,3 +779,253 @@ financial edit the user believes they made.
 an optimistic-update cache). It solves the merge case properly but needs a
 patch log, invalidation rules, and a rollback path on a failed mutation — a
 lot of machinery for surfaces whose mutations already happen behind a modal.
+
+---
+
+## 24. A background sweep's failure count becomes state, in one shared runner
+
+All fourteen long-lived sweeps started in `main.lifespan` carried a private copy
+of the same loop, and every copy discarded the result its `*_once()` returned.
+Twelve of those results already carried a `failures: int`. Nothing read it: its
+only consumer was a conditional aggregate `logger.info` inside `*_once` itself.
+There was no supervision either — `asyncio.create_task` with no
+`add_done_callback` — so a sweep whose loop died was gone for the life of the
+process with nothing anywhere saying so, and `GET /api/health` returned a static
+`ok` that answered a different question. An `audit_shipping` sink misconfigured
+for months looked exactly like one running clean.
+
+Four calls are worth recording.
+
+**The mechanism is a shared loop runner, not a shared reporting call.** The
+tempting smaller change is to leave fourteen loops in place and add one
+`record(...)` line to each. That preserves the thing the follow-up complained
+about: fourteen bodies free to drift. `sweep_health.run_sweep_loop` takes the
+tick and owns the whole body, so the outcome is recorded *by construction* — a
+sweep cannot forget. The loops keep their own logger and their own
+`settings.<interval>` read, so per-sweep log filters and the suites that patch
+`<module>.settings` are unaffected; only the body is shared, never the identity.
+
+Making them consistent surfaced a defect the deduplication then fixed once.
+`payment_reconciler` carried a comment explaining that `exc_info=True` leaks
+`str(exc)` — the stdlib appends the whole traceback regardless of what the
+format string names — and had removed it *for itself alone*. Six sibling loops
+still passed it and two called `logger.exception`, all of them one adapter error
+away from putting a vendor name in the log sink. One body, one posture: class
+name only.
+
+**A tick that completes reporting failures is a failed run.** Modelling only
+"did the tick raise" would have left the motivating case invisible: the
+`audit_shipping` adapters raise *per tenant*, `ship_once` catches that, counts
+it, and returns normally. So `failures > 0` (and `vendor_rescreen`'s separate
+`vendor_failures`) increments the same consecutive-failure streak a raise does.
+The streak, not the absolute count, is the signal — a sweep that fails once and
+recovers is noise; one that has failed 37 times running is the months-long
+misconfiguration.
+
+**The state is per-process and in-memory, and that is the answer, not a
+compromise.** A durable per-sweep run table means an Alembic migration fanned
+out to every tenant DB to hold telemetry that is platform-level, not
+tenant-level; `Organization.settings` is the only JSON marker available and it
+is per-tenant, while these sweeps span all tenants. Both were rejected. The
+question an operator actually asks — "is *this* replica's sweep alive and
+progressing?" — is exactly what a per-process registry answers, and the
+cluster-wide view is the log sink, where every replica emits the same PII-free
+`NOT MAKING PROGRESS` line on each streak multiple (a multiple, not every tick,
+so a 60-second sweep stuck for a day writes 8 lines rather than 1440).
+
+**`GET /api/health` was left alone, and the new endpoint hides tenant counts.**
+Folding sweep health into the liveness probe would turn a misconfigured audit
+sink into a rolling restart loop — a degraded background sweep is not a reason
+to pull a serving process out of rotation. So the probe stays public and static,
+and the operator view is a separate admin-gated `GET /api/health/sweeps`. That
+endpoint reports state, timestamps, outcome, streak and the exception CLASS, but
+**not** the sweeps' raw counters: an ordinary tenant admin holds `ROLE_ADMIN`,
+and `tenants_scanned` would tell them how many organizations the platform
+sweeps. Only `last_failure_count` crosses the boundary — the number an operator
+acts on, and zero on a healthy platform. The full counters stay in the registry
+and the logs, whose reader is already trusted with them.
+
+---
+
+## 25. Sequencing is per list, and a bubble is addressed by identity
+
+Applying §23 across the rest of the app — eighteen list surfaces, plus the two
+chat pages — forced three calls §23 didn't have to make, because it only had to
+serve three surfaces that each owned exactly one list.
+
+**One sequencer per independent list, not one per file.** Several surfaces hold
+more than one list: the `admin` store (users and roles), the `notifications`
+store (the list and the 60-second unread-count poll), the `expenses` page (four
+tabs), the `discounts` page (offers and the KPI dashboard). A single counter
+per surface is the obvious economy and it is wrong: `start()` is monotonic, so
+a roles refresh, or a badge poll tick, would mark an unrelated in-flight users
+fetch un-committable and blank the list it was about to paint. Each list gets
+its own counter. The corollary is that a local edit writing state that *several*
+of them load — a mark-read moves `unread`, which both the list load and the
+badge poll return — must supersede every one of them; `notifications` has a
+`supersedeReads()` for exactly that, rather than one call that looks complete
+and isn't.
+
+**`syncUrl()` is untracked wholesale, not just on `search`.** Eight pages'
+filter `$effect`s transitively depended on `search` through `buildParams()` and
+`syncUrl()`, so a keystroke fired an immediate load alongside the debounced one
+(issue #168, fixed on three pages in 2026 and never carried to the rest). The
+narrow fix is `untrack(() => search)` at each read. It was taken in
+`buildParams()`, whose other reads are filters the caller genuinely depends on
+and declares. It was **not** taken in `syncUrl()`, which is untracked in full:
+that function is a *writer* of URL state called from the effects, never a
+source of dependencies, and its `$page.url` read was already untracked for the
+adjacent reason (it writes that URL via `replaceState`, so tracking it
+self-triggers the effect). Stating the property once means adding a field to
+`syncUrl` later can't quietly reintroduce the bug — and it also removed the
+accidental cross-dependencies on `/expenses`, where a tab switch re-fired the
+expenses list fetch. The cost is that a genuine dependency can no longer be
+declared *inside* `syncUrl`; it has to be read in the effect, which is where a
+reader looks for it anyway.
+
+**The chat placeholder is addressed by identity, and `busy` still closes the
+window.** `/assistant` let a send start while a saved thread was loading, then
+wrote the model's answer into `messages[capturedIndex]` of an array the load
+had meanwhile replaced — so the answer didn't vanish, it landed on an
+unrelated historical message. Either fix alone would stop today's reproduction:
+holding `busy` for the load closes the window, and resolving the placeholder by
+a stable client-side id makes a replaced array return `null` instead of a
+wrong row. Both shipped, because they fail differently — `busy` is a policy
+that any new "replace the messages array" path (a delete, a rename, a
+server-push) can forget to respect, while identity is a property of the write
+itself. `/cash-flow`'s copilot is a copy of the same code with no
+thread-opening rail yet; it got the identity half so it isn't the
+index-capturing version someone copies from next.
+
+**A write asks a third question, so the primitive grew one.** §23 split the
+old single `isLatest` predicate in two because a local edit makes "may I
+commit?" and "am I the newest request?" diverge. A *write* — a save that PUTs
+the list and then re-reads it — turned out to need a third: only a local edit
+invalidates the payload it just sent, and an unrelated newer *read* says
+nothing about that. The first attempt at `InvoiceModal.saveLineItems` read
+`canCommit`, which is false for either reason, so an extraction poll's own
+reload landing mid-save left the dirty flag stuck on and the Save button up
+over a table nobody had touched. `wasSupersededByEdit(token)` isolates the
+edit half. It is deliberately a fourth method rather than a second sequencer
+or a bespoke boolean in the component: the state it reads (`staleThrough`)
+already exists and belongs to the primitive, and a component-local copy would
+drift from the `supersedeInFlight()` that sets it.
+
+**Not adopted:** wrapping the three-call protocol (`start` / `canCommit` /
+`isCurrentRequest`) in a single `sequenced(fn)` helper. It reads better at
+twenty call sites, but it has to decide the `finally` semantics for the caller,
+and that is the exact distinction §23 records as easy to get backwards — a
+`loading` flag cleared on `canCommit` sticks on forever after a local edit. The
+three calls stay visible so the choice stays visible.
+
+---
+
+## 26. Platform extraction falls back to the offline reader locally, never in a deployed env
+
+**Decided:** 2026-08-16 · `backend/app/services/extraction.py::resolve_platform_provider`
+
+`extraction._resolve_extraction_config` hardcoded `provider: "claude_vision"`
+for `program_type: "platform"` — the default for every org that sets no
+`settings.extraction`, which is every seeded tenant — **regardless of whether
+`FEOH_ANTHROPIC_API_KEY` was set**. So on a fresh clone every extraction, an
+invoice upload and a PDF supplier statement alike, POSTed to
+`api.anthropic.com` with an empty key and came back `provider_error`. The
+offline `mock` reader existed precisely so `pnpm dev` could exercise the whole
+path with no credential, and nothing routed to it. That broke guard rail 7 for
+the one adapter family whose local equivalent was already written.
+
+**The rule now** is the pure `resolve_platform_provider`, in precedence order:
+an explicit `FEOH_EXTRACTION_PROVIDER`; else a configured platform key →
+`claude_vision`; else, in a non-deployed environment, `mock`; else (keyless and
+deployed) `claude_vision` anyway. The committed `backend/.env.development` also
+sets `FEOH_EXTRACTION_PROVIDER=mock`, so the choice is visible in the file a
+contributor reads rather than only implied by an absent key.
+
+**The last rung is the whole point of the entry.** The obvious symmetric fix —
+"no key means mock, everywhere" — is wrong here in a way that is easy to miss:
+`MockExtractionAdapter.extract` returns a **fixture** ("Extracted Vendor Inc",
+1500.00, a fabricated invoice number), not a read of the document. A deployed
+environment that lost its key would therefore stop erroring and start booking
+invented payables against real vendors, silently, at 0.95 confidence — inside
+the confidence band that can auto-approve. A loud `provider_error` that parks
+the invoice in `failed` is strictly better. So the fallback is gated on
+`settings.is_deployed`, and a keyless deployed env keeps failing exactly as it
+did before this change. `extract_statement` is not symmetric with `extract`
+here and that is deliberate: mock's statement reader reads the document's real
+text layer and gives up loudly when there isn't one, which is why the PDF
+statement path is genuinely exercisable offline while the invoice path is only
+*runnable* offline.
+
+**Failing visibly was a requirement, not a nicety.** Both fallback rungs log a
+PII-free WARNING naming the provider and the reason; the resolved config
+carries `platform_provider_reason`; and the provider already travels on the
+persisted result (`InvoiceExtractionResult.method`, a statement run's
+`meta.extraction.provider`, surfaced in its provenance panel). A `mock` read is
+labelled `mock` everywhere a human looks at it.
+
+**Why the boot-time allowlist.** `get_extraction_adapter` falls back to `mock`
+for an unrecognised provider name. Introducing an env var that names a provider
+therefore introduced a new way to reach the fixture adapter by typo — in
+production. `config.py::_validate_extraction_provider` refuses an unregistered
+name at boot, and a drift-guard test cross-checks the literal allowlist against
+the live registry, because config.py must not import the service layer.
+
+**Not adopted:** making `mock.extract` return an empty/failed result instead of
+a fixture. It would make the fallback safe everywhere, but the fixture is what
+lets tests and demos produce a populated invoice with no provider — a much
+wider blast radius than the resolution rule this entry is about.
+
+---
+
+## 27. A statement's decimal convention is decided per document, not per token
+
+**Decided:** 2026-08-16 · `backend/app/services/vendor_statement_recon.py`
+
+`850,00` is 850.00 in most of Europe and 85000 if the comma groups thousands.
+`parse_amount` assumed the latter unconditionally (`s.replace(",", "")`), so a
+European supplier statement reconciled at **a hundred times** its real value.
+The text reader agreed the token was money — it read that same comma as
+thousands-separator evidence — so nothing upstream caught it.
+
+The unit that can answer is the **document**, not the token. A statement is
+written in one convention throughout, so one unambiguous `1.234,56` anywhere in
+it settles every bare `1.200` beside it. `detect_amount_convention` runs across
+the whole amount column (CSV) or all extracted lines (PDF) before any of it is
+parsed.
+
+**Only genuinely ambiguous tokens consult the document.** A single separator
+with a three-digit tail (`1,234` / `1.234`) is a thousands group under one
+convention and a three-decimal value under the other — that shape, and only that
+shape, takes the document's answer. Everything else is self-describing and is
+read on its own terms: both separators present means the rightmost is the
+decimal point; a repeated separator can only be grouping; and a one- or
+two-digit tail must be the decimal point, because money carries at most two
+decimal places and no grouping run is shorter than three digits. That last rule
+is what makes a lone `850,00` correct with no other row present.
+
+The asymmetry matters: a document-level vote must not override a token that says
+what it is, or one malformed row would drag an entire statement onto the wrong
+reading. Contradictory evidence therefore resolves to "no answer" rather than to
+a majority, and the self-describing tokens still parse correctly underneath it.
+
+**Trade-off:** with no evidence at all, the ambiguous three-digit-tail shape
+keeps its historical US reading, so a European statement consisting *only* of
+`1.200`-shaped amounts still reads them as 1.200. That is unchanged behaviour
+rather than a new failure, and any row carrying cents fixes it for the whole
+document.
+
+**Not adopted:** per-token locale guessing (no rule distinguishes `1,234`
+American from European in isolation — this is the whole difficulty), and
+refusing the ambiguous shape outright (safe, but it makes every European
+statement unreadable, trading a wrong number for no number on documents that
+are perfectly legible once the convention is known).
+
+**A second, quieter blocker rode along.** `_DATE_TOKEN` matched only `-` and
+`/`, so `15.01.2026` read as a second *identifier*-shaped token and the
+exactly-one-identifier rule refused the whole row. European statements were
+therefore skipped wholesale rather than mis-read — safe, but it meant fixing the
+amount alone would not have made one reconcile. Dotted dates are now recognised,
+and the amount pattern pins grouping runs to exactly three digits so a date can
+never be read as money.
+
+See [vendor-statement-reconciliation.md § Decimal conventions](../backend/docs/vendor-statement-reconciliation.md).

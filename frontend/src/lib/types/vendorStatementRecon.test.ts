@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	RECON_SOURCE_FORMAT_LABELS,
+	ambiguousSkipCount,
 	formatExtractionConfidence,
 	isMachineRead,
 	sourceStatementFilename
@@ -90,5 +91,36 @@ describe('RECON_SOURCE_FORMAT_LABELS', () => {
 		for (const label of Object.values(RECON_SOURCE_FORMAT_LABELS)) {
 			expect(label.length).toBeGreaterThan(0);
 		}
+	});
+});
+
+describe('ambiguousSkipCount', () => {
+	const meta = (skipped?: unknown) =>
+		({ method: 'ai_extraction', provider: 'mock', confidence: 0.6, line_count: 2, ...(skipped === undefined ? {} : { skipped_ambiguous: skipped }) }) as never;
+
+	it("reports the reader's refused-row count", () => {
+		expect(ambiguousSkipCount(meta(3))).toBe(3);
+	});
+
+	it('reports zero when the reader read the document fully', () => {
+		// The panel must stay silent on a clean statement — a standing
+		// "0 rows skipped" line is the noise the split classification avoids.
+		expect(ambiguousSkipCount(meta(0))).toBe(0);
+	});
+
+	it('reports zero for a run that predates the count', () => {
+		// Persisted `meta.extraction` from before the reader classified its
+		// skips carries no key; that is "unknown", not "rows were dropped".
+		expect(ambiguousSkipCount(meta())).toBe(0);
+		expect(ambiguousSkipCount(null)).toBe(0);
+		expect(ambiguousSkipCount(undefined)).toBe(0);
+	});
+
+	it('never emits a nonsense figure from a bad payload', () => {
+		expect(ambiguousSkipCount(meta(Number.NaN))).toBe(0);
+		expect(ambiguousSkipCount(meta(Number.POSITIVE_INFINITY))).toBe(0);
+		expect(ambiguousSkipCount(meta(-4))).toBe(0);
+		expect(ambiguousSkipCount(meta('3'))).toBe(0);
+		expect(ambiguousSkipCount(meta(2.6))).toBe(3);
 	});
 });

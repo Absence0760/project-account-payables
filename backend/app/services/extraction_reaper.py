@@ -15,7 +15,6 @@ Also exposed as a CLI: `python scripts/reap_stuck_extractions.py`.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -27,6 +26,7 @@ from app.config import settings
 from app.database import _make_tenant_url, control_session_factory
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.organization import Organization
+from app.services.sweep_health import SWEEP_EXTRACTION_REAPER, run_sweep_loop
 
 logger = logging.getLogger(__name__)
 
@@ -151,23 +151,17 @@ async def run_reaper_loop() -> None:
     on shutdown. Sleeps `FEOH_EXTRACTION_REAPER_INTERVAL` between sweeps so
     even a crashed worker only leaves an invoice stuck for the threshold +
     one interval at most.
+
+    The loop body itself is `sweep_health.run_sweep_loop` — shared with every
+    other background sweep so each tick's outcome (including the `failures`
+    count `reap_once` returns) lands in the health registry instead of being
+    discarded. See `sweep_health` and `../docs/decisions.md` §24.
     """
-    interval = settings.extraction_reaper_interval_seconds
-    logger.info(
-        "[reaper] started; threshold=%ds interval=%ds",
-        settings.extraction_timeout_seconds,
-        interval,
+    await run_sweep_loop(
+        SWEEP_EXTRACTION_REAPER,
+        lambda: reap_once(),
+        interval_seconds=settings.extraction_reaper_interval_seconds,
+        log=logger,
+        log_prefix="[reaper]",
+        start_detail=f" threshold={settings.extraction_timeout_seconds}s",
     )
-    try:
-        while True:
-            try:
-                await reap_once()
-            except Exception as exc:
-                # Catch-all so one bad sweep doesn't kill the loop. Logs at
-                # ERROR so it's noticeable but doesn't take the app down.
-                # Class only, not the message (PII-out-of-logs invariant).
-                logger.error("[reaper] sweep raised: %s", exc.__class__.__name__, exc_info=True)
-            await asyncio.sleep(interval)
-    except asyncio.CancelledError:
-        logger.info("[reaper] shutting down")
-        raise

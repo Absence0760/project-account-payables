@@ -196,7 +196,11 @@
 		border-radius: 10px;
 		font-size: 0.78rem;
 		font-weight: 600;
-		background: var(--surface-2, rgba(127, 127, 127, 0.15));
+		/* Deliberately NOT --surface-2: this is a neutral badge tint that sits
+		   beside the tinted status variants below, not a raised panel. It read
+		   as `var(--surface-2, …)` only because the token was undefined and the
+		   fallback always won; now that it resolves, spell out what renders. */
+		background: rgba(127, 127, 127, 0.15);
 	}
 	.status-returned {
 		background: rgba(31, 168, 106, 0.15);

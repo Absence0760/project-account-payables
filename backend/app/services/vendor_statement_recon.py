@@ -28,9 +28,11 @@ from __future__ import annotations
 import csv
 import io
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+from typing import Literal
 
 from app.models.vendor_statement_recon import (
     CLASS_AMOUNT_MISMATCH,
@@ -186,7 +188,19 @@ def parse_date(raw: str | None) -> date | None:
     raw = raw.strip()
     if not raw:
         return None
-    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d"):
+    # Ordering encodes the convention each separator carries: a SLASHED date is
+    # US-first (01/15/2026 = January 15), a DOTTED one is European-first
+    # (15.01.2026 = 15 January). Where the first pattern is impossible — month
+    # 15 — the next one takes it, so both orderings still read.
+    for fmt in (
+        "%Y-%m-%d",
+        "%m/%d/%Y",
+        "%d/%m/%Y",
+        "%Y/%m/%d",
+        "%d.%m.%Y",
+        "%m.%d.%Y",
+        "%Y.%m.%d",
+    ):
         try:
             return datetime.strptime(raw, fmt).date()
         except ValueError:
@@ -194,29 +208,145 @@ def parse_date(raw: str | None) -> date | None:
     return None
 
 
-def parse_amount(raw: str | None) -> Decimal | None:
-    """Accept ``1234.56``, ``1,234.56``, ``(1,234.56)`` (negative), ``$``,
-    ``-1234.56``. Returns the signed Decimal, or ``None`` on a blank /
-    unparseable value (e.g. ``"-"``).
+# Which separator is the decimal point. A statement is written in exactly one
+# of these conventions throughout, which is the fact this module leans on —
+# because a single token often cannot say which one it is in.
+AMOUNT_CONVENTION_US = "us"  # 1,234.56 — comma groups, period is the decimal
+AMOUNT_CONVENTION_EU = "eu"  # 1.234,56 — period groups, comma is the decimal
 
-    Public for the same reason as :func:`parse_date`: the PDF intake path turns
-    an adapter's raw amount STRING into money here, so a model's output and a
-    CSV cell become a ``Decimal`` by exactly the same rules — and neither ever
-    passes through a float."""
+AmountConvention = Literal["us", "eu"]
+
+# Stripped before the digits are read. Currency symbols can sit either side of
+# the number depending on locale (``$850.00`` vs ``850,00 €``), and a space or
+# non-breaking space is itself a thousands separator in French convention
+# (``1 234,56``), so internal ones go too.
+_AMOUNT_SYMBOLS = "$€£¥ \t\xa0\u202f"
+
+
+def _amount_core(raw: str | None) -> tuple[str, bool] | None:
+    """Reduce a raw amount token to bare digits-and-separators, plus its sign.
+
+    Returns ``None`` when nothing numeric is left (a blank cell, a ``"-"``
+    placeholder). Accounting parentheses and a leading minus both mean
+    negative.
+    """
     if raw is None:
         return None
     s = str(raw).strip()
     if not s:
         return None
     negative = s.startswith("(") and s.endswith(")")
-    s = s.strip("()").replace(",", "").replace("$", "").strip()
+    s = s.strip("()")
+    for ch in _AMOUNT_SYMBOLS:
+        s = s.replace(ch, "")
+    s = s.strip()
     if s.startswith("-"):
         negative = True
         s = s[1:].strip()
-    if not s:
+    if not s or not any(ch.isdigit() for ch in s):
         return None
+    return s, negative
+
+
+def _convention_proved_by(core: str) -> AmountConvention | None:
+    """Which convention this ONE token proves, or ``None`` if it proves nothing.
+
+    Three shapes are self-describing:
+
+    * **Both separators** (``1,234.56`` / ``1.234,56``) — the rightmost one is
+      the decimal point, because grouping separators never follow it.
+    * **The same separator twice or more** (``1,234,567``) — only grouping
+      repeats.
+    * **One separator with a one- or two-digit tail** (``850,00`` / ``850.5``) —
+      it must be the decimal point: money carries at most two decimal places,
+      and no grouping run is shorter than three digits. This is the shape the
+      old unconditional ``replace(",", "")`` got wrong, reading ``850,00`` as
+      ``85000``.
+
+    One shape is genuinely ambiguous and deliberately proves nothing: a single
+    separator with a **three-digit tail** (``1,234`` / ``1.234``) is a thousands
+    group under one convention and a three-decimal-place value under the other.
+    Resolving it is what :func:`detect_amount_convention` exists for; letting it
+    vote would be circular.
+    """
+    has_comma = "," in core
+    has_period = "." in core
+    if has_comma and has_period:
+        if core.rfind(".") > core.rfind(","):
+            return AMOUNT_CONVENTION_US
+        return AMOUNT_CONVENTION_EU
+    if not has_comma and not has_period:
+        return None
+    sep = "," if has_comma else "."
+    parts = core.split(sep)
+    if len(parts) > 2:
+        return AMOUNT_CONVENTION_US if sep == "," else AMOUNT_CONVENTION_EU
+    if len(parts[1]) in (1, 2):
+        return AMOUNT_CONVENTION_EU if sep == "," else AMOUNT_CONVENTION_US
+    return None
+
+
+def detect_amount_convention(raw_values: Iterable[str | None]) -> AmountConvention | None:
+    """Resolve the decimal convention a whole statement is written in.
+
+    A statement is internally consistent, so the full token set answers what a
+    single token cannot — one unambiguous ``1.234,56`` anywhere in the document
+    settles every bare ``1.200`` in it.
+
+    Returns ``None`` when the document proves nothing (no separators at all, or
+    only ambiguous three-digit tails) **and** when its tokens contradict each
+    other. Both cases mean "no document-level answer"; per-token readings still
+    apply, so a contradictory document still parses its self-describing tokens
+    correctly rather than being dragged onto one convention wholesale.
+    """
+    votes: set[AmountConvention] = set()
+    for raw in raw_values:
+        parsed = _amount_core(raw)
+        if parsed is None:
+            continue
+        proved = _convention_proved_by(parsed[0])
+        if proved is not None:
+            votes.add(proved)
+            if len(votes) > 1:
+                return None  # contradictory — no document-level answer
+    if len(votes) == 1:
+        return votes.pop()
+    return None
+
+
+def parse_amount(raw: str | None, *, convention: AmountConvention | None = None) -> Decimal | None:
+    """Accept ``1234.56``, ``1,234.56``, ``(1,234.56)`` (negative), ``$``,
+    ``-1234.56`` — and their European equivalents ``1.234,56`` / ``850,00``.
+    Returns the signed Decimal, or ``None`` on a blank / unparseable value
+    (e.g. ``"-"``).
+
+    ``convention`` is the document-level answer from
+    :func:`detect_amount_convention`. It is consulted **only** for the one
+    genuinely ambiguous shape (a single separator with a three-digit tail);
+    every self-describing token is read on its own terms, so a token cannot be
+    mis-read just because the rest of the document voted otherwise. Omitting it
+    keeps the historical US reading for that ambiguous shape.
+
+    Public for the same reason as :func:`parse_date`: the PDF intake path turns
+    an adapter's raw amount STRING into money here, so a model's output and a
+    CSV cell become a ``Decimal`` by exactly the same rules — and neither ever
+    passes through a float."""
+    parsed = _amount_core(raw)
+    if parsed is None:
+        return None
+    core, negative = parsed
+    reading = _convention_proved_by(core)
+    if reading is None and ("," in core or "." in core):
+        # Only the ambiguous three-digit-tail shape reaches here carrying a
+        # separator. Default to US when the document didn't answer, which is
+        # what this function always did.
+        reading = convention or AMOUNT_CONVENTION_US
+    if reading == AMOUNT_CONVENTION_EU:
+        core = core.replace(".", "").replace(",", ".")
+    else:
+        core = core.replace(",", "")
     try:
-        amount = Decimal(s)
+        amount = Decimal(core)
     except (InvalidOperation, ValueError):
         return None
     return -amount if negative else amount
@@ -262,6 +392,16 @@ def parse_statement_csv(raw_csv: bytes) -> list[StatementLine]:
     idx = {h: i for i, h in enumerate(headers)}
     lines: list[StatementLine] = []
 
+    # Resolve the decimal convention across the WHOLE amount column before
+    # parsing any of it: a supplier writing ``850,00`` means 850.00, and only
+    # the other rows can prove that. See :func:`detect_amount_convention`.
+    convention: AmountConvention | None = None
+    if amount_col:
+        amount_idx = idx[amount_col]
+        convention = detect_amount_convention(
+            row[amount_idx] for row in rows[1:] if len(row) > amount_idx
+        )
+
     for row in rows[1:]:
         if not any(cell.strip() for cell in row):
             continue  # blank line
@@ -271,7 +411,7 @@ def parse_statement_csv(raw_csv: bytes) -> list[StatementLine]:
         invoice_number = row[idx[invoice_col]].strip() if invoice_col else ""
         invoice_number = invoice_number or None
         statement_date = parse_date(row[idx[date_col]]) if date_col else None
-        amount = parse_amount(row[idx[amount_col]]) if amount_col else None
+        amount = parse_amount(row[idx[amount_col]], convention=convention) if amount_col else None
         status = row[idx[status_col]].strip() if status_col else None
         status = status or None
 

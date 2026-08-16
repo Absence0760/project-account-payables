@@ -1,6 +1,7 @@
 import type { Contract } from '$lib/types/contract';
 import { listContracts, type ContractListParams } from '$lib/api/contracts';
 import { appendUnique } from '$lib/utils/pagination';
+import { createRequestSequencer } from '$lib/utils/requestSequence';
 
 function createContractStore() {
 	let contracts = $state<Contract[]>([]);
@@ -9,34 +10,51 @@ function createContractStore() {
 	let page = $state(1);
 	let lastParams = $state<ContractListParams>({});
 
+	// Sequences `fetch`/`loadMore` (one shared counter — latest-issued wins) so a
+	// slow response for an earlier search/filter can't land after a faster later
+	// one and clobber the list. `upsert`/`remove` mark in-flight fetches stale
+	// the same way, so a response issued before a local edit can't revert it.
+	// See `frontend/CLAUDE.md` § Sequencing list fetches.
+	const fetchSequence = createRequestSequencer();
+
 	async function fetch(params: ContractListParams = {}) { // noqa: raw-fetch-in-component — store method name; routes through listContracts → api client
+		const token = fetchSequence.start();
 		loading = true;
 		try {
 			const res = await listContracts({ ...params, page: 1, page_size: 20 });
+			// Superseded by a newer fetch/loadMore, or by a local edit.
+			if (!fetchSequence.canCommit(token)) return;
 			contracts = res.items;
 			total = res.total;
 			page = res.page;
 			lastParams = params;
 		} finally {
-			loading = false;
+			if (fetchSequence.isCurrentRequest(token)) loading = false;
 		}
 	}
 
 	async function loadMore() {
+		const token = fetchSequence.start();
 		loading = true;
 		try {
 			const res = await listContracts({ ...lastParams, page: page + 1, page_size: 20 });
+			if (!fetchSequence.canCommit(token)) return;
 			contracts = appendUnique(contracts, res.items);
 			total = res.total;
 			page = res.page;
 		} finally {
-			loading = false;
+			if (fetchSequence.isCurrentRequest(token)) loading = false;
 		}
 	}
 
 	// Replace one row in place (after a lifecycle action / edit / upload) so the
 	// list reflects the change without a full refetch.
 	function upsert(updated: Contract) {
+		// A fetch already in flight read the list BEFORE this mutation landed, so
+		// its response would revert it (or drop a just-created row entirely —
+		// a create needs no pre-existing row, so it races even the mount fetch).
+		// Retire every pre-edit request before applying.
+		fetchSequence.supersedeInFlight();
 		const idx = contracts.findIndex((c) => c.id === updated.id);
 		if (idx === -1) {
 			contracts = [updated, ...contracts];
@@ -47,6 +65,7 @@ function createContractStore() {
 	}
 
 	function remove(id: string) {
+		fetchSequence.supersedeInFlight();
 		if (contracts.some((c) => c.id === id)) {
 			contracts = contracts.filter((c) => c.id !== id);
 			total = Math.max(0, total - 1);

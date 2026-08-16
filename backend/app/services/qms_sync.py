@@ -28,7 +28,6 @@ and resolution outcome only).
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from dataclasses import dataclass
@@ -46,6 +45,7 @@ from app.schemas.inspection import VALID_RESULTS
 from app.services.audit_dispatch import dispatch_audit
 from app.services.qms_adapters import get_qms_adapter
 from app.services.qms_adapters.base import QMSInspectionRecord
+from app.services.sweep_health import SWEEP_QMS_SYNC, run_sweep_loop
 from app.tenant import resolve_default_entity_id
 
 logger = logging.getLogger(__name__)
@@ -322,16 +322,12 @@ async def _sweep_tenant(db_name: str, org_id: uuid.UUID, qms_config: dict) -> di
 
 
 async def run_qms_sync_loop() -> None:
-    """Long-lived loop started in ``main.lifespan``; cancelled on shutdown."""
-    interval = settings.qms_sync_interval_seconds
-    logger.info("[qms-sync] started; interval=%ds", interval)
-    try:
-        while True:
-            try:
-                await run_qms_sync_once()
-            except Exception as exc:  # noqa: BLE001
-                logger.error("[qms-sync] sweep raised: %s", exc.__class__.__name__)
-            await asyncio.sleep(interval)
-    except asyncio.CancelledError:
-        logger.info("[qms-sync] shutting down")
-        raise
+    """Long-lived loop started in ``main.lifespan``; cancelled on shutdown.
+    Body is the shared ``sweep_health.run_sweep_loop``."""
+    await run_sweep_loop(
+        SWEEP_QMS_SYNC,
+        lambda: run_qms_sync_once(),
+        interval_seconds=settings.qms_sync_interval_seconds,
+        log=logger,
+        log_prefix="[qms-sync]",
+    )

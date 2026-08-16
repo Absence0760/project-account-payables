@@ -27,6 +27,7 @@
 	import KpiCard from '$lib/components/ui/KpiCard.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { formatDate } from '$lib/utils/time';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { PERM_VENDOR_BLOCK } from '$lib/types/admin';
@@ -82,16 +83,32 @@
 	let reviewCount = $derived(items.filter((it) => it.screening_status === 'review').length);
 	let blockedCount = $derived(items.filter((it) => it.payments_blocked).length);
 
+	// Sequences `loadQueue`. The mount `$effect` is not its only trigger — the
+	// header Refresh button fires it too, so two can be in flight at once and
+	// resolve out of order. `applyVendorUpdate` rewrites a row in place with no
+	// fetch of its own, so it retires whatever is in flight first: otherwise a
+	// queue response issued before a block/unblock/re-screen lands afterwards
+	// and puts the lifted payment block — or the stale screening verdict — back
+	// on the row. See `frontend/CLAUDE.md` § Sequencing list fetches.
+	const fetchSequence = createRequestSequencer();
+
 	async function loadQueue() {
+		const token = fetchSequence.start();
 		loading = true;
 		loadError = false;
 		try {
-			items = await getScreeningReviewQueue();
+			const queue = await getScreeningReviewQueue();
+			// Superseded by a newer refresh, or by a local block/re-screen.
+			if (!fetchSequence.canCommit(token)) return;
+			items = queue;
 		} catch {
+			// `isCurrentRequest`, not `canCommit`: a load superseded by a local
+			// edit still failed, and no newer load is coming to report it.
+			if (!fetchSequence.isCurrentRequest(token)) return;
 			loadError = true;
 			toast('Failed to load the screening review queue', 'error');
 		} finally {
-			loading = false;
+			if (fetchSequence.isCurrentRequest(token)) loading = false;
 		}
 	}
 
@@ -125,6 +142,7 @@
 		risk_level: ScreeningReviewItem['risk_level'];
 		risk_score: string | null;
 	}) {
+		fetchSequence.supersedeInFlight();
 		items = items.map((it) =>
 			it.vendor_id === vendor.id
 				? {

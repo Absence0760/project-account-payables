@@ -27,6 +27,30 @@
 
 	let isEmpty = $derived(messages.length === 0);
 
+	// Bubbles carry a stable client-side id (see `UiMessage.id`). A turn in
+	// flight resolves its own placeholder through `assistantMessage()`, never
+	// through a captured array index — `messages` can be REPLACED wholesale
+	// while the turn is streaming, and an index into the old array then
+	// addresses an unrelated historical message.
+	let nextMessageId = 0;
+	function makeMessage(msg: Omit<UiMessage, 'id'>): UiMessage {
+		nextMessageId += 1;
+		return { ...msg, id: `ui-${nextMessageId}` };
+	}
+
+	/** The in-progress bubble, or null once it is gone (the array was replaced,
+	 *  or a budget error dropped it). A null means the turn's result has
+	 *  nowhere to land and is discarded — the one safe outcome. */
+	function assistantMessage(id: string): UiMessage | null {
+		return messages.find((msg) => msg.id === id) ?? null;
+	}
+
+	/** Drop the empty in-progress bubble, by identity. */
+	function dropMessage(id: string) {
+		const idx = messages.findIndex((msg) => msg.id === id);
+		if (idx !== -1) messages.splice(idx, 1);
+	}
+
 	async function loadUsage() {
 		try {
 			usage = await api.get<UsageResponse>('/api/assistant/usage');
@@ -64,21 +88,31 @@
 
 	async function openConversation(id: string) {
 		if (busy) return;
+		// Hold `busy` for the WHOLE load, not just guard on it. This GET replaces
+		// `messages` wholesale, and the composer is disabled by `busy` — without
+		// setting it, a send fired while the thread was still loading pushed its
+		// user + placeholder bubbles into an array this response was about to
+		// throw away. The dead guard above shows that was always the intent.
+		busy = true;
 		try {
 			const detail = await api.get<ConversationDetail>(`/api/assistant/conversations/${id}`);
 			conversationId = detail.conversation.id;
 			messages = detail.messages
-				.filter((m) => m.role === 'user' || m.role === 'assistant')
-				.map((m) => ({
-					role: m.role === 'user' ? 'user' : 'assistant',
-					content: m.content,
-					tools: m.tool_calls ?? [],
-					streaming: false
-				}));
+				.filter((msg) => msg.role === 'user' || msg.role === 'assistant')
+				.map((msg) =>
+					makeMessage({
+						role: msg.role === 'user' ? 'user' : 'assistant',
+						content: msg.content,
+						tools: msg.tool_calls ?? [],
+						streaming: false
+					})
+				);
 			budgetNotice = null;
 			await scrollToBottom();
 		} catch {
 			budgetNotice = m('assistant.error.loadConversation');
+		} finally {
+			busy = false;
 		}
 	}
 
@@ -89,9 +123,9 @@
 
 	/** Apply the authoritative `done`/`/chat` payload to the in-progress
 	 *  assistant message and refresh side state. */
-	function applyFinal(payload: ChatResponse, assistantIdx: number) {
+	function applyFinal(payload: ChatResponse, assistantId: string) {
 		conversationId = payload.conversation_id;
-		const msg = messages[assistantIdx];
+		const msg = assistantMessage(assistantId);
 		if (msg) {
 			msg.content = payload.answer;
 			msg.tools = (payload.tool_invocations as ToolInvocation[]) ?? msg.tools;
@@ -101,12 +135,12 @@
 
 	/** Non-streaming fallback — used when the stream endpoint is unavailable
 	 *  (404 during local dev) or fails mid-flight before any content arrived. */
-	async function fallbackChat(message: string, assistantIdx: number) {
+	async function fallbackChat(message: string, assistantId: string) {
 		const payload = await api.post<ChatResponse>('/api/assistant/chat', {
 			message,
 			conversation_id: conversationId ?? undefined
 		});
-		applyFinal(payload, assistantIdx);
+		applyFinal(payload, assistantId);
 	}
 
 	async function send() {
@@ -116,13 +150,15 @@
 		budgetNotice = null;
 		input = '';
 
-		messages.push({ role: 'user', content: message, tools: [] });
-		const assistantIdx = messages.push({
+		messages.push(makeMessage({ role: 'user', content: message, tools: [] }));
+		const placeholder = makeMessage({
 			role: 'assistant',
 			content: '',
 			tools: [],
 			streaming: true
-		}) - 1;
+		});
+		const assistantId = placeholder.id;
+		messages.push(placeholder);
 		await scrollToBottom();
 
 		let sawContent = false;
@@ -131,7 +167,7 @@
 				{ message, conversation_id: conversationId ?? undefined },
 				{
 					onTool: (frame) => {
-						const msg = messages[assistantIdx];
+						const msg = assistantMessage(assistantId);
 						if (!msg) return;
 						msg.tools = [
 							...msg.tools,
@@ -146,18 +182,18 @@
 						void scrollToBottom();
 					},
 					onDelta: (text) => {
-						const msg = messages[assistantIdx];
+						const msg = assistantMessage(assistantId);
 						if (!msg) return;
 						msg.content += text;
 						sawContent = true;
 						void scrollToBottom();
 					},
 					onDone: (payload) => {
-						applyFinal(payload as ChatResponse, assistantIdx);
+						applyFinal(payload as ChatResponse, assistantId);
 						sawContent = true;
 					},
 					onError: (frame) => {
-						const msg = messages[assistantIdx];
+						const msg = assistantMessage(assistantId);
 						if (msg && !sawContent) {
 							msg.error = frame.detail || m('assistant.error.generic');
 							msg.streaming = false;
@@ -172,21 +208,21 @@
 					budget: err.budget.toLocaleString()
 				});
 				// Drop the empty in-progress assistant bubble.
-				messages.splice(assistantIdx, 1);
+				dropMessage(assistantId);
 			} else if (!sawContent) {
 				// Stream unavailable / failed before any content → non-streaming
 				// fallback so the page works against `/chat` alone.
 				try {
-					await fallbackChat(message, assistantIdx);
+					await fallbackChat(message, assistantId);
 				} catch (fallbackErr) {
 					if (fallbackErr instanceof AssistantBudgetError) {
 						budgetNotice = m('assistant.budget.reached', {
 								used: fallbackErr.used.toLocaleString(),
 								budget: fallbackErr.budget.toLocaleString()
 							});
-						messages.splice(assistantIdx, 1);
+						dropMessage(assistantId);
 					} else {
-						const msg = messages[assistantIdx];
+						const msg = assistantMessage(assistantId);
 						const detail =
 							fallbackErr instanceof Error ? fallbackErr.message : m('assistant.error.somethingWrong');
 						if (msg) {
@@ -199,7 +235,7 @@
 				}
 			}
 		} finally {
-			const msg = messages[assistantIdx];
+			const msg = assistantMessage(assistantId);
 			if (msg) msg.streaming = false;
 			busy = false;
 			void loadUsage();
@@ -260,7 +296,7 @@
 					<ExamplePrompts onpick={pickPrompt} />
 				{:else}
 					<div class="msg-stream">
-						{#each messages as message, i (i)}
+						{#each messages as message (message.id)}
 							<ChatMessage {message} />
 						{/each}
 					</div>

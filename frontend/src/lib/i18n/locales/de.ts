@@ -858,6 +858,10 @@ export const messages = {
 	'cfo.position.title': 'Liquiditätsposition',
 	'cfo.position.enterOpening': 'Geben Sie oben ein Anfangs-Bankguthaben ein, um die laufende Liquiditätsposition zu projizieren.',
 	'cfo.position.breach': '{n, plural, one {⚠ # Periode liegt voraussichtlich unter Ihrem Mindestguthaben-Alarm.} other {⚠ # Perioden liegen voraussichtlich unter Ihrem Mindestguthaben-Alarm.}}',
+	'cfo.position.providerSkippedCurrency':
+		'Ihr verbundener Bankbestand wurde nicht verwendet: Dieses Konto wird in einer anderen Währung als Ihrer Berichtswährung {currency} geführt, und die Prognose daraus zu speisen würde jeden laufenden Saldo unten zu einer Mischung aus zwei Währungen machen. Die Zahlen beginnen stattdessen bei Ihrem gespeicherten Anfangsbestand. Passen Sie die Berichtswährung an das Konto an oder geben Sie oben einen Anfangsbestand ein.',
+	'cfo.position.providerSkipped':
+		'Ihr verbundener Bankbestand wurde nicht verwendet, die Prognose unten beginnt also nicht damit. Die Zahlen beginnen stattdessen bei Ihrem gespeicherten Anfangsbestand.',
 	'cfo.position.colPeriod': 'Periode',
 	'cfo.position.colOpening': 'Anfang',
 	'cfo.position.colOutflow': 'Abfluss',
@@ -2941,6 +2945,8 @@ export const messages = {
 		'Maschinell gelesen von {provider} mit {confidence} Konfidenz — {n, plural, one {# offene Position} other {# offene Positionen}} aus dem Dokument übernommen.',
 	'vendorStatements.modal.provenanceSkipNote':
 		'Eine Zeile, die nicht eindeutig lesbar war, wurde übersprungen statt geraten — unsere Rechnung dazu erscheint unten als zu klärende Differenz.',
+	'vendorStatements.modal.provenanceSkipped':
+		'{n, plural, one {# Zeile wurde} other {# Zeilen wurden}} als mehrdeutig übersprungen — der Reader sah einen offenen Posten, den er nicht ohne Raten lesen konnte (eine zweite Betragsspalte, eine zweite Referenzspalte). Der Abgleich unten fehlt um genau so viele Lieferantenzeilen, daher erscheinen unsere Rechnungen dazu als zu klärende Differenzen. Laden Sie den Auszug als CSV hoch oder konfigurieren Sie einen Vision-Anbieter, um sie zu lesen.',
 	'vendorStatements.modal.provenanceCsv': 'Direkt aus der hochgeladenen CSV-Datei eingelesen.',
 	'vendorStatements.modal.downloadSource': 'Originalauszug herunterladen',
 	'vendorStatements.modal.downloadingSource': 'Wird heruntergeladen…',

@@ -7,6 +7,7 @@
 	import { auth } from '$lib/stores/auth.svelte';
 	import { adminStore } from '$lib/stores/admin.svelte';
 	import { api } from '$lib/api';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
@@ -590,6 +591,24 @@
 	let lineItemsDirty = $state(false);
 	let savingLines = $state(false);
 
+	// The line-item table is an EDITOR over a fetched list, and three things
+	// load it: the modal's open `$effect`, the extraction poll when it finishes,
+	// and `saveLineItems` afterwards. Any of those can be in flight while the
+	// user is typing into a cell — and a load resolving then replaces the whole
+	// array, wiping unsaved edits while `lineItemsDirty` stays set on rows that
+	// no longer hold them. `markLineItemsDirty()` retires the in-flight load
+	// before every local edit. See `frontend/CLAUDE.md` § Sequencing list
+	// fetches.
+	const lineItemsSequence = createRequestSequencer();
+
+	/** Flag an unsaved local edit — and retire whatever is already in flight,
+	 *  whose response predates it: a load (which would replace the table) or a
+	 *  save (whose payload doesn't carry this edit — see `saveLineItems`). */
+	function markLineItemsDirty() {
+		lineItemsSequence.supersedeInFlight();
+		lineItemsDirty = true;
+	}
+
 	/**
 	 * Outcome of `PUT /api/invoices/{id}/line-items`. The backend reconciles
 	 * the re-summed lines against the header and reports the verdict here —
@@ -666,7 +685,7 @@
 
 	function updateLineItem(idx: number, field: string, value: unknown) {
 		lineItems = lineItems.map((li, i) => i === idx ? { ...li, [field]: value } : li);
-		lineItemsDirty = true;
+		markLineItemsDirty();
 	}
 
 	function addLineItem() {
@@ -681,15 +700,26 @@
 			total: null,
 			gl_account: gl_account || null,
 		}];
-		lineItemsDirty = true;
+		markLineItemsDirty();
 	}
 
 	function removeLineItem(idx: number) {
 		lineItems = lineItems.filter((_, i) => i !== idx);
-		lineItemsDirty = true;
+		markLineItemsDirty();
 	}
 
 	async function saveLineItems() {
+		// The PUT is itself a request whose response can be superseded, so it
+		// takes a token like any load. Only the Save BUTTON is disabled while it
+		// is in flight — the cells stay editable — and an edit made in that
+		// window is not in the payload this request carries.
+		//
+		// It asks `wasSupersededByEdit`, NOT `canCommit`: only an edit
+		// invalidates what this request sent. `canCommit` would also go false
+		// for an unrelated newer read — the extraction poll's own
+		// `loadLineItems()` landing mid-save — and the dirty flag would then
+		// stick on, leaving a Save button up over a table nobody had touched.
+		const saveToken = lineItemsSequence.start();
 		savingLines = true;
 		try {
 			const res = await api.put<LineItemsSaveResult>(`/api/invoices/${invoice.id}/line-items`, lineItems.map((li, idx) => ({
@@ -702,12 +732,18 @@
 				total: li.total,
 				gl_account: li.gl_account,
 			})));
-			lineItemsDirty = false;
+			const editedDuringSave = lineItemsSequence.wasSupersededByEdit(saveToken);
+			// Clearing `lineItemsDirty` over an edit made mid-save is the worse
+			// half of the bug: it loses the edit AND removes the Save button
+			// (which only renders while dirty), so the user can't re-submit
+			// what they just typed.
+			if (!editedDuringSave) lineItemsDirty = false;
 			// Surface the backend's reconciliation verdict inline instead of
 			// letting it stay invisible until the modal is reopened. A
 			// mismatch is a blocking condition downstream (the invoice can't
 			// enter a payment run), so it gets the persistent panel below the
-			// table, not just a transient toast.
+			// table, not just a transient toast. This reports what the server
+			// now holds, so it stands whether or not the table moved on.
 			lineTotalMismatch = res.reconciles_with_header ? null : res;
 			toast(
 				res.reconciles_with_header
@@ -715,7 +751,9 @@
 					: m('invoices.modal.toast.lineItemsMismatch'),
 				res.reconciles_with_header ? 'success' : 'warning'
 			);
-			await loadLineItems();
+			// Re-reading the server list would discard that mid-save edit — the
+			// server hasn't been told about it yet.
+			if (!editedDuringSave) await loadLineItems();
 		} catch (err) {
 			toast(err instanceof Error ? err.message : m('invoices.modal.toast.saveFailed'), 'error');
 		} finally {
@@ -908,8 +946,12 @@
 	}
 
 	async function loadLineItems() {
+		const token = lineItemsSequence.start();
 		try {
-			lineItems = await api.get<LineItem[]>(`/api/invoices/${invoice.id}/line-items`);
+			const fetched = await api.get<LineItem[]>(`/api/invoices/${invoice.id}/line-items`);
+			// Superseded by a newer load, or by an unsaved local edit.
+			if (!lineItemsSequence.canCommit(token)) return;
+			lineItems = fetched;
 		} catch {
 			// non-critical
 		}

@@ -446,25 +446,15 @@ async def run_scheduled_reports_once(*, now: datetime | None = None) -> SweepRes
 
 
 async def run_scheduled_reports_loop() -> None:
-    """Long-lived loop started in ``main.lifespan``; cancelled on shutdown."""
-    import asyncio
-
+    """Long-lived loop started in ``main.lifespan``; cancelled on shutdown.
+    Body is the shared ``sweep_health.run_sweep_loop``."""
     from app.config import settings
+    from app.services.sweep_health import SWEEP_SCHEDULED_REPORTS, run_sweep_loop
 
-    interval = settings.scheduled_reports_tick_seconds
-    logger.info("[scheduled_reports] started; interval=%ds", interval)
-    try:
-        while True:
-            try:
-                await run_scheduled_reports_once()
-            except Exception as exc:  # noqa: BLE001
-                # Class name in the message; exc_info=True keeps the traceback
-                # for debugging without putting the exception text (possible PII)
-                # in the log format string.
-                logger.error(
-                    "[scheduled_reports] sweep raised: %s", exc.__class__.__name__, exc_info=True
-                )
-            await asyncio.sleep(interval)
-    except asyncio.CancelledError:
-        logger.info("[scheduled_reports] shutting down")
-        raise
+    await run_sweep_loop(
+        SWEEP_SCHEDULED_REPORTS,
+        lambda: run_scheduled_reports_once(),
+        interval_seconds=settings.scheduled_reports_tick_seconds,
+        log=logger,
+        log_prefix="[scheduled_reports]",
+    )

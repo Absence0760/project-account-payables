@@ -39,6 +39,7 @@ from app.api import (
     expenses,
     gl_accounts,
     goods_receipts,
+    health,
     inspections,
     intake,
     invoices,
@@ -143,8 +144,22 @@ async def lifespan(app: FastAPI):
     from app.services.recurring_invoices import run_recurring_invoices_loop
     from app.services.retention_sweep import run_retention_loop
     from app.services.scheduled_reports import run_scheduled_reports_loop
+    from app.services.sweep_health import supervise_task
     from app.services.vendor_rescreen import run_vendor_rescreen_loop
     from app.services.webhooks.delivery import run_webhook_delivery_loop
+
+    def start_sweep(coro, name: str) -> asyncio.Task:
+        """Start a supervised sweep task.
+
+        `supervise_task` attaches the done-callback that records a sweep ending
+        — cleanly cancelled at shutdown, or *died*, which is a real defect: a
+        loop that ends on its own is gone for the lifetime of the process and
+        nothing else would say so. The task's own `name` is the key
+        `services/sweep_health` files it under, and the same string is what
+        `GET /api/health/sweeps` reports, so the two can't drift
+        (`tests/test_sweep_health.py` AST-scans this file to pin it).
+        """
+        return supervise_task(asyncio.create_task(coro, name=name))
 
     reaper_task: asyncio.Task | None = None
     shipper_task: asyncio.Task | None = None
@@ -161,72 +176,66 @@ async def lifespan(app: FastAPI):
     scheduled_reports_task: asyncio.Task | None = None
     shortfall_alerts_task: asyncio.Task | None = None
     if settings.extraction_reaper_enabled:
-        reaper_task = asyncio.create_task(run_reaper_loop(), name="extraction-reaper")
+        reaper_task = start_sweep(run_reaper_loop(), name="extraction-reaper")
     # Centralized audit-log shipper (SOC 2). Disabled by default so local
     # dev doesn't spin up AWS clients; flip FEOH_AUDIT_SHIPPING_ENABLED on in
     # deployed envs.
     if settings.audit_shipping_enabled:
-        shipper_task = asyncio.create_task(run_shipper_loop(), name="audit-log-shipper")
+        shipper_task = start_sweep(run_shipper_loop(), name="audit-log-shipper")
     if settings.approval_escalation_enabled:
-        escalation_task = asyncio.create_task(run_escalation_loop(), name="approval-escalation")
+        escalation_task = start_sweep(run_escalation_loop(), name="approval-escalation")
     if settings.payment_reconcile_enabled:
-        reconciler_task = asyncio.create_task(run_reconciler_loop(), name="payment-reconciler")
+        reconciler_task = start_sweep(run_reconciler_loop(), name="payment-reconciler")
     # Contract renewal-alert sweep. Disabled by default; flip
     # FEOH_CONTRACT_RENEWAL_ENABLED on in deployed envs.
     if settings.contract_renewal_enabled:
-        renewal_task = asyncio.create_task(run_renewal_loop(), name="contract-renewal")
+        renewal_task = start_sweep(run_renewal_loop(), name="contract-renewal")
     # Periodic vendor sanctions re-screening sweep. Disabled by default;
     # flip FEOH_VENDOR_RESCREEN_ENABLED on in deployed envs.
     if settings.vendor_rescreen_enabled:
-        rescreen_task = asyncio.create_task(run_vendor_rescreen_loop(), name="vendor-rescreen")
+        rescreen_task = start_sweep(run_vendor_rescreen_loop(), name="vendor-rescreen")
     # Dynamic-discounting auto-capture sweep. Disabled by default; flip
     # FEOH_DISCOUNT_OPTIMIZATION_ENABLED on in deployed envs. Only accepts
     # high-ROI offers — never moves money (see discount_auto_trigger).
     if settings.discount_optimization_enabled:
-        discount_task = asyncio.create_task(
-            run_discount_optimization_loop(), name="discount-auto-trigger"
-        )
+        discount_task = start_sweep(run_discount_optimization_loop(), name="discount-auto-trigger")
     # QMS inspection sync. Disabled by default; flip FEOH_QMS_SYNC_ENABLED on in
     # deployed envs once a real QMS is configured per-org. Pulls inspection
     # records into the quality_inspections table (4-way-match leg).
     if settings.qms_sync_enabled:
-        qms_task = asyncio.create_task(run_qms_sync_loop(), name="qms-sync")
+        qms_task = start_sweep(run_qms_sync_loop(), name="qms-sync")
     # Retention-policy enforcement sweep (SOX records management). Disabled by
     # default; flip FEOH_RETENTION_ENABLED on in deployed envs. Soft-archives
     # overdue terminal invoices + verifies audit-log WORM shipment; NEVER
     # deletes audit_log rows (composes with the immutability trigger).
     if settings.retention_enabled:
-        retention_task = asyncio.create_task(run_retention_loop(), name="retention-sweep")
+        retention_task = start_sweep(run_retention_loop(), name="retention-sweep")
     # Recurring / subscription invoice generation sweep. Disabled by default;
     # flip FEOH_RECURRING_INVOICES_ENABLED on in deployed envs. Only creates
     # pre-coded invoices in the approval queue — never moves money (see
     # recurring_invoices).
     if settings.recurring_invoices_enabled:
-        recurring_task = asyncio.create_task(
-            run_recurring_invoices_loop(), name="recurring-invoices"
-        )
+        recurring_task = start_sweep(run_recurring_invoices_loop(), name="recurring-invoices")
     # Outbound-webhook retry/delivery sweep. Disabled by default; flip
     # FEOH_WEBHOOKS_ENABLED on in deployed envs. The emit path delivers inline on
     # the running loop; this sweep is the durable retry backstop.
     if settings.webhooks_enabled:
-        webhooks_task = asyncio.create_task(run_webhook_delivery_loop(), name="webhook-delivery")
+        webhooks_task = start_sweep(run_webhook_delivery_loop(), name="webhook-delivery")
     # Billing dunning / past-due automation sweep. Disabled by default; flip
     # FEOH_BILLING_DUNNING_ENABLED on in deployed envs. Only cancels subscriptions
     # overdue past the grace window — never moves money (see dunning_sweep).
     if settings.billing_dunning_enabled:
-        dunning_task = asyncio.create_task(run_dunning_loop(), name="billing-dunning")
+        dunning_task = start_sweep(run_dunning_loop(), name="billing-dunning")
     # Scheduled-report runner. Disabled by default so local dev / tests never
     # email reports; flip FEOH_SCHEDULED_REPORTS_ENABLED on in deployed envs.
     if settings.scheduled_reports_enabled:
-        scheduled_reports_task = asyncio.create_task(
-            run_scheduled_reports_loop(), name="scheduled-reports"
-        )
+        scheduled_reports_task = start_sweep(run_scheduled_reports_loop(), name="scheduled-reports")
     # Projected cash-shortfall alerts. Disabled by default so local dev / tests
     # never email a CFO; flip FEOH_CASHFLOW_SHORTFALL_ALERTS_ENABLED on in
     # deployed envs. Only reads the cash forecast and notifies — never moves
     # money (see cash_flow_alerts).
     if settings.cashflow_shortfall_alerts_enabled:
-        shortfall_alerts_task = asyncio.create_task(
+        shortfall_alerts_task = start_sweep(
             run_shortfall_alerts_loop(), name="cashflow-shortfall-alerts"
         )
 
@@ -413,11 +422,9 @@ app.include_router(teams_approvals.public_router, prefix="/api")
 app.include_router(catalogs.public_router, prefix="/api")
 app.include_router(tax.router, prefix="/api")
 app.include_router(tax_intl.router, prefix="/api")
-
-
-@app.get("/api/health")
-async def health():
-    return {"status": "ok"}
+# GET /api/health (public liveness probe, unchanged) + GET /api/health/sweeps
+# (admin-gated background-sweep report). See app/api/health.py.
+app.include_router(health.router, prefix="/api")
 
 
 @app.get("/api/public-config")

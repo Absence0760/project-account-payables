@@ -145,4 +145,122 @@ describe('a local mutation survives a late-resolving stale fetch', () => {
 		await list.load(async () => [{ id: 'inv-1', status: 'sending_to_erp' }]);
 		expect(list.rows).toEqual([{ id: 'inv-1', status: 'sending_to_erp' }]);
 	});
+
+	/**
+	 * The dismissal this exists to kill: "the mount fetch must have landed
+	 * before there's a row to mutate, so edit/delete can't race it". True for
+	 * edit and delete — false for New/Add, which is live while the FIRST GET is
+	 * still out. Every store here has such a path (`upsert` prepending an
+	 * unseen row, `createUser`, `createFromTemplate`).
+	 */
+	it('a create that prepends survives the very first load still in flight', async () => {
+		const seq = createRequestSequencer();
+		let rows: Array<{ id: string }> = [];
+
+		let releaseMount!: () => void;
+		const mountGate = new Promise<void>((resolve) => (releaseMount = resolve));
+
+		const token = seq.start();
+		const mountLoad = (async () => {
+			await mountGate;
+			// The server list this request read predates the create below.
+			const items = [{ id: 'existing' }];
+			if (!seq.canCommit(token)) return;
+			rows = items;
+		})();
+
+		// The user hits "New" before the list has painted a single row.
+		seq.supersedeInFlight();
+		rows = [{ id: 'created' }, ...rows];
+
+		releaseMount();
+		await mountLoad;
+
+		expect(rows).toEqual([{ id: 'created' }]);
+	});
+});
+
+/**
+ * `wasSupersededByEdit` — the third question, and the one only a WRITE asks.
+ *
+ * `InvoiceModal.saveLineItems` PUTs the table and then re-reads it. Only the
+ * Save button is disabled during the round trip, so a cell edited in that
+ * window is not in the payload the PUT carried, and neither the dirty-flag
+ * clear nor the follow-up reload may go ahead.
+ *
+ * It must NOT ask `canCommit`, which is false for two different reasons. An
+ * unrelated newer READ (the extraction poll's own `loadLineItems()`) makes
+ * `canCommit` false while saying nothing about whether the user edited
+ * anything — and the write would then refuse to clear its dirty flag forever,
+ * leaving a Save button up over a table nobody had touched. These tests pin
+ * the two apart; the first version of this fix conflated them.
+ */
+describe('wasSupersededByEdit — a write asks only about local edits', () => {
+	it('is true when a local edit landed while the write was in flight', () => {
+		const seq = createRequestSequencer();
+		const saveToken = seq.start(); // the PUT goes out
+		seq.supersedeInFlight(); // ...the user edits a cell while it is in flight
+
+		expect(seq.wasSupersededByEdit(saveToken)).toBe(true);
+	});
+
+	it('is FALSE when only an unrelated newer read was issued', () => {
+		const seq = createRequestSequencer();
+		const saveToken = seq.start();
+		seq.start(); // an unrelated reload (extraction poll) — no edit involved
+
+		// The distinction the write depends on: `canCommit` cannot tell these
+		// two cases apart, and using it here is what stuck the dirty flag on.
+		expect(seq.canCommit(saveToken)).toBe(false);
+		expect(seq.wasSupersededByEdit(saveToken)).toBe(false);
+	});
+
+	it('is false when nothing happened during the write', () => {
+		const seq = createRequestSequencer();
+		expect(seq.wasSupersededByEdit(seq.start())).toBe(false);
+	});
+
+	it('is false for a write issued after the edit', () => {
+		const seq = createRequestSequencer();
+		seq.start();
+		seq.supersedeInFlight();
+
+		// A save started after the edit carries it, so it is not superseded.
+		expect(seq.wasSupersededByEdit(seq.start())).toBe(false);
+	});
+});
+
+/**
+ * Two independent lists loaded by two independent requests get one sequencer
+ * EACH — `stores/admin.svelte.ts` (users vs roles) and
+ * `stores/notifications.svelte.ts` (the list vs the 60s unread-count poll).
+ * Sharing one counter would make an unrelated request mark the other's
+ * in-flight response un-committable and blank it.
+ */
+describe('one sequencer per independent list', () => {
+	it('a second list’s request does not supersede the first list’s', () => {
+		const usersSeq = createRequestSequencer();
+		const rolesSeq = createRequestSequencer();
+
+		const usersToken = usersSeq.start();
+		rolesSeq.start(); // a roles refresh fires while the users fetch is out
+
+		expect(usersSeq.canCommit(usersToken)).toBe(true);
+	});
+
+	it('a local edit that touches both lists supersedes both', () => {
+		// `markRead` writes `unread`, which BOTH the list load and the badge
+		// poll would otherwise restore to its pre-edit value.
+		const listSeq = createRequestSequencer();
+		const countSeq = createRequestSequencer();
+
+		const listToken = listSeq.start();
+		const countToken = countSeq.start();
+
+		listSeq.supersedeInFlight();
+		countSeq.supersedeInFlight();
+
+		expect(listSeq.canCommit(listToken)).toBe(false);
+		expect(countSeq.canCommit(countToken)).toBe(false);
+	});
 });

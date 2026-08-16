@@ -30,6 +30,7 @@
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
 	import { onMount, untrack } from 'svelte';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { formatDate } from '$lib/utils/time';
 
 	const canCreate = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk'));
@@ -81,34 +82,58 @@
 	);
 	const periodTotal = $derived(requisitions.reduce((sum, r) => sum + (r.total || 0), 0));
 
-	// Read the URL untracked — syncUrl() writes it via replaceState inside a
-	// filter $effect; a tracked $page.url read would self-trigger the effect
-	// (Svelte effect_update_depth_exceeded loop).
+	// Reflect the live filter state into the URL. EVERY read in here is
+	// untracked, `$page.url` included, because syncUrl() is a WRITER called
+	// from the filter `$effect`s below — not a source of dependencies:
+	//   - the URL read would self-trigger the effect that writes it via
+	//     replaceState (Svelte effect_update_depth_exceeded);
+	//   - a tracked `search` read would make every filter effect depend on
+	//     `search`, so each keystroke re-fired it: an immediate, un-debounced
+	//     load racing the dedicated 300ms debounce timer. That is issue #168,
+	//     fixed on /invoices, /payments and /vendors but never carried to this
+	//     page. Each effect declares the filters it actually depends on by
+	//     reading them directly, so nothing here needs to be tracked.
 	function syncUrl() {
-		const url = new URL(untrack(() => $page.url));
-		// `id` is a transient deep-link param (see deepLinkId below) — it is
-		// consumed once at load and never persisted, so the filter-state sync
-		// always drops it rather than resurrecting it from a stale URL read.
-		url.searchParams.delete('id');
-		if (statusFilter !== 'all') url.searchParams.set('status', statusFilter);
-		else url.searchParams.delete('status');
-		if (search.trim()) url.searchParams.set('search', search.trim());
-		else url.searchParams.delete('search');
-		replaceState(`${url.pathname}${url.search}`, {});
+		untrack(() => {
+			const url = new URL($page.url);
+			// `id` is a transient deep-link param (see deepLinkId below) — it is
+			// consumed once at load and never persisted, so the filter-state sync
+			// always drops it rather than resurrecting it from a stale URL read.
+			url.searchParams.delete('id');
+			if (statusFilter !== 'all') url.searchParams.set('status', statusFilter);
+			else url.searchParams.delete('status');
+			if (search.trim()) url.searchParams.set('search', search.trim());
+			else url.searchParams.delete('search');
+			replaceState(`${url.pathname}${url.search}`, {});
+		});
 	}
 
+	// Sequences `load` (latest-issued wins) so a slow response for an earlier
+	// status filter can't land after a faster later one. `onSaved` / `replaceRow`
+	// / `doDelete` edit the list in place with no fetch of their own, so they
+	// retire whatever is in flight first — a new requisition needs no
+	// pre-existing row, so it races even the first load. See
+	// `frontend/CLAUDE.md` § Sequencing list fetches.
+	const fetchSequence = createRequestSequencer();
+
 	async function load() {
+		const token = fetchSequence.start();
 		loading = true;
 		try {
 			const params: { status?: string; page_size: number } = { page_size: 100 };
 			if (statusFilter !== 'all') params.status = statusFilter;
 			const res = await listRequisitions(params);
+			// Superseded by a newer load, or by a local create/lifecycle edit.
+			if (!fetchSequence.canCommit(token)) return;
 			requisitions = res.items;
 			total = res.total;
 		} catch (err) {
+			// `isCurrentRequest`, not `canCommit`: a load superseded by a local
+			// edit still failed, and no newer load is coming to report it.
+			if (!fetchSequence.isCurrentRequest(token)) return;
 			toast(err instanceof Error ? err.message : m('requisitions.toast.loadFailed'), 'error');
 		} finally {
-			loading = false;
+			if (fetchSequence.isCurrentRequest(token)) loading = false;
 		}
 	}
 
@@ -151,6 +176,7 @@
 	}
 
 	function onSaved(r: Requisition) {
+		fetchSequence.supersedeInFlight();
 		const idx = requisitions.findIndex((x) => x.id === r.id);
 		if (idx >= 0) requisitions = requisitions.map((x) => (x.id === r.id ? r : x));
 		else {
@@ -161,6 +187,7 @@
 	}
 
 	function replaceRow(r: Requisition) {
+		fetchSequence.supersedeInFlight();
 		requisitions = requisitions.map((x) => (x.id === r.id ? r : x));
 		if (editing && editing.id === r.id) editing = r;
 	}
@@ -216,6 +243,7 @@
 	async function doDelete(id: string) {
 		try {
 			await apiDelete(id);
+			fetchSequence.supersedeInFlight();
 			requisitions = requisitions.filter((r) => r.id !== id);
 			total = Math.max(0, total - 1);
 			toast(m('requisitions.toast.deleted'), 'success');

@@ -43,7 +43,6 @@ holding — and touching one of those from async SQLAlchemy is a
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -55,6 +54,7 @@ from app.config import settings
 from app.database import _make_tenant_url, control_session_factory
 from app.models.organization import Organization
 from app.models.vendor import Vendor
+from app.services.sweep_health import SWEEP_VENDOR_RESCREEN, run_sweep_loop
 from app.services.vendor_screening import screen_vendor_record
 
 logger = logging.getLogger(__name__)
@@ -213,21 +213,18 @@ async def _sweep_tenant(
 
 
 async def run_vendor_rescreen_loop() -> None:
-    """Long-lived loop started in `main.lifespan`; cancelled on shutdown."""
-    interval = settings.vendor_rescreen_interval_seconds
-    logger.info("[vendor-rescreen] started; interval=%ds", interval)
-    try:
-        while True:
-            try:
-                await rescreen_vendors_once()
-            except Exception as exc:  # noqa: BLE001
-                # Class name in the message; exc_info=True keeps the traceback
-                # for debugging without putting the exception text (possible PII)
-                # in the log format string.
-                logger.error(
-                    "[vendor-rescreen] sweep raised: %s", exc.__class__.__name__, exc_info=True
-                )
-            await asyncio.sleep(interval)
-    except asyncio.CancelledError:
-        logger.info("[vendor-rescreen] shutting down")
-        raise
+    """Long-lived loop started in `main.lifespan`; cancelled on shutdown.
+
+    Body is the shared `sweep_health.run_sweep_loop`. Both counters this sweep
+    reports feed the health streak — `failures` (a whole tenant's sweep
+    aborted) and `vendor_failures` (individual screens that raised) — so a
+    tenant that keeps completing while every vendor screen fails is no longer
+    indistinguishable from a clean run.
+    """
+    await run_sweep_loop(
+        SWEEP_VENDOR_RESCREEN,
+        lambda: rescreen_vendors_once(),
+        interval_seconds=settings.vendor_rescreen_interval_seconds,
+        log=logger,
+        log_prefix="[vendor-rescreen]",
+    )

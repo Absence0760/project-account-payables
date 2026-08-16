@@ -28,7 +28,6 @@ never halting the sweep. Disabled by default (``FEOH_RETENTION_ENABLED``).
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from dataclasses import dataclass
@@ -44,6 +43,7 @@ from app.models.invoice import Invoice, InvoiceStatus
 from app.models.organization import Organization
 from app.models.workflow import AuditLog
 from app.services.audit_dispatch import dispatch_audit
+from app.services.sweep_health import SWEEP_RETENTION, run_sweep_loop
 
 logger = logging.getLogger(__name__)
 
@@ -232,16 +232,12 @@ async def run_retention_once(*, now: datetime | None = None) -> RetentionResult:
 
 
 async def run_retention_loop() -> None:
-    """Long-lived loop started in ``main.lifespan``; cancelled on shutdown."""
-    interval = settings.retention_interval_seconds
-    logger.info("[retention] started; interval=%ds", interval)
-    try:
-        while True:
-            try:
-                await run_retention_once()
-            except Exception as exc:  # noqa: BLE001
-                logger.error("[retention] sweep raised: %s", exc.__class__.__name__)
-            await asyncio.sleep(interval)
-    except asyncio.CancelledError:
-        logger.info("[retention] shutting down")
-        raise
+    """Long-lived loop started in ``main.lifespan``; cancelled on shutdown.
+    Body is the shared ``sweep_health.run_sweep_loop``."""
+    await run_sweep_loop(
+        SWEEP_RETENTION,
+        lambda: run_retention_once(),
+        interval_seconds=settings.retention_interval_seconds,
+        log=logger,
+        log_prefix="[retention]",
+    )
