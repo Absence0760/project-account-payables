@@ -2932,9 +2932,21 @@ export const messages = {
 	'vendorStatements.modal.currency': 'Moneda',
 	'vendorStatements.modal.notes': 'Notas',
 	'vendorStatements.modal.statementLines': 'Líneas del estado de cuenta',
-	'vendorStatements.modal.intakeHintPre': 'Pegue las líneas del estado de cuenta del proveedor, ',
-	'vendorStatements.modal.intakeHintOr': 'o',
-	'vendorStatements.modal.intakeHintPost': ' cargue un CSV a continuación.',
+	'vendorStatements.modal.intakeModeLegend': '¿Cómo llega el estado de cuenta?',
+	'vendorStatements.modal.intakeModePaste': 'Escribir las líneas',
+	'vendorStatements.modal.intakeModeFile': 'Cargar un archivo',
+	'vendorStatements.modal.pasteHint':
+		'Una fila por partida abierta del estado de cuenta del proveedor.',
+	'vendorStatements.modal.uploadFile': 'Cargar el estado de cuenta (CSV o PDF)',
+	'vendorStatements.modal.fileHintCsv':
+		'Un CSV se analiza directamente. Necesita una fila de encabezado con una columna de número de factura y/o una columna de importe.',
+	'vendorStatements.modal.fileHintPdf':
+		'Un PDF lo lee el proveedor de extracción de esta organización. Una fila que no pueda leer sin ambigüedad se omite en lugar de adivinarse, por lo que la factura correspondiente aparece como una discrepancia a resolver.',
+	'vendorStatements.modal.fileSelected': 'Seleccionado: {name}',
+	'vendorStatements.modal.fileRemove': 'Quitar',
+	'vendorStatements.modal.fileTooLarge':
+		'Ese archivo supera el límite de carga de {max} MB. Cargue el estado de cuenta en CSV o divídalo.',
+	'vendorStatements.modal.intakeErrorTitle': 'No se pudo conciliar este estado de cuenta',
 	'vendorStatements.modal.linesEditorAria': 'Editor de líneas del estado de cuenta',
 	'vendorStatements.modal.colInvoice': 'Factura n.º',
 	'vendorStatements.modal.colAmount': 'Importe',
@@ -2944,7 +2956,6 @@ export const messages = {
 	'vendorStatements.modal.lineDateAria': 'Línea del estado de cuenta {n} fecha',
 	'vendorStatements.modal.removeLineAria': 'Eliminar la línea del estado de cuenta {n}',
 	'vendorStatements.modal.addLine': '+ Agregar línea',
-	'vendorStatements.modal.uploadCsv': 'O cargue un estado de cuenta en CSV',
 	'vendorStatements.modal.fileAria': 'Archivo del estado de cuenta',
 	'vendorStatements.modal.cancel': 'Cancelar',
 	'vendorStatements.modal.reconcile': 'Conciliar',
@@ -2955,6 +2966,16 @@ export const messages = {
 	'vendorStatements.modal.toastIgnored': 'Línea ignorada',
 	'vendorStatements.modal.toastUpdateFailed': 'No se pudo actualizar la línea',
 	'vendorStatements.modal.refPill': 'Ref. {reference}',
+	'vendorStatements.modal.provenanceTitle': 'De dónde salieron estas líneas',
+	'vendorStatements.modal.provenanceRead':
+		'Leído automáticamente por {provider} con una confianza del {confidence} — {n, plural, one {# partida abierta tomada} other {# partidas abiertas tomadas}} del documento.',
+	'vendorStatements.modal.provenanceSkipNote':
+		'Una fila que el lector no pudo leer sin ambigüedad se omitió en lugar de adivinarse, así que nuestra factura correspondiente aparece abajo como una diferencia a resolver.',
+	'vendorStatements.modal.provenanceCsv': 'Analizado directamente desde el CSV cargado.',
+	'vendorStatements.modal.downloadSource': 'Descargar el estado de cuenta original',
+	'vendorStatements.modal.downloadingSource': 'Descargando…',
+	'vendorStatements.modal.toastDownloadFailed':
+		'No se pudo descargar el estado de cuenta original',
 	'vendorStatements.modal.statLines': '{n, plural, one {# línea} other {# líneas}}',
 	'vendorStatements.modal.statMatched': '{n} conciliadas',
 	'vendorStatements.modal.statMismatch': '{n} discrepancias',

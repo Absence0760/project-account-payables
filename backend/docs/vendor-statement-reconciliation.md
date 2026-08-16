@@ -399,6 +399,49 @@ JSONB carries `source: "extraction"` plus that line's own confidence. A reviewer
 clearing these lines is clearing a machine's reading of a document, and the
 response says so; a CSV / pasted-lines run returns `extraction: null`.
 
+`extraction.line_count` is the number of open items the reader **accepted** off
+the document — deliberately not the run's `summary.line_count`, which also counts
+the `missing_on_their_side` rows built from our own ledger. The reader reports no
+*skipped*-row figure; why that is a design question rather than an oversight is
+in [followups.md](../../docs/followups.md) § The statement reader skips rows
+without saying how many.
+
+## The UI (`/vendor-statements`)
+
+`VendorStatementReconModal` is both the create form and the run detail.
+
+**Intake is an explicit choice**, not inferred from which field the user touched:
+a radio pair swaps between the pasted-lines editor and a CSV-or-PDF file picker.
+Before, both were on screen at once and a file silently won the tiebreak, so
+typed lines could vanish; `notes` (which `POST /upload` does not accept) sat
+above both and was dropped on the upload path. Notes now lives in the paste
+panel, and submit stays disabled until the chosen intake can actually produce a
+statement line — an empty editor used to create a run asserting the supplier
+listed nothing, the same claim the PDF path refuses to invent.
+
+**A refusal is rendered, not toasted.** The 422 reason messages above are the
+actionable half of a fail-closed refusal ("upload a CSV, or configure a vision
+provider"), so they land in a persistent `role="alert"` region on the form
+(`[data-testid="statement-intake-error"]`) with the dialog still open. Oversized
+files are caught client-side against the same 25 MB `storage.MAX_FILE_SIZE` cap
+the route enforces, so the refusal reads as a size problem rather than a failed
+upload.
+
+**The run detail carries its provenance**: a source pill (typed / CSV / PDF), and
+for a machine-read run a panel naming the adapter, its confidence and the number
+of open items taken off the document, plus what the skip-rather-than-guess rule
+means for the diff below it — a skipped row is precisely what becomes a
+`missing_on_their_side` difference. When the document was archived, a Download
+control fetches it through the authenticated client (a bare `<a href>` can't
+carry the Bearer + tenant headers).
+
+Confidence is rendered by the pure `formatExtractionConfidence`
+(`frontend/src/lib/types/vendorStatementRecon.ts`), which clamps and guards
+non-finite input: the figure crosses a network boundary from a provider, and a
+reviewer weighing a machine's reading must never be handed `NaN%` or `140%`.
+Covered by `vendorStatementRecon.test.ts` (vitest) and
+`frontend/tests-e2e/vendor-statements/recon.spec.ts`.
+
 ## Raw-file storage
 
 Both upload paths archive the uploaded document to S3/MinIO

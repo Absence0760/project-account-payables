@@ -9,8 +9,13 @@
 	import {
 		RECON_STATUS_LABELS,
 		RECON_CLASSIFICATION_LABELS,
-		RECON_RESOLUTION_LABELS
+		RECON_RESOLUTION_LABELS,
+		RECON_SOURCE_FORMAT_LABELS,
+		formatExtractionConfidence,
+		isMachineRead,
+		sourceStatementFilename
 	} from '$lib/types/vendorStatementRecon';
+	import type { ReconSourceFormat } from '$lib/types/vendorStatementRecon';
 	import { auth } from '$lib/stores/auth.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
@@ -22,7 +27,8 @@
 		createReconciliation,
 		uploadReconciliation,
 		resolveLine,
-		getReconciliation
+		getReconciliation,
+		downloadSourceStatement
 	} from '$lib/api/vendorStatementRecon';
 
 	interface VendorOption {
@@ -58,9 +64,25 @@
 	let statement_reference = $state('');
 	let currency = $state('USD');
 	let notes = $state('');
-	// Intake choice: pasted lines (default) or a CSV file upload.
+	// Intake choice, explicit rather than inferred. Both paths used to be visible
+	// at once with "a file wins" as the tiebreak, so a user who typed lines AND
+	// picked a file silently lost the lines. The mode is now the single answer to
+	// "where do these statement lines come from".
+	let intakeMode = $state<'paste' | 'file'>('paste');
 	let file = $state<File | null>(null);
 	let lines = $state<StatementLineInput[]>([{ invoice_number: '', amount: null, invoice_date: '' }]);
+
+	// Mirrors `storage.MAX_FILE_SIZE` (25 MB). The backend is authoritative and
+	// 413s regardless — this only spares the user a 25 MB upload that can't land,
+	// and lets the refusal read as a size problem instead of a network failure.
+	const MAX_UPLOAD_MB = 25;
+
+	// The backend refuses a statement it cannot read HONESTLY (a scan with no text
+	// layer, a multi-money-column layout, a CSV with no usable header) and returns
+	// a specific, PII-free explanation. That explanation is the whole point of the
+	// refusal, so it lands in a persistent inline region — a toast that fades
+	// leaves the user with a form that just didn't work.
+	let intakeError = $state<string | null>(null);
 
 	let saving = $state(false);
 	let busyLineId = $state<string | null>(null);
@@ -82,19 +104,65 @@
 
 	function onFile(e: Event) {
 		const input = e.currentTarget as HTMLInputElement;
-		file = input.files?.[0] ?? null;
+		const picked = input.files?.[0] ?? null;
+		intakeError = null;
+		if (picked && picked.size > MAX_UPLOAD_MB * 1024 * 1024) {
+			file = null;
+			input.value = '';
+			intakeError = m('vendorStatements.modal.fileTooLarge', { max: MAX_UPLOAD_MB });
+			return;
+		}
+		file = picked;
+	}
+
+	function clearFile() {
+		file = null;
+		intakeError = null;
+	}
+
+	function setIntakeMode(mode: 'paste' | 'file') {
+		intakeMode = mode;
+		intakeError = null;
+		// Switching to the typed path drops the picked file. The `{#if}` destroys
+		// the file input, so keeping the File would leave our "Selected: x.csv"
+		// chip contradicting a picker that reads "No file chosen" on the way back —
+		// and the mode is supposed to be the single answer to where these lines
+		// come from.
+		if (mode === 'paste') file = null;
 	}
 
 	function handleError(err: unknown, fallback: string) {
 		toast(err instanceof Error ? err.message : fallback, 'error');
 	}
 
+	// The pasted-lines path needs at least one row carrying something to match
+	// on. Submitting an empty editor would create a run asserting the supplier
+	// listed nothing — which reads as "we owe them nothing", the same claim the
+	// PDF path deliberately refuses to invent.
+	const payloadLines = $derived(
+		lines
+			.filter((l) => (l.invoice_number ?? '').toString().trim() || l.amount != null)
+			.map((l) => ({
+				invoice_number: (l.invoice_number ?? '').toString().trim() || null,
+				invoice_date: l.invoice_date || null,
+				amount: l.amount ?? null,
+				status: l.status ?? null
+			}))
+	);
+
+	const canSubmit = $derived(
+		!!vendor_id &&
+			!!statement_date &&
+			(intakeMode === 'file' ? file !== null : payloadLines.length > 0)
+	);
+
 	async function handleCreate() {
-		if (!vendor_id || !statement_date) return;
+		if (!canSubmit) return;
 		saving = true;
+		intakeError = null;
 		try {
 			let saved: Reconciliation;
-			if (file) {
+			if (intakeMode === 'file' && file) {
 				saved = await uploadReconciliation(file, {
 					vendor_id,
 					statement_date,
@@ -102,14 +170,6 @@
 					currency: currency.trim() || undefined
 				});
 			} else {
-				const payloadLines = lines
-					.filter((l) => (l.invoice_number ?? '').toString().trim() || l.amount != null)
-					.map((l) => ({
-						invoice_number: (l.invoice_number ?? '').toString().trim() || null,
-						invoice_date: l.invoice_date || null,
-						amount: l.amount ?? null,
-						status: l.status ?? null
-					}));
 				saved = await createReconciliation({
 					vendor_id,
 					statement_date,
@@ -123,7 +183,12 @@
 			onsaved(saved);
 			onclose();
 		} catch (err) {
-			handleError(err, m('vendorStatements.modal.toastCreateFailed'));
+			// 422 (unreadable statement) / 413 (too large) / 404 (vendor out of
+			// scope) all arrive here carrying the backend's own explanation.
+			intakeError =
+				err instanceof Error && err.message
+					? err.message
+					: m('vendorStatements.modal.toastCreateFailed');
 		} finally {
 			saving = false;
 		}
@@ -171,6 +236,34 @@
 	const status = $derived<ReconStatus>(detail?.status ?? 'open');
 	const sortedLines = $derived(detail?.lines ?? []);
 
+	// An unrecognised source format renders its raw value rather than a blank
+	// pill — a new backend format would otherwise disappear silently.
+	const sourceLabel = $derived(
+		detail
+			? (RECON_SOURCE_FORMAT_LABELS[detail.source_format as ReconSourceFormat] ??
+					detail.source_format)
+			: ''
+	);
+
+	// --- Source document ---
+	let downloading = $state(false);
+
+	async function downloadSource() {
+		if (!detail) return;
+		downloading = true;
+		try {
+			await downloadSourceStatement(detail.id, sourceStatementFilename(detail));
+		} catch {
+			// Deliberately NOT the thrown message: `api.downloadBlob` raises a bare
+			// transport string ("Failed to load file: 404"), which is not an
+			// explanation a clerk can act on — unlike the create path, where the
+			// backend's own 422 reason IS the actionable part.
+			toast(m('vendorStatements.modal.toastDownloadFailed'), 'error');
+		} finally {
+			downloading = false;
+		}
+	}
+
 	const modalTitle = $derived(
 		isCreate
 			? m('vendorStatements.modal.titleCreate')
@@ -208,19 +301,38 @@
 					<span>{m('vendorStatements.modal.currency')}</span>
 					<input type="text" bind:value={currency} maxlength="3" disabled={!canEdit} />
 				</label>
-				<label class="full-width">
-					<span>{m('vendorStatements.modal.notes')}</span>
-					<input type="text" bind:value={notes} disabled={!canEdit} />
-				</label>
 			</div>
 
+			<fieldset class="intake-mode">
+				<legend>{m('vendorStatements.modal.intakeModeLegend')}</legend>
+				<label>
+					<input
+						type="radio"
+						name="intake-mode"
+						value="paste"
+						checked={intakeMode === 'paste'}
+						onchange={() => setIntakeMode('paste')}
+						disabled={!canEdit}
+					/>
+					<span>{m('vendorStatements.modal.intakeModePaste')}</span>
+				</label>
+				<label>
+					<input
+						type="radio"
+						name="intake-mode"
+						value="file"
+						checked={intakeMode === 'file'}
+						onchange={() => setIntakeMode('file')}
+						disabled={!canEdit}
+					/>
+					<span>{m('vendorStatements.modal.intakeModeFile')}</span>
+				</label>
+			</fieldset>
+
+			{#if intakeMode === 'paste'}
 			<div class="intake-section">
 				<div class="intake-title">{m('vendorStatements.modal.statementLines')}</div>
-				<p class="intake-hint">
-					{m('vendorStatements.modal.intakeHintPre')}<strong
-						>{m('vendorStatements.modal.intakeHintOr')}</strong
-					>{m('vendorStatements.modal.intakeHintPost')}
-				</p>
+				<p class="intake-hint">{m('vendorStatements.modal.pasteHint')}</p>
 
 				<div class="lines-editor" aria-label={m('vendorStatements.modal.linesEditorAria')}>
 					<div class="line-head">
@@ -272,24 +384,52 @@
 					{/if}
 				</div>
 
+				<label class="note-field">
+					<span>{m('vendorStatements.modal.notes')}</span>
+					<input type="text" bind:value={notes} disabled={!canEdit} />
+				</label>
+			</div>
+			{:else}
+			<div class="intake-section">
+				<div class="intake-title">{m('vendorStatements.modal.uploadFile')}</div>
+				<p class="intake-hint">{m('vendorStatements.modal.fileHintCsv')}</p>
+				<p class="intake-hint">{m('vendorStatements.modal.fileHintPdf')}</p>
+
 				<label class="file-label">
-					<span>{m('vendorStatements.modal.uploadCsv')}</span>
+					<span>{m('vendorStatements.modal.fileAria')}</span>
 					<input
 						type="file"
-						accept=".csv,text/csv,application/pdf"
+						accept=".csv,.pdf,text/csv,application/pdf"
 						onchange={onFile}
 						aria-label={m('vendorStatements.modal.fileAria')}
 						disabled={!canEdit}
 					/>
 				</label>
+
+				{#if file}
+					<div class="file-chosen" data-testid="statement-file-chosen">
+						<span class="file-name">{m('vendorStatements.modal.fileSelected', { name: file.name })}</span>
+						<button type="button" class="file-clear" onclick={clearFile} disabled={!canEdit}>
+							{m('vendorStatements.modal.fileRemove')}
+						</button>
+					</div>
+				{/if}
 			</div>
+			{/if}
+
+			{#if intakeError}
+				<div class="intake-error" role="alert" data-testid="statement-intake-error">
+					<strong>{m('vendorStatements.modal.intakeErrorTitle')}</strong>
+					<span>{intakeError}</span>
+				</div>
+			{/if}
 
 			<div class="modal-footer">
 				<button type="button" class="btn-cancel" onclick={onclose}
 					>{m('vendorStatements.modal.cancel')}</button
 				>
 				{#if canEdit}
-					<button type="submit" class="btn-primary" disabled={saving || !vendor_id || !statement_date}>
+					<button type="submit" class="btn-primary" disabled={saving || !canSubmit}>
 						{saving
 							? m('vendorStatements.modal.reconciling')
 							: m('vendorStatements.modal.reconcile')}
@@ -307,7 +447,41 @@
 					>{m('vendorStatements.modal.refPill', { reference: detail.statement_reference })}</span
 				>
 			{/if}
+			<span class="meta-pill" data-testid="statement-source">{sourceLabel}</span>
 		</div>
+
+		<!-- Provenance: how these lines got here, and the supplier's own document.
+		     A reviewer clearing a machine-read run is clearing a model's reading of
+		     a PDF, and the run says so rather than presenting the lines as fact. -->
+		{#if isMachineRead(detail) || detail.has_source_file}
+			<div class="provenance" data-testid="statement-provenance">
+				<div class="prov-title">{m('vendorStatements.modal.provenanceTitle')}</div>
+				{#if detail.extraction}
+					<p class="prov-line">
+						{m('vendorStatements.modal.provenanceRead', {
+							provider: detail.extraction.provider,
+							confidence: formatExtractionConfidence(detail.extraction.confidence),
+							n: detail.extraction.line_count
+						})}
+					</p>
+					<p class="prov-note">{m('vendorStatements.modal.provenanceSkipNote')}</p>
+				{:else if detail.source_format === 'csv'}
+					<p class="prov-line">{m('vendorStatements.modal.provenanceCsv')}</p>
+				{/if}
+				{#if detail.has_source_file}
+					<button
+						type="button"
+						class="prov-download"
+						onclick={downloadSource}
+						disabled={downloading}
+					>
+						{downloading
+							? m('vendorStatements.modal.downloadingSource')
+							: m('vendorStatements.modal.downloadSource')}
+					</button>
+				{/if}
+			</div>
+		{/if}
 
 		<!-- Summary counts -->
 		<div class="stat-chips">
@@ -458,6 +632,53 @@
 		border-radius: 8px;
 		background: var(--bg);
 		color: var(--text-muted);
+	}
+
+	/* --- Provenance --- */
+	.provenance {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 4px;
+		margin-bottom: 12px;
+		padding: 10px 12px;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		background: var(--bg);
+	}
+	.prov-title {
+		font-size: 0.78rem;
+		font-weight: 600;
+		color: var(--text);
+	}
+	.prov-line {
+		margin: 0;
+		font-size: 0.78rem;
+		color: var(--text);
+	}
+	.prov-note {
+		margin: 0;
+		font-size: 0.74rem;
+		color: var(--text-muted);
+	}
+	.prov-download {
+		margin-top: 4px;
+		border: 1px solid var(--border);
+		background: transparent;
+		color: var(--text-muted);
+		border-radius: 5px;
+		padding: 4px 12px;
+		cursor: pointer;
+		font-family: inherit;
+		font-size: 0.78rem;
+	}
+	.prov-download:hover:not(:disabled) {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+	.prov-download:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
 	}
 
 	/* --- Summary stat chips --- */
@@ -708,5 +929,104 @@
 		margin-top: 14px;
 		font-size: 0.82rem;
 		color: var(--text-muted);
+	}
+
+	.note-field {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		margin-top: 14px;
+		font-size: 0.82rem;
+		color: var(--text-muted);
+	}
+	.note-field input {
+		padding: 7px 9px;
+		border-radius: 5px;
+		border: 1px solid var(--border);
+		background: var(--bg);
+		color: var(--text);
+		font-family: inherit;
+		font-size: 0.88rem;
+	}
+
+	/* --- Intake mode picker --- */
+	.intake-mode {
+		display: flex;
+		align-items: center;
+		gap: 18px;
+		flex-wrap: wrap;
+		margin: 16px 0 0;
+		padding: 0;
+		border: 0;
+	}
+	.intake-mode legend {
+		padding: 0;
+		font-size: 0.8rem;
+		font-weight: 600;
+		color: var(--text);
+		margin-bottom: 6px;
+	}
+	.intake-mode label {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 0.84rem;
+		color: var(--text);
+		cursor: pointer;
+	}
+	.intake-mode input:disabled + span {
+		opacity: 0.6;
+	}
+
+	/* --- Chosen file --- */
+	.file-chosen {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		margin-top: 8px;
+		flex-wrap: wrap;
+	}
+	.file-name {
+		font-size: 0.8rem;
+		color: var(--text);
+		word-break: break-all;
+	}
+	.file-clear {
+		border: 1px solid var(--border);
+		background: transparent;
+		color: var(--text-muted);
+		border-radius: 5px;
+		padding: 3px 10px;
+		cursor: pointer;
+		font-family: inherit;
+		font-size: 0.76rem;
+	}
+	.file-clear:hover:not(:disabled) {
+		border-color: #e04040;
+		color: #e04040;
+	}
+	.file-clear:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
+	/* --- Inline intake refusal ---
+	   Persistent by design: the backend refuses a statement it can't read
+	   honestly and explains why, and that explanation is the actionable part. */
+	.intake-error {
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+		margin-top: 14px;
+		padding: 10px 12px;
+		border: 1px solid rgba(224, 64, 64, 0.4);
+		border-radius: 6px;
+		background: rgba(224, 64, 64, 0.08);
+		font-size: 0.82rem;
+		color: var(--text);
+	}
+	.intake-error strong {
+		color: #e04040;
+		font-size: 0.8rem;
 	}
 </style>

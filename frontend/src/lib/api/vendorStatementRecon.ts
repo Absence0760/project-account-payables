@@ -60,6 +60,32 @@ export function deleteReconciliation(id: string): Promise<void> {
 	return api.delete(`/api/vendor-statements/${id}`);
 }
 
+// The authenticated path for the archived supplier document. The shared `api`
+// client adds the Bearer + tenant headers, so a bare `<a href>` can't reach it —
+// callers go through `downloadSourceStatement` below.
+export function sourceStatementPath(id: string): string {
+	return `/api/vendor-statements/${id}/file`;
+}
+
+// Fetch + trigger a browser download of the statement this run was built from.
+// Mirrors `downloadPositivePayFile`. A run whose document was never archived
+// (pasted-lines path, or a best-effort storage miss) 404s — the caller gates on
+// `has_source_file` and surfaces the failure rather than swallowing it.
+export async function downloadSourceStatement(id: string, filename: string): Promise<void> {
+	const blob = await api.downloadBlob(sourceStatementPath(id));
+	const url = URL.createObjectURL(blob);
+	try {
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = filename;
+		document.body.appendChild(a);
+		a.click();
+		a.remove();
+	} finally {
+		URL.revokeObjectURL(url);
+	}
+}
+
 // Resolve / ignore / un-resolve a single reconciliation line.
 export function resolveLine(
 	reconciliationId: string,
