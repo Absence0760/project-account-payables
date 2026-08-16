@@ -7,6 +7,7 @@
 	import { auth } from '$lib/stores/auth.svelte';
 	import { adminStore } from '$lib/stores/admin.svelte';
 	import { api } from '$lib/api';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
@@ -590,6 +591,23 @@
 	let lineItemsDirty = $state(false);
 	let savingLines = $state(false);
 
+	// The line-item table is an EDITOR over a fetched list, and three things
+	// load it: the modal's open `$effect`, the extraction poll when it finishes,
+	// and `saveLineItems` afterwards. Any of those can be in flight while the
+	// user is typing into a cell — and a load resolving then replaces the whole
+	// array, wiping unsaved edits while `lineItemsDirty` stays set on rows that
+	// no longer hold them. `markLineItemsDirty()` retires the in-flight load
+	// before every local edit. See `frontend/CLAUDE.md` § Sequencing list
+	// fetches.
+	const lineItemsSequence = createRequestSequencer();
+
+	/** Flag an unsaved local edit — and retire any load already in flight,
+	 *  whose response predates it. */
+	function markLineItemsDirty() {
+		lineItemsSequence.supersedeInFlight();
+		lineItemsDirty = true;
+	}
+
 	/**
 	 * Outcome of `PUT /api/invoices/{id}/line-items`. The backend reconciles
 	 * the re-summed lines against the header and reports the verdict here —
@@ -666,7 +684,7 @@
 
 	function updateLineItem(idx: number, field: string, value: unknown) {
 		lineItems = lineItems.map((li, i) => i === idx ? { ...li, [field]: value } : li);
-		lineItemsDirty = true;
+		markLineItemsDirty();
 	}
 
 	function addLineItem() {
@@ -681,12 +699,12 @@
 			total: null,
 			gl_account: gl_account || null,
 		}];
-		lineItemsDirty = true;
+		markLineItemsDirty();
 	}
 
 	function removeLineItem(idx: number) {
 		lineItems = lineItems.filter((_, i) => i !== idx);
-		lineItemsDirty = true;
+		markLineItemsDirty();
 	}
 
 	async function saveLineItems() {
@@ -908,8 +926,12 @@
 	}
 
 	async function loadLineItems() {
+		const token = lineItemsSequence.start();
 		try {
-			lineItems = await api.get<LineItem[]>(`/api/invoices/${invoice.id}/line-items`);
+			const fetched = await api.get<LineItem[]>(`/api/invoices/${invoice.id}/line-items`);
+			// Superseded by a newer load, or by an unsaved local edit.
+			if (!lineItemsSequence.canCommit(token)) return;
+			lineItems = fetched;
 		} catch {
 			// non-critical
 		}
