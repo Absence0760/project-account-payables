@@ -13,6 +13,17 @@ from app.models.invoice import Invoice, InvoiceStatus
 from app.models.workflow import WorkflowDefinition, WorkflowInstance, WorkflowStep
 from app.services.audit_dispatch import dispatch_audit
 
+# Re-exported for callers that already import the vocabulary from the engine.
+# The definitions live in workflow_step_types — see the note below STEP_TYPES.
+from app.services.workflow_step_types import (
+    BUILDER_STEP_TYPES,  # noqa: F401
+    CANONICAL_STEP_TYPES,
+    KNOWN_STEP_TYPES,  # noqa: F401
+    canonical_step_index,
+    is_known_step_type,  # noqa: F401
+    resolve_step_type,
+)
+
 _log = logging.getLogger(__name__)
 
 # ---------- valid status transitions ----------
@@ -48,32 +59,12 @@ VALID_TRANSITIONS: dict[InvoiceStatus, set[InvoiceStatus]] = {
     InvoiceStatus.failed: {InvoiceStatus.pending, InvoiceStatus.sending_to_erp},
 }
 
-# Map step index → step type. This ordered list models the *canonical* linear
-# pipeline that drives the invoice state machine; its order is load-bearing
-# (`STEP_TYPES.index(...)` resolves a step number), so NEW builder step types are
-# deliberately NOT appended here.
-STEP_TYPES = ["extraction", "approval", "erp_export", "done"]
-
-# NEW no-code builder step types (config-only, stored in steps_config JSONB).
-# They orchestrate/branch but don't drive VALID_TRANSITIONS — see
-# services/workflow_builder.py. Registered here only so the engine recognises a
-# definition that contains them as valid rather than rejecting it.
-BUILDER_STEP_TYPES = ["condition", "parallel", "webhook", "email", "delay"]
-
-# The full set of step types the engine accepts in a steps_config definition:
-# the canonical pipeline types plus the builder types.
-KNOWN_STEP_TYPES = set(STEP_TYPES) | set(BUILDER_STEP_TYPES)
-
-# Backwards-compatible aliases for old step type names
-_STEP_TYPE_ALIASES = {"upload": "extraction", "review": "approval", "erp_push": "erp_export"}
-
-
-def is_known_step_type(step_type: str) -> bool:
-    """True if ``step_type`` is a canonical pipeline step, a legacy alias, or a
-    no-code builder step type. The orchestration uses this to accept a workflow
-    definition containing builder steps instead of rejecting it."""
-    resolved = _STEP_TYPE_ALIASES.get(step_type, step_type)
-    return resolved in KNOWN_STEP_TYPES
+# The step-type vocabulary lives in ONE module (services/workflow_step_types.py)
+# and is re-exported here for the many callers that already import it from the
+# engine. Do NOT redeclare either tuple: they were hand-copied into this module
+# and into workflow_builder with no cross-check, which is how the engine ended up
+# validating a definition against nothing at all.
+STEP_TYPES = CANONICAL_STEP_TYPES
 
 
 DEFAULT_STEPS_CONFIG = {
@@ -491,8 +482,15 @@ async def create_workflow_step(
     # step_type == "approval") would silently miss alias-named rows. Storing the
     # resolved name keeps the persisted data consistent across all call sites
     # (and matches what scripts/seed.py writes).
-    resolved = _STEP_TYPE_ALIASES.get(step_type, step_type)
-    step_number = STEP_TYPES.index(resolved) + 1
+    #
+    # `canonical_step_index` is the guard: it refuses a no-code builder type
+    # (orchestration config, no place in the pipeline) and an unrecognised one
+    # BY NAME, before anything is added to the session. The bare
+    # `STEP_TYPES.index(resolved)` this replaces raised
+    # `ValueError: list.index(x): x not in list` — a 500 naming neither the
+    # value nor the reason.
+    resolved = resolve_step_type(step_type)
+    step_number = canonical_step_index(resolved)
     step = WorkflowStep(
         correlation_id=instance.correlation_id,
         instance_id=instance.id,
@@ -536,9 +534,13 @@ async def advance_workflow(
     assigned_to: uuid.UUID | None = None,
 ) -> WorkflowStep:
     """Complete the current step and create the next one."""
+    # Resolve BEFORE closing the current step: this used to run after
+    # `complete_current_step`, so a step type the pipeline can't drive left the
+    # current step closed with no successor opened — a permanently stranded
+    # instance — on its way to raising.
+    resolved_next = resolve_step_type(next_step_type)
+    next_index = canonical_step_index(resolved_next) - 1
     await complete_current_step(db, instance, action)
-    resolved_next = _STEP_TYPE_ALIASES.get(next_step_type, next_step_type)
-    next_index = STEP_TYPES.index(resolved_next)
     instance.current_step = next_index
     new_step = await create_workflow_step(db, instance, next_step_type, assigned_to=assigned_to)
     return new_step

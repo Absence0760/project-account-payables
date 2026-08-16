@@ -34,11 +34,9 @@ import logging
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from app.services.workflow_step_types import BUILDER_STEP_TYPES, is_known_step_type
 
-# The five NEW builder step types. The canonical engine types
-# (extraction/approval/erp_export/done) are NOT in this list.
-BUILDER_STEP_TYPES = ["condition", "parallel", "webhook", "email", "delay"]
+logger = logging.getLogger(__name__)
 
 # condition rule vocabulary — kept in sync with the spec + the frontend types.
 CONDITION_FIELDS = {"amount", "currency", "vendor_id", "gl_account", "cost_center", "department"}
@@ -522,15 +520,25 @@ _VALIDATORS = {
 
 
 def validate_builder_steps(steps: list[dict]) -> list[str]:
-    """Validate the NEW builder step types' config across a steps list.
+    """Validate a steps list before it is persisted as a workflow definition.
 
-    Returns a list of human-readable error strings (empty list = valid). Only
-    the five builder types are inspected; canonical engine steps
-    (extraction/approval/erp_export/done) are passed through untouched. Also
-    cross-checks every ``condition`` ``goto`` target against the set of step
-    numbers actually present, so a dangling branch is caught before persist.
+    Returns a list of human-readable error strings (empty list = valid).
 
-    Used by Worker B's import + create paths.
+    Two checks, in order:
+
+    1. **Every step's ``type`` must be one the platform recognises** — a
+       canonical engine step, a legacy alias, or one of the five builder types
+       (``is_known_step_type``, the shared vocabulary). This is the gate that
+       was missing: ``POST /api/workflows/import`` takes ``steps_config`` as a
+       free-form dict, so it is the one save path a Pydantic ``Literal`` does
+       not already constrain, and an unrecognised type used to persist happily
+       and then be *silently ignored* at runtime — a typo'd ``"aproval"`` step
+       reads to the engine as "no approval step configured", which drops the
+       approval gate off the workflow rather than failing loudly.
+    2. **Builder-step config shape** — only the five builder types are
+       inspected here; canonical engine steps carry no builder config. Also
+       cross-checks every ``condition`` ``goto`` target against the set of step
+       numbers actually present, so a dangling branch is caught before persist.
     """
     errors: list[str] = []
     if not isinstance(steps, list):
@@ -543,8 +551,15 @@ def validate_builder_steps(steps: list[dict]) -> list[str]:
             errors.append("each step must be an object")
             continue
         step_type = step.get("type")
+        if not is_known_step_type(step_type):
+            errors.append(
+                f"step {step.get('number')}: unknown step type {step_type!r} "
+                "— a step type the platform does not recognise would be ignored "
+                "at runtime, silently removing that step from the workflow"
+            )
+            continue
         if step_type not in BUILDER_STEP_TYPES:
-            continue  # canonical step — not this validator's concern
+            continue  # canonical step — no builder config to check
         number = step.get("number")
         name = step.get("name") or step_type
         label = f"step {number} ('{name}')"
