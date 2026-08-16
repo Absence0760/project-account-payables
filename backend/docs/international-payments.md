@@ -40,7 +40,11 @@ returns a frozen `CorridorChoice`. Resolution order:
    (otherwise a cross-border payment shipped out on a domestic rail + a
    foreign currency and failed at the processor — issue #123). Requirement
    flags (`requires_swift`, `requires_iban`, `requires_fx`) are still derived
-   from the corridor shape so validation isn't skipped.
+   from the corridor shape so validation isn't skipped. An honoured override is
+   normalised (trimmed + lower-cased) through the same
+   `payment_methods.normalize_payment_method` the honour gate uses, so the rail
+   that reaches `CorridorChoice.method` — and from there `Payment.method` — is
+   always canonical.
 2. Cross-currency → `international_wire`, FX leg required, SWIFT
    required, IBAN required iff destination is in the SEPA zone.
 3. Same-currency USD to the US → `ach`.

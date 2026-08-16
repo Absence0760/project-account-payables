@@ -23,7 +23,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from app.services.payment_methods import is_international_payment_method
+from app.services.payment_methods import (
+    is_international_payment_method,
+    normalize_payment_method,
+)
 from app.utils.banking import is_sepa_country
 
 # NACHA Global ACH supports USD-originated cross-border ACH to a small
@@ -169,7 +172,17 @@ def pick_corridor(
     if honor_override:
         # Caller is overriding — derive only the requirement flags
         # from the corridor's shape. Fee is a best-effort lookup.
-        method = requested_method.lower()
+        #
+        # Normalised through the SAME helper the gate above uses, not a bare
+        # `.lower()`. The two disagreeing on whitespace is not cosmetic: a
+        # padded `" sepa "` cleared the gate (which trims) and was then
+        # compared un-trimmed here, so it missed `CORRIDOR_OVERRIDE_FEES` and
+        # got priced at the international-wire anchor, missed the
+        # `method == "sepa"` test and so dropped `requires_iban` — skipping the
+        # structural validation that refuses a payment whose vendor bank row
+        # has no IBAN — and was stamped onto `Payment.method` verbatim, where
+        # every downstream rail classification then reads it as unknown.
+        method = normalize_payment_method(requested_method)
         fee = CORRIDOR_OVERRIDE_FEES.get(method, _FEE_INTL_WIRE)
         if method == "wire" and requires_fx:
             fee = _FEE_INTL_WIRE

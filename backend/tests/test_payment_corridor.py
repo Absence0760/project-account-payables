@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from app.services.payment_corridor import pick_corridor
+from app.services.payment_corridor import CORRIDOR_OVERRIDE_FEES, pick_corridor
 
 # ---------------------------------------------------------------------------
 # Cross-currency → international wire + FX leg.
@@ -201,6 +201,58 @@ def test_requested_method_virtual_card_does_not_require_swift():
     )
     assert c.method == "virtual_card"
     assert c.requires_swift is False
+
+
+# ---------------------------------------------------------------------------
+# An honoured override is normalised through the SAME helper the honour gate
+# uses. The gate trims + lower-cases; the branch below used a bare `.lower()`,
+# so a whitespace-padded rail cleared the gate and was then compared
+# un-trimmed — three consequences, the third being a real money-path hole.
+# ---------------------------------------------------------------------------
+
+
+def test_padded_override_still_requires_the_iban_the_rail_needs():
+    """The one that matters: `" sepa "` missed the `method == "sepa"` test, so
+    the corridor came back with `requires_iban=False` and
+    `prepare_international_payment` skipped the structural check that refuses a
+    payment whose vendor bank row has no IBAN."""
+    c = pick_corridor(
+        source_currency="EUR",
+        target_currency="EUR",
+        target_country="DE",
+        requested_method="  SePa  ",
+    )
+    assert c.method == "sepa"
+    assert c.requires_iban is True
+
+
+def test_padded_override_is_priced_at_its_own_fee_anchor():
+    """`" ach "` missed `CORRIDOR_OVERRIDE_FEES` and fell back to the
+    international-wire anchor — a 25x overstatement on a domestic rail."""
+    c = pick_corridor(
+        source_currency="USD",
+        target_currency="USD",
+        target_country="US",
+        requested_method=" ach ",
+    )
+    assert c.method == "ach"
+    assert c.expected_fee_pct == CORRIDOR_OVERRIDE_FEES["ach"]
+
+
+def test_padded_override_is_not_stamped_onto_the_payment_verbatim():
+    """`CorridorChoice.method` becomes `Payment.method`, which every rail
+    classification (1099 treatment, geography) then reads. An un-normalised
+    value reads as an unknown rail everywhere downstream."""
+    for raw in (" wire ", "WIRE", "\twire\n"):
+        assert (
+            pick_corridor(
+                source_currency="USD",
+                target_currency="USD",
+                target_country="US",
+                requested_method=raw,
+            ).method
+            == "wire"
+        )
 
 
 # ---------------------------------------------------------------------------
