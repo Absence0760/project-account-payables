@@ -1111,6 +1111,8 @@ export const en = {
 	'expenseModal.field.paymentMethod': 'Payment Method',
 	'expenseModal.field.glAccount': 'GL Account',
 	'expenseModal.field.glSelect': 'Select…',
+	'expenseModal.field.mileageMiles': 'Mileage (miles)',
+	'expenseModal.field.mileageMilesPlaceholder': 'Leave blank if not a trip',
 	'expenseModal.field.reimbursable': 'Reimbursable',
 	'expenseModal.field.description': 'Description',
 	'expenseModal.receipt.title': 'Receipt',

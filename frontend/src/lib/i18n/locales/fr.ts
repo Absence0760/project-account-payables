@@ -1074,6 +1074,8 @@ export const messages = {
 	'expenseModal.field.paymentMethod': 'Mode de paiement',
 	'expenseModal.field.glAccount': 'Compte comptable',
 	'expenseModal.field.glSelect': 'Sélectionner…',
+	'expenseModal.field.mileageMiles': 'Kilométrage (miles)',
+	'expenseModal.field.mileageMilesPlaceholder': 'Laisser vide si ce n’est pas un trajet',
 	'expenseModal.field.reimbursable': 'Remboursable',
 	'expenseModal.field.description': 'Description',
 	'expenseModal.receipt.title': 'Reçu',

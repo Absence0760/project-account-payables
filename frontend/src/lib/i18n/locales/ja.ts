@@ -1070,6 +1070,8 @@ export const messages = {
 	'expenseModal.field.paymentMethod': '支払方法',
 	'expenseModal.field.glAccount': '勘定科目',
 	'expenseModal.field.glSelect': '選択…',
+	'expenseModal.field.mileageMiles': '走行距離（マイル）',
+	'expenseModal.field.mileageMilesPlaceholder': '移動でない場合は空欄',
 	'expenseModal.field.reimbursable': '精算対象',
 	'expenseModal.field.description': '説明',
 	'expenseModal.receipt.title': '領収書',
