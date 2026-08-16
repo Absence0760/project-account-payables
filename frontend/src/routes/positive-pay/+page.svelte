@@ -92,16 +92,26 @@
 		return params;
 	}
 
-	// Read the URL untracked — syncUrl() writes it via replaceState inside a
-	// filter $effect; a tracked $page.url read would self-trigger the effect
-	// (Svelte effect_update_depth_exceeded loop).
+	// Reflect the live filter state into the URL. EVERY read in here is
+	// untracked, `$page.url` included, because syncUrl() is a WRITER called
+	// from the filter `$effect`s below — not a source of dependencies:
+	//   - the URL read would self-trigger the effect that writes it via
+	//     replaceState (Svelte effect_update_depth_exceeded);
+	//   - a tracked `search` read would make every filter effect depend on
+	//     `search`, so each keystroke re-fired it: an immediate, un-debounced
+	//     load racing the dedicated 300ms debounce timer. That is issue #168,
+	//     fixed on /invoices, /payments and /vendors but never carried to this
+	//     page. Each effect declares the filters it actually depends on by
+	//     reading them directly, so nothing here needs to be tracked.
 	function syncUrl() {
-		const url = new URL(untrack(() => $page.url));
-		if (typeFilter !== 'all') url.searchParams.set('file_type', typeFilter);
-		else url.searchParams.delete('file_type');
-		if (search.trim()) url.searchParams.set('search', search.trim());
-		else url.searchParams.delete('search');
-		replaceState(`${url.pathname}${url.search}`, {});
+		untrack(() => {
+			const url = new URL($page.url);
+			if (typeFilter !== 'all') url.searchParams.set('file_type', typeFilter);
+			else url.searchParams.delete('file_type');
+			if (search.trim()) url.searchParams.set('search', search.trim());
+			else url.searchParams.delete('search');
+			replaceState(`${url.pathname}${url.search}`, {});
+		});
 	}
 
 	// Sequences `load` (filter change and load-more alike — one shared counter,

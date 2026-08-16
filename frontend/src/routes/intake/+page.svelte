@@ -76,26 +76,44 @@
 	const openCount = $derived(items.filter((i) => i.status === 'open').length);
 	const reviewCount = $derived(items.filter((i) => i.status === 'in_review').length);
 
+	// `untrack` on the `search` read: buildParams() is called from `load()`,
+	// which the filter `$effect` below calls directly — and Svelte tracks reads
+	// transitively through called functions, so a plain read here would make
+	// that effect depend on `search` and re-fire it on every keystroke,
+	// un-debounced, racing the dedicated 300ms timer (issue #168). `untrack`
+	// still reads the CURRENT value, so the request carries the live search
+	// term; it just stops the read registering as the caller's dependency.
 	function buildParams() {
 		const params: { status?: string; type?: string; search?: string } = {};
 		if (statusFilter !== 'all') params.status = statusFilter;
 		if (typeFilter !== 'all') params.type = typeFilter;
-		if (search.trim()) params.search = search.trim();
+		const currentSearch = untrack(() => search);
+		if (currentSearch.trim()) params.search = currentSearch.trim();
 		return params;
 	}
 
-	// Read the URL untracked — syncUrl() writes it via replaceState inside a
-	// filter $effect; a tracked $page.url read would self-trigger the effect
-	// (Svelte effect_update_depth_exceeded loop).
+	// Reflect the live filter state into the URL. EVERY read in here is
+	// untracked, `$page.url` included, because syncUrl() is a WRITER called
+	// from the filter `$effect`s below — not a source of dependencies:
+	//   - the URL read would self-trigger the effect that writes it via
+	//     replaceState (Svelte effect_update_depth_exceeded);
+	//   - a tracked `search` read would make every filter effect depend on
+	//     `search`, so each keystroke re-fired it: an immediate, un-debounced
+	//     load racing the dedicated 300ms debounce timer. That is issue #168,
+	//     fixed on /invoices, /payments and /vendors but never carried to this
+	//     page. Each effect declares the filters it actually depends on by
+	//     reading them directly, so nothing here needs to be tracked.
 	function syncUrl() {
-		const url = new URL(untrack(() => $page.url));
-		if (statusFilter !== 'all') url.searchParams.set('status', statusFilter);
-		else url.searchParams.delete('status');
-		if (typeFilter !== 'all') url.searchParams.set('type', typeFilter);
-		else url.searchParams.delete('type');
-		if (search.trim()) url.searchParams.set('search', search.trim());
-		else url.searchParams.delete('search');
-		replaceState(`${url.pathname}${url.search}`, {});
+		untrack(() => {
+			const url = new URL($page.url);
+			if (statusFilter !== 'all') url.searchParams.set('status', statusFilter);
+			else url.searchParams.delete('status');
+			if (typeFilter !== 'all') url.searchParams.set('type', typeFilter);
+			else url.searchParams.delete('type');
+			if (search.trim()) url.searchParams.set('search', search.trim());
+			else url.searchParams.delete('search');
+			replaceState(`${url.pathname}${url.search}`, {});
+		});
 	}
 
 	// Sequences `load` (latest-issued wins) so a slow response for an earlier

@@ -92,6 +92,53 @@ const CASES: RouteCase[] = [
 			})
 	},
 	{
+		// The #168 fix was originally applied to /invoices, /payments and
+		// /vendors only. /recurring (and its siblings /contracts, /budgets,
+		// /intake) carried the identical bug — their filter `$effect` called
+		// `buildParams()` / `syncUrl()`, both of which read `search` — until the
+		// sequencer sweep. This case is the guard that it stays fixed.
+		name: 'recurring',
+		route: '/recurring',
+		apiPathname: '/api/recurring',
+		searchPlaceholder: 'Search templates...',
+		buildBody: (searchTerm, marker) =>
+			JSON.stringify({
+				items: [
+					{
+						id: `${marker}-id`,
+						name: marker,
+						vendor_id: null,
+						vendor_name: `vendor for "${searchTerm}"`,
+						description: null,
+						amount: 100,
+						currency: 'USD',
+						gl_account: null,
+						cost_center: null,
+						department: null,
+						project: null,
+						po_number: null,
+						payment_terms: null,
+						cadence: 'monthly',
+						day_of_period: 1,
+						start_date: '2026-01-01',
+						end_date: null,
+						next_run_on: '2026-09-01',
+						last_period_key: null,
+						last_generated_at: null,
+						generated_count: 0,
+						status: 'active',
+						variance_tolerance_pct: null,
+						notes: null,
+						created_at: '2026-01-01T00:00:00Z',
+						updated_at: null
+					}
+				],
+				total: 1,
+				page: 1,
+				page_size: 20
+			})
+	},
+	{
 		name: 'payments (history tab)',
 		route: '/payments',
 		apiPathname: '/api/payments',
