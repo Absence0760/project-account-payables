@@ -886,12 +886,14 @@ Two guards enforce it, and neither subsumes the other:
   fine (a revoked-row fade put `/admin/api-keys`' status pill at 2.44:1). Add a
   route here when you add a page carrying dialogs or dense controls.
 
-What is left is **consistency, not contrast**: ~208 rules still spell a tinted
-badge as a hand-rolled `rgba()` plus a literal hex — about 40 spellings of what
-the five pairs above now name. Every one of them passes, so this is design-system
+What is left is **consistency, not contrast**: 202 rules still spell a tinted
+badge as a hand-rolled `rgba()` plus a literal hex — 44 spellings of what the
+five pairs above now name. Every one of them passes, so this is design-system
 debt rather than a defect, and normalising it changes tint strength on surfaces
 across the whole app. Tracked in `docs/followups.md`; reach for the tokens in
-new code and when you are already editing a rule.
+new code and when you are already editing a rule. `ui/StatusBadge.svelte` is
+already migrated and is the reference for what a tokenised badge looks like —
+including how to comment a tone that stays a literal on purpose.
 
 **A failure means changing the colour, never relaxing the rule** — there is no
 suppression mechanism, because the `-strong` companions mean a correct answer

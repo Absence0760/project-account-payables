@@ -390,9 +390,11 @@ recurrence. Rationale, and why the other two shapes were rejected:
 [decisions.md](decisions.md) §30.
 
 What remains is the **consistency** half, which is not a contrast problem:
-**~208 rules** still write a tinted badge as a hand-rolled `rgba()` plus a
-literal hex — roughly **40 distinct spellings** of the five tones the tokens
-now name. A sample of how thin the distinctions are:
+**202 rules** still write a tinted badge as a hand-rolled `rgba()` plus a
+literal hex — **44 distinct spellings** of the five tones the tokens now name.
+(`StatusBadge`, the shared primitive the values were derived from, is already
+migrated — it was where the numbers the other badges copied lived.) A sample of
+how thin the distinctions are:
 
 | Spelling | Count |
 |---|---|
@@ -421,9 +423,11 @@ any visual complaint impossible to attribute to one or the other.
 **Durable fix:** sweep by tone, one commit per tone, checking the rendered
 result rather than only the guard — the guard is already green on all of them
 and will stay green either way, so it cannot be the reviewer here. Retire each
-literal as it moves. `StatusBadge`'s own purple (`#a585f5`, `sent_to_erp`) has
-no semantic sibling; either give it a named tone or leave it commented as the
-deliberate exception.
+literal as it moves. Expect a few genuine one-offs like `StatusBadge`'s purple
+(`#a585f5`, `sent_to_erp`): it shares no semantics with the five tones, so it
+stays a measured literal with a comment saying so rather than becoming a token
+with one caller. And check what a collapsed distinction was carrying before
+collapsing it — see the `pending_compliance` note in §30.
 
 **Trigger:** the next `/audit:accessibility` pass, or opportunistically —
 reach for the tokens in new code and whenever you are already editing one of
