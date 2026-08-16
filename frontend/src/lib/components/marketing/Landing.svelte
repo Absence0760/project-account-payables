@@ -310,7 +310,7 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 6px;
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff !important;
 		padding: 8px 16px;
 		border-radius: 6px;
@@ -383,7 +383,7 @@
 		transition: transform 0.1s, opacity 0.15s;
 	}
 	.primary {
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 		box-shadow: 0 8px 28px -8px rgba(99, 140, 255, 0.6);
 	}
@@ -482,7 +482,7 @@
 		font-family: inherit;
 	}
 	.mock-approve {
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 	}
 	.mock-reject {

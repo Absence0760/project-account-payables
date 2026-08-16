@@ -111,7 +111,7 @@
 	}
 	.next .primary {
 		display: inline-block;
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 		padding: 12px 28px;
 		border-radius: 6px;

@@ -233,7 +233,7 @@
 	}
 	.upload-btn {
 		display: inline-block;
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 		padding: 8px 14px;
 		border-radius: 4px;

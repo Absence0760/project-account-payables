@@ -487,9 +487,9 @@
 	}
 
 	.chip.on {
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: white;
-		border-color: var(--accent);
+		border-color: var(--accent-strong);
 	}
 
 	.rule-row {

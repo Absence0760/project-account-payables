@@ -1752,9 +1752,11 @@
 
 	.btn-remove-domain:hover:not(:disabled),
 	.btn-remove-domain.armed {
-		border-color: var(--danger, #e5484d);
+		/* --danger-strong, not --danger: this armed state is a fill carrying
+		   white text, and the old #e5484d fallback was 3.91:1. */
+		border-color: var(--danger-strong);
 		color: #fff;
-		background: var(--danger, #e5484d);
+		background: var(--danger-strong);
 	}
 
 	.btn-remove-domain:disabled {
@@ -1773,7 +1775,7 @@
 	}
 
 	.domain-error {
-		color: var(--danger, #e5484d);
+		color: var(--danger);
 		font-size: 0.88rem;
 		margin: 4px 0 12px;
 	}
@@ -1857,7 +1859,7 @@
 		padding: 8px 18px;
 		border-radius: 6px;
 		border: none;
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 		font-size: 0.85rem;
 		font-weight: 500;

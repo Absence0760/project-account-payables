@@ -65,7 +65,7 @@
 		line-height: 1.5;
 	}
 	.msg.user .msg-bubble {
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 	}
 	.msg.assistant .msg-bubble {

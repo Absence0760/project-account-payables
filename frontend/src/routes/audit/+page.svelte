@@ -243,7 +243,7 @@
 	}
 
 	.mode-toggle button.active {
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 	}
 

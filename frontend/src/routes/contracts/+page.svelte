@@ -287,7 +287,7 @@
 		line-height: 16px;
 		text-align: center;
 		border-radius: 50%;
-		background: #e04040;
+		background: var(--danger-strong);
 		color: #fff;
 		font-size: 0.7rem;
 		font-weight: 700;

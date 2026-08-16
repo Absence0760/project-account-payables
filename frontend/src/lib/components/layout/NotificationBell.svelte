@@ -155,7 +155,7 @@
 		align-items: center;
 		justify-content: center;
 		border-radius: 8px;
-		background: #e04040;
+		background: var(--danger-strong);
 		color: #fff;
 		font-size: 0.62rem;
 		font-weight: 700;

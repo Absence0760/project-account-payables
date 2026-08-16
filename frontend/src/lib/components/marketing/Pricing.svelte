@@ -234,7 +234,7 @@
 		gap: 6px;
 	}
 	.toggle button.active {
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 	}
 	.save {
@@ -285,7 +285,7 @@
 		top: -12px;
 		left: 50%;
 		transform: translateX(-50%);
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 		font-size: 0.72rem;
 		font-weight: 600;
@@ -353,9 +353,9 @@
 		border-color: var(--text-muted);
 	}
 	.plan-cta.primary {
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
-		border-color: var(--accent);
+		border-color: var(--accent-strong);
 		box-shadow: 0 8px 28px -8px rgba(99, 140, 255, 0.6);
 	}
 	.plan-cta.primary:hover { opacity: 0.92; }

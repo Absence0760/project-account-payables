@@ -262,7 +262,7 @@
 	}
 	.mono {
 		font-variant-numeric: tabular-nums;
-		font-family: var(--mono, ui-monospace, monospace);
+		font-family: var(--font-mono);
 	}
 	.match-list {
 		display: flex;

@@ -2400,7 +2400,7 @@
 		padding: 5px 14px;
 		border-radius: 4px;
 		border: none;
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 		font-size: 0.8rem;
 		font-weight: 500;
@@ -2509,9 +2509,9 @@
 	}
 
 	.btn-save {
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
-		border-color: var(--accent);
+		border-color: var(--accent-strong);
 	}
 
 	.btn-save:hover:not(:disabled) {
@@ -2524,9 +2524,9 @@
 	}
 
 	.btn-submit {
-		background: #1fa86a;
+		background: var(--success-strong);
 		color: #fff;
-		border-color: #1fa86a;
+		border-color: var(--success-strong);
 	}
 
 	.btn-submit:hover:not(:disabled) {
@@ -3077,7 +3077,7 @@
 		padding: 8px 18px;
 		border-radius: 4px;
 		border: none;
-		background: #1fa86a;
+		background: var(--success-strong);
 		color: #fff;
 		font-size: 0.85rem;
 		font-weight: 500;
@@ -3102,9 +3102,9 @@
 		gap: 6px;
 		padding: 8px 18px;
 		border-radius: 4px;
-		border: 1px solid #e04040;
+		border: 1px solid var(--danger);
 		background: var(--surface);
-		color: #e04040;
+		color: var(--danger);
 		font-size: 0.85rem;
 		font-weight: 500;
 		cursor: pointer;
@@ -3172,7 +3172,7 @@
 		padding: 6px 14px;
 		border-radius: 4px;
 		border: none;
-		background: #e04040;
+		background: var(--danger-strong);
 		color: #fff;
 		font-size: 0.82rem;
 		font-weight: 500;
@@ -3248,7 +3248,7 @@
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
-		color: var(--text-muted, #6b7280);
+		color: var(--text-muted);
 	}
 	.audit-summary-regen {
 		font-size: 11px;
@@ -3256,7 +3256,7 @@
 		border: 1px solid var(--border);
 		border-radius: 6px;
 		background: transparent;
-		color: var(--text-muted, #6b7280);
+		color: var(--text-muted);
 		cursor: pointer;
 	}
 	.audit-summary-regen:hover:not(:disabled) {
@@ -3277,7 +3277,7 @@
 		margin: 6px 0 0;
 		font-size: 11px;
 		font-style: italic;
-		color: var(--text-muted, #6b7280);
+		color: var(--text-muted);
 	}
 	.audit-summary-skeleton {
 		height: 12px;

@@ -1345,7 +1345,7 @@
 		padding: 6px 16px;
 		border-radius: 4px;
 		border: none;
-		background: #1fa86a;
+		background: var(--success-strong);
 		color: #fff;
 		font-size: 0.85rem;
 		font-weight: 500;
@@ -1434,7 +1434,7 @@
 		padding: 8px 20px;
 		border-radius: 6px;
 		border: none;
-		background: #1fa86a;
+		background: var(--success-strong);
 		color: #fff;
 		font-size: 0.88rem;
 		font-weight: 600;
@@ -1466,8 +1466,8 @@
 	.btn-danger {
 		padding: 8px 18px;
 		border-radius: 4px;
-		border: 1px solid #e04040;
-		background: #e04040;
+		border: 1px solid var(--danger-strong);
+		background: var(--danger-strong);
 		color: #fff;
 		font-size: 0.85rem;
 		font-weight: 500;

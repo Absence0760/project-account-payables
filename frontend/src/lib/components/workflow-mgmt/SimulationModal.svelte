@@ -178,7 +178,7 @@
 		padding: 8px 18px;
 		border-radius: 6px;
 		border: none;
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 		font-size: 0.85rem;
 		font-weight: 500;
@@ -246,7 +246,7 @@
 		width: 24px;
 		height: 24px;
 		border-radius: 50%;
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 		display: grid;
 		place-items: center;

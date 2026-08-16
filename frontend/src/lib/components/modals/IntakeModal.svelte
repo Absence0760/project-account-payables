@@ -211,7 +211,7 @@
 		margin-bottom: 12px;
 	}
 	.number {
-		font-family: var(--font-mono, monospace);
+		font-family: var(--font-mono);
 		font-size: 0.85rem;
 		color: var(--text-muted);
 	}

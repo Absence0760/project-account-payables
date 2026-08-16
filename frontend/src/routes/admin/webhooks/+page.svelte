@@ -900,7 +900,7 @@
 	}
 
 	.events-field {
-		border: 1px solid var(--border, #2a3350);
+		border: 1px solid var(--border);
 		border-radius: 8px;
 		padding: 0.5rem 0.75rem 0.6rem;
 		margin: 0.5rem 0;

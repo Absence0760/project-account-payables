@@ -491,7 +491,7 @@
 		color: #9ca3af;
 	}
 	.error-banner {
-		color: var(--danger, #f87171);
+		color: var(--danger);
 		margin: 8px 0;
 	}
 	.field {
@@ -540,7 +540,7 @@
 	.variant-table th,
 	.variant-table td {
 		padding: 6px 10px;
-		border-bottom: 1px solid var(--border, #333);
+		border-bottom: 1px solid var(--border);
 		text-align: left;
 	}
 	.variant-table .right {

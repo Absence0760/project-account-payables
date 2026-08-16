@@ -45,7 +45,7 @@
 		white-space: nowrap;
 	}
 	.tier-chip.accepted {
-		background: #1fa86a;
+		background: var(--success-strong);
 		color: #fff;
 	}
 	.tier-none {

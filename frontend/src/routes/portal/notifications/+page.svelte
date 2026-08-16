@@ -140,7 +140,7 @@
 		padding: 8px 16px;
 		border: none;
 		border-radius: 4px;
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 		font-size: 0.85rem;
 		cursor: pointer;

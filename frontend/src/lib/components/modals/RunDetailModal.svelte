@@ -521,7 +521,7 @@
 		padding: 8px 20px;
 		border-radius: 4px;
 		border: none;
-		background: #1fa86a;
+		background: var(--success-strong);
 		color: #fff;
 		font-size: 0.88rem;
 		font-weight: 600;
@@ -581,8 +581,8 @@
 	.btn-approve {
 		padding: 8px 16px;
 		border-radius: 4px;
-		border: 1px solid var(--accent);
-		background: var(--accent);
+		border: 1px solid var(--accent-strong);
+		background: var(--accent-strong);
 		color: #fff;
 		font-size: 0.85rem;
 		font-weight: 500;
