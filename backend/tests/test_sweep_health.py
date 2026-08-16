@@ -13,6 +13,7 @@ import ast
 import asyncio
 import logging
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -29,6 +30,7 @@ from app.services.sweep_health import (
     STATE_DISABLED,
     STATE_IDLE,
     STATE_NOT_STARTED,
+    STATE_STALLED,
     STATE_STOPPED,
     SWEEP_ENABLED_FLAGS,
     extract_counts,
@@ -179,6 +181,69 @@ def test_overall_state_degraded_past_the_streak_then_failing_on_death(monkeypatc
 
     sweep_health.sweep_exited(_TEST_SWEEP, cancelled=False, error=RuntimeError("boom"))
     assert sweep_health.overall_state() == "failing"
+
+
+def test_a_tick_stuck_in_flight_is_reported_stalled(monkeypatch):
+    """Failure counting alone leaves one hole: a sweep HUNG inside `*_once`
+    never raises, never completes, and so never touches the streak — it just
+    sits in `running` looking healthy. That is the "alive but not progressing"
+    case, so it is derived on read."""
+    _disable_all(monkeypatch)
+    sweep_health.sweep_started(_TEST_SWEEP, interval_seconds=60)
+    sweep_health.run_started(_TEST_SWEEP)
+
+    assert sweep_health.snapshot_of(_TEST_SWEEP).state == sweep_health.STATE_RUNNING
+    assert sweep_health.overall_state() == "ok"
+
+    # Backdate the in-flight tick past max(3 * 60, 900) seconds.
+    entry = sweep_health._SWEEPS[_TEST_SWEEP]
+    entry.last_run_started_at -= timedelta(seconds=sweep_health.STALL_FLOOR_SECONDS + 60)
+
+    assert sweep_health.snapshot_of(_TEST_SWEEP).state == STATE_STALLED
+    assert sweep_health.overall_state() == "degraded"
+
+
+def test_a_long_but_plausible_tick_is_not_called_stalled(monkeypatch):
+    """A daily sweep draining a big backlog must not be flagged after minutes —
+    the threshold scales with the sweep's own cadence."""
+    _disable_all(monkeypatch)
+    sweep_health.sweep_started(_TEST_SWEEP, interval_seconds=86400)
+    sweep_health.run_started(_TEST_SWEEP)
+    entry = sweep_health._SWEEPS[_TEST_SWEEP]
+    entry.last_run_started_at -= timedelta(hours=6)
+
+    assert sweep_health.snapshot_of(_TEST_SWEEP).state == sweep_health.STATE_RUNNING
+    assert sweep_health.overall_state() == "ok"
+
+
+def test_a_finished_tick_is_never_stalled(monkeypatch):
+    """Only an in-flight tick can stall; an idle sweep waiting out a long
+    interval is exactly what a daily sweep looks like all day."""
+    _disable_all(monkeypatch)
+    sweep_health.sweep_started(_TEST_SWEEP, interval_seconds=60)
+    sweep_health.run_started(_TEST_SWEEP)
+    sweep_health.run_succeeded(_TEST_SWEEP, _FakeResult())
+    entry = sweep_health._SWEEPS[_TEST_SWEEP]
+    entry.last_run_started_at -= timedelta(days=7)
+
+    assert sweep_health.snapshot_of(_TEST_SWEEP).state == STATE_IDLE
+    assert sweep_health.overall_state() == "ok"
+
+
+async def test_stalled_sweep_surfaces_on_the_health_endpoint(health_client, monkeypatch):
+    _disable_all(monkeypatch)
+    sweep_health.sweep_started(_TEST_SWEEP, interval_seconds=60)
+    sweep_health.run_started(_TEST_SWEEP)
+    entry = sweep_health._SWEEPS[_TEST_SWEEP]
+    entry.last_run_started_at -= timedelta(seconds=sweep_health.STALL_FLOOR_SECONDS + 60)
+
+    async with health_client("admin") as client:
+        resp = await client.get("/api/health/sweeps")
+
+    body = resp.json()
+    assert body["state"] == "degraded"
+    row = next(r for r in body["sweeps"] if r["name"] == _TEST_SWEEP)
+    assert row["state"] == STATE_STALLED
 
 
 def test_clean_shutdown_is_stopped_not_died(monkeypatch):

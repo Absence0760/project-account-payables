@@ -106,6 +106,14 @@ STATE_RUNNING = "running"  # a tick is in flight
 STATE_IDLE = "idle"  # between ticks
 STATE_STOPPED = "stopped"  # cancelled cleanly (shutdown)
 STATE_DIED = "died"  # the task ended on its own — a real defect
+STATE_STALLED = "stalled"  # a tick has been in flight far past the cadence
+
+# A tick still running after `max(STALL_FACTOR × interval, STALL_FLOOR_SECONDS)`
+# is reported `stalled`. Derived diagnostics rather than operator policy, so
+# module constants, not env knobs — the tunable one is the failure streak.
+# Generous by design: a legitimately long tick must not be called stalled.
+STALL_FACTOR = 3
+STALL_FLOOR_SECONDS = 900
 
 OUTCOME_OK = "ok"
 OUTCOME_PARTIAL = "partial"  # tick completed but reported failures > 0
@@ -187,6 +195,9 @@ class SweepHealth:
 class _SweepState:
     name: str
     state: str = STATE_STARTING
+    #: The loop's own tick interval, recorded at start so a tick still in flight
+    #: can be judged stalled against the cadence it was supposed to keep.
+    interval_seconds: float | None = None
     started_at: datetime | None = None
     last_run_started_at: datetime | None = None
     last_run_finished_at: datetime | None = None
@@ -223,10 +234,15 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-def sweep_started(name: str) -> None:
-    """Record that a sweep's loop has entered. Called by ``run_sweep_loop``."""
+def sweep_started(name: str, *, interval_seconds: float | None = None) -> None:
+    """Record that a sweep's loop has entered. Called by ``run_sweep_loop``.
+
+    ``interval_seconds`` is kept so a tick still in flight can be judged against
+    the cadence the loop promised — see :func:`_is_stalled`.
+    """
     entry = _state(name)
     entry.state = STATE_STARTING
+    entry.interval_seconds = interval_seconds
     entry.started_at = _now()
     entry.exit_error_class = None
 
@@ -280,6 +296,30 @@ def sweep_exited(name: str, *, cancelled: bool, error: BaseException | None = No
     entry.exit_error_class = None if error is None else error.__class__.__name__
 
 
+def _is_stalled(entry: _SweepState, *, now: datetime | None = None) -> bool:
+    """True when a tick has been in flight far longer than the sweep's cadence.
+
+    Failure counting alone leaves one hole: a sweep HUNG inside ``*_once`` — a
+    DB connect with no timeout, an adapter socket that never returns — never
+    raises, never completes, and so never touches the streak. It sits in
+    ``running`` forever while reporting perfectly healthy, which is the exact
+    "alive but not progressing" case this module exists to make visible.
+
+    The threshold is deliberately generous — ``max(STALL_FACTOR × interval,
+    STALL_FLOOR_SECONDS)`` — because a legitimately long tick (the audit shipper
+    draining a large backlog) must not be called stalled. For a 60-second sweep
+    that is the 15-minute floor; for a daily one it is three days, by which
+    point a tick in flight is unambiguously hung.
+    """
+    if entry.state != STATE_RUNNING or entry.last_run_started_at is None:
+        return False
+    interval = entry.interval_seconds
+    if interval is None or interval <= 0:
+        return False
+    limit = max(STALL_FACTOR * interval, STALL_FLOOR_SECONDS)
+    return ((now or _now()) - entry.last_run_started_at).total_seconds() > limit
+
+
 def _is_enabled(name: str) -> bool:
     flag = SWEEP_ENABLED_FLAGS.get(name)
     if flag is None:
@@ -298,7 +338,9 @@ def snapshot_of(name: str) -> SweepHealth:
         )
     return SweepHealth(
         name=entry.name,
-        state=entry.state,
+        # Derived on read, not stored: nothing is executing while a tick hangs,
+        # so there is no code path that could have written `stalled`.
+        state=STATE_STALLED if _is_stalled(entry) else entry.state,
         enabled=enabled,
         started_at=entry.started_at,
         last_run_started_at=entry.last_run_started_at,
@@ -329,7 +371,10 @@ def overall_state(sweeps: list[SweepHealth] | None = None) -> str:
     """Aggregate verdict over every sweep. Worst state wins.
 
     - ``failing`` — a sweep that should be running died, or never registered.
-    - ``degraded`` — a running sweep is past its consecutive-failure streak.
+    - ``degraded`` — a sweep is past its consecutive-failure streak, or has a
+      tick stuck in flight far past its cadence (``stalled``). Stalled is
+      ``degraded`` rather than ``failing`` because a very long tick is a
+      plausible benign explanation; a dead task has none.
     - ``ok`` — everything enabled is alive and progressing.
     """
     rows = snapshot() if sweeps is None else sweeps
@@ -340,6 +385,8 @@ def overall_state(sweeps: list[SweepHealth] | None = None) -> str:
             return "failing"
         if row.enabled and row.state == STATE_NOT_STARTED:
             return "failing"
+        if row.state == STATE_STALLED:
+            degraded = True
         if streak > 0 and row.consecutive_failures >= streak:
             degraded = True
     return "degraded" if degraded else "ok"
@@ -369,7 +416,7 @@ async def run_sweep_loop(
     at call time (``lambda: reap_once()``, not ``reap_once``) — tests patch the
     module attribute, and a captured reference would sail past the patch.
     """
-    sweep_started(name)
+    sweep_started(name, interval_seconds=interval_seconds)
     log.info("%s started; interval=%ss%s", log_prefix, interval_seconds, start_detail)
     try:
         while True:

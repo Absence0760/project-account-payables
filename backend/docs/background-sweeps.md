@@ -139,11 +139,33 @@ Per-sweep `state` is one of:
 | `disabled` | Its `FEOH_*_ENABLED` flag is off in this process. Expected, not a problem. |
 | `not_started` | **Enabled but never registered.** Flips the aggregate to `failing`. |
 | `starting` / `running` / `idle` | Registered; a tick is pending, in flight, or done. |
+| `stalled` | A tick has been in flight far past the sweep's own cadence — see below. |
 | `stopped` | Cancelled cleanly at shutdown. |
 | `died` | The task ended on its own — a real defect. It is gone for the life of the process. |
 
 The aggregate `state` is `failing` if any sweep died or is enabled-but-absent,
-`degraded` if any is past its streak, else `ok`.
+`degraded` if any is past its streak or stalled, else `ok`.
+
+### The hung-tick hole, and `stalled`
+
+Failure counting alone leaves one case invisible: a sweep **hung inside**
+`*_once` — a DB connect with no timeout, an adapter socket that never returns —
+never raises, never completes, and so never touches the streak. It sits in
+`running` forever while reporting perfectly healthy, which is precisely the
+"alive but not progressing" state this whole mechanism exists to expose.
+
+`stalled` closes it. It is **derived on read**, not stored — nothing is
+executing while a tick hangs, so there is no code path that could write it. A
+tick is stalled once it has been in flight longer than
+`max(STALL_FACTOR × interval, STALL_FLOOR_SECONDS)` (3× and 15 minutes; module
+constants in `sweep_health.py`, not env knobs — the tunable dial is the failure
+streak). The threshold is deliberately generous so a legitimately long tick (the
+audit shipper draining a large backlog) is not called stalled: a 60-second sweep
+gets the 15-minute floor, a daily one gets three days, by which point a tick
+still in flight is unambiguously hung.
+
+Stalled reports `degraded` rather than `failing` because a very long tick has a
+plausible benign explanation; a dead task has none.
 
 ### What the payload deliberately omits
 
