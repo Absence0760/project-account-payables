@@ -104,6 +104,49 @@ def test_normalize_parses_money_and_dates_exactly():
     assert lines[1].invoice_date == date(2026, 1, 20)
 
 
+def test_normalize_reads_a_european_statement_under_one_document_convention():
+    """The convention is resolved across the whole document, not per line.
+
+    `1.200` is ambiguous alone — a thousands group or a three-decimal value —
+    but the sibling `1.234,56` proves the statement is European, so it reads as
+    1200 rather than 1.2. And `850,00` is 850.00, not the 85000 the old
+    unconditional comma-strip produced.
+    """
+    lines = vse.normalize_extracted_lines(
+        _ok(
+            [
+                StatementLineExtraction("INV-1", "15.01.2026", "1.234,56", "open", 0.9),
+                StatementLineExtraction("INV-2", "20.01.2026", "850,00", None, 0.9),
+                StatementLineExtraction("INV-3", "01.02.2026", "1.200", None, 0.9),
+                StatementLineExtraction("INV-4", "05.02.2026", "(250,00)", None, 0.9),
+            ]
+        )
+    )
+    assert [ln.amount for ln in lines] == [
+        Decimal("1234.56"),
+        Decimal("850.00"),
+        Decimal("1200"),
+        Decimal("-250.00"),
+    ]
+    assert all(isinstance(ln.amount, Decimal) for ln in lines)
+    assert lines[0].invoice_date == date(2026, 1, 15)
+    assert lines[1].invoice_date == date(2026, 1, 20)
+
+
+def test_normalize_us_statement_is_unaffected_by_the_convention_pass():
+    """The same document-level pass must leave the US reading exactly as it was
+    — `1,200` is 1200, not 1.2."""
+    lines = vse.normalize_extracted_lines(
+        _ok(
+            [
+                StatementLineExtraction("INV-1", "2026-01-15", "1,234.56", None, 0.9),
+                StatementLineExtraction("INV-2", "2026-01-20", "1,200", None, 0.9),
+            ]
+        )
+    )
+    assert [ln.amount for ln in lines] == [Decimal("1234.56"), Decimal("1200")]
+
+
 def test_normalize_keeps_a_line_whose_date_is_unreadable():
     """A date we can't parse must not cost us the line — the engine's second
     matching leg tolerates a missing date, but it can't match a line we

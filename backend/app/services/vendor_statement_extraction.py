@@ -137,11 +137,16 @@ def normalize_extracted_lines(
     they mean on a statement, and nothing passes through a float. A row that
     ends up with neither an invoice number nor an amount has nothing to match
     on and is dropped, exactly as the CSV parser drops it.
+
+    The decimal convention is resolved across the WHOLE document first, for the
+    same reason the CSV path does it: a supplier writing ``850,00`` means
+    850.00, and only the other rows can prove it.
     """
+    convention = recon.detect_amount_convention(line.amount for line in result.lines)
     lines: list[recon.StatementLine] = []
     for extracted in result.lines:
         number = (extracted.invoice_number or "").strip() or None
-        amount = recon.parse_amount(extracted.amount)
+        amount = recon.parse_amount(extracted.amount, convention=convention)
         if number is None and amount is None:
             continue
         lines.append(

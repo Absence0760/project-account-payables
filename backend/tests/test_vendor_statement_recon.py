@@ -27,11 +27,15 @@ from app.models.vendor_statement_recon import (
     CLASS_MISSING_THEIR_SIDE,
 )
 from app.services.vendor_statement_recon import (
+    AMOUNT_CONVENTION_EU,
+    AMOUNT_CONVENTION_US,
     LedgerInvoice,
     StatementLine,
     StatementParseError,
+    detect_amount_convention,
     line_unreconciled_amount,
     normalize_invoice_number,
+    parse_amount,
     parse_statement_csv,
     reconcile,
 )
@@ -156,6 +160,29 @@ def test_parse_csv_date_format_variants():
     assert by_num["C"].invoice_date == date(2026, 3, 1)
 
 
+def test_parse_csv_dotted_european_date_variants():
+    """A dotted date is European-first (``15.01.2026`` = 15 January), while a
+    slashed one stays US-first — the separator carries the convention. An
+    impossible first reading (month 15) falls through to the other ordering, so
+    both still parse."""
+    csv = b"Invoice,Date,Amount\nA,15.01.2026,1\nB,01.15.2026,2\nC,2026.03.01,3\nD,03.04.2026,4\n"
+    by_num = {ln.invoice_number: ln for ln in parse_statement_csv(csv)}
+    assert by_num["A"].invoice_date == date(2026, 1, 15)
+    assert by_num["B"].invoice_date == date(2026, 1, 15)
+    assert by_num["C"].invoice_date == date(2026, 3, 1)
+    # Ambiguous either way; the dotted convention makes it 3 April, not 4 March.
+    assert by_num["D"].invoice_date == date(2026, 4, 3)
+
+
+def test_parse_csv_slashed_date_still_reads_us_first():
+    """Guard against the dotted formats disturbing the existing slash order."""
+    by_num = {
+        ln.invoice_number: ln
+        for ln in parse_statement_csv(b"Invoice,Date,Amount\nA,03/04/2026,1\n")
+    }
+    assert by_num["A"].invoice_date == date(2026, 3, 4)
+
+
 def test_parse_csv_unparseable_amount_with_number_kept():
     # Bad amount ('-') but a real invoice number → keep, amount None.
     csv = b"Invoice,Amount\nINV-1,-\n"
@@ -194,6 +221,143 @@ def test_parse_csv_utf8_bom():
     assert len(lines) == 1
     # The BOM must not contaminate the first header.
     assert lines[0].invoice_number == "INV-1"
+
+
+# ---------------------------------------------------------------------------
+# Decimal convention — detection
+# ---------------------------------------------------------------------------
+
+
+def test_detect_convention_us_from_both_separators():
+    assert detect_amount_convention(["1,234.56", "850.00"]) == AMOUNT_CONVENTION_US
+
+
+def test_detect_convention_eu_from_both_separators():
+    assert detect_amount_convention(["1.234,56", "850,00"]) == AMOUNT_CONVENTION_EU
+
+
+def test_detect_convention_eu_from_a_lone_two_digit_comma_tail():
+    """``850,00`` is not valid US formatting — a US thousands group is three
+    digits — so a comma with a two-digit tail proves the comma is the decimal
+    point, with no other row needed."""
+    assert detect_amount_convention(["850,00"]) == AMOUNT_CONVENTION_EU
+
+
+def test_detect_convention_none_without_separators():
+    assert detect_amount_convention(["1200", "850", ""]) is None
+
+
+def test_detect_convention_none_from_only_ambiguous_three_digit_tails():
+    """``1,234`` / ``1.234`` are a thousands group under one convention and a
+    three-decimal value under the other. They must not vote, or the resolution
+    would be circular."""
+    assert detect_amount_convention(["1,234"]) is None
+    assert detect_amount_convention(["1.234"]) is None
+
+
+def test_detect_convention_none_when_document_contradicts_itself():
+    assert detect_amount_convention(["1,234.56", "1.234,56"]) is None
+
+
+def test_detect_convention_ignores_unparseable_values():
+    assert detect_amount_convention([None, "", "-", "n/a", "850,00"]) == AMOUNT_CONVENTION_EU
+
+
+# ---------------------------------------------------------------------------
+# Decimal convention — parsing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        # US, unchanged.
+        ("1234.56", "1234.56"),
+        ("1,234.56", "1234.56"),
+        ("$3000.00", "3000.00"),
+        ("(2.50)", "-2.50"),
+        ("-4.00", "-4.00"),
+        ("1,234,567.89", "1234567.89"),
+        # European. `850,00` is the regression: the old unconditional
+        # `replace(",", "")` read it as 85000, a hundredfold overstatement.
+        ("850,00", "850.00"),
+        ("1.234,56", "1234.56"),
+        ("1.234.567,89", "1234567.89"),
+        ("(1.234,56)", "-1234.56"),
+        ("-1.234,56", "-1234.56"),
+        ("€1.234,56", "1234.56"),
+        # French grouping uses a space (and often a non-breaking one).
+        ("1 234,56", "1234.56"),
+        ("1\xa0234,56", "1234.56"),
+        # No separator at all — identical under either convention.
+        ("1200", "1200"),
+    ],
+)
+def test_parse_amount_reads_both_conventions_without_a_document_hint(raw, expected):
+    assert parse_amount(raw) == Decimal(expected)
+
+
+@pytest.mark.parametrize("raw", [None, "", "   ", "-", "n/a", "abc"])
+def test_parse_amount_returns_none_for_unparseable(raw):
+    assert parse_amount(raw) is None
+
+
+def test_parse_amount_three_digit_tail_follows_the_document_convention():
+    """The one genuinely ambiguous shape, and the only thing `convention` moves."""
+    assert parse_amount("1.200", convention=AMOUNT_CONVENTION_EU) == Decimal("1200")
+    assert parse_amount("1,200", convention=AMOUNT_CONVENTION_EU) == Decimal("1.200")
+    assert parse_amount("1,200", convention=AMOUNT_CONVENTION_US) == Decimal("1200")
+    assert parse_amount("1.200", convention=AMOUNT_CONVENTION_US) == Decimal("1.200")
+
+
+def test_parse_amount_three_digit_tail_defaults_to_us_without_a_convention():
+    """Back-compat: this is exactly what the function did before."""
+    assert parse_amount("1,200") == Decimal("1200")
+    assert parse_amount("1.200") == Decimal("1.200")
+
+
+def test_parse_amount_self_describing_token_beats_a_contradicting_convention():
+    """A document-level vote must not drag a token that says what it is onto
+    the wrong reading — otherwise one odd row poisons the whole statement."""
+    assert parse_amount("850,00", convention=AMOUNT_CONVENTION_US) == Decimal("850.00")
+    assert parse_amount("850.00", convention=AMOUNT_CONVENTION_EU) == Decimal("850.00")
+    assert parse_amount("1.234,56", convention=AMOUNT_CONVENTION_US) == Decimal("1234.56")
+
+
+# ---------------------------------------------------------------------------
+# Decimal convention — end to end through the CSV parser
+# ---------------------------------------------------------------------------
+
+
+def test_parse_csv_european_statement():
+    csv = b'Invoice,Amount\nA,"1.234,56"\nB,"850,00"\nC,"1.200"\n'
+    amounts = {ln.invoice_number: ln.amount for ln in parse_statement_csv(csv)}
+    assert amounts["A"] == Decimal("1234.56")
+    assert amounts["B"] == Decimal("850.00")
+    # Ambiguous on its own; the sibling rows prove the document is European.
+    assert amounts["C"] == Decimal("1200")
+
+
+def test_parse_csv_lone_european_amount_is_not_inflated_hundredfold():
+    """The reported defect, end to end: `850,00` reconciled as 85000."""
+    lines = parse_statement_csv(b'Invoice,Amount\nINV-1,"850,00"\n')
+    assert lines[0].amount == Decimal("850.00")
+
+
+def test_parse_csv_us_statement_unaffected_by_the_convention_pass():
+    csv = b'Invoice,Amount\nA,"1,234.56"\nB,"1,200"\nC,850.00\n'
+    amounts = {ln.invoice_number: ln.amount for ln in parse_statement_csv(csv)}
+    assert amounts["A"] == Decimal("1234.56")
+    assert amounts["B"] == Decimal("1200")
+    assert amounts["C"] == Decimal("850.00")
+
+
+def test_parse_csv_short_rows_do_not_break_convention_detection():
+    """A ragged row (fewer cells than headers) must not raise while the amount
+    column is being scanned ahead of the main loop."""
+    csv = b'Invoice,Amount\nA,"850,00"\nB\n'
+    amounts = {ln.invoice_number: ln.amount for ln in parse_statement_csv(csv)}
+    assert amounts["A"] == Decimal("850.00")
 
 
 # ---------------------------------------------------------------------------
