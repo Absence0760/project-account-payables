@@ -208,7 +208,7 @@
 	}
 	.status-converted {
 		background: rgba(63, 124, 240, 0.15);
-		color: #3f7cf0;
+		color: var(--accent);
 	}
 	.cart {
 		width: 100%;

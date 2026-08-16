@@ -209,7 +209,7 @@
 	.message {
 		background: rgba(40, 160, 80, 0.12);
 		border: 1px solid rgba(40, 160, 80, 0.35);
-		color: #1f7a44;
+		color: var(--success);
 		padding: 10px 14px;
 		border-radius: 4px;
 		margin-bottom: 12px;

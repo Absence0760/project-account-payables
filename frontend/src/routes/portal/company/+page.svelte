@@ -447,7 +447,7 @@
 	.banner {
 		background: rgba(214, 158, 46, 0.12);
 		border: 1px solid rgba(214, 158, 46, 0.4);
-		color: #9a6a00;
+		color: #d4940a;
 		padding: 10px 14px;
 		border-radius: 4px;
 		margin-bottom: 16px;
@@ -545,7 +545,7 @@
 	.message {
 		background: rgba(40, 160, 80, 0.12);
 		border: 1px solid rgba(40, 160, 80, 0.35);
-		color: #1f7a44;
+		color: var(--success);
 		padding: 8px 12px;
 		border-radius: 4px;
 		margin-bottom: 10px;

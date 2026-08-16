@@ -282,11 +282,25 @@ describe('auditStyles — bare literal text colour', () => {
 		expect(auditText('.a{color:#000}')).toEqual([]);
 	});
 
-	it('stands down once the rule declares its own background — the pair check owns it', () => {
+	it('stands down once the rule declares its own OPAQUE background — the pair check owns it', () => {
 		// Same failing literal, but now on a stated background: reported as a
 		// contrast pair (against #fff), not as a bare literal.
 		const findings = auditText('.a{color:#e04040;background:#fff}');
 		expect(findings.map((f) => f.kind)).toEqual(['contrast']);
+	});
+
+	/**
+	 * A translucent tint composites against whatever is behind it, so the pair
+	 * check can't judge it — and it's the standard dark-theme status-pill
+	 * shape. Falling silent there is how the purple/green/amber pill text kept
+	 * its sub-4.5:1 colours; holding the literal to the bare surface is the
+	 * right approximation and the conservative one.
+	 */
+	it('still applies when the declared background is translucent or a gradient', () => {
+		const tint = auditText('.badge{background:rgba(224,64,64,0.15);color:#e04040}');
+		expect(tint.map((f) => f.kind)).toEqual(['literal-text-color']);
+		const gradient = auditText('.g{background:linear-gradient(#000,#fff);color:#e04040}');
+		expect(gradient.map((f) => f.kind)).toEqual(['literal-text-color']);
 	});
 
 	it('honours the large-text bar', () => {

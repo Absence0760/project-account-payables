@@ -324,12 +324,18 @@ export function auditStyles(sources: StyleSource[], options: AuditOptions): Styl
 				// `background-color`, so plain assignment models both.
 				else if (prop === 'background' || prop === 'background-color') background = value;
 			}
-			// 4 — a bare literal `color:` with no background in this rule. The
-			// background comes from the cascade, so the only sound question is
+			const resolvedBackground = background ? resolveColorValue(background, palette) : null;
+
+			// 4 — a literal `color:` whose rule states no OPAQUE background.
+			// Whatever is behind it comes from the cascade — nothing at all, a
+			// translucent tint, a gradient — so the only sound question is
 			// whether the literal is legible on the surfaces body text sits on.
-			// A palette token is exempt because `palette contract` asserts each
-			// one against those same surfaces directly.
-			if (foreground && !background) {
+			// (A translucent tint over one of those surfaces composites close
+			// to it, so holding the literal to the bare surface is the right
+			// approximation, and the conservative one.) A palette token is
+			// exempt because `palette contract` asserts each one against those
+			// same surfaces directly.
+			if (foreground && !resolvedBackground) {
 				const fg = resolveColorValue(foreground, palette);
 				const isToken = /^var\(/i.test(foreground.trim());
 				if (fg && !isToken && !LITERAL_EXEMPT.has(fg)) {
@@ -355,11 +361,11 @@ export function auditStyles(sources: StyleSource[], options: AuditOptions): Styl
 				}
 			}
 
-			if (!foreground || !background) continue;
+			if (!foreground || !background || !resolvedBackground) continue;
 
 			const fg = resolveColorValue(foreground, palette);
-			const bg = resolveColorValue(background, palette);
-			if (!fg || !bg) continue;
+			const bg = resolvedBackground;
+			if (!fg) continue;
 
 			const ratio = contrastRatio(fg, bg);
 			if (ratio === null) continue;
