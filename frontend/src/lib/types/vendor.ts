@@ -49,6 +49,11 @@ export interface SanctionsCheck {
 	result: string;
 	risk_score: string | null;
 	matched_list: string | null;
+	// PII-free taxonomy of WHAT was hit: 'sanctions' | 'pep' | 'adverse_media'
+	// | 'high_risk_country'. Empty for a clear screen and for rows written
+	// before the taxonomy shipped.
+	categories: string[];
+	adverse_media: boolean;
 	checked_at: string;
 }
 
@@ -63,6 +68,8 @@ export interface ScreeningReviewItem {
 	risk_score: string | null;
 	latest_matched_list: string | null;
 	latest_provider: string | null;
+	latest_categories: string[];
+	adverse_media: boolean;
 }
 
 // Vendor risk detail (GET /risk, POST /risk/recompute).
@@ -216,3 +223,19 @@ export const RISK_LEVEL_LABELS: Record<RiskLevel, string> = {
 	critical: 'Critical',
 	unknown: 'Unknown'
 };
+
+// The screening-hit taxonomy (`SanctionsCheck.categories`). The backend's
+// vocabulary is fixed but open-ended — a future provider may report a label we
+// have no wording for, so `formatScreeningCategories` falls back to a
+// de-underscored version of the raw label rather than dropping it.
+export const SCREENING_CATEGORY_LABELS: Record<string, string> = {
+	sanctions: 'Sanctions list',
+	pep: 'Politically exposed person',
+	adverse_media: 'Negative news',
+	high_risk_country: 'High-risk jurisdiction'
+};
+
+export function formatScreeningCategories(categories: string[] | null | undefined): string {
+	if (!categories?.length) return '—';
+	return categories.map((c) => SCREENING_CATEGORY_LABELS[c] ?? c.replace(/_/g, ' ')).join(', ');
+}

@@ -13,7 +13,11 @@ Three sub-checks, run in order so the most-severe verdict wins:
 
   1. Sanctions / PEP screening via the configured
      `sanctions_adapter`. A `match` refuses; a `review_required`
-     holds.
+     holds. An **adverse-media** (negative-news) category on the
+     result adds its own reason on top of whatever the verdict was —
+     including on a `clear` verdict, which turns it into a hold, so
+     negative news can never be auto-allowed just because the vendor
+     is not on a formal list yet.
 
   2. KYC status on the vendor row. Corridors with
      `requires_kyc=True` refuse if `vendor.kyc_status != "verified"`.
@@ -64,6 +68,10 @@ from app.services.sanctions_adapters import (
     SanctionsAdapter,
     ScreeningResult,
     get_sanctions_adapter,
+)
+from app.services.sanctions_categories import (
+    adverse_media_reason,
+    merge_categories_into_raw_response,
 )
 
 # Defaults — tenant settings override.
@@ -215,19 +223,26 @@ async def check_payment_compliance(
         check_type="pre_payment",
         result=screening.result,
         risk_score=screening.risk_score,
+        # The PII-free category taxonomy rides the row so `vendor_risk_scoring`
+        # (compute-on-read, no adapter call) can see WHY a screen was elevated.
+        raw_response=merge_categories_into_raw_response(
+            screening.raw_response, screening.categories
+        ),
         matched_list=screening.matched_list,
-        raw_response=screening.raw_response,
         correlation_id=correlation_id,
     )
     db.add(sanctions_row)
 
     if screening.result == "match":
+        match_reasons = [
+            f"vendor matched sanctions list "
+            f"({screening.matched_list or 'unspecified'}) via {screening.provider}"
+        ]
+        if screening.adverse_media:
+            match_reasons.append(adverse_media_reason(screening.provider))
         return ComplianceDecision(
             verdict="refuse",
-            reasons=[
-                f"vendor matched sanctions list "
-                f"({screening.matched_list or 'unspecified'}) via {screening.provider}"
-            ],
+            reasons=match_reasons,
             screening_result=screening,
             sanctions_check_row=sanctions_row,
         )
@@ -236,6 +251,15 @@ async def check_payment_compliance(
             f"vendor screening returned review_required "
             f"({screening.matched_list or 'see audit row'}) via {screening.provider}"
         )
+    # Adverse media is called out separately from the bare verdict — it is the
+    # signal the taxonomy exists for, and "negative news" is a different
+    # instruction to a reviewer than "on a watchlist". Deliberately NOT nested
+    # under the `review_required` branch: a provider that reports negative news
+    # alongside a `clear` verdict (nothing on a formal list yet) would otherwise
+    # be auto-allowed, and one reason here is what turns the verdict into a
+    # `hold` for AP review — fail closed.
+    if screening.adverse_media:
+        reasons.append(adverse_media_reason(screening.provider))
 
     # ---------- 2. KYC status on high-risk corridors -------------------------
     if _kyc_required_for(payment_method, payment_amount, org_settings):
