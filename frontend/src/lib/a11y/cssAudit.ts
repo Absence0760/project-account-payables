@@ -213,9 +213,10 @@ export function findVarReferences(css: string): VarReference[] {
 			token: match[1],
 			fallback: commaAt < 0 ? null : css.slice(commaAt + 1, close).trim()
 		});
-		// Resume after the token so a nested var() inside the fallback is
-		// still visited on its own.
-		tokenRe.lastIndex = match.index + match[0].length;
+		// `exec` has already left `lastIndex` just past `var(--token`, which is
+		// what we want: scanning resumes INSIDE the fallback, so a nested
+		// var() is visited on its own terms rather than skipped with its
+		// parent. `match[0]` is never empty, so this always advances.
 	}
 	return refs;
 }
