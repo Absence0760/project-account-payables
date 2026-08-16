@@ -57,6 +57,22 @@ function deleteReconciliation(id: string): void {
 	tenantPsql(`DELETE FROM vendor_statement_reconciliations WHERE id='${id}'`);
 }
 
+/**
+ * Cleanup for a run created from an UPLOAD, which also archived the document to
+ * MinIO. Deleting the rows straight out of Postgres would strand that object
+ * forever — only `DELETE /api/vendor-statements/{id}` drops it — so go through
+ * the API and fall back to psql if that call can't be made.
+ */
+async function deleteUploadedReconciliation(
+	page: import('@playwright/test').Page,
+	id: string
+): Promise<void> {
+	const resp = await page.request.delete(`${API_BASE}/api/vendor-statements/${id}`, {
+		headers: await authedTenantHeaders(page)
+	});
+	if (!resp.ok()) deleteReconciliation(id);
+}
+
 test.describe('/vendor-statements (admin)', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/vendor-statements');
@@ -235,7 +251,7 @@ test.describe('/vendor-statements (admin)', () => {
 				provenance.getByRole('button', { name: 'Download the source statement' })
 			).toBeVisible();
 		} finally {
-			if (id) deleteReconciliation(id);
+			if (id) await deleteUploadedReconciliation(page, id);
 		}
 	});
 
