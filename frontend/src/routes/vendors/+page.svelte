@@ -82,7 +82,11 @@
 	}
 
 	// Replace a vendor in the list (and keep the open detail modal in sync) after
-	// any mutation — bank edit, screening, risk recompute, block/unblock.
+	// a mutation the detail modal reports — re-screen, risk recompute,
+	// block/unblock, enrichment apply. NOT the bank-detail editor below:
+	// `saveBankDetails` stages a dual-control change request and applies
+	// nothing locally, so there is no row to sync until a second approver
+	// signs it off.
 	function applyVendorUpdate(updated: Vendor) {
 		// A fetch already in flight read this vendor BEFORE the mutation landed,
 		// so its response would revert the change (a lifted payment block

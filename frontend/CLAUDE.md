@@ -471,9 +471,9 @@ async function fetch(params) {
   (`invoiceStore.update` / `patchLocal`, the vendors page's
   `applyVendorUpdate`). Without it the counter never moves, so an
   already-in-flight fetch resolves afterwards holding a pre-edit snapshot
-  and silently reverts the edit — a user watching their approve or
-  bank-detail change undo itself. Requests issued *after* the edit are
-  unaffected; they read server state that already includes it.
+  and silently reverts the edit — a user watching their approve, or the
+  payment block they just lifted, undo itself. Requests issued *after* the
+  edit are unaffected; they read server state that already includes it.
 
 The superseded response is discarded, never merged — see
 `docs/decisions.md` §22 for why re-applying the edit on top of it isn't

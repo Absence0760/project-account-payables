@@ -660,10 +660,12 @@ its config at runtime from sops. The guard would cost more than it protects.
 
 The list surfaces (`/invoices`, `/vendors`, `/payments`) fetch a page and
 replace the whole array. Some of them also edit one row *in place* with no
-fetch — the invoice modal's save / file attach, the vendors page's
-bank-detail save, re-screen, risk recompute, block/unblock. Both things can
-be happening at once: a mount fetch, a debounced search or a filter-chip
-fetch is still in flight when the user approves the invoice they have open.
+fetch — the invoice modal's save / file attach, and on `/vendors` a
+re-screen, a risk recompute, a block/unblock or an enrichment apply. (Not a
+bank-detail save: that one stages a dual-control change request and applies
+nothing locally.) Both things can be happening at once: a mount fetch, a
+debounced search or a filter-chip fetch is still in flight when the user
+approves the invoice they have open.
 If that fetch resolves afterwards it holds a snapshot the server took
 *before* the edit, and putting it into state silently reverts the edit — the
 user watches their approval undo itself. `createRequestSequencer` closed the
