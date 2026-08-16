@@ -2998,6 +2998,15 @@ export const en = {
 	'vendorStatements.modal.toastIgnored': 'Line ignored',
 	'vendorStatements.modal.toastUpdateFailed': 'Could not update line',
 	'vendorStatements.modal.refPill': 'Ref {reference}',
+	'vendorStatements.modal.provenanceTitle': 'Where these lines came from',
+	'vendorStatements.modal.provenanceRead':
+		'Machine-read by {provider} at {confidence} confidence — {n, plural, one {# open item} other {# open items}} taken off the document.',
+	'vendorStatements.modal.provenanceSkipNote':
+		'A row the reader could not read unambiguously was skipped rather than guessed, so our invoice for it appears below as a difference to chase.',
+	'vendorStatements.modal.provenanceCsv': 'Parsed directly from the uploaded CSV.',
+	'vendorStatements.modal.downloadSource': 'Download the source statement',
+	'vendorStatements.modal.downloadingSource': 'Downloading…',
+	'vendorStatements.modal.toastDownloadFailed': 'Could not download the source statement',
 	'vendorStatements.modal.statLines': '{n, plural, one {# line} other {# lines}}',
 	'vendorStatements.modal.statMatched': '{n} matched',
 	'vendorStatements.modal.statMismatch': '{n} mismatch',

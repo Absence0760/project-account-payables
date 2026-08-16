@@ -2934,6 +2934,15 @@ export const messages = {
 	'vendorStatements.modal.toastIgnored': 'Ligne ignorée',
 	'vendorStatements.modal.toastUpdateFailed': 'Impossible de mettre à jour la ligne',
 	'vendorStatements.modal.refPill': 'Réf. {reference}',
+	'vendorStatements.modal.provenanceTitle': 'Origine de ces lignes',
+	'vendorStatements.modal.provenanceRead':
+		'Lu automatiquement par {provider} avec une confiance de {confidence} — {n, plural, one {# poste ouvert relevé} other {# postes ouverts relevés}} sur le document.',
+	'vendorStatements.modal.provenanceSkipNote':
+		'Une ligne que le lecteur ne pouvait pas lire sans ambiguïté a été ignorée plutôt que devinée : notre facture correspondante apparaît ci-dessous comme un écart à traiter.',
+	'vendorStatements.modal.provenanceCsv': 'Analysé directement depuis le CSV importé.',
+	'vendorStatements.modal.downloadSource': 'Télécharger le relevé d’origine',
+	'vendorStatements.modal.downloadingSource': 'Téléchargement…',
+	'vendorStatements.modal.toastDownloadFailed': 'Impossible de télécharger le relevé d’origine',
 	'vendorStatements.modal.statLines': '{n, plural, one {# ligne} other {# lignes}}',
 	'vendorStatements.modal.statMatched': '{n} rapprochées',
 	'vendorStatements.modal.statMismatch': '{n} écarts',

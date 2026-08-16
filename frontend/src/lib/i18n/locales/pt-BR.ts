@@ -2965,6 +2965,15 @@ export const messages = {
 	'vendorStatements.modal.toastIgnored': 'Linha ignorada',
 	'vendorStatements.modal.toastUpdateFailed': 'Não foi possível atualizar a linha',
 	'vendorStatements.modal.refPill': 'Ref. {reference}',
+	'vendorStatements.modal.provenanceTitle': 'De onde vieram estas linhas',
+	'vendorStatements.modal.provenanceRead':
+		'Lido automaticamente por {provider} com {confidence} de confiança — {n, plural, one {# item em aberto extraído} other {# itens em aberto extraídos}} do documento.',
+	'vendorStatements.modal.provenanceSkipNote':
+		'Uma linha que o leitor não conseguiu ler sem ambiguidade foi ignorada em vez de adivinhada, então a nossa nota correspondente aparece abaixo como uma diferença a apurar.',
+	'vendorStatements.modal.provenanceCsv': 'Lido diretamente do CSV enviado.',
+	'vendorStatements.modal.downloadSource': 'Baixar o extrato original',
+	'vendorStatements.modal.downloadingSource': 'Baixando…',
+	'vendorStatements.modal.toastDownloadFailed': 'Não foi possível baixar o extrato original',
 	'vendorStatements.modal.statLines': '{n, plural, one {# linha} other {# linhas}}',
 	'vendorStatements.modal.statMatched': '{n} conciliadas',
 	'vendorStatements.modal.statMismatch': '{n} divergências',

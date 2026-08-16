@@ -2966,6 +2966,16 @@ export const messages = {
 	'vendorStatements.modal.toastIgnored': 'Línea ignorada',
 	'vendorStatements.modal.toastUpdateFailed': 'No se pudo actualizar la línea',
 	'vendorStatements.modal.refPill': 'Ref. {reference}',
+	'vendorStatements.modal.provenanceTitle': 'De dónde salieron estas líneas',
+	'vendorStatements.modal.provenanceRead':
+		'Leído automáticamente por {provider} con una confianza del {confidence} — {n, plural, one {# partida abierta tomada} other {# partidas abiertas tomadas}} del documento.',
+	'vendorStatements.modal.provenanceSkipNote':
+		'Una fila que el lector no pudo leer sin ambigüedad se omitió en lugar de adivinarse, así que nuestra factura correspondiente aparece abajo como una diferencia a resolver.',
+	'vendorStatements.modal.provenanceCsv': 'Analizado directamente desde el CSV cargado.',
+	'vendorStatements.modal.downloadSource': 'Descargar el estado de cuenta original',
+	'vendorStatements.modal.downloadingSource': 'Descargando…',
+	'vendorStatements.modal.toastDownloadFailed':
+		'No se pudo descargar el estado de cuenta original',
 	'vendorStatements.modal.statLines': '{n, plural, one {# línea} other {# líneas}}',
 	'vendorStatements.modal.statMatched': '{n} conciliadas',
 	'vendorStatements.modal.statMismatch': '{n} discrepancias',

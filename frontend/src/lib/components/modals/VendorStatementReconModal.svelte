@@ -9,8 +9,12 @@
 	import {
 		RECON_STATUS_LABELS,
 		RECON_CLASSIFICATION_LABELS,
-		RECON_RESOLUTION_LABELS
+		RECON_RESOLUTION_LABELS,
+		RECON_SOURCE_FORMAT_LABELS,
+		formatExtractionConfidence,
+		sourceStatementFilename
 	} from '$lib/types/vendorStatementRecon';
+	import type { ReconSourceFormat } from '$lib/types/vendorStatementRecon';
 	import { auth } from '$lib/stores/auth.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
@@ -22,7 +26,8 @@
 		createReconciliation,
 		uploadReconciliation,
 		resolveLine,
-		getReconciliation
+		getReconciliation,
+		downloadSourceStatement
 	} from '$lib/api/vendorStatementRecon';
 
 	interface VendorOption {
@@ -224,6 +229,30 @@
 	const status = $derived<ReconStatus>(detail?.status ?? 'open');
 	const sortedLines = $derived(detail?.lines ?? []);
 
+	// An unrecognised source format renders its raw value rather than a blank
+	// pill — a new backend format would otherwise disappear silently.
+	const sourceLabel = $derived(
+		detail
+			? (RECON_SOURCE_FORMAT_LABELS[detail.source_format as ReconSourceFormat] ??
+					detail.source_format)
+			: ''
+	);
+
+	// --- Source document ---
+	let downloading = $state(false);
+
+	async function downloadSource() {
+		if (!detail) return;
+		downloading = true;
+		try {
+			await downloadSourceStatement(detail.id, sourceStatementFilename(detail));
+		} catch (err) {
+			handleError(err, m('vendorStatements.modal.toastDownloadFailed'));
+		} finally {
+			downloading = false;
+		}
+	}
+
 	const modalTitle = $derived(
 		isCreate
 			? m('vendorStatements.modal.titleCreate')
@@ -407,7 +436,41 @@
 					>{m('vendorStatements.modal.refPill', { reference: detail.statement_reference })}</span
 				>
 			{/if}
+			<span class="meta-pill" data-testid="statement-source">{sourceLabel}</span>
 		</div>
+
+		<!-- Provenance: how these lines got here, and the supplier's own document.
+		     A reviewer clearing a machine-read run is clearing a model's reading of
+		     a PDF, and the run says so rather than presenting the lines as fact. -->
+		{#if detail.extraction || detail.has_source_file}
+			<div class="provenance" data-testid="statement-provenance">
+				<div class="prov-title">{m('vendorStatements.modal.provenanceTitle')}</div>
+				{#if detail.extraction}
+					<p class="prov-line">
+						{m('vendorStatements.modal.provenanceRead', {
+							provider: detail.extraction.provider,
+							confidence: formatExtractionConfidence(detail.extraction.confidence),
+							n: detail.extraction.line_count
+						})}
+					</p>
+					<p class="prov-note">{m('vendorStatements.modal.provenanceSkipNote')}</p>
+				{:else}
+					<p class="prov-line">{m('vendorStatements.modal.provenanceCsv')}</p>
+				{/if}
+				{#if detail.has_source_file}
+					<button
+						type="button"
+						class="prov-download"
+						onclick={downloadSource}
+						disabled={downloading}
+					>
+						{downloading
+							? m('vendorStatements.modal.downloadingSource')
+							: m('vendorStatements.modal.downloadSource')}
+					</button>
+				{/if}
+			</div>
+		{/if}
 
 		<!-- Summary counts -->
 		<div class="stat-chips">
@@ -558,6 +621,53 @@
 		border-radius: 8px;
 		background: var(--bg);
 		color: var(--text-muted);
+	}
+
+	/* --- Provenance --- */
+	.provenance {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 4px;
+		margin-bottom: 12px;
+		padding: 10px 12px;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		background: var(--bg);
+	}
+	.prov-title {
+		font-size: 0.78rem;
+		font-weight: 600;
+		color: var(--text);
+	}
+	.prov-line {
+		margin: 0;
+		font-size: 0.78rem;
+		color: var(--text);
+	}
+	.prov-note {
+		margin: 0;
+		font-size: 0.74rem;
+		color: var(--text-muted);
+	}
+	.prov-download {
+		margin-top: 4px;
+		border: 1px solid var(--border);
+		background: transparent;
+		color: var(--text-muted);
+		border-radius: 5px;
+		padding: 4px 12px;
+		cursor: pointer;
+		font-family: inherit;
+		font-size: 0.78rem;
+	}
+	.prov-download:hover:not(:disabled) {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+	.prov-download:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
 	}
 
 	/* --- Summary stat chips --- */

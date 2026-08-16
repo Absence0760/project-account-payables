@@ -2954,6 +2954,15 @@ export const messages = {
 	'vendorStatements.modal.toastIgnored': '行を無視しました',
 	'vendorStatements.modal.toastUpdateFailed': '行を更新できませんでした',
 	'vendorStatements.modal.refPill': '参照 {reference}',
+	'vendorStatements.modal.provenanceTitle': 'これらの行の出所',
+	'vendorStatements.modal.provenanceRead':
+		'{provider} が信頼度 {confidence} で自動読み取りしました — 文書から{n, plural, other {#件}}の未決済項目を取得。',
+	'vendorStatements.modal.provenanceSkipNote':
+		'明確に読み取れなかった行は推測せずにスキップされたため、該当する当社の請求書は下に確認すべき差異として表示されます。',
+	'vendorStatements.modal.provenanceCsv': 'アップロードされたCSVから直接読み取りました。',
+	'vendorStatements.modal.downloadSource': '元の明細書をダウンロード',
+	'vendorStatements.modal.downloadingSource': 'ダウンロード中…',
+	'vendorStatements.modal.toastDownloadFailed': '元の明細書をダウンロードできませんでした',
 	'vendorStatements.modal.statLines': '{n, plural, other {# 行}}',
 	'vendorStatements.modal.statMatched': '{n} 件一致',
 	'vendorStatements.modal.statMismatch': '{n} 件不一致',

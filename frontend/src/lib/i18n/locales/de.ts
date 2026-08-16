@@ -2936,6 +2936,16 @@ export const messages = {
 	'vendorStatements.modal.toastIgnored': 'Position ignoriert',
 	'vendorStatements.modal.toastUpdateFailed': 'Position konnte nicht aktualisiert werden',
 	'vendorStatements.modal.refPill': 'Ref. {reference}',
+	'vendorStatements.modal.provenanceTitle': 'Herkunft dieser Positionen',
+	'vendorStatements.modal.provenanceRead':
+		'Maschinell gelesen von {provider} mit {confidence} Konfidenz — {n, plural, one {# offene Position} other {# offene Positionen}} aus dem Dokument übernommen.',
+	'vendorStatements.modal.provenanceSkipNote':
+		'Eine Zeile, die nicht eindeutig lesbar war, wurde übersprungen statt geraten — unsere Rechnung dazu erscheint unten als zu klärende Differenz.',
+	'vendorStatements.modal.provenanceCsv': 'Direkt aus der hochgeladenen CSV-Datei eingelesen.',
+	'vendorStatements.modal.downloadSource': 'Originalauszug herunterladen',
+	'vendorStatements.modal.downloadingSource': 'Wird heruntergeladen…',
+	'vendorStatements.modal.toastDownloadFailed':
+		'Originalauszug konnte nicht heruntergeladen werden',
 	'vendorStatements.modal.statLines': '{n, plural, one {# Position} other {# Positionen}}',
 	'vendorStatements.modal.statMatched': '{n} abgeglichen',
 	'vendorStatements.modal.statMismatch': '{n} Abweichungen',
