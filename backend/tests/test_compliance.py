@@ -249,6 +249,68 @@ async def test_kyc_threshold_override_lifts_floor():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["sepa", "international_ach", "international_wire"])
+async def test_kyc_gate_covers_every_international_rail(method):
+    """The default high-risk set IS `payment_methods.INTERNATIONAL_PAYMENT_METHODS`,
+    imported rather than restated — so a fourth international rail can't ship
+    with the KYC gate silently off for it."""
+    vendor = _vendor(kyc_status="not_required")
+    db = _mock_db_with_zero_trailing_spend()
+    decision = await check_payment_compliance(
+        db,
+        vendor=vendor,
+        payment_amount=Decimal("5000.00"),
+        payment_method=method,
+        org_settings={},
+        organization_id=uuid.uuid4(),
+    )
+    assert decision.verdict == "refuse"
+
+
+def test_default_high_risk_methods_is_the_shared_international_set():
+    """Pin the import, not a copy — this is the drift the round closed."""
+    from app.services.compliance import _DEFAULT_HIGH_RISK_METHODS
+    from app.services.payment_methods import INTERNATIONAL_PAYMENT_METHODS
+
+    assert _DEFAULT_HIGH_RISK_METHODS == INTERNATIONAL_PAYMENT_METHODS
+
+
+@pytest.mark.asyncio
+async def test_high_risk_corridor_override_is_case_insensitive():
+    """An admin typing `SEPA` into the per-org override used to disable the KYC
+    gate for that corridor entirely, because `Payment.method` is stored
+    lower-case. Both sides are normalised now."""
+    vendor = _vendor(kyc_status="not_required")
+    db = _mock_db_with_zero_trailing_spend()
+    decision = await check_payment_compliance(
+        db,
+        vendor=vendor,
+        payment_amount=Decimal("5000.00"),
+        payment_method="sepa",
+        org_settings={"compliance": {"high_risk_corridor_methods": [" SEPA "]}},
+        organization_id=uuid.uuid4(),
+    )
+    assert decision.verdict == "refuse"
+
+
+@pytest.mark.asyncio
+async def test_blank_high_risk_override_falls_back_to_the_default_set():
+    """A settings blob of `[""]` is noise, not an instruction to disable the
+    gate — it falls back to the platform default (fail closed)."""
+    vendor = _vendor(kyc_status="not_required")
+    db = _mock_db_with_zero_trailing_spend()
+    decision = await check_payment_compliance(
+        db,
+        vendor=vendor,
+        payment_amount=Decimal("5000.00"),
+        payment_method="sepa",
+        org_settings={"compliance": {"high_risk_corridor_methods": ["", "   ", None]}},
+        organization_id=uuid.uuid4(),
+    )
+    assert decision.verdict == "refuse"
+
+
+@pytest.mark.asyncio
 async def test_kyc_not_required_for_domestic_corridors():
     """Domestic ACH payment, $50k (well above the KYC threshold but
     under the AML threshold), no KYC on the vendor → still allow.

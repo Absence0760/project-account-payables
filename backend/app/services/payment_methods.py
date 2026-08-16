@@ -1,5 +1,15 @@
 """Payment-rail classification — one source of truth for what a
-``Payment.method`` value *means* to downstream regulatory reporting.
+``Payment.method`` value *means* to downstream regulatory reporting **and to
+the international money path**.
+
+Two orthogonal questions are answered here, both keyed on the same rail string,
+because a rail added for one and forgotten by the other is the failure mode:
+
+1. **Is this rail reported by us on a 1099, or by the card settlement entity on
+   a 1099-K?** (``CARD_PAYMENT_METHODS`` / ``IRS_1099_REPORTABLE_METHODS``)
+2. **Is this rail international?** (``INTERNATIONAL_PAYMENT_METHODS`` /
+   ``DOMESTIC_PAYMENT_METHODS``) — which decides whether an FX rate is locked,
+   whether a corridor override is trustworthy, and whether KYC is required.
 
 The rail matters most for **IRS 1099 reporting**. Payments settled over a
 payment card are reported by the card settlement entity on Form **1099-K**,
@@ -43,9 +53,9 @@ guard below is what stops "unknown" from becoming a hiding place.
 **Drift guard:** ``tests/test_payment_methods.py`` fails if a rail appears in
 the ``PaymentMethod`` schema enum, in any registered payment adapter's
 ``supported_methods``, or in the corridor selector's method table without
-being classified here. Add the rail to exactly one of the two frozensets
-below and the guard goes green again — there is no way to add a rail and
-leave its tax treatment undecided.
+being classified here — on **both** axes. Add the rail to exactly one of the
+1099 frozensets *and* one of the geography frozensets and the guard goes green
+again; there is no way to add a rail and leave either treatment undecided.
 """
 
 from __future__ import annotations
@@ -71,6 +81,48 @@ IRS_1099_REPORTABLE_METHODS: frozenset[str] = frozenset(
 
 KNOWN_PAYMENT_METHODS: frozenset[str] = CARD_PAYMENT_METHODS | IRS_1099_REPORTABLE_METHODS
 
+# ---------------------------------------------------------------------------
+# Geography: which rails cross a border / a currency by construction.
+# ---------------------------------------------------------------------------
+# These three exist ONLY as an international routing decision — nothing
+# defaults to them. ``payment_runs.create_payment_run`` stamps every line item
+# with a plain domestic method regardless of the invoice's real currency or
+# country, so a truthy ``ach``/``wire`` is a default, while a truthy ``sepa``
+# means a human (or a vendor preference) actually chose that corridor. Three
+# live decisions read this set:
+#
+#   * ``payment_corridor.pick_corridor`` — whether to honour a caller's
+#     ``requested_method`` as a real override or fall through to auto-selection.
+#   * ``compliance._kyc_required_for`` — the default high-risk corridor set
+#     above which a vendor must be KYC-verified (an org may override it via
+#     ``settings.compliance.high_risk_corridor_methods``).
+#   * ``api/payments`` — whether to run the international leg at all, i.e.
+#     whether an FX rate gets locked onto the row.
+#
+# Before this set existed each of those hand-rolled its own literal, so adding
+# a fourth international rail meant remembering all three.
+INTERNATIONAL_PAYMENT_METHODS: frozenset[str] = frozenset(
+    {
+        "sepa",
+        "international_ach",
+        "international_wire",
+    }
+)
+
+# Rails that stay inside the payer's own banking system. ``virtual_card`` is
+# here because the corridor selector never routes a cross-border payment onto
+# a card — card issuance is its own path (``services/card_issuance``) and does
+# not participate in FX locking or corridor selection.
+DOMESTIC_PAYMENT_METHODS: frozenset[str] = frozenset(
+    {
+        "ach",
+        "check",
+        "wire",
+        "rtp",
+        "virtual_card",
+    }
+)
+
 
 def normalize_payment_method(value: str | None) -> str:
     """Canonical form of a stored rail: trimmed + lower-cased. ``None`` → ``""``."""
@@ -89,6 +141,26 @@ def is_1099_reportable_method(value: str | None) -> bool:
     unknown or ``NULL`` method. See the module docstring for why.
     """
     return not is_card_payment_method(value)
+
+
+def is_international_payment_method(value: str | None) -> bool:
+    """True when the rail is one of the international corridors.
+
+    An unknown or ``NULL`` rail is **not** international. That is the correct
+    default at all three call sites — an unrecognised ``requested_method`` must
+    not be honoured as a deliberate international override, and the FX leg is
+    additionally reached whenever the invoice currency differs from the org's
+    home currency or the vendor carries IBAN/SWIFT fields, so the predicate is
+    never the only gate.
+
+    It IS the only gate for the KYC threshold, where "unknown ⇒ not high risk"
+    would be fail-open — which is precisely why the drift guard in
+    ``tests/test_payment_methods.py`` requires every rail the codebase can
+    produce to appear in ``INTERNATIONAL_PAYMENT_METHODS`` or
+    ``DOMESTIC_PAYMENT_METHODS``. "Unknown" is unreachable for a real rail, so
+    it can't become a hiding place.
+    """
+    return normalize_payment_method(value) in INTERNATIONAL_PAYMENT_METHODS
 
 
 def card_payment_method_clause(column: ColumnElement[str | None]) -> ColumnElement[bool]:

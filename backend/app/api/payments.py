@@ -42,7 +42,10 @@ from app.schemas.payment import (
 )
 from app.services.audit_access import log_access
 from app.services.exception_lifecycle import record_decision
-from app.services.international_payments import realized_fx_gain_loss_for_settlement
+from app.services.international_payments import (
+    is_international_payment,
+    realized_fx_gain_loss_for_settlement,
+)
 from app.services.payment_adapters import (
     PaymentAdapter,
     PaymentPayload,
@@ -2016,7 +2019,11 @@ async def _execute_single_payment(
         invoice is not None
         and (
             invoice_currency != org_home_currency
-            or payment.method in {"sepa", "international_wire", "international_ach"}
+            # The rail set is NOT restated here — `is_international_payment`
+            # owns it (via `services/payment_methods`), so this gate, the
+            # corridor selector's override check and the compliance KYC
+            # threshold can't drift apart when a rail is added.
+            or is_international_payment(payment)
             or has_intl_bank_fields
         )
         and payment.fx_rate is None  # not already prepared

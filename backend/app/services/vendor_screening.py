@@ -51,6 +51,10 @@ from app.services.sanctions_adapters import (
     ScreeningResult,
     get_sanctions_adapter,
 )
+from app.services.sanctions_categories import (
+    has_adverse_media,
+    merge_categories_into_raw_response,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +74,14 @@ class ScreenOutcome:
     provider: str
     blocked: bool
     sanctions_check: SanctionsCheck
+    # PII-free taxonomy of WHAT was hit (sanctions / pep / adverse_media /
+    # high_risk_country). Defaulted so existing constructions keep working.
+    categories: tuple[str, ...] = ()
+
+    @property
+    def adverse_media(self) -> bool:
+        """True when this screen included a negative-news hit."""
+        return has_adverse_media(self.categories)
 
 
 def _adapter_for(org_settings: dict | None) -> SanctionsAdapter:
@@ -119,7 +131,13 @@ async def screen_vendor_record(
         result=screening.result,
         risk_score=screening.risk_score,
         matched_list=screening.matched_list,
-        raw_response=screening.raw_response,
+        # The PII-free category taxonomy rides the row: `vendor_risk_scoring`
+        # is compute-on-read off the latest `sanctions_checks` row and never
+        # calls an adapter, so this is the only way an adverse-media hit can
+        # reach the vendor's `risk_factors`.
+        raw_response=merge_categories_into_raw_response(
+            screening.raw_response, screening.categories
+        ),
         correlation_id=corr,
     )
     db.add(row)
@@ -155,6 +173,10 @@ async def screen_vendor_record(
             "result": screening.result,
             "provider": screening.provider,
             "matched_list": screening.matched_list,
+            # Fixed-vocabulary labels only (sanctions / pep / adverse_media /
+            # high_risk_country) — no provider free text, so the trail can say
+            # WHAT was hit without carrying a name or a date of birth.
+            "categories": list(screening.categories),
             "check_type": check_type,
             "newly_blocked": newly_blocked,
         },
@@ -177,4 +199,5 @@ async def screen_vendor_record(
         provider=screening.provider,
         blocked=vendor.payments_blocked,
         sanctions_check=row,
+        categories=screening.categories,
     )
