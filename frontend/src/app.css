@@ -6,11 +6,23 @@
 	color-scheme: dark;
 	--bg: #0f1117;
 	--surface: #181a23;
+	/* A raised panel ON TOP of --surface: the inline-code chip, the one-time
+	   secret reveal, the proration box. It was used in six places as
+	   `var(--surface-2, #232b44)` before it was ever defined here, so the
+	   fallback was always what rendered — and two of those sites disagreed
+	   about the value. Defined once so it can't drift again.
+
+	   WCAG 1.4.3 Contrast (Minimum): --text-muted does NOT clear the 4.5:1 bar
+	   on this surface — #8a8fa0 on #232b44 is 4.34:1, which is what the axe
+	   guard caught on /admin/api-keys and /admin/webhooks. Muted text belongs
+	   on --bg or --surface; text on --surface-2 uses --text (11.0:1). */
+	--surface-2: #232b44;
 	--border: #2a2d3a;
 	--text: #e2e4ea;
 	/* WCAG 1.4.3 Contrast (Minimum): #8a8fa0 on --bg (#0f1117) computes to
 	   5.86:1, and 5.38:1 on --surface (#181a23) — both clear the 4.5:1 bar for
-	   normal text, so the muted token is kept as-is. */
+	   normal text, so the muted token is kept as-is. It does NOT clear it on
+	   --surface-2; see that token's note. */
 	--text-muted: #8a8fa0;
 	--accent: #638cff;
 	/* WCAG 1.4.3 Contrast: --accent (#638cff) only reaches 3.12:1 against

@@ -147,7 +147,7 @@
 
 	.key-value {
 		flex: 1;
-		background: var(--surface-2, #232b44);
+		background: var(--surface-2);
 		border: 1px solid var(--border, #2a3350);
 		border-radius: 8px;
 		padding: 0.6rem 0.75rem;

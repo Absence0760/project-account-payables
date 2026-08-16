@@ -832,7 +832,7 @@
 		align-items: baseline;
 		justify-content: space-between;
 		gap: 1rem;
-		background: var(--surface-2, #232b44);
+		background: var(--surface-2);
 		border: 1px solid var(--border, #2a3350);
 		border-radius: 8px;
 		padding: 0.75rem 1rem;
@@ -840,7 +840,10 @@
 	}
 
 	.change-result .proration dt {
-		color: var(--text-muted, #94a3b8);
+		/* Same 4.34:1 failure as the admin code chips — muted text on
+		   --surface-2. /billing is not in the axe route list, so this one was
+		   latent rather than caught. */
+		color: var(--text);
 		font-size: 0.85rem;
 	}
 
@@ -888,7 +891,7 @@
 	}
 
 	.btn {
-		background: var(--surface-2, #232b44);
+		background: var(--surface-2);
 		color: var(--text, #e2e8f0);
 		border: 1px solid var(--border, #2a3350);
 		border-radius: 8px;

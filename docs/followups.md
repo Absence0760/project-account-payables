@@ -249,6 +249,34 @@ originally-deferred sub-bucket from that same feature remains:
 Refs: [roadmap.md](roadmap.md) § AI Cash-Flow Copilot,
 [cash-flow-copilot.md](cash-flow-copilot.md).
 
+### The axe route list still trails the routes that carry dialogs
+
+Widening the guard to `/admin` + `/vendor-statements` immediately caught a real
+`serious` contrast failure (`--text-muted` on the newly-defined `--surface-2`,
+4.34:1). Fixing it turned up the **same** defect on `/billing`'s proration box —
+found by reading, not by the guard, because `/billing` is not in the route list.
+That is the coverage gap restating itself: the pages with one-time secret
+reveals, saved-card metadata and armed destructive actions are exactly the ones
+worth guarding, and `/billing`, `/reports`, `/experiments` and `/cfo` are still
+outside it.
+
+- [ ] Extend `frontend/tests-e2e/a11y/axe.spec.ts` to `/billing`, `/reports`,
+      `/experiments` and `/cfo`. Expect them to pass — they reuse the shared
+      `ui/` primitives — and treat any failure as the finding, fixing the root
+      rather than relaxing the rule.
+- [ ] Consider whether a token-pairing guard (which foreground tokens are legal
+      on which surface tokens) beats route-by-route coverage for this class. The
+      contrast bug recurs per *surface*, not per route, so a lint over
+      `app.css` + component styles would catch it everywhere at once.
+
+**Why deferred:** the routes were added as part of closing the previous a11y
+gap, and each newly-guarded route is a potential new CI failure. Adding four
+more unverified routes in the same change that was fixing a red build would
+have made a second failure indistinguishable from a regression in the fix.
+**Trigger:** the next `/audit:accessibility` pass, or any change to a page in
+the list above.
+Ref: [accessibility.md](accessibility.md).
+
 ---
 
 ## (a) Blocked on external credentials, accounts, or hardware
