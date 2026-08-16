@@ -34,32 +34,61 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#251](https://github.com/Absence0760/project-account-payables/issues/251)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Vendor-statement upload UI closed 2026-08-15** — `/vendor-statements` now has
-an explicit intake-mode choice (type the lines / upload a CSV or PDF), renders
-the backend's 422 refusal reason as a persistent inline alert instead of a fading
-toast, and surfaces the run's source pill, `extraction` provenance block and a
-download of the archived supplier document. That was the last open item in the
-Vendor Statement Reconciliation roadmap section, which moved to
-[roadmap_shipped.md](roadmap_shipped.md). Building it surfaced two new items
-below — the keyless-dev-box extraction fallback, and the reader's uncounted
-skipped rows.
+**Last reconciled:** 2026-08-15 against `improve/round-followup-batch-2` — a
+three-agent round that closed the two remaining actionable `(c)` items and
+shipped one backend improvement chosen by survey.
 
-**Last reconciled:** 2026-08-15 against `improve/round-followup-closeout` — a
-three-agent round that closed the three remaining tracked items. **Webhook
-secret rotation is now reachable from `/admin/webhooks`** (row action → overlap
-picker → one-time reveal), and its overlap badge survives a reload now that
-`SubscriptionResponse` carries the expiry. **Vendor statements accept a PDF**,
-routed through the org's own extraction adapter as an optional
-`extract_statement` capability rather than a second parser, with the source
-document archived. **The cash-flow copilot gained a proactive
-shortfall-alert sweep**; its opening-balance-provenance bullet turned out to be
-already shipped, and closing it surfaced a real defect underneath — the provider
-balance's CURRENCY was dropped, so a USD-reporting org with a EUR account got a
-running balance that was silently a two-currency mixture. That is fixed and the
-CFO endpoint now shares the same resolution chain.
+**The vendor-statement upload UI closed** — but the entry's premise ("no file
+picker at all") was stale; a picker existed and already took CSV and PDF. The
+real defects were sharper: the two intakes competed silently (a file beat typed
+lines, and `notes` was dropped on the upload path the endpoint doesn't accept it
+on), the backend's PII-free 422 refusals — the actionable half of a reader that
+*skips rather than guesses* — went to a fading toast, `has_source_file` /
+`extraction` were never typed client-side, and an empty pasted editor created a
+run asserting the supplier had listed nothing. Intake is now an explicit mode
+choice, refusals render as a persistent inline alert, and the run detail carries
+a source pill, the `extraction` provenance block and a download of the archived
+supplier document. That was the last open item in the Vendor Statement
+Reconciliation roadmap section, which moved to
+[roadmap_shipped.md](roadmap_shipped.md). It surfaced two new items below — the
+keyless-dev-box extraction fallback, and the reader's uncounted skipped rows.
 
-Two new entries below replace them, both surfaced by this round's reviews rather
-than by the work itself.
+**The invoices/vendors local-mutation race closed** — the fix went into the
+shared `createRequestSequencer()` primitive rather than being hand-rolled per
+page, splitting the old single `isLatest` predicate into `canCommit` (may this
+response be written?) and `isCurrentRequest` (is this still the newest request?)
+so a `finally` clearing a loading flag doesn't hang forever once a local edit
+supersedes an in-flight fetch. Rationale in [decisions.md](decisions.md) §23.
+The exhaustive sweep it prompted found the far larger remainder — eighteen list
+surfaces with no sequencing at all — and a separate `/assistant` defect, both
+new entries below.
+
+**The ERP sync-back's failures became visible and recoverable** —
+`services/payment_erp_sync` is the only path that flips an invoice
+`payment_scheduled → paid`, is dispatched one-shot after a terminal event and is
+never re-invoked for an already-`completed` payment, so a failed leg left the
+money moved and the invoice stranded forever behind a log line. Worse, one
+shared transaction meant a leg failing on a DB error rolled back the run's
+*successful* transitions too. Each leg now commits independently, every failure
+opens a de-duped PII-free `erp_reconciliation` exception, and
+`POST /api/payments/runs/{run_id}/sync-erp` is the audited retry exit.
+Rationale in [decisions.md](decisions.md) §22. Two sibling fixes rode along (a
+fail-open `quote_payment` base default, and a head-of-line stall in
+`vendor_rescreen`); the systemic remainder — every sweep discarding its own
+failure count — is a new entry below.
+
+Closed in the pass before that, against `improve/round-followup-closeout`: the
+three tracked items of that round. **Webhook secret rotation became reachable
+from `/admin/webhooks`** (row action → overlap picker → one-time reveal), with
+its overlap badge surviving a reload now that `SubscriptionResponse` carries the
+expiry. **Vendor statements began accepting a PDF**, routed through the org's own
+extraction adapter as an optional `extract_statement` capability rather than a
+second parser, with the source document archived. **The cash-flow copilot gained
+a proactive shortfall-alert sweep**; its opening-balance-provenance bullet turned
+out to be already shipped, and closing it surfaced a real defect underneath — the
+provider balance's CURRENCY was dropped, so a USD-reporting org with a EUR
+account got a running balance that was silently a two-currency mixture. That is
+fixed and the CFO endpoint now shares the same resolution chain.
 
 Closed in the pass before that, against
 `feat/settled-amount-and-money-path-followups`: the entire
@@ -297,60 +326,77 @@ conflict.)
 `/admin` or `/vendor-statements`.
 Ref: [accessibility.md](accessibility.md).
 
-### Mount-time double-fetch race — invoices/vendors' local-mutation bypass
+### Every other list surface is still unsequenced — a local edit races its fetch
 
-`frontend/src/lib/components/admin/UsersPanel.svelte` had two `$effect`s that
-both called `adminStore.fetchUsers()` on mount — the search-debounce effect
-fired an unguarded duplicate ~250ms after the immediate one (a Svelte
-`$effect` always runs once on mount regardless of whether its tracked value
-changed). Because the store always *replaces* the list wholesale, whichever
-of the two fetches resolved last could silently clobber an optimistic
-create/delete with a stale snapshot — a real, user-visible race, not a test
-flake (root-caused and fixed via `/flake-doctor`, PR #286).
+`frontend/src/lib/utils/requestSequence.ts` grew `supersedeInFlight()` so a
+row edited in place can't be reverted by a fetch that was already in flight,
+and `/invoices` + `/vendors` were wired to it. A sibling sweep afterwards —
+every `+page.svelte` and list store **read**, not grepped — found that **no
+other list surface has sequencing of any kind**: not `createRequestSequencer`,
+not a hand-rolled token counter, not an `AbortController`. Eighteen of them
+both replace the list wholesale from a fetch *and* edit a row locally with no
+fetch, which is exactly the clobber just fixed.
 
-An independently-verified `/bug-hunt` sibling sweep (each page's actual
-`$effect` blocks read, not just grepped) found the identical pattern —
-unguarded duplicate mount fetch + a local-only mutation splice with no
-sequencer — on five more pages, now fixed the same way (a guard skipping
-the second effect's own mount-time run): **`budgets`, `contracts`, `intake`,
-`recurring`, and `purchase-orders`** (the last caught in code review, missed
-by the initial sweep — narrower blast radius since it's read-only/ERP-synced
-with no local-splice mutation, but `syncFromErp()`/`loadMore()` could still
-be overwritten by the delayed duplicate). Five other pages were checked and
-confirmed NOT at risk: `catalogs` and `expenses` only ever have one
-fetch-triggering effect; `payments`, `positive-pay`, `requisitions`,
-`vendor-statements` each have a request sequencer and/or route every
-mutation through a full sequencer-protected refetch, closing the race from
-a different angle.
+Racing: the `contracts`, `expenses`, `notifications`, `admin` (users + roles)
+and `workflows` stores; the `discounts`, `positive-pay`, `recurring`,
+`budgets`, `intake`, `requisitions`, `catalogs` (delete only),
+`vendor-statements`, `vendors/screening` (its Refresh button is the second
+trigger) and `workflows/[id]` routes; the policies and pre-approvals
+sub-lists on `expenses`; and `InvoiceModal`'s line-item list.
+`VendorConsolidationModal` was checked and is the one provably safe surface —
+mount-only fetch, no create path.
 
-**Still open — a narrower variant on `invoices` and `vendors`:** both pages
-already carry a request sequencer (`createRequestSequencer()`) that correctly
-resolves fetch-vs-fetch ordering, so the `UsersPanel`-style guard doesn't
-apply to them. But each has **local-mutation helpers that bypass the
-sequencer entirely**: `invoiceStore.update()` / `patchLocal()` (used by
-`InvoiceModal`'s save/approve/reject/file-attach) and `vendors/+page.svelte`'s
-`applyVendorUpdate()` (bank-detail edit, screening, risk-recompute,
-block/unblock) mutate the list directly without calling
-`fetchSequence.start()`. A still-in-flight mount-time fetch — the sequencer
-only drops it if a *newer sequenced fetch* supersedes it, which these local
-mutations never trigger — can resolve after one of these edits and overwrite
-it with a stale pre-edit snapshot.
+Two details worth keeping, because they defeat the obvious dismissals:
 
-- [ ] Route `invoiceStore.update()`/`patchLocal()` and
-      `vendors/+page.svelte`'s `applyVendorUpdate()` through the same
-      sequencer their pages already use (mark the local mutation as
-      superseding any in-flight fetch, or have it call
-      `fetchSequence.start()`/mark-latest before applying), so a stale
-      redundant fetch can never clobber a local edit either.
+- **A create/prepend path needs no existing row.** "The mount fetch must have
+  landed before there's a row to mutate" closes the race for edit/delete but
+  not for New/Add, which is live while the first GET is still out.
+- **The `untrack()` fix from issue #168 never reached four of these pages.**
+  On `contracts`, `recurring`, `budgets` and `intake` the filter `$effect`
+  calls `buildParams()`, which reads `search` directly — Svelte tracks that
+  transitively, so every keystroke fires an immediate undebounced fetch
+  *alongside* the 300 ms debounced one: two concurrent loads, either able to
+  clobber. Those pages' `searchEffectRan` guards cover the duplicate **mount**
+  fetch only and do nothing here.
 
-**Why deferred:** this is a different code shape from the four just fixed
-(threading state through an existing sequencer rather than adding a mount
-guard) and touches two higher-traffic pages — worth its own focused pass
-rather than folding into the mechanical sibling-sweep fix.
-**Trigger:** next `/flake-doctor` or `/bug-hunt` pass touching `invoices` or
-`vendors`, or a bug report matching this symptom on either page.
-Ref: `reviews/flake-admin-users.md` (gitignored — regenerate via
-`/flake-doctor` if consulting this again after the file has aged out).
+- [ ] Adopt `createRequestSequencer` on each surface above (`start` →
+      `canCommit` → `isCurrentRequest`, plus `supersedeInFlight()` in the
+      local-mutation helper). The primitive and the pattern doc
+      (`frontend/CLAUDE.md` § Sequencing list fetches) now exist for this.
+- [ ] Apply `untrack(() => search)` to the four filter effects above.
+
+**Why deferred:** the round that built the primitive ran in a worktree fenced
+to `/invoices` + `/vendors` while two other agents held `/cfo`,
+`/vendor-statements` and the a11y specs — several surfaces above sit in their
+files, so an eighteen-file sweep from here would have collided on merge.
+Nothing about the fix is unknown; it is mechanical per surface.
+**Trigger:** the next frontend round that has the whole app to itself, or any
+page above being edited for another reason — fix it there and then, rather
+than recopying the pattern.
+Ref: [decisions.md](decisions.md) §23.
+
+### `/assistant` loses a message — and overwrites another — if you send while a thread loads
+
+`openConversation` (`frontend/src/routes/assistant/+page.svelte:65`) opens
+with `if (busy) return` but never sets `busy = true`; only `send()` does. The
+composer therefore stays live while the conversation GET is in flight. Send
+in that window and `send()` pushes the user and placeholder-assistant bubbles
+and captures `assistantIdx` against the current array; the GET then resolves
+and replaces `messages` wholesale, dropping both; `applyFinal` (:90) writes
+the model's answer into `messages[assistantIdx]` of the **new** array. The
+answer doesn't just go missing — it lands on top of an unrelated historical
+message.
+
+- [ ] Hold `busy` for the duration of `openConversation` (its own dead guard
+      shows that was the intent), and resolve the placeholder by identity
+      rather than by captured index, so a replaced array can't misdirect the
+      write.
+
+**Why deferred:** found by the sibling sweep above, not by the round's own
+change, and `/assistant` was outside that round's worktree fence. It is a
+display-integrity bug on a read-only surface — it moves no money and writes
+nothing server-side — so it did not warrant breaking the fence.
+**Trigger:** the next `/assistant` change, or the sequencer sweep above.
 
 ---
 
