@@ -134,6 +134,23 @@ def test_offline_fallback_is_logged(monkeypatch, caplog):
     assert any("OFFLINE" in r.getMessage() for r in caplog.records)
 
 
+def test_silent_resolution_still_resolves_but_says_nothing(monkeypatch, caplog):
+    """`announce=False` is what the failure path uses.
+
+    It re-resolves purely to read the provider for the `ExtractionUsage` row,
+    and a second identical warning per failed extraction turns the fallback
+    signal into noise — which is how a warning stops being read.
+    """
+    monkeypatch.setattr(ext.settings, "extraction_provider", "")
+    monkeypatch.setattr(ext.settings, "anthropic_api_key", "")
+    monkeypatch.setattr(ext.settings, "environment", "development")
+    with caplog.at_level("WARNING"):
+        config = ext._resolve_extraction_config({}, announce=False)
+    assert config["provider"] == "mock"
+    assert config["platform_provider_reason"] == ext.PLATFORM_REASON_NO_KEY_LOCAL
+    assert caplog.records == []
+
+
 def test_keyless_deployed_is_logged(monkeypatch, caplog):
     with caplog.at_level("WARNING"):
         _platform_config(monkeypatch, environment="production")

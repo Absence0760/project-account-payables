@@ -92,8 +92,14 @@ def resolve_platform_provider(
     return PLATFORM_OFFLINE_PROVIDER, PLATFORM_REASON_NO_KEY_LOCAL
 
 
-def _resolve_extraction_config(org_settings: dict | None) -> dict:
-    """Build extraction adapter config based on org settings and program type."""
+def _resolve_extraction_config(org_settings: dict | None, *, announce: bool = True) -> dict:
+    """Build extraction adapter config based on org settings and program type.
+
+    ``announce=False`` resolves silently. The failure path re-resolves purely to
+    read `provider` / `program_type` for the `ExtractionUsage` row, and a second
+    identical warning per failed extraction turns the fallback signal into noise
+    — which is how a warning stops being read.
+    """
     extraction = (org_settings or {}).get("extraction", {})
     program_type = extraction.get("program_type", "platform")
 
@@ -106,22 +112,23 @@ def _resolve_extraction_config(org_settings: dict | None) -> dict:
         platform_key=settings.anthropic_api_key,
         is_deployed=settings.is_deployed,
     )
-    if reason == PLATFORM_REASON_NO_KEY_LOCAL:
-        # Loud on purpose: `mock` output must never be mistaken for a real read.
-        logger.warning(
-            "[extraction] No platform key configured — platform extraction is running "
-            "OFFLINE on the '%s' adapter. Its invoice fields are a fixture, not a read "
-            "of the document. Set FEOH_ANTHROPIC_API_KEY (or FEOH_EXTRACTION_PROVIDER) "
-            "to use a real provider.",
-            provider,
-        )
-    elif reason == PLATFORM_REASON_NO_KEY_DEPLOYED:
-        logger.warning(
-            "[extraction] No platform key configured in a DEPLOYED environment — "
-            "staying on '%s', which will fail at the provider. Refusing to fall back to "
-            "the offline adapter, whose invoice fields are fabricated.",
-            provider,
-        )
+    if announce:
+        if reason == PLATFORM_REASON_NO_KEY_LOCAL:
+            # Loud on purpose: `mock` output must never be mistaken for a real read.
+            logger.warning(
+                "[extraction] No platform key configured — platform extraction is running "
+                "OFFLINE on the '%s' adapter. Its invoice fields are a fixture, not a read "
+                "of the document. Set FEOH_ANTHROPIC_API_KEY (or FEOH_EXTRACTION_PROVIDER) "
+                "to use a real provider.",
+                provider,
+            )
+        elif reason == PLATFORM_REASON_NO_KEY_DEPLOYED:
+            logger.warning(
+                "[extraction] No platform key configured in a DEPLOYED environment — "
+                "staying on '%s', which will fail at the provider. Refusing to fall back to "
+                "the offline adapter, whose invoice fields are fabricated.",
+                provider,
+            )
     return {
         "program_type": "platform",
         "provider": provider,
@@ -613,7 +620,10 @@ async def run_extraction(
         # Track failed usage (extraction_usage lives in the control DB)
         try:
             if ctrl_db is not None:
-                config = _resolve_extraction_config(org_settings)
+                # Silent: the success path above already announced any provider
+                # fallback for this attempt, and repeating it here would double
+                # every such warning per failed extraction.
+                config = _resolve_extraction_config(org_settings, announce=False)
                 usage = ExtractionUsage(
                     invoice_id=invoice_id,
                     provider=config.get("provider", "unknown"),
