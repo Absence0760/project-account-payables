@@ -1086,10 +1086,17 @@ dispatcher cannot know whether its caller is moving money or drawing a chart —
   fictitious `voided_upstream`.
 - **Count it as a failure.** The payment reconciler lets it propagate so the
   tenant registers as a sweep failure and shows `degraded` on
-  `GET /api/health/sweeps` (§24). `payment_erp_sync` returns a failed pass
-  instead — it is documented "never raises into its caller", runs on a
-  detached daemon thread where a traceback reaches nobody, and is awaited
-  directly by `POST /payments/runs/{id}/sync-erp`.
+  `GET /api/health/sweeps` (§24).
+- **Fail the leg, not the pass.** `payment_erp_sync` resolves the ERP adapter
+  *inside* `_sync_one_leg`, where it would be used, so an unsupported type
+  travels the same path as any other leg failure and opens the de-duped
+  `erp_reconciliation` exception §22 introduced. The first attempt at this put
+  the check in `_sync_payments` as a pre-flight, before the tenant session
+  exists — which cannot open an exception, aborts every payment in the run at
+  once, and returns a count that `_run_in_thread` discards on the primary
+  dispatch path. That reintroduced exactly the invisible strand §22 removed:
+  money moved, invoices frozen at `payment_scheduled`, nothing in the queue.
+  A config error must strand the same way a transport error does.
 - **Say which name is wrong.** `POST /organization/test-payments` and
   `/test-erp` echo the bad value and list the registered alternatives. The name
   is bounded to 50 chars (its column width) so an absurd value can't bloat a

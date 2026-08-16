@@ -391,6 +391,44 @@ async def test_failed_leg_opens_an_erp_reconciliation_exception(realdb):
     assert f"/api/payments/runs/{run_id}/sync-erp" in exc_row.description
 
 
+async def test_unsupported_erp_adapter_strands_visibly_not_silently(realdb):
+    """A typo in `settings.erp.type` is a leg failure, not a whole-run abort.
+
+    `get_erp_adapter` fails closed on an ERP type it has no adapter for (the
+    old `mock` fallback returned `success=True` with a fabricated document id
+    — see `docs/decisions.md` §28). The refusal must be raised where every
+    OTHER leg failure is raised, so it opens the same de-duped
+    `erp_reconciliation` exception.
+
+    Resolving it as a pre-flight before the tenant session instead would abort
+    the run with a single count — and on the primary dispatch path
+    (`dispatch_payment_sync` → `_run_in_thread`) that count is discarded, so
+    every payment in the run would sit at `payment_scheduled` forever with no
+    exception row, no notification, and no sweep to notice. That is precisely
+    the invisibility this module was rewritten to remove.
+    """
+    await _set_org_erp(realdb, "a", {"type": "netsuite-oauth", "integration_method": "direct"})
+    run_id, invoice_id = await _seed_run(realdb, "a")
+
+    result = await _sync_payments(run_id, realdb.info("a").org_id)
+
+    assert result.failed == 1
+    assert result.synced == 0
+    assert result.transitioned == 0
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        inv = (await s.execute(select(Invoice).where(Invoice.id == invoice_id))).scalar_one()
+    assert inv.status == InvoiceStatus.payment_scheduled, "no false `paid` from a broken config"
+
+    rows = await _open_erp_reconciliation_rows(realdb, "a", invoice_id)
+    assert len(rows) == 1, "the strand must be visible in the exception queue"
+    exc_row = rows[0]
+    assert exc_row.severity == "error"
+    assert "UnknownErpAdapterError" in exc_row.description
+    assert f"/api/payments/runs/{run_id}/sync-erp" in exc_row.description
+
+
 async def test_failed_leg_exception_is_deduped_across_retries(realdb):
     """A second failed pass must not pile up a second open row for the same
     invoice — the queue would fill with duplicates of one strand."""

@@ -197,6 +197,89 @@ async def test_resume_refuses_unsupported_provider(realdb):
     assert payment.status == "pending"
 
 
+@pytest.mark.asyncio
+async def test_retry_failed_refuses_before_booking_any_retry_attempt(realdb):
+    """The third and most complex dispatch entry point.
+
+    `/retry-failed` books a NEW `Payment` row per re-attempted invoice and
+    writes a `payment.retried` audit row for each, all BEFORE the dispatch
+    loop. Resolving the adapter after that would leave a run full of retry
+    attempts that were never sent — so the pre-flight has to precede the
+    booking, not just the claim.
+    """
+    from app.api.payments import retry_failed_payments
+    from app.models.workflow import AuditLog
+
+    info = realdb.info("a")
+    org_id = info.org_id
+    mk = realdb.sessionmaker("a")
+    run_id, pay_id = await _seed_draft_run(mk, org_id, initiated_by=info.users["ap_manager"])
+    async with mk() as s:
+        run = (await s.execute(select(PaymentRun).where(PaymentRun.id == run_id))).scalar_one()
+        run.status = "failed"
+        payment = (await s.execute(select(Payment).where(Payment.id == pay_id))).scalar_one()
+        payment.status = "failed"
+        # Must be genuinely RETRY-SAFE (`payment_runs._RETRY_SAFE_FAILURE_*`) or
+        # the endpoint would skip it as `needs_reconciliation` and the
+        # nothing-was-booked assertions below would hold for the wrong reason.
+        # The positive control at the end of this test proves they don't.
+        payment.failure_reason = "cards_not_enabled"
+        await s.commit()
+
+    async with realdb.sessionmaker("a")() as db:
+        with pytest.raises(HTTPException) as ei:
+            await retry_failed_payments(
+                run_id=run_id,
+                db=db,
+                org=_org(org_id),
+                user=_user(info.users["admin"]),
+                entity_id=None,
+            )
+
+    assert ei.value.status_code == 409
+    assert BAD_PROVIDER in ei.value.detail
+
+    async with mk() as s:
+        run = (await s.execute(select(PaymentRun).where(PaymentRun.id == run_id))).scalar_one()
+        payments = (
+            (await s.execute(select(Payment).where(Payment.payment_run_id == run_id)))
+            .scalars()
+            .all()
+        )
+        retried_rows = (
+            (await s.execute(select(AuditLog).where(AuditLog.action == "payment.retried")))
+            .scalars()
+            .all()
+        )
+    assert run.status == "failed", "the run was never claimed"
+    assert len(payments) == 1, "no retry-attempt row was booked"
+    assert retried_rows == []
+
+    # Positive control: the SAME run and payment, with a supported provider,
+    # does book a retry attempt. Without this the assertions above would also
+    # pass if the endpoint had simply skipped the payment for another reason.
+    async with realdb.sessionmaker("a")() as db:
+        with (
+            patch("app.api.payments.transition_invoice", new_callable=AsyncMock),
+            patch("app.services.payment_erp_sync.dispatch_payment_sync", new_callable=AsyncMock),
+        ):
+            await retry_failed_payments(
+                run_id=run_id,
+                db=db,
+                org=_org(org_id, provider="mock"),
+                user=_user(info.users["admin"]),
+                entity_id=None,
+            )
+
+    async with mk() as s:
+        payments = (
+            (await s.execute(select(Payment).where(Payment.payment_run_id == run_id)))
+            .scalars()
+            .all()
+        )
+    assert len(payments) == 2, "the refusal, not the payment's retry-safety, is what stopped it"
+
+
 # ── Void ──────────────────────────────────────────────────────────────
 
 
@@ -504,36 +587,7 @@ async def test_test_erp_endpoint_no_longer_confirms_a_typod_adapter():
     assert "SECRET" not in res["message"]
 
 
-@pytest.mark.asyncio
-async def test_payment_erp_sync_reports_a_failed_pass_for_an_unsupported_adapter():
-    """`_sync_payments` is documented "never raises into its caller" — it runs
-    on a detached daemon thread on the webhook path and is awaited directly by
-    `POST /payments/runs/{id}/sync-erp`. The refusal has to become a counted
-    failure, not an escaping exception."""
-    from app.services import payment_erp_sync
-
-    org = SimpleNamespace(
-        id=uuid.uuid4(),
-        db_name="feoh_pytest_never_opened",
-        settings={"erp": {"type": BAD_ERP_TYPE, "integration_method": "direct"}},
-    )
-    result = MagicMock()
-    result.scalar_one_or_none = MagicMock(return_value=org)
-    ctrl = AsyncMock()
-    ctrl.execute = AsyncMock(return_value=result)
-    factory = MagicMock()
-    factory.return_value.__aenter__ = AsyncMock(return_value=ctrl)
-    factory.return_value.__aexit__ = AsyncMock(return_value=False)
-
-    engine = MagicMock()
-    engine.dispose = AsyncMock()
-    with (
-        patch.object(payment_erp_sync, "async_sessionmaker", return_value=factory),
-        patch.object(payment_erp_sync, "create_async_engine", return_value=engine) as mk_engine,
-    ):
-        outcome = await payment_erp_sync._sync_payments(uuid.uuid4(), org.id)
-
-    assert outcome.failed == 1
-    assert outcome.transitioned == 0
-    # Only the control-plane engine was built; no tenant DB was opened.
-    assert mk_engine.call_count == 1
+# The ERP sync-back half of this defect is exercised against a real tenant DB
+# in `test_payment_erp_sync.py::test_unsupported_erp_adapter_strands_visibly_
+# not_silently` — it has to assert the `erp_reconciliation` exception row, and
+# that needs the real harness rather than a mocked session.
