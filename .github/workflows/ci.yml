@@ -257,6 +257,16 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      # The frontend's vitest suite — the i18n message-parity check, the pure
+      # helpers, the payment-status drift guard, and the stylesheet
+      # colour-token / contrast scan. It ran nowhere in CI until now, so a
+      # guard the a11y work leans on (and that accessibility.md + the VPAT
+      # both describe as enforced on every CI run) was only ever a local
+      # command. Runs before the typecheck because it is the faster, more
+      # specific signal — the whole suite is about a second.
+      - name: Unit tests
+        run: pnpm test:unit
+
       - name: Typecheck
         env:
           PUBLIC_API_URL: http://localhost:8000
