@@ -374,7 +374,7 @@ async def test_reap_tenant_disposes_engine_even_on_query_failure():
 async def test_run_reaper_loop_sleeps_configured_interval_between_sweeps():
     import asyncio
 
-    from app.services import extraction_reaper
+    from app.services import extraction_reaper, sweep_health
 
     sleeps: list[float] = []
 
@@ -384,12 +384,23 @@ async def test_run_reaper_loop_sleeps_configured_interval_between_sweeps():
         if len(sleeps) >= 2:
             raise asyncio.CancelledError
 
-    with (
-        patch.object(extraction_reaper, "reap_once", AsyncMock(return_value=SimpleNamespace())),
-        patch.object(extraction_reaper.settings, "extraction_reaper_interval_seconds", 42),
-        patch.object(extraction_reaper.asyncio, "sleep", fake_sleep),
-    ):
-        with pytest.raises(asyncio.CancelledError):
-            await extraction_reaper.run_reaper_loop()
+    # The sleep lives in `sweep_health.run_sweep_loop` now — `run_reaper_loop`
+    # delegates its whole body there so each tick's outcome reaches the health
+    # registry (decisions §24). Patching the shared runner still pins exactly
+    # what this test always asserted: that the reaper is driven on the
+    # *configured* interval, which `run_reaper_loop` passes through.
+    sweep_health.reset()
+    try:
+        with (
+            patch.object(extraction_reaper, "reap_once", AsyncMock(return_value=SimpleNamespace())),
+            patch.object(extraction_reaper.settings, "extraction_reaper_interval_seconds", 42),
+            patch.object(sweep_health.asyncio, "sleep", fake_sleep),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await extraction_reaper.run_reaper_loop()
+    finally:
+        # The registry is module-global; this file has no autouse reset fixture
+        # (test_sweep_health.py does), so leave it clean for the rest of the shard.
+        sweep_health.reset()
 
     assert sleeps and all(s == 42 for s in sleeps)
