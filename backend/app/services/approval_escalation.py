@@ -17,7 +17,6 @@ a CLI: `python scripts/sweep_approval_escalations.py`.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from dataclasses import dataclass
@@ -32,6 +31,7 @@ from app.models.organization import Organization
 from app.models.workflow import WorkflowInstance
 from app.services.approval_chain import apply_escalation
 from app.services.audit_dispatch import dispatch_audit
+from app.services.sweep_health import SWEEP_APPROVAL_ESCALATION, run_sweep_loop
 
 logger = logging.getLogger(__name__)
 
@@ -156,21 +156,12 @@ async def _escalate_tenant(db_name: str, now: datetime, *, org_id: uuid.UUID | N
 
 async def run_escalation_loop() -> None:
     """Long-lived loop. Started in `main.lifespan` on app startup, cancelled
-    on shutdown."""
-    interval = settings.approval_escalation_interval_seconds
-    logger.info("[approval-escalation] started; interval=%ds", interval)
-    try:
-        while True:
-            try:
-                await escalate_once()
-            except Exception as exc:
-                # Class only, not the message (PII-out-of-logs invariant).
-                logger.error(
-                    "[approval-escalation] sweep raised: %s",
-                    exc.__class__.__name__,
-                    exc_info=True,
-                )
-            await asyncio.sleep(interval)
-    except asyncio.CancelledError:
-        logger.info("[approval-escalation] shutting down")
-        raise
+    on shutdown. Body is the shared `sweep_health.run_sweep_loop`, so each
+    tick's outcome (including `EscalateResult.failures`) is recorded."""
+    await run_sweep_loop(
+        SWEEP_APPROVAL_ESCALATION,
+        lambda: escalate_once(),
+        interval_seconds=settings.approval_escalation_interval_seconds,
+        log=logger,
+        log_prefix="[approval-escalation]",
+    )

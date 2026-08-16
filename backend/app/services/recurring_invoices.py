@@ -40,7 +40,6 @@ All money is ``Decimal`` (never float). Only stdlib date math — no
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from dataclasses import dataclass
@@ -62,6 +61,7 @@ from app.models.recurring_invoice import (
     RecurringInvoiceTemplate,
 )
 from app.services.audit_dispatch import dispatch_audit
+from app.services.sweep_health import SWEEP_RECURRING_INVOICES, run_sweep_loop
 from app.services.workflow_engine import create_workflow_instance
 
 logger = logging.getLogger(__name__)
@@ -534,16 +534,12 @@ async def _sweep_tenant(db_name: str, today: date) -> int:
 
 
 async def run_recurring_invoices_loop() -> None:
-    """Long-lived loop started in ``main.lifespan``; cancelled on shutdown."""
-    interval = settings.recurring_invoices_interval_seconds
-    logger.info("[recurring] started; interval=%ds", interval)
-    try:
-        while True:
-            try:
-                await generate_recurring_invoices_once()
-            except Exception as exc:  # noqa: BLE001
-                logger.error("[recurring] sweep raised: %s", exc.__class__.__name__)
-            await asyncio.sleep(interval)
-    except asyncio.CancelledError:
-        logger.info("[recurring] shutting down")
-        raise
+    """Long-lived loop started in ``main.lifespan``; cancelled on shutdown.
+    Body is the shared ``sweep_health.run_sweep_loop``."""
+    await run_sweep_loop(
+        SWEEP_RECURRING_INVOICES,
+        lambda: generate_recurring_invoices_once(),
+        interval_seconds=settings.recurring_invoices_interval_seconds,
+        log=logger,
+        log_prefix="[recurring]",
+    )

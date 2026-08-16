@@ -34,7 +34,6 @@ one row's failure logged but never halts the sweep. Disabled by default
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 
@@ -45,6 +44,7 @@ from app.config import settings
 from app.database import control_session_factory
 from app.models.billing import Subscription
 from app.services.audit_dispatch import dispatch_auth_audit
+from app.services.sweep_health import SWEEP_BILLING_DUNNING, run_sweep_loop
 
 logger = logging.getLogger(__name__)
 
@@ -98,18 +98,29 @@ async def run_dunning_once(control_db: AsyncSession, *, now: datetime | None = N
     return canceled
 
 
+async def _dunning_tick() -> int:
+    """One sweep tick. Returns the cancellation count so the shared runner can
+    record it (``extract_counts`` maps a bare int to ``{"count": n}``)."""
+    async with control_session_factory() as control_db:
+        count = await run_dunning_once(control_db)
+    if count:
+        logger.info("billing dunning sweep canceled %d past-due subscription(s)", count)
+    return count
+
+
 async def run_dunning_loop() -> None:
-    """Long-lived sweep loop. Started in ``main.lifespan`` when enabled."""
-    interval = settings.billing_dunning_interval_seconds
-    logger.info("billing dunning sweep started (interval=%ss)", interval)
-    while True:
-        try:
-            async with control_session_factory() as control_db:
-                count = await run_dunning_once(control_db)
-            if count:
-                logger.info("billing dunning sweep canceled %d past-due subscription(s)", count)
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 — one tick's failure must not kill the loop
-            logger.exception("billing dunning sweep tick failed")
-        await asyncio.sleep(interval)
+    """Long-lived sweep loop. Started in ``main.lifespan`` when enabled.
+
+    Body is the shared ``sweep_health.run_sweep_loop``, which also replaces the
+    old ``logger.exception`` on a failed tick: that call attaches the full
+    traceback (including ``str(exc)``) to the record, and a control-plane /
+    billing-adapter error can carry a customer identifier. The class name alone
+    is what reaches the sink now, consistent with every other sweep.
+    """
+    await run_sweep_loop(
+        SWEEP_BILLING_DUNNING,
+        _dunning_tick,
+        interval_seconds=settings.billing_dunning_interval_seconds,
+        log=logger,
+        log_prefix="[billing-dunning]",
+    )

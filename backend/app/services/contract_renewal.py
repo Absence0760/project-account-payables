@@ -34,7 +34,6 @@ never halts the sweep. Disabled by default (``FEOH_CONTRACT_RENEWAL_ENABLED``).
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from dataclasses import dataclass
@@ -52,6 +51,7 @@ from app.models.vendor import Vendor
 from app.services.audit_dispatch import dispatch_audit
 from app.services.notification_dispatch import notify_event, resolve_role_user_ids
 from app.services.notification_templates import render_contract_renewal
+from app.services.sweep_health import SWEEP_CONTRACT_RENEWAL, run_sweep_loop
 
 logger = logging.getLogger(__name__)
 
@@ -211,21 +211,13 @@ async def _sweep_tenant(db_name: str, ref_today: date) -> tuple[int, int]:
 
 
 async def run_renewal_loop() -> None:
-    """Long-lived loop started in ``main.lifespan``; cancelled on shutdown."""
-    interval = settings.contract_renewal_interval_seconds
-    logger.info("[contract-renewal] started; interval=%ds", interval)
-    try:
-        while True:
-            try:
-                await notify_renewals_once()
-            except Exception as exc:  # noqa: BLE001
-                # Log the class, not the message (PII-out-of-logs invariant).
-                logger.error(
-                    "[contract-renewal] sweep raised: %s",
-                    exc.__class__.__name__,
-                    exc_info=True,
-                )
-            await asyncio.sleep(interval)
-    except asyncio.CancelledError:
-        logger.info("[contract-renewal] shutting down")
-        raise
+    """Long-lived loop started in ``main.lifespan``; cancelled on shutdown.
+    Body is the shared ``sweep_health.run_sweep_loop`` — each tick's
+    ``RenewalResult`` (including its ``failures``) is recorded there."""
+    await run_sweep_loop(
+        SWEEP_CONTRACT_RENEWAL,
+        lambda: notify_renewals_once(),
+        interval_seconds=settings.contract_renewal_interval_seconds,
+        log=logger,
+        log_prefix="[contract-renewal]",
+    )

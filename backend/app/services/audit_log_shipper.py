@@ -25,7 +25,6 @@ for the boto3 calls is all the concurrency we need.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -42,6 +41,7 @@ from app.services.audit_shipping import (
     AuditShippingAdapter,
     get_audit_shipping_adapters,
 )
+from app.services.sweep_health import SWEEP_AUDIT_LOG_SHIPPER, run_sweep_loop
 
 logger = logging.getLogger(__name__)
 
@@ -187,27 +187,20 @@ async def run_shipper_loop() -> None:
     """Long-lived loop, started in `main.lifespan` on app startup and
     cancelled on shutdown. Sleeps `FEOH_AUDIT_SHIPPING_INTERVAL_SECONDS`
     between sweeps.
+
+    The loop body is the shared `sweep_health.run_sweep_loop`, so the
+    `failures` count `ship_once` returns — tenant DBs whose rows stayed
+    unshipped — reaches `GET /api/health/sweeps` instead of being discarded.
+    A sink misconfigured for months is exactly what that closes.
     """
-    interval = settings.audit_shipping_interval_seconds
     providers = _parse_providers(settings.audit_shipping_providers)
-    logger.info(
-        "[audit-shipper] started; interval=%ds batch=%d providers=%s",
-        interval,
-        settings.audit_shipping_batch_size,
-        providers or "(none)",
+    await run_sweep_loop(
+        SWEEP_AUDIT_LOG_SHIPPER,
+        lambda: ship_once(),
+        interval_seconds=settings.audit_shipping_interval_seconds,
+        log=logger,
+        log_prefix="[audit-shipper]",
+        start_detail=(
+            f" batch={settings.audit_shipping_batch_size} providers={providers or '(none)'}"
+        ),
     )
-    try:
-        while True:
-            try:
-                await ship_once()
-            except Exception as exc:
-                # Catch-all so one bad sweep doesn't kill the loop. Logged
-                # at ERROR so it surfaces without taking the app down.
-                # Class only, not the message (PII-out-of-logs invariant).
-                logger.error(
-                    "[audit-shipper] sweep raised: %s", exc.__class__.__name__, exc_info=True
-                )
-            await asyncio.sleep(interval)
-    except asyncio.CancelledError:
-        logger.info("[audit-shipper] shutting down")
-        raise
