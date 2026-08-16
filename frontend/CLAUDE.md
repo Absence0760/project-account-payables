@@ -433,6 +433,53 @@ items, then a centred Load More button below the table:
   (create / delete / bulk-delete) keep `total` in sync without a
   refetch.
 
+### Sequencing list fetches (`createRequestSequencer`)
+
+A list surface that can have a request in flight while something else
+changes the list wires **`createRequestSequencer()`**
+(`$lib/utils/requestSequence.ts`) — `stores/invoices.svelte.ts`,
+`stores/payments.svelte.ts` and `routes/vendors/+page.svelte` do today.
+It answers two separate questions, and conflating them is a bug both ways:
+
+```ts
+const fetchSequence = createRequestSequencer();
+
+async function fetch(params) {
+    const token = fetchSequence.start();   // synchronously, before firing
+    loading = true;
+    try {
+        const res = await api.get(`/api/things?${qs}`);
+        if (!fetchSequence.canCommit(token)) return;   // stale → discard
+        things = res.items;
+    } finally {
+        // NOT canCommit — see below.
+        if (fetchSequence.isCurrentRequest(token)) loading = false;
+    }
+}
+```
+
+- **`canCommit(token)`** — may this response be written into state? False
+  once a later `start()` has happened (the classic "search `acm` resolves
+  after `acme`" race) **or** once a local edit superseded it.
+- **`isCurrentRequest(token)`** — is this still the newest request I
+  issued? Use it in the `finally` for the `loading` flag and for any
+  load-error toast. Reading `canCommit` there leaves the spinner stuck on
+  forever after a local edit, because no newer request exists to clear it.
+- **`supersedeInFlight()`** — call it **immediately before** any helper
+  that edits the list in place with no fetch of its own
+  (`invoiceStore.update` / `patchLocal`, the vendors page's
+  `applyVendorUpdate`). Without it the counter never moves, so an
+  already-in-flight fetch resolves afterwards holding a pre-edit snapshot
+  and silently reverts the edit — a user watching their approve or
+  bank-detail change undo itself. Requests issued *after* the edit are
+  unaffected; they read server state that already includes it.
+
+The superseded response is discarded, never merged — see
+`docs/decisions.md` §22 for why re-applying the edit on top of it isn't
+sound. A store with no local-mutation helper (every mutation re-fetches
+through the sequencer, like `paymentStore`) needs no `supersedeInFlight`
+call; say so in a comment rather than leaving the next reader to derive it.
+
 ### Status filter chips
 
 Use **`<FilterChips>`** (`$lib/components/ui/FilterChips.svelte`) for the

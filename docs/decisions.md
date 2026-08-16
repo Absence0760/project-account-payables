@@ -651,3 +651,56 @@ guard, which refuses to *build* a release against placeholder endpoints. That
 repo ships mobile/watch binaries where a bad endpoint is unrecoverable after
 store submission; here the frontend redeploys in minutes and the backend reads
 its config at runtime from sops. The guard would cost more than it protects.
+
+---
+
+## 22. A stale list response is discarded, never merged onto a local edit
+
+**Decided:** 2026-08-15
+
+The list surfaces (`/invoices`, `/vendors`, `/payments`) fetch a page and
+replace the whole array. Some of them also edit one row *in place* with no
+fetch — the invoice modal's save / file attach, the vendors page's
+bank-detail save, re-screen, risk recompute, block/unblock. Both things can
+be happening at once: a mount fetch, a debounced search or a filter-chip
+fetch is still in flight when the user approves the invoice they have open.
+If that fetch resolves afterwards it holds a snapshot the server took
+*before* the edit, and putting it into state silently reverts the edit — the
+user watches their approval undo itself. `createRequestSequencer` closed the
+fetch-vs-fetch half of this, but a local edit issues no request, so its
+counter never moved and the in-flight fetch stayed "latest".
+
+`supersedeInFlight()` closes it: every request issued up to the moment of the
+edit becomes un-committable. Two calls worth recording:
+
+**The superseded response is dropped, not merged.** The tempting alternative
+is to re-apply the local edit on top of the arriving response — "newest data
+plus my change". It isn't sound. The response is a whole-row snapshot from
+before the edit, so overlaying the edited fields still publishes stale values
+for every *other* field on that row, and for a row the server changed for an
+unrelated reason in the same window. Dropping it leaves the list showing
+pre-fetch data plus the edit — consistent, if briefly behind — and the next
+sequenced fetch (a filter change, the modal close, a reload) reconciles. In
+practice every call site mutates from an open modal, so the user cannot have
+changed a filter concurrently; nothing they asked for is lost.
+
+**"Can I commit this?" and "am I the newest request?" became two questions.**
+They used to be one predicate, `isLatest`. A local edit makes them diverge: the
+in-flight fetch is still the newest *request* (nothing newer was issued) but
+must no longer commit. The `finally` that clears the `loading` flag has to read
+the request question — `isCurrentRequest` — or the spinner stays on forever
+after a local edit, with no later request coming to clear it. The vendors
+load-error toast reads it for the same reason: a superseded request still
+failed, and only a newer *fetch* makes its failure someone else's to report.
+
+**Trade-off:** a fetch issued in the same window as the edit is dropped even
+though it might have included the edit, costing one redundant round trip's
+worth of freshness. The alternative — assuming it is fresh enough — is exactly
+the bug. Conservative is correct here: the cost of dropping a good response is
+a slightly stale list; the cost of committing a stale one is losing a
+financial edit the user believes they made.
+
+**Not adopted:** tracking per-field pending patches (a mutation overlay, à la
+an optimistic-update cache). It solves the merge case properly but needs a
+patch log, invalidation rules, and a rollback path on a failed mutation — a
+lot of machinery for surfaces whose mutations already happen behind a modal.
