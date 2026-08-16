@@ -46,6 +46,86 @@ property as the per-recipient email link). Tokens are only added when
 **`FEOH_EMAIL_ACTION_SIGNING_KEY` is set and the chat provider is `teams`**;
 otherwise the card stays a plain (non-interactive) post.
 
+`notification_dispatch._build_chat_action_tokens` is the one place that decides
+this. It dispatches on the org's chat provider — `slack` →
+`build_slack_action_tokens`, `teams` → `build_teams_action_tokens`, anything else
+(`mock`, an unknown key) → no tokens at all — so each surface only ever receives
+tokens minted on its **own** channel and the two are never interchangeable.
+
+## The outbound card — Approve / Reject actions
+
+`services/chat_notification_adapters/teams_adapter.py` renders the
+`invoice_assigned` MessageCard with two `HttpPOST` actions after the existing
+`OpenUri` deep link:
+
+```json
+{
+  "@type": "HttpPOST",
+  "name": "Approve",
+  "target": "https://<api-host>/api/approvals/teams/interactivity",
+  "bodyContentType": "application/json",
+  "body": "{\"type\":\"message\",\"value\":{\"token\":\"<action token>\"}}",
+  "headers": [
+    { "name": "Content-Type", "value": "application/json" },
+    { "name": "Authorization", "value": "HMAC <base64 digest>" },
+    { "name": "X-Feoh-Card-Signature", "value": "<base64 digest>" }
+  ]
+}
+```
+
+The `body` shape is exactly what `_extract_token` reads (`value.token`), so the
+card and the endpoint agree by construction.
+
+### Why the card signs itself
+
+A MessageCard `HttpPOST` action is dispatched **by Microsoft, not by us**, so
+there is no shared-secret handshake to ride on the way a Teams *Outgoing Webhook*
+has one. What we do control is the action's exact `body` string and its `headers`
+— so the card is stamped, at render time, with
+`HMAC-SHA256(security token, body)` over that exact string. The endpoint
+re-derives the same digest with the same primitive.
+
+What that digest is and isn't:
+
+- it **proves the POST replays a body the platform minted** — it can't be
+  produced without the security token;
+- it is **not a key**, and it is **body-bound**: it cannot sign a different body,
+  so an approver handed the Reject action can't upgrade it to Approve (the test
+  suite pins exactly this);
+- anyone who could extract it could only **re-fire that one action**, which the
+  single-use `jti` already collapses to a no-op. That is the same exposure the
+  Slack buttons have — any channel member can click — and authorization still
+  rides entirely on the signed, per-approver action token inside the body.
+
+**Two headers, one digest.** Teams may replace an actionable message's
+`Authorization` header with its own bearer token (it attaches the acting user's
+identity to the POST), which would strip the only proof we have. The card
+therefore carries the digest on the dedicated `X-Feoh-Card-Signature` header as
+well; the endpoint prefers `Authorization: HMAC …` (the genuine Outgoing-Webhook
+spelling, unchanged) and falls through to the card header when `Authorization`
+holds something else. Same secret, same digest, same constant-time compare.
+
+**No timestamp header.** The card deliberately does not emit
+`X-Teams-Request-Timestamp`: it is stamped at *render* time, so the ±5-minute
+window would kill the buttons five minutes after the card is posted. Replay is
+bounded by the single-use `jti` and the workflow state machine instead — which
+is the posture the endpoint already documents for a timestamp-less POST.
+
+### Fail-closed rungs (each independent)
+
+The card falls back to a plain read-only post — never a broken button — unless
+**all** of these hold. A button whose POST the endpoint is guaranteed to reject
+is worse than no button: the approver clicks it and is told nothing happened.
+
+| Missing | Result |
+|---|---|
+| `FEOH_EMAIL_ACTION_SIGNING_KEY` | no tokens minted → no actions |
+| chat provider isn't `slack`/`teams` | no tokens minted → no actions |
+| event isn't `invoice_assigned` | no tokens minted → no actions |
+| zero or several intended approvers | no tokens minted → no actions |
+| `FEOH_TEAMS_SECURITY_TOKEN` | nothing to sign with → no actions |
+| `FEOH_API_PUBLIC_URL` | no callback target → no actions |
+
 ## The inbound webhook
 
 ```
@@ -58,11 +138,15 @@ exactly like the PEPPOL-inbound, email-approval, and Slack routes.
 
 Two gates, layered, both fail closed:
 
-1. **Teams request signature.** A Teams **Outgoing Webhook** signs every POST as
-   `Authorization: HMAC <base64(hmac-sha256 over the raw body)>` using a
-   base64-encoded shared **security token** (`FEOH_TEAMS_SECURITY_TOKEN`). We
-   base64-decode the secret to get the HMAC key, recompute the digest over the
-   raw bytes, and compare with a constant-time `hmac.compare_digest`. When Teams
+1. **Teams request signature.** `base64(hmac-sha256(base64decode(security token),
+   raw_body))`, compared with a constant-time `hmac.compare_digest`. It arrives on
+   `Authorization: HMAC <digest>` — how a Teams **Outgoing Webhook** signs every
+   POST — or on `X-Feoh-Card-Signature`, which is how the approval card's own
+   `HttpPOST` action carries it (see § The outbound card). Both spellings are
+   verified by the shared `services/teams_signature.py` primitive, which is the
+   same function that *signs* the outbound card, so the two ends of the round-trip
+   cannot drift apart. A security token that is empty — or decodes to nothing —
+   fails closed in both directions. When Teams
    includes an `X-Teams-Request-Timestamp` header we additionally **reject a
    timestamp more than `FEOH_TEAMS_REQUEST_MAX_AGE_SECONDS` (default 300s) from
    now** so a captured POST can't be replayed; the header is optional (Teams does
@@ -115,10 +199,11 @@ HMAC token(s). Never bank details, tax IDs, addresses, or payment-method numbers
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `FEOH_TEAMS_SECURITY_TOKEN` | (empty) | Teams Outgoing-Webhook **security token** (base64) for the interactivity-POST HMAC. **Empty → feature OFF**: every inbound POST rejected (fail-closed, no hardcoded fallback). NON-secret base64 dev value committed in `.env.development`; real secret via sops. The token's presence IS the on/off switch (mirrors `FEOH_SLACK_SIGNING_SECRET`). |
-| `FEOH_TEAMS_REQUEST_MAX_AGE_SECONDS` | `300` | Reject a Teams interactivity POST whose `X-Teams-Request-Timestamp` is more than this far from now (replay-window guard; only enforced when the header is present). |
+| `FEOH_TEAMS_SECURITY_TOKEN` | (empty) | Teams **security token** (base64) — the HMAC key for **both** directions: the card's action signature and the interactivity-POST verify. **Empty → feature OFF in both**: no actions are rendered and every inbound POST is rejected (fail-closed, no hardcoded fallback). NON-secret base64 dev value committed in `.env.development`; real secret via sops. The token's presence IS the on/off switch (mirrors `FEOH_SLACK_SIGNING_SECRET`). |
+| `FEOH_TEAMS_REQUEST_MAX_AGE_SECONDS` | `300` | Reject a Teams interactivity POST whose `X-Teams-Request-Timestamp` is more than this far from now (replay-window guard; only enforced when the header is present — the card deliberately omits it, see above). |
 | `FEOH_EMAIL_ACTION_SIGNING_KEY` | (empty) | Reused to sign the action token (bound to the `teams` channel). Empty → no actions added. |
 | `FEOH_EMAIL_ACTION_TTL_HOURS` | `168` | Reused as the action token's validity window. |
+| `FEOH_API_PUBLIC_URL` | `http://localhost:8000` | Externally-reachable API base. The card's `HttpPOST` actions target `<this>/api/approvals/teams/interactivity`, so it must be reachable from Microsoft's service for the buttons to work. Empty → no actions added. |
 
 The outbound side also needs the org to have its chat provider set to `teams`
 with a configured `webhook_url` on `Organization.settings.chat_notifications`
@@ -127,11 +212,18 @@ with a configured `webhook_url` on `Organization.settings.chat_notifications`
 
 ## Teams app setup (deployed)
 
-1. In the Teams channel, add an **Outgoing Webhook**, point its callback URL at
-   `https://<api-host>/api/approvals/teams/interactivity`, and copy the generated
-   **security token** into `FEOH_TEAMS_SECURITY_TOKEN` (sops). (Or use an Incoming
-   Webhook for the outbound card + an Outgoing Webhook for the action callback.)
-2. Set `FEOH_EMAIL_ACTION_SIGNING_KEY` (sops) if not already set for email / Slack
+1. In the Teams channel, add an **Incoming Webhook** and put its URL on the org's
+   `settings.chat_notifications.webhook_url` with `provider: "teams"` — that is
+   how the approval card gets posted at all.
+2. Set `FEOH_TEAMS_SECURITY_TOKEN` (sops) to a base64 value. It is the HMAC key
+   for both the card's action signature and the inbound verify. If you also
+   register an **Outgoing Webhook** pointed at
+   `https://<api-host>/api/approvals/teams/interactivity`, use the token Teams
+   generates for it, so both wirings share one key.
+3. Set `FEOH_API_PUBLIC_URL` to the externally-reachable API base — Microsoft's
+   service POSTs the card's actions there, so a loopback value means the buttons
+   go nowhere.
+4. Set `FEOH_EMAIL_ACTION_SIGNING_KEY` (sops) if not already set for email / Slack
    approval.
 
 No real Teams account is needed for tests — the test suite constructs
@@ -139,6 +231,13 @@ correctly-signed interactivity requests in-process.
 
 ## Tests
 
+- `tests/test_teams_card_actions.py` (pure) — the outbound half and the
+  round-trip: the shared sign/verify primitive and its fail-closed rungs, the
+  rendered `HttpPOST` actions (target / body / both signature headers), each
+  read-only fallback, PII-freeness of the action block, a drift guard that the
+  adapter's target constant is a route the app actually mounts, and the
+  provider dispatch in `_build_chat_action_tokens` (teams → `teams` channel,
+  slack → `slack` channel, `mock`/unknown → nothing).
 - `tests/test_teams_approvals.py` (realdb) — signed approve/reject happy paths +
   immutable audit / exception rows, token-in-`value` and token-in-`text`,
   single-use replay, bad Teams signature → opaque no-op, missing `Authorization`
@@ -146,16 +245,22 @@ correctly-signed interactivity requests in-process.
   (no secret) → reject, segregation + non-approver gates, the
   `teams`/`slack`/`email` channel-binding (a teams token is rejected under the
   email and slack expectations and vice versa), and the
-  `build_teams_action_tokens` primitive.
+  `build_teams_action_tokens` primitive — plus the **closed loop**: a card
+  rendered by the real production path (the notification chokepoint mints the
+  tokens, the adapter signs the body) is posted verbatim to the real endpoint and
+  approves / rejects; it still works when Teams substitutes its own bearer token
+  on `Authorization`; and Approve's signature over Reject's body is refused with
+  the same opaque ack.
 - Auth-gating is covered by `tests/test_rbac.py` (the route is in
   `NO_AUTH_REQUIRED`).
 
 ## Deferred
 
-- **Outbound interactive card rendering** — the Teams adapter currently posts a
-  read-only MessageCard. Wiring `build_teams_action_tokens` into an interactive
-  Adaptive Card / `Action.Http` payload (the outbound counterpart, mirroring the
-  Slack adapter's Block Kit buttons) is a small follow-up on the outbound track;
-  the inbound endpoint already accepts the token the moment it is wired.
 - **Richer message updates** — on success we return a simple message ack rather
   than rewriting the original card in place. That polish is a follow-up.
+- **Adaptive Cards** — the outbound card is the legacy `MessageCard` format,
+  because that is what a Teams **incoming webhook** accepts (Office connectors do
+  not accept Adaptive Cards). Moving to `Action.Execute` / `Action.Submit` would
+  mean registering a real Bot Framework app and replacing the shared-secret gate
+  with Bot Framework JWT validation — a different auth model, not an increment on
+  this one.

@@ -145,9 +145,6 @@ correctly-signed interactivity requests in-process.
 
 ## Deferred
 
-- **Microsoft Teams interactivity** — the outbound Teams adapter posts the
-  approval card, but the inbound Teams Action.Http / Bot Framework handshake +
-  signature scheme is a separate slice.
 - **Richer message updates** — on success we return a simple ephemeral ack rather
   than a full `chat.update` that rewrites the original message in place (e.g.
   "Approved by Jane at 14:03"). That `response_url` / `chat.update` polish is a
