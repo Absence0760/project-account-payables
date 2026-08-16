@@ -433,7 +433,7 @@ Full list in `backend/app/config.py`.
 | Secrets rotation | `docs/secrets-rotation.md` — what to rotate, when, and how |
 | Getting started | `docs/getting-started.md` — first-run setup |
 | Troubleshooting | `docs/troubleshooting.md` — common issues |
-| Known issues (diagnosed, unfixed) | `docs/known-issues.md` — e.g. a dev backend on the same Postgres mutating the pytest tenant DBs mid-test. (The read-after-write race and the workflow-mutating-e2e-strand issue are both **fixed** — see `decisions.md` §20 and `known-issues.md`) |
+| Known issues (diagnosed, unfixed) | `docs/known-issues.md` — currently: a non-generatable recurring template silently skipping every period, and a tenant with no ERP configured never getting an invoice to `paid` (the `payment_erp_sync` gate skips the whole pass, not just the adapter it guards). The three older entries — the read-after-write race, the workflow-mutating-e2e strand, and the dev-backend-vs-pytest-tenant collision — are all **fixed**, kept as stubs for their diagnoses (see also `decisions.md` §20) |
 | Open follow-ups (deferred work) | `docs/followups.md` — the destination guard rail 6 requires: every deferral, categorized (blocked on a credential / operator step on merged code / sized-but-unstarted), with its durable fix and trigger. Open items only — prune on landing. Mirrored as issue #251 |
 | Self-service signup | `docs/self-service-signup.md` — signup flow, email adapters, abuse mitigations |
 | Supplier portal | `backend/docs/supplier-portal.md` — VendorUser auth, invoice submission, phase 2 deferrals |
