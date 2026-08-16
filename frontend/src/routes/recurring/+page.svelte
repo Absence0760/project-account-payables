@@ -31,6 +31,7 @@
 	import { replaceState } from '$app/navigation';
 	import { untrack } from 'svelte';
 	import { formatDate } from '$lib/utils/time';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 
 	const canCreate = $derived(auth.isManager);
 
@@ -74,41 +75,74 @@
 	let showCreate = $state(false);
 	let editing = $state<RecurringTemplate | null>(null);
 
+	// `untrack` on the `search` read: buildParams() is called from `load()`,
+	// which the filter `$effect` below calls directly — and Svelte tracks reads
+	// transitively through called functions, so a plain read here would make
+	// that effect depend on `search` and re-fire it on every keystroke,
+	// un-debounced, racing the dedicated 300ms timer (issue #168). `untrack`
+	// still reads the CURRENT value, so the request carries the live search
+	// term; it just stops the read registering as the caller's dependency.
 	function buildParams() {
 		const params: { status?: string; search?: string } = {};
 		if (statusFilter !== 'all') params.status = statusFilter;
-		if (search.trim()) params.search = search.trim();
+		const currentSearch = untrack(() => search);
+		if (currentSearch.trim()) params.search = currentSearch.trim();
 		return params;
 	}
 
-	// Reflect filter state into the URL so it survives reload / back-forward.
-	// Read the URL untracked — syncUrl() writes it via replaceState inside a
-	// filter $effect; a tracked $page.url read would self-trigger the effect
-	// (Svelte effect_update_depth_exceeded loop).
+	// Reflect the live filter state into the URL. EVERY read in here is
+	// untracked, `$page.url` included, because syncUrl() is a WRITER called
+	// from the filter `$effect`s below — not a source of dependencies:
+	//   - the URL read would self-trigger the effect that writes it via
+	//     replaceState (Svelte effect_update_depth_exceeded);
+	//   - a tracked `search` read would make every filter effect depend on
+	//     `search`, so each keystroke re-fired it: an immediate, un-debounced
+	//     load racing the dedicated 300ms debounce timer. That is issue #168,
+	//     fixed on /invoices, /payments and /vendors but never carried to this
+	//     page. Each effect declares the filters it actually depends on by
+	//     reading them directly, so nothing here needs to be tracked.
 	function syncUrl() {
-		const url = new URL(untrack(() => $page.url));
-		if (statusFilter !== 'all') url.searchParams.set('status', statusFilter);
-		else url.searchParams.delete('status');
-		if (search.trim()) url.searchParams.set('search', search.trim());
-		else url.searchParams.delete('search');
-		replaceState(`${url.pathname}${url.search}`, {});
+		untrack(() => {
+			const url = new URL($page.url);
+			if (statusFilter !== 'all') url.searchParams.set('status', statusFilter);
+			else url.searchParams.delete('status');
+			if (search.trim()) url.searchParams.set('search', search.trim());
+			else url.searchParams.delete('search');
+			replaceState(`${url.pathname}${url.search}`, {});
+		});
 	}
+
+	// Sequences `load` (filter change and load-more alike — one shared counter,
+	// latest-issued wins). `upsert` edits the list in place with no fetch of its
+	// own, so it retires whatever is in flight first: otherwise a pause/resume/
+	// end — or a brand-new template, which needs no pre-existing row and so
+	// races even the first load — is reverted by the load already out.
+	// See `frontend/CLAUDE.md` § Sequencing list fetches.
+	const fetchSequence = createRequestSequencer();
 
 	async function load(opts: { append?: boolean } = {}) {
 		const nextPage = opts.append ? pageNum + 1 : 1;
+		const token = fetchSequence.start();
 		if (opts.append) loadingMore = true;
 		else loading = true;
 		try {
 			const data = await listRecurring({ ...buildParams(), page: nextPage, page_size: PAGE_SIZE });
+			// Superseded by a newer load, or by a local edit.
+			if (!fetchSequence.canCommit(token)) return;
 			templates = opts.append ? appendUnique(templates, data.items) : data.items;
 			total = data.total;
 			pageNum = nextPage;
 		} catch (e) {
+			// `isCurrentRequest`, not `canCommit`: a load superseded by a local
+			// edit still failed, and no newer load is coming to report it.
+			if (!fetchSequence.isCurrentRequest(token)) return;
 			if (!opts.append) templates = [];
 			toast(e instanceof Error ? e.message : m('recurring.toast.loadFailed'), 'error');
 		} finally {
-			loading = false;
-			loadingMore = false;
+			if (fetchSequence.isCurrentRequest(token)) {
+				loading = false;
+				loadingMore = false;
+			}
 		}
 	}
 
@@ -186,6 +220,9 @@
 	}
 
 	function upsert(t: RecurringTemplate) {
+		// Retire every load issued before this mutation landed — their responses
+		// predate it and would revert the row (or drop a just-created one).
+		fetchSequence.supersedeInFlight();
 		const idx = templates.findIndex((x) => x.id === t.id);
 		if (idx === -1) {
 			templates = [t, ...templates];

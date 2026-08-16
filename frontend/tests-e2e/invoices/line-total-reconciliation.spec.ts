@@ -108,3 +108,62 @@ test.describe('/invoices — line-total reconciliation', () => {
 		await expect(panel).toHaveCount(0);
 	});
 });
+
+/**
+ * The save is a request whose result can be invalidated before it lands.
+ *
+ * Only the Save BUTTON is disabled during the PUT — the cells stay editable —
+ * so a cell typed into mid-flight is not in the payload that request carried.
+ * The save used to clear `lineItemsDirty` unconditionally and then re-read the
+ * server list, which discarded that edit; and because the Save button only
+ * renders while dirty, the user was left with no way to re-submit it.
+ *
+ * The PUT is held open with a route gate (a real signal, not a sleep) so the
+ * edit lands inside the window deterministically.
+ */
+test.describe('/invoices — a line-item edit made during a save is not discarded', () => {
+	test('the mid-save edit survives and stays offered for saving', async ({ page }) => {
+		await createAndOpenInvoice(page, '100.00');
+		const modal = page.locator('div.modal[role="dialog"][aria-label*="Edit invoice"]');
+
+		await modal.getByRole('button', { name: '+ Add Line' }).click();
+		await modal.getByLabel('Line 1 description').fill('Saved text');
+		await modal.getByLabel('Line 1 total').fill('100.00');
+
+		// Hold the PUT open until the edit below has been made.
+		let releaseSave: () => void = () => {};
+		const saveGate = new Promise<void>((resolve) => (releaseSave = resolve));
+		await page.route('**/api/invoices/*/line-items', async (route) => {
+			if (route.request().method() !== 'PUT') {
+				await route.continue();
+				return;
+			}
+			await saveGate;
+			await route.continue();
+		});
+
+		const savePut = page.waitForResponse(
+			(r) => r.url().includes('/line-items') && r.request().method() === 'PUT'
+		);
+		await modal.getByRole('button', { name: 'Save Line Items' }).click();
+
+		// Type into a cell while the save is still out. This edit is NOT in the
+		// payload the PUT carried.
+		const description = modal.getByLabel('Line 1 description');
+		await description.fill('Edited while saving');
+
+		releaseSave();
+		const response = await savePut;
+		expect(response.ok()).toBeTruthy();
+		// One frame past the response: the continuation (and any state write it
+		// would have made) has run by the time a frame paints.
+		await page.evaluate(() => new Promise<void>((r) => requestAnimationFrame(() => r())));
+
+		// The edit is still on screen — the follow-up reload must not have
+		// replaced the table with the server's pre-edit copy.
+		await expect(description).toHaveValue('Edited while saving');
+		// ...and it is still offered for saving. The Save button renders only
+		// while dirty, so clearing that flag would strand the edit unsaveable.
+		await expect(modal.getByRole('button', { name: 'Save Line Items' })).toBeVisible();
+	});
+});

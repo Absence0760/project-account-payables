@@ -1,6 +1,7 @@
 import type { AdminUser, PermissionCatalogEntry, Role } from '$lib/types/admin';
 import { api } from '$lib/api';
 import { appendUnique } from '$lib/utils/pagination';
+import { createRequestSequencer } from '$lib/utils/requestSequence';
 
 interface AdminUserListResponse {
 	items: AdminUser[];
@@ -27,7 +28,17 @@ function createAdminStore() {
 	let page = $state(1);
 	let pageSize = $state(20);
 
+	// Users and roles are two independent lists loaded by two independent
+	// requests, so they get a sequencer each — a roles refresh must not mark an
+	// in-flight users fetch un-committable, or vice versa. Within each, the
+	// create/update/delete helpers below mutate the list in place with no fetch
+	// of their own, so they retire whatever is in flight before they write.
+	// See `frontend/CLAUDE.md` § Sequencing list fetches.
+	const usersSequence = createRequestSequencer();
+	const rolesSequence = createRequestSequencer();
+
 	async function fetchUsers(opts: FetchUsersOptions = {}) {
+		const token = usersSequence.start();
 		loading = true;
 		try {
 			const params = new URLSearchParams();
@@ -36,12 +47,14 @@ function createAdminStore() {
 			params.set('page', String(nextPage));
 			params.set('page_size', String(opts.pageSize ?? pageSize));
 			const res = await api.get<AdminUserListResponse>(`/api/admin/users?${params}`);
+			// Superseded by a newer search/page fetch, or by a local edit.
+			if (!usersSequence.canCommit(token)) return;
 			users = opts.append ? appendUnique(users, res.items) : res.items;
 			total = res.total;
 			page = nextPage;
 			if (opts.pageSize) pageSize = opts.pageSize;
 		} finally {
-			loading = false;
+			if (usersSequence.isCurrentRequest(token)) loading = false;
 		}
 	}
 
@@ -50,8 +63,11 @@ function createAdminStore() {
 	}
 
 	async function fetchRoles() {
+		const token = rolesSequence.start();
 		try {
-			roles = await api.get<Role[]>('/api/admin/roles');
+			const fetched = await api.get<Role[]>('/api/admin/roles');
+			if (!rolesSequence.canCommit(token)) return;
+			roles = fetched;
 		} catch {
 			// non-critical
 		}
@@ -73,6 +89,10 @@ function createAdminStore() {
 		role_names: string[];
 	}): Promise<CreateUserResponse> {
 		const created = await api.post<CreateUserResponse>('/api/admin/users', data);
+		// A users fetch already in flight read the list BEFORE this user existed,
+		// so its response would drop the new row. An invite needs no pre-existing
+		// row, so it races even the page's very first load.
+		usersSequence.supersedeInFlight();
 		users = [created, ...users];
 		total += 1;
 		return created;
@@ -89,12 +109,14 @@ function createAdminStore() {
 		}>
 	): Promise<AdminUser> {
 		const updated = await api.patch<AdminUser>(`/api/admin/users/${id}`, changes);
+		usersSequence.supersedeInFlight();
 		users = users.map((u) => (u.id === id ? updated : u));
 		return updated;
 	}
 
 	async function deleteUser(id: string): Promise<void> {
 		await api.delete(`/api/admin/users/${id}`);
+		usersSequence.supersedeInFlight();
 		users = users.filter((u) => u.id !== id);
 		total = Math.max(0, total - 1);
 	}
@@ -118,6 +140,7 @@ function createAdminStore() {
 			user_ids: ids
 		});
 		const deletedSet = new Set(result.deleted);
+		usersSequence.supersedeInFlight();
 		users = users.filter((u) => !deletedSet.has(u.id));
 		total = Math.max(0, total - result.deleted.length);
 		return result;
@@ -129,6 +152,7 @@ function createAdminStore() {
 		permissions?: string[];
 	}): Promise<Role> {
 		const created = await api.post<Role>('/api/admin/roles', data);
+		rolesSequence.supersedeInFlight();
 		roles = [...roles, created];
 		return created;
 	}
@@ -138,12 +162,14 @@ function createAdminStore() {
 		changes: { description?: string; permissions?: string[] }
 	): Promise<Role> {
 		const updated = await api.patch<Role>(`/api/admin/roles/${id}`, changes);
+		rolesSequence.supersedeInFlight();
 		roles = roles.map((r) => (r.id === id ? updated : r));
 		return updated;
 	}
 
 	async function deleteRole(id: string): Promise<void> {
 		await api.delete(`/api/admin/roles/${id}`);
+		rolesSequence.supersedeInFlight();
 		roles = roles.filter((r) => r.id !== id);
 	}
 

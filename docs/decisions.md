@@ -842,3 +842,74 @@ and `tenants_scanned` would tell them how many organizations the platform
 sweeps. Only `last_failure_count` crosses the boundary — the number an operator
 acts on, and zero on a healthy platform. The full counters stay in the registry
 and the logs, whose reader is already trusted with them.
+
+## 25. Sequencing is per list, and a bubble is addressed by identity
+
+Applying §23 across the rest of the app — eighteen list surfaces, plus the two
+chat pages — forced three calls §23 didn't have to make, because it only had to
+serve three surfaces that each owned exactly one list.
+
+**One sequencer per independent list, not one per file.** Several surfaces hold
+more than one list: the `admin` store (users and roles), the `notifications`
+store (the list and the 60-second unread-count poll), the `expenses` page (four
+tabs), the `discounts` page (offers and the KPI dashboard). A single counter
+per surface is the obvious economy and it is wrong: `start()` is monotonic, so
+a roles refresh, or a badge poll tick, would mark an unrelated in-flight users
+fetch un-committable and blank the list it was about to paint. Each list gets
+its own counter. The corollary is that a local edit writing state that *several*
+of them load — a mark-read moves `unread`, which both the list load and the
+badge poll return — must supersede every one of them; `notifications` has a
+`supersedeReads()` for exactly that, rather than one call that looks complete
+and isn't.
+
+**`syncUrl()` is untracked wholesale, not just on `search`.** Eight pages'
+filter `$effect`s transitively depended on `search` through `buildParams()` and
+`syncUrl()`, so a keystroke fired an immediate load alongside the debounced one
+(issue #168, fixed on three pages in 2026 and never carried to the rest). The
+narrow fix is `untrack(() => search)` at each read. It was taken in
+`buildParams()`, whose other reads are filters the caller genuinely depends on
+and declares. It was **not** taken in `syncUrl()`, which is untracked in full:
+that function is a *writer* of URL state called from the effects, never a
+source of dependencies, and its `$page.url` read was already untracked for the
+adjacent reason (it writes that URL via `replaceState`, so tracking it
+self-triggers the effect). Stating the property once means adding a field to
+`syncUrl` later can't quietly reintroduce the bug — and it also removed the
+accidental cross-dependencies on `/expenses`, where a tab switch re-fired the
+expenses list fetch. The cost is that a genuine dependency can no longer be
+declared *inside* `syncUrl`; it has to be read in the effect, which is where a
+reader looks for it anyway.
+
+**The chat placeholder is addressed by identity, and `busy` still closes the
+window.** `/assistant` let a send start while a saved thread was loading, then
+wrote the model's answer into `messages[capturedIndex]` of an array the load
+had meanwhile replaced — so the answer didn't vanish, it landed on an
+unrelated historical message. Either fix alone would stop today's reproduction:
+holding `busy` for the load closes the window, and resolving the placeholder by
+a stable client-side id makes a replaced array return `null` instead of a
+wrong row. Both shipped, because they fail differently — `busy` is a policy
+that any new "replace the messages array" path (a delete, a rename, a
+server-push) can forget to respect, while identity is a property of the write
+itself. `/cash-flow`'s copilot is a copy of the same code with no
+thread-opening rail yet; it got the identity half so it isn't the
+index-capturing version someone copies from next.
+
+**A write asks a third question, so the primitive grew one.** §23 split the
+old single `isLatest` predicate in two because a local edit makes "may I
+commit?" and "am I the newest request?" diverge. A *write* — a save that PUTs
+the list and then re-reads it — turned out to need a third: only a local edit
+invalidates the payload it just sent, and an unrelated newer *read* says
+nothing about that. The first attempt at `InvoiceModal.saveLineItems` read
+`canCommit`, which is false for either reason, so an extraction poll's own
+reload landing mid-save left the dirty flag stuck on and the Save button up
+over a table nobody had touched. `wasSupersededByEdit(token)` isolates the
+edit half. It is deliberately a fourth method rather than a second sequencer
+or a bespoke boolean in the component: the state it reads (`staleThrough`)
+already exists and belongs to the primitive, and a component-local copy would
+drift from the `supersedeInFlight()` that sets it.
+
+**Not adopted:** wrapping the three-call protocol (`start` / `canCommit` /
+`isCurrentRequest`) in a single `sequenced(fn)` helper. It reads better at
+twenty call sites, but it has to decide the `finally` semantics for the caller,
+and that is the exact distinction §23 records as easy to get backwards — a
+`loading` flag cleared on `canCommit` sticks on forever after a local edit. The
+three calls stay visible so the choice stays visible.

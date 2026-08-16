@@ -9,9 +9,12 @@ import { test, signInAndWait } from '../fixtures/helpers';
  * `replaceState`. `syncUrl()` is called synchronously inside the status-filter
  * `$effect`, so reading the *reactive* `$page.url` there made the effect depend
  * on the very state it mutated — Svelte tripped `effect_update_depth_exceeded`
- * on mount (a console error + an abandoned effect). The fix reads the URL via
- * `untrack(() => $page.url)`. This spec fails if any route reintroduces the
- * tracked read (the loop surfaces as a console error / pageerror on mount).
+ * on mount (a console error + an abandoned effect). The fix untracked that
+ * read; `syncUrl()`'s whole body is now untracked, since it is a writer of URL
+ * state and never a dependency source (the same generalisation also stopped a
+ * tracked `search` read firing an un-debounced load per keystroke — see
+ * `search-debounce-race.spec.ts`). This spec fails if any route reintroduces a
+ * tracked read there: the loop surfaces as a console error / pageerror on mount.
  */
 const LOOP_RE = /effect_update_depth_exceeded|Maximum update depth exceeded/i;
 

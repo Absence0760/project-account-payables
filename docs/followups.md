@@ -60,8 +60,25 @@ response be written?) and `isCurrentRequest` (is this still the newest request?)
 so a `finally` clearing a loading flag doesn't hang forever once a local edit
 supersedes an in-flight fetch. Rationale in [decisions.md](decisions.md) §23.
 The exhaustive sweep it prompted found the far larger remainder — eighteen list
-surfaces with no sequencing at all — and a separate `/assistant` defect, both
-new entries below.
+surfaces with no sequencing at all — and a separate `/assistant` defect.
+
+**Both of those are now closed too**, in the frontend round that had the whole
+app to itself. Every list store and list route named in that sweep is on the
+shared primitive, `InvoiceModal`'s line-item editor and the `workflows/[id]`
+canvas with it (an editor over a fetched list loses unsaved work, not just a
+row), and the issue-#168 `untrack` fix reached the eight filter pages that
+never got it — `syncUrl()` is untracked wholesale there, since it writes URL
+state and is not a dependency source. `/assistant` now holds `busy` for the
+whole conversation load *and* resolves its in-flight bubble by identity rather
+than by a captured index, so a replaced array can't misdirect the model's
+answer onto an unrelated historical message; `/cash-flow`'s copy of the same
+code got the identity half so it isn't the version copied from next. The
+per-list (not per-file) sequencer rule, the untracked-writer rule and the
+identity rule are in [decisions.md](decisions.md) §25; the pattern doc is
+`frontend/CLAUDE.md` § Sequencing list fetches. Guards:
+`tests-e2e/reactivity/local-edit-vs-inflight-fetch.spec.ts`,
+`tests-e2e/assistant/thread-load-race.spec.ts`, and `/recurring` joining the
+existing `search-debounce-race.spec.ts` table.
 
 **The ERP sync-back's failures became visible and recoverable** —
 `services/payment_erp_sync` is the only path that flips an invoice
@@ -278,78 +295,6 @@ conflict.)
 **Trigger:** the next `/audit:accessibility` or `/polish-ui` pass touching
 `/admin` or `/vendor-statements`.
 Ref: [accessibility.md](accessibility.md).
-
-### Every other list surface is still unsequenced — a local edit races its fetch
-
-`frontend/src/lib/utils/requestSequence.ts` grew `supersedeInFlight()` so a
-row edited in place can't be reverted by a fetch that was already in flight,
-and `/invoices` + `/vendors` were wired to it. A sibling sweep afterwards —
-every `+page.svelte` and list store **read**, not grepped — found that **no
-other list surface has sequencing of any kind**: not `createRequestSequencer`,
-not a hand-rolled token counter, not an `AbortController`. Eighteen of them
-both replace the list wholesale from a fetch *and* edit a row locally with no
-fetch, which is exactly the clobber just fixed.
-
-Racing: the `contracts`, `expenses`, `notifications`, `admin` (users + roles)
-and `workflows` stores; the `discounts`, `positive-pay`, `recurring`,
-`budgets`, `intake`, `requisitions`, `catalogs` (delete only),
-`vendor-statements`, `vendors/screening` (its Refresh button is the second
-trigger) and `workflows/[id]` routes; the policies and pre-approvals
-sub-lists on `expenses`; and `InvoiceModal`'s line-item list.
-`VendorConsolidationModal` was checked and is the one provably safe surface —
-mount-only fetch, no create path.
-
-Two details worth keeping, because they defeat the obvious dismissals:
-
-- **A create/prepend path needs no existing row.** "The mount fetch must have
-  landed before there's a row to mutate" closes the race for edit/delete but
-  not for New/Add, which is live while the first GET is still out.
-- **The `untrack()` fix from issue #168 never reached four of these pages.**
-  On `contracts`, `recurring`, `budgets` and `intake` the filter `$effect`
-  calls `buildParams()`, which reads `search` directly — Svelte tracks that
-  transitively, so every keystroke fires an immediate undebounced fetch
-  *alongside* the 300 ms debounced one: two concurrent loads, either able to
-  clobber. Those pages' `searchEffectRan` guards cover the duplicate **mount**
-  fetch only and do nothing here.
-
-- [ ] Adopt `createRequestSequencer` on each surface above (`start` →
-      `canCommit` → `isCurrentRequest`, plus `supersedeInFlight()` in the
-      local-mutation helper). The primitive and the pattern doc
-      (`frontend/CLAUDE.md` § Sequencing list fetches) now exist for this.
-- [ ] Apply `untrack(() => search)` to the four filter effects above.
-
-**Why deferred:** the round that built the primitive ran in a worktree fenced
-to `/invoices` + `/vendors` while two other agents held `/cfo`,
-`/vendor-statements` and the a11y specs — several surfaces above sit in their
-files, so an eighteen-file sweep from here would have collided on merge.
-Nothing about the fix is unknown; it is mechanical per surface.
-**Trigger:** the next frontend round that has the whole app to itself, or any
-page above being edited for another reason — fix it there and then, rather
-than recopying the pattern.
-Ref: [decisions.md](decisions.md) §23.
-
-### `/assistant` loses a message — and overwrites another — if you send while a thread loads
-
-`openConversation` (`frontend/src/routes/assistant/+page.svelte:65`) opens
-with `if (busy) return` but never sets `busy = true`; only `send()` does. The
-composer therefore stays live while the conversation GET is in flight. Send
-in that window and `send()` pushes the user and placeholder-assistant bubbles
-and captures `assistantIdx` against the current array; the GET then resolves
-and replaces `messages` wholesale, dropping both; `applyFinal` (:90) writes
-the model's answer into `messages[assistantIdx]` of the **new** array. The
-answer doesn't just go missing — it lands on top of an unrelated historical
-message.
-
-- [ ] Hold `busy` for the duration of `openConversation` (its own dead guard
-      shows that was the intent), and resolve the placeholder by identity
-      rather than by captured index, so a replaced array can't misdirect the
-      write.
-
-**Why deferred:** found by the sibling sweep above, not by the round's own
-change, and `/assistant` was outside that round's worktree fence. It is a
-display-integrity bug on a read-only surface — it moves no money and writes
-nothing server-side — so it did not warrant breaking the fence.
-**Trigger:** the next `/assistant` change, or the sequencer sweep above.
 
 ---
 
