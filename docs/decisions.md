@@ -1236,3 +1236,67 @@ adapter can be *removed* from the registry after a name was already stored.
 The dispatcher is the only chokepoint every caller passes through.
 
 See `backend/docs/payments.md` § Provider resolution.
+
+## 30. A translucent tint is composited, not approximated — and each tone names its own text
+
+§28 armed a bare-literal `color:` check against the surfaces body text sits on,
+and deliberately let it also fire when a rule *did* declare a background that
+resolved to nothing usable — a gradient, or a translucent tint. Its stated
+reasoning for the tint half: "a tint over an app surface composites close to
+it, so the bare surface is the right approximation."
+
+**That approximation was wrong in the unsafe direction, and this entry
+supersedes it.** A tint does not composite *close to* the surface; it moves the
+surface *toward the colour of the tint*, which in the status-badge recipe is
+the same hue as the text on top of it. Every such badge therefore renders with
+less contrast than the bare surface predicts, so the check passed them. 29 did,
+between 4.15:1 and 4.48:1 — failing by a hair, which is why none was caught by
+eye either. Accent text on its own 15% tint measures 5.55:1 against the bare
+surface and renders at 4.48:1.
+
+**Composite it instead.** The primitives were already there and unused on this
+path (`parseColorWithAlpha`, `compositeOver` — §28 added them for the `opacity`
+case). A translucent background now resolves *with* its alpha, is composited
+over each backdrop, and the rule's own opacity applies on top. Both compositing
+causes became one calculation rather than two checks that could disagree.
+
+**The fix is a third token role, not 29 new hexes.** The palette already paired
+a base token (text on a dark surface) with a `-strong` companion (the fill
+behind white text). Badges get `--<tone>-tint` and the `--<tone>-on-tint` text
+calibrated on it, for five tones. The values are not new: `StatusBadge` had
+solved this for its own six tones by lifting the text rather than darkening the
+tint, and those hexes are what the tokens promote out of one component's
+private stylesheet.
+
+- **Why not per-hue alphas.** Cheapest and most fragile. Accent passed only at
+  alpha ≤ .14 and sat at .15 — one hundredth — so every future nudge silently
+  re-breaks it, and nothing states the rule.
+- **Why not opaque tint tokens.** It would move these rules under the existing
+  same-rule pair check and need no compositing at all. Rejected because an
+  opaque tint bakes in ONE backdrop, and badges sit on both `--bg` and
+  `--surface`; and because the guard has to composite anyway to catch the next
+  hand-rolled `rgba()`, so the simpler check would have bought nothing.
+- **`--danger-on-tint` equals `--danger`.** Red is bright enough to clear its
+  own tint unaided. The token is declared anyway so the rule stays "tint
+  background, matching `-on-tint` text" with no exception to memorise, and so
+  red can be recalibrated later without hunting the sites that spelled it the
+  other way.
+
+**The guard ships after the sites, not with them.** An armed guard with 29
+known failures is a red build, not a guard — so the tokens landed, then the
+badges moved onto them, then the compositing was switched on.
+
+**What this did not fix.** ~208 rules still spell a tinted badge as a
+hand-rolled `rgba()` plus a literal hex — about 40 spellings of the five tones
+now named. All of them pass, so that is design-system debt rather than a
+defect, and normalising it shifts tint strength across the app. Tracked in
+[followups.md](followups.md).
+
+**A regression the move caused, recorded because the shape recurs.** Folding
+two hand-picked oranges onto one warning tone made `/payments`'
+`pending_compliance` identical to `pending` — the invisibility that status was
+made first-class to end. Sharing the tone is right (both are waiting); the
+distinction moved to a ring. When a normalisation collapses two colours, check
+what those colours were silently carrying.
+
+See `frontend/CLAUDE.md` § Colour tokens and contrast.

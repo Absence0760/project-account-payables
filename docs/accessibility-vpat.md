@@ -77,7 +77,7 @@ and the manual audit is the tracked outstanding work.
 | 1.2.5 Audio Description (Prerecorded) | AA | Not Applicable | No pre-recorded multimedia. |
 | 1.3.4 Orientation | AA | Supports | Layout works in both portrait and landscape; no orientation lock (mobile + responsive web). |
 | 1.3.5 Identify Input Purpose | AA | Supports | Auth + onboarding fields carry `autocomplete` tokens (`email`, `current-password`, `new-password`, `organization`, `name`, `one-time-code`); inputs use the matching `type`. |
-| 1.4.3 Contrast (Minimum) | AA | Supports | Dark-theme text and UI components meet 4.5:1 / 3:1; enforced by the axe `color-contrast` rule on every CI run. |
+| 1.4.3 Contrast (Minimum) | AA | Supports | Dark-theme text and UI components meet 4.5:1 / 3:1. Enforced two ways on every CI run: the axe `color-contrast` rule on what the listed routes render, and a scan of every stylesheet in the app that resolves each colour pair through the palette — including pairs that only exist after compositing (a rule's own `opacity`, a translucent badge tint). The stylesheet scan is what covers a surface no listed route happens to render. |
 | 1.4.4 Resize Text | AA | Supports | Layout uses relative units and reflows; text scales to 200% without loss of content. |
 | 1.4.5 Images of Text | AA | Supports | Text is real text, not images of text. |
 | 1.4.10 Reflow | AA | Supports | Content reflows to a single column at 320px with no page-level horizontal scroll (sidebar auto-collapses to its icon rail; chart grids and the payments tab row reflow); data grids scroll within their own `overflow-x` container (the permitted exception). Guarded by `screen-reader.spec.ts`. |

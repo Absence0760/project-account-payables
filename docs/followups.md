@@ -378,70 +378,58 @@ originally-deferred sub-bucket from that same feature remains:
 Refs: [roadmap.md](roadmap.md) § AI Cash-Flow Copilot,
 [cash-flow-copilot.md](cash-flow-copilot.md).
 
-### Status badges on a translucent tint sit just under 4.5:1
+### Tinted badges are spelled ~40 ways for five tones
 
-Widening the axe route list to `/cfo` immediately caught the failure the
-follow-up above predicted — `.kpi-sub`, `--text-muted` under `opacity: .85`,
-4.24:1 — and fixing it closed that whole class: the stylesheet guard now models
-a rule's **own** `opacity`, and all eleven instances are gone.
+The 29 badges that sat **below** 4.5:1 on a translucent tint are fixed — option
+1 of the three shapes this entry used to weigh (tint-paired text tokens), with
+values promoted out of `StatusBadge`, which had already solved it for its own
+tones by lifting the text rather than darkening the tint. The scanner's
+compositing half is armed, the palette contract asserts each pair over both
+backdrops, and `frontend/src/lib/a11y/tokenPairing.test.ts` fails on a
+recurrence. Rationale, and why the other two shapes were rejected:
+[decisions.md](decisions.md) §30.
 
-Building it surfaced an adjacent class the same pass can measure but did **not**
-fix: a badge that tints its background translucently (`background: rgba(<hue>,
-0.15)`) and sets text in the same hue. The tint lightens the dark surface
-*toward* the text, so the pair lands just under the bar — every one of these is
-between **4.15:1 and 4.48:1**, i.e. failing by a hair rather than obviously
-wrong. **29 instances**, across ~8 distinct colour pairs:
+What remains is the **consistency** half, which is not a contrast problem:
+**~208 rules** still write a tinted badge as a hand-rolled `rgba()` plus a
+literal hex — roughly **40 distinct spellings** of the five tones the tokens
+now name. A sample of how thin the distinctions are:
 
-| Text | Tint | Renders | Ratio | Passes at alpha |
-|---|---|---|---|---|
-| `#638cff` / `--accent` | `rgba(99,140,255,.15)` | `#232b44` | 4.48 | ≤ .14 |
-| `#1fa86a` | `rgba(50,200,130,.15)` | `#1c3431` | 4.33 | ≤ .12 |
-| `--text-muted` | `rgba(138,143,160,.15)` | `#292c36` | 4.32 | ≤ .12 |
-| `--text-muted` | `rgba(150,150,150,.15)` | `#2b2d34` | 4.27 | ≤ .12 |
-| `#888` | `rgba(150,150,150,.15)` | `#23252a` | 4.33 | ≤ .12 |
-| `#c96a14` | `rgba(224,120,40,.15)` | `#2e201a` | 4.15 | ≤ .09 |
-| `#2ea043` | `rgba(46,160,67,.12)` | `#1b2a27` | 4.42 | ≤ .10 |
-| `#c47b00` | `rgba(255,165,0,.08)` | `#2a2520` | 4.47 | ≤ .07 |
+| Spelling | Count |
+|---|---|
+| `var(--danger)` on `rgba(224,64,64,.1)` | 20 |
+| `#d4940a` on `rgba(212,148,10,.12)` | 19 |
+| `#1fa86a` on `rgba(31,168,106,.15)` | 18 |
+| `#1fa86a` on `rgba(31,168,106,.12)` | 18 |
+| `#d4940a` on `rgba(255,180,50,.15)` | 11 |
+| …plus ~35 more, mostly single-digit | |
 
-Sites: `payments` (4 badges), `RunDetailModal` (4), `discounts` (2),
-`SimulationModal` (2), `profile` (2), `Pricing` (2), `workflows` +
-`workflows/[id]` `.default-badge`, `invoices` `.priors-badge`, `InvoiceModal`
-`.priors-chip`, `tax` `.chip-off`, `purchase-orders` `.badge.open`, and the
-`Contract` / `Expense` / `Intake` / `Requisition` modal `.badge.draft|open`,
-`BulkRecodeGLModal` `.src-ai`, `VersionHistoryModal` `.kind-added`,
-`SupplierChatThread` `.chat-status-pill.open`.
+**Every one of these passes**, so this is design-system debt, not a defect —
+which is exactly why it is here and not in
+[known-issues.md](known-issues.md). It still matters: the same tone written
+four ways is how the 29 failures accumulated unnoticed, and a file where one
+rule is tokenised while its three siblings are literals reads worse than either
+extreme (`ContractModal`'s `.badge.draft` next to `.active` / `.expired` /
+`.terminated` is the canonical example).
 
-**Why deferred:** this is a design call, not a mechanical fix, and the margins
-make that the whole point. The `opacity` class was 11 instances each fixed by
-deleting a redundant line — no colour judgement at all. This one needs a
-decision between three shapes, and the per-hue alphas above show why picking
-ad-hoc numbers is the wrong answer: accent blue passes only at **≤ .14**, one
-hundredth under where it sits, so any future tweak silently re-breaks it.
-Landing 29 colour changes across ~25 files inside the same PR that was fixing a
-red build would also make a second failure indistinguishable from a regression
-in the fix — the same reason the backend half of that round deferred its own
-eight-item batch.
+**Why deferred rather than swept now:** it is ~7× the size of the failing set,
+and it is not value-preserving. The tokens standardise on alpha `.15`, so
+normalising a `.1` or `.12` rule visibly strengthens that badge's tint. That
+is a design review across most of the app's surfaces, not a mechanical
+substitution — and landing it in the same change as the contrast fix would make
+any visual complaint impossible to attribute to one or the other.
 
-**Durable fix — pick one, don't mix:**
-1. **Tint-paired text tokens** (`--accent-on-tint`, …) calibrated with real
-   margin, so the contract states the answer instead of each site guessing.
-   Most consistent with the existing base/`-strong` pairing.
-2. **Opaque tint tokens** (`--accent-tint: #232b44`) replacing the `rgba()`,
-   which also moves these rules under the *existing* same-rule pair check
-   rather than needing the compositing one.
-3. Per-hue alphas from the table. Cheapest, and the most fragile — listed so
-   the thin margins are on the record, not as a recommendation.
+**Durable fix:** sweep by tone, one commit per tone, checking the rendered
+result rather than only the guard — the guard is already green on all of them
+and will stay green either way, so it cannot be the reviewer here. Retire each
+literal as it moves. `StatusBadge`'s own purple (`#a585f5`, `sent_to_erp`) has
+no semantic sibling; either give it a named tone or leave it commented as the
+deliberate exception.
 
-Then extend the stylesheet guard to composite a translucent background over
-the text surfaces (the scanner already has `parseColorWithAlpha` +
-`compositeOver`; only the `resolveColorParts` wiring was left out) so the class
-can't return. **Not shipping that half until the sites are fixed is deliberate:
-an armed guard with 29 known failures is a red build, not a guard.**
-
-**Trigger:** the next `/audit:accessibility` pass, or any change to a status
-badge. Refs: [accessibility.md](accessibility.md),
-[decisions.md](decisions.md) §28, `frontend/CLAUDE.md` § Colour tokens and
-contrast.
+**Trigger:** the next `/audit:accessibility` pass, or opportunistically —
+reach for the tokens in new code and whenever you are already editing one of
+these rules. Refs: [accessibility.md](accessibility.md),
+[decisions.md](decisions.md) §28 + §30, `frontend/CLAUDE.md` § Colour tokens
+and contrast.
 
 ---
 
