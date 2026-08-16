@@ -31,6 +31,7 @@ import {
 	contrastRatio,
 	parseColor,
 	parseColorWithAlpha,
+	type RgbaParts,
 	WCAG_AA_LARGE,
 	WCAG_AA_NORMAL
 } from './contrast';
@@ -288,6 +289,27 @@ export function resolveColorValue(
 }
 
 /**
+ * The same `var()`-following resolution, **keeping** alpha — so a caller that
+ * can name the backdrop can composite a translucent value instead of giving up
+ * on it.
+ *
+ * `resolveColorValue` above discards these, which is right for the checks that
+ * have no backdrop to offer. A translucent `background` does have one: the
+ * surfaces body text sits on. Without this, such a rule reads to the audit as
+ * having *no* background at all, and a tint that lightens the surface toward
+ * its own text — the status-badge recipe — measured as if the text sat on the
+ * bare surface, which is the optimistic direction.
+ */
+export function resolveColorParts(
+	value: string,
+	palette: Record<string, string>,
+	depth = 0
+): RgbaParts | null {
+	const literal = resolveColorLiteral(value, palette, depth);
+	return literal === null ? null : parseColorWithAlpha(literal);
+}
+
+/**
  * The shared `var()`-following core: resolves a declaration value to the colour
  * literal it renders as, **keeping** a translucent one (which
  * `resolveColorValue` then discards as unresolvable).
@@ -430,18 +452,30 @@ export function auditStyles(sources: StyleSource[], options: AuditOptions): Styl
 				// `background-color`, so plain assignment models both.
 				else if (prop === 'background' || prop === 'background-color') background = value;
 			}
-			const resolvedBackground = background ? resolveColorValue(background, palette) : null;
+			// A background is one of three things, and conflating the last two is
+			// what left the tint class unmeasured: opaque (compare directly),
+			// translucent (composite over the backdrop first), or unresolvable
+			// (a gradient — nothing to judge).
+			const backgroundParts = background ? resolveColorParts(background, palette) : null;
+			const resolvedBackground =
+				backgroundParts && backgroundParts.alpha >= 1 ? toHex(backgroundParts.color) : null;
+			const translucentBackground =
+				backgroundParts && backgroundParts.alpha < 1 ? backgroundParts : null;
 
 			// 4 — a literal `color:` whose rule states no OPAQUE background.
 			// Whatever is behind it comes from the cascade — nothing at all, a
 			// translucent tint, a gradient — so the only sound question is
 			// whether the literal is legible on the surfaces body text sits on.
-			// (A translucent tint over one of those surfaces composites close
-			// to it, so holding the literal to the bare surface is the right
-			// approximation, and the conservative one.) A palette token is
-			// exempt because `palette contract` asserts each one against those
-			// same surfaces directly.
-			if (foreground && !resolvedBackground) {
+			// A palette token is exempt because `palette contract` asserts each
+			// one against those same surfaces directly.
+			//
+			// A *translucent* background is excluded here and measured properly
+			// by check 5 below. Holding the literal to the bare surface was the
+			// old approximation, and it is the optimistic one, not the
+			// conservative one: the tint lightens the surface toward the text,
+			// so the pair renders worse than this check models — which is
+			// exactly how 29 status badges passed at 4.15–4.48:1.
+			if (foreground && !resolvedBackground && !translucentBackground) {
 				const fg = resolveColorValue(foreground, palette);
 				const isToken = /^var\(/i.test(foreground.trim());
 				if (fg && !isToken && !LITERAL_EXEMPT.has(fg)) {
@@ -467,29 +501,47 @@ export function auditStyles(sources: StyleSource[], options: AuditOptions): Styl
 				}
 			}
 
-			// 5 — a rule that fades ITSELF with `opacity`. Opacity composites the
-			// element — text and its background together — down onto whatever is
-			// behind it, so a colour that clears the bar at full strength can
-			// render well under it. Nothing above sees this: check 3 compares the
-			// declared pair, and check 4 exempts a palette token on the reasoning
-			// that `palette contract` already vouches for it — which opacity is
-			// exactly what invalidates. `--text-muted` under `opacity: .85` is
-			// 4.24:1 on `--surface`, and that is what axe reported on /cfo.
+			// 5 — a rule whose rendered colour only exists after compositing.
+			// Two shapes, one calculation:
 			//
-			// Only the rule's OWN opacity is knowable here. An ANCESTOR's is not,
-			// and neither is a translucent background — see the module header.
+			//   • the rule fades ITSELF with `opacity`, which composites the
+			//     element — text and its background together — down onto
+			//     whatever is behind it, so a colour that clears the bar at full
+			//     strength can render well under it (`--text-muted` at `.85` is
+			//     4.24:1 on `--surface`, which is what axe reported on /cfo);
+			//   • the rule tints its background translucently, which lightens
+			//     the dark surface *toward* text set in the same hue — the
+			//     status-badge recipe, and the reason 29 of them sat between
+			//     4.15:1 and 4.48:1.
+			//
+			// Nothing above sees either: check 3 compares the declared pair, and
+			// check 4 exempts a palette token on the reasoning that `palette
+			// contract` already vouches for it — which is precisely what
+			// compositing invalidates.
+			//
+			// Only the rule's OWN opacity and OWN background are knowable here.
+			// An ANCESTOR's opacity is not — see the module header.
 			const opacity = ruleOpacity(rule.declarations);
-			if (foreground && opacity < 1) {
+			if (foreground && (opacity < 1 || translucentBackground)) {
 				const fg = resolveColorValue(foreground, palette);
 				const required = isLargeText(rule.declarations) ? WCAG_AA_LARGE : WCAG_AA_NORMAL;
 				if (fg) {
 					for (const token of textSurfaces) {
 						const backdrop = palette[token] ? parseColor(palette[token]) : null;
 						if (!backdrop) continue;
-						// The element's own background if it declares an opaque
-						// one, else the backdrop shows through.
+						// The element's own box colour, as rendered: an opaque
+						// background is itself; a translucent one is that tint
+						// composited over the backdrop; declaring none lets the
+						// backdrop show through untouched.
 						const opaqueBg = resolvedBackground ? parseColor(resolvedBackground) : null;
-						const box = opaqueBg ?? backdrop;
+						const tinted = translucentBackground
+							? compositeOver(
+									translucentBackground.color,
+									backdrop,
+									translucentBackground.alpha
+								)
+							: null;
+						const box = opaqueBg ?? tinted ?? backdrop;
 						const text = compositeOver(parseColor(fg)!, box, opacity);
 						const faded = compositeOver(box, backdrop, opacity);
 
