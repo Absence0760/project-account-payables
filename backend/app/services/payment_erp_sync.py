@@ -2,31 +2,102 @@
 
 Runs async in a background thread — doesn't block the payment run response.
 Records sync status on each payment for retry capability.
+
+**This module is the only code path that flips an invoice
+``payment_scheduled → paid``**, and it is invoked exactly twice, both
+fire-and-forget after a terminal event: at the end of ``POST
+/api/payments/runs/{id}/execute`` and from the payment webhook once a payment
+settles. Nothing re-invokes it for a payment that is already ``completed`` —
+the reconciler backstop only re-dispatches payments it moves OUT of
+``submitted``/``processing``. Two consequences shape the design here:
+
+**A failed leg is a strand, so it must be visible.** If a payment's leg raises,
+the money has already moved but the invoice stays ``payment_scheduled``
+forever: the ERP is never told, and the invoice's aging and 1099 YTD totals are
+wrong. That used to be a ``logger.warning`` carrying an exception class name and
+a counter that died with the thread — no exception row, no notification, no
+persisted marker, nothing to act on. Every failed leg now opens a de-duped,
+PII-free ``erp_reconciliation`` exception naming the payment, the run, and the
+retry endpoint, so the strand lands in the queue an AP manager already works.
+(``erp_reconciliation`` is the type ``api/erp_webhook`` already raises for "the
+ERP and our ledger disagree and a human must reconcile" — the same situation.)
+
+**A failed leg must not take its siblings down.** The loop used to run every
+payment inside one transaction and commit once at the end. A leg that failed
+with a DB error poisoned that transaction, so the final commit raised, the
+outer handler rolled back, and the run's *successful* transitions were
+discarded too — silently, with nothing to re-invoke them. Each leg now re-reads
+its own rows by id and commits on its own, so an earlier success can never be
+undone by a later failure and no leg is left holding ORM state expired by
+another leg's rollback.
+
+The exit for a strand is ``POST /api/payments/runs/{run_id}/sync-erp``, which
+awaits this same pass and returns its counts. Voiding is NOT an exit here — the
+money moved, and ``/void`` sends the invoice back to ``approved`` where it
+invites a second payment. That asymmetry is why the retry endpoint exists;
+contrast the ``held`` (short-settlement) path, which is a deliberate hold with
+its own two documented exits (accept / void).
 """
 
 import asyncio
 import logging
 import threading
 import uuid
+from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import settings
 from app.database import _make_tenant_url
+from app.models.exception import Exception as APException
 from app.models.invoice import Invoice
 from app.models.organization import Organization
 from app.models.payment import Payment
+from app.services.exception_service import create_exception
 from app.services.payment_settlement import settlement_coverage
 
 logger = logging.getLogger(__name__)
+
+#: Exception type opened when a settled payment's ERP sync-back leg fails.
+#: Reuses the roster type ``api/erp_webhook`` already raises for an ERP/ledger
+#: disagreement needing human reconciliation — same situation, so no new
+#: taxonomy entry (see ``services/exception_lifecycle.EXCEPTION_TYPES``).
+ERP_SYNC_FAILURE_EXCEPTION_TYPE = "erp_reconciliation"
+
+#: Per-leg outcomes, in the order they are decided.
+_SYNCED = "synced"
+_SKIPPED = "skipped"
+_HELD = "held"
+_FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class PaymentSyncResult:
+    """Outcome of one ERP sync-back pass over a payment run.
+
+    Returned so a caller that can *use* the counts gets them — the manual retry
+    endpoint reports them straight back to the operator. The background-thread
+    path can only log them (there is nobody to return to), which is exactly the
+    invisibility the exception rows now cover.
+    """
+
+    synced: int = 0
+    skipped: int = 0
+    held: int = 0
+    failed: int = 0
 
 
 async def dispatch_payment_sync(
     run_id: uuid.UUID,
     org_id: uuid.UUID,
 ) -> None:
-    """Trigger async ERP sync for a completed payment run."""
+    """Trigger async ERP sync for a completed payment run.
+
+    Fire-and-forget: the thread is detached, so awaiting this only awaits the
+    thread *start*. A caller that needs the outcome must await
+    :func:`_sync_payments` directly (the retry endpoint does).
+    """
     thread = threading.Thread(
         target=_run_in_thread,
         args=(run_id, org_id),
@@ -44,8 +115,8 @@ def _run_in_thread(run_id: uuid.UUID, org_id: uuid.UUID) -> None:
         loop.close()
 
 
-async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> None:
-    """Sync all payments in a run to the ERP."""
+async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> PaymentSyncResult:
+    """Sync all payments in a run to the ERP. Never raises into its caller."""
     ctrl_engine = create_async_engine(settings.database_url)
     ctrl_factory = async_sessionmaker(ctrl_engine, expire_on_commit=False)
 
@@ -56,12 +127,12 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> None:
             org = result.scalar_one_or_none()
             if not org:
                 logger.warning("[payment-sync] organization %s not found", org_id)
-                return
+                return PaymentSyncResult()
 
         erp_config = (org.settings or {}).get("erp")
         if not erp_config:
             logger.info("[payment-sync] no ERP configured for org %s, skipping sync", org_id)
-            return
+            return PaymentSyncResult()
 
         # Import adapters
         import app.services.erp_adapters.dynamics_365_bc  # noqa: F401
@@ -77,133 +148,228 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> None:
         tenant_engine = create_async_engine(tenant_url)
         tenant_factory = async_sessionmaker(tenant_engine, expire_on_commit=False)
 
-        async with tenant_factory() as db:
-            try:
-                # Get payments in this run
-                result = await db.execute(
-                    select(Payment, Invoice)
-                    .outerjoin(Invoice, Payment.invoice_id == Invoice.id)
-                    .where(Payment.payment_run_id == run_id)
-                )
-                rows = result.all()
-
-                synced = 0
-                skipped = 0
-                held = 0
-                failed = 0
-                for payment, invoice in rows:
-                    try:
-                        # A run can hold a mix of settled and in-flight payments
-                        # (e.g. one ACH `completed` by the mock adapter alongside
-                        # one `submitted` awaiting the processor webhook). Only a
-                        # payment we believe actually settled may mark its invoice
-                        # `paid` — flipping an in-flight payment's invoice to
-                        # `paid` here would claim money moved before the rail
-                        # confirmed it (and would pre-empt the webhook's own
-                        # `paid` transition, which never re-fires for an invoice
-                        # already in `paid`). The webhook handler triggers a fresh
-                        # ERP sync once the in-flight payment settles.
-                        if payment.status != "completed":
-                            skipped += 1
-                            continue
-
-                        # Build payment data for ERP
-                        # In production, this would call adapter.post_payment()
-                        # For now, log and mark as synced. Amount is not PII; goes
-                        # through the module logger so it reaches the same
-                        # aggregation/redaction pipeline as the rest of the sync.
-                        logger.info(
-                            "[payment-sync] syncing payment %s: invoice=%s, amount=%s, method=%s",
-                            payment.id,
-                            invoice.invoice_number if invoice else "?",
-                            f"{payment.amount:.2f}",
-                            payment.method,
-                        )
-
-                        # Update invoice status to paid if currently payment_scheduled
-                        if invoice and invoice.status.value == "payment_scheduled":
-                            # ...but only if what the rail actually settled
-                            # discharges the invoice. A processor that moved
-                            # $250 against a $500 instruction leaves the vendor
-                            # short; marking the invoice `paid` here would tell
-                            # the ERP, the aging report and the 1099 YTD totals
-                            # it was settled in full.
-                            #
-                            # This reads the figure PERSISTED on the payment row
-                            # (migration 0083), not the transient state of an
-                            # exception. That distinction is why the earlier
-                            # attempt at this hold had to be reverted: keyed on
-                            # a resolvable flag, clearing the flag — the correct
-                            # response to an over-settlement — stranded the
-                            # invoice permanently, because nothing re-invokes
-                            # this sweep once a run's payments are terminal.
-                            # A shortfall on the row does not evaporate, and it
-                            # has two real exits: accept it as final
-                            # (`POST /api/payments/{id}/settlement/accept`) or
-                            # void and re-pay (`POST /api/payments/{id}/void`,
-                            # which accepts a `payment_scheduled` invoice).
-                            coverage = settlement_coverage(
-                                settled_amount=payment.settled_amount,
-                                settled_currency=payment.settled_currency,
-                                target_amount=payment.amount,
-                                target_currency=invoice.currency,
-                                source_amount=payment.source_amount,
-                                source_currency=payment.source_currency,
-                            )
-                            if not coverage.completes_invoice:
-                                logger.info(
-                                    "[payment-sync] holding invoice for payment %s: "
-                                    "settlement %s (shortfall %s)",
-                                    payment.id,
-                                    coverage.state,
-                                    coverage.shortfall,
-                                )
-                                held += 1
-                                continue
-
-                            from app.models.invoice import InvoiceStatus
-                            from app.services.workflow_engine import transition_invoice
-
-                            await transition_invoice(
-                                db,
-                                invoice,
-                                InvoiceStatus.paid,
-                                actor_id=None,
-                                action_name="invoice.paid_via_erp_sync",
-                                details={"payment_id": str(payment.id)},
-                            )
-
-                        synced += 1
-
-                    except Exception as exc:
-                        # Log the exception CLASS only, not the message — a
-                        # processor/ERP SDK error string can embed partial
-                        # account / PAN data (PII-out-of-logs invariant).
-                        logger.warning(
-                            "[payment-sync] failed to sync payment %s: %s",
-                            payment.id,
-                            exc.__class__.__name__,
-                        )
-                        failed += 1
-
-                await db.commit()
-                logger.info(
-                    "[payment-sync] run %s: %d synced, %d skipped (in-flight), "
-                    "%d held (settlement short/uncertain), %d failed",
-                    run_id,
-                    synced,
-                    skipped,
-                    held,
-                    failed,
-                )
-
-            except Exception as exc:
-                # Same PII rationale as above — class only, never the message.
-                logger.warning(
-                    "[payment-sync] error for run %s: %s", run_id, exc.__class__.__name__
-                )
-                await db.rollback()
-
-        await tenant_engine.dispose()
+        try:
+            async with tenant_factory() as db:
+                return await _sync_run_legs(db, run_id=run_id, org_id=org_id)
+        finally:
+            await tenant_engine.dispose()
     finally:
         await ctrl_engine.dispose()
+
+
+async def _sync_run_legs(db, *, run_id: uuid.UUID, org_id: uuid.UUID) -> PaymentSyncResult:
+    """Run one leg per payment in the run, each independently committed."""
+    counts = {_SYNCED: 0, _SKIPPED: 0, _HELD: 0, _FAILED: 0}
+    try:
+        # Select ids only. Each leg re-reads its own rows, so a leg that rolls
+        # back can never leave the NEXT leg holding ORM objects its rollback
+        # expired (accessing one of those from async SQLAlchemy is an implicit
+        # lazy load, i.e. a MissingGreenlet, not a clean failure).
+        payment_ids = (
+            (
+                await db.execute(
+                    select(Payment.id).where(Payment.payment_run_id == run_id).order_by(Payment.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        for payment_id in payment_ids:
+            outcome = await _sync_one_leg(db, payment_id=payment_id, run_id=run_id, org_id=org_id)
+            counts[outcome] += 1
+
+    except Exception as exc:
+        # Last-resort net around the leg loop itself (e.g. the id query failed).
+        # Log the exception CLASS only, not the message — a processor/ERP SDK
+        # error string can embed partial account / PAN data (PII-out-of-logs
+        # invariant). Legs that already committed keep their work.
+        logger.warning("[payment-sync] error for run %s: %s", run_id, exc.__class__.__name__)
+
+    result = PaymentSyncResult(**counts)
+    logger.info(
+        "[payment-sync] run %s: %d synced, %d skipped (in-flight), "
+        "%d held (settlement short/uncertain), %d failed",
+        run_id,
+        result.synced,
+        result.skipped,
+        result.held,
+        result.failed,
+    )
+    return result
+
+
+async def _sync_one_leg(db, *, payment_id: uuid.UUID, run_id: uuid.UUID, org_id: uuid.UUID) -> str:
+    """Sync one payment, committing on its own. Returns the outcome key.
+
+    Committing per leg is deliberate: an earlier leg's successful
+    ``payment_scheduled → paid`` transition must not be discarded because a
+    later leg failed. There is no cross-leg invariant to keep atomic — each
+    payment discharges its own invoice.
+    """
+    try:
+        payment = await db.get(Payment, payment_id)
+        if payment is None:  # pragma: no cover — deleted between select and get
+            return _SKIPPED
+
+        # A run can hold a mix of settled and in-flight payments (e.g. one ACH
+        # `completed` by the mock adapter alongside one `submitted` awaiting the
+        # processor webhook). Only a payment we believe actually settled may mark
+        # its invoice `paid` — flipping an in-flight payment's invoice to `paid`
+        # here would claim money moved before the rail confirmed it (and would
+        # pre-empt the webhook's own `paid` transition, which never re-fires for
+        # an invoice already in `paid`). The webhook handler triggers a fresh ERP
+        # sync once the in-flight payment settles.
+        if payment.status != "completed":
+            return _SKIPPED
+
+        invoice = await db.get(Invoice, payment.invoice_id) if payment.invoice_id else None
+
+        # In production, this would call adapter.post_payment(). For now, log
+        # and mark as synced. Amount is not PII; goes through the module logger
+        # so it reaches the same aggregation/redaction pipeline as the rest of
+        # the sync.
+        logger.info(
+            "[payment-sync] syncing payment %s: invoice=%s, amount=%s, method=%s",
+            payment.id,
+            invoice.invoice_number if invoice else "?",
+            f"{payment.amount:.2f}",
+            payment.method,
+        )
+
+        # Update invoice status to paid if currently payment_scheduled
+        if invoice and invoice.status.value == "payment_scheduled":
+            # ...but only if what the rail actually settled discharges the
+            # invoice. A processor that moved $250 against a $500 instruction
+            # leaves the vendor short; marking the invoice `paid` here would
+            # tell the ERP, the aging report and the 1099 YTD totals it was
+            # settled in full.
+            #
+            # This reads the figure PERSISTED on the payment row (migration
+            # 0083), not the transient state of an exception. That distinction
+            # is why the earlier attempt at this hold had to be reverted: keyed
+            # on a resolvable flag, clearing the flag — the correct response to
+            # an over-settlement — stranded the invoice permanently, because
+            # nothing re-invokes this sweep once a run's payments are terminal.
+            # A shortfall on the row does not evaporate, and it has two real
+            # exits: accept it as final (`POST /api/payments/{id}/settlement/accept`)
+            # or void and re-pay (`POST /api/payments/{id}/void`, which accepts a
+            # `payment_scheduled` invoice).
+            coverage = settlement_coverage(
+                settled_amount=payment.settled_amount,
+                settled_currency=payment.settled_currency,
+                target_amount=payment.amount,
+                target_currency=invoice.currency,
+                source_amount=payment.source_amount,
+                source_currency=payment.source_currency,
+            )
+            if not coverage.completes_invoice:
+                logger.info(
+                    "[payment-sync] holding invoice for payment %s: settlement %s (shortfall %s)",
+                    payment.id,
+                    coverage.state,
+                    coverage.shortfall,
+                )
+                return _HELD
+
+            from app.models.invoice import InvoiceStatus
+            from app.services.workflow_engine import transition_invoice
+
+            await transition_invoice(
+                db,
+                invoice,
+                InvoiceStatus.paid,
+                actor_id=None,
+                action_name="invoice.paid_via_erp_sync",
+                details={"payment_id": str(payment.id)},
+            )
+
+        await db.commit()
+        return _SYNCED
+
+    except Exception as exc:
+        # Log the exception CLASS only, not the message — a processor/ERP SDK
+        # error string can embed partial account / PAN data (PII-out-of-logs
+        # invariant).
+        logger.warning(
+            "[payment-sync] failed to sync payment %s: %s",
+            payment_id,
+            exc.__class__.__name__,
+        )
+        await db.rollback()
+        await _flag_sync_failure(
+            db,
+            payment_id=payment_id,
+            run_id=run_id,
+            org_id=org_id,
+            failure=exc.__class__.__name__,
+        )
+        return _FAILED
+
+
+async def _flag_sync_failure(
+    db,
+    *,
+    payment_id: uuid.UUID,
+    run_id: uuid.UUID,
+    org_id: uuid.UUID,
+    failure: str,
+) -> None:
+    """Open a de-duped ``erp_reconciliation`` exception for a stranded invoice.
+
+    The money moved and the invoice did not advance; nothing re-invokes this
+    sync, so without a row the strand is invisible forever. Best-effort — a
+    flagging failure must not stop the remaining legs from syncing.
+
+    **De-duped** on an already-open/escalated ``erp_reconciliation`` for the
+    invoice, so a repeated retry doesn't pile up rows (and so an ERP-void
+    reconciliation raised by ``api/erp_webhook`` isn't duplicated either).
+
+    **PII-free**: identifiers, the failure's exception class, the invoice's
+    current status, and the retry path. Never the raw error message, which can
+    embed partial account / PAN data.
+    """
+    try:
+        invoice_id = (
+            await db.execute(select(Payment.invoice_id).where(Payment.id == payment_id))
+        ).scalar_one_or_none()
+        if invoice_id is None:
+            return
+
+        existing = (
+            await db.execute(
+                select(func.count()).where(
+                    APException.invoice_id == invoice_id,
+                    APException.exception_type == ERP_SYNC_FAILURE_EXCEPTION_TYPE,
+                    APException.status.in_(("open", "escalated")),
+                )
+            )
+        ).scalar() or 0
+        if existing:
+            return
+
+        invoice = await db.get(Invoice, invoice_id)
+        current_status = invoice.status.value if invoice else "?"
+        await create_exception(
+            db,
+            exception_type=ERP_SYNC_FAILURE_EXCEPTION_TYPE,
+            severity="error",
+            description=(
+                f"Payment {payment_id} settled but its ERP sync-back leg failed "
+                f"({failure}); the invoice is still '{current_status}' although the "
+                f"money moved. Nothing re-runs this automatically — retry with "
+                f"POST /api/payments/runs/{run_id}/sync-erp."
+            ),
+            status="open",
+            organization_id=org_id,
+            invoice=invoice,
+            invoice_id=invoice_id,
+        )
+        await db.commit()
+    except Exception as exc:
+        logger.warning(
+            "[payment-sync] could not flag failed sync for payment %s: %s",
+            payment_id,
+            exc.__class__.__name__,
+        )
+        await db.rollback()
