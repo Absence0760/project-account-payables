@@ -614,6 +614,9 @@
 
 	// ── White-label branding ────────────────────────────────────────────
 	import { brand } from '$lib/stores/brand.svelte';
+	import { accentStrongContrast } from '$lib/stores/brandTheme';
+	import { formatRatio, WCAG_AA_NORMAL } from '$lib/a11y/contrast';
+	import FieldWarning from '$lib/components/ui/FieldWarning.svelte';
 
 	let brandProductName = $state('');
 	let brandLogoUrl = $state('');
@@ -628,6 +631,15 @@
 	// the live default when the org hasn't set one — without writing it back.
 	const DEFAULT_ACCENT = '#638cff';
 	const DEFAULT_ACCENT_STRONG = '#3f5fd6';
+
+	// The strong accent is written straight into the `--accent-strong` custom
+	// property, whose one contract is that white text sits on it. Warn while
+	// the field is still being edited; the backend accepts any valid hex and
+	// the brand is the tenant's call, so this advises rather than blocks.
+	const accentStrongRatio = $derived(accentStrongContrast(brandAccentStrongColor));
+	const accentStrongFails = $derived(
+		accentStrongRatio !== null && accentStrongRatio < WCAG_AA_NORMAL
+	);
 
 	async function saveBranding() {
 		// Client-side validation mirroring the backend BrandConfig guards, so a
@@ -914,6 +926,12 @@
 								placeholder={DEFAULT_ACCENT_STRONG}
 							/>
 						</span>
+						<FieldWarning
+							show={accentStrongFails}
+							message={m('common.contrastWarning', {
+								ratio: accentStrongRatio === null ? '' : formatRatio(accentStrongRatio)
+							})}
+						/>
 					</label>
 					<label>
 						<span>{m('org.branding.supportUrl')}</span>

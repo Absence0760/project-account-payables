@@ -86,6 +86,11 @@ export const en = {
 	'common.search': 'Search',
 	'common.clear': 'Clear',
 	'common.apply': 'Apply',
+	// Advisory shown under a brand "strong accent" colour field. Shared by the
+	// org Branding panel and the partner child-branding modal so the two can't
+	// give a tenant different advice about the same setting.
+	'common.contrastWarning':
+		'White text on this color is only {ratio}. WCAG AA needs 4.5:1, so buttons and chips using it will be hard to read.',
 
 	// Dashboard (routes/+page.svelte)
 	'dashboard.title': 'Dashboard',

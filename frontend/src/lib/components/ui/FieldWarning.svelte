@@ -1,0 +1,45 @@
+<script lang="ts">
+	/**
+	 * An inline, advisory warning attached to a form field — the thing that
+	 * says "this is legal, and here is what it will cost you" while the user
+	 * is still typing.
+	 *
+	 * Distinct from a toast (transient, fires on submit) and from a
+	 * `role="alert"` refusal panel (assertive, interrupts, used for a request
+	 * the server rejected). This is `role="status"` / `aria-live="polite"`:
+	 * it appears and updates as the field changes, so an assertive live
+	 * region would interrupt the user on every keystroke.
+	 *
+	 * Render nothing by passing `show={false}` — the element leaves the DOM,
+	 * which is what makes the polite region announce on its next appearance.
+	 */
+	let {
+		show = false,
+		message
+	}: {
+		show?: boolean;
+		/** Already-localized text — this component is i18n-agnostic. */
+		message: string;
+	} = $props();
+</script>
+
+{#if show}
+	<p class="field-warning" role="status">
+		<span aria-hidden="true">⚠</span>
+		{message}
+	</p>
+{/if}
+
+<style>
+	.field-warning {
+		display: flex;
+		align-items: flex-start;
+		gap: 6px;
+		margin: 6px 0 0;
+		font-size: 0.8rem;
+		line-height: 1.4;
+		/* --danger is the text-on-dark token; --danger-strong is the fill
+		   behind white text and would be far too dark to read here. */
+		color: var(--danger);
+	}
+</style>

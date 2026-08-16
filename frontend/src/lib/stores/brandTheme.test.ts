@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { isValidHexColor, brandThemeVars, type Brand } from './brandTheme';
+import {
+	accentStrongContrast,
+	accentStrongMeetsAA,
+	isValidHexColor,
+	brandThemeVars,
+	type Brand
+} from './brandTheme';
 
 function makeBrand(overrides: Partial<Brand> = {}): Brand {
 	return {
@@ -67,5 +73,43 @@ describe('brandThemeVars (fallback logic)', () => {
 		expect(brandThemeVars(makeBrand({ accent_color: '  #112233  ' }))).toEqual({
 			'--accent': '#112233'
 		});
+	});
+});
+
+/**
+ * `--accent-strong` exists so white text has somewhere legible to sit, and
+ * `brandThemeVars` hands the tenant's raw hex straight to it. The static
+ * token-pairing guard can't see that override, so this is the runtime half of
+ * the same check.
+ */
+describe('accentStrongContrast / accentStrongMeetsAA', () => {
+	it('reports the white-on-colour ratio for the shipped default', () => {
+		// app.css --accent-strong: #3f5fd6
+		expect(accentStrongContrast('#3f5fd6') as number).toBeCloseTo(5.5, 1);
+		expect(accentStrongMeetsAA('#3f5fd6')).toBe(true);
+	});
+
+	it('fails a brand colour too light to carry white text', () => {
+		// A logo yellow is the realistic bad case, not a contrived one.
+		expect(accentStrongMeetsAA('#ffe066')).toBe(false);
+		// And the plain --accent value, which is exactly why the strong
+		// companion exists.
+		expect(accentStrongContrast('#638cff') as number).toBeCloseTo(3.12, 2);
+		expect(accentStrongMeetsAA('#638cff')).toBe(false);
+	});
+
+	it('accepts 3-digit hex and surrounding whitespace, like the validator', () => {
+		expect(accentStrongMeetsAA('  #000  ')).toBe(true);
+	});
+
+	/**
+	 * Null, not false — a half-typed or empty field must not flash a warning,
+	 * and "not a colour" is a different state from "fails".
+	 */
+	it('returns null when there is nothing to judge', () => {
+		for (const value of ['', '   ', '#12', 'rebeccapurple', null, undefined]) {
+			expect(accentStrongContrast(value), String(value)).toBeNull();
+			expect(accentStrongMeetsAA(value), String(value)).toBeNull();
+		}
 	});
 });

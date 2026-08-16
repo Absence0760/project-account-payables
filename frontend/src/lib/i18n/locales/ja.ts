@@ -81,6 +81,8 @@ export const messages = {
 	'common.search': '検索',
 	'common.clear': 'クリア',
 	'common.apply': '適用',
+	'common.contrastWarning':
+		'この色に白文字を載せるとコントラスト比は {ratio} です。WCAG AA は 4.5:1 を求めるため、これを使うボタンやチップは読みにくくなります。',
 
 	// Dashboard
 	'dashboard.title': 'ダッシュボード',
