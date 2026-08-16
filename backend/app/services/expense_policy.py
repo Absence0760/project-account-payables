@@ -21,7 +21,7 @@ advisory and surfaces as a warning badge.
 
 Every comparison is **currency-aware**. A policy's money thresholds
 (``category_limit`` / ``per_diem_amount`` / ``requires_receipt_above`` /
-``requires_preapproval_above``) are denominated in the policy's
+``requires_preapproval_above`` / ``mileage_rate``) are denominated in the policy's
 ``threshold_currency``, and the expense is expressed in that currency before
 being compared — a €200 EUR expense is never judged against a USD 100 limit as
 bare numbers. ``threshold_currency`` is ``NULL`` on rows that predate the
@@ -43,7 +43,8 @@ See ``backend/docs/expense-management.md``.
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
+from dataclasses import dataclass
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
 from app.services.expense_currency import expense_amount_in_currency, normalize_currency
@@ -53,9 +54,27 @@ VIOLATION_CATEGORY_LIMIT = "category_limit"
 VIOLATION_RECEIPT_REQUIRED = "receipt_required"
 VIOLATION_PREAPPROVAL_REQUIRED = "preapproval_required"
 VIOLATION_PER_DIEM_EXCEEDED = "per_diem_exceeded"
+VIOLATION_MILEAGE_MISMATCH = "mileage_amount_mismatch"
 
 # The subset that blocks report submission. The rest are advisory.
+#
+# The two blocking codes are both *missing evidence the submitter can supply* —
+# attach the receipt, get the pre-approval — so a 422 at submit is actionable.
+# ``mileage_amount_mismatch`` is deliberately NOT one of them: it is a
+# disagreement between two numbers the employee already supplied, and which of
+# them is wrong is a human judgement (the rate changed mid-period, the line
+# bundles a toll, the claim is deliberately *under* the entitlement). Blocking
+# would strand a legitimate claim with no in-app override; the approver, who
+# sees the badge carrying the exact expected figure, is the right control point.
 BLOCKING_CODES = frozenset({VIOLATION_RECEIPT_REQUIRED, VIOLATION_PREAPPROVAL_REQUIRED})
+
+# Rounding slack on the mileage comparison. ``miles`` is ``Numeric(10, 2)`` and
+# ``mileage_rate`` ``Numeric(10, 4)``, so their product carries up to 6 dp while
+# the claim is ``Numeric(15, 2)`` — a half-up 2 dp expectation and a claim
+# rounded the other way legitimately differ by a cent. Same one-cent tolerance
+# the settlement-amount check uses (``services/payment_settlement``).
+MILEAGE_TOLERANCE = Decimal("0.01")
+_MONEY_QUANT = Decimal("0.01")
 
 # Marker on a violation raised without a performed comparison (see the module
 # docstring): the expense could not be expressed in the threshold's currency, so
@@ -100,24 +119,89 @@ def threshold_currency_for(policy: Any, default_currency: str) -> str:
     return normalize_currency(getattr(policy, "threshold_currency", None), default=default_currency)
 
 
-def mileage_reimbursement(expense: Any, policies: list[Any]) -> Decimal:
-    """Reimbursable mileage amount = ``mileage_miles * mileage_rate``.
+@dataclass(frozen=True)
+class MileageExpectation:
+    """What the org's own policy says a logged trip is worth.
 
-    The rate comes from the first applicable active policy that carries a
-    ``mileage_rate``, and the result is denominated in that policy's
-    ``threshold_currency``. Returns ``Decimal("0")`` when the expense logs no
-    miles or no policy sets a rate. Pure ``Decimal`` math (no float)."""
+    ``amount`` is the exact product (``miles * rate``, unrounded — the figure
+    ``mileage_reimbursement`` has always returned); ``rounded`` is that product
+    quantized to the 2 dp a claim is stored at, which is what a claim is
+    compared against. ``currency`` is the unit — the rate's policy's
+    ``threshold_currency``, exactly like every other money threshold on the row.
+    """
+
+    policy_id: str | None
+    currency: str
+    miles: Decimal
+    rate: Decimal
+    amount: Decimal
+    rounded: Decimal
+
+
+def resolve_mileage_expectation(
+    expense: Any,
+    policies: list[Any],
+    *,
+    default_threshold_currency: str = "USD",
+) -> MileageExpectation | None:
+    """The single owner of "what is this trip worth, and in what currency".
+
+    Returns ``None`` when the question doesn't arise: the expense logs no
+    positive ``mileage_miles``, or no applicable active policy carries a usable
+    ``mileage_rate``. Both `mileage_reimbursement` (the amount) and
+    ``evaluate_expense``'s mileage rule (the violation) read this, so the figure
+    a violation quotes can never disagree with the figure the helper computes.
+
+    **A rate must be strictly positive to count.** ``mileage_rate`` is nullable,
+    so NULL is how "this org does not reimburse mileage" is expressed; a literal
+    ``0.0000`` is far more likely a form artifact than a deliberate zero-rate
+    policy. Treating it as unset also stops a zero-rate policy from shadowing a
+    later applicable policy that does carry a real rate, and stops every mileage
+    claim in the tenant from flagging against an expectation of nothing.
+
+    Pure ``Decimal`` math, no float, never raises."""
     miles = _as_decimal(getattr(expense, "mileage_miles", None))
     if miles is None or miles <= 0:
-        return Decimal("0")
+        return None
     category = getattr(expense, "category", None)
     for policy in policies:
         if not _policy_applies(policy, category):
             continue
         rate = _as_decimal(getattr(policy, "mileage_rate", None))
-        if rate is not None:
-            return miles * rate
-    return Decimal("0")
+        if rate is None or rate <= 0:
+            continue
+        amount = miles * rate
+        return MileageExpectation(
+            policy_id=str(getattr(policy, "id", "")) or None,
+            currency=threshold_currency_for(policy, default_threshold_currency),
+            miles=miles,
+            rate=rate,
+            amount=amount,
+            rounded=amount.quantize(_MONEY_QUANT, rounding=ROUND_HALF_UP),
+        )
+    return None
+
+
+def mileage_reimbursement(
+    expense: Any,
+    policies: list[Any],
+    *,
+    default_threshold_currency: str = "USD",
+) -> Decimal:
+    """Reimbursable mileage amount = ``mileage_miles * mileage_rate``.
+
+    The rate comes from the first applicable active policy that carries one, and
+    the result is denominated in that policy's ``threshold_currency``. Returns
+    ``Decimal("0")`` when the expense logs no miles or no policy sets a rate.
+    Pure ``Decimal`` math (no float).
+
+    A bare ``Decimal`` carries no unit, so prefer
+    ``resolve_mileage_expectation`` when the currency matters; this stays as the
+    amount-only view for callers that already know it."""
+    expectation = resolve_mileage_expectation(
+        expense, policies, default_threshold_currency=default_threshold_currency
+    )
+    return expectation.amount if expectation is not None else Decimal("0")
 
 
 def _violation(
@@ -130,6 +214,7 @@ def _violation(
     currency: str,
     expense_currency: str,
     unresolved: bool,
+    extra: dict | None = None,
 ) -> dict:
     """Build one violation dict. PII-free by construction — amounts and ISO
     currency codes only, never a merchant, a person, or a bank detail."""
@@ -142,6 +227,8 @@ def _violation(
         # The unit BOTH ``limit`` and (when resolved) ``actual`` are in.
         "currency": currency,
     }
+    if extra:
+        entry.update(extra)
     if unresolved:
         # ``actual`` is the expense's own face amount here, in its own currency —
         # no conversion existed to express it in ``currency``.
@@ -173,6 +260,14 @@ def evaluate_expense(
       resolves it from the DB, currency-matched to the expense); when present and
       >= the expense amount the rule is satisfied.
     - ``per_diem_exceeded``: the expense exceeds the policy's ``per_diem_amount``.
+    - ``mileage_amount_mismatch``: the expense logs ``mileage_miles`` and an
+      applicable policy sets a ``mileage_rate``, but the claimed amount is not
+      ``miles * rate`` (± one cent). Advisory, and raised in **both** directions
+      — an over-claim is the money leak, an under-claim means one of the two
+      numbers the employee typed is still wrong. At most one is raised per
+      expense: unlike a category limit (each policy is its own ceiling), a
+      mileage rate is *the* rate, so two contradictory expectations would be
+      worse than the one ``resolve_mileage_expectation`` picks.
 
     ``default_threshold_currency`` is the unit for policies with no
     ``threshold_currency`` set — callers pass the org's reporting currency.
@@ -304,7 +399,75 @@ def evaluate_expense(
                 )
             )
 
+    mileage = _mileage_violation(
+        expense,
+        policies,
+        amount=amount,
+        expense_currency=expense_currency,
+        default_threshold_currency=default_threshold_currency,
+    )
+    if mileage is not None:
+        violations.append(mileage)
+
     return violations
+
+
+def _mileage_violation(
+    expense: Any,
+    policies: list[Any],
+    *,
+    amount: Decimal,
+    expense_currency: str,
+    default_threshold_currency: str,
+) -> dict | None:
+    """The ``mileage_amount_mismatch`` rule — see ``evaluate_expense``.
+
+    Lives outside the per-policy loop because the expectation is resolved once
+    for the whole expense (``resolve_mileage_expectation``), not once per policy.
+    """
+    expectation = resolve_mileage_expectation(
+        expense, policies, default_threshold_currency=default_threshold_currency
+    )
+    if expectation is None:
+        return None
+
+    cur = expectation.currency
+    expected = expectation.rounded
+    comparable = expense_amount_in_currency(expense, target_currency=cur)
+    unresolved = comparable is None
+    actual = amount if unresolved else comparable
+    basis = f"{expectation.miles} mi x {expectation.rate}"
+
+    if unresolved:
+        message = (
+            f"Claimed {amount} {expense_currency} cannot be converted to {cur} to check the "
+            f"mileage entitlement of {expected} {cur} ({basis}); flagged for review."
+        )
+    elif comparable > expected + MILEAGE_TOLERANCE:
+        message = (
+            f"Claimed {actual} {cur} exceeds the mileage entitlement of {expected} {cur} ({basis})."
+        )
+    elif comparable < expected - MILEAGE_TOLERANCE:
+        message = (
+            f"Claimed {actual} {cur} is below the mileage entitlement of "
+            f"{expected} {cur} ({basis})."
+        )
+    else:
+        return None
+
+    return _violation(
+        VIOLATION_MILEAGE_MISMATCH,
+        message=message,
+        policy_id=expectation.policy_id,
+        limit=expected,
+        actual=actual,
+        currency=cur,
+        expense_currency=expense_currency,
+        unresolved=unresolved,
+        # Exact strings so an approver UI can show the working without
+        # re-deriving it (and without money ever becoming a JS number).
+        extra={"miles": str(expectation.miles), "rate": str(expectation.rate)},
+    )
 
 
 def evaluate_report(

@@ -66,8 +66,9 @@ export const EXPENSE_REPORT_STATUS_LABELS: Record<ExpenseReportStatus, string> =
 
 // A single policy-engine finding stamped onto `Expense.policy_violations` by the
 // WF3 backend engine (`evaluate_expense`). `code` is a stable machine key
-// (`category_limit`, `receipt_required`, `preapproval_required`, `per_diem`),
-// `message` is the human string the badge tooltip renders.
+// (`category_limit`, `receipt_required`, `preapproval_required`,
+// `per_diem_exceeded`, `mileage_amount_mismatch`), `message` is the human
+// string the badge tooltip renders.
 export interface PolicyViolation {
 	code: string;
 	message: string;
@@ -75,6 +76,13 @@ export interface PolicyViolation {
 	/** Exact decimal strings — money never round-trips as a JS number. */
 	limit?: string;
 	actual?: string;
+	/**
+	 * `mileage_amount_mismatch` only — the working behind `limit`, as exact
+	 * strings. `miles` is a distance, not money; `rate` is per-mile in
+	 * `currency`.
+	 */
+	miles?: string;
+	rate?: string;
 	/** Currency `limit` (and, when the comparison resolved, `actual`) is in. */
 	currency?: string;
 	/**
@@ -206,6 +214,12 @@ export interface ExpenseCreate {
 	gl_account_id: string | null;
 	payment_method: string;
 	reimbursable: boolean;
+	/**
+	 * Distance driven. Backed by the policy engine's `mileage_rate`, which
+	 * flags a claim that isn't `miles x rate` (`mileage_amount_mismatch`) —
+	 * so leaving this null is what tells the backend the line isn't a trip.
+	 */
+	mileage_miles?: number | null;
 	report_id?: string | null;
 }
 

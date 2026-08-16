@@ -3,9 +3,11 @@
 DB-free: policies + expenses are ``SimpleNamespace`` stand-ins, money is
 ``Decimal``. Covers category limits, receipt-required, pre-approval-required,
 per-diem caps, category matching (NULL = all), the active flag, mileage
-reimbursement, report aggregation, the blocking-subset filter, and — the
-currency dimension — that a threshold is only ever compared against the expense
-expressed in the threshold's own currency, failing closed when it cannot be.
+reimbursement **and its enforcement** (``mileage_amount_mismatch`` — advisory,
+both directions, one-cent slack, first-applicable rate), report aggregation,
+the blocking-subset filter, and — the currency dimension — that a threshold is
+only ever compared against the expense expressed in the threshold's own
+currency, failing closed when it cannot be.
 """
 
 import uuid
@@ -15,6 +17,7 @@ from types import SimpleNamespace
 from app.services.expense_policy import (
     COMPARISON_UNRESOLVED,
     VIOLATION_CATEGORY_LIMIT,
+    VIOLATION_MILEAGE_MISMATCH,
     VIOLATION_PER_DIEM_EXCEEDED,
     VIOLATION_PREAPPROVAL_REQUIRED,
     VIOLATION_RECEIPT_REQUIRED,
@@ -22,6 +25,7 @@ from app.services.expense_policy import (
     evaluate_expense,
     evaluate_report,
     mileage_reimbursement,
+    resolve_mileage_expectation,
     threshold_currency_for,
 )
 
@@ -160,6 +164,182 @@ def test_mileage_reimbursement_decimal():
 def test_mileage_zero_when_no_rate_or_miles():
     assert mileage_reimbursement(_expense(mileage_miles=None), [_policy()]) == Decimal("0")
     assert mileage_reimbursement(_expense(mileage_miles=Decimal("50")), []) == Decimal("0")
+
+
+def test_mileage_expectation_carries_its_unit_and_working():
+    pol = _policy(mileage_rate=Decimal("0.6700"), threshold_currency="EUR")
+    exp = resolve_mileage_expectation(_expense(mileage_miles=Decimal("120.00")), [pol])
+    assert exp is not None
+    assert exp.currency == "EUR"
+    assert exp.miles == Decimal("120.00")
+    assert exp.rate == Decimal("0.6700")
+    assert exp.amount == Decimal("80.400000")
+    assert exp.rounded == Decimal("80.40")
+    assert exp.policy_id == str(pol.id)
+
+
+def test_mileage_expectation_currency_defaults_to_org_reporting_currency():
+    """A policy with no ``threshold_currency`` is denominated in whatever the
+    caller resolves as the org's reporting currency — same rule as every other
+    money threshold on the row."""
+    pol = _policy(mileage_rate=Decimal("0.5000"), threshold_currency=None)
+    exp = resolve_mileage_expectation(
+        _expense(mileage_miles=Decimal("10")), [pol], default_threshold_currency="GBP"
+    )
+    assert exp is not None and exp.currency == "GBP"
+
+
+def test_mileage_rate_of_zero_is_treated_as_unset():
+    """NULL is how "we don't reimburse mileage" is expressed; a literal 0 must
+    not shadow a later applicable policy that carries a real rate, nor flag
+    every claim against an entitlement of nothing."""
+    zero = _policy(mileage_rate=Decimal("0.0000"))
+    real = _policy(mileage_rate=Decimal("0.6700"))
+    exp = resolve_mileage_expectation(_expense(mileage_miles=Decimal("100")), [zero, real])
+    assert exp is not None and exp.rate == Decimal("0.6700")
+    assert mileage_reimbursement(_expense(mileage_miles=Decimal("100")), [zero]) == Decimal("0")
+    assert evaluate_expense(_expense(mileage_miles=Decimal("100")), [zero]) == []
+
+
+# --- mileage enforcement (the violation) ----------------------------------
+
+
+def test_mileage_over_claim_flagged_with_the_expected_figure():
+    pol = _policy(mileage_rate=Decimal("0.6700"))
+    exp = _expense(amount=Decimal("250.00"), mileage_miles=Decimal("120.00"))
+    v = evaluate_expense(exp, [pol])
+    assert [x["code"] for x in v] == [VIOLATION_MILEAGE_MISMATCH]
+    assert v[0]["limit"] == "80.40"
+    assert v[0]["actual"] == "250.00"
+    assert v[0]["currency"] == "USD"
+    assert v[0]["miles"] == "120.00"
+    assert v[0]["rate"] == "0.6700"
+    assert "exceeds" in v[0]["message"]
+
+
+def test_mileage_under_claim_also_flagged():
+    """Both directions: an under-claim costs the company nothing but still means
+    one of the two numbers the employee typed is wrong."""
+    pol = _policy(mileage_rate=Decimal("0.6700"))
+    v = evaluate_expense(_expense(amount=Decimal("8.04"), mileage_miles=Decimal("120.00")), [pol])
+    assert [x["code"] for x in v] == [VIOLATION_MILEAGE_MISMATCH]
+    assert "below" in v[0]["message"]
+
+
+def test_mileage_exact_claim_clean():
+    pol = _policy(mileage_rate=Decimal("0.6700"))
+    assert (
+        evaluate_expense(_expense(amount=Decimal("80.40"), mileage_miles=Decimal("120.00")), [pol])
+        == []
+    )
+
+
+def test_mileage_one_cent_rounding_slack_is_not_a_violation():
+    """3 mi x 0.5850 = 1.755 — half-up 1.76, rounded-down 1.75. Neither is a
+    mismatch; two cents out is."""
+    pol = _policy(mileage_rate=Decimal("0.5850"))
+    for claim in (Decimal("1.75"), Decimal("1.76")):
+        assert evaluate_expense(_expense(amount=claim, mileage_miles=Decimal("3")), [pol]) == []
+    v = evaluate_expense(_expense(amount=Decimal("1.78"), mileage_miles=Decimal("3")), [pol])
+    assert [x["code"] for x in v] == [VIOLATION_MILEAGE_MISMATCH]
+
+
+def test_mileage_is_advisory_not_blocking():
+    pol = _policy(mileage_rate=Decimal("0.6700"))
+    v = evaluate_expense(_expense(amount=Decimal("500.00"), mileage_miles=Decimal("10")), [pol])
+    assert [x["code"] for x in v] == [VIOLATION_MILEAGE_MISMATCH]
+    assert blocking_violations(v) == []
+
+
+def test_mileage_not_flagged_without_miles_or_rate():
+    assert (
+        evaluate_expense(
+            _expense(amount=Decimal("100.00"), mileage_miles=None),
+            [_policy(mileage_rate=Decimal("0.67"))],
+        )
+        == []
+    )
+    assert (
+        evaluate_expense(_expense(amount=Decimal("100.00"), mileage_miles=Decimal("50")), []) == []
+    )
+
+
+def test_mileage_only_the_first_applicable_rate_is_enforced():
+    """Two policies both carrying a rate must not produce two contradictory
+    expectations — a mileage rate is *the* rate, not a per-policy ceiling."""
+    first = _policy(mileage_rate=Decimal("0.6700"))
+    second = _policy(mileage_rate=Decimal("0.4000"))
+    v = evaluate_expense(
+        _expense(amount=Decimal("500.00"), mileage_miles=Decimal("100")), [first, second]
+    )
+    assert [x["code"] for x in v] == [VIOLATION_MILEAGE_MISMATCH]
+    assert v[0]["limit"] == "67.00"
+
+
+def test_mileage_respects_policy_category_scope():
+    pol = _policy(category="mileage", mileage_rate=Decimal("0.6700"))
+    off_category = _expense(category="meals", amount=Decimal("500.00"), mileage_miles=Decimal("10"))
+    assert evaluate_expense(off_category, [pol]) == []
+
+
+def test_mileage_inactive_policy_ignored():
+    pol = _policy(active=False, mileage_rate=Decimal("0.6700"))
+    assert (
+        evaluate_expense(_expense(amount=Decimal("500.00"), mileage_miles=Decimal("10")), [pol])
+        == []
+    )
+
+
+def test_mileage_compared_in_the_rate_currency_via_the_locked_conversion():
+    """A EUR rate judges a USD claim only through the rate the write path
+    locked onto the row — never as bare numbers."""
+    pol = _policy(mileage_rate=Decimal("0.6000"), threshold_currency="EUR")
+    # 100 mi x 0.60 = EUR 60.00; the USD 70.00 claim locked to EUR 60.00.
+    clean = _expense(
+        amount=Decimal("70.00"),
+        currency="USD",
+        converted_amount=Decimal("60.00"),
+        converted_currency="EUR",
+        mileage_miles=Decimal("100"),
+    )
+    assert evaluate_expense(clean, [pol]) == []
+    # Bare numbers would have read "70.00 > 60.00" and flagged it.
+
+
+def test_mileage_fails_closed_when_the_claim_cannot_be_expressed_in_the_rate_currency():
+    pol = _policy(mileage_rate=Decimal("0.6000"), threshold_currency="EUR")
+    exp = _expense(amount=Decimal("60.00"), currency="USD", mileage_miles=Decimal("100"))
+    v = evaluate_expense(exp, [pol])
+    assert [x["code"] for x in v] == [VIOLATION_MILEAGE_MISMATCH]
+    assert v[0]["comparison"] == COMPARISON_UNRESOLVED
+    assert v[0]["currency"] == "EUR"
+    assert v[0]["expense_currency"] == "USD"
+    # `actual` is the face amount when nothing could convert it.
+    assert v[0]["actual"] == "60.00"
+    assert v[0]["limit"] == "60.00"
+
+
+def test_mileage_violation_is_pii_free():
+    pol = _policy(mileage_rate=Decimal("0.6700"))
+    exp = _expense(
+        amount=Decimal("500.00"),
+        mileage_miles=Decimal("10"),
+        merchant="Jane Doe Consulting",
+        description="drove to 14 Acacia Ave",
+    )
+    v = evaluate_expense(exp, [pol])
+    blob = repr(v)
+    assert "Jane Doe" not in blob
+    assert "Acacia" not in blob
+
+
+def test_mileage_flows_through_report_aggregation():
+    pol = _policy(mileage_rate=Decimal("0.6700"))
+    e1 = _expense(amount=Decimal("500.00"), mileage_miles=Decimal("10"))
+    agg = evaluate_report(SimpleNamespace(id=uuid.uuid4()), [e1], [pol])
+    assert [(x["expense_id"], x["code"]) for x in agg] == [(str(e1.id), VIOLATION_MILEAGE_MISMATCH)]
+    # Advisory — a mileage mismatch alone never blocks report submission.
+    assert blocking_violations(agg) == []
 
 
 # --- report aggregation + blocking filter --------------------------------

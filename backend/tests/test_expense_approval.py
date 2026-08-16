@@ -600,3 +600,124 @@ async def test_foreign_expense_locked_into_the_threshold_currency_compares_conve
         patched = await c.patch(f"/api/expenses/{eid}", json={"description": "hotel"})
         assert patched.status_code == 200, patched.text
         assert not (patched.json()["policy_violations"] or [])
+
+
+# ---------------------------------------------------------------------------
+# Mileage enforcement (the rate finally being read)
+# ---------------------------------------------------------------------------
+
+
+async def test_mileage_overclaim_surfaced_on_create_and_cleared_on_correction(realdb):
+    """The gap this closes: the rate was settable and read by nothing.
+
+    An admin sets $0.67/mile, an employee logs 120 miles and claims $250 — the
+    reimbursable figure used to be whatever they typed. The engine now flags it
+    on the real write path and names the $80.40 the policy actually entitles;
+    correcting the claim clears the badge."""
+    async with realdb.client(key="a", role="ap_manager") as c:
+        await _make_policy(c, name="Mileage", category="travel", mileage_rate="0.6700")
+        created = await c.post(
+            "/api/expenses",
+            json={
+                "expense_date": "2026-06-01",
+                "category": "travel",
+                "amount": "250.00",
+                "mileage_miles": "120.00",
+            },
+        )
+        assert created.status_code == 201, created.text
+        eid = created.json()["id"]
+        violations = created.json()["policy_violations"] or []
+        by_code = {v["code"]: v for v in violations}
+        assert "mileage_amount_mismatch" in by_code, violations
+        flagged = by_code["mileage_amount_mismatch"]
+        assert flagged["limit"] == "80.40"
+        assert flagged["actual"] == "250.00"
+        assert flagged["miles"] == "120.00"
+        assert flagged["rate"] == "0.6700"
+
+        corrected = await c.patch(f"/api/expenses/{eid}", json={"amount": "80.40"})
+        assert corrected.status_code == 200, corrected.text
+        assert not (corrected.json()["policy_violations"] or [])
+
+
+async def test_mileage_mismatch_does_not_block_report_submission(realdb):
+    """Advisory, deliberately: it rides into the approver's view rather than
+    422-ing a submission whose numbers a human still has to adjudicate."""
+    async with realdb.client(key="a", role="ap_manager") as c:
+        await _make_policy(c, name="Mileage", category="travel", mileage_rate="0.6700")
+        eid = (
+            await c.post(
+                "/api/expenses",
+                json={
+                    "expense_date": "2026-06-01",
+                    "category": "travel",
+                    "amount": "250.00",
+                    "mileage_miles": "120.00",
+                },
+            )
+        ).json()["id"]
+        rid = (
+            await c.post(
+                "/api/expense-reports",
+                json={"report_number": f"R-{uuid.uuid4().hex[:8]}"},
+            )
+        ).json()["id"]
+        await c.post(f"/api/expense-reports/{rid}/expenses", json={"expense_ids": [eid]})
+
+        submitted = await c.post(f"/api/expense-reports/{rid}/submit")
+        assert submitted.status_code == 200, submitted.text
+        # The flag is still on the line the approver reviews.
+        line = (await c.get(f"/api/expenses/{eid}")).json()
+        assert any(
+            v["code"] == "mileage_amount_mismatch" for v in (line["policy_violations"] or [])
+        )
+
+
+async def test_mileage_without_a_rate_is_not_enforced(realdb):
+    """No `mileage_rate` on any applicable policy = the org does not reimburse
+    per mile, so a logged trip is judged only by the other rules."""
+    async with realdb.client(key="a", role="ap_manager") as c:
+        await _make_policy(c, name="NoRate", category="travel", category_limit="1000.00")
+        created = await c.post(
+            "/api/expenses",
+            json={
+                "expense_date": "2026-06-01",
+                "category": "travel",
+                "amount": "250.00",
+                "mileage_miles": "120.00",
+            },
+        )
+        assert created.status_code == 201, created.text
+        codes = {v["code"] for v in (created.json()["policy_violations"] or [])}
+        assert "mileage_amount_mismatch" not in codes
+
+
+async def test_negative_mileage_is_refused_on_create_and_patch(realdb):
+    """A distance is never negative, and a negative one silently DISABLES the
+    mileage rule for that line (`resolve_mileage_expectation` skips
+    `miles <= 0`) — so it has to be refused at the edge, not stored."""
+    async with realdb.client(key="a", role="ap_manager") as c:
+        rejected = await c.post(
+            "/api/expenses",
+            json={
+                "expense_date": "2026-06-01",
+                "category": "travel",
+                "amount": "50.00",
+                "mileage_miles": "-120.00",
+            },
+        )
+        assert rejected.status_code == 422, rejected.text
+
+        eid = (
+            await c.post(
+                "/api/expenses",
+                json={"expense_date": "2026-06-01", "category": "travel", "amount": "50.00"},
+            )
+        ).json()["id"]
+        patched = await c.patch(f"/api/expenses/{eid}", json={"mileage_miles": "-1"})
+        assert patched.status_code == 422, patched.text
+
+        # Zero is a legitimate value (a logged-but-distance-free line), not an error.
+        zeroed = await c.patch(f"/api/expenses/{eid}", json={"mileage_miles": "0"})
+        assert zeroed.status_code == 200, zeroed.text

@@ -42,7 +42,10 @@ class ExpenseBase(BaseModel):
     gl_account_id: str | None = None
     payment_method: ExpensePaymentMethod = ExpensePaymentMethod.out_of_pocket
     reimbursable: bool = True
-    mileage_miles: Decimal | None = None
+    # A distance, so never negative. Nothing consumes a negative one — the
+    # policy engine's mileage rule skips `miles <= 0` — so an unbounded field
+    # just persisted nonsense that silently disabled the rule for that line.
+    mileage_miles: Decimal | None = Field(default=None, ge=0)
 
 
 class ExpenseCreate(ExpenseBase):
@@ -62,7 +65,7 @@ class ExpenseUpdate(BaseModel):
     gl_account_id: str | None = None
     payment_method: ExpensePaymentMethod | None = None
     reimbursable: bool | None = None
-    mileage_miles: Decimal | None = None
+    mileage_miles: Decimal | None = Field(default=None, ge=0)
     report_id: str | None = None
 
 
