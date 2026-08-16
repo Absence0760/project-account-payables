@@ -606,6 +606,89 @@ async def test_two_concurrent_passes_transition_the_invoice_once(realdb):
     assert paid_rows == 1, "two concurrent passes must not both write the paid transition"
 
 
+async def test_a_held_leg_releases_its_lock_and_its_siblings_still_sync(realdb):
+    """A short-settled leg holds its invoice at `payment_scheduled` — but it
+    took the row FOR UPDATE to decide that, so it must release before returning.
+
+    Otherwise the lock lives until the session's next commit, i.e. for the rest
+    of the run's legs, blocking any concurrent writer of a held invoice —
+    including its own `POST /{id}/settlement/accept` release path, the very
+    thing an operator reaches for next.
+    """
+    await _set_org_erp(realdb, "a", {"type": "mock", "integration_method": "direct"})
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    run_id = uuid.uuid4()
+    inv_short = uuid.uuid4()
+    inv_full = uuid.uuid4()
+    async with mk() as s:
+        s.add(PaymentRun(id=run_id, status="completed", organization_id=org_id))
+        for iid, num in ((inv_short, "INV-SHORT"), (inv_full, "INV-FULL")):
+            s.add(
+                Invoice(
+                    id=iid,
+                    invoice_number=num,
+                    vendor_name="V",
+                    amount=Decimal("500.00"),
+                    currency="USD",
+                    status=InvoiceStatus.payment_scheduled,
+                    organization_id=org_id,
+                )
+            )
+        await s.flush()
+        # uuid(int=1) sorts first: the HELD leg runs before the syncing one, so
+        # a lock it failed to release would still be held when the next leg runs.
+        s.add(
+            Payment(
+                id=uuid.UUID(int=1),
+                invoice_id=inv_short,
+                payment_run_id=run_id,
+                amount=Decimal("500.00"),
+                method="ach",
+                status="completed",
+                settled_amount=Decimal("250.00"),
+                settled_currency="USD",
+            )
+        )
+        s.add(
+            Payment(
+                id=uuid.UUID(int=2),
+                invoice_id=inv_full,
+                payment_run_id=run_id,
+                amount=Decimal("500.00"),
+                method="ach",
+                status="completed",
+                settled_amount=Decimal("500.00"),
+                settled_currency="USD",
+            )
+        )
+        await s.commit()
+
+    result = await _sync_payments(run_id, org_id)
+
+    assert result.held == 1
+    assert result.synced == 1
+    assert result.transitioned == 1
+
+    async with mk() as s:
+        short = (await s.execute(select(Invoice).where(Invoice.id == inv_short))).scalar_one()
+        full = (await s.execute(select(Invoice).where(Invoice.id == inv_full))).scalar_one()
+    assert short.status == InvoiceStatus.payment_scheduled, "an under-settled invoice is held"
+    assert full.status == InvoiceStatus.paid
+
+    # The held invoice's row is free: a fresh session can take it FOR UPDATE
+    # without waiting, which is what the accept/void release paths need.
+    async with mk() as s:
+        locked = (
+            await s.execute(
+                select(Invoice.id).where(Invoice.id == inv_short).with_for_update(nowait=True)
+            )
+        ).scalar_one()
+        assert locked == inv_short
+        await s.rollback()
+
+
 async def test_retry_endpoint_409s_when_no_payment_settled(realdb):
     """Nothing settled means nothing to report to the ERP — refuse rather than
     silently reporting a zero-count success."""

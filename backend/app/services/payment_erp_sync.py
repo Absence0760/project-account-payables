@@ -312,6 +312,12 @@ async def _sync_one_leg(
                     coverage.state,
                     coverage.shortfall,
                 )
+                # Release the FOR UPDATE lock now. Nothing was written, but the
+                # lock lives until this session's next commit — without this it
+                # would be held for the rest of the run's legs, blocking any
+                # concurrent writer of a held invoice (e.g. its own
+                # `POST /{id}/settlement/accept` release path).
+                await db.commit()
                 return _HELD, False
 
             from app.models.invoice import InvoiceStatus
