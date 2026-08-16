@@ -35,11 +35,13 @@ class ChatMessage:
     amount: Decimal | None = None
     currency: str = "USD"
     link: str | None = None  # deep link into the app (no secrets)
-    # Optional signed Approve/Reject action tokens for an interactive message
-    # (currently Slack Block Kit buttons on the "assigned for review" event).
-    # Each is the per-action token from `email_action_token` bound to the
-    # `slack` channel + the intended approver; it IS the credential, redeemed at
-    # the Slack interactivity endpoint. None = a plain (non-interactive) message.
+    # Optional signed Approve/Reject action tokens for an interactive message —
+    # Slack Block Kit buttons or Teams MessageCard HttpPOST actions, on the
+    # "assigned for review" event. Each is the per-action token from
+    # `email_action_token`, bound to the intended approver AND to the posting
+    # provider's own channel (`slack` / `teams`), so it is redeemable only at
+    # that provider's interactivity endpoint. It IS the credential.
+    # None = a plain (non-interactive) message.
     approve_token: str | None = None
     reject_token: str | None = None
 
@@ -105,9 +107,10 @@ def render_chat_message(
     chat doesn't notify on, so the caller simply skips it.
 
     ``approve_token`` / ``reject_token`` are the optional signed action tokens
-    that turn the message interactive (Slack Approve/Reject buttons). They are
-    only meaningful on the "assigned for review" event; adapters render buttons
-    only when both are present.
+    that turn the message interactive (Slack Approve/Reject buttons, Teams
+    MessageCard HttpPOST actions). They are only meaningful on the "assigned for
+    review" event; adapters render actions only when both are present, and may
+    additionally require their own transport credential.
     """
     labels = _EVENT_LABELS.get(event_type)
     if labels is None:
