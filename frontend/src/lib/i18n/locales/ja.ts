@@ -2920,9 +2920,21 @@ export const messages = {
 	'vendorStatements.modal.currency': '通貨',
 	'vendorStatements.modal.notes': 'メモ',
 	'vendorStatements.modal.statementLines': '明細書の行',
-	'vendorStatements.modal.intakeHintPre': 'サプライヤー明細書の行を貼り付けるか、',
-	'vendorStatements.modal.intakeHintOr': 'または',
-	'vendorStatements.modal.intakeHintPost': '以下でCSVをアップロードしてください。',
+	'vendorStatements.modal.intakeModeLegend': '明細書はどのように届きますか？',
+	'vendorStatements.modal.intakeModePaste': '行を入力する',
+	'vendorStatements.modal.intakeModeFile': 'ファイルをアップロード',
+	'vendorStatements.modal.pasteHint':
+		'サプライヤー明細書の未決済項目ごとに1行を入力してください。',
+	'vendorStatements.modal.uploadFile': '明細書をアップロード（CSVまたはPDF）',
+	'vendorStatements.modal.fileHintCsv':
+		'CSVはそのまま解析されます。請求書番号列と金額列のいずれか（または両方）を含むヘッダー行が必要です。',
+	'vendorStatements.modal.fileHintPdf':
+		'PDFはこの組織自身の抽出プロバイダーが読み取ります。明確に読み取れない行は推測せずにスキップされるため、該当する請求書は確認すべき差異として表示されます。',
+	'vendorStatements.modal.fileSelected': '選択済み: {name}',
+	'vendorStatements.modal.fileRemove': '削除',
+	'vendorStatements.modal.fileTooLarge':
+		'このファイルはアップロード上限の{max} MBを超えています。明細書をCSVでアップロードするか、分割してください。',
+	'vendorStatements.modal.intakeErrorTitle': 'この明細書は照合できませんでした',
 	'vendorStatements.modal.linesEditorAria': '明細書行エディター',
 	'vendorStatements.modal.colInvoice': '請求書番号',
 	'vendorStatements.modal.colAmount': '金額',
@@ -2932,7 +2944,6 @@ export const messages = {
 	'vendorStatements.modal.lineDateAria': '明細書行{n}の日付',
 	'vendorStatements.modal.removeLineAria': '明細書行{n}を削除',
 	'vendorStatements.modal.addLine': '+ 行を追加',
-	'vendorStatements.modal.uploadCsv': 'または明細書をCSVでアップロード',
 	'vendorStatements.modal.fileAria': '明細書ファイル',
 	'vendorStatements.modal.cancel': 'キャンセル',
 	'vendorStatements.modal.reconcile': '照合',

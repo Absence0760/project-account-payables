@@ -2902,9 +2902,21 @@ export const messages = {
 	'vendorStatements.modal.currency': 'Währung',
 	'vendorStatements.modal.notes': 'Notizen',
 	'vendorStatements.modal.statementLines': 'Auszugspositionen',
-	'vendorStatements.modal.intakeHintPre': 'Fügen Sie die Positionen aus dem Lieferantenauszug ein, ',
-	'vendorStatements.modal.intakeHintOr': 'oder',
-	'vendorStatements.modal.intakeHintPost': ' laden Sie unten eine CSV-Datei hoch.',
+	'vendorStatements.modal.intakeModeLegend': 'Wie kommt der Auszug zu uns?',
+	'vendorStatements.modal.intakeModePaste': 'Positionen eingeben',
+	'vendorStatements.modal.intakeModeFile': 'Datei hochladen',
+	'vendorStatements.modal.pasteHint':
+		'Eine Zeile pro offener Position auf dem Lieferantenauszug.',
+	'vendorStatements.modal.uploadFile': 'Auszug hochladen (CSV oder PDF)',
+	'vendorStatements.modal.fileHintCsv':
+		'Eine CSV-Datei wird direkt eingelesen. Sie benötigt eine Kopfzeile mit einer Rechnungsnummern- und/oder einer Betragsspalte.',
+	'vendorStatements.modal.fileHintPdf':
+		'Ein PDF wird vom Extraktionsanbieter dieser Organisation gelesen. Eine Zeile, die nicht eindeutig lesbar ist, wird übersprungen statt geraten — die zugehörige Rechnung erscheint dann als zu klärende Abweichung.',
+	'vendorStatements.modal.fileSelected': 'Ausgewählt: {name}',
+	'vendorStatements.modal.fileRemove': 'Entfernen',
+	'vendorStatements.modal.fileTooLarge':
+		'Diese Datei überschreitet das Upload-Limit von {max} MB. Laden Sie den Auszug als CSV hoch oder teilen Sie ihn auf.',
+	'vendorStatements.modal.intakeErrorTitle': 'Dieser Auszug konnte nicht abgeglichen werden',
 	'vendorStatements.modal.linesEditorAria': 'Editor für Auszugspositionen',
 	'vendorStatements.modal.colInvoice': 'Rechnung #',
 	'vendorStatements.modal.colAmount': 'Betrag',
@@ -2914,7 +2926,6 @@ export const messages = {
 	'vendorStatements.modal.lineDateAria': 'Auszugsposition {n} Datum',
 	'vendorStatements.modal.removeLineAria': 'Auszugsposition {n} entfernen',
 	'vendorStatements.modal.addLine': '+ Position hinzufügen',
-	'vendorStatements.modal.uploadCsv': 'Oder laden Sie einen Auszug als CSV hoch',
 	'vendorStatements.modal.fileAria': 'Auszugsdatei',
 	'vendorStatements.modal.cancel': 'Abbrechen',
 	'vendorStatements.modal.reconcile': 'Abstimmen',
