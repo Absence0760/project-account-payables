@@ -84,8 +84,8 @@ def _ack(message: str = "Thanks — your response was recorded.") -> JSONRespons
     return JSONResponse({"type": "message", "text": message})
 
 
-def _extract_signature(lower_headers: dict) -> str | None:
-    """Pull the base64 digest off whichever header carries it, or ``None``.
+def _signature_candidates(lower_headers: dict) -> list[str]:
+    """Every base64 digest the request offers, in preference order.
 
     Two wirings reach this endpoint and they differ only in where the digest sits:
 
@@ -95,19 +95,25 @@ def _extract_signature(lower_headers: dict) -> str | None:
       message's ``Authorization`` header with its own bearer token (the acting
       user's identity) — which would otherwise strip the only proof we have.
 
-    ``Authorization`` is preferred; a non-``HMAC`` value there (Teams' bearer)
-    falls through to the card header rather than failing, so both wirings work
-    against one endpoint with one secret.
+    Collecting *candidates* rather than picking one is deliberate: a proxy may
+    fold duplicate ``Authorization`` headers into one comma-joined value, so a
+    first-match-wins read could hand the verifier a mangled string and never
+    reach the card header behind it. A base64 digest never contains a comma, so
+    splitting on it is safe. Offering several candidates weakens nothing — each
+    must independently reproduce the HMAC of the exact body, which is impossible
+    without the security token.
     """
-    auth = lower_headers.get("authorization")
-    if auth and auth.startswith("HMAC "):
-        candidate = auth[len("HMAC ") :].strip()
-        if candidate:
-            return candidate
-    card_sig = lower_headers.get(CARD_SIGNATURE_HEADER)
-    if card_sig and card_sig.strip():
-        return card_sig.strip()
-    return None
+    candidates: list[str] = []
+    for part in (lower_headers.get("authorization") or "").split(","):
+        part = part.strip()
+        if part.startswith("HMAC "):
+            value = part[len("HMAC ") :].strip()
+            if value:
+                candidates.append(value)
+    card_sig = (lower_headers.get(CARD_SIGNATURE_HEADER) or "").strip()
+    if card_sig:
+        candidates.append(card_sig)
+    return candidates
 
 
 def _verify_teams_signature(headers: dict, raw_body: bytes) -> bool:
@@ -118,6 +124,12 @@ def _verify_teams_signature(headers: dict, raw_body: bytes) -> bool:
     the two ends of the round-trip cannot drift apart. Fail closed: no secret, no
     recognised signature header, or a timestamp outside the replay window all
     return False. Never raises.
+
+    A request may offer the digest on more than one header; each candidate is
+    checked independently and any one of them verifying is enough. That is not a
+    weaker gate — every candidate must reproduce the HMAC of the exact body — but
+    it is a more robust one, because stopping at the first candidate lets a
+    mangled ``Authorization`` value mask a perfectly good card signature behind it.
     """
     lower = {k.lower(): v for k, v in headers.items()}
 
@@ -135,7 +147,10 @@ def _verify_teams_signature(headers: dict, raw_body: bytes) -> bool:
         if abs(time.time() - ts) > settings.teams_request_max_age_seconds:
             return False
 
-    return verify_body(settings.teams_security_token, raw_body, _extract_signature(lower))
+    return any(
+        verify_body(settings.teams_security_token, raw_body, candidate)
+        for candidate in _signature_candidates(lower)
+    )
 
 
 def _extract_token(payload: dict) -> str | None:

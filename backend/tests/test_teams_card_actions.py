@@ -224,6 +224,33 @@ def test_rendered_action_satisfies_the_inbound_verifier(monkeypatch):
     assert not teams_approvals._verify_teams_signature({}, raw)
 
 
+def test_a_mangled_authorization_header_cannot_mask_the_card_signature(monkeypatch):
+    """A proxy folding duplicate `Authorization` values must not blind the gate.
+
+    Stopping at the first candidate would hand the verifier the joined string and
+    never look at the card header behind it — a silent, config-dependent outage
+    of the whole feature.
+    """
+    _configure(monkeypatch)
+    msg = _assigned_message(approve_token="approve-tok", reject_token="reject-tok")
+    action = _http_actions(TeamsChatNotificationAdapter({}).build_body(msg))[0]
+    raw = action["body"].encode("utf-8")
+    digest = _header(action, CARD_SIGNATURE_HEADER)
+
+    # Folded duplicate: our HMAC value plus Teams' bearer, comma-joined.
+    assert teams_approvals._verify_teams_signature(
+        {"Authorization": f"HMAC {digest}, Bearer eyJhbGciOi.teams.bearer"}, raw
+    )
+    # Junk on Authorization, the real digest on the card header.
+    assert teams_approvals._verify_teams_signature(
+        {"Authorization": "HMAC not-a-digest", CARD_SIGNATURE_HEADER: digest}, raw
+    )
+    # Junk on both is still a rejection — offering candidates is not a bypass.
+    assert not teams_approvals._verify_teams_signature(
+        {"Authorization": "HMAC not-a-digest", CARD_SIGNATURE_HEADER: "also-junk"}, raw
+    )
+
+
 def test_inbound_extracts_token_from_the_rendered_action_body(monkeypatch):
     """The endpoint's own parser must find the token in the body we emit."""
     _configure(monkeypatch)
