@@ -21,6 +21,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from app.services.payment_corridor import CORRIDOR_OVERRIDE_FEES, pick_corridor
+from app.utils.banking import is_sepa_country
 
 # ---------------------------------------------------------------------------
 # Cross-currency → international wire + FX leg.
@@ -215,11 +216,21 @@ def test_padded_override_still_requires_the_iban_the_rail_needs():
     """The one that matters: `" sepa "` missed the `method == "sepa"` test, so
     the corridor came back with `requires_iban=False` and
     `prepare_international_payment` skipped the structural check that refuses a
-    payment whose vendor bank row has no IBAN."""
+    payment whose vendor bank row has no IBAN.
+
+    **The destination country must be outside the SEPA zone** — do not
+    "helpfully" change it to a European one. `requires_iban` is
+    `method == "sepa" or (method != "international_ach" and
+    is_sepa_country(country))`, so a SEPA destination satisfies the SECOND
+    disjunct on its own and the assertion below passes even with the bug
+    present. `JP` forces the flag to hinge entirely on the normalised method,
+    which is the thing under test.
+    """
+    assert not is_sepa_country("JP"), "this test is only meaningful outside the SEPA zone"
     c = pick_corridor(
         source_currency="EUR",
         target_currency="EUR",
-        target_country="DE",
+        target_country="JP",
         requested_method="  SePa  ",
     )
     assert c.method == "sepa"
