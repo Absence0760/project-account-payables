@@ -328,14 +328,16 @@ reader can't drift.
 #### The offline reader skips rather than guesses
 
 `scan_statement_text` reads a row as `identifier [date] amount`, and takes the
-amount only when **both** hold:
+amount only when **all three** hold:
 
-1. the row has **exactly one** money column after the identifier — money being a
+1. the identifier is **not itself money** (see § …and it says how many it
+   skipped — a row whose reference is a figure is a summary line, not an item);
+2. the row has **exactly one** money column after the identifier — money being a
    token with cents, a thousands separator, or a currency symbol (a lone
    amount-shaped integer counts, for a statement that prints no cents);
-2. **nothing amount-shaped sits to the right of it.**
+3. **nothing amount-shaped sits to the right of it.**
 
-Rule 1 alone isn't enough, and the reason is worth stating because the two
+Rule 2 alone isn't enough, and the reason is worth stating because the two
 layouts look identical in shape:
 
 ```
@@ -373,11 +375,26 @@ So the skip is **classified where it happens**, and only one class is reported:
 | Not a row | no | No identifier-shaped token, or nothing money-shaped after one. Column headers, page furniture, `Total …`, `Balance forward …`. |
 | Ambiguous | **yes** | The line *did* look like an open item and the reader refused to pick between two readings — two money columns, or a second reference-shaped column left of the amount. |
 
-One refinement makes the split hold on a real aging statement: a row whose
-chosen *identifier* is itself unambiguous money (`Total  1,200.00  850.50
-410.00  2,460.50`) is a figures-only footer, not an ambiguous open item, so it
-stays uncounted. That affects the count only — never which rows are accepted (an
-identifier can legitimately be all digits, and `_is_money` says no to that).
+One rule makes the split hold on a real aging statement, and closed a bug on
+the way: **a row whose chosen reference is itself unambiguous money is not an
+open item at all** — it is a summary or total line, skipped silently and not
+counted.
+
+```
+Total                              1,800.50
+Total  1,200.00  850.50  410.00    2,460.50   <- aging footer
+Current: 1,200.00   Past due:        850.00   <- summary block
+```
+
+The first two only ever reached the skip path by accident — one has nothing
+after the money token it took as its reference, the other has too many. The
+third has exactly one figure after it and was therefore **accepted**, booking a
+fabricated open item keyed on `1,200.00` for `850.00` that no ledger row can
+match. That is the invented money the whole reader exists to avoid, and it is
+worse than a skip. Testing the reference directly closes all three. The rule is
+narrow by construction: an all-digit invoice number (`100234`, `1200`) is real,
+and `_is_money` says no to it — money needs cents, a thousands separator, or a
+currency symbol.
 
 The result: a clean `number date amount` statement reports **0**; a
 four-column aging statement reports **one per data row**. The count rides

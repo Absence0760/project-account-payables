@@ -183,6 +183,15 @@ def test_scan_statement_text_reads_rows_and_skips_furniture():
         "Globex Industrial",
         "Statement date: 2026-02-28",
         "",
+        # A summary block printing two figures on ONE line. This was ACCEPTED —
+        # the first money token became the "invoice number" and the second the
+        # balance, booking a fabricated open item keyed on "1,200.00" that no
+        # ledger row can ever match. A wrong open item is exactly the invented
+        # money this reader exists not to produce, and it is worse than a skip.
+        "Current: 1,200.00  Past due: 850.00",
+        "Subtotal 1,200.00 Total 2,050.50",
+        # The aging statement's footer: same shape, more columns.
+        "Total  1,200.00  850.50  410.00  2,460.50",
     ],
 )
 def test_scan_statement_text_rejects_non_item_rows(row):
@@ -368,6 +377,38 @@ def test_a_partially_readable_statement_counts_only_the_refused_rows():
     scan = scan_statement_text(_MIXED_STATEMENT_TEXT)
     assert [ln.invoice_number for ln in scan.lines] == ["INV-3003"]
     assert scan.ambiguous_skips == 2
+
+
+def test_a_money_reference_is_never_an_invoice_number():
+    """A row whose reference is itself a figure is a summary line, not an item.
+
+    The direction that matters is that these are neither accepted NOR counted:
+    accepting one books invented money (an open item keyed on "1,200.00" that no
+    ledger row can match), and counting one would tell a clerk a supplier row was
+    dropped when none existed.
+    """
+    for row in (
+        "Current: 1,200.00  Past due: 850.00",
+        "Total  1,200.00  850.50  410.00  2,460.50",
+        "Total                     1,800.50",
+    ):
+        scan = scan_statement_text(row)
+        assert scan.lines == [], row
+        assert scan.ambiguous_skips == 0, row
+
+
+def test_an_all_digit_invoice_number_is_still_a_valid_reference():
+    """The counterpart: the money test must not swallow a real reference.
+
+    `100234` and `1200` are digit-runs but not money — no cents, no thousands
+    separator, no symbol — so they stay bookable.
+    """
+    assert [
+        ln.invoice_number for ln in scan_statement_text("100234  2026-01-15  500.00").lines
+    ] == ["100234"]
+    assert [ln.invoice_number for ln in scan_statement_text("1200  2026-01-15  850.50").lines] == [
+        "1200"
+    ]
 
 
 def test_furniture_around_ambiguous_rows_stays_uncounted():

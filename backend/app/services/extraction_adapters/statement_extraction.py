@@ -295,15 +295,26 @@ def scan_statement_text(text: str) -> StatementScan:
             # and `Page 1 of 2` land here.
             continue
 
-        # An "identifier" that is itself unambiguous MONEY means the row is a
-        # figures-only line — `Total  1,200.00  850.50  410.00  2,460.50`, the
-        # footer of an aging statement — not an open item whose reading was
-        # ambiguous. It is still skipped either way; this only keeps it OUT of
-        # the reported count, because a total row is furniture and counting it
-        # would inflate every aging statement's figure by one. Deliberately does
-        # NOT touch which rows are accepted: an identifier can legitimately be
-        # all digits (`100234`), and `_is_money` says no to that.
-        looked_like_an_open_item = not _is_money(tokens[number_idx])
+        # A "reference" that is itself unambiguous MONEY is not one: the row is
+        # a summary or total line, not an open item. Not a row — so it is
+        # skipped silently and is not an ambiguous skip either.
+        #
+        #   Total                              1,800.50
+        #   Total  1,200.00  850.50  410.00    2,460.50   <- aging footer
+        #   Current: 1,200.00   Past due:        850.00   <- summary block
+        #
+        # The first two only ever reached the skip path by accident: one has
+        # nothing after the money token it took as its reference, the other has
+        # too many. The third has exactly one figure after it and was therefore
+        # ACCEPTED — booking a fabricated open item keyed on "1,200.00" for
+        # 850.00, which is the invented-money outcome this whole reader exists
+        # to avoid. Testing the reference directly is what closes all three.
+        #
+        # Deliberately narrow: an all-digit invoice number (`100234`) is real,
+        # and `_is_money` says no to it — money needs cents, a thousands
+        # separator, or a currency symbol.
+        if _is_money(tokens[number_idx]):
+            continue
 
         trailing = [i for i in range(number_idx + 1, len(tokens)) if i != date_idx]
         # Unambiguous money first; a lone amount-shaped integer only when the
@@ -319,8 +330,7 @@ def scan_statement_text(text: str) -> StatementScan:
         if len(candidates) > 1:
             # Ambiguous: two money columns and nothing on the row says which is
             # the open balance. The aging-bucket layout is this case.
-            if looked_like_an_open_item:
-                ambiguous_skips += 1
+            ambiguous_skips += 1
             continue
         amount_idx = candidates[0]
 
@@ -348,8 +358,7 @@ def scan_statement_text(text: str) -> StatementScan:
             # list. `!= 1` is written rather than `> 1` so the guard survives a
             # future change to how the identifier is chosen. Either way the row
             # looked like an open item, so it is the ambiguous class.
-            if looked_like_an_open_item:
-                ambiguous_skips += 1
+            ambiguous_skips += 1
             continue
 
         # ...and nothing numeric may sit to the RIGHT of it. Position is the
@@ -366,8 +375,7 @@ def scan_statement_text(text: str) -> StatementScan:
             # Ambiguous for the same reason as the two-money-column case: this
             # only fires when a money token was chosen and something
             # amount-shaped still sits to its right, i.e. a second column.
-            if looked_like_an_open_item:
-                ambiguous_skips += 1
+            ambiguous_skips += 1
             continue
 
         lines.append(
