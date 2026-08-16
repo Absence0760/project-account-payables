@@ -217,33 +217,6 @@ originally-deferred sub-bucket from that same feature remains:
 Refs: [roadmap.md](roadmap.md) § AI Cash-Flow Copilot,
 [cash-flow-copilot.md](cash-flow-copilot.md).
 
-### The axe a11y guard doesn't cover `/admin` or `/vendor-statements`
-
-`frontend/tests-e2e/a11y/axe.spec.ts` covers dashboard / invoices / vendors /
-payments / exceptions / login / portal. **No `/admin` route is in it** — not
-`/admin` itself, not `/admin/api-keys`, `/admin/webhooks`, or `/admin/partner`.
-Those pages carry dialogs, armed two-click destructive actions and one-time
-secret reveals, which is exactly the surface where a focus-management or
-labelling regression is most costly, and the guard would not catch it.
-
-`/vendor-statements` is missing too, and its create modal has since gained a
-radio `fieldset`/`legend` intake picker, a file input and a persistent
-`role="alert"` refusal region — new interactive controls with no axe pass.
-
-- [ ] Add the `/admin` routes and `/vendor-statements` to the axe spec's route
-      list (they reuse the shared `ui/` primitives, so the expectation is that
-      they pass as-is; if one doesn't, that IS the finding).
-
-**Why deferred:** surfaced while adding the webhook rotation UI, and again while
-adding the statement upload UI. Widening a shared guard spec at the end of an
-unrelated round is the wrong moment — a new failure there would be
-indistinguishable from a regression the round caused. (Both rounds ran in
-parallel worktrees, where a shared spec is also the file most likely to
-conflict.)
-**Trigger:** the next `/audit:accessibility` or `/polish-ui` pass touching
-`/admin` or `/vendor-statements`.
-Ref: [accessibility.md](accessibility.md).
-
 ### Every other list surface is still unsequenced — a local edit races its fetch
 
 `frontend/src/lib/utils/requestSequence.ts` grew `supersedeInFlight()` so a
