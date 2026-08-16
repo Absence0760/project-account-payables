@@ -167,14 +167,21 @@ async def test_create_workflow_step_refuses_an_unknown_step_type():
 @pytest.mark.asyncio
 async def test_advance_workflow_refuses_a_builder_step_type_without_closing_the_current_step():
     """`advance_workflow` used to compute `next_index` with the same bare
-    `.index()`. It ran `complete_current_step` FIRST, so the raise left the
-    current step closed and no successor opened — a stranded instance. The
-    guard must run before any mutation."""
+    `.index()`, and ran `complete_current_step` FIRST — so the raise left the
+    current step CLOSED with no successor opened, a permanently stranded
+    instance. The guard must resolve before any mutation, which is what the
+    still-open `completed_at` below proves."""
     db = _db()
     inst = _instance()
-    db.execute = AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=lambda: None))
+    open_step = SimpleNamespace(step_number=2, action=None, completed_at=None)
+    db.execute = AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=lambda: open_step))
+
     with pytest.raises(NonCanonicalStepTypeError):
         await advance_workflow(db, inst, "parallel", action="approved")
+
+    # The step that was open is STILL open — nothing was half-advanced.
+    assert open_step.completed_at is None
+    assert open_step.action is None
     assert inst.current_step == 0
     db.add.assert_not_called()
 
