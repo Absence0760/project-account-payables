@@ -217,38 +217,6 @@ originally-deferred sub-bucket from that same feature remains:
 Refs: [roadmap.md](roadmap.md) § AI Cash-Flow Copilot,
 [cash-flow-copilot.md](cash-flow-copilot.md).
 
-### PDF statement intake can't run on the committed local defaults
-
-The offline `mock` statement reader exists precisely so `pnpm dev` can exercise
-the whole PDF-statement path with no cloud credential — but nothing routes to it
-by default. `extraction._resolve_extraction_config` hardcodes
-`provider: "claude_vision"` for `program_type: "platform"` (the default when an
-org sets no `settings.extraction`, which is every seeded tenant), **regardless of
-whether `FEOH_ANTHROPIC_API_KEY` is set**. So a PDF statement uploaded on a fresh
-clone makes an outbound call to `api.anthropic.com` with an empty key and comes
-back `provider_error` — the UI now explains that clearly, but the local-first
-promise (guard rail 7) isn't kept for this path, and only hand-editing an org's
-`settings.extraction` to `{program_type: "byok", provider: "mock"}` reaches the
-offline reader.
-
-This is not statement-specific: the same resolution governs invoice extraction,
-which is why it's a wider change than a statement round should make.
-
-- [ ] Make platform mode fall back to `mock` when no platform key is configured
-      (or introduce `FEOH_EXTRACTION_PROVIDER` with a `mock` default in
-      `backend/.env.development`), so a keyless dev box never makes an outbound
-      extraction call. Whichever shape wins must keep a *deployed* env with a key
-      on `claude_vision` unchanged, and needs pytest coverage of the keyless
-      resolution.
-
-**Why deferred:** it changes adapter selection for the whole extraction path
-(invoices included), not just statements — a different blast radius from the
-`/vendor-statements` UI round that surfaced it.
-**Trigger:** the next extraction-config change, or the first report of a dev box
-making unexpected outbound calls.
-Refs: `backend/app/services/extraction.py::_resolve_extraction_config`,
-[vendor-statement-reconciliation.md](../backend/docs/vendor-statement-reconciliation.md) § PDF intake.
-
 ### The statement reader skips rows without saying how many
 
 `scan_statement_text` deliberately skips a row it can't read unambiguously (a

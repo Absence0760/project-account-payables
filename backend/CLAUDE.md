@@ -465,6 +465,22 @@ Registered: `claude_vision`, `openai_vision`, `aws_textract`, `ollama`, `einvoic
 
 **Two program types**: `platform` (app-level Claude Vision key, usage tracked) vs `byok` (customer provides own API key).
 
+**Platform-mode provider precedence** is the pure `extraction.resolve_platform_provider`
+(BYOK never reaches it): `FEOH_EXTRACTION_PROVIDER` → a set `FEOH_ANTHROPIC_API_KEY`
+→ `claude_vision` (**the deployed path, unchanged**) → keyless + non-deployed →
+`mock`. The last rung is what makes extraction local-first — platform mode used to
+be hardcoded to `claude_vision` *whether or not a key existed*, so a fresh clone
+POSTed to `api.anthropic.com` with an empty key and every extraction (invoice and
+PDF supplier statement alike) came back `provider_error`. A keyless **deployed**
+env deliberately does NOT fall back: `mock.extract` returns a fixture, and
+fabricating invoice fields on a real tenant's document is worse than the loud
+provider error. Both fallback rungs log a PII-free WARNING and stamp
+`platform_provider_reason` on the config; the chosen provider rides the persisted
+result (`InvoiceExtractionResult.method` / a statement run's
+`meta.extraction.provider`). An unregistered `FEOH_EXTRACTION_PROVIDER` is refused
+at boot (`config.py::_validate_extraction_provider` + its registry drift guard).
+See `docs/ai-extraction.md` § Platform provider precedence and `../docs/decisions.md` §26.
+
 **Structured e-invoices** (`einvoice`): the `app/services/e_invoice/` package parses UBL 2.1 / UN-CEFACT CII / Factur-X·ZUGFeRD (embedded CII in a PDF/A-3) into a normalized `EInvoiceDocument` — pure, local, XXE-hardened lxml, no LLM/network. Routing is **not** config-driven: `extraction.run_extraction` is the single choke point both upload and email-intake reach, and it calls `_detect_structured_format(file_bytes, file_key)` right after the S3 fetch — a structured file overrides `config.provider` to `einvoice` and passes the real mime; everything else falls through to the configured vision/mock adapter. Confidence 1.0 on every present field → auto-approve; malformed → field-named `EInvoiceValidationError` (no PII). The same package also generates **outbound** XML from the same normalized model: `generate.generate_ubl(doc) -> bytes` (UBL 2.1, the exact inverse of `ubl.py`; round-trip `parse_ubl(generate_ubl(doc)) == doc`) and `generate_cii.generate_cii(doc) -> bytes` (UN/CEFACT CII D16B, the exact inverse of `cii.py`; round-trip `parse_cii(generate_cii(doc)) == doc`; the Factur-X/ZUGFeRD dialect), `mapper.invoice_to_einvoice_document(invoice, line_items, BuyerIdentity)` (ORM → normalized model), and `tax_rules.py` — the shared country tax-validation building block (per-country VAT/GST/IVA tax-ID format + rate plausibility + reverse-charge/zero-rate, PII-free `FieldError`s) wired into both inbound `validate_document(check_tax=True)` and the outbound export guard. Routes: `GET /api/invoices/{id}/einvoice?format=ubl|cii|fatturapa|cfdi|nfe|dian` (role-gated AP export, 422 on tax-invalid; `ubl`/`cii` are built-in dialects sharing the tax guard, the rest national formats) + `GET /portal/invoices/{id}/einvoice` (vendor-scoped supplier download, never 422s the supplier). See `docs/e-invoicing.md`.
 
 ### ERP adapters (`services/erp_adapters/`)

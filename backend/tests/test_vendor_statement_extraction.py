@@ -240,6 +240,27 @@ def test_resolve_uses_the_orgs_byok_provider():
     assert adapter.provider_name == "mock"
 
 
-def test_resolve_defaults_to_the_platform_provider():
+def test_resolve_defaults_to_the_platform_provider(monkeypatch):
+    """Platform mode with a key resolves to the platform adapter, as it always has."""
+    from app.services import extraction as ext
+
+    monkeypatch.setattr(ext.settings, "extraction_provider", "")
+    monkeypatch.setattr(ext.settings, "anthropic_api_key", "sk-ant-real-key")
     adapter = vse.resolve_statement_adapter({})
     assert adapter.provider_name == "claude_vision"
+
+
+def test_resolve_falls_back_to_the_offline_reader_on_a_keyless_dev_box(monkeypatch):
+    """The local-first half: no platform key locally → the offline text reader.
+
+    This is what makes a PDF statement upload work on a fresh clone; before it,
+    the same upload POSTed to api.anthropic.com with an empty key. Precedence
+    itself is covered by `test_extraction_provider_resolution.py`.
+    """
+    from app.services import extraction as ext
+
+    monkeypatch.setattr(ext.settings, "extraction_provider", "")
+    monkeypatch.setattr(ext.settings, "anthropic_api_key", "")
+    monkeypatch.setattr(ext.settings, "environment", "development")
+    adapter = vse.resolve_statement_adapter({})
+    assert adapter.provider_name == "mock"

@@ -7,6 +7,21 @@ from pydantic_settings import BaseSettings
 # safety guards (e.g. the captcha requirement) are relaxed for local dev + CI.
 _NON_DEPLOYED_ENVS = frozenset({"development", "dev", "local", "test", "ci"})
 
+# Every provider `app/services/extraction_adapters/` registers. Held as a
+# literal because config.py must not import the service layer (that would make
+# every adapter module load at settings construction); the registry is the
+# source of truth and `tests/test_extraction_provider_resolution.py` cross-checks
+# the two so a new adapter can't drift out of this set.
+#
+# It exists to validate `FEOH_EXTRACTION_PROVIDER` at BOOT: an unrecognised name
+# falls back to `mock` inside `get_extraction_adapter`, and `mock`'s `extract`
+# returns a fabricated invoice — so a typo'd override would quietly turn a
+# deployed extraction pipeline into a fixture generator. Refusing at boot is the
+# only place that miss is loud.
+_EXTRACTION_PROVIDERS = frozenset(
+    {"claude_vision", "openai_vision", "aws_textract", "ollama", "einvoice", "mock"}
+)
+
 
 class Settings(BaseSettings):
     model_config = {"env_prefix": "FEOH_"}
@@ -226,6 +241,18 @@ class Settings(BaseSettings):
     # AI Extraction (platform-level key — used when customers choose "Platform" extraction)
     anthropic_api_key: str = ""  # your Anthropic API key for Claude Vision
     extraction_model: str = "claude-sonnet-4-20250514"
+    # Operator override for the adapter PLATFORM-mode extraction runs on. Empty
+    # (the code default) means "derive": a configured platform key selects
+    # `claude_vision`, and a keyless NON-deployed environment falls back to the
+    # offline `mock` reader so `pnpm dev` never calls out with an empty key.
+    # A keyless DEPLOYED environment deliberately does NOT fall back — `mock`'s
+    # `extract` returns a fixture, and fabricating invoice fields on a real
+    # tenant's document is worse than the loud provider error. Set explicitly
+    # (e.g. `mock`, `ollama`) to pin the provider regardless of the key; a BYOK
+    # org's own `settings.extraction` is unaffected either way. See
+    # `app/services/extraction.py::resolve_platform_provider` and
+    # `backend/docs/ai-extraction.md` § Platform provider precedence.
+    extraction_provider: str = ""
 
     # Audit-log summarization (invoice detail modal). Reuses the extraction
     # API key + model, so no new secret. Master switch — when False the
@@ -764,6 +791,19 @@ class Settings(BaseSettings):
     def is_deployed(self) -> bool:
         """True for any deployed (non local-dev / non-CI) environment."""
         return self.environment.strip().lower() not in _NON_DEPLOYED_ENVS
+
+    @model_validator(mode="after")
+    def _validate_extraction_provider(self) -> "Settings":
+        # Empty is the documented "derive from the key" default; anything else
+        # must name a registered adapter. See `_EXTRACTION_PROVIDERS`.
+        name = self.extraction_provider.strip()
+        if name and name not in _EXTRACTION_PROVIDERS:
+            raise ValueError(
+                f"FEOH_EXTRACTION_PROVIDER={name!r} is not a registered extraction "
+                f"adapter (one of: {', '.join(sorted(_EXTRACTION_PROVIDERS))}); leave it "
+                "empty to derive the provider from FEOH_ANTHROPIC_API_KEY."
+            )
+        return self
 
     @model_validator(mode="after")
     def _require_captcha_in_deployed_envs(self) -> "Settings":

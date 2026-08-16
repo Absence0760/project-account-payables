@@ -779,3 +779,60 @@ financial edit the user believes they made.
 an optimistic-update cache). It solves the merge case properly but needs a
 patch log, invalidation rules, and a rollback path on a failed mutation — a
 lot of machinery for surfaces whose mutations already happen behind a modal.
+
+---
+
+## 26. Platform extraction falls back to the offline reader locally, never in a deployed env
+
+**Decided:** 2026-08-16 · `backend/app/services/extraction.py::resolve_platform_provider`
+
+`extraction._resolve_extraction_config` hardcoded `provider: "claude_vision"`
+for `program_type: "platform"` — the default for every org that sets no
+`settings.extraction`, which is every seeded tenant — **regardless of whether
+`FEOH_ANTHROPIC_API_KEY` was set**. So on a fresh clone every extraction, an
+invoice upload and a PDF supplier statement alike, POSTed to
+`api.anthropic.com` with an empty key and came back `provider_error`. The
+offline `mock` reader existed precisely so `pnpm dev` could exercise the whole
+path with no credential, and nothing routed to it. That broke guard rail 7 for
+the one adapter family whose local equivalent was already written.
+
+**The rule now** is the pure `resolve_platform_provider`, in precedence order:
+an explicit `FEOH_EXTRACTION_PROVIDER`; else a configured platform key →
+`claude_vision`; else, in a non-deployed environment, `mock`; else (keyless and
+deployed) `claude_vision` anyway. The committed `backend/.env.development` also
+sets `FEOH_EXTRACTION_PROVIDER=mock`, so the choice is visible in the file a
+contributor reads rather than only implied by an absent key.
+
+**The last rung is the whole point of the entry.** The obvious symmetric fix —
+"no key means mock, everywhere" — is wrong here in a way that is easy to miss:
+`MockExtractionAdapter.extract` returns a **fixture** ("Extracted Vendor Inc",
+1500.00, a fabricated invoice number), not a read of the document. A deployed
+environment that lost its key would therefore stop erroring and start booking
+invented payables against real vendors, silently, at 0.95 confidence — inside
+the confidence band that can auto-approve. A loud `provider_error` that parks
+the invoice in `failed` is strictly better. So the fallback is gated on
+`settings.is_deployed`, and a keyless deployed env keeps failing exactly as it
+did before this change. `extract_statement` is not symmetric with `extract`
+here and that is deliberate: mock's statement reader reads the document's real
+text layer and gives up loudly when there isn't one, which is why the PDF
+statement path is genuinely exercisable offline while the invoice path is only
+*runnable* offline.
+
+**Failing visibly was a requirement, not a nicety.** Both fallback rungs log a
+PII-free WARNING naming the provider and the reason; the resolved config
+carries `platform_provider_reason`; and the provider already travels on the
+persisted result (`InvoiceExtractionResult.method`, a statement run's
+`meta.extraction.provider`, surfaced in its provenance panel). A `mock` read is
+labelled `mock` everywhere a human looks at it.
+
+**Why the boot-time allowlist.** `get_extraction_adapter` falls back to `mock`
+for an unrecognised provider name. Introducing an env var that names a provider
+therefore introduced a new way to reach the fixture adapter by typo — in
+production. `config.py::_validate_extraction_provider` refuses an unregistered
+name at boot, and a drift-guard test cross-checks the literal allowlist against
+the live registry, because config.py must not import the service layer.
+
+**Not adopted:** making `mock.extract` return an empty/failed result instead of
+a fixture. It would make the fallback safe everywhere, but the fixture is what
+lets tests and demos produce a populated invoice with no provider — a much
+wider blast radius than the resolution rule this entry is about.

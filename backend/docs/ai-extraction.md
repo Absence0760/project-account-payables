@@ -345,6 +345,54 @@ BYOK example:
 Platform mode uses environment variables:
 - `FEOH_ANTHROPIC_API_KEY` — your Anthropic API key
 - `FEOH_EXTRACTION_MODEL` — model to use (default: claude-sonnet-4-20250514)
+- `FEOH_EXTRACTION_PROVIDER` — operator override for the platform adapter (see next section)
+
+## Platform provider precedence
+
+`services/extraction.py::resolve_platform_provider` is the single pure rule that
+decides which adapter **platform** mode runs on. A BYOK org never reaches it —
+its own `settings.extraction` is used verbatim.
+
+| # | Condition | Provider | `platform_provider_reason` |
+|---|---|---|---|
+| 1 | `FEOH_EXTRACTION_PROVIDER` set | that provider | `configured` |
+| 2 | `FEOH_ANTHROPIC_API_KEY` set | `claude_vision` | `platform_key` |
+| 3 | no key, **not** a deployed env | `mock` | `no_platform_key_local` |
+| 4 | no key, **deployed** env | `claude_vision` | `no_platform_key_deployed` |
+
+**Rule 2 is the deployed path and it is unchanged** — an environment that has a
+key behaves exactly as it did before this rule existed.
+
+**Rule 3 is what makes extraction local-first** (guard rail 7). Before it,
+platform mode was hardcoded to `claude_vision` *regardless of whether a key was
+configured*, so a fresh clone POSTed to `api.anthropic.com` with an empty key
+and every extraction — invoice and PDF supplier statement alike — came back
+`provider_error`. The committed `backend/.env.development` also sets
+`FEOH_EXTRACTION_PROVIDER=mock` explicitly, so the choice is visible in the file
+a contributor reads; rule 3 is the safety net for any environment that doesn't
+load it.
+
+**Rule 4 is the one that looks inconsistent and isn't.** `MockExtractionAdapter.
+extract` returns a *fixture* — "Extracted Vendor Inc", 1500.00 — so falling back
+to it in a deployed environment would turn a missing credential into fabricated
+invoice fields on a real tenant's document. That is strictly worse than the loud
+`provider_error` a keyless `claude_vision` call produces, so a deployed env
+keeps failing loudly. (`extract_statement` is different: `mock` reads the
+document's own text layer there, which is why the PDF-statement path is
+genuinely exercisable offline.)
+
+**Visibility.** Rules 3 and 4 each log a PII-free `WARNING` naming the provider
+and why, and the resolved config carries `platform_provider_reason`. The chosen
+provider also travels on the persisted result — `InvoiceExtractionResult.method`
+for an invoice, `meta.extraction.provider` for a statement run (surfaced in the
+run's provenance panel) — so `mock` output is never presented as a real read.
+
+**An unregistered `FEOH_EXTRACTION_PROVIDER` is refused at boot.** The
+dispatcher falls back to `mock` on an unknown provider name, so a typo would
+otherwise quietly turn a deployed pipeline into a fixture generator;
+`config.py::_validate_extraction_provider` checks the value against
+`_EXTRACTION_PROVIDERS`, which `tests/test_extraction_provider_resolution.py`
+drift-guards against the live registry.
 
 ## Code Structure
 
