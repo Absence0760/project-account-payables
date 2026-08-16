@@ -283,6 +283,49 @@ def test_scan_statement_text_accepts_a_lone_whole_number_balance():
 
 
 @pytest.mark.parametrize(
+    "row,amount",
+    [
+        ("INV-1001   2026-01-15   850,00", "850,00"),
+        ("INV-1001   2026-01-15   1.234,56", "1.234,56"),
+        ("INV-1001   2026-01-15   €1.234,56", "€1.234,56"),
+        ("INV-1001   2026-01-15   1.200", "1.200"),
+    ],
+)
+def test_scan_statement_text_reads_a_european_amount_column(row, amount):
+    """The reader used to reject `1.234,56` and `1.200` outright — its amount
+    pattern only allowed a comma as the grouping separator — so a European
+    statement's rows were skipped wholesale. The token is passed through
+    VERBATIM; turning it into a Decimal is `parse_amount`'s job, against the
+    whole document's convention."""
+    lines = scan_statement_text(row).lines
+    assert [ln.amount for ln in lines] == [amount]
+
+
+@pytest.mark.parametrize(
+    "row,expected_date,expected_amount",
+    [
+        ("INV-1001   15.01.2026   1.234,56", "15.01.2026", "1.234,56"),
+        ("INV-1001   01.15.2026   850,00", "01.15.2026", "850,00"),
+        ("INV-1001   15.01.2026   1.200", "15.01.2026", "1.200"),
+    ],
+)
+def test_scan_statement_text_reads_a_dotted_european_date_row(row, expected_date, expected_amount):
+    """A dotted date must be recognised as a DATE, not as a second identifier.
+
+    Unrecognised, `15.01.2026` is identifier-shaped, so the exactly-one-
+    identifier rule refused the whole row — every dotted-date European
+    statement came back empty. It must also not be read as MONEY: the amount
+    pattern pins a thousands group to exactly three digits, which is what keeps
+    a three-component date out of the money bucket.
+    """
+    lines = scan_statement_text(row).lines
+    assert len(lines) == 1
+    assert lines[0].invoice_number == "INV-1001"
+    assert lines[0].invoice_date == expected_date
+    assert lines[0].amount == expected_amount
+
+
+@pytest.mark.parametrize(
     "row",
     [
         # invoice-amount + balance-due: nothing on the row says which is open.
@@ -428,7 +471,6 @@ def test_a_money_reference_is_reported_only_when_the_row_looked_like_an_item(row
         "SI-2026.01",  # prefixed, so the decimal can't make it money-shaped
         "#4502",
         "A100.50",  # a letter anywhere disqualifies it as money
-        "1.234,56",  # European decimal comma — not the money shape either
     ],
 )
 def test_a_real_invoice_reference_survives_the_money_test(reference):
@@ -451,6 +493,12 @@ def test_a_real_invoice_reference_survives_the_money_test(reference):
         "5001.01",  # revision / split-invoice suffix
         "24.05",
         "1,234",  # thousands separator
+        # European money, and the reader now reads it as such. This used to sit
+        # in the list above — but only because the reader could not recognise a
+        # European amount at all, so `1.234,56` fell through as "not money". Now
+        # that it can, this reference is indistinguishable from €1,234.56 in a
+        # summary block's first column, which is exactly what this rule refuses.
+        "1.234,56",
     ],
 )
 def test_a_numeric_reference_shaped_like_money_is_refused_but_reported(reference):

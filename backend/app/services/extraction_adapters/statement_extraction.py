@@ -151,13 +151,35 @@ def parse_statement_payload(data: object, provider: str) -> StatementExtractionR
 # Deterministic offline reader (the `mock` adapter's stand-in for a model)
 # --------------------------------------------------------------------------- #
 
-# A date column: 2026-01-15 / 01/20/2026 / 20-01-2026. Deliberately loose on
-# ordering — the caller re-parses the token with the reconciliation engine's own
-# forgiving date parser, so this only has to *recognise* a date, not read it.
-_DATE_TOKEN = re.compile(r"^\d{1,4}[-/]\d{1,2}[-/]\d{1,4}$")
+# A date column: 2026-01-15 / 01/20/2026 / 20-01-2026 / 15.01.2026. Deliberately
+# loose on ordering — the caller re-parses the token with the reconciliation
+# engine's own forgiving date parser, so this only has to *recognise* a date,
+# not read it.
+#
+# The dot is what lets a European statement parse at all: unrecognised,
+# `15.01.2026` reads as a second IDENTIFIER-shaped token, and the row is then
+# refused by the exactly-one-identifier rule — so every dotted-date row was
+# skipped. It cannot swallow a European amount, because a date needs three
+# numeric components and the middle one at most two digits, while a European
+# grouped amount (`1.234.567`) has three-digit groups throughout.
+_DATE_TOKEN = re.compile(r"^\d{1,4}[-./]\d{1,2}[-./]\d{1,4}$")
 
-# A money column: 1200 / 1,200.00 / $1,200.00 / -1200.00 / (250.00).
-_AMOUNT_TOKEN = re.compile(r"^\(?[-+]?[$€£]?\d[\d,]*(?:\.\d{1,2})?\)?$")
+# A money column, in EITHER decimal convention:
+#   US  1200 / 1,200.00 / $1,200.00 / -1200.00 / (250.00)
+#   EU  1.200 / 1.234,56 / €1.234,56 / 850,00
+# The two alternatives are "grouped" (at least one three-digit run behind a
+# separator, optional decimal tail) and "plain" (digits, optional decimal tail).
+# Groups are pinned to exactly three digits on purpose: it is what keeps a
+# European dotted DATE (``15.01.2026``) from reading as an amount, which a
+# looser ``[\d.,]*`` would happily match. Which separator is the decimal point
+# is NOT decided here — `vendor_statement_recon.parse_amount` resolves that
+# against the whole document's convention.
+_AMOUNT_TOKEN = re.compile(
+    r"^\(?[-+]?[$€£¥]?"
+    r"(?:\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?"
+    r"|\d+(?:[.,]\d{1,2})?)"
+    r"\)?$"
+)
 
 # Confidence a heuristic text read is worth. Below every model's clearly-printed
 # band on purpose: this reader recognises a shape, it does not read a document.
@@ -196,7 +218,10 @@ def _is_money(token: str) -> bool:
     if not _AMOUNT_TOKEN.match(token):
         return False
     core = token.strip("()+-")
-    return "." in core or any(sym in core for sym in "$€£,")
+    # Either separator counts, in either convention: ``1.200`` is a European
+    # thousands group and ``850,00`` a European decimal, and both are money for
+    # exactly the same reason ``1,200`` and ``850.00`` are.
+    return any(sym in core for sym in ".,$€£¥")
 
 
 @dataclass(frozen=True)
