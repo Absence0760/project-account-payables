@@ -321,7 +321,7 @@
 		min-height: 0;
 		border: 1px solid var(--border);
 		border-radius: 12px;
-		background: var(--bg, var(--surface));
+		background: var(--bg);
 		overflow: hidden;
 	}
 	.chat-scroll {

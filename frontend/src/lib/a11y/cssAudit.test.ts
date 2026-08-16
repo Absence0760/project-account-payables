@@ -4,6 +4,7 @@ import {
 	collectAssignedTokens,
 	describeFinding,
 	extractStyleBlocks,
+	findVarReferences,
 	isLargeText,
 	parseDeclarations,
 	parsePalette,
@@ -236,6 +237,61 @@ describe('auditStyles — token drift', () => {
 
 	it('says nothing about a var() with no fallback at all', () => {
 		expect(audit('.a{color:var(--text-muted)}')).toEqual([]);
+	});
+
+	/**
+	 * A fallback can itself be a `var()`. A `[^()]*` capture matches nothing
+	 * there, which would have been a hole in the exact guard this module is —
+	 * `var(--bg, var(--surface))` shipped in two routes and was invisible to
+	 * both drift checks.
+	 */
+	it('sees through a fallback that is itself a var()', () => {
+		const findings = audit('.a{background:var(--bg, var(--surface))}');
+		expect(findings).toHaveLength(1);
+		expect(findings[0]).toMatchObject({ kind: 'stale-fallback', token: '--bg' });
+	});
+
+	it('compares a token-valued fallback by the colour it resolves to', () => {
+		// --accent and its fallback spell the same colour two ways: not stale.
+		expect(audit('.a{color:var(--accent, var(--accent))}')).toEqual([]);
+	});
+
+	it('still exempts a locally-assigned token behind a nested fallback', () => {
+		expect(
+			audit('.a{border-color:var(--type-color, var(--accent))}', ['--type-color'])
+		).toEqual([]);
+	});
+});
+
+describe('findVarReferences', () => {
+	it('captures a plain reference, with and without a fallback', () => {
+		expect(findVarReferences('color: var(--a); background: var(--b, #fff)')).toEqual([
+			{ token: '--a', fallback: null },
+			{ token: '--b', fallback: '#fff' }
+		]);
+	});
+
+	it('captures a nested var() fallback whole, and visits the inner one too', () => {
+		expect(findVarReferences('background: var(--bg, var(--surface))')).toEqual([
+			{ token: '--bg', fallback: 'var(--surface)' },
+			{ token: '--surface', fallback: null }
+		]);
+	});
+
+	it('splits on the FIRST top-level comma, so a multi-part fallback survives', () => {
+		expect(findVarReferences('font-family: var(--mono, ui-monospace, monospace)')).toEqual([
+			{ token: '--mono', fallback: 'ui-monospace, monospace' }
+		]);
+	});
+
+	it('keeps a function call in the fallback intact', () => {
+		expect(findVarReferences('color: var(--x, rgba(0, 0, 0, 1))')).toEqual([
+			{ token: '--x', fallback: 'rgba(0, 0, 0, 1)' }
+		]);
+	});
+
+	it('ignores an unbalanced var( rather than guessing where it ends', () => {
+		expect(findVarReferences('color: var(--x, #fff')).toEqual([]);
 	});
 });
 

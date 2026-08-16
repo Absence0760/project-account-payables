@@ -176,6 +176,50 @@ export function parseRules(css: string): CssRule[] {
 	return rules;
 }
 
+export interface VarReference {
+	token: string;
+	/** The fallback as written, or `null` when the `var()` has none. */
+	fallback: string | null;
+}
+
+/**
+ * Every `var()` reference in a stylesheet, with its fallback.
+ *
+ * Paren-aware rather than a regex, because a fallback can itself be a
+ * `var()` — `var(--bg, var(--surface))` is in the codebase — and a
+ * `[^()]*` capture silently matches nothing there. That would be a hole in
+ * the exact guard this module exists to be: a rename staling one of those
+ * nested fallbacks would go unreported by both the dead-token and the
+ * stale-fallback check.
+ */
+export function findVarReferences(css: string): VarReference[] {
+	const refs: VarReference[] = [];
+	const tokenRe = new RegExp(`var\\(\\s*(${TOKEN_RE})`, 'gi');
+	let match: RegExpExecArray | null;
+	while ((match = tokenRe.exec(css)) !== null) {
+		// Walk from the `var(` to its matching close paren, tracking depth.
+		let depth = 1;
+		let i = match.index + 'var('.length;
+		let commaAt = -1;
+		for (; i < css.length && depth > 0; i++) {
+			const ch = css[i];
+			if (ch === '(') depth++;
+			else if (ch === ')') depth--;
+			else if (ch === ',' && depth === 1 && commaAt < 0) commaAt = i;
+		}
+		if (depth !== 0) continue; // unbalanced — not something to judge
+		const close = i - 1;
+		refs.push({
+			token: match[1],
+			fallback: commaAt < 0 ? null : css.slice(commaAt + 1, close).trim()
+		});
+		// Resume after the token so a nested var() inside the fallback is
+		// still visited on its own.
+		tokenRe.lastIndex = match.index + match[0].length;
+	}
+	return refs;
+}
+
 /** Split a value on top-level whitespace, keeping `rgba(1, 2, 3)` intact. */
 function splitTopLevel(value: string): string[] {
 	const parts: string[] = [];
@@ -293,17 +337,14 @@ export function auditStyles(sources: StyleSource[], options: AuditOptions): Styl
 
 		// 1 + 2 — every var() reference: is the token real, and does a fallback
 		// contradict it?
-		const varRe = new RegExp(`var\\(\\s*(${TOKEN_RE})\\s*,([^()]*?)\\)`, 'g');
-		let varMatch: RegExpExecArray | null;
-		while ((varMatch = varRe.exec(css)) !== null) {
-			const token = varMatch[1];
-			const fallback = varMatch[2].trim();
+		for (const { token, fallback } of findVarReferences(css)) {
+			if (fallback === null) continue; // nothing to contradict, nothing dead to hide
 			const declared = palette[token];
 			if (declared === undefined) {
 				if (!assignedTokens.has(token)) {
 					findings.push({ kind: 'dead-token', path: source.path, token, fallback });
 				}
-			} else if (!sameValue(declared, fallback)) {
+			} else if (!sameValue(declared, fallback, palette)) {
 				findings.push({
 					kind: 'stale-fallback',
 					path: source.path,
@@ -388,9 +429,16 @@ export function auditStyles(sources: StyleSource[], options: AuditOptions): Styl
 	return findings;
 }
 
-/** Compare two CSS values for "the same colour", so `#FFF` === `white`. */
-function sameValue(a: string, b: string): boolean {
+/**
+ * Compare two CSS values for "the same colour", so `#FFF` === `white` and a
+ * fallback written as another token (`var(--bg, var(--surface))`) is compared
+ * by the colour it resolves to, not by its spelling. Non-colour values (a font
+ * stack) fall back to a normalized string compare.
+ */
+function sameValue(a: string, b: string, palette: Record<string, string>): boolean {
 	const normalize = (v: string) => {
+		const resolved = resolveColorValue(v, palette);
+		if (resolved) return resolved;
 		const parsed = parseColor(v);
 		return parsed ? toHex(parsed) : v.trim().toLowerCase().replace(/\s+/g, ' ');
 	};
