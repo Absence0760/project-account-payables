@@ -244,8 +244,8 @@
 		background: rgba(255, 255, 255, 0.2);
 	}
 	.toggle button:not(.active) .save {
-		background: rgba(99, 140, 255, 0.15);
-		color: var(--accent);
+		background: var(--accent-tint);
+		color: var(--accent-on-tint);
 	}
 
 	/* ------------------------------ grid -------------------------------- */
@@ -383,8 +383,8 @@
 		width: 18px;
 		height: 18px;
 		border-radius: 999px;
-		background: rgba(99, 140, 255, 0.15);
-		color: var(--accent);
+		background: var(--accent-tint);
+		color: var(--accent-on-tint);
 		flex-shrink: 0;
 		margin-top: 2px;
 	}

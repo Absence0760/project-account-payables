@@ -425,8 +425,8 @@
 	}
 
 	.chat-status-pill.open {
-		background: rgba(99, 140, 255, 0.15);
-		color: #638cff;
+		background: var(--accent-tint);
+		color: var(--accent-on-tint);
 	}
 
 	.chat-status-pill.resolved {

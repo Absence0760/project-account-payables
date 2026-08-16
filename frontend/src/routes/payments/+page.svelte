@@ -1212,25 +1212,38 @@
 	}
 
 	.badge.pending {
-		background: rgba(255, 180, 50, 0.15);
-		color: #d4940a;
+		background: var(--warning-tint);
+		color: var(--warning-on-tint);
 	}
 
 	/* Held by the sanctions/KYC gate — an attention state, not a failure.
-	   Amber-red so it reads as "needs a human", distinct from `failed`. */
+	   Amber so it reads as "needs a human", distinct from `failed`.
+
+	   It shares the warning tone with `pending` above, which is correct — both
+	   are waiting — so the RING, not the fill, is what separates a payment a
+	   human must clear from one merely waiting its turn. Before the tokens the
+	   two were told apart by two different hand-picked oranges; that read as a
+	   distinction but was never a stated one, and it is the kind of thing a
+	   later palette nudge silently collapses. `Compliance Hold` vs `Pending`
+	   already carries it in text (SC 1.4.1) — this is scannability, which is
+	   the whole reason the status is first-class rather than invisible.
+
+	   An inset shadow, not a border: `.badge` declares none, so a real border
+	   would grow this pill 2px and misalign it against every sibling badge. */
 	.badge.pending_compliance {
-		background: rgba(224, 120, 40, 0.15);
-		color: #c96a14;
+		background: var(--warning-tint);
+		color: var(--warning-on-tint);
+		box-shadow: inset 0 0 0 1px var(--warning-on-tint);
 	}
 
 	.badge.processing {
-		background: rgba(99, 140, 255, 0.15);
-		color: #638cff;
+		background: var(--accent-tint);
+		color: var(--accent-on-tint);
 	}
 
 	.badge.completed {
-		background: rgba(50, 200, 130, 0.15);
-		color: #1fa86a;
+		background: var(--success-tint);
+		color: var(--success-on-tint);
 	}
 
 	.badge.failed {
@@ -1249,8 +1262,8 @@
 	}
 
 	.badge.submitted {
-		background: rgba(99, 140, 255, 0.15);
-		color: #638cff;
+		background: var(--accent-tint);
+		color: var(--accent-on-tint);
 	}
 
 	/* --- Queue selection & payment --- */

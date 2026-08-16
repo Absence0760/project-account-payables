@@ -738,8 +738,8 @@
 		margin-left: 6px;
 		padding: 1px 6px;
 		border-radius: 4px;
-		background: rgba(99, 140, 255, 0.15);
-		color: var(--accent);
+		background: var(--accent-tint);
+		color: var(--accent-on-tint);
 		font-size: 0.68rem;
 		font-weight: 600;
 		letter-spacing: 0.02em;

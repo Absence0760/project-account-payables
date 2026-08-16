@@ -675,8 +675,8 @@
 		white-space: nowrap;
 	}
 	.status-badge.offered {
-		background: rgba(99, 140, 255, 0.15);
-		color: #638cff;
+		background: var(--accent-tint);
+		color: var(--accent-on-tint);
 	}
 	.status-badge.accepted {
 		background: rgba(255, 180, 50, 0.15);
@@ -688,8 +688,8 @@
 	}
 	.status-badge.declined,
 	.status-badge.expired {
-		background: rgba(150, 150, 150, 0.15);
-		color: #888;
+		background: var(--muted-tint);
+		color: var(--muted-on-tint);
 	}
 
 	/* --- Accept modal tier picker --- */

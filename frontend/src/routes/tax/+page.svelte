@@ -321,8 +321,8 @@
 	}
 
 	.chip-off {
-		background: rgba(150, 150, 150, 0.15);
-		color: var(--text-muted);
+		background: var(--muted-tint);
+		color: var(--muted-on-tint);
 	}
 
 	.chip-warn {

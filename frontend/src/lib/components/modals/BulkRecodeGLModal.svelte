@@ -426,7 +426,7 @@
 		color: #1fa86a;
 	}
 	.src-ai {
-		background: rgba(99, 140, 255, 0.15);
-		color: var(--accent);
+		background: var(--accent-tint);
+		color: var(--accent-on-tint);
 	}
 </style>

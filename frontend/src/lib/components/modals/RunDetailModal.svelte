@@ -449,13 +449,13 @@
 	}
 
 	.badge.processing {
-		background: rgba(99, 140, 255, 0.15);
-		color: #638cff;
+		background: var(--accent-tint);
+		color: var(--accent-on-tint);
 	}
 
 	.badge.completed {
-		background: rgba(50, 200, 130, 0.15);
-		color: #1fa86a;
+		background: var(--success-tint);
+		color: var(--success-on-tint);
 	}
 
 	.badge.failed {
@@ -478,8 +478,8 @@
 	}
 
 	.status-badge.completed {
-		background: rgba(50, 200, 130, 0.15);
-		color: #1fa86a;
+		background: var(--success-tint);
+		color: var(--success-on-tint);
 	}
 
 	footer {
@@ -566,8 +566,8 @@
 	}
 
 	.status-badge.cancelled {
-		background: rgba(138, 143, 160, 0.15);
-		color: var(--text-muted);
+		background: var(--muted-tint);
+		color: var(--muted-on-tint);
 	}
 
 	.footer-note.pending {
