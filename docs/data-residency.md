@@ -147,9 +147,21 @@ is where that region lives. So:
   physically lives in the single (US) region until multi-region infra exists.
 - `check_residency_alignment(org, FEOH_DEPLOYED_REGION)` surfaces exactly this
   gap, and it is no longer log-only: the verdict rides `GET`/`PUT
-  /api/organization/data-residency` as the `alignment` block, so the tenant's own
-  admin — not just an operator reading logs — can see that the commitment is not
-  yet physically honoured. Advisory throughout; nothing blocks.
+  /api/organization/data-residency` as the `alignment` block and renders on the
+  `/organization` **Data Residency** panel, so the tenant's own admin — not just
+  an operator reading logs — can see that the commitment is not yet physically
+  honoured. Advisory throughout; nothing blocks.
+
+## The UI
+
+`/organization` → **Data Residency** (`frontend/src/routes/organization/+page.svelte`):
+the region picker (the platform default is marked as such), the documented
+placement target for the selected region, and the alignment verdict as a tinted
+box — green for `aligned`, amber for `misaligned`, muted for `unknown` — each
+carrying the standing "advisory only, nothing is blocked" line. Save is enabled
+only when the selection differs from what is persisted, and a refused save
+(non-admins get a 403 from the backend) snaps the control back to the persisted
+region rather than leaving a pin on screen that was never made.
 
 This is deliberate: the roadmap asks us to **document the model even before
 multi-region infra ships**, so the configuration surface, the placement map,

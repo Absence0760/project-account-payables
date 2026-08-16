@@ -619,6 +619,32 @@ export const messages = {
 	'org.customDomains.toast.removed': 'Dominio personalizado eliminado',
 	'org.customDomains.toast.loadFailed': 'No se pudieron cargar los dominios personalizados',
 	'org.customDomains.toast.saveFailed': 'No se pudieron guardar los dominios personalizados',
+	'org.section.dataResidency': 'Residencia de datos',
+	'org.residency.hint':
+		'Fije dónde deben residir la base de datos y el almacenamiento de archivos de este inquilino (RGPD / CCPA). Esto registra el requisito — por sí solo no traslada ningún dato.',
+	'org.residency.loading': 'Cargando la residencia de datos…',
+	'org.residency.regionLabel': 'Región',
+	'org.residency.regionDefault': '{region} (valor predeterminado de la plataforma)',
+	'org.residency.region.us': 'Estados Unidos',
+	'org.residency.region.eu': 'Unión Europea',
+	'org.residency.region.uk': 'Reino Unido',
+	'org.residency.region.ca': 'Canadá',
+	'org.residency.region.au': 'Australia',
+	'org.residency.placement': 'Destino de ubicación: {cluster} · {bucket}',
+	'org.residency.alignment.title': 'Coherencia con el despliegue',
+	'org.residency.alignment.aligned':
+		'Fijado en {region}, que es donde se ejecuta esta instancia. El compromiso se cumple hoy.',
+	'org.residency.alignment.misaligned':
+		'Fijado en {configured}, pero esta instancia se ejecuta en {deployed}. El requisito queda registrado y auditado; los datos aún no se han trasladado.',
+	'org.residency.alignment.unknownUnset':
+		'Esta instancia no ha declarado en qué región se ejecuta, así que no se puede confirmar si se cumple lo fijado.',
+	'org.residency.alignment.unknownUnrecognised':
+		'Esta instancia declara una región que no es uno de los valores admitidos, así que no se puede confirmar si se cumple lo fijado.',
+	'org.residency.alignment.advisory': 'Solo informativo — esta comprobación no bloquea nada.',
+	'org.residency.save': 'Guardar región',
+	'org.residency.toast.saved': 'Región de residencia de datos actualizada',
+	'org.residency.toast.loadFailed': 'No se pudo cargar la residencia de datos',
+	'org.residency.toast.saveFailed': 'No se pudo guardar la residencia de datos',
 	'org.section.extraction': 'Extracción con IA',
 	'org.section.extractionSaved': 'Extracción con IA',
 	'org.extraction.hint': 'Configure cómo se extraen los datos de factura de los archivos cargados. El modo plataforma usa nuestra IA — se cobra por extracción. BYOK usa su propia clave de API.',

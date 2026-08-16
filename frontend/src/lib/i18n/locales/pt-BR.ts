@@ -619,6 +619,32 @@ export const messages = {
 	'org.customDomains.toast.removed': 'Domínio personalizado removido',
 	'org.customDomains.toast.loadFailed': 'Falha ao carregar domínios personalizados',
 	'org.customDomains.toast.saveFailed': 'Falha ao salvar domínios personalizados',
+	'org.section.dataResidency': 'Residência de dados',
+	'org.residency.hint':
+		'Defina onde o banco de dados e o armazenamento de arquivos deste inquilino devem residir (LGPD / GDPR / CCPA). Isso registra a exigência — por si só não move nenhum dado.',
+	'org.residency.loading': 'Carregando a residência de dados…',
+	'org.residency.regionLabel': 'Região',
+	'org.residency.regionDefault': '{region} (padrão da plataforma)',
+	'org.residency.region.us': 'Estados Unidos',
+	'org.residency.region.eu': 'União Europeia',
+	'org.residency.region.uk': 'Reino Unido',
+	'org.residency.region.ca': 'Canadá',
+	'org.residency.region.au': 'Austrália',
+	'org.residency.placement': 'Destino de alocação: {cluster} · {bucket}',
+	'org.residency.alignment.title': 'Alinhamento com a implantação',
+	'org.residency.alignment.aligned':
+		'Fixado em {region}, que é onde esta instância roda. O compromisso está sendo cumprido hoje.',
+	'org.residency.alignment.misaligned':
+		'Fixado em {configured}, mas esta instância roda em {deployed}. A exigência fica registrada e auditada; os dados ainda não foram movidos.',
+	'org.residency.alignment.unknownUnset':
+		'Esta instância não declarou em qual região roda, portanto não é possível confirmar se a definição é cumprida.',
+	'org.residency.alignment.unknownUnrecognised':
+		'Esta instância declara uma região que não está entre os valores suportados, portanto não é possível confirmar se a definição é cumprida.',
+	'org.residency.alignment.advisory': 'Apenas informativo — esta verificação não bloqueia nada.',
+	'org.residency.save': 'Salvar região',
+	'org.residency.toast.saved': 'Região de residência de dados atualizada',
+	'org.residency.toast.loadFailed': 'Falha ao carregar a residência de dados',
+	'org.residency.toast.saveFailed': 'Falha ao salvar a residência de dados',
 	'org.section.extraction': 'Extração por IA',
 	'org.section.extractionSaved': 'Extração por IA',
 	'org.extraction.hint': 'Configure como os dados de fatura são extraídos dos arquivos enviados. O modo plataforma usa nossa IA — cobrada por extração. BYOK usa sua própria chave de API.',
