@@ -1134,7 +1134,7 @@
 				{#if loadingResidency}
 					<p class="card-hint">{m('org.residency.loading')}</p>
 				{:else if residencyError}
-					<p class="domain-error" role="alert">{residencyError}</p>
+					<p class="residency-error" role="alert">{residencyError}</p>
 				{:else}
 					<div class="form-grid">
 						<label>
@@ -2003,7 +2003,10 @@
 		flex: 1;
 	}
 
-	.domain-error {
+	/* Panel-level load failure (custom domains, data residency) — a persistent
+	   region rather than a toast, because it explains why the panel is empty. */
+	.domain-error,
+	.residency-error {
 		color: var(--danger);
 		font-size: 0.88rem;
 		margin: 4px 0 12px;
