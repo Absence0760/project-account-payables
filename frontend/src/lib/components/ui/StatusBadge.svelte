@@ -19,43 +19,54 @@
 		white-space: nowrap;
 	}
 
+	/* WCAG 1.4.3 — these badges are small but bold uppercase, so they are held
+	   to the normal-text bar (≥4.5:1), not the large-text one.
+
+	   This component worked out the lifted-text answer for the tinted-badge
+	   recipe before the palette had a name for it, and carried the resulting
+	   hexes as private literals. They are now the `--<tone>-tint` /
+	   `--<tone>-on-tint` pairs in app.css — same values, one owner — so a tone
+	   is recalibrated in one place instead of here and in the 20-odd badges
+	   that copied these numbers. See `frontend/CLAUDE.md` § Colour tokens and
+	   contrast, and decisions.md §30.
+
+	   Two drifts went with the move: `.done` and `.ready_for_review` had two
+	   different greens (a 15% tint of #1fa86a vs of #32c882) that composite
+	   within a few units of each other, so the difference was accidental
+	   rather than meaningful; and `.failed` / `.pending` gain a little margin
+	   (4.74→5.36 and 4.87→5.50) by taking the tokens' text. */
 	.new {
-		background: rgba(99, 140, 255, 0.15);
-		/* On the modal's lighter --surface the 15% tint composites to #232b44,
-		   where #638cff is only 4.48:1 (fails WCAG 1.4.3). #7d9bff lifts it to
-		   5.18:1 on surface / 5.72:1 on --bg. */
-		color: #7d9bff;
+		background: var(--accent-tint);
+		color: var(--accent-on-tint);
 	}
 
 	.pending {
-		background: rgba(255, 180, 50, 0.15);
-		color: #d4940a;
+		background: var(--warning-tint);
+		color: var(--warning-on-tint);
 	}
 
 	.ready_for_review {
-		background: rgba(50, 200, 130, 0.15);
-		/* #1fa86a is only 4.33:1 on the green 15%-tint-over-surface (#1c3431);
-		   #26b977 lifts it to 5.37:1 (WCAG 1.4.3). */
-		color: #26b977;
+		background: var(--success-tint);
+		color: var(--success-on-tint);
 	}
 
-	/* WCAG 1.4.3 — these badges are small but bold uppercase, treated as normal
-	   text (need ≥4.5:1). Foreground brightened against the ~15%-tint-over-bg
-	   effective background: failed #e04040→#f06464 (3.86:1→5.21:1),
-	   sent_to_erp #8c64f0→#a585f5 (3.99:1→5.59:1). The passing tones
-	   (new 4.98, pending 5.46, ready_for_review 4.84, done 5.08) are unchanged. */
 	.failed {
-		background: rgba(240, 70, 70, 0.15);
-		color: #f06464;
+		background: var(--danger-tint);
+		color: var(--danger-on-tint);
 	}
 
+	/* The one tone with no palette entry: purple carries no semantic meaning
+	   the other four share — it exists to make "handed to the ERP" scannable
+	   mid-pipeline — so naming it would add a token with one caller. Kept as
+	   a literal deliberately, and measured like any other: #a585f5 on the 15%
+	   tint composites to 5.59:1. */
 	.sent_to_erp {
 		background: rgba(140, 100, 240, 0.15);
 		color: #a585f5;
 	}
 
 	.done {
-		background: rgba(31, 168, 106, 0.15);
-		color: #26b977;
+		background: var(--success-tint);
+		color: var(--success-on-tint);
 	}
 </style>
