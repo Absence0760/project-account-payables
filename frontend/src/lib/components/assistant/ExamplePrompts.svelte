@@ -38,7 +38,6 @@
 	}
 	.empty-icon {
 		color: var(--accent);
-		opacity: 0.8;
 	}
 	.empty-state h2 {
 		margin: 0;

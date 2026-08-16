@@ -56,7 +56,6 @@
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
 		color: var(--text-muted);
-		opacity: 0.7;
 	}
 	.msg-bubble {
 		border-radius: 12px;

@@ -671,7 +671,6 @@ input[type='week']:hover::-webkit-calendar-picker-indicator {
 .modal input::placeholder,
 .modal textarea::placeholder {
 	color: var(--text-muted);
-	opacity: 0.6;
 }
 .modal-footer {
 	display: flex;
@@ -718,7 +717,6 @@ input[type='week']:hover::-webkit-calendar-picker-indicator {
 	font-size: 0.72rem;
 	line-height: 1.35;
 	color: var(--text-muted);
-	opacity: 0.85;
 }
 .kpi.highlight-green {
 	border-color: rgba(31, 168, 106, 0.3);

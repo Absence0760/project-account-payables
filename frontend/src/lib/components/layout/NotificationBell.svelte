@@ -309,7 +309,6 @@
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 		color: var(--text-muted);
-		opacity: 0.7;
 	}
 
 	.bell-viewall {

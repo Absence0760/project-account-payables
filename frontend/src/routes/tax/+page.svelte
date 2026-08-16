@@ -352,7 +352,6 @@
 		display: block;
 		font-size: 0.68rem;
 		color: var(--text-muted);
-		opacity: 0.85;
 	}
 
 	.threshold-flag {

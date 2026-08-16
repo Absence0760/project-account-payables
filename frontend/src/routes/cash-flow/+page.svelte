@@ -304,7 +304,6 @@
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
 		color: var(--text-muted);
-		opacity: 0.7;
 		padding-top: 4px;
 		border-top: 1px solid var(--border);
 	}
