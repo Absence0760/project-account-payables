@@ -12,6 +12,7 @@
 		RECON_RESOLUTION_LABELS,
 		RECON_SOURCE_FORMAT_LABELS,
 		formatExtractionConfidence,
+		isMachineRead,
 		sourceStatementFilename
 	} from '$lib/types/vendorStatementRecon';
 	import type { ReconSourceFormat } from '$lib/types/vendorStatementRecon';
@@ -122,6 +123,12 @@
 	function setIntakeMode(mode: 'paste' | 'file') {
 		intakeMode = mode;
 		intakeError = null;
+		// Switching to the typed path drops the picked file. The `{#if}` destroys
+		// the file input, so keeping the File would leave our "Selected: x.csv"
+		// chip contradicting a picker that reads "No file chosen" on the way back —
+		// and the mode is supposed to be the single answer to where these lines
+		// come from.
+		if (mode === 'paste') file = null;
 	}
 
 	function handleError(err: unknown, fallback: string) {
@@ -246,8 +253,12 @@
 		downloading = true;
 		try {
 			await downloadSourceStatement(detail.id, sourceStatementFilename(detail));
-		} catch (err) {
-			handleError(err, m('vendorStatements.modal.toastDownloadFailed'));
+		} catch {
+			// Deliberately NOT the thrown message: `api.downloadBlob` raises a bare
+			// transport string ("Failed to load file: 404"), which is not an
+			// explanation a clerk can act on — unlike the create path, where the
+			// backend's own 422 reason IS the actionable part.
+			toast(m('vendorStatements.modal.toastDownloadFailed'), 'error');
 		} finally {
 			downloading = false;
 		}
@@ -442,7 +453,7 @@
 		<!-- Provenance: how these lines got here, and the supplier's own document.
 		     A reviewer clearing a machine-read run is clearing a model's reading of
 		     a PDF, and the run says so rather than presenting the lines as fact. -->
-		{#if detail.extraction || detail.has_source_file}
+		{#if isMachineRead(detail) || detail.has_source_file}
 			<div class="provenance" data-testid="statement-provenance">
 				<div class="prov-title">{m('vendorStatements.modal.provenanceTitle')}</div>
 				{#if detail.extraction}
@@ -454,7 +465,7 @@
 						})}
 					</p>
 					<p class="prov-note">{m('vendorStatements.modal.provenanceSkipNote')}</p>
-				{:else}
+				{:else if detail.source_format === 'csv'}
 					<p class="prov-line">{m('vendorStatements.modal.provenanceCsv')}</p>
 				{/if}
 				{#if detail.has_source_file}

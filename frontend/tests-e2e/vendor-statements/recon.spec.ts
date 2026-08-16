@@ -190,6 +190,19 @@ test.describe('/vendor-statements (admin)', () => {
 		// silently discarded by a file that wins the tiebreak.
 		await expect(dialog.locator('input[type="file"]')).toBeVisible();
 		await expect(dialog.getByLabel('Statement line 1 invoice number')).toHaveCount(0);
+
+		// Leaving the file path drops the pick. The `{#if}` destroys the native
+		// picker, so a retained File would leave the "Selected: …" chip claiming an
+		// attachment the (re-rendered, empty) input contradicts.
+		await dialog.locator('input[type="file"]').setInputFiles({
+			name: 'discarded.csv',
+			mimeType: 'text/csv',
+			buffer: Buffer.from('Invoice Number,Amount\nINV-1,1.00\n')
+		});
+		await expect(dialog.getByTestId('statement-file-chosen')).toBeVisible();
+		await dialog.getByRole('radio', { name: 'Type the lines' }).check();
+		await dialog.getByRole('radio', { name: 'Upload a file' }).check();
+		await expect(dialog.getByTestId('statement-file-chosen')).toHaveCount(0);
 	});
 
 	test('a CSV upload creates a run, and its detail offers the source document', async ({
