@@ -38,7 +38,20 @@ for the tracker view. Keep the two reconciled when either moves.
 round that closed **every remaining actionable `(c)` item**. What is left in
 this file is the `(a)` credential-blocked set, the `(b)` operator steps, and two
 `(c)` entries that are product calls rather than work (an unwired adapter family
-and the copilot's saved-plans bucket). This file is the shortest it has been.
+and the copilot's saved-plans bucket).
+
+A later backend round added one more `(c)` entry — eight built-and-documented
+capabilities with no production caller — found while closing the
+adapter-registry defect behind [decisions §29](decisions.md). That round did
+close the sharp half of the same survey: all three money-touching dispatchers
+(payments, ERP, FX) resolved an unrecognised provider name to their **fixture**
+adapter, which is not an inert stub — `mock.create_payment` reports every
+payment settled, `mock.parse_webhook` verifies no signature, `mock.post_invoice`
+returns a fabricated ERP document id, and the mock FX rate got *locked onto the
+Payment row* — so one typo in an admin-entered settings value silently produced
+paid-but-unpaid invoices, an unverified public webhook parser, ERP references
+pointing at nothing, and a permanently mis-priced outflow. All three now fail
+closed, with each caller deciding what the refusal means.
 
 **The vendor-statement upload UI closed** — but the entry's premise ("no file
 picker at all") was stale; a picker existed and already took CSV and PDF. The
@@ -261,6 +274,95 @@ defects in shipped behaviour.
 **Trigger:** the first slice that consumes either family.
 Ref: `backend/docs/international-payments.md`,
 `backend/docs/dynamic-discounting.md`.
+
+### Built-and-documented backend capabilities with no production caller
+
+Surfaced by the survey behind [decisions §29](decisions.md) (which closed the
+adapter-registry half of the same sweep: all three money-touching dispatchers
+now fail closed on an unrecognised provider name instead of silently resolving
+to their fixture adapter). Each item below is code that exists, is tested, and
+that nothing in `app/`, `scripts/` or `alembic/` reaches:
+
+- [ ] **`expense_policy.mileage_reimbursement` is never called.** The whole
+      stack around it is wired — `Expense.mileage_miles`,
+      `ExpensePolicy.mileage_rate`, both schemas, both CRUD paths — but
+      `evaluate_expense` never looks at mileage, so an admin sets `$0.67/mile`,
+      an employee logs 120 miles, and the reimbursable amount is whatever
+      free-text `amount` they typed. `expense-management.md` labels the rate
+      "*Defined in WF1; enforced in WF3*"; WF3 never landed the enforcement.
+      **Durable fix:** compute it at expense create/update and either surface
+      it on the response or raise a `mileage_amount_mismatch` violation from
+      `evaluate_expense`. No migration — the columns exist.
+- [ ] **Teams interactive approval is inbound-only.**
+      `email_action_token.build_teams_action_tokens` has no production caller;
+      `notification_dispatch._build_slack_action_tokens` hard-returns
+      `(None, None)` unless the provider is literally `"slack"`; and
+      `chat_notification_adapters/teams_adapter.build_body` emits an `OpenUri`
+      MessageCard that never reads `ChatMessage.approve_token` /
+      `.reject_token`. Meanwhile the entire inbound half ships and is mounted
+      (`api/teams_approvals.py` — HMAC verify, replay window, channel-bound
+      single-use `jti`). A Teams org gets a read-only card and a
+      security-reviewed public endpoint nothing can reach.
+      **Durable fix:** dispatch `_build_slack_action_tokens` on the provider
+      and add the `potentialAction` / `Action.Http` block to `build_body`.
+      Already named in `backend/docs/teams-approval.md` § Deferred.
+- [ ] **Sanctions `ScreeningResult.categories` / `.adverse_media` are computed
+      and then dropped.** `refinitiv` maps World-Check `ADVERSE-MEDIA` into
+      them and `mock` simulates it, but all three consumers
+      (`compliance.check_payment_compliance`,
+      `vendor_screening.screen_vendor_record`, `vendor_risk_scoring`) read only
+      `.result` / `.risk_score` / `.matched_list`. A negative-news hit — the
+      thing the taxonomy was added for — never reaches the compliance verdict
+      reasons, the vendor's `risk_factors`, or the persisted `SanctionsCheck`.
+      **Durable fix:** fold `categories` into `SanctionsCheck.raw_response` and
+      `Vendor.risk_factors` (both JSONB, no migration) and add an adverse-media
+      reason to `ComplianceDecision.reasons`.
+- [ ] **`international_payments.is_international_payment` is dead while three
+      live modules hand-roll its rail set** — `payment_corridor`
+      (`_EXPLICIT_INTERNATIONAL_METHODS`), `compliance`
+      (`_DEFAULT_HIGH_RISK_METHODS`, which drives KYC thresholds) and an inline
+      literal in `api/payments.py` that decides whether an FX rate is locked at
+      all. Adding a fourth international rail means remembering all three; the
+      canonical predicate that would prevent the drift is the unused one.
+      **Durable fix:** export the frozenset and have the three sites import it.
+- [ ] **`workflow_engine.is_known_step_type` is dead and `BUILDER_STEP_TYPES`
+      is forked** — defined identically in `workflow_engine` and
+      `workflow_builder` with no cross-check. The builder validates against its
+      copy; the engine validates against nothing and resolves step numbers via
+      `STEP_TYPES.index(resolved)`, so a builder step type reaching
+      `create_workflow_step` raises `ValueError: 'condition' is not in list`
+      rather than being recognised — which is exactly what the unused helper
+      was written to prevent.
+      **Durable fix:** one source of truth for the list, call the helper at the
+      definition-save chokepoint, guard the `.index()` calls.
+- [ ] **`data_residency.check_residency_alignment` is dead**, so
+      `GET /api/organization/data-residency` cannot report that a tenant pinned
+      to `eu` is being served from a single-region platform. There is no
+      `deployed_region` setting to compare against either.
+      **Durable fix:** add the env-backed setting and surface `aligned` on the
+      response (advisory, never blocking — which is what the function already
+      does). No migration.
+- [ ] **`analytics.compute_dpo_trend` is dead and re-derived inline twice**
+      (`api/analytics.py` in two places). The second copy emits `float(ap)` /
+      `float(cogs)` / `float(dpo_val)` — money crossing the API boundary as
+      float, against the Decimal invariant, in the path the canonical helper
+      would have kept exact.
+      **Durable fix:** call the helper from both sites.
+- [ ] **`tax_rate_adapters/{avalara,taxjar}.test_connection` return `True` on
+      credentials alone** while their `get_rate` unconditionally raises
+      `NotImplementedError` — a fabricated healthy probe for an adapter that
+      can never satisfy its contract's core method. Impact is currently nil
+      (nothing calls `test_connection` on that family), which is why it sits
+      below the rest.
+      **Durable fix:** return `False` from the skeleton probes, matching the
+      `qms_adapters/generic_qms` posture.
+
+**Why deferred:** each is a genuine gap but a *different* feature's wiring, and
+landing eight unrelated behaviour changes behind one round's regression
+envelope is how a fix becomes indistinguishable from a regression. None is
+blocked on anything.
+**Trigger:** the next round touching that feature — or take them as a batch;
+they are individually small.
 
 ### AI Cash-Flow Copilot — Phase 3 deferred bucket
 

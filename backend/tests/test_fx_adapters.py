@@ -119,12 +119,24 @@ def test_dispatcher_falls_back_to_mock_when_config_is_empty():
     assert adapter.provider_name == "mock"
 
 
-def test_dispatcher_falls_back_to_mock_on_unknown_provider():
-    """A typo in `fx.provider` shouldn't take the org's payments
-    offline. Falls back to mock; in prod, this just means tests pass
-    locally without surprising config."""
-    adapter = get_fx_adapter({"provider": "made_up_provider"})
-    assert adapter.provider_name == "mock"
+def test_dispatcher_fails_closed_on_unknown_provider():
+    """This test previously asserted the fallback to `mock`, reasoning that
+    "a typo in `fx.provider` shouldn't take the org's payments offline".
+
+    It took them somewhere worse. `MockFxAdapter.get_rate` returns a plausible
+    rate off a hardcoded table, and `prepare_international_payment` LOCKS
+    whatever it gets onto the Payment row (`fx_rate` / `fx_locked_at` /
+    `source_amount`) and never re-fetches it — so the typo silently mis-priced
+    the real outflow, permanently, and later fed
+    `realized_fx_gain_loss_for_settlement` too. The payment leg now fails with
+    `fx_provider_unsupported` instead, which IS taking that payment offline —
+    deliberately, and visibly. See `tests/test_payment_provider_resolution.py`.
+    """
+    from app.services.fx_adapters import UnknownFxProviderError
+
+    with pytest.raises(UnknownFxProviderError) as ei:
+        get_fx_adapter({"provider": "made_up_provider"})
+    assert ei.value.provider == "made_up_provider"
 
 
 def test_dispatcher_routes_to_openexchangerates_when_configured():

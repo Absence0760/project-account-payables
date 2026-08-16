@@ -140,14 +140,21 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> PaymentSyncRes
             logger.info("[payment-sync] no ERP configured for org %s, skipping sync", org_id)
             return PaymentSyncResult()
 
-        # Import adapters
+        # Import adapters so the @register_adapter decorators populate the
+        # registry before any leg resolves one. Deliberately NOT resolving the
+        # adapter here as a pre-flight: an unsupported `settings.erp` type has
+        # to fail the LEG, so it travels the same path every other leg failure
+        # does and opens the de-duped `erp_reconciliation` exception this
+        # module exists to guarantee (see the header docstring). Aborting the
+        # whole run here instead would strand every payment at
+        # `payment_scheduled` with no exception row and no notification — and
+        # on the primary dispatch path the returned count is discarded by
+        # `_run_in_thread`, so it would be invisible, which is exactly the
+        # failure mode this module was rewritten to remove.
         import app.services.erp_adapters.dynamics_365_bc  # noqa: F401
         import app.services.erp_adapters.merge_dev  # noqa: F401
         import app.services.erp_adapters.mock_adapter  # noqa: F401
         import app.services.erp_adapters.netsuite  # noqa: F401
-        from app.services.erp_adapters import get_erp_adapter
-
-        get_erp_adapter(erp_config)
 
         # Open tenant DB
         tenant_url = _make_tenant_url(org.db_name)
@@ -156,14 +163,16 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> PaymentSyncRes
 
         try:
             async with tenant_factory() as db:
-                return await _sync_run_legs(db, run_id=run_id, org_id=org_id)
+                return await _sync_run_legs(db, run_id=run_id, org_id=org_id, erp_config=erp_config)
         finally:
             await tenant_engine.dispose()
     finally:
         await ctrl_engine.dispose()
 
 
-async def _sync_run_legs(db, *, run_id: uuid.UUID, org_id: uuid.UUID) -> PaymentSyncResult:
+async def _sync_run_legs(
+    db, *, run_id: uuid.UUID, org_id: uuid.UUID, erp_config: dict
+) -> PaymentSyncResult:
     """Run one leg per payment in the run, each independently committed."""
     counts = {_SYNCED: 0, _SKIPPED: 0, _HELD: 0, _FAILED: 0}
     transitioned = 0
@@ -184,7 +193,7 @@ async def _sync_run_legs(db, *, run_id: uuid.UUID, org_id: uuid.UUID) -> Payment
 
         for payment_id in payment_ids:
             outcome, moved = await _sync_one_leg(
-                db, payment_id=payment_id, run_id=run_id, org_id=org_id
+                db, payment_id=payment_id, run_id=run_id, org_id=org_id, erp_config=erp_config
             )
             counts[outcome] += 1
             transitioned += int(moved)
@@ -211,7 +220,7 @@ async def _sync_run_legs(db, *, run_id: uuid.UUID, org_id: uuid.UUID) -> Payment
 
 
 async def _sync_one_leg(
-    db, *, payment_id: uuid.UUID, run_id: uuid.UUID, org_id: uuid.UUID
+    db, *, payment_id: uuid.UUID, run_id: uuid.UUID, org_id: uuid.UUID, erp_config: dict
 ) -> tuple[str, bool]:
     """Sync one payment, committing on its own.
 
@@ -243,6 +252,19 @@ async def _sync_one_leg(
         if payment.status != "completed":
             return _SKIPPED, False
 
+        # Resolve the ERP adapter for THIS leg, before taking the invoice lock.
+        # `get_erp_adapter` fails closed on a `settings.erp` type it has no
+        # adapter for (see its docstring — the old `mock` fallback reported
+        # every push as accepted), and raising here is the point: the handler
+        # below rolls back, opens the de-duped `erp_reconciliation` exception
+        # for this invoice, and counts the leg `failed`. That is the module's
+        # contract — a strand must land in the queue an AP manager works —
+        # and a config error strands exactly like a transport error does.
+        # Resolved before the lock so a failure never holds one it can't use.
+        from app.services.erp_adapters import get_erp_adapter
+
+        adapter = get_erp_adapter(erp_config)
+
         # Row-lock the invoice before deciding whether to transition it —
         # backend/CLAUDE.md § Conventions: every status transition takes the row
         # FOR UPDATE. The window is real, not theoretical: the manual retry
@@ -266,13 +288,16 @@ async def _sync_one_leg(
                 )
             ).scalar_one_or_none()
 
-        # In production, this would call adapter.post_payment(). For now, log
-        # and mark as synced. Amount is not PII; goes through the module logger
-        # so it reaches the same aggregation/redaction pipeline as the rest of
-        # the sync.
+        # In production, this would call `adapter.post_payment()` — the
+        # `adapter` resolved above is the one it would use. For now, log and
+        # mark as synced. Amount is not PII; goes through the module logger so
+        # it reaches the same aggregation/redaction pipeline as the rest of the
+        # sync. The provider NAME is logged so an operator reading the strand
+        # can see which ERP the leg was aimed at.
         logger.info(
-            "[payment-sync] syncing payment %s: invoice=%s, amount=%s, method=%s",
+            "[payment-sync] syncing payment %s via %s: invoice=%s, amount=%s, method=%s",
             payment.id,
+            adapter.erp_type,
             invoice.invoice_number if invoice else "?",
             f"{payment.amount:.2f}",
             payment.method,

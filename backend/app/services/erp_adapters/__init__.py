@@ -7,7 +7,11 @@ from app.services.erp_adapters.base import (
     InvoicePayload,
     LineItemPayload,
 )
-from app.services.erp_adapters.dispatcher import get_erp_adapter
+from app.services.erp_adapters.dispatcher import (
+    UnknownErpAdapterError,
+    get_erp_adapter,
+    list_available_adapters,
+)
 
 __all__ = [
     "ErpAdapter",
@@ -15,5 +19,7 @@ __all__ = [
     "ErpPostResult",
     "InvoicePayload",
     "LineItemPayload",
+    "UnknownErpAdapterError",
     "get_erp_adapter",
+    "list_available_adapters",
 ]

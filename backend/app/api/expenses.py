@@ -8,6 +8,7 @@ reconciliation land in later workflows (WF2-4); their models + schemas already
 exist. See ``backend/docs/expense-management.md``.
 """
 
+import logging
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -74,7 +75,7 @@ from app.services.expense_policy import (
     evaluate_expense,
     evaluate_report,
 )
-from app.services.fx_adapters import get_fx_adapter
+from app.services.fx_adapters import UnknownFxProviderError, get_fx_adapter
 from app.services.storage import get_file, upload_expense_receipt
 from app.tenant import (
     apply_entity_scope,
@@ -83,6 +84,8 @@ from app.tenant import (
     get_tenant_db,
     get_write_entity_id,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/expenses", tags=["expenses"])
 reports_router = APIRouter(prefix="/expense-reports", tags=["expense-reports"])
@@ -290,10 +293,24 @@ async def _recompute_report_total(db: AsyncSession, report: ExpenseReport) -> Re
 
 
 def _fx_adapter_for(org: Organization):
-    """FX adapter from the org's config — ``mock`` (deterministic, no network)
-    unless the org names a provider. Local-first: a fresh clone converts
-    multi-currency expense reports with no cloud account."""
-    return get_fx_adapter((org.settings or {}).get("fx"))
+    """FX adapter from the org's config, or ``None`` when there is no usable
+    rate source.
+
+    ``mock`` (deterministic, no network) unless the org names a provider —
+    local-first, so a fresh clone converts multi-currency expense reports with
+    no cloud account. A provider name we have no adapter for now raises at the
+    dispatcher instead of silently resolving to ``mock``'s hardcoded rate table
+    (see `fx_adapters.dispatcher`); ``None`` is how that reaches the two
+    callers, each of which already has a documented posture for "no FX
+    available" — refuse the attach, or leave the report figure NULL so the CFO
+    gate fails closed. Returning `None` keeps both, where letting the raise
+    escape would 500 an ordinary expense save.
+    """
+    try:
+        return get_fx_adapter((org.settings or {}).get("fx"))
+    except UnknownFxProviderError:
+        logger.warning("expense FX conversion unavailable: org names an unsupported provider")
+        return None
 
 
 async def _lock_line_conversion(expense: Expense, report: ExpenseReport, org: Organization) -> None:
@@ -302,9 +319,19 @@ async def _lock_line_conversion(expense: Expense, report: ExpenseReport, org: Or
     Fail-closed: rather than attaching a line we cannot express in the report's
     currency (which would understate the total the CFO gate reads), the write is
     rejected. The message carries only currency codes — no PII."""
+    fx_adapter = _fx_adapter_for(org)
+    if fx_adapter is None:
+        # Same fail-closed direction as an unconvertible currency pair: refuse
+        # the attach rather than understate the total. No provider name — this
+        # message is read by any expense user, not just the admin who owns the
+        # setting.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="No FX rate source is configured, so this line cannot be converted.",
+        )
     try:
         await lock_expense_conversion(
-            expense, target_currency=report.currency, fx_adapter=_fx_adapter_for(org)
+            expense, target_currency=report.currency, fx_adapter=fx_adapter
         )
     except ExpenseConversionError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
@@ -1195,9 +1222,17 @@ async def submit_report(
     # then fails CLOSED (CFO required), so a failure here never lets a report
     # through with less scrutiny.
     reporting_currency = resolve_reporting_currency(org.settings)
-    await lock_report_reporting_amount(
-        report, reporting_currency=reporting_currency, fx_adapter=_fx_adapter_for(org)
-    )
+    submit_fx_adapter = _fx_adapter_for(org)
+    if submit_fx_adapter is None:
+        # No usable rate source is the same outcome as an FX outage, which
+        # `lock_report_reporting_amount` already models: clear the figure and
+        # let `report_amount_for_gate` treat the missing number as OVER the
+        # threshold, so the CFO gate fails closed.
+        clear_report_reporting_amount(report)
+    else:
+        await lock_report_reporting_amount(
+            report, reporting_currency=reporting_currency, fx_adapter=submit_fx_adapter
+        )
 
     await dispatch_audit(
         db,

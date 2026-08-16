@@ -181,3 +181,44 @@ async def test_base_quote_payment_still_names_an_unsupported_method():
     quote = await _BareAdapter({}).quote_payment(_payload(method="wire"))
     assert quote.available is False
     assert "wire" in (quote.unavailable_reason or "")
+
+
+# ---------------------------------------------------------------------------
+# The guard above only works if the registry it reads is the real one
+# ---------------------------------------------------------------------------
+
+
+def test_no_test_file_registers_a_permanent_fake_adapter():
+    """``@register_payment_adapter`` writes into a process-global dict.
+
+    A test that declares a fake adapter with the raw decorator leaves it in
+    the registry for every LATER test in the same pytest worker, and the
+    classification guard above then fails on an adapter that only ever existed
+    inside another file. That is exactly what ``test_cashflow_balance``'s
+    ``explodes_on_balance`` fake did — and because CI shards by duration,
+    whether the two files share a process is luck, so the failure looked like
+    a flake rather than the pollution it was.
+
+    Use the ``temp_payment_adapter`` fixture (``tests/conftest.py``) instead;
+    it yields the same decorator and restores the registry on teardown.
+    """
+    import ast
+    from pathlib import Path
+
+    offenders: list[str] = []
+    for path in sorted(Path(__file__).parent.glob("test_*.py")):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            for deco in node.decorator_list:
+                func = deco.func if isinstance(deco, ast.Call) else deco
+                name = getattr(func, "id", None) or getattr(func, "attr", None)
+                if name == "register_payment_adapter":
+                    offenders.append(f"{path.name}:{node.lineno} ({node.name})")
+
+    assert not offenders, (
+        "these tests register a payment adapter permanently into the global "
+        f"registry: {offenders}. Request the `temp_payment_adapter` fixture "
+        "and decorate with it instead, so the registry is restored on teardown."
+    )

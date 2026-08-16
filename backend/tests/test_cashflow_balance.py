@@ -22,7 +22,6 @@ from app.services.payment_adapters import (
     PaymentAdapter,
     get_payment_adapter,
 )
-from app.services.payment_adapters.dispatcher import register_payment_adapter
 
 # ---------------------------------------------------------------------------
 # Adapter get_balance capability
@@ -99,11 +98,17 @@ async def test_fetch_provider_balance_no_config_resolves_to_mock():
     assert pb.amount == Decimal("250000.00")
 
 
-async def test_fetch_provider_balance_swallows_adapter_error():
+async def test_fetch_provider_balance_swallows_adapter_error(temp_payment_adapter):
     """A provider that raises must not propagate — the dashboard falls back to
-    the manual opening balance instead of 500-ing."""
+    the manual opening balance instead of 500-ing.
 
-    @register_payment_adapter("explodes_on_balance")
+    Registered through the ``temp_payment_adapter`` fixture, not the raw
+    decorator: the registry is process-global, and leaving this fake in it
+    made ``test_payment_adapter_capabilities``'s drift guard fail whenever the
+    two files shared a pytest process.
+    """
+
+    @temp_payment_adapter("explodes_on_balance")
     class _Exploder(PaymentAdapter):
         provider_name = "explodes_on_balance"
 

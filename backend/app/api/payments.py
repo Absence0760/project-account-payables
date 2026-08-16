@@ -44,8 +44,10 @@ from app.services.audit_access import log_access
 from app.services.exception_lifecycle import record_decision
 from app.services.international_payments import realized_fx_gain_loss_for_settlement
 from app.services.payment_adapters import (
+    PaymentAdapter,
     PaymentPayload,
     PaymentStatus,
+    UnknownPaymentProviderError,
     get_payment_adapter,
 )
 from app.services.payment_controls import check_run_segregation
@@ -115,6 +117,31 @@ PAYMENT_BLOCKING_EXCEPTION_TYPES = ("duplicate", "fraud_flag", "line_total_misma
 # partial index) excludes them. A void hands the invoice back to `approved` to
 # be re-paid; a failed / cancelled attempt must not block a fresh one.
 LIVE_PAYMENT_TERMINAL_STATUSES = ("voided", "failed", "cancelled")
+
+
+def _require_payment_adapter(org: Organization) -> PaymentAdapter:
+    """Resolve the org's payment processor, or refuse before anything moves.
+
+    `get_payment_adapter` fails closed on a provider name it has no adapter
+    for (see its docstring — the old `mock` fallback reported every payment
+    as settled without moving money). Every money-moving entry point resolves
+    through here FIRST, so the refusal lands as an actionable 409 with the
+    run still in `draft` and no payment dispatched, rather than as a 500 with
+    the run stranded `executing`.
+    """
+    try:
+        return get_payment_adapter((org.settings or {}).get("payments") or {})
+    except UnknownPaymentProviderError as exc:
+        # The provider name is the org's own admin-entered settings value and
+        # is bounded by the exception — echoing it is what makes the error
+        # actionable ("you typed modern-treasury"). No credential is included.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Payment processor '{exc.provider}' is not a supported provider, so "
+                "nothing was dispatched. Fix Settings → Payments before executing."
+            ),
+        ) from exc
 
 
 async def _find_live_payment(db: AsyncSession, invoice_id: uuid.UUID) -> Payment | None:
@@ -678,11 +705,20 @@ async def void_payment(
 
     # Adapter side: best-effort. A processor failure here doesn't block
     # the local void — operators can chase the rail manually, but the
-    # accounting books should always reflect intent.
+    # accounting books should always reflect intent. That includes an
+    # unsupported `settings.payments.provider`: the accounting void still
+    # lands, and `provider_not_supported` on the audit row is what tells the
+    # operator the rail was never asked (rather than the old behaviour, which
+    # called `mock.void_payment` — it returns True unconditionally — and
+    # recorded a `voided_upstream` that never happened).
     payment_config = (org.settings or {}).get("payments") or {}
-    adapter = get_payment_adapter(payment_config)
     adapter_outcome: str | None = None
-    if payment.provider_payment_id:
+    try:
+        adapter = get_payment_adapter(payment_config)
+    except UnknownPaymentProviderError:
+        adapter = None
+        adapter_outcome = "provider_not_supported"
+    if adapter is not None and payment.provider_payment_id:
         try:
             void_fn = getattr(adapter, "void_payment", None)
             if callable(void_fn):
@@ -826,8 +862,10 @@ async def release_compliance_hold(
         await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
     ).scalar_one_or_none()
 
-    payment_config = (org.settings or {}).get("payments") or {}
-    adapter = get_payment_adapter(payment_config)
+    # Releasing dispatches to the processor exactly like /execute, so it takes
+    # the same pre-flight: an unsupported provider refuses here with the
+    # payment still `pending_compliance`, never a 500 mid-dispatch.
+    adapter = _require_payment_adapter(org)
     now = datetime.now(UTC)
     await _execute_single_payment(db, payment=payment, org=org, adapter=adapter, user=user, now=now)
 
@@ -1983,7 +2021,7 @@ async def _execute_single_payment(
         )
         and payment.fx_rate is None  # not already prepared
     ):
-        from app.services.fx_adapters import get_fx_adapter
+        from app.services.fx_adapters import UnknownFxProviderError, get_fx_adapter
         from app.services.international_payments import (
             InternationalPaymentError,
             prepare_international_payment,
@@ -1994,7 +2032,19 @@ async def _execute_single_payment(
             address_country=getattr(invoice, "vendor_country", None),
         )
         fx_cfg = (org.settings or {}).get("fx") or {}
-        fx_adapter = get_fx_adapter(fx_cfg)
+        try:
+            fx_adapter = get_fx_adapter(fx_cfg)
+        except UnknownFxProviderError:
+            # Fail the payment rather than lock a rate we can't source. The
+            # rate is written once onto the row and never re-fetched, so a
+            # fabricated one silently mis-prices the outflow forever — see
+            # `fx_adapters.dispatcher`. The provider name is not echoed here:
+            # `failure_reason` is surfaced to every AP user, not just the
+            # admin who owns the setting.
+            payment.status = "failed"
+            payment.failure_reason = "fx_provider_unsupported"
+            payment.completed_at = now
+            return
         try:
             prepared = await prepare_international_payment(
                 invoice=invoice,
@@ -2137,6 +2187,7 @@ async def _dispatch_run_payments(
     run_id: uuid.UUID,
     org: Organization,
     user: User,
+    adapter: PaymentAdapter,
 ) -> dict:
     """Dispatch every still-`pending` payment on `run`, committing durably
     after each one, then roll up the run's final status across ALL its
@@ -2154,9 +2205,11 @@ async def _dispatch_run_payments(
     the payments already recorded before it. That durability is what makes an
     `executing` run resumable instead of permanently stuck with real money
     moved but no local record of it.
+
+    `adapter` is resolved by the caller via `_require_payment_adapter` BEFORE
+    it claims the run, so an unsupported `settings.payments.provider` refuses
+    with the run untouched instead of stranding it `executing`.
     """
-    payment_config = (org.settings or {}).get("payments") or {}
-    adapter = get_payment_adapter(payment_config)
     now = datetime.now(UTC)
 
     from app.services.audit_dispatch import dispatch_audit
@@ -2358,13 +2411,21 @@ async def execute_payment_run(
             ),
         )
 
+    # Resolve the processor BEFORE claiming the run. An unsupported
+    # `settings.payments.provider` can dispatch nothing, so refusing here
+    # leaves the run in `draft` and re-runnable once settings are fixed —
+    # rather than stranding it `executing` behind a 500.
+    adapter = _require_payment_adapter(org)
+
     # Claim the run: flip it to an in-flight status and commit so the lock
     # releases and any concurrent caller blocked above wakes to a non-draft
     # run (→ 409). The final rollup status overwrites `executing` at the end.
     run.status = "executing"
     await db.commit()
 
-    return await _dispatch_run_payments(db, run=run, run_id=run_id, org=org, user=user)
+    return await _dispatch_run_payments(
+        db, run=run, run_id=run_id, org=org, user=user, adapter=adapter
+    )
 
 
 @router.post("/runs/{run_id}/resume")
@@ -2411,11 +2472,17 @@ async def resume_payment_run(
         action="execute",
     )
 
+    # Same pre-flight as /execute: refuse an unsupported processor before the
+    # loop rather than 500-ing partway through it.
+    adapter = _require_payment_adapter(org)
+
     # Release the row lock before the (potentially slow) per-payment loop —
     # no status change needed here, the run is already `executing`.
     await db.commit()
 
-    return await _dispatch_run_payments(db, run=run, run_id=run_id, org=org, user=user)
+    return await _dispatch_run_payments(
+        db, run=run, run_id=run_id, org=org, user=user, adapter=adapter
+    )
 
 
 @router.post("/runs/{run_id}/sync-erp")
@@ -2618,6 +2685,10 @@ async def retry_failed_payments(
             ),
         )
 
+    # Same pre-flight as /execute and /resume: a run whose processor can't be
+    # resolved retries nothing, so refuse before booking any retry attempt row.
+    adapter = _require_payment_adapter(org)
+
     all_run_payments = (
         (await db.execute(select(Payment).where(Payment.payment_run_id == run_id))).scalars().all()
     )
@@ -2765,7 +2836,9 @@ async def retry_failed_payments(
     run.status = "executing"
     await db.commit()
 
-    result = await _dispatch_run_payments(db, run=run, run_id=run_id, org=org, user=user)
+    result = await _dispatch_run_payments(
+        db, run=run, run_id=run_id, org=org, user=user, adapter=adapter
+    )
     result["payments_retried"] = retried
     result["payments_skipped"] = len(skipped)
     result["skip_reasons"] = sorted(set(skipped))
@@ -2870,7 +2943,17 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
     if payment_config.get("provider") != provider:
         return  # wrong adapter for this tenant
 
-    adapter = get_payment_adapter(payment_config)
+    try:
+        adapter = get_payment_adapter(payment_config)
+    except UnknownPaymentProviderError:
+        # The tenant's configured provider name matches this URL but names a
+        # processor we have no adapter for. Before `get_payment_adapter` failed
+        # closed, this resolved to `mock` — whose `parse_webhook` verifies no
+        # signature at all — so a single settings typo silently re-opened the
+        # very hole the `provider == "mock"` early-return above exists to
+        # close, under any other name. 204 like every other rejection path.
+        logger.warning("Payment webhook rejected: tenant's configured provider is not supported")
+        return
     event = adapter.parse_webhook(headers, body)
     if event is None:
         return  # bad signature, unrecognised event, or no-op

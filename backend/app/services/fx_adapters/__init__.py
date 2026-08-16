@@ -15,6 +15,16 @@ Same registry pattern as `card_adapters`, `extraction_adapters`,
 """
 
 from app.services.fx_adapters.base import FXAdapter, FXRate
-from app.services.fx_adapters.dispatcher import get_fx_adapter, register_fx_adapter
+from app.services.fx_adapters.dispatcher import (
+    UnknownFxProviderError,
+    get_fx_adapter,
+    register_fx_adapter,
+)
 
-__all__ = ["FXAdapter", "FXRate", "get_fx_adapter", "register_fx_adapter"]
+__all__ = [
+    "FXAdapter",
+    "FXRate",
+    "UnknownFxProviderError",
+    "get_fx_adapter",
+    "register_fx_adapter",
+]

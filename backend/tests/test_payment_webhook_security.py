@@ -273,6 +273,47 @@ async def test_webhook_rejects_mock_provider_before_tenant_lookup():
     _ = org  # constructed to document the "configured for mock" case
 
 
+@pytest.mark.asyncio
+async def test_webhook_rejects_unsupported_configured_provider():
+    """The `provider == "mock"` guard above only catches the literal name.
+
+    A tenant whose `settings.payments.provider` is a name we have no adapter
+    for used to resolve to the mock adapter anyway — `get_payment_adapter`
+    fell back to it — so a typo like `modern-treasury` re-opened exactly the
+    hole that guard closes, under a different URL segment: the request passes
+    the provider cross-check (config matches the path) and then reaches
+    `mock.parse_webhook`, which verifies NO signature. The dispatcher now
+    fails closed and the handler 204s, so no unverified parse happens.
+
+    Uses the REAL dispatcher (no `get_payment_adapter` patch) — patching it
+    would mock away the behaviour under test.
+    """
+    from app.api.payments import payment_webhook
+
+    org = _org(provider="modern-treasury")  # hyphen — not a registered adapter
+    tenant_factory, db = _tenant_session_factory(payment=None)
+
+    with (
+        patch(
+            "app.database.control_session_factory",
+            _ctrl_session_factory(org),
+        ),
+        patch("app.database.get_tenant_engine", return_value=MagicMock()),
+        patch("sqlalchemy.ext.asyncio.async_sessionmaker", return_value=tenant_factory),
+    ):
+        result = await payment_webhook(
+            tenant_slug="acme",
+            provider="modern-treasury",
+            request=_fake_request(body=b'{"provider_payment_id":"px","status":"completed"}'),
+        )
+
+    assert result is None  # 204 No Content path
+    # The forged body must never reach a parser, and the tenant DB must never
+    # be opened — the same posture as a failed signature check.
+    db.execute.assert_not_called()
+    db.commit.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Signature verification
 # ---------------------------------------------------------------------------
