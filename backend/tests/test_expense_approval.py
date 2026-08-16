@@ -691,3 +691,33 @@ async def test_mileage_without_a_rate_is_not_enforced(realdb):
         assert created.status_code == 201, created.text
         codes = {v["code"] for v in (created.json()["policy_violations"] or [])}
         assert "mileage_amount_mismatch" not in codes
+
+
+async def test_negative_mileage_is_refused_on_create_and_patch(realdb):
+    """A distance is never negative, and a negative one silently DISABLES the
+    mileage rule for that line (`resolve_mileage_expectation` skips
+    `miles <= 0`) — so it has to be refused at the edge, not stored."""
+    async with realdb.client(key="a", role="ap_manager") as c:
+        rejected = await c.post(
+            "/api/expenses",
+            json={
+                "expense_date": "2026-06-01",
+                "category": "travel",
+                "amount": "50.00",
+                "mileage_miles": "-120.00",
+            },
+        )
+        assert rejected.status_code == 422, rejected.text
+
+        eid = (
+            await c.post(
+                "/api/expenses",
+                json={"expense_date": "2026-06-01", "category": "travel", "amount": "50.00"},
+            )
+        ).json()["id"]
+        patched = await c.patch(f"/api/expenses/{eid}", json={"mileage_miles": "-1"})
+        assert patched.status_code == 422, patched.text
+
+        # Zero is a legitimate value (a logged-but-distance-free line), not an error.
+        zeroed = await c.patch(f"/api/expenses/{eid}", json={"mileage_miles": "0"})
+        assert zeroed.status_code == 200, zeroed.text
