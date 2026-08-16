@@ -193,7 +193,7 @@
 						<td>{key.scopes.join(', ')}</td>
 						<td>{formatDate(key.created_at)}</td>
 						<td>{formatDate(key.last_used_at)}</td>
-						<td>
+						<td class="status-col">
 							{#if isRevoked(key)}
 								<span class="status-pill revoked">{m('admin.apiKeys.statusRevoked')}</span>
 							{:else}
@@ -378,12 +378,26 @@
 		color: #26b977;
 	}
 
+	/*
+	 * 0.12, not 0.15: the tint lightens --surface toward the text, so at 0.15
+	 * --text-muted lands on #292c36 at 4.32:1 — under the bar before anything
+	 * else happens to it. See `frontend/CLAUDE.md` § Colour tokens and contrast.
+	 */
 	.status-pill.revoked {
-		background: rgba(138, 143, 160, 0.15);
+		background: rgba(138, 143, 160, 0.12);
 		color: var(--text-muted);
 	}
 
-	tr.revoked td:not(.actions) {
+	/*
+	 * The fade de-emphasises a revoked key's DATA. It deliberately spares the
+	 * status cell: opacity composites text toward the backdrop, and the pill —
+	 * already muted by --text-muted — dropped to 2.44:1 under it, so the one
+	 * cell explaining why the row is faded became the least readable thing in
+	 * it. An ancestor's opacity is invisible to the stylesheet guard
+	 * (`lib/a11y/tokenPairing.test.ts`), which is why axe caught this and not
+	 * the scan.
+	 */
+	tr.revoked td:not(.actions):not(.status-col) {
 		opacity: 0.6;
 	}
 
