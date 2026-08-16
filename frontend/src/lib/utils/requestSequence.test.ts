@@ -181,27 +181,52 @@ describe('a local mutation survives a late-resolving stale fetch', () => {
 });
 
 /**
- * A WRITE is a sequenced request too. `InvoiceModal.saveLineItems` PUTs the
- * table and then re-reads it — but only the Save button is disabled while the
- * PUT is in flight, so a cell edited in that window is not in the payload it
- * carries. Taking a token for the write is how its response learns the table
- * moved on: clearing the dirty flag over that edit would lose it AND grey out
- * the Save button, leaving the user unable to re-submit what they just typed.
+ * `wasSupersededByEdit` — the third question, and the one only a WRITE asks.
+ *
+ * `InvoiceModal.saveLineItems` PUTs the table and then re-reads it. Only the
+ * Save button is disabled during the round trip, so a cell edited in that
+ * window is not in the payload the PUT carried, and neither the dirty-flag
+ * clear nor the follow-up reload may go ahead.
+ *
+ * It must NOT ask `canCommit`, which is false for two different reasons. An
+ * unrelated newer READ (the extraction poll's own `loadLineItems()`) makes
+ * `canCommit` false while saying nothing about whether the user edited
+ * anything — and the write would then refuse to clear its dirty flag forever,
+ * leaving a Save button up over a table nobody had touched. These tests pin
+ * the two apart; the first version of this fix conflated them.
  */
-describe('a write whose follow-up read must not commit over a mid-write edit', () => {
-	it('reports the table as no longer clean when an edit landed during the write', () => {
+describe('wasSupersededByEdit — a write asks only about local edits', () => {
+	it('is true when a local edit landed while the write was in flight', () => {
 		const seq = createRequestSequencer();
-
 		const saveToken = seq.start(); // the PUT goes out
 		seq.supersedeInFlight(); // ...the user edits a cell while it is in flight
 
-		expect(seq.canCommit(saveToken)).toBe(false);
+		expect(seq.wasSupersededByEdit(saveToken)).toBe(true);
 	});
 
-	it('reports it clean when nothing was touched during the write', () => {
+	it('is FALSE when only an unrelated newer read was issued', () => {
 		const seq = createRequestSequencer();
 		const saveToken = seq.start();
-		expect(seq.canCommit(saveToken)).toBe(true);
+		seq.start(); // an unrelated reload (extraction poll) — no edit involved
+
+		// The distinction the write depends on: `canCommit` cannot tell these
+		// two cases apart, and using it here is what stuck the dirty flag on.
+		expect(seq.canCommit(saveToken)).toBe(false);
+		expect(seq.wasSupersededByEdit(saveToken)).toBe(false);
+	});
+
+	it('is false when nothing happened during the write', () => {
+		const seq = createRequestSequencer();
+		expect(seq.wasSupersededByEdit(seq.start())).toBe(false);
+	});
+
+	it('is false for a write issued after the edit', () => {
+		const seq = createRequestSequencer();
+		seq.start();
+		seq.supersedeInFlight();
+
+		// A save started after the edit carries it, so it is not superseded.
+		expect(seq.wasSupersededByEdit(seq.start())).toBe(false);
 	});
 });
 

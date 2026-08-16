@@ -830,6 +830,20 @@ itself. `/cash-flow`'s copilot is a copy of the same code with no
 thread-opening rail yet; it got the identity half so it isn't the
 index-capturing version someone copies from next.
 
+**A write asks a third question, so the primitive grew one.** §23 split the
+old single `isLatest` predicate in two because a local edit makes "may I
+commit?" and "am I the newest request?" diverge. A *write* — a save that PUTs
+the list and then re-reads it — turned out to need a third: only a local edit
+invalidates the payload it just sent, and an unrelated newer *read* says
+nothing about that. The first attempt at `InvoiceModal.saveLineItems` read
+`canCommit`, which is false for either reason, so an extraction poll's own
+reload landing mid-save left the dirty flag stuck on and the Save button up
+over a table nobody had touched. `wasSupersededByEdit(token)` isolates the
+edit half. It is deliberately a fourth method rather than a second sequencer
+or a bespoke boolean in the component: the state it reads (`staleThrough`)
+already exists and belongs to the primitive, and a component-local copy would
+drift from the `supersedeInFlight()` that sets it.
+
 **Not adopted:** wrapping the three-call protocol (`start` / `canCommit` /
 `isCurrentRequest`) in a single `sequenced(fn)` helper. It reads better at
 twenty call sites, but it has to decide the `finally` semantics for the caller,

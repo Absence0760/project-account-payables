@@ -31,6 +31,10 @@
  * load error. Using `canCommit` there would leave the spinner stuck on forever
  * after a local mutation superseded the fetch that owns it.
  *
+ * A **write** (a save that PUTs the list and then re-reads it) takes a token
+ * too, but asks the third question — `wasSupersededByEdit` — because only a
+ * local edit invalidates what it sent; an unrelated newer read does not.
+ *
  * Shared by every list loader that can have a request in flight while something
  * else changes the list — the list stores, the list routes, the `expenses`
  * page's four sub-lists, the `workflows/[id]` builder canvas and
@@ -64,6 +68,21 @@ export function createRequestSequencer() {
 		 *  bookkeeping in a `finally` — NOT to decide whether to commit data. */
 		isCurrentRequest(token: number): boolean {
 			return token === latest;
+		},
+		/** True when a local mutation retired this request — `supersedeInFlight()`
+		 *  ran after it was issued. This is the third question, and only a WRITE
+		 *  asks it.
+		 *
+		 *  A read asks `canCommit`, which is false for either reason: a newer
+		 *  read supersedes it just as surely as an edit does. A write's
+		 *  post-condition is narrower — "is the payload I just sent still what
+		 *  the user has on screen?" — and an unrelated newer READ says nothing
+		 *  about that. Reading `canCommit` there makes a write report a conflict
+		 *  that never happened (`InvoiceModal.saveLineItems` left its dirty flag
+		 *  stuck on, and the Save button up, whenever an extraction poll's own
+		 *  reload happened to land mid-save). */
+		wasSupersededByEdit(token: number): boolean {
+			return token <= staleThrough;
 		},
 		/** Mark every already-issued request un-committable. Call immediately
 		 *  before applying a local mutation to the list. */

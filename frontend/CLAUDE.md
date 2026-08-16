@@ -474,6 +474,14 @@ async function fetch(params) {
   issued? Use it in the `finally` for the `loading` flag and for any
   load-error toast. Reading `canCommit` there leaves the spinner stuck on
   forever after a local edit, because no newer request exists to clear it.
+- **`wasSupersededByEdit(token)`** — did a *local edit* retire this request?
+  The third question, and only a **write** asks it. A save that PUTs the list
+  and then re-reads it takes a token too, but its post-condition is narrower
+  than a read's: only an edit invalidates what it sent. Reading `canCommit`
+  there makes an unrelated newer read look like a conflict — which is how
+  `InvoiceModal.saveLineItems` first shipped, leaving its dirty flag (and so
+  the Save button) stuck on whenever an extraction poll's own reload landed
+  mid-save.
 - **`supersedeInFlight()`** — call it **immediately before** any helper
   that edits the list in place with no fetch of its own
   (`invoiceStore.update` / `patchLocal`, the vendors page's

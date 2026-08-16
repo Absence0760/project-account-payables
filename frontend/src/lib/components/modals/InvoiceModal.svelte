@@ -712,9 +712,13 @@
 		// The PUT is itself a request whose response can be superseded, so it
 		// takes a token like any load. Only the Save BUTTON is disabled while it
 		// is in flight — the cells stay editable — and an edit made in that
-		// window is not in the payload this request carries. `markLineItemsDirty`
-		// turns this token un-committable, which is how the response learns the
-		// table is no longer clean.
+		// window is not in the payload this request carries.
+		//
+		// It asks `wasSupersededByEdit`, NOT `canCommit`: only an edit
+		// invalidates what this request sent. `canCommit` would also go false
+		// for an unrelated newer read — the extraction poll's own
+		// `loadLineItems()` landing mid-save — and the dirty flag would then
+		// stick on, leaving a Save button up over a table nobody had touched.
 		const saveToken = lineItemsSequence.start();
 		savingLines = true;
 		try {
@@ -728,11 +732,12 @@
 				total: li.total,
 				gl_account: li.gl_account,
 			})));
-			const savedTableStillOnScreen = lineItemsSequence.canCommit(saveToken);
+			const editedDuringSave = lineItemsSequence.wasSupersededByEdit(saveToken);
 			// Clearing `lineItemsDirty` over an edit made mid-save is the worse
-			// half of the bug: it loses the edit AND greys out the Save button,
-			// so the user can't even re-submit what they just typed.
-			if (savedTableStillOnScreen) lineItemsDirty = false;
+			// half of the bug: it loses the edit AND removes the Save button
+			// (which only renders while dirty), so the user can't re-submit
+			// what they just typed.
+			if (!editedDuringSave) lineItemsDirty = false;
 			// Surface the backend's reconciliation verdict inline instead of
 			// letting it stay invisible until the modal is reopened. A
 			// mismatch is a blocking condition downstream (the invoice can't
@@ -748,7 +753,7 @@
 			);
 			// Re-reading the server list would discard that mid-save edit — the
 			// server hasn't been told about it yet.
-			if (savedTableStillOnScreen) await loadLineItems();
+			if (!editedDuringSave) await loadLineItems();
 		} catch (err) {
 			toast(err instanceof Error ? err.message : m('invoices.modal.toast.saveFailed'), 'error');
 		} finally {
