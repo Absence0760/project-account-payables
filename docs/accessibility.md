@@ -29,8 +29,8 @@ of scope for this statement; where we hand off to them we note it.
 
 ## How we test
 
-Accessibility is verified at three layers — automated regression in CI plus two
-kinds of human review:
+Accessibility is verified at four layers — two automated regression guards in CI
+plus two kinds of human review:
 
 1. **Automated (axe-core, every CI run).** The Playwright e2e suite includes an
    accessibility regression guard at `frontend/tests-e2e/a11y/axe.spec.ts`. It
@@ -38,7 +38,8 @@ kinds of human review:
    `@axe-core/playwright`) against the key authenticated surfaces (dashboard,
    invoices list, vendors, payments, exceptions, the invoice detail modal, the
    whole `/admin` section — Users & Roles, API Keys, Webhooks, Partner Admin —
-   plus `/vendor-statements` and its create modal) and the two unauthenticated
+   plus `/vendor-statements` and its create modal, `/billing`, `/reports`,
+   `/experiments` and `/cfo`) and the two unauthenticated
    login surfaces (AP login, supplier portal login),
    asserting **zero violations** at the WCAG 2.0 / 2.1 / 2.2 Level A + AA tag
    set (`wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`, `wcag22aa`). It runs on
@@ -59,16 +60,44 @@ kinds of human review:
    list *and* with its create modal open, since the radio `fieldset`/`legend`
    intake picker, the file input and the persistent `role="alert"` refusal
    region all live in the dialog.
-2. **Navigability tests (web).** `frontend/tests-e2e/a11y/screen-reader.spec.ts`
+2. **Automated (colour-token contrast scan, every CI run).** A route list will
+   always trail the app, and a contrast failure recurs per **surface** rather
+   than per route — `--text-muted` on `--surface-2` was 4.34:1 everywhere it
+   appeared, so axe caught it on the two `/admin` pages inside the list and
+   missed the identical defect on `/billing`, which wasn't. So the palette is
+   checked at the source: `frontend/src/lib/a11y/tokenPairing.test.ts` (vitest,
+   `pnpm test:unit`, no browser needed) scans **every** stylesheet in `src/` —
+   `app.css` plus every component `<style>` block — for a rule that sets both a
+   `color` and a `background`, resolves both through the palette, and fails
+   below the SC 1.4.3 threshold (3:1 when the rule declares a large-text size).
+   It also fails a `var(--token, fallback)` whose fallback contradicts the
+   declared token, and a `var()` on a token nothing ever assigns — the drift
+   that let `--surface-2` render for months as a value nobody had declared.
+   The palette's own contract (which foreground token is legal on which
+   surface) is asserted directly, so one drifting token surfaces as one
+   failure rather than dozens.
+
+   The two guards are complements, not alternatives: the scan can't resolve the
+   cascade (a rule setting only `color` inherits its background at runtime),
+   and axe can't see a surface no listed route renders. Rationale + what was
+   rejected: [decisions.md](decisions.md) §28; the token table and the rule for
+   authors are in `frontend/CLAUDE.md` § Colour tokens and contrast.
+
+   One hole neither guard can close: white-label theming lets a tenant
+   overwrite `--accent` / `--accent-strong` at runtime. Both surfaces that edit
+   those colours (`/organization` Branding, the `/admin/partner` child-branding
+   modal) show the real white-on-colour ratio as an inline advisory before it
+   is saved — advisory, because the brand is the tenant's call.
+3. **Navigability tests (web).** `frontend/tests-e2e/a11y/screen-reader.spec.ts`
    asserts the structural semantics a screen-reader/keyboard user relies on:
    skip link + named landmarks + a single `<h1>`, no positive tabindex, 320px
    reflow with no horizontal scroll, and dialog focus-trap + focus-restore on
    Esc. `workflow-builder.spec.ts` covers the keyboard step-reorder path.
-3. **Flutter semantics tests (mobile).** The mobile app uses Flutter's
+4. **Flutter semantics tests (mobile).** The mobile app uses Flutter's
    `Semantics` tree and `meetsGuideline` widget tests (`mobile/test/a11y/`) to
    assert that interactive widgets expose labels, roles, and state to TalkBack /
    VoiceOver, plus tap-target size and contrast.
-4. **Manual screen-reader passes.** Keyboard-only and screen-reader walkthroughs
+5. **Manual screen-reader passes.** Keyboard-only and screen-reader walkthroughs
    of the core flows — **VoiceOver** (macOS Safari + iOS), **NVDA** (Windows
    Firefox/Chrome), **TalkBack** (Android) — run from the repeatable
    [screen-reader checklist](./accessibility-screen-reader-checklist.md) before a
@@ -104,8 +133,9 @@ The current build implements:
 - **Labelled form fields** — every input has an associated `<label>`;
   required fields are marked.
 - **Sufficient colour contrast** in the dark theme (text and UI components meet
-  the 4.5:1 / 3:1 AA thresholds), verified by the contrast rules in the axe
-  guard.
+  the 4.5:1 / 3:1 AA thresholds), verified two ways: the contrast rules in the
+  axe guard on what a route renders, and the stylesheet-wide colour-token scan
+  on every rule in the app, whether a guarded route renders it or not.
 - **Reduced-motion support** — animations respect
   `prefers-reduced-motion: reduce`.
 - **Semantic structure** — landmarks (`header`, `nav`, `main`), a single `h1`
@@ -168,5 +198,8 @@ five business days.
   the repeatable manual VoiceOver / NVDA / TalkBack pass.
 - `frontend/tests-e2e/a11y/axe.spec.ts` + `screen-reader.spec.ts` — the
   automated regression guards (axe + navigability/reflow/focus-trap).
+- `frontend/src/lib/a11y/tokenPairing.test.ts` — the stylesheet colour-token /
+  contrast scan (`pnpm test:unit`), with its pure scanners in `cssAudit.ts` and
+  the WCAG math in `contrast.ts`.
 - `frontend/tests-e2e/README.md` — how to run the e2e suite (incl. the a11y
   guard) locally and in CI.
