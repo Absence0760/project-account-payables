@@ -156,6 +156,33 @@ accessibility guard gained all four `/admin` routes plus `/vendor-statements`
 destructive actions and one-time secret reveals, which is exactly where a
 focus-management regression is most costly and where the guard was silent.
 
+**The axe route list stopped trailing the app — by not being the only guard.**
+Its entry asked two things: add four more routes, and *consider* whether a
+token-pairing lint beats route-by-route coverage for this class. Both are done,
+and the second turned out to be the whole answer. Scanning the stylesheets
+instead of the rendered routes found **99** problems the route list could never
+have covered: 55 colour pairs below 4.5:1 (the `--accent-strong` companion had
+existed for a round and almost nothing used it — 40 buttons and chips still
+filled with `var(--accent)` at 3.12:1; green and red had no companion at all,
+so pay / approve / execute / reject / void all failed), 32
+`var(--token, fallback)` declarations whose fallback contradicted its token,
+and 12 references to a token nothing ever assigns. A fourth rule, added once
+those were green, found the largest single defect of the lot: a bare literal
+`color:` renders on whatever the cascade supplies, and `#e04040` — the status
+red on error messages, alerts and the danger row-action — is 4.11:1 on
+`--surface`, in **106** declarations across 61 files. Twelve more came out
+once the rule stopped standing down on a translucent tint, which is the
+standard status-pill shape. `--success{,-strong}` and `--danger{,-strong}` now
+exist alongside `--accent{,-strong}`, every site is fixed, and
+`frontend/src/lib/a11y/tokenPairing.test.ts` fails the suite on a recurrence —
+with no suppression mechanism, since a `-strong` companion means a correct
+answer always exists. The four routes went in too; the two guards are
+complements (the scan can't resolve the cascade, axe can't see a surface no
+listed route renders). Rationale in [decisions.md](decisions.md) §28. It also
+surfaced the one hole neither can close — white-label theming writes a tenant's
+hex straight into `--accent-strong` at runtime — now an inline contrast
+advisory on both surfaces that edit it.
+
 Closed in the pass before that, against `improve/round-followup-closeout`: the
 three tracked items of that round. **Webhook secret rotation became reachable
 from `/admin/webhooks`** (row action → overlap picker → one-time reveal), with
@@ -248,34 +275,6 @@ originally-deferred sub-bucket from that same feature remains:
 **Trigger:** next feature slice. Nothing blocks it.
 Refs: [roadmap.md](roadmap.md) § AI Cash-Flow Copilot,
 [cash-flow-copilot.md](cash-flow-copilot.md).
-
-### The axe route list still trails the routes that carry dialogs
-
-Widening the guard to `/admin` + `/vendor-statements` immediately caught a real
-`serious` contrast failure (`--text-muted` on the newly-defined `--surface-2`,
-4.34:1). Fixing it turned up the **same** defect on `/billing`'s proration box —
-found by reading, not by the guard, because `/billing` is not in the route list.
-That is the coverage gap restating itself: the pages with one-time secret
-reveals, saved-card metadata and armed destructive actions are exactly the ones
-worth guarding, and `/billing`, `/reports`, `/experiments` and `/cfo` are still
-outside it.
-
-- [ ] Extend `frontend/tests-e2e/a11y/axe.spec.ts` to `/billing`, `/reports`,
-      `/experiments` and `/cfo`. Expect them to pass — they reuse the shared
-      `ui/` primitives — and treat any failure as the finding, fixing the root
-      rather than relaxing the rule.
-- [ ] Consider whether a token-pairing guard (which foreground tokens are legal
-      on which surface tokens) beats route-by-route coverage for this class. The
-      contrast bug recurs per *surface*, not per route, so a lint over
-      `app.css` + component styles would catch it everywhere at once.
-
-**Why deferred:** the routes were added as part of closing the previous a11y
-gap, and each newly-guarded route is a potential new CI failure. Adding four
-more unverified routes in the same change that was fixing a red build would
-have made a second failure indistinguishable from a regression in the fix.
-**Trigger:** the next `/audit:accessibility` pass, or any change to a page in
-the list above.
-Ref: [accessibility.md](accessibility.md).
 
 ---
 

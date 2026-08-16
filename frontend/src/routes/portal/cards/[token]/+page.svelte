@@ -164,7 +164,7 @@
 	.state.error h1 {
 		font-size: 1.2rem;
 		margin: 0 0 8px;
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	.lede {

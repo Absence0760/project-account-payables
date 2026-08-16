@@ -243,12 +243,12 @@
 	}
 
 	.mode-toggle button.active {
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 	}
 
 	.audit-error {
-		color: #e04040;
+		color: var(--danger);
 		margin: 0 0 8px;
 	}
 

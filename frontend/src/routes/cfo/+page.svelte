@@ -318,7 +318,7 @@
 		text-transform: capitalize;
 	}
 	.seg-btn.active {
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 	}
 	.cf-input {
@@ -332,7 +332,7 @@
 		width: 180px;
 	}
 	.cf-error {
-		color: #e04040;
+		color: var(--danger);
 		font-weight: 500;
 	}
 	.chart-card {
@@ -457,7 +457,7 @@
 		font-weight: 600;
 	}
 	.cf-breach {
-		color: #e04040;
+		color: var(--danger);
 		font-weight: 600;
 	}
 	.cf-table {
@@ -480,7 +480,7 @@
 		font-weight: 600;
 	}
 	.cf-table tr.breach td {
-		color: #e04040;
+		color: var(--danger);
 	}
 	.empty {
 		color: var(--text-muted);

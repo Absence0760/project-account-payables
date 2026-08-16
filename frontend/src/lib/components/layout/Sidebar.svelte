@@ -320,9 +320,9 @@
 		width: 100%;
 		padding: 7px 12px;
 		border-radius: 5px;
-		border: 1px solid #e04040;
+		border: 1px solid var(--danger);
 		background: rgba(224, 64, 64, 0.1);
-		color: #e04040;
+		color: var(--danger);
 		font-size: 0.82rem;
 		font-weight: 500;
 		cursor: pointer;

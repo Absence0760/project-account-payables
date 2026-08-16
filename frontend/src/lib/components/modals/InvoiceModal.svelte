@@ -2045,14 +2045,14 @@
 	}
 
 	.btn-delete-outline:hover {
-		border-color: #e04040;
-		color: #e04040;
+		border-color: var(--danger);
+		color: var(--danger);
 	}
 
 	.btn-delete-outline.armed {
-		border-color: #e04040;
+		border-color: var(--danger);
 		background: rgba(224, 64, 64, 0.1);
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	.btn-delete-outline:disabled {
@@ -2258,7 +2258,7 @@
 	}
 
 	.li-delete:hover {
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	.line-items-empty {
@@ -2314,8 +2314,8 @@
 		color: var(--accent);
 	}
 	.btn-contract-unlink:hover:not(:disabled) {
-		border-color: #e04040;
-		color: #e04040;
+		border-color: var(--danger);
+		color: var(--danger);
 	}
 	.btn-contract-link:disabled,
 	.btn-contract-unlink:disabled {
@@ -2400,7 +2400,7 @@
 		padding: 5px 14px;
 		border-radius: 4px;
 		border: none;
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 		font-size: 0.8rem;
 		font-weight: 500;
@@ -2509,9 +2509,9 @@
 	}
 
 	.btn-save {
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
-		border-color: var(--accent);
+		border-color: var(--accent-strong);
 	}
 
 	.btn-save:hover:not(:disabled) {
@@ -2524,9 +2524,9 @@
 	}
 
 	.btn-submit {
-		background: #1fa86a;
+		background: var(--success-strong);
 		color: #fff;
-		border-color: #1fa86a;
+		border-color: var(--success-strong);
 	}
 
 	.btn-submit:hover:not(:disabled) {
@@ -2624,7 +2624,7 @@
 
 	.warning-item.error {
 		background: rgba(224, 64, 64, 0.1);
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	.warning-item.warning {
@@ -2693,7 +2693,7 @@
 	.po-match-status.mismatch,
 	.po-match-status.no_po {
 		background: rgba(224, 64, 64, 0.15);
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	.po-match-status.partial {
@@ -2742,7 +2742,7 @@
 	}
 
 	.po-match-value.variance-pos {
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	.po-match-value.variance-neg {
@@ -2784,7 +2784,7 @@
 	.inspection-badge.fail,
 	.inspection-badge.missing {
 		background: rgba(224, 64, 64, 0.15);
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	.inspection-badge.partial {
@@ -2793,17 +2793,17 @@
 	}
 
 	.required {
-		color: #e04040;
+		color: var(--danger);
 		font-style: normal;
 	}
 
 	.field-error input,
 	.field-error select {
-		border-color: #e04040;
+		border-color: var(--danger);
 	}
 
 	.field-error span {
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	.validation-hint {
@@ -2847,7 +2847,7 @@
 	}
 
 	.meta-value.rejected {
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	.meta-date {
@@ -2918,7 +2918,7 @@
 	}
 
 	.activity-detail.error {
-		color: #e04040;
+		color: var(--danger);
 		font-style: italic;
 	}
 
@@ -3009,7 +3009,7 @@
 	}
 
 	.erp-error .erp-value {
-		color: #e04040;
+		color: var(--danger);
 		font-family: inherit;
 	}
 
@@ -3077,7 +3077,7 @@
 		padding: 8px 18px;
 		border-radius: 4px;
 		border: none;
-		background: #1fa86a;
+		background: var(--success-strong);
 		color: #fff;
 		font-size: 0.85rem;
 		font-weight: 500;
@@ -3102,9 +3102,9 @@
 		gap: 6px;
 		padding: 8px 18px;
 		border-radius: 4px;
-		border: 1px solid #e04040;
+		border: 1px solid var(--danger);
 		background: var(--surface);
-		color: #e04040;
+		color: var(--danger);
 		font-size: 0.85rem;
 		font-weight: 500;
 		cursor: pointer;
@@ -3143,7 +3143,7 @@
 
 	.reject-input:focus {
 		outline: none;
-		border-color: #e04040;
+		border-color: var(--danger);
 		box-shadow: 0 0 0 2px rgba(224, 64, 64, 0.15);
 	}
 
@@ -3172,7 +3172,7 @@
 		padding: 6px 14px;
 		border-radius: 4px;
 		border: none;
-		background: #e04040;
+		background: var(--danger-strong);
 		color: #fff;
 		font-size: 0.82rem;
 		font-weight: 500;
@@ -3198,7 +3198,7 @@
 	.save-error {
 		background: rgba(224, 64, 64, 0.1);
 		border: 1px solid rgba(224, 64, 64, 0.3);
-		color: #e04040;
+		color: var(--danger);
 		padding: 8px 12px;
 		border-radius: 4px;
 		font-size: 0.82rem;
@@ -3248,7 +3248,7 @@
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
-		color: var(--text-muted, #6b7280);
+		color: var(--text-muted);
 	}
 	.audit-summary-regen {
 		font-size: 11px;
@@ -3256,7 +3256,7 @@
 		border: 1px solid var(--border);
 		border-radius: 6px;
 		background: transparent;
-		color: var(--text-muted, #6b7280);
+		color: var(--text-muted);
 		cursor: pointer;
 	}
 	.audit-summary-regen:hover:not(:disabled) {
@@ -3277,7 +3277,7 @@
 		margin: 6px 0 0;
 		font-size: 11px;
 		font-style: italic;
-		color: var(--text-muted, #6b7280);
+		color: var(--text-muted);
 	}
 	.audit-summary-skeleton {
 		height: 12px;

@@ -226,7 +226,7 @@
 		font-variant-numeric: tabular-nums;
 	}
 	.tool-err {
-		color: #e04040;
+		color: var(--danger);
 		font-size: 0.85rem;
 		margin: 0;
 	}
@@ -262,7 +262,7 @@
 	}
 	.mono {
 		font-variant-numeric: tabular-nums;
-		font-family: var(--mono, ui-monospace, monospace);
+		font-family: var(--font-mono);
 	}
 	.match-list {
 		display: flex;

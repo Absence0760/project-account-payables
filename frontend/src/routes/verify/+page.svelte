@@ -93,7 +93,7 @@
 		margin: 0 0 16px;
 	}
 	.error {
-		color: #e04040;
+		color: var(--danger);
 		font-size: 0.9rem;
 		margin: 0 0 16px;
 	}
@@ -111,7 +111,7 @@
 	}
 	.next .primary {
 		display: inline-block;
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 		padding: 12px 28px;
 		border-radius: 6px;

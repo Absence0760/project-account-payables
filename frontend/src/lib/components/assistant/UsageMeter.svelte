@@ -88,7 +88,7 @@
 		color: #d4940a;
 	}
 	.usage-meter.over .usage-note {
-		color: #e04040;
+		color: var(--danger);
 	}
 	.usage-note.muted {
 		color: var(--text-muted);

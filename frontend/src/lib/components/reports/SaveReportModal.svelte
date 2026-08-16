@@ -95,11 +95,11 @@
 		color: var(--text-muted);
 	}
 	.required {
-		color: var(--danger, #f87171);
+		color: var(--danger);
 		font-style: normal;
 	}
 	.error-banner {
-		color: var(--danger, #f87171);
+		color: var(--danger);
 		margin: 8px 0;
 	}
 </style>

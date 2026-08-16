@@ -404,7 +404,7 @@
 		color: var(--text-muted);
 	}
 	.blocked-text {
-		color: #e04040;
+		color: var(--danger);
 		font-weight: 500;
 	}
 	.actions-row {
@@ -505,7 +505,7 @@
 		font-weight: 500;
 	}
 	.matched-list {
-		color: #e04040;
+		color: var(--danger);
 		font-weight: 500;
 	}
 </style>

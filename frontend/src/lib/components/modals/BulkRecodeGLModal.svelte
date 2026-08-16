@@ -329,9 +329,9 @@
 		color: var(--text);
 	}
 	.btn-primary {
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: white;
-		border-color: var(--accent);
+		border-color: var(--accent-strong);
 	}
 	.btn-primary:disabled,
 	.btn-cancel:disabled {

@@ -565,7 +565,7 @@
 		margin-top: 2px;
 	}
 	.error-banner {
-		color: var(--danger, #f87171);
+		color: var(--danger);
 		margin: 4px 0;
 	}
 	.muted {

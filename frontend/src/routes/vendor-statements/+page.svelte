@@ -402,7 +402,7 @@
 		font-size: 0.74rem;
 		font-weight: 700;
 		background: rgba(224, 64, 64, 0.12);
-		color: #e04040;
+		color: var(--danger);
 	}
 	.disc-clean {
 		color: var(--text-muted);

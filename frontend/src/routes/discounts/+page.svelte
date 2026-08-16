@@ -502,7 +502,7 @@
 		padding: 20px;
 	}
 	.dash-error {
-		color: #e04040;
+		color: var(--danger);
 		font-weight: 500;
 	}
 

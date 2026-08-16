@@ -193,9 +193,9 @@
 	}
 
 	.chip.on {
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: white;
-		border-color: var(--accent);
+		border-color: var(--accent-strong);
 	}
 
 	.icon-btn {
@@ -214,8 +214,8 @@
 	}
 
 	.icon-btn.danger:hover:not(:disabled) {
-		border-color: #e04040;
-		color: #e04040;
+		border-color: var(--danger);
+		color: var(--danger);
 	}
 
 	.icon-btn:disabled {

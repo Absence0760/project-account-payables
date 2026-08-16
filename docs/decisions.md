@@ -1029,3 +1029,100 @@ and the amount pattern pins grouping runs to exactly three digits so a date can
 never be read as money.
 
 See [vendor-statement-reconciliation.md § Decimal conventions](../backend/docs/vendor-statement-reconciliation.md).
+
+---
+
+## 28. Contrast is guarded per surface in the stylesheets, not per route in a browser
+
+**Decision:** the app's colour palette carries a two-token contract — a base
+token for text/icons/borders on a dark surface, and a `-strong` companion that
+is the fill behind white text — and a vitest guard
+(`frontend/src/lib/a11y/tokenPairing.test.ts`) scans every stylesheet in `src/`
+for a pair that breaks it. The route-level axe guard
+(`tests-e2e/a11y/axe.spec.ts`) stays, and keeps the half the scanner can't do.
+
+**Why.** The axe guard only sees what a listed route happens to render. Twice
+running, that shape produced the same outcome: a WCAG 1.4.3 failure was caught
+on the pages inside the route list and missed, identically, on the pages
+outside it. `--text-muted` on `--surface-2` was 4.34:1 *wherever it appeared*;
+axe found it on `/admin/api-keys` and `/admin/webhooks`, and `/billing`'s
+proration box — the same defect — was found by a human reading the file. The
+bug recurs per **surface**, so the surfaces are what to check.
+
+Running the scan the first time found 99 problems, which is the real argument
+(a fourth rule, added once the first three were green, found 106 more — see
+below):
+
+- **55 contrast failures**, almost all one root cause. `--accent-strong` had
+  been added specifically so white text had somewhere legible to sit, and
+  almost nothing used it — 40 buttons, chips and chat bubbles still filled
+  with `var(--accent)` at 3.12:1. Green (`#1fa86a`, 3.06:1) and red
+  (`#e04040`, 4.22:1) had no companion at all, so pay / approve / execute /
+  reject / void — the money buttons — all failed.
+- **32 `var(--token, fallback)` declarations whose fallback contradicted the
+  token.** Inert while the token exists, and the wrong colour the moment one is
+  renamed. This is exactly how `--surface-2` shipped for months rendering a
+  value nobody had declared, with two call sites disagreeing about it.
+- **12 references to a token nothing ever assigns**, where the fallback is
+  always what renders — including two spellings of the monospace stack.
+
+**Scope, deliberately.** The scanner checks pairs decided **inside one rule**.
+A rule that sets only `color` inherits its background through the cascade,
+which is a runtime question; that stays axe's job. Neither guard subsumes the
+other, and saying so here is cheaper than someone deleting one of them later.
+
+**One sound question survives in the cascade case**, though, and asking it
+found the round's largest single defect. A rule setting only a `color` will
+render on *some* app surface, so a **literal** there has to be legible on the
+surfaces body text actually sits on. `#e04040` — the status red — is 4.11:1 on
+`--surface` and 4.47:1 on `--bg`: failing, in **106** declarations across 61
+files, on error messages, alerts and the danger row-action. Only literals are
+asked (a palette token is already asserted against those surfaces), `#fff` and
+`#000` are exempt as the deliberate on-a-fill choices, and `--surface-2` is
+*not* in the surface list — text on that raised panel declares its background,
+so the pair check owns it, and including it would flag every status colour in
+the app on the strength of a surface it never renders against. Decorative
+fills (a chart bar, a confidence dot, an SVG `fill`) carry no text and are
+untouched.
+
+The rule also fires when the rule *does* declare a background that resolves to
+nothing usable — a translucent tint, a gradient. Standing down there sounded
+conservative and was the opposite: `background: rgba(140,100,240,0.15);
+color: #8c64f0` is the standard dark-theme status pill, so the check would have
+fallen silent precisely on the pills. A tint over an app surface composites
+close to it, so the bare surface is the right approximation; twelve more
+failures came out (purple, blue, amber and green pill/banner text, 3.53–4.42:1).
+
+**A hole in the drift check itself** turned up in review and is worth
+recording: the `var()` fallback was captured with `[^()]*`, which cannot cross
+an inner paren, so `var(--bg, var(--surface))` — shipped on two routes —
+matched nothing and was invisible to both the dead-token and the stale-fallback
+check. The scan is paren-aware now, and the comparison resolves a fallback
+through the palette rather than by spelling, since a token-valued fallback
+would otherwise read as stale on sight.
+
+**Fixing a failure means changing the colour.** There is no suppression
+mechanism and no allowlist, because the `-strong` companions mean a correct
+answer always exists. The one nuance encoded instead of waived is WCAG's own:
+a rule that declares a large-text size in the same block is held to 3:1, and an
+unresolvable size (`em`, `calc`, inherited) is treated as normal text — the
+stricter direction.
+
+**The palette's own contract is asserted directly**, not inferred from the
+rules that happen to use it. A token drifting light would otherwise surface as
+dozens of scattered failures instead of one.
+
+**Not adopted:** widening the axe route list alone (the ask that prompted this
+— it treats the symptom, and the list will trail the app again the next time a
+route is added); a linter plugin (a colour comparison needs the resolved token
+values, which is the part a generic CSS lint doesn't have); and blocking a
+tenant's brand colour. On that last one — `brandThemeVars` writes a tenant's
+`accent_strong_color` straight into `--accent-strong`, so a brand colour can
+defeat the whole contract at runtime where no static scan can see it. The
+backend accepts any valid hex and the brand is the tenant's call, so the
+answer is an advisory: `accentStrongContrast` reuses the same WCAG primitive
+and both surfaces that edit that colour — the org Branding panel and the
+partner child-branding modal — show the real ratio before it is saved.
+
+See `frontend/CLAUDE.md` § Colour tokens and contrast, and
+[accessibility.md](accessibility.md).

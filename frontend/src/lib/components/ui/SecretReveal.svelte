@@ -148,7 +148,7 @@
 	.key-value {
 		flex: 1;
 		background: var(--surface-2);
-		border: 1px solid var(--border, #2a3350);
+		border: 1px solid var(--border);
 		border-radius: 8px;
 		padding: 0.6rem 0.75rem;
 		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

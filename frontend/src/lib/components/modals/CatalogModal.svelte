@@ -412,7 +412,7 @@
 		text-align: right;
 	}
 	.item-table td.mono {
-		font-family: var(--mono, monospace);
+		font-family: var(--font-mono);
 	}
 	.item-table td.actions {
 		display: flex;

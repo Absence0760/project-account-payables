@@ -6,9 +6,12 @@
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import RowLink from '$lib/components/ui/RowLink.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
+	import FieldWarning from '$lib/components/ui/FieldWarning.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
+	import { accentStrongContrast } from '$lib/stores/brandTheme';
+	import { formatRatio, WCAG_AA_NORMAL } from '$lib/a11y/contrast';
 	import {
 		getPartnerOverview,
 		getChildBranding,
@@ -76,6 +79,15 @@
 	let brandLoading = $state(false);
 	let brandError = $state<string | null>(null);
 	let saving = $state(false);
+
+	// A partner pushes this brand into the CHILD tenant's `--accent-strong`,
+	// whose one contract is that white text sits on it — so an unreadable
+	// choice here lands on someone else's users. Same advisory as the org
+	// Branding panel, from the same helper.
+	const childAccentStrongRatio = $derived(accentStrongContrast(brand?.accent_strong_color));
+	const childAccentStrongFails = $derived(
+		childAccentStrongRatio !== null && childAccentStrongRatio < WCAG_AA_NORMAL
+	);
 
 	const HEX_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 	const URL_RE = /^https?:\/\//i;
@@ -436,6 +448,13 @@
 					<label>
 						<span>{m('admin.partner.field.strongAccent')}</span>
 						<input type="text" bind:value={brand.accent_strong_color} placeholder={m('admin.partner.field.strongAccentPlaceholder')} />
+						<FieldWarning
+							show={childAccentStrongFails}
+							testId="child-accent-strong-contrast-warning"
+							message={m('common.contrastWarning', {
+								ratio: childAccentStrongRatio === null ? '' : formatRatio(childAccentStrongRatio)
+							})}
+						/>
 					</label>
 				</div>
 				<label>

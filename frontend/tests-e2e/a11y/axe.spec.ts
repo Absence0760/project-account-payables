@@ -59,7 +59,22 @@ const AUTHED_ROUTES: { path: string; name: string; ready?: string }[] = [
 	// file input and a persistent role="alert" refusal region — new interactive
 	// controls that had never seen an axe pass. (The list page is scanned here;
 	// the modal itself is covered by the dedicated test below.)
-	{ path: '/vendor-statements', name: 'vendor statements', ready: 'Statements' }
+	{ path: '/vendor-statements', name: 'vendor statements', ready: 'Statements' },
+	// The four routes the guard had been trailing. Widening it to `/admin` +
+	// `/vendor-statements` last round caught a real `serious` contrast failure
+	// (--text-muted on --surface-2, 4.34:1) — and fixing that turned up the
+	// SAME defect on /billing's proration box, found by reading rather than by
+	// the guard, because /billing wasn't in this list. These are the pages with
+	// saved-card metadata, money readouts and a plan-change dialog, which is
+	// exactly where a labelling or contrast regression is worth catching.
+	//
+	// The headings are the ones the existing specs for these routes already
+	// select on (`tests-e2e/{billing,reports,cfo}/`), so a title change breaks
+	// them together rather than silently skipping the scan here.
+	{ path: '/billing', name: 'billing', ready: 'Billing' },
+	{ path: '/reports', name: 'report builder', ready: 'Report Builder' },
+	{ path: '/experiments', name: 'workflow experiments', ready: 'Workflow Experiments' },
+	{ path: '/cfo', name: 'cash flow', ready: 'Cash Flow' }
 ];
 
 test.describe('accessibility — authenticated app (WCAG 2.2 AA)', () => {

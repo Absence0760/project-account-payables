@@ -362,7 +362,7 @@
 	}
 
 	.error {
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	dl.meta {
@@ -460,7 +460,7 @@
 
 	.badge.failed {
 		background: rgba(240, 70, 70, 0.15);
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	.status-badge {
@@ -521,7 +521,7 @@
 		padding: 8px 20px;
 		border-radius: 4px;
 		border: none;
-		background: #1fa86a;
+		background: var(--success-strong);
 		color: #fff;
 		font-size: 0.88rem;
 		font-weight: 600;
@@ -550,14 +550,14 @@
 	}
 
 	.btn-discard:hover:not(:disabled):not(.armed) {
-		border-color: #e04040;
-		color: #e04040;
+		border-color: var(--danger);
+		color: var(--danger);
 	}
 
 	.btn-discard.armed {
-		border-color: #e04040;
+		border-color: var(--danger);
 		background: rgba(224, 64, 64, 0.1);
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	.btn-discard:disabled {
@@ -581,8 +581,8 @@
 	.btn-approve {
 		padding: 8px 16px;
 		border-radius: 4px;
-		border: 1px solid var(--accent);
-		background: var(--accent);
+		border: 1px solid var(--accent-strong);
+		background: var(--accent-strong);
 		color: #fff;
 		font-size: 0.85rem;
 		font-weight: 500;

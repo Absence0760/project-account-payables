@@ -126,14 +126,14 @@
 
 	/* --- danger: neutral by default, red on hover; armed = red filled */
 	.row-action.variant-danger:hover:not(:disabled) {
-		border-color: #e04040;
-		color: #e04040;
+		border-color: var(--danger);
+		color: var(--danger);
 	}
 
 	.row-action.variant-danger.armed {
-		border-color: #e04040;
+		border-color: var(--danger);
 		background: rgba(224, 64, 64, 0.1);
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	.row-action:disabled {

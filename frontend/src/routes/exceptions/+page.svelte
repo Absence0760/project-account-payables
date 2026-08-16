@@ -620,8 +620,8 @@
 	.bulk-action-btn {
 		padding: 6px 14px;
 		border-radius: 4px;
-		border: 1px solid var(--accent);
-		background: var(--accent);
+		border: 1px solid var(--accent-strong);
+		background: var(--accent-strong);
 		color: #fff;
 		font-size: 0.85rem;
 		font-weight: 500;
