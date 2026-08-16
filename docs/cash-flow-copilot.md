@@ -436,6 +436,20 @@ design-only — everything else on this page is shipped.
    `"query"` to `"explicit"` — the two names always meant the same thing, and
    the `cashFlow.chart.source.explicit` i18n key already existed in every
    locale while `…source.query` never did.
+
+   **The `/cfo` cash-position card renders the refusal.** It used to show only
+   the `source === 'none'` prompt, so "we have your bank balance and declined to
+   use it" and "no bank is connected" looked identical on the surface where the
+   number is actually read — the copilot's chat narration was the only place a
+   human saw the difference. The card now renders a distinct amber notice
+   whenever `opening_balance_provider_skipped` is set (independent of `source`,
+   since the refusal can fall through to a persisted figure as easily as to
+   zero), naming the reporting currency and what to do about it. The reason
+   code → message mapping is the pure `routes/cfo/openingBalanceNotice.ts`; an
+   **unrecognised** code deliberately falls back to a generic line rather than
+   to silence, because the backend can add a reason before the frontend learns
+   its wording and silence is the failure mode this closes. Display only — no
+   backend change; the API already carried the field.
 3. **Multi-entity consolidation.** Phase 1 honors `X-Entity-ID` (per-entity
    view). A "show me consolidated cash across all subsidiaries" mode would ignore
    the header like `GET /analytics/by-entity` does — a small follow-up. (The

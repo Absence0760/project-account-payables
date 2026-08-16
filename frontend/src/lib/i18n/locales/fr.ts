@@ -857,6 +857,10 @@ export const messages = {
 	'cfo.position.title': 'Position de trésorerie',
 	'cfo.position.enterOpening': 'Saisissez un solde bancaire d\'ouverture ci-dessus pour projeter la position de trésorerie courante.',
 	'cfo.position.breach': '{n, plural, one {⚠ # période projette en dessous de votre alerte de solde minimum.} other {⚠ # périodes projettent en dessous de votre alerte de solde minimum.}}',
+	'cfo.position.providerSkippedCurrency':
+		'Le solde de votre banque connectée n’a pas été utilisé : ce compte est tenu dans une devise différente de votre devise de reporting {currency}, et amorcer la projection à partir de lui ferait de chaque solde courant ci-dessous un mélange de deux devises. Les chiffres partent de votre solde d’ouverture enregistré. Alignez la devise de reporting sur le compte, ou saisissez un solde d’ouverture ci-dessus.',
+	'cfo.position.providerSkipped':
+		'Le solde de votre banque connectée n’a pas été utilisé : la projection ci-dessous n’en part donc pas. Les chiffres partent de votre solde d’ouverture enregistré.',
 	'cfo.position.colPeriod': 'Période',
 	'cfo.position.colOpening': 'Ouverture',
 	'cfo.position.colOutflow': 'Sortie',

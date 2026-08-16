@@ -890,6 +890,10 @@ export const en = {
 	'cfo.position.title': 'Cash position',
 	'cfo.position.enterOpening': 'Enter an opening bank balance above to project the running cash position.',
 	'cfo.position.breach': '{n, plural, one {⚠ # period projects below your minimum-balance alert.} other {⚠ # periods project below your minimum-balance alert.}}',
+	'cfo.position.providerSkippedCurrency':
+		'Your connected bank balance was not used: that funding account is held in a different currency than your {currency} reporting currency, and seeding the projection from it would make every running balance below a mixture of two currencies. The figures start from your saved opening balance instead. Set the reporting currency to match the account, or enter an opening balance above.',
+	'cfo.position.providerSkipped':
+		'Your connected bank balance was not used, so the projection below does not start from it. The figures start from your saved opening balance instead.',
 	'cfo.position.colPeriod': 'Period',
 	'cfo.position.colOpening': 'Opening',
 	'cfo.position.colOutflow': 'Outflow',

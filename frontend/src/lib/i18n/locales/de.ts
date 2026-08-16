@@ -858,6 +858,10 @@ export const messages = {
 	'cfo.position.title': 'Liquiditätsposition',
 	'cfo.position.enterOpening': 'Geben Sie oben ein Anfangs-Bankguthaben ein, um die laufende Liquiditätsposition zu projizieren.',
 	'cfo.position.breach': '{n, plural, one {⚠ # Periode liegt voraussichtlich unter Ihrem Mindestguthaben-Alarm.} other {⚠ # Perioden liegen voraussichtlich unter Ihrem Mindestguthaben-Alarm.}}',
+	'cfo.position.providerSkippedCurrency':
+		'Ihr verbundener Bankbestand wurde nicht verwendet: Dieses Konto wird in einer anderen Währung als Ihrer Berichtswährung {currency} geführt, und die Prognose daraus zu speisen würde jeden laufenden Saldo unten zu einer Mischung aus zwei Währungen machen. Die Zahlen beginnen stattdessen bei Ihrem gespeicherten Anfangsbestand. Passen Sie die Berichtswährung an das Konto an oder geben Sie oben einen Anfangsbestand ein.',
+	'cfo.position.providerSkipped':
+		'Ihr verbundener Bankbestand wurde nicht verwendet, die Prognose unten beginnt also nicht damit. Die Zahlen beginnen stattdessen bei Ihrem gespeicherten Anfangsbestand.',
 	'cfo.position.colPeriod': 'Periode',
 	'cfo.position.colOpening': 'Anfang',
 	'cfo.position.colOutflow': 'Abfluss',

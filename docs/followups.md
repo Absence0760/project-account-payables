@@ -217,28 +217,6 @@ originally-deferred sub-bucket from that same feature remains:
 Refs: [roadmap.md](roadmap.md) § AI Cash-Flow Copilot,
 [cash-flow-copilot.md](cash-flow-copilot.md).
 
-### `/cfo` can't tell a skipped provider balance from no bank at all
-
-`GET /api/analytics/cash-position` now returns `opening_balance_provider_skipped`
-(e.g. `currency_mismatch`, when the payment adapter reports a balance in a
-currency other than the org's reporting currency and the chain refuses it rather
-than mixing two currencies into one running balance). The `/cfo` dashboard
-renders only `opening_balance_source === 'none'`, so **"we have a bank balance
-but declined to use it"** and **"no bank is connected"** look identical on the
-page. The copilot's chat narration is currently the only place a human sees the
-difference — on the surface where the number is actually read, the reason is
-invisible.
-
-- [ ] Render the skip reason distinctly on the cash-position card (the API
-      already carries it — this is display only, no backend work).
-
-**Why deferred:** surfaced by the code review of the cash-flow round, whose
-scope was the backend correctness bug (the wrong money figure), which is closed.
-This is the reporting half and belongs with a `/cfo` pass.
-**Trigger:** the first org that connects a foreign-currency operating account,
-or the next UI pass on `/cfo`.
-Ref: [cash-flow-copilot.md](cash-flow-copilot.md) § Opening balance.
-
 ### The axe a11y guard doesn't cover `/admin` or `/vendor-statements`
 
 `frontend/tests-e2e/a11y/axe.spec.ts` covers dashboard / invoices / vendors /

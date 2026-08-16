@@ -858,6 +858,10 @@ export const messages = {
 	'cfo.position.title': 'Posición de caja',
 	'cfo.position.enterOpening': 'Introduzca un saldo bancario inicial arriba para proyectar la posición de caja en curso.',
 	'cfo.position.breach': '{n, plural, one {⚠ # período proyecta por debajo de su alerta de saldo mínimo.} other {⚠ # períodos proyectan por debajo de su alerta de saldo mínimo.}}',
+	'cfo.position.providerSkippedCurrency':
+		'No se usó el saldo de su banco conectado: esa cuenta está denominada en una moneda distinta de su moneda de reporte {currency}, y partir de ella haría que cada saldo corriente de abajo fuera una mezcla de dos monedas. Las cifras parten de su saldo inicial guardado. Ajuste la moneda de reporte a la de la cuenta, o introduzca un saldo inicial arriba.',
+	'cfo.position.providerSkipped':
+		'No se usó el saldo de su banco conectado, así que la proyección de abajo no parte de él. Las cifras parten de su saldo inicial guardado.',
 	'cfo.position.colPeriod': 'Período',
 	'cfo.position.colOpening': 'Apertura',
 	'cfo.position.colOutflow': 'Salida',
