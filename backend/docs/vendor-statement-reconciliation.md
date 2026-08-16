@@ -391,10 +391,25 @@ after the money token it took as its reference, the other has too many. The
 third has exactly one figure after it and was therefore **accepted**, booking a
 fabricated open item keyed on `1,200.00` for `850.00` that no ledger row can
 match. That is the invented money the whole reader exists to avoid, and it is
-worse than a skip. Testing the reference directly closes all three. The rule is
-narrow by construction: an all-digit invoice number (`100234`, `1200`) is real,
-and `_is_money` says no to it — money needs cents, a thousands separator, or a
-currency symbol.
+worse than a skip. Testing the reference directly closes all three.
+
+**The cost, named.** `_is_money` needs cents, a thousands separator, or a
+currency symbol, so the rule only reaches a **bare, prefix-less, purely numeric**
+reference that happens to carry one. In practice that is exactly two shapes:
+`2026.01` (a year.sequence reference) and `1,234`. Every other real format
+survives — `INV-1001`, `100234`, `1200`, `INV/2026/001`, `2026-001`, `2026.001`
+(three decimals, so not money-shaped), `FR-2026-01`, `0012345678`, `#4502`,
+`SI-2026.01`, and the European `1.234,56`. A supplier using one of the two
+affected shapes loses those rows from a machine-read run, and they surface as
+`missing_on_their_side` — visible, chased, recoverable.
+
+That trade is deliberate and follows the reader's own doctrine: a token like
+`2026.01` is *genuinely ambiguous* between a reference and a figure, and every
+ambiguity here resolves to skipping. The alternative costs more — an accepted
+summary line is invented money a clerk chases the supplier for, and nothing
+downstream ever flags it. `test_a_money_reference_is_never_an_invoice_number`
+and `test_an_all_digit_invoice_number_is_still_a_valid_reference` pin both
+directions so neither drifts.
 
 The result: a clean `number date amount` statement reports **0**; a
 four-column aging statement reports **one per data row**. The count rides

@@ -213,9 +213,9 @@ class StatementScan:
     So the skip is CLASSIFIED where it happens, and only one class is reported:
 
     * **Not a row** (silent) — the line never looked like an open item. It had
-      no identifier-shaped token, or nothing money-shaped followed one. Column
-      headers, page furniture, totals and ``balance forward`` all land here by
-      construction, which is why they were already being skipped correctly.
+      no identifier-shaped token, its "reference" was itself a money figure, or
+      nothing money-shaped followed one. Column headers, page furniture, totals,
+      ``balance forward`` and summary blocks all land here.
     * **Ambiguous** (:attr:`ambiguous_skips`) — the line DID look like an open
       item, and the reader refused to pick between two readings of it: two
       money columns (which one is the open balance?), or a second
@@ -310,9 +310,12 @@ def scan_statement_text(text: str) -> StatementScan:
         # 850.00, which is the invented-money outcome this whole reader exists
         # to avoid. Testing the reference directly is what closes all three.
         #
-        # Deliberately narrow: an all-digit invoice number (`100234`) is real,
-        # and `_is_money` says no to it — money needs cents, a thousands
-        # separator, or a currency symbol.
+        # Deliberately narrow: money needs cents, a thousands separator, or a
+        # currency symbol on a bare numeric token, so `INV-1001`, `100234`,
+        # `2026-001`, `2026.001` (three decimals) and `1.234,56` all survive.
+        # The named cost is a bare `2026.01` / `1,234` reference — genuinely
+        # ambiguous between a reference and a figure, and every ambiguity here
+        # resolves to skipping. See the doc's § The cost, named.
         if _is_money(tokens[number_idx]):
             continue
 

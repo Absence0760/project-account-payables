@@ -397,18 +397,51 @@ def test_a_money_reference_is_never_an_invoice_number():
         assert scan.ambiguous_skips == 0, row
 
 
-def test_an_all_digit_invoice_number_is_still_a_valid_reference():
-    """The counterpart: the money test must not swallow a real reference.
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "INV-1001",  # the common prefixed form
+        "100234",  # all-digit — no cents, no separator, so not money
+        "1200",
+        "0012345678",  # zero-padded
+        "INV/2026/001",  # slash-separated
+        "2026-001",  # year-sequence, hyphenated
+        "2026.001",  # year-sequence, THREE decimals — money allows at most two
+        "FR-2026-01",
+        "SI-2026.01",  # prefixed, so the decimal can't make it money-shaped
+        "#4502",
+        "A100.50",  # a letter anywhere disqualifies it as money
+        "1.234,56",  # European decimal comma — not the money shape either
+    ],
+)
+def test_a_real_invoice_reference_survives_the_money_test(reference):
+    """The counterpart, over the reference formats suppliers actually use.
 
-    `100234` and `1200` are digit-runs but not money — no cents, no thousands
-    separator, no symbol — so they stay bookable.
+    A dropped supplier row becomes a false `missing_on_their_side` difference,
+    so the money test has to stay narrow. It does: it needs cents, a thousands
+    separator, or a currency symbol on a bare numeric token.
     """
-    assert [
-        ln.invoice_number for ln in scan_statement_text("100234  2026-01-15  500.00").lines
-    ] == ["100234"]
-    assert [ln.invoice_number for ln in scan_statement_text("1200  2026-01-15  850.50").lines] == [
-        "1200"
-    ]
+    row = f"{reference}  2026-01-15  500.00"
+    scan = scan_statement_text(row)
+    assert [ln.invoice_number for ln in scan.lines] == [reference], row
+    assert scan.ambiguous_skips == 0, row
+
+
+@pytest.mark.parametrize("reference", ["2026.01", "1,234"])
+def test_a_numeric_reference_shaped_like_money_is_the_named_cost(reference):
+    """The two shapes the rule genuinely costs us — pinned, not discovered later.
+
+    A bare, prefix-less, purely numeric reference carrying a decimal or a
+    thousands separator is indistinguishable from a figure, and this reader
+    resolves every ambiguity by skipping. A supplier using `2026.01` loses those
+    rows from a machine-read run and sees them as `missing_on_their_side` —
+    visible and chased. The alternative costs more: the summary line the rule
+    exists to reject would be booked as invented money nothing downstream flags.
+    See `docs/vendor-statement-reconciliation.md` § The cost, named.
+    """
+    scan = scan_statement_text(f"{reference}  2026-01-15  500.00")
+    assert scan.lines == []
+    assert scan.ambiguous_skips == 0
 
 
 def test_furniture_around_ambiguous_rows_stays_uncounted():
