@@ -111,9 +111,53 @@ sweep** — reconciliation is entirely user-triggered. The CSV-parsing helpers
   | Status | `status`, `state` |
 
 - Amount parser accepts `1234.56`, `1,234.56`, `$1,234.56`, `-1234.56`, and
-  `(1,234.56)` (Quickbooks-style parenthesized negative → signed Decimal).
-- Date parser tries ISO (`%Y-%m-%d`), then `%m/%d/%Y`, then `%d/%m/%Y`, then
-  `%Y/%m/%d`; an unrecognised value is `None` (never raises).
+  `(1,234.56)` (Quickbooks-style parenthesized negative → signed Decimal) — and
+  their European equivalents `1.234,56`, `850,00`, `€1.234,56`, `1 234,56`. See
+  [Decimal conventions](#decimal-conventions) below for how the two are told
+  apart.
+- Date parser tries ISO (`%Y-%m-%d`), then the slashed orderings `%m/%d/%Y`,
+  `%d/%m/%Y`, `%Y/%m/%d`, then the dotted ones `%d.%m.%Y`, `%m.%d.%Y`,
+  `%Y.%m.%d`; an unrecognised value is `None` (never raises). The orderings
+  encode what each separator conventionally means: a **slashed** date is
+  US-first (`01/15/2026` = January 15), a **dotted** one European-first
+  (`15.01.2026` = 15 January). Where the first reading is impossible — month 15
+  — the next pattern takes it, so both orderings still parse.
+
+### Decimal conventions
+
+`850,00` means **850.00** in most of Europe and **85000** if you assume the
+comma groups thousands. The parser used to assume the latter unconditionally
+(`s.replace(",", "")`), so a European statement reconciled at a hundred times
+its real value — and the text reader agreed it was money, because it read that
+same comma as thousands-separator evidence.
+
+The fix is **per document, not per token**: a statement is written in exactly
+one convention throughout, so the full token set answers what a single token
+cannot.
+
+- `detect_amount_convention(values)` → `"us" | "eu" | None`. It votes only on
+  tokens that are *self-describing*: both separators present (the rightmost is
+  the decimal point), the same separator twice or more (only grouping repeats),
+  or a single separator with a **one- or two-digit tail** (money carries at
+  most two decimal places and no grouping run is shorter than three digits, so
+  `850,00` proves the comma is decimal on its own). Contradictory evidence
+  returns `None`, exactly like no evidence.
+- `parse_amount(raw, *, convention=None)` consults `convention` for **one**
+  shape only — a single separator with a three-digit tail (`1,234` / `1.234`),
+  which is a thousands group under one convention and a three-decimal value
+  under the other. Every other token is read on its own terms, so one odd row
+  can't drag the rest of the statement onto the wrong reading. With no
+  `convention`, that ambiguous shape keeps its historical US reading.
+
+Both document-scoped call sites resolve first and then parse: `parse_statement_csv`
+across its amount column, and `vendor_statement_extraction.normalize_extracted_lines`
+across the adapter's lines. The manual-entry path is unaffected — it takes a
+typed `Decimal` through Pydantic and never reaches this parser.
+
+The text reader's amount pattern accepts both conventions too. Grouping runs are
+pinned to exactly three digits on purpose: it is what keeps a European dotted
+**date** (`15.01.2026`) out of the money bucket, which a looser `[\d.,]*` would
+swallow. Rationale: [decisions.md](../../docs/decisions.md) §27.
 
 Raises `StatementParseError` (→ a 422 at the route) only on a **structural**
 failure: an empty body / fewer than two rows (header + ≥1 data row), or a header

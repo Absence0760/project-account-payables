@@ -974,3 +974,58 @@ the live registry, because config.py must not import the service layer.
 a fixture. It would make the fallback safe everywhere, but the fixture is what
 lets tests and demos produce a populated invoice with no provider — a much
 wider blast radius than the resolution rule this entry is about.
+
+---
+
+## 27. A statement's decimal convention is decided per document, not per token
+
+**Decided:** 2026-08-16 · `backend/app/services/vendor_statement_recon.py`
+
+`850,00` is 850.00 in most of Europe and 85000 if the comma groups thousands.
+`parse_amount` assumed the latter unconditionally (`s.replace(",", "")`), so a
+European supplier statement reconciled at **a hundred times** its real value.
+The text reader agreed the token was money — it read that same comma as
+thousands-separator evidence — so nothing upstream caught it.
+
+The unit that can answer is the **document**, not the token. A statement is
+written in one convention throughout, so one unambiguous `1.234,56` anywhere in
+it settles every bare `1.200` beside it. `detect_amount_convention` runs across
+the whole amount column (CSV) or all extracted lines (PDF) before any of it is
+parsed.
+
+**Only genuinely ambiguous tokens consult the document.** A single separator
+with a three-digit tail (`1,234` / `1.234`) is a thousands group under one
+convention and a three-decimal value under the other — that shape, and only that
+shape, takes the document's answer. Everything else is self-describing and is
+read on its own terms: both separators present means the rightmost is the
+decimal point; a repeated separator can only be grouping; and a one- or
+two-digit tail must be the decimal point, because money carries at most two
+decimal places and no grouping run is shorter than three digits. That last rule
+is what makes a lone `850,00` correct with no other row present.
+
+The asymmetry matters: a document-level vote must not override a token that says
+what it is, or one malformed row would drag an entire statement onto the wrong
+reading. Contradictory evidence therefore resolves to "no answer" rather than to
+a majority, and the self-describing tokens still parse correctly underneath it.
+
+**Trade-off:** with no evidence at all, the ambiguous three-digit-tail shape
+keeps its historical US reading, so a European statement consisting *only* of
+`1.200`-shaped amounts still reads them as 1.200. That is unchanged behaviour
+rather than a new failure, and any row carrying cents fixes it for the whole
+document.
+
+**Not adopted:** per-token locale guessing (no rule distinguishes `1,234`
+American from European in isolation — this is the whole difficulty), and
+refusing the ambiguous shape outright (safe, but it makes every European
+statement unreadable, trading a wrong number for no number on documents that
+are perfectly legible once the convention is known).
+
+**A second, quieter blocker rode along.** `_DATE_TOKEN` matched only `-` and
+`/`, so `15.01.2026` read as a second *identifier*-shaped token and the
+exactly-one-identifier rule refused the whole row. European statements were
+therefore skipped wholesale rather than mis-read — safe, but it meant fixing the
+amount alone would not have made one reconcile. Dotted dates are now recognised,
+and the amount pattern pins grouping runs to exactly three digits so a date can
+never be read as money.
+
+See [vendor-statement-reconciliation.md § Decimal conventions](../backend/docs/vendor-statement-reconciliation.md).
