@@ -3331,8 +3331,8 @@
 		flex: 1;
 	}
 	.priors-chip {
-		background: rgba(99, 140, 255, 0.15);
-		color: var(--accent);
+		background: var(--accent-tint);
+		color: var(--accent-on-tint);
 		font-size: 0.72rem;
 		font-weight: 500;
 		padding: 2px 8px;

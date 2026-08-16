@@ -348,7 +348,7 @@
 		text-transform: uppercase;
 		letter-spacing: 0.03em;
 	}
-	.badge.draft { background: rgba(99, 140, 255, 0.15); color: #638cff; }
+	.badge.draft { background: var(--accent-tint); color: var(--accent-on-tint); }
 	.badge.submitted { background: rgba(212, 148, 10, 0.15); color: #d4940a; }
 	.badge.pending_approval { background: rgba(212, 148, 10, 0.15); color: #d4940a; }
 	.badge.approved { background: rgba(31, 168, 106, 0.15); color: #1fa86a; }

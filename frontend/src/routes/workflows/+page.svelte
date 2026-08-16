@@ -379,8 +379,8 @@
 		letter-spacing: 0.03em;
 		padding: 2px 7px;
 		border-radius: 4px;
-		background: rgba(99, 140, 255, 0.15);
-		color: var(--accent);
+		background: var(--accent-tint);
+		color: var(--accent-on-tint);
 		margin-left: 8px;
 	}
 

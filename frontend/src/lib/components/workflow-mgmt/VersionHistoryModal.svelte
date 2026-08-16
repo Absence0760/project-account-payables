@@ -289,8 +289,8 @@
 	}
 
 	.kind-added .vh-kind {
-		background: rgba(50, 200, 130, 0.15);
-		color: #1fa86a;
+		background: var(--success-tint);
+		color: var(--success-on-tint);
 	}
 
 	.kind-removed .vh-kind {

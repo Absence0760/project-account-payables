@@ -839,9 +839,9 @@
 	}
 
 	.warn {
-		color: #c47b00;
+		color: var(--warning-on-tint);
 		font-size: 0.85rem;
-		background: rgba(255, 165, 0, 0.08);
+		background: var(--warning-tint);
 		border: 1px solid rgba(255, 165, 0, 0.3);
 		padding: 8px 12px;
 		border-radius: 4px;
@@ -885,8 +885,8 @@
 	}
 
 	.status.enabled {
-		background: rgba(46, 160, 67, 0.12);
-		color: #2ea043;
+		background: var(--success-tint);
+		color: var(--success-on-tint);
 	}
 
 	.status.disabled {

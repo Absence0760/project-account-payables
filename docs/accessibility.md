@@ -80,6 +80,16 @@ plus two kinds of human review:
    surface) is asserted directly, so one drifting token surfaces as one
    failure rather than dozens.
 
+   A colour that only exists **after compositing** is measured too, in the same
+   pass: a rule that fades itself with `opacity`, and a rule that tints its
+   background translucently. The latter is the status-badge recipe, and it
+   fails in a way nobody spots by eye — the tint lightens the dark surface
+   toward text set in the same tone, so 29 badges rendered between 4.15:1 and
+   4.48:1, short by a hair rather than obviously wrong. Each tone therefore
+   carries a `--<tone>-tint` background paired with the `--<tone>-on-tint` text
+   calibrated on it, asserted over both backdrops a badge sits on. See
+   [decisions.md](decisions.md) §30.
+
    The two guards are complements, not alternatives: the scan can't resolve the
    cascade (a rule setting only `color` inherits its background at runtime),
    and axe can't see a surface no listed route renders. Rationale + what was

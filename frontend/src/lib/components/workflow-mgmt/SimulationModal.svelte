@@ -290,14 +290,14 @@
 	.outcome-ok,
 	.outcome-passed,
 	.outcome-matched {
-		background: rgba(50, 200, 130, 0.15);
-		color: #1fa86a;
+		background: var(--success-tint);
+		color: var(--success-on-tint);
 	}
 
 	.outcome-skipped,
 	.outcome-not_matched {
-		background: rgba(138, 143, 160, 0.15);
-		color: var(--text-muted);
+		background: var(--muted-tint);
+		color: var(--muted-on-tint);
 	}
 
 	.outcome-error,

@@ -229,7 +229,7 @@
 		text-transform: uppercase;
 		letter-spacing: 0.03em;
 	}
-	.badge.open { background: rgba(99, 140, 255, 0.15); color: #638cff; }
+	.badge.open { background: var(--accent-tint); color: var(--accent-on-tint); }
 	.badge.in_review { background: rgba(212, 148, 10, 0.15); color: #d4940a; }
 	.badge.approved { background: rgba(31, 168, 106, 0.15); color: #1fa86a; }
 	.badge.rejected { background: rgba(224, 64, 64, 0.15); color: var(--danger); }

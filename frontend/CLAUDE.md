@@ -819,20 +819,31 @@ inherit it for free. Reuse these; don't re-solve them per page.
 ### Colour tokens and contrast (WCAG 1.4.3)
 
 The palette in `src/app.css` `:root` is small and every colour token has a
-**stated job**. Three of them come in pairs, and picking the wrong half is the
-one mistake this codebase kept making:
+**stated job**. They come in families, and picking the wrong member is the one
+mistake this codebase kept making:
 
-| Base token — text / icons / borders on a dark surface | `-strong` companion — the FILL behind white text |
-|---|---|
-| `--accent` `#638cff` | `--accent-strong` `#3f5fd6` |
-| `--success` `#1fa86a` | `--success-strong` `#177a4d` |
-| `--danger` `#f87171` | `--danger-strong` `#c43535` |
+| Base token — text / icons / borders on a dark surface | `-strong` companion — the FILL behind white text | `-tint` / `-on-tint` pair — the status-badge recipe |
+|---|---|---|
+| `--accent` `#638cff` | `--accent-strong` `#3f5fd6` | `--accent-tint` + `--accent-on-tint` `#7d9bff` |
+| `--success` `#1fa86a` | `--success-strong` `#177a4d` | `--success-tint` + `--success-on-tint` `#26b977` |
+| `--danger` `#f87171` | `--danger-strong` `#c43535` | `--danger-tint` + `--danger-on-tint` `#f87171` |
+| — | — | `--warning-tint` + `--warning-on-tint` `#dca014` |
+| `--text-muted` `#8a8fa0` | — | `--muted-tint` + `--muted-on-tint` `#9aa0b2` |
 
 - **Never put white text on a base token.** All three are mid-tones chosen to
   be legible *as text on the dark surfaces*; white on them is 3.06–3.12:1,
   well under the 4.5:1 bar. That is what the `-strong` half is for, and it is
   the only thing it is for — `--danger-strong` as *text* on `--surface` would
   be unreadable in the other direction.
+- **A tinted badge takes the `-on-tint` text, never the base token.** A
+  translucent tint lightens the dark surface *toward* text set in the same
+  tone, so a base token — chosen to be legible on the BARE surface — lands
+  just under the bar once composited. `--accent` on `--accent-tint` is 4.48:1:
+  two hundredths short, which is why 29 badges shipped that way unnoticed.
+  Write `background: var(--accent-tint); color: var(--accent-on-tint)` and
+  nothing else; the pair is calibrated together and carries ≥0.7 of margin on
+  both `--bg` and `--surface`. `--danger-on-tint` equals `--danger` on purpose
+  — red needs no lift — so that the rule has no exception to remember.
 - **`--surface-2` `#232b44` is the hostile surface.** Only `--text` clears
   4.5:1 on it (11.0:1). `--text-muted` is 4.34:1 there — the failure the axe
   guard originally caught. Muted text belongs on `--bg` or `--surface`.
@@ -863,7 +874,11 @@ Two guards enforce it, and neither subsumes the other:
   and its background down onto the backdrop — so a token that clears the bar at
   full strength can render under it (`--text-muted` at `.85` is 4.24:1 on
   `--surface`). **Don't dim already-muted text with `opacity`**: the token has
-  done that job, and the fade only spends contrast. Pure scanners live in
+  done that job, and the fade only spends contrast. It measures a **translucent
+  background** the same way and in the same pass, compositing the tint over each
+  backdrop before judging the pair — the check that found all 29 badges. And it
+  asserts each `-tint` / `-on-tint` pair directly, so a tone that drifts names
+  one token instead of the dozen sites that spelled it. Pure scanners live in
   `a11y/cssAudit.ts`; the WCAG math in `a11y/contrast.ts`.
 - **`tests-e2e/a11y/axe.spec.ts`** covers what the scanner deliberately can't:
   a rule setting only `color` inherits its background through the cascade at
@@ -871,10 +886,14 @@ Two guards enforce it, and neither subsumes the other:
   fine (a revoked-row fade put `/admin/api-keys`' status pill at 2.44:1). Add a
   route here when you add a page carrying dialogs or dense controls.
 
-A **translucent** `background: rgba(…)` is the same compositing problem and the
-scanner has the primitives for it, but the ~29 status badges built that way sit
-just under the bar (4.15–4.48:1) and need a design call, so that half is not
-armed yet — see `docs/followups.md`.
+What is left is **consistency, not contrast**: 202 rules still spell a tinted
+badge as a hand-rolled `rgba()` plus a literal hex — 44 spellings of what the
+five pairs above now name. Every one of them passes, so this is design-system
+debt rather than a defect, and normalising it changes tint strength on surfaces
+across the whole app. Tracked in `docs/followups.md`; reach for the tokens in
+new code and when you are already editing a rule. `ui/StatusBadge.svelte` is
+already migrated and is the reference for what a tokenised badge looks like —
+including how to comment a tone that stays a literal on purpose.
 
 **A failure means changing the colour, never relaxing the rule** — there is no
 suppression mechanism, because the `-strong` companions mean a correct answer

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { compositeOver, parseColor, parseColorWithAlpha, type Rgb } from './contrast';
 import {
 	auditStyles,
 	collectAssignedTokens,
@@ -24,7 +25,11 @@ const PALETTE = {
 	'--text': '#e2e4ea',
 	'--text-muted': '#8a8fa0',
 	'--accent': '#638cff',
-	'--accent-strong': '#3f5fd6'
+	'--accent-strong': '#3f5fd6',
+	// The badge-tint pair, so a fixture can exercise both the recipe that fails
+	// (base token on its own tint) and the one that replaced it.
+	'--accent-tint': 'rgba(99, 140, 255, 0.15)',
+	'--accent-on-tint': '#7d9bff'
 };
 
 const audit = (css: string, assigned: string[] = []) =>
@@ -350,17 +355,24 @@ describe('auditStyles — bare literal text colour', () => {
 	});
 
 	/**
-	 * A translucent tint composites against whatever is behind it, so the pair
-	 * check can't judge it — and it's the standard dark-theme status-pill
-	 * shape. Falling silent there is how the purple/green/amber pill text kept
-	 * its sub-4.5:1 colours; holding the literal to the bare surface is the
-	 * right approximation and the conservative one.
+	 * A gradient has no single colour, so it stays unjudgeable and the literal
+	 * is held to the bare surfaces instead.
+	 *
+	 * A *translucent* background used to be lumped in with it on the reasoning
+	 * that a tint composites close to the surface behind it. It doesn't: the
+	 * tint moves the surface toward the text, so that approximation is
+	 * optimistic and it passed 29 real badges at 4.15–4.48:1. Compositing is
+	 * exact and cheap once the backdrop is named, so the tint case now belongs
+	 * to `composited-contrast` and only the gradient falls through here.
 	 */
-	it('still applies when the declared background is translucent or a gradient', () => {
-		const tint = auditText('.badge{background:rgba(224,64,64,0.15);color:#e04040}');
-		expect(tint.map((f) => f.kind)).toEqual(['literal-text-color']);
+	it('still applies when the declared background is a gradient', () => {
 		const gradient = auditText('.g{background:linear-gradient(#000,#fff);color:#e04040}');
 		expect(gradient.map((f) => f.kind)).toEqual(['literal-text-color']);
+	});
+
+	it('hands a translucent background to the composited check instead', () => {
+		const tint = auditText('.badge{background:rgba(224,64,64,0.15);color:#e04040}');
+		expect(tint.map((f) => f.kind)).toEqual(['composited-contrast']);
 	});
 
 	it('honours the large-text bar', () => {
@@ -427,6 +439,125 @@ describe('auditStyles — a rule that fades itself with opacity', () => {
 	 */
 	it('does not try to model an ancestor’s opacity', () => {
 		expect(auditText('tr.faded td{opacity:0.6}.pill{color:var(--text-muted)}')).toEqual([]);
+	});
+});
+
+describe('auditStyles — a rule that tints its background translucently', () => {
+	/**
+	 * The status-badge recipe: a background tinted in the tone's own hue, and
+	 * text set in that tone. The tint lightens the dark surface *toward* the
+	 * text, so the pair renders below the bar even though both halves are
+	 * individually fine — 29 badges in this app sat between 4.15:1 and 4.48:1.
+	 */
+	it('flags the badge recipe — accent text on its own 15% tint', () => {
+		const findings = auditText('.badge{color:var(--accent);background:rgba(99,140,255,0.15)}');
+		expect(findings).toHaveLength(1);
+		expect(findings[0]).toMatchObject({
+			kind: 'composited-contrast',
+			selector: '.badge',
+			// The rule declares no fade of its own — the tint alone does this.
+			opacity: 1,
+			surface: '--surface',
+			backgroundColor: '#232b44'
+		});
+		expect((findings[0] as { ratio: number }).ratio).toBeCloseTo(4.48, 2);
+		expect(describeFinding(findings[0])).toContain('the translucent background');
+	});
+
+	/**
+	 * The regression this whole class turns on. Before the tint was composited,
+	 * such a rule reached the bare-literal check instead, which measures the
+	 * text against the UNTINTED surface — 5.55:1 here, a comfortable pass. That
+	 * approximation is optimistic, not conservative, and it is why 29 failures
+	 * went unreported by a scanner that already owned every primitive.
+	 */
+	it('does not let a translucent background fall through to the bare-surface check', () => {
+		const findings = auditText('.badge{color:#638cff;background:rgba(99,140,255,0.15)}');
+		expect(findings).toHaveLength(1);
+		expect(findings[0].kind).toBe('composited-contrast');
+	});
+
+	it('passes the calibrated pair the tint tokens exist to supply', () => {
+		expect(
+			auditText('.badge{color:var(--accent-on-tint);background:var(--accent-tint)}')
+		).toEqual([]);
+	});
+
+	/**
+	 * The failure text is the whole UX of this guard, and the two compositing
+	 * causes need opposite advice. Telling someone whose rule declares no
+	 * opacity to "drop the fade" sends them hunting for one that isn't there.
+	 */
+	it('gives tint-specific remediation, not the opacity advice', () => {
+		const tint = describeFinding(
+			auditText('.badge{color:var(--accent);background:rgba(99,140,255,0.15)}')[0]
+		);
+		expect(tint).toContain('var(--<tone>-on-tint)');
+		expect(tint).not.toContain('drop the fade');
+
+		const fade = describeFinding(auditText('.sub{color:var(--text-muted);opacity:0.85}')[0]);
+		expect(fade).toContain('drop the fade');
+		expect(fade).not.toContain('var(--<tone>-on-tint)');
+	});
+
+	/**
+	 * Both compositing causes at once — and the one case where the two plausible
+	 * formulas for the TEXT side disagree, so the numbers are pinned rather than
+	 * just "a finding fired".
+	 *
+	 * `opacity` is group opacity: the element renders to an offscreen buffer and
+	 * that buffer is composited over the backdrop. An opaque glyph hides the box
+	 * behind it inside the buffer, so the text fades toward the BACKDROP. Blending
+	 * it onto the tinted box instead counts the tint twice on the text side, and
+	 * errs optimistic — the direction a contrast guard must never err in.
+	 */
+	it('fades text toward the backdrop, not toward its own tint', () => {
+		const tintOnly = auditText('.a{color:var(--accent-on-tint);background:var(--accent-tint)}');
+		expect(tintOnly).toEqual([]);
+
+		const findings = auditText(
+			'.a{color:var(--accent-on-tint);background:var(--accent-tint);opacity:0.7}'
+		);
+		expect(findings).toHaveLength(1);
+		const f = findings[0] as Extract<StyleFinding, { kind: 'composited-contrast' }>;
+		expect(f.opacity).toBe(0.7);
+
+		// Whichever backdrop it reported — the scan stops at the first failing
+		// one, and at .7 opacity this pair already fails on --bg.
+		const backdrop = parseColor(f.surfaceColor)!;
+		const tint = parseColorWithAlpha(PALETTE['--accent-tint'])!;
+		const hex = ({ r, g, b }: Rgb) =>
+			`#${[r, g, b].map((n) => n.toString(16).padStart(2, '0')).join('')}`;
+
+		// Text: the glyph over the backdrop at the group's opacity.
+		expect(f.foregroundColor).toBe(
+			hex(compositeOver(parseColor(PALETTE['--accent-on-tint'])!, backdrop, 0.7))
+		);
+		// Box: the tint over the backdrop, then faded onto it — equivalently one
+		// blend at the product of the alphas, which is what the browser draws.
+		expect(f.backgroundColor).toBe(hex(compositeOver(tint.color, backdrop, tint.alpha * 0.7)));
+	});
+
+	it('leaves an opaque background to the same-rule pair check', () => {
+		const findings = auditText('.b{color:var(--text-muted);background:var(--surface-2)}');
+		expect(findings).toHaveLength(1);
+		// `contrast`, not `composited-contrast` — nothing here needs compositing.
+		expect(findings[0].kind).toBe('contrast');
+	});
+
+	it('holds a tinted rule to the large-text bar when the rule declares one', () => {
+		expect(
+			auditText(
+				'.h{color:var(--accent);background:rgba(99,140,255,0.15);font-size:1.5rem}'
+			)
+		).toEqual([]);
+	});
+
+	/** A gradient has no single colour to composite, so there is nothing to judge. */
+	it('stays silent on a background it cannot resolve', () => {
+		expect(
+			auditText('.g{color:var(--accent);background:linear-gradient(#fff,#000)}')
+		).toEqual([]);
 	});
 });
 
