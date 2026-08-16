@@ -542,7 +542,21 @@ export function auditStyles(sources: StyleSource[], options: AuditOptions): Styl
 								)
 							: null;
 						const box = opaqueBg ?? tinted ?? backdrop;
-						const text = compositeOver(parseColor(fg)!, box, opacity);
+						// `opacity` is GROUP opacity: the element's subtree is
+						// rendered to an offscreen buffer, then that buffer is
+						// composited over the backdrop. Inside the buffer an
+						// opaque glyph completely covers the box behind it, so
+						// the text's blend target is the BACKDROP — not its own
+						// background, which never shows through the glyph.
+						// Blending text onto `box` double-counts the tint on the
+						// text side, and does so optimistically.
+						//
+						// The box side does pass through its background twice,
+						// and that is correct: compositing a tint over B and
+						// then fading the result onto B is algebraically the
+						// same as one blend at the product of the two alphas,
+						// which is what the browser draws.
+						const text = compositeOver(parseColor(fg)!, backdrop, opacity);
 						const faded = compositeOver(box, backdrop, opacity);
 
 						const ratio = contrastRatio(text, faded);

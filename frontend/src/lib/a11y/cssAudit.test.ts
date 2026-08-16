@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { compositeOver, parseColor, parseColorWithAlpha, type Rgb } from './contrast';
 import {
 	auditStyles,
 	collectAssignedTokens,
@@ -499,15 +500,42 @@ describe('auditStyles — a rule that tints its background translucently', () =>
 		expect(fade).not.toContain('var(--<tone>-on-tint)');
 	});
 
-	/** Both compositing causes at once: the tint sets the box, opacity fades it. */
-	it('applies the rule’s own opacity on top of the tint', () => {
+	/**
+	 * Both compositing causes at once — and the one case where the two plausible
+	 * formulas for the TEXT side disagree, so the numbers are pinned rather than
+	 * just "a finding fired".
+	 *
+	 * `opacity` is group opacity: the element renders to an offscreen buffer and
+	 * that buffer is composited over the backdrop. An opaque glyph hides the box
+	 * behind it inside the buffer, so the text fades toward the BACKDROP. Blending
+	 * it onto the tinted box instead counts the tint twice on the text side, and
+	 * errs optimistic — the direction a contrast guard must never err in.
+	 */
+	it('fades text toward the backdrop, not toward its own tint', () => {
 		const tintOnly = auditText('.a{color:var(--accent-on-tint);background:var(--accent-tint)}');
-		const alsoFaded = auditText(
+		expect(tintOnly).toEqual([]);
+
+		const findings = auditText(
 			'.a{color:var(--accent-on-tint);background:var(--accent-tint);opacity:0.7}'
 		);
-		expect(tintOnly).toEqual([]);
-		expect(alsoFaded).toHaveLength(1);
-		expect(alsoFaded[0]).toMatchObject({ kind: 'composited-contrast', opacity: 0.7 });
+		expect(findings).toHaveLength(1);
+		const f = findings[0] as Extract<StyleFinding, { kind: 'composited-contrast' }>;
+		expect(f.opacity).toBe(0.7);
+
+		// Whichever backdrop it reported — the scan stops at the first failing
+		// one, and at .7 opacity this pair already fails on --bg.
+		const backdrop = parseColor(f.surfaceColor)!;
+		const tint = parseColorWithAlpha(PALETTE['--accent-tint'])!;
+		const hex = ({ r, g, b }: Rgb) =>
+			`#${[r, g, b].map((n) => n.toString(16).padStart(2, '0')).join('')}`;
+
+		// Text: the glyph over the backdrop at the group's opacity.
+		expect(f.foregroundColor).toBe(
+			hex(compositeOver(parseColor(PALETTE['--accent-on-tint'])!, backdrop, 0.7))
+		);
+		// Box: the tint over the backdrop, then faded onto it — equivalently one
+		// blend at the product of the alphas, which is what the browser draws.
+		expect(f.backgroundColor).toBe(hex(compositeOver(tint.color, backdrop, tint.alpha * 0.7)));
 	});
 
 	it('leaves an opaque background to the same-rule pair check', () => {
