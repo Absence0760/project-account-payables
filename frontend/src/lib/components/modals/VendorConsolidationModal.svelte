@@ -47,6 +47,17 @@
 		load();
 	});
 
+	// The ONE call site is the mount `$effect` above, and that is what makes
+	// this the one list surface in the app with no `createRequestSequencer()`
+	// (`frontend/CLAUDE.md` § Sequencing list fetches). `doMerge` drops a
+	// cluster from `clusters` in place with no fetch of its own — the exact
+	// shape that gets clobbered elsewhere — but it is only reachable from a
+	// button rendered off `clusters`, so no GET can still be in flight when it
+	// runs, and there is no create path to race the first load.
+	//
+	// Adding a second trigger breaks that immediately: a `load()` after the
+	// merge on line 96 to re-list, or a Retry control on the `loadError` state.
+	// Wire the sequencer in the same change if you add either.
 	async function load() {
 		loading = true;
 		loadError = false;
