@@ -56,6 +56,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.payment import Payment
 from app.models.sanctions_check import SanctionsCheck
 from app.models.vendor import Vendor
+from app.services.payment_methods import (
+    INTERNATIONAL_PAYMENT_METHODS,
+    normalize_payment_method,
+)
 from app.services.sanctions_adapters import (
     SanctionsAdapter,
     ScreeningResult,
@@ -65,9 +69,13 @@ from app.services.sanctions_adapters import (
 # Defaults — tenant settings override.
 _DEFAULT_KYC_REQUIRED_ABOVE = Decimal("1000")
 _DEFAULT_AML_ALERT_THRESHOLD = Decimal("100000")
-_DEFAULT_HIGH_RISK_METHODS: frozenset[str] = frozenset(
-    {"sepa", "international_wire", "international_ach"}
-)
+# The corridors that require a KYC-verified vendor above the threshold. This is
+# exactly "the international rails", so it is imported from the one registry
+# that names them (`services/payment_methods`) rather than restated here — a
+# fourth international rail must not be able to ship with no KYC gate because
+# this copy was forgotten. An org can still narrow/widen it per-tenant via
+# `settings.compliance.high_risk_corridor_methods`.
+_DEFAULT_HIGH_RISK_METHODS: frozenset[str] = INTERNATIONAL_PAYMENT_METHODS
 
 
 @dataclass
@@ -102,8 +110,18 @@ def _config(org_settings: dict | None) -> dict:
 
 def _kyc_required_for(method: str, amount: Decimal, org_settings: dict | None) -> bool:
     cfg = _config(org_settings)
-    high_risk = set(cfg.get("high_risk_corridor_methods", []) or []) or _DEFAULT_HIGH_RISK_METHODS
-    if method not in high_risk:
+    # Both sides are normalised: an admin typing "SEPA" into the per-org
+    # override used to silently disable the KYC gate for that corridor, because
+    # the stored `Payment.method` is lower-case.
+    # Blank / non-string entries are dropped, so a settings blob of `[""]` falls
+    # back to the default set rather than disabling the gate entirely.
+    configured = {
+        normalized
+        for m in cfg.get("high_risk_corridor_methods") or []
+        if (normalized := normalize_payment_method(m if isinstance(m, str) else None))
+    }
+    high_risk = configured or _DEFAULT_HIGH_RISK_METHODS
+    if normalize_payment_method(method) not in high_risk:
         return False
     threshold = Decimal(str(cfg.get("kyc_required_above", _DEFAULT_KYC_REQUIRED_ABOVE)))
     return amount >= threshold

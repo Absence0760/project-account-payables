@@ -94,5 +94,5 @@ def test_is_international_payment_recognises_intl_ach():
     """A payment with corridor=international_ach but no fx_rate is
     still international (foreign rails) — the predicate must say
     True so reporting and audit trails treat it correctly."""
-    p = SimpleNamespace(fx_rate=None, corridor="international_ach")
+    p = SimpleNamespace(fx_rate=None, corridor="international_ach", method="international_ach")
     assert is_international_payment(p) is True

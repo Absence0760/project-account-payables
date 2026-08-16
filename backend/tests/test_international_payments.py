@@ -324,25 +324,41 @@ def test_fx_gain_loss_refuses_zero_invoice_rate():
 
 
 def test_is_international_true_when_fx_rate_locked():
-    p = SimpleNamespace(fx_rate=Decimal("0.92"), corridor="international_wire")
+    p = SimpleNamespace(
+        fx_rate=Decimal("0.92"), corridor="international_wire", method="international_wire"
+    )
     assert is_international_payment(p) is True
 
 
 def test_is_international_true_for_sepa_even_without_fx():
     """EUR→EUR SEPA has no FX leg but is still an international
     payment from the org's perspective if home currency is USD."""
-    p = SimpleNamespace(fx_rate=None, corridor="sepa")
+    p = SimpleNamespace(fx_rate=None, corridor="sepa", method="sepa")
     assert is_international_payment(p) is True
 
 
 def test_is_international_false_for_domestic_ach():
-    p = SimpleNamespace(fx_rate=None, corridor="ach")
+    p = SimpleNamespace(fx_rate=None, corridor="ach", method="ach")
     assert is_international_payment(p) is False
 
 
 def test_is_international_false_for_payment_without_corridor_set():
     """Legacy rows from before migration 0017 have corridor=None."""
-    p = SimpleNamespace(fx_rate=None, corridor=None)
+    p = SimpleNamespace(fx_rate=None, corridor=None, method="ach")
+    assert is_international_payment(p) is False
+
+
+def test_is_international_true_when_only_the_method_names_the_rail():
+    """`corridor` is stamped by `prepare_international_payment`; the standalone
+    `POST /api/payments` path and pre-migration-0017 rows carry only `method`.
+    Reading `corridor` alone would miss those and skip the FX lock."""
+    p = SimpleNamespace(fx_rate=None, corridor=None, method="international_wire")
+    assert is_international_payment(p) is True
+
+
+def test_is_international_ignores_a_non_positive_locked_rate():
+    """A zero/negative rate is not evidence of an FX leg — the rail is."""
+    p = SimpleNamespace(fx_rate=Decimal("0"), corridor="ach", method="ach")
     assert is_international_payment(p) is False
 
 

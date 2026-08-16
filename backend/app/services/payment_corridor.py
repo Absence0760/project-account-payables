@@ -23,6 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
+from app.services.payment_methods import is_international_payment_method
 from app.utils.banking import is_sepa_country
 
 # NACHA Global ACH supports USD-originated cross-border ACH to a small
@@ -85,7 +86,11 @@ class CorridorChoice:
 # every line item to regardless of the invoice's actual currency/country —
 # a truthy `requested_method` of one of those can NOT be trusted as "the user
 # explicitly chose this" the way an explicit international method can.
-_EXPLICIT_INTERNATIONAL_METHODS = frozenset({"sepa", "international_wire", "international_ach"})
+#
+# That set is `payment_methods.INTERNATIONAL_PAYMENT_METHODS`, imported rather
+# than restated: `compliance` (KYC thresholds) and `api/payments` (whether an
+# FX rate is locked) ask the same question, and three private copies meant a
+# fourth international rail had to be remembered in three places.
 
 # Fee anchors — order-of-magnitude estimates, not contracts. Used to
 # render a "≈ $X" badge on the payment screen so the AP team can pick.
@@ -158,7 +163,7 @@ def pick_corridor(
     # there instead of routing correctly. Fall through to auto-selection
     # below exactly as if no method had been requested.
     honor_override = bool(requested_method) and (
-        requested_method.lower() in _EXPLICIT_INTERNATIONAL_METHODS or is_domestic_us
+        is_international_payment_method(requested_method) or is_domestic_us
     )
 
     if honor_override:
