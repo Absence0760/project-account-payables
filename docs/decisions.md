@@ -1085,6 +1085,22 @@ the app on the strength of a surface it never renders against. Decorative
 fills (a chart bar, a confidence dot, an SVG `fill`) carry no text and are
 untouched.
 
+The rule also fires when the rule *does* declare a background that resolves to
+nothing usable — a translucent tint, a gradient. Standing down there sounded
+conservative and was the opposite: `background: rgba(140,100,240,0.15);
+color: #8c64f0` is the standard dark-theme status pill, so the check would have
+fallen silent precisely on the pills. A tint over an app surface composites
+close to it, so the bare surface is the right approximation; twelve more
+failures came out (purple, blue, amber and green pill/banner text, 3.53–4.42:1).
+
+**A hole in the drift check itself** turned up in review and is worth
+recording: the `var()` fallback was captured with `[^()]*`, which cannot cross
+an inner paren, so `var(--bg, var(--surface))` — shipped on two routes —
+matched nothing and was invisible to both the dead-token and the stale-fallback
+check. The scan is paren-aware now, and the comparison resolves a fallback
+through the palette rather than by spelling, since a token-valued fallback
+would otherwise read as stale on sight.
+
 **Fixing a failure means changing the colour.** There is no suppression
 mechanism and no allowlist, because the `-strong` companions mean a correct
 answer always exists. The one nuance encoded instead of waived is WCAG's own:

@@ -166,10 +166,13 @@ existed for a round and almost nothing used it — 40 buttons and chips still
 filled with `var(--accent)` at 3.12:1; green and red had no companion at all,
 so pay / approve / execute / reject / void all failed), 32
 `var(--token, fallback)` declarations whose fallback contradicted its token,
-and 12 references to a token nothing ever assigns. `--success{,-strong}` and
-`--danger{,-strong}` now exist alongside `--accent{,-strong}`, every site is
-fixed, and `frontend/src/lib/a11y/tokenPairing.test.ts` fails the suite on a
-recurrence — with no suppression mechanism, since a `-strong` companion means a
+and 12 references to a token nothing ever assigns. A fourth rule, added once
+those were green, found **120** more: a bare literal `color:` renders on
+whatever the cascade supplies, and `#e04040` — the status red on error
+messages, alerts and the danger row-action — is 4.11:1 on `--surface`.
+`--success{,-strong}` and `--danger{,-strong}` now exist alongside
+`--accent{,-strong}`, every site is fixed, and
+`frontend/src/lib/a11y/tokenPairing.test.ts` fails the suite on a recurrence — with no suppression mechanism, since a `-strong` companion means a
 correct answer always exists. The four routes went in too; the two guards are
 complements (the scan can't resolve the cascade, axe can't see a surface no
 listed route renders). Rationale in [decisions.md](decisions.md) §28. It also
