@@ -32,8 +32,14 @@
  * after a local mutation superseded the fetch that owns it.
  *
  * Shared by every list loader that can have a request in flight while something
- * else changes the list — see `stores/invoices.svelte.ts`,
- * `stores/payments.svelte.ts`, and `routes/vendors/+page.svelte`.
+ * else changes the list — the list stores, the list routes, the `expenses`
+ * page's four sub-lists, the `workflows/[id]` builder canvas and
+ * `InvoiceModal`'s line-item editor all wire it. Two rules the app-wide
+ * adoption settled, both in `frontend/CLAUDE.md` § Sequencing list fetches:
+ * a surface holding several independent lists gives each its OWN sequencer
+ * (one shared counter would let an unrelated request blank another list), and
+ * a create/prepend path supersedes too — it needs no pre-existing row, so it
+ * races even the very first load.
  */
 export function createRequestSequencer() {
 	let latest = 0;
