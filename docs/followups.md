@@ -34,13 +34,22 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#251](https://github.com/Absence0760/project-account-payables/issues/251)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-08-15 against `feat/webhook-secret-rotation`. Closed in
-that pass: **outbound-webhook signing secrets have no rotation path** — both
-halves shipped together (`POST /api/webhooks/{id}/rotate-secret` keeping the
-subscription id + delivery history, and the overlap window via migration `0084`
-plus the `X-Webhook-Signature-Previous` header), so the deferral's "shipping only
-the no-overlap half leaves the hard cutover a customer will actually hit" no
-longer applies.
+**Last reconciled:** 2026-08-15 against `improve/round-followup-closeout` — a
+three-agent round that closed the three remaining tracked items. **Webhook
+secret rotation is now reachable from `/admin/webhooks`** (row action → overlap
+picker → one-time reveal), and its overlap badge survives a reload now that
+`SubscriptionResponse` carries the expiry. **Vendor statements accept a PDF**,
+routed through the org's own extraction adapter as an optional
+`extract_statement` capability rather than a second parser, with the source
+document archived. **The cash-flow copilot gained a proactive
+shortfall-alert sweep**; its opening-balance-provenance bullet turned out to be
+already shipped, and closing it surfaced a real defect underneath — the provider
+balance's CURRENCY was dropped, so a USD-reporting org with a EUR account got a
+running balance that was silently a two-currency mixture. That is fixed and the
+CFO endpoint now shares the same resolution chain.
+
+Two new entries below replace them, both surfaced by this round's reviews rather
+than by the work itself.
 
 Closed in the pass before that, against
 `feat/settled-amount-and-money-path-followups`: the entire
@@ -93,40 +102,6 @@ originally-deferred sub-bucket from that same feature remains:
 Refs: [roadmap.md](roadmap.md) § AI Cash-Flow Copilot,
 [cash-flow-copilot.md](cash-flow-copilot.md).
 
-### Webhook overlap badge doesn't survive a reload — `SubscriptionResponse` omits the expiry
-
-The `/admin/webhooks` rotation UI ships: a Rotate-secret row action, a
-confirm dialog carrying the overlap picker (including the explicit
-"Compromised — cut over now" hard cutover), the one-time reveal of the
-replacement secret, and a `Previous secret until …` pill while the retiring
-secret is still signing.
-
-That pill is **session-scoped**, and only because it has to be.
-`GET /api/webhooks` returns `SubscriptionResponse`, which carries
-`secret_prefix` but **not** `previous_secret_expires_at` — the field exists on
-the row (migration `0084`) and on the rotate response, but never on a list
-read. So the frontend holds the expiry in memory from the rotation it just
-performed, and a page reload loses the badge even though the window is still
-open. An admin who reloads mid-rotation can't tell whether the old secret is
-still verifying.
-
-- [ ] Add `previous_secret_expires_at: datetime | None` to
-      `SubscriptionResponse` in `backend/app/api/webhooks.py` (it is an expiry
-      timestamp, not a secret — `previous_signing_secret` itself must stay off
-      the wire), then drop the in-memory `overlapUntil` map in
-      `frontend/src/routes/admin/webhooks/+page.svelte` and read the field off
-      the listed row instead. `$lib/utils/webhookRotation.isOverlapLive` is
-      already the shared predicate and doesn't change.
-
-**Why deferred:** the round that built the UI was frontend-scoped by
-assignment and explicitly not permitted to change the backend contract; the
-badge is genuinely useful in the session where it matters (the admin is on the
-page pasting the new secret into their receiver), so shipping the UI without
-it would have been the worse trade.
-**Trigger:** the next backend touch on `webhooks.py` — it is a one-field
-change plus its `test_webhooks.py` assertion.
-Ref: [public-api.md](../backend/docs/public-api.md) § Rotating a signing secret.
-
 ### Vendor statement reconciliation — statement upload UI
 
 PDF-via-extraction intake and raw-file storage both **shipped**: a PDF upload
@@ -153,6 +128,48 @@ than being bolted on.
 **Trigger:** the first tenant expected to upload a statement without an
 engineer, or the next `/polish-ui` pass touching `/vendor-statements`.
 Ref: [vendor-statement-reconciliation.md](../backend/docs/vendor-statement-reconciliation.md) § PDF intake.
+
+### `/cfo` can't tell a skipped provider balance from no bank at all
+
+`GET /api/analytics/cash-position` now returns `opening_balance_provider_skipped`
+(e.g. `currency_mismatch`, when the payment adapter reports a balance in a
+currency other than the org's reporting currency and the chain refuses it rather
+than mixing two currencies into one running balance). The `/cfo` dashboard
+renders only `opening_balance_source === 'none'`, so **"we have a bank balance
+but declined to use it"** and **"no bank is connected"** look identical on the
+page. The copilot's chat narration is currently the only place a human sees the
+difference — on the surface where the number is actually read, the reason is
+invisible.
+
+- [ ] Render the skip reason distinctly on the cash-position card (the API
+      already carries it — this is display only, no backend work).
+
+**Why deferred:** surfaced by the code review of the cash-flow round, whose
+scope was the backend correctness bug (the wrong money figure), which is closed.
+This is the reporting half and belongs with a `/cfo` pass.
+**Trigger:** the first org that connects a foreign-currency operating account,
+or the next UI pass on `/cfo`.
+Ref: [cash-flow-copilot.md](cash-flow-copilot.md) § Opening balance.
+
+### The axe a11y guard doesn't cover any `/admin` route
+
+`frontend/tests-e2e/a11y/axe.spec.ts` covers dashboard / invoices / vendors /
+payments / exceptions / login / portal. **No `/admin` route is in it** — not
+`/admin` itself, not `/admin/api-keys`, `/admin/webhooks`, or `/admin/partner`.
+Those pages carry dialogs, armed two-click destructive actions and one-time
+secret reveals, which is exactly the surface where a focus-management or
+labelling regression is most costly, and the guard would not catch it.
+
+- [ ] Add the `/admin` routes to the axe spec's route list (they reuse the
+      shared `ui/` primitives, so the expectation is that they pass as-is; if
+      one doesn't, that IS the finding).
+
+**Why deferred:** surfaced while adding the webhook rotation UI. Widening a
+shared guard spec at the end of an unrelated round is the wrong moment — a new
+failure there would be indistinguishable from a regression the round caused.
+**Trigger:** the next `/audit:accessibility` or `/polish-ui` pass touching
+`/admin`.
+Ref: [accessibility.md](accessibility.md).
 
 ### Mount-time double-fetch race — invoices/vendors' local-mutation bypass
 
