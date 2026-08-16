@@ -42,40 +42,57 @@ const KEYWORDS: Record<string, Rgb> = {
 
 const clampByte = (n: number) => Math.max(0, Math.min(255, Math.round(n)));
 
+/** A parsed colour plus its alpha. `alpha` is 1 for every opaque notation. */
+export interface RgbaParts {
+	color: Rgb;
+	alpha: number;
+}
+
 /**
- * Parse a CSS colour literal into RGB. Returns `null` for anything whose
- * rendered colour depends on context — a translucent value, a gradient, a
- * keyword like `transparent` / `currentColor`, or an unresolved `var()`.
- * Resolve `var()` before calling this (see `cssAudit.resolveColorValue`).
+ * Parse a CSS colour literal, **keeping** its alpha. Returns `null` only for
+ * something whose colour isn't a literal at all — a gradient, `transparent` /
+ * `currentColor`, an unresolved `var()`. Resolve `var()` before calling this
+ * (see `cssAudit.resolveColorValue`).
+ *
+ * Exists because a translucent value is not unknowable — it is knowable *given
+ * what is behind it*. `parseColor` (below) deliberately drops those, so a
+ * caller that can supply the backdrop uses this and `compositeOver` instead.
  */
-export function parseColor(value: string): Rgb | null {
+export function parseColorWithAlpha(value: string): RgbaParts | null {
 	if (!value) return null;
 	const v = value.trim().toLowerCase().replace(/\s*!important$/, '').trim();
 	if (!v) return null;
 
-	if (KEYWORDS[v]) return KEYWORDS[v];
+	if (KEYWORDS[v]) return { color: KEYWORDS[v], alpha: 1 };
 
 	if (/^#[0-9a-f]{3}$/.test(v)) {
 		return {
-			r: parseInt(v[1] + v[1], 16),
-			g: parseInt(v[2] + v[2], 16),
-			b: parseInt(v[3] + v[3], 16)
+			color: {
+				r: parseInt(v[1] + v[1], 16),
+				g: parseInt(v[2] + v[2], 16),
+				b: parseInt(v[3] + v[3], 16)
+			},
+			alpha: 1
 		};
 	}
 	if (/^#[0-9a-f]{6}$/.test(v)) {
 		return {
-			r: parseInt(v.slice(1, 3), 16),
-			g: parseInt(v.slice(3, 5), 16),
-			b: parseInt(v.slice(5, 7), 16)
+			color: {
+				r: parseInt(v.slice(1, 3), 16),
+				g: parseInt(v.slice(3, 5), 16),
+				b: parseInt(v.slice(5, 7), 16)
+			},
+			alpha: 1
 		};
 	}
-	// #rrggbbaa is only opaque at aa === ff; anything else composites.
 	if (/^#[0-9a-f]{8}$/.test(v)) {
-		if (v.slice(7, 9) !== 'ff') return null;
 		return {
-			r: parseInt(v.slice(1, 3), 16),
-			g: parseInt(v.slice(3, 5), 16),
-			b: parseInt(v.slice(5, 7), 16)
+			color: {
+				r: parseInt(v.slice(1, 3), 16),
+				g: parseInt(v.slice(3, 5), 16),
+				b: parseInt(v.slice(5, 7), 16)
+			},
+			alpha: parseInt(v.slice(7, 9), 16) / 255
 		};
 	}
 
@@ -85,17 +102,46 @@ export function parseColor(value: string): Rgb | null {
 		if (slots.length !== 3 && slots.length !== 4) return null;
 		const nums = slots.map((s) => parseFloat(s));
 		if (nums.some((n) => Number.isNaN(n))) return null;
-		if (slots.length === 4) {
-			// Alpha is a 0–1 number or a percentage — never a 0–255 byte.
-			const alpha = slots[3].endsWith('%') ? nums[3] / 100 : nums[3];
-			if (alpha < 1) return null;
-		}
+		// Alpha is a 0–1 number or a percentage — never a 0–255 byte.
+		const alpha =
+			slots.length === 4 ? (slots[3].endsWith('%') ? nums[3] / 100 : nums[3]) : 1;
+		if (alpha < 0 || alpha > 1) return null;
 		// Colour channels may be bytes (`255`) or percentages (`100%`).
 		const channel = (i: number) => (slots[i].endsWith('%') ? (nums[i] / 100) * 255 : nums[i]);
-		return { r: clampByte(channel(0)), g: clampByte(channel(1)), b: clampByte(channel(2)) };
+		return {
+			color: { r: clampByte(channel(0)), g: clampByte(channel(1)), b: clampByte(channel(2)) },
+			alpha
+		};
 	}
 
 	return null;
+}
+
+/**
+ * Composite a translucent colour over an opaque backdrop (simple source-over).
+ * This is what the browser does, and what axe measures — so a rule that tints
+ * its background, or sits under an ancestor `opacity`, has a knowable rendered
+ * colour as soon as the backdrop is named.
+ */
+export function compositeOver(source: Rgb, backdrop: Rgb, alpha: number): Rgb {
+	const blend = (s: number, b: number) => clampByte(alpha * s + (1 - alpha) * b);
+	return {
+		r: blend(source.r, backdrop.r),
+		g: blend(source.g, backdrop.g),
+		b: blend(source.b, backdrop.b)
+	};
+}
+
+/**
+ * Parse a CSS colour literal into RGB. Returns `null` for anything whose
+ * rendered colour depends on context — a translucent value, a gradient, a
+ * keyword like `transparent` / `currentColor`, or an unresolved `var()`.
+ * Resolve `var()` before calling this (see `cssAudit.resolveColorValue`).
+ */
+export function parseColor(value: string): Rgb | null {
+	const parsed = parseColorWithAlpha(value);
+	if (!parsed || parsed.alpha < 1) return null;
+	return parsed.color;
 }
 
 /** WCAG relative luminance of an opaque sRGB colour. */

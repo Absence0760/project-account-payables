@@ -26,7 +26,14 @@
  * single rule, which is where the palette's own mistakes live.
  */
 
-import { contrastRatio, parseColor, WCAG_AA_LARGE, WCAG_AA_NORMAL } from './contrast';
+import {
+	compositeOver,
+	contrastRatio,
+	parseColor,
+	parseColorWithAlpha,
+	WCAG_AA_LARGE,
+	WCAG_AA_NORMAL
+} from './contrast';
 
 export interface StyleSource {
 	/** Repo-relative path, used only for reporting. */
@@ -78,11 +85,36 @@ export interface LiteralTextColorFinding {
 	required: number;
 }
 
+/**
+ * A pair whose rendered colour only exists after compositing — the rule fades
+ * itself with `opacity`, or tints its background translucently. Both are
+ * measured against the backdrop surfaces body text sits on.
+ */
+export interface CompositedContrastFinding {
+	kind: 'composited-contrast';
+	path: string;
+	selector: string;
+	/** The declarations as written. */
+	foreground: string;
+	background: string | null;
+	/** The rule's own opacity (1 when it declares none). */
+	opacity: number;
+	/** The backdrop it failed against. */
+	surface: string;
+	surfaceColor: string;
+	/** What actually renders, after compositing. */
+	foregroundColor: string;
+	backgroundColor: string;
+	ratio: number;
+	required: number;
+}
+
 export type StyleFinding =
 	| ContrastFinding
 	| StaleFallbackFinding
 	| DeadTokenFinding
-	| LiteralTextColorFinding;
+	| LiteralTextColorFinding
+	| CompositedContrastFinding;
 
 const TOKEN_RE = '--[a-z0-9-]+';
 
@@ -249,6 +281,22 @@ export function resolveColorValue(
 	palette: Record<string, string>,
 	depth = 0
 ): string | null {
+	const literal = resolveColorLiteral(value, palette, depth);
+	if (literal === null) return null;
+	const opaque = parseColor(literal);
+	return opaque ? toHex(opaque) : null;
+}
+
+/**
+ * The shared `var()`-following core: resolves a declaration value to the colour
+ * literal it renders as, **keeping** a translucent one (which
+ * `resolveColorValue` then discards as unresolvable).
+ */
+function resolveColorLiteral(
+	value: string,
+	palette: Record<string, string>,
+	depth = 0
+): string | null {
 	if (!value || depth > 8) return null;
 	const v = value.trim().replace(/\s*!important$/i, '').trim();
 	if (!v) return null;
@@ -257,20 +305,19 @@ export function resolveColorValue(
 	const varMatch = new RegExp(`^var\\(\\s*(${TOKEN_RE})\\s*(?:,([\\s\\S]*))?\\)$`, 'i').exec(v);
 	if (varMatch) {
 		const declared = palette[varMatch[1]];
-		if (declared !== undefined) return resolveColorValue(declared, palette, depth + 1);
-		if (varMatch[2] !== undefined) return resolveColorValue(varMatch[2], palette, depth + 1);
+		if (declared !== undefined) return resolveColorLiteral(declared, palette, depth + 1);
+		if (varMatch[2] !== undefined) return resolveColorLiteral(varMatch[2], palette, depth + 1);
 		return null;
 	}
 
-	const direct = parseColor(v);
-	if (direct) return toHex(direct);
+	if (parseColorWithAlpha(v)) return v;
 
 	// A shorthand like `background: var(--surface) url(x) no-repeat` — the
 	// colour is one of the top-level parts.
 	const parts = splitTopLevel(v);
 	if (parts.length > 1) {
 		for (const part of parts) {
-			const resolved = resolveColorValue(part, palette, depth + 1);
+			const resolved = resolveColorLiteral(part, palette, depth + 1);
 			if (resolved) return resolved;
 		}
 	}
@@ -324,6 +371,23 @@ export interface AuditOptions {
  * parent or sibling rule the scanner can't see.
  */
 const LITERAL_EXEMPT = new Set(['#ffffff', '#000000']);
+
+/**
+ * The rule's own `opacity`, or 1 when it declares none / declares something
+ * non-numeric. Only a rule's OWN opacity is knowable here — an ancestor's is
+ * not, which is the seam `tests-e2e/a11y/axe.spec.ts` covers at runtime.
+ */
+function ruleOpacity(declarations: Array<[string, string]>): number {
+	let opacity = 1;
+	for (const [prop, value] of declarations) {
+		if (prop !== 'opacity') continue;
+		const raw = value.trim().replace(/\s*!important$/i, '').trim();
+		const n = raw.endsWith('%') ? parseFloat(raw) / 100 : parseFloat(raw);
+		if (Number.isFinite(n) && n >= 0 && n <= 1) opacity = n; // later wins
+	}
+	return opacity;
+}
+
 
 /**
  * Run all three checks over the given stylesheets. Findings are returned, not
@@ -403,6 +467,56 @@ export function auditStyles(sources: StyleSource[], options: AuditOptions): Styl
 				}
 			}
 
+			// 5 — a rule that fades ITSELF with `opacity`. Opacity composites the
+			// element — text and its background together — down onto whatever is
+			// behind it, so a colour that clears the bar at full strength can
+			// render well under it. Nothing above sees this: check 3 compares the
+			// declared pair, and check 4 exempts a palette token on the reasoning
+			// that `palette contract` already vouches for it — which opacity is
+			// exactly what invalidates. `--text-muted` under `opacity: .85` is
+			// 4.24:1 on `--surface`, and that is what axe reported on /cfo.
+			//
+			// Only the rule's OWN opacity is knowable here. An ANCESTOR's is not,
+			// and neither is a translucent background — see the module header.
+			const opacity = ruleOpacity(rule.declarations);
+			if (foreground && opacity < 1) {
+				const fg = resolveColorValue(foreground, palette);
+				const required = isLargeText(rule.declarations) ? WCAG_AA_LARGE : WCAG_AA_NORMAL;
+				if (fg) {
+					for (const token of textSurfaces) {
+						const backdrop = palette[token] ? parseColor(palette[token]) : null;
+						if (!backdrop) continue;
+						// The element's own background if it declares an opaque
+						// one, else the backdrop shows through.
+						const opaqueBg = resolvedBackground ? parseColor(resolvedBackground) : null;
+						const box = opaqueBg ?? backdrop;
+						const text = compositeOver(parseColor(fg)!, box, opacity);
+						const faded = compositeOver(box, backdrop, opacity);
+
+						const ratio = contrastRatio(text, faded);
+						if (ratio === null || ratio + 1e-9 >= required) continue;
+						findings.push({
+							kind: 'composited-contrast',
+							path: source.path,
+							selector: rule.selector,
+							foreground,
+							background,
+							opacity,
+							surface: token,
+							surfaceColor: palette[token],
+							foregroundColor: toHex(text),
+							backgroundColor: toHex(faded),
+							ratio,
+							required
+						});
+						break; // one finding per rule — the first failing surface names it
+					}
+				}
+				// Fully described by the check above; the opaque same-rule pair
+				// below would measure colours that never render.
+				continue;
+			}
+
 			if (!foreground || !background || !resolvedBackground) continue;
 
 			const fg = resolveColorValue(foreground, palette);
@@ -474,5 +588,19 @@ export function describeFinding(finding: StyleFinding): string {
 				`(${finding.surfaceColor}), below the ${finding.required}:1 bar. The rule sets no ` +
 				`background, so this text renders on an app surface — use a palette token`
 			);
+		case 'composited-contrast': {
+			const cause =
+				finding.opacity < 1
+					? `opacity ${finding.opacity}` +
+						(finding.background ? ` and a ${finding.background} background` : '')
+					: `the translucent background ${finding.background}`;
+			return (
+				`${finding.path} — {${finding.selector}}: color ${finding.foreground} under ` +
+				`${cause} renders as ${finding.foregroundColor} on ${finding.backgroundColor} ` +
+				`over ${finding.surface} (${finding.surfaceColor}) — ${finding.ratio.toFixed(2)}:1, ` +
+				`below the ${finding.required}:1 bar. Opacity fades text and its background onto ` +
+				`the backdrop; pick a colour that clears the bar once composited, or drop the fade`
+			);
+		}
 	}
 }

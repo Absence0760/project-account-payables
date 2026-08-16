@@ -16,6 +16,10 @@ import {
 
 const PALETTE = {
 	'--bg': '#0f1117',
+	// --surface is one of the two `textSurfaces` below, and the surface the
+	// real `.kpi-sub` defect failed on — a fixture without it can't reproduce
+	// the class at all, because --bg is darker and more forgiving.
+	'--surface': '#181a23',
 	'--surface-2': '#232b44',
 	'--text': '#e2e4ea',
 	'--text-muted': '#8a8fa0',
@@ -366,6 +370,63 @@ describe('auditStyles — bare literal text colour', () => {
 
 	it('does nothing when no text surfaces are configured', () => {
 		expect(audit('.err{color:#e04040}')).toEqual([]);
+	});
+});
+
+describe('auditStyles — a rule that fades itself with opacity', () => {
+	/**
+	 * The class BOTH other contrast checks structurally miss. Check 3 compares
+	 * the declared pair; check 4 exempts a palette token on the reasoning that
+	 * the palette contract already vouches for it — and opacity is precisely
+	 * what invalidates that, because it composites the text down toward the
+	 * backdrop. `.kpi-sub` (--text-muted at .85) rendered 4.24:1 on --surface
+	 * and was invisible to the scan until axe caught it on /cfo.
+	 */
+	it('flags a muted token faded below the bar by the rule’s own opacity', () => {
+		const findings = auditText('.sub{color:var(--text-muted);opacity:0.85}');
+		expect(findings).toHaveLength(1);
+		expect(findings[0]).toMatchObject({
+			kind: 'composited-contrast',
+			foreground: 'var(--text-muted)',
+			opacity: 0.85
+		});
+		// The reported colour is what RENDERS, not what was declared.
+		expect(findings[0]).not.toMatchObject({ foregroundColor: PALETTE['--text-muted'] });
+		expect(describeFinding(findings[0])).toContain('opacity 0.85');
+	});
+
+	it('passes the same token at full opacity', () => {
+		expect(auditText('.sub{color:var(--text-muted)}')).toEqual([]);
+	});
+
+	it('treats opacity:1 and a non-numeric value as no fade', () => {
+		expect(auditText('.a{color:var(--text-muted);opacity:1}')).toEqual([]);
+		expect(auditText('.b{color:var(--text-muted);opacity:inherit}')).toEqual([]);
+	});
+
+	it('fades onto the rule’s own opaque background, not the backdrop', () => {
+		// --text on --surface is 11:1, so a light fade still clears — but only
+		// when the box is --surface. Measured against the page behind it the
+		// same rule would read far darker.
+		expect(
+			auditText('.c{color:var(--text);background:var(--surface);opacity:0.9}')
+		).toEqual([]);
+	});
+
+	it('honours the large-text bar', () => {
+		expect(auditText('.h{color:var(--text-muted);opacity:0.85;font-size:1.5rem}')).toEqual([]);
+	});
+
+	it('reports one finding per rule even when several surfaces fail', () => {
+		expect(auditText('.d{color:var(--text-muted);opacity:0.5}')).toHaveLength(1);
+	});
+
+	/**
+	 * An ANCESTOR's opacity is a cascade question, so it stays axe's half —
+	 * this rule is legible on its own and must not be flagged here.
+	 */
+	it('does not try to model an ancestor’s opacity', () => {
+		expect(auditText('tr.faded td{opacity:0.6}.pill{color:var(--text-muted)}')).toEqual([]);
 	});
 });
 
