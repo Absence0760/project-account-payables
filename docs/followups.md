@@ -34,13 +34,22 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#251](https://github.com/Absence0760/project-account-payables/issues/251)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-08-15 against `feat/webhook-secret-rotation`. Closed in
-that pass: **outbound-webhook signing secrets have no rotation path** — both
-halves shipped together (`POST /api/webhooks/{id}/rotate-secret` keeping the
-subscription id + delivery history, and the overlap window via migration `0084`
-plus the `X-Webhook-Signature-Previous` header), so the deferral's "shipping only
-the no-overlap half leaves the hard cutover a customer will actually hit" no
-longer applies.
+**Last reconciled:** 2026-08-15 against `improve/round-followup-closeout` — a
+three-agent round that closed the three remaining tracked items. **Webhook
+secret rotation is now reachable from `/admin/webhooks`** (row action → overlap
+picker → one-time reveal), and its overlap badge survives a reload now that
+`SubscriptionResponse` carries the expiry. **Vendor statements accept a PDF**,
+routed through the org's own extraction adapter as an optional
+`extract_statement` capability rather than a second parser, with the source
+document archived. **The cash-flow copilot gained a proactive
+shortfall-alert sweep**; its opening-balance-provenance bullet turned out to be
+already shipped, and closing it surfaced a real defect underneath — the provider
+balance's CURRENCY was dropped, so a USD-reporting org with a EUR account got a
+running balance that was silently a two-currency mixture. That is fixed and the
+CFO endpoint now shares the same resolution chain.
+
+Two new entries below replace them, both surfaced by this round's reviews rather
+than by the work itself.
 
 Closed in the pass before that, against
 `feat/settled-amount-and-money-path-followups`: the entire
@@ -87,53 +96,80 @@ Phases 1–3 core shipped (read-only cash Q&A, `propose_payment_plan` +
 originally-deferred sub-bucket from that same feature remains:
 
 - [ ] Saved plans / plan-vs-actual (`CashPlan` model + migration)
-- [ ] Opening-balance provenance surfacing
 - [ ] Consolidated cross-entity mode
-- [ ] Proactive shortfall-alert sweep
 
 **Trigger:** next feature slice. Nothing blocks it.
 Refs: [roadmap.md](roadmap.md) § AI Cash-Flow Copilot,
 [cash-flow-copilot.md](cash-flow-copilot.md).
 
-### Outbound-webhook secret rotation is API-only — no admin UI
+### Vendor statement reconciliation — statement upload UI
 
-`POST /api/webhooks/{id}/rotate-secret` ships with its overlap window, docs and
-tests, but `frontend/src/routes/admin/webhooks/+page.svelte` has no control for
-it — the page can create, edit and delete a subscription, so an admin who needs
-to rotate a leaked secret has to reach for the API while a Delete button (which
-CASCADE-deletes the delivery history) sits right there in the UI. That's the
-wrong affordance to be the easy one during an incident.
+PDF-via-extraction intake and raw-file storage both **shipped**: a PDF upload
+routes through the org's own extraction adapter (`ExtractionAdapter.extract_statement`,
+an optional capability implemented on `mock` / `claude_vision` / `ollama`), the
+uploaded document is archived to S3 and served back by
+`GET /api/vendor-statements/{id}/file`, and `file_key` is no longer written NULL.
 
-- [ ] Add a rotate action to the subscription row: confirm-then-act like the
-      existing armed two-click Delete, an overlap picker (default 60 min, plus
-      an explicit "compromised — cut over now" = 0 option), and a
-      show-once secret panel reusing whatever the create flow already does for
-      the one-time secret reveal.
-- [ ] Surface an "overlap active until …" badge while
-      `previous_secret_expires_at` is in the future, so an admin can see a
-      rotation is mid-flight rather than guessing.
+What's left is the surface, not the pipeline: `/vendor-statements` is a
+create-from-pasted-lines page with no file picker at all — the CSV endpoint
+never had one either, and the PDF one inherits that gap. Today both are
+API-only.
 
-**Why deferred:** the backend round that closed the rotation follow-up was
-scoped to the endpoint + overlap + docs (what that item actually listed); the
-UI is a different surface with its own patterns (`Modal`, `RowAction`, the
-one-time-secret reveal) and deserves its own pass rather than being bolted on.
-**Trigger:** the first tenant expected to self-serve a rotation without an
-engineer, or the next `/polish-ui` pass touching `/admin`.
-Ref: [public-api.md](../backend/docs/public-api.md) § Rotating a signing secret.
+- [ ] Statement upload UI on `/vendor-statements` — file picker (CSV or PDF) →
+      vendor / statement-date / reference form → the run detail; surface the
+      run's `extraction` provenance block and a "download the source statement"
+      link when `has_source_file` is true; map the 422 reason messages onto the
+      form.
 
-### Vendor statement reconciliation — PDF intake
+**Why deferred:** the backend round that closed PDF intake was scoped to the
+adapter capability, the bridge service, the route and raw-file storage; the page
+is a different surface with its own patterns and deserves its own pass rather
+than being bolted on.
+**Trigger:** the first tenant expected to upload a statement without an
+engineer, or the next `/polish-ui` pass touching `/vendor-statements`.
+Ref: [vendor-statement-reconciliation.md](../backend/docs/vendor-statement-reconciliation.md) § PDF intake.
 
-CSV upload and the manual pasted-lines path both ship. A supplier statement that
-arrives as a PDF still has to be transcribed by hand.
+### `/cfo` can't tell a skipped provider balance from no bank at all
 
-- [ ] PDF-via-extraction statement intake + raw-file storage — route the PDF
-      through the existing extraction pipeline rather than adding a second
-      parser.
+`GET /api/analytics/cash-position` now returns `opening_balance_provider_skipped`
+(e.g. `currency_mismatch`, when the payment adapter reports a balance in a
+currency other than the org's reporting currency and the chain refuses it rather
+than mixing two currencies into one running balance). The `/cfo` dashboard
+renders only `opening_balance_source === 'none'`, so **"we have a bank balance
+but declined to use it"** and **"no bank is connected"** look identical on the
+page. The copilot's chat narration is currently the only place a human sees the
+difference — on the surface where the number is actually read, the reason is
+invisible.
 
-**Why deferred:** the CSV/manual paths cover the common case, and reusing the
-extraction adapters properly is a real slice rather than a bolt-on.
-**Trigger:** a pilot tenant whose suppliers send PDF statements.
-Ref: [vendor-statement-reconciliation.md](../backend/docs/vendor-statement-reconciliation.md) § Deferred.
+- [ ] Render the skip reason distinctly on the cash-position card (the API
+      already carries it — this is display only, no backend work).
+
+**Why deferred:** surfaced by the code review of the cash-flow round, whose
+scope was the backend correctness bug (the wrong money figure), which is closed.
+This is the reporting half and belongs with a `/cfo` pass.
+**Trigger:** the first org that connects a foreign-currency operating account,
+or the next UI pass on `/cfo`.
+Ref: [cash-flow-copilot.md](cash-flow-copilot.md) § Opening balance.
+
+### The axe a11y guard doesn't cover any `/admin` route
+
+`frontend/tests-e2e/a11y/axe.spec.ts` covers dashboard / invoices / vendors /
+payments / exceptions / login / portal. **No `/admin` route is in it** — not
+`/admin` itself, not `/admin/api-keys`, `/admin/webhooks`, or `/admin/partner`.
+Those pages carry dialogs, armed two-click destructive actions and one-time
+secret reveals, which is exactly the surface where a focus-management or
+labelling regression is most costly, and the guard would not catch it.
+
+- [ ] Add the `/admin` routes to the axe spec's route list (they reuse the
+      shared `ui/` primitives, so the expectation is that they pass as-is; if
+      one doesn't, that IS the finding).
+
+**Why deferred:** surfaced while adding the webhook rotation UI. Widening a
+shared guard spec at the end of an unrelated round is the wrong moment — a new
+failure there would be indistinguishable from a regression the round caused.
+**Trigger:** the next `/audit:accessibility` or `/polish-ui` pass touching
+`/admin`.
+Ref: [accessibility.md](accessibility.md).
 
 ### Mount-time double-fetch race — invoices/vendors' local-mutation bypass
 

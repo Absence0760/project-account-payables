@@ -178,7 +178,7 @@ Use AP data to forecast cash outflows and optimize payment timing.
 
 ### AI Cash-Flow Copilot
 **Status:** Phases 1–3 shipped (read-only cash Q&A + `/cash-flow` copilot; proposed payment plans via `propose_payment_plan` + the plan card; draft-only enactment — stage a draft payment run / accept the plan's discounts) — see [cash-flow-copilot.md](cash-flow-copilot.md).
-**Open:** The deferred bucket only — saved plans / plan-vs-actual, opening-balance provenance, consolidated cross-entity mode, shortfall-alert sweep. Tracked in [followups.md](followups.md).
+**Open:** The deferred bucket only — saved plans / plan-vs-actual, consolidated cross-entity mode. (Opening-balance provenance and the proactive shortfall-alert sweep have both shipped.) Tracked in [followups.md](followups.md).
 
 A **beyond-parity** differentiator, not a competitive gap: a natural-language,
 forward-looking copilot that answers "when do I run low on cash?" and "what

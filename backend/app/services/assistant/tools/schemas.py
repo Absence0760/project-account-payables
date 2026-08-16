@@ -193,9 +193,18 @@ class CashPositionResult(BaseModel):
     granularity: str
     horizon_days: int
     opening_balance: Decimal
-    # Which link of the resolution chain supplied the balance —
-    # "explicit" (caller) | "provider" (bank sync) | "settings" | "none".
+    # Provenance of the figure the whole curve is built on — see
+    # `services.cashflow.OpeningBalance`. Which link of the resolution chain
+    # supplied it ("explicit" | "provider" | "settings" | "none"), and, when a
+    # bank sync supplied it, which provider + which (opaque) account label so
+    # the copilot can say "from your Modern Treasury operating account"
+    # instead of an unattributable number.
     opening_balance_source: str
+    opening_balance_provider: str | None = None
+    opening_balance_account_ref: str | None = None
+    # "currency_mismatch" when a live provider balance existed but was refused
+    # because its account is in another currency than the org reports in.
+    opening_balance_provider_skipped: str | None = None
     min_balance_threshold: Decimal | None
     periods: list[CashPositionPeriod]
     first_shortfall_period: str | None
@@ -280,7 +289,13 @@ class PaymentPlanResult(BaseModel):
     granularity: str
     horizon_days: int
     opening_balance: Decimal
+    # Same provenance fields as `CashPositionResult` — the plan's whole cash
+    # curve starts from this figure, so the reader needs to see its origin
+    # before acting on a proposed pay schedule.
     opening_balance_source: str
+    opening_balance_provider: str | None = None
+    opening_balance_account_ref: str | None = None
+    opening_balance_provider_skipped: str | None = None
     min_balance_threshold: Decimal | None
     # The raw cash-budget input the optimizer selection was run under (may be
     # None — unconstrained). Echoed back verbatim (not resolved to anything)

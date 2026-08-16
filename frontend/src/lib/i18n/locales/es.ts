@@ -2106,6 +2106,11 @@ export const messages = {
 	'admin.webhooks.statusInactive': 'Inactivo',
 	'admin.webhooks.row.delete': 'Eliminar',
 	'admin.webhooks.row.confirm': 'Confirmar',
+	'admin.webhooks.row.rotate': 'Rotar secreto',
+	'admin.webhooks.rotateAria': 'Rotar el secreto de firma de {name}',
+	'admin.webhooks.overlapPill': 'Secreto anterior hasta {time}',
+	'admin.webhooks.overlapTitle':
+		'Hay una rotación en curso: el secreto saliente sigue firmando la cabecera X-Webhook-Signature-Previous hasta esta hora.',
 	'admin.webhooks.deliveries': 'Entregas',
 	'admin.webhooks.filter.all': 'Todas',
 	'admin.webhooks.filter.pending': 'Pendientes',
@@ -2132,6 +2137,34 @@ export const messages = {
 	'admin.webhooks.toast.deleteFailed': 'No se pudo eliminar el webhook',
 	'admin.webhooks.toast.requeued': 'Entrega vuelta a encolar',
 	'admin.webhooks.toast.redeliverFailed': 'Error al reenviar',
+	'admin.webhooks.toast.rotateFailed': 'Error al rotar el secreto de firma',
+	'admin.webhooks.rotate.aria': 'Rotar el secreto de firma',
+	'admin.webhooks.rotate.heading': 'Rotar el secreto de firma',
+	'admin.webhooks.rotate.hint':
+		'Genera un secreto de firma de reemplazo para {name}, conservando este webhook y todo su historial de entregas. El nuevo secreto se muestra una sola vez.',
+	'admin.webhooks.rotate.reRotateWarning':
+		'Ya hay una rotación en curso hasta {time}. Solo se conserva un secreto anterior, así que rotar de nuevo ahora dejará fuera a cualquier receptor que siga usando el secreto original, sea cual sea la ventana que elijas.',
+	'admin.webhooks.rotate.overlapLegend': 'Ventana de solapamiento',
+	'admin.webhooks.rotate.overlapHint':
+		'Cuánto tiempo el secreto saliente sigue firmando una segunda cabecera X-Webhook-Signature-Previous. Un receptor que acepte cualquiera de las dos cabeceras rota sin perder entregas.',
+	'admin.webhooks.rotate.overlap.cutover': 'Comprometido: cambiar ahora',
+	'admin.webhooks.rotate.overlap.15m': '15 minutos',
+	'admin.webhooks.rotate.overlap.1h': '1 hora (predeterminado)',
+	'admin.webhooks.rotate.overlap.4h': '4 horas',
+	'admin.webhooks.rotate.overlap.24h': '24 horas',
+	'admin.webhooks.rotate.cutoverWarning':
+		'Sin solapamiento: el secreto actual deja de verificar en la siguiente entrega. Las entregas fallarán hasta que tu receptor tenga el nuevo secreto.',
+	'admin.webhooks.rotate.rotate': 'Rotar secreto',
+	'admin.webhooks.rotate.rotating': 'Rotando…',
+	'admin.webhooks.rotated.aria': 'Secreto de firma rotado',
+	'admin.webhooks.rotated.heading': 'Secreto de firma rotado',
+	'admin.webhooks.rotated.warningStrong': 'Copia este secreto de firma ahora.',
+	'admin.webhooks.rotated.warning':
+		'Por seguridad se muestra una sola vez y nunca podrá recuperarse. Si lo pierdes, vuelve a rotarlo.',
+	'admin.webhooks.rotated.overlapNote':
+		'El secreto anterior seguirá firmando la cabecera X-Webhook-Signature-Previous hasta {time}. Instala el nuevo secreto en tu receptor antes de esa hora.',
+	'admin.webhooks.rotated.cutoverNote':
+		'Sin ventana de solapamiento: el secreto anterior dejó de verificar de inmediato. Instala el nuevo secreto en tu receptor ahora.',
 	'admin.webhooks.create.aria': 'Crear webhook',
 	'admin.webhooks.create.heading': 'Crear webhook',
 	'admin.webhooks.create.hintPre': 'Enviamos JSON firmado por POST a la URL de destino cada vez que se dispara un evento suscrito. El secreto de firma se genera ahora y se muestra',

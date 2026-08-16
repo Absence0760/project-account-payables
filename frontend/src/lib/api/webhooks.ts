@@ -6,6 +6,7 @@
 import { api } from '$lib/api';
 import type {
 	WebhookDelivery,
+	WebhookSecretRotated,
 	WebhookSubscription,
 	WebhookSubscriptionCreated
 } from '$lib/types/webhooks';
@@ -37,6 +38,30 @@ export function updateWebhookSubscription(
 	}
 ): Promise<WebhookSubscription> {
 	return api.patch<WebhookSubscription>(`/api/webhooks/${id}`, body);
+}
+
+/**
+ * Mint a replacement signing secret for a subscription, keeping its id — and
+ * therefore its whole delivery history, which `deleteWebhookSubscription`
+ * CASCADEs away. This is the remedy for a leaked secret; deleting and
+ * re-creating destroys the record of what was delivered.
+ *
+ * The response is the ONLY place the replacement secret is returned — surface
+ * it once, then drop it, exactly like the create flow.
+ *
+ * `overlapMinutes` keeps the retiring secret signing a second
+ * `X-Webhook-Signature-Previous` header for that long, so a receiver accepting
+ * either header rotates with no dropped deliveries; `0` is a hard cutover for a
+ * known-compromised secret. Out-of-range values are refused by the backend
+ * (422), not clamped — see `$lib/utils/webhookRotation`.
+ */
+export function rotateWebhookSecret(
+	id: string,
+	overlapMinutes: number
+): Promise<WebhookSecretRotated> {
+	return api.post<WebhookSecretRotated>(`/api/webhooks/${id}/rotate-secret`, {
+		overlap_minutes: overlapMinutes
+	});
 }
 
 /** Delete a subscription (CASCADEs its deliveries). */

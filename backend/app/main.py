@@ -134,6 +134,7 @@ async def lifespan(app: FastAPI):
     from app.services.approval_escalation import run_escalation_loop
     from app.services.audit_log_shipper import run_shipper_loop
     from app.services.billing.dunning_sweep import run_dunning_loop
+    from app.services.cash_flow_alerts import run_shortfall_alerts_loop
     from app.services.contract_renewal import run_renewal_loop
     from app.services.discount_auto_trigger import run_discount_optimization_loop
     from app.services.extraction_reaper import run_reaper_loop
@@ -158,6 +159,7 @@ async def lifespan(app: FastAPI):
     webhooks_task: asyncio.Task | None = None
     dunning_task: asyncio.Task | None = None
     scheduled_reports_task: asyncio.Task | None = None
+    shortfall_alerts_task: asyncio.Task | None = None
     if settings.extraction_reaper_enabled:
         reaper_task = asyncio.create_task(run_reaper_loop(), name="extraction-reaper")
     # Centralized audit-log shipper (SOC 2). Disabled by default so local
@@ -219,6 +221,14 @@ async def lifespan(app: FastAPI):
         scheduled_reports_task = asyncio.create_task(
             run_scheduled_reports_loop(), name="scheduled-reports"
         )
+    # Projected cash-shortfall alerts. Disabled by default so local dev / tests
+    # never email a CFO; flip FEOH_CASHFLOW_SHORTFALL_ALERTS_ENABLED on in
+    # deployed envs. Only reads the cash forecast and notifies — never moves
+    # money (see cash_flow_alerts).
+    if settings.cashflow_shortfall_alerts_enabled:
+        shortfall_alerts_task = asyncio.create_task(
+            run_shortfall_alerts_loop(), name="cashflow-shortfall-alerts"
+        )
 
     try:
         yield
@@ -237,6 +247,7 @@ async def lifespan(app: FastAPI):
             webhooks_task,
             dunning_task,
             scheduled_reports_task,
+            shortfall_alerts_task,
         ):
             if task is not None:
                 task.cancel()

@@ -4,6 +4,49 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+# --------------------------------------------------------------------------- #
+# Supplier-statement extraction — machine-safe reason codes
+#
+# A statement read can fail for reasons the *user* needs to act on ("this scan
+# has no text layer — configure a vision provider"), but an adapter's own error
+# text is provider output and must never reach an HTTP body. These codes are the
+# PII-free contract between an adapter and the service that surfaces the failure;
+# `StatementExtractionResult.error` stays for logs only.
+# --------------------------------------------------------------------------- #
+
+STATEMENT_REASON_NOT_SUPPORTED = "not_supported"
+STATEMENT_REASON_EMPTY_FILE = "empty_file"
+STATEMENT_REASON_NO_TEXT_LAYER = "no_text_layer"
+STATEMENT_REASON_NO_LINES = "no_lines_found"
+STATEMENT_REASON_PROVIDER_ERROR = "provider_error"
+STATEMENT_REASON_UNREADABLE = "unreadable_response"
+
+
+def pdf_text_layer(pdf_bytes: bytes, *, min_chars: int = 50) -> str | None:
+    """Return a PDF's embedded text layer, or ``None`` when there isn't one.
+
+    ``None`` means "this is a scan" (or PyMuPDF is unavailable / the bytes
+    aren't a readable PDF) — the caller must fall back to a vision model rather
+    than treat an empty read as an empty document. ``min_chars`` is the
+    "basically no text" floor: a scanned page often yields a few stray
+    characters from a header stamp.
+
+    Never raises.
+    """
+    try:
+        import fitz  # PyMuPDF
+
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        text = ""
+        for page in doc:
+            text += page.get_text()
+        text = text.strip()
+        return text if len(text) > min_chars else None
+    except ImportError:
+        return None
+    except Exception:
+        return None
+
 
 @dataclass
 class ExtractedField:
@@ -99,6 +142,50 @@ class ExtractionResult:
         return result
 
 
+@dataclass
+class StatementLineExtraction:
+    """One open item read off a **supplier statement** (the supplier's view).
+
+    Every value is the RAW string the reader saw — never a float, never a
+    pre-parsed number. Normalising into ``Decimal`` / ``date`` is the job of
+    ``app.services.vendor_statement_extraction``, which is also the only place
+    that knows the reconciliation engine's dataclasses. Keeping adapters on
+    strings is what makes it impossible for a provider response to introduce a
+    float into the money path.
+    """
+
+    invoice_number: str | None = None
+    invoice_date: str | None = None
+    amount: str | None = None
+    status: str | None = None
+    confidence: float = 0.0
+    raw: dict | None = None
+
+
+@dataclass
+class StatementExtractionResult:
+    """Normalised result of reading a supplier statement of open items.
+
+    A statement is a different document shape from an invoice — many open items
+    for ONE supplier, no header totals worth trusting — so it gets its own
+    result type rather than being forced through :class:`ExtractionResult`'s
+    single-invoice header + line-item shape (an ``ExtractedLineItem`` has no
+    invoice number or date to match on, which are exactly the two fields
+    reconciliation needs).
+    """
+
+    available: bool = False
+    success: bool = False
+    lines: list[StatementLineExtraction] = field(default_factory=list)
+    overall_confidence: float = 0.0
+    provider: str = ""
+    # PII-free code from the STATEMENT_REASON_* set — safe to map to a message.
+    reason: str | None = None
+    # Provider detail for LOGS ONLY — never put this in an HTTP response body.
+    error: str | None = None
+    raw_response: dict | None = None
+
+
 class ExtractionAdapter:
     """Base class for AI extraction providers."""
 
@@ -119,6 +206,32 @@ class ExtractionAdapter:
         Returns structured result with per-field confidence.
         """
         raise NotImplementedError
+
+    async def extract_statement(
+        self,
+        file_bytes: bytes = b"",
+        file_key: str = "",
+        mime_type: str = "application/pdf",
+    ) -> StatementExtractionResult:
+        """Read a supplier **statement of open items** into statement lines.
+
+        OPTIONAL capability — the default returns
+        ``StatementExtractionResult(available=False,
+        reason=STATEMENT_REASON_NOT_SUPPORTED)``, exactly like
+        ``PaymentAdapter.get_balance`` / ``fetch_settlement``. Adapters that
+        can't read a statement are unaffected, and the caller refuses the upload
+        with an actionable message instead of inventing statement lines — which
+        on this feature would be inventing money a clerk then chases.
+
+        Best-effort by contract: implementations catch transport failures and
+        return ``success=False`` rather than raise. The caller guards the call
+        too, so a provider outage can't 500 the upload.
+        """
+        return StatementExtractionResult(
+            available=False,
+            provider=self.provider_name,
+            reason=STATEMENT_REASON_NOT_SUPPORTED,
+        )
 
     async def test_connection(self) -> bool:
         """Verify the provider connection / API key is working."""

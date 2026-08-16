@@ -54,8 +54,8 @@ from app.services.analytics import (
 from app.services.audit_dispatch import dispatch_auth_audit
 from app.services.cashflow import (
     CashThresholds,
-    fetch_provider_balance,
     resolve_cash_thresholds,
+    resolve_opening_balance,
     store_cash_thresholds,
 )
 from app.services.currency_conversion import (
@@ -300,8 +300,12 @@ async def get_cash_position(
     period-by-period minus scheduled AP outflows, flagging periods that
     close below `min_balance_threshold`.
 
-    Opening-balance resolution (first hit wins):
-      1. `opening_balance` query param (explicit BYO override) → `"query"`.
+    Opening-balance resolution is the SHARED chain in
+    `services/cashflow.py::resolve_opening_balance` — the same one the cash-flow
+    copilot's tools and the projected-shortfall alert sweep use, so this
+    dashboard, a copilot answer, and an alert email can never start from a
+    different number. First hit wins:
+      1. `opening_balance` query param (explicit BYO override) → `"explicit"`.
       2. Auto-sync from the org's configured payment/banking provider when its
          adapter supports the optional `get_balance` capability (the `mock`
          adapter returns a deterministic figure for local dev) → `"provider"`.
@@ -309,6 +313,15 @@ async def get_cash_position(
          through. Pass `seed_balance=false` to skip the provider call.
       3. Persisted `Organization.settings.cashflow.opening_balance` → `"settings"`.
       4. `0` with `opening_balance_source: "none"` so the UI prompts for one.
+
+    A provider balance denominated in a currency other than the org's reporting
+    currency is **refused** — every outflow subtracted from it here is in the
+    reporting currency, so seeding the curve from a foreign account would make
+    the running balance a silent two-currency mixture. The chain then falls
+    through and `opening_balance_provider_skipped` reports
+    `"currency_mismatch"`, so the fallback can't be mistaken for "no bank is
+    connected". `opening_balance_currency` is therefore always the reporting
+    currency the whole curve is denominated in.
 
     The alert threshold is the `min_balance_threshold` query param when supplied,
     else the org's persisted `settings.cashflow.min_balance_threshold` (managed
@@ -320,29 +333,16 @@ async def get_cash_position(
     )
     periods = bucket_outflows(rows, granularity=granularity, today=today)
 
-    opening = _parse_decimal_param(opening_balance, "opening_balance")
-    source = "query"
-    balance_currency: str | None = None
-    payments_config = (org.settings or {}).get("payments")
-    if opening is None and seed_balance and payments_config:
-        # Auto-sync: pull the live funding-account balance from the configured
-        # provider when its adapter supports it. Best-effort — None on any
-        # failure / unsupported adapter, so we fall through to the manual chain.
-        # Skipped entirely when the org has configured no payments provider (a
-        # bare clone shouldn't fabricate a balance from the mock fallback).
-        provider_balance = await fetch_provider_balance(payments_config)
-        if provider_balance is not None:
-            opening = provider_balance.amount
-            balance_currency = provider_balance.currency
-            source = "provider"
-    if opening is None:
-        settings_balance = (org.settings or {}).get("cashflow", {}).get("opening_balance")
-        if settings_balance is not None:
-            opening = _parse_decimal_param(str(settings_balance), "opening_balance")
-            source = "settings"
-    if opening is None:
-        opening = Decimal("0")
-        source = "none"
+    balance = await resolve_opening_balance(
+        org_settings=org.settings,
+        reporting_currency=resolve_reporting_currency(org.settings),
+        explicit_opening=_parse_decimal_param(opening_balance, "opening_balance"),
+        # `seed_balance=false` skips the provider call — a bare clone shouldn't
+        # fabricate a balance, and the resolver additionally no-ops the provider
+        # link when the org has configured no payments provider at all.
+        use_provider=seed_balance,
+    )
+    opening = balance.amount
 
     threshold = _parse_decimal_param(min_balance_threshold, "min_balance_threshold")
     if threshold is None:
@@ -358,8 +358,10 @@ async def get_cash_position(
         "granularity": granularity,
         "horizon_days": horizon_days,
         "opening_balance": float(opening),
-        "opening_balance_source": source,
-        "opening_balance_currency": balance_currency,
+        "opening_balance_source": balance.source,
+        "opening_balance_currency": balance.currency,
+        "opening_balance_provider": balance.provider,
+        "opening_balance_provider_skipped": balance.provider_skipped,
         "threshold": float(threshold) if threshold is not None else None,
         "periods": [
             {

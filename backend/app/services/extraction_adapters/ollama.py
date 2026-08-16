@@ -14,12 +14,22 @@ import json
 import httpx
 
 from app.services.extraction_adapters.base import (
+    STATEMENT_REASON_EMPTY_FILE,
+    STATEMENT_REASON_NO_TEXT_LAYER,
+    STATEMENT_REASON_PROVIDER_ERROR,
+    STATEMENT_REASON_UNREADABLE,
     ExtractedLineItem,
     ExtractionAdapter,
     ExtractionResult,
+    StatementExtractionResult,
+    pdf_text_layer,
 )
 from app.services.extraction_adapters.claude_vision import EXTRACTION_PROMPT, _parse_field
 from app.services.extraction_adapters.dispatcher import register_extraction_adapter
+from app.services.extraction_adapters.statement_extraction import (
+    STATEMENT_EXTRACTION_PROMPT,
+    parse_statement_payload,
+)
 
 
 def _parse_ollama_json(content: str) -> dict | None:
@@ -104,21 +114,14 @@ class OllamaAdapter(ExtractionAdapter):
 
     @staticmethod
     def _extract_pdf_text(pdf_bytes: bytes) -> str | None:
-        """Extract text from a PDF. Returns None if no text layer (scanned doc)."""
-        try:
-            import fitz  # PyMuPDF
+        """Extract text from a PDF. Returns None if no text layer (scanned doc).
 
-            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            text = ""
-            for page in doc:
-                text += page.get_text()
-            text = text.strip()
-            # If very little text, it's probably a scanned PDF
-            return text if len(text) > 50 else None
-        except ImportError:
-            return None
-        except Exception:
-            return None
+        Kept as a staticmethod because `openai_vision` calls it by this name;
+        the implementation lives in `base.pdf_text_layer` so the statement
+        reader and the invoice reader can't drift on what "has a text layer"
+        means.
+        """
+        return pdf_text_layer(pdf_bytes)
 
     @staticmethod
     def _pdf_to_images(pdf_bytes: bytes, max_pages: int = 20) -> list[bytes]:
@@ -347,6 +350,88 @@ class OllamaAdapter(ExtractionAdapter):
         result.overall_confidence = sum(confidences) / len(confidences) if confidences else 0.0
 
         return result
+
+    async def extract_statement(
+        self,
+        file_bytes: bytes = b"",
+        file_key: str = "",
+        mime_type: str = "application/pdf",
+    ) -> StatementExtractionResult:
+        """Read a supplier statement of open items with the LOCAL model.
+
+        This is the no-cloud answer for a *scanned* statement, where the
+        deterministic text-layer reader has nothing to work with: `pnpm
+        ollama:up`, point the org's extraction config at `ollama`, and the whole
+        PDF-intake path runs on the laptop with no credential anywhere.
+
+        Same two modes as :meth:`extract` — text when the PDF has a text layer
+        (cheaper and far more accurate on a table), page images when it doesn't.
+        Never raises.
+        """
+        if not file_bytes:
+            return StatementExtractionResult(
+                available=True, provider=self.provider_name, reason=STATEMENT_REASON_EMPTY_FILE
+            )
+
+        is_pdf = mime_type == "application/pdf" or file_key.lower().endswith(".pdf")
+        message: dict = {"role": "user", "content": STATEMENT_EXTRACTION_PROMPT}
+        if is_pdf:
+            pdf_text = self._extract_pdf_text(file_bytes)
+            if pdf_text:
+                message["content"] = (
+                    f"{STATEMENT_EXTRACTION_PROMPT}\n\nHere is the statement text:\n\n{pdf_text}"
+                )
+            else:
+                page_images = self._pdf_to_images(file_bytes)
+                if not page_images:
+                    return StatementExtractionResult(
+                        available=True,
+                        provider=self.provider_name,
+                        reason=STATEMENT_REASON_NO_TEXT_LAYER,
+                        error="Cannot read PDF. Install PyMuPDF: pip install PyMuPDF",
+                    )
+                message["images"] = [base64.b64encode(img).decode("utf-8") for img in page_images]
+        else:
+            message["images"] = [base64.b64encode(file_bytes).decode("utf-8")]
+
+        try:
+            async with httpx.AsyncClient(timeout=600) as client:
+                resp = await client.post(
+                    f"{self._base_url()}/api/chat",
+                    json={
+                        "model": self._model(),
+                        "messages": [message],
+                        "stream": False,
+                        "format": "json",
+                        "options": {"num_predict": 8192},
+                    },
+                )
+        except Exception as exc:
+            return StatementExtractionResult(
+                available=True,
+                provider=self.provider_name,
+                reason=STATEMENT_REASON_PROVIDER_ERROR,
+                error=f"Ollama API error: {exc}",
+            )
+
+        if resp.status_code != 200:
+            return StatementExtractionResult(
+                available=True,
+                provider=self.provider_name,
+                reason=STATEMENT_REASON_PROVIDER_ERROR,
+                error=f"Ollama error {resp.status_code}",
+            )
+
+        data = _parse_ollama_json(resp.json().get("message", {}).get("content", ""))
+        if data is None:
+            return StatementExtractionResult(
+                available=True,
+                provider=self.provider_name,
+                reason=STATEMENT_REASON_UNREADABLE,
+                error="Failed to parse JSON from Ollama response",
+            )
+
+        return parse_statement_payload(data, self.provider_name)
 
     async def test_connection(self) -> bool:
         try:

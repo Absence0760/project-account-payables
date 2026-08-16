@@ -5,6 +5,7 @@
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
+	import SecretReveal from '$lib/components/ui/SecretReveal.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import RowLink from '$lib/components/ui/RowLink.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
@@ -49,9 +50,10 @@
 	let newName = $state('');
 	let saving = $state(false);
 
-	// One-time plaintext reveal (after a successful mint).
+	// One-time plaintext reveal (after a successful mint). `SecretReveal` owns the
+	// copy affordance + the shown-once warning; this page only holds the value
+	// long enough to render it and drops it on close.
 	let minted = $state<ApiKeyCreated | null>(null);
-	let copied = $state(false);
 
 	// Revoke confirm (armed two-click on the row action).
 	let confirmRevokeId = $state<string | null>(null);
@@ -96,7 +98,6 @@
 			const created = await createApiKey(name);
 			creating = false;
 			newName = '';
-			copied = false;
 			// Show the plaintext exactly once. Keep the list fresh too.
 			minted = created;
 			await load();
@@ -107,21 +108,9 @@
 		}
 	}
 
-	async function copyKey() {
-		if (!minted) return;
-		try {
-			await navigator.clipboard.writeText(minted.key);
-			copied = true;
-			toast(m('admin.apiKeys.toast.copied'), 'success');
-		} catch {
-			toast(m('admin.apiKeys.toast.copyFailed'), 'error');
-		}
-	}
-
 	function dismissMinted() {
 		// Drop the plaintext from memory the moment the reveal closes.
 		minted = null;
-		copied = false;
 	}
 
 	async function handleRevoke(id: string) {
@@ -262,38 +251,31 @@
 </Modal>
 
 <!-- One-time plaintext reveal -->
-<Modal
+<SecretReveal
 	open={minted !== null}
 	ariaLabel={m('admin.apiKeys.reveal.aria')}
-	width="md"
+	heading={m('admin.apiKeys.reveal.heading')}
+	warningStrong={m('admin.apiKeys.reveal.warningStrong')}
+	warning={m('admin.apiKeys.reveal.warning')}
+	secret={minted?.key ?? ''}
+	testId="minted-key"
+	copyLabel={m('admin.apiKeys.reveal.copy')}
+	copiedLabel={m('admin.apiKeys.reveal.copied')}
+	copiedToast={m('admin.apiKeys.toast.copied')}
+	copyFailedToast={m('admin.apiKeys.toast.copyFailed')}
+	doneLabel={m('admin.apiKeys.reveal.done')}
+	meta={minted
+		? [
+				{ label: m('admin.apiKeys.reveal.name'), value: minted.api_key.name },
+				{
+					label: m('admin.apiKeys.reveal.prefix'),
+					value: `${minted.api_key.key_prefix}…`,
+					mono: true
+				}
+			]
+		: []}
 	onclose={dismissMinted}
->
-	{#if minted}
-		<h2>{m('admin.apiKeys.reveal.heading')}</h2>
-		<div class="reveal-warning" role="alert">
-			<strong>{m('admin.apiKeys.reveal.warningStrong')}</strong> {m('admin.apiKeys.reveal.warning')}
-		</div>
-		<div class="key-reveal">
-			<code class="key-value" data-testid="minted-key">{minted.key}</code>
-			<button type="button" class="btn-primary copy-btn" onclick={copyKey}>
-				{copied ? m('admin.apiKeys.reveal.copied') : m('admin.apiKeys.reveal.copy')}
-			</button>
-		</div>
-		<dl class="reveal-meta">
-			<div>
-				<dt>{m('admin.apiKeys.reveal.name')}</dt>
-				<dd>{minted.api_key.name}</dd>
-			</div>
-			<div>
-				<dt>{m('admin.apiKeys.reveal.prefix')}</dt>
-				<dd class="mono">{minted.api_key.key_prefix}…</dd>
-			</div>
-		</dl>
-		<div class="modal-footer">
-			<button type="button" class="btn-primary" onclick={dismissMinted}>{m('admin.apiKeys.reveal.done')}</button>
-		</div>
-	{/if}
-</Modal>
+/>
 
 <!-- Per-key usage view -->
 <Modal open={usageKey !== null} ariaLabel={m('admin.apiKeys.usage.aria')} width="md" onclose={() => (usageKey = null)}>
@@ -399,59 +381,6 @@
 
 	tr.revoked td:not(.actions) {
 		opacity: 0.6;
-	}
-
-	/* One-time reveal */
-	.reveal-warning {
-		background: rgba(255, 180, 50, 0.12);
-		border: 1px solid rgba(255, 180, 50, 0.35);
-		color: #d4940a;
-		border-radius: 8px;
-		padding: 0.75rem 1rem;
-		font-size: 0.85rem;
-		margin-bottom: 1rem;
-	}
-
-	.key-reveal {
-		display: flex;
-		align-items: stretch;
-		gap: 0.5rem;
-		margin-bottom: 1rem;
-	}
-
-	.key-value {
-		flex: 1;
-		background: var(--surface-2, #232b44);
-		border: 1px solid var(--border, #2a3350);
-		border-radius: 8px;
-		padding: 0.6rem 0.75rem;
-		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-		font-size: 0.85rem;
-		word-break: break-all;
-		user-select: all;
-	}
-
-	.copy-btn {
-		white-space: nowrap;
-	}
-
-	.reveal-meta {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-		gap: 0.75rem;
-		margin: 0 0 0.5rem;
-	}
-
-	.reveal-meta dt {
-		font-size: 0.72rem;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		color: var(--text-muted);
-	}
-
-	.reveal-meta dd {
-		margin: 0.15rem 0 0;
-		font-weight: 600;
 	}
 
 	/* Usage view */

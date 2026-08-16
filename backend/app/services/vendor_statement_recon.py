@@ -15,8 +15,8 @@ one of the four reconciliation outcomes the ORM models define
 
 The module is **pure**: no DB session, no I/O, no network, no ``async``. It
 operates on dataclasses only, and every money value is :class:`~decimal.Decimal`
-(never float). The local CSV-parsing helpers (`_find_col`, `_parse_date`,
-`_parse_amount`) mirror the forgiving idioms in
+(never float). The local CSV-parsing helpers (`_find_col`, `parse_date`,
+`parse_amount`) mirror the forgiving idioms in
 ``app.services.bank_reconciliation`` but are reimplemented here so the engine
 stays self-contained.
 
@@ -174,9 +174,13 @@ def _find_col(headers: list[str], candidates: set[str]) -> str | None:
     return None
 
 
-def _parse_date(raw: str | None) -> date | None:
+def parse_date(raw: str | None) -> date | None:
     """Accept ISO, MM/DD/YYYY, DD/MM/YYYY, YYYY/MM/DD. Returns ``None`` on a
-    blank or unrecognised value (never raises)."""
+    blank or unrecognised value (never raises).
+
+    Public because the PDF intake path (``vendor_statement_extraction``)
+    normalises an extraction adapter's raw date STRING with the same parser the
+    CSV path uses — one statement date format story, not two."""
     if not raw:
         return None
     raw = raw.strip()
@@ -190,10 +194,15 @@ def _parse_date(raw: str | None) -> date | None:
     return None
 
 
-def _parse_amount(raw: str | None) -> Decimal | None:
+def parse_amount(raw: str | None) -> Decimal | None:
     """Accept ``1234.56``, ``1,234.56``, ``(1,234.56)`` (negative), ``$``,
     ``-1234.56``. Returns the signed Decimal, or ``None`` on a blank /
-    unparseable value (e.g. ``"-"``)."""
+    unparseable value (e.g. ``"-"``).
+
+    Public for the same reason as :func:`parse_date`: the PDF intake path turns
+    an adapter's raw amount STRING into money here, so a model's output and a
+    CSV cell become a ``Decimal`` by exactly the same rules — and neither ever
+    passes through a float."""
     if raw is None:
         return None
     s = str(raw).strip()
@@ -261,8 +270,8 @@ def parse_statement_csv(raw_csv: bytes) -> list[StatementLine]:
 
         invoice_number = row[idx[invoice_col]].strip() if invoice_col else ""
         invoice_number = invoice_number or None
-        statement_date = _parse_date(row[idx[date_col]]) if date_col else None
-        amount = _parse_amount(row[idx[amount_col]]) if amount_col else None
+        statement_date = parse_date(row[idx[date_col]]) if date_col else None
+        amount = parse_amount(row[idx[amount_col]]) if amount_col else None
         status = row[idx[status_col]].strip() if status_col else None
         status = status or None
 

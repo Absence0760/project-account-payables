@@ -9,12 +9,20 @@ import json
 import httpx
 
 from app.services.extraction_adapters.base import (
+    STATEMENT_REASON_EMPTY_FILE,
+    STATEMENT_REASON_PROVIDER_ERROR,
+    STATEMENT_REASON_UNREADABLE,
     ExtractedField,
     ExtractedLineItem,
     ExtractionAdapter,
     ExtractionResult,
+    StatementExtractionResult,
 )
 from app.services.extraction_adapters.dispatcher import register_extraction_adapter
+from app.services.extraction_adapters.statement_extraction import (
+    STATEMENT_EXTRACTION_PROMPT,
+    parse_statement_payload,
+)
 
 _EXTRACTION_PROMPT_TEMPLATE = """You are an invoice data extraction system. \
 Extract all fields from this invoice image/document.
@@ -88,6 +96,32 @@ _DEFAULT_GL_LIST = """\
 # Backward-compatible constant with the default GL list baked in.
 # Other adapters (openai_vision, ollama) import this directly.
 EXTRACTION_PROMPT = _EXTRACTION_PROMPT_TEMPLATE.replace(_GL_PLACEHOLDER, _DEFAULT_GL_LIST)
+
+
+def _strip_json_fence(text: str) -> str:
+    """Unwrap a ```json ... ``` fence the model sometimes adds around its JSON."""
+    json_str = text.strip()
+    if json_str.startswith("```"):
+        json_str = json_str.split("```")[1]
+        if json_str.startswith("json"):
+            json_str = json_str[4:]
+    return json_str.strip()
+
+
+def _document_block(file_bytes: bytes, mime_type: str) -> dict:
+    """Build the Anthropic content block for a PDF page set or a single image."""
+    if mime_type in ("image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"):
+        media_type = mime_type
+    else:
+        media_type = "application/pdf"
+    return {
+        "type": "document" if media_type == "application/pdf" else "image",
+        "source": {
+            "type": "base64",
+            "media_type": media_type,
+            "data": base64.b64encode(file_bytes).decode("utf-8"),
+        },
+    }
 
 
 def _parse_field(data: dict | None, field_name: str) -> ExtractedField:
@@ -284,6 +318,83 @@ class ClaudeVisionAdapter(ExtractionAdapter):
         result.overall_confidence = sum(confidences) / len(confidences) if confidences else 0.0
 
         return result
+
+    async def extract_statement(
+        self,
+        file_bytes: bytes = b"",
+        file_key: str = "",
+        mime_type: str = "application/pdf",
+    ) -> StatementExtractionResult:
+        """Read a supplier statement of open items via Claude's vision path.
+
+        Same document channel as :meth:`extract` — only the prompt and the
+        response shape differ, because a statement is many rows for one
+        supplier rather than one invoice header. Never raises: a transport or
+        provider failure comes back as ``success=False`` with a PII-free
+        ``reason``; the provider's own text stays on ``error`` for the log.
+        """
+        if not file_bytes:
+            return StatementExtractionResult(
+                available=True, provider=self.provider_name, reason=STATEMENT_REASON_EMPTY_FILE
+            )
+
+        body = {
+            "model": self.config.get("model", "claude-sonnet-4-20250514"),
+            "max_tokens": 8192,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        _document_block(file_bytes, mime_type),
+                        {"type": "text", "text": STATEMENT_EXTRACTION_PROMPT},
+                    ],
+                }
+            ],
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                resp = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    json=body,
+                    headers={
+                        "x-api-key": self.config.get("api_key", ""),
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json",
+                    },
+                )
+        except Exception as exc:
+            return StatementExtractionResult(
+                available=True,
+                provider=self.provider_name,
+                reason=STATEMENT_REASON_PROVIDER_ERROR,
+                error=f"API call failed: {exc}",
+            )
+
+        if resp.status_code != 200:
+            return StatementExtractionResult(
+                available=True,
+                provider=self.provider_name,
+                reason=STATEMENT_REASON_PROVIDER_ERROR,
+                error=f"Claude API error {resp.status_code}",
+            )
+
+        text_content = ""
+        for block in resp.json().get("content", []):
+            if block.get("type") == "text":
+                text_content += block.get("text", "")
+
+        try:
+            data = json.loads(_strip_json_fence(text_content))
+        except json.JSONDecodeError:
+            return StatementExtractionResult(
+                available=True,
+                provider=self.provider_name,
+                reason=STATEMENT_REASON_UNREADABLE,
+                error="Failed to parse JSON from Claude response",
+            )
+
+        return parse_statement_payload(data, self.provider_name)
 
     async def test_connection(self) -> bool:
         try:
