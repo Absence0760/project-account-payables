@@ -1071,6 +1071,48 @@ Payment execution requires integration with a payment processor or bank API:
 
 Currently, payment execution is a status change only — actual bank integration is a future phase.
 
+### Provider resolution — an unsupported name fails closed
+
+`get_payment_adapter` (`services/payment_adapters/dispatcher.py`) resolves
+`Organization.settings.payments.provider` to an adapter:
+
+- **no configured provider → `mock`.** The local-first default (guard rail 7);
+  an org that has configured nothing is a normal state.
+- **a configured name we have no adapter for → `UnknownPaymentProviderError`.**
+
+It used to fall back to `mock` here too. `mock` is not an inert stub — its
+`create_payment` returns `success=True, status=completed` immediately, its
+`parse_webhook` verifies no signature, and its `void_payment` returns `True`
+unconditionally. So a single typo in the admin-entered settings value
+(`modern-treasury` for `modern_treasury`) made **every payment in every run
+report as settled while no money moved**, flipped the invoices to `paid`,
+routed the public webhook route to an unverified parser under a name the
+`provider == "mock"` early-return there cannot catch, and recorded upstream
+voids that never happened. The ERP and FX dispatchers had the same fallback
+with comparable consequences. Full rationale + the per-caller policy:
+[decisions §28](../../docs/decisions.md).
+
+What each caller does with the refusal:
+
+| Caller | Behaviour |
+|---|---|
+| `POST /runs/{id}/execute`, `/resume`, `/retry-failed` | `_require_payment_adapter` runs **before** the run is claimed → 409, run stays `draft`, nothing dispatched |
+| `POST /{id}/compliance/release` | Same pre-flight → 409, payment stays `pending_compliance` |
+| `POST /{id}/void` | Still voids locally (the books reflect intent); audit `adapter_outcome: "provider_not_supported"` instead of a fictitious `voided_upstream` |
+| `POST /payments/webhook/{tenant}/{provider}` | Silent 204 like every other rejection — no parse, no tenant DB opened |
+| `payment_reconciler` sweep | Propagates → the tenant counts as a sweep failure → `degraded` on `GET /api/health/sweeps` |
+| `corridor_quotes.compare_quotes` | Skips just that provider (`unavailable_reason: "provider_not_supported"`) so one bad name can't take the auction down |
+| `POST /organization/test-payments` | Names the bad provider and lists the registered alternatives — where an admin should find the typo |
+| `cashflow.fetch_provider_balance` | Degrades to the manual opening balance (best-effort by contract) |
+
+The international leg is the FX twin: an unsupported `settings.fx.provider`
+fails the payment with `failure_reason="fx_provider_unsupported"` rather than
+locking a fabricated rate onto the row. The reason names the condition and not
+the admin's raw settings value, because every AP user reads `failure_reason`.
+
+Guards: `tests/test_payment_provider_resolution.py`, plus the webhook half in
+`tests/test_payment_webhook_security.py`.
+
 ### Audit Trail
 
 Every payment **status transition** writes an append-only audit row (project

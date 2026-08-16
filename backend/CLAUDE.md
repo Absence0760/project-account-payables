@@ -499,7 +499,9 @@ class MyErpAdapter(ErpAdapter):
 
 Registered: `merge_dev`, `dynamics_365_bc`, `netsuite`, `mock`
 
-Config `integration_method: "merge_dev"|"direct"` selects whether to use Merge.dev unified API or direct adapter.
+Config `integration_method: "merge_dev"|"direct"` selects whether to use Merge.dev unified API or direct adapter. Note `integration_method` **defaults to `merge_dev`**, so a config naming only a `type` routes through Merge.dev regardless of that type.
+
+An ERP type with no registered adapter raises `UnknownErpAdapterError` — it used to fall back to `mock`, whose `post_invoice` returns `success=True` with a fabricated `MOCK-…` document id, so `services/erp` walked the invoice `sending_to_erp → sent_to_erp → done` carrying an ERP reference that pointed at nothing, and `POST /api/organization/test-erp` answered "Connected successfully" (`mock.test_connection()` is `True`). The three sync endpoints now 400, `payment_erp_sync` reports a failed pass, and test-erp names the bad value. See `../docs/decisions.md` §28.
 
 ERP send has retry logic: up to 3 attempts with exponential backoff (2s, 4s, 8s).
 
@@ -550,6 +552,24 @@ class MyAdapter(PaymentAdapter):
 ```
 
 Registered: `mock`, `modern_treasury`, `stripe_treasury`, `increase`, `column`, `dwolla` (ACH only), `checkeeper` (check printing).
+
+**An unsupported provider name fails closed.** `get_payment_adapter` resolves an
+absent/empty `settings.payments.provider` to `mock` (the local-first default) but
+raises `UnknownPaymentProviderError` for a NAMED provider it has no adapter for.
+It used to fall back to `mock` there too, and `mock` is not an inert stub — its
+`create_payment` returns `success=True, status=completed` immediately, its
+`parse_webhook` verifies no signature, its `void_payment` returns `True`
+unconditionally — so one typo in an admin-entered settings value made every
+payment report as settled with no money moved, and served the public webhook
+route to an unverified parser under a name the `provider == "mock"` early-return
+cannot catch. `erp_adapters` and `fx_adapters` had the identical fallback and now
+raise `UnknownErpAdapterError` / `UnknownFxProviderError`; the FX one is the
+sharpest, because `prepare_international_payment` LOCKS the rate it gets onto the
+Payment row and never re-fetches it. Each caller decides what the refusal means
+(refuse before claiming a run; fail the one payment; degrade; count a sweep
+failure) — the table is in `docs/payments.md` § Provider resolution, the
+rationale in `../docs/decisions.md` §28. Guard:
+`tests/test_payment_provider_resolution.py`.
 
 **The four optional capabilities are drift-guarded** by
 `tests/test_payment_adapter_capabilities.py` (same shape as
@@ -618,6 +638,8 @@ class MyAdapter:
 ```
 
 Registered: `mock`, `openexchangerates`. Wise / Tipalti slot in via the same pattern.
+
+An FX provider with no registered adapter raises `UnknownFxProviderError` (absent/empty still resolves to `mock` — the local-first default). This is the sharpest of the three fail-closed dispatchers: the rate is locked onto the Payment row once and never re-fetched, so the old `mock` fallback wrote a plausible-but-wrong figure off a hardcoded table that then drove the real outflow and `realized_fx_gain_loss_for_settlement`. The international leg now fails the payment with `failure_reason="fx_provider_unsupported"`; expenses refuse the attach / leave the report figure NULL so the CFO gate fails closed; the CFO dashboard reports `available: false`. See `../docs/decisions.md` §28.
 
 `services/international_payments.prepare_international_payment` calls `get_rate` exactly once at payment-submission time, persists the locked rate + `fx_locked_at` on the Payment row, and never re-fetches even if the market moves before settlement. The corridor selector decides whether an FX leg is needed (`requires_fx` on `CorridorChoice`); same-currency payments skip the lookup entirely. Per-org config in `Organization.settings.fx`. See `docs/international-payments.md`.
 

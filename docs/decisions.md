@@ -1029,3 +1029,81 @@ and the amount pattern pins grouping runs to exactly three digits so a date can
 never be read as money.
 
 See [vendor-statement-reconciliation.md § Decimal conventions](../backend/docs/vendor-statement-reconciliation.md).
+
+---
+
+## 28. A mis-typed provider name never resolves to the fixture adapter
+
+**Decided:** 2026-08-16 · `backend/app/services/{payment_adapters,erp_adapters,fx_adapters}/dispatcher.py`
+
+All three dispatchers resolved an unrecognised provider name to their `mock`
+adapter. Each had written down why — "prevents a missed config from silently
+500-ing the entire payments domain", "so a typo'd config doesn't blow up
+sync-erp", "fails closed in prod because the mock returns a fixed rate that
+will not match real market" — and each was reasoning about a `mock` that does
+not exist. These fixture adapters are not inert stubs; they are the thing that
+makes `pnpm dev` work with no cloud account, so they answer **yes** to
+everything:
+
+| Family | What `mock` does | What a typo'd `settings.*` produced |
+|---|---|---|
+| payments | `create_payment` → `success=True, completed` | every payment in every run reported as settled, invoices flipped to `paid`, no money moved |
+| payments | `parse_webhook` verifies no signature | the public webhook route reached an unverified parser, under a name the `provider == "mock"` early-return cannot catch |
+| payments | `void_payment` → `True` unconditionally | a `voided_upstream` audit row for a rail nobody asked |
+| ERP | `post_invoice` → `success=True` + a `MOCK-…` id | the invoice walked `sending_to_erp → sent_to_erp → done` with an ERP reference pointing at nothing |
+| ERP | `test_connection` → `True` | `POST /organization/test-erp` answered "Connected to `<typo>` successfully" — the endpoint that exists to catch the misconfiguration confirmed it |
+| FX | `get_rate` → a hardcoded table | `prepare_international_payment` **locked** the fabricated rate onto `Payment.fx_rate` / `source_amount`, never re-fetched, driving the real outflow and later `realized_fx_gain_loss_for_settlement` |
+
+**The rule now:** no configured provider still means `mock` — that is the
+local-first default (guard rail 7) and an org that has configured nothing is a
+normal state. A **named** provider we have no adapter for raises
+(`UnknownPaymentProviderError` / `UnknownErpAdapterError` /
+`UnknownFxProviderError`).
+
+**This is §26's call, one layer down.** There the same fallback let an
+unrecognised `FEOH_EXTRACTION_PROVIDER` reach a fixture adapter, and the fix
+was a boot-time allowlist. That doesn't transfer: these names come from
+per-org `Organization.settings`, not process env, so there is no boot at which
+to check them. The refusal has to live at the dispatcher, and — because a
+dispatcher cannot know whether its caller is moving money or drawing a chart —
+**each caller decides what the refusal means**:
+
+- **Refuse, before any state changes.** Run execute / resume / retry-failed and
+  the compliance release resolve through `_require_payment_adapter` *before*
+  claiming the run, so the answer is a 409 with the run still `draft` rather
+  than a 500 with it stranded `executing`. The three ERP sync endpoints 400 —
+  a config problem, not the 502 they use for a gateway failure.
+- **Fail the one payment.** The international leg records
+  `failure_reason="fx_provider_unsupported"` instead of booking a rate. The
+  reason names the condition and NOT the admin's raw settings value, because
+  every AP user reads `failure_reason` while only an admin owns the setting.
+- **Degrade.** `fetch_provider_balance` falls back to the manual opening
+  balance; the CFO dashboard's unrealized-FX panel reports `available: false`;
+  the corridor auction skips just that provider so one bad name in a
+  multi-provider list can't take the whole auction down.
+- **Record and continue.** `/void` still voids locally — the books should
+  reflect intent — but writes `provider_not_supported` rather than a
+  fictitious `voided_upstream`.
+- **Count it as a failure.** The payment reconciler lets it propagate so the
+  tenant registers as a sweep failure and shows `degraded` on
+  `GET /api/health/sweeps` (§24). `payment_erp_sync` returns a failed pass
+  instead — it is documented "never raises into its caller", runs on a
+  detached daemon thread where a traceback reaches nobody, and is awaited
+  directly by `POST /payments/runs/{id}/sync-erp`.
+- **Say which name is wrong.** `POST /organization/test-payments` and
+  `/test-erp` echo the bad value and list the registered alternatives. The name
+  is bounded to 50 chars (its column width) so an absurd value can't bloat a
+  log line, and no credential from the posted config is echoed.
+
+**Why not make the mock adapters inert instead.** §26 rejected the same idea
+for extraction and the reason holds here: the fixtures are what let tests and
+demos exercise a whole money path with no processor. Neutering them has a far
+wider blast radius than the resolution rule this entry is about.
+
+**Not adopted:** validating `settings.payments.provider` on write in
+`PATCH /api/organization`. Worth doing, but it is not sufficient on its own —
+settings predate any validator, arrive from seeds and migrations, and an
+adapter can be *removed* from the registry after a name was already stored.
+The dispatcher is the only chokepoint every caller passes through.
+
+See `backend/docs/payments.md` § Provider resolution.
