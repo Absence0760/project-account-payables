@@ -657,7 +657,7 @@
 
 <style>
 	.state {
-		color: var(--text-muted, #94a3b8);
+		color: var(--text-muted);
 		padding: 1rem 0;
 	}
 
@@ -675,13 +675,13 @@
 	}
 
 	.empty p {
-		color: var(--text-muted, #94a3b8);
+		color: var(--text-muted);
 		margin: 0 0 1rem;
 	}
 
 	.plan-card {
-		background: var(--surface, #1a2035);
-		border: 1px solid var(--border, #2a3350);
+		background: var(--surface);
+		border: 1px solid var(--border);
 		border-radius: 12px;
 		padding: 1.5rem;
 		max-width: 720px;
@@ -700,7 +700,7 @@
 		font-size: 0.75rem;
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
-		color: var(--text-muted, #94a3b8);
+		color: var(--text-muted);
 	}
 
 	.plan-name {
@@ -725,7 +725,7 @@
 		font-size: 0.75rem;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
-		color: var(--text-muted, #94a3b8);
+		color: var(--text-muted);
 	}
 
 	.meta-value {
@@ -734,7 +734,7 @@
 
 	.per {
 		font-weight: 400;
-		color: var(--text-muted, #94a3b8);
+		color: var(--text-muted);
 		font-size: 0.85rem;
 	}
 
@@ -774,7 +774,7 @@
 		font-size: 0.75rem;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
-		color: var(--text-muted, #94a3b8);
+		color: var(--text-muted);
 		padding: 0 0 0.5rem;
 	}
 
@@ -782,7 +782,7 @@
 		display: flex;
 		align-items: center;
 		gap: 0.75rem;
-		border: 1px solid var(--border, #2a3350);
+		border: 1px solid var(--border);
 		border-radius: 8px;
 		padding: 0.65rem 0.85rem;
 		cursor: pointer;
@@ -794,7 +794,7 @@
 	}
 
 	.plan-option.selected {
-		border-color: var(--accent, #638cff);
+		border-color: var(--accent);
 	}
 
 	.plan-option-name {
@@ -823,7 +823,7 @@
 
 	.apply-notice {
 		font-size: 0.85rem;
-		color: var(--text-muted, #94a3b8);
+		color: var(--text-muted);
 		margin: 0 0 1rem;
 	}
 
@@ -833,7 +833,7 @@
 		justify-content: space-between;
 		gap: 1rem;
 		background: var(--surface-2);
-		border: 1px solid var(--border, #2a3350);
+		border: 1px solid var(--border);
 		border-radius: 8px;
 		padding: 0.75rem 1rem;
 		margin: 0.75rem 0;
@@ -855,7 +855,7 @@
 
 	.change-result .hint {
 		font-size: 0.85rem;
-		color: var(--text-muted, #94a3b8);
+		color: var(--text-muted);
 	}
 
 	.actions {
@@ -865,7 +865,7 @@
 		gap: 0.75rem;
 		margin-top: 1.5rem;
 		padding-top: 1.25rem;
-		border-top: 1px solid var(--border, #2a3350);
+		border-top: 1px solid var(--border);
 	}
 
 	.usage-section h3 {
@@ -874,7 +874,7 @@
 
 	.period {
 		font-weight: 400;
-		color: var(--text-muted, #94a3b8);
+		color: var(--text-muted);
 		font-size: 0.9rem;
 	}
 
@@ -886,14 +886,14 @@
 
 	.note {
 		margin-top: 0.75rem;
-		color: var(--text-muted, #94a3b8);
+		color: var(--text-muted);
 		font-size: 0.9rem;
 	}
 
 	.btn {
 		background: var(--surface-2);
-		color: var(--text, #e2e8f0);
-		border: 1px solid var(--border, #2a3350);
+		color: var(--text);
+		border: 1px solid var(--border);
 		border-radius: 8px;
 		padding: 0.5rem 1rem;
 		font-size: 0.9rem;
@@ -906,7 +906,7 @@
 	}
 
 	.btn.primary {
-		background: var(--accent, #638cff);
+		background: var(--accent-strong);
 		color: #fff;
 		border-color: transparent;
 		text-decoration: none;
@@ -914,7 +914,7 @@
 	}
 
 	.link {
-		color: var(--accent, #7d9bff);
+		color: var(--accent);
 		font-size: 0.9rem;
 	}
 
@@ -940,8 +940,8 @@
 		flex-wrap: wrap;
 		align-items: center;
 		gap: 0.75rem;
-		background: var(--surface, #1a2035);
-		border: 1px solid var(--border, #2a3350);
+		background: var(--surface);
+		border: 1px solid var(--border);
 		border-radius: 8px;
 		padding: 0.75rem 1rem;
 		margin-bottom: 0.75rem;
@@ -950,7 +950,7 @@
 
 	.card-setup p {
 		margin: 0;
-		color: var(--text, #e2e8f0);
+		color: var(--text);
 	}
 
 	.card-setup.state-error {
@@ -962,7 +962,7 @@
 	}
 
 	.card-setup-placeholder {
-		color: var(--text-muted, #94a3b8) !important;
+		color: var(--text-muted) !important;
 		font-style: italic;
 		flex-basis: 100%;
 	}
@@ -1002,7 +1002,7 @@
 	}
 
 	.muted {
-		color: var(--text-muted, #94a3b8);
+		color: var(--text-muted);
 	}
 
 	/* Settlement-state pill — mirrors the StatusBadge .badge recipe, tones

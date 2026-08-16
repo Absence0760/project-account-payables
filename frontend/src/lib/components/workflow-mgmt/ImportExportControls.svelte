@@ -230,7 +230,7 @@
 		padding: 10px 12px;
 		border-radius: 6px;
 		background: rgba(240, 70, 70, 0.1);
-		color: #e04040;
+		color: var(--danger);
 		font-size: 0.82rem;
 		display: flex;
 		flex-direction: column;
@@ -252,7 +252,7 @@
 		padding: 8px 18px;
 		border-radius: 6px;
 		border: none;
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 		font-size: 0.85rem;
 		font-weight: 500;

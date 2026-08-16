@@ -275,7 +275,7 @@
 		color: var(--text-muted);
 	}
 	.spend-detail span.over {
-		color: #e04040;
+		color: var(--danger);
 		font-weight: 600;
 	}
 

@@ -38,7 +38,20 @@ for the tracker view. Keep the two reconciled when either moves.
 round that closed **every remaining actionable `(c)` item**. What is left in
 this file is the `(a)` credential-blocked set, the `(b)` operator steps, and two
 `(c)` entries that are product calls rather than work (an unwired adapter family
-and the copilot's saved-plans bucket). This file is the shortest it has been.
+and the copilot's saved-plans bucket).
+
+A later backend round added one more `(c)` entry — eight built-and-documented
+capabilities with no production caller — found while closing the
+adapter-registry defect behind [decisions §29](decisions.md). That round did
+close the sharp half of the same survey: all three money-touching dispatchers
+(payments, ERP, FX) resolved an unrecognised provider name to their **fixture**
+adapter, which is not an inert stub — `mock.create_payment` reports every
+payment settled, `mock.parse_webhook` verifies no signature, `mock.post_invoice`
+returns a fabricated ERP document id, and the mock FX rate got *locked onto the
+Payment row* — so one typo in an admin-entered settings value silently produced
+paid-but-unpaid invoices, an unverified public webhook parser, ERP references
+pointing at nothing, and a permanently mis-priced outflow. All three now fail
+closed, with each caller deciding what the refusal means.
 
 **The vendor-statement upload UI closed** — but the entry's premise ("no file
 picker at all") was stale; a picker existed and already took CSV and PDF. The
@@ -156,6 +169,33 @@ accessibility guard gained all four `/admin` routes plus `/vendor-statements`
 destructive actions and one-time secret reveals, which is exactly where a
 focus-management regression is most costly and where the guard was silent.
 
+**The axe route list stopped trailing the app — by not being the only guard.**
+Its entry asked two things: add four more routes, and *consider* whether a
+token-pairing lint beats route-by-route coverage for this class. Both are done,
+and the second turned out to be the whole answer. Scanning the stylesheets
+instead of the rendered routes found **99** problems the route list could never
+have covered: 55 colour pairs below 4.5:1 (the `--accent-strong` companion had
+existed for a round and almost nothing used it — 40 buttons and chips still
+filled with `var(--accent)` at 3.12:1; green and red had no companion at all,
+so pay / approve / execute / reject / void all failed), 32
+`var(--token, fallback)` declarations whose fallback contradicted its token,
+and 12 references to a token nothing ever assigns. A fourth rule, added once
+those were green, found the largest single defect of the lot: a bare literal
+`color:` renders on whatever the cascade supplies, and `#e04040` — the status
+red on error messages, alerts and the danger row-action — is 4.11:1 on
+`--surface`, in **106** declarations across 61 files. Twelve more came out
+once the rule stopped standing down on a translucent tint, which is the
+standard status-pill shape. `--success{,-strong}` and `--danger{,-strong}` now
+exist alongside `--accent{,-strong}`, every site is fixed, and
+`frontend/src/lib/a11y/tokenPairing.test.ts` fails the suite on a recurrence —
+with no suppression mechanism, since a `-strong` companion means a correct
+answer always exists. The four routes went in too; the two guards are
+complements (the scan can't resolve the cascade, axe can't see a surface no
+listed route renders). Rationale in [decisions.md](decisions.md) §28. It also
+surfaced the one hole neither can close — white-label theming writes a tenant's
+hex straight into `--accent-strong` at runtime — now an inline contrast
+advisory on both surfaces that edit it.
+
 Closed in the pass before that, against `improve/round-followup-closeout`: the
 three tracked items of that round. **Webhook secret rotation became reachable
 from `/admin/webhooks`** (row action → overlap picker → one-time reveal), with
@@ -235,6 +275,95 @@ defects in shipped behaviour.
 Ref: `backend/docs/international-payments.md`,
 `backend/docs/dynamic-discounting.md`.
 
+### Built-and-documented backend capabilities with no production caller
+
+Surfaced by the survey behind [decisions §29](decisions.md) (which closed the
+adapter-registry half of the same sweep: all three money-touching dispatchers
+now fail closed on an unrecognised provider name instead of silently resolving
+to their fixture adapter). Each item below is code that exists, is tested, and
+that nothing in `app/`, `scripts/` or `alembic/` reaches:
+
+- [ ] **`expense_policy.mileage_reimbursement` is never called.** The whole
+      stack around it is wired — `Expense.mileage_miles`,
+      `ExpensePolicy.mileage_rate`, both schemas, both CRUD paths — but
+      `evaluate_expense` never looks at mileage, so an admin sets `$0.67/mile`,
+      an employee logs 120 miles, and the reimbursable amount is whatever
+      free-text `amount` they typed. `expense-management.md` labels the rate
+      "*Defined in WF1; enforced in WF3*"; WF3 never landed the enforcement.
+      **Durable fix:** compute it at expense create/update and either surface
+      it on the response or raise a `mileage_amount_mismatch` violation from
+      `evaluate_expense`. No migration — the columns exist.
+- [ ] **Teams interactive approval is inbound-only.**
+      `email_action_token.build_teams_action_tokens` has no production caller;
+      `notification_dispatch._build_slack_action_tokens` hard-returns
+      `(None, None)` unless the provider is literally `"slack"`; and
+      `chat_notification_adapters/teams_adapter.build_body` emits an `OpenUri`
+      MessageCard that never reads `ChatMessage.approve_token` /
+      `.reject_token`. Meanwhile the entire inbound half ships and is mounted
+      (`api/teams_approvals.py` — HMAC verify, replay window, channel-bound
+      single-use `jti`). A Teams org gets a read-only card and a
+      security-reviewed public endpoint nothing can reach.
+      **Durable fix:** dispatch `_build_slack_action_tokens` on the provider
+      and add the `potentialAction` / `Action.Http` block to `build_body`.
+      Already named in `backend/docs/teams-approval.md` § Deferred.
+- [ ] **Sanctions `ScreeningResult.categories` / `.adverse_media` are computed
+      and then dropped.** `refinitiv` maps World-Check `ADVERSE-MEDIA` into
+      them and `mock` simulates it, but all three consumers
+      (`compliance.check_payment_compliance`,
+      `vendor_screening.screen_vendor_record`, `vendor_risk_scoring`) read only
+      `.result` / `.risk_score` / `.matched_list`. A negative-news hit — the
+      thing the taxonomy was added for — never reaches the compliance verdict
+      reasons, the vendor's `risk_factors`, or the persisted `SanctionsCheck`.
+      **Durable fix:** fold `categories` into `SanctionsCheck.raw_response` and
+      `Vendor.risk_factors` (both JSONB, no migration) and add an adverse-media
+      reason to `ComplianceDecision.reasons`.
+- [ ] **`international_payments.is_international_payment` is dead while three
+      live modules hand-roll its rail set** — `payment_corridor`
+      (`_EXPLICIT_INTERNATIONAL_METHODS`), `compliance`
+      (`_DEFAULT_HIGH_RISK_METHODS`, which drives KYC thresholds) and an inline
+      literal in `api/payments.py` that decides whether an FX rate is locked at
+      all. Adding a fourth international rail means remembering all three; the
+      canonical predicate that would prevent the drift is the unused one.
+      **Durable fix:** export the frozenset and have the three sites import it.
+- [ ] **`workflow_engine.is_known_step_type` is dead and `BUILDER_STEP_TYPES`
+      is forked** — defined identically in `workflow_engine` and
+      `workflow_builder` with no cross-check. The builder validates against its
+      copy; the engine validates against nothing and resolves step numbers via
+      `STEP_TYPES.index(resolved)`, so a builder step type reaching
+      `create_workflow_step` raises `ValueError: 'condition' is not in list`
+      rather than being recognised — which is exactly what the unused helper
+      was written to prevent.
+      **Durable fix:** one source of truth for the list, call the helper at the
+      definition-save chokepoint, guard the `.index()` calls.
+- [ ] **`data_residency.check_residency_alignment` is dead**, so
+      `GET /api/organization/data-residency` cannot report that a tenant pinned
+      to `eu` is being served from a single-region platform. There is no
+      `deployed_region` setting to compare against either.
+      **Durable fix:** add the env-backed setting and surface `aligned` on the
+      response (advisory, never blocking — which is what the function already
+      does). No migration.
+- [ ] **`analytics.compute_dpo_trend` is dead and re-derived inline twice**
+      (`api/analytics.py` in two places). The second copy emits `float(ap)` /
+      `float(cogs)` / `float(dpo_val)` — money crossing the API boundary as
+      float, against the Decimal invariant, in the path the canonical helper
+      would have kept exact.
+      **Durable fix:** call the helper from both sites.
+- [ ] **`tax_rate_adapters/{avalara,taxjar}.test_connection` return `True` on
+      credentials alone** while their `get_rate` unconditionally raises
+      `NotImplementedError` — a fabricated healthy probe for an adapter that
+      can never satisfy its contract's core method. Impact is currently nil
+      (nothing calls `test_connection` on that family), which is why it sits
+      below the rest.
+      **Durable fix:** return `False` from the skeleton probes, matching the
+      `qms_adapters/generic_qms` posture.
+
+**Why deferred:** each is a genuine gap but a *different* feature's wiring, and
+landing eight unrelated behaviour changes behind one round's regression
+envelope is how a fix becomes indistinguishable from a regression. None is
+blocked on anything.
+**Trigger:** the next round touching that feature — or take them as a batch;
+they are individually small.
+
 ### AI Cash-Flow Copilot — Phase 3 deferred bucket
 
 Phases 1–3 core shipped (read-only cash Q&A, `propose_payment_plan` +
@@ -249,33 +378,70 @@ originally-deferred sub-bucket from that same feature remains:
 Refs: [roadmap.md](roadmap.md) § AI Cash-Flow Copilot,
 [cash-flow-copilot.md](cash-flow-copilot.md).
 
-### The axe route list still trails the routes that carry dialogs
+### Status badges on a translucent tint sit just under 4.5:1
 
-Widening the guard to `/admin` + `/vendor-statements` immediately caught a real
-`serious` contrast failure (`--text-muted` on the newly-defined `--surface-2`,
-4.34:1). Fixing it turned up the **same** defect on `/billing`'s proration box —
-found by reading, not by the guard, because `/billing` is not in the route list.
-That is the coverage gap restating itself: the pages with one-time secret
-reveals, saved-card metadata and armed destructive actions are exactly the ones
-worth guarding, and `/billing`, `/reports`, `/experiments` and `/cfo` are still
-outside it.
+Widening the axe route list to `/cfo` immediately caught the failure the
+follow-up above predicted — `.kpi-sub`, `--text-muted` under `opacity: .85`,
+4.24:1 — and fixing it closed that whole class: the stylesheet guard now models
+a rule's **own** `opacity`, and all eleven instances are gone.
 
-- [ ] Extend `frontend/tests-e2e/a11y/axe.spec.ts` to `/billing`, `/reports`,
-      `/experiments` and `/cfo`. Expect them to pass — they reuse the shared
-      `ui/` primitives — and treat any failure as the finding, fixing the root
-      rather than relaxing the rule.
-- [ ] Consider whether a token-pairing guard (which foreground tokens are legal
-      on which surface tokens) beats route-by-route coverage for this class. The
-      contrast bug recurs per *surface*, not per route, so a lint over
-      `app.css` + component styles would catch it everywhere at once.
+Building it surfaced an adjacent class the same pass can measure but did **not**
+fix: a badge that tints its background translucently (`background: rgba(<hue>,
+0.15)`) and sets text in the same hue. The tint lightens the dark surface
+*toward* the text, so the pair lands just under the bar — every one of these is
+between **4.15:1 and 4.48:1**, i.e. failing by a hair rather than obviously
+wrong. **29 instances**, across ~8 distinct colour pairs:
 
-**Why deferred:** the routes were added as part of closing the previous a11y
-gap, and each newly-guarded route is a potential new CI failure. Adding four
-more unverified routes in the same change that was fixing a red build would
-have made a second failure indistinguishable from a regression in the fix.
-**Trigger:** the next `/audit:accessibility` pass, or any change to a page in
-the list above.
-Ref: [accessibility.md](accessibility.md).
+| Text | Tint | Renders | Ratio | Passes at alpha |
+|---|---|---|---|---|
+| `#638cff` / `--accent` | `rgba(99,140,255,.15)` | `#232b44` | 4.48 | ≤ .14 |
+| `#1fa86a` | `rgba(50,200,130,.15)` | `#1c3431` | 4.33 | ≤ .12 |
+| `--text-muted` | `rgba(138,143,160,.15)` | `#292c36` | 4.32 | ≤ .12 |
+| `--text-muted` | `rgba(150,150,150,.15)` | `#2b2d34` | 4.27 | ≤ .12 |
+| `#888` | `rgba(150,150,150,.15)` | `#23252a` | 4.33 | ≤ .12 |
+| `#c96a14` | `rgba(224,120,40,.15)` | `#2e201a` | 4.15 | ≤ .09 |
+| `#2ea043` | `rgba(46,160,67,.12)` | `#1b2a27` | 4.42 | ≤ .10 |
+| `#c47b00` | `rgba(255,165,0,.08)` | `#2a2520` | 4.47 | ≤ .07 |
+
+Sites: `payments` (4 badges), `RunDetailModal` (4), `discounts` (2),
+`SimulationModal` (2), `profile` (2), `Pricing` (2), `workflows` +
+`workflows/[id]` `.default-badge`, `invoices` `.priors-badge`, `InvoiceModal`
+`.priors-chip`, `tax` `.chip-off`, `purchase-orders` `.badge.open`, and the
+`Contract` / `Expense` / `Intake` / `Requisition` modal `.badge.draft|open`,
+`BulkRecodeGLModal` `.src-ai`, `VersionHistoryModal` `.kind-added`,
+`SupplierChatThread` `.chat-status-pill.open`.
+
+**Why deferred:** this is a design call, not a mechanical fix, and the margins
+make that the whole point. The `opacity` class was 11 instances each fixed by
+deleting a redundant line — no colour judgement at all. This one needs a
+decision between three shapes, and the per-hue alphas above show why picking
+ad-hoc numbers is the wrong answer: accent blue passes only at **≤ .14**, one
+hundredth under where it sits, so any future tweak silently re-breaks it.
+Landing 29 colour changes across ~25 files inside the same PR that was fixing a
+red build would also make a second failure indistinguishable from a regression
+in the fix — the same reason the backend half of that round deferred its own
+eight-item batch.
+
+**Durable fix — pick one, don't mix:**
+1. **Tint-paired text tokens** (`--accent-on-tint`, …) calibrated with real
+   margin, so the contract states the answer instead of each site guessing.
+   Most consistent with the existing base/`-strong` pairing.
+2. **Opaque tint tokens** (`--accent-tint: #232b44`) replacing the `rgba()`,
+   which also moves these rules under the *existing* same-rule pair check
+   rather than needing the compositing one.
+3. Per-hue alphas from the table. Cheapest, and the most fragile — listed so
+   the thin margins are on the record, not as a recommendation.
+
+Then extend the stylesheet guard to composite a translucent background over
+the text surfaces (the scanner already has `parseColorWithAlpha` +
+`compositeOver`; only the `resolveColorParts` wiring was left out) so the class
+can't return. **Not shipping that half until the sites are fixed is deliberate:
+an armed guard with 29 known failures is a red build, not a guard.**
+
+**Trigger:** the next `/audit:accessibility` pass, or any change to a status
+badge. Refs: [accessibility.md](accessibility.md),
+[decisions.md](decisions.md) §28, `frontend/CLAUDE.md` § Colour tokens and
+contrast.
 
 ---
 

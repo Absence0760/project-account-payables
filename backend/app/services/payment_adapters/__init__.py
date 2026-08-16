@@ -23,6 +23,7 @@ from app.services.payment_adapters.base import (
     to_minor_units,
 )
 from app.services.payment_adapters.dispatcher import (
+    UnknownPaymentProviderError,
     get_payment_adapter,
     list_available_providers,
     register_payment_adapter,
@@ -36,6 +37,7 @@ __all__ = [
     "PaymentResult",
     "PaymentStatus",
     "SettlementReport",
+    "UnknownPaymentProviderError",
     "WebhookEvent",
     "get_payment_adapter",
     "list_available_providers",

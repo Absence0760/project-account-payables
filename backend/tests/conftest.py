@@ -167,6 +167,36 @@ def _autouse_fake_redis(monkeypatch):
     return fake
 
 
+@pytest.fixture
+def temp_payment_adapter():
+    """Register throwaway payment adapters, then restore the real registry.
+
+    ``@register_payment_adapter`` writes into a module-level dict that lives
+    for the whole process, so a test that declares a fake adapter inline
+    leaves it there for every *later* test in the same pytest worker. That is
+    not hypothetical: ``test_cashflow_balance``'s ``explodes_on_balance`` fake
+    made ``test_payment_adapter_capabilities``'s drift guard fail — correctly,
+    since the guard's whole job is to notice an unclassified adapter in the
+    registry — whenever the two landed in the same process. CI shards by
+    duration, so whether they co-locate is luck, which is the worst shape for
+    a failure to have.
+
+    Yields the decorator. Anything registered inside the test is removed on
+    teardown; the built-in adapters are untouched.
+    """
+    from app.services.payment_adapters.dispatcher import (
+        _ADAPTER_REGISTRY,
+        register_payment_adapter,
+    )
+
+    before = dict(_ADAPTER_REGISTRY)
+    try:
+        yield register_payment_adapter
+    finally:
+        _ADAPTER_REGISTRY.clear()
+        _ADAPTER_REGISTRY.update(before)
+
+
 # ---------------------------------------------------------------------------
 # Real-Postgres harness (opt-in: request the ``realdb`` fixture)
 #

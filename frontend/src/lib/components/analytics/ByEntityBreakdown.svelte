@@ -111,27 +111,27 @@
 
 <style>
 	.be-error {
-		color: var(--danger, #f87171);
+		color: var(--danger);
 	}
 
 	.be-tag {
 		margin-left: 6px;
 		font-size: 0.72rem;
-		color: var(--muted, #9ca3af);
-		border: 1px solid var(--border, #374151);
+		color: var(--text-muted);
+		border: 1px solid var(--border);
 		border-radius: 4px;
 		padding: 0 5px;
 		vertical-align: middle;
 	}
 
 	.be-alert {
-		color: var(--danger, #f87171);
+		color: var(--danger);
 		font-weight: 600;
 	}
 
 	/* The consolidated cross-check row — visually separated as the total. */
 	.be-total td {
-		border-top: 2px solid var(--border, #374151);
+		border-top: 2px solid var(--border);
 		font-weight: 700;
 	}
 </style>

@@ -92,15 +92,39 @@ def test_mock_adapter_list_pos_returns_independent_copies():
     assert second[0].line_items[0].description != "MUTATED"
 
 
-def test_mock_adapter_dispatch_via_merge_dev_method_falls_back_to_mock_when_no_real_keys():
-    """Even when integration_method='merge_dev' is configured, a config
-    that lacks credentials defaults to the merge_dev adapter — but the
-    mock fallback in the dispatcher is what kicks in for unknown types.
-    Lock that branch so a typo'd config doesn't blow up sync-erp."""
+def test_unknown_erp_type_fails_closed_instead_of_becoming_mock():
+    """This test previously asserted the opposite — that a typo'd `type` fell
+    back to `mock` "so it doesn't blow up sync-erp".
+
+    That fallback is the bug: `MockAdapter.post_invoice` returns
+    `success=True` with a fabricated `MOCK-…` document id, so `services/erp`
+    walked the invoice `sending_to_erp → sent_to_erp → done` and recorded an
+    ERP reference pointing at nothing. `POST /api/organization/test-erp`
+    confirmed the misconfiguration for the same reason
+    (`mock.test_connection()` is True). Every caller now turns the refusal
+    into a specific outcome — 400 on the sync endpoints, a failed pass in
+    `payment_erp_sync`, a named message on test-erp — so nothing "blows up",
+    it just stops lying.
+    """
+    from app.services.erp_adapters.dispatcher import (
+        UnknownErpAdapterError,
+        get_erp_adapter,
+    )
+
+    with pytest.raises(UnknownErpAdapterError) as ei:
+        get_erp_adapter({"type": "totally_unknown", "integration_method": "direct"})
+    assert ei.value.adapter_key == "totally_unknown"
+    # Actionable: names the real alternatives.
+    assert "mock" in str(ei.value)
+
+
+def test_erp_dispatcher_still_resolves_every_registered_adapter():
+    """The guard must not break the ordinary path."""
     from app.services.erp_adapters.dispatcher import get_erp_adapter
 
-    adapter = get_erp_adapter({"type": "totally_unknown", "integration_method": "direct"})
-    assert adapter.erp_type == "mock"
+    assert get_erp_adapter({"type": "mock", "integration_method": "direct"}).erp_type == "mock"
+    # `integration_method` defaults to merge_dev — unchanged by the guard.
+    assert get_erp_adapter({"type": "netsuite"}).erp_type == "merge_dev"
 
 
 # ---------- Base / unimplemented adapters --------------------------------

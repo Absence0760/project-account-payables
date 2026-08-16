@@ -201,7 +201,7 @@
 	.error {
 		background: rgba(224, 64, 64, 0.1);
 		border: 1px solid rgba(224, 64, 64, 0.3);
-		color: #e04040;
+		color: var(--danger);
 		padding: 10px 14px;
 		border-radius: 4px;
 		margin-bottom: 12px;
@@ -209,7 +209,7 @@
 	.message {
 		background: rgba(40, 160, 80, 0.12);
 		border: 1px solid rgba(40, 160, 80, 0.35);
-		color: #1f7a44;
+		color: var(--success);
 		padding: 10px 14px;
 		border-radius: 4px;
 		margin-bottom: 12px;

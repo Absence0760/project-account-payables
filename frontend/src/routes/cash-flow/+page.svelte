@@ -304,7 +304,6 @@
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
 		color: var(--text-muted);
-		opacity: 0.7;
 		padding-top: 4px;
 		border-top: 1px solid var(--border);
 	}
@@ -321,7 +320,7 @@
 		min-height: 0;
 		border: 1px solid var(--border);
 		border-radius: 12px;
-		background: var(--bg, var(--surface));
+		background: var(--bg);
 		overflow: hidden;
 	}
 	.chat-scroll {
@@ -387,7 +386,7 @@
 		border-radius: 8px;
 		background: rgba(240, 70, 70, 0.1);
 		border: 1px solid rgba(240, 70, 70, 0.3);
-		color: #e04040;
+		color: var(--danger);
 		font-size: 0.85rem;
 	}
 	.composer {

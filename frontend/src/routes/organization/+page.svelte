@@ -614,6 +614,9 @@
 
 	// ── White-label branding ────────────────────────────────────────────
 	import { brand } from '$lib/stores/brand.svelte';
+	import { accentStrongContrast } from '$lib/stores/brandTheme';
+	import { formatRatio, WCAG_AA_NORMAL } from '$lib/a11y/contrast';
+	import FieldWarning from '$lib/components/ui/FieldWarning.svelte';
 
 	let brandProductName = $state('');
 	let brandLogoUrl = $state('');
@@ -628,6 +631,15 @@
 	// the live default when the org hasn't set one — without writing it back.
 	const DEFAULT_ACCENT = '#638cff';
 	const DEFAULT_ACCENT_STRONG = '#3f5fd6';
+
+	// The strong accent is written straight into the `--accent-strong` custom
+	// property, whose one contract is that white text sits on it. Warn while
+	// the field is still being edited; the backend accepts any valid hex and
+	// the brand is the tenant's call, so this advises rather than blocks.
+	const accentStrongRatio = $derived(accentStrongContrast(brandAccentStrongColor));
+	const accentStrongFails = $derived(
+		accentStrongRatio !== null && accentStrongRatio < WCAG_AA_NORMAL
+	);
 
 	async function saveBranding() {
 		// Client-side validation mirroring the backend BrandConfig guards, so a
@@ -914,6 +926,13 @@
 								placeholder={DEFAULT_ACCENT_STRONG}
 							/>
 						</span>
+						<FieldWarning
+							show={accentStrongFails}
+							testId="accent-strong-contrast-warning"
+							message={m('common.contrastWarning', {
+								ratio: accentStrongRatio === null ? '' : formatRatio(accentStrongRatio)
+							})}
+						/>
 					</label>
 					<label>
 						<span>{m('org.branding.supportUrl')}</span>
@@ -1752,9 +1771,11 @@
 
 	.btn-remove-domain:hover:not(:disabled),
 	.btn-remove-domain.armed {
-		border-color: var(--danger, #e5484d);
+		/* --danger-strong, not --danger: this armed state is a fill carrying
+		   white text, and the old #e5484d fallback was 3.91:1. */
+		border-color: var(--danger-strong);
 		color: #fff;
-		background: var(--danger, #e5484d);
+		background: var(--danger-strong);
 	}
 
 	.btn-remove-domain:disabled {
@@ -1773,7 +1794,7 @@
 	}
 
 	.domain-error {
-		color: var(--danger, #e5484d);
+		color: var(--danger);
 		font-size: 0.88rem;
 		margin: 4px 0 12px;
 	}
@@ -1857,7 +1878,7 @@
 		padding: 8px 18px;
 		border-radius: 6px;
 		border: none;
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 		font-size: 0.85rem;
 		font-weight: 500;
@@ -1917,7 +1938,7 @@
 	}
 
 	.test-result.failure {
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	.sync-grid {

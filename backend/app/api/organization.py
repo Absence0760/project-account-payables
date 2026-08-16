@@ -418,10 +418,24 @@ async def test_erp_connection(
     import app.services.erp_adapters.merge_dev  # noqa: F401
     import app.services.erp_adapters.mock_adapter  # noqa: F401
     import app.services.erp_adapters.netsuite  # noqa: F401
-    from app.services.erp_adapters import get_erp_adapter
+    from app.services.erp_adapters import UnknownErpAdapterError, get_erp_adapter
 
     try:
         adapter = get_erp_adapter(erp_config)
+    except UnknownErpAdapterError as exc:
+        # This endpoint exists to catch exactly this misconfiguration. It used
+        # to CONFIRM it instead: the unknown type fell back to `mock`, whose
+        # `test_connection` returns True, so the admin was told "Connected to
+        # <typo> successfully". Name the bad value; echo no credential.
+        return {
+            "success": False,
+            "message": (
+                f"'{exc.adapter_key}' is not a supported ERP adapter. "
+                "Pick one from the ERP list and re-test."
+            ),
+        }
+
+    try:
         success = await adapter.test_connection()
         if success:
             return {
@@ -485,10 +499,26 @@ async def test_payment_connection(
         raise HTTPException(status_code=400, detail="No payment processor configuration provided")
 
     # Trigger registration of all bundled adapters.
-    from app.services.payment_adapters import get_payment_adapter
+    from app.services.payment_adapters import (
+        UnknownPaymentProviderError,
+        get_payment_adapter,
+    )
 
     try:
         adapter = get_payment_adapter(config)
+    except UnknownPaymentProviderError as exc:
+        # This endpoint is where an admin discovers a typo'd provider name
+        # before it reaches a payment run, so name it rather than returning
+        # the generic "check your configuration". No credential is echoed.
+        return {
+            "success": False,
+            "message": (
+                f"'{exc.provider}' is not a supported payment provider. "
+                "Pick one from the provider list and re-test."
+            ),
+        }
+
+    try:
         success = await adapter.test_connection()
         provider = config.get("provider", "unknown")
         if success:

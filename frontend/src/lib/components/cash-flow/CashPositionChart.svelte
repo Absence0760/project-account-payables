@@ -204,7 +204,7 @@
 		border-radius: 8px;
 		background: rgba(240, 70, 70, 0.1);
 		border: 1px solid rgba(240, 70, 70, 0.3);
-		color: #e04040;
+		color: var(--danger);
 		font-size: 0.82rem;
 	}
 	.breach-when {
@@ -265,7 +265,7 @@
 		text-align: center;
 	}
 	.axis-label.below {
-		color: #e04040;
+		color: var(--danger);
 		font-weight: 600;
 	}
 	.chart-legend {

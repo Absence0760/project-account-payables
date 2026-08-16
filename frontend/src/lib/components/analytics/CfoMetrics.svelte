@@ -245,7 +245,7 @@
 	}
 
 	.cfm-error {
-		color: #e04040;
+		color: var(--danger);
 		font-weight: 500;
 	}
 
@@ -291,13 +291,13 @@
 	}
 
 	.cfm-flag {
-		color: #e04040;
+		color: var(--danger);
 		font-weight: 600;
 		font-size: 0.85rem;
 		margin: 0 0 12px;
 	}
 
 	.cfm-alert {
-		color: #e04040;
+		color: var(--danger);
 	}
 </style>

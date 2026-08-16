@@ -5,6 +5,8 @@
  * `BrandConfig` validators.
  */
 
+import { contrastRatio, WCAG_AA_NORMAL } from '$lib/a11y/contrast';
+
 export interface Brand {
 	product_name: string;
 	logo_url: string;
@@ -45,4 +47,36 @@ export function brandThemeVars(brand: Brand): Record<string, string> {
 	if (isValidHexColor(brand.accent_strong_color))
 		vars['--accent-strong'] = brand.accent_strong_color.trim();
 	return vars;
+}
+
+/**
+ * The white-on-colour contrast ratio a candidate `accent_strong_color` would
+ * produce, or `null` when the value isn't a usable hex yet (empty field,
+ * half-typed).
+ *
+ * `--accent-strong` has exactly one contract — white text sits on it — and
+ * `brandThemeVars` writes whatever hex the tenant types straight into that
+ * custom property. So a tenant picking `#ffe066` because it matches their
+ * logo turns every primary button, active filter chip and skip link in the
+ * app into near-invisible white-on-yellow. The static token-pairing guard
+ * (`lib/a11y/tokenPairing.test.ts`) can't see that: it scans the stylesheets,
+ * and this override happens at runtime.
+ *
+ * Advisory, not a block. A brand colour is the tenant's call and the backend
+ * accepts any valid hex; what was missing is anyone telling them the cost
+ * before they save.
+ */
+export function accentStrongContrast(color: string | null | undefined): number | null {
+	if (!isValidHexColor(color)) return null;
+	return contrastRatio('#ffffff', (color as string).trim());
+}
+
+/**
+ * `true` / `false` for a usable hex, `null` when there's nothing to judge yet.
+ * Never collapses "not a colour" into "fails" — a half-typed field must not
+ * flash a warning.
+ */
+export function accentStrongMeetsAA(color: string | null | undefined): boolean | null {
+	const ratio = accentStrongContrast(color);
+	return ratio === null ? null : ratio >= WCAG_AA_NORMAL;
 }

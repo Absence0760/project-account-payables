@@ -21,5 +21,12 @@ export default defineConfig({
 	test: {
 		environment: 'node',
 		include: ['src/**/*.{test,spec}.ts'],
+		// Vitest's default (`css: false`) short-circuits every CSS module to an
+		// empty string — including one imported `?raw`. The token-pairing guard
+		// (`lib/a11y/tokenPairing.test.ts`) reads `app.css` as text to extract
+		// the palette, and a silently-empty read would make it pass by scanning
+		// nothing. No test imports CSS for its styles, so turning processing on
+		// costs nothing else.
+		css: true,
 	},
 });

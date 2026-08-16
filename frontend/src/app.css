@@ -4,6 +4,11 @@
 	   scrollbars, date pickers) in their dark variant instead of the default
 	   light styling that clashes with our dark surfaces. */
 	color-scheme: dark;
+	/* Canonical monospace stack. Three components referenced it as
+	   `var(--mono, …)` / `var(--font-mono, …)` under two different names
+	   before either existed, so the fallback was always what rendered.
+	   Declared once, under the name the majority spelled. */
+	--font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
 	--bg: #0f1117;
 	--surface: #181a23;
 	/* A raised panel ON TOP of --surface: the inline-code chip, the one-time
@@ -32,6 +37,34 @@
 	   (buttons, active filter chip, skip link). Leave --accent for borders,
 	   focus rings, checkbox/radio fills, and accent-coloured text. */
 	--accent-strong: #3f5fd6;
+
+	/* Semantic status colours, in the same two-token shape as --accent /
+	   --accent-strong, because the same mistake was being made in both hues:
+	   a mid-tone fill was carrying white text and failing WCAG 1.4.3.
+
+	   The rule for all three families:
+	     • the base token is for TEXT, ICONS and BORDERS on a dark surface;
+	     • the `-strong` token is the FILL behind white text, and nothing else.
+
+	   --success  #1fa86a: 6.17:1 on --bg, 5.67:1 on --surface, 4.58:1 on
+	              --surface-2. White on it is only 3.06:1 — hence the companion.
+	   --success-strong #177a4d: white-on-it 5.35:1.
+	   --danger   #f87171: 6.82:1 on --bg, 6.27:1 on --surface, 5.06:1 on
+	              --surface-2. This token was referenced as
+	              `var(--danger, …)` in nine places with two disagreeing
+	              fallbacks (#f87171 and #e5484d) before it existed here, so the
+	              fallback was always what rendered — the same drift --surface-2
+	              had. Declared once.
+	   --danger-strong #c43535: white-on-it 5.37:1. The old #e04040 fill was
+	              4.22:1 and the old #e5484d 3.91:1; both failed.
+
+	   `src/lib/a11y/tokenPairing.test.ts` asserts every one of these numbers
+	   and scans every stylesheet for a pair that breaks the rule, so a new
+	   colour can't quietly reintroduce it. */
+	--success: #1fa86a;
+	--success-strong: #177a4d;
+	--danger: #f87171;
+	--danger-strong: #c43535;
 }
 
 *,
@@ -450,7 +483,8 @@ input[type='week']:hover::-webkit-calendar-picker-indicator {
 	font-size: 0.72rem;
 }
 .filter-chip .count.alert {
-	background: #e04040;
+	/* --danger-strong, not --danger: this is a fill carrying white text. */
+	background: var(--danger-strong);
 	color: #fff;
 	padding: 0 5px;
 	border-radius: 8px;
@@ -637,7 +671,6 @@ input[type='week']:hover::-webkit-calendar-picker-indicator {
 .modal input::placeholder,
 .modal textarea::placeholder {
 	color: var(--text-muted);
-	opacity: 0.6;
 }
 .modal-footer {
 	display: flex;
@@ -684,7 +717,6 @@ input[type='week']:hover::-webkit-calendar-picker-indicator {
 	font-size: 0.72rem;
 	line-height: 1.35;
 	color: var(--text-muted);
-	opacity: 0.85;
 }
 .kpi.highlight-green {
 	border-color: rgba(31, 168, 106, 0.3);

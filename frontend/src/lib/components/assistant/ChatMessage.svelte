@@ -56,7 +56,6 @@
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
 		color: var(--text-muted);
-		opacity: 0.7;
 	}
 	.msg-bubble {
 		border-radius: 12px;
@@ -65,7 +64,7 @@
 		line-height: 1.5;
 	}
 	.msg.user .msg-bubble {
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 	}
 	.msg.assistant .msg-bubble {
@@ -81,7 +80,7 @@
 	}
 	.msg-error {
 		margin: 0;
-		color: #e04040;
+		color: var(--danger);
 		font-size: 0.88rem;
 	}
 	.typing {

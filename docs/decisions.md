@@ -1029,3 +1029,210 @@ and the amount pattern pins grouping runs to exactly three digits so a date can
 never be read as money.
 
 See [vendor-statement-reconciliation.md § Decimal conventions](../backend/docs/vendor-statement-reconciliation.md).
+
+---
+
+## 28. Contrast is guarded per surface in the stylesheets, not per route in a browser
+
+**Decision:** the app's colour palette carries a two-token contract — a base
+token for text/icons/borders on a dark surface, and a `-strong` companion that
+is the fill behind white text — and a vitest guard
+(`frontend/src/lib/a11y/tokenPairing.test.ts`) scans every stylesheet in `src/`
+for a pair that breaks it. The route-level axe guard
+(`tests-e2e/a11y/axe.spec.ts`) stays, and keeps the half the scanner can't do.
+
+**Why.** The axe guard only sees what a listed route happens to render. Twice
+running, that shape produced the same outcome: a WCAG 1.4.3 failure was caught
+on the pages inside the route list and missed, identically, on the pages
+outside it. `--text-muted` on `--surface-2` was 4.34:1 *wherever it appeared*;
+axe found it on `/admin/api-keys` and `/admin/webhooks`, and `/billing`'s
+proration box — the same defect — was found by a human reading the file. The
+bug recurs per **surface**, so the surfaces are what to check.
+
+Running the scan the first time found 99 problems, which is the real argument
+(a fourth rule, added once the first three were green, found 106 more — see
+below):
+
+- **55 contrast failures**, almost all one root cause. `--accent-strong` had
+  been added specifically so white text had somewhere legible to sit, and
+  almost nothing used it — 40 buttons, chips and chat bubbles still filled
+  with `var(--accent)` at 3.12:1. Green (`#1fa86a`, 3.06:1) and red
+  (`#e04040`, 4.22:1) had no companion at all, so pay / approve / execute /
+  reject / void — the money buttons — all failed.
+- **32 `var(--token, fallback)` declarations whose fallback contradicted the
+  token.** Inert while the token exists, and the wrong colour the moment one is
+  renamed. This is exactly how `--surface-2` shipped for months rendering a
+  value nobody had declared, with two call sites disagreeing about it.
+- **12 references to a token nothing ever assigns**, where the fallback is
+  always what renders — including two spellings of the monospace stack.
+
+**Scope, deliberately.** The scanner checks pairs decided **inside one rule**.
+A rule that sets only `color` inherits its background through the cascade,
+which is a runtime question; that stays axe's job. Neither guard subsumes the
+other, and saying so here is cheaper than someone deleting one of them later.
+
+**One sound question survives in the cascade case**, though, and asking it
+found the round's largest single defect. A rule setting only a `color` will
+render on *some* app surface, so a **literal** there has to be legible on the
+surfaces body text actually sits on. `#e04040` — the status red — is 4.11:1 on
+`--surface` and 4.47:1 on `--bg`: failing, in **106** declarations across 61
+files, on error messages, alerts and the danger row-action. Only literals are
+asked (a palette token is already asserted against those surfaces), `#fff` and
+`#000` are exempt as the deliberate on-a-fill choices, and `--surface-2` is
+*not* in the surface list — text on that raised panel declares its background,
+so the pair check owns it, and including it would flag every status colour in
+the app on the strength of a surface it never renders against. Decorative
+fills (a chart bar, a confidence dot, an SVG `fill`) carry no text and are
+untouched.
+
+The rule also fires when the rule *does* declare a background that resolves to
+nothing usable — a translucent tint, a gradient. Standing down there sounded
+conservative and was the opposite: `background: rgba(140,100,240,0.15);
+color: #8c64f0` is the standard dark-theme status pill, so the check would have
+fallen silent precisely on the pills. A tint over an app surface composites
+close to it, so the bare surface is the right approximation; twelve more
+failures came out (purple, blue, amber and green pill/banner text, 3.53–4.42:1).
+
+**A hole in the drift check itself** turned up in review and is worth
+recording: the `var()` fallback was captured with `[^()]*`, which cannot cross
+an inner paren, so `var(--bg, var(--surface))` — shipped on two routes —
+matched nothing and was invisible to both the dead-token and the stale-fallback
+check. The scan is paren-aware now, and the comparison resolves a fallback
+through the palette rather than by spelling, since a token-valued fallback
+would otherwise read as stale on sight.
+
+**Fixing a failure means changing the colour.** There is no suppression
+mechanism and no allowlist, because the `-strong` companions mean a correct
+answer always exists. The one nuance encoded instead of waived is WCAG's own:
+a rule that declares a large-text size in the same block is held to 3:1, and an
+unresolvable size (`em`, `calc`, inherited) is treated as normal text — the
+stricter direction.
+
+**The palette's own contract is asserted directly**, not inferred from the
+rules that happen to use it. A token drifting light would otherwise surface as
+dozens of scattered failures instead of one.
+
+**Not adopted:** widening the axe route list alone (the ask that prompted this
+— it treats the symptom, and the list will trail the app again the next time a
+route is added); a linter plugin (a colour comparison needs the resolved token
+values, which is the part a generic CSS lint doesn't have); and blocking a
+tenant's brand colour. On that last one — `brandThemeVars` writes a tenant's
+`accent_strong_color` straight into `--accent-strong`, so a brand colour can
+defeat the whole contract at runtime where no static scan can see it. The
+backend accepts any valid hex and the brand is the tenant's call, so the
+answer is an advisory: `accentStrongContrast` reuses the same WCAG primitive
+and both surfaces that edit that colour — the org Branding panel and the
+partner child-branding modal — show the real ratio before it is saved.
+
+**The scan also models a rule's own `opacity`, and deliberately stops there.**
+Adding `/cfo` to the axe list caught `.kpi-sub` — `--text-muted` under
+`opacity: .85` — at 4.24:1, which *both* static checks had structurally missed:
+the same-rule pair check compares the colours as declared, and the bare-literal
+check exempts a palette token on the reasoning that this contract already
+vouches for it. Opacity is exactly what invalidates that reasoning, because it
+composites text and its background together down onto the backdrop. So a rule
+that fades itself is now measured as it renders, and the eleven instances that
+found were all the same shape: an `opacity` line fading text a token had
+*already* muted. Every fix was deleting the line — the fade was never carrying
+meaning, only cost.
+
+An **ancestor's** opacity stays out of scope, and that is the boundary, not an
+omission: resolving it means resolving the cascade, which is the half axe owns.
+`.status-pill.revoked` on `/admin/api-keys` is the worked example — a row fade
+dragged an already-muted pill to 2.44:1, and only a browser could see it. The
+fix spares the status cell from the fade, because the one cell explaining why a
+row is faded should not be the least readable thing in it.
+
+Translucent *backgrounds* are the same compositing problem and are measurable
+with the same primitives, but 29 badges sit 4.15–4.48:1 — failing by a hair,
+needing a design call rather than a mechanical edit. Arming that half before
+fixing them would ship a red build, so it is tracked with its measurements in
+[followups.md](followups.md) instead.
+
+See `frontend/CLAUDE.md` § Colour tokens and contrast, and
+[accessibility.md](accessibility.md).
+
+---
+
+## 29. A mis-typed provider name never resolves to the fixture adapter
+
+**Decided:** 2026-08-16 · `backend/app/services/{payment_adapters,erp_adapters,fx_adapters}/dispatcher.py`
+
+All three dispatchers resolved an unrecognised provider name to their `mock`
+adapter. Each had written down why — "prevents a missed config from silently
+500-ing the entire payments domain", "so a typo'd config doesn't blow up
+sync-erp", "fails closed in prod because the mock returns a fixed rate that
+will not match real market" — and each was reasoning about a `mock` that does
+not exist. These fixture adapters are not inert stubs; they are the thing that
+makes `pnpm dev` work with no cloud account, so they answer **yes** to
+everything:
+
+| Family | What `mock` does | What a typo'd `settings.*` produced |
+|---|---|---|
+| payments | `create_payment` → `success=True, completed` | every payment in every run reported as settled, invoices flipped to `paid`, no money moved |
+| payments | `parse_webhook` verifies no signature | the public webhook route reached an unverified parser, under a name the `provider == "mock"` early-return cannot catch |
+| payments | `void_payment` → `True` unconditionally | a `voided_upstream` audit row for a rail nobody asked |
+| ERP | `post_invoice` → `success=True` + a `MOCK-…` id | the invoice walked `sending_to_erp → sent_to_erp → done` with an ERP reference pointing at nothing |
+| ERP | `test_connection` → `True` | `POST /organization/test-erp` answered "Connected to `<typo>` successfully" — the endpoint that exists to catch the misconfiguration confirmed it |
+| FX | `get_rate` → a hardcoded table | `prepare_international_payment` **locked** the fabricated rate onto `Payment.fx_rate` / `source_amount`, never re-fetched, driving the real outflow and later `realized_fx_gain_loss_for_settlement` |
+
+**The rule now:** no configured provider still means `mock` — that is the
+local-first default (guard rail 7) and an org that has configured nothing is a
+normal state. A **named** provider we have no adapter for raises
+(`UnknownPaymentProviderError` / `UnknownErpAdapterError` /
+`UnknownFxProviderError`).
+
+**This is §26's call, one layer down.** There the same fallback let an
+unrecognised `FEOH_EXTRACTION_PROVIDER` reach a fixture adapter, and the fix
+was a boot-time allowlist. That doesn't transfer: these names come from
+per-org `Organization.settings`, not process env, so there is no boot at which
+to check them. The refusal has to live at the dispatcher, and — because a
+dispatcher cannot know whether its caller is moving money or drawing a chart —
+**each caller decides what the refusal means**:
+
+- **Refuse, before any state changes.** Run execute / resume / retry-failed and
+  the compliance release resolve through `_require_payment_adapter` *before*
+  claiming the run, so the answer is a 409 with the run still `draft` rather
+  than a 500 with it stranded `executing`. The three ERP sync endpoints 400 —
+  a config problem, not the 502 they use for a gateway failure.
+- **Fail the one payment.** The international leg records
+  `failure_reason="fx_provider_unsupported"` instead of booking a rate. The
+  reason names the condition and NOT the admin's raw settings value, because
+  every AP user reads `failure_reason` while only an admin owns the setting.
+- **Degrade.** `fetch_provider_balance` falls back to the manual opening
+  balance; the CFO dashboard's unrealized-FX panel reports `available: false`;
+  the corridor auction skips just that provider so one bad name in a
+  multi-provider list can't take the whole auction down.
+- **Record and continue.** `/void` still voids locally — the books should
+  reflect intent — but writes `provider_not_supported` rather than a
+  fictitious `voided_upstream`.
+- **Count it as a failure.** The payment reconciler lets it propagate so the
+  tenant registers as a sweep failure and shows `degraded` on
+  `GET /api/health/sweeps` (§24).
+- **Fail the leg, not the pass.** `payment_erp_sync` resolves the ERP adapter
+  *inside* `_sync_one_leg`, where it would be used, so an unsupported type
+  travels the same path as any other leg failure and opens the de-duped
+  `erp_reconciliation` exception §22 introduced. The first attempt at this put
+  the check in `_sync_payments` as a pre-flight, before the tenant session
+  exists — which cannot open an exception, aborts every payment in the run at
+  once, and returns a count that `_run_in_thread` discards on the primary
+  dispatch path. That reintroduced exactly the invisible strand §22 removed:
+  money moved, invoices frozen at `payment_scheduled`, nothing in the queue.
+  A config error must strand the same way a transport error does.
+- **Say which name is wrong.** `POST /organization/test-payments` and
+  `/test-erp` echo the bad value and list the registered alternatives. The name
+  is bounded to 50 chars (its column width) so an absurd value can't bloat a
+  log line, and no credential from the posted config is echoed.
+
+**Why not make the mock adapters inert instead.** §26 rejected the same idea
+for extraction and the reason holds here: the fixtures are what let tests and
+demos exercise a whole money path with no processor. Neutering them has a far
+wider blast radius than the resolution rule this entry is about.
+
+**Not adopted:** validating `settings.payments.provider` on write in
+`PATCH /api/organization`. Worth doing, but it is not sufficient on its own —
+settings predate any validator, arrive from seeds and migrations, and an
+adapter can be *removed* from the registry after a name was already stored.
+The dispatcher is the only chokepoint every caller passes through.
+
+See `backend/docs/payments.md` § Provider resolution.

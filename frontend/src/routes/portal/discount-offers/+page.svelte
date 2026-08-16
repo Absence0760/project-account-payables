@@ -301,8 +301,8 @@
 		color: var(--text);
 	}
 	.filter-chip.active {
-		background: var(--accent);
-		border-color: var(--accent);
+		background: var(--accent-strong);
+		border-color: var(--accent-strong);
 		color: #fff;
 	}
 	table {
@@ -411,7 +411,7 @@
 	.error {
 		background: rgba(224, 64, 64, 0.1);
 		border: 1px solid rgba(224, 64, 64, 0.3);
-		color: #e04040;
+		color: var(--danger);
 		padding: 10px 14px;
 		border-radius: 4px;
 		margin-bottom: 12px;
@@ -487,9 +487,9 @@
 	}
 	.btn-primary {
 		padding: 7px 14px;
-		border: 1px solid var(--accent);
+		border: 1px solid var(--accent-strong);
 		border-radius: 4px;
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 		cursor: pointer;
 		font-size: 0.85rem;

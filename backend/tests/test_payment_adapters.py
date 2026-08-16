@@ -15,23 +15,74 @@ import json
 import uuid
 from decimal import Decimal
 
+import pytest
+
 # ---------- Adapter scaffold ----------------------------------------------
 
 
-def test_dispatcher_returns_mock_for_unknown_provider():
-    """Unknown provider must not raise — the orchestrator depends on a
-    fallback so a misconfigured org can't 500 the entire payments domain."""
-    from app.services.payment_adapters import get_payment_adapter
+def test_dispatcher_fails_closed_for_unknown_provider():
+    """An unsupported provider name must RAISE, never silently become `mock`.
 
-    adapter = get_payment_adapter({"provider": "does_not_exist"})
-    assert adapter.provider_name == "mock"
+    This test previously asserted the opposite ("a misconfigured org can't
+    500 the entire payments domain"). That trade was wrong for this family:
+    `mock.create_payment` returns `success=True, status=completed`
+    immediately, so one typo in an admin-supplied `settings.payments.provider`
+    (`modern-treasury` for `modern_treasury`) made every payment in every run
+    report as settled while no money moved, and flipped the invoices to
+    `paid`. `mock.parse_webhook` also verifies no signature, so the same typo
+    routed the public webhook route to an unverified parser. Callers now
+    resolve through `_require_payment_adapter` and refuse with an actionable
+    409 before anything is dispatched — the "don't 500" goal, kept, without
+    the silent-success failure mode.
+    """
+    from app.services.payment_adapters import (
+        UnknownPaymentProviderError,
+        get_payment_adapter,
+    )
+
+    with pytest.raises(UnknownPaymentProviderError) as exc_info:
+        get_payment_adapter({"provider": "does_not_exist"})
+    assert exc_info.value.provider == "does_not_exist"
+
+
+def test_unknown_provider_error_names_the_registered_alternatives():
+    """The message has to be actionable for the admin who typo'd, and must
+    carry no credential material out of the config dict."""
+    from app.services.payment_adapters import (
+        UnknownPaymentProviderError,
+        get_payment_adapter,
+    )
+
+    with pytest.raises(UnknownPaymentProviderError) as exc_info:
+        get_payment_adapter({"provider": "modern-treasury", "api_key": "sk_live_SECRET"})
+    message = str(exc_info.value)
+    assert "modern-treasury" in message
+    assert "modern_treasury" in message  # the real name is offered
+    assert "SECRET" not in message
+
+
+def test_unknown_provider_name_is_length_bounded():
+    """An absurd settings value must not bloat a log line or a response."""
+    from app.services.payment_adapters import (
+        UnknownPaymentProviderError,
+        get_payment_adapter,
+    )
+
+    with pytest.raises(UnknownPaymentProviderError) as exc_info:
+        get_payment_adapter({"provider": "x" * 5000})
+    assert len(exc_info.value.provider) == 50
 
 
 def test_dispatcher_returns_mock_for_empty_config():
+    """No configured processor is a normal state (local-first default), and
+    stays `mock`. Only a NAMED provider we have no adapter for fails closed."""
     from app.services.payment_adapters import get_payment_adapter
 
     assert get_payment_adapter(None).provider_name == "mock"
     assert get_payment_adapter({}).provider_name == "mock"
+    # An empty / null provider is "not configured", not "unsupported".
+    assert get_payment_adapter({"provider": ""}).provider_name == "mock"
+    assert get_payment_adapter({"provider": None}).provider_name == "mock"
 
 
 def test_registered_providers_include_mock_and_modern_treasury():

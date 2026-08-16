@@ -148,7 +148,7 @@
 	}
 
 	.tl-error {
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	.tl-group {
@@ -226,7 +226,7 @@
 		padding: 6px 14px;
 		border-radius: 6px;
 		border: none;
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 		font-size: 0.82rem;
 		font-weight: 500;

@@ -261,7 +261,7 @@
 
 	.branch-tag.false {
 		background: rgba(224, 64, 64, 0.12);
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	.parallel-summary {

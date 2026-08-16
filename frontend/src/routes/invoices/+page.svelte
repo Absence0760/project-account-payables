@@ -902,14 +902,14 @@
 	}
 
 	.bulk-delete-btn:hover {
-		border-color: #e04040;
-		color: #e04040;
+		border-color: var(--danger);
+		color: var(--danger);
 	}
 
 	.bulk-delete-btn.armed {
-		border-color: #e04040;
+		border-color: var(--danger);
 		background: rgba(224, 64, 64, 0.1);
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	.bulk-delete-btn:disabled {

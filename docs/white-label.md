@@ -48,6 +48,24 @@ Validated by the Pydantic `BrandConfig` schema (`app/schemas/organization.py`):
   renders as `<img src>` and the links as `<a href>`, so `javascript:`,
   `data:`, and other schemes are rejected.
 
+**A legal hex can still be an illegible one, and the UI says so.**
+`accent_strong_color` overrides `--accent-strong`, whose single contract is
+that white text sits on it — every primary button, active filter chip and the
+skip link read off it. So a tenant picking the yellow from their logo makes
+those unreadable across the whole app, and the stylesheet contrast guard
+(`frontend/src/lib/a11y/tokenPairing.test.ts`) structurally cannot see it: that
+scan runs over the sources, this override happens at runtime. Both surfaces
+that edit the colour — the `/organization` Branding panel and the
+`/admin/partner` child-branding modal, where the consequence lands on somebody
+else's users — show the real white-on-colour ratio inline as the field is
+typed (`stores/brandTheme.ts` `accentStrongContrast`, `ui/FieldWarning`).
+
+It is **advisory, not a block.** The backend accepts any valid hex on purpose:
+the brand is the tenant's call, and a hard refusal would make the API the
+arbiter of a design decision. What was missing was anyone stating the cost
+before it is saved. See [accessibility.md](accessibility.md) and
+[decisions.md](decisions.md) §28.
+
 The mutate path writes `org.settings["brand"]` via `flag_modified` (nested JSONB
 in-place mutation isn't auto-marked dirty) and audits
 `organization.branding_updated` into the tenant trail. The audit detail is

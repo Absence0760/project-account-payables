@@ -84,7 +84,7 @@
 	.error {
 		background: rgba(224, 64, 64, 0.1);
 		border: 1px solid rgba(224, 64, 64, 0.3);
-		color: #e04040;
+		color: var(--danger);
 		padding: 10px;
 		border-radius: 4px;
 		font-size: 0.85rem;
@@ -113,7 +113,7 @@
 		padding: 10px;
 		border-radius: 4px;
 		border: none;
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 		font-weight: 500;
 		cursor: pointer;

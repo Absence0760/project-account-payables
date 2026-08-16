@@ -109,7 +109,7 @@
 		font-weight: 700;
 	}
 	.error {
-		color: #e04040;
+		color: var(--danger);
 		font-size: 0.9rem;
 		margin: 0 0 16px;
 	}

@@ -277,7 +277,7 @@
 		border-radius: 8px;
 		background: rgba(240, 70, 70, 0.1);
 		border: 1px solid rgba(240, 70, 70, 0.3);
-		color: #e04040;
+		color: var(--danger);
 		font-size: 0.82rem;
 	}
 	.breach-when {
@@ -339,7 +339,7 @@
 		text-align: right;
 	}
 	.mini-table tr.below td {
-		color: #e04040;
+		color: var(--danger);
 	}
 	.plan-note {
 		margin: 0 0 8px;
@@ -372,9 +372,9 @@
 		cursor: not-allowed;
 	}
 	.plan-capture-btn.armed {
-		border-color: #e04040;
+		border-color: var(--danger);
 		background: rgba(240, 70, 70, 0.1);
-		color: #e04040;
+		color: var(--danger);
 	}
 	.plan-action-result {
 		margin: 0 0 6px;
@@ -384,7 +384,7 @@
 	.plan-action-error {
 		margin: 0 0 6px;
 		font-size: 0.78rem;
-		color: #e04040;
+		color: var(--danger);
 	}
 	.plan-disclaimer {
 		margin: 0;

@@ -185,9 +185,9 @@
 	}
 
 	.status-chip.selected {
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
-		border-color: var(--accent);
+		border-color: var(--accent-strong);
 	}
 
 	footer {
@@ -237,9 +237,9 @@
 	}
 
 	.btn-apply {
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
-		border-color: var(--accent);
+		border-color: var(--accent-strong);
 	}
 
 	.btn-apply:hover {

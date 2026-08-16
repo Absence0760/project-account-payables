@@ -816,7 +816,7 @@
 		padding: 8px 18px;
 		border-radius: 6px;
 		border: none;
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 		font-size: 0.85rem;
 		font-weight: 500;
@@ -1190,8 +1190,8 @@
 	}
 
 	.remove-btn:hover {
-		border-color: #e04040;
-		color: #e04040;
+		border-color: var(--danger);
+		color: var(--danger);
 	}
 
 	.no-selection {

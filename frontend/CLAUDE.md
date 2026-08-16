@@ -18,7 +18,8 @@ pnpm dev              # dev server on :7777
 pnpm build            # production build (adapter-static)
 pnpm preview          # preview build on :8888
 pnpm check            # typecheck
-pnpm test:unit        # vitest unit tests (i18n parity + pure helpers)
+pnpm test:unit        # vitest unit tests (i18n parity, pure helpers, the
+                      # stylesheet colour-token/contrast guard)
 ```
 
 ## Routes → API mappings
@@ -170,6 +171,14 @@ Grouped into subfolders by role. Import with the full path, e.g.
 - `ScreeningBadge.svelte` — sanctions-screening + vendor-risk pill. `<ScreeningBadge screening={v.screening_status} risk={v.risk_level} blocked={v.payments_blocked} />`. Tone map: clear=green, review/medium=amber, match/high/critical/blocked=red, unscreened/low=grey. Shared by the vendor list cell + `VendorModal`.
 - `SubscriptionBadge.svelte` — platform-billing subscription-status pill. `<SubscriptionBadge status={sub.status} />` for the four states (`trialing`/`active`/`past_due`/`canceled`); WCAG-1.4.3-calibrated tones matching `StatusBadge`. Used by `/billing`.
 - `SecretReveal.svelte` — **the** one-time credential reveal dialog. `<SecretReveal open ariaLabel heading warningStrong warning secret testId copyLabel copiedLabel copiedToast copyFailedToast doneLabel meta? onclose />` (+ an optional `{#snippet note()}` under the meta rows). Wraps `Modal`; renders the plaintext in a `user-select:all` `<code>` carrying `testId`, a clipboard Copy button with a "Copied" acknowledgement, and the shown-once warning banner. **The secret is a prop, never state** — the component neither stores, caches nor logs it, and the caller drops its own copy in `onclose`, so the value leaves the DOM with the dialog. Every string is passed in already-localized (the component is i18n-agnostic; each caller keeps its own key namespace). Used by the API-key mint (`/admin/api-keys`) and both webhook secret reveals — create and rotate (`/admin/webhooks`). Use this for any new "shown once, never retrievable" value; don't hand-roll a third copy.
+- `FieldWarning.svelte` — inline advisory attached to a form field: "this is
+  legal, and here is what it will cost you". `<FieldWarning show message />`
+  (the message arrives already-localized; the component is i18n-agnostic).
+  `role="status"` / polite, because it updates as the user types — an
+  assertive region would interrupt on every keystroke. Distinct from a toast
+  (transient, on submit) and from the `role="alert"` refusal panels (a request
+  the server rejected). First use: the brand strong-accent contrast advisory on
+  `/organization` + `/admin/partner`.
 - `Money.svelte` — locale-aware currency display. `<Money amount={row.amount} currency={row.currency} />`. Opt-in `whole` (no decimals), `accounting` (parenthesised negatives), `mono` (tabular-nums). Over `utils/money.ts::formatMoney`; see *Money formatting* above. Use this (or `formatMoney` in script) for every currency value — don't write `Intl.NumberFormat` inline.
 
 The visual styling for all of the above lives **globally in `src/app.css`** (class-scoped: `.workspace`, `.grid-container td`, `.filter-chip`, `.modal`, `.kpi`, …) so route pages carry no duplicated `<style>`. Feature components below keep their own scoped CSS (Svelte's `.svelte-<hash>` outranks the bare-class globals).
@@ -542,7 +551,9 @@ pill-shaped status filter above the table:
 
 - `chips = [{key, label, count?, alert?}]`. Omit `count` for label-only
   chips; `alert: true` renders the red attention badge (`.count.alert`).
-- The "All" chip comes first; active chip uses `var(--accent)` + white.
+- The "All" chip comes first; the active chip uses `var(--accent-strong)` +
+  white — **not** `var(--accent)`, which is only 3.12:1 against white. See
+  *Colour tokens and contrast* below.
 - **Single-select only.** For a multi-select status filter (e.g. `/invoices`,
   whose filter is an array) keep an inline `<nav class="filters">` chip
   nav — it still uses the global `.filter-chip` / `.count` CSS, so the
@@ -709,6 +720,7 @@ the `ui/` primitive in the Source column.
 | KPI card | `.kpi` / `.kpi-value` / `.kpi-label` | `ui/KpiCard.svelte` |
 | Status badge | `<StatusBadge>` | `ui/StatusBadge.svelte` |
 | Money / currency | `<Money>` / `formatMoney` | `ui/Money.svelte` / `utils/money.ts` |
+| Field-level advisory | `.field-warning` (`role="status"`) | `ui/FieldWarning.svelte` |
 | Checkbox / radio / file | `input[type='checkbox'\|'radio'\|'file']` (global base) | `src/app.css` |
 
 **Native form controls** are dark-themed globally in `src/app.css` so a
@@ -803,6 +815,78 @@ inherit it for free. Reuse these; don't re-solve them per page.
 - **Icon-only controls** — every icon-only `<button>` needs an
   `aria-label` (NotificationBell reflects the unread count; the sidebar
   collapse toggle + profile button carry `aria-label` + `aria-expanded`).
+
+### Colour tokens and contrast (WCAG 1.4.3)
+
+The palette in `src/app.css` `:root` is small and every colour token has a
+**stated job**. Three of them come in pairs, and picking the wrong half is the
+one mistake this codebase kept making:
+
+| Base token — text / icons / borders on a dark surface | `-strong` companion — the FILL behind white text |
+|---|---|
+| `--accent` `#638cff` | `--accent-strong` `#3f5fd6` |
+| `--success` `#1fa86a` | `--success-strong` `#177a4d` |
+| `--danger` `#f87171` | `--danger-strong` `#c43535` |
+
+- **Never put white text on a base token.** All three are mid-tones chosen to
+  be legible *as text on the dark surfaces*; white on them is 3.06–3.12:1,
+  well under the 4.5:1 bar. That is what the `-strong` half is for, and it is
+  the only thing it is for — `--danger-strong` as *text* on `--surface` would
+  be unreadable in the other direction.
+- **`--surface-2` `#232b44` is the hostile surface.** Only `--text` clears
+  4.5:1 on it (11.0:1). `--text-muted` is 4.34:1 there — the failure the axe
+  guard originally caught. Muted text belongs on `--bg` or `--surface`.
+- **Never write a `var(--token, fallback)` fallback.** Every token above is
+  declared, so the fallback is dead code that becomes the *wrong colour* the
+  day a token is renamed. `--surface-2` shipped for months as
+  `var(--surface-2, #232b44)` with the token undefined, two call sites
+  disagreeing about the value — that is the bug this rule prevents. Same for
+  `--font-mono`, the canonical monospace stack.
+- **Text colour comes from a token, not a literal.** A bare `color: #<hex>`
+  with no background in the same rule renders on whatever the cascade supplies,
+  so it has to be legible on `--bg` and `--surface` — and `#e04040` (the old
+  status red) was 4.11:1 on `--surface`, failing in 106 places. `#fff` / `#000`
+  are exempt: they're the deliberate on-a-coloured-fill choices. Decorative
+  fills (a chart bar, a confidence dot, an SVG `fill`) carry no text and are
+  not covered by this.
+
+Two guards enforce it, and neither subsumes the other:
+
+- **`src/lib/a11y/tokenPairing.test.ts`** (vitest, no browser) scans **every**
+  stylesheet in `src/` — `app.css` plus every `<style>` block — for a rule that
+  sets both `color` and a `background`, resolves both through the palette, and
+  fails below 4.5:1 (3:1 when the rule itself declares a large-text size). It
+  also fails a bare literal `color:` that can't clear the bar on `--bg` or
+  `--surface`, a fallback that contradicts its token, a `var()` on a token
+  nothing assigns, and asserts the table above directly. It also measures a
+  rule that fades **itself** with `opacity`, because opacity composites text
+  and its background down onto the backdrop — so a token that clears the bar at
+  full strength can render under it (`--text-muted` at `.85` is 4.24:1 on
+  `--surface`). **Don't dim already-muted text with `opacity`**: the token has
+  done that job, and the fade only spends contrast. Pure scanners live in
+  `a11y/cssAudit.ts`; the WCAG math in `a11y/contrast.ts`.
+- **`tests-e2e/a11y/axe.spec.ts`** covers what the scanner deliberately can't:
+  a rule setting only `color` inherits its background through the cascade at
+  runtime, and an **ancestor's** `opacity` fades a descendant the scan reads as
+  fine (a revoked-row fade put `/admin/api-keys`' status pill at 2.44:1). Add a
+  route here when you add a page carrying dialogs or dense controls.
+
+A **translucent** `background: rgba(…)` is the same compositing problem and the
+scanner has the primitives for it, but the ~29 status badges built that way sit
+just under the bar (4.15–4.48:1) and need a design call, so that half is not
+armed yet — see `docs/followups.md`.
+
+**A failure means changing the colour, never relaxing the rule** — there is no
+suppression mechanism, because the `-strong` companions mean a correct answer
+always exists. Rationale + what was rejected: `docs/decisions.md` §28.
+
+**The one runtime hole:** white-label theming lets a tenant overwrite
+`--accent` / `--accent-strong` with any valid hex (`stores/brandTheme.ts`
+`brandThemeVars`), which no static scan can see. `accentStrongContrast` /
+`accentStrongMeetsAA` (same file, same WCAG primitive) drive a `FieldWarning`
+advisory on both surfaces that edit it — `/organization` Branding and the
+`/admin/partner` child-branding modal. Advisory, not a block: the backend
+accepts any valid hex and the brand is the tenant's call.
 
 ## Conventions
 

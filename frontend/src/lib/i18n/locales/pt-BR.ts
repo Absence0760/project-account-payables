@@ -78,6 +78,8 @@ export const messages = {
 	'common.search': 'Pesquisar',
 	'common.clear': 'Limpar',
 	'common.apply': 'Aplicar',
+	'common.contrastWarning':
+		'Texto branco sobre esta cor atinge apenas {ratio}. O WCAG AA exige 4,5:1, então botões e chips que a usarem ficarão difíceis de ler.',
 
 	// Dashboard
 	'dashboard.title': 'Painel',
