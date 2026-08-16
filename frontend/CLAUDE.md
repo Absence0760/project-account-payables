@@ -858,12 +858,23 @@ Two guards enforce it, and neither subsumes the other:
   fails below 4.5:1 (3:1 when the rule itself declares a large-text size). It
   also fails a bare literal `color:` that can't clear the bar on `--bg` or
   `--surface`, a fallback that contradicts its token, a `var()` on a token
-  nothing assigns, and asserts the table above directly. Pure scanners live in
+  nothing assigns, and asserts the table above directly. It also measures a
+  rule that fades **itself** with `opacity`, because opacity composites text
+  and its background down onto the backdrop — so a token that clears the bar at
+  full strength can render under it (`--text-muted` at `.85` is 4.24:1 on
+  `--surface`). **Don't dim already-muted text with `opacity`**: the token has
+  done that job, and the fade only spends contrast. Pure scanners live in
   `a11y/cssAudit.ts`; the WCAG math in `a11y/contrast.ts`.
 - **`tests-e2e/a11y/axe.spec.ts`** covers what the scanner deliberately can't:
   a rule setting only `color` inherits its background through the cascade at
-  runtime. Add a route here when you add a page carrying dialogs or dense
-  controls.
+  runtime, and an **ancestor's** `opacity` fades a descendant the scan reads as
+  fine (a revoked-row fade put `/admin/api-keys`' status pill at 2.44:1). Add a
+  route here when you add a page carrying dialogs or dense controls.
+
+A **translucent** `background: rgba(…)` is the same compositing problem and the
+scanner has the primitives for it, but the ~29 status badges built that way sit
+just under the bar (4.15–4.48:1) and need a design call, so that half is not
+armed yet — see `docs/followups.md`.
 
 **A failure means changing the colour, never relaxing the rule** — there is no
 suppression mechanism, because the `-strong` companions mean a correct answer

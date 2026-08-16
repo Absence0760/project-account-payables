@@ -1124,6 +1124,31 @@ answer is an advisory: `accentStrongContrast` reuses the same WCAG primitive
 and both surfaces that edit that colour — the org Branding panel and the
 partner child-branding modal — show the real ratio before it is saved.
 
+**The scan also models a rule's own `opacity`, and deliberately stops there.**
+Adding `/cfo` to the axe list caught `.kpi-sub` — `--text-muted` under
+`opacity: .85` — at 4.24:1, which *both* static checks had structurally missed:
+the same-rule pair check compares the colours as declared, and the bare-literal
+check exempts a palette token on the reasoning that this contract already
+vouches for it. Opacity is exactly what invalidates that reasoning, because it
+composites text and its background together down onto the backdrop. So a rule
+that fades itself is now measured as it renders, and the eleven instances that
+found were all the same shape: an `opacity` line fading text a token had
+*already* muted. Every fix was deleting the line — the fade was never carrying
+meaning, only cost.
+
+An **ancestor's** opacity stays out of scope, and that is the boundary, not an
+omission: resolving it means resolving the cascade, which is the half axe owns.
+`.status-pill.revoked` on `/admin/api-keys` is the worked example — a row fade
+dragged an already-muted pill to 2.44:1, and only a browser could see it. The
+fix spares the status cell from the fade, because the one cell explaining why a
+row is faded should not be the least readable thing in it.
+
+Translucent *backgrounds* are the same compositing problem and are measurable
+with the same primitives, but 29 badges sit 4.15–4.48:1 — failing by a hair,
+needing a design call rather than a mechanical edit. Arming that half before
+fixing them would ship a red build, so it is tracked with its measurements in
+[followups.md](followups.md) instead.
+
 See `frontend/CLAUDE.md` § Colour tokens and contrast, and
 [accessibility.md](accessibility.md).
 

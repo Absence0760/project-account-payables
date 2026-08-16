@@ -378,6 +378,71 @@ originally-deferred sub-bucket from that same feature remains:
 Refs: [roadmap.md](roadmap.md) § AI Cash-Flow Copilot,
 [cash-flow-copilot.md](cash-flow-copilot.md).
 
+### Status badges on a translucent tint sit just under 4.5:1
+
+Widening the axe route list to `/cfo` immediately caught the failure the
+follow-up above predicted — `.kpi-sub`, `--text-muted` under `opacity: .85`,
+4.24:1 — and fixing it closed that whole class: the stylesheet guard now models
+a rule's **own** `opacity`, and all eleven instances are gone.
+
+Building it surfaced an adjacent class the same pass can measure but did **not**
+fix: a badge that tints its background translucently (`background: rgba(<hue>,
+0.15)`) and sets text in the same hue. The tint lightens the dark surface
+*toward* the text, so the pair lands just under the bar — every one of these is
+between **4.15:1 and 4.48:1**, i.e. failing by a hair rather than obviously
+wrong. **29 instances**, across ~8 distinct colour pairs:
+
+| Text | Tint | Renders | Ratio | Passes at alpha |
+|---|---|---|---|---|
+| `#638cff` / `--accent` | `rgba(99,140,255,.15)` | `#232b44` | 4.48 | ≤ .14 |
+| `#1fa86a` | `rgba(50,200,130,.15)` | `#1c3431` | 4.33 | ≤ .12 |
+| `--text-muted` | `rgba(138,143,160,.15)` | `#292c36` | 4.32 | ≤ .12 |
+| `--text-muted` | `rgba(150,150,150,.15)` | `#2b2d34` | 4.27 | ≤ .12 |
+| `#888` | `rgba(150,150,150,.15)` | `#23252a` | 4.33 | ≤ .12 |
+| `#c96a14` | `rgba(224,120,40,.15)` | `#2e201a` | 4.15 | ≤ .09 |
+| `#2ea043` | `rgba(46,160,67,.12)` | `#1b2a27` | 4.42 | ≤ .10 |
+| `#c47b00` | `rgba(255,165,0,.08)` | `#2a2520` | 4.47 | ≤ .07 |
+
+Sites: `payments` (4 badges), `RunDetailModal` (4), `discounts` (2),
+`SimulationModal` (2), `profile` (2), `Pricing` (2), `workflows` +
+`workflows/[id]` `.default-badge`, `invoices` `.priors-badge`, `InvoiceModal`
+`.priors-chip`, `tax` `.chip-off`, `purchase-orders` `.badge.open`, and the
+`Contract` / `Expense` / `Intake` / `Requisition` modal `.badge.draft|open`,
+`BulkRecodeGLModal` `.src-ai`, `VersionHistoryModal` `.kind-added`,
+`SupplierChatThread` `.chat-status-pill.open`.
+
+**Why deferred:** this is a design call, not a mechanical fix, and the margins
+make that the whole point. The `opacity` class was 11 instances each fixed by
+deleting a redundant line — no colour judgement at all. This one needs a
+decision between three shapes, and the per-hue alphas above show why picking
+ad-hoc numbers is the wrong answer: accent blue passes only at **≤ .14**, one
+hundredth under where it sits, so any future tweak silently re-breaks it.
+Landing 29 colour changes across ~25 files inside the same PR that was fixing a
+red build would also make a second failure indistinguishable from a regression
+in the fix — the same reason the backend half of that round deferred its own
+eight-item batch.
+
+**Durable fix — pick one, don't mix:**
+1. **Tint-paired text tokens** (`--accent-on-tint`, …) calibrated with real
+   margin, so the contract states the answer instead of each site guessing.
+   Most consistent with the existing base/`-strong` pairing.
+2. **Opaque tint tokens** (`--accent-tint: #232b44`) replacing the `rgba()`,
+   which also moves these rules under the *existing* same-rule pair check
+   rather than needing the compositing one.
+3. Per-hue alphas from the table. Cheapest, and the most fragile — listed so
+   the thin margins are on the record, not as a recommendation.
+
+Then extend the stylesheet guard to composite a translucent background over
+the text surfaces (the scanner already has `parseColorWithAlpha` +
+`compositeOver`; only the `resolveColorParts` wiring was left out) so the class
+can't return. **Not shipping that half until the sites are fixed is deliberate:
+an armed guard with 29 known failures is a red build, not a guard.**
+
+**Trigger:** the next `/audit:accessibility` pass, or any change to a status
+badge. Refs: [accessibility.md](accessibility.md),
+[decisions.md](decisions.md) §28, `frontend/CLAUDE.md` § Colour tokens and
+contrast.
+
 ---
 
 ## (a) Blocked on external credentials, accounts, or hardware
