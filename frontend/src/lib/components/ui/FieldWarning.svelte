@@ -15,16 +15,19 @@
 	 */
 	let {
 		show = false,
-		message
+		message,
+		testId
 	}: {
 		show?: boolean;
 		/** Already-localized text — this component is i18n-agnostic. */
 		message: string;
+		/** `data-testid` for an e2e selector; the class is Svelte-scoped. */
+		testId?: string;
 	} = $props();
 </script>
 
 {#if show}
-	<p class="field-warning" role="status">
+	<p class="field-warning" role="status" data-testid={testId}>
 		<span aria-hidden="true">⚠</span>
 		{message}
 	</p>

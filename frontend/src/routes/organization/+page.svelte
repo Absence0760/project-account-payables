@@ -928,6 +928,7 @@
 						</span>
 						<FieldWarning
 							show={accentStrongFails}
+							testId="accent-strong-contrast-warning"
 							message={m('common.contrastWarning', {
 								ratio: accentStrongRatio === null ? '' : formatRatio(accentStrongRatio)
 							})}

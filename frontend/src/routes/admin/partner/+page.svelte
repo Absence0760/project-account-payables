@@ -450,6 +450,7 @@
 						<input type="text" bind:value={brand.accent_strong_color} placeholder={m('admin.partner.field.strongAccentPlaceholder')} />
 						<FieldWarning
 							show={childAccentStrongFails}
+							testId="child-accent-strong-contrast-warning"
 							message={m('common.contrastWarning', {
 								ratio: childAccentStrongRatio === null ? '' : formatRatio(childAccentStrongRatio)
 							})}
