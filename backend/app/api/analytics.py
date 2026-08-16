@@ -43,6 +43,7 @@ from app.services.analytics import (
     compute_cash_conversion_cycle,
     compute_cash_position,
     compute_dpo,
+    compute_dpo_trend,
     compute_forecast_variance,
     compute_fraud_rate_trend,
     compute_rebate_yield,
@@ -471,6 +472,76 @@ async def update_cash_position_settings(
 
 
 # ---------------------------------------------------------------------------
+# Monthly DPO snapshots — ONE builder for the trend chart and its drill-through
+# ---------------------------------------------------------------------------
+
+
+async def _monthly_dpo_snapshots(
+    db: AsyncSession,
+    *,
+    months: int,
+    entity_id: uuid.UUID | None,
+    today: date,
+) -> list[dict]:
+    """Per-month `{month, accounts_payable, cogs}` rows, newest month last.
+
+    This is the ONE population behind both DPO surfaces: the `dpo_trend` chart
+    on `GET /api/analytics/cfo` and the `GET /api/analytics/drill/dpo`
+    drill-through the CFO clicks to explain a spike in it. They used to run
+    near-identical loops written out twice, and the copies had already diverged:
+    the chart excluded `rejected` invoices from its COGS proxy (matching the
+    headline `total_spend`) while the drill-through did not, so drilling into a
+    point reported a *different* DPO than the point being drilled — the exact
+    failure `tests/test_analytics_rejected_exclusion.py` pins for the
+    concentration tile (issue #126).
+
+    Both the rejected exclusion and the open-AP status set are stated once here,
+    the latter from the canonical `OPEN_AP_STATUSES` rather than a third
+    hand-copied literal. The returned shape is exactly what the pure
+    `services.analytics.compute_dpo_trend` consumes — money stays `Decimal`.
+    """
+    rows: list[dict] = []
+    cursor = today.replace(day=1)
+    for _ in range(months):
+        month_end = cursor - timedelta(days=1)
+        month_start = month_end.replace(day=1)
+        cogs_q = await db.execute(
+            apply_entity_scope(
+                select(func.coalesce(func.sum(Invoice.amount), 0)).where(
+                    Invoice.invoice_date >= month_start,
+                    Invoice.invoice_date <= month_end,
+                    # Exclude rejected — match the headline `total_spend`, else
+                    # the COGS proxy is inflated relative to the current-period
+                    # DPO computed from it.
+                    Invoice.status != InvoiceStatus.rejected.value,
+                ),
+                Invoice,
+                entity_id,
+            )
+        )
+        ap_q = await db.execute(
+            apply_entity_scope(
+                select(func.coalesce(func.sum(Invoice.amount), 0)).where(
+                    Invoice.invoice_date <= month_end,
+                    Invoice.status.in_(OPEN_AP_STATUSES),
+                ),
+                Invoice,
+                entity_id,
+            )
+        )
+        rows.append(
+            {
+                "month": month_start.strftime("%Y-%m"),
+                "accounts_payable": Decimal(str(ap_q.scalar() or 0)),
+                "cogs": Decimal(str(cogs_q.scalar() or 0)),
+            }
+        )
+        cursor = month_start
+    rows.reverse()
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # /api/analytics/cfo — the aggregate CFO dashboard
 # ---------------------------------------------------------------------------
 
@@ -567,48 +638,12 @@ async def get_cfo_analytics(
     dpo = compute_dpo(accounts_payable=ap_balance, cogs=total_spend, period_days=period_days)
 
     # ----- DPO trend (last 6 months snapshots) -----
-    monthly_dpo_rows = []
-    cursor = today.replace(day=1)
-    for _ in range(6):
-        month_end = cursor - timedelta(days=1)
-        month_start = month_end.replace(day=1)
-        month_spend_q = await db.execute(
-            _inv(
-                select(func.coalesce(func.sum(Invoice.amount), 0)).where(
-                    Invoice.invoice_date >= month_start,
-                    Invoice.invoice_date <= month_end,
-                    # Exclude rejected — match the headline total_spend, else the
-                    # DPO trend's COGS proxy is inflated vs the current-period DPO.
-                    Invoice.status != InvoiceStatus.rejected.value,
-                )
-            )
-        )
-        month_ap_q = await db.execute(
-            _inv(
-                select(func.coalesce(func.sum(Invoice.amount), 0)).where(
-                    Invoice.invoice_date <= month_end,
-                    Invoice.status.in_(
-                        [
-                            InvoiceStatus.approved.value,
-                            InvoiceStatus.sending_to_erp.value,
-                            InvoiceStatus.sent_to_erp.value,
-                            InvoiceStatus.posted_in_erp.value,
-                            InvoiceStatus.payment_scheduled.value,
-                        ]
-                    ),
-                )
-            )
-        )
-        cogs_m = Decimal(str(month_spend_q.scalar() or 0))
-        feoh_m = Decimal(str(month_ap_q.scalar() or 0))
-        monthly_dpo_rows.append(
-            {
-                "month": month_start.strftime("%Y-%m"),
-                "dpo": compute_dpo(accounts_payable=feoh_m, cogs=cogs_m, period_days=30),
-            }
-        )
-        cursor = month_start
-    monthly_dpo_rows.reverse()
+    # Snapshots + arithmetic both come from shared code, so this chart and the
+    # `/drill/dpo` drill-through that explains it cannot disagree.
+    monthly_dpo_rows = compute_dpo_trend(
+        await _monthly_dpo_snapshots(db, months=6, entity_id=entity_id, today=today),
+        period_days=30,
+    )
 
     # ----- Cash conversion cycle — DSO/DIO aren't available in -----
     # ----- an AP-only product. We expose None so the UI can render -----
@@ -1225,55 +1260,31 @@ async def drill_dpo(
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Per-month accounts-payable balance + COGS used to derive
-    each DPO point. Lets the CFO see what's driving a spike."""
-    today = date.today()
-    cursor = today.replace(day=1)
-    rows = []
-    for _ in range(months):
-        month_end = cursor - timedelta(days=1)
-        month_start = month_end.replace(day=1)
-        cogs_q = await db.execute(
-            apply_entity_scope(
-                select(func.coalesce(func.sum(Invoice.amount), 0)).where(
-                    Invoice.invoice_date >= month_start,
-                    Invoice.invoice_date <= month_end,
-                ),
-                Invoice,
-                entity_id,
-            )
-        )
-        feoh_q = await db.execute(
-            apply_entity_scope(
-                select(func.coalesce(func.sum(Invoice.amount), 0)).where(
-                    Invoice.invoice_date <= month_end,
-                    Invoice.status.in_(
-                        [
-                            InvoiceStatus.approved.value,
-                            InvoiceStatus.sending_to_erp.value,
-                            InvoiceStatus.sent_to_erp.value,
-                            InvoiceStatus.posted_in_erp.value,
-                            InvoiceStatus.payment_scheduled.value,
-                        ]
-                    ),
-                ),
-                Invoice,
-                entity_id,
-            )
-        )
-        cogs = Decimal(str(cogs_q.scalar() or 0))
-        ap = Decimal(str(feoh_q.scalar() or 0))
-        dpo_val = compute_dpo(accounts_payable=ap, cogs=cogs, period_days=30)
-        rows.append(
+    each DPO point. Lets the CFO see what's driving a spike.
+
+    Shares `_monthly_dpo_snapshots` + `compute_dpo_trend` with the `dpo_trend`
+    chart on `GET /api/analytics/cfo`, so a point here always reconciles with
+    the point it was clicked from. `accounts_payable` / `cogs` are money and
+    serialize as EXACT decimal strings (project invariant — never float);
+    `dpo` is a day count, not money, and stays a JSON number so it matches the
+    numeric `dpo` the chart already renders.
+    """
+    rows = compute_dpo_trend(
+        await _monthly_dpo_snapshots(db, months=months, entity_id=entity_id, today=date.today()),
+        period_days=30,
+    )
+    return {
+        "months": months,
+        "rows": [
             {
-                "month": month_start.strftime("%Y-%m"),
-                "accounts_payable": float(ap),
-                "cogs": float(cogs),
-                "dpo": float(dpo_val),
+                "month": r["month"],
+                "accounts_payable": str(r["accounts_payable"]),
+                "cogs": str(r["cogs"]),
+                "dpo": float(r["dpo"]),
             }
-        )
-        cursor = month_start
-    rows.reverse()
-    return {"months": months, "rows": rows}
+            for r in rows
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------

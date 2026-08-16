@@ -93,7 +93,9 @@ Response:
   `total_amount`** ("Total Amount (All Invoices)") — see that field's
   description above before wiring a UI that shows both side by side.
 - `accounts_payable_balance`, `avg_daily_outflow`
-- `dpo_current` + `dpo_trend` (last 6 months)
+- `dpo_current` + `dpo_trend` (the last 6 **closed** months — the loop walks
+  back from the 1st of the current month, so the newest point is the month that
+  just ended). See § DPO trend + drill-through below.
 - `cash_conversion_cycle` (NULL when DSO/DIO not available — the
   AP-only product can't compute it)
 - `accruals.{open_po_amount, received_amount, unposted_invoice_amount, total_accrual}`
@@ -109,6 +111,36 @@ Response:
 - `supplier_concentration.{top_10_share_pct, top_50_share_pct, largest_vendor, largest_vendor_share_pct, flagged}` — `flagged=true` iff the largest vendor exceeds 25% (configurable). Excludes `rejected` invoices (never real spend) — the SAME population its drill-through and the `vendor_spend` export/scheduled report use, so clicking from the tile into either agrees with the number the CFO started from. Also the SAME reporting-currency rollup as the dashboard's `vendor_spend` (see above) — a vendor's multi-currency invoices are converted before summing, never naively added across currencies
 - `fraud_rate_trend` — exceptions / invoices × 100 per month
 - `rebate_yield.{yield_pct, annualised_rebates, ...}`
+
+### DPO trend + drill-through — one population, one calculation
+
+`dpo_trend` (the chart) and `GET /api/analytics/drill/dpo?months=N` (the
+drill-through a CFO opens to explain a spike in it) answer the same question at
+two resolutions, so they must never disagree. They now share both halves:
+
+- **The snapshots** come from `api/analytics.py::_monthly_dpo_snapshots` — the
+  only place the monthly `{month, accounts_payable, cogs}` SQL lives. It states
+  the `rejected` exclusion once (matching the headline `total_spend`, so the
+  COGS proxy isn't inflated relative to the DPO computed from it) and takes the
+  open-AP population from the canonical `OPEN_AP_STATUSES`, not a hand-copied
+  status list.
+- **The arithmetic** comes from the pure `services/analytics.py::compute_dpo_trend`.
+
+They used to be two hand-written copies of the same loop, and the copies had
+already drifted: the chart excluded `rejected` invoices from COGS, the
+drill-through summed every status — so a $9 000 rejected invoice next to a
+$1 000 approved one made the drill-through report 3.0 days where the chart it
+was opened from showed 30.0. Same failure shape as the supplier-concentration
+tile vs. its drill-through (issue #126). Pinned by
+`tests/test_analytics_rejected_exclusion.py`.
+
+`/drill/dpo` serializes `accounts_payable` and `cogs` — money — as **exact
+decimal strings** (project invariant: money never crosses the API boundary as a
+float). `dpo` is a day count, not money, and stays a JSON number so it matches
+the numeric `dpo` the `dpo_trend` chart already renders. The rest of this
+module's money fields are still floats; converting them is a separate,
+client-breaking change and is **not** done here — `/drill/dpo` has no shipped
+frontend or mobile consumer, so it could be corrected in isolation.
 
 Drill-through:
 - `GET /api/analytics/drill/spend_concentration?period_days=N&limit=N`
