@@ -69,8 +69,12 @@ from app.tenant import get_entity_id, get_tenant, get_tenant_db, get_write_entit
 router = APIRouter(prefix="/cash-flow", tags=["cash-flow"])
 
 # Finance-leader roles ONLY — the copilot reasons about the money outflow plan,
-# so it excludes ``ap_clerk`` (unlike the general assistant's role set).
-_COPILOT_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)
+# so it excludes ``ap_clerk`` (unlike the general assistant's role set). Public
+# (not ``_``-prefixed) because it is the single answer to "who may see this
+# org's cash position": ``services.cash_flow_alerts.ALERT_ROLES`` addresses the
+# same audience and is pinned to this tuple by a drift-guard test, so the pull
+# surface and the push surface can never disagree.
+COPILOT_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)
 
 
 def _require_enabled() -> None:
@@ -104,7 +108,7 @@ async def copilot(
     control_db: AsyncSession = Depends(get_control_db),
     org: Organization = Depends(get_tenant),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
-    user: User = Depends(require_roles(*_COPILOT_ROLES)),
+    user: User = Depends(require_roles(*COPILOT_ROLES)),
 ) -> ChatResponse:
     """Finance-leader façade over ``orchestrator.run_turn`` — same body, deps,
     and budget→429 mapping as ``POST /api/assistant/chat``."""
@@ -140,7 +144,7 @@ async def copilot_stream(
     control_db: AsyncSession = Depends(get_control_db),
     org: Organization = Depends(get_tenant),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
-    user: User = Depends(require_roles(*_COPILOT_ROLES)),
+    user: User = Depends(require_roles(*COPILOT_ROLES)),
 ) -> StreamingResponse:
     """Streaming counterpart of ``POST /copilot`` — mirrors
     ``POST /api/assistant/chat/stream`` exactly (same SSE media type + headers,
@@ -247,7 +251,7 @@ async def draft_run_from_plan(
     org: Organization = Depends(get_tenant),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
     write_entity_id: uuid.UUID = Depends(get_write_entity_id),
-    user: User = Depends(require_roles(*_COPILOT_ROLES)),
+    user: User = Depends(require_roles(*COPILOT_ROLES)),
 ) -> DraftRunResponse:
     """Enact tier 1 of a proposed plan: stage a DRAFT payment run over every
     currently-payable invoice the plan's horizon says is due.
@@ -341,7 +345,7 @@ async def capture_discounts_from_plan(
     control_db: AsyncSession = Depends(get_control_db),
     org: Organization = Depends(get_tenant),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
-    user: User = Depends(require_roles(*_COPILOT_ROLES)),
+    user: User = Depends(require_roles(*COPILOT_ROLES)),
 ) -> CaptureDiscountsResponse:
     """Enact tier 2 of a proposed plan: accept every discount offer the SAME
     optimizer pass selected.

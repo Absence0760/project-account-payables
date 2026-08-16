@@ -30,6 +30,11 @@ EVENT_CONTRACT_RENEWAL_DUE = "contract_renewal_due"
 # AP managers (supplier replies) or the mentioned users (AP posts). entity_type
 # on the row is "invoice". See services.supplier_chat + docs/supplier-chat.md.
 EVENT_CHAT_MESSAGE = "chat_message"
+# The AP cash forecast projects a period closing below the org's configured
+# minimum balance — emitted by services.cash_flow_alerts' background sweep.
+# entity_type on the row is "cash_position" and entity_id is NULL: the alert is
+# about the org's whole projected position, not any one record.
+EVENT_CASH_SHORTFALL_PROJECTED = "cash_shortfall_projected"
 
 NOTIFICATION_EVENT_TYPES = (
     EVENT_INVOICE_ASSIGNED,
@@ -38,6 +43,7 @@ NOTIFICATION_EVENT_TYPES = (
     EVENT_INVOICE_PAID,
     EVENT_CONTRACT_RENEWAL_DUE,
     EVENT_CHAT_MESSAGE,
+    EVENT_CASH_SHORTFALL_PROJECTED,
 )
 
 

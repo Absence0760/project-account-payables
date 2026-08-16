@@ -87,9 +87,7 @@ Phases 1–3 core shipped (read-only cash Q&A, `propose_payment_plan` +
 originally-deferred sub-bucket from that same feature remains:
 
 - [ ] Saved plans / plan-vs-actual (`CashPlan` model + migration)
-- [ ] Opening-balance provenance surfacing
 - [ ] Consolidated cross-entity mode
-- [ ] Proactive shortfall-alert sweep
 
 **Trigger:** next feature slice. Nothing blocks it.
 Refs: [roadmap.md](roadmap.md) § AI Cash-Flow Copilot,

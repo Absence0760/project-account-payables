@@ -77,7 +77,19 @@ export interface CashPosition {
 	granularity: CashflowGranularity;
 	horizon_days: number;
 	opening_balance: number;
-	opening_balance_source: 'query' | 'settings' | 'none';
+	// Provenance of the figure the curve starts from — the shared resolution
+	// chain in `services/cashflow.py::resolve_opening_balance` (the same one the
+	// cash-flow copilot uses, hence `explicit` rather than the endpoint's old
+	// `query`). `provider` was already reachable before this union listed it.
+	opening_balance_source: 'explicit' | 'provider' | 'settings' | 'none';
+	// The reporting currency the whole curve is denominated in.
+	opening_balance_currency: string;
+	// Adapter name when a bank sync supplied the balance, else null.
+	opening_balance_provider: string | null;
+	// `'currency_mismatch'` when a live provider balance existed but was refused
+	// because its account is in another currency than the org reports in — so a
+	// fallback to `settings`/`none` isn't mistaken for "no bank is connected".
+	opening_balance_provider_skipped: string | null;
 	threshold: number | null;
 	periods: CashPositionPeriod[];
 	breaches: CashPositionBreach[];

@@ -344,6 +344,9 @@ Reuses the assistant's config; a couple of additive knobs:
 |----------|---------|---------|
 | `FEOH_CASHFLOW_COPILOT_ENABLED` | `true` | Master switch for the copilot tools + façade routes |
 | `FEOH_CASHFLOW_COPILOT_DEFAULT_HORIZON_DAYS` | `90` | Default forecast horizon when the user doesn't specify |
+| `FEOH_CASHFLOW_SHORTFALL_ALERTS_ENABLED` | `false` | Master switch for the projected-shortfall alert sweep (§14). OFF by default so local dev / tests never email a CFO |
+| `FEOH_CASHFLOW_SHORTFALL_ALERTS_INTERVAL_SECONDS` | `86400` | Sweep tick. Daily — a cash forecast doesn't move hour to hour |
+| `FEOH_CASHFLOW_SHORTFALL_ALERTS_HORIZON_DAYS` | `90` | How far ahead the alerting forecast looks. Separate from the copilot's interactive default so an operator can alert on a shorter, more actionable window |
 | (reused) `FEOH_ASSISTANT_PROVIDER` / `FEOH_ASSISTANT_MONTHLY_TOKEN_BUDGET` / `FEOH_ANTHROPIC_API_KEY` | — | Adapter, budget, key — **no new secret** |
 | (reused) `FEOH_DISCOUNT_COST_OF_CAPITAL_PCT` | `8.0` | Optimizer cost-of-capital when the user doesn't override |
 
@@ -397,21 +400,108 @@ design-only — everything else on this page is shipped.
 1. **Saved plans + plan-vs-actual.** A tenant-scoped `CashPlan` model + migration
    to persist a proposal and later compare it to what actually got paid. Deferred
    until there's demand; v1 plans are stateless/re-derivable.
-2. **Opening-balance source.** `compute_cash_position` already resolves an
-   opening balance (explicit param → provider auto-sync → seed). The copilot
-   should surface *which* source it used ("balance from your Modern Treasury
-   account" vs "assumed $0") so the user trusts the curve. Wire the existing
-   resolution's provenance field into the tool result.
+2. ~~**Opening-balance source.**~~ **SHIPPED.** The resolution chain lives in
+   `services/cashflow.py::resolve_opening_balance` — **one owner, and all three
+   consumers go through it**: the copilot tools, the §14 alert sweep, and
+   `GET /api/analytics/cash_position` (the `/cfo` dashboard's chart, which had
+   its own duplicate inline copy). A copilot answer, an alert email, and the
+   dashboard therefore cannot start from a different number. It returns an
+   `OpeningBalance` carrying its own provenance: `source`
+   (`explicit` | `provider` | `settings` | `none`), plus the `provider` name and
+   the adapter's opaque `account_ref` when a bank sync supplied it — so the
+   copilot can say "from your Modern Treasury operating account" rather than
+   quoting an unattributable number. `CashPositionResult` and
+   `PaymentPlanResult` surface all of it (`opening_balance_source` /
+   `_provider` / `_account_ref`), and `CashPositionChart` / `PlanCard` already
+   render the source label in every locale.
+
+   The same change closed a real defect it exposed: the provider link used to
+   take the adapter's amount and **drop its currency**. Every outflow subtracted
+   from the opening balance is denominated in the org's reporting currency, so
+   an org reporting in USD with a EUR operating account got a running balance
+   that was silently a mixture of two currencies — and the plan proposals and
+   shortfall figures priced off it were wrong by the exchange rate, with no
+   signal. A provider balance in any other currency is now **refused**: the
+   chain falls through to the persisted/zero link and flags
+   `opening_balance_provider_skipped: "currency_mismatch"`, so the fallback
+   can't be mistaken for "no bank is connected". Converting was rejected —
+   an FX rate fetched on a read makes the curve non-deterministic and
+   unreproducible (§3, `decisions.md` §18), and the fix an operator needs is to
+   set a reporting currency or a BYO opening balance, not for us to guess. A
+   blank / unknown provider currency fails closed the same way.
+
+   `GET /api/analytics/cash_position` now returns the same provenance
+   (`opening_balance_source` / `_currency` / `_provider` /
+   `_provider_skipped`). Its explicit-override source value changed from
+   `"query"` to `"explicit"` — the two names always meant the same thing, and
+   the `cashFlow.chart.source.explicit` i18n key already existed in every
+   locale while `…source.query` never did.
 3. **Multi-entity consolidation.** Phase 1 honors `X-Entity-ID` (per-entity
    view). A "show me consolidated cash across all subsidiaries" mode would ignore
-   the header like `GET /analytics/by-entity` does — a small follow-up.
+   the header like `GET /analytics/by-entity` does — a small follow-up. (The
+   §14 alert sweep already runs org-wide for exactly this reason; the
+   interactive tools still honour the header.)
 4. **Analytics endpoints' float coercion.** The existing forecast/what-if HTTP
    endpoints serialize money to `float` for charts. Not in scope to fix here, but
    the copilot must not inherit it, and it's worth a tracked follow-up to move
    those to exact strings too (frontend `<Money>` already handles strings).
-5. **Proactive alerts.** A background sweep that pings a finance leader when a
-   projected shortfall crosses a threshold (mirrors `contract_renewal` /
-   `discount_auto_trigger`). Natural Phase 4; out of scope here.
+5. ~~**Proactive alerts.**~~ **SHIPPED** — see §14.
+
+---
+
+## 14. Proactive projected-shortfall alerts (shipped)
+
+`app/services/cash_flow_alerts.py` — a background sweep that pushes the cash
+forecast instead of waiting for someone to pull it. The cash-position curve and
+its pure breach detector (`services/analytics.detect_threshold_breaches`) both
+predate this; until now their only consumer was a dashboard read, so a finance
+leader learned about a projected shortfall by going looking for it.
+
+Mirrors `contract_renewal` / `discount_auto_trigger` exactly: a long-lived
+asyncio task started in `main.lifespan`, one fresh engine per tenant, one org's
+failure logged (exception *class* only — PII-out-of-logs) and skipped rather
+than halting the sweep, **off by default** behind
+`FEOH_CASHFLOW_SHORTFALL_ALERTS_ENABLED`.
+
+Per org, per tick:
+
+1. **Opt-in check.** Skip unless the org has a persisted
+   `settings.cashflow.min_balance_threshold` (managed by
+   `GET/PUT /api/analytics/cash-position-settings`). The threshold *is* the
+   opt-in — with no line there is nothing to breach and nothing to say.
+2. Build the org-wide commitment rows via the same `_commitment_rows` the CFO
+   dashboard and the copilot use, bucket them weekly over
+   `FEOH_CASHFLOW_SHORTFALL_ALERTS_HORIZON_DAYS`, resolve the opening balance
+   through the shared `resolve_opening_balance` (§12.2), and run
+   `compute_cash_position` → `detect_threshold_breaches`.
+3. `project_shortfall` (pure) reduces the breach list to the **earliest**
+   breaching period — the deadline the finance leader is actually working
+   against — carrying the count of all breaching periods so the message can say
+   how widespread it is.
+4. If that period differs from the one the org was last alerted about, notify
+   its finance leaders once (`notification_dispatch.notify_event`, in-app +
+   email, per-user-preference gated) and record the period on
+   `Organization.settings.cashflow.shortfall_alert`.
+
+| Property | How |
+|---|---|
+| **Never moves money** | No `Payment` / `PaymentRun`, no discount accepted, no invoice touched. The only write beyond the notification rows is the alerted-period marker in the org's settings JSON (no migration) |
+| **Idempotent** | The marker is the dedupe — the role `renewal_alert_sent_at` plays in `contract_renewal`. A standing shortfall is announced once per projected period; the marker clears when the projection clears, so a recurrence is announced again |
+| **Fails in the safe direction** | The notification is sent *before* the marker is written, so a crash between the two re-alerts next tick rather than swallowing the warning. For an alert, a duplicate is recoverable and a miss is not |
+| **One answer on audience** | `ALERT_ROLES` is pinned by a drift-guard test to `api/cash_flow.py::COPILOT_ROLES` (`admin` / `ap_manager` / `cfo` — not `ap_clerk`), so the push surface and the pull surface can't disagree about who may see org cash. An org with no finance leaders yet leaves the marker unwritten so a later sweep still fires |
+| **Org-wide by design** | `entity_id=None` — a treasury shortfall is a question about the whole legal group's cash, the same consolidated posture `GET /analytics/by-entity` takes by ignoring `X-Entity-ID` |
+| **PII-free** | The message carries org-level aggregates only (projected closing balance, threshold, shortfall), formatted straight off the `Decimal`; log lines carry counts and exception classes, never a cash figure |
+
+New notification event: `cash_shortfall_projected` (`entity_type:
+"cash_position"`, `entity_id: NULL` — the alert is about the org's whole
+projected position, not any one record). Rendered by
+`notification_templates.render_cash_shortfall`, pre-rendered and handed to
+`notify_event(rendered=…)` like `contract_renewal_due`.
+
+Tests: `backend/tests/test_cash_flow_alerts.py` (pure reduction, mocked
+multi-org fan-out + failure isolation + dedupe + re-arm + recipient-less retry,
+and a real-Postgres pass proving the breach comes from real invoices and that
+nothing on the money path moves).
 
 ---
 
@@ -420,9 +510,14 @@ design-only — everything else on this page is shipped.
 Backend: `app/services/assistant/tools/{cashflow,optimizer}.py` (new tools) +
 `tools/__init__.py` (register), `app/api/cash_flow.py` (façade + enact routes),
 `app/services/cash_flow_plan.py` (pure plan assembler over the existing
-analytics/optimizer functions), `app/schemas/cash_flow.py`, wired into
-`app/main.py`; tests `backend/tests/test_cash_flow_copilot.py`; docs — flip this
-banner + add a router row to the root `CLAUDE.md` + a roadmap entry.
+analytics/optimizer functions), `app/services/cashflow.py` (opening-balance
+resolution + provenance, §12.2), `app/services/cash_flow_alerts.py` (the §14
+shortfall sweep, wired into `app/main.py`'s lifespan),
+`app/schemas/cash_flow.py`, wired into `app/main.py`; tests
+`backend/tests/test_cash_flow_copilot.py`,
+`backend/tests/test_cash_flow_opening_balance.py`,
+`backend/tests/test_cash_flow_alerts.py`; docs — flip this banner + add a
+router row to the root `CLAUDE.md` + a roadmap entry.
 Frontend: `src/routes/cash-flow/+page.svelte`, `src/lib/components/cash-flow/`,
 `src/lib/api/cashFlow.ts`, nav entry in `src/lib/nav.ts`, e2e
 `tests-e2e/cash-flow/copilot.spec.ts`.

@@ -269,6 +269,22 @@ class Settings(BaseSettings):
     # Default forecast horizon (days) when the user doesn't specify one.
     cashflow_copilot_default_horizon_days: int = 90
 
+    # Projected cash-shortfall alert sweep (services/cash_flow_alerts.py).
+    # `cashflow_shortfall_alerts_enabled` is the master switch: OFF by default so
+    # local dev / tests never email a CFO. The sweep only READS the cash forecast
+    # and sends a notification — it never creates a Payment/PaymentRun, accepts a
+    # discount, or touches an invoice. A per-org
+    # `settings.cashflow.min_balance_threshold` is the opt-in; an org without one
+    # is skipped entirely.
+    cashflow_shortfall_alerts_enabled: bool = False
+    # Daily by default — a cash forecast doesn't move hour to hour, and a
+    # standing shortfall is announced once per projected period regardless.
+    cashflow_shortfall_alerts_interval_seconds: int = 86400
+    # How far ahead the alerting forecast looks. Independent of the copilot's
+    # own default horizon so an operator can alert on a shorter, more actionable
+    # window than the one an interactive question defaults to.
+    cashflow_shortfall_alerts_horizon_days: int = 90
+
     # Virtual Cards (platform-level keys — used when customers choose "Platform" card program)
     lithic_api_key: str = ""  # your Lithic API key
     lithic_sandbox: bool = True

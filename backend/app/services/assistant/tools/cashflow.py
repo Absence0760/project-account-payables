@@ -47,7 +47,11 @@ from app.services.assistant.tools.schemas import (
     WhatifScenario,
 )
 from app.services.cash_flow_plan import assemble_plan, compute_plan_id
-from app.services.cashflow import fetch_provider_balance, resolve_cash_thresholds
+from app.services.cashflow import (
+    OpeningBalance,
+    resolve_cash_thresholds,
+    resolve_opening_balance,
+)
 
 _ZERO = Decimal("0")
 
@@ -60,40 +64,33 @@ async def _resolve_opening_balance(
     *,
     control_db: AsyncSession | None,
     org_id: uuid.UUID,
+    reporting_currency: str,
     explicit_opening: Decimal | None,
     explicit_threshold: Decimal | None,
-) -> tuple[Decimal, str, Decimal | None]:
-    """Opening-balance + threshold resolution: explicit param → provider
-    auto-sync → persisted org settings → 0. Mirrors ``GET
-    /api/analytics/cash_position``. Shared by ``get_cash_position`` and
-    ``propose_payment_plan`` so the two can never resolve a different opening
-    balance for the same org."""
+) -> tuple[OpeningBalance, Decimal | None]:
+    """Opening-balance (+ its provenance) and threshold for one org.
+
+    The chain itself lives in ``services.cashflow.resolve_opening_balance`` —
+    shared with the projected-shortfall alert sweep so a copilot answer and an
+    alert email can never start from a different number. This wrapper only adds
+    the control-plane settings lookup and the threshold fallback, and is shared
+    by ``get_cash_position`` and ``propose_payment_plan``."""
     org_settings: dict = {}
     if control_db is not None:
         org = await control_db.get(Organization, org_id)
         org_settings = (org.settings or {}) if org else {}
 
-    opening = explicit_opening
-    source = "explicit"
-    if opening is None and (payments_config := org_settings.get("payments")):
-        provider_balance = await fetch_provider_balance(payments_config)
-        if provider_balance is not None:
-            opening = provider_balance.amount
-            source = "provider"
-    if opening is None:
-        settings_balance = (org_settings.get("cashflow") or {}).get("opening_balance")
-        if settings_balance is not None:
-            opening = Decimal(str(settings_balance))
-            source = "settings"
-    if opening is None:
-        opening = _ZERO
-        source = "none"
+    balance = await resolve_opening_balance(
+        org_settings=org_settings,
+        reporting_currency=reporting_currency,
+        explicit_opening=explicit_opening,
+    )
 
     threshold = explicit_threshold
     if threshold is None:
         threshold = resolve_cash_thresholds(org_settings).min_balance_threshold
 
-    return opening, source, threshold
+    return balance, threshold
 
 
 async def get_cashflow_forecast(
@@ -163,15 +160,20 @@ async def get_cash_position(
     )
     outflow_periods = bucket_outflows(rows, granularity=params.granularity, today=today)
 
-    # The source is surfaced so the copilot can say where the number came from.
-    opening, source, threshold = await _resolve_opening_balance(
+    # The provenance is surfaced so the copilot can say where the number came
+    # from — a balance whose origin you can't see is one you can't act on.
+    currency = await resolve_org_currency(org_id, control_db)
+    balance, threshold = await _resolve_opening_balance(
         control_db=control_db,
         org_id=org_id,
+        reporting_currency=currency,
         explicit_opening=params.opening_balance,
         explicit_threshold=params.min_balance_threshold,
     )
 
-    position = compute_cash_position(opening, outflow_periods, min_balance_threshold=threshold)
+    position = compute_cash_position(
+        balance.amount, outflow_periods, min_balance_threshold=threshold
+    )
 
     periods: list[CashPositionPeriod] = []
     first_shortfall: str | None = None
@@ -190,11 +192,14 @@ async def get_cash_position(
         )
 
     return CashPositionResult(
-        currency=await resolve_org_currency(org_id, control_db),
+        currency=currency,
         granularity=params.granularity,
         horizon_days=horizon_days,
-        opening_balance=opening,
-        opening_balance_source=source,
+        opening_balance=balance.amount,
+        opening_balance_source=balance.source,
+        opening_balance_provider=balance.provider,
+        opening_balance_account_ref=balance.account_ref,
+        opening_balance_provider_skipped=balance.provider_skipped,
         min_balance_threshold=threshold,
         periods=periods,
         first_shortfall_period=first_shortfall,
@@ -266,9 +271,11 @@ async def propose_payment_plan(
         db, today=today, horizon_days=horizon_days, include_pending=True, entity_id=entity_id
     )
 
-    opening, source, threshold = await _resolve_opening_balance(
+    currency = await resolve_org_currency(org_id, control_db)
+    balance, threshold = await _resolve_opening_balance(
         control_db=control_db,
         org_id=org_id,
+        reporting_currency=currency,
         explicit_opening=params.opening_balance,
         explicit_threshold=params.min_balance_threshold,
     )
@@ -288,7 +295,7 @@ async def propose_payment_plan(
     plan = assemble_plan(
         rows,
         optimizer_result=optimizer_result,
-        opening_balance=opening,
+        opening_balance=balance.amount,
         min_balance_threshold=threshold,
         granularity=params.granularity,
         horizon_days=horizon_days,
@@ -308,11 +315,14 @@ async def propose_payment_plan(
 
     return PaymentPlanResult(
         plan_id=plan_id,
-        currency=await resolve_org_currency(org_id, control_db),
+        currency=currency,
         granularity=params.granularity,
         horizon_days=horizon_days,
         opening_balance=plan.opening_balance,
-        opening_balance_source=source,
+        opening_balance_source=balance.source,
+        opening_balance_provider=balance.provider,
+        opening_balance_account_ref=balance.account_ref,
+        opening_balance_provider_skipped=balance.provider_skipped,
         min_balance_threshold=threshold,
         cash_budget=params.cash_budget,
         periods=[
