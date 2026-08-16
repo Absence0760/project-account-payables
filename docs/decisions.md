@@ -779,3 +779,66 @@ financial edit the user believes they made.
 an optimistic-update cache). It solves the merge case properly but needs a
 patch log, invalidation rules, and a rollback path on a failed mutation — a
 lot of machinery for surfaces whose mutations already happen behind a modal.
+
+## 24. A background sweep's failure count becomes state, in one shared runner
+
+All fourteen long-lived sweeps started in `main.lifespan` carried a private copy
+of the same loop, and every copy discarded the result its `*_once()` returned.
+Twelve of those results already carried a `failures: int`. Nothing read it: its
+only consumer was a conditional aggregate `logger.info` inside `*_once` itself.
+There was no supervision either — `asyncio.create_task` with no
+`add_done_callback` — so a sweep whose loop died was gone for the life of the
+process with nothing anywhere saying so, and `GET /api/health` returned a static
+`ok` that answered a different question. An `audit_shipping` sink misconfigured
+for months looked exactly like one running clean.
+
+Four calls are worth recording.
+
+**The mechanism is a shared loop runner, not a shared reporting call.** The
+tempting smaller change is to leave fourteen loops in place and add one
+`record(...)` line to each. That preserves the thing the follow-up complained
+about: fourteen bodies free to drift. `sweep_health.run_sweep_loop` takes the
+tick and owns the whole body, so the outcome is recorded *by construction* — a
+sweep cannot forget. The loops keep their own logger and their own
+`settings.<interval>` read, so per-sweep log filters and the suites that patch
+`<module>.settings` are unaffected; only the body is shared, never the identity.
+
+Making them consistent surfaced a defect the deduplication then fixed once.
+`payment_reconciler` carried a comment explaining that `exc_info=True` leaks
+`str(exc)` — the stdlib appends the whole traceback regardless of what the
+format string names — and had removed it *for itself alone*. Six sibling loops
+still passed it and two called `logger.exception`, all of them one adapter error
+away from putting a vendor name in the log sink. One body, one posture: class
+name only.
+
+**A tick that completes reporting failures is a failed run.** Modelling only
+"did the tick raise" would have left the motivating case invisible: the
+`audit_shipping` adapters raise *per tenant*, `ship_once` catches that, counts
+it, and returns normally. So `failures > 0` (and `vendor_rescreen`'s separate
+`vendor_failures`) increments the same consecutive-failure streak a raise does.
+The streak, not the absolute count, is the signal — a sweep that fails once and
+recovers is noise; one that has failed 37 times running is the months-long
+misconfiguration.
+
+**The state is per-process and in-memory, and that is the answer, not a
+compromise.** A durable per-sweep run table means an Alembic migration fanned
+out to every tenant DB to hold telemetry that is platform-level, not
+tenant-level; `Organization.settings` is the only JSON marker available and it
+is per-tenant, while these sweeps span all tenants. Both were rejected. The
+question an operator actually asks — "is *this* replica's sweep alive and
+progressing?" — is exactly what a per-process registry answers, and the
+cluster-wide view is the log sink, where every replica emits the same PII-free
+`NOT MAKING PROGRESS` line on each streak multiple (a multiple, not every tick,
+so a 60-second sweep stuck for a day writes 8 lines rather than 1440).
+
+**`GET /api/health` was left alone, and the new endpoint hides tenant counts.**
+Folding sweep health into the liveness probe would turn a misconfigured audit
+sink into a rolling restart loop — a degraded background sweep is not a reason
+to pull a serving process out of rotation. So the probe stays public and static,
+and the operator view is a separate admin-gated `GET /api/health/sweeps`. That
+endpoint reports state, timestamps, outcome, streak and the exception CLASS, but
+**not** the sweeps' raw counters: an ordinary tenant admin holds `ROLE_ADMIN`,
+and `tenants_scanned` would tell them how many organizations the platform
+sweeps. Only `last_failure_count` crosses the boundary — the number an operator
+acts on, and zero on a healthy platform. The full counters stay in the registry
+and the logs, whose reader is already trusted with them.

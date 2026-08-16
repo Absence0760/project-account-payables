@@ -127,53 +127,6 @@ defects awaiting a fix" section is retired until something new lands there).
 
 ## (c) Feature work — sized and unstarted
 
-### Every background sweep throws away its own failure count
-
-All fourteen long-lived sweeps started in `backend/app/main.py`'s lifespan share
-one shape:
-
-```python
-while True:
-    try:
-        await <sweep>_once()          # <-- return value DISCARDED
-    except Exception as exc:
-        logger.error("[x] sweep raised: %s", exc.__class__.__name__)
-    await asyncio.sleep(interval)
-```
-
-Twelve of them already return a result dataclass carrying a `failures: int`
-(`extraction_reaper`, `audit_log_shipper`, `approval_escalation`,
-`payment_reconciler`, `contract_renewal`, `vendor_rescreen`,
-`discount_auto_trigger`, `qms_sync`, `recurring_invoices`, `retention_sweep`,
-`scheduled_reports`, `cash_flow_alerts`) — and **every loop discards it at the
-call site**. The counter's only consumer is a conditional aggregate
-`logger.info` inside `*_once` itself. It is never persisted, never exposed, never
-alerted on. There is also no supervision (`asyncio.Task` with no
-`add_done_callback`, no restart) and `GET /api/health` returns a static `ok`
-that says nothing about whether any sweep is alive or progressing.
-
-Consequence: a sink that has been misconfigured for months (the `audit_shipping`
-adapters raise by design so rows stay unshipped and retry forever — the SOC 2
-WORM evidence trail simply isn't leaving the tenant DB) looks identical to one
-running clean.
-
-- [ ] Read the `failures` count in each loop and turn it into queryable state —
-      the two sweeps that already model failure as state are the pattern:
-      `scheduled_reports` persists `last_run_status` / `last_run_error` and
-      auto-disables after 5 consecutive failures, and `webhook_deliveries` keeps
-      per-row status + attempt count. A per-sweep run row (or a settings-JSON
-      marker, no migration needed) plus a non-zero-streak signal would convert
-      ten of these from invisible to detectable.
-
-**Why deferred:** surfaced by the survey behind this round's `payment_erp_sync`
-and `vendor_rescreen` fixes, which closed the two *specific* cases where an
-invisible failure also lost work or blocked progress. This entry is the
-remaining *systemic* observability gap — it touches fourteen files and wants one
-consistent mechanism decided first, not fourteen ad-hoc ones.
-**Trigger:** the next operability/observability pass, or the first deployed
-environment where a sweep is suspected of not running.
-Ref: `backend/CLAUDE.md` § Key background services.
-
 ### Two adapter families ship code no caller reaches
 
 Both are latent traps rather than live defects — nothing calls them today — but
