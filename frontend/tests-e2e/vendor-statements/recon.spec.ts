@@ -157,6 +157,118 @@ test.describe('/vendor-statements (admin)', () => {
 		await expect(dialog.getByLabel('Vendor')).toBeVisible();
 		await expect(dialog.getByLabel('Statement Date')).toBeVisible();
 	});
+
+	test('switching intake mode swaps the pasted-lines editor for the file picker', async ({
+		page
+	}) => {
+		await page.getByRole('button', { name: '+ New reconciliation' }).click();
+		const dialog = page.getByRole('dialog', { name: 'New vendor statement reconciliation' });
+
+		// Paste is the default: the lines editor is up, the file picker is not.
+		await expect(dialog.getByLabel('Statement line 1 invoice number')).toBeVisible();
+		await expect(dialog.locator('input[type="file"]')).toHaveCount(0);
+
+		await dialog.getByRole('radio', { name: 'Upload a file' }).check();
+
+		// The two intakes are mutually exclusive — typed lines can no longer be
+		// silently discarded by a file that wins the tiebreak.
+		await expect(dialog.locator('input[type="file"]')).toBeVisible();
+		await expect(dialog.getByLabel('Statement line 1 invoice number')).toHaveCount(0);
+	});
+
+	test('a CSV upload creates a run, and its detail offers the source document', async ({
+		page
+	}) => {
+		const vendor = await getFirstVendor(page);
+		const reference = `E2E upload ${Date.now()}`;
+		const statementDate = '2026-04-30';
+		let id: string | null = null;
+		try {
+			await page.getByRole('button', { name: '+ New reconciliation' }).click();
+			const dialog = page.getByRole('dialog', { name: 'New vendor statement reconciliation' });
+
+			await dialog.getByLabel('Vendor').selectOption(vendor.id);
+			await dialog.getByLabel('Statement Date').fill(statementDate);
+			await dialog.getByLabel('Statement Reference').fill(reference);
+			await dialog.getByRole('radio', { name: 'Upload a file' }).check();
+			await dialog.locator('input[type="file"]').setInputFiles({
+				name: 'supplier-statement.csv',
+				mimeType: 'text/csv',
+				buffer: Buffer.from(
+					`Invoice Number,Amount,Date\nE2E-CSV-${Date.now()},1234.56,2026-04-15\n`
+				)
+			});
+			// The picked file is acknowledged before submit — the old form gave no
+			// indication a file had been attached at all.
+			await expect(dialog.getByTestId('statement-file-chosen')).toContainText(
+				'supplier-statement.csv'
+			);
+
+			const uploadResp = page.waitForResponse(
+				(r) =>
+					r.url().includes('/api/vendor-statements/upload') && r.request().method() === 'POST'
+			);
+			await dialog.getByRole('button', { name: 'Reconcile' }).click();
+			const created = (await (await uploadResp).json()) as {
+				id: string;
+				source_format: string;
+				has_source_file: boolean;
+			};
+			id = created.id;
+			expect(created.source_format).toBe('csv');
+			expect(created.has_source_file).toBe(true);
+
+			// Deep-link straight to the run the upload produced.
+			await page.goto(`/vendor-statements?id=${id}`);
+			const detail = page.getByRole('dialog', {
+				name: 'Vendor statement reconciliation detail'
+			});
+			await expect(detail).toBeVisible({ timeout: 10_000 });
+			await expect(detail.getByTestId('statement-source')).toHaveText('CSV upload');
+
+			// Provenance: a CSV is parsed directly (no adapter), and the supplier's
+			// own document is retrievable for a disputed balance.
+			const provenance = detail.getByTestId('statement-provenance');
+			await expect(provenance).toBeVisible();
+			await expect(provenance).toContainText('Parsed directly from the uploaded CSV.');
+			await expect(
+				provenance.getByRole('button', { name: 'Download the source statement' })
+			).toBeVisible();
+		} finally {
+			if (id) deleteReconciliation(id);
+		}
+	});
+
+	test('a statement the backend refuses explains itself on the form', async ({ page }) => {
+		const vendor = await getFirstVendor(page);
+		await page.getByRole('button', { name: '+ New reconciliation' }).click();
+		const dialog = page.getByRole('dialog', { name: 'New vendor statement reconciliation' });
+
+		await dialog.getByLabel('Vendor').selectOption(vendor.id);
+		await dialog.getByLabel('Statement Date').fill('2026-05-31');
+		await dialog.getByRole('radio', { name: 'Upload a file' }).check();
+		// Header row only — `parse_statement_csv` refuses this structurally rather
+		// than creating a run that claims the supplier listed nothing.
+		await dialog.locator('input[type="file"]').setInputFiles({
+			name: 'header-only.csv',
+			mimeType: 'text/csv',
+			buffer: Buffer.from('Invoice Number,Amount,Date\n')
+		});
+
+		const refusal = page.waitForResponse(
+			(r) => r.url().includes('/api/vendor-statements/upload') && r.request().method() === 'POST'
+		);
+		await dialog.getByRole('button', { name: 'Reconcile' }).click();
+		expect((await refusal).status()).toBe(422);
+
+		// The backend's own explanation lands in a persistent alert on the form —
+		// not a toast that fades — and the dialog stays open so it can be acted on.
+		const error = dialog.getByTestId('statement-intake-error');
+		await expect(error).toBeVisible();
+		await expect(error).toHaveAttribute('role', 'alert');
+		await expect(error).toContainText('CSV is empty or has no data rows');
+		await expect(dialog).toBeVisible();
+	});
 });
 
 test.describe('/vendor-statements (clerk — read-only)', () => {
