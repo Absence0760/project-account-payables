@@ -122,6 +122,16 @@ class Settings(BaseSettings):
     discount_auto_capture_roi_threshold: float = 12.0
     discount_cost_of_capital_pct: float = 8.0
     approval_escalation_interval_seconds: int = 600
+    # Background-sweep health (see backend/app/services/sweep_health.py). Every
+    # long-lived sweep reports each tick's outcome into an in-process registry
+    # served by GET /api/health/sweeps. This is how many CONSECUTIVE failed runs
+    # (a tick that raised, or one that completed reporting `failures > 0`) a
+    # sweep may accumulate before it is called degraded: the aggregate verdict
+    # flips, and the loop emits the alertable PII-free "NOT MAKING PROGRESS"
+    # ERROR log on each streak multiple. Set to 0 to disable the escalation —
+    # the per-tick failure log stays either way. Not a secret; a count, not a
+    # currency, so a plain int.
+    sweep_failure_alert_streak: int = 3
     # Recurring / subscription invoice generation sweep. `recurring_invoices_enabled`
     # is the master switch for the background loop — OFF by default so local dev /
     # tests don't auto-create invoices. The sweep finds `active` templates whose
