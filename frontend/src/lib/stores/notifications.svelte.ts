@@ -6,6 +6,7 @@ import type {
 	NotificationPrefs,
 } from '$lib/types/notification';
 import { appendUnique } from '$lib/utils/pagination';
+import { createRequestSequencer } from '$lib/utils/requestSequence';
 
 const PAGE_SIZE = 20;
 const POLL_INTERVAL_MS = 60_000;
@@ -21,8 +22,20 @@ function createNotificationStore() {
 
 	let hasMore = $derived(items.length < total);
 
+	// Two sequencers, deliberately not one. `listSequence` guards the list
+	// `load()` (a filter flip or a load-more resolving out of order), and
+	// `countSequence` guards the 60s badge poll. Sharing a single counter would
+	// let a poll tick landing mid-load mark that load un-committable and blank
+	// the list — the poll and the list are independent reads of the same server
+	// state, not successive versions of one request. `markRead`/`markAllRead`
+	// supersede BOTH: each writes `unread`, so either could restore the pre-edit
+	// count. See `frontend/CLAUDE.md` § Sequencing list fetches.
+	const listSequence = createRequestSequencer();
+	const countSequence = createRequestSequencer();
+
 	async function load(opts: { append?: boolean; nextPage?: number; unreadOnly?: boolean } = {}) {
 		const nextPage = opts.nextPage ?? 1;
+		const token = listSequence.start();
 		loading = true;
 		try {
 			const params = new URLSearchParams();
@@ -30,12 +43,14 @@ function createNotificationStore() {
 			params.set('page_size', String(PAGE_SIZE));
 			if (opts.unreadOnly) params.set('unread_only', 'true');
 			const res = await api.get<NotificationListResponse>(`/api/notifications?${params}`);
+			// Superseded by a newer load, or by a local mark-read.
+			if (!listSequence.canCommit(token)) return;
 			items = opts.append ? appendUnique(items, res.items) : res.items;
 			total = res.total;
 			unread = res.unread;
 			page = nextPage;
 		} finally {
-			loading = false;
+			if (listSequence.isCurrentRequest(token)) loading = false;
 		}
 	}
 
@@ -49,16 +64,29 @@ function createNotificationStore() {
 
 	async function fetchUnreadCount() {
 		if (!hasToken()) return;
+		const token = countSequence.start();
 		try {
 			const res = await api.get<{ unread: number }>('/api/notifications/unread-count');
+			// A poll issued before a mark-read carries the pre-edit count and
+			// would flip the badge back on. Discard it.
+			if (!countSequence.canCommit(token)) return;
 			unread = res.unread;
 		} catch {
 			/* badge is non-critical — ignore transient failures */
 		}
 	}
 
+	/** Retire every in-flight read of server state — both the list load and the
+	 *  badge poll carry a pre-edit `unread`, and the list load a pre-edit
+	 *  `read_at`. Call immediately before applying a local read-state edit. */
+	function supersedeReads() {
+		listSequence.supersedeInFlight();
+		countSequence.supersedeInFlight();
+	}
+
 	async function markRead(id: string) {
 		await api.post(`/api/notifications/${id}/read`, {});
+		supersedeReads();
 		// Reflect locally without a refetch.
 		const target = items.find((n) => n.id === id);
 		if (target && !target.read_at) {
@@ -71,6 +99,7 @@ function createNotificationStore() {
 
 	async function markAllRead() {
 		const res = await api.post<{ updated: number }>('/api/notifications/read-all', {});
+		supersedeReads();
 		const now = new Date().toISOString();
 		items = items.map((n) => (n.read_at ? n : { ...n, read_at: now }));
 		unread = 0;

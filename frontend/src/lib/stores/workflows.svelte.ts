@@ -10,6 +10,7 @@ import type {
 } from '$lib/types/workflow';
 import { api } from '$lib/api';
 import { appendUnique } from '$lib/utils/pagination';
+import { createRequestSequencer } from '$lib/utils/requestSequence';
 
 export interface ApprovalConfig {
 	approver_strategy: 'manual' | 'specific' | 'auto';
@@ -46,18 +47,31 @@ function createWorkflowStore() {
 	let page = $state(1);
 	let activeSteps = $state<ActiveSteps>({ ...DEFAULT_ACTIVE_STEPS });
 
+	// Sequences `fetch`/`loadMore` (one shared counter — latest-issued wins) so a
+	// response can't land out of order and clobber the list. Every mutator below
+	// edits the list in place with no fetch of its own, so each retires whatever
+	// is in flight first — otherwise a definition created from a template, or a
+	// step edit saved from the builder, is reverted by the load that was already
+	// out. `fetchActiveSteps` writes a different piece of state (not the list) and
+	// is deliberately left unsequenced. See `frontend/CLAUDE.md` § Sequencing
+	// list fetches.
+	const fetchSequence = createRequestSequencer();
+
 	async function load(opts: { append?: boolean; nextPage?: number } = {}) {
 		const nextPage = opts.nextPage ?? 1;
+		const token = fetchSequence.start();
 		loading = true;
 		try {
 			const res = await api.get<WorkflowListResponse>(
 				`/api/workflows?page=${nextPage}&page_size=${PAGE_SIZE}`
 			);
+			// Superseded by a newer load, or by a local mutation.
+			if (!fetchSequence.canCommit(token)) return;
 			workflows = opts.append ? appendUnique(workflows, res.items) : res.items;
 			total = res.total;
 			page = nextPage;
 		} finally {
-			loading = false;
+			if (fetchSequence.isCurrentRequest(token)) loading = false;
 		}
 	}
 
@@ -79,6 +93,7 @@ function createWorkflowStore() {
 		steps: WorkflowStep[];
 	}): Promise<WorkflowDefinition> {
 		const created = await api.post<WorkflowDefinition>('/api/workflows', data);
+		fetchSequence.supersedeInFlight();
 		workflows = [...workflows, created];
 		total += 1;
 		return created;
@@ -89,12 +104,14 @@ function createWorkflowStore() {
 		changes: { name?: string; description?: string; is_active?: boolean; steps?: WorkflowStep[] }
 	): Promise<WorkflowDefinition> {
 		const updated = await api.patch<WorkflowDefinition>(`/api/workflows/${id}`, changes);
+		fetchSequence.supersedeInFlight();
 		workflows = workflows.map((w) => (w.id === id ? updated : w));
 		return updated;
 	}
 
 	async function remove(id: string): Promise<void> {
 		await api.delete(`/api/workflows/${id}`);
+		fetchSequence.supersedeInFlight();
 		workflows = workflows.filter((w) => w.id !== id);
 		total = Math.max(0, total - 1);
 	}
@@ -114,6 +131,7 @@ function createWorkflowStore() {
 			workflow_ids: ids
 		});
 		const deletedSet = new Set(result.deleted);
+		fetchSequence.supersedeInFlight();
 		workflows = workflows.filter((w) => !deletedSet.has(w.id));
 		total = Math.max(0, total - deletedSet.size);
 		return result;
@@ -131,6 +149,7 @@ function createWorkflowStore() {
 			template_key: key,
 			name,
 		});
+		fetchSequence.supersedeInFlight();
 		workflows = [...workflows, created];
 		total += 1;
 		return created;
@@ -150,6 +169,7 @@ function createWorkflowStore() {
 			`/api/workflows/${id}/restore/${versionId}`,
 			{}
 		);
+		fetchSequence.supersedeInFlight();
 		workflows = workflows.map((w) => (w.id === id ? updated : w));
 		return updated;
 	}
@@ -180,6 +200,7 @@ function createWorkflowStore() {
 		definition: WorkflowExport;
 	}): Promise<WorkflowDefinition> {
 		const created = await api.post<WorkflowDefinition>('/api/workflows/import', payload);
+		fetchSequence.supersedeInFlight();
 		workflows = [...workflows, created];
 		total += 1;
 		return created;

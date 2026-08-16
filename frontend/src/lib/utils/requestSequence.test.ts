@@ -145,4 +145,72 @@ describe('a local mutation survives a late-resolving stale fetch', () => {
 		await list.load(async () => [{ id: 'inv-1', status: 'sending_to_erp' }]);
 		expect(list.rows).toEqual([{ id: 'inv-1', status: 'sending_to_erp' }]);
 	});
+
+	/**
+	 * The dismissal this exists to kill: "the mount fetch must have landed
+	 * before there's a row to mutate, so edit/delete can't race it". True for
+	 * edit and delete — false for New/Add, which is live while the FIRST GET is
+	 * still out. Every store here has such a path (`upsert` prepending an
+	 * unseen row, `createUser`, `createFromTemplate`).
+	 */
+	it('a create that prepends survives the very first load still in flight', async () => {
+		const seq = createRequestSequencer();
+		let rows: Array<{ id: string }> = [];
+
+		let releaseMount!: () => void;
+		const mountGate = new Promise<void>((resolve) => (releaseMount = resolve));
+
+		const token = seq.start();
+		const mountLoad = (async () => {
+			await mountGate;
+			// The server list this request read predates the create below.
+			const items = [{ id: 'existing' }];
+			if (!seq.canCommit(token)) return;
+			rows = items;
+		})();
+
+		// The user hits "New" before the list has painted a single row.
+		seq.supersedeInFlight();
+		rows = [{ id: 'created' }, ...rows];
+
+		releaseMount();
+		await mountLoad;
+
+		expect(rows).toEqual([{ id: 'created' }]);
+	});
+});
+
+/**
+ * Two independent lists loaded by two independent requests get one sequencer
+ * EACH — `stores/admin.svelte.ts` (users vs roles) and
+ * `stores/notifications.svelte.ts` (the list vs the 60s unread-count poll).
+ * Sharing one counter would make an unrelated request mark the other's
+ * in-flight response un-committable and blank it.
+ */
+describe('one sequencer per independent list', () => {
+	it('a second list’s request does not supersede the first list’s', () => {
+		const usersSeq = createRequestSequencer();
+		const rolesSeq = createRequestSequencer();
+
+		const usersToken = usersSeq.start();
+		rolesSeq.start(); // a roles refresh fires while the users fetch is out
+
+		expect(usersSeq.canCommit(usersToken)).toBe(true);
+	});
+
+	it('a local edit that touches both lists supersedes both', () => {
+		// `markRead` writes `unread`, which BOTH the list load and the badge
+		// poll would otherwise restore to its pre-edit value.
+		const listSeq = createRequestSequencer();
+		const countSeq = createRequestSequencer();
+
+		const listToken = listSeq.start();
+		const countToken = countSeq.start();
+
+		listSeq.supersedeInFlight();
+		countSeq.supersedeInFlight();
+
+		expect(listSeq.canCommit(listToken)).toBe(false);
+		expect(countSeq.canCommit(countToken)).toBe(false);
+	});
 });
