@@ -24,6 +24,8 @@ function createPaymentStore() {
 	// Sequences every `load()` call (fetch and loadMore alike — one shared
 	// counter, latest-issued wins) so a slow response for an earlier
 	// search/filter can't land after a faster later one and clobber the list.
+	// This store exposes no local-mutation helper — every /payments mutation
+	// re-fetches through `load()` — so it needs no `supersedeInFlight()` call.
 	const fetchSequence = createRequestSequencer();
 
 	async function load(params: Record<string, string>, opts: { append?: boolean; nextPage?: number } = {}) {
@@ -37,12 +39,12 @@ function createPaymentStore() {
 				page_size: String(PAGE_SIZE),
 			}).toString();
 			const res = await api.get<PaymentListResponse>(`/api/payments?${query}`);
-			if (!fetchSequence.isLatest(token)) return; // superseded by a newer load
+			if (!fetchSequence.canCommit(token)) return; // superseded by a newer load
 			payments = opts.append ? appendUnique(payments, res.items) : res.items;
 			total = res.total;
 			page = nextPage;
 		} finally {
-			if (fetchSequence.isLatest(token)) loading = false;
+			if (fetchSequence.isCurrentRequest(token)) loading = false;
 		}
 	}
 

@@ -84,6 +84,11 @@
 	// Replace a vendor in the list (and keep the open detail modal in sync) after
 	// any mutation — bank edit, screening, risk recompute, block/unblock.
 	function applyVendorUpdate(updated: Vendor) {
+		// A fetch already in flight read this vendor BEFORE the mutation landed,
+		// so its response would revert the change (a lifted payment block
+		// reappearing, a fresh screening verdict going back to stale). Retire
+		// every pre-edit request before applying.
+		fetchSequence.supersedeInFlight();
 		vendors = vendors.map((v) => (v.id === updated.id ? updated : v));
 		if (detailVendor && detailVendor.id === updated.id) detailVendor = updated;
 	}
@@ -142,6 +147,8 @@
 	// Sequences fetchVendors calls (fetch and load-more alike — one shared
 	// counter, latest-issued wins) so a slow response for an earlier
 	// search/filter can't land after a faster later one and clobber the list.
+	// `applyVendorUpdate` marks in-flight fetches stale the same way, so a
+	// response issued before a local edit can't overwrite it either.
 	const fetchSequence = createRequestSequencer();
 
 	async function fetchVendors(opts: { append?: boolean; nextPage?: number } = {}) {
@@ -166,13 +173,17 @@
 			const data = await api.get<{ items: Vendor[]; total: number }>(
 				`/api/vendors?${params}`
 			);
-			if (!fetchSequence.isLatest(token)) return; // superseded by a newer fetch
+			// Superseded by a newer fetch, or by a local edit.
+			if (!fetchSequence.canCommit(token)) return;
 			vendors = opts.append ? appendUnique(vendors, data.items) : data.items;
 			total = data.total;
 			page = nextPage;
 			if (!opts.append) fetchCounts();
 		} catch {
-			if (fetchSequence.isLatest(token)) toast('Failed to load vendors', 'error');
+			// `isCurrentRequest`, not `canCommit`: a request superseded by a
+			// local edit still failed, and no newer request is coming to report
+			// it — only a newer *fetch* makes this one's outcome irrelevant.
+			if (fetchSequence.isCurrentRequest(token)) toast('Failed to load vendors', 'error');
 		}
 	}
 

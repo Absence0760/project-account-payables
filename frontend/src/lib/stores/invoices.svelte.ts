@@ -21,7 +21,8 @@ function createInvoiceStore() {
 	// Sequences `fetch`/`loadMore` calls (they share one counter — whichever
 	// was issued last wins) so a slow response for an earlier search/filter
 	// can't land after a faster later one and clobber the list with stale
-	// results.
+	// results. `update`/`patchLocal` mark in-flight fetches stale the same way,
+	// so a response issued before a local edit can't overwrite it either.
 	const fetchSequence = createRequestSequencer();
 
 	async function fetch(params?: Record<string, string>) { // noqa: raw-fetch-in-component — store method name; routes through api.get
@@ -33,13 +34,14 @@ function createInvoiceStore() {
 			if (!merged.page_size) merged.page_size = '20';
 			const query = '?' + new URLSearchParams(merged).toString();
 			const res = await api.get<InvoiceListResponse>(`/api/invoices${query}`);
-			if (!fetchSequence.isLatest(token)) return; // superseded by a newer fetch/loadMore
+			// Superseded by a newer fetch/loadMore, or by a local edit.
+			if (!fetchSequence.canCommit(token)) return;
 			invoices = res.items;
 			total = res.total;
 			page = res.page;
 			lastParams = params ?? {};
 		} finally {
-			if (fetchSequence.isLatest(token)) loading = false;
+			if (fetchSequence.isCurrentRequest(token)) loading = false;
 		}
 	}
 
@@ -52,12 +54,13 @@ function createInvoiceStore() {
 			merged.page_size = String(20);
 			const query = '?' + new URLSearchParams(merged).toString();
 			const res = await api.get<InvoiceListResponse>(`/api/invoices${query}`);
-			if (!fetchSequence.isLatest(token)) return; // superseded by a newer fetch/loadMore
+			// Superseded by a newer fetch/loadMore, or by a local edit.
+			if (!fetchSequence.canCommit(token)) return;
 			invoices = appendUnique(invoices, res.items);
 			total = res.total;
 			page = res.page;
 		} finally {
-			if (fetchSequence.isLatest(token)) loading = false;
+			if (fetchSequence.isCurrentRequest(token)) loading = false;
 		}
 	}
 
@@ -76,6 +79,9 @@ function createInvoiceStore() {
 
 	async function update(id: string, changes: Partial<Invoice>) {
 		const updated = await api.patch<Invoice>(`/api/invoices/${id}`, changes);
+		// A fetch already in flight read the invoice BEFORE this PATCH landed,
+		// so its response would revert the edit. Retire it before applying.
+		fetchSequence.supersedeInFlight();
 		invoices = invoices.map((inv) => (inv.id === id ? updated : inv));
 	}
 
@@ -83,6 +89,8 @@ function createInvoiceStore() {
 	 *  already mutated the invoice via a dedicated endpoint (e.g. the file
 	 *  attach/replace/delete routes) and just need the cached row to reflect it. */
 	function patchLocal(id: string, changes: Partial<Invoice>) {
+		// Same as `update`: retire any pre-edit fetch so it can't overwrite this.
+		fetchSequence.supersedeInFlight();
 		invoices = invoices.map((inv) => (inv.id === id ? { ...inv, ...changes } : inv));
 	}
 
