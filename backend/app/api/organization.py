@@ -485,10 +485,26 @@ async def test_payment_connection(
         raise HTTPException(status_code=400, detail="No payment processor configuration provided")
 
     # Trigger registration of all bundled adapters.
-    from app.services.payment_adapters import get_payment_adapter
+    from app.services.payment_adapters import (
+        UnknownPaymentProviderError,
+        get_payment_adapter,
+    )
 
     try:
         adapter = get_payment_adapter(config)
+    except UnknownPaymentProviderError as exc:
+        # This endpoint is where an admin discovers a typo'd provider name
+        # before it reaches a payment run, so name it rather than returning
+        # the generic "check your configuration". No credential is echoed.
+        return {
+            "success": False,
+            "message": (
+                f"'{exc.provider}' is not a supported payment provider. "
+                "Pick one from the provider list and re-test."
+            ),
+        }
+
+    try:
         success = await adapter.test_connection()
         provider = config.get("provider", "unknown")
         if success:

@@ -175,6 +175,11 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
         # Org hasn't configured a processor; nothing to poll.
         return {"polled": 0, "resolved": 0, "aged_out": 0}
 
+    # An unsupported provider name raises (see `get_payment_adapter`). Let it
+    # propagate: `reconcile_once` counts the tenant as a failure, which is what
+    # drives the sweep to `degraded` on `GET /api/health/sweeps`. Swallowing it
+    # would leave the tenant's stuck payments un-polled AND the sweep looking
+    # clean — the exact blindness `sweep_health` exists to remove.
     adapter = get_payment_adapter(payment_config)
 
     engine = create_async_engine(_make_tenant_url(org.db_name))

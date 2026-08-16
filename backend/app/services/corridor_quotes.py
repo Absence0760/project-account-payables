@@ -33,6 +33,7 @@ from app.services.payment_adapters import (
     CorridorQuote,
     PaymentAdapter,
     PaymentPayload,
+    UnknownPaymentProviderError,
     get_payment_adapter,
 )
 
@@ -159,7 +160,25 @@ async def compare_quotes(
     if not configs:
         raise NoEligibleCorridorError("no payment providers configured in org.settings.payments")
 
-    adapters: list[PaymentAdapter] = [get_payment_adapter(cfg) for cfg in configs]
+    adapters: list[PaymentAdapter] = []
+    unsupported: list[CorridorQuote] = []
+    for cfg in configs:
+        try:
+            adapters.append(get_payment_adapter(cfg))
+        except UnknownPaymentProviderError as exc:
+            # One bad name in a multi-provider list must not take the whole
+            # auction down — the org's other rails can still quote. It becomes
+            # an unavailable quote so it can never WIN, and the reason is what
+            # `NoEligibleCorridorError` reports if it was the only entry.
+            logger.warning("[corridor_quotes] skipping unsupported provider in payments.providers")
+            unsupported.append(
+                CorridorQuote(
+                    provider=exc.provider,
+                    method=payload.method,
+                    available=False,
+                    unavailable_reason="provider_not_supported",
+                )
+            )
 
     # De-duplicate by provider_name so a doubly-configured org doesn't
     # quote itself twice (and rank one against the other).
@@ -171,7 +190,7 @@ async def compare_quotes(
         seen.add(a.provider_name)
         unique_adapters.append(a)
 
-    quotes: list[CorridorQuote] = []
+    quotes: list[CorridorQuote] = list(unsupported)
     for adapter in unique_adapters:
         quotes.append(await _quote_one(adapter, payload))
 
