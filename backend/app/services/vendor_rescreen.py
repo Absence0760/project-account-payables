@@ -19,11 +19,26 @@ any that newly hit. Every tick:
      inventing one would need a migration / event-registry change; the re-screen
      itself — including the payment block on a ``match`` — is the load-bearing
      behaviour, so we deliberately fall back to logging here.)
-  5. Commit once per tenant.
+  5. Commit **per vendor**.
 
 Mirrors ``services/contract_renewal.py``: long-lived asyncio task started in
 ``main.lifespan``, fresh per-tenant engine, one tenant's failure logged but
 never halting the sweep. Disabled by default (``FEOH_VENDOR_RESCREEN_ENABLED``).
+
+**Why per-vendor and not once per tenant.** The tenant loop had no per-vendor
+guard and committed once at the end, and ``screen_vendor_record`` has no
+internal ``except`` — so a single vendor whose screen raised (adapter transport
+error, a bad credential, one malformed row) aborted the tenant's whole sweep
+*before* that commit. Not even the vendors already screened on that tick got
+their ``last_screened_at`` advanced, so every one of them stayed due, the same
+poison vendor was re-selected on the next tick, and the sweep made **zero
+progress forever** — a sanctions-compliance control silently not running, whose
+only trace was a per-tenant ``failures`` counter the loop discards. Committing
+each vendor on its own turns that into: the poison vendor is skipped and
+counted, everyone else advances. Each vendor is re-read by id inside its own
+leg, because a rollback expires the ORM objects a pre-loaded list would still be
+holding — and touching one of those from async SQLAlchemy is a
+``MissingGreenlet``, not a clean failure.
 """
 
 from __future__ import annotations
@@ -56,7 +71,12 @@ class RescreenResult:
     tenants_scanned: int = 0
     vendors_screened: int = 0
     new_flags: int = 0
+    #: Tenants whose sweep aborted outright (engine/connect/query failure).
     failures: int = 0
+    #: Individual vendors whose screen raised. Counted apart from ``failures``
+    #: because a vendor failure no longer takes its tenant down with it — the
+    #: rest of that tenant's vendors still advance.
+    vendor_failures: int = 0
 
 
 async def rescreen_vendors_once(*, now: datetime | None = None) -> RescreenResult:
@@ -78,9 +98,10 @@ async def rescreen_vendors_once(*, now: datetime | None = None) -> RescreenResul
     for _org_id, db_name, org_settings in tenants:
         result.tenants_scanned += 1
         try:
-            screened, flags = await _sweep_tenant(db_name, org_settings, cutoff)
+            screened, flags, vendor_failures = await _sweep_tenant(db_name, org_settings, cutoff)
             result.vendors_screened += screened
             result.new_flags += flags
+            result.vendor_failures += vendor_failures
         except Exception as exc:  # noqa: BLE001 — one tenant must not halt the sweep
             # Log the exception CLASS only — a DB/asyncpg or sanctions-adapter
             # error message can echo a vendor name / partial banking value
@@ -90,38 +111,46 @@ async def rescreen_vendors_once(*, now: datetime | None = None) -> RescreenResul
             )
             result.failures += 1
 
-    if result.vendors_screened or result.new_flags or result.failures:
+    if result.vendors_screened or result.new_flags or result.failures or result.vendor_failures:
         logger.info(
-            "[vendor-rescreen] swept %d tenant(s); screened=%d new_flags=%d failed_sweeps=%d",
+            "[vendor-rescreen] swept %d tenant(s); screened=%d new_flags=%d "
+            "failed_sweeps=%d failed_vendors=%d",
             result.tenants_scanned,
             result.vendors_screened,
             result.new_flags,
             result.failures,
+            result.vendor_failures,
         )
     return result
 
 
 async def _sweep_tenant(
     db_name: str, org_settings: dict | None, cutoff: datetime
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     """Re-screen due vendors for one tenant.
 
-    Returns ``(vendors_screened, new_flags)``. Commits once on success.
+    Returns ``(vendors_screened, new_flags, vendor_failures)``. Commits per
+    vendor — see the module docstring for why one commit per tenant made a
+    single failing vendor block the tenant's sweep permanently.
     """
     engine = create_async_engine(_make_tenant_url(db_name))
     factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with factory() as db:
-            due = (
+            # Ids only: each vendor is re-read inside its own leg, so a leg that
+            # rolls back can't leave the NEXT one holding an expired ORM object.
+            due_ids = (
                 (
                     await db.execute(
-                        select(Vendor).where(
+                        select(Vendor.id)
+                        .where(
                             Vendor.status == "active",
                             or_(
                                 Vendor.last_screened_at.is_(None),
                                 Vendor.last_screened_at < cutoff,
                             ),
                         )
+                        .order_by(Vendor.id)
                     )
                 )
                 .scalars()
@@ -130,19 +159,39 @@ async def _sweep_tenant(
 
             screened = 0
             new_flags = 0
-            for vendor in due:
-                # Capture the pre-screen status so we only count a vendor that
-                # was NOT already flagged flipping into match / review.
-                was_flagged = vendor.screening_status in _FLAGGED_STATUSES
+            vendor_failures = 0
+            for vendor_id in due_ids:
+                try:
+                    vendor = await db.get(Vendor, vendor_id)
+                    if vendor is None:  # deleted since the id query
+                        continue
 
-                outcome = await screen_vendor_record(
-                    db,
-                    vendor=vendor,
-                    organization_id=vendor.organization_id,
-                    org_settings=org_settings,
-                    check_type="periodic",
-                )
-                screened += 1
+                    # Capture the pre-screen status so we only count a vendor
+                    # that was NOT already flagged flipping into match / review.
+                    was_flagged = vendor.screening_status in _FLAGGED_STATUSES
+
+                    outcome = await screen_vendor_record(
+                        db,
+                        vendor=vendor,
+                        organization_id=vendor.organization_id,
+                        org_settings=org_settings,
+                        check_type="periodic",
+                    )
+                    await db.commit()
+                    screened += 1
+                except Exception as exc:  # noqa: BLE001 — one vendor must not halt the tenant
+                    # Class only — a sanctions-adapter or asyncpg error message
+                    # can echo a vendor name / partial banking value
+                    # (PII-out-of-logs).
+                    logger.warning(
+                        "[vendor-rescreen] vendor=%s screen failed in %s: %s",
+                        vendor_id,
+                        db_name,
+                        exc.__class__.__name__,
+                    )
+                    await db.rollback()
+                    vendor_failures += 1
+                    continue
 
                 if not was_flagged and outcome.screening_status in _FLAGGED_STATUSES:
                     new_flags += 1
@@ -158,8 +207,7 @@ async def _sweep_tenant(
                         db_name,
                     )
 
-            await db.commit()
-            return screened, new_flags
+            return screened, new_flags, vendor_failures
     finally:
         await engine.dispose()
 

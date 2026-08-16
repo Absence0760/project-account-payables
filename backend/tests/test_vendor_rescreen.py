@@ -97,7 +97,7 @@ async def test_rescreen_once_iterates_every_tenant():
             _fake_control_session(["feoh_a", "feoh_b", "feoh_c"]),
         ),
         patch.object(
-            vendor_rescreen, "_sweep_tenant", AsyncMock(return_value=(2, 1))
+            vendor_rescreen, "_sweep_tenant", AsyncMock(return_value=(2, 1, 0))
         ) as sweep_tenant,
     ):
         result = await rescreen_vendors_once()
@@ -106,12 +106,13 @@ async def test_rescreen_once_iterates_every_tenant():
     assert result.vendors_screened == 6  # 3 tenants × 2
     assert result.new_flags == 3  # 3 tenants × 1
     assert result.failures == 0
+    assert result.vendor_failures == 0
     assert sweep_tenant.await_count == 3
 
 
 async def test_rescreen_once_continues_after_one_tenant_fails():
     """One bad tenant DB must not halt the sweep — log + move on."""
-    side_effects = [(2, 0), RuntimeError("connection refused"), (1, 1)]
+    side_effects = [(2, 0, 0), RuntimeError("connection refused"), (1, 1, 3)]
     with (
         patch.object(
             vendor_rescreen,
@@ -126,6 +127,9 @@ async def test_rescreen_once_continues_after_one_tenant_fails():
     assert result.vendors_screened == 3  # 2 + (skipped) + 1
     assert result.new_flags == 1
     assert result.failures == 1
+    # Per-vendor failures are counted apart from a whole-tenant sweep failure —
+    # a vendor that fails no longer takes its tenant down with it.
+    assert result.vendor_failures == 3
 
 
 # A sentinel that stands in for the vendor name / partial banking value an
@@ -329,3 +333,72 @@ async def test_inactive_vendor_is_not_screened(realdb):
     vendor = await _get_vendor(realdb, "a", vid)
     assert vendor.last_screened_at is None
     assert await _checks_for(realdb, "a", vid) == []
+
+
+async def test_one_failing_vendor_does_not_block_the_tenants_other_vendors(realdb):
+    """Regression: a single bad vendor used to stop a tenant's sweep FOREVER.
+
+    The tenant loop had no per-vendor guard and committed once at the end, so a
+    vendor whose screen raised aborted the sweep before that commit — not even
+    the vendors already screened that tick got their `last_screened_at`
+    advanced. Every one of them stayed due, the same poison vendor was
+    re-selected next tick, and the sweep made zero progress permanently: a
+    sanctions-compliance control silently not running.
+
+    The failing vendor is chosen by NAME so the assertion doesn't depend on the
+    order ids happen to sort in.
+    """
+    good_a = await _seed_vendor(realdb, "a", name="Good Vendor One")
+    bad = await _seed_vendor(realdb, "a", name="Poison Vendor")
+    good_b = await _seed_vendor(realdb, "a", name="Good Vendor Two")
+
+    real_screen = vendor_rescreen.screen_vendor_record
+
+    async def _explode_on_poison(db, *, vendor, **kwargs):
+        if vendor.name == "Poison Vendor":
+            raise RuntimeError("sanctions provider unreachable")
+        return await real_screen(db, vendor=vendor, **kwargs)
+
+    with (
+        _patch_control(realdb),
+        patch.object(vendor_rescreen, "screen_vendor_record", _explode_on_poison),
+    ):
+        result = await rescreen_vendors_once()
+
+    assert result.vendor_failures == 1
+    assert result.failures == 0, "a vendor failure is not a tenant-sweep failure"
+    assert result.vendors_screened == 2
+
+    for vid in (good_a, good_b):
+        vendor = await _get_vendor(realdb, "a", vid)
+        assert vendor.last_screened_at is not None, (
+            "a healthy vendor must advance even when a sibling's screen raised"
+        )
+        assert len(await _checks_for(realdb, "a", vid)) == 1
+
+    poisoned = await _get_vendor(realdb, "a", bad)
+    assert poisoned.last_screened_at is None, "the failing vendor stays due, as it should"
+    assert await _checks_for(realdb, "a", bad) == []
+
+
+async def test_failing_vendor_logs_the_exception_class_not_the_message(realdb, caplog):
+    """The per-vendor guard is a new log site — a sanctions-adapter error string
+    can carry a vendor name / partial bank value (PII-out-of-logs invariant)."""
+    await _seed_vendor(realdb, "a", name="Poison Vendor")
+
+    async def _explode(db, *, vendor, **kwargs):
+        raise RuntimeError(_PII_SENTINEL)
+
+    with (
+        _patch_control(realdb),
+        patch.object(vendor_rescreen, "screen_vendor_record", _explode),
+        caplog.at_level(logging.WARNING, logger=vendor_rescreen.logger.name),
+    ):
+        result = await rescreen_vendors_once()
+
+    assert result.vendor_failures == 1
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings, "expected a WARNING log for the failed vendor"
+    for record in caplog.records:
+        assert _PII_SENTINEL not in record.getMessage()
+    assert any("RuntimeError" in r.getMessage() for r in warnings)
