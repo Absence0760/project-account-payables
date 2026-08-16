@@ -37,9 +37,18 @@ screen, with `check_type` (`initial` | `periodic` | `manual` | `pre_payment`),
 A provider reports not just a verdict but **what kind of hit** it was. The
 adapters normalise their own vocabulary into a fixed taxonomy on
 `ScreeningResult.categories` — `sanctions` / `pep` / `adverse_media` /
-`high_risk_country` (Refinitiv's World-Check `ADVERSE-MEDIA` maps to
-`adverse_media`; the `mock` adapter simulates it for the fixture names in
-`_DEFAULT_ADVERSE_MEDIA`, overridable via `compliance.sanctions.mock_adverse_media`).
+`high_risk_country`:
+
+| Adapter | Where the taxonomy comes from |
+|---|---|
+| `mock` | simulated for the fixture names in `_DEFAULT_ADVERSE_MEDIA`, overridable via `compliance.sanctions.mock_adverse_media` |
+| `refinitiv` | World-Check `categories[].name`; `ADVERSE-MEDIA` → `adverse_media` |
+| `dowjones` | `match-type`; `adverse-media` → `adverse_media` |
+| `complyadvantage` | the hit `doc.types` set it already computes for the verdict. It **asks** for `adverse-media` in `filters.types` — a control that never requests the signal it claims to screen for is a false assurance — and carries an unmapped CA type (`warning`, `fitness-probity`) through with hyphens normalised rather than dropping it |
+
+Requesting adverse media widens what comes back to `review_required`, never to
+a block: the verdict for a non-`sanction` hit is unchanged, and an adverse-media
+hit means *review the relationship*.
 
 **Adverse media is negative-news screening**: press coverage of fraud or
 corruption that has not reached a formal watchlist. It is a different
