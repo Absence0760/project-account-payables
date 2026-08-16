@@ -249,7 +249,7 @@
 	.error {
 		background: rgba(224, 64, 64, 0.1);
 		border: 1px solid rgba(224, 64, 64, 0.3);
-		color: #e04040;
+		color: var(--danger);
 		padding: 10px 14px;
 		border-radius: 4px;
 		font-size: 0.85rem;
@@ -308,7 +308,7 @@
 		color: #2e9960;
 	}
 	.hint.bad {
-		color: #e04040;
+		color: var(--danger);
 	}
 	button {
 		margin-top: 8px;

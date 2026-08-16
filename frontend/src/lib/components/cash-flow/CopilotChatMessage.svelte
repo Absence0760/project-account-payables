@@ -81,7 +81,7 @@
 	}
 	.msg-error {
 		margin: 0;
-		color: #e04040;
+		color: var(--danger);
 		font-size: 0.88rem;
 	}
 	.typing {

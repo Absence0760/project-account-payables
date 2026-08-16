@@ -271,11 +271,11 @@
 	.badge.draft { background: rgba(99, 140, 255, 0.12); color: #638cff; }
 	.badge.active { background: rgba(31, 168, 106, 0.12); color: #1fa86a; }
 	.badge.expired { background: rgba(212, 148, 10, 0.12); color: #d4940a; }
-	.badge.terminated { background: rgba(224, 64, 64, 0.12); color: #e04040; }
+	.badge.terminated { background: rgba(224, 64, 64, 0.12); color: var(--danger); }
 	.badge.cancelled { background: var(--bg); color: var(--text-muted); }
 
 	.over-limit {
-		color: #e04040;
+		color: var(--danger);
 		font-weight: 600;
 	}
 

@@ -279,7 +279,7 @@
 	}
 
 	.state-card.error {
-		color: #e04040;
+		color: var(--danger);
 		display: flex;
 		flex-direction: column;
 		align-items: center;
@@ -327,7 +327,7 @@
 
 	.chip-warn {
 		background: rgba(240, 70, 70, 0.15);
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	.row-flag {

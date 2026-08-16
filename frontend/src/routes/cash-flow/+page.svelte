@@ -387,7 +387,7 @@
 		border-radius: 8px;
 		background: rgba(240, 70, 70, 0.1);
 		border: 1px solid rgba(240, 70, 70, 0.3);
-		color: #e04040;
+		color: var(--danger);
 		font-size: 0.85rem;
 	}
 	.composer {

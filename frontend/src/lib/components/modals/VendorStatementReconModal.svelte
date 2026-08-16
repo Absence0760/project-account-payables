@@ -728,7 +728,7 @@
 	}
 	.stat-chip.flag {
 		background: rgba(224, 64, 64, 0.12);
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	/* --- Totals --- */
@@ -815,7 +815,7 @@
 	}
 	.cls.flag {
 		background: rgba(224, 64, 64, 0.12);
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	.resolution-cell {
@@ -920,8 +920,8 @@
 		line-height: 1;
 	}
 	.line-remove:hover:not(:disabled) {
-		border-color: #e04040;
-		color: #e04040;
+		border-color: var(--danger);
+		color: var(--danger);
 	}
 	.line-remove:disabled {
 		opacity: 0.6;
@@ -1024,8 +1024,8 @@
 		font-size: 0.76rem;
 	}
 	.file-clear:hover:not(:disabled) {
-		border-color: #e04040;
-		color: #e04040;
+		border-color: var(--danger);
+		color: var(--danger);
 	}
 	.file-clear:disabled {
 		opacity: 0.6;
@@ -1048,7 +1048,7 @@
 		color: var(--text);
 	}
 	.intake-error strong {
-		color: #e04040;
+		color: var(--danger);
 		font-size: 0.8rem;
 	}
 </style>

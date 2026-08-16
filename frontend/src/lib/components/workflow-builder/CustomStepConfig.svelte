@@ -329,8 +329,8 @@
 	}
 
 	.icon-btn.danger:hover {
-		border-color: #e04040;
-		color: #e04040;
+		border-color: var(--danger);
+		color: var(--danger);
 	}
 
 	.link-btn {

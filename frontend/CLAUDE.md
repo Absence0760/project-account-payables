@@ -842,6 +842,13 @@ one mistake this codebase kept making:
   `var(--surface-2, #232b44)` with the token undefined, two call sites
   disagreeing about the value — that is the bug this rule prevents. Same for
   `--font-mono`, the canonical monospace stack.
+- **Text colour comes from a token, not a literal.** A bare `color: #<hex>`
+  with no background in the same rule renders on whatever the cascade supplies,
+  so it has to be legible on `--bg` and `--surface` — and `#e04040` (the old
+  status red) was 4.11:1 on `--surface`, failing in 106 places. `#fff` / `#000`
+  are exempt: they're the deliberate on-a-coloured-fill choices. Decorative
+  fills (a chart bar, a confidence dot, an SVG `fill`) carry no text and are
+  not covered by this.
 
 Two guards enforce it, and neither subsumes the other:
 
@@ -849,7 +856,8 @@ Two guards enforce it, and neither subsumes the other:
   stylesheet in `src/` — `app.css` plus every `<style>` block — for a rule that
   sets both `color` and a `background`, resolves both through the palette, and
   fails below 4.5:1 (3:1 when the rule itself declares a large-text size). It
-  also fails a fallback that contradicts its token, a `var()` on a token
+  also fails a bare literal `color:` that can't clear the bar on `--bg` or
+  `--surface`, a fallback that contradicts its token, a `var()` on a token
   nothing assigns, and asserts the table above directly. Pure scanners live in
   `a11y/cssAudit.ts`; the WCAG math in `a11y/contrast.ts`.
 - **`tests-e2e/a11y/axe.spec.ts`** covers what the scanner deliberately can't:

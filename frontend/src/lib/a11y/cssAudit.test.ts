@@ -28,6 +28,14 @@ const audit = (css: string, assigned: string[] = []) =>
 		assignedTokens: new Set(assigned)
 	});
 
+/** The same audit with the bare-literal rule armed, as the repo guard runs it. */
+const auditText = (css: string) =>
+	auditStyles([{ path: 'fixture.css', css }], {
+		palette: PALETTE,
+		assignedTokens: new Set(),
+		textSurfaces: ['--bg', '--surface']
+	});
+
 describe('stripCssComments', () => {
 	it('removes block comments, including multi-line ones', () => {
 		expect(stripCssComments('a{/* x\n y */color:red}')).toBe('a{color:red}');
@@ -228,6 +236,66 @@ describe('auditStyles — token drift', () => {
 
 	it('says nothing about a var() with no fallback at all', () => {
 		expect(audit('.a{color:var(--text-muted)}')).toEqual([]);
+	});
+});
+
+describe('auditStyles — bare literal text colour', () => {
+	/**
+	 * The class the same-rule pair check structurally cannot see: the rule
+	 * sets only `color`, so the background arrives through the cascade. The
+	 * sound question left is whether the literal is legible on the surfaces
+	 * body text renders on.
+	 */
+	it('flags a literal below the bar on an app surface', () => {
+		// #e04040 — 4.47:1 on --bg, 4.11:1 on --surface.
+		const findings = auditText('.err{color:#e04040}');
+		expect(findings).toHaveLength(1);
+		expect(findings[0]).toMatchObject({
+			kind: 'literal-text-color',
+			colorValue: '#e04040',
+			surface: '--bg'
+		});
+		expect(describeFinding(findings[0])).toContain('use a palette token');
+	});
+
+	it('reports one finding per rule even when several surfaces fail', () => {
+		expect(auditText('.err{color:#e04040}')).toHaveLength(1);
+	});
+
+	it('passes a literal that clears the bar everywhere', () => {
+		// #f87171 — 6.82:1 on --bg, 6.27:1 on --surface.
+		expect(auditText('.err{color:#f87171}')).toEqual([]);
+	});
+
+	/** A token is exempt: `palette contract` asserts it against these surfaces. */
+	it('never flags a palette token', () => {
+		expect(auditText('.a{color:var(--text-muted)}')).toEqual([]);
+	});
+
+	/**
+	 * White and black are the deliberate on-a-coloured-fill choices; their
+	 * background legitimately comes from a parent rule the scanner can't see.
+	 */
+	it('exempts white and black', () => {
+		expect(auditText('.a{color:#fff}')).toEqual([]);
+		expect(auditText('.a{color:white}')).toEqual([]);
+		expect(auditText('.a{color:#000}')).toEqual([]);
+	});
+
+	it('stands down once the rule declares its own background — the pair check owns it', () => {
+		// Same failing literal, but now on a stated background: reported as a
+		// contrast pair (against #fff), not as a bare literal.
+		const findings = auditText('.a{color:#e04040;background:#fff}');
+		expect(findings.map((f) => f.kind)).toEqual(['contrast']);
+	});
+
+	it('honours the large-text bar', () => {
+		// 4.47:1 clears the 3:1 large-text threshold.
+		expect(auditText('.h{color:#e04040;font-size:1.5rem}')).toEqual([]);
+	});
+
+	it('does nothing when no text surfaces are configured', () => {
+		expect(audit('.err{color:#e04040}')).toEqual([]);
 	});
 });
 

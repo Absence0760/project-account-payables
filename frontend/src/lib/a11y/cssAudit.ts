@@ -64,7 +64,25 @@ export interface DeadTokenFinding {
 	fallback: string;
 }
 
-export type StyleFinding = ContrastFinding | StaleFallbackFinding | DeadTokenFinding;
+export interface LiteralTextColorFinding {
+	kind: 'literal-text-color';
+	path: string;
+	selector: string;
+	/** The literal as written. */
+	color: string;
+	colorValue: string;
+	/** The surface token it failed against, and by how much. */
+	surface: string;
+	surfaceColor: string;
+	ratio: number;
+	required: number;
+}
+
+export type StyleFinding =
+	| ContrastFinding
+	| StaleFallbackFinding
+	| DeadTokenFinding
+	| LiteralTextColorFinding;
 
 const TOKEN_RE = '--[a-z0-9-]+';
 
@@ -244,7 +262,23 @@ export interface AuditOptions {
 	palette: Record<string, string>;
 	/** Every custom property assigned anywhere in the scanned tree. */
 	assignedTokens: Set<string>;
+	/**
+	 * Palette tokens a bare literal `color:` is held against — the surfaces
+	 * body text actually sits on. `--surface-2` is deliberately NOT here: it's
+	 * a raised panel used in a handful of places, and a rule that puts text on
+	 * it declares the background, so the same-rule pair check already covers
+	 * it. Including it would flag every red/green status literal in the app on
+	 * the strength of a surface it never renders against.
+	 */
+	textSurfaces?: string[];
 }
+
+/**
+ * Colours exempt from the bare-literal rule: they are the deliberate
+ * on-a-coloured-fill choices, whose background legitimately comes from a
+ * parent or sibling rule the scanner can't see.
+ */
+const LITERAL_EXEMPT = new Set(['#ffffff', '#000000']);
 
 /**
  * Run all three checks over the given stylesheets. Findings are returned, not
@@ -252,7 +286,7 @@ export interface AuditOptions {
  */
 export function auditStyles(sources: StyleSource[], options: AuditOptions): StyleFinding[] {
 	const findings: StyleFinding[] = [];
-	const { palette, assignedTokens } = options;
+	const { palette, assignedTokens, textSurfaces = [] } = options;
 
 	for (const source of sources) {
 		const css = stripCssComments(source.css);
@@ -290,6 +324,37 @@ export function auditStyles(sources: StyleSource[], options: AuditOptions): Styl
 				// `background-color`, so plain assignment models both.
 				else if (prop === 'background' || prop === 'background-color') background = value;
 			}
+			// 4 — a bare literal `color:` with no background in this rule. The
+			// background comes from the cascade, so the only sound question is
+			// whether the literal is legible on the surfaces body text sits on.
+			// A palette token is exempt because `palette contract` asserts each
+			// one against those same surfaces directly.
+			if (foreground && !background) {
+				const fg = resolveColorValue(foreground, palette);
+				const isToken = /^var\(/i.test(foreground.trim());
+				if (fg && !isToken && !LITERAL_EXEMPT.has(fg)) {
+					const required = isLargeText(rule.declarations) ? WCAG_AA_LARGE : WCAG_AA_NORMAL;
+					for (const token of textSurfaces) {
+						const surfaceColor = palette[token];
+						if (!surfaceColor) continue;
+						const ratio = contrastRatio(fg, surfaceColor);
+						if (ratio === null || ratio + 1e-9 >= required) continue;
+						findings.push({
+							kind: 'literal-text-color',
+							path: source.path,
+							selector: rule.selector,
+							color: foreground,
+							colorValue: fg,
+							surface: token,
+							surfaceColor,
+							ratio,
+							required
+						});
+						break; // one finding per rule — the first failing surface names it
+					}
+				}
+			}
+
 			if (!foreground || !background) continue;
 
 			const fg = resolveColorValue(foreground, palette);
@@ -346,6 +411,13 @@ export function describeFinding(finding: StyleFinding): string {
 				`${finding.path} — var(${finding.token}, ${finding.fallback}) references a token ` +
 				`nothing ever assigns, so the fallback is what always renders; ` +
 				`define ${finding.token} or inline the value`
+			);
+		case 'literal-text-color':
+			return (
+				`${finding.path} — {${finding.selector}}: color ${finding.color} ` +
+				`(${finding.colorValue}) is ${finding.ratio.toFixed(2)}:1 on ${finding.surface} ` +
+				`(${finding.surfaceColor}), below the ${finding.required}:1 bar. The rule sets no ` +
+				`background, so this text renders on an app surface — use a palette token`
 			);
 	}
 }

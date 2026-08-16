@@ -1049,7 +1049,9 @@ axe found it on `/admin/api-keys` and `/admin/webhooks`, and `/billing`'s
 proration box — the same defect — was found by a human reading the file. The
 bug recurs per **surface**, so the surfaces are what to check.
 
-Running the scan the first time found 99 problems, which is the real argument:
+Running the scan the first time found 99 problems, which is the real argument
+(a fourth rule, added once the first three were green, found 106 more — see
+below):
 
 - **55 contrast failures**, almost all one root cause. `--accent-strong` had
   been added specifically so white text had somewhere legible to sit, and
@@ -1068,6 +1070,20 @@ Running the scan the first time found 99 problems, which is the real argument:
 A rule that sets only `color` inherits its background through the cascade,
 which is a runtime question; that stays axe's job. Neither guard subsumes the
 other, and saying so here is cheaper than someone deleting one of them later.
+
+**One sound question survives in the cascade case**, though, and asking it
+found the round's largest single defect. A rule setting only a `color` will
+render on *some* app surface, so a **literal** there has to be legible on the
+surfaces body text actually sits on. `#e04040` — the status red — is 4.11:1 on
+`--surface` and 4.47:1 on `--bg`: failing, in **106** declarations across 61
+files, on error messages, alerts and the danger row-action. Only literals are
+asked (a palette token is already asserted against those surfaces), `#fff` and
+`#000` are exempt as the deliberate on-a-fill choices, and `--surface-2` is
+*not* in the surface list — text on that raised panel declares its background,
+so the pair check owns it, and including it would flag every status colour in
+the app on the strength of a surface it never renders against. Decorative
+fills (a chart bar, a confidence dot, an SVG `fill`) carry no text and are
+untouched.
 
 **Fixing a failure means changing the colour.** There is no suppression
 mechanism and no allowlist, because the `-strong` companions mean a correct

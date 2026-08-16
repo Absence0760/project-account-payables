@@ -405,7 +405,7 @@
 	.badge.open { background: rgba(99, 140, 255, 0.12); color: #638cff; }
 	.badge.in_review { background: rgba(212, 148, 10, 0.12); color: #d4940a; }
 	.badge.approved { background: rgba(31, 168, 106, 0.12); color: #1fa86a; }
-	.badge.rejected { background: rgba(224, 64, 64, 0.12); color: #e04040; }
+	.badge.rejected { background: rgba(224, 64, 64, 0.12); color: var(--danger); }
 	.badge.converted { background: rgba(140, 100, 240, 0.12); color: #8c64f0; }
 	.badge.cancelled { background: var(--bg); color: var(--text-muted); }
 

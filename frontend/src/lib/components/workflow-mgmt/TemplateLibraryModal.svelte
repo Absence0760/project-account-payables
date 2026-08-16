@@ -148,7 +148,7 @@
 	}
 
 	.tl-error {
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	.tl-group {

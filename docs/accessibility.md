@@ -70,9 +70,12 @@ plus two kinds of human review:
    `app.css` plus every component `<style>` block — for a rule that sets both a
    `color` and a `background`, resolves both through the palette, and fails
    below the SC 1.4.3 threshold (3:1 when the rule declares a large-text size).
-   It also fails a `var(--token, fallback)` whose fallback contradicts the
-   declared token, and a `var()` on a token nothing ever assigns — the drift
-   that let `--surface-2` render for months as a value nobody had declared.
+   A rule that sets only a `color` inherits its background, so a **literal**
+   there is instead held against the surfaces body text renders on (`--bg`,
+   `--surface`) — which is how the old status red, 4.11:1 in 106 places, was
+   found. It also fails a `var(--token, fallback)` whose fallback contradicts
+   the declared token, and a `var()` on a token nothing ever assigns — the
+   drift that let `--surface-2` render for months as a value nobody declared.
    The palette's own contract (which foreground token is legal on which
    surface) is asserted directly, so one drifting token surfaces as one
    failure rather than dozens.

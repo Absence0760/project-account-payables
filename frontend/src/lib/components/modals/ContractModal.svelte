@@ -578,7 +578,7 @@
 	.badge.draft { background: rgba(99, 140, 255, 0.15); color: #638cff; }
 	.badge.active { background: rgba(31, 168, 106, 0.15); color: #1fa86a; }
 	.badge.expired { background: rgba(212, 148, 10, 0.15); color: #d4940a; }
-	.badge.terminated { background: rgba(224, 64, 64, 0.15); color: #e04040; }
+	.badge.terminated { background: rgba(224, 64, 64, 0.15); color: var(--danger); }
 	.badge.cancelled { background: var(--bg); color: var(--text-muted); }
 
 	.meta-pill {
@@ -641,7 +641,7 @@
 		background: var(--bg);
 	}
 	.spend-panel.over {
-		border-color: #e04040;
+		border-color: var(--danger);
 	}
 	.spend-title {
 		font-size: 0.8rem;
@@ -671,13 +671,13 @@
 		color: var(--text);
 	}
 	.spend-value.neg {
-		color: #e04040;
+		color: var(--danger);
 	}
 	.spend-warning {
 		margin-top: 8px;
 		font-size: 0.78rem;
 		font-weight: 600;
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	/* --- Line items --- */
@@ -750,7 +750,7 @@
 		cursor: pointer;
 		line-height: 1;
 	}
-	.li-delete:hover { color: #e04040; }
+	.li-delete:hover { color: var(--danger); }
 	.line-items-empty {
 		font-size: 0.82rem;
 		color: var(--text-muted);
@@ -881,5 +881,5 @@
 	.btn-lifecycle:disabled { opacity: 0.6; cursor: not-allowed; }
 	.btn-lifecycle.activate:hover { border-color: #1fa86a; color: #1fa86a; }
 	.btn-lifecycle.terminate:hover,
-	.btn-lifecycle.cancel:hover { border-color: #e04040; color: #e04040; }
+	.btn-lifecycle.cancel:hover { border-color: var(--danger); color: var(--danger); }
 </style>

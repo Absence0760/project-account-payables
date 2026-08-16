@@ -203,7 +203,7 @@
 	}
 
 	.vh-error {
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	.vh-diff-controls {
@@ -295,7 +295,7 @@
 
 	.kind-removed .vh-kind {
 		background: rgba(240, 70, 70, 0.15);
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	.kind-changed .vh-kind {

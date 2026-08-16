@@ -536,7 +536,7 @@
 	.error {
 		background: rgba(224, 64, 64, 0.1);
 		border: 1px solid rgba(224, 64, 64, 0.3);
-		color: #e04040;
+		color: var(--danger);
 		padding: 8px 12px;
 		border-radius: 4px;
 		margin-bottom: 10px;
@@ -557,7 +557,7 @@
 		border: 1px solid rgba(224, 64, 64, 0.5);
 		border-radius: 4px;
 		background: transparent;
-		color: #e04040;
+		color: var(--danger);
 		font-size: 0.85rem;
 		cursor: pointer;
 	}

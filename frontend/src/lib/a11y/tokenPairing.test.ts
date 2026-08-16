@@ -58,7 +58,13 @@ describe('style token pairing', () => {
 	});
 
 	it('has no colour pair below the WCAG AA bar, no stale fallback, and no dead token', () => {
-		const findings = auditStyles(sources, { palette, assignedTokens });
+		const findings = auditStyles(sources, {
+			palette,
+			assignedTokens,
+			// The surfaces body text actually renders on. See `AuditOptions`
+			// for why --surface-2 is not in this list.
+			textSurfaces: ['--bg', '--surface']
+		});
 		const report = findings.map((f) => `  • ${describeFinding(f)}`).join('\n');
 		expect(findings, `\n${report}\n`).toEqual([]);
 	});

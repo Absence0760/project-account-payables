@@ -362,7 +362,7 @@
 	}
 
 	.error {
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	dl.meta {
@@ -460,7 +460,7 @@
 
 	.badge.failed {
 		background: rgba(240, 70, 70, 0.15);
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	.status-badge {
@@ -550,14 +550,14 @@
 	}
 
 	.btn-discard:hover:not(:disabled):not(.armed) {
-		border-color: #e04040;
-		color: #e04040;
+		border-color: var(--danger);
+		color: var(--danger);
 	}
 
 	.btn-discard.armed {
-		border-color: #e04040;
+		border-color: var(--danger);
 		background: rgba(224, 64, 64, 0.1);
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	.btn-discard:disabled {

@@ -352,7 +352,7 @@
 	.badge.submitted { background: rgba(212, 148, 10, 0.15); color: #d4940a; }
 	.badge.pending_approval { background: rgba(212, 148, 10, 0.15); color: #d4940a; }
 	.badge.approved { background: rgba(31, 168, 106, 0.15); color: #1fa86a; }
-	.badge.rejected { background: rgba(224, 64, 64, 0.15); color: #e04040; }
+	.badge.rejected { background: rgba(224, 64, 64, 0.15); color: var(--danger); }
 	.badge.converted { background: rgba(140, 100, 240, 0.15); color: #8c64f0; }
 	.badge.cancelled { background: var(--bg); color: var(--text-muted); }
 
@@ -454,7 +454,7 @@
 		cursor: pointer;
 	}
 	.btn-remove-line:hover {
-		color: #e04040;
+		color: var(--danger);
 	}
 	.total-label {
 		font-weight: 600;

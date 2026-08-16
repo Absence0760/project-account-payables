@@ -418,8 +418,8 @@
 	}
 
 	.icon-btn.danger:hover:not(:disabled) {
-		border-color: #e04040;
-		color: #e04040;
+		border-color: var(--danger);
+		color: var(--danger);
 	}
 
 	.row {

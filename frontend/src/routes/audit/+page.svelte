@@ -248,7 +248,7 @@
 	}
 
 	.audit-error {
-		color: #e04040;
+		color: var(--danger);
 		margin: 0 0 8px;
 	}
 

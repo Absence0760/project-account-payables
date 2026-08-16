@@ -1937,7 +1937,7 @@
 	}
 
 	.test-result.failure {
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	.sync-grid {

@@ -290,7 +290,7 @@
 	.badge.draft { background: rgba(99, 140, 255, 0.15); color: #638cff; }
 	.badge.submitted { background: rgba(212, 148, 10, 0.15); color: #d4940a; }
 	.badge.approved { background: rgba(31, 168, 106, 0.15); color: #1fa86a; }
-	.badge.rejected { background: rgba(224, 64, 64, 0.15); color: #e04040; }
+	.badge.rejected { background: rgba(224, 64, 64, 0.15); color: var(--danger); }
 	.badge.reimbursed { background: rgba(140, 100, 240, 0.15); color: #8c64f0; }
 
 	.form-grid {

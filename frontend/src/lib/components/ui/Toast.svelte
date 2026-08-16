@@ -122,7 +122,7 @@
 
 	.toast.error {
 		background: #2a1313;
-		border: 1px solid #e04040;
+		border: 1px solid var(--danger);
 		color: #f87171;
 	}
 

@@ -1463,7 +1463,7 @@
 	.badge.submitted { background: rgba(212, 148, 10, 0.12); color: #d4940a; }
 	.badge.pending_approval { background: rgba(212, 148, 10, 0.12); color: #d4940a; }
 	.badge.approved { background: rgba(31, 168, 106, 0.12); color: #1fa86a; }
-	.badge.rejected { background: rgba(224, 64, 64, 0.12); color: #e04040; }
+	.badge.rejected { background: rgba(224, 64, 64, 0.12); color: var(--danger); }
 	.badge.reimbursed { background: rgba(140, 100, 240, 0.12); color: #8c64f0; }
 	.badge.cancelled { background: var(--bg); color: var(--text-muted); }
 	.badge.pending { background: rgba(212, 148, 10, 0.12); color: #d4940a; }
@@ -1474,7 +1474,7 @@
 	.badge.violation {
 		margin-left: 6px;
 		background: rgba(224, 64, 64, 0.12);
-		color: #e04040;
+		color: var(--danger);
 		cursor: help;
 	}
 
@@ -1545,13 +1545,13 @@
 
 	/* Danger variant of the secondary button (report reject). */
 	.btn-secondary.danger:hover {
-		border-color: #e04040;
-		color: #e04040;
+		border-color: var(--danger);
+		color: var(--danger);
 	}
 
 	/* Inline blocking-violation panel above the report detail. */
 	.violation-panel {
-		border: 1px solid #e04040;
+		border: 1px solid var(--danger);
 		background: rgba(224, 64, 64, 0.06);
 		border-radius: 8px;
 		padding: 12px 14px;
@@ -1564,7 +1564,7 @@
 	}
 	.violation-panel li {
 		margin: 2px 0;
-		color: #e04040;
+		color: var(--danger);
 	}
 
 	/* Partial-total notice: some lines lack an FX lock and were excluded. */
