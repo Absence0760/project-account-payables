@@ -523,11 +523,35 @@ class MyAdapter(PaymentAdapter):
     async def get_payment_status(self, provider_payment_id: str) -> PaymentStatus: ...
     def parse_webhook(self, headers: dict, body: bytes) -> WebhookEvent | None: ...
     async def test_connection(self) -> bool: ...
-    # OPTIONAL — base returns available=False, exactly like get_balance:
+    # OPTIONAL — all four fail closed on the base (available=False):
+    async def quote_payment(self, payload: PaymentPayload) -> CorridorQuote: ...
+    async def get_balance(self) -> BalanceResult: ...
     async def fetch_settlement(self, provider_payment_id: str) -> SettlementReport: ...
+    async def void_payment(self, provider_payment_id: str) -> bool: ...
 ```
 
 Registered: `mock`, `modern_treasury`, `stripe_treasury`, `increase`, `column`, `dwolla` (ACH only), `checkeeper` (check printing).
+
+**The four optional capabilities are drift-guarded** by
+`tests/test_payment_adapter_capabilities.py` (same shape as
+`test_payment_methods.py`, which guards the *rails* an adapter offers): every
+registered adapter must either implement each capability or be listed there as
+deliberately not implementing it, **with the consequence for the caller written
+down**. Registering a processor that silently inherits all four is otherwise
+invisible — the corridor auction skips it, the cash-position curve falls back to
+the manual opening balance, its settlements stay `unverified`, and `/void` books
+a bookkeeping-only void while the money is still in flight — because in every
+case the inherited code "works".
+
+`quote_payment`'s base default is the one that had to *change* to fail closed.
+It returned a fabricated `available=True` zero-fee, zero-ETA quote for any
+supported method, and `corridor_quotes._rank` orders on realised cost then ETA —
+so an adapter inheriting it beat every sibling publishing a real fee on BOTH
+`cheapest` and `fastest`, unconditionally, and `savings_vs_runner_up` reported an
+invented saving against it. `modern_treasury` is that adapter. It now reports
+`no_quote_endpoint` and is skipped until its real fee table lands. (`compare_quotes`
+currently has no production caller — this was a latent trap, not a live
+mis-route.) See `docs/international-payments.md` § Multi-route quote optimization.
 
 `fetch_settlement` is the **pull** counterpart to the settled amount a webhook
 pushes on `WebhookEvent`. Two paths knew a payment completed but never its

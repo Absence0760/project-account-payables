@@ -412,18 +412,35 @@ class PaymentAdapter:
     async def quote_payment(self, payload: PaymentPayload) -> CorridorQuote:
         """Return a price quote for this payment WITHOUT submitting it.
 
-        Used by `services.corridor_quotes.compare_quotes` to pick the
-        cheapest of N configured processors. Default implementation
-        reports `available=True` iff the payload's `method` is in
-        `supported_methods`, with zero fees — concrete adapters
-        override this with their real fee schedule + a live call to
-        the processor's quote endpoint (Wise, Tipalti) when available,
-        or a static fee table when not (Modern Treasury).
+        OPTIONAL capability, and the default **fails closed** — an adapter that
+        hasn't published a fee schedule reports `available=False`, exactly like
+        `get_balance` and `fetch_settlement`.
 
-        Adapters that genuinely can't quote (no static table, no
-        live endpoint) MUST return `CorridorQuote(available=False,
-        unavailable_reason="no_quote_endpoint")` so the aggregator
-        falls back to the next provider.
+        Used by `services.corridor_quotes.compare_quotes` to pick the cheapest
+        (or fastest) of N configured processors. Concrete adapters override this
+        with their real fee schedule + a live call to the processor's quote
+        endpoint when one exists.
+
+        **Why the default is not a permissive zero-fee quote.** It used to
+        return `available=True` with `flat_fee=0`, `pct_fee=0` and
+        `eta_business_days=0` for any supported method — a *fabricated* quote.
+        `corridor_quotes._rank` ranks on realised cost then ETA, so an adapter
+        inheriting that default beat every sibling publishing a real fee on BOTH
+        `cheapest` and `fastest`, unconditionally, and `savings_vs_runner_up`
+        reported an invented saving against it. Money would be routed on numbers
+        nobody supplied. `modern_treasury` is the adapter that inherits it, and
+        its docstring already told adapters that "genuinely can't quote MUST
+        return `available=False`" — the default just didn't do what it asked.
+
+        Failing closed means such a provider is skipped rather than chosen; if
+        every configured provider is skipped, `compare_quotes` raises
+        `NoEligibleCorridorError` and the caller fails the payment with a
+        specific reason. That is the honest outcome of "we don't have this
+        processor's pricing", and it is recoverable by adding the schedule.
+
+        `tests/test_payment_adapter_capabilities.py` is the drift guard: a newly
+        registered adapter must either implement this or be listed there as
+        deliberately not implementing it.
         """
         if payload.method not in self.supported_methods:
             return CorridorQuote(
@@ -437,8 +454,6 @@ class PaymentAdapter:
         return CorridorQuote(
             provider=self.provider_name,
             method=payload.method,
-            available=True,
-            flat_fee=Decimal("0"),
-            pct_fee=Decimal("0"),
-            eta_business_days=0,
+            available=False,
+            unavailable_reason="no_quote_endpoint",
         )
