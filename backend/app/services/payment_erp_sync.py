@@ -145,9 +145,26 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> PaymentSyncRes
         import app.services.erp_adapters.merge_dev  # noqa: F401
         import app.services.erp_adapters.mock_adapter  # noqa: F401
         import app.services.erp_adapters.netsuite  # noqa: F401
-        from app.services.erp_adapters import get_erp_adapter
+        from app.services.erp_adapters import UnknownErpAdapterError, get_erp_adapter
 
-        get_erp_adapter(erp_config)
+        # Resolving the adapter is a pre-flight gate — the return value is
+        # deliberately unused; each leg builds its own. An unsupported
+        # `settings.erp` type now raises here instead of quietly resolving to
+        # `mock`, whose `post_invoice` reports every push as accepted. Report
+        # it as a FAILED pass rather than letting it escape: this function is
+        # documented "never raises into its caller", it runs on a detached
+        # daemon thread on the webhook path (nobody would see the traceback),
+        # and `POST /payments/runs/{id}/sync-erp` awaits it directly (an escape
+        # would be a 500 instead of a count the operator can read).
+        try:
+            get_erp_adapter(erp_config)
+        except UnknownErpAdapterError:
+            logger.warning(
+                "[payment-sync] org %s names an unsupported ERP adapter; run %s not synced",
+                org_id,
+                run_id,
+            )
+            return PaymentSyncResult(failed=1)
 
         # Open tenant DB
         tenant_url = _make_tenant_url(org.db_name)

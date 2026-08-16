@@ -804,6 +804,12 @@ async def get_cfo_analytics(
             {"amount": r[0], "currency": r[1], "reporting_amount": r[2], "reporting_currency": r[3]}
             for r in open_rows_q.all()
         ]
+        # An unsupported `settings.fx.provider` raises (see
+        # `fx_adapters.dispatcher`) rather than silently returning the
+        # hardcoded mock rate. Reporting is the one consumer that should
+        # DEGRADE rather than refuse, and the surrounding handler already does
+        # exactly that: `available: False` with a PII-free warning, so the
+        # rest of the CFO dashboard still renders.
         fx_adapter = get_fx_adapter((org.settings or {}).get("fx"))
         unrealized = await compute_unrealized_fx_gain_loss(
             open_invoices,

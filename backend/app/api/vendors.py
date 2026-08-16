@@ -1017,9 +1017,19 @@ async def sync_vendors_from_erp_endpoint(
     import app.services.erp_adapters.merge_dev  # noqa: F401
     import app.services.erp_adapters.mock_adapter  # noqa: F401
     import app.services.erp_adapters.netsuite  # noqa: F401
-    from app.services.erp_adapters import get_erp_adapter
+    from app.services.erp_adapters import UnknownErpAdapterError, get_erp_adapter
 
-    adapter = get_erp_adapter(erp_config)
+    try:
+        adapter = get_erp_adapter(erp_config)
+    except UnknownErpAdapterError as exc:
+        # A config problem, not a gateway failure — 400, not 502. Before the
+        # dispatcher failed closed this resolved to `mock` and imported its
+        # fixture vendors as if they were the ERP's, creating real payee rows.
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{exc.adapter_key}' is not a supported ERP adapter.",
+        ) from exc
+
     try:
         erp_vendors = await adapter.list_vendors()
     except Exception as exc:

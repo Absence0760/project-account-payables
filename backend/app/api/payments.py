@@ -2021,7 +2021,7 @@ async def _execute_single_payment(
         )
         and payment.fx_rate is None  # not already prepared
     ):
-        from app.services.fx_adapters import get_fx_adapter
+        from app.services.fx_adapters import UnknownFxProviderError, get_fx_adapter
         from app.services.international_payments import (
             InternationalPaymentError,
             prepare_international_payment,
@@ -2032,7 +2032,19 @@ async def _execute_single_payment(
             address_country=getattr(invoice, "vendor_country", None),
         )
         fx_cfg = (org.settings or {}).get("fx") or {}
-        fx_adapter = get_fx_adapter(fx_cfg)
+        try:
+            fx_adapter = get_fx_adapter(fx_cfg)
+        except UnknownFxProviderError:
+            # Fail the payment rather than lock a rate we can't source. The
+            # rate is written once onto the row and never re-fetched, so a
+            # fabricated one silently mis-prices the outflow forever — see
+            # `fx_adapters.dispatcher`. The provider name is not echoed here:
+            # `failure_reason` is surfaced to every AP user, not just the
+            # admin who owns the setting.
+            payment.status = "failed"
+            payment.failure_reason = "fx_provider_unsupported"
+            payment.completed_at = now
+            return
         try:
             prepared = await prepare_international_payment(
                 invoice=invoice,

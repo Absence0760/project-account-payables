@@ -418,10 +418,24 @@ async def test_erp_connection(
     import app.services.erp_adapters.merge_dev  # noqa: F401
     import app.services.erp_adapters.mock_adapter  # noqa: F401
     import app.services.erp_adapters.netsuite  # noqa: F401
-    from app.services.erp_adapters import get_erp_adapter
+    from app.services.erp_adapters import UnknownErpAdapterError, get_erp_adapter
 
     try:
         adapter = get_erp_adapter(erp_config)
+    except UnknownErpAdapterError as exc:
+        # This endpoint exists to catch exactly this misconfiguration. It used
+        # to CONFIRM it instead: the unknown type fell back to `mock`, whose
+        # `test_connection` returns True, so the admin was told "Connected to
+        # <typo> successfully". Name the bad value; echo no credential.
+        return {
+            "success": False,
+            "message": (
+                f"'{exc.adapter_key}' is not a supported ERP adapter. "
+                "Pick one from the ERP list and re-test."
+            ),
+        }
+
+    try:
         success = await adapter.test_connection()
         if success:
             return {

@@ -22,6 +22,7 @@ that has to decide what to do with the refusal. The webhook half lives in
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -386,3 +387,153 @@ async def test_cash_position_balance_degrades_instead_of_raising():
     balance = await fetch_provider_balance({"provider": "mock"})
     assert balance is not None
     assert balance.provider == "mock"
+
+
+# ── The same defect in the FX family ──────────────────────────────────
+#
+# `MockFxAdapter.get_rate` returns a plausible rate off a hardcoded table, and
+# `prepare_international_payment` LOCKS whatever it gets onto the Payment row
+# (`fx_rate` / `fx_locked_at` / `source_amount`) and never re-fetches it. So a
+# typo in `settings.fx.provider` produced a confidently wrong, persisted rate
+# driving the real outflow — the docstring even claimed the opposite.
+
+BAD_FX_PROVIDER = "open-exchange-rates"
+
+
+def test_fx_dispatcher_fails_closed_for_unknown_provider():
+    from app.services.fx_adapters import UnknownFxProviderError, get_fx_adapter
+
+    with pytest.raises(UnknownFxProviderError) as ei:
+        get_fx_adapter({"provider": BAD_FX_PROVIDER, "api_key": "SECRET"})
+    assert ei.value.provider == BAD_FX_PROVIDER
+    assert "SECRET" not in str(ei.value)
+
+
+def test_fx_dispatcher_keeps_the_local_first_default():
+    """No configured provider stays `mock` — a fresh clone still converts
+    currencies with no cloud account (guard rail 7)."""
+    from app.services.fx_adapters import get_fx_adapter
+
+    assert get_fx_adapter(None).provider_name == "mock"
+    assert get_fx_adapter({}).provider_name == "mock"
+    assert get_fx_adapter({"provider": ""}).provider_name == "mock"
+    # Case-insensitive resolution is unchanged.
+    assert get_fx_adapter({"provider": "MOCK"}).provider_name == "mock"
+
+
+@pytest.mark.asyncio
+async def test_payment_fails_rather_than_locking_a_rate_from_an_unsupported_fx_provider(realdb):
+    """The international leg must refuse, not book a fabricated rate.
+
+    `failure_reason` is read by every AP user, so it names the condition
+    (`fx_provider_unsupported`) and NOT the admin's raw settings value.
+    """
+    from app.api.payments import _execute_single_payment
+
+    info = realdb.info("a")
+    org_id = info.org_id
+    mk = realdb.sessionmaker("a")
+    _, pay_id = await _seed_draft_run(mk, org_id, initiated_by=info.users["ap_manager"])
+    async with mk() as s:
+        # A foreign-currency invoice is what pulls the payment onto the FX leg.
+        payment = (await s.execute(select(Payment).where(Payment.id == pay_id))).scalar_one()
+        invoice = (
+            await s.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
+        ).scalar_one()
+        invoice.currency = "EUR"
+        payment.method = "international_wire"
+        await s.commit()
+
+    org = SimpleNamespace(
+        id=org_id,
+        name="PyTest",
+        slug="pytesta",
+        settings={
+            "payments": {"provider": "mock", "home_currency": "USD"},
+            "fx": {"provider": BAD_FX_PROVIDER},
+        },
+    )
+
+    async with realdb.sessionmaker("a")() as db:
+        payment = (await db.execute(select(Payment).where(Payment.id == pay_id))).scalar_one()
+        await _execute_single_payment(
+            db,
+            payment=payment,
+            org=org,
+            adapter=MagicMock(provider_name="mock"),
+            user=_user(info.users["admin"]),
+            now=datetime.now(UTC),
+        )
+        await db.commit()
+
+    async with mk() as s:
+        failed = (await s.execute(select(Payment).where(Payment.id == pay_id))).scalar_one()
+    assert failed.status == "failed"
+    assert failed.failure_reason == "fx_provider_unsupported"
+    # The whole point: no fabricated rate was written to the row.
+    assert failed.fx_rate is None
+    assert failed.source_amount is None
+    assert BAD_FX_PROVIDER not in (failed.failure_reason or "")
+
+
+# ── The same defect in the ERP family ─────────────────────────────────
+#
+# `MockAdapter.post_invoice` returns `success=True` with a fabricated
+# `MOCK-…` document id, so an unknown `settings.erp` type walked the invoice
+# to `done` carrying an ERP reference that points at nothing.
+
+BAD_ERP_TYPE = "netsuite-oauth"
+
+
+@pytest.mark.asyncio
+async def test_test_erp_endpoint_no_longer_confirms_a_typod_adapter():
+    """It used to answer "Connected to <typo> successfully" — `mock`'s
+    `test_connection()` returns True — so the endpoint that exists to catch
+    the misconfiguration confirmed it."""
+    from app.api.organization import test_erp_connection
+
+    org = SimpleNamespace(id=uuid.uuid4(), settings={})
+    res = await test_erp_connection(
+        request={"type": BAD_ERP_TYPE, "integration_method": "direct", "api_key": "SECRET"},
+        org=org,
+        user=_user(uuid.uuid4()),
+    )
+
+    assert res["success"] is False
+    assert BAD_ERP_TYPE in res["message"]
+    assert "SECRET" not in res["message"]
+
+
+@pytest.mark.asyncio
+async def test_payment_erp_sync_reports_a_failed_pass_for_an_unsupported_adapter():
+    """`_sync_payments` is documented "never raises into its caller" — it runs
+    on a detached daemon thread on the webhook path and is awaited directly by
+    `POST /payments/runs/{id}/sync-erp`. The refusal has to become a counted
+    failure, not an escaping exception."""
+    from app.services import payment_erp_sync
+
+    org = SimpleNamespace(
+        id=uuid.uuid4(),
+        db_name="feoh_pytest_never_opened",
+        settings={"erp": {"type": BAD_ERP_TYPE, "integration_method": "direct"}},
+    )
+    result = MagicMock()
+    result.scalar_one_or_none = MagicMock(return_value=org)
+    ctrl = AsyncMock()
+    ctrl.execute = AsyncMock(return_value=result)
+    factory = MagicMock()
+    factory.return_value.__aenter__ = AsyncMock(return_value=ctrl)
+    factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    engine = MagicMock()
+    engine.dispose = AsyncMock()
+    with (
+        patch.object(payment_erp_sync, "async_sessionmaker", return_value=factory),
+        patch.object(payment_erp_sync, "create_async_engine", return_value=engine) as mk_engine,
+    ):
+        outcome = await payment_erp_sync._sync_payments(uuid.uuid4(), org.id)
+
+    assert outcome.failed == 1
+    assert outcome.transitioned == 0
+    # Only the control-plane engine was built; no tenant DB was opened.
+    assert mk_engine.call_count == 1
