@@ -183,14 +183,8 @@ def test_scan_statement_text_reads_rows_and_skips_furniture():
         "Globex Industrial",
         "Statement date: 2026-02-28",
         "",
-        # A summary block printing two figures on ONE line. This was ACCEPTED —
-        # the first money token became the "invoice number" and the second the
-        # balance, booking a fabricated open item keyed on "1,200.00" that no
-        # ledger row can ever match. A wrong open item is exactly the invented
-        # money this reader exists not to produce, and it is worse than a skip.
-        "Current: 1,200.00  Past due: 850.00",
-        "Subtotal 1,200.00 Total 2,050.50",
-        # The aging statement's footer: same shape, more columns.
+        # The aging statement's footer — a money reference followed by FOUR
+        # figures. No real open item is printed that way, so it is furniture.
         "Total  1,200.00  850.50  410.00  2,460.50",
     ],
 )
@@ -379,22 +373,45 @@ def test_a_partially_readable_statement_counts_only_the_refused_rows():
     assert scan.ambiguous_skips == 2
 
 
-def test_a_money_reference_is_never_an_invoice_number():
-    """A row whose reference is itself a figure is a summary line, not an item.
+def test_a_money_reference_is_never_booked_as_an_invoice_number():
+    """A row whose reference is itself a figure is never accepted.
 
-    The direction that matters is that these are neither accepted NOR counted:
-    accepting one books invented money (an open item keyed on "1,200.00" that no
-    ledger row can match), and counting one would tell a clerk a supplier row was
-    dropped when none existed.
+    `Current: 1,200.00  Past due: 850.00` used to be: the first money token
+    became the "invoice number" and the second the balance, booking a fabricated
+    open item no ledger row can ever match. That is invented money — the outcome
+    this reader exists not to produce — and it is worse than a skip.
     """
     for row in (
         "Current: 1,200.00  Past due: 850.00",
+        "Subtotal 1,200.00 Total 2,050.50",
         "Total  1,200.00  850.50  410.00  2,460.50",
         "Total                     1,800.50",
     ):
-        scan = scan_statement_text(row)
-        assert scan.lines == [], row
-        assert scan.ambiguous_skips == 0, row
+        assert scan_statement_text(row).lines == [], row
+
+
+@pytest.mark.parametrize(
+    ("row", "expected", "why"),
+    [
+        # Exactly one figure follows the money reference — the shape a real open
+        # item has, so refusing it has to be announced.
+        ("Current: 1,200.00  Past due: 850.00", 1, "summary block"),
+        ("Subtotal 1,200.00 Total 2,050.50", 1, "two labelled figures"),
+        # Nothing follows: a plain total line, never an open item.
+        ("Total                     1,800.50", 0, "statement total"),
+        ("Balance forward           500.00", 0, "balance forward"),
+        # Four figures follow: an aging footer. Counting it would inflate every
+        # aging statement's figure by one — a footer masquerading as a lost row.
+        ("Total  1,200.00  850.50  410.00  2,460.50", 0, "aging footer"),
+    ],
+)
+def test_a_money_reference_is_reported_only_when_the_row_looked_like_an_item(row, expected, why):
+    """The verdict is deferred to where the row's shape is known.
+
+    Refusing a money-referenced row is right either way, but refusing it
+    *silently* is only right when nothing on the row claimed to be an open item.
+    """
+    assert scan_statement_text(row).ambiguous_skips == expected, why
 
 
 @pytest.mark.parametrize(
@@ -427,21 +444,30 @@ def test_a_real_invoice_reference_survives_the_money_test(reference):
     assert scan.ambiguous_skips == 0, row
 
 
-@pytest.mark.parametrize("reference", ["2026.01", "1,234"])
-def test_a_numeric_reference_shaped_like_money_is_the_named_cost(reference):
-    """The two shapes the rule genuinely costs us — pinned, not discovered later.
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "2026.01",  # year.sequence
+        "5001.01",  # revision / split-invoice suffix
+        "24.05",
+        "1,234",  # thousands separator
+    ],
+)
+def test_a_numeric_reference_shaped_like_money_is_refused_but_reported(reference):
+    """The shapes the rule genuinely costs us — refused, and never silently.
 
-    A bare, prefix-less, purely numeric reference carrying a decimal or a
-    thousands separator is indistinguishable from a figure, and this reader
-    resolves every ambiguity by skipping. A supplier using `2026.01` loses those
-    rows from a machine-read run and sees them as `missing_on_their_side` —
-    visible and chased. The alternative costs more: the summary line the rule
-    exists to reject would be booked as invented money nothing downstream flags.
+    A bare, prefix-less, purely numeric reference carrying cents or a thousands
+    separator is indistinguishable from the first column of a summary block, and
+    this reader resolves every ambiguity by skipping. But a real supplier does
+    use `5001.01`, so dropping it quietly would cost a clerk a genuine open item
+    with nothing to chase — the whole failure mode `ambiguous_skips` exists to
+    close. It is therefore counted: the run says N rows were skipped and points
+    at the CSV / vision alternative that can read them.
     See `docs/vendor-statement-reconciliation.md` § The cost, named.
     """
     scan = scan_statement_text(f"{reference}  2026-01-15  500.00")
     assert scan.lines == []
-    assert scan.ambiguous_skips == 0
+    assert scan.ambiguous_skips == 1
 
 
 def test_furniture_around_ambiguous_rows_stays_uncounted():

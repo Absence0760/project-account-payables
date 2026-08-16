@@ -213,16 +213,18 @@ class StatementScan:
     So the skip is CLASSIFIED where it happens, and only one class is reported:
 
     * **Not a row** (silent) — the line never looked like an open item. It had
-      no identifier-shaped token, its "reference" was itself a money figure, or
-      nothing money-shaped followed one. Column headers, page furniture, totals,
-      ``balance forward`` and summary blocks all land here.
+      no identifier-shaped token, or nothing money-shaped followed one, or its
+      "reference" was a money figure trailed by four more (a totals footer).
+      Column headers, page furniture, totals and ``balance forward`` land here.
     * **Ambiguous** (:attr:`ambiguous_skips`) — the line DID look like an open
       item, and the reader refused to pick between two readings of it: two
-      money columns (which one is the open balance?), or a second
+      money columns (which one is the open balance?), a second
       reference-shaped column left of the amount (which one is the invoice
-      number?). This is the class a clerk needs to know about, because the
-      run below is short by exactly this many supplier rows and our own
-      invoices for them will surface as ``missing_on_their_side``.
+      number?), or a reference that is itself a figure with exactly one figure
+      after it (a real ``5001.01`` reference, or a summary block's first
+      column?). This is the class a clerk needs to know about, because the run
+      below is short by exactly this many supplier rows and our own invoices
+      for them will surface as ``missing_on_their_side``.
 
     A clean ``number date amount`` statement therefore reports **zero**; an
     aging-bucket statement reports one per data row. The split IS the feature —
@@ -295,29 +297,32 @@ def scan_statement_text(text: str) -> StatementScan:
             # and `Page 1 of 2` land here.
             continue
 
-        # A "reference" that is itself unambiguous MONEY is not one: the row is
-        # a summary or total line, not an open item. Not a row — so it is
-        # skipped silently and is not an ambiguous skip either.
+        # Is the token we took as the row's REFERENCE itself unambiguous money?
+        # Three row shapes make this true, and they are not the same case:
         #
-        #   Total                              1,800.50
+        #   Total                              1,800.50   <- nothing follows
         #   Total  1,200.00  850.50  410.00    2,460.50   <- aging footer
         #   Current: 1,200.00   Past due:        850.00   <- summary block
         #
-        # The first two only ever reached the skip path by accident: one has
-        # nothing after the money token it took as its reference, the other has
-        # too many. The third has exactly one figure after it and was therefore
-        # ACCEPTED — booking a fabricated open item keyed on "1,200.00" for
-        # 850.00, which is the invented-money outcome this whole reader exists
-        # to avoid. Testing the reference directly is what closes all three.
+        # None may be ACCEPTED. The third used to be: exactly one figure follows,
+        # so it booked a fabricated open item keyed on "1,200.00" for 850.00 —
+        # the invented money this whole reader exists to avoid.
         #
-        # Deliberately narrow: money needs cents, a thousands separator, or a
-        # currency symbol on a bare numeric token, so `INV-1001`, `100234`,
-        # `2026-001`, `2026.001` (three decimals) and `1.234,56` all survive.
-        # The named cost is a bare `2026.01` / `1,234` reference — genuinely
-        # ambiguous between a reference and a figure, and every ambiguity here
-        # resolves to skipping. See the doc's § The cost, named.
-        if _is_money(tokens[number_idx]):
-            continue
+        # But it must not become a SILENT drop either, because a bare numeric
+        # reference carrying cents (`5001.01`, a revision/split suffix; `2026.01`,
+        # a year.sequence) is a real supplier format and is indistinguishable
+        # from the summary block's first column. Refusing it is right — every
+        # ambiguity here resolves to skipping — and refusing it quietly is not:
+        # the clerk would lose a genuine open item with nothing to chase.
+        #
+        # So the verdict is deferred to where the row's shape is known: the
+        # `exactly one figure follows` case is reported as an ambiguous skip (see
+        # below), and the other two stay silent, because nothing on this planet
+        # prints a real open item as `Total  a  b  c  d`. Money needs cents, a
+        # thousands separator, or a currency symbol on a bare numeric token, so
+        # `INV-1001`, `100234`, `2026-001`, `2026.001` (three decimals),
+        # `SI-2026.01` and `1.234,56` never reach any of this.
+        reference_is_money = _is_money(tokens[number_idx])
 
         trailing = [i for i in range(number_idx + 1, len(tokens)) if i != date_idx]
         # Unambiguous money first; a lone amount-shaped integer only when the
@@ -333,7 +338,14 @@ def scan_statement_text(text: str) -> StatementScan:
         if len(candidates) > 1:
             # Ambiguous: two money columns and nothing on the row says which is
             # the open balance. The aging-bucket layout is this case.
-            ambiguous_skips += 1
+            #
+            # ...unless the reference is money too, in which case this is a
+            # totals row (`Total  1,200.00  850.50  410.00  2,460.50`) and not a
+            # supplier row at all. No real open item prints one reference and
+            # four figures, so counting it would inflate every aging statement's
+            # figure by one — the footer masquerading as a lost row.
+            if not reference_is_money:
+                ambiguous_skips += 1
             continue
         amount_idx = candidates[0]
 
@@ -378,6 +390,18 @@ def scan_statement_text(text: str) -> StatementScan:
             # Ambiguous for the same reason as the two-money-column case: this
             # only fires when a money token was chosen and something
             # amount-shaped still sits to its right, i.e. a second column.
+            ambiguous_skips += 1
+            continue
+
+        if reference_is_money:
+            # Everything about this row says "open item" except its reference,
+            # which is a figure. `5001.01  2026-01-15  500.00` (a real revision
+            # suffix) and `Current: 1,200.00  Past due: 850.00` (a summary block)
+            # are the same shape, and nothing here can tell them apart — so it is
+            # refused, and REPORTED. This is the one skip that would otherwise
+            # cost a clerk a genuine supplier row with no signal; counted, it
+            # says "N rows were skipped as ambiguous" and points at the CSV /
+            # vision alternative that can read them.
             ambiguous_skips += 1
             continue
 

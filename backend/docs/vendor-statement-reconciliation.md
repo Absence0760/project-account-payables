@@ -393,23 +393,33 @@ fabricated open item keyed on `1,200.00` for `850.00` that no ledger row can
 match. That is the invented money the whole reader exists to avoid, and it is
 worse than a skip. Testing the reference directly closes all three.
 
-**The cost, named.** `_is_money` needs cents, a thousands separator, or a
-currency symbol, so the rule only reaches a **bare, prefix-less, purely numeric**
-reference that happens to carry one. In practice that is exactly two shapes:
-`2026.01` (a year.sequence reference) and `1,234`. Every other real format
-survives — `INV-1001`, `100234`, `1200`, `INV/2026/001`, `2026-001`, `2026.001`
-(three decimals, so not money-shaped), `FR-2026-01`, `0012345678`, `#4502`,
-`SI-2026.01`, and the European `1.234,56`. A supplier using one of the two
-affected shapes loses those rows from a machine-read run, and they surface as
-`missing_on_their_side` — visible, chased, recoverable.
+**The cost, named — and reported.** `_is_money` needs cents, a thousands
+separator, or a currency symbol, so the rule only reaches a **bare, prefix-less,
+purely numeric** reference that happens to carry one: `2026.01` (a year.sequence
+reference), `5001.01` (a revision / split-invoice suffix), `1,234`. Every other
+real format survives — `INV-1001`, `100234`, `1200`, `INV/2026/001`, `2026-001`,
+`2026.001` (three decimals, so not money-shaped), `FR-2026-01`, `0012345678`,
+`#4502`, `SI-2026.01`, and the European `1.234,56`.
 
-That trade is deliberate and follows the reader's own doctrine: a token like
-`2026.01` is *genuinely ambiguous* between a reference and a figure, and every
-ambiguity here resolves to skipping. The alternative costs more — an accepted
-summary line is invented money a clerk chases the supplier for, and nothing
-downstream ever flags it. `test_a_money_reference_is_never_an_invoice_number`
-and `test_an_all_digit_invoice_number_is_still_a_valid_reference` pin both
-directions so neither drifts.
+Those affected shapes are real supplier formats, so refusing them **silently**
+would be its own bug — the clerk would lose a genuine open item with nothing to
+chase. The verdict is therefore deferred to where the row's shape is known:
+
+| Money reference followed by… | Accepted? | Counted? | Because |
+|---|---|---|---|
+| nothing | no | no | a plain total / `balance forward` line |
+| **exactly one figure** | no | **yes** | the shape a real open item has — `5001.01  2026-01-15  500.00` and `Current: 1,200.00  Past due: 850.00` are indistinguishable |
+| several figures | no | no | an aging footer; no open item prints one reference and four figures, and counting it would inflate every aging statement by one |
+
+So the trade follows the reader's own doctrine — genuine ambiguity resolves to
+skipping — without the silence: the run reports the skip, and the provenance
+panel points at the CSV / vision alternative that can read those rows. The
+alternative costs more, because an accepted summary line is invented money a
+clerk chases the supplier for and nothing downstream ever flags it.
+`test_a_money_reference_is_never_booked_as_an_invoice_number`,
+`test_a_money_reference_is_reported_only_when_the_row_looked_like_an_item`,
+`test_a_numeric_reference_shaped_like_money_is_refused_but_reported` and
+`test_a_real_invoice_reference_survives_the_money_test` pin every direction.
 
 The result: a clean `number date amount` statement reports **0**; a
 four-column aging statement reports **one per data row**. The count rides
@@ -462,17 +472,22 @@ Two refusals are worth calling out because the tempting alternative is worse:
 ### Provenance
 
 A PDF run records `meta.extraction` (`method` / `provider` / `confidence` /
-`line_count`), surfaced on the response as `extraction`, and each line's `raw`
-JSONB carries `source: "extraction"` plus that line's own confidence. A reviewer
-clearing these lines is clearing a machine's reading of a document, and the
-response says so; a CSV / pasted-lines run returns `extraction: null`.
+`line_count` / `skipped_ambiguous`), surfaced on the response as `extraction`,
+and each line's `raw` JSONB carries `source: "extraction"` plus that line's own
+confidence. A reviewer clearing these lines is clearing a machine's reading of a
+document, and the response says so; a CSV / pasted-lines run returns
+`extraction: null`.
 
 `extraction.line_count` is the number of open items the reader **accepted** off
 the document — deliberately not the run's `summary.line_count`, which also counts
-the `missing_on_their_side` rows built from our own ledger. The reader reports no
-*skipped*-row figure; why that is a design question rather than an oversight is
-in [followups.md](../../docs/followups.md) § The statement reader skips rows
-without saying how many.
+the `missing_on_their_side` rows built from our own ledger.
+
+`extraction.skipped_ambiguous` is the counterpart: how many rows the reader
+recognised as an open item and **refused** to book. It is not a count of every
+skipped line — see § …and it says how many it skipped for why that distinction
+is the whole design, and what the panel does with the figure. Defaulted to `0`,
+so a run persisted before the reader counted its skips still deserialises; a
+model-backed adapter also leaves it `0`, meaning "not measured".
 
 ## The UI (`/vendor-statements`)
 
