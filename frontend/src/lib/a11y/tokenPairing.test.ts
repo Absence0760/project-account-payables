@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { contrastRatio, formatRatio, WCAG_AA_NORMAL } from './contrast';
+import {
+	compositeOver,
+	contrastRatio,
+	formatRatio,
+	parseColor,
+	parseColorWithAlpha,
+	type Rgb,
+	type RgbaParts,
+	WCAG_AA_NORMAL
+} from './contrast';
 import {
 	auditStyles,
 	collectAssignedTokens,
@@ -101,6 +110,46 @@ describe('palette contract', () => {
 					`${token} (${value}) on ${surface} (${palette[surface]}) is ${formatRatio(
 						ratio as number
 					)}`
+				).toBeGreaterThanOrEqual(WCAG_AA_NORMAL);
+			}
+		});
+	}
+
+	/**
+	 * The badge-tint pairs, asserted on the thing they actually promise: the
+	 * `-on-tint` text, over its own tint, over each backdrop a badge sits on.
+	 *
+	 * The scan above only sees tints someone *used*. This sees the contract
+	 * itself, so a tone stays honest even while no rule references it — and a
+	 * failure names one token rather than the dozen sites that spelled it.
+	 */
+	const TINT_PAIRS = ['accent', 'success', 'warning', 'muted', 'danger'] as const;
+	for (const tone of TINT_PAIRS) {
+		it(`--${tone}-on-tint is legible on --${tone}-tint over both backdrops`, () => {
+			const tint = palette[`--${tone}-tint`];
+			const text = palette[`--${tone}-on-tint`];
+			expect(tint, `--${tone}-tint must be declared in :root`).toBeDefined();
+			expect(text, `--${tone}-on-tint must be declared in :root`).toBeDefined();
+
+			const parts = parseColorWithAlpha(tint);
+			expect(parts, `--${tone}-tint (${tint}) must parse as a colour`).not.toBeNull();
+			expect(
+				(parts as RgbaParts).alpha,
+				`--${tone}-tint is meant to be translucent — an opaque one needs no compositing`
+			).toBeLessThan(1);
+
+			for (const surface of ['--bg', '--surface'] as const) {
+				const backdrop = parseColor(palette[surface]) as Rgb;
+				const rendered = compositeOver(
+					(parts as RgbaParts).color,
+					backdrop,
+					(parts as RgbaParts).alpha
+				);
+				const ratio = contrastRatio(text, rendered) as number;
+				expect(
+					ratio,
+					`--${tone}-on-tint (${text}) on --${tone}-tint over ${surface} renders ` +
+						`${formatRatio(ratio)}`
 				).toBeGreaterThanOrEqual(WCAG_AA_NORMAL);
 			}
 		});

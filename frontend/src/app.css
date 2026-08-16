@@ -65,6 +65,50 @@
 	--success-strong: #177a4d;
 	--danger: #f87171;
 	--danger-strong: #c43535;
+
+	/* ---------------------------------------------------------------
+	   Badge tints — the THIRD role in the same family, for the status
+	   pill: a background tinted translucently in the tone's own hue,
+	   with text set in that tone.
+
+	   It needs its own pair because a translucent tint lightens the dark
+	   surface *toward* the text sitting on it, so the base token — chosen
+	   to be legible on the BARE surface — lands just under the bar once
+	   composited. Every hue did: 29 badges between 4.15:1 and 4.48:1,
+	   i.e. failing by a hair, which is why nobody spotted them by eye.
+	   `--accent` on its own 15% tint is 4.48:1 — two hundredths short.
+
+	   So each tone gets a tint and the text calibrated ON it:
+
+	     --<tone>-tint     the translucent badge BACKGROUND;
+	     --<tone>-on-tint  the ONLY text colour for that background.
+
+	   Ratios below are text-on-tint over the two backdrops a badge sits
+	   on, `--surface` (the binding, lighter case) then `--bg`. All carry
+	   ≥0.7 of margin deliberately: the previous values were correct to
+	   within a rounding error, which is how a later nudge would silently
+	   re-break them.
+
+	   These are NOT interchangeable with the base tokens. Putting
+	   `--accent` on `--accent-tint` is the exact bug this pair exists to
+	   retire, and `src/lib/a11y/tokenPairing.test.ts` composites every
+	   translucent background over both backdrops to keep it retired. */
+	--accent-tint: rgba(99, 140, 255, 0.15); /* --accent-on-tint: 5.33 / 5.93 */
+	--accent-on-tint: #7d9bff;
+	--success-tint: rgba(50, 200, 130, 0.15); /* --success-on-tint: 5.23 / 5.84 */
+	--success-on-tint: #26b977;
+	--warning-tint: rgba(255, 180, 50, 0.15); /* --warning-on-tint: 5.50 / 6.16 */
+	--warning-on-tint: #dca014;
+	--muted-tint: rgba(138, 143, 160, 0.15); /* --muted-on-tint: 5.34 / 5.94 */
+	--muted-on-tint: #9aa0b2;
+	/* Red is the one tone needing no lift: --danger is already bright
+	   enough to clear its own tint at 5.36:1 / 5.89:1. The token is
+	   declared anyway, and equal to --danger on purpose — so the rule
+	   stays "tint background → the matching -on-tint text" with no
+	   exception to remember, and so red can be recalibrated later
+	   without hunting for the sites that spelled it the other way. */
+	--danger-tint: rgba(240, 70, 70, 0.15);
+	--danger-on-tint: #f87171;
 }
 
 *,
