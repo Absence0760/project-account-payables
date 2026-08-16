@@ -708,6 +708,13 @@
 	}
 
 	async function saveLineItems() {
+		// The PUT is itself a request whose response can be superseded, so it
+		// takes a token like any load. Only the Save BUTTON is disabled while it
+		// is in flight — the cells stay editable — and an edit made in that
+		// window is not in the payload this request carries. `markLineItemsDirty`
+		// turns this token un-committable, which is how the response learns the
+		// table is no longer clean.
+		const saveToken = lineItemsSequence.start();
 		savingLines = true;
 		try {
 			const res = await api.put<LineItemsSaveResult>(`/api/invoices/${invoice.id}/line-items`, lineItems.map((li, idx) => ({
@@ -720,12 +727,17 @@
 				total: li.total,
 				gl_account: li.gl_account,
 			})));
-			lineItemsDirty = false;
+			const savedTableStillOnScreen = lineItemsSequence.canCommit(saveToken);
+			// Clearing `lineItemsDirty` over an edit made mid-save is the worse
+			// half of the bug: it loses the edit AND greys out the Save button,
+			// so the user can't even re-submit what they just typed.
+			if (savedTableStillOnScreen) lineItemsDirty = false;
 			// Surface the backend's reconciliation verdict inline instead of
 			// letting it stay invisible until the modal is reopened. A
 			// mismatch is a blocking condition downstream (the invoice can't
 			// enter a payment run), so it gets the persistent panel below the
-			// table, not just a transient toast.
+			// table, not just a transient toast. This reports what the server
+			// now holds, so it stands whether or not the table moved on.
 			lineTotalMismatch = res.reconciles_with_header ? null : res;
 			toast(
 				res.reconciles_with_header
@@ -733,7 +745,9 @@
 					: m('invoices.modal.toast.lineItemsMismatch'),
 				res.reconciles_with_header ? 'success' : 'warning'
 			);
-			await loadLineItems();
+			// Re-reading the server list would discard that mid-save edit — the
+			// server hasn't been told about it yet.
+			if (savedTableStillOnScreen) await loadLineItems();
 		} catch (err) {
 			toast(err instanceof Error ? err.message : m('invoices.modal.toast.saveFailed'), 'error');
 		} finally {

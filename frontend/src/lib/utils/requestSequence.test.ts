@@ -181,6 +181,31 @@ describe('a local mutation survives a late-resolving stale fetch', () => {
 });
 
 /**
+ * A WRITE is a sequenced request too. `InvoiceModal.saveLineItems` PUTs the
+ * table and then re-reads it — but only the Save button is disabled while the
+ * PUT is in flight, so a cell edited in that window is not in the payload it
+ * carries. Taking a token for the write is how its response learns the table
+ * moved on: clearing the dirty flag over that edit would lose it AND grey out
+ * the Save button, leaving the user unable to re-submit what they just typed.
+ */
+describe('a write whose follow-up read must not commit over a mid-write edit', () => {
+	it('reports the table as no longer clean when an edit landed during the write', () => {
+		const seq = createRequestSequencer();
+
+		const saveToken = seq.start(); // the PUT goes out
+		seq.supersedeInFlight(); // ...the user edits a cell while it is in flight
+
+		expect(seq.canCommit(saveToken)).toBe(false);
+	});
+
+	it('reports it clean when nothing was touched during the write', () => {
+		const seq = createRequestSequencer();
+		const saveToken = seq.start();
+		expect(seq.canCommit(saveToken)).toBe(true);
+	});
+});
+
+/**
  * Two independent lists loaded by two independent requests get one sequencer
  * EACH — `stores/admin.svelte.ts` (users vs roles) and
  * `stores/notifications.svelte.ts` (the list vs the 60s unread-count poll).
