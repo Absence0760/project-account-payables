@@ -346,7 +346,7 @@ def _chat_event_enabled(chat_config: dict, event_type: str) -> bool:
     return bool(events.get(event_type, True))
 
 
-def _build_slack_action_tokens(
+def _build_chat_action_tokens(
     *,
     event_type: str,
     chat_config: dict,
@@ -354,21 +354,35 @@ def _build_slack_action_tokens(
     invoice_id: uuid.UUID | None,
     recipient_user_ids: list[uuid.UUID] | None,
 ) -> tuple[str | None, str | None]:
-    """Build the (approve, reject) Slack-button tokens for an assigned invoice.
+    """Build the (approve, reject) action tokens for the org's chat provider.
 
     Returns ``(None, None)`` — so the message stays non-interactive — unless ALL
-    of: the event is ``invoice_assigned``, the chat provider is Slack, the action
-    signing key is set, the tenant slug + invoice id resolve, and there is
-    exactly one intended approver to bind the token to. The single-approver
-    guard matches how ``review.assign_reviewer`` fires the event (one reviewer
-    per assignment); binding to one specific approver keeps the same
-    no-privilege-escalation property as the per-recipient email link.
+    of: the event is ``invoice_assigned``, the chat provider has an interactive
+    approval surface (Slack or Teams), the action signing key is set, the tenant
+    slug + invoice id resolve, and there is exactly one intended approver to bind
+    the token to. The single-approver guard matches how
+    ``review.assign_reviewer`` fires the event (one reviewer per assignment);
+    binding to one specific approver keeps the same no-privilege-escalation
+    property as the per-recipient email link.
+
+    The token is minted on the **provider's own channel** (``slack`` / ``teams``),
+    so it is only redeemable at that provider's interactivity endpoint — a Slack
+    token can never be replayed against the Teams route, or vice versa. A provider
+    with no interactive surface (``mock``, or an unknown key) mints nothing.
     """
     from app.models.notification import EVENT_INVOICE_ASSIGNED
+    from app.services.email_action_token import (
+        build_slack_action_tokens,
+        build_teams_action_tokens,
+    )
+
+    builders = {"slack": build_slack_action_tokens, "teams": build_teams_action_tokens}
 
     if event_type != EVENT_INVOICE_ASSIGNED:
         return None, None
-    if (chat_config.get("provider") or settings.chat_notification_provider) != "slack":
+    provider = chat_config.get("provider") or settings.chat_notification_provider
+    builder = builders.get(provider)
+    if builder is None:
         return None, None
     if not settings.email_action_signing_key or slug is None or invoice_id is None:
         return None, None
@@ -379,9 +393,7 @@ def _build_slack_action_tokens(
         # token to a specific reviewer, so omit the buttons (link still works).
         return None, None
 
-    from app.services.email_action_token import build_slack_action_tokens
-
-    tokens = build_slack_action_tokens(
+    tokens = builder(
         tenant_slug=slug,
         invoice_id=invoice_id,
         actor_id=approvers[0],
@@ -408,11 +420,13 @@ async def _send_chat_best_effort(
     never affected. No-ops when the org hasn't enabled chat, the event isn't a
     chat-notifiable approval event, or the provider can't be resolved.
 
-    For the "assigned for review" event, when the org's chat provider is Slack
-    and the action-signing key is configured, the message gets interactive
-    Approve/Reject buttons. Each button carries a signed, single-use action
-    token bound to the intended approver (the assigned reviewer) on the ``slack``
-    channel — the same primitive the email-approval link uses.
+    For the "assigned for review" event, when the org's chat provider has an
+    interactive approval surface (Slack or Teams) and the action-signing key is
+    configured, the message gets Approve/Reject actions. Each carries a signed,
+    single-use action token bound to the intended approver (the assigned
+    reviewer) on that provider's own channel — the same primitive the
+    email-approval link uses. The adapter has the final say on rendering: Teams
+    also needs its interactivity secret, without which it emits a read-only card.
     """
     from app.services.chat_notification_adapters import (
         get_chat_notification_adapter,
@@ -438,7 +452,7 @@ async def _send_chat_best_effort(
         except Exception:  # noqa: BLE001 — a bad template must not break dispatch
             link = None
 
-    approve_token, reject_token = _build_slack_action_tokens(
+    approve_token, reject_token = _build_chat_action_tokens(
         event_type=event_type,
         chat_config=chat_config,
         slug=slug,

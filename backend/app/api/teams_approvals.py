@@ -13,14 +13,17 @@ there is no JWT, no session, so this endpoint is public-by-design and lives in
 
 Two gates, layered, both fail closed (the exact same posture as the Slack path):
 
-1. **Teams request signature** — a Teams Outgoing Webhook signs every POST as
-   ``Authorization: HMAC <base64(hmac-sha256 over the raw body)>`` using a
-   base64-encoded shared **security token** (``FEOH_TEAMS_SECURITY_TOKEN``). We
-   base64-decode the secret, recompute the digest over the raw bytes, and compare
-   constant-time. When Teams includes an ``X-Teams-Request-Timestamp`` header we
-   also reject stale timestamps (> ``teams_request_max_age_seconds``) to stop
-   replay of a captured POST. No secret configured → the feature is OFF and every
-   request is rejected.
+1. **Teams request signature** — ``base64(hmac-sha256(base64decode(security
+   token), raw_body))`` over the *raw* bytes, compared constant-time by the
+   shared :mod:`app.services.teams_signature` primitive (the same function that
+   signs the outbound card, so the two ends can't drift). It arrives on
+   ``Authorization: HMAC <digest>`` from a Teams **Outgoing Webhook**, or on
+   ``X-Feoh-Card-Signature`` from the approval card's own ``HttpPOST`` action —
+   Teams may overwrite an actionable message's ``Authorization`` with its own
+   bearer token, so the card carries both. When Teams includes an
+   ``X-Teams-Request-Timestamp`` header we also reject stale timestamps
+   (> ``teams_request_max_age_seconds``) to stop replay of a captured POST. No
+   secret configured → the feature is OFF and every request is rejected.
 2. **Action token** — verified exactly like the email/Slack path (HMAC + expiry +
    ``teams`` channel + single-use ``jti`` consume in Redis), then the
    approve/reject runs through the *normal* :mod:`app.services.review` path as the
@@ -35,9 +38,6 @@ secret/token shapes are accepted. Best-effort: it never crashes.
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
 import json
 import logging
 import time
@@ -63,6 +63,7 @@ from app.services.email_action_token import (
     CHANNEL_TEAMS,
     verify_action_token,
 )
+from app.services.teams_signature import CARD_SIGNATURE_HEADER, verify_body
 
 logger = logging.getLogger(__name__)
 
@@ -83,23 +84,48 @@ def _ack(message: str = "Thanks — your response was recorded.") -> JSONRespons
     return JSONResponse({"type": "message", "text": message})
 
 
-def _verify_teams_signature(headers: dict, raw_body: bytes) -> bool:
-    """Verify a Teams Outgoing Webhook HMAC and reject stale timestamps.
+def _extract_signature(lower_headers: dict) -> str | None:
+    """Pull the base64 digest off whichever header carries it, or ``None``.
 
-    Teams computes ``HMAC-SHA256(base64decode(security_token), raw_body)`` and
-    sends it base64-encoded as ``Authorization: HMAC <base64-digest>``. We rebuild
-    that and compare via constant-time ``hmac.compare_digest``. Fail closed: no
-    secret, no/garbled header, a non-base64 secret, or a timestamp outside the
-    replay window all return False. Never raises.
+    Two wirings reach this endpoint and they differ only in where the digest sits:
+
+    * a Teams **Outgoing Webhook** sends ``Authorization: HMAC <base64-digest>``;
+    * the **approval card**'s ``HttpPOST`` action carries the same digest on
+      ``X-Feoh-Card-Signature``, because Teams may replace an actionable
+      message's ``Authorization`` header with its own bearer token (the acting
+      user's identity) — which would otherwise strip the only proof we have.
+
+    ``Authorization`` is preferred; a non-``HMAC`` value there (Teams' bearer)
+    falls through to the card header rather than failing, so both wirings work
+    against one endpoint with one secret.
     """
-    secret = settings.teams_security_token
-    if not secret:
-        return False
+    auth = lower_headers.get("authorization")
+    if auth and auth.startswith("HMAC "):
+        candidate = auth[len("HMAC ") :].strip()
+        if candidate:
+            return candidate
+    card_sig = lower_headers.get(CARD_SIGNATURE_HEADER)
+    if card_sig and card_sig.strip():
+        return card_sig.strip()
+    return None
+
+
+def _verify_teams_signature(headers: dict, raw_body: bytes) -> bool:
+    """Verify the Teams HMAC over the raw body and reject stale timestamps.
+
+    The digest itself is derived by the shared :mod:`app.services.teams_signature`
+    primitive — the same function that signs the outbound card's action body — so
+    the two ends of the round-trip cannot drift apart. Fail closed: no secret, no
+    recognised signature header, or a timestamp outside the replay window all
+    return False. Never raises.
+    """
     lower = {k.lower(): v for k, v in headers.items()}
 
     # Optional replay guard — Teams does not always send a timestamp; only enforce
     # the window when the header is present (the jti + state machine still bound
-    # replay either way).
+    # replay either way). The card's own actions deliberately do NOT carry one:
+    # it is stamped at render time, so a 5-minute window would kill the buttons
+    # five minutes after the card is posted.
     timestamp = lower.get("x-teams-request-timestamp")
     if timestamp is not None:
         try:
@@ -109,17 +135,7 @@ def _verify_teams_signature(headers: dict, raw_body: bytes) -> bool:
         if abs(time.time() - ts) > settings.teams_request_max_age_seconds:
             return False
 
-    auth = lower.get("authorization")
-    if not auth or not auth.startswith("HMAC "):
-        return False
-    provided_b64 = auth[len("HMAC ") :].strip()
-    try:
-        key = base64.b64decode(secret)
-        digest = hmac.new(key, raw_body, hashlib.sha256).digest()
-        expected = base64.b64encode(digest).decode("ascii")
-    except Exception:  # noqa: BLE001 — non-base64 secret / malformed input must fail closed
-        return False
-    return hmac.compare_digest(expected, provided_b64)
+    return verify_body(settings.teams_security_token, raw_body, _extract_signature(lower))
 
 
 def _extract_token(payload: dict) -> str | None:

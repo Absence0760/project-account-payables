@@ -431,3 +431,109 @@ def test_build_teams_action_tokens_are_teams_channel():
         assert decoded is not None
         assert decoded.channel == CHANNEL_TEAMS
         assert decoded.action == act
+
+
+# ---------------------------------------------------------------------------
+# The closed loop — a card the outbound adapter rendered actually approves
+# ---------------------------------------------------------------------------
+
+
+def _rendered_actions(realdb, invoice_id):
+    """Render the real approval card and return its HttpPOST actions.
+
+    Goes through the production path end to end: the notification chokepoint
+    mints the teams-channel tokens, the Teams adapter shapes and signs the card.
+    Nothing here hand-builds a token or a digest.
+    """
+    from app.services import notification_dispatch as nd
+    from app.services.chat_notification_adapters.base import render_chat_message
+    from app.services.chat_notification_adapters.teams_adapter import (
+        TeamsChatNotificationAdapter,
+    )
+
+    info = realdb.info("a")
+    approve_token, reject_token = nd._build_chat_action_tokens(
+        event_type="invoice_assigned",
+        chat_config={"provider": "teams"},
+        slug=info.slug,
+        invoice_id=invoice_id,
+        recipient_user_ids=[info.users["ap_manager"]],
+    )
+    assert approve_token and reject_token
+    msg = render_chat_message(
+        "invoice_assigned",
+        invoice_number="INV-CARD",
+        vendor_name="Test Vendor",
+        amount=Decimal("100.00"),
+        approve_token=approve_token,
+        reject_token=reject_token,
+    )
+    body = TeamsChatNotificationAdapter({"webhook_url": "https://outlook.office.com/x"}).build_body(
+        msg
+    )
+    actions = [a for a in body["potentialAction"] if a["@type"] == "HttpPOST"]
+    assert [a["name"] for a in actions] == ["Approve", "Reject"]
+    return actions
+
+
+def _card_headers(action: dict) -> dict:
+    return {h["name"]: h["value"] for h in action["headers"]}
+
+
+async def test_card_rendered_approve_action_approves_end_to_end(realdb, teams_keys):
+    """Post the card's own body + headers verbatim — no hand-built credential.
+
+    This is the property the round trip exists for: before the outbound half
+    landed, the endpoint was security-reviewed, mounted, and unreachable.
+    """
+    admin = realdb.info("a").users["admin"]
+    inv_id = await _make_invoice(realdb, uploaded_by_id=admin)
+    approve = _rendered_actions(realdb, inv_id)[0]
+
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.post(
+            _INTERACTIVITY_URL,
+            content=approve["body"].encode("utf-8"),
+            headers=_card_headers(approve),
+        )
+
+    assert resp.status_code == 200
+    assert await _status(realdb, inv_id) == InvoiceStatus.approved
+
+
+async def test_card_action_survives_teams_replacing_the_authorization_header(realdb, teams_keys):
+    """Teams attaches its own bearer to an actionable-message POST; the card's
+    dedicated signature header is what keeps the proof intact."""
+    admin = realdb.info("a").users["admin"]
+    inv_id = await _make_invoice(realdb, uploaded_by_id=admin)
+    reject = _rendered_actions(realdb, inv_id)[1]
+
+    headers = _card_headers(reject)
+    headers["Authorization"] = "Bearer eyJhbGciOi.teams.bearer"
+
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.post(
+            _INTERACTIVITY_URL, content=reject["body"].encode("utf-8"), headers=headers
+        )
+
+    assert resp.status_code == 200
+    assert await _status(realdb, inv_id) == InvoiceStatus.rejected
+
+
+async def test_card_action_body_tamper_is_rejected(realdb, teams_keys):
+    """The digest is body-bound: swapping the token in the posted body fails."""
+    admin = realdb.info("a").users["admin"]
+    inv_id = await _make_invoice(realdb, uploaded_by_id=admin)
+    approve, reject = _rendered_actions(realdb, inv_id)
+
+    # Approve's signature over Reject's body — a caller trying to upgrade the
+    # action it was handed.
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.post(
+            _INTERACTIVITY_URL,
+            content=reject["body"].encode("utf-8"),
+            headers=_card_headers(approve),
+        )
+
+    assert resp.status_code == 200  # opaque ack, never a 4xx
+    assert await _status(realdb, inv_id) == InvoiceStatus.ready_for_review
