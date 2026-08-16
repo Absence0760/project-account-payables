@@ -641,17 +641,26 @@ export function describeFinding(finding: StyleFinding): string {
 				`background, so this text renders on an app surface — use a palette token`
 			);
 		case 'composited-contrast': {
-			const cause =
-				finding.opacity < 1
-					? `opacity ${finding.opacity}` +
-						(finding.background ? ` and a ${finding.background} background` : '')
-					: `the translucent background ${finding.background}`;
+			// Name the cause AND the remedy for that cause. The two shapes need
+			// opposite advice — "drop the fade" is nonsense to someone whose rule
+			// declares no opacity, and would send them looking for one.
+			const faded = finding.opacity < 1;
+			const cause = faded
+				? `opacity ${finding.opacity}` +
+					(finding.background ? ` and a ${finding.background} background` : '')
+				: `the translucent background ${finding.background}`;
+			const remedy = faded
+				? 'Opacity fades text and its background onto the backdrop; pick a colour ' +
+					'that clears the bar once composited, or drop the fade — if the text is ' +
+					'already on a muted token, the fade only spends contrast'
+				: 'A translucent tint lightens the surface toward text set in the same tone. ' +
+					'Use the calibrated pair for it — background: var(--<tone>-tint) with ' +
+					'color: var(--<tone>-on-tint) — rather than picking a new hex';
 			return (
 				`${finding.path} — {${finding.selector}}: color ${finding.foreground} under ` +
 				`${cause} renders as ${finding.foregroundColor} on ${finding.backgroundColor} ` +
 				`over ${finding.surface} (${finding.surfaceColor}) — ${finding.ratio.toFixed(2)}:1, ` +
-				`below the ${finding.required}:1 bar. Opacity fades text and its background onto ` +
-				`the backdrop; pick a colour that clears the bar once composited, or drop the fade`
+				`below the ${finding.required}:1 bar. ${remedy}`
 			);
 		}
 	}

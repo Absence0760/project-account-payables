@@ -482,6 +482,23 @@ describe('auditStyles — a rule that tints its background translucently', () =>
 		).toEqual([]);
 	});
 
+	/**
+	 * The failure text is the whole UX of this guard, and the two compositing
+	 * causes need opposite advice. Telling someone whose rule declares no
+	 * opacity to "drop the fade" sends them hunting for one that isn't there.
+	 */
+	it('gives tint-specific remediation, not the opacity advice', () => {
+		const tint = describeFinding(
+			auditText('.badge{color:var(--accent);background:rgba(99,140,255,0.15)}')[0]
+		);
+		expect(tint).toContain('var(--<tone>-on-tint)');
+		expect(tint).not.toContain('drop the fade');
+
+		const fade = describeFinding(auditText('.sub{color:var(--text-muted);opacity:0.85}')[0]);
+		expect(fade).toContain('drop the fade');
+		expect(fade).not.toContain('var(--<tone>-on-tint)');
+	});
+
 	/** Both compositing causes at once: the tint sets the box, opacity fades it. */
 	it('applies the rule’s own opacity on top of the tint', () => {
 		const tintOnly = auditText('.a{color:var(--accent-on-tint);background:var(--accent-tint)}');
