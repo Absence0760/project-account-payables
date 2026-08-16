@@ -395,7 +395,9 @@ def test_every_enabled_flag_is_a_real_settings_attribute():
 
 
 def _lifespan_task_names() -> set[str]:
-    """Every `asyncio.create_task(..., name="…")` string in app/main.py."""
+    """Every `start_sweep(..., name="…")` / `create_task(..., name="…")` string
+    in app/main.py's lifespan. Both call shapes are scanned so the guard
+    survives the helper being inlined or renamed back."""
     source = Path(__file__).resolve().parents[1] / "app" / "main.py"
     tree = ast.parse(source.read_text())
     names: set[str] = set()
@@ -403,7 +405,10 @@ def _lifespan_task_names() -> set[str]:
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        if not (isinstance(func, ast.Attribute) and func.attr == "create_task"):
+        is_starter = (isinstance(func, ast.Attribute) and func.attr == "create_task") or (
+            isinstance(func, ast.Name) and func.id == "start_sweep"
+        )
+        if not is_starter:
             continue
         for kw in node.keywords:
             if kw.arg == "name" and isinstance(kw.value, ast.Constant):
@@ -415,3 +420,136 @@ def test_lifespan_task_names_match_the_canonical_sweep_names():
     """The task name IS the registry key — a rename on one side silently
     orphans the other, so the two are pinned together here."""
     assert _lifespan_task_names() == set(ALL_SWEEPS)
+
+
+def test_every_lifespan_sweep_is_supervised():
+    """A raw `asyncio.create_task` in the lifespan starts an UNSUPERVISED sweep:
+    its death would go back to being invisible, which is the defect this round
+    closed. Every sweep must go through `start_sweep`."""
+    source = Path(__file__).resolve().parents[1] / "app" / "main.py"
+    tree = ast.parse(source.read_text())
+    lifespan = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "lifespan"
+    )
+    raw = [
+        node
+        for node in ast.walk(lifespan)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "create_task"
+        # A literal name is a sweep start site; `name=name` is `start_sweep`'s
+        # own body forwarding the caller's string.
+        and any(kw.arg == "name" and isinstance(kw.value, ast.Constant) for kw in node.keywords)
+    ]
+    assert not raw, "every lifespan sweep must be started via start_sweep(), not create_task()"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/health/sweeps
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def health_client():
+    """httpx client authenticated as a user holding the given role."""
+    import httpx
+
+    from app.api.deps import get_current_user
+    from app.main import app
+
+    made: list[httpx.AsyncClient] = []
+
+    def _make(role: str):
+        async def _override():
+            return SimpleNamespace(
+                id="00000000-0000-0000-0000-0000000000aa",
+                organization_id="00000000-0000-0000-0000-0000000000bb",
+                roles=[SimpleNamespace(name=role)],
+            )
+
+        app.dependency_overrides[get_current_user] = _override
+        client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+        made.append(client)
+        return client
+
+    yield _make
+    app.dependency_overrides.clear()
+
+
+async def test_public_health_probe_contract_is_unchanged():
+    """`GET /api/health` is the load balancer's liveness probe — public, static.
+    A degraded sweep must NOT fail it, or a misconfigured audit sink becomes a
+    rolling restart loop."""
+    import httpx
+
+    from app.main import app
+
+    sweep_health.sweep_started(_TEST_SWEEP)
+    sweep_health.run_started(_TEST_SWEEP)
+    sweep_health.run_failed(_TEST_SWEEP, RuntimeError("boom"))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/health")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+
+async def test_sweep_report_returns_every_sweep_for_an_admin(health_client, monkeypatch):
+    _disable_all(monkeypatch)
+    sweep_health.sweep_started(_TEST_SWEEP)
+    sweep_health.run_started(_TEST_SWEEP)
+    sweep_health.run_succeeded(_TEST_SWEEP, _FakeResult(tenants_scanned=4, failures=2))
+
+    async with health_client("admin") as client:
+        resp = await client.get("/api/health/sweeps")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert {row["name"] for row in body["sweeps"]} == set(ALL_SWEEPS)
+    row = next(r for r in body["sweeps"] if r["name"] == _TEST_SWEEP)
+    assert row["last_outcome"] == OUTCOME_PARTIAL
+    assert row["last_failure_count"] == 2
+    assert row["consecutive_failures"] == 1
+
+
+async def test_sweep_report_never_leaks_cross_tenant_cardinality(health_client, monkeypatch):
+    """An ordinary tenant admin holds ROLE_ADMIN, so the payload must not carry
+    the raw per-sweep counters — `tenants_scanned` would tell them how many
+    organizations the platform sweeps."""
+    _disable_all(monkeypatch)
+    sweep_health.sweep_started(_TEST_SWEEP)
+    sweep_health.run_started(_TEST_SWEEP)
+    sweep_health.run_succeeded(_TEST_SWEEP, _FakeResult(tenants_scanned=137, failures=0))
+
+    async with health_client("admin") as client:
+        resp = await client.get("/api/health/sweeps")
+
+    assert "137" not in resp.text
+    assert "tenants_scanned" not in resp.text
+    assert "acme-corp" not in resp.text  # the non-int field on _FakeResult
+
+
+async def test_sweep_report_is_admin_only(health_client):
+    for role in ("ap_manager", "ap_clerk", "cfo"):
+        async with health_client(role) as client:
+            resp = await client.get("/api/health/sweeps")
+        assert resp.status_code == 403, role
+
+
+async def test_sweep_report_flags_an_enabled_sweep_that_never_started(health_client, monkeypatch):
+    _disable_all(monkeypatch)
+    monkeypatch.setattr(settings, "audit_shipping_enabled", True)
+
+    async with health_client("admin") as client:
+        resp = await client.get("/api/health/sweeps")
+
+    body = resp.json()
+    assert body["state"] == "failing"
+    shipper = next(r for r in body["sweeps"] if r["name"] == "audit-log-shipper")
+    assert shipper["state"] == STATE_NOT_STARTED
+    assert shipper["enabled"] is True
