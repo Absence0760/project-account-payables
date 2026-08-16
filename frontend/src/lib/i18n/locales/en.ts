@@ -3003,6 +3003,8 @@ export const en = {
 		'Machine-read by {provider} at {confidence} confidence — {n, plural, one {# open item} other {# open items}} taken off the document.',
 	'vendorStatements.modal.provenanceSkipNote':
 		'A row the reader could not read unambiguously was skipped rather than guessed, so our invoice for it appears below as a difference to chase.',
+	'vendorStatements.modal.provenanceSkipped':
+		'{n, plural, one {# row was} other {# rows were}} skipped as ambiguous — the reader saw an open item it could not read without guessing (a second amount column, a second reference column). The diff below is short by that many supplier rows, so our invoices for them appear as differences to chase. Upload the statement as a CSV, or configure a vision provider, to read them.',
 	'vendorStatements.modal.provenanceCsv': 'Parsed directly from the uploaded CSV.',
 	'vendorStatements.modal.downloadSource': 'Download the source statement',
 	'vendorStatements.modal.downloadingSource': 'Downloading…',

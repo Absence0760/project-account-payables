@@ -216,5 +216,11 @@ async def extract_statement_lines(
         "provider": result.provider,
         "confidence": round(float(result.overall_confidence), 4),
         "line_count": len(lines),
+        # Rows the reader recognised as an open item but refused to book
+        # (see `statement_extraction.StatementScan`). Persisted on the run so
+        # the provenance panel can say the diff below is short by this many
+        # supplier rows — without it a clerk whose aging-bucket statement lost
+        # half its rows just sees a suspiciously short run.
+        "skipped_ambiguous": int(result.skipped_ambiguous),
     }
     return lines, meta

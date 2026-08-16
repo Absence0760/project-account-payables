@@ -217,34 +217,6 @@ originally-deferred sub-bucket from that same feature remains:
 Refs: [roadmap.md](roadmap.md) § AI Cash-Flow Copilot,
 [cash-flow-copilot.md](cash-flow-copilot.md).
 
-### The statement reader skips rows without saying how many
-
-`scan_statement_text` deliberately skips a row it can't read unambiguously (a
-second money column, a second identifier column) rather than booking a
-plausible-but-wrong figure — the right call, documented at length. But nothing
-counts those skips: `meta.extraction` records `line_count` (rows *accepted*) and
-no skip figure, so a clerk whose aging-bucket statement lost half its rows sees a
-short run with no signal that anything was dropped. The new provenance panel
-explains the *rule* and names the accepted count, which is as far as the data
-goes today.
-
-- [ ] Report a skipped-row count (or the skipped rows' raw text) from
-      `scan_statement_text` → `StatementExtractionResult` → `meta.extraction`, so
-      the provenance panel can say "N rows were skipped as ambiguous" and offer
-      the CSV/vision alternative in context.
-
-**Why deferred:** an *honest* count is a design problem, not a plumbing one. The
-reader skips blank lines, column headers, page furniture, subtotals and genuinely
-ambiguous open-item rows through the same path, and counting all of them would
-report noise ("47 rows skipped" on a clean two-page statement) that is worse than
-silence. Separating "looked like an open item but was ambiguous" from "was never
-a row" is exactly the judgment the reader refuses to make elsewhere, so it needs
-its own thought and its own pure-function tests.
-**Trigger:** the first support case where a machine-read run came back
-suspiciously short, or the next pass on `statement_extraction.py`.
-Refs: `backend/app/services/extraction_adapters/statement_extraction.py`,
-[vendor-statement-reconciliation.md](../backend/docs/vendor-statement-reconciliation.md) § The offline reader skips rather than guesses.
-
 ### `/cfo` can't tell a skipped provider balance from no bank at all
 
 `GET /api/analytics/cash-position` now returns `opening_balance_provider_skipped`

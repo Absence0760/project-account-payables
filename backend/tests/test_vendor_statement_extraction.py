@@ -156,8 +156,25 @@ async def test_extract_statement_lines_happy_path(monkeypatch):
         "provider": "stub",
         "confidence": 0.9,
         "line_count": 1,
+        # A model-backed adapter isn't asked to report its own skips, so 0 here
+        # honestly means "not measured" rather than "read everything".
+        "skipped_ambiguous": 0,
     }
     assert adapter.seen["file_key"] == "k.pdf"
+
+
+async def test_extract_statement_lines_carries_the_ambiguous_skip_count(monkeypatch):
+    """The offline reader's refused rows reach the run's provenance meta.
+
+    Without this the clerk sees a short run and no signal that the supplier's
+    own rows were read and declined.
+    """
+    result = _ok([StatementLineExtraction("INV-1", "2026-01-15", "1200.00")])
+    result.skipped_ambiguous = 3
+    _use(monkeypatch, _StubAdapter(result))
+    _lines, meta = await vse.extract_statement_lines(org_settings={}, file_bytes=b"%PDF-1.4")
+    assert meta["line_count"] == 1
+    assert meta["skipped_ambiguous"] == 3
 
 
 async def test_unsupported_provider_refuses_instead_of_creating_an_empty_run(monkeypatch):

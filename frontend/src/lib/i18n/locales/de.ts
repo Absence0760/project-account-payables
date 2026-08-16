@@ -2941,6 +2941,8 @@ export const messages = {
 		'Maschinell gelesen von {provider} mit {confidence} Konfidenz — {n, plural, one {# offene Position} other {# offene Positionen}} aus dem Dokument übernommen.',
 	'vendorStatements.modal.provenanceSkipNote':
 		'Eine Zeile, die nicht eindeutig lesbar war, wurde übersprungen statt geraten — unsere Rechnung dazu erscheint unten als zu klärende Differenz.',
+	'vendorStatements.modal.provenanceSkipped':
+		'{n, plural, one {# Zeile wurde} other {# Zeilen wurden}} als mehrdeutig übersprungen — der Reader sah einen offenen Posten, den er nicht ohne Raten lesen konnte (eine zweite Betragsspalte, eine zweite Referenzspalte). Der Abgleich unten fehlt um genau so viele Lieferantenzeilen, daher erscheinen unsere Rechnungen dazu als zu klärende Differenzen. Laden Sie den Auszug als CSV hoch oder konfigurieren Sie einen Vision-Anbieter, um sie zu lesen.',
 	'vendorStatements.modal.provenanceCsv': 'Direkt aus der hochgeladenen CSV-Datei eingelesen.',
 	'vendorStatements.modal.downloadSource': 'Originalauszug herunterladen',
 	'vendorStatements.modal.downloadingSource': 'Wird heruntergeladen…',

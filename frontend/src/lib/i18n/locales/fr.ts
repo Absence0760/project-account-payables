@@ -2939,6 +2939,8 @@ export const messages = {
 		'Lu automatiquement par {provider} avec une confiance de {confidence} — {n, plural, one {# poste ouvert relevé} other {# postes ouverts relevés}} sur le document.',
 	'vendorStatements.modal.provenanceSkipNote':
 		'Une ligne que le lecteur ne pouvait pas lire sans ambiguïté a été ignorée plutôt que devinée : notre facture correspondante apparaît ci-dessous comme un écart à traiter.',
+	'vendorStatements.modal.provenanceSkipped':
+		'{n, plural, one {# ligne a été ignorée} other {# lignes ont été ignorées}} car ambiguë(s) — le lecteur a vu un poste ouvert qu’il ne pouvait pas lire sans deviner (une deuxième colonne de montant, une deuxième colonne de référence). L’écart ci-dessous est incomplet d’autant de lignes fournisseur, donc nos factures correspondantes apparaissent comme des écarts à traiter. Importez le relevé en CSV, ou configurez un fournisseur de vision, pour les lire.',
 	'vendorStatements.modal.provenanceCsv': 'Analysé directement depuis le CSV importé.',
 	'vendorStatements.modal.downloadSource': 'Télécharger le relevé d’origine',
 	'vendorStatements.modal.downloadingSource': 'Téléchargement…',

@@ -2970,6 +2970,8 @@ export const messages = {
 		'Lido automaticamente por {provider} com {confidence} de confiança — {n, plural, one {# item em aberto extraído} other {# itens em aberto extraídos}} do documento.',
 	'vendorStatements.modal.provenanceSkipNote':
 		'Uma linha que o leitor não conseguiu ler sem ambiguidade foi ignorada em vez de adivinhada, então a nossa nota correspondente aparece abaixo como uma diferença a apurar.',
+	'vendorStatements.modal.provenanceSkipped':
+		'{n, plural, one {# linha foi ignorada} other {# linhas foram ignoradas}} por ambiguidade: o leitor viu um item em aberto que não conseguia ler sem adivinhar (uma segunda coluna de valor, uma segunda coluna de referência). A comparação abaixo está incompleta nessa mesma quantidade de linhas do fornecedor, então as nossas notas correspondentes aparecem como diferenças a apurar. Envie o extrato como CSV, ou configure um provedor de visão, para lê-las.',
 	'vendorStatements.modal.provenanceCsv': 'Lido diretamente do CSV enviado.',
 	'vendorStatements.modal.downloadSource': 'Baixar o extrato original',
 	'vendorStatements.modal.downloadingSource': 'Baixando…',

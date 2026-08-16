@@ -23,6 +23,7 @@ See ``backend/docs/vendor-statement-reconciliation.md`` § PDF intake.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 
 from app.services.extraction_adapters.base import (
     STATEMENT_REASON_NO_LINES,
@@ -198,7 +199,41 @@ def _is_money(token: str) -> bool:
     return "." in core or any(sym in core for sym in "$€£,")
 
 
-def scan_statement_text(text: str) -> list[StatementLineExtraction]:
+@dataclass(frozen=True)
+class StatementScan:
+    """What the offline reader made of a statement's text layer.
+
+    Two numbers, not one, because "how many rows did you skip?" has no honest
+    single answer here. The reader walks every physical line — blank lines,
+    the vendor block, column headers, ``Page 1 of 2``, the statement total —
+    through the same loop as a real open item, and a count of everything it
+    declined would report dozens of skips on a clean statement. That number
+    would train a reviewer to ignore it, which is worse than not showing one.
+
+    So the skip is CLASSIFIED where it happens, and only one class is reported:
+
+    * **Not a row** (silent) — the line never looked like an open item. It had
+      no identifier-shaped token, or nothing money-shaped followed one. Column
+      headers, page furniture, totals and ``balance forward`` all land here by
+      construction, which is why they were already being skipped correctly.
+    * **Ambiguous** (:attr:`ambiguous_skips`) — the line DID look like an open
+      item, and the reader refused to pick between two readings of it: two
+      money columns (which one is the open balance?), or a second
+      reference-shaped column left of the amount (which one is the invoice
+      number?). This is the class a clerk needs to know about, because the
+      run below is short by exactly this many supplier rows and our own
+      invoices for them will surface as ``missing_on_their_side``.
+
+    A clean ``number date amount`` statement therefore reports **zero**; an
+    aging-bucket statement reports one per data row. The split IS the feature —
+    a bare total would be noise.
+    """
+
+    lines: list[StatementLineExtraction] = field(default_factory=list)
+    ambiguous_skips: int = 0
+
+
+def scan_statement_text(text: str) -> StatementScan:
     """Read ``number [date] amount`` rows out of a statement's text layer.
 
     Deterministic and conservative. A row is kept only when an identifier token
@@ -231,15 +266,19 @@ def scan_statement_text(text: str) -> list[StatementLineExtraction]:
     skipping. A multi-column or aging-bucket statement is the case this reader
     cannot resolve honestly, and the answer there is a vision provider
     (``ollama`` locally, ``claude_vision`` deployed), not a smarter guess.
+
+    Every skip is classified as it happens — see :class:`StatementScan` for why
+    only the ambiguous class is counted and reported.
     """
     lines: list[StatementLineExtraction] = []
+    ambiguous_skips = 0
     for physical in text.splitlines():
         row = physical.strip()
         if not row:
-            continue
+            continue  # not a row
         tokens = row.split()
         if len(tokens) < 2:
-            continue
+            continue  # not a row
 
         date_idx = next((i for i, t in enumerate(tokens) if _DATE_TOKEN.match(t)), None)
 
@@ -252,7 +291,19 @@ def scan_statement_text(text: str) -> list[StatementLineExtraction]:
             None,
         )
         if number_idx is None:
+            # Not a row: no identifier-shaped token at all. The column header
+            # and `Page 1 of 2` land here.
             continue
+
+        # An "identifier" that is itself unambiguous MONEY means the row is a
+        # figures-only line — `Total  1,200.00  850.50  410.00  2,460.50`, the
+        # footer of an aging statement — not an open item whose reading was
+        # ambiguous. It is still skipped either way; this only keeps it OUT of
+        # the reported count, because a total row is furniture and counting it
+        # would inflate every aging statement's figure by one. Deliberately does
+        # NOT touch which rows are accepted: an identifier can legitimately be
+        # all digits (`100234`), and `_is_money` says no to that.
+        looked_like_an_open_item = not _is_money(tokens[number_idx])
 
         trailing = [i for i in range(number_idx + 1, len(tokens)) if i != date_idx]
         # Unambiguous money first; a lone amount-shaped integer only when the
@@ -260,7 +311,16 @@ def scan_statement_text(text: str) -> list[StatementLineExtraction]:
         candidates = [i for i in trailing if _is_money(tokens[i])] or [
             i for i in trailing if _is_amount(tokens[i])
         ]
-        if len(candidates) != 1:
+        if not candidates:
+            # Not a row: nothing money-shaped follows the identifier. `Total
+            # 1,800.50` and `Balance forward 500.00` take the money token AS
+            # their identifier and then find nothing after it.
+            continue
+        if len(candidates) > 1:
+            # Ambiguous: two money columns and nothing on the row says which is
+            # the open balance. The aging-bucket layout is this case.
+            if looked_like_an_open_item:
+                ambiguous_skips += 1
             continue
         amount_idx = candidates[0]
 
@@ -283,6 +343,13 @@ def scan_statement_text(text: str) -> list[StatementLineExtraction]:
             i for i in range(amount_idx) if i != date_idx and _is_identifier_candidate(tokens[i])
         ]
         if len(identifiers) != 1:
+            # Always MORE than one here, never zero — `number_idx` is itself an
+            # identifier candidate left of the amount, so it is always in this
+            # list. `!= 1` is written rather than `> 1` so the guard survives a
+            # future change to how the identifier is chosen. Either way the row
+            # looked like an open item, so it is the ambiguous class.
+            if looked_like_an_open_item:
+                ambiguous_skips += 1
             continue
 
         # ...and nothing numeric may sit to the RIGHT of it. Position is the
@@ -296,6 +363,11 @@ def scan_statement_text(text: str) -> list[StatementLineExtraction]:
         # column is printed BEFORE the balance and a second money column AFTER
         # it, and only the second one makes which figure is open ambiguous.
         if any(_is_amount(tokens[i]) for i in trailing if i > amount_idx):
+            # Ambiguous for the same reason as the two-money-column case: this
+            # only fires when a money token was chosen and something
+            # amount-shaped still sits to its right, i.e. a second column.
+            if looked_like_an_open_item:
+                ambiguous_skips += 1
             continue
 
         lines.append(
@@ -308,4 +380,4 @@ def scan_statement_text(text: str) -> list[StatementLineExtraction]:
                 raw={"text": row},
             )
         )
-    return lines
+    return StatementScan(lines=lines, ambiguous_skips=ambiguous_skips)

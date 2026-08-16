@@ -356,6 +356,42 @@ invoice for that row lands as `missing_on_their_side`, a difference the clerk
 sees and chases. A multi-column or aging-bucket statement is the case this
 reader can't resolve honestly; the answer there is a vision provider.
 
+#### …and it says how many it skipped
+
+`scan_statement_text` returns a `StatementScan` — `lines` plus
+`ambiguous_skips` — because "how many rows did you skip?" has no honest single
+answer. Every physical line goes through the same loop: blank lines, the vendor
+block, the column header, `Page 1 of 2`, the statement total. A count of
+everything declined would report a dozen skips on a clean two-page statement,
+and a number that is noise on the good case trains a reviewer to ignore it on
+the bad one.
+
+So the skip is **classified where it happens**, and only one class is reported:
+
+| Class | Reported? | What it is |
+|---|---|---|
+| Not a row | no | No identifier-shaped token, or nothing money-shaped after one. Column headers, page furniture, `Total …`, `Balance forward …`. |
+| Ambiguous | **yes** | The line *did* look like an open item and the reader refused to pick between two readings — two money columns, or a second reference-shaped column left of the amount. |
+
+One refinement makes the split hold on a real aging statement: a row whose
+chosen *identifier* is itself unambiguous money (`Total  1,200.00  850.50
+410.00  2,460.50`) is a figures-only footer, not an ambiguous open item, so it
+stays uncounted. That affects the count only — never which rows are accepted (an
+identifier can legitimately be all digits, and `_is_money` says no to that).
+
+The result: a clean `number date amount` statement reports **0**; a
+four-column aging statement reports **one per data row**. The count rides
+`StatementExtractionResult.skipped_ambiguous` → the run's
+`meta.extraction.skipped_ambiguous` → the detail modal's provenance panel,
+which says how many rows were skipped, that the diff below is short by exactly
+that many supplier rows, and points at the CSV / vision-provider alternative in
+context. A count only, never the skipped rows' text — the figure is what a
+reviewer acts on, and the text is supplier data.
+
+A **model-backed** adapter leaves the field at `0`: it is not asked to report
+its own skips, so `0` there means "not measured", which is why the panel shows
+the standing skip-rule note instead of a "0 rows skipped" line.
+
 ### Money crosses the boundary as a string
 
 An adapter returns `StatementLineExtraction` with **raw strings** —

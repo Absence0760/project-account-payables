@@ -101,18 +101,23 @@ class MockExtractionAdapter(ExtractionAdapter):
                 available=True, provider=self.provider_name, reason=STATEMENT_REASON_NO_TEXT_LAYER
             )
 
-        lines = scan_statement_text(text)
-        if not lines:
+        scan = scan_statement_text(text)
+        if not scan.lines:
+            # Nothing bookable. The ambiguous count is deliberately dropped
+            # here: with no lines the run never gets created, so there is no
+            # provenance panel to carry it, and the 422 the router raises is a
+            # static PII-free string keyed off the reason code.
             return StatementExtractionResult(
                 available=True, provider=self.provider_name, reason=STATEMENT_REASON_NO_LINES
             )
 
-        confidences = [ln.confidence for ln in lines]
+        confidences = [ln.confidence for ln in scan.lines]
         return StatementExtractionResult(
             available=True,
             success=True,
-            lines=lines,
+            lines=scan.lines,
             overall_confidence=sum(confidences) / len(confidences),
+            skipped_ambiguous=scan.ambiguous_skips,
             provider=self.provider_name,
         )
 
