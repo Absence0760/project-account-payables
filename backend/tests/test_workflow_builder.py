@@ -513,7 +513,10 @@ def test_validate_builder_steps_flags_non_dict_config():
 
 
 def test_builder_step_types_constant():
-    assert BUILDER_STEP_TYPES == ["condition", "parallel", "webhook", "email", "delay"]
+    # An immutable tuple, not a list: it is the shared source of truth
+    # (services/workflow_step_types.py) that this module and the engine both
+    # re-export, so a stray `.append()` anywhere would edit both vocabularies.
+    assert BUILDER_STEP_TYPES == ("condition", "parallel", "webhook", "email", "delay")
 
 
 def test_engine_knows_builder_step_types():
