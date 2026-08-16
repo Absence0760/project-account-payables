@@ -601,8 +601,9 @@
 	// fetches.
 	const lineItemsSequence = createRequestSequencer();
 
-	/** Flag an unsaved local edit — and retire any load already in flight,
-	 *  whose response predates it. */
+	/** Flag an unsaved local edit — and retire whatever is already in flight,
+	 *  whose response predates it: a load (which would replace the table) or a
+	 *  save (whose payload doesn't carry this edit — see `saveLineItems`). */
 	function markLineItemsDirty() {
 		lineItemsSequence.supersedeInFlight();
 		lineItemsDirty = true;
