@@ -33,7 +33,6 @@ this module does persistence, RBAC and the audit write. See
 from __future__ import annotations
 
 import asyncio
-import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -64,7 +63,11 @@ from app.services.chat_notifications_config import (
 )
 from app.tenant import get_tenant
 
-logger = logging.getLogger(__name__)
+# No module logger on purpose: every value this router handles is either the
+# webhook credential or derived from it, and the safe derivation (its hostname)
+# already goes to the audit trail. A logger here would be an invitation to log
+# the one thing that must not be logged — see `notification_dispatch`, where a
+# `logger.exception` on the send path put exactly this URL into the log.
 
 router = APIRouter(prefix="/organization/chat-notifications", tags=["chat-notifications"])
 
