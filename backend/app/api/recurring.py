@@ -393,7 +393,10 @@ async def generate_now(
     template = await _get_scoped(db, template_id, entity_id)
     if template.status == STATUS_ENDED:
         raise HTTPException(status_code=409, detail="Cannot generate from an ended template")
-    if template.amount is None or not template.vendor_name:
+    # Same verdict the sweep reaches — one condition, so a manual generate-now
+    # can never disagree with what the background sweep decided about this
+    # template (and skipped a period over).
+    if svc.not_generatable_reason(template) is not None:
         raise HTTPException(
             status_code=422,
             detail="Template needs a vendor and amount before it can generate an invoice",

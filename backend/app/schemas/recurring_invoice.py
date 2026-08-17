@@ -84,6 +84,23 @@ class RecurringTemplateUpdate(BaseModel):
     notes: str | None = Field(default=None, max_length=500)
 
 
+class GenerationSkip(BaseModel):
+    """The last due period this template could NOT generate an invoice for.
+
+    Persisted by the background sweep on ``RecurringInvoiceTemplate.meta`` (see
+    ``services/recurring_invoices.record_generation_skip``) and surfaced here so
+    "nothing has been raised for months" is distinguishable from "nothing due
+    yet" — which it wasn't when the skip only reached a log line. PII-free: a
+    reason code, the period, a count and a timestamp. ``None`` once the template
+    generates again.
+    """
+
+    reason: str
+    period_key: str | None = None
+    consecutive: int = 0
+    last_skipped_at: str | None = None
+
+
 class RecurringTemplateResponse(BaseModel):
     id: str
     name: str
@@ -109,10 +126,33 @@ class RecurringTemplateResponse(BaseModel):
     status: str
     variance_tolerance_pct: PercentNumber | None = None
     notes: str | None
+    #: Set while the template's last due period could not be generated.
+    last_skip: GenerationSkip | None = None
     created_at: str
     updated_at: str | None
 
     model_config = {"from_attributes": True}
+
+    @staticmethod
+    def _skip_from_meta(meta) -> GenerationSkip | None:
+        """Parse the sweep's skip marker off ``meta``, tolerating bad JSON.
+
+        A hand-edited or legacy ``meta`` must never 500 the templates list, so
+        anything that isn't a well-shaped marker reads as "no skip".
+        """
+        marker = (meta or {}).get("generation_skip") if isinstance(meta, dict) else None
+        if not isinstance(marker, dict) or not marker.get("reason"):
+            return None
+        try:
+            consecutive = int(marker.get("consecutive") or 0)
+        except (TypeError, ValueError):
+            consecutive = 0
+        return GenerationSkip(
+            reason=str(marker["reason"]),
+            period_key=marker.get("period_key"),
+            consecutive=consecutive,
+            last_skipped_at=marker.get("last_skipped_at"),
+        )
 
     @classmethod
     def from_db(cls, t) -> RecurringTemplateResponse:
@@ -141,6 +181,7 @@ class RecurringTemplateResponse(BaseModel):
             status=t.status,
             variance_tolerance_pct=t.variance_tolerance_pct,
             notes=t.notes,
+            last_skip=cls._skip_from_meta(getattr(t, "meta", None)),
             created_at=t.created_at.isoformat() if t.created_at else None,
             updated_at=t.updated_at.isoformat() if t.updated_at else None,
         )
