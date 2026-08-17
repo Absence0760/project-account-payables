@@ -3,12 +3,14 @@ import 'package:feohledger_mobile/models/payment_queue.dart' show moneyToDisplay
 /// Cash-flow forecast + cash-position data for the CFO screen, from
 /// `GET /api/analytics/cashflow_forecast` and `GET /api/analytics/cash_position`.
 ///
-/// The backend serialises these dict responses with `float(...)`, so money
-/// arrives as JSON numbers. We keep every money field as a **display string**
-/// via [moneyToDisplay] and NEVER do client-side float arithmetic on currency
-/// — every total the screen shows is server-computed (forecast `totals`,
-/// cash-position `opening`/`closing`, breach `shortfall`). This mirrors the
-/// payment-queue "money as string, never client float math" invariant.
+/// Money arrives as an **exact decimal string** — the backend never floats
+/// currency across the API boundary. [moneyToDisplay] passes a string through
+/// verbatim and still stringifies a JSON number, so a build running against a
+/// pre-migration backend keeps rendering; either way the device NEVER does
+/// float arithmetic on currency — every total the screen shows is
+/// server-computed (forecast `totals`, cash-position `opening`/`closing`,
+/// breach `shortfall`). This mirrors the payment-queue "money as string, never
+/// client float math" invariant.
 
 /// One bucketed forecast period from `cashflow_forecast.periods[]`.
 class CashFlowForecastPeriod {

@@ -28,7 +28,9 @@ class CatalogItemBase(BaseModel):
     sku: str | None = Field(default=None, max_length=100)
     name: str = Field(..., max_length=255)
     description: str | None = None
-    unit_price: Decimal | None = None
+    # Digits match `catalog_items.unit_price` Numeric(15, 2). A catalog list
+    # price is never negative.
+    unit_price: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     currency: str = Field(default="USD", max_length=3)
     uom: str | None = Field(default=None, max_length=20)
     vendor_id: str | None = None
@@ -47,7 +49,7 @@ class CatalogItemUpdate(BaseModel):
     sku: str | None = Field(default=None, max_length=100)
     name: str | None = Field(default=None, max_length=255)
     description: str | None = None
-    unit_price: Decimal | None = None
+    unit_price: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     currency: str | None = Field(default=None, max_length=3)
     uom: str | None = Field(default=None, max_length=20)
     vendor_id: str | None = None

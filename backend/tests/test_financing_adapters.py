@@ -7,7 +7,10 @@ Pins:
     proportional to days-to-due at the configured APR, repayment_date
     == invoice due_date
   - request_funding is idempotent: same key → same external id
-  - the c2fo skeleton fails closed (raises) without an api_key
+  - the c2fo skeleton fails closed (raises) without an api_key, and WITH
+    one answers in the contract's own vocabulary — an ineligible quote /
+    an unfunded result — rather than raising `NotImplementedError` at the
+    first caller. Its probe stays False either way.
 
 Pure / async unit tests — adapters instantiated directly, no DB.
 `asyncio_mode = "auto"` in pyproject means no explicit asyncio marker
@@ -25,7 +28,7 @@ from app.services.financing_adapters import (
     FinancingQuote,
     get_financing_adapter,
 )
-from app.services.financing_adapters.c2fo import C2FOAdapter
+from app.services.financing_adapters.c2fo import REASON_NOT_IMPLEMENTED, C2FOAdapter
 from app.services.financing_adapters.mock_adapter import MockFinancingAdapter
 
 # A fixed funding date keeps every quote deterministic regardless of
@@ -260,14 +263,63 @@ async def test_c2fo_test_connection_false_without_key():
 
 
 @pytest.mark.asyncio
-async def test_c2fo_with_key_does_not_raise_on_construction():
-    # A key gets past the credential guard; the skeleton then surfaces
-    # NotImplementedError rather than the fail-closed RuntimeError.
+async def test_c2fo_with_key_returns_an_ineligible_quote_not_a_crash():
+    """The Protocol's own wording: implementations "return an ineligible
+    ``FinancingQuote`` rather than raising when the provider simply declines".
+
+    The skeleton used to `raise NotImplementedError` here, so the first caller
+    wired to this family would take a 500 from the one path whose contract is
+    that it answers "not eligible". Money fields are zeroed and no funding
+    date is claimed; the due date the caller supplied is still a fact.
+    """
     adapter = C2FOAdapter({"api_key": "live-key"})
-    with pytest.raises(NotImplementedError):
-        await adapter.quote(
-            invoice_amount=Decimal("100.00"),
-            currency="USD",
-            due_date=_DUE,
-            vendor_name="V",
-        )
+    quote = await adapter.quote(
+        invoice_amount=Decimal("100.00"),
+        currency="USD",
+        due_date=_DUE,
+        vendor_name="V",
+    )
+    assert quote.eligible is False
+    assert quote.reason == REASON_NOT_IMPLEMENTED
+    assert quote.advance_amount == Decimal("0.00")
+    assert quote.discount_percent == Decimal("0.00")
+    assert quote.fee_percent == Decimal("0.00")
+    assert quote.funding_date is None
+    assert quote.repayment_date == _DUE
+    assert isinstance(quote.advance_amount, Decimal)
+
+
+@pytest.mark.asyncio
+async def test_c2fo_with_key_returns_an_unfunded_result_not_a_crash():
+    """Same rule on the money-moving half — and it must not claim the
+    financier *declined*: nobody was asked. No money moves, so a repeat call
+    with the same idempotency key is trivially idempotent."""
+    adapter = C2FOAdapter({"api_key": "live-key"})
+    quote = FinancingQuote(
+        provider="c2fo",
+        eligible=True,
+        discount_percent=Decimal("1.00"),
+        fee_percent=Decimal("1.00"),
+        funding_date=date.fromisoformat(_FUNDING),
+        repayment_date=_DUE,
+        advance_amount=Decimal("99.00"),
+    )
+    first = await adapter.request_funding(quote=quote, idempotency_key="k")
+    again = await adapter.request_funding(quote=quote, idempotency_key="k")
+
+    assert first.funded is False
+    assert first.external_funding_id is None
+    assert first.status == "unavailable"
+    assert first.reason == REASON_NOT_IMPLEMENTED
+    assert first.advance_amount == Decimal("0.00")
+    assert first.fee_amount == Decimal("0.00")
+    assert again == first
+
+
+@pytest.mark.asyncio
+async def test_c2fo_probe_stays_false_even_fully_credentialed():
+    """The refusal is only safe because the probe never claims otherwise —
+    an operator learns at configuration time, not on the first quote."""
+    assert await C2FOAdapter({"api_key": "live-key", "account_id": "acct"}).test_connection() is (
+        False
+    )

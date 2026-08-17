@@ -1,6 +1,9 @@
 """Sync payment data to the connected ERP after payment execution.
 
-Runs async in a background thread — doesn't block the payment run response.
+Runs as a detached asyncio task on the app's loop — doesn't block the payment
+run response. NOT a background thread with its own loop: the pass reaches
+`transition_invoice`'s notification hook, which uses the main-loop-bound
+`database.control_session_factory` (see `dispatch_payment_sync`).
 Records sync status on each payment for retry capability.
 
 **This module is the only code path that flips an invoice
@@ -31,6 +34,15 @@ its own rows by id and commits on its own, so an earlier success can never be
 undone by a later failure and no leg is left holding ORM state expired by
 another leg's rollback.
 
+**The ERP gate guards the ERP, not the transition.** A tenant with no
+``settings.erp`` — the "direct schedule, no ERP" branch the state machine
+explicitly supports — still gets its settled invoices marked ``paid`` here.
+The missing config skips resolving the adapter and the (future) push, and
+nothing else; the per-leg guards (payment ``completed``, invoice
+``payment_scheduled``, settlement covering) are identical either way. Returning
+early over the whole pass, as this module used to, stranded every such
+invoice at ``payment_scheduled`` forever while its payment row looked correct.
+
 The exit for a strand is ``POST /api/payments/runs/{run_id}/sync-erp``, which
 awaits this same pass and returns its counts. Voiding is NOT an exit here — the
 money moved, and ``/void`` sends the invoice back to ``approved`` where it
@@ -41,7 +53,6 @@ its own two documented exits (accept / void).
 
 import asyncio
 import logging
-import threading
 import uuid
 from dataclasses import dataclass
 
@@ -85,6 +96,9 @@ class PaymentSyncResult:
     #: Legs whose ERP-facing work completed. TRUE for a settled payment whose
     #: invoice was ALREADY `paid`, so a re-run reports the same count as the
     #: first pass — this counts legs that ran, not work that changed anything.
+    #: Also TRUE for a tenant with no ERP configured, where the ERP-facing work
+    #: is vacuously complete because there is none; `transitioned` is the count
+    #: that answers "did anything advance" on both paths.
     synced: int = 0
     #: Invoices this pass actually moved `payment_scheduled → paid`. The number
     #: an operator retrying a strand is asking about; `0` on a repeat call.
@@ -94,31 +108,45 @@ class PaymentSyncResult:
     failed: int = 0
 
 
+#: Strong references to in-flight dispatch tasks. `asyncio` only holds a WEAK
+#: reference to a running task, so a fire-and-forget task with no other referent
+#: can be garbage-collected mid-await and vanish silently.
+_dispatch_tasks: set[asyncio.Task] = set()
+
+
 async def dispatch_payment_sync(
     run_id: uuid.UUID,
     org_id: uuid.UUID,
 ) -> None:
     """Trigger async ERP sync for a completed payment run.
 
-    Fire-and-forget: the thread is detached, so awaiting this only awaits the
-    thread *start*. A caller that needs the outcome must await
-    :func:`_sync_payments` directly (the retry endpoint does).
+    Fire-and-forget: awaiting this only schedules the pass. A caller that needs
+    the outcome must await :func:`_sync_payments` directly (the retry endpoint
+    does).
+
+    **Scheduled on the CALLER's running loop, deliberately not on a new loop in
+    a detached thread.** The pass reaches `transition_invoice`, whose
+    notification hook resolves recipients through the module-level
+    `database.control_session_factory` — an engine bound to the loop that
+    imported it, i.e. the app's main loop. Driving that from a second loop is
+    not merely unsupported, it is actively destructive: asyncpg raises
+    ``RuntimeError: got Future attached to a different loop`` AND can return the
+    half-used connection to the pool the REQUEST path draws from, so unrelated
+    control-plane requests then hang on it.
+
+    That was live: an ERP-less tenant's `invoice_paid` notification failed on
+    every run, and `PATCH /api/organization` intermittently timed out behind it.
+    Running here means the pass, the notification hook and the shared engines
+    are all on one loop, which is the same arrangement the `/sync-erp` retry
+    endpoint has always used by awaiting `_sync_payments` directly.
+
+    This is a pure-`await` I/O pass (DB + HTTP), so it yields to the request
+    loop rather than blocking it — the reason `extraction_dispatch` needs a
+    worker thread does not apply here.
     """
-    thread = threading.Thread(
-        target=_run_in_thread,
-        args=(run_id, org_id),
-        daemon=True,
-    )
-    thread.start()
-
-
-def _run_in_thread(run_id: uuid.UUID, org_id: uuid.UUID) -> None:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(_sync_payments(run_id, org_id))
-    finally:
-        loop.close()
+    task = asyncio.create_task(_sync_payments(run_id, org_id), name=f"payment-sync-{run_id}")
+    _dispatch_tasks.add(task)
+    task.add_done_callback(_dispatch_tasks.discard)
 
 
 async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> PaymentSyncResult:
@@ -135,10 +163,24 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> PaymentSyncRes
                 logger.warning("[payment-sync] organization %s not found", org_id)
                 return PaymentSyncResult()
 
-        erp_config = (org.settings or {}).get("erp")
-        if not erp_config:
-            logger.info("[payment-sync] no ERP configured for org %s, skipping sync", org_id)
-            return PaymentSyncResult()
+        # An absent `settings.erp` gates exactly ONE thing: resolving the ERP
+        # adapter and pushing to it. It is deliberately NOT an early return over
+        # the whole pass, because the rest of the pass — advancing a settled
+        # payment's invoice `payment_scheduled → paid` — has nothing to do with
+        # an ERP, and this module is the only automatic writer of that
+        # transition. The state machine explicitly supports the direct-schedule
+        # branch (`approved → payment_scheduled`, no `sending_to_erp` leg), so
+        # returning here stranded every settled invoice of an ERP-less tenant at
+        # `payment_scheduled` forever — under-counting the aging report, the
+        # `/dashboard` pipeline, the vendor's payment history and the 1099 YTD
+        # totals, while the payment row itself looked perfectly correct.
+        erp_config = (org.settings or {}).get("erp") or None
+        if erp_config is None:
+            logger.info(
+                "[payment-sync] no ERP configured for org %s — no ERP push; settled "
+                "payments still advance their invoices to paid",
+                org_id,
+            )
 
         # Import adapters so the @register_adapter decorators populate the
         # registry before any leg resolves one. Deliberately NOT resolving the
@@ -149,7 +191,7 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> PaymentSyncRes
         # whole run here instead would strand every payment at
         # `payment_scheduled` with no exception row and no notification — and
         # on the primary dispatch path the returned count is discarded by
-        # `_run_in_thread`, so it would be invisible, which is exactly the
+        # the fire-and-forget dispatch task, so it would be invisible, which is exactly the
         # failure mode this module was rewritten to remove.
         import app.services.erp_adapters.dynamics_365_bc  # noqa: F401
         import app.services.erp_adapters.merge_dev  # noqa: F401
@@ -171,7 +213,7 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> PaymentSyncRes
 
 
 async def _sync_run_legs(
-    db, *, run_id: uuid.UUID, org_id: uuid.UUID, erp_config: dict
+    db, *, run_id: uuid.UUID, org_id: uuid.UUID, erp_config: dict | None
 ) -> PaymentSyncResult:
     """Run one leg per payment in the run, each independently committed."""
     counts = {_SYNCED: 0, _SKIPPED: 0, _HELD: 0, _FAILED: 0}
@@ -220,9 +262,15 @@ async def _sync_run_legs(
 
 
 async def _sync_one_leg(
-    db, *, payment_id: uuid.UUID, run_id: uuid.UUID, org_id: uuid.UUID, erp_config: dict
+    db, *, payment_id: uuid.UUID, run_id: uuid.UUID, org_id: uuid.UUID, erp_config: dict | None
 ) -> tuple[str, bool]:
     """Sync one payment, committing on its own.
+
+    ``erp_config`` is ``None`` for a tenant that pays without an ERP. That
+    skips the adapter and the (future) push — and nothing else: the invoice
+    transition below is not ERP work and still runs, through the same guards
+    (settled payment, `payment_scheduled` invoice, covering settlement) every
+    other leg passes.
 
     Returns ``(outcome_key, invoice_moved_to_paid)``. The second element is
     separate because ``_SYNCED`` means "this leg's ERP-facing work completed",
@@ -261,15 +309,23 @@ async def _sync_one_leg(
         # contract — a strand must land in the queue an AP manager works —
         # and a config error strands exactly like a transport error does.
         # Resolved before the lock so a failure never holds one it can't use.
-        from app.services.erp_adapters import get_erp_adapter
+        #
+        # No ERP configured is NOT that case: there is nothing to resolve and
+        # nothing to push, so the leg carries on to the invoice transition with
+        # `adapter = None`. Calling `get_erp_adapter({})` here instead would
+        # fail closed and turn "this tenant has no ERP" into a permanent strand
+        # plus an exception row for a situation that is not an error.
+        adapter = None
+        if erp_config is not None:
+            from app.services.erp_adapters import get_erp_adapter
 
-        adapter = get_erp_adapter(erp_config)
+            adapter = get_erp_adapter(erp_config)
 
         # Row-lock the invoice before deciding whether to transition it —
         # backend/CLAUDE.md § Conventions: every status transition takes the row
         # FOR UPDATE. The window is real, not theoretical: the manual retry
         # endpoint awaits this pass synchronously, so it can overlap the
-        # background thread a webhook just dispatched for the same run. Two
+        # background sync task a webhook just dispatched for the same run. Two
         # unlocked readers would both see `payment_scheduled`, both pass the
         # coverage check, and both transition — a duplicate audit row and a
         # duplicate "invoice paid" notification (which, unlike the outbound
@@ -289,15 +345,16 @@ async def _sync_one_leg(
             ).scalar_one_or_none()
 
         # In production, this would call `adapter.post_payment()` — the
-        # `adapter` resolved above is the one it would use. For now, log and
-        # mark as synced. Amount is not PII; goes through the module logger so
-        # it reaches the same aggregation/redaction pipeline as the rest of the
+        # `adapter` resolved above is the one it would use, and a leg with no
+        # ERP configured skips that call entirely. For now, log and mark as
+        # synced. Amount is not PII; goes through the module logger so it
+        # reaches the same aggregation/redaction pipeline as the rest of the
         # sync. The provider NAME is logged so an operator reading the strand
-        # can see which ERP the leg was aimed at.
+        # can see which ERP the leg was aimed at (or that there was none).
         logger.info(
             "[payment-sync] syncing payment %s via %s: invoice=%s, amount=%s, method=%s",
             payment.id,
-            adapter.erp_type,
+            adapter.erp_type if adapter is not None else "none (no ERP configured)",
             invoice.invoice_number if invoice else "?",
             f"{payment.amount:.2f}",
             payment.method,

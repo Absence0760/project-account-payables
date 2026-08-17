@@ -38,6 +38,27 @@ Every protected endpoint declares the roles that can call it via `Depends(requir
 
 Notation: `*` = any authenticated role, `admin/manager` = admin or ap_manager, `admin/manager/cfo` = the three non-clerk roles.
 
+## Money and quantity fields — digit bounds
+
+Every `Decimal` field on a request body is bounded with Pydantic `max_digits` /
+`decimal_places` matching the `Numeric(precision, scale)` of the column it lands
+in. Most money is `Numeric(15, 2)`, i.e. **13 integer digits and 2 decimal
+places**; quantities are `Numeric(12, 4)`, and a few totals are `Numeric(18, 2)`.
+
+- A value wider than its column returns **422** with a `decimal_max_digits`
+  error. It used to pass validation and raise `NumericValueOutOfRangeError` at
+  the DB flush — a **500** for input the caller got wrong.
+- A value with **more decimal places than the column's scale** also returns 422
+  (`decimal_max_places`) rather than being silently rounded by Postgres. Send
+  money already rounded to the currency's minor unit; quietly changing a
+  submitted amount is a data-integrity problem, not a convenience.
+- Bounds are **exactly** the column's — never tighter — so any value the
+  database can store is accepted. Where a field additionally carries a semantic
+  range (`tax_rate` is `ge=0, le=100`), that narrower rule also applies.
+
+`backend/tests/test_schema_decimal_bounds.py` derives this from the live route
+tree and fails when a new `Decimal` request field lands without a bound.
+
 ## Pagination
 
 List endpoints share one contract, defined once in `app/api/pagination.py`

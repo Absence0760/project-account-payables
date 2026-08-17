@@ -15,7 +15,26 @@ Two surfaces share these helpers:
   * the :func:`run_recurring_invoices_loop` background sweep, which mirrors
     ``discount_auto_trigger`` exactly — control-plane enumerates orgs, a fresh
     per-tenant engine is disposed in ``finally``, and one tenant's failure is
-    logged but never halts the sweep.
+    logged but never halts the sweep. Within a tenant it mirrors
+    ``vendor_rescreen``: each template is re-read by id, guarded, and committed
+    **on its own**, so one template that raises can't abort the tick and
+    discard the invoices already generated on it.
+
+A skipped period is never silent
+--------------------------------
+A template missing ``amount`` or ``vendor_name`` can't generate, and the
+sweep's defensive cursor advance rolls it past the period anyway so a stuck
+cursor can't spin forever. That half was always right; the missing half is
+that nothing surfaced the miss — the template stayed ``active``,
+``generated_count`` never moved, and the only trace was a log line, so a
+subscription invoice a tenant believed was being raised every month simply
+wasn't. Now every skip stamps a PII-free marker on ``template.meta``
+(:func:`record_generation_skip` — reason code, period, consecutive count,
+timestamp; no migration), writes a ``recurring_template.generation_skipped``
+audit row, and rides the ``last_skip`` field on the API response. Past
+:data:`MAX_CONSECUTIVE_SKIPS` consecutive misses the sweep pauses the template
+and audits that too, so an unfixable schedule stops claiming to be live.
+:func:`clear_generation_skip` resets the count the moment it generates again.
 
 Money-path boundary
 -------------------
@@ -58,6 +77,7 @@ from app.models.recurring_invoice import (
     CADENCE_ANNUAL,
     CADENCE_QUARTERLY,
     STATUS_ACTIVE,
+    STATUS_PAUSED,
     RecurringInvoiceTemplate,
 )
 from app.services.audit_dispatch import dispatch_audit
@@ -73,6 +93,116 @@ logger = logging.getLogger(__name__)
 DEFAULT_VARIANCE_TOLERANCE_PCT = Decimal("10.0")
 
 _HUNDRED = Decimal("100")
+
+# --------------------------------------------------------------------------- #
+# Non-generatable templates — the skip is persisted, counted and bounded
+# --------------------------------------------------------------------------- #
+
+#: PII-free reason codes for a template that cannot produce an invoice. Stable
+#: strings: they ride the audit trail and the API response, so they are read by
+#: humans and by the frontend, never re-worded per call site.
+SKIP_MISSING_AMOUNT = "missing_amount"
+SKIP_MISSING_VENDOR = "missing_vendor"
+SKIP_MISSING_AMOUNT_AND_VENDOR = "missing_amount_and_vendor"
+
+#: Key under which the skip marker lives on ``RecurringInvoiceTemplate.meta``.
+#: Settings-JSON, so recording a skip needs no migration.
+SKIP_META_KEY = "generation_skip"
+
+#: Consecutive due periods a template may fail to generate before the sweep
+#: pauses it. Mirrors ``services/scheduled_reports``' auto-disable-after-N
+#: shape: an unfixable schedule shouldn't keep claiming to be live. Small
+#: because each miss is a whole billing period, not a tick.
+MAX_CONSECUTIVE_SKIPS = 3
+
+
+def not_generatable_reason(template: RecurringInvoiceTemplate) -> str | None:
+    """Why ``template`` cannot generate an invoice, or ``None`` if it can.
+
+    Pure. The single condition :func:`generate_one`, the sweep, and the
+    router's ``generate-now`` 422 all read, so the three can't drift into
+    disagreeing about what "generatable" means.
+    """
+    missing_amount = template.amount is None
+    missing_vendor = not template.vendor_name
+    if missing_amount and missing_vendor:
+        return SKIP_MISSING_AMOUNT_AND_VENDOR
+    if missing_amount:
+        return SKIP_MISSING_AMOUNT
+    if missing_vendor:
+        return SKIP_MISSING_VENDOR
+    return None
+
+
+def _read_skip_marker(template: RecurringInvoiceTemplate) -> dict:
+    """The persisted skip marker, or ``{}``. Tolerates hand-edited JSON."""
+    marker = (template.meta or {}).get(SKIP_META_KEY)
+    return marker if isinstance(marker, dict) else {}
+
+
+def record_generation_skip(
+    template: RecurringInvoiceTemplate, *, period_key: str, reason: str, at: datetime
+) -> dict:
+    """Stamp a non-generatable period onto the template and return the marker.
+
+    Persisting is the point. ``generate_one`` returning ``None`` used to log a
+    WARNING and nothing else, while the sweep's (correct) defensive cursor
+    advance rolled ``next_run_on`` forward anyway — so the template stayed
+    ``active``, ``generated_count`` never moved, and a subscription invoice a
+    tenant believed was being raised every month simply wasn't. The only trace
+    was a log line, and ``GET /api/recurring/{id}/history`` showed an empty run
+    history indistinguishable from "nothing due yet".
+
+    ``consecutive`` counts CONSECUTIVE misses — :func:`clear_generation_skip`
+    resets it the moment the template generates again — and is what bounds the
+    silence via :data:`MAX_CONSECUTIVE_SKIPS`. The marker is PII-free: a reason
+    code, the period, a count and a timestamp; never the vendor or the amount.
+    """
+    prior = _read_skip_marker(template)
+    try:
+        consecutive = int(prior.get("consecutive") or 0) + 1
+    except (TypeError, ValueError):  # pragma: no cover — hand-edited JSON
+        consecutive = 1
+    marker = {
+        "reason": reason,
+        "period_key": period_key,
+        "consecutive": consecutive,
+        "last_skipped_at": at.isoformat(),
+    }
+    # Reassign rather than mutate: SQLAlchemy doesn't track in-place changes to
+    # a JSONB dict, so an in-place write would never reach the UPDATE.
+    template.meta = {**(template.meta or {}), SKIP_META_KEY: marker}
+    return marker
+
+
+def clear_generation_skip(template: RecurringInvoiceTemplate) -> None:
+    """Drop the skip marker once the template can generate again. No-op if absent.
+
+    Call this from **every** path that has just established the reason no
+    longer holds, not only the background sweep. The marker isn't cosmetic:
+    ``record_generation_skip`` counts up from whatever it finds, so a stale
+    count left behind after a manual fix makes the NEXT single miss trip the
+    :data:`MAX_CONSECUTIVE_SKIPS` auto-pause — and a healthy template goes on
+    reporting "Not generating" to the operator who just fixed it, which is the
+    original bug inverted.
+    """
+    meta = template.meta or {}
+    if SKIP_META_KEY not in meta:
+        return
+    remaining = {k: v for k, v in meta.items() if k != SKIP_META_KEY}
+    template.meta = remaining or None
+
+
+def clear_generation_skip_if_resolved(template: RecurringInvoiceTemplate) -> None:
+    """Clear the skip marker iff the template is generatable again.
+
+    For the callers that change a template *without* generating from it — the
+    ``PATCH`` that fills in the missing amount, the ``resume`` that puts it back
+    in service. A template still missing its vendor keeps the marker, because
+    the reason it names is still true.
+    """
+    if not_generatable_reason(template) is None:
+        clear_generation_skip(template)
 
 
 # --------------------------------------------------------------------------- #
@@ -270,13 +400,23 @@ async def generate_one(
     audit, no cursor advance).
 
     Returns the created (or pre-existing) :class:`Invoice`. ``None`` only when
-    the template lacks the minimum data to generate (no vendor / no amount).
+    the template lacks the minimum data to generate (no vendor / no amount) —
+    the condition is :func:`not_generatable_reason`, shared with the sweep and
+    the router so a "can't generate" verdict is decided in one place. A caller
+    that receives ``None`` owes the user a persisted trace; the sweep records
+    one via :func:`record_generation_skip`.
     """
-    if template.amount is None or not template.vendor_name:
-        logger.warning(
-            "[recurring] template %s not generatable (missing amount/vendor)", template.id
-        )
+    reason = not_generatable_reason(template)
+    if reason is not None:
+        logger.warning("[recurring] template %s not generatable (%s)", template.id, reason)
         return None
+
+    # The guard above just established the template CAN generate, so any skip
+    # marker is stale. Clearing here — in the shared primitive — is what makes
+    # `POST /{id}/generate-now` reset the count too; leaving it to the sweep
+    # alone meant a manually-fixed template kept a stale `consecutive`, so its
+    # next single miss tripped the auto-pause meant for three.
+    clear_generation_skip(template)
 
     period_key = period_key_for(template.cadence, run_on)
     correlation_id = uuid.uuid4()
@@ -424,11 +564,39 @@ def flag_template_variance(
 
 @dataclass
 class SweepResult:
-    """Per-sweep outcome for logging + tests."""
+    """Per-sweep outcome for logging + tests.
+
+    ``sweep_health.failure_count`` sums every field named ``failures`` or
+    ending in ``_failures``, so ``template_failures`` deliberately joins the
+    health signal (a template whose generation *raised* is a real failure) while
+    ``templates_skipped`` deliberately does not: a template missing a vendor or
+    an amount is a tenant configuration problem, not a broken sweep, and
+    counting it would leave the sweep permanently `degraded` for something no
+    operator of this platform can fix. That skip is surfaced per-template
+    instead — persisted marker, audit row, and an auto-pause that bounds it.
+    """
 
     tenants_scanned: int = 0
     invoices_generated: int = 0
+    #: Due periods a template couldn't generate (missing amount / vendor).
+    templates_skipped: int = 0
+    #: Templates the sweep paused after `MAX_CONSECUTIVE_SKIPS` misses.
+    templates_paused: int = 0
+    #: Tenants whose sweep aborted outright (engine / connect / query failure).
     failures: int = 0
+    #: Individual templates whose generation raised. Counted apart from
+    #: ``failures`` because one template no longer takes its tenant down.
+    template_failures: int = 0
+
+
+@dataclass
+class TenantSweepOutcome:
+    """One tenant's slice of a sweep. Mirrors the fields on :class:`SweepResult`."""
+
+    generated: int = 0
+    templates_skipped: int = 0
+    templates_paused: int = 0
+    template_failures: int = 0
 
 
 async def generate_recurring_invoices_once(*, today: date | None = None) -> SweepResult:
@@ -443,37 +611,131 @@ async def generate_recurring_invoices_once(*, today: date | None = None) -> Swee
     for _org_id, db_name in tenants:
         result.tenants_scanned += 1
         try:
-            result.invoices_generated += await _sweep_tenant(db_name, ref_today)
+            outcome = await _sweep_tenant(db_name, ref_today)
+            result.invoices_generated += outcome.generated
+            result.templates_skipped += outcome.templates_skipped
+            result.templates_paused += outcome.templates_paused
+            result.template_failures += outcome.template_failures
         except Exception as exc:  # noqa: BLE001 — one tenant must not halt the sweep
             logger.warning("[recurring] failed sweeping %s: %s", db_name, exc.__class__.__name__)
             result.failures += 1
 
-    if result.invoices_generated or result.failures:
+    if (
+        result.invoices_generated
+        or result.templates_skipped
+        or result.failures
+        or result.template_failures
+    ):
         logger.info(
-            "[recurring] swept %d tenant(s); generated=%d failed_sweeps=%d",
+            "[recurring] swept %d tenant(s); generated=%d skipped=%d paused=%d "
+            "failed_sweeps=%d failed_templates=%d",
             result.tenants_scanned,
             result.invoices_generated,
+            result.templates_skipped,
+            result.templates_paused,
             result.failures,
+            result.template_failures,
         )
     return result
 
 
-async def _sweep_tenant(db_name: str, today: date) -> int:
-    """Generate due invoices for one tenant. Returns the count generated.
+def _advance_cursor(template: RecurringInvoiceTemplate, run_on: date) -> None:
+    """Force ``next_run_on`` forward one period if generation didn't move it.
+
+    Defensive: the already-generated no-op and the non-generatable skip both
+    leave the cursor where it was, and a stuck ``next_run_on <= today`` would
+    re-select the same template on every tick forever.
+    """
+    if template.next_run_on is None or template.next_run_on > run_on:
+        return
+    months = _months_per_period(template.cadence)
+    template.next_run_on = compute_next_run_on(
+        template.cadence,
+        template.day_of_period,
+        after=_add_months(run_on, months),
+        start_date=template.start_date,
+        end_date=template.end_date,
+    )
+
+
+async def _handle_non_generatable(
+    db: AsyncSession,
+    template: RecurringInvoiceTemplate,
+    *,
+    period_key: str,
+    reason: str,
+    outcome: TenantSweepOutcome,
+) -> None:
+    """Persist, audit and (past the cap) pause a template that can't generate."""
+    marker = record_generation_skip(
+        template, period_key=period_key, reason=reason, at=datetime.now(UTC)
+    )
+    outcome.templates_skipped += 1
+    # Correlate the skip — and the pause it may trigger — on the template's own
+    # id, so a reader following one template's generation problem gets the
+    # whole thread rather than one row per unrelated correlation.
+    await dispatch_audit(
+        db,
+        correlation_id=template.id,
+        organization_id=template.organization_id,
+        actor_id=None,
+        action="recurring_template.generation_skipped",
+        entity_type="recurring_invoice_template",
+        entity_id=template.id,
+        details={
+            "reason": reason,
+            "period_key": period_key,
+            "consecutive": marker["consecutive"],
+        },
+    )
+    if marker["consecutive"] >= MAX_CONSECUTIVE_SKIPS and template.status == STATUS_ACTIVE:
+        # Stop pretending to be a live schedule. `resume` re-anchors the cursor
+        # from today, so nothing back-fires the periods slept through.
+        template.status = STATUS_PAUSED
+        outcome.templates_paused += 1
+        await dispatch_audit(
+            db,
+            correlation_id=template.id,
+            organization_id=template.organization_id,
+            actor_id=None,
+            action="recurring_template.paused",
+            entity_type="recurring_invoice_template",
+            entity_id=template.id,
+            details={
+                "status": STATUS_PAUSED,
+                "source": "sweep",
+                "reason": reason,
+                "consecutive_skips": marker["consecutive"],
+            },
+        )
+
+
+async def _sweep_tenant(db_name: str, today: date) -> TenantSweepOutcome:
+    """Generate due invoices for one tenant.
 
     Finds ``active`` templates with ``next_run_on <= today`` and generates the
     due period for each, capped at ``recurring_invoices_max_per_sweep`` per
     tick. Never moves money.
+
+    **Per template, not per tenant.** Each template is re-read by id, guarded,
+    and committed on its own. The loop used to run every template in one
+    transaction with a single commit at the end, so one template that raised
+    aborted the tenant's whole tick *and discarded the invoices already
+    generated on it* — the identical shape fixed in ``vendor_rescreen`` and
+    ``payment_erp_sync``. Re-reading by id matters because a rollback expires
+    the ORM objects a pre-loaded list would still hold, and touching one of
+    those from async SQLAlchemy is a ``MissingGreenlet``, not a clean failure.
     """
     cap = int(settings.recurring_invoices_max_per_sweep)
+    outcome = TenantSweepOutcome()
     engine = create_async_engine(_make_tenant_url(db_name))
     factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with factory() as db:
-            templates = (
+            template_ids = (
                 (
                     await db.execute(
-                        select(RecurringInvoiceTemplate)
+                        select(RecurringInvoiceTemplate.id)
                         .where(
                             RecurringInvoiceTemplate.status == STATUS_ACTIVE,
                             RecurringInvoiceTemplate.next_run_on.isnot(None),
@@ -487,48 +749,69 @@ async def _sweep_tenant(db_name: str, today: date) -> int:
                 .all()
             )
 
-            generated = 0
-            for template in templates:
-                run_on = template.next_run_on
-                if run_on is None:
-                    continue
-                # generate_one() returns the SAME non-None Invoice whether it
-                # just created one or hit the (template, period_key)
-                # idempotency guard and returned the pre-existing row — so
-                # "invoice is not None" alone can't tell a real create from a
-                # no-op. Pre-check the period ourselves and only call
-                # generate_one (and count it) when the period genuinely has
-                # no invoice yet; an already-generated period is a no-op that
-                # must NOT inflate the `generated` metric/log.
-                period_key = period_key_for(template.cadence, run_on)
-                already_generated = (
-                    await db.execute(
-                        select(Invoice.id).where(
-                            Invoice.recurring_template_id == template.id,
-                            Invoice.recurring_period_key == period_key,
-                        )
-                    )
-                ).scalar_one_or_none() is not None
-                if not already_generated:
-                    invoice = await generate_one(db, template, run_on=run_on, actor_id=None)
-                    if invoice is not None:
-                        generated += 1
-                # Defensive: if the cursor didn't advance (e.g. the
-                # already-generated no-op above, or the missing amount/vendor
-                # guard inside generate_one), force it forward one period so a
-                # stuck `next_run_on <= today` can't loop the sweep forever.
-                if template.next_run_on is not None and template.next_run_on <= run_on:
-                    months = _months_per_period(template.cadence)
-                    template.next_run_on = compute_next_run_on(
-                        template.cadence,
-                        template.day_of_period,
-                        after=_add_months(run_on, months),
-                        start_date=template.start_date,
-                        end_date=template.end_date,
-                    )
+            for template_id in template_ids:
+                try:
+                    template = await db.get(RecurringInvoiceTemplate, template_id)
+                    if template is None:  # deleted since the id query
+                        continue
+                    run_on = template.next_run_on
+                    if run_on is None:
+                        continue
+                    period_key = period_key_for(template.cadence, run_on)
 
-            await db.commit()
-            return generated
+                    reason = not_generatable_reason(template)
+                    if reason is not None:
+                        await _handle_non_generatable(
+                            db,
+                            template,
+                            period_key=period_key,
+                            reason=reason,
+                            outcome=outcome,
+                        )
+                        _advance_cursor(template, run_on)
+                        await db.commit()
+                        continue
+
+                    # Generatable — so any marker from an earlier period is
+                    # stale, including on the already-generated no-op path
+                    # below, which never reaches `generate_one`'s own clear.
+                    clear_generation_skip(template)
+
+                    # generate_one() returns the SAME non-None Invoice whether
+                    # it just created one or hit the (template, period_key)
+                    # idempotency guard and returned the pre-existing row — so
+                    # "invoice is not None" alone can't tell a real create from
+                    # a no-op. Pre-check the period ourselves and only call
+                    # generate_one (and count it) when the period genuinely has
+                    # no invoice yet; an already-generated period is a no-op
+                    # that must NOT inflate the `generated` metric/log.
+                    already_generated = (
+                        await db.execute(
+                            select(Invoice.id).where(
+                                Invoice.recurring_template_id == template.id,
+                                Invoice.recurring_period_key == period_key,
+                            )
+                        )
+                    ).scalar_one_or_none() is not None
+                    if not already_generated:
+                        invoice = await generate_one(db, template, run_on=run_on, actor_id=None)
+                        if invoice is not None:
+                            outcome.generated += 1
+                    _advance_cursor(template, run_on)
+                    await db.commit()
+                except Exception as exc:  # noqa: BLE001 — one template must not halt the tenant
+                    # Class only — a DB/asyncpg error message can echo a vendor
+                    # name or a denormalised amount (PII-out-of-logs).
+                    logger.warning(
+                        "[recurring] template=%s generation failed in %s: %s",
+                        template_id,
+                        db_name,
+                        exc.__class__.__name__,
+                    )
+                    await db.rollback()
+                    outcome.template_failures += 1
+
+            return outcome
     finally:
         await engine.dispose()
 

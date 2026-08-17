@@ -1,16 +1,18 @@
 """Tests for TIN-validation adapters + offline format rules.
 
-DB-free: exercises the deterministic ``format_rules`` and the ``mock`` /
-``tax1099`` adapters directly. The IRS TIN-match transport path on the
-tax1099 adapter is not exercised against a live endpoint — we only verify
-its offline-degrade behaviour (format-only when no key, hard-fail on a
-malformed TIN).
+DB-free and network-free: exercises the deterministic ``format_rules`` and the
+``mock`` / ``tax1099`` adapters directly. The IRS TIN-match transport path is
+never pointed at a live endpoint — the offline-degrade behaviour (format-only
+when no key, hard-fail on a malformed TIN) is asserted directly, and the
+connection probe runs against an in-process ``httpx.MockTransport``.
 """
 
 from __future__ import annotations
 
+import httpx
 import pytest
 
+import app.services.tin_validation_adapters.tax1099_adapter as tax1099_tin
 from app.services.tin_validation_adapters import get_tin_validation_adapter
 from app.services.tin_validation_adapters.base import (
     VERDICT_INVALID,
@@ -136,3 +138,79 @@ async def test_tax1099_hard_fails_malformed_without_calling_out():
     result = await adapter.validate(tin="not-a-tin")
     assert result.verdict == VERDICT_INVALID
     assert result.reason_code == "format_invalid"
+
+
+# ---------------------------------------------------------------------------
+# Tax1099 skeleton — the probe must actually probe
+# ---------------------------------------------------------------------------
+#
+# `test_connection` used to call `validate(tin="00-0000000")`, on the theory
+# that a malformed TIN exercised auth without spending a real lookup. It did
+# not: `validate` runs the OFFLINE `check_format` first and returns
+# `format_invalid` before any HTTP, so the probe never left the process and
+# answered True for ANY non-empty `api_key`. A connection test that reports
+# healthy on the mere presence of a credential is worse than none — it is the
+# surface an operator uses to catch a wrong key, and it confirmed the mistake.
+
+
+def _mock_httpx(monkeypatch, handler):
+    """Point the adapter's `httpx.AsyncClient` at an in-process transport."""
+    real_client = httpx.AsyncClient
+
+    def _factory(**kwargs):
+        return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(tax1099_tin.httpx, "AsyncClient", _factory)
+
+
+@pytest.mark.asyncio
+async def test_tax1099_probe_reaches_the_provider(monkeypatch):
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"status": "ok"})
+
+    _mock_httpx(monkeypatch, handler)
+    adapter = get_tin_validation_adapter({"provider": "tax1099", "api_key": "live-key"})
+
+    assert await adapter.test_connection() is True
+    assert seen["url"].endswith("/account/ping")
+    assert seen["auth"] == "Bearer live-key"
+
+
+@pytest.mark.asyncio
+async def test_tax1099_probe_is_false_on_a_rejected_credential(monkeypatch):
+    """The regression. A 401 from the provider is exactly the case the probe
+    exists to surface, and the old implementation answered True."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": "unauthorized"})
+
+    _mock_httpx(monkeypatch, handler)
+    adapter = get_tin_validation_adapter({"provider": "tax1099", "api_key": "wrong-key"})
+
+    assert await adapter.test_connection() is False
+
+
+@pytest.mark.asyncio
+async def test_tax1099_probe_is_false_when_the_provider_is_unreachable(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("no route to host", request=request)
+
+    _mock_httpx(monkeypatch, handler)
+    adapter = get_tin_validation_adapter({"provider": "tax1099", "api_key": "live-key"})
+
+    assert await adapter.test_connection() is False
+
+
+@pytest.mark.asyncio
+async def test_tax1099_probe_is_false_without_a_key_and_makes_no_call(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover - must not run
+        raise AssertionError("unconfigured probe must not call out")
+
+    _mock_httpx(monkeypatch, handler)
+    adapter = get_tin_validation_adapter({"provider": "tax1099"})
+
+    assert await adapter.test_connection() is False

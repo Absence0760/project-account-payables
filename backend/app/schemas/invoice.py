@@ -32,7 +32,8 @@ class InvoiceStatus(StrEnum):
 class InvoiceBase(BaseModel):
     vendor: str = Field(..., max_length=255)
     invoice_number: str = Field(..., max_length=100)
-    amount: Decimal = Field(..., ge=0)
+    # Digits match `invoices.amount` Numeric(15, 2).
+    amount: Decimal = Field(..., ge=0, max_digits=15, decimal_places=2)
     currency: str = Field(default="USD", max_length=3)
     invoice_date: date | None = None
     received_date: date | None = None
@@ -47,16 +48,16 @@ class InvoiceBase(BaseModel):
     # hardcodes `new`; this field stays off the schema. See InvoiceUpdate for the
     # same reasoning on edits.
     po_number: str | None = Field(default=None, max_length=100)
-    subtotal: Decimal | None = Field(default=None, ge=0)
-    tax_amount: Decimal | None = Field(default=None, ge=0)
-    discount_amount: Decimal | None = Field(default=None, ge=0)
-    shipping_amount: Decimal | None = Field(default=None, ge=0)
+    subtotal: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    tax_amount: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    discount_amount: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    shipping_amount: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     remit_to_address: str | None = None
     bill_to_address: str | None = None
     vendor_address: str | None = None
     vendor_tax_id: str | None = Field(default=None, max_length=50)
     ship_to_address: str | None = None
-    tax_rate: Decimal | None = Field(default=None, ge=0, le=100)
+    tax_rate: Decimal | None = Field(default=None, ge=0, le=100, max_digits=5, decimal_places=2)
     payment_method: str | None = Field(default=None, max_length=50)
     reference_number: str | None = Field(default=None, max_length=100)
     description: str | None = None
@@ -86,7 +87,7 @@ class InvoiceCreate(InvoiceBase):
 class InvoiceUpdate(BaseModel):
     vendor: str | None = Field(default=None, max_length=255)
     invoice_number: str | None = Field(default=None, max_length=100)
-    amount: Decimal | None = Field(default=None, ge=0)
+    amount: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     currency: str | None = Field(default=None, max_length=3)
     invoice_date: date | None = None
     received_date: date | None = None
@@ -102,16 +103,16 @@ class InvoiceUpdate(BaseModel):
     # on this PATCH body would let a bare setattr bypass every one of them
     # (e.g. new → paid, or an uploader self-approving). Keep it off.
     po_number: str | None = None
-    subtotal: Decimal | None = Field(default=None, ge=0)
-    tax_amount: Decimal | None = Field(default=None, ge=0)
-    discount_amount: Decimal | None = Field(default=None, ge=0)
-    shipping_amount: Decimal | None = Field(default=None, ge=0)
+    subtotal: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    tax_amount: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    discount_amount: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    shipping_amount: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     remit_to_address: str | None = None
     bill_to_address: str | None = None
     vendor_address: str | None = None
     vendor_tax_id: str | None = Field(default=None, max_length=50)
     ship_to_address: str | None = None
-    tax_rate: Decimal | None = Field(default=None, ge=0, le=100)
+    tax_rate: Decimal | None = Field(default=None, ge=0, le=100, max_digits=5, decimal_places=2)
     payment_method: str | None = Field(default=None, max_length=50)
     reference_number: str | None = Field(default=None, max_length=100)
     description: str | None = None

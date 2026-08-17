@@ -5,6 +5,17 @@
 	import { m } from '$lib/i18n/store.svelte';
 	import type { MessageKey } from '$lib/i18n/messages';
 	import { formatDate } from '$lib/utils/time';
+	import {
+		getChatNotifications,
+		revokeChatWebhook,
+		rotateChatWebhook,
+		updateChatNotifications
+	} from '$lib/api/chatNotifications';
+	import {
+		CHAT_EVENT_LABELS,
+		CHAT_PROVIDER_LABELS,
+		type ChatNotificationStatus
+	} from '$lib/types/chatNotifications';
 
 	interface CompanyProfile {
 		address: string;
@@ -255,6 +266,7 @@
 		loadOrg();
 		loadCustomDomains();
 		loadResidency();
+		loadChat();
 	});
 
 	async function loadOrg() {
@@ -888,6 +900,124 @@
 		const ok = await saveCustomDomains(customDomains.filter((d) => d !== host));
 		if (ok) toast(m('org.customDomains.toast.removed'), 'success');
 	}
+
+	// ── Chat notifications (Slack / Teams) ──────────────────────────────
+	// The incoming-webhook URL is the credential for both real providers, and
+	// it is WRITE-ONLY end to end: no endpoint returns it, so there is no
+	// `chatWebhookUrl` mirror of the persisted value here — only the status the
+	// server reports (configured yes/no + the bare host it posts to) and the
+	// draft the admin is currently typing. Don't add one.
+	// See backend/docs/notifications.md § Rotating the webhook URL.
+	let chat = $state<ChatNotificationStatus | null>(null);
+	let chatEnabled = $state(false);
+	let chatProvider = $state('mock');
+	let chatEvents = $state<Record<string, boolean>>({});
+	let loadingChat = $state(true);
+	let chatError = $state('');
+	let savingChat = $state(false);
+	let newChatWebhook = $state('');
+	let savingChatWebhook = $state(false);
+	let confirmRemoveChatWebhook = $state(false);
+
+	function applyChat(data: ChatNotificationStatus) {
+		chat = data;
+		chatEnabled = data.enabled;
+		chatProvider = data.provider ?? 'mock';
+		// A missing per-event key means "on" (the backend's opt-out default), so
+		// materialize the full map here rather than letting an unchecked box
+		// mean "unset".
+		chatEvents = Object.fromEntries(
+			(data.supported_events ?? []).map((e) => [e, data.events?.[e] ?? true])
+		);
+	}
+
+	function chatProviderLabel(token: string): string {
+		return CHAT_PROVIDER_LABELS[token] ?? token;
+	}
+
+	function chatEventLabel(token: string): string {
+		return CHAT_EVENT_LABELS[token] ?? token;
+	}
+
+	// Chat on, a real provider selected, no webhook stored → the adapter fails
+	// closed and silently posts nothing. Surface that rather than let the panel
+	// read as configured.
+	const chatWebhookMissing = $derived(
+		!!chat && chat.enabled && chat.provider !== 'mock' && !chat.webhook_configured
+	);
+
+	async function loadChat() {
+		loadingChat = true;
+		chatError = '';
+		try {
+			applyChat(await getChatNotifications());
+		} catch (err) {
+			chatError = err instanceof Error ? err.message : m('org.chat.toast.loadFailed');
+		} finally {
+			loadingChat = false;
+		}
+	}
+
+	async function saveChat() {
+		savingChat = true;
+		try {
+			// The response is authoritative — in particular it re-reports
+			// `webhook_configured`, which this save deliberately does not touch.
+			applyChat(
+				await updateChatNotifications({
+					enabled: chatEnabled,
+					provider: chatProvider,
+					events: chatEvents
+				})
+			);
+			toast(m('org.chat.toast.saved'), 'success');
+		} catch (err) {
+			toast(err instanceof Error ? err.message : m('org.chat.toast.saveFailed'), 'error');
+		} finally {
+			savingChat = false;
+		}
+	}
+
+	async function saveChatWebhook() {
+		const url = newChatWebhook.trim();
+		if (!url) {
+			toast(m('org.chat.webhook.toast.empty'), 'error');
+			return;
+		}
+		savingChatWebhook = true;
+		try {
+			applyChat(await rotateChatWebhook(url));
+			// Drop the credential from component state the moment it is stored —
+			// it is never re-fetchable, so keeping it around buys nothing.
+			newChatWebhook = '';
+			toast(m('org.chat.webhook.toast.saved'), 'success');
+		} catch (err) {
+			toast(err instanceof Error ? err.message : m('org.chat.webhook.toast.saveFailed'), 'error');
+		} finally {
+			savingChatWebhook = false;
+		}
+	}
+
+	async function removeChatWebhook() {
+		// Two-click arm/confirm — revoking silently stops every approval post.
+		if (!confirmRemoveChatWebhook) {
+			confirmRemoveChatWebhook = true;
+			return;
+		}
+		confirmRemoveChatWebhook = false;
+		savingChatWebhook = true;
+		try {
+			applyChat(await revokeChatWebhook());
+			toast(m('org.chat.webhook.toast.removed'), 'success');
+		} catch (err) {
+			toast(
+				err instanceof Error ? err.message : m('org.chat.webhook.toast.removeFailed'),
+				'error'
+			);
+		} finally {
+			savingChatWebhook = false;
+		}
+	}
 </script>
 
 <svelte:window
@@ -895,6 +1025,13 @@
 		// Un-arm a pending domain-remove confirm when clicking elsewhere.
 		if (confirmRemoveDomain && !(e.target as HTMLElement)?.closest?.('.domain-remove')) {
 			confirmRemoveDomain = null;
+		}
+		// Same for the chat-webhook revoke.
+		if (
+			confirmRemoveChatWebhook &&
+			!(e.target as HTMLElement)?.closest?.('.chat-webhook-remove')
+		) {
+			confirmRemoveChatWebhook = false;
 		}
 	}}
 />
@@ -1124,6 +1261,119 @@
 							{savingDomains ? m('org.customDomains.adding') : m('org.customDomains.add')}
 						</button>
 					</form>
+				{/if}
+			</section>
+
+			<section class="card">
+				<h2>{m('org.section.chat')}</h2>
+				<p class="card-hint">{m('org.chat.hint')}</p>
+
+				{#if loadingChat}
+					<p class="card-hint">{m('org.chat.loading')}</p>
+				{:else if chatError}
+					<p class="chat-error" role="alert">{chatError}</p>
+				{:else if chat}
+					<div class="form-grid">
+						<label class="switch-row">
+							<input type="checkbox" bind:checked={chatEnabled} />
+							<span>{m('org.chat.enabled')}</span>
+						</label>
+						<label>
+							{m('org.chat.provider')}
+							<select bind:value={chatProvider}>
+								{#each chat.supported_providers as p (p)}
+									<option value={p}>{chatProviderLabel(p)}</option>
+								{/each}
+							</select>
+						</label>
+					</div>
+
+					<fieldset class="chat-events">
+						<legend>{m('org.chat.events')}</legend>
+						<p class="card-hint">{m('org.chat.eventsHint')}</p>
+						{#each chat.supported_events as ev (ev)}
+							<label class="switch-row">
+								<input
+									type="checkbox"
+									checked={chatEvents[ev] ?? true}
+									onchange={(e) =>
+										(chatEvents = {
+											...chatEvents,
+											[ev]: (e.currentTarget as HTMLInputElement).checked
+										})}
+								/>
+								<span>{chatEventLabel(ev)}</span>
+							</label>
+						{/each}
+					</fieldset>
+
+					<div class="section-footer">
+						<button class="btn-save-section" disabled={savingChat} onclick={saveChat}>
+							{savingChat ? m('org.common.saving') : m('org.chat.save')}
+						</button>
+					</div>
+
+					<h3 class="chat-subhead">{m('org.chat.webhook.title')}</h3>
+					<p class="card-hint">{m('org.chat.webhook.hint')}</p>
+
+					{#if chatWebhookMissing}
+						<p class="chat-warning" role="alert">
+							{m('org.chat.webhook.missingWarning', {
+								provider: chatProviderLabel(chat.provider ?? '')
+							})}
+						</p>
+					{/if}
+
+					<div class="chat-webhook-status">
+						{#if chat.webhook_configured}
+							<span class="chat-webhook-set">
+								{chat.webhook_host
+									? m('org.chat.webhook.configured', { host: chat.webhook_host })
+									: m('org.chat.webhook.configuredUnknownHost')}
+							</span>
+							<span class="chat-webhook-remove">
+								<button
+									type="button"
+									class="btn-remove-domain"
+									class:armed={confirmRemoveChatWebhook}
+									disabled={savingChatWebhook}
+									aria-label={m('org.chat.webhook.removeAria')}
+									onclick={removeChatWebhook}
+								>
+									{confirmRemoveChatWebhook
+										? m('org.chat.webhook.confirmRemove')
+										: m('org.chat.webhook.remove')}
+								</button>
+							</span>
+						{:else}
+							<span class="card-hint">{m('org.chat.webhook.notConfigured')}</span>
+						{/if}
+					</div>
+
+					<form
+						class="domain-add"
+						onsubmit={(e) => {
+							e.preventDefault();
+							saveChatWebhook();
+						}}
+					>
+						<input
+							type="text"
+							bind:value={newChatWebhook}
+							placeholder={m('org.chat.webhook.placeholder')}
+							aria-label={m('org.chat.webhook.inputAria')}
+							autocomplete="off"
+							spellcheck="false"
+						/>
+						<button type="submit" class="btn-save-section" disabled={savingChatWebhook}>
+							{savingChatWebhook
+								? m('org.chat.webhook.saving')
+								: chat.webhook_configured
+									? m('org.chat.webhook.replace')
+									: m('org.chat.webhook.set')}
+						</button>
+					</form>
+					<p class="card-hint">{m('org.chat.webhook.rotateHint')}</p>
 				{/if}
 			</section>
 
@@ -2003,13 +2253,72 @@
 		flex: 1;
 	}
 
-	/* Panel-level load failure (custom domains, data residency) — a persistent
-	   region rather than a toast, because it explains why the panel is empty. */
+	/* Panel-level load failure (custom domains, data residency, chat) — a
+	   persistent region rather than a toast, because it explains why the panel
+	   is empty. */
 	.domain-error,
-	.residency-error {
+	.residency-error,
+	.chat-error {
 		color: var(--danger);
 		font-size: 0.88rem;
 		margin: 4px 0 12px;
+	}
+
+	/* "Enabled for a real provider but no webhook stored" — the adapter fails
+	   closed and posts nothing, so this is a live misconfiguration, not an
+	   error the user just caused. Tinted-badge recipe: the -tint background
+	   with its matching -on-tint text, never the base token. */
+	.chat-warning {
+		margin: 4px 0 12px;
+		padding: 10px 12px;
+		border-radius: 6px;
+		font-size: 0.82rem;
+		background: var(--warning-tint);
+		color: var(--warning-on-tint);
+	}
+
+	.chat-subhead {
+		margin: 20px 0 4px;
+		font-size: 0.95rem;
+		font-weight: 600;
+		color: var(--text);
+	}
+
+	.chat-events {
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		padding: 12px 14px;
+		margin: 14px 0 0;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.chat-events legend {
+		padding: 0 6px;
+		font-size: 0.82rem;
+		font-weight: 600;
+		color: var(--text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+
+	.chat-events .card-hint {
+		margin: 0 0 4px;
+	}
+
+	.chat-webhook-status {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		margin: 8px 0 12px;
+		flex-wrap: wrap;
+	}
+
+	.chat-webhook-set {
+		font-size: 0.88rem;
+		color: var(--text);
 	}
 
 	.domain-empty {

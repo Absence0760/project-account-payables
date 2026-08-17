@@ -20,6 +20,24 @@ import { getActiveFormatLocale } from '$lib/i18n/formatLocale';
 /** ISO 4217 default when an amount arrives without an explicit currency. */
 export const DEFAULT_CURRENCY = 'USD';
 
+/**
+ * An exact decimal money amount as the API serialises it — `"1234.50"`.
+ *
+ * The backend holds money as `Decimal` and writes it to JSON as a string so
+ * no figure ever round-trips through a binary float. Type an API money field
+ * as this, never `number`: a `number` field silently invites `.toFixed()`,
+ * `a - b`, and `Math.max()` on currency, which is exactly the arithmetic the
+ * Decimal invariant exists to prevent.
+ */
+export type MoneyString = string;
+
+/**
+ * Every shape a money amount arrives in at a render site: the exact decimal
+ * string the API sends, a legacy JSON number from an endpoint not yet
+ * migrated, or nothing at all.
+ */
+export type MoneyAmount = MoneyString | number | null | undefined;
+
 export interface MoneyFormatOptions {
 	/** ISO 4217 code. Falls back to {@link DEFAULT_CURRENCY} when empty/nullish. */
 	currency?: string | null;
@@ -45,10 +63,33 @@ function resolveCurrency(currency?: string | null): string {
  * the API, null) to a finite number. Returns `null` when there is no
  * usable value so the caller can render a placeholder.
  */
-function toNumber(amount: number | string | null | undefined): number | null {
+function toNumber(amount: MoneyAmount): number | null {
 	if (amount === null || amount === undefined || amount === '') return null;
 	const n = typeof amount === 'number' ? amount : Number(amount);
 	return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Parse an exact-decimal money amount into a plain `number` for **layout and
+ * ordering only** — a chart bar's width, the `Math.max()` that sets a chart's
+ * scale, a sort key.
+ *
+ * This is the one sanctioned way a money string becomes a JS number, and it is
+ * named for its purpose so the name refuses the wrong use at the call site.
+ * The result is a *geometry* input, never a figure:
+ *
+ * - **Never render it.** Use `formatMoney` / `<Money>` on the original string.
+ * - **Never add, subtract or scale two of them into a figure a user reads.**
+ *   That is float money math; render both figures and let the backend own any
+ *   delta (`sumMoney` exists for the narrow display-total case it documents).
+ * - **Never compare two amounts for a business decision.** Use
+ *   `isPositiveAmount` / `isNegativeAmount`, or ask the backend.
+ *
+ * Returns `0` for null / empty / unparseable input so a chart can't render a
+ * `NaN%` width off a missing field.
+ */
+export function parseMoneyForLayout(amount: MoneyAmount): number {
+	return toNumber(amount) ?? 0;
 }
 
 /**
@@ -60,9 +101,22 @@ function toNumber(amount: number | string | null | undefined): number | null {
  * report's card-excluded total, which is only meaningful when non-zero);
  * never to add, subtract or compare two amounts against each other.
  */
-export function isPositiveAmount(amount: number | string | null | undefined): boolean {
+export function isPositiveAmount(amount: MoneyAmount): boolean {
 	const n = toNumber(amount);
 	return n !== null && n > 0;
+}
+
+/**
+ * Is this a strictly-negative amount?
+ *
+ * The mirror of {@link isPositiveAmount}, and a *predicate* for the same
+ * reason: it decides whether to tint a figure as a loss (an unrealized FX
+ * gain/loss column, a negative proration), never what that figure reads as.
+ * An absent / unparseable amount is not a loss, so it returns `false`.
+ */
+export function isNegativeAmount(amount: MoneyAmount): boolean {
+	const n = toNumber(amount);
+	return n !== null && n < 0;
 }
 
 /**
@@ -72,7 +126,7 @@ export function isPositiveAmount(amount: number | string | null | undefined): bo
  *          amount is null/empty/non-finite.
  */
 export function formatMoney(
-	amount: number | string | null | undefined,
+	amount: MoneyAmount,
 	options: MoneyFormatOptions = {},
 	placeholder = '—'
 ): string {
@@ -128,7 +182,7 @@ export function formatMoney(
  * mirroring the `Number(x ?? 0)` call sites this replaces. Returns `0`
  * for an empty or all-skipped input.
  */
-export function sumMoney(amounts: Iterable<number | string | null | undefined>): number {
+export function sumMoney(amounts: Iterable<MoneyAmount>): number {
 	let maxScale = 0;
 	const parsed: { negative: boolean; digits: string; scale: number }[] = [];
 

@@ -72,6 +72,23 @@ CASES = [
     # Compound commands: a deny anywhere in the chain blocks.
     ('git add foo.ts && git commit -m "msg"', "deny"),
     ('git add foo.ts && git commit -m "msg" -- foo.ts', "allow"),
+    # A heredoc BODY is data, not shell. Its newlines used to become `;`
+    # statement separators, so a commit message that merely *mentioned* a
+    # blocked command was parsed as that command and denied — and this repo's
+    # own conventions talk about `git add -A` constantly, so writing an honest
+    # message got the commit refused.
+    ("git commit -F - -- a.py <<'EOF'\nfix: x\n\nstop using git add -A\nEOF", "allow"),
+    ("git commit -F - -- a.py <<'EOF'\nfix: x\n\nrun git commit -a to repro\nEOF", "allow"),
+    ("git commit -F - -- a.py <<EOF\nfix: x\ngit reset --hard\nEOF", "allow"),
+    ("git commit -F - -- a.py <<-EOF\n\tfix: x\n\tgit clean -f\n\tEOF", "allow"),
+    # …but the body must not become a hiding place. Everything after the
+    # terminator is shell again, and the two lookalikes that are NOT heredocs
+    # (a `<<<` herestring, a quoted string containing `<<EOF`) must not open
+    # one either — otherwise the guard could be talked out of its own job.
+    ("git commit -F - -- a.py <<'EOF'\nmsg\nEOF\ngit add -A", "deny"),
+    ("git commit -F - -- a.py <<'EOF'\nmsg\nEOF\ngit reset --hard", "deny"),
+    ('git add -A <<<"x"', "deny"),
+    ('echo "<<EOF" ; git add -A', "deny"),
 ]
 
 failures = []

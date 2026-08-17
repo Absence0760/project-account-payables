@@ -62,7 +62,8 @@ class DiscountOfferCreate(BaseModel):
     vendor_id: str | None = None
     source: OfferSource = OfferSource.supplier
     tiers: list[DiscountTier] = Field(..., min_length=1)
-    base_amount: Decimal | None = Field(default=None, ge=0)
+    # Digits match `discount_offers.base_amount` Numeric(15, 2).
+    base_amount: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     currency: str | None = Field(default=None, min_length=3, max_length=3)
     valid_from: date | None = None
     valid_until: date | None = None

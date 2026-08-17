@@ -128,8 +128,90 @@ savepoint is purely the concurrency backstop.)
 **The sweep never moves money.** It only creates an `Invoice` in the queue; the
 CFO-gated payment run is what funds it, exactly as for a manually-uploaded bill.
 
-`generate_due_invoices(today=…)` (or the per-tenant inner helper) is callable
-directly for a single sweep (CLI / tests) without the loop.
+### One template's failure never costs its siblings their work
+
+Within a tenant the sweep mirrors `vendor_rescreen`: it selects template **ids**,
+then re-reads each template by id, guards it, and **commits on its own**. The
+loop used to run every template in one transaction with a single commit at the
+end, so one template that raised aborted the tenant's whole tick *and discarded
+the invoices already generated on it* — the identical shape fixed in
+`vendor_rescreen` and `payment_erp_sync`. Re-reading by id is load-bearing: a
+rollback expires the ORM objects a pre-loaded list would still hold, and
+touching one from async SQLAlchemy is a `MissingGreenlet`, not a clean failure.
+
+A template whose generation raises is counted as `template_failures` — a name
+ending in `_failures`, so `sweep_health.failure_count` folds it into the sweep's
+health signal (`GET /api/health/sweeps`) exactly like `vendor_rescreen`'s
+`vendor_failures`.
+
+### A skipped period is never silent
+
+A template missing `amount` or `vendor_name` can't generate. The sweep's
+defensive cursor advance rolls it past the period anyway, which is correct — a
+stuck `next_run_on <= today` would re-select the same template on every tick
+forever. What was missing was the other half: the template stayed `active`,
+`generated_count` never moved, and the only trace was a log line, so a
+subscription invoice a tenant believed was being raised every month simply
+wasn't — and `GET /recurring/{id}/history` showed an empty run history
+indistinguishable from "nothing due yet".
+
+Every skip now:
+
+1. **Persists a marker** on `RecurringInvoiceTemplate.meta.generation_skip`
+   (`services/recurring_invoices.record_generation_skip`) — `reason`
+   (`missing_amount` / `missing_vendor` / `missing_amount_and_vendor`),
+   `period_key`, a `consecutive` count and `last_skipped_at`. Settings-JSON, so
+   **no migration**. PII-free: reason codes and identifiers, never the vendor or
+   the amount.
+2. **Writes a `recurring_template.generation_skipped` audit row**, correlated on
+   the template's own id so one template's generation problem reads as one
+   thread.
+3. **Surfaces as `last_skip`** on every `/api/recurring` template response, so
+   the UI can tell "not generating" apart from "nothing due yet".
+
+**Clearing the marker is not cosmetic, and every path that fixes a template
+does it.** `record_generation_skip` counts *up from whatever it finds*, so a
+stale count left behind after a manual fix makes the NEXT single miss trip the
+three-miss auto-pause — and a healthy template goes on reporting "Not
+generating" to the operator who just fixed it, which is the original bug
+inverted. The rule is "clear it wherever the code has just established the
+reason no longer holds":
+
+| Path | Clears via |
+|------|-----------|
+| `generate_one` (the shared primitive — sweep generate *and* `generate-now`) | `clear_generation_skip`, immediately after its generatable guard passes |
+| the sweep's already-generated no-op (never reaches `generate_one`) | `clear_generation_skip` |
+| `POST /{id}/generate-now`'s idempotent 200 branch (short-circuits before `generate_one`) | `clear_generation_skip` |
+| `PATCH /{id}` — the edit that fills in the missing field | `clear_generation_skip_if_resolved` |
+| `POST /{id}/resume` — putting an auto-paused template back in service | `clear_generation_skip_if_resolved` |
+
+The `_if_resolved` variant is for the two callers that change a template
+*without* generating from it: a template resumed while still missing its vendor
+**keeps** its marker, because the reason it names is still true (and it will
+re-trip the pause). Leaving the clearing to the sweep alone was a real defect
+caught in review — `tests/test_recurring_invoices.py` pins each row above,
+including that one miss after a manual fix does NOT pause.
+
+Past `MAX_CONSECUTIVE_SKIPS` (3) consecutive misses the sweep **pauses** the
+template — the shape `services/scheduled_reports` already uses for its
+auto-disable — and writes a `recurring_template.paused` row with
+`actor_id = NULL`, `source: "sweep"` and the reason. An unfixable schedule stops
+claiming to be live, and `POST /{id}/resume` re-anchors `next_run_on` from today
+so nothing back-fires the periods it slept through.
+
+The skip count is deliberately **not** named `*_failures`: a template missing a
+vendor is a tenant configuration problem, not a broken sweep, and folding it
+into `sweep_health` would leave the sweep permanently `degraded` for something
+no platform operator can fix. It is surfaced per-template instead, and bounded
+by the auto-pause.
+
+`not_generatable_reason(template)` is the one condition `generate_one`, the
+sweep and `POST /{id}/generate-now`'s 422 all read, so a manual generate-now can
+never disagree with what the sweep decided about the same template.
+
+`generate_recurring_invoices_once(today=…)` (or the per-tenant inner helper
+`_sweep_tenant`) is callable directly for a single sweep (CLI / tests) without
+the loop.
 
 Disabled by default. Env vars:
 
@@ -168,6 +250,11 @@ Mounted at `/api/recurring`.
 | `GET /recurring/{id}/upcoming-schedule?count=` | Projected upcoming generations (no invoice created) — `period_key` + `run_on` + `amount`/`currency` per occurrence | read |
 | `GET /recurring/{id}/history` | The invoices generated from this template (links back via `recurring_template_id`) | read |
 
+Every template response carries `last_skip` — `null` normally, otherwise the
+sweep's persisted `{reason, period_key, consecutive, last_skipped_at}` marker
+for the last due period it could not generate. See § A skipped period is never
+silent.
+
 ### RBAC
 
 - **read** = `admin`, `ap_manager`, `ap_clerk`, `cfo`
@@ -186,7 +273,8 @@ the DB layer). `entity_type` is `recurring_template`:
 |--------|-----------|
 | `recurring_template.created` | `POST /recurring` |
 | `recurring_template.updated` | `PATCH /recurring/{id}` (only when fields changed) |
-| `recurring_template.paused` | `POST /{id}/pause` |
+| `recurring_template.paused` | `POST /{id}/pause`; also the sweep's auto-pause after `MAX_CONSECUTIVE_SKIPS` non-generatable periods (`actor_id` NULL, `details.source = "sweep"`) |
+| `recurring_template.generation_skipped` | the sweep, when a due period can't generate; `details` carries the reason code, period_key and consecutive count |
 | `recurring_template.resumed` | `POST /{id}/resume` |
 | `recurring_template.ended` | `POST /{id}/end` |
 | `recurring_template.deleted` | `DELETE /recurring/{id}` |

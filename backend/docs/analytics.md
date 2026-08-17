@@ -21,6 +21,42 @@ forecast variance). Both are computed by pure functions in
 | CSV export | `app/services/report_export.py` + `/api/analytics/export/{report}` | invoice_register, vendor_spend, payment_register, aging_snapshot, cashflow_forecast, expense_register |
 | Scheduled delivery | `app/services/scheduled_reports.py` + migration 0020 | Per-tenant cron-like subscriptions; daily / weekly / monthly cadence; email via existing adapter |
 
+## Money serialisation
+
+**Every money field on every `/api/analytics/*` endpoint is an EXACT decimal
+string** (`"1500.00"`), never a JSON number — the project's Decimal invariant
+applied at the API boundary, so no figure a CFO reads has round-tripped through
+a binary float. `app/api/analytics.py::_money` is the module's single
+serialiser; route every new money field through it rather than calling `str()`
+inline, so this file can't half-migrate the way it did when `/drill/dpo` was
+the only corrected endpoint (`../../docs/decisions.md` §32). It formats
+**fixed-point**, because `str(Decimal("1E+3"))` is `"1E+3"` — parseable in
+Python, and exactly the value a downstream consumer's own parser fumbles.
+Trailing zeros are preserved (`"0.00"` stays `"0.00"`); a `None` figure stays
+JSON `null`, never the string `"None"`. A source scan in
+`tests/test_analytics_money_serialization.py` fails on any bare `str(...)` in
+the module, so a second serialiser can't quietly appear.
+
+**What is deliberately NOT a string**, because it is not money and
+stringifying it would be a bug wearing compliance's clothes:
+
+| Kind | Fields |
+|---|---|
+| Day counts | `dpo_current`, `dpo_trend[].dpo`, `drill/dpo` `rows[].dpo`, `cash_conversion_cycle`, `weighted_avg_pay_date_days` |
+| Percentages | `supplier_concentration.{top_10_share_pct,top_50_share_pct,largest_vendor_share_pct}`, `drill/spend_concentration` `rows[].share_pct`, `fraud_rate_trend[].rate_pct`, `rebate_yield.yield_pct`, `forecast_variance` `rows[].variance_pct` |
+| Counts | every `count` / `*_count` / `invoice_count` / `exception_count` / `open_exceptions` |
+
+A `null` money field stays JSON `null` (`cash_position.threshold`,
+`cash_conversion_cycle`) — "not set" is not `"0"`.
+
+**Consumers.** `frontend/src/lib/types/analytics.ts` types these as
+`MoneyString`; render them with `<Money>` / `formatMoney` and get a number out
+of one only via `parseMoneyForLayout` (chart geometry + ordering — see
+`frontend/CLAUDE.md` § Money formatting). The Flutter app's
+`mobile/lib/models/cash_flow.dart` keeps them as display strings through
+`moneyToDisplay`, which passes a string through verbatim and still stringifies
+a legacy JSON number, so an app build older than this change keeps rendering.
+
 ## Operational metrics (dashboard)
 
 Existing fields stay: `pipeline`, `vendor_spend`, `aging`,
@@ -87,6 +123,10 @@ New keys added in a prior iteration:
 
 Query params: `period_days` (default 365, range 30–730).
 
+Every money field below is an exact decimal string; `dpo_current`,
+`dpo_trend[].dpo`, `cash_conversion_cycle`, every `*_pct` and every count are
+JSON numbers. See [Money serialisation](#money-serialisation).
+
 Response:
 - `total_spend` — invoices dated within the trailing `period_days` window,
   excluding `rejected`. **Not the same population as the dashboard's
@@ -135,20 +175,23 @@ tile vs. its drill-through (issue #126). Pinned by
 `tests/test_analytics_rejected_exclusion.py`.
 
 `/drill/dpo` serializes `accounts_payable` and `cogs` — money — as **exact
-decimal strings** (project invariant: money never crosses the API boundary as a
-float). `dpo` is a day count, not money, and stays a JSON number so it matches
-the numeric `dpo` the `dpo_trend` chart already renders. The rest of this
-module's money fields are still floats; converting them is a separate,
-client-breaking change and is **not** done here — `/drill/dpo` has no shipped
-frontend or mobile consumer, so it could be corrected in isolation.
+decimal strings**, and `dpo` as a JSON number, because it is a day count. That
+split is now the whole module's rule, not this endpoint's exception: see
+[Money serialisation](#money-serialisation). (`/drill/dpo` was corrected first,
+in isolation, because it had no shipped consumer — `../../docs/decisions.md`
+§32.)
 
-Drill-through:
-- `GET /api/analytics/drill/spend_concentration?period_days=N&limit=N`
+Drill-through (money as exact decimal strings here too — see
+[Money serialisation](#money-serialisation)):
+- `GET /api/analytics/drill/spend_concentration?period_days=N&limit=N` —
+  `rows[].amount` + `total_spend` are money; `share_pct` is a percentage and
+  `invoice_count` a count, so both stay JSON numbers.
 - `GET /api/analytics/drill/dpo?months=N`
 - `POST /api/analytics/forecast_variance` — body `{"months":
   [{"month": "YYYY-MM", "forecast": "100000"}, ...]}`. Server
   fills in `actual` from completed payments and returns
-  `{rows: [{forecast, actual, variance, variance_pct}, ...]}`.
+  `{rows: [{forecast, actual, variance, variance_pct}, ...]}` —
+  the first three money, `variance_pct` a percentage.
   Forecasts are NOT persisted — the CFO pastes from their FP&A
   tool.
 
@@ -185,6 +228,10 @@ consolidated block is a true sum-across-entities cross-check.
 
 Query params: `period_days` (default 365, range 30–730).
 
+Every money field below is an exact decimal string; `dpo_current`,
+`dpo_trend[].dpo`, `cash_conversion_cycle`, every `*_pct` and every count are
+JSON numbers. See [Money serialisation](#money-serialisation).
+
 Response:
 - `period_days`, `period_start`
 - `entities[]` — one row per active entity:
@@ -206,9 +253,9 @@ Read-only, admin + CFO only. All three resolve the tenant DB through
 `get_tenant_db`. Source rows: open invoices `LEFT JOIN payment_schedules`
 on `invoice_id`, timed on the schedule's `due_date` (falling back to
 `Invoice.due_date`), bounded to `[today, today + horizon_days]`. Money is
-`Decimal` end-to-end (floated only at the JSON boundary). No writes, no
-audit rows, no new migration — pure aggregate math, like
-`forecast_variance`.
+`Decimal` end-to-end and serialises as an **exact decimal string** (see
+[Money serialisation](#money-serialisation)). No writes, no audit rows, no new
+migration — pure aggregate math, like `forecast_variance`.
 
 **Committed vs pending status sets** (the rest — `rejected`, `paid`,
 `done`, `failed` — are excluded):
@@ -226,7 +273,8 @@ Monday-anchored. Default `granularity=week`, `horizon_days=90`.
 `GET /cashflow_whatif?granularity=…&horizon_days=N&grace_days=N` —
 compares three payment-timing scenarios, each with `total_outflow`,
 `total_discount_captured`, amount-weighted `weighted_avg_pay_date_days`,
-and bucketed `periods`:
+and bucketed `periods`. `weighted_avg_pay_date_days` is a day count, not
+money, and stays a JSON number:
 
 - `on_time` — pay on `due_date`, full amount.
 - `early` — pay on `discount_date` when present, net of
@@ -239,12 +287,15 @@ and bucketed `periods`:
 (`closing = opening − outflow`; receivables/inflows aren't modelled in an
 AP-only product). Periods that close below the effective threshold are flagged
 (`below_threshold`) and collected in `breaches[]` with the `shortfall`. Money
-params are parsed as `Decimal` strings (never floats); garbage → 400.
+params are parsed as `Decimal` strings (never floats); garbage → 400. A
+`threshold` of `null` on the response means none is set — deliberately not
+`"0"`, which would read as "alert on any positive balance".
 
 **Opening balance — resolution order** (first hit wins; the chosen source is
 echoed as `opening_balance_source`):
 
-1. `opening_balance` query param — explicit bring-your-own override → `"query"`.
+1. `opening_balance` query param — explicit bring-your-own override →
+   `"explicit"`.
 2. **Bank-balance auto-sync** — pulled from the org's configured
    payment/banking provider via the optional `PaymentAdapter.get_balance`
    capability → `"provider"` (with `opening_balance_currency`). Only attempted
@@ -387,4 +438,5 @@ is stored.
 | `tests/test_dashboard_aggregations.py` | Existing — extended through the new branches via the try/except absorption pattern |
 | `tests/test_cashflow_balance.py` | Unit — `get_balance` capability (base-class default unsupported; mock deterministic + config override + simulated-unsupported); `fetch_provider_balance` best-effort (mock balance, None on unsupported, swallows adapter error); persisted-threshold resolve/store round-trip + garbage tolerance + key preservation/clear |
 | `tests/test_cashflow_forecast_api.py` (cash-position additions) | API — auto-seed opening balance from the mock provider (`source: provider`); `seed_balance=false` skips it; query param beats provider; provider-unsupported falls back to `settings`; persisted threshold applied without a query override; `cash-position-settings` GET/PUT round-trip; negative → 422; RBAC (ap_clerk 403, admin/cfo 200) |
+| `tests/test_analytics_money_serialization.py` | Money serialisation — a **structural** guard over `/cfo`, the cash-flow trio, both drill-throughs, `/forecast_variance` and `/by-entity`: every response is walked and any JSON *number* whose key isn't in the declared day-count / percentage / count roster fails, so a new money field added as a float can't land silently. Plus the zero-population `/cfo` response (where `0` and `"0"` both read as "nothing here"), the `null` cash-position threshold, and the exact seeded figures surviving the round trip |
 | `tests/test_analytics_by_entity.py` | `/by-entity` — per-entity spend/invoice-count scoping for two entities; `consolidated` equals the cross-entity sum; open-exceptions scope per entity; single-entity tenant returns a coherent one-row breakdown; RBAC (ap_clerk/ap_manager 403, cfo 200); the endpoint ignores `X-Entity-ID` |

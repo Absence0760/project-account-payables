@@ -28,7 +28,8 @@ class IntakeRequestBase(BaseModel):
     title: str = Field(..., max_length=255)
     request_type: IntakeType = IntakeType.other
     description: str | None = None
-    estimated_amount: Decimal | None = None
+    # Digits match `intake_requests.estimated_amount` Numeric(15, 2).
+    estimated_amount: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     currency: str = Field(default="USD", max_length=3)
     vendor_name: str | None = Field(default=None, max_length=255)
     vendor_id: str | None = None
@@ -52,7 +53,8 @@ class IntakeRequestUpdate(BaseModel):
     title: str | None = Field(default=None, max_length=255)
     request_type: IntakeType | None = None
     description: str | None = None
-    estimated_amount: Decimal | None = None
+    # Digits match `intake_requests.estimated_amount` Numeric(15, 2).
+    estimated_amount: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     currency: str | None = Field(default=None, max_length=3)
     vendor_name: str | None = Field(default=None, max_length=255)
     vendor_id: str | None = None

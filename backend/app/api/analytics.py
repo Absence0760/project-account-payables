@@ -162,6 +162,35 @@ async def _commitment_rows(
     return rows
 
 
+def _money(value: Decimal | int | None) -> str | None:
+    """Serialise a money figure as an EXACT decimal string (project invariant:
+    money never crosses the API boundary as a float).
+
+    The output half of `_parse_decimal_param`, and the module's ONE money
+    serialiser — every response below routes through it so this file can't
+    half-migrate the way it did while `/drill/dpo` was the only corrected
+    endpoint (`docs/decisions.md` §32).
+
+    Deliberately **not** applied to a day count (`dpo`, `weighted_avg_pay_date_days`,
+    `cash_conversion_cycle`), a percentage (`*_share_pct`, `rate_pct`,
+    `yield_pct`, `variance_pct`) or a row count: those are numbers, and
+    stringifying one would be a bug wearing compliance's clothes. `None` passes
+    through so a nullable figure stays JSON `null` rather than the string
+    `"None"`.
+
+    Formats FIXED-POINT rather than via `str()`, which renders a `Decimal`
+    carrying a positive exponent in scientific notation (`Decimal("1E+3")` →
+    `"1E+3"`). Both parse in Python, but `"1E+3"` in a money field is the kind
+    of value a downstream consumer's own parser fumbles — and the whole point
+    of the exact-string contract is that the figure survives the wire
+    unambiguously. Trailing zeros are preserved either way (`"0.00"` stays
+    `"0.00"`); this is not `.normalize()`.
+    """
+    if value is None:
+        return None
+    return format(Decimal(value), "f")
+
+
 def _parse_decimal_param(raw: str | None, field: str) -> Decimal | None:
     """Parse an optional money query-param into Decimal, 400 on garbage.
     Used for `opening_balance` / `min_balance_threshold` — passed as
@@ -198,10 +227,10 @@ async def get_cashflow_forecast(
     )
     periods = bucket_outflows(rows, granularity=granularity, today=today)
     totals = {
-        "scheduled_amount": float(sum((p["scheduled_amount"] for p in periods), Decimal("0"))),
-        "committed_amount": float(sum((p["committed_amount"] for p in periods), Decimal("0"))),
-        "pending_amount": float(sum((p["pending_amount"] for p in periods), Decimal("0"))),
-        "discount_eligible_amount": float(
+        "scheduled_amount": _money(sum((p["scheduled_amount"] for p in periods), Decimal("0"))),
+        "committed_amount": _money(sum((p["committed_amount"] for p in periods), Decimal("0"))),
+        "pending_amount": _money(sum((p["pending_amount"] for p in periods), Decimal("0"))),
+        "discount_eligible_amount": _money(
             sum((p["discount_eligible_amount"] for p in periods), Decimal("0"))
         ),
         "count": sum(p["count"] for p in periods),
@@ -216,10 +245,10 @@ async def get_cashflow_forecast(
                 "period": p["period"],
                 "period_start": p["period_start"].isoformat(),
                 "period_end": p["period_end"].isoformat(),
-                "scheduled_amount": float(p["scheduled_amount"]),
-                "committed_amount": float(p["committed_amount"]),
-                "pending_amount": float(p["pending_amount"]),
-                "discount_eligible_amount": float(p["discount_eligible_amount"]),
+                "scheduled_amount": _money(p["scheduled_amount"]),
+                "committed_amount": _money(p["committed_amount"]),
+                "pending_amount": _money(p["pending_amount"]),
+                "discount_eligible_amount": _money(p["discount_eligible_amount"]),
                 "count": p["count"],
             }
             for p in periods
@@ -251,15 +280,16 @@ async def get_cashflow_whatif(
     def _serialise(result: dict) -> dict:
         return {
             "scenario": result["scenario"],
-            "total_outflow": float(result["total_outflow"]),
-            "total_discount_captured": float(result["total_discount_captured"]),
+            "total_outflow": _money(result["total_outflow"]),
+            "total_discount_captured": _money(result["total_discount_captured"]),
+            # A day count, not money — stays a JSON number.
             "weighted_avg_pay_date_days": float(result["weighted_avg_pay_date_days"]),
             "periods": [
                 {
                     "period": p["period"],
                     "period_start": p["period_start"].isoformat(),
                     "period_end": p["period_end"].isoformat(),
-                    "scheduled_amount": float(p["scheduled_amount"]),
+                    "scheduled_amount": _money(p["scheduled_amount"]),
                 }
                 for p in result["periods"]
             ],
@@ -358,21 +388,22 @@ async def get_cash_position(
     return {
         "granularity": granularity,
         "horizon_days": horizon_days,
-        "opening_balance": float(opening),
+        "opening_balance": _money(opening),
         "opening_balance_source": balance.source,
         "opening_balance_currency": balance.currency,
         "opening_balance_provider": balance.provider,
         "opening_balance_provider_skipped": balance.provider_skipped,
-        "threshold": float(threshold) if threshold is not None else None,
+        # `None` stays JSON null — "no threshold set" is not zero.
+        "threshold": _money(threshold),
         "periods": [
             {
                 "period": p["period"],
                 "period_start": p["period_start"].isoformat() if p["period_start"] else None,
                 "period_end": p["period_end"].isoformat() if p["period_end"] else None,
-                "opening": float(p["opening"]),
-                "outflow": float(p["outflow"]),
-                "inflow": float(p["inflow"]),
-                "closing": float(p["closing"]),
+                "opening": _money(p["opening"]),
+                "outflow": _money(p["outflow"]),
+                "inflow": _money(p["inflow"]),
+                "closing": _money(p["closing"]),
                 "below_threshold": p["below_threshold"],
             }
             for p in position
@@ -382,8 +413,8 @@ async def get_cash_position(
                 "period": b["period"],
                 "period_start": b["period_start"].isoformat() if b["period_start"] else None,
                 "period_end": b["period_end"].isoformat() if b["period_end"] else None,
-                "closing": float(b["closing"]),
-                "shortfall": float(b["shortfall"]),
+                "closing": _money(b["closing"]),
+                "shortfall": _money(b["shortfall"]),
             }
             for b in breaches
         ],
@@ -413,14 +444,8 @@ class CashThresholdSettings(BaseModel):
 
 
 def _threshold_response(thresholds: CashThresholds) -> dict:
-    """Serialise persisted thresholds as JSON strings (money never as float)."""
-    return {
-        "min_balance_threshold": (
-            str(thresholds.min_balance_threshold)
-            if thresholds.min_balance_threshold is not None
-            else None
-        ),
-    }
+    """Serialise persisted thresholds through the module's money serialiser."""
+    return {"min_balance_threshold": _money(thresholds.min_balance_threshold)}
 
 
 @router.get("/cash-position-settings")
@@ -460,13 +485,7 @@ async def update_cash_position_settings(
         actor_id=user.id,
         action="organization.cash_thresholds_updated",
         entity_id=org.id,
-        details={
-            "min_balance_threshold": (
-                str(thresholds.min_balance_threshold)
-                if thresholds.min_balance_threshold is not None
-                else None
-            ),
-        },
+        details={"min_balance_threshold": _money(thresholds.min_balance_threshold)},
     )
     return _threshold_response(thresholds)
 
@@ -816,11 +835,11 @@ async def get_cfo_analytics(
     unrealized_payload: dict = {
         "reporting_currency": reporting_currency,
         # Money flows through Decimal even for the fallback zero (money
-        # invariant), serialised to float at this JSON boundary like every
-        # other figure in this response. The real "FX unavailable vs a
-        # genuine zero gain/loss" signal is `available` (flipped False in the
-        # except branch below) — never this number.
-        "total_unrealized_gain_loss": float(Decimal("0")),
+        # invariant), serialised as an exact decimal string at this JSON
+        # boundary like every other money figure in this response. The real
+        # "FX unavailable vs a genuine zero gain/loss" signal is `available`
+        # (flipped False in the except branch below) — never this figure.
+        "total_unrealized_gain_loss": _money(Decimal("0")),
         "by_currency": [],
         "available": True,
     }
@@ -853,14 +872,14 @@ async def get_cfo_analytics(
         )
         unrealized_payload = {
             "reporting_currency": unrealized.reporting_currency,
-            "total_unrealized_gain_loss": float(unrealized.total_unrealized_gain_loss),
+            "total_unrealized_gain_loss": _money(unrealized.total_unrealized_gain_loss),
             "by_currency": [
                 {
                     "currency": e.currency,
-                    "open_original_amount": float(e.open_original_amount),
-                    "booked_reporting_amount": float(e.booked_reporting_amount),
-                    "current_reporting_amount": float(e.current_reporting_amount),
-                    "unrealized_gain_loss": float(e.unrealized_gain_loss),
+                    "open_original_amount": _money(e.open_original_amount),
+                    "booked_reporting_amount": _money(e.booked_reporting_amount),
+                    "current_reporting_amount": _money(e.current_reporting_amount),
+                    "unrealized_gain_loss": _money(e.unrealized_gain_loss),
                 }
                 for e in unrealized.by_currency
             ],
@@ -873,21 +892,21 @@ async def get_cfo_analytics(
     return {
         "period_days": period_days,
         "period_start": period_start.isoformat(),
-        "total_spend": float(total_spend),
+        "total_spend": _money(total_spend),
         # Currency-aware spend rollup (the unified reporting-currency total +
         # the per-currency split). `total_spend` above stays as the legacy
         # naive SUM for back-compat; `reporting_spend.total_amount` is the
         # figure to trust when the org books in multiple currencies.
         "reporting_spend": {
             "reporting_currency": spend_rollup.reporting_currency,
-            "total_amount": float(spend_rollup.total_reporting_amount),
+            "total_amount": _money(spend_rollup.total_reporting_amount),
             "total_count": spend_rollup.total_count,
             "unconverted_count": spend_rollup.unconverted_count,
             "by_currency": [
                 {
                     "currency": e.currency,
-                    "original_amount": float(e.original_amount),
-                    "reporting_amount": float(e.reporting_amount),
+                    "original_amount": _money(e.original_amount),
+                    "reporting_amount": _money(e.reporting_amount),
                     "count": e.count,
                     "unconverted_count": e.unconverted_count,
                 }
@@ -895,32 +914,36 @@ async def get_cfo_analytics(
             ],
         },
         "unrealized_fx": unrealized_payload,
-        "accounts_payable_balance": float(ap_balance),
+        "accounts_payable_balance": _money(ap_balance),
+        # `dpo_*` and `cash_conversion_cycle` are DAY COUNTS, not money — they
+        # stay JSON numbers, matching `/drill/dpo`'s `dpo`.
         "dpo_current": float(dpo),
         "dpo_trend": [{"month": r["month"], "dpo": float(r["dpo"])} for r in monthly_dpo_rows],
         "cash_conversion_cycle": float(ccc) if ccc is not None else None,
         "accruals": {
-            "open_po_amount": float(accruals.open_po_amount),
-            "received_amount": float(accruals.received_amount),
-            "unposted_invoice_amount": float(accruals.unposted_invoice_amount),
-            "total_accrual": float(accruals.total_accrual),
+            "open_po_amount": _money(accruals.open_po_amount),
+            "received_amount": _money(accruals.received_amount),
+            "unposted_invoice_amount": _money(accruals.unposted_invoice_amount),
+            "total_accrual": _money(accruals.total_accrual),
         },
-        "working_capital_impact_5_days": float(wc_impact_5d),
-        "avg_daily_outflow": float(avg_daily_outflow),
+        "working_capital_impact_5_days": _money(wc_impact_5d),
+        "avg_daily_outflow": _money(avg_daily_outflow),
         "supplier_concentration": {
-            "total_spend": float(concentration.total_spend),
+            # `total_spend` is money; the three `*_share_pct` are percentages.
+            "total_spend": _money(concentration.total_spend),
             "top_10_share_pct": float(concentration.top_10_share_pct),
             "top_50_share_pct": float(concentration.top_50_share_pct),
             "largest_vendor": concentration.largest_vendor,
             "largest_vendor_share_pct": float(concentration.largest_vendor_share_pct),
             "flagged": concentration.flagged,
         },
+        # `rate_pct` is a percentage; the row's other fields are counts.
         "fraud_rate_trend": [{**r, "rate_pct": float(r["rate_pct"])} for r in fraud_trend],
         "rebate_yield": {
-            "rebates_total": float(rebate["rebates_total"]),
-            "total_spend": float(rebate["total_spend"]),
+            "rebates_total": _money(rebate["rebates_total"]),
+            "total_spend": _money(rebate["total_spend"]),
             "yield_pct": float(rebate["yield_pct"]),
-            "annualised_rebates": float(rebate["annualised_rebates"]),
+            "annualised_rebates": _money(rebate["annualised_rebates"]),
         },
     }
 
@@ -1106,11 +1129,11 @@ async def _entity_metrics(
         open_po_amount = Decimal("0")
 
     return {
-        "total_spend": str(total_spend),
-        "outstanding_amount": str(outstanding_amount),
+        "total_spend": _money(total_spend),
+        "outstanding_amount": _money(outstanding_amount),
         "invoice_count": invoice_count,
         "open_exceptions": open_exceptions,
-        "open_po_amount": str(open_po_amount),
+        "open_po_amount": _money(open_po_amount),
     }
 
 
@@ -1235,7 +1258,8 @@ async def drill_spend_concentration(
         "rows": [
             {
                 "vendor": e.vendor,
-                "amount": float(e.amount),
+                "amount": _money(e.amount),
+                # A percentage, not money — stays a JSON number.
                 "share_pct": float((e.amount / total * Decimal("100")).quantize(Decimal("0.1")))
                 if total > 0
                 else 0.0,
@@ -1243,7 +1267,7 @@ async def drill_spend_concentration(
             }
             for e in vendor_entries
         ],
-        "total_spend": float(total),
+        "total_spend": _money(total),
     }
 
 
@@ -1278,8 +1302,9 @@ async def drill_dpo(
         "rows": [
             {
                 "month": r["month"],
-                "accounts_payable": str(r["accounts_payable"]),
-                "cogs": str(r["cogs"]),
+                "accounts_payable": _money(r["accounts_payable"]),
+                "cogs": _money(r["cogs"]),
+                # A day count, not money — stays a JSON number.
                 "dpo": float(r["dpo"]),
             }
             for r in rows
@@ -1582,8 +1607,11 @@ async def post_forecast_variance(
         augmented.append(
             {
                 "month": month,
+                # The client's own figure, echoed into the pure function, which
+                # parses it. `actual` is ours and is kept `Decimal` all the way
+                # in — the same DB-scalar idiom the rest of this module uses.
                 "forecast": r.get("forecast", "0"),
-                "actual": str(actual_q.scalar() or 0),
+                "actual": Decimal(str(actual_q.scalar() or 0)),
             }
         )
     result = compute_forecast_variance(augmented)
@@ -1591,9 +1619,10 @@ async def post_forecast_variance(
         "rows": [
             {
                 "month": r["month"],
-                "forecast": float(r["forecast"]),
-                "actual": float(r["actual"]),
-                "variance": float(r["variance"]),
+                "forecast": _money(r["forecast"]),
+                "actual": _money(r["actual"]),
+                "variance": _money(r["variance"]),
+                # A percentage, not money — stays a JSON number.
                 "variance_pct": float(r["variance_pct"]),
             }
             for r in result

@@ -154,10 +154,14 @@ async def test_cfo_analytics_rebate_yield_scopes_by_entity(realdb):
     )
 
     async with realdb.client(key=TENANT, role="admin") as c:
+        # `rebates_total` is money, so it crosses the boundary as an EXACT
+        # decimal STRING, never a float (`analytics._money`). Asserting the
+        # string is the stronger check — it fails if the field ever regresses
+        # to a float, which the float comparison would have accepted.
         scoped_sub = await c.get("/api/analytics/cfo", headers={"X-Entity-ID": sub_id})
         assert scoped_sub.status_code == 200, scoped_sub.text
-        assert scoped_sub.json()["rebate_yield"]["rebates_total"] == 12.0
+        assert scoped_sub.json()["rebate_yield"]["rebates_total"] == "12.00"
 
         scoped_def = await c.get("/api/analytics/cfo", headers={"X-Entity-ID": default_id})
         assert scoped_def.status_code == 200
-        assert scoped_def.json()["rebate_yield"]["rebates_total"] == 22.0
+        assert scoped_def.json()["rebate_yield"]["rebates_total"] == "22.00"

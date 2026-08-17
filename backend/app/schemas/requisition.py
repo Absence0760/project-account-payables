@@ -28,8 +28,11 @@ class RequisitionLineItemBase(BaseModel):
     catalog_item_id: str | None = None
     item_code: str | None = Field(default=None, max_length=100)
     description: str | None = None
-    quantity: Decimal | None = None
-    unit_price: Decimal | None = None
+    # Digits match `requisition_line_items` — quantity Numeric(12, 4),
+    # unit_price Numeric(15, 2). A requisition asks to BUY, so both are
+    # non-negative; a credit is a credit memo, not a requisition line.
+    quantity: Decimal | None = Field(default=None, ge=0, max_digits=12, decimal_places=4)
+    unit_price: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     gl_account_id: str | None = None
     uom: str | None = Field(default=None, max_length=20)
 

@@ -11,6 +11,12 @@ Asserts:
 - PII (bank/tax/address/payment-method) never reaches the rendered message.
 - A chat-send failure is swallowed by `_send_chat_best_effort` (it never
   propagates — the caller's transition survives).
+
+Every `_send_chat_best_effort` call below passes the invoice PK as the
+`invoice_id=` KEYWORD. That is deliberate and load-bearing: the parameter used
+to be called `entity_id`, which in this codebase otherwise means the
+multi-entity subsidiary FK, so it read as a tenant-scoping bug on sight.
+Renaming it back would `TypeError` here, which is the pin.
 """
 
 from __future__ import annotations
@@ -283,8 +289,92 @@ async def test_send_chat_best_effort_swallows_failure():
             organization_id=uuid.uuid4(),
             event_type="invoice_approved",
             invoice_ctx=_ctx(),
-            entity_id=uuid.uuid4(),
+            invoice_id=uuid.uuid4(),
         )
+
+
+async def test_send_chat_failure_never_logs_the_webhook_url(caplog):
+    """A failed chat send must not write the org's webhook URL into the log.
+
+    This is the real failure mode, not a hypothetical: both real adapters end in
+    `response.raise_for_status()`, and httpx's `HTTPStatusError` message embeds
+    the request URL verbatim — which for a Slack/Teams incoming webhook IS the
+    credential. `logger.exception` attaches the traceback (and so that message)
+    regardless of the format string, so the first 4xx from a dead or rotated
+    webhook used to leak it. The adapter below raises the exact exception
+    `raise_for_status` builds, so this pins the mechanism rather than a
+    stand-in.
+    """
+    import logging
+    import uuid
+
+    import httpx
+
+    from app.services import notification_dispatch as nd
+
+    url = "https://hooks.slack.com/services/T0AAAAAAA/B0BBBBBBB/zzTOPSECRETzz"
+
+    class _Boom(MockChatNotificationAdapter):
+        async def send(self, message):  # noqa: D401
+            request = httpx.Request("POST", url)
+            response = httpx.Response(404, request=request)
+            response.raise_for_status()
+
+    async def _fake_cfg(_org_id):
+        return ({"enabled": True, "provider": "slack"}, "acme")
+
+    caplog.set_level(logging.DEBUG)
+    with (
+        patch.object(nd, "_resolve_org_chat_config", _fake_cfg),
+        patch(
+            "app.services.chat_notification_adapters.get_chat_notification_adapter",
+            lambda cfg: _Boom({}),
+        ),
+    ):
+        await nd._send_chat_best_effort(
+            organization_id=uuid.uuid4(),
+            event_type="invoice_approved",
+            invoice_ctx=_ctx(),
+            invoice_id=uuid.uuid4(),
+        )
+
+    assert "zzTOPSECRETzz" not in caplog.text
+    assert "hooks.slack.com" not in caplog.text
+    # …but the failure is still visible enough to act on.
+    assert "chat send failed" in caplog.text
+    assert "HTTPStatusError" in caplog.text
+
+
+async def test_send_email_failure_never_logs_the_recipient_address(caplog):
+    """Same mechanism, same file: `SMTPRecipientsRefused` stringifies as
+    `{'someone@customer.com': (550, b'…')}`, so `logger.exception` there put the
+    recipient address in the log — the one thing that call site has always
+    promised not to log."""
+    import logging
+    import smtplib
+
+    from app.services import notification_dispatch as nd
+
+    class _Boom:
+        async def send(self, message):  # noqa: D401
+            raise smtplib.SMTPRecipientsRefused({"cfo@customer.example": (550, b"nope")})
+
+    caplog.set_level(logging.DEBUG)
+    with patch(
+        "app.services.email_adapters.get_email_adapter",
+        lambda: _Boom(),
+    ):
+        await nd._send_email_best_effort(
+            "cfo@customer.example",
+            "subject",
+            "body",
+            None,
+            event_type="invoice_approved",
+        )
+
+    assert "cfo@customer.example" not in caplog.text
+    assert "email send failed" in caplog.text
+    assert "SMTPRecipientsRefused" in caplog.text
 
 
 async def test_send_chat_best_effort_noop_when_disabled():
@@ -310,7 +400,7 @@ async def test_send_chat_best_effort_noop_when_disabled():
             organization_id=uuid.uuid4(),
             event_type="invoice_approved",
             invoice_ctx=_ctx(),
-            entity_id=uuid.uuid4(),
+            invoice_id=uuid.uuid4(),
         )
     assert built["count"] == 0
 
@@ -332,7 +422,7 @@ async def test_send_chat_best_effort_per_event_toggle():
             organization_id=uuid.uuid4(),
             event_type="invoice_paid",
             invoice_ctx=_ctx(),
-            entity_id=uuid.uuid4(),
+            invoice_id=uuid.uuid4(),
         )
         assert SENT == []
         # invoice_approved still on (default-on within an events map):
@@ -340,7 +430,7 @@ async def test_send_chat_best_effort_per_event_toggle():
             organization_id=uuid.uuid4(),
             event_type="invoice_approved",
             invoice_ctx=_ctx(),
-            entity_id=uuid.uuid4(),
+            invoice_id=uuid.uuid4(),
         )
         assert len(SENT) == 1
         assert SENT[0].event_type == "invoice_approved"

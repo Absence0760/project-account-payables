@@ -53,7 +53,8 @@ class PaymentCreate(BaseModel):
     # disagrees (see `api/payments.create_payment`). Required-ness here was a
     # trap once netting landed — a caller that knows the invoice amount but not
     # its credits had no figure it could legally send.
-    amount: Decimal | None = Field(default=None, ge=0)
+    # Digits match `payments.amount` Numeric(15, 2).
+    amount: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     method: PaymentMethod | None = None
     reference: str | None = Field(default=None, max_length=255)
     payment_run_id: str | None = None

@@ -5,6 +5,12 @@ names the root cause, the evidence, blast radius, and a recommended fix
 approach — this is a staging area for real problems, not a place to let them
 go stale. See root `CLAUDE.md` guard rail 6 (no dangling deferred findings).
 
+**Two entries are open** (the foreign-loop dispatchers and the over-range
+settlement amount, below). Everything after them is a `~~struck-through~~`
+resolved stub, kept because the *diagnosis* is the expensive part and is worth
+not re-deriving. Add a new entry above them when a defect is diagnosed but
+can't be fixed in the same session.
+
 **Scope:** *diagnosed defects* only. A deferral that isn't a defect — blocked on
 a credential, an operator step on merged code, or sized-but-unstarted work —
 goes to [followups.md](followups.md). Reasoning behind a deliberate design call
@@ -12,89 +18,194 @@ goes to [decisions.md](decisions.md).
 
 ---
 
-## A non-generatable recurring template silently skips every period
+## `extraction_dispatch` / `erp_dispatch` still run on a foreign event loop — OPEN, diagnosed 2026-08-17
 
-**Found:** 2026-08-15, in the background-sweep survey behind the
-`payment_erp_sync` / `vendor_rescreen` fixes.
+**Found by** CI, the expensive way. The identical defect in `payment_erp_sync`
+is FIXED (it now schedules on the app's loop); these two siblings still use the
+old pattern and were left alone deliberately.
 
-`services/recurring_invoices.generate_one` returns `None` for a template missing
-`amount` or `vendor_name`, logging a `WARNING` and nothing else. The sweep's
-"defensive" cursor advance then rolls `next_run_on` forward **anyway**
-(`recurring_invoices.py`, the `if template.next_run_on is not None and
-template.next_run_on <= run_on:` block near the end of `_sweep_tenant`).
+**Root cause.** All three `*_dispatch` paths ran their work in a detached
+thread on a brand-new event loop (`asyncio.new_event_loop()`). Anything that
+work reaches which touches `database.control_session_factory` or the cached
+`_tenant_engines` is using an engine bound to the loop that imported it — the
+app's main loop. Cross-loop use of an asyncpg pool fails in both directions: it
+raises `RuntimeError: got Future attached to a different loop`, **and** it can
+return the half-used connection to the pool the request path draws from, so
+unrelated requests hang behind it.
 
-The guard itself is right — it exists so a template that can't generate can't
-spin the sweep forever. What's missing is the other half: the template stays
-`active`, `generated_count` never moves, `last_generated_at` never updates, and
-nothing surfaces the skip. Month after month, a subscription invoice that a
-tenant believes is being raised into the approval queue simply isn't, and the
-only trace is a log line. `GET /api/recurring/{id}/history` shows an empty run
-history that is indistinguishable from "nothing due yet".
+**Evidence it is real, not theoretical.** In `payment_erp_sync` this produced
+seven `RuntimeError`s in one CI run and nine failing e2e specs whose only
+symptom was `PATCH /api/organization` timing out — endpoints with no connection
+to payments at all. The failing call was
+`notification_dispatch._load_recipients`, reached from `transition_invoice`'s
+notification hook. Both remaining dispatchers reach `transition_invoice` too
+(`erp_dispatch` → `services/erp` → `sending_to_erp`/`sent_to_erp`;
+`extraction_dispatch` → `pending`/`ready_for_review`/`failed`).
 
-**Same file, second issue:** `_sweep_tenant` has no per-template guard and a
-single commit at the end, so one template that raises aborts that tenant's whole
-tick and discards the invoices already generated on it — the identical shape
-fixed in `services/vendor_rescreen` (per-item re-read by id + per-item commit +
-a counted, logged skip) and in `services/payment_erp_sync`. Fix both together.
+**Why it may not have bitten yet.** `_load_recipients` returns early on an
+empty id list, so a transition whose event resolves to no recipients never
+touches the control plane. That makes the blast radius depend on notification
+configuration rather than on code — which is exactly why it should not be left
+to chance.
 
-**Recommended fix.** Persist the skip rather than only logging it: stamp a
-reason on the template (a `meta`/settings-JSON marker needs no migration) and
-either pause the template after N consecutive non-generatable periods — the
-shape `services/scheduled_reports` already uses (`last_run_status` /
-`last_run_error` / auto-disable at 5 consecutive failures) — or raise it into
-the notification path AP managers already read. Then apply the per-template
-guard + per-template commit.
+**Durable fix.** Same as the one applied to `payment_erp_sync`: schedule on the
+caller's loop (`asyncio.create_task`) with a strong reference, unless the work
+is genuinely blocking. `extraction_dispatch` is the one case that may truly
+need a worker thread (image/PDF processing is CPU-bound); if it keeps the
+thread, then everything reachable from it must construct its own engines inside
+that loop rather than importing the shared ones — the rule `_sync_payments`
+already follows for its OWN engines and broke only via the notification hook.
+
+**Trigger.** Before enabling `FEOH_ERP_MODE=local` on a deployed tenant with
+notifications on, or with the next change that touches either dispatcher.
+`backend/tests/test_payment_erp_sync.py::test_dispatch_runs_on_the_callers_loop_not_a_new_one`
+is the template for the regression test each needs.
 
 ---
 
-## A tenant with no ERP configured never gets an invoice to `paid`
+## An over-range settlement amount wedges the payment webhook instead of flagging it — OPEN, diagnosed 2026-08-17
 
-**Found:** 2026-08-15, while fixing the ERP sync-back's failed-leg strand.
+**Found while** bounding the bulk-intake parsers (`services/numeric_bounds`).
+That work covered the three CSV/document parsers; this is the same defect class
+on a fourth parser, in the money path, and it does **not** have the same fix.
 
-`services/payment_erp_sync._sync_payments` returns early when the org has no
-`settings.erp`:
+**Root cause.** `services/payment_adapters/base.py::parse_amount` returns an
+unbounded `Decimal` — its only guard is `.quantize(Decimal("0.01"))`, which
+raises (→ `None`) for genuinely absurd magnitudes but happily returns a
+20-integer-digit value. `payments.settled_amount` is `Numeric(15, 2)`, i.e. 13
+integer digits. So a processor webhook reporting an amount between roughly
+10^13 and 10^26 parses, verifies, and then raises `NumericValueOutOfRangeError`
+at the flush.
 
-```python
-erp_config = (org.settings or {}).get("erp")
-if not erp_config:
-    logger.info("[payment-sync] no ERP configured for org %s, skipping sync", org_id)
-    return PaymentSyncResult()
-```
+**Blast radius.** The wrong thing fails, in the wrong direction. `verify_settlement`
+already classifies such a figure correctly — it is nowhere near any authorized
+leg, so the verdict is `amount_mismatch`, which is exactly the divergence that
+should open a payment-blocking `fraud_flag` and suppress the discount capture.
+But the persist at `api/payments.py` (`payment.settled_amount = …`) is inside
+the same transaction, so the flush rolls the whole handler back: the fraud flag
+never lands, the completion is never recorded, the handler 5xxs, and the
+provider retries into the identical failure forever. The single most suspicious
+settlement a rail can report is the one the system records nothing about.
+`services/payment_reconciler.py` writes the same column from
+`fetch_settlement` and has the same exposure.
 
-That early return skips the **whole pass**, including the part that has nothing
-to do with an ERP: advancing `payment_scheduled → paid` for a payment the rail
-actually settled. And this module is the only automatic path that makes that
-transition. The other two writers of `InvoiceStatus.paid` are
-`POST /api/payments/{id}/settlement/accept` (a manual short-settlement release)
-and `api/erp_webhook` (which by definition requires an ERP).
+Reachability is gated by the HMAC — this needs a compromised or buggy
+processor, not an anonymous attacker. That is what keeps it a defect rather
+than a vulnerability.
 
-**Blast radius.** For an org that pays without an ERP — the "direct schedule, no
-ERP" branch the state machine explicitly supports (`approved →
-payment_scheduled` with no `sending_to_erp` leg) — every settled invoice sits at
-`payment_scheduled` indefinitely. Downstream that means the aging report, the
-`/dashboard` pipeline, the vendor's payment history, and the 1099 YTD totals all
-under-count paid spend, and `retention_sweep` never sees the invoice as
-archivable (`done`/`paid`). The payment row itself is correct throughout, so
-nothing looks wrong from the payments page — which is what makes it easy to
-miss.
+**Why it was not fixed alongside the bulk-intake parsers.** The obvious
+symmetry is wrong. Returning `None` from `parse_amount` (what the three CSV
+parsers do) means "the rail reported no amount", which `verify_settlement`
+reads as `unverified` and `settlement_coverage` deliberately fails OPEN on — so
+a garbage figure would be laundered into a silent pass and the invoice marked
+`paid`. Guarding only the persist and leaving the column NULL lands in the same
+place for the same reason. Clamping fabricates a number. A correct fix has to
+let coverage distinguish "no figure on record" from "a figure we could not
+store", which is a new column or flag — a migration in the money path, with the
+review that implies. Out of scope for a commit about CSV parsers.
 
-**Why it wasn't fixed here.** The current behaviour is *asserted*, with an
-explanatory docstring, by
-`backend/tests/test_payment_erp_sync.py::test_sync_skips_when_no_erp_configured`.
-Flipping it changes when invoices reach `paid` for a whole class of tenants, so
-it needs that test's intent revisited rather than a drive-by edit inside an
-unrelated round.
+**Durable fix.** Carry "reported but unstorable" as its own state rather than
+collapsing it into NULL. Cheapest shape that preserves the evidence: keep
+`verify_settlement`'s verdict and its audit row (JSONB, unbounded — it can
+record the reported figure verbatim), persist `settled_amount` only when
+`numeric_bounds.fits_numeric(value, 15, 2)`, and add a boolean/flag the
+`settlement_coverage` check reads as **not** covered so the invoice holds at
+`payment_scheduled` behind the existing accept/void exits. Widening the column
+instead is not the fix — it moves the cliff without changing the semantics, and
+no legitimate settlement is 14 digits.
 
-**Recommended fix.** Narrow the gate to what it actually guards. The ERP config
-is only needed to resolve the adapter (`get_erp_adapter(erp_config)`), and the
-"push to ERP" step is presently a `logger.info` placeholder — so the gate is
-currently skipping the invoice transition and nothing else. Move the check so it
-guards adapter resolution and the (future) push, and let the leg loop run
-either way; the leg already skips any payment that isn't `completed` and any
-invoice that isn't `payment_scheduled`, so a no-ERP tenant would simply get its
-invoices marked `paid` on settlement. Update the test above to assert the new
-contract (no adapter call, invoice still advances) and note the change in
-`backend/docs/payments.md` § ERP Payment Sync.
+**Trigger.** Do it with the next change that already touches
+`payment_settlement` / `settlement_coverage`, or sooner if a real processor is
+onboarded (the adapter-specific `parse_amount` call sites are `checkeeper`,
+`dwolla`, and `mock`). Guard rail 3 applies — money path, so it gets a review
+pass.
+
+---
+
+## ~~A non-generatable recurring template silently skips every period~~ — FIXED 2026-08-16
+
+**Resolved**, both halves, in `services/recurring_invoices.py`.
+
+*The silent skip.* The defensive cursor advance was always right — a template
+that can't generate must not spin the sweep forever — so what was added is the
+missing other half. A skip now stamps a PII-free marker on
+`RecurringInvoiceTemplate.meta.generation_skip` (`record_generation_skip` —
+reason code, period, consecutive count, timestamp; settings-JSON, **no
+migration**), writes a `recurring_template.generation_skipped` audit row
+correlated on the template's own id, and rides a `last_skip` field on every
+`/api/recurring` response, rendered as a *Not generating* badge on the
+`/recurring` list. Past `MAX_CONSECUTIVE_SKIPS` (3) the sweep **pauses** the
+template and audits that too (`recurring_template.paused`, `actor_id` NULL,
+`source: "sweep"`) — the `services/scheduled_reports` auto-disable shape — so an
+unfixable schedule stops claiming to be live. The marker is cleared by **every**
+path that establishes the reason no longer holds — `generate_one`, the sweep's
+already-generated no-op, `generate-now`'s idempotent branch, and (via
+`clear_generation_skip_if_resolved`) `PATCH` and `resume` — which is what makes
+`consecutive` mean consecutive; clearing only in the sweep left a manually-fixed
+template with a stale count, so its next single miss tripped the three-miss
+auto-pause. The "can it generate" verdict itself moved into one pure
+`not_generatable_reason`, shared by `generate_one`, the sweep and the router's
+`generate-now` 422, so the three can't drift.
+
+The skip count is deliberately **not** a `*_failures` field on `SweepResult`:
+`sweep_health.failure_count` sums those, and a template missing a vendor is a
+tenant configuration problem, not a broken sweep — counting it would leave the
+sweep permanently `degraded` for something no platform operator can fix. The
+auto-pause is what bounds it instead.
+
+*The per-tenant commit.* `_sweep_tenant` now selects template **ids**, then
+re-reads, guards and commits each template on its own — the `vendor_rescreen`
+shape. A template whose generation raises is rolled back, logged by exception
+CLASS only, and counted as `template_failures` (which *does* feed
+`sweep_health`), while its siblings keep the invoices they already generated.
+
+Regression coverage in `backend/tests/test_recurring_invoices.py`: the persisted
+marker + audit row, the auto-pause after N periods (and that a paused template
+is left alone), the marker clearing once the template generates, the
+sibling-survives-a-poison-template proof, the PII-out-of-logs assertion, and the
+API's `last_skip` (present / absent / malformed-`meta` tolerated). Frontend map
+guarded by `frontend/src/lib/types/recurring.test.ts`. Documented in
+`backend/docs/recurring-invoices.md` § A skipped period is never silent and
+§ One template's failure never costs its siblings their work.
+
+---
+
+## ~~A tenant with no ERP configured never gets an invoice to `paid`~~ — FIXED 2026-08-16
+
+**Resolved** by narrowing the gate to what it actually guards.
+`services/payment_erp_sync._sync_payments` no longer returns early on an absent
+`settings.erp`; it carries `erp_config=None` into the leg loop, and
+`_sync_one_leg` resolves the ERP adapter (and would perform the push) only when
+a config exists. Every other per-leg guard is unchanged and shared by both
+paths — payment `completed`, invoice `payment_scheduled`, settlement covering,
+invoice taken `FOR UPDATE` — so an ERP-less tenant's settled invoices now reach
+`paid` while an in-flight payment is still skipped and a *named but unsupported*
+ERP type still fails its own leg into the de-duped `erp_reconciliation`
+exception (the recoverability semantics of [decisions.md §22](decisions.md) are
+untouched).
+
+`get_erp_adapter({})` is deliberately not called on the no-ERP path: it fails
+closed on an unusable config ([decisions.md §29](decisions.md)), which would
+turn "this tenant has no ERP" into a permanent strand plus an exception row for
+a situation that is not an error.
+
+Kept as a stub because the *blast radius* is worth not re-deriving: this module
+is the only automatic writer of `payment_scheduled → paid` (the other two are
+the manual `POST /api/payments/{id}/settlement/accept` and `api/erp_webhook`,
+which by definition requires an ERP), so the early return left every settled
+invoice of a "direct schedule, no ERP" tenant at `payment_scheduled` forever —
+under-counting the aging report, the `/dashboard` pipeline, the vendor's payment
+history and the 1099 YTD totals, and never letting `retention_sweep` see the
+invoice as archivable. The payment row stayed correct throughout, which is what
+made it invisible from the payments page.
+
+Regression coverage:
+`backend/tests/test_payment_erp_sync.py::test_no_erp_configured_still_advances_the_settled_invoice`
+(asserts the adapter is never resolved AND the invoice advances) plus
+`::test_no_erp_configured_does_not_strand_an_unsettled_invoice` (the no-ERP path
+reuses the same guards rather than a looser branch). Contract documented in
+`backend/docs/payments.md` § ERP Payment Sync → No ERP configured skips the
+push, not the transition.
 
 ---
 

@@ -113,11 +113,32 @@ Customers with unusual exports can hand you their raw CSV and you
 rename the columns. The importer tolerates extra unknown columns so
 you don't have to strip them.
 
+## Amount range
+
+`amount` is written into a `Numeric(15, 2)` column — **13 integer digits**, i.e.
+just under 10 trillion in the invoice's currency. A cell wider than that is
+reported as `amount invalid: …` for that row and the rest of the import
+proceeds.
+
+That bound is enforced in `_parse_decimal` (`services/csv_import.py`) via the
+shared `services/numeric_bounds.fits_numeric`. Without it an over-range cell
+parsed cleanly and raised `NumericValueOutOfRangeError` at the flush — which is
+worse than a rejected row, because the import had already written the rows
+before it.
+
+**Extra decimal places are rounded, not rejected.** `1234.567` imports as
+`1234.57`, matching what Postgres does. A migration file from a customer's old
+system may legitimately carry more precision than the column, and dropping whole
+rows over a third decimal would lose more than it protects. (The JSON API is
+stricter — it answers 422 there, because a client authored that one value and
+can correct it. See `api-reference.md` § Money and quantity fields.)
+
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
 | `CSV must be UTF-8 encoded` | Re-save from Excel as "CSV UTF-8". Don't use the default `CSV (Comma delimited)` option on Windows. |
+| `amount invalid: '99999999999999999999'` | The amount exceeds `Numeric(15, 2)`'s 13 integer digits. Check for a misplaced decimal separator or a column shift. |
 | `status invalid: '2026-03-01'` | An amount had an unquoted comma and shifted all columns. Wrap comma-containing values in double quotes. |
 | Many `vendor_name or vendor_code is required` errors | The vendor column name in the CSV doesn't match. Rename it before upload. |
 | Duplicate vendors show up twice | Customer export has inconsistent casing. Add a `code` column to dedup cleanly. |

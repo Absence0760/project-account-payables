@@ -29,6 +29,7 @@ from app.services.data_residency import (
     get_region_placement,
     resolve_region,
 )
+from app.services.org_settings_view import settings_for_response
 from app.services.sso import generate_scim_token
 from app.tenant import get_tenant, normalize_custom_domain
 
@@ -74,9 +75,24 @@ class SCIMTokenResponse(BaseModel):
     bearer_hash_prefix: str  # first 8 hex chars, useful as a UI identifier
 
 
-def _org_response(org: Organization) -> OrganizationResponse:
-    raw = org.settings or {}
-    # Ensure company and invoice_defaults have defaults
+def _is_admin(user: User) -> bool:
+    """Whether the caller holds the admin role (roles are eager-loaded by
+    `get_current_user`)."""
+    return ROLE_ADMIN in {r.name for r in (user.roles or [])}
+
+
+def _org_response(org: Organization, *, is_admin: bool) -> OrganizationResponse:
+    """Serialize the org, projecting `settings` to what this caller may see.
+
+    `is_admin` is REQUIRED, not defaulted: this response carries the tenant's
+    third-party credentials, and a default would decide the security question
+    silently at every future call site. See `services/org_settings_view`.
+    """
+    raw = settings_for_response(org.settings, is_admin=is_admin)
+    # Ensure company and invoice_defaults have defaults. Mutating in place is
+    # safe on the non-admin path (a fresh projection) and on the admin path
+    # whenever a redaction copied the dict; when neither applies this touches
+    # the live ORM dict exactly as it always has.
     if "company" not in raw:
         raw["company"] = CompanyProfile().model_dump()
     if "invoice_defaults" not in raw:
@@ -96,7 +112,15 @@ async def get_organization(
     org: Organization = Depends(get_tenant),
     user: User = Depends(get_current_user),
 ):
-    return _org_response(org)
+    """Return the org + the settings this caller's role may read.
+
+    Open to any authenticated org user because the whole app reads
+    `invoice_defaults.currency` from here — but a non-admin now gets an
+    allow-listed projection, not the raw JSONB. Before that, every role could
+    read the tenant's ERP / payment / card / extraction / SSO credentials and
+    the Slack-Teams webhook URL straight out of this response.
+    """
+    return _org_response(org, is_admin=_is_admin(user))
 
 
 @router.get("/fraud-rules/defaults")
@@ -122,13 +146,30 @@ async def update_organization(
         org.name = body.name
 
     if body.settings is not None:
+        # The chat webhook URL has one sanctioned writer — the audited
+        # `PUT /api/organization/chat-notifications/webhook`. This generic merge
+        # would otherwise be a second, unaudited way to set the credential, and
+        # a shallow `update()` here also silently replaces the WHOLE
+        # chat_notifications block (dropping the webhook while "saving the
+        # provider"). Refuse the key and name the endpoint that owns it.
+        if "chat_notifications" in body.settings:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "chat_notifications is managed by "
+                    "/api/organization/chat-notifications (and its /webhook "
+                    "sub-resource for the incoming-webhook URL), so that every "
+                    "change to it is audited."
+                ),
+            )
         # Merge incoming keys into existing settings (don't replace the whole dict)
         existing = dict(org.settings or {})
         existing.update(body.settings)
         org.settings = existing
 
     await db.commit()
-    return _org_response(org)
+    # Admin-only endpoint, so the response is the admin projection.
+    return _org_response(org, is_admin=True)
 
 
 def _residency_response(org: Organization, region: str) -> DataResidencyResponse:

@@ -1,0 +1,111 @@
+"""What `GET /api/organization` may serve out of `Organization.settings`.
+
+That endpoint is gated only by `get_current_user` — no role check — and returned
+the raw settings JSONB, so **every** authenticated role, `ap_clerk` included,
+could read the tenant's third-party credentials: `erp.client_secret` /
+`erp.api_key` / `erp.webhook_signing_secret`, `payments.credentials` +
+`payments.webhook_secret`, `cards.api_key` + `cards.webhook_signing_secret`,
+`extraction.api_key`, `sso.client_secret` + `sso.scim_bearer_hash`, and
+`chat_notifications.webhook_url`. Any one of those is enough to act as the
+tenant against a third party; the chat webhook URL alone lets its holder post
+into the channel where payments are approved.
+
+Two rules, and they answer different questions:
+
+**`NON_ADMIN_SETTINGS` — an allow-list, not a deny-list.** A deny-list of
+secret-looking key names is the wrong shape for a free-form JSONB blob that
+keeps growing: the day someone adds a provider block, the leak is the default.
+Here, exposure requires a deliberate edit to this file, and each entry has to
+name a real non-admin consumer.
+
+**`ALWAYS_REDACTED` — dropped for every role, admin included.** One value is
+write-only by design rather than by privilege: the chat incoming-webhook URL is
+a bearer capability whose only management path is the audited
+`/api/organization/chat-notifications/webhook`. Leaving it readable here would
+make "no endpoint ever returns it" false and give the settings page a silent,
+unaudited second way to see it.
+
+Admins otherwise still get the settings **verbatim** — the `/organization` page
+reads saved credentials back into its form fields, so redacting for them would
+blank a live config on the next save. Narrowing what an admin sees needs a
+"leave blank to keep" contract on the write path; that is a separate change.
+
+Pure: no DB, no request, no I/O.
+"""
+
+from __future__ import annotations
+
+# Top-level settings blocks a NON-ADMIN may read.
+#
+# * `None` → the whole block passes through.
+# * a set  → only those sub-keys pass.
+#
+# Each entry earns its place by naming a real consumer; a block with no
+# non-admin reader stays out, because "it looks harmless" is how the credential
+# blocks were reachable in the first place.
+NON_ADMIN_SETTINGS: dict[str, set[str] | None] = {
+    # Tenant company profile — the mobile org-settings screen renders it for any
+    # authed user (`mobile/lib/stores/org_settings_store.dart`).
+    "company": None,
+    # Currency / terms / GL defaults — the web `orgCurrency` store reads
+    # `invoice_defaults.currency` to format every aggregate figure, for every
+    # role (`frontend/src/lib/stores/orgSettings.svelte.ts`).
+    "invoice_defaults": None,
+    # White-label brand. Already readable by any authed role through
+    # `GET /api/organization/branding`, and PII-free by construction.
+    "brand": None,
+    # ONLY the routing mode. The workflow builder shows a different ERP hint for
+    # merge_dev vs direct (`frontend/src/routes/workflows/[id]/+page.svelte`).
+    # Every credential in this block stays behind the admin gate.
+    "erp": {"integration_method"},
+}
+
+# (block, key) pairs stripped for EVERY role, admin included — see the module
+# docstring. Keep this tiny: it is for values whose only sanctioned read is
+# "is one set?", not for general credential hygiene.
+ALWAYS_REDACTED: tuple[tuple[str, str], ...] = (("chat_notifications", "webhook_url"),)
+
+
+def _without_always_redacted(settings: dict) -> dict:
+    """Copy `settings` with every `ALWAYS_REDACTED` pair removed.
+
+    Copies only the path it touches, so the caller's dict (and, for an admin,
+    the live ORM `Organization.settings`) is never mutated.
+    """
+    if not any(block in settings for block, _ in ALWAYS_REDACTED):
+        return settings
+    out = dict(settings)
+    for block, key in ALWAYS_REDACTED:
+        value = out.get(block)
+        if isinstance(value, dict) and key in value:
+            out[block] = {k: v for k, v in value.items() if k != key}
+    return out
+
+
+def settings_for_response(settings: dict | None, *, is_admin: bool) -> dict:
+    """Return the settings a caller of this role may see.
+
+    An admin gets everything except `ALWAYS_REDACTED`. Everyone else gets a NEW
+    dict holding only `NON_ADMIN_SETTINGS`, so a block added to the JSONB later
+    is invisible to non-admins until it is listed here on purpose.
+    """
+    raw = settings or {}
+    if is_admin:
+        return _without_always_redacted(raw)
+
+    projected: dict = {}
+    for block, allowed_keys in NON_ADMIN_SETTINGS.items():
+        value = raw.get(block)
+        if value is None:
+            continue
+        if allowed_keys is None:
+            projected[block] = value
+            continue
+        if not isinstance(value, dict):
+            # A block declared with a sub-key allow-list can't be filtered when
+            # it isn't a mapping; drop it rather than pass it through whole.
+            continue
+        subset = {k: v for k, v in value.items() if k in allowed_keys}
+        if subset:
+            projected[block] = subset
+    return _without_always_redacted(projected)

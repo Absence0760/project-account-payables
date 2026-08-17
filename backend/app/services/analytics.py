@@ -614,8 +614,8 @@ def compute_forecast_variance(
 # These four functions power `/api/analytics/cashflow_forecast`,
 # `/cashflow_whatif`, and `/cash_position`. They are pure + sync like the
 # rest of this module: the API layer hands in already-fetched commitment
-# rows (one per open invoice) and floats the Decimal results at the JSON
-# boundary.
+# rows (one per open invoice) and serialises the Decimal results as exact
+# decimal strings at the JSON boundary (`api/analytics._money`).
 #
 # A "commitment row" is a dict with:
 #   {"due_date": date, "amount": Decimal, "committed": bool,

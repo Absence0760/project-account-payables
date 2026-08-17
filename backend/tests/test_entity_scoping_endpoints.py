@@ -230,20 +230,25 @@ async def test_cfo_analytics_and_cashflow_scope_by_entity(realdb):
             )
             assert r.status_code == 201, r.text
 
-        # /cfo total_spend scopes to the entity.
+        # /cfo total_spend scopes to the entity. Money crosses the boundary as
+        # an EXACT decimal STRING, never a float (`analytics._money`) — so the
+        # scoping assertion is written against the string, which also catches a
+        # regression back to float that `== 100.0` would have accepted.
         cfo_us = (await c.get("/api/analytics/cfo", headers={"X-Entity-ID": us})).json()
-        assert cfo_us["total_spend"] == 100.0
+        assert cfo_us["total_spend"] == "100.00"
         cfo_all = (await c.get("/api/analytics/cfo")).json()
-        assert cfo_all["total_spend"] == 300.0
+        assert cfo_all["total_spend"] == "300.00"
 
         # /cashflow_forecast bucketed totals scope too (new invoices are in the
         # pending pipeline, due within the default 90-day horizon).
+        # `count` stays a number — it is a row count, not money. Only the money
+        # field is a string, which is exactly the split `_money` encodes.
         f_us = (await c.get("/api/analytics/cashflow_forecast", headers={"X-Entity-ID": us})).json()
         assert f_us["totals"]["count"] == 1
-        assert f_us["totals"]["scheduled_amount"] == 100.0
+        assert f_us["totals"]["scheduled_amount"] == "100.00"
         f_all = (await c.get("/api/analytics/cashflow_forecast")).json()
         assert f_all["totals"]["count"] == 2
-        assert f_all["totals"]["scheduled_amount"] == 300.0
+        assert f_all["totals"]["scheduled_amount"] == "300.00"
 
 
 # ---------------------------------------------------------------------------

@@ -5,6 +5,13 @@ Money convention (mirrors ``schemas/contract.py``): request fields are typed
 money as ``float | None`` (the router does ``float(...)``). Never ``float`` on a
 column or in-memory total.
 
+Every request-side ``Decimal`` is digit-bounded to the ``Numeric(precision,
+scale)`` of the column it lands in, via ``max_digits`` / ``decimal_places`` on
+its ``Field``. Unbounded, an over-range amount passed validation and blew up at
+the DB flush as an unhandled ``DataError`` — a 500 where the caller's own bad
+input deserves a 422. ``tests/test_schema_decimal_bounds.py`` is the guard that
+keeps a newly added field from re-opening the hole.
+
 Policy / pre-approval / card-transaction schemas are defined here too so the
 later workflows (WF2-4) can reuse them — only the expenses + expense-reports
 endpoints are wired in WF1.
@@ -37,7 +44,8 @@ class ExpenseBase(BaseModel):
     # Must be strictly positive — a negative "expense" would net a report under
     # the CFO approval threshold while hiding a genuinely large line (a credit
     # is a credit memo, not an expense). See issue #156.
-    amount: Decimal = Field(gt=0)
+    # Digits match `expenses.amount` Numeric(15, 2) — see the module docstring.
+    amount: Decimal = Field(gt=0, max_digits=15, decimal_places=2)
     currency: str = Field(default="USD", max_length=3)
     gl_account_id: str | None = None
     payment_method: ExpensePaymentMethod = ExpensePaymentMethod.out_of_pocket
@@ -45,7 +53,8 @@ class ExpenseBase(BaseModel):
     # A distance, so never negative. Nothing consumes a negative one — the
     # policy engine's mileage rule skips `miles <= 0` — so an unbounded field
     # just persisted nonsense that silently disabled the rule for that line.
-    mileage_miles: Decimal | None = Field(default=None, ge=0)
+    # Digits match `expenses.mileage_miles` Numeric(10, 2).
+    mileage_miles: Decimal | None = Field(default=None, ge=0, max_digits=10, decimal_places=2)
 
 
 class ExpenseCreate(ExpenseBase):
@@ -60,12 +69,12 @@ class ExpenseUpdate(BaseModel):
     merchant: str | None = Field(default=None, max_length=255)
     category: str | None = Field(default=None, max_length=100)
     description: str | None = None
-    amount: Decimal | None = Field(default=None, gt=0)
+    amount: Decimal | None = Field(default=None, gt=0, max_digits=15, decimal_places=2)
     currency: str | None = Field(default=None, max_length=3)
     gl_account_id: str | None = None
     payment_method: ExpensePaymentMethod | None = None
     reimbursable: bool | None = None
-    mileage_miles: Decimal | None = Field(default=None, ge=0)
+    mileage_miles: Decimal | None = Field(default=None, ge=0, max_digits=10, decimal_places=2)
     report_id: str | None = None
 
 
@@ -209,12 +218,19 @@ class ExpensePolicyBase(BaseModel):
     # The currency every money threshold on this policy is denominated in.
     # None = "the org's reporting currency", resolved at evaluation time.
     threshold_currency: str | None = None
-    per_diem_amount: Decimal | None = None
+    # Every money threshold is non-negative: a negative allowance / limit /
+    # threshold has no meaning the engine can act on (`0` already expresses
+    # "always require"). Digits match the `expense_policies` columns.
+    per_diem_amount: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     per_diem_currency: str = Field(default="USD", max_length=3)
-    mileage_rate: Decimal | None = None
-    category_limit: Decimal | None = None
-    requires_preapproval_above: Decimal | None = None
-    requires_receipt_above: Decimal | None = None
+    mileage_rate: Decimal | None = Field(default=None, ge=0, max_digits=10, decimal_places=4)
+    category_limit: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    requires_preapproval_above: Decimal | None = Field(
+        default=None, ge=0, max_digits=15, decimal_places=2
+    )
+    requires_receipt_above: Decimal | None = Field(
+        default=None, ge=0, max_digits=15, decimal_places=2
+    )
     rules: dict | None = None
 
     @field_validator("threshold_currency")
@@ -243,12 +259,16 @@ class ExpensePolicyUpdate(BaseModel):
     active: bool | None = None
     category: str | None = Field(default=None, max_length=100)
     threshold_currency: str | None = None
-    per_diem_amount: Decimal | None = None
+    per_diem_amount: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     per_diem_currency: str | None = Field(default=None, max_length=3)
-    mileage_rate: Decimal | None = None
-    category_limit: Decimal | None = None
-    requires_preapproval_above: Decimal | None = None
-    requires_receipt_above: Decimal | None = None
+    mileage_rate: Decimal | None = Field(default=None, ge=0, max_digits=10, decimal_places=4)
+    category_limit: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    requires_preapproval_above: Decimal | None = Field(
+        default=None, ge=0, max_digits=15, decimal_places=2
+    )
+    requires_receipt_above: Decimal | None = Field(
+        default=None, ge=0, max_digits=15, decimal_places=2
+    )
     rules: dict | None = None
 
     @field_validator("threshold_currency")
@@ -300,7 +320,10 @@ class CorporateCardTransactionBase(BaseModel):
     txn_date: date
     posted_date: date | None = None
     merchant: str | None = Field(default=None, max_length=255)
-    amount: Decimal
+    # Digits match `corporate_card_transactions.amount` Numeric(15, 2).
+    # Deliberately NOT `ge=0`: a card refund / merchant credit is a genuine
+    # negative line on the feed, and rejecting it would drop real transactions.
+    amount: Decimal = Field(max_digits=15, decimal_places=2)
     currency: str = Field(default="USD", max_length=3)
     external_txn_id: str | None = Field(default=None, max_length=255)
     import_batch: str | None = Field(default=None, max_length=100)
@@ -355,7 +378,8 @@ class CorporateCardTransactionListResponse(PageMeta):
 
 class ExpensePreapprovalBase(BaseModel):
     title: str = Field(..., max_length=255)
-    estimated_amount: Decimal
+    # Digits match `expense_preapprovals.estimated_amount` Numeric(15, 2).
+    estimated_amount: Decimal = Field(ge=0, max_digits=15, decimal_places=2)
     currency: str = Field(default="USD", max_length=3)
     category: str | None = Field(default=None, max_length=100)
     justification: str | None = None

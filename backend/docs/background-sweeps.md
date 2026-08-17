@@ -72,7 +72,18 @@ Two things, and the first is the one the follow-up existed for:
 
 1. **The tick completed but reported failures** (`failures > 0` on its result,
    or any `*_failures` counter — `vendor_rescreen` counts `vendor_failures`
-   apart from `failures`). Outcome `partial`, logged at WARNING.
+   and `recurring_invoices` counts `template_failures` apart from `failures`).
+   Outcome `partial`, logged at WARNING.
+
+   **The `*_failures` suffix is a decision, not a naming habit.** A per-item
+   counter joins the health signal only when the item failing means the
+   *platform* is failing. `recurring_invoices.templates_skipped` deliberately
+   does NOT carry the suffix: a template missing a vendor or an amount is a
+   tenant configuration problem no platform operator can fix, so counting it
+   would pin the sweep at `degraded` indefinitely and drown the streak alert
+   that exists for real breakage. That skip is surfaced per-template instead —
+   a persisted marker, an audit row, and an auto-pause that bounds it (see
+   `recurring-invoices.md` § A skipped period is never silent).
 2. **The tick raised.** Outcome `error`, logged at ERROR with the exception
    **class**.
 

@@ -94,6 +94,49 @@ class CustomDomainsConfig(BaseModel):
     custom_domains: list[str] = Field(default_factory=list)
 
 
+class ChatNotificationStatus(BaseModel):
+    """The **credential-free** view of `settings.chat_notifications`.
+
+    `webhook_url` is deliberately absent and always will be: it is a bearer
+    capability (see `services/chat_notifications_config`), so it is write-only.
+    `webhook_host` is the bare hostname — enough for an admin to answer "where
+    does our approval channel post?" during an incident, with none of the path
+    or query that carries the provider's token.
+    """
+
+    enabled: bool = False
+    provider: str | None = None
+    events: dict[str, bool] = Field(default_factory=dict)
+    webhook_configured: bool = False
+    webhook_host: str | None = None
+    # Registry-derived, so the picker can't offer a provider with no adapter.
+    supported_providers: list[str] = Field(default_factory=list)
+    supported_events: list[str] = Field(default_factory=list)
+
+
+class UpdateChatNotificationsRequest(BaseModel):
+    """Non-credential chat settings. The webhook URL is NOT settable here — it
+    has its own endpoint, and a save through this one preserves it."""
+
+    enabled: bool = False
+    provider: str = "mock"
+    events: dict[str, bool] = Field(default_factory=dict)
+
+
+class SetChatWebhookRequest(BaseModel):
+    """The incoming-webhook URL (the credential).
+
+    Deliberately declared as a bare `str` with **no** Pydantic constraints:
+    FastAPI's default `RequestValidationError` body echoes the offending
+    `input` back, so a `min_length` / pattern failure here would put the
+    credential into an HTTP error body (and any log or APM span that captures
+    one). Every check runs in the endpoint instead and answers with one
+    generic, value-free 422.
+    """
+
+    webhook_url: str = ""
+
+
 class OrganizationResponse(BaseModel):
     id: str
     name: str

@@ -297,7 +297,8 @@ async def test_cfo_accruals_received_amount_values_partial_and_full_receipts(rea
         body = (await c.get("/api/analytics/cfo")).json()
 
     # $9,600 (80% of the $12k PO) + $6,300 (fully received) = $15,900.
-    assert body["accruals"]["received_amount"] == 15900.0
+    # Money crosses the boundary as an EXACT decimal STRING (`analytics._money`).
+    assert body["accruals"]["received_amount"] == "15900.00"
 
 
 async def test_cfo_accruals_received_amount_excludes_other_tenant(realdb):
@@ -324,4 +325,6 @@ async def test_cfo_accruals_received_amount_excludes_other_tenant(realdb):
 
     async with realdb.client(key="b", role="cfo") as c:
         body = (await c.get("/api/analytics/cfo")).json()
-    assert body["accruals"]["received_amount"] == 0.0
+    # Exact decimal string, and "0.00" — not "0" — because the zero is a money
+    # figure carrying the column's scale, not a bare count.
+    assert body["accruals"]["received_amount"] == "0.00"
