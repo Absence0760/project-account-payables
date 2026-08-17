@@ -349,3 +349,97 @@ async def test_by_entity_rollup_money_is_exact_strings(realdb):
     seen = _assert_money_strings(body, keys=_BY_ENTITY_MONEY_FIELDS)
     assert seen == _BY_ENTITY_MONEY_FIELDS
     assert Decimal(body["consolidated"]["total_spend"]) == Decimal("1234.56")
+
+
+# ---------------------------------------------------------------------------
+# The serialiser itself
+# ---------------------------------------------------------------------------
+
+
+def test_money_formats_fixed_point_never_scientific():
+    """`str(Decimal("1E+3"))` is `"1E+3"`.
+
+    Both forms parse in Python, but a money field carrying `"1E+3"` is exactly
+    the value a downstream consumer's own parser fumbles — and an exact-string
+    contract whose figure needs interpreting isn't one. `_money` formats
+    fixed-point so the wire value is always plainly a decimal.
+    """
+    from app.api.analytics import _money
+
+    assert _money(Decimal("1E+3")) == "1000"
+    assert _money(Decimal("1.2E-3")) == "0.0012"
+    assert _money(Decimal("-1E+2")) == "-100"
+
+
+def test_money_preserves_scale_and_passes_none_through():
+    """Trailing zeros are the figure's precision, not noise — this is not
+    `.normalize()`. And `None` stays JSON null, never the string `"None"`."""
+    from app.api.analytics import _money
+
+    assert _money(Decimal("0.00")) == "0.00"
+    assert _money(Decimal("1234.50")) == "1234.50"
+    assert _money(Decimal("0")) == "0"
+    assert _money(None) is None
+
+
+def test_analytics_module_has_no_second_money_serialiser():
+    """`_money` is the module's ONE money serialiser.
+
+    A source scan, because the failure it guards is a *new* response field
+    hand-serialised with `str(...)` — which works, looks right in review, and
+    silently reintroduces the scientific-notation and `"None"` holes `_money`
+    closes. `Decimal(str(...))` is the opposite direction (parsing a DB scalar
+    INTO a Decimal) and is fine, as is `str()` on a UUID.
+
+    Uses the AST rather than a line regex so a docstring or comment mentioning
+    `str()` can't trip it — the scan must be about code, not prose.
+    """
+    import ast
+    from pathlib import Path
+
+    import app.api.analytics as analytics_module
+
+    source = Path(analytics_module.__file__).read_text()
+    tree = ast.parse(source)
+
+    # Every `str(...)` call that is the direct argument of a `Decimal(...)`
+    # call — the parse-a-DB-scalar idiom, not serialisation.
+    inside_decimal: set[int] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "Decimal"
+        ):
+            for arg in node.args:
+                if isinstance(arg, ast.Call) and isinstance(arg.func, ast.Name):
+                    if arg.func.id == "str":
+                        inside_decimal.add(id(arg))
+
+    def _is_identifier_arg(call: ast.Call) -> bool:
+        """`str(inv_id)` / `str(e.id)` — a UUID, not money."""
+        if len(call.args) != 1:
+            return False
+        arg = call.args[0]
+        name = (
+            arg.id
+            if isinstance(arg, ast.Name)
+            else arg.attr
+            if isinstance(arg, ast.Attribute)
+            else ""
+        )
+        return name.endswith("id")
+
+    offenders = [
+        f"line {node.lineno}: {ast.unparse(node)}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "str"
+        and id(node) not in inside_decimal
+        and not _is_identifier_arg(node)
+    ]
+    assert not offenders, (
+        "bare `str(...)` in api/analytics.py — if it is a money field it must go "
+        f"through `_money`: {offenders}"
+    )

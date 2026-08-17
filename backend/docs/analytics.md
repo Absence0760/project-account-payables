@@ -29,7 +29,13 @@ applied at the API boundary, so no figure a CFO reads has round-tripped through
 a binary float. `app/api/analytics.py::_money` is the module's single
 serialiser; route every new money field through it rather than calling `str()`
 inline, so this file can't half-migrate the way it did when `/drill/dpo` was
-the only corrected endpoint (`../../docs/decisions.md` §32).
+the only corrected endpoint (`../../docs/decisions.md` §32). It formats
+**fixed-point**, because `str(Decimal("1E+3"))` is `"1E+3"` — parseable in
+Python, and exactly the value a downstream consumer's own parser fumbles.
+Trailing zeros are preserved (`"0.00"` stays `"0.00"`); a `None` figure stays
+JSON `null`, never the string `"None"`. A source scan in
+`tests/test_analytics_money_serialization.py` fails on any bare `str(...)` in
+the module, so a second serialiser can't quietly appear.
 
 **What is deliberately NOT a string**, because it is not money and
 stringifying it would be a bug wearing compliance's clothes:

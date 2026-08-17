@@ -177,10 +177,18 @@ def _money(value: Decimal | int | None) -> str | None:
     stringifying one would be a bug wearing compliance's clothes. `None` passes
     through so a nullable figure stays JSON `null` rather than the string
     `"None"`.
+
+    Formats FIXED-POINT rather than via `str()`, which renders a `Decimal`
+    carrying a positive exponent in scientific notation (`Decimal("1E+3")` →
+    `"1E+3"`). Both parse in Python, but `"1E+3"` in a money field is the kind
+    of value a downstream consumer's own parser fumbles — and the whole point
+    of the exact-string contract is that the figure survives the wire
+    unambiguously. Trailing zeros are preserved either way (`"0.00"` stays
+    `"0.00"`); this is not `.normalize()`.
     """
     if value is None:
         return None
-    return str(value)
+    return format(Decimal(value), "f")
 
 
 def _parse_decimal_param(raw: str | None, field: str) -> Decimal | None:
@@ -436,14 +444,8 @@ class CashThresholdSettings(BaseModel):
 
 
 def _threshold_response(thresholds: CashThresholds) -> dict:
-    """Serialise persisted thresholds as JSON strings (money never as float)."""
-    return {
-        "min_balance_threshold": (
-            str(thresholds.min_balance_threshold)
-            if thresholds.min_balance_threshold is not None
-            else None
-        ),
-    }
+    """Serialise persisted thresholds through the module's money serialiser."""
+    return {"min_balance_threshold": _money(thresholds.min_balance_threshold)}
 
 
 @router.get("/cash-position-settings")
@@ -483,13 +485,7 @@ async def update_cash_position_settings(
         actor_id=user.id,
         action="organization.cash_thresholds_updated",
         entity_id=org.id,
-        details={
-            "min_balance_threshold": (
-                str(thresholds.min_balance_threshold)
-                if thresholds.min_balance_threshold is not None
-                else None
-            ),
-        },
+        details={"min_balance_threshold": _money(thresholds.min_balance_threshold)},
     )
     return _threshold_response(thresholds)
 
@@ -1133,11 +1129,11 @@ async def _entity_metrics(
         open_po_amount = Decimal("0")
 
     return {
-        "total_spend": str(total_spend),
-        "outstanding_amount": str(outstanding_amount),
+        "total_spend": _money(total_spend),
+        "outstanding_amount": _money(outstanding_amount),
         "invoice_count": invoice_count,
         "open_exceptions": open_exceptions,
-        "open_po_amount": str(open_po_amount),
+        "open_po_amount": _money(open_po_amount),
     }
 
 
@@ -1306,8 +1302,9 @@ async def drill_dpo(
         "rows": [
             {
                 "month": r["month"],
-                "accounts_payable": str(r["accounts_payable"]),
-                "cogs": str(r["cogs"]),
+                "accounts_payable": _money(r["accounts_payable"]),
+                "cogs": _money(r["cogs"]),
+                # A day count, not money — stays a JSON number.
                 "dpo": float(r["dpo"]),
             }
             for r in rows
@@ -1610,8 +1607,11 @@ async def post_forecast_variance(
         augmented.append(
             {
                 "month": month,
+                # The client's own figure, echoed into the pure function, which
+                # parses it. `actual` is ours and is kept `Decimal` all the way
+                # in — the same DB-scalar idiom the rest of this module uses.
                 "forecast": r.get("forecast", "0"),
-                "actual": str(actual_q.scalar() or 0),
+                "actual": Decimal(str(actual_q.scalar() or 0)),
             }
         )
     result = compute_forecast_variance(augmented)
