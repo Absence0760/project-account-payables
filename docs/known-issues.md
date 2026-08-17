@@ -32,9 +32,13 @@ correlated on the template's own id, and rides a `last_skip` field on every
 `/recurring` list. Past `MAX_CONSECUTIVE_SKIPS` (3) the sweep **pauses** the
 template and audits that too (`recurring_template.paused`, `actor_id` NULL,
 `source: "sweep"`) — the `services/scheduled_reports` auto-disable shape — so an
-unfixable schedule stops claiming to be live. `clear_generation_skip` resets the
-count on a successful generation, which is what makes `consecutive` mean
-consecutive. The "can it generate" verdict itself moved into one pure
+unfixable schedule stops claiming to be live. The marker is cleared by **every**
+path that establishes the reason no longer holds — `generate_one`, the sweep's
+already-generated no-op, `generate-now`'s idempotent branch, and (via
+`clear_generation_skip_if_resolved`) `PATCH` and `resume` — which is what makes
+`consecutive` mean consecutive; clearing only in the sweep left a manually-fixed
+template with a stale count, so its next single miss tripped the three-miss
+auto-pause. The "can it generate" verdict itself moved into one pure
 `not_generatable_reason`, shared by `generate_one`, the sweep and the router's
 `generate-now` 422, so the three can't drift.
 

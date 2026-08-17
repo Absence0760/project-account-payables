@@ -167,9 +167,30 @@ Every skip now:
    the template's own id so one template's generation problem reads as one
    thread.
 3. **Surfaces as `last_skip`** on every `/api/recurring` template response, so
-   the UI can tell "not generating" apart from "nothing due yet". `null` once
-   the template generates again — `clear_generation_skip` resets the count on a
-   successful generation, which is what makes `consecutive` mean *consecutive*.
+   the UI can tell "not generating" apart from "nothing due yet".
+
+**Clearing the marker is not cosmetic, and every path that fixes a template
+does it.** `record_generation_skip` counts *up from whatever it finds*, so a
+stale count left behind after a manual fix makes the NEXT single miss trip the
+three-miss auto-pause — and a healthy template goes on reporting "Not
+generating" to the operator who just fixed it, which is the original bug
+inverted. The rule is "clear it wherever the code has just established the
+reason no longer holds":
+
+| Path | Clears via |
+|------|-----------|
+| `generate_one` (the shared primitive — sweep generate *and* `generate-now`) | `clear_generation_skip`, immediately after its generatable guard passes |
+| the sweep's already-generated no-op (never reaches `generate_one`) | `clear_generation_skip` |
+| `POST /{id}/generate-now`'s idempotent 200 branch (short-circuits before `generate_one`) | `clear_generation_skip` |
+| `PATCH /{id}` — the edit that fills in the missing field | `clear_generation_skip_if_resolved` |
+| `POST /{id}/resume` — putting an auto-paused template back in service | `clear_generation_skip_if_resolved` |
+
+The `_if_resolved` variant is for the two callers that change a template
+*without* generating from it: a template resumed while still missing its vendor
+**keeps** its marker, because the reason it names is still true (and it will
+re-trip the pause). Leaving the clearing to the sweep alone was a real defect
+caught in review — `tests/test_recurring_invoices.py` pins each row above,
+including that one miss after a manual fix does NOT pause.
 
 Past `MAX_CONSECUTIVE_SKIPS` (3) consecutive misses the sweep **pauses** the
 template — the shape `services/scheduled_reports` already uses for its

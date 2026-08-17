@@ -249,6 +249,12 @@ async def update_template(
     if template.status == STATUS_ACTIVE and (_SCHEDULE_FIELDS & set(changed)):
         _seed_next_run_on(template, after=max(date.today(), template.start_date))
 
+    # This edit is how an operator fixes a template the sweep couldn't generate
+    # from; once the reason no longer holds, the skip marker is stale and its
+    # count must not carry into a future miss. Still-missing fields keep it.
+    if changed:
+        svc.clear_generation_skip_if_resolved(template)
+
     if changed:
         await dispatch_audit(
             db,
@@ -353,6 +359,11 @@ async def resume_template(
     # Re-anchor from today so resuming never back-fires every historic period
     # the template slept through.
     _seed_next_run_on(template, after=max(date.today(), template.start_date))
+    # Resuming a template the SWEEP auto-paused is the operator saying it's
+    # fixed — but only clear the marker if it actually is. A template resumed
+    # still missing its vendor keeps it (and will re-trip the pause), because
+    # the reason it names is still true.
+    svc.clear_generation_skip_if_resolved(template)
     await _audit_lifecycle(db, template, org_id, user.id, "recurring_template.resumed")
     await db.commit()
     await db.refresh(template)
@@ -424,6 +435,13 @@ async def generate_now(
         )
     ).scalar_one_or_none()
     if existing is not None:
+        # This period is already satisfied and the guard above proved the
+        # template is generatable, so a leftover skip marker is stale. The
+        # idempotent branch never reaches `generate_one`'s own clear, and a
+        # stale `consecutive` would make the next single sweep miss trip the
+        # auto-pause meant for three.
+        svc.clear_generation_skip(template)
+        await db.commit()
         return Response(
             content=_generate_payload(existing, period_key),
             media_type="application/json",

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -972,3 +972,163 @@ async def test_api_last_skip_tolerates_a_malformed_meta_marker(realdb):
         r = await c.get(f"/api/recurring/{tid}")
     assert r.status_code == 200
     assert r.json()["last_skip"] is None
+
+
+# --------------------------------------------------------------------------- #
+# Real-DB — the skip marker is cleared by every path that fixes the template
+# --------------------------------------------------------------------------- #
+#
+# The marker is not cosmetic: `record_generation_skip` counts UP from whatever
+# it finds, so a stale count left behind after a manual fix makes the NEXT
+# single miss trip the MAX_CONSECUTIVE_SKIPS auto-pause meant for three — and a
+# healthy template goes on reporting "Not generating" to the operator who just
+# fixed it, which is the original bug inverted.
+
+
+async def test_generate_now_clears_a_stale_skip_marker(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    db_name = realdb.info("a").db_name
+    vendor_name = "Manual Fix Co"
+
+    tid = await _add_ungeneratable_template(mk, org_id, next_run_on=_SWEEP_TODAY, name=vendor_name)
+    await svc._sweep_tenant(db_name, _SWEEP_TODAY)
+    assert (await _reload(mk, tid)).meta[svc.SKIP_META_KEY]["consecutive"] == 1
+
+    # The operator fills in the amount and generates by hand.
+    async with realdb.client(key="a", role="ap_manager") as c:
+        patched = await c.patch(f"/api/recurring/{tid}", json={"amount": 250.0})
+        assert patched.status_code == 200
+        r = await c.post(f"/api/recurring/{tid}/generate-now")
+        assert r.status_code in (200, 201)
+
+    assert svc.SKIP_META_KEY not in ((await _reload(mk, tid)).meta or {})
+
+
+async def test_generate_now_clears_the_marker_on_the_idempotent_branch(realdb):
+    """The already-generated 200 never reaches `generate_one`'s own clear."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    tid = await _add_recurring_template(
+        mk, org_id, next_run_on=date.today(), name="Idempotent Fix Co"
+    )
+    async with realdb.client(key="a", role="ap_manager") as c:
+        first = await c.post(f"/api/recurring/{tid}/generate-now")
+        assert first.status_code == 201
+
+        # Plant a stale marker, then re-call: the period is already satisfied,
+        # so the router short-circuits to 200 before `generate_one`.
+        async with mk() as s:
+            t = (
+                await s.execute(
+                    select(RecurringInvoiceTemplate).where(RecurringInvoiceTemplate.id == tid)
+                )
+            ).scalar_one()
+            svc.record_generation_skip(
+                t, period_key="2020-01", reason=svc.SKIP_MISSING_AMOUNT, at=datetime.now(UTC)
+            )
+            await s.commit()
+
+        again = await c.post(f"/api/recurring/{tid}/generate-now")
+        assert again.status_code == 200
+
+    assert svc.SKIP_META_KEY not in ((await _reload(mk, tid)).meta or {})
+
+
+async def test_patch_that_fixes_the_template_clears_the_marker(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    db_name = realdb.info("a").db_name
+
+    tid = await _add_ungeneratable_template(mk, org_id, next_run_on=_SWEEP_TODAY, name="Patch Co")
+    await svc._sweep_tenant(db_name, _SWEEP_TODAY)
+    assert (await _reload(mk, tid)).meta[svc.SKIP_META_KEY]
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        r = await c.patch(f"/api/recurring/{tid}", json={"amount": 99.0})
+    assert r.status_code == 200
+    assert r.json()["last_skip"] is None
+    assert svc.SKIP_META_KEY not in ((await _reload(mk, tid)).meta or {})
+
+
+async def test_patch_that_does_not_fix_the_template_keeps_the_marker(realdb):
+    """A still-unfixable template keeps its marker — the reason is still true."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    db_name = realdb.info("a").db_name
+
+    tid = await _add_ungeneratable_template(
+        mk, org_id, next_run_on=_SWEEP_TODAY, name="Still Broken Co"
+    )
+    await svc._sweep_tenant(db_name, _SWEEP_TODAY)
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        r = await c.patch(f"/api/recurring/{tid}", json={"notes": "chasing the vendor"})
+    assert r.status_code == 200
+    assert r.json()["last_skip"]["reason"] == svc.SKIP_MISSING_AMOUNT
+
+
+async def test_a_manual_generation_resets_the_auto_pause_budget(realdb):
+    """The consecutive count is what the auto-pause reads, so a fix must reset
+    it — otherwise the next SINGLE miss trips a pause meant for three."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    db_name = realdb.info("a").db_name
+
+    tid = await _add_ungeneratable_template(mk, org_id, next_run_on=_SWEEP_TODAY, name="Budget Co")
+
+    day = _SWEEP_TODAY
+    for _ in range(svc.MAX_CONSECUTIVE_SKIPS - 1):
+        await svc._sweep_tenant(db_name, day)
+        day = svc._add_months(day, 1)
+    assert (await _reload(mk, tid)).meta[svc.SKIP_META_KEY]["consecutive"] == (
+        svc.MAX_CONSECUTIVE_SKIPS - 1
+    )
+
+    # Operator fixes it and generates by hand...
+    async with realdb.client(key="a", role="ap_manager") as c:
+        assert (await c.patch(f"/api/recurring/{tid}", json={"amount": 40.0})).status_code == 200
+        assert (await c.post(f"/api/recurring/{tid}/generate-now")).status_code in (200, 201)
+
+    # ...then it regresses (amount cleared again) and misses ONE more period.
+    async with mk() as s:
+        t = (
+            await s.execute(
+                select(RecurringInvoiceTemplate).where(RecurringInvoiceTemplate.id == tid)
+            )
+        ).scalar_one()
+        t.amount = None
+        t.next_run_on = day
+        t.status = STATUS_ACTIVE
+        await s.commit()
+    await svc._sweep_tenant(db_name, day)
+
+    template = await _reload(mk, tid)
+    assert template.meta[svc.SKIP_META_KEY]["consecutive"] == 1, "the budget must have reset"
+    assert template.status == STATUS_ACTIVE, "one miss must not trip a three-miss pause"
+
+
+async def test_resume_clears_the_marker_only_when_the_template_is_fixed(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    db_name = realdb.info("a").db_name
+
+    # Auto-paused, still unfixable -> resume keeps the marker.
+    broken = await _add_ungeneratable_template(
+        mk, org_id, next_run_on=_SWEEP_TODAY, name="Resume Broken Co"
+    )
+    day = _SWEEP_TODAY
+    for _ in range(svc.MAX_CONSECUTIVE_SKIPS):
+        await svc._sweep_tenant(db_name, day)
+        day = svc._add_months(day, 1)
+    assert (await _reload(mk, broken)).status == STATUS_PAUSED
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        r = await c.post(f"/api/recurring/{broken}/resume")
+        assert r.status_code == 200
+        assert r.json()["last_skip"]["reason"] == svc.SKIP_MISSING_AMOUNT
+
+        # Fix it, pause + resume -> the marker goes.
+        assert (await c.patch(f"/api/recurring/{broken}", json={"amount": 12.0})).status_code == 200
+    assert svc.SKIP_META_KEY not in ((await _reload(mk, broken)).meta or {})

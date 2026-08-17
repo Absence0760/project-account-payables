@@ -176,12 +176,33 @@ def record_generation_skip(
 
 
 def clear_generation_skip(template: RecurringInvoiceTemplate) -> None:
-    """Drop the skip marker after a successful generation. No-op if absent."""
+    """Drop the skip marker once the template can generate again. No-op if absent.
+
+    Call this from **every** path that has just established the reason no
+    longer holds, not only the background sweep. The marker isn't cosmetic:
+    ``record_generation_skip`` counts up from whatever it finds, so a stale
+    count left behind after a manual fix makes the NEXT single miss trip the
+    :data:`MAX_CONSECUTIVE_SKIPS` auto-pause — and a healthy template goes on
+    reporting "Not generating" to the operator who just fixed it, which is the
+    original bug inverted.
+    """
     meta = template.meta or {}
     if SKIP_META_KEY not in meta:
         return
     remaining = {k: v for k, v in meta.items() if k != SKIP_META_KEY}
     template.meta = remaining or None
+
+
+def clear_generation_skip_if_resolved(template: RecurringInvoiceTemplate) -> None:
+    """Clear the skip marker iff the template is generatable again.
+
+    For the callers that change a template *without* generating from it — the
+    ``PATCH`` that fills in the missing amount, the ``resume`` that puts it back
+    in service. A template still missing its vendor keeps the marker, because
+    the reason it names is still true.
+    """
+    if not_generatable_reason(template) is None:
+        clear_generation_skip(template)
 
 
 # --------------------------------------------------------------------------- #
@@ -389,6 +410,13 @@ async def generate_one(
     if reason is not None:
         logger.warning("[recurring] template %s not generatable (%s)", template.id, reason)
         return None
+
+    # The guard above just established the template CAN generate, so any skip
+    # marker is stale. Clearing here — in the shared primitive — is what makes
+    # `POST /{id}/generate-now` reset the count too; leaving it to the sweep
+    # alone meant a manually-fixed template kept a stale `consecutive`, so its
+    # next single miss tripped the auto-pause meant for three.
+    clear_generation_skip(template)
 
     period_key = period_key_for(template.cadence, run_on)
     correlation_id = uuid.uuid4()
@@ -744,6 +772,11 @@ async def _sweep_tenant(db_name: str, today: date) -> TenantSweepOutcome:
                         await db.commit()
                         continue
 
+                    # Generatable — so any marker from an earlier period is
+                    # stale, including on the already-generated no-op path
+                    # below, which never reaches `generate_one`'s own clear.
+                    clear_generation_skip(template)
+
                     # generate_one() returns the SAME non-None Invoice whether
                     # it just created one or hit the (template, period_key)
                     # idempotency guard and returned the pre-existing row — so
@@ -764,9 +797,6 @@ async def _sweep_tenant(db_name: str, today: date) -> TenantSweepOutcome:
                         invoice = await generate_one(db, template, run_on=run_on, actor_id=None)
                         if invoice is not None:
                             outcome.generated += 1
-                            # `consecutive` counts CONSECUTIVE misses — a
-                            # template an operator has since fixed starts over.
-                            clear_generation_skip(template)
                     _advance_cursor(template, run_on)
                     await db.commit()
                 except Exception as exc:  # noqa: BLE001 — one template must not halt the tenant
