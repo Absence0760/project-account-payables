@@ -263,9 +263,50 @@ Represents the workflow template. The `steps_config` JSONB column defines the st
 }
 ```
 
-Step types `extraction`, `approval`, `erp_export`, `done` are canonical. Legacy aliases `upload`, `review`, `erp_push` are still accepted by `_STEP_TYPE_ALIASES` for backwards compatibility but new configs should use the canonical names.
+Step types `extraction`, `approval`, `erp_export`, `done` are canonical. Legacy aliases `upload`, `review`, `erp_push` are still accepted (`STEP_TYPE_ALIASES`) for backwards compatibility but new configs should use the canonical names.
 
 Seeded per tenant at organization creation. Configurable for custom approval chains.
+
+#### The step-type vocabulary has ONE owner
+
+`app/services/workflow_step_types.py` is the single source of truth for every
+step type the platform recognises, and for what may be done with each:
+
+| Name | Meaning |
+|------|---------|
+| `CANONICAL_STEP_TYPES` | The four pipeline steps that drive the invoice state machine. **Order is load-bearing** — a `WorkflowStep.step_number` is this tuple's 1-based index, and `complete_current_step` finds the open step by ordering on that number. Nothing may be appended, reordered, or removed without migrating the rows already carrying those numbers. |
+| `BUILDER_STEP_TYPES` | The five no-code builder types below. Orchestration config only: they have **no** step number and are never persisted as a `WorkflowStep`. |
+| `KNOWN_STEP_TYPES` | The union — everything a persisted `steps_config` may legally name. |
+| `STEP_TYPE_ALIASES` | The three legacy names, resolved before persisting so a query filtering on `"approval"` can never miss an alias-named row. |
+| `is_known_step_type()` | The gate the definition-save chokepoint runs. |
+| `canonical_step_index()` | Resolves a `step_number`, or refuses by name. |
+
+`workflow_engine` and `workflow_builder` **re-export** these; neither redeclares
+them. Before that, both modules held hand-copied literals with no cross-check
+between them (plus a third copy as the `Literal` on
+`schemas/workflow.py::WorkflowStepConfig.type`, which
+`tests/test_workflow_step_types.py` now drift-guards). The consequence was two
+real gaps:
+
+- **Nothing validated a persisted step type.** `is_known_step_type` existed but
+  had no production caller. `POST /api/workflows/import` takes `steps_config` as
+  a free-form dict — the one save path a Pydantic `Literal` does not constrain —
+  so a typo'd `"aproval"` step persisted happily and was then *silently ignored*
+  at runtime, which reads to the engine as "no approval step configured". A
+  workflow could lose its approval gate to a spelling mistake. `validate_builder_steps`
+  now rejects any step whose type `is_known_step_type()` refuses, before persist.
+- **The engine resolved a step number with a bare `.index()`.** A builder type
+  reaching `create_workflow_step` raised `ValueError: list.index(x): x not in list`
+  — a 500 naming neither the value nor the cause. `canonical_step_index()` now
+  raises `NonCanonicalStepTypeError` (a recognised builder type used where a
+  pipeline step is required) or `UnknownStepTypeError` (not a step type at all),
+  both naming the offending value; both subclass `ValueError` so existing
+  handlers still catch. `advance_workflow` resolves **before** closing the
+  current step — it used to close it first, so the raise left an instance with a
+  closed step and no successor.
+
+The posture is `decisions §29`'s: a step type we do not recognise is refused by
+name, never quietly coerced into something plausible.
 
 #### Per-entity selection (multi-entity Phase 3)
 

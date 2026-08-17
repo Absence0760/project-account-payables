@@ -26,10 +26,34 @@ import httpx
 
 from app.services.sanctions_adapters.base import ScreeningResult
 from app.services.sanctions_adapters.dispatcher import register_sanctions_adapter
+from app.services.sanctions_categories import (
+    CATEGORY_ADVERSE_MEDIA,
+    CATEGORY_PEP,
+    CATEGORY_SANCTIONS,
+)
 
 logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://api.complyadvantage.com"
+
+# The search types we ask ComplyAdvantage for. `adverse-media` is included
+# because negative-news screening is part of what this module promises (see
+# `backend/docs/vendor-risk-screening.md`) — a control that never asks for the
+# signal it claims to screen for is a false assurance. It widens what comes
+# back to `review_required`, which is the correct direction for a compliance
+# gate: an adverse-media hit is "review the relationship", never an auto-block.
+_SEARCH_TYPES = ["sanction", "warning", "fitness-probity", "pep", "adverse-media"]
+
+# CA's own hit-type vocabulary → our PII-free taxonomy
+# (`services/sanctions_categories`). Anything CA reports that isn't listed here
+# is carried through with hyphens normalised to underscores rather than
+# dropped — an unmapped label is still evidence, and the surfaces render an
+# unknown one by de-underscoring it.
+_TYPE_TO_CATEGORY = {
+    "sanction": CATEGORY_SANCTIONS,
+    "pep": CATEGORY_PEP,
+    "adverse-media": CATEGORY_ADVERSE_MEDIA,
+}
 
 
 @register_sanctions_adapter("complyadvantage")
@@ -59,7 +83,7 @@ class ComplyAdvantageAdapter:
             "search_term": vendor_name,
             "fuzziness": self.fuzziness / 100.0,
             "filters": {
-                "types": ["sanction", "warning", "fitness-probity", "pep"],
+                "types": list(_SEARCH_TYPES),
             },
         }
         # CA accepts ISO country codes as an additional filter to cut
@@ -73,13 +97,22 @@ class ComplyAdvantageAdapter:
             response.raise_for_status()
             payload = response.json()
 
-        # Response shape:
-        # {
-        #   "content": {"data": {"hits": [...], "total_hits": N}},
-        # }
-        # A 0-hit response is `clear`. Any sanction-typed hit is a
-        # `match` (highest severity). A PEP-only hit is
-        # `review_required`. Warning-only hits are also review.
+        return self._parse(payload)
+
+    def _parse(self, payload: dict) -> ScreeningResult:
+        """Map the documented `searches` response to a verdict + taxonomy.
+
+        Response shape:
+            {"content": {"data": {"hits": [...], "total_hits": N}}}
+
+        A 0-hit response is `clear`. Any `sanction`-typed hit is a `match`
+        (highest severity). Anything else — PEP, warning, fitness-probity,
+        **adverse-media** — is `review_required`, not auto-refused.
+
+        Split out of `screen_vendor` (mirroring the `dowjones` / `refinitiv`
+        siblings) so the response contract is testable without a network call
+        or a live key.
+        """
         data = (payload.get("content") or {}).get("data") or {}
         hits = data.get("hits") or []
         total_hits = int(data.get("total_hits", 0))
@@ -92,11 +125,14 @@ class ComplyAdvantageAdapter:
                 raw_response=payload,
             )
 
-        # Bucket hits by type to drive the verdict.
-        types = set()
+        # Bucket hits by type to drive the verdict + the category taxonomy.
+        types: set[str] = set()
         for h in hits:
             for t in h.get("doc", {}).get("types") or []:
-                types.add(t.lower())
+                if isinstance(t, str) and t.strip():
+                    types.add(t.strip().lower())
+
+        categories = tuple(sorted({_TYPE_TO_CATEGORY.get(t, t.replace("-", "_")) for t in types}))
 
         if "sanction" in types:
             return ScreeningResult(
@@ -105,16 +141,18 @@ class ComplyAdvantageAdapter:
                 matched_list="OFAC/EU/UN/UK_SANCTION",
                 risk_score=Decimal("95.00"),
                 raw_response=payload,
+                categories=categories,
             )
 
-        # Anything else (PEP, warning, fitness-probity) goes to the
-        # review queue — not auto-refused.
+        # Anything else (PEP, warning, fitness-probity, adverse-media) goes to
+        # the review queue — not auto-refused.
         return ScreeningResult(
             provider=self.provider_name,
             result="review_required",
             matched_list=",".join(sorted(types)) or "UNKNOWN",
             risk_score=Decimal("70.00"),
             raw_response=payload,
+            categories=categories,
         )
 
     async def test_connection(self) -> bool:

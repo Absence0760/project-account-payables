@@ -11,7 +11,12 @@ PII-free signals (no external calls; reads the persisted latest
   * sanctions — the latest `SanctionsCheck` for the vendor. `match`
     dominates (critical); `review_required` is elevated; `clear` /
     none contributes nothing. The provider risk_score (0–100) is
-    folded in when present.
+    folded in when present, and an **adverse-media** (negative-news)
+    category on that row raises the sub-score to at least
+    `_ADVERSE_MEDIA_FLOOR` and is named in the factor breakdown — the
+    taxonomy travels on the persisted row's JSONB (see
+    `services/sanctions_categories`), because this service is
+    compute-on-read and never calls an adapter.
   * fraud signals — count of *open* `fraud_flag` exceptions on the
     vendor's invoices.
   * payment history — trailing-12-month completed-payment volume +
@@ -46,6 +51,10 @@ from app.models.invoice import Invoice
 from app.models.payment import Payment
 from app.models.sanctions_check import SanctionsCheck
 from app.models.vendor import Vendor
+from app.services.sanctions_categories import (
+    categories_from_raw_response,
+    has_adverse_media,
+)
 
 # ---------------------------------------------------------------------------
 # Scoring weights. Each sub-signal yields a 0–100 sub-score; the
@@ -63,6 +72,14 @@ _FAILED_PAYMENT_PER = Decimal("20")  # each failed/cancelled payment in window
 # Trailing-12m completed volume → exposure sub-score. Linear ramp: at
 # or above this amount the volume component is maxed at 100.
 _VOLUME_FULL_EXPOSURE = Decimal("100000")
+
+# Sanctions sub-score floors. `_REVIEW_FLOOR` is what a `review_required`
+# scores when the provider volunteered no risk_score of its own;
+# `_ADVERSE_MEDIA_FLOOR` sits above it so a negative-news hit can never rank
+# below a generic review (the mock adapter scores adverse media 50, i.e. below
+# the review floor, which would otherwise invert the two).
+_REVIEW_FLOOR = Decimal("60")
+_ADVERSE_MEDIA_FLOOR = Decimal("65")
 
 # Bucket thresholds on the 0–100 composite.
 _HIGH_AT = Decimal("70")
@@ -157,24 +174,48 @@ async def _payment_history(db: AsyncSession, vendor_id: uuid.UUID) -> tuple[Deci
 def _sanctions_subscore(check: SanctionsCheck | None) -> tuple[Decimal, dict]:
     """0–100 sanctions sub-score + the PII-free factor breakdown."""
     if check is None:
-        return Decimal("0"), {"latest_result": None}
+        return Decimal("0"), {"latest_result": None, "categories": [], "adverse_media": False}
     provider_score = Decimal(str(check.risk_score)) if check.risk_score is not None else None
+    # The category taxonomy the adapter reported, folded onto the row at write
+    # time (see `services/sanctions_categories`). This service is
+    # compute-on-read and never calls an adapter, so the persisted row is the
+    # only place the taxonomy can come from. A pre-taxonomy row reads as `()`.
+    categories = categories_from_raw_response(check.raw_response)
+    adverse_media = has_adverse_media(categories)
     factor = {
         "latest_result": check.result,
         "matched_list": check.matched_list,
         "score": str(provider_score) if provider_score is not None else None,
         "provider": check.provider,
+        # Fixed-vocabulary labels only — safe to persist onto `risk_factors`
+        # and render, unlike the provider's raw match details.
+        "categories": list(categories),
+        "adverse_media": adverse_media,
     }
     if check.result == "match":
         # Hard list match — max sub-score (the overall verdict is forced
         # critical anyway, but keep the numeric coherent).
         return Decimal("100"), factor
+
     if check.result == "review_required":
         # Elevated. Prefer the provider's own risk_score when it gave
         # one; otherwise a fixed elevated floor.
-        return (provider_score if provider_score is not None else Decimal("60")), factor
-    # clear → no contribution.
-    return Decimal("0"), factor
+        sub = provider_score if provider_score is not None else _REVIEW_FLOOR
+    else:
+        # clear → no contribution from the verdict itself.
+        sub = Decimal("0")
+
+    if adverse_media:
+        # Negative news outranks a bare jurisdiction flag: it is a statement
+        # about this counterparty's conduct, not about where it banks. Without
+        # this floor an adverse-media hit could score BELOW a generic
+        # `review_required` — the mock adapter scores it 50 against the 60
+        # review floor — which inverts the two signals. Applied outside the
+        # `review_required` branch so a provider reporting negative news on an
+        # otherwise-`clear` verdict still moves the score, matching the
+        # compliance gate, which holds that payment for review.
+        sub = max(sub, _ADVERSE_MEDIA_FLOOR)
+    return _clamp(sub), factor
 
 
 def _fraud_subscore(open_flags: int) -> tuple[Decimal, dict]:

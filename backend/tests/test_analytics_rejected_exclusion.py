@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import csv
 import io
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -200,6 +200,97 @@ async def test_cfo_concentration_converts_mixed_currency_invoices(realdb):
     conc = body["supplier_concentration"]
     assert conc["largest_vendor"] == "Global Supply Co"
     assert Decimal(str(conc["total_spend"])) == Decimal("2086.96")
+
+
+# ---------------------------------------------------------------------------
+# The DPO trend and its own drill-through are the same population.
+#
+# `GET /api/analytics/cfo`'s `dpo_trend` and `GET /api/analytics/drill/dpo`
+# were two hand-written copies of the same monthly loop, and they had already
+# drifted: the chart excluded `rejected` invoices from its COGS proxy (matching
+# the headline `total_spend`) while the drill-through summed every status — so
+# the drill-through a CFO opens to explain a DPO spike reported a DIFFERENT DPO
+# than the point clicked. Same shape as the concentration bug above (#126).
+#
+# Both now build their snapshots with `_monthly_dpo_snapshots` and do the
+# arithmetic with the shared pure `compute_dpo_trend`.
+# ---------------------------------------------------------------------------
+
+
+def _last_month_end(today: date) -> date:
+    """The DPO loop walks back from the 1st of the current month, so the most
+    recent point it covers is the month that just closed."""
+    return today.replace(day=1) - timedelta(days=1)
+
+
+async def _seed_closed_month_invoices(realdb):
+    """One approved + one (larger) rejected invoice, both dated in the month
+    that just closed — the newest month the DPO trend actually covers."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    when = _last_month_end(date.today())
+    async with mk() as s:
+        ent = await _default_entity_id(s)
+        s.add(
+            Invoice(
+                organization_id=org_id,
+                entity_id=ent,
+                invoice_number="DPO-OK",
+                vendor_name="ZZ DPO Co",
+                amount=Decimal("1000.00"),
+                currency="USD",
+                status=InvoiceStatus.approved,
+                invoice_date=when,
+            )
+        )
+        s.add(
+            Invoice(
+                organization_id=org_id,
+                entity_id=ent,
+                invoice_number="DPO-NO",
+                vendor_name="ZZ DPO Co",
+                amount=Decimal("9000.00"),
+                currency="USD",
+                status=InvoiceStatus.rejected,
+                invoice_date=when,
+            )
+        )
+        await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_dpo_drill_through_matches_the_trend_point_it_explains(realdb):
+    await _seed_closed_month_invoices(realdb)
+    month = _last_month_end(date.today()).strftime("%Y-%m")
+
+    async with realdb.client(key=TENANT, role="cfo") as c:
+        cfo = (await c.get("/api/analytics/cfo")).json()
+        drill = (await c.get("/api/analytics/drill/dpo?months=1")).json()
+
+    trend_point = next(r for r in cfo["dpo_trend"] if r["month"] == month)
+    drill_row = next(r for r in drill["rows"] if r["month"] == month)
+    assert Decimal(str(drill_row["dpo"])) == Decimal(str(trend_point["dpo"]))
+
+    # And the shared figure is the right one: AP 1000 over a COGS proxy of 1000
+    # (the rejected 9000 excluded) across 30 days → 30.0 days. With the
+    # rejected invoice counted in COGS the drill-through reported 3.0.
+    assert Decimal(drill_row["cogs"]) == Decimal("1000.00")
+    assert Decimal(drill_row["accounts_payable"]) == Decimal("1000.00")
+    assert Decimal(str(drill_row["dpo"])) == Decimal("30.0")
+
+
+@pytest.mark.asyncio
+async def test_dpo_drill_through_serializes_money_as_exact_strings(realdb):
+    """`accounts_payable` and `cogs` are money and must cross the API boundary
+    as exact decimal strings, never as a float (project invariant)."""
+    await _seed_closed_month_invoices(realdb)
+    async with realdb.client(key=TENANT, role="cfo") as c:
+        drill = (await c.get("/api/analytics/drill/dpo?months=3")).json()
+
+    assert drill["rows"], "drill/dpo returned no rows"
+    for row in drill["rows"]:
+        assert isinstance(row["accounts_payable"], str), row
+        assert isinstance(row["cogs"], str), row
 
 
 @pytest.mark.asyncio

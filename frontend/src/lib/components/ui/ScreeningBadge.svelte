@@ -2,8 +2,12 @@
 	// Small pill for a vendor's sanctions-screening status and/or risk level.
 	// Pass `screening` (clear=green, review=amber, match=red, unscreened=grey)
 	// and/or `risk` (low=grey, medium=amber, high/critical=red). `blocked`
-	// forces the screening pill red with a "Blocked" label. Shared by the
-	// vendor list cell and the detail modal — don't hand-roll these pills.
+	// forces the screening pill red with a "Blocked" label. `adverseMedia` adds
+	// an amber "Negative news" pill — a different instruction to a reviewer
+	// than a watchlist match, so it reads alongside the verdict rather than
+	// replacing it. Shared by the vendor list cell, the screening review queue
+	// and the detail modal — don't hand-roll these pills (the tone classes
+	// carry calibrated WCAG-checked text colours; see `docs/accessibility.md`).
 	import {
 		SCREENING_STATUS_LABELS,
 		RISK_LEVEL_LABELS,
@@ -14,11 +18,13 @@
 	let {
 		screening,
 		risk,
-		blocked = false
+		blocked = false,
+		adverseMedia = false
 	}: {
 		screening?: ScreeningStatus;
 		risk?: RiskLevel;
 		blocked?: boolean;
+		adverseMedia?: boolean;
 	} = $props();
 
 	// Map status/level to a tone class shared across both pills.
@@ -46,6 +52,14 @@
 {#if risk && risk !== 'unknown'}
 	<span class="screen-badge risk {riskTone(risk)}" title="Risk: {RISK_LEVEL_LABELS[risk]}">
 		{RISK_LEVEL_LABELS[risk]} risk
+	</span>
+{/if}
+{#if adverseMedia}
+	<span
+		class="screen-badge amber"
+		title="Adverse-media (negative news) hit — review the relationship"
+	>
+		Negative news
 	</span>
 {/if}
 

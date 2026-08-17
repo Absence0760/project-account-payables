@@ -13,7 +13,11 @@ Three sub-checks, run in order so the most-severe verdict wins:
 
   1. Sanctions / PEP screening via the configured
      `sanctions_adapter`. A `match` refuses; a `review_required`
-     holds.
+     holds. An **adverse-media** (negative-news) category on the
+     result adds its own reason on top of whatever the verdict was —
+     including on a `clear` verdict, which turns it into a hold, so
+     negative news can never be auto-allowed just because the vendor
+     is not on a formal list yet.
 
   2. KYC status on the vendor row. Corridors with
      `requires_kyc=True` refuse if `vendor.kyc_status != "verified"`.
@@ -56,18 +60,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.payment import Payment
 from app.models.sanctions_check import SanctionsCheck
 from app.models.vendor import Vendor
+from app.services.payment_methods import (
+    INTERNATIONAL_PAYMENT_METHODS,
+    normalize_payment_method,
+)
 from app.services.sanctions_adapters import (
     SanctionsAdapter,
     ScreeningResult,
     get_sanctions_adapter,
 )
+from app.services.sanctions_categories import (
+    adverse_media_reason,
+    merge_categories_into_raw_response,
+)
 
 # Defaults — tenant settings override.
 _DEFAULT_KYC_REQUIRED_ABOVE = Decimal("1000")
 _DEFAULT_AML_ALERT_THRESHOLD = Decimal("100000")
-_DEFAULT_HIGH_RISK_METHODS: frozenset[str] = frozenset(
-    {"sepa", "international_wire", "international_ach"}
-)
+# The corridors that require a KYC-verified vendor above the threshold. This is
+# exactly "the international rails", so it is imported from the one registry
+# that names them (`services/payment_methods`) rather than restated here — a
+# fourth international rail must not be able to ship with no KYC gate because
+# this copy was forgotten. An org can still narrow/widen it per-tenant via
+# `settings.compliance.high_risk_corridor_methods`.
+_DEFAULT_HIGH_RISK_METHODS: frozenset[str] = INTERNATIONAL_PAYMENT_METHODS
 
 
 @dataclass
@@ -102,8 +118,18 @@ def _config(org_settings: dict | None) -> dict:
 
 def _kyc_required_for(method: str, amount: Decimal, org_settings: dict | None) -> bool:
     cfg = _config(org_settings)
-    high_risk = set(cfg.get("high_risk_corridor_methods", []) or []) or _DEFAULT_HIGH_RISK_METHODS
-    if method not in high_risk:
+    # Both sides are normalised: an admin typing "SEPA" into the per-org
+    # override used to silently disable the KYC gate for that corridor, because
+    # the stored `Payment.method` is lower-case.
+    # Blank / non-string entries are dropped, so a settings blob of `[""]` falls
+    # back to the default set rather than disabling the gate entirely.
+    configured = {
+        normalized
+        for m in cfg.get("high_risk_corridor_methods") or []
+        if (normalized := normalize_payment_method(m if isinstance(m, str) else None))
+    }
+    high_risk = configured or _DEFAULT_HIGH_RISK_METHODS
+    if normalize_payment_method(method) not in high_risk:
         return False
     threshold = Decimal(str(cfg.get("kyc_required_above", _DEFAULT_KYC_REQUIRED_ABOVE)))
     return amount >= threshold
@@ -197,19 +223,26 @@ async def check_payment_compliance(
         check_type="pre_payment",
         result=screening.result,
         risk_score=screening.risk_score,
+        # The PII-free category taxonomy rides the row so `vendor_risk_scoring`
+        # (compute-on-read, no adapter call) can see WHY a screen was elevated.
+        raw_response=merge_categories_into_raw_response(
+            screening.raw_response, screening.categories
+        ),
         matched_list=screening.matched_list,
-        raw_response=screening.raw_response,
         correlation_id=correlation_id,
     )
     db.add(sanctions_row)
 
     if screening.result == "match":
+        match_reasons = [
+            f"vendor matched sanctions list "
+            f"({screening.matched_list or 'unspecified'}) via {screening.provider}"
+        ]
+        if screening.adverse_media:
+            match_reasons.append(adverse_media_reason(screening.provider))
         return ComplianceDecision(
             verdict="refuse",
-            reasons=[
-                f"vendor matched sanctions list "
-                f"({screening.matched_list or 'unspecified'}) via {screening.provider}"
-            ],
+            reasons=match_reasons,
             screening_result=screening,
             sanctions_check_row=sanctions_row,
         )
@@ -218,6 +251,15 @@ async def check_payment_compliance(
             f"vendor screening returned review_required "
             f"({screening.matched_list or 'see audit row'}) via {screening.provider}"
         )
+    # Adverse media is called out separately from the bare verdict — it is the
+    # signal the taxonomy exists for, and "negative news" is a different
+    # instruction to a reviewer than "on a watchlist". Deliberately NOT nested
+    # under the `review_required` branch: a provider that reports negative news
+    # alongside a `clear` verdict (nothing on a formal list yet) would otherwise
+    # be auto-allowed, and one reason here is what turns the verdict into a
+    # `hold` for AP review — fail closed.
+    if screening.adverse_media:
+        reasons.append(adverse_media_reason(screening.provider))
 
     # ---------- 2. KYC status on high-risk corridors -------------------------
     if _kyc_required_for(payment_method, payment_amount, org_settings):

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.api.deps import ROLE_ADMIN, get_current_user, require_roles
+from app.config import settings
 from app.database import get_control_db
 from app.models.organization import Organization
 from app.models.user import User
@@ -24,6 +25,7 @@ from app.services.audit_dispatch import dispatch_auth_audit
 from app.services.data_residency import (
     DEFAULT_REGION,
     SUPPORTED_REGIONS,
+    check_residency_alignment,
     get_region_placement,
     resolve_region,
 )
@@ -35,6 +37,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/organization", tags=["organization"])
 
 
+class ResidencyAlignmentResponse(BaseModel):
+    """Advisory: is the pinned region the one this stack actually runs in?
+
+    Never blocks anything — it reports whether a residency commitment is
+    physically honoured today. `aligned` is tri-state: `null` (with
+    `status: "unknown"`) when the operator has not declared a usable
+    `FEOH_DEPLOYED_REGION`, so "we can't attest" can never be read as "yes".
+    """
+
+    status: str  # "aligned" | "misaligned" | "unknown"
+    aligned: bool | None  # None ⇔ status == "unknown"
+    deployed_region: str | None  # the declared region, once it is a known token
+    reason: str | None  # why it's unknown: deployed_region_unset|_unrecognised
+
+
 class DataResidencyResponse(BaseModel):
     """Where this tenant's data is pinned to live (GDPR/CCPA residency)."""
 
@@ -42,6 +59,7 @@ class DataResidencyResponse(BaseModel):
     default_region: str  # platform default, so the UI can show "(default)"
     supported_regions: list[str]
     placement: dict[str, str]  # documented DB/object-storage target for `region`
+    alignment: ResidencyAlignmentResponse  # advisory configured-vs-deployed check
 
 
 class UpdateDataResidencyRequest(BaseModel):
@@ -113,6 +131,29 @@ async def update_organization(
     return _org_response(org)
 
 
+def _residency_response(org: Organization, region: str) -> DataResidencyResponse:
+    """Build the residency payload for `region`, including the advisory alignment.
+
+    Shared by GET and PUT so the two can't drift — a PUT that answered without
+    the alignment block would leave an admin who just pinned `eu` with no
+    indication that the stack still runs elsewhere, which is precisely the
+    moment the signal is worth the most.
+    """
+    alignment = check_residency_alignment(org, settings.deployed_region)
+    return DataResidencyResponse(
+        region=region,
+        default_region=DEFAULT_REGION,
+        supported_regions=list(SUPPORTED_REGIONS),
+        placement=get_region_placement(region),
+        alignment=ResidencyAlignmentResponse(
+            status=alignment.status,
+            aligned=alignment.aligned,
+            deployed_region=alignment.deployed_region,
+            reason=alignment.reason,
+        ),
+    )
+
+
 @router.get("/data-residency", response_model=DataResidencyResponse)
 async def get_data_residency(
     org: Organization = Depends(get_tenant),
@@ -122,16 +163,11 @@ async def get_data_residency(
 
     Read-gated to any authenticated org user (same as `GET /api/organization`);
     only the mutate path is admin-only. The placement block is the documented
-    DB-cluster + object-storage target the region maps to — see
+    DB-cluster + object-storage target the region maps to, and `alignment` is the
+    advisory answer to "is that where we actually run?" — see
     `docs/data-residency.md` for the single-region reality + multi-region plan.
     """
-    region = resolve_region(org)
-    return DataResidencyResponse(
-        region=region,
-        default_region=DEFAULT_REGION,
-        supported_regions=list(SUPPORTED_REGIONS),
-        placement=get_region_placement(region),
-    )
+    return _residency_response(org, resolve_region(org))
 
 
 @router.put("/data-residency", response_model=DataResidencyResponse)
@@ -180,12 +216,7 @@ async def update_data_residency(
         details={"region": {"old": before, "new": body.region}},
     )
 
-    return DataResidencyResponse(
-        region=body.region,
-        default_region=DEFAULT_REGION,
-        supported_regions=list(SUPPORTED_REGIONS),
-        placement=get_region_placement(body.region),
-    )
+    return _residency_response(org, body.region)
 
 
 def _resolve_brand(org: Organization) -> BrandConfig:

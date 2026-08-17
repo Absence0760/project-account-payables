@@ -145,6 +145,56 @@ async def test_review_queue_includes_matched_vendor(realdb):
 
 
 @pytest.mark.asyncio
+async def test_adverse_media_hit_reaches_the_trail_queue_and_risk_factors(realdb):
+    """End-to-end for the negative-news signal: the mock adapter's
+    adverse-media fixture name is screened on create, and the PII-free
+    `adverse_media` category must survive the write and surface on all three
+    consumer surfaces. It used to be computed by the adapter and dropped."""
+    async with realdb.client(key=TENANT, role="admin") as client:
+        created = await client.post(
+            "/api/vendors", json={"name": "Adverse Media Test Co", "code": "AMT-1"}
+        )
+        assert created.status_code == 201, created.text
+        vendor_id = created.json()["id"]
+        assert created.json()["screening_status"] == "review"
+        # Negative news is a review, never an auto-block.
+        assert created.json()["payments_blocked"] is False
+
+        history = (await client.get(f"/api/vendors/{vendor_id}/screening-history")).json()
+        assert history[0]["categories"] == ["adverse_media"]
+        assert history[0]["adverse_media"] is True
+
+        queue = (await client.get("/api/vendors/screening/review-queue")).json()
+        mine = [it for it in queue if it["vendor_id"] == vendor_id]
+        assert mine, "an adverse-media vendor belongs in the review queue"
+        assert mine[0]["adverse_media"] is True
+        assert mine[0]["latest_categories"] == ["adverse_media"]
+
+        # `GET /risk` reads the denormalised columns; the recompute is the
+        # writer, so it is what folds the screening trail into risk_factors.
+        risk = (await client.post(f"/api/vendors/{vendor_id}/risk/recompute")).json()
+        sanctions_factor = risk["risk_factors"]["sanctions"]
+        assert sanctions_factor["adverse_media"] is True
+        assert sanctions_factor["categories"] == ["adverse_media"]
+        # Negative news must outrank a bare review, not sit under it.
+        assert Decimal(risk["risk_score"]) > Decimal("0")
+
+
+@pytest.mark.asyncio
+async def test_clear_vendor_reports_no_categories(realdb):
+    """The negative half — a clean screen must not manufacture a signal."""
+    async with realdb.client(key=TENANT, role="admin") as client:
+        created = await client.post(
+            "/api/vendors", json={"name": "Wholly Innocent Ltd", "code": "WIL-1"}
+        )
+        vendor_id = created.json()["id"]
+        history = (await client.get(f"/api/vendors/{vendor_id}/screening-history")).json()
+    assert history[0]["result"] == "clear"
+    assert history[0]["categories"] == []
+    assert history[0]["adverse_media"] is False
+
+
+@pytest.mark.asyncio
 async def test_review_queue_literal_route_not_shadowed(realdb):
     """`GET /vendors/screening/review-queue` must hit the queue handler, not
     the `/{vendor_id}` route (which expects a UUID)."""

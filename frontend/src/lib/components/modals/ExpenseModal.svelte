@@ -44,6 +44,7 @@
 	let gl_account_id = $state(expense?.gl_account_id ?? '');
 	let description = $state(expense?.description ?? '');
 	let reimbursable = $state(expense?.reimbursable ?? true);
+	let mileage_miles = $state<number | null>(expense?.mileage_miles ?? null);
 	/* eslint-enable svelte/state-referenced-locally */
 
 	let saving = $state(false);
@@ -105,7 +106,10 @@
 				payment_method,
 				gl_account_id: gl_account_id || null,
 				description: description.trim() || null,
-				reimbursable
+				reimbursable,
+				// null (not 0) when blank — the backend reads a missing value as
+				// "this line is not a trip" and skips the mileage rule entirely.
+				mileage_miles
 			};
 			let saved = isCreate
 				? await createExpense(payload)
@@ -207,6 +211,18 @@
 						<option value={g.id}>{g.code} — {g.name}</option>
 					{/each}
 				</select>
+			</label>
+			<label>
+				<span>{m('expenseModal.field.mileageMiles')}</span>
+				<input
+					type="number"
+					step="0.01"
+					min="0"
+					value={mileage_miles ?? ''}
+					oninput={(e) => (mileage_miles = numOrNull(e.currentTarget.value))}
+					placeholder={m('expenseModal.field.mileageMilesPlaceholder')}
+					disabled={!canEdit}
+				/>
 			</label>
 			<label class="checkbox-label">
 				<input type="checkbox" bind:checked={reimbursable} disabled={!canEdit} />

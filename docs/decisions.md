@@ -1300,3 +1300,169 @@ distinction moved to a ring. When a normalisation collapses two colours, check
 what those colours were silently carrying.
 
 See `frontend/CLAUDE.md` § Colour tokens and contrast.
+
+---
+
+## 31. A canonical helper with no caller is a bug that has usually already happened
+
+Eight built, tested, documented capabilities had no production caller
+([followups.md](followups.md) § Backend capabilities with no production caller).
+The tempting read is that they are spare capacity awaiting a consumer. Closing
+all eight in one round showed the opposite: in three cases the reason nothing
+called the helper is that somebody had already re-implemented it inline, and the
+copies had drifted into live defects.
+
+- `analytics.compute_dpo_trend` was re-derived twice in `api/analytics.py`, and
+  the copies disagreed about whether `rejected` invoices belong in the COGS
+  proxy — so `/api/analytics/drill/dpo` reported **3.0 days where the chart it
+  exists to explain showed 30.0**. Same failure shape as issue #126.
+- `workflow_engine.is_known_step_type` was written to be the shared gate and
+  never wired, so `POST /api/workflows/import` — the one save path a Pydantic
+  `Literal` does not constrain — persisted a typo'd `"aproval"` that the engine
+  then silently skipped. An unrecognised step type is not a degraded step; it is
+  an *absent* one, and the absent one is usually the approval.
+- `international_payments.is_international_payment` was dead while three modules
+  hand-rolled its rail set. Unifying them surfaced that
+  `compliance._kyc_required_for` compared a raw per-org override against a
+  lower-case `Payment.method`, so an admin entry of `"SEPA"` disabled the KYC
+  gate for that corridor — and a blank `[""]` produced a truthy set that
+  disabled it for **every** corridor. A fail-open on a regulatory control,
+  invisible because the code path that would have prevented it was the unused
+  one.
+
+The rule this yields: when a helper exists and nothing calls it, look for the
+inline copy before assuming the feature was never finished — and treat the
+divergence between them as the actual finding.
+
+## 32. A step type we don't recognise is refused by name, never silently ignored
+
+`validate_builder_steps` previously passed over any type outside the five
+builder types, reasoning that canonical steps were not its concern. But the
+engine reads `steps_config` by type *name*, so an unrecognised type is absent
+rather than degraded — a typo reads as "no approval step configured" and the
+workflow quietly loses a financial control. Failing the import loudly is
+strictly safer than persisting a config whose runtime meaning is "one fewer
+gate". Same posture as §29.
+
+Two follow-on calls, both deliberate:
+
+**`create_workflow_step` refuses a builder step type rather than inventing a
+number for it.** `WorkflowStep.step_number` is the canonical pipeline's 1-based
+index, and `complete_current_step` finds the open step by ordering on it. A
+builder step is orchestration config with no place in that ordering, so
+`canonical_step_index` raises `NonCanonicalStepTypeError` instead of allocating
+a number that would corrupt the queue. Both new errors subclass `ValueError`, so
+any handler written against the old bare `.index()` still catches.
+
+**`/drill/dpo` serializes money as exact decimal strings while the rest of
+`api/analytics.py` stays float.** That inconsistency is chosen, not overlooked:
+the module has ~57 more float money fields feeding shipped frontend and mobile
+consumers (`analytics.ts` types them `number`; `CfoMetrics.svelte` calls
+`.toFixed()`), so converting them is a separate client-breaking migration,
+tracked in followups. `/drill/dpo` has no shipped consumer, so it could be
+corrected in isolation and was. `dpo` itself stays a JSON number — it is a day
+count, not money. Rejected: leaving `/drill/dpo` on float for consistency with
+its neighbours; consistency with a violated invariant is not a reason to keep
+violating it.
+
+## 33. A card that cannot be handed a signature signs itself
+
+The Teams approval card's buttons are MessageCard `HttpPOST` actions dispatched
+by Microsoft, not by us — which is the whole problem. A Slack interactivity POST
+arrives signed by Slack's infrastructure and a Teams *Outgoing Webhook* POST
+arrives signed with the shared security token, but an actionable-message action
+arrives with whatever we put in its `headers`. There is no handshake to ride on,
+which is why the inbound half shipped, was security-reviewed, and then sat
+unreachable.
+
+Three options. Point the buttons at the existing email-approval confirm page
+(`OpenUri` + an `email`-channel token): safe, but it routes around the shipped
+Teams endpoint entirely and breaks the channel binding that keeps each surface's
+tokens non-interchangeable. Register a Bot Framework app and use
+`Action.Execute`: a different auth model (Bot Framework JWT validation), not an
+increment on the shared-secret gate already reviewed. Or sign the action
+ourselves.
+
+We sign it ourselves. We control the action's exact `body` string, so the card is
+stamped at render time with `HMAC-SHA256(security token, body)` and the endpoint
+re-derives it over the raw bytes. What that digest is matters less than what it
+is **not**: it is not a key, and it is body-bound, so an approver handed the
+Reject action cannot upgrade it to Approve, and publishing one valid
+`(body, digest)` pair yields nothing about the token. What it proves is that the
+POST replays a body the platform minted — which is exactly the job of keeping
+blind probes off a public endpoint. Anyone who can read the digest already holds
+the action token sitting in plaintext in the same JSON, and re-firing it is
+collapsed to a no-op by the single-use `jti`. So the exposure is unchanged from
+the accepted Slack precedent: any channel member can click.
+
+Two consequences that look like oversights and are not:
+
+- **The digest rides two headers.** Teams may replace an actionable message's
+  `Authorization` with its own bearer token, stripping our only proof, so the
+  card also carries the digest on `X-Feoh-Card-Signature`. The endpoint collects
+  every candidate and accepts if any verifies — not weaker (each must reproduce
+  the HMAC of the exact body) but robust to a proxy folding duplicate
+  `Authorization` values into one string, which would otherwise mask a good card
+  signature behind a mangled one.
+- **The card emits no timestamp header.** It is stamped at *render* time, so the
+  ±5-minute replay window would kill the buttons five minutes after the card was
+  posted. Replay stays bounded by the single-use `jti` and the workflow state
+  machine — the posture the endpoint already documents for a timestamp-less POST.
+
+Rejected alongside: minting the token on the `email` channel so the card could
+reuse the confirm page. That would make a Teams card's credential redeemable at
+the email endpoint, dissolving the channel claim that exists precisely to keep
+one surface's token off another.
+
+## 34. An attestation nobody made reports "unknown", not the default
+
+Two verdicts landed this round that could have defaulted to the reassuring
+answer, and both deliberately do not.
+
+**Data residency.** `check_residency_alignment` compares a tenant's pinned region
+against `FEOH_DEPLOYED_REGION`. The obvious shape — default the deployed region
+to `DEFAULT_REGION` and return a plain `bool` — was rejected: it makes the
+*absence* of a declaration indistinguishable from a verified match, and hands an
+EU-pinned tenant `aligned: true` on the strength of nobody having said
+otherwise. That is the precise failure a residency control exists to prevent,
+and it fails in the reassuring direction, which is the one nobody investigates.
+So the verdict is tri-state (`aligned` / `misaligned` / `unknown`) with
+`aligned: bool | None`, and `None` only ever pairs with `unknown`; a `reason`
+(`deployed_region_unset` / `deployed_region_unrecognised`) makes the unknown
+actionable rather than merely honest. An *unrecognised* token reports `unknown`
+rather than comparing literally, because one typo (`eu-central-1` for `eu`)
+would otherwise mark every tenant misaligned and bury the real ones. Boot-time
+validation was also rejected: `config.py` refuses to start on a bad
+`FEOH_EXTRACTION_PROVIDER` because that value silently turns a deployed pipeline
+into a fixture generator, but this one changes nothing except a report, so
+refusing to start over it trades a wrong answer for an outage. Advisory
+end-to-end — nothing routes, blocks, or moves data on the verdict.
+
+**Adverse media.** The sanctions taxonomy (`sanctions` / `pep` /
+`adverse_media` / `high_risk_country`) shipped on `ScreeningResult.categories`
+and was dropped by all three consumers, so negative-news coverage that has not
+yet reached a formal list reached nothing that acts. It now rides the row's
+existing JSONB under a reserved key — not a new column: the payload is a small
+fixed enum list and the only read pattern is "latest row per vendor", so a
+column would fan a schema change out to every tenant DB to store it. The merge
+never mutates the provider's own payload (a `clear` screen's payload stays
+byte-identical, so an auditor replays exactly what was returned) and reads are
+tolerant, because a screening-trail row must never 500 the risk endpoint. The
+labels are *our* fixed vocabulary rather than provider free text, which is what
+makes them safe on an audit row, in an API response and in a UI badge —
+`raw_response` itself is still never serialized out (invariant #7). And **a
+`clear` verdict carrying adverse media becomes a `hold`**: no shipped adapter
+produces that combination today, so it changes no live flow, but auto-allowing
+it is exactly the gap the taxonomy was added to close.
+
+**Mileage, by contrast, is advisory — and that is the same principle, not an
+exception to it.** `expense_policy.BLOCKING_CODES` holds exactly two codes, both
+*missing evidence the submitter can supply*, so the 422 is actionable: attach
+the thing and resubmit. A `mileage_amount_mismatch` is a disagreement between
+two numbers already supplied, and which one is wrong is a human judgement (the
+rate changed mid-period, the line bundles a toll, the claim is deliberately
+*under* entitlement). Blocking would strand a legitimate claim with no in-app
+override and would refuse a submission for an under-claim that costs nothing.
+The approver is the control point, and the violation carries the expected figure
+plus its working so the badge says what to pay. Fail *informative*, not falsely
+reassuring — and not falsely obstructive either.

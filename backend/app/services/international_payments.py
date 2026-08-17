@@ -33,6 +33,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from app.models.payment import Payment
 from app.services.fx_adapters import FXAdapter, FXRate
 from app.services.payment_corridor import CorridorChoice, pick_corridor
+from app.services.payment_methods import is_international_payment_method
 from app.utils.banking import (
     country_from_iban,
     validate_iban,
@@ -276,15 +277,26 @@ def realized_fx_gain_loss_for_settlement(
 
 
 def is_international_payment(payment: Payment) -> bool:
-    """Convenience predicate used by reporting / payment_erp_sync.
+    """Row-level predicate: does this Payment have an international leg?
+
+    Used by ``api/payments`` to decide whether to run
+    ``prepare_international_payment`` (i.e. whether an FX rate gets locked onto
+    the row) before handing off to the processor.
 
     A payment is international iff:
       - It has an explicit FX rate locked (cross-currency), OR
-      - Its corridor is one of the international rails (`sepa`,
-        `international_wire`, `international_ach`).
+      - Its corridor OR its method is one of the international rails.
+
+    Both columns are checked because they are written by different paths and
+    can legitimately disagree: ``prepare_international_payment`` stamps both,
+    but a row created by the standalone ``POST /api/payments`` path (or any row
+    predating the corridor column) carries only ``method``. Reading just one
+    would miss the other's evidence. The rail set itself lives in
+    ``services/payment_methods`` — the same one the corridor selector and the
+    KYC gate read, so all three cannot drift.
     """
     if payment.fx_rate is not None and payment.fx_rate > 0:
         return True
-    if payment.corridor in ("sepa", "international_wire", "international_ach"):
-        return True
-    return False
+    return is_international_payment_method(payment.corridor) or is_international_payment_method(
+        payment.method
+    )

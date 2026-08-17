@@ -3,6 +3,7 @@
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import { m } from '$lib/i18n/store.svelte';
+	import type { MessageKey } from '$lib/i18n/messages';
 	import { formatDate } from '$lib/utils/time';
 
 	interface CompanyProfile {
@@ -253,6 +254,7 @@
 	$effect(() => {
 		loadOrg();
 		loadCustomDomains();
+		loadResidency();
 	});
 
 	async function loadOrg() {
@@ -769,6 +771,113 @@
 		}
 	}
 
+	// ── Data residency (GDPR/CCPA region pin) ───────────────────────────
+	// Manages settings.residency.region plus the backend's advisory
+	// configured-vs-deployed `alignment` verdict — which is the whole point of
+	// showing this here: the pin is a commitment, and an admin should be able to
+	// see whether the platform is physically honouring it yet. Nothing on this
+	// panel blocks; the region never moves data by itself.
+	// See docs/data-residency.md.
+	interface ResidencyAlignment {
+		status: string; // "aligned" | "misaligned" | "unknown"
+		aligned: boolean | null; // null ⇔ status "unknown" — never read as yes
+		deployed_region: string | null;
+		reason: string | null;
+	}
+	interface ResidencyResponse {
+		region: string;
+		default_region: string;
+		supported_regions: string[];
+		placement: Record<string, string>;
+		alignment: ResidencyAlignment;
+	}
+
+	// Region tokens come from the server; their display names are ours.
+	const REGION_LABEL_KEYS: Record<string, MessageKey> = {
+		us: 'org.residency.region.us',
+		eu: 'org.residency.region.eu',
+		uk: 'org.residency.region.uk',
+		ca: 'org.residency.region.ca',
+		au: 'org.residency.region.au'
+	};
+
+	let residencyRegion = $state(''); // the select's bound value
+	let residencySavedRegion = $state(''); // last persisted effective region
+	let residencyDefault = $state('');
+	let residencyRegions = $state<string[]>([]);
+	let residencyPlacement = $state<Record<string, string>>({});
+	let residencyAlignment = $state<ResidencyAlignment | null>(null);
+	let loadingResidency = $state(true);
+	let residencyError = $state('');
+	let savingResidency = $state(false);
+
+	// An unmapped token renders as itself rather than vanishing — the server
+	// owns the supported set, so a region added there stays selectable here.
+	function regionLabel(token: string | null): string {
+		if (!token) return '';
+		const key = REGION_LABEL_KEYS[token];
+		return key ? m(key) : token.toUpperCase();
+	}
+
+	function applyResidency(data: ResidencyResponse) {
+		residencyRegion = data.region;
+		residencySavedRegion = data.region;
+		residencyDefault = data.default_region;
+		residencyRegions = data.supported_regions ?? [];
+		residencyPlacement = data.placement ?? {};
+		residencyAlignment = data.alignment ?? null;
+	}
+
+	async function loadResidency() {
+		loadingResidency = true;
+		residencyError = '';
+		try {
+			applyResidency(await api.get<ResidencyResponse>('/api/organization/data-residency'));
+		} catch (err) {
+			residencyError = err instanceof Error ? err.message : m('org.residency.toast.loadFailed');
+		} finally {
+			loadingResidency = false;
+		}
+	}
+
+	// The PUT answers with the same payload as the GET, alignment included, so
+	// the verdict for the region just pinned lands without a second round trip.
+	async function saveResidency() {
+		savingResidency = true;
+		try {
+			applyResidency(
+				await api.put<ResidencyResponse>('/api/organization/data-residency', {
+					region: residencyRegion
+				})
+			);
+			toast(m('org.residency.toast.saved'), 'success');
+		} catch (err) {
+			toast(err instanceof Error ? err.message : m('org.residency.toast.saveFailed'), 'error');
+			// Snap the control back to what is actually persisted, so the panel
+			// never shows a region the tenant is not pinned to.
+			residencyRegion = residencySavedRegion;
+		} finally {
+			savingResidency = false;
+		}
+	}
+
+	const alignmentMessage = $derived.by(() => {
+		const a = residencyAlignment;
+		if (!a) return '';
+		if (a.status === 'aligned') {
+			return m('org.residency.alignment.aligned', { region: regionLabel(a.deployed_region) });
+		}
+		if (a.status === 'misaligned') {
+			return m('org.residency.alignment.misaligned', {
+				configured: regionLabel(residencySavedRegion),
+				deployed: regionLabel(a.deployed_region)
+			});
+		}
+		return a.reason === 'deployed_region_unrecognised'
+			? m('org.residency.alignment.unknownUnrecognised')
+			: m('org.residency.alignment.unknownUnset');
+	});
+
 	async function removeCustomDomain(host: string) {
 		// Two-click arm/confirm so a stray click can't drop a live domain.
 		if (confirmRemoveDomain !== host) {
@@ -1015,6 +1124,63 @@
 							{savingDomains ? m('org.customDomains.adding') : m('org.customDomains.add')}
 						</button>
 					</form>
+				{/if}
+			</section>
+
+			<section class="card">
+				<h2>{m('org.section.dataResidency')}</h2>
+				<p class="card-hint">{m('org.residency.hint')}</p>
+
+				{#if loadingResidency}
+					<p class="card-hint">{m('org.residency.loading')}</p>
+				{:else if residencyError}
+					<p class="residency-error" role="alert">{residencyError}</p>
+				{:else}
+					<div class="form-grid">
+						<label>
+							<span>{m('org.residency.regionLabel')}</span>
+							<select bind:value={residencyRegion}>
+								{#each residencyRegions as token (token)}
+									<option value={token}>
+										{token === residencyDefault
+											? m('org.residency.regionDefault', { region: regionLabel(token) })
+											: regionLabel(token)}
+									</option>
+								{/each}
+							</select>
+						</label>
+					</div>
+
+					{#if residencyPlacement.db_cluster}
+						<p class="card-hint residency-placement">
+							{m('org.residency.placement', {
+								cluster: residencyPlacement.db_cluster,
+								bucket: residencyPlacement.s3_bucket ?? ''
+							})}
+						</p>
+					{/if}
+
+					{#if residencyAlignment}
+						<div
+							class="residency-alignment"
+							class:ok={residencyAlignment.status === 'aligned'}
+							class:warn={residencyAlignment.status === 'misaligned'}
+						>
+							<strong>{m('org.residency.alignment.title')}</strong>
+							<p>{alignmentMessage}</p>
+							<p class="residency-advisory">{m('org.residency.alignment.advisory')}</p>
+						</div>
+					{/if}
+
+					<div class="section-footer">
+						<button
+							class="btn-save-section"
+							disabled={savingResidency || residencyRegion === residencySavedRegion}
+							onclick={saveResidency}
+						>
+							{savingResidency ? m('org.common.saving') : m('org.residency.save')}
+						</button>
+					</div>
 				{/if}
 			</section>
 
@@ -1758,6 +1924,50 @@
 		word-break: break-all;
 	}
 
+	.residency-placement {
+		font-family: var(--font-mono);
+		margin: 12px 0 0;
+	}
+
+	/* Advisory verdict box. Tinted-badge recipe: each tone takes its own
+	   -tint background with the matching -on-tint text (never the base token,
+	   which lands under 4.5:1 once composited over the tint). Unknown — the
+	   deliberately non-committal state — is the muted default. */
+	.residency-alignment {
+		margin-top: 14px;
+		padding: 10px 12px;
+		border-radius: 6px;
+		font-size: 0.82rem;
+		background: var(--muted-tint);
+		color: var(--muted-on-tint);
+	}
+
+	.residency-alignment.ok {
+		background: var(--success-tint);
+		color: var(--success-on-tint);
+	}
+
+	.residency-alignment.warn {
+		background: var(--warning-tint);
+		color: var(--warning-on-tint);
+	}
+
+	.residency-alignment strong {
+		display: block;
+		margin-bottom: 4px;
+	}
+
+	.residency-alignment p {
+		margin: 0;
+	}
+
+	/* Inherits the box's calibrated colour — a muted token here would be
+	   judged against the bare surface, not the tint it actually sits on. */
+	.residency-advisory {
+		margin-top: 6px;
+		font-size: 0.78rem;
+	}
+
 	.btn-remove-domain {
 		flex-shrink: 0;
 		padding: 4px 12px;
@@ -1793,7 +2003,10 @@
 		flex: 1;
 	}
 
-	.domain-error {
+	/* Panel-level load failure (custom domains, data residency) — a persistent
+	   region rather than a toast, because it explains why the panel is empty. */
+	.domain-error,
+	.residency-error {
 		color: var(--danger);
 		font-size: 0.88rem;
 		margin: 4px 0 12px;

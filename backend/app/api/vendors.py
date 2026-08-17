@@ -62,6 +62,10 @@ from app.services.audit_access import build_field_diff, log_access
 from app.services.audit_dispatch import dispatch_audit
 from app.services.csv_import import MAX_CSV_IMPORT_SIZE, import_vendors_csv
 from app.services.email_adapters import EmailMessage, get_email_adapter
+from app.services.sanctions_categories import (
+    categories_from_raw_response,
+    has_adverse_media,
+)
 from app.services.vendor_screening import screen_vendor_record
 from app.services.vendor_sync import sync_vendors_from_erp
 from app.tenant import (
@@ -466,6 +470,7 @@ async def screening_review_queue(
                 .limit(1)
             )
         ).scalar_one_or_none()
+        categories = categories_from_raw_response(latest.raw_response) if latest else ()
         items.append(
             ScreeningReviewItem(
                 vendor_id=str(v.id),
@@ -479,6 +484,8 @@ async def screening_review_queue(
                 ),
                 latest_matched_list=latest.matched_list if latest else None,
                 latest_provider=latest.provider if latest else None,
+                latest_categories=list(categories),
+                adverse_media=has_adverse_media(categories),
             )
         )
     return items

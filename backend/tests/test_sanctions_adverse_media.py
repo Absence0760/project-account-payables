@@ -23,6 +23,7 @@ import pytest
 
 from app.services.sanctions_adapters import get_sanctions_adapter
 from app.services.sanctions_adapters.base import ScreeningResult
+from app.services.sanctions_adapters.complyadvantage import ComplyAdvantageAdapter
 from app.services.sanctions_adapters.dowjones import DowJonesAdapter
 from app.services.sanctions_adapters.mock_adapter import MockSanctionsAdapter
 from app.services.sanctions_adapters.refinitiv import RefinitivAdapter
@@ -192,3 +193,63 @@ def test_refinitiv_parses_no_results_as_clear():
     adapter = RefinitivAdapter({"api_key": "k"})
     r = adapter._parse({"results": []})
     assert r.result == "clear"
+
+
+# ---------------------------------------------------------------------------
+# ComplyAdvantage — the third skeleton, brought to taxonomy parity with its
+# siblings. It computed a `types` set to pick the verdict and then threw it
+# away, so a CA tenant got no categories at all.
+# ---------------------------------------------------------------------------
+
+
+def _ca_payload(*types_per_hit: list[str]) -> dict:
+    hits = [{"doc": {"types": t}} for t in types_per_hit]
+    return {"content": {"data": {"hits": hits, "total_hits": len(hits)}}}
+
+
+def test_complyadvantage_parses_sanction_match_with_categories():
+    adapter = ComplyAdvantageAdapter({"api_key": "k"})
+    r = adapter._parse(_ca_payload(["sanction", "pep"]))
+    assert r.result == "match"
+    assert r.matched_list == "OFAC/EU/UN/UK_SANCTION"
+    assert r.categories == ("pep", "sanctions")
+    assert r.adverse_media is False
+
+
+def test_complyadvantage_parses_adverse_media_as_review():
+    adapter = ComplyAdvantageAdapter({"api_key": "k"})
+    r = adapter._parse(_ca_payload(["adverse-media"]))
+    assert r.result == "review_required"
+    assert r.categories == ("adverse_media",)
+    assert r.adverse_media is True
+
+
+def test_complyadvantage_carries_an_unmapped_type_through():
+    """An unmapped CA type is still evidence — carried through with hyphens
+    normalised, never silently dropped."""
+    adapter = ComplyAdvantageAdapter({"api_key": "k"})
+    r = adapter._parse(_ca_payload(["fitness-probity"]))
+    assert r.result == "review_required"
+    assert r.categories == ("fitness_probity",)
+
+
+def test_complyadvantage_parses_no_hits_as_clear_with_no_categories():
+    adapter = ComplyAdvantageAdapter({"api_key": "k"})
+    r = adapter._parse({"content": {"data": {"hits": [], "total_hits": 0}}})
+    assert r.result == "clear"
+    assert r.categories == ()
+
+
+def test_complyadvantage_requests_adverse_media():
+    """Negative-news screening is part of what this module promises; a control
+    that never asks the provider for the signal is a false assurance."""
+    from app.services.sanctions_adapters.complyadvantage import _SEARCH_TYPES
+
+    assert "adverse-media" in _SEARCH_TYPES
+
+
+@pytest.mark.asyncio
+async def test_complyadvantage_raises_without_api_key():
+    adapter = ComplyAdvantageAdapter()
+    with pytest.raises(RuntimeError, match="api_key"):
+        await adapter.screen_vendor(vendor_name="Acme", vendor_country="US")

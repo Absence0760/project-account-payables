@@ -108,6 +108,14 @@ optional per-tenant `mock_rates` overrides), `avalara` + `taxjar` (skeletons
 that raise `NotImplementedError` / require credentials until wired up, so a
 misconfig surfaces loudly rather than returning a wrong rate).
 
+**A skeleton's `test_connection` returns `False`, credentials or not** — the same
+posture as `qms_adapters/generic_qms`. Reporting `True` on a key alone would
+call an integration healthy when `get_rate`, the only method the contract exists
+for, can never answer; the operator would learn that on the first real lookup
+instead of at configuration time. `tests/test_tax_rate_adapters.py` is the drift
+guard, and it is written against the registry rather than the two known names,
+so a future skeleton inherits the rule.
+
 The dispatcher (`get_tax_rate_adapter`) resolves the provider from
 `Organization.settings.tax.rate_provider`, falling back to the platform-wide
 `FEOH_TAX_RATE_PROVIDER`, then `mock`.

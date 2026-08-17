@@ -637,6 +637,33 @@ export const en = {
 	'org.customDomains.toast.removed': 'Custom domain removed',
 	'org.customDomains.toast.loadFailed': 'Failed to load custom domains',
 	'org.customDomains.toast.saveFailed': 'Failed to save custom domains',
+	'org.section.dataResidency': 'Data Residency',
+	'org.residency.hint':
+		'Pin where this tenant’s database and file storage should live (GDPR / CCPA). This records the requirement — it does not itself move any data.',
+	'org.residency.loading': 'Loading data residency…',
+	'org.residency.regionLabel': 'Region',
+	'org.residency.regionDefault': '{region} (platform default)',
+	'org.residency.region.us': 'United States',
+	'org.residency.region.eu': 'European Union',
+	'org.residency.region.uk': 'United Kingdom',
+	'org.residency.region.ca': 'Canada',
+	'org.residency.region.au': 'Australia',
+	'org.residency.placement': 'Placement target: {cluster} · {bucket}',
+	'org.residency.alignment.title': 'Deployment alignment',
+	'org.residency.alignment.aligned':
+		'Pinned to {region}, which is where this stack runs. The commitment is honoured today.',
+	'org.residency.alignment.misaligned':
+		'Pinned to {configured}, but this stack runs in {deployed}. The requirement is recorded and audited; the data has not moved yet.',
+	'org.residency.alignment.unknownUnset':
+		'This stack has not declared which region it runs in, so whether the pin is honoured cannot be confirmed.',
+	'org.residency.alignment.unknownUnrecognised':
+		'This stack declares a region that is not one of the supported values, so whether the pin is honoured cannot be confirmed.',
+	'org.residency.alignment.advisory':
+		'Advisory only — nothing is blocked by this check.',
+	'org.residency.save': 'Save Region',
+	'org.residency.toast.saved': 'Data residency region updated',
+	'org.residency.toast.loadFailed': 'Failed to load data residency',
+	'org.residency.toast.saveFailed': 'Failed to save data residency',
 	'org.section.extraction': 'AI Extraction',
 	'org.section.extractionSaved': 'AI Extraction',
 	'org.extraction.hint':
@@ -1111,6 +1138,8 @@ export const en = {
 	'expenseModal.field.paymentMethod': 'Payment Method',
 	'expenseModal.field.glAccount': 'GL Account',
 	'expenseModal.field.glSelect': 'Select…',
+	'expenseModal.field.mileageMiles': 'Mileage (miles)',
+	'expenseModal.field.mileageMilesPlaceholder': 'Leave blank if not a trip',
 	'expenseModal.field.reimbursable': 'Reimbursable',
 	'expenseModal.field.description': 'Description',
 	'expenseModal.receipt.title': 'Receipt',

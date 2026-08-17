@@ -118,8 +118,8 @@ default:
 | Provider | Body shape | Notes |
 |---|---|---|
 | `mock` | — | **Default.** No network, no credential. Records sends on `mock_adapter.SENT` + logs a PII-free line, so `pnpm dev` exercises the full path with no real Slack/Teams. |
-| `slack` | `{"text": ..., "blocks": [section]}` | Posts to a Slack incoming-webhook URL via httpx. |
-| `teams` | legacy `MessageCard` (`@type`/`sections.facts`/`potentialAction`) | Posts to a Teams incoming-webhook URL via httpx. |
+| `slack` | `{"text": ..., "blocks": [section]}` | Posts to a Slack incoming-webhook URL via httpx. Interactive: Block Kit Approve/Reject buttons on `invoice_assigned`. |
+| `teams` | legacy `MessageCard` (`@type`/`sections.facts`/`potentialAction`) | Posts to a Teams incoming-webhook URL via httpx. Interactive: `HttpPOST` Approve/Reject actions on `invoice_assigned`. |
 
 `get_chat_notification_adapter(org_config)` resolves the provider from
 `org_config["provider"]` → `FEOH_CHAT_NOTIFICATION_PROVIDER` (default `mock`); an
@@ -162,6 +162,25 @@ message, builds the adapter, and sends — the whole thing wrapped in its own
 try/except so any failure (config load, adapter build, transport) is swallowed
 and logged PII-free. The deep link is built from `FEOH_TENANT_URL_TEMPLATE` +
 invoice id (no secrets).
+
+### Interactive approval actions
+
+On `invoice_assigned` only, the channel post can carry **Approve / Reject**
+actions that decide the invoice without an app login.
+`_build_chat_action_tokens` dispatches on the org's chat provider and mints the
+pair of signed, single-use action tokens on that provider's **own** channel
+(`slack` / `teams`), bound to the single intended approver — so a Slack token can
+never be redeemed at the Teams endpoint or vice versa, and a provider with no
+interactive surface (`mock`, or an unknown key) mints nothing. Tokens are only
+minted when `FEOH_EMAIL_ACTION_SIGNING_KEY` is set and the event resolves to
+exactly one approver; the adapter then decides whether it can render a *usable*
+action (Teams additionally needs `FEOH_TEAMS_SECURITY_TOKEN` +
+`FEOH_API_PUBLIC_URL` to sign and target the callback). Every rung falls back to
+a plain read-only post rather than a button that can't work.
+
+The decision runs the normal `services/review` path — segregation of duties, the
+CFO gate, thresholds, the immutable audit row, the approval signature. Full
+mechanics: `slack-approval.md` and `teams-approval.md`.
 
 ### PII
 

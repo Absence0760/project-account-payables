@@ -41,7 +41,48 @@ as the platform default region.
 | `resolve_region(org)` | Reads `org.settings["residency"]["region"]`, falls back to `DEFAULT_REGION`. Never raises — a missing/malformed/unknown value all degrade to the default (a placement read must never break a request). |
 | `REGION_PLACEMENT` | Per-region documented target: intended DB cluster + object-storage bucket/endpoint. The "model" the future provisioning + connection layer resolves against. |
 | `get_region_placement(region)` | The placement for a region; falls back to the default region's placement for an unknown key. |
-| `check_residency_alignment(org, deployed_region)` | Advisory: reports (never blocks) a mismatch between a tenant's configured region and the region the stack is actually deployed in. Logs a WARNING on mismatch. |
+| `check_residency_alignment(org, deployed_region)` | Advisory: reports (never blocks) whether a tenant's configured region is the one the stack is actually deployed in. Returns a `ResidencyAlignment` — see [Alignment](#alignment-is-the-pin-honoured-today) below. Logs a PII-free WARNING on a genuine mismatch or a misconfigured `deployed_region`. |
+| `ResidencyAlignment` | Frozen dataclass: `status` (`aligned`/`misaligned`/`unknown`), `aligned` (`True`/`False`/**`None`**), `configured_region`, `deployed_region`, `reason`. |
+
+## Where the *deployed* region comes from
+
+The tenant's pin says where its data **should** live. Where the stack actually
+runs is a fact about the deployment, not about any tenant — so it is operator
+env, not settings-JSON:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FEOH_DEPLOYED_REGION` | (empty) | The region this stack declares it runs in. One of `SUPPORTED_REGIONS`. **Empty = unknown / cannot attest.** |
+
+It is deliberately **not validated at boot**. The value is advisory — nothing
+routes, blocks, or moves data on it — and refusing to start over an advisory
+field trades a wrong answer for an outage. An unrecognised value reports
+`unknown` with a reason instead (below).
+
+`backend/.env.development` sets `us`, matching the single-region reality the
+platform documents, so the signal is exercisable under `pnpm dev`: an unpinned
+tenant reads `aligned`, and pinning one to `eu` flips it to `misaligned`. That
+file is loaded by `main.py` (the local-dev entrypoint) only, so it cannot leak
+into a deployed environment.
+
+## Alignment: is the pin honoured today?
+
+`check_residency_alignment(org, FEOH_DEPLOYED_REGION)` answers one question and
+never acts on the answer. Three states, because two of them are not comparisons:
+
+| `status` | `aligned` | When | `reason` |
+|---|---|---|---|
+| `aligned` | `true` | The pin equals the declared deployed region. | — |
+| `misaligned` | `false` | The pin differs — a commitment we are not physically honouring yet. | — |
+| `unknown` | **`null`** | `FEOH_DEPLOYED_REGION` is unset. | `deployed_region_unset` |
+| `unknown` | **`null`** | `FEOH_DEPLOYED_REGION` is set to something outside `SUPPORTED_REGIONS` (e.g. `eu-central-1` for `eu`). | `deployed_region_unrecognised` |
+
+`aligned` is tri-state on purpose. Defaulting an unset deployed region to
+`DEFAULT_REGION` would hand an EU-pinned tenant a green light nothing verified —
+the exact failure mode a residency control exists to prevent. **Unknown is a
+legitimate answer; a fabricated `true` is not.** And an unrecognised token
+reports `unknown` rather than comparing literally, because a single typo would
+otherwise mark *every* tenant misaligned and bury the ones that genuinely are.
 
 ## Supported regions
 
@@ -66,8 +107,28 @@ Wired into the existing `/api/organization` router
 
 | Method | Path | RBAC | Purpose |
 |--------|------|------|---------|
-| `GET` | `/api/organization/data-residency` | any authenticated org user | Effective region + default + supported list + the documented placement for the effective region. |
-| `PUT` | `/api/organization/data-residency` | **admin only** | Set the region. Validates against `SUPPORTED_REGIONS` (422 on an unsupported value *before* any write), writes `settings["residency"]["region"]` via `flag_modified`, and audits `organization.residency_updated` into the tenant trail (PII-free — region tokens only). |
+| `GET` | `/api/organization/data-residency` | any authenticated org user | Effective region + default + supported list + the documented placement for the effective region + the advisory `alignment` block. |
+| `PUT` | `/api/organization/data-residency` | **admin only** | Set the region. Validates against `SUPPORTED_REGIONS` (422 on an unsupported value *before* any write), writes `settings["residency"]["region"]` via `flag_modified`, and audits `organization.residency_updated` into the tenant trail (PII-free — region tokens only). Returns the same payload as GET, alignment included — so an admin sees immediately whether the pin they just made is honoured. |
+
+Both responses carry:
+
+```json
+{
+  "region": "eu",
+  "default_region": "us",
+  "supported_regions": ["us", "eu", "uk", "ca", "au"],
+  "placement": { "db_cluster": "feoh-pg-eu-central-1", "...": "..." },
+  "alignment": {
+    "status": "misaligned",
+    "aligned": false,
+    "deployed_region": "us",
+    "reason": null
+  }
+}
+```
+
+The alignment block is **reporting only** — no request path branches on it, no
+route refuses on it, no data moves because of it.
 
 The read is gated to the same roles as `GET /api/organization` (any authed
 user); only the mutate path is admin-only, matching the records-management
@@ -84,10 +145,23 @@ is where that region lives. So:
 
 - A tenant pinned to `eu` is *configured* for the EU but its data still
   physically lives in the single (US) region until multi-region infra exists.
-- `check_residency_alignment(org, deployed_region)` exists to surface exactly
-  this gap: it flags (advisory/log-only, never blocking) any tenant whose
-  configured region differs from the region the stack is deployed in, so an
-  operator can see which residency commitments are not yet physically honoured.
+- `check_residency_alignment(org, FEOH_DEPLOYED_REGION)` surfaces exactly this
+  gap, and it is no longer log-only: the verdict rides `GET`/`PUT
+  /api/organization/data-residency` as the `alignment` block and renders on the
+  `/organization` **Data Residency** panel, so the tenant's own admin — not just
+  an operator reading logs — can see that the commitment is not yet physically
+  honoured. Advisory throughout; nothing blocks.
+
+## The UI
+
+`/organization` → **Data Residency** (`frontend/src/routes/organization/+page.svelte`):
+the region picker (the platform default is marked as such), the documented
+placement target for the selected region, and the alignment verdict as a tinted
+box — green for `aligned`, amber for `misaligned`, muted for `unknown` — each
+carrying the standing "advisory only, nothing is blocked" line. Save is enabled
+only when the selection differs from what is persisted, and a refused save
+(non-admins get a 403 from the backend) snaps the control back to the persisted
+region rather than leaving a pin on screen that was never made.
 
 This is deliberate: the roadmap asks us to **document the model even before
 multi-region infra ships**, so the configuration surface, the placement map,

@@ -16,7 +16,11 @@
 		screenVendor
 	} from '$lib/api/vendors';
 	import type { ScreeningReviewItem, SanctionsCheck } from '$lib/types/vendor';
-	import { SCREENING_STATUS_LABELS, RISK_LEVEL_LABELS } from '$lib/types/vendor';
+	import {
+		SCREENING_STATUS_LABELS,
+		RISK_LEVEL_LABELS,
+		formatScreeningCategories as formatCategories
+	} from '$lib/types/vendor';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
@@ -64,7 +68,8 @@
 		loadQueue();
 	});
 
-	// Client-side search over the loaded queue (vendor name + matched list).
+	// Client-side search over the loaded queue (vendor name + matched list +
+	// the hit categories, so "negative news" finds the adverse-media rows).
 	// The queue is a bounded attention list, so it's small enough to filter in
 	// memory; the fetch pulls the whole set.
 	let filtered = $derived(
@@ -73,7 +78,8 @@
 					const q = search.trim().toLowerCase();
 					return (
 						it.vendor_name.toLowerCase().includes(q) ||
-						(it.latest_matched_list ?? '').toLowerCase().includes(q)
+						(it.latest_matched_list ?? '').toLowerCase().includes(q) ||
+						formatCategories(it.latest_categories).toLowerCase().includes(q)
 					);
 				})
 			: items
@@ -256,6 +262,7 @@
 							screening={it.screening_status}
 							risk={it.risk_level}
 							blocked={it.payments_blocked}
+							adverseMedia={it.adverse_media}
 						/>
 					</td>
 					<td class="muted">{it.latest_matched_list ?? '—'}</td>
@@ -285,6 +292,7 @@
 				screening={selected.screening_status}
 				risk={selected.risk_level}
 				blocked={selected.payments_blocked}
+				adverseMedia={selected.adverse_media}
 			/>
 		</div>
 
@@ -300,6 +308,10 @@
 			<div>
 				<dt>Matched list</dt>
 				<dd>{selected.latest_matched_list ?? '—'}</dd>
+			</div>
+			<div>
+				<dt>Hit categories</dt>
+				<dd>{formatCategories(selected.latest_categories)}</dd>
 			</div>
 			<div>
 				<dt>Provider</dt>
@@ -364,6 +376,7 @@
 						<span class="history-meta">
 							{h.check_type} · {h.provider}
 							{#if h.matched_list}· {h.matched_list}{/if}
+							{#if h.categories.length}· {formatCategories(h.categories)}{/if}
 							{#if h.risk_score}· score {h.risk_score}{/if}
 						</span>
 						<span class="history-date">{formatDate(h.checked_at, '—', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>

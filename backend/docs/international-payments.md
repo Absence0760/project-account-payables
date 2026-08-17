@@ -40,7 +40,11 @@ returns a frozen `CorridorChoice`. Resolution order:
    (otherwise a cross-border payment shipped out on a domestic rail + a
    foreign currency and failed at the processor — issue #123). Requirement
    flags (`requires_swift`, `requires_iban`, `requires_fx`) are still derived
-   from the corridor shape so validation isn't skipped.
+   from the corridor shape so validation isn't skipped. An honoured override is
+   normalised (trimmed + lower-cased) through the same
+   `payment_methods.normalize_payment_method` the honour gate uses, so the rail
+   that reaches `CorridorChoice.method` — and from there `Payment.method` — is
+   always canonical.
 2. Cross-currency → `international_wire`, FX leg required, SWIFT
    required, IBAN required iff destination is in the SEPA zone.
 3. Same-currency USD to the US → `ach`.
@@ -58,6 +62,37 @@ returns a frozen `CorridorChoice`. Resolution order:
 SEPA membership lives in `SEPA_COUNTRIES` (`app/utils/banking.py`).
 Global-ACH destinations live in `_GLOBAL_ACH_DESTINATIONS`
 (`payment_corridor.py`).
+
+### One international rail set, three consumers
+
+Which `Payment.method` values *are* international is a single registry —
+`INTERNATIONAL_PAYMENT_METHODS` / `is_international_payment_method` in
+`services/payment_methods.py`, the same module that classifies rails for
+1099 reporting. Three live decisions read it, and each used to carry its
+own copy of the literal:
+
+| Consumer | What it decides |
+|---|---|
+| `payment_corridor.pick_corridor` | whether a caller's `requested_method` is a real override or `create_payment_run`'s blanket default (step 1 above) |
+| `compliance._kyc_required_for` | the default high-risk corridor set above which a vendor must be KYC-verified |
+| `api/payments` (via `international_payments.is_international_payment`) | whether the international leg runs at all — i.e. whether an FX rate is locked onto the row |
+
+Adding a fourth international rail therefore means editing exactly one
+frozenset. `tests/test_payment_methods.py` is the guard on both axes: every
+rail the codebase can produce (the `PaymentMethod` enum, any adapter's
+`supported_methods`, `CORRIDOR_OVERRIDE_FEES`) must be classified as
+card-or-reportable **and** international-or-domestic, and a source scan fails
+if any module under `app/` re-enumerates the international set as its own
+literal. The geography half matters because
+`compliance._kyc_required_for` treats an unclassified rail as low-risk —
+"unknown" there is fail-open, so the guard is what makes it unreachable.
+
+`is_international_payment(payment)` is the row-level predicate: an FX rate
+locked at a positive value, **or** an international `corridor`, **or** an
+international `method`. Both columns are read because they are written by
+different paths — `prepare_international_payment` stamps both, while a row
+from the standalone `POST /api/payments` path (or predating migration 0017)
+carries only `method`.
 
 ## Multi-route quote optimization
 
@@ -112,13 +147,21 @@ sub-checks run in order; the most-severe verdict wins:
    append-only `sanctions_checks` audit row (raw provider response in
    JSONB; never echoed to logs or HTTP responses — invariant #7).
 
-2. **KYC status gating**. Corridors with high-risk methods (`sepa`,
-   `international_wire`, `international_ach` by default, configurable
-   via `compliance.high_risk_corridor_methods`) refuse the payment if
-   `vendor.kyc_status != "verified"` AND the amount exceeds
+2. **KYC status gating**. Corridors with high-risk methods refuse the
+   payment if `vendor.kyc_status != "verified"` AND the amount exceeds
    `compliance.kyc_required_above` (default $1,000). KYC gap is a
    refuse, not a hold — regulatory intent is that the AP team
    cannot override.
+
+   The default high-risk set is `INTERNATIONAL_PAYMENT_METHODS`
+   (`services/payment_methods.py`) — imported, not restated, so a new
+   international rail can't ship with this gate silently off (see
+   [One international rail set, three consumers](#one-international-rail-set-three-consumers)).
+   An org overrides it via `compliance.high_risk_corridor_methods`;
+   entries are normalised (trimmed + lower-cased) before comparison, so
+   `"SEPA"` matches the lower-case `Payment.method` the row stores, and a
+   list of only blank entries falls back to the default set rather than
+   disabling the gate.
 
 3. **AML trailing-12m spend signal**. Sum of completed payments to
    this vendor in the last 365 days plus the new payment; if it
@@ -274,4 +317,5 @@ nullable / defaulted KYC columns and creates the append-only
 | `tests/test_cross_border_ach.py` | NACHA Global ACH (IAT) routing: CA/MX/GB/BR pick `international_ach`; JP falls through to SWIFT; explicit override; `is_international_payment` recognizes the new rail |
 | `tests/test_corridor_quotes.py` | Cheapest + fastest ranking, unavailable provider can't win, adapter exception sanitised (no PII in `unavailable_reason`), `NoEligibleCorridorError` when zero providers quote, legacy single-provider shape, dedupe |
 | `tests/test_compliance.py` | Mock sanctions adapter (clear / match / review_required / beneficial-owner hit), `check_payment_compliance` verdict resolution (refuse on match + KYC gap; hold on review + AML), audit-row persistence, dispatcher fallback, **end-to-end** sanctions refusal through `execute_payment_run` (adapter NEVER called) |
-| `tests/test_international_payments.py` | `prepare_international_payment` happy paths + refusals; `compute_fx_gain_loss` directionality; `is_international_payment` predicate; **end-to-end** through `execute_payment_run` with a EUR invoice on a USD-home org → locked rate + corridor + invoice flip |
+| `tests/test_international_payments.py` | `prepare_international_payment` happy paths + refusals; `compute_fx_gain_loss` directionality; `is_international_payment` predicate (incl. a method-only row and a non-positive locked rate); **end-to-end** through `execute_payment_run` with a EUR invoice on a USD-home org → locked rate + corridor + invoice flip |
+| `tests/test_payment_methods.py` | The rail registry's **two** drift guards: every producible rail is card-or-reportable AND international-or-domestic; a source scan fails if any module under `app/` re-enumerates the international rail set as its own literal |

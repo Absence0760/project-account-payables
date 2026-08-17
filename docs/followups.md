@@ -275,94 +275,102 @@ defects in shipped behaviour.
 Ref: `backend/docs/international-payments.md`,
 `backend/docs/dynamic-discounting.md`.
 
-### Built-and-documented backend capabilities with no production caller
+### Backend capabilities with no production caller — CLOSED
 
-Surfaced by the survey behind [decisions §29](decisions.md) (which closed the
-adapter-registry half of the same sweep: all three money-touching dispatchers
-now fail closed on an unrecognised provider name instead of silently resolving
-to their fixture adapter). Each item below is code that exists, is tested, and
-that nothing in `app/`, `scripts/` or `alembic/` reaches:
+All eight entries that stood here were landed in one five-agent round (see
+`git log --oneline` for `round7/*`). Each was a built, tested, documented
+capability that nothing in `app/`, `scripts/` or `alembic/` reached; three of
+them turned out to be masking a live defect rather than merely being unwired:
 
-- [ ] **`expense_policy.mileage_reimbursement` is never called.** The whole
-      stack around it is wired — `Expense.mileage_miles`,
-      `ExpensePolicy.mileage_rate`, both schemas, both CRUD paths — but
-      `evaluate_expense` never looks at mileage, so an admin sets `$0.67/mile`,
-      an employee logs 120 miles, and the reimbursable amount is whatever
-      free-text `amount` they typed. `expense-management.md` labels the rate
-      "*Defined in WF1; enforced in WF3*"; WF3 never landed the enforcement.
-      **Durable fix:** compute it at expense create/update and either surface
-      it on the response or raise a `mileage_amount_mismatch` violation from
-      `evaluate_expense`. No migration — the columns exist.
-- [ ] **Teams interactive approval is inbound-only.**
-      `email_action_token.build_teams_action_tokens` has no production caller;
-      `notification_dispatch._build_slack_action_tokens` hard-returns
-      `(None, None)` unless the provider is literally `"slack"`; and
-      `chat_notification_adapters/teams_adapter.build_body` emits an `OpenUri`
-      MessageCard that never reads `ChatMessage.approve_token` /
-      `.reject_token`. Meanwhile the entire inbound half ships and is mounted
-      (`api/teams_approvals.py` — HMAC verify, replay window, channel-bound
-      single-use `jti`). A Teams org gets a read-only card and a
-      security-reviewed public endpoint nothing can reach.
-      **Durable fix:** dispatch `_build_slack_action_tokens` on the provider
-      and add the `potentialAction` / `Action.Http` block to `build_body`.
-      Already named in `backend/docs/teams-approval.md` § Deferred.
-- [ ] **Sanctions `ScreeningResult.categories` / `.adverse_media` are computed
-      and then dropped.** `refinitiv` maps World-Check `ADVERSE-MEDIA` into
-      them and `mock` simulates it, but all three consumers
-      (`compliance.check_payment_compliance`,
-      `vendor_screening.screen_vendor_record`, `vendor_risk_scoring`) read only
-      `.result` / `.risk_score` / `.matched_list`. A negative-news hit — the
-      thing the taxonomy was added for — never reaches the compliance verdict
-      reasons, the vendor's `risk_factors`, or the persisted `SanctionsCheck`.
-      **Durable fix:** fold `categories` into `SanctionsCheck.raw_response` and
-      `Vendor.risk_factors` (both JSONB, no migration) and add an adverse-media
-      reason to `ComplianceDecision.reasons`.
-- [ ] **`international_payments.is_international_payment` is dead while three
-      live modules hand-roll its rail set** — `payment_corridor`
-      (`_EXPLICIT_INTERNATIONAL_METHODS`), `compliance`
-      (`_DEFAULT_HIGH_RISK_METHODS`, which drives KYC thresholds) and an inline
-      literal in `api/payments.py` that decides whether an FX rate is locked at
-      all. Adding a fourth international rail means remembering all three; the
-      canonical predicate that would prevent the drift is the unused one.
-      **Durable fix:** export the frozenset and have the three sites import it.
-- [ ] **`workflow_engine.is_known_step_type` is dead and `BUILDER_STEP_TYPES`
-      is forked** — defined identically in `workflow_engine` and
-      `workflow_builder` with no cross-check. The builder validates against its
-      copy; the engine validates against nothing and resolves step numbers via
-      `STEP_TYPES.index(resolved)`, so a builder step type reaching
-      `create_workflow_step` raises `ValueError: 'condition' is not in list`
-      rather than being recognised — which is exactly what the unused helper
-      was written to prevent.
-      **Durable fix:** one source of truth for the list, call the helper at the
-      definition-save chokepoint, guard the `.index()` calls.
-- [ ] **`data_residency.check_residency_alignment` is dead**, so
-      `GET /api/organization/data-residency` cannot report that a tenant pinned
-      to `eu` is being served from a single-region platform. There is no
-      `deployed_region` setting to compare against either.
-      **Durable fix:** add the env-backed setting and surface `aligned` on the
-      response (advisory, never blocking — which is what the function already
-      does). No migration.
-- [ ] **`analytics.compute_dpo_trend` is dead and re-derived inline twice**
-      (`api/analytics.py` in two places). The second copy emits `float(ap)` /
-      `float(cogs)` / `float(dpo_val)` — money crossing the API boundary as
-      float, against the Decimal invariant, in the path the canonical helper
-      would have kept exact.
-      **Durable fix:** call the helper from both sites.
-- [ ] **`tax_rate_adapters/{avalara,taxjar}.test_connection` return `True` on
-      credentials alone** while their `get_rate` unconditionally raises
-      `NotImplementedError` — a fabricated healthy probe for an adapter that
-      can never satisfy its contract's core method. Impact is currently nil
-      (nothing calls `test_connection` on that family), which is why it sits
-      below the rest.
-      **Durable fix:** return `False` from the skeleton probes, matching the
-      `qms_adapters/generic_qms` posture.
+- `analytics.compute_dpo_trend` — the two inline copies had already **diverged**
+  (one excluded `rejected` invoices from the COGS proxy, the other didn't), so
+  `/api/analytics/drill/dpo` reported 3.0 days where the chart it explains
+  showed 30.0.
+- `workflow_engine.is_known_step_type` — `POST /api/workflows/import` is the one
+  save path a Pydantic `Literal` doesn't constrain, so a typo'd `"aproval"`
+  persisted and was silently skipped at runtime, which the engine reads as *no
+  approval step configured*. A spelling mistake could drop a financial control.
+- `international_payments.is_international_payment` — unifying the three
+  hand-rolled rail sets exposed that a per-org `high_risk_corridor_methods`
+  entry of `"SEPA"` (or a blank `[""]`) made `_kyc_required_for` fail **open**,
+  disabling the KYC gate for that corridor — or, for a blank entry, for every
+  corridor.
 
-**Why deferred:** each is a genuine gap but a *different* feature's wiring, and
-landing eight unrelated behaviour changes behind one round's regression
-envelope is how a fix becomes indistinguishable from a regression. None is
-blocked on anything.
-**Trigger:** the next round touching that feature — or take them as a batch;
-they are individually small.
+The remaining five (`expense_policy.mileage_reimbursement`, Teams outbound
+approval actions, sanctions `ScreeningResult.categories`,
+`data_residency.check_residency_alignment`, the `avalara`/`taxjar` skeleton
+probes) were wiring gaps as described, and are now wired, tested and documented.
+
+Rationale for the non-obvious calls made while closing them:
+[decisions.md](decisions.md) §31–§34.
+
+### Surfaced while closing the above, deliberately not fixed
+
+Each is real, scoped, and out of the envelope of the round that found it:
+
+- [ ] **`api/analytics.py` serializes money as `float` in ~57 remaining places**
+      (`total_spend`, `accounts_payable_balance`, every `accruals.*`, the
+      cash-position curve, the FX exposure block,
+      `drill/spend_concentration`) — a module-wide violation of the Decimal
+      invariant. `/api/analytics/drill/dpo` was corrected in isolation only
+      because it has no shipped consumer; these do —
+      `frontend/src/lib/types/analytics.ts` types them `number` and
+      `CfoMetrics.svelte` calls `.toFixed()` on them.
+      **Durable fix:** exact decimal strings on the API plus a coordinated
+      frontend/mobile update, one panel at a time, behind a typed `Money` parse.
+      **Trigger:** the next round touching the CFO analytics response shape.
+- [ ] **No `Numeric` field in the expense schemas is digit/scale-bounded.**
+      `Expense.amount`, `mileage_miles`, and every `ExpensePolicy` money
+      threshold are bare `Decimal` in Pydantic while their columns are
+      `Numeric(10,2)` / `Numeric(15,2)` / `Numeric(10,4)`. An out-of-range value
+      passes validation and fails at the DB flush as an unhandled `DataError`
+      (a 500) rather than a 422. `mileage_miles` is now bounded `ge=0` — because
+      a negative there silently switched the new mileage enforcement *off* — but
+      not by digits; the rest are unbounded in both directions.
+      **Durable fix:** add `max_digits` / `decimal_places` (and `ge=0` where a
+      negative is meaningless) to `app/schemas/expense.py`, matching each
+      column. Schema-only, no migration.
+      **Trigger:** the next change touching expense schema validation.
+- [ ] **`Organization.settings.chat_notifications.webhook_url` has no rotation
+      path.** It is the per-org credential for both real chat providers and is
+      only settable by overwriting the settings JSON — there is no counterpart
+      to the webhook-subscription secret rotation (`POST
+      /webhooks/{id}/rotate-secret`, migration 0084) with its overlap window. A
+      leaked Teams/Slack incoming-webhook URL lets anyone post arbitrary content
+      into the customer's approval channel, and recovery is an untracked manual
+      edit.
+      **Durable fix:** an audited `PUT /organization/chat-notifications/webhook`
+      writing a PII-free `organization.chat_webhook_rotated` row (URL never
+      logged).
+      **Trigger:** the next slice touching org chat settings.
+- [ ] **`notification_dispatch._send_chat_best_effort` names the invoice id
+      `entity_id`.** The parameter carrying the invoice PK is called `entity_id`
+      and passed straight into `_build_chat_action_tokens(invoice_id=…)` and the
+      deep link. In this repo `entity_id` otherwise means the multi-entity
+      subsidiary FK, so it reads as a tenant-scoping bug on every review of that
+      file. Behaviour is correct and tested; it is a trap for the next reader.
+      **Durable fix:** rename to `invoice_id` through the dispatch chain.
+      **Trigger:** the next change to that file.
+- [ ] **The `/organization` Data Residency panel has no e2e spec**, while the
+      structurally identical Custom Domains panel on the same route does
+      (`frontend/tests-e2e/organization/custom-domains.spec.ts`). The panel
+      branches three ways on the alignment verdict (tint class + copy) and gates
+      its save button; only the backend contract is covered.
+      **Durable fix:** add
+      `frontend/tests-e2e/organization/data-residency.spec.ts` modelled on
+      `custom-domains.spec.ts` — assert the region picker persists a pin and
+      that the alignment box renders the misaligned state when the backend under
+      test declares a different `FEOH_DEPLOYED_REGION`.
+      **Trigger:** the next session that can bring the full stack up on
+      :7777/:8000 without colliding with a concurrent agent.
+- [ ] **The DPO trend silently excludes the current month.** Both surfaces walk
+      back from the 1st of the current month, so the newest point is the month
+      that just closed and today's invoices never appear. Defensible (a
+      part-month DPO misleads) but nowhere in the UI — the chart is labelled
+      only "DPO trend". Behaviour is now documented in
+      `backend/docs/analytics.md`; the label/tooltip is not.
+      **Durable fix:** name the window in the chart label or a tooltip.
+      **Trigger:** the next round touching the CFO dashboard.
 
 ### AI Cash-Flow Copilot — Phase 3 deferred bucket
 
@@ -477,6 +485,21 @@ as oversights.
 ---
 
 ## (b) Operator steps on merged code
+
+- [ ] **Confirm Teams posts the approval card's action body byte-for-byte.**
+      The outbound card stamps each Approve/Reject `HttpPOST` action with the
+      HMAC of the exact `body` string it will send, and
+      `/api/approvals/teams/interactivity` re-derives it over the raw request
+      bytes ([decisions §33](decisions.md)). If Microsoft re-serialised the body
+      rather than relaying it verbatim, the digest would not match. The failure
+      mode is graceful and already tested — the opaque ack tells the approver to
+      sign in to the app, never a 500 or a wrong decision — but only a live
+      Teams tenant can confirm the happy path.
+      **Durable fix:** post a real card into a Teams channel, click both
+      buttons, and confirm the invoice transitions; if the body is re-serialised,
+      switch the digest to cover a canonical subset (the action token alone)
+      rather than the whole string.
+      Ref: [teams-approval.md](../backend/docs/teams-approval.md).
 
 - [ ] **TLS/DNS provisioning runbook for a partner-provisioned child tenant's
       vanity domain.** `POST /api/partner/children/provision` and the
