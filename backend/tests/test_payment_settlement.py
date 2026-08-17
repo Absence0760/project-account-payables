@@ -26,9 +26,12 @@ from app.services.payment_settlement import (
     OUTCOME_MATCHED,
     OUTCOME_UNVERIFIED,
     REASON_NO_SETTLED_AMOUNT,
+    REASON_SETTLED_AMOUNT_UNSTORABLE,
+    SETTLED_AMOUNT_NUMERIC,
     SETTLEMENT_AMOUNT_TOLERANCE,
     build_authorized_legs,
     describe_discrepancy,
+    persistable_settled_amount,
     settlement_coverage,
     verify_settlement,
 )
@@ -465,3 +468,90 @@ def test_unauthorized_currency_is_uncertain_not_covered():
     assert c.state == COVERAGE_UNCERTAIN
     assert c.completes_invoice is False
     assert c.shortfall is None
+
+
+# ---------------------------------------------------------------------------
+# A reported figure the column cannot hold
+# ---------------------------------------------------------------------------
+#
+# `payments.settled_amount` is NUMERIC(15, 2) — 13 integer digits. A processor
+# reporting more used to parse, verify, then raise at the flush and roll the
+# whole webhook transaction back, losing the fraud flag AND the record that the
+# payment completed. Migration 0085 adds the flag that keeps "reported garbage"
+# distinguishable from "reported nothing".
+
+
+def test_persistable_splits_a_storable_figure_through_unchanged():
+    amount = Decimal("9999999999999.99")  # the column maximum
+    assert persistable_settled_amount(amount) == (amount, False)
+
+
+def test_persistable_refuses_a_figure_one_digit_too_wide():
+    assert persistable_settled_amount(Decimal("10000000000000.00")) == (None, True)
+    assert persistable_settled_amount(Decimal("99999999999999999999.00")) == (None, True)
+
+
+def test_persistable_reports_absence_as_absence_not_as_unstorable():
+    """The distinction the whole fix rests on: `(None, False)` fails OPEN in
+    coverage, `(None, True)` holds. Collapsing them would either strand every
+    amount-free rail or launder every garbage report."""
+    assert persistable_settled_amount(None) == (None, False)
+
+
+def test_persistable_bound_matches_the_declared_column_shape():
+    """Drift guard: if `Payment.settled_amount` is ever widened, this constant
+    and the model must move together, or the splitter silently refuses figures
+    the column would now accept."""
+    from app.models.payment import Payment
+
+    col = Payment.__table__.c.settled_amount.type
+    assert (col.precision, col.scale) == SETTLED_AMOUNT_NUMERIC
+
+
+def test_coverage_holds_when_the_reported_amount_was_unstorable():
+    c = settlement_coverage(
+        settled_amount=None,
+        settled_currency="USD",
+        target_amount=Decimal("5000.00"),
+        target_currency="USD",
+        settled_amount_unstorable=True,
+    )
+    assert c.state == COVERAGE_UNCERTAIN
+    assert c.reason == REASON_SETTLED_AMOUNT_UNSTORABLE
+    assert c.completes_invoice is False
+
+
+def test_coverage_does_not_let_an_unstorable_report_fall_through_to_covered():
+    """`settled_amount` is NULL in BOTH the unstorable and the never-reported
+    case, and NULL alone means covered. The flag has to be checked first, or a
+    figure we know is wrong marks the invoice paid — the exact failure this
+    change exists to prevent."""
+    unstorable = settlement_coverage(
+        settled_amount=None,
+        settled_currency="USD",
+        target_amount=Decimal("5000.00"),
+        target_currency="USD",
+        settled_amount_unstorable=True,
+    )
+    never_reported = settlement_coverage(
+        settled_amount=None,
+        settled_currency=None,
+        target_amount=Decimal("5000.00"),
+        target_currency="USD",
+    )
+    assert unstorable.completes_invoice is False
+    assert never_reported.completes_invoice is True
+    assert never_reported.reason == REASON_NO_SETTLED_AMOUNT
+
+
+def test_coverage_flag_defaults_off_so_every_existing_caller_is_unchanged():
+    """The parameter is keyword-only with a `False` default: a row predating
+    migration 0085, and every call site that does not pass it, behaves exactly
+    as before."""
+    c = settlement_coverage(
+        settled_amount=Decimal("5000.00"),
+        settled_currency="USD",
+        target_amount=Decimal("5000.00"),
+        target_currency="USD",
+    )
+    assert c.state == COVERAGE_COVERED

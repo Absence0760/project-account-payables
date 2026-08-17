@@ -5,10 +5,10 @@ names the root cause, the evidence, blast radius, and a recommended fix
 approach — this is a staging area for real problems, not a place to let them
 go stale. See root `CLAUDE.md` guard rail 6 (no dangling deferred findings).
 
-**One entry is open** (the over-range settlement amount, below). Everything
-else is a `~~struck-through~~` resolved stub, kept because the *diagnosis* is
-the expensive part and is worth not re-deriving. Add a new entry above them
-when a defect is diagnosed but can't be fixed in the same session.
+**Nothing is currently open.** Every entry below is a `~~struck-through~~`
+resolved stub, kept because the *diagnosis* is the expensive part and is worth
+not re-deriving. Add a new entry above them when a defect is diagnosed but
+can't be fixed in the same session.
 
 **Scope:** *diagnosed defects* only. A deferral that isn't a defect — blocked on
 a credential, an operator step on merged code, or sized-but-unstarted work —
@@ -68,62 +68,49 @@ modes → The event-loop rule.
 
 ---
 
-## An over-range settlement amount wedges the payment webhook instead of flagging it — OPEN, diagnosed 2026-08-17
+## ~~An over-range settlement amount wedges the payment webhook~~ — FIXED 2026-08-17
 
-**Found while** bounding the bulk-intake parsers (`services/numeric_bounds`).
-That work covered the three CSV/document parsers; this is the same defect class
-on a fourth parser, in the money path, and it does **not** have the same fix.
+**Resolved** by giving "reported but unstorable" its own state, which is what
+the diagnosis said it would take.
 
-**Root cause.** `services/payment_adapters/base.py::parse_amount` returns an
-unbounded `Decimal` — its only guard is `.quantize(Decimal("0.01"))`, which
-raises (→ `None`) for genuinely absurd magnitudes but happily returns a
-20-integer-digit value. `payments.settled_amount` is `Numeric(15, 2)`, i.e. 13
-integer digits. So a processor webhook reporting an amount between roughly
-10^13 and 10^26 parses, verifies, and then raises `NumericValueOutOfRangeError`
-at the flush.
+*The defect.* `payments.settled_amount` is `NUMERIC(15, 2)` — 13 integer
+digits. A processor reporting more parsed fine (`parse_amount` guards only
+against values so large that `quantize` itself raises), verified fine, and then
+raised `NumericValueOutOfRangeError` at the flush. That took the whole webhook
+transaction with it: the `fraud_flag` the verdict had ALREADY decided on was
+rolled back, the completion was never recorded, the handler 5xx'd, and the
+processor retried into the identical failure forever.
 
-**Blast radius.** The wrong thing fails, in the wrong direction. `verify_settlement`
-already classifies such a figure correctly — it is nowhere near any authorized
-leg, so the verdict is `amount_mismatch`, which is exactly the divergence that
-should open a payment-blocking `fraud_flag` and suppress the discount capture.
-But the persist at `api/payments.py` (`payment.settled_amount = …`) is inside
-the same transaction, so the flush rolls the whole handler back: the fraud flag
-never lands, the completion is never recorded, the handler 5xxs, and the
-provider retries into the identical failure forever. The single most suspicious
-settlement a rail can report is the one the system records nothing about.
-`services/payment_reconciler.py` writes the same column from
-`fetch_settlement` and has the same exposure.
+*Why the obvious fixes were wrong.* Returning `None` (what the three CSV
+parsers do) means "the rail reported no amount", which coverage deliberately
+fails OPEN on — so a garbage figure would be laundered into a silent pass and
+the invoice marked paid. Guarding only the persist and leaving the column NULL
+lands in the same place for the same reason. Widening the column moves the
+cliff without changing the semantics; no legitimate settlement is 14 integer
+digits, so a value that doesn't fit is a corrupt or hostile report, not a big
+payment.
 
-Reachability is gated by the HMAC — this needs a compromised or buggy
-processor, not an anonymous attacker. That is what keeps it a defect rather
-than a vulnerability.
+*The fix.* `payment_settlement.persistable_settled_amount` is the one splitter
+both writers use — the webhook and the reconciler backstop, so they cannot
+disagree about what is storable. An over-range figure leaves `settled_amount`
+NULL and sets the new `settled_amount_unstorable` (migration `0085`), which
+`settlement_coverage` reads as `uncertain`: the invoice holds at
+`payment_scheduled` behind the same accept / void exits a shortfall has. The
+verdict is untouched, so the payment-blocking `fraud_flag` still lands, and the
+figure survives verbatim on the append-only audit row (JSONB, no range limit).
+The column carries the decision input; the audit row carries the evidence.
 
-**Why it was not fixed alongside the bulk-intake parsers.** The obvious
-symmetry is wrong. Returning `None` from `parse_amount` (what the three CSV
-parsers do) means "the rail reported no amount", which `verify_settlement`
-reads as `unverified` and `settlement_coverage` deliberately fails OPEN on — so
-a garbage figure would be laundered into a silent pass and the invoice marked
-`paid`. Guarding only the persist and leaving the column NULL lands in the same
-place for the same reason. Clamping fabricates a number. A correct fix has to
-let coverage distinguish "no figure on record" from "a figure we could not
-store", which is a new column or flag — a migration in the money path, with the
-review that implies. Out of scope for a commit about CSV parsers.
+Coverage: the end-to-end webhook case (completion recorded, flag set, exception
+raised, raw figure on the audit row — i.e. the transaction no longer rolls
+back), a realdb `payment_erp_sync` test proving an unstorable leg holds **while
+an amount-free sibling still reaches `paid`** (the two NULL cases must stay
+distinct), and a drift guard tying `SETTLED_AMOUNT_NUMERIC` to the model column.
 
-**Durable fix.** Carry "reported but unstorable" as its own state rather than
-collapsing it into NULL. Cheapest shape that preserves the evidence: keep
-`verify_settlement`'s verdict and its audit row (JSONB, unbounded — it can
-record the reported figure verbatim), persist `settled_amount` only when
-`numeric_bounds.fits_numeric(value, 15, 2)`, and add a boolean/flag the
-`settlement_coverage` check reads as **not** covered so the invoice holds at
-`payment_scheduled` behind the existing accept/void exits. Widening the column
-instead is not the fix — it moves the cliff without changing the semantics, and
-no legitimate settlement is 14 digits.
-
-**Trigger.** Do it with the next change that already touches
-`payment_settlement` / `settlement_coverage`, or sooner if a real processor is
-onboarded (the adapter-specific `parse_amount` call sites are `checkeeper`,
-`dwolla`, and `mock`). Guard rail 3 applies — money path, so it gets a review
-pass.
+The migration was verified against real Postgres, not just the ORM: apply,
+downgrade, re-apply (idempotent), no-op on the control plane, and fan-out to
+every tenant. Worth doing — the first revision id was 38 characters and
+Alembic's `alembic_version.version_num` is `VARCHAR(32)`, so the DDL applied
+and the version bump then failed. Model-based tests would never have seen it.
 
 ---
 

@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, Numeric, String, Text, text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Numeric, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -138,6 +138,22 @@ class Payment(Base, EntityMixin, TimestampMixin):
     # every invoice it settles.
     settled_amount: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
     settled_currency: Mapped[str | None] = mapped_column(String(3))
+
+    # The rail reported a figure that does NOT fit `settled_amount`'s
+    # NUMERIC(15, 2) — more than 13 integer digits (migration 0085). Distinct
+    # from NULL above, and that distinction is the whole point: NULL means
+    # nothing was ever reported and fails OPEN, whereas this means we were told
+    # something we cannot represent, which must NOT read as "nothing
+    # contradicts this invoice being settled". `settlement_coverage` returns
+    # `uncertain` for it and the invoice holds at `payment_scheduled`.
+    #
+    # No legitimate settlement is 14 integer digits, so this is a corrupt or
+    # hostile report, not a large payment — which is why the column is a flag
+    # rather than a wider NUMERIC. The figure itself is preserved verbatim on
+    # the append-only audit row (`SettlementVerification.as_details`, JSONB).
+    settled_amount_unstorable: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
 
     # International / multi-currency. NULL on domestic same-currency
     # payments; populated by `services.international_payments` when

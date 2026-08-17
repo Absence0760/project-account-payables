@@ -930,3 +930,82 @@ async def test_dispatch_keeps_a_strong_reference_to_the_task():
         release.set()
 
     assert payment_erp_sync._dispatch_tasks == set(), "completed task was not discarded"
+
+
+async def test_an_unstorable_settlement_holds_the_invoice(realdb):
+    """A rail reported a figure too wide for `payments.settled_amount`
+    NUMERIC(15, 2), so only the `settled_amount_unstorable` flag survives
+    (migration 0085).
+
+    `settled_amount` is NULL here — exactly as it is for an amount-free rail,
+    which fails OPEN and reaches `paid`. This must NOT: a figure we know is
+    wrong is not the same as no figure, and marking the invoice paid on the
+    strength of it is the outcome the flag exists to prevent. It holds at
+    `payment_scheduled` with the same two exits a shortfall has.
+    """
+    await _set_org_erp(realdb, "a", {"type": "mock", "integration_method": "direct"})
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    run_id = uuid.uuid4()
+    inv_bad = uuid.uuid4()
+    inv_ok = uuid.uuid4()
+    async with mk() as s:
+        s.add(PaymentRun(id=run_id, status="completed", organization_id=org_id))
+        for iid, num in ((inv_bad, "INV-UNSTORABLE"), (inv_ok, "INV-CLEAN")):
+            s.add(
+                Invoice(
+                    id=iid,
+                    invoice_number=num,
+                    vendor_name="V",
+                    amount=Decimal("500.00"),
+                    currency="USD",
+                    status=InvoiceStatus.payment_scheduled,
+                    organization_id=org_id,
+                )
+            )
+        await s.flush()
+        s.add(
+            Payment(
+                id=uuid.UUID(int=11),
+                invoice_id=inv_bad,
+                payment_run_id=run_id,
+                amount=Decimal("500.00"),
+                method="ach",
+                status="completed",
+                settled_amount=None,
+                settled_currency="USD",
+                settled_amount_unstorable=True,
+            )
+        )
+        # A sibling with NOTHING reported proves the two NULL cases stay
+        # distinct: this one still fails open and reaches `paid`.
+        s.add(
+            Payment(
+                id=uuid.UUID(int=12),
+                invoice_id=inv_ok,
+                payment_run_id=run_id,
+                amount=Decimal("500.00"),
+                method="ach",
+                status="completed",
+                settled_amount=None,
+                settled_currency=None,
+            )
+        )
+        await s.commit()
+
+    result = await _sync_payments(run_id, org_id)
+
+    assert result.held == 1, "the unstorable leg must hold"
+    assert result.synced == 1, "the amount-free leg must still sync"
+
+    async with mk() as s:
+        bad = (await s.execute(select(Invoice).where(Invoice.id == inv_bad))).scalar_one()
+        ok = (await s.execute(select(Invoice).where(Invoice.id == inv_ok))).scalar_one()
+    assert bad.status == InvoiceStatus.payment_scheduled, (
+        "an invoice whose settlement could not be represented was marked paid"
+    )
+    assert ok.status == InvoiceStatus.paid, (
+        "an amount-free rail must still fail OPEN — conflating it with a "
+        "garbage report would strand every invoice such a rail settles"
+    )
