@@ -80,6 +80,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.bank_reconciliation import BankStatement, BankTransaction
 from app.models.invoice import Invoice
 from app.models.payment import Payment
+from app.services.numeric_bounds import STATEMENT_NUMERIC, fits_numeric
 from app.services.vendor_matching import _normalize, _similarity
 
 logger = logging.getLogger(__name__)
@@ -312,7 +313,16 @@ def _parse_date(raw: str) -> date | None:
 def _parse_amount(raw: str) -> Decimal | None:
     """Accept `1234.56`, `1,234.56`, `(1,234.56)` (negative form),
     `-1234.56`. Returns the absolute Decimal; sign is handled by
-    the debit/credit logic separately."""
+    the debit/credit logic separately.
+
+    An amount too wide for `bank_transactions.amount` `Numeric(18, 2)` is
+    `None`, which the caller already treats as "bad amount, skip the row" with a
+    PII-free warning. Unbounded, such a cell parsed cleanly and then raised
+    `NumericValueOutOfRangeError` on the flush — one malformed line in a bank
+    export took down the whole statement import. Scale is deliberately not
+    enforced: Postgres rounds it, and a bank's own export is not ours to refuse
+    over a third decimal (see `services/numeric_bounds`).
+    """
     if raw is None:
         return None
     s = str(raw).strip()
@@ -326,6 +336,8 @@ def _parse_amount(raw: str) -> Decimal | None:
     try:
         amount = Decimal(s)
     except (InvalidOperation, ValueError):
+        return None
+    if not fits_numeric(amount, *STATEMENT_NUMERIC):
         return None
     return -amount if negative else amount
 

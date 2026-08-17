@@ -130,6 +130,15 @@ Amount parser handles:
 - `-1234.56` (negative as debit)
 - `(1,234.56)` (Quickbooks-style parenthesized negative)
 
+It also **range-checks against `bank_transactions.amount` `Numeric(18, 2)`**
+(via the shared `services/numeric_bounds.fits_numeric`): a value wider than 16
+integer digits is treated as unparseable, so the row is skipped with the same
+PII-free warning as a bad date. Unbounded, such a cell parsed cleanly and then
+raised `NumericValueOutOfRangeError` on the flush — one malformed line in a bank
+export failed the entire statement import. Extra decimal places are still
+rounded rather than refused (Postgres' own behaviour); a bank's export is not
+ours to reject over a third decimal.
+
 Date parser tries ISO (`%Y-%m-%d`) first, then US (`%m/%d/%Y`), then
 DMY (`%d/%m/%Y`). Ambiguous dates like `01/02/2026` are read as
 US — operators should export ISO when possible.

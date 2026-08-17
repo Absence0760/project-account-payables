@@ -18,7 +18,9 @@ operates on dataclasses only, and every money value is :class:`~decimal.Decimal`
 (never float). The local CSV-parsing helpers (`_find_col`, `parse_date`,
 `parse_amount`) mirror the forgiving idioms in
 ``app.services.bank_reconciliation`` but are reimplemented here so the engine
-stays self-contained.
+stays self-contained. The one shared import is ``services.numeric_bounds`` —
+itself pure — because "does this Decimal fit that column?" must be answered the
+same way in every bulk-intake parser or the three drift apart.
 
 See ``backend/docs/vendor-statement-reconciliation.md``.
 """
@@ -40,6 +42,7 @@ from app.models.vendor_statement_recon import (
     CLASS_MISSING_OUR_SIDE,
     CLASS_MISSING_THEIR_SIDE,
 )
+from app.services.numeric_bounds import STATEMENT_NUMERIC, fits_numeric
 
 # Matching tolerances — overridable per call.
 DEFAULT_AMOUNT_TOLERANCE = Decimal("0.01")
@@ -330,7 +333,17 @@ def parse_amount(raw: str | None, *, convention: AmountConvention | None = None)
     Public for the same reason as :func:`parse_date`: the PDF intake path turns
     an adapter's raw amount STRING into money here, so a model's output and a
     CSV cell become a ``Decimal`` by exactly the same rules — and neither ever
-    passes through a float."""
+    passes through a float.
+
+    An amount too wide for ``vendor_statement_recon_lines.statement_amount``
+    ``Numeric(18, 2)`` is ``None``, which both callers already treat as "this
+    row carries no amount" (kept if it has an invoice number to match on,
+    skipped if it has neither). Unbounded, such a value parsed cleanly and then
+    raised ``NumericValueOutOfRangeError`` on the flush, failing the whole
+    reconciliation run. Being the shared parser, this one bound covers the CSV
+    upload AND the PDF/extraction path. Scale is deliberately not enforced:
+    Postgres rounds it, and a supplier's own statement is not ours to refuse
+    over a third decimal (see ``services/numeric_bounds``)."""
     parsed = _amount_core(raw)
     if parsed is None:
         return None
@@ -348,6 +361,8 @@ def parse_amount(raw: str | None, *, convention: AmountConvention | None = None)
     try:
         amount = Decimal(core)
     except (InvalidOperation, ValueError):
+        return None
+    if not fits_numeric(amount, *STATEMENT_NUMERIC):
         return None
     return -amount if negative else amount
 

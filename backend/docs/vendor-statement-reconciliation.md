@@ -165,6 +165,26 @@ carrying **neither** an invoice-number column **nor** an amount column. A single
 data row with no number *and* no usable amount is noise → skipped silently; a
 blank line is skipped.
 
+### Amount range
+
+`parse_amount` also **range-checks against `vendor_statement_recon_lines.statement_amount`
+`Numeric(18, 2)`** (via the shared `services/numeric_bounds.fits_numeric`): a
+value wider than 16 integer digits returns `None`, the parser's existing "this
+row carries no amount" signal — so the row is kept when it has an invoice number
+to match on and dropped when it has neither, and the rest of the statement
+reconciles normally. Unbounded, such a value parsed cleanly and then raised
+`NumericValueOutOfRangeError` at the flush, failing the entire run over one cell.
+
+Because `parse_amount` is the **shared** parser, that one bound covers the CSV
+upload and the PDF/extraction path alike. The manual-entry path is bounded
+separately and more strictly, at its Pydantic schema
+(`StatementLineInput.amount`, `max_digits=18, decimal_places=2` → a 422): a
+client authored that one value and can correct it, whereas a supplier's own
+statement is not ours to refuse over a third decimal. Extra decimal places are
+therefore **rounded, not rejected** on the file paths, matching Postgres' own
+behaviour. Same split as [csv-import.md](csv-import.md) § Amount range and
+[bank-reconciliation.md](bank-reconciliation.md).
+
 ### Matching algorithm (`reconcile`)
 
 `reconcile(statement_lines, ledger_invoices, *, amount_tolerance=Decimal("0.01"),

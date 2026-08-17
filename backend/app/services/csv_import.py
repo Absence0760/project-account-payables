@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.vendor import Vendor
+from app.services.numeric_bounds import MONEY_NUMERIC, fits_numeric
 
 # CSV imports are always small structured text (vendor lists, invoice batches,
 # card-transaction feeds) — well under the general 25 MB file-upload cap in
@@ -132,13 +133,25 @@ def _parse_bool(raw: str | None) -> bool:
 
 
 def _parse_decimal(raw: str | None) -> Decimal | None:
+    """Parse a money cell, or ``None`` if it is unusable.
+
+    Both call sites write the result into a ``Numeric(15, 2)`` column and turn a
+    ``None`` into an ``ImportRowError``, so the magnitude check belongs here: an
+    over-range cell used to parse fine and then raise
+    ``NumericValueOutOfRangeError`` at the flush, aborting an import that had
+    already written earlier rows. It is now one named bad row among the others.
+    Scale is NOT enforced — Postgres rounds it, and refusing a migration row
+    because the customer's old system carried a third decimal loses more than it
+    protects (see ``services/numeric_bounds``).
+    """
     if raw is None or raw == "":
         return None
     cleaned = raw.replace(",", "").replace("$", "").strip()
     try:
-        return Decimal(cleaned)
+        value = Decimal(cleaned)
     except (InvalidOperation, ValueError):
         return None
+    return value if fits_numeric(value, *MONEY_NUMERIC) else None
 
 
 def _parse_date(raw: str | None) -> date | None:
