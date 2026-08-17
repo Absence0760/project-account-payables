@@ -282,3 +282,70 @@ async def test_cash_position_null_threshold_stays_null(realdb):
         resp = await c.get("/api/analytics/cash_position")
     assert resp.status_code == 200, resp.text
     assert resp.json()["threshold"] is None
+
+
+# ---------------------------------------------------------------------------
+# Drill-throughs + forecast variance + the by-entity rollup
+# ---------------------------------------------------------------------------
+#
+# These three had no shipped frontend or mobile consumer, which is why
+# `/drill/dpo` and `/by-entity` could be corrected in isolation ahead of the
+# rest. They are pinned here anyway so the whole module answers to one rule.
+
+_DRILL_MONEY_FIELDS = {"amount", "total_spend", "accounts_payable", "cogs"}
+_VARIANCE_MONEY_FIELDS = {"forecast", "actual", "variance"}
+_BY_ENTITY_MONEY_FIELDS = {"total_spend", "outstanding_amount", "open_po_amount"}
+
+
+async def test_drill_endpoints_money_is_exact_strings(realdb):
+    await _seed(realdb)
+    async with realdb.client(key="a", role="cfo") as c:
+        conc = await c.get("/api/analytics/drill/spend_concentration?period_days=365")
+        dpo = await c.get("/api/analytics/drill/dpo?months=3")
+    assert conc.status_code == 200, conc.text
+    assert dpo.status_code == 200, dpo.text
+
+    conc_body = conc.json()
+    _assert_numbers_are_declared(conc_body, path="drill/spend_concentration")
+    seen = _assert_money_strings(conc_body, keys=_DRILL_MONEY_FIELDS)
+    assert {"amount", "total_spend"} <= seen
+    assert Decimal(conc_body["total_spend"]) == Decimal("1234.56")
+    # `share_pct` is a percentage, not money.
+    assert isinstance(conc_body["rows"][0]["share_pct"], int | float)
+
+    dpo_body = dpo.json()
+    _assert_numbers_are_declared(dpo_body, path="drill/dpo")
+    _assert_money_strings(dpo_body, keys=_DRILL_MONEY_FIELDS)
+
+
+async def test_forecast_variance_money_is_exact_strings(realdb):
+    await _seed(realdb)
+    month = _TODAY.strftime("%Y-%m")
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.post(
+            "/api/analytics/forecast_variance",
+            json={"months": [{"month": month, "forecast": "1000.00"}]},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    _assert_numbers_are_declared(body, path="forecast_variance")
+    seen = _assert_money_strings(body, keys=_VARIANCE_MONEY_FIELDS)
+    assert seen == _VARIANCE_MONEY_FIELDS
+    row = body["rows"][0]
+    # The seeded completed payment is the actual; variance = actual - forecast.
+    assert Decimal(row["actual"]) == Decimal("500.25")
+    assert Decimal(row["variance"]) == Decimal("-499.75")
+    # `variance_pct` is a percentage, not money.
+    assert isinstance(row["variance_pct"], int | float)
+
+
+async def test_by_entity_rollup_money_is_exact_strings(realdb):
+    await _seed(realdb)
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.get("/api/analytics/by-entity")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    _assert_numbers_are_declared(body, path="by-entity")
+    seen = _assert_money_strings(body, keys=_BY_ENTITY_MONEY_FIELDS)
+    assert seen == _BY_ENTITY_MONEY_FIELDS
+    assert Decimal(body["consolidated"]["total_spend"]) == Decimal("1234.56")

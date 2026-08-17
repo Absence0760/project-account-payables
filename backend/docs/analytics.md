@@ -175,13 +175,17 @@ split is now the whole module's rule, not this endpoint's exception: see
 in isolation, because it had no shipped consumer — `../../docs/decisions.md`
 §32.)
 
-Drill-through:
-- `GET /api/analytics/drill/spend_concentration?period_days=N&limit=N`
+Drill-through (money as exact decimal strings here too — see
+[Money serialisation](#money-serialisation)):
+- `GET /api/analytics/drill/spend_concentration?period_days=N&limit=N` —
+  `rows[].amount` + `total_spend` are money; `share_pct` is a percentage and
+  `invoice_count` a count, so both stay JSON numbers.
 - `GET /api/analytics/drill/dpo?months=N`
 - `POST /api/analytics/forecast_variance` — body `{"months":
   [{"month": "YYYY-MM", "forecast": "100000"}, ...]}`. Server
   fills in `actual` from completed payments and returns
-  `{rows: [{forecast, actual, variance, variance_pct}, ...]}`.
+  `{rows: [{forecast, actual, variance, variance_pct}, ...]}` —
+  the first three money, `variance_pct` a percentage.
   Forecasts are NOT persisted — the CFO pastes from their FP&A
   tool.
 
@@ -428,4 +432,5 @@ is stored.
 | `tests/test_dashboard_aggregations.py` | Existing — extended through the new branches via the try/except absorption pattern |
 | `tests/test_cashflow_balance.py` | Unit — `get_balance` capability (base-class default unsupported; mock deterministic + config override + simulated-unsupported); `fetch_provider_balance` best-effort (mock balance, None on unsupported, swallows adapter error); persisted-threshold resolve/store round-trip + garbage tolerance + key preservation/clear |
 | `tests/test_cashflow_forecast_api.py` (cash-position additions) | API — auto-seed opening balance from the mock provider (`source: provider`); `seed_balance=false` skips it; query param beats provider; provider-unsupported falls back to `settings`; persisted threshold applied without a query override; `cash-position-settings` GET/PUT round-trip; negative → 422; RBAC (ap_clerk 403, admin/cfo 200) |
+| `tests/test_analytics_money_serialization.py` | Money serialisation — a **structural** guard over `/cfo`, the cash-flow trio, both drill-throughs, `/forecast_variance` and `/by-entity`: every response is walked and any JSON *number* whose key isn't in the declared day-count / percentage / count roster fails, so a new money field added as a float can't land silently. Plus the zero-population `/cfo` response (where `0` and `"0"` both read as "nothing here"), the `null` cash-position threshold, and the exact seeded figures surviving the round trip |
 | `tests/test_analytics_by_entity.py` | `/by-entity` — per-entity spend/invoice-count scoping for two entities; `consolidated` equals the cross-entity sum; open-exceptions scope per entity; single-entity tenant returns a coherent one-row breakdown; RBAC (ap_clerk/ap_manager 403, cfo 200); the endpoint ignores `X-Entity-ID` |

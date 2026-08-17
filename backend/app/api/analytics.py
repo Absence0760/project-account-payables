@@ -1262,7 +1262,8 @@ async def drill_spend_concentration(
         "rows": [
             {
                 "vendor": e.vendor,
-                "amount": float(e.amount),
+                "amount": _money(e.amount),
+                # A percentage, not money — stays a JSON number.
                 "share_pct": float((e.amount / total * Decimal("100")).quantize(Decimal("0.1")))
                 if total > 0
                 else 0.0,
@@ -1270,7 +1271,7 @@ async def drill_spend_concentration(
             }
             for e in vendor_entries
         ],
-        "total_spend": float(total),
+        "total_spend": _money(total),
     }
 
 
@@ -1618,9 +1619,10 @@ async def post_forecast_variance(
         "rows": [
             {
                 "month": r["month"],
-                "forecast": float(r["forecast"]),
-                "actual": float(r["actual"]),
-                "variance": float(r["variance"]),
+                "forecast": _money(r["forecast"]),
+                "actual": _money(r["actual"]),
+                "variance": _money(r["variance"]),
+                # A percentage, not money — stays a JSON number.
                 "variance_pct": float(r["variance_pct"]),
             }
             for r in result
