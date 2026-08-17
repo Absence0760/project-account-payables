@@ -130,12 +130,12 @@ to `TOOLS` / `TOOL_SPECS` (`tools/__init__.py`). Each is
 `async def(db, *, org_id, entity_id, current_user_id, params) -> PydanticModel`,
 entity-scoped, money as **exact Decimal → JSON string** (never `float`).
 
-> ⚠️ Note: the *analytics HTTP endpoints* today coerce money to `float()` for
-> chart transport (`app/api/analytics.py`). The copilot tools must **not** —
-> they return exact decimal strings via `model_dump(mode="json")`, matching the
-> assistant's existing money discipline. Refactor `bucket_outflows` callers to
-> keep `Decimal` and serialize at the edge; do not introduce float into the tool
-> return path.
+> Note: the *analytics HTTP endpoints* used to coerce money to `float()` for
+> chart transport (`app/api/analytics.py`). They no longer do — every money
+> field there is an exact decimal string too (`backend/docs/analytics.md`
+> § Money serialisation), so the copilot's discipline and the dashboard's now
+> agree. The tools' own contract is unchanged: exact decimal strings via
+> `model_dump(mode="json")`, never float in the tool return path.
 
 | Tool | Params (clamped) | Returns |
 |------|------------------|---------|
@@ -321,7 +321,7 @@ follow-up once the surface has real usage to script against.
 
 | Invariant | How this design satisfies it |
 |-----------|------------------------------|
-| Money is exact | All figures from `Decimal` pure functions; tools serialize to string, never `float` (explicitly *not* copying the analytics endpoints' float coercion) |
+| Money is exact | All figures from `Decimal` pure functions; tools serialize to string, never `float`. The analytics HTTP endpoints have since been migrated to the same exact-string contract, so there is no longer a float coercion to avoid copying |
 | Idempotency on money-moving writes | Copilot moves no money; the only write is a draft run via the existing idempotent create path, deduped on `plan_id` |
 | Audit trail append-only | Every tool call audited (existing orchestrator); every enact action audited via the existing payment-run / discount-accept audit rows |
 | Tenant isolation at the data layer | Inherited from `get_tenant` chokepoint + entity scoping; tools bound to one tenant session |
@@ -455,10 +455,11 @@ design-only — everything else on this page is shipped.
    the header like `GET /analytics/by-entity` does — a small follow-up. (The
    §14 alert sweep already runs org-wide for exactly this reason; the
    interactive tools still honour the header.)
-4. **Analytics endpoints' float coercion.** The existing forecast/what-if HTTP
-   endpoints serialize money to `float` for charts. Not in scope to fix here, but
-   the copilot must not inherit it, and it's worth a tracked follow-up to move
-   those to exact strings too (frontend `<Money>` already handles strings).
+4. ~~**Analytics endpoints' float coercion.**~~ **SHIPPED** — every money field
+   on `/api/analytics/*` is now an exact decimal string, with the frontend and
+   Flutter consumers moved across in the same change. Day counts, percentages
+   and counts stay JSON numbers. See `backend/docs/analytics.md`
+   § Money serialisation.
 5. ~~**Proactive alerts.**~~ **SHIPPED** — see §14.
 
 ---
