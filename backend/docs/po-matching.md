@@ -187,6 +187,15 @@ families (`financing_adapters`, `fx_adapters`, …):
   `Organization.settings.qms.provider`, falling back to `FEOH_QMS_PROVIDER`
   (default `mock`). Contract: `async fetch_inspections(*, since=None) ->
   list[QMSInspectionRecord]` + `async test_connection() -> bool`.
+  `generic.fetch_inspections` raises **however it is configured** — the live REST
+  body is unwritten — so its `test_connection` returns `False` on credentials
+  alone too: an operator learns at configuration time that the integration
+  cannot pull anything, rather than on the first sweep. That pairing is
+  declared and enforced registry-wide by
+  `tests/test_adapter_contract_integrity.py` (with the consequence recorded:
+  the sweep registers a failed run and shows `degraded` on
+  `GET /api/health/sweeps`). Raising is deliberate here — fabricating
+  inspection rows would forge the 4-way-match quality leg.
 - **Sync** (`services/qms_sync.py`): `sync_tenant_inspections` fetches records,
   resolves each record's `po_number` / `gr_number` to local `PurchaseOrder` /
   `GoodsReceipt` ids, then **upserts** a `QualityInspection` idempotently keyed on

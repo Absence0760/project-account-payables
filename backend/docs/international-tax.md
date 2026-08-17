@@ -116,6 +116,13 @@ instead of at configuration time. `tests/test_tax_rate_adapters.py` is the drift
 guard, and it is written against the registry rather than the two known names,
 so a future skeleton inherits the rule.
 
+That rule is now enforced across **every** adapter family, not just this one:
+`tests/test_adapter_contract_integrity.py` AST-scans each registry for a method
+that raises on every path, requires it to be declared with the consequence for
+the caller written down, and asserts the declaring adapter's probe reports
+unavailable when fully credentialled. `avalara.get_rate` and `taxjar.get_rate`
+are two of its three entries.
+
 The dispatcher (`get_tax_rate_adapter`) resolves the provider from
 `Organization.settings.tax.rate_provider`, falling back to the platform-wide
 `FEOH_TAX_RATE_PROVIDER`, then `mock`.
