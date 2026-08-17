@@ -105,27 +105,28 @@ export interface CashPosition {
 	breaches: CashPositionBreach[];
 }
 
-// CFO metrics dashboard — `GET /api/analytics/cfo`. Unlike most of this file
-// (and unlike the by-entity rollup below), money here is plain `number`
-// (backend-serialized float), matching the pre-existing convention of the
-// forecast/what-if/cash-position endpoints on this same page — a tenant-wide
-// roll-up with no per-row currency, rendered via the org default currency
-// (`orgCurrency`), same as `CashflowForecast` above.
+// CFO metrics dashboard — `GET /api/analytics/cfo`. A tenant-wide roll-up with
+// no per-row currency, rendered via the org default currency (`orgCurrency`).
+// Money is `MoneyString`, like every other endpoint in this file. What is NOT
+// a string here is not money: a DAY COUNT (`dpo_*`, `cash_conversion_cycle`), a
+// PERCENTAGE (`*_share_pct`, `rate_pct`, `yield_pct`) and a row count are
+// genuinely numbers, and stringifying one would be a bug, not compliance.
 
 export interface CfoDpoTrendPoint {
 	month: string;
+	/** A day count, not money. */
 	dpo: number;
 }
 
 export interface CfoAccruals {
-	open_po_amount: number;
-	received_amount: number;
-	unposted_invoice_amount: number;
-	total_accrual: number;
+	open_po_amount: MoneyString;
+	received_amount: MoneyString;
+	unposted_invoice_amount: MoneyString;
+	total_accrual: MoneyString;
 }
 
 export interface CfoSupplierConcentration {
-	total_spend: number;
+	total_spend: MoneyString;
 	top_10_share_pct: number;
 	top_50_share_pct: number;
 	largest_vendor: string | null;
@@ -141,38 +142,38 @@ export interface CfoFraudTrendPoint {
 }
 
 export interface CfoRebateYield {
-	rebates_total: number;
-	total_spend: number;
+	rebates_total: MoneyString;
+	total_spend: MoneyString;
 	yield_pct: number;
-	annualised_rebates: number;
+	annualised_rebates: MoneyString;
 }
 
 export interface CfoUnrealizedFxByCurrency {
 	currency: string;
-	open_original_amount: number;
-	booked_reporting_amount: number;
-	current_reporting_amount: number;
-	unrealized_gain_loss: number;
+	open_original_amount: MoneyString;
+	booked_reporting_amount: MoneyString;
+	current_reporting_amount: MoneyString;
+	unrealized_gain_loss: MoneyString;
 }
 
 export interface CfoUnrealizedFx {
 	reporting_currency: string;
-	total_unrealized_gain_loss: number;
+	total_unrealized_gain_loss: MoneyString;
 	by_currency: CfoUnrealizedFxByCurrency[];
 	available: boolean;
 }
 
 export interface CfoReportingSpendByCurrency {
 	currency: string;
-	original_amount: number;
-	reporting_amount: number;
+	original_amount: MoneyString;
+	reporting_amount: MoneyString;
 	count: number;
 	unconverted_count: number;
 }
 
 export interface CfoReportingSpend {
 	reporting_currency: string;
-	total_amount: number;
+	total_amount: MoneyString;
 	total_count: number;
 	unconverted_count: number;
 	by_currency: CfoReportingSpendByCurrency[];
@@ -181,16 +182,18 @@ export interface CfoReportingSpend {
 export interface CfoAnalytics {
 	period_days: number;
 	period_start: string;
-	total_spend: number;
+	total_spend: MoneyString;
 	reporting_spend: CfoReportingSpend;
 	unrealized_fx: CfoUnrealizedFx;
-	accounts_payable_balance: number;
+	accounts_payable_balance: MoneyString;
+	/** A day count, not money. */
 	dpo_current: number;
 	dpo_trend: CfoDpoTrendPoint[];
+	/** A day count, not money; `null` when receivables data is unavailable. */
 	cash_conversion_cycle: number | null;
 	accruals: CfoAccruals;
-	working_capital_impact_5_days: number;
-	avg_daily_outflow: number;
+	working_capital_impact_5_days: MoneyString;
+	avg_daily_outflow: MoneyString;
 	supplier_concentration: CfoSupplierConcentration;
 	fraud_rate_trend: CfoFraudTrendPoint[];
 	rebate_yield: CfoRebateYield;

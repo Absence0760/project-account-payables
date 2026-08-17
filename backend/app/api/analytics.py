@@ -839,11 +839,11 @@ async def get_cfo_analytics(
     unrealized_payload: dict = {
         "reporting_currency": reporting_currency,
         # Money flows through Decimal even for the fallback zero (money
-        # invariant), serialised to float at this JSON boundary like every
-        # other figure in this response. The real "FX unavailable vs a
-        # genuine zero gain/loss" signal is `available` (flipped False in the
-        # except branch below) — never this number.
-        "total_unrealized_gain_loss": float(Decimal("0")),
+        # invariant), serialised as an exact decimal string at this JSON
+        # boundary like every other money figure in this response. The real
+        # "FX unavailable vs a genuine zero gain/loss" signal is `available`
+        # (flipped False in the except branch below) — never this figure.
+        "total_unrealized_gain_loss": _money(Decimal("0")),
         "by_currency": [],
         "available": True,
     }
@@ -876,14 +876,14 @@ async def get_cfo_analytics(
         )
         unrealized_payload = {
             "reporting_currency": unrealized.reporting_currency,
-            "total_unrealized_gain_loss": float(unrealized.total_unrealized_gain_loss),
+            "total_unrealized_gain_loss": _money(unrealized.total_unrealized_gain_loss),
             "by_currency": [
                 {
                     "currency": e.currency,
-                    "open_original_amount": float(e.open_original_amount),
-                    "booked_reporting_amount": float(e.booked_reporting_amount),
-                    "current_reporting_amount": float(e.current_reporting_amount),
-                    "unrealized_gain_loss": float(e.unrealized_gain_loss),
+                    "open_original_amount": _money(e.open_original_amount),
+                    "booked_reporting_amount": _money(e.booked_reporting_amount),
+                    "current_reporting_amount": _money(e.current_reporting_amount),
+                    "unrealized_gain_loss": _money(e.unrealized_gain_loss),
                 }
                 for e in unrealized.by_currency
             ],
@@ -896,21 +896,21 @@ async def get_cfo_analytics(
     return {
         "period_days": period_days,
         "period_start": period_start.isoformat(),
-        "total_spend": float(total_spend),
+        "total_spend": _money(total_spend),
         # Currency-aware spend rollup (the unified reporting-currency total +
         # the per-currency split). `total_spend` above stays as the legacy
         # naive SUM for back-compat; `reporting_spend.total_amount` is the
         # figure to trust when the org books in multiple currencies.
         "reporting_spend": {
             "reporting_currency": spend_rollup.reporting_currency,
-            "total_amount": float(spend_rollup.total_reporting_amount),
+            "total_amount": _money(spend_rollup.total_reporting_amount),
             "total_count": spend_rollup.total_count,
             "unconverted_count": spend_rollup.unconverted_count,
             "by_currency": [
                 {
                     "currency": e.currency,
-                    "original_amount": float(e.original_amount),
-                    "reporting_amount": float(e.reporting_amount),
+                    "original_amount": _money(e.original_amount),
+                    "reporting_amount": _money(e.reporting_amount),
                     "count": e.count,
                     "unconverted_count": e.unconverted_count,
                 }
@@ -918,32 +918,36 @@ async def get_cfo_analytics(
             ],
         },
         "unrealized_fx": unrealized_payload,
-        "accounts_payable_balance": float(ap_balance),
+        "accounts_payable_balance": _money(ap_balance),
+        # `dpo_*` and `cash_conversion_cycle` are DAY COUNTS, not money — they
+        # stay JSON numbers, matching `/drill/dpo`'s `dpo`.
         "dpo_current": float(dpo),
         "dpo_trend": [{"month": r["month"], "dpo": float(r["dpo"])} for r in monthly_dpo_rows],
         "cash_conversion_cycle": float(ccc) if ccc is not None else None,
         "accruals": {
-            "open_po_amount": float(accruals.open_po_amount),
-            "received_amount": float(accruals.received_amount),
-            "unposted_invoice_amount": float(accruals.unposted_invoice_amount),
-            "total_accrual": float(accruals.total_accrual),
+            "open_po_amount": _money(accruals.open_po_amount),
+            "received_amount": _money(accruals.received_amount),
+            "unposted_invoice_amount": _money(accruals.unposted_invoice_amount),
+            "total_accrual": _money(accruals.total_accrual),
         },
-        "working_capital_impact_5_days": float(wc_impact_5d),
-        "avg_daily_outflow": float(avg_daily_outflow),
+        "working_capital_impact_5_days": _money(wc_impact_5d),
+        "avg_daily_outflow": _money(avg_daily_outflow),
         "supplier_concentration": {
-            "total_spend": float(concentration.total_spend),
+            # `total_spend` is money; the three `*_share_pct` are percentages.
+            "total_spend": _money(concentration.total_spend),
             "top_10_share_pct": float(concentration.top_10_share_pct),
             "top_50_share_pct": float(concentration.top_50_share_pct),
             "largest_vendor": concentration.largest_vendor,
             "largest_vendor_share_pct": float(concentration.largest_vendor_share_pct),
             "flagged": concentration.flagged,
         },
+        # `rate_pct` is a percentage; the row's other fields are counts.
         "fraud_rate_trend": [{**r, "rate_pct": float(r["rate_pct"])} for r in fraud_trend],
         "rebate_yield": {
-            "rebates_total": float(rebate["rebates_total"]),
-            "total_spend": float(rebate["total_spend"]),
+            "rebates_total": _money(rebate["rebates_total"]),
+            "total_spend": _money(rebate["total_spend"]),
             "yield_pct": float(rebate["yield_pct"]),
-            "annualised_rebates": float(rebate["annualised_rebates"]),
+            "annualised_rebates": _money(rebate["annualised_rebates"]),
         },
     }
 

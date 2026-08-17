@@ -117,6 +117,10 @@ New keys added in a prior iteration:
 
 Query params: `period_days` (default 365, range 30–730).
 
+Every money field below is an exact decimal string; `dpo_current`,
+`dpo_trend[].dpo`, `cash_conversion_cycle`, every `*_pct` and every count are
+JSON numbers. See [Money serialisation](#money-serialisation).
+
 Response:
 - `total_spend` — invoices dated within the trailing `period_days` window,
   excluding `rejected`. **Not the same population as the dashboard's
@@ -165,12 +169,11 @@ tile vs. its drill-through (issue #126). Pinned by
 `tests/test_analytics_rejected_exclusion.py`.
 
 `/drill/dpo` serializes `accounts_payable` and `cogs` — money — as **exact
-decimal strings** (project invariant: money never crosses the API boundary as a
-float). `dpo` is a day count, not money, and stays a JSON number so it matches
-the numeric `dpo` the `dpo_trend` chart already renders. The rest of this
-module's money fields are still floats; converting them is a separate,
-client-breaking change and is **not** done here — `/drill/dpo` has no shipped
-frontend or mobile consumer, so it could be corrected in isolation.
+decimal strings**, and `dpo` as a JSON number, because it is a day count. That
+split is now the whole module's rule, not this endpoint's exception: see
+[Money serialisation](#money-serialisation). (`/drill/dpo` was corrected first,
+in isolation, because it had no shipped consumer — `../../docs/decisions.md`
+§32.)
 
 Drill-through:
 - `GET /api/analytics/drill/spend_concentration?period_days=N&limit=N`
@@ -214,6 +217,10 @@ open-exception count, open-PO accrual via `_open_po_sum_query`), the
 consolidated block is a true sum-across-entities cross-check.
 
 Query params: `period_days` (default 365, range 30–730).
+
+Every money field below is an exact decimal string; `dpo_current`,
+`dpo_trend[].dpo`, `cash_conversion_cycle`, every `*_pct` and every count are
+JSON numbers. See [Money serialisation](#money-serialisation).
 
 Response:
 - `period_days`, `period_start`

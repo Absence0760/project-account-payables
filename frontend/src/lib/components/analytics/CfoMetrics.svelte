@@ -2,7 +2,8 @@
 	import { api } from '$lib/api';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import KpiCard from '$lib/components/ui/KpiCard.svelte';
-	import { formatMoney } from '$lib/utils/money';
+	import { formatMoney, isNegativeAmount } from '$lib/utils/money';
+	import type { MoneyAmount } from '$lib/utils/money';
 	import { formatPeriod } from '$lib/utils/time';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { m } from '$lib/i18n/store.svelte';
@@ -25,8 +26,8 @@
 	let loading = $state(false);
 	let error = $state<string | null>(null);
 
-	function fmt(n: number): string {
-		return formatMoney(n, { currency: orgCurrency.currency, whole: true });
+	function fmt(amount: MoneyAmount): string {
+		return formatMoney(amount, { currency: orgCurrency.currency, whole: true });
 	}
 
 	let maxDpo = $derived(Math.max(1, ...(data?.dpo_trend ?? []).map((r) => r.dpo)));
@@ -174,7 +175,7 @@
 								<td class="num">{fmt(e.open_original_amount)}</td>
 								<td class="num">{fmt(e.booked_reporting_amount)}</td>
 								<td class="num">{fmt(e.current_reporting_amount)}</td>
-								<td class="num" class:cfm-alert={e.unrealized_gain_loss < 0}>
+								<td class="num" class:cfm-alert={isNegativeAmount(e.unrealized_gain_loss)}>
 									{fmt(e.unrealized_gain_loss)}
 								</td>
 							</tr>
