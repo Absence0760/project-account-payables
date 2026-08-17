@@ -177,6 +177,10 @@ _RETRY_SAFE_FAILURE_PREFIXES = (
     "cards_not_enabled",
     # dwolla's unsupported-method refusal: "method 'wire' is not supported…"
     "method '",
+    # A credit memo landed between booking and dispatch, so the row's amount is
+    # no longer what the vendor is owed. `_execute_single_payment` refuses
+    # BEFORE the adapter call, so no order exists at the processor.
+    "net_amount_changed",
 )
 
 # Per-adapter pre-flight refusals — checked before any HTTP call is made.
@@ -460,6 +464,26 @@ async def create_payment_run_for_invoices(
         net_amount = await net_payable_amount(db, inv)
         net_amounts[item.invoice_id] = net_amount
         total += net_amount
+
+    # An invoice fully covered by applied credit memos has nothing to pay. The
+    # standalone `POST /api/payments` already refuses this; staging it into a
+    # run instead booked a $0 payment, which a real rail rejects as `failed` —
+    # leaving the invoice stuck in the payable queue with no exit that
+    # recognises "there is nothing to move" (and, on `virtual_card`, minting a
+    # $0 card at the provider first). Both money paths refuse identically.
+    fully_credited = [
+        invoices[item.invoice_id].invoice_number
+        for item in items
+        if net_amounts[item.invoice_id] <= 0
+    ]
+    if fully_credited:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Invoice(s) fully covered by applied credit memos — nothing to pay: "
+                f"{', '.join(sorted(fully_credited))}"
+            ),
+        )
 
     # CFO sign-off threshold — identical fail-closed handling of a corrupted /
     # unparseable setting as the original inline implementation.

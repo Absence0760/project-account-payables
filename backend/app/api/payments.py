@@ -1801,6 +1801,32 @@ async def _execute_single_payment(
     # Resolve invoice + vendor for the payload
     inv_result = await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
     invoice = inv_result.scalar_one_or_none()
+
+    # What the invoice is worth NOW, immediately before the adapter call.
+    # `payment.amount` was netted against applied credit memos when the row was
+    # booked (`payment_runs.net_payable_amount`), but `credit_memos.py` gates an
+    # application on neither invoice status nor an existing payment — so a
+    # credit recorded between booking and dispatch (a run sitting `draft`
+    # awaiting CFO sign-off, a payment held `pending_compliance`) leaves the
+    # row's amount stale and would overpay the vendor by the credit. That
+    # window is not hypothetical: `docs/dynamic-discounting.md` documents
+    # recording a credit memo as THE way to take an early-pay discount.
+    #
+    # The amount is never silently adjusted here — re-pricing money nobody
+    # re-approved is its own defect — so refuse and let a fresh run re-derive
+    # it through the full gate set. This mirrors `/retry-failed`'s
+    # `net_amount_changed` skip exactly, and is a refusal made BEFORE the
+    # adapter is called, hence retry-safe (`_RETRY_SAFE_FAILURE_PREFIXES`).
+    if invoice is not None:
+        from app.services.payment_runs import net_payable_amount as _net_payable_amount
+
+        current_net = await _net_payable_amount(db, invoice)
+        if current_net != payment.amount:
+            payment.status = "failed"
+            payment.failure_reason = "net_amount_changed"
+            payment.completed_at = now
+            return
+
     vendor_bank: dict | None = None
     if invoice and invoice.vendor_id:
         v_result = await db.execute(
@@ -1848,7 +1874,15 @@ async def _execute_single_payment(
         card_decision = await check_payment_compliance(
             db,
             vendor=v_card,
-            payment_amount=payment.amount,
+            # The home-currency leg when an FX rate was locked, else the
+            # invoice-currency amount tagged with its own currency — the gate
+            # fails closed when that isn't the threshold's currency.
+            payment_amount=payment.source_amount or payment.amount,
+            payment_currency=(
+                payment.source_currency
+                if payment.source_amount is not None
+                else (invoice.currency if invoice is not None else None)
+            ),
             payment_method=payment.method,
             org_settings=org.settings or {},
             organization_id=org.id,
@@ -2106,7 +2140,15 @@ async def _execute_single_payment(
         decision = await check_payment_compliance(
             db,
             vendor=v_full,
-            payment_amount=payment.amount,
+            # See the card leg above: the KYC threshold is a home-currency
+            # figure, so hand the gate the home-currency leg (locked by the FX
+            # step just above) and let it fail closed when it isn't available.
+            payment_amount=payment.source_amount or payment.amount,
+            payment_currency=(
+                payment.source_currency
+                if payment.source_amount is not None
+                else (invoice.currency if invoice is not None else None)
+            ),
             payment_method=payment.method,
             org_settings=org.settings or {},
             organization_id=org.id,

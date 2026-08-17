@@ -134,3 +134,108 @@ async def test_invoice_with_no_credit_memo_pays_the_full_amount(realdb):
         )
     assert run_resp.status_code == 201, run_resp.text
     assert run_resp.json()["total_amount"] == "500.00"
+
+
+async def test_credit_memo_applied_after_run_creation_does_not_pay_the_stale_amount(realdb):
+    """A credit recorded BETWEEN run creation and `/execute` must not be
+    ignored.
+
+    `Payment.amount` is netted when the run is built, but `credit_memos.py`
+    gates an application on neither invoice status nor an existing payment —
+    and `docs/dynamic-discounting.md` documents recording a credit memo as THE
+    way to take an early-pay discount, so this ordering happens by design of
+    another feature. Nothing re-derived the figure at dispatch, so the vendor
+    was paid the full pre-credit amount.
+
+    The amount is never silently re-priced here (that would move money nobody
+    re-approved) — the payment fails `net_amount_changed` and a fresh run
+    re-derives it through the full gate set, exactly as `/retry-failed`
+    already does for the same window.
+    """
+    info = realdb.info("a")
+    mk = realdb.sessionmaker("a")
+    vendor_id, invoice_id = await _seed_vendor_and_approved_invoice(
+        mk, info.org_id, number="CMNET-STALE-1", amount=Decimal("1000.00")
+    )
+
+    async with realdb.client(key="a", role="admin") as c:
+        run_resp = await c.post(
+            "/api/payments/runs",
+            json={"items": [{"invoice_id": invoice_id, "method": "ach"}]},
+        )
+        assert run_resp.status_code == 201, run_resp.text
+        run_id = run_resp.json()["id"]
+        # Booked at the full amount — no credits existed yet.
+        assert run_resp.json()["total_amount"] == "1000.00"
+
+        memo_resp = await c.post(
+            "/api/credit-memos",
+            json={
+                "memo_number": "CM-NET-STALE-1",
+                "vendor_id": vendor_id,
+                "amount": "400.00",
+                "invoice_id": invoice_id,
+            },
+        )
+        assert memo_resp.status_code == 201, memo_resp.text
+
+    # A different user executes — segregation of duties forbids the run's
+    # creator from also executing it.
+    async with realdb.client(key="a", role="ap_manager") as c2:
+        exec_resp = await c2.post(f"/api/payments/runs/{run_id}/execute")
+        assert exec_resp.status_code == 200, exec_resp.text
+
+    async with mk() as s:
+        payment = (
+            await s.execute(select(Payment).where(Payment.invoice_id == uuid.UUID(invoice_id)))
+        ).scalar_one()
+        # The vendor was NOT paid the stale $1000.00.
+        assert payment.status == "failed"
+        assert payment.failure_reason == "net_amount_changed"
+        invoice = (
+            await s.execute(select(Invoice).where(Invoice.id == uuid.UUID(invoice_id)))
+        ).scalar_one()
+        # Still payable — a fresh run re-derives $600.00 through every gate.
+        assert invoice.status == InvoiceStatus.approved
+
+
+async def test_fully_credited_invoice_cannot_be_staged_into_a_run(realdb):
+    """An invoice fully covered by credits has nothing to pay.
+
+    The standalone `POST /api/payments` already refuses this; the run builder
+    used the same netting helper but had no zero guard, so it staged a $0.00
+    payment. A real rail rejects a $0 order as `failed`, stranding the invoice
+    in the payable queue with no exit that recognises "there is nothing to
+    move" — and on `virtual_card` it mints a $0 card at the provider first.
+    """
+    info = realdb.info("a")
+    mk = realdb.sessionmaker("a")
+    vendor_id, invoice_id = await _seed_vendor_and_approved_invoice(
+        mk, info.org_id, number="CMNET-FULL-1", amount=Decimal("500.00")
+    )
+
+    async with realdb.client(key="a", role="admin") as c:
+        memo_resp = await c.post(
+            "/api/credit-memos",
+            json={
+                "memo_number": "CM-NET-FULL-1",
+                "vendor_id": vendor_id,
+                "amount": "500.00",
+                "invoice_id": invoice_id,
+            },
+        )
+        assert memo_resp.status_code == 201, memo_resp.text
+
+        run_resp = await c.post(
+            "/api/payments/runs",
+            json={"items": [{"invoice_id": invoice_id, "method": "ach"}]},
+        )
+
+    assert run_resp.status_code == 409, run_resp.text
+    assert "CMNET-FULL-1" in run_resp.text
+
+    async with mk() as s:
+        rows = (
+            await s.execute(select(Payment).where(Payment.invoice_id == uuid.UUID(invoice_id)))
+        ).scalars().all()
+        assert rows == []
