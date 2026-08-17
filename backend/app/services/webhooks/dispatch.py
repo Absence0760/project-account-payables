@@ -146,12 +146,23 @@ def _spawn_immediate_attempt(delivery_id: uuid.UUID) -> None:
     """Best-effort immediate delivery on the running event loop, if any."""
     import asyncio
 
+    from app.database import in_dispatch_scope
     from app.services.webhooks.delivery import process_delivery_by_id
 
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         # No running loop (e.g. a sync worker thread) — the sweep will pick it up.
+        return
+
+    if in_dispatch_scope():
+        # On a dispatcher's own event loop (`extraction_dispatch`'s worker).
+        # That loop closes as soon as the job returns and its engines are
+        # disposed with it, so a task started here would be abandoned
+        # mid-flight — quite possibly mid-HTTP-POST to the customer's endpoint,
+        # having already written the delivery row. The sweep owns it instead:
+        # the same durable fallback this function already takes when there is
+        # no running loop at all. See `database.dispatch_engine_scope`.
         return
     task = loop.create_task(process_delivery_by_id(delivery_id))
     # Swallow any task exception so an unawaited failure never surfaces as an

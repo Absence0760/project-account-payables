@@ -417,11 +417,16 @@ async def _repoint_global_control_session_factory(ctrl_db_name: str) -> None:
     functions directly "just worked" by accident: the harness's orgs and this
     global engine's target were the SAME shared `feohledger`. Now that every
     slot (0 included) has its own database, that accidental overlap is gone
-    — so this rebinds `control_session_factory` in place to restore it.
-    `.configure(bind=...)` MUTATES the existing `async_sessionmaker` object;
-    every one of those modules already holds a reference to that same object
-    (`from app.database import control_session_factory`), so they all pick up
-    the new bind with no per-module edit.
+    — so this rebinds the app's control-plane sessionmaker in place to restore
+    it. `.configure(bind=...)` MUTATES the existing `async_sessionmaker`
+    object, so every caller picks up the new bind with no per-module edit.
+
+    The target is `app.database._default_control_session_factory`, NOT the
+    public `control_session_factory`: the latter is now a *function* that
+    resolves either the dispatcher-scoped sessionmaker or that default (see
+    `database.dispatch_engine_scope` — a worker thread on its own event loop
+    must not touch app-loop engines). Configuring the default is what those
+    modules end up using here, since no test binds a dispatcher scope.
 
     Uses NullPool (like every other harness engine) specifically so this ONE
     engine can be reused safely across every test's fresh event loop for the
@@ -445,7 +450,7 @@ async def _repoint_global_control_session_factory(ctrl_db_name: str) -> None:
     _sweep_control_engine = create_async_engine(
         _make_tenant_url(ctrl_db_name), **_HARNESS_ENGINE_KW
     )
-    db_module.control_session_factory.configure(bind=_sweep_control_engine)
+    db_module._default_control_session_factory.configure(bind=_sweep_control_engine)
 
 
 async def _rebuild_pytest_schema(db_name: str) -> None:
