@@ -37,6 +37,11 @@ import sys
 
 PATHSPEC_ALL = {".", "*", "./", ":/", ":/.", ":/*"}
 
+# A bare `<<` / `<<-` redirect token. Runs of punctuation come back as one
+# token from shlex, so `<<<` (herestring) and a quoted `"<<EOF"` (data, not a
+# redirect) both fail this and are correctly left alone.
+_HEREDOC_OP = re.compile(r"^<<-?$")
+
 
 def _deny(reason):
     print(json.dumps({
@@ -49,10 +54,61 @@ def _deny(reason):
     sys.exit(0)
 
 
+def _heredoc_delimiters(line):
+    """Delimiters opened by *unquoted* heredoc redirects on this line."""
+    # posix=False keeps quotes attached to their token, which is what lets a
+    # quoted `"<<EOF"` (a string that merely contains the characters) be told
+    # apart from a real `<<EOF` redirect.
+    lex = shlex.shlex(line, posix=False, punctuation_chars=";&|<>()")
+    lex.whitespace_split = True
+    try:
+        tokens = list(lex)
+    except ValueError:
+        return []  # unbalanced quotes on this line — don't guess
+    delims = []
+    for i, tok in enumerate(tokens):
+        if not _HEREDOC_OP.match(tok) or i + 1 >= len(tokens):
+            continue
+        delim = tokens[i + 1]
+        if delim.startswith("-"):
+            delim = delim[1:]  # `<<-EOF` splits as `<<` + `-EOF`
+        if len(delim) >= 2 and delim[0] == delim[-1] and delim[0] in "'\"":
+            delim = delim[1:-1]
+        if delim:
+            delims.append(delim)
+    return delims
+
+
+def _strip_heredoc_bodies(command):
+    """Drop heredoc BODIES, keeping the line that opens them.
+
+    A heredoc body is *data* — a commit message, a file being written — not
+    shell. Left in place, its newlines become `;` statement separators below,
+    so a line of prose is parsed as a command: a commit message that merely
+    mentions `git add -A` (as this repo's own conventions constantly do) was
+    read as that command and denied. The guard has to see the redirect itself,
+    but must never read what is being fed through it.
+    """
+    lines = command.split("\n")
+    kept, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        kept.append(line)
+        delims = _heredoc_delimiters(line)
+        i += 1
+        for delim in delims:
+            # Consume the body, then the terminator line. An unterminated
+            # heredoc runs to EOF — which is also what the shell would do.
+            while i < len(lines) and lines[i].strip() != delim:
+                i += 1
+            i += 1
+    return "\n".join(kept)
+
+
 def _segments(command):
     """Split a shell command into segments on operators, respecting quotes."""
     # Treat newlines as statement separators so multi-line commands are split.
-    normalised = command.replace("\n", " ; ")
+    normalised = _strip_heredoc_bodies(command).replace("\n", " ; ")
     lex = shlex.shlex(normalised, posix=True, punctuation_chars=";&|<>()")
     lex.whitespace_split = True
     try:
