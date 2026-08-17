@@ -129,11 +129,30 @@ class Tax1099TINValidationAdapter:
         )
 
     async def test_connection(self) -> bool:
+        """Cheap authenticated ping — the same `/account/ping` the sibling
+        `tax_filing_adapters/tax1099_adapter` uses (one provider, one endpoint).
+
+        This deliberately does NOT route through `validate`. It used to, with a
+        malformed TIN, on the theory that "a deliberately malformed TIN
+        exercises auth without a real lookup" — but `validate` runs the OFFLINE
+        `check_format` first and returns `format_invalid` before touching the
+        network, so the probe never reached Tax1099 at all and answered True
+        for any non-empty string in `api_key`. `POST
+        /api/organization/test-*`-style probes exist to catch a bad credential;
+        one that reports healthy on the *presence* of a credential tells the
+        operator the opposite of the truth, and they find out at 1099 season.
+        Sending a well-formed fake TIN instead was rejected: that is a real
+        IRS TIN-match lookup against a made-up taxpayer.
+        """
         if not self.api_key:
             return False
         try:
-            # A deliberately malformed TIN exercises auth without a real lookup.
-            await self.validate(tin="00-0000000", legal_name="connection_test")
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.get(
+                    f"{_BASE_URL}/account/ping",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                )
+                response.raise_for_status()
         except Exception:  # noqa: BLE001
             return False
         return True
