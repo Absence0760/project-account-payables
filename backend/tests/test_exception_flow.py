@@ -358,3 +358,74 @@ async def test_no_warnings_persists_none_not_empty_list():
     warnings = await refresh_warnings(db, inv)
     assert warnings == []
     assert inv.warnings is None
+
+
+# ---------------------------------------------------------------------------
+# /api/exceptions/summary — the type-filter chips beside the queue
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_summary_by_type_follows_the_status_filter(realdb):
+    """`by_type` drives the type-filter chips, so it must count within the
+    status the user is actually looking at.
+
+    It was computed `WHERE status = 'open'` unconditionally. Under the
+    Escalated / Resolved / All views the chips therefore showed open-only
+    tallies (a chip reading `duplicate 12` beside 2 rows) and — worse — a type
+    that exists ONLY among resolved exceptions got no chip at all, so it could
+    not be filtered to.
+    """
+    import uuid as _uuid
+
+    from app.models.exception import Exception as APException
+    from app.models.invoice import Invoice
+
+    org_id = realdb.info("a").org_id
+    mk = realdb.sessionmaker("a")
+
+    async with mk() as s:
+        inv = Invoice(
+            organization_id=org_id,
+            invoice_number=f"EXSUM-{_uuid.uuid4().hex[:6]}",
+            vendor_name="Summary Vendor",
+            amount=Decimal("100.00"),
+            status=InvoiceStatus.new,
+        )
+        s.add(inv)
+        await s.flush()
+        s.add(
+            APException(
+                invoice_id=inv.id,
+                exception_type="duplicate",
+                status="open",
+                organization_id=org_id,
+            )
+        )
+        # Only ever RESOLVED — the type that used to be unreachable.
+        s.add(
+            APException(
+                invoice_id=inv.id,
+                exception_type="price_variance",
+                status="resolved",
+                organization_id=org_id,
+            )
+        )
+        await s.commit()
+
+    async with realdb.client(key="a", role="admin") as c:
+        default_view = (await c.get("/api/exceptions/summary")).json()
+        resolved_view = (await c.get("/api/exceptions/summary?status=resolved")).json()
+        all_view = (await c.get("/api/exceptions/summary?status=all")).json()
+
+    # Default is still the open view — unchanged behaviour.
+    assert default_view["by_type"].get("duplicate") == 1
+    assert "price_variance" not in default_view["by_type"]
+
+    # The resolved view now offers a chip for the resolved-only type.
+    assert resolved_view["by_type"].get("price_variance") == 1
+    assert "duplicate" not in resolved_view["by_type"]
+
+    # `all` counts both.
+    assert all_view["by_type"].get("duplicate") == 1
+    assert all_view["by_type"].get("price_variance") == 1

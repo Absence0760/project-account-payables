@@ -128,11 +128,22 @@ async def list_exceptions(
 
 @router.get("/summary")
 async def exception_summary(
+    status_filter: str | None = Query(None, alias="status"),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    """Counts by status and type for the exception queue. Scoped to the entity."""
+    """Counts by status and type for the exception queue. Scoped to the entity.
+
+    `by_type` honours the SAME `status` filter the list endpoint takes, because
+    the frontend renders it as the type-filter chips beside the list. Computing
+    it `WHERE status = 'open'` unconditionally meant the chips showed open-only
+    tallies while the user was looking at Escalated / Resolved / All (a chip
+    reading `duplicate 12` beside 2 rows), and — worse — a type that exists
+    only among resolved exceptions got NO chip at all, so it could not be
+    filtered to. The status totals above stay unfiltered: they are what the
+    status chips themselves are counting.
+    """
     # By status
     status_rows = await db.execute(
         apply_entity_scope(
@@ -143,12 +154,13 @@ async def exception_summary(
     )
     by_status = {row[0]: row[1] for row in status_rows.all()}
 
-    # By type (open only)
+    # By type — within the caller's current status view (default: open).
+    type_query = select(APException.exception_type, func.count(APException.id))
+    if status_filter != "all":
+        type_query = type_query.where(APException.status == (status_filter or "open"))
     type_rows = await db.execute(
         apply_entity_scope(
-            select(APException.exception_type, func.count(APException.id))
-            .where(APException.status == "open")
-            .group_by(APException.exception_type),
+            type_query.group_by(APException.exception_type),
             APException,
             entity_id,
         )
