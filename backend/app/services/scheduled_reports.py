@@ -299,7 +299,11 @@ async def execute_schedule(
     try:
         payload = await _generate_report_payload(db, schedule)
     except Exception as exc:  # noqa: BLE001
-        err = str(exc)[:500]
+        # Class name only, never `str(exc)`. A DB-level error message echoes
+        # the offending row's values, and `last_run_error` is surfaced to
+        # every AP user — the same reason the email branch below already
+        # stores only the class (PII-out-of-error-responses invariant).
+        err = f"report generation failed: {exc.__class__.__name__}"
         await _mark_failure(db, schedule, err, now)
         return {"status": "failure", "error": err, "next_run_at": schedule.next_run_at}
 
@@ -411,12 +415,36 @@ async def _sweep_tenant(db_name: str, *, now: datetime) -> tuple[int, int]:
         async with factory() as db:
             due = await list_due_schedules(db, now=now)
             for schedule in due:
-                outcome = await execute_schedule(db, schedule, now=now)
+                # One transaction PER SCHEDULE. Sharing one across the tenant's
+                # whole batch meant a DB-level error in schedule N (a statement
+                # timeout, a tenant behind on a migration) aborted the
+                # transaction, so `_mark_failure`'s own write raised
+                # `PendingRollbackError` and unwound the loop — rolling back
+                # the `next_run_at` bumps of every schedule that had ALREADY
+                # generated and EMAILED successfully. Those re-sent their
+                # report on every tick, forever, while the failing one's
+                # retry counter never persisted so the documented 5-strike
+                # auto-disable could never fire. Same shape
+                # `recurring_invoices` and `vendor_rescreen` already adopted.
+                try:
+                    outcome = await execute_schedule(db, schedule, now=now)
+                    await db.commit()
+                except Exception:  # noqa: BLE001
+                    # `execute_schedule` promises not to raise, but its own
+                    # bookkeeping write can when the session is already
+                    # poisoned. Roll back so the NEXT schedule starts clean.
+                    await db.rollback()
+                    logger.warning(
+                        "[scheduled-reports] schedule %s failed in tenant %s",
+                        schedule.id,
+                        db_name,
+                    )
+                    run += 1
+                    failed += 1
+                    continue
                 run += 1
                 if outcome["status"] == "failure":
                     failed += 1
-            if due:
-                await db.commit()
     finally:
         await engine.dispose()
     return run, failed
