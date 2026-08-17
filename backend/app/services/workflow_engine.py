@@ -83,9 +83,18 @@ DEFAULT_STEPS_CONFIG = {
             "number": 2,
             "type": "approval",
             "name": "Manager Approval",
-            "enabled": False,
+            # Approval is ON in the fallback, deliberately. This config is what
+            # `get_or_create_workflow_definition` mints when a tenant has NO
+            # active definition, and with approval disabled `complete_invoice`
+            # falls through every branch to the default `→ done` transition:
+            # the invoice reaches a terminal, immutable state with no approval,
+            # no approval signature, no `invoice.approved` audit row, no
+            # segregation check and no CFO gate. A fallback must fail CLOSED.
+            # `provision_tenant` seeds a real definition so this is a backstop,
+            # not the operative config for any tenant.
+            "enabled": True,
             "config": {
-                "required": False,
+                "required": True,
                 "approver_id": None,
                 "approver_strategy": "manual",
                 "require_segregation": True,

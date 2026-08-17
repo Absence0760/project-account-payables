@@ -8,6 +8,7 @@ partial-failure diagnostics without re-running everything on retry.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import uuid
@@ -139,6 +140,42 @@ async def _drop_postgres_database(db_name: str) -> None:
         await conn.close()
 
 
+# The workflow every freshly provisioned tenant starts on. Distinct from
+# `workflow_engine.DEFAULT_STEPS_CONFIG`, which is the fail-closed BACKSTOP for
+# a tenant that somehow has no active definition — this is the real, fully
+# enabled pipeline a new customer expects to find.
+PROVISIONED_STEPS_CONFIG: dict = {
+    "steps": [
+        {
+            "number": 1,
+            "type": "extraction",
+            "name": "Data Extraction",
+            "enabled": True,
+            "config": {"auto_approve_enabled": False, "auto_approve_threshold": 0.95},
+        },
+        {
+            "number": 2,
+            "type": "approval",
+            "name": "Manager Approval",
+            "enabled": True,
+            "config": {
+                "required": True,
+                "approver_id": None,
+                "approver_strategy": "manual",
+                "require_segregation": True,
+            },
+        },
+        {
+            "number": 3,
+            "type": "erp_export",
+            "name": "ERP Export",
+            "enabled": True,
+            "config": {"erp_system": "default"},
+        },
+    ]
+}
+
+
 async def _create_tenant_tables(db_name: str, organization_id: uuid.UUID | None = None) -> None:
     tenant_url = _make_tenant_url(db_name)
     engine = create_async_engine(tenant_url)
@@ -176,6 +213,33 @@ async def _create_tenant_tables(db_name: str, organization_id: uuid.UUID | None 
                     "WHERE NOT EXISTS (SELECT 1 FROM entities WHERE is_default)"
                 ),
                 {"id": uuid.uuid4(), "org": organization_id},
+            )
+
+            # Every tenant gets a real default workflow. Without one, the
+            # first invoice triggers `get_or_create_workflow_definition`'s
+            # lazy fallback — and a tenant whose workflow came from that
+            # fallback is a tenant nobody configured. Seeding it here means
+            # the shipped pipeline (extraction → approval → ERP export) is
+            # what a fresh tenant actually runs, and the fallback stays a
+            # backstop. Idempotent: `uq_workflow_definitions_one_default`
+            # also guards a second shared default.
+            await conn.execute(
+                text(
+                    "INSERT INTO workflow_definitions "
+                    "(id, organization_id, entity_id, name, description, "
+                    " steps_config, is_active, is_default) "
+                    "SELECT :id, :org, NULL, 'Default Workflow', :descr, "
+                    "       CAST(:steps AS jsonb), true, true "
+                    "WHERE NOT EXISTS ("
+                    "  SELECT 1 FROM workflow_definitions WHERE is_default AND entity_id IS NULL"
+                    ")"
+                ),
+                {
+                    "id": uuid.uuid4(),
+                    "org": organization_id,
+                    "descr": "Full pipeline: extraction \u2192 approval \u2192 ERP export.",
+                    "steps": json.dumps(PROVISIONED_STEPS_CONFIG),
+                },
             )
     await engine.dispose()
     logger.info("Created tenant tables in: %s", db_name)

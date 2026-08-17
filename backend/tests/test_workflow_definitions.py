@@ -342,13 +342,21 @@ async def test_patch_workflow_with_approval_chain_money_fields(realdb):
 
 async def test_get_active_steps_reflects_active_definition(realdb):
     async with realdb.client(key="a", role="ap_clerk") as c:
-        # Auto-creates the default (all steps disabled in DEFAULT_STEPS_CONFIG).
+        # Auto-creates the fallback definition (DEFAULT_STEPS_CONFIG).
         resp = await c.get("/api/workflows/active/steps")
     assert resp.status_code == 200
     body = resp.json()
-    # Default config disables every step type.
+    # The fallback fails CLOSED on approval: with it disabled,
+    # `complete_invoice` falls through every branch to the default
+    # `→ done` transition, so an invoice reaches a terminal, immutable
+    # state with no approval, no approval signature, no `invoice.approved`
+    # audit row, no segregation check and no CFO gate.
+    assert body["approval"] is True
+    # The other two are conveniences, not controls — extraction disabled
+    # just means fields are keyed by hand, and ERP export is optional
+    # (the direct-schedule path exists). They stay off so a fresh tenant
+    # never calls an AI or ERP adapter it didn't configure.
     assert body["extraction"] is False
-    assert body["approval"] is False
     assert body["erp_export"] is False
 
 

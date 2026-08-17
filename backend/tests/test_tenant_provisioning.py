@@ -453,6 +453,26 @@ async def test_provision_tenant_creates_org_user_and_tenant_tables(
                     "WHERE table_name = 'invoices' AND column_name = 'entity_id'"
                 )
                 assert has_col.scalar() == 1
+                # Every tenant is provisioned with a real, ENABLED default
+                # workflow. Without one, the first invoice fell through to
+                # `get_or_create_workflow_definition`'s lazy fallback — whose
+                # approval step used to be disabled, so `complete_invoice`
+                # skipped every branch and transitioned the invoice straight
+                # to the terminal `done`: no approval, no approval signature,
+                # no `invoice.approved` audit row, no segregation check and no
+                # CFO gate, for every self-service tenant.
+                wf_count = await conn.exec_driver_sql(
+                    "SELECT count(*) FROM workflow_definitions "
+                    "WHERE is_default AND is_active AND entity_id IS NULL"
+                )
+                assert wf_count.scalar() == 1
+                approval_enabled = await conn.exec_driver_sql(
+                    "SELECT bool_or((step->>'enabled')::boolean) "
+                    "FROM workflow_definitions, "
+                    "     jsonb_array_elements(steps_config->'steps') AS step "
+                    "WHERE is_default AND step->>'type' = 'approval'"
+                )
+                assert approval_enabled.scalar() is True
                 # Perf: the vendor-scoped history index (bank-change /
                 # stat-anomaly / price-variance lookups in invoice_warnings.py)
                 # and the duplicate-detection functional index must be built by
