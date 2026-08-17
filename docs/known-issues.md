@@ -5,6 +5,11 @@ names the root cause, the evidence, blast radius, and a recommended fix
 approach — this is a staging area for real problems, not a place to let them
 go stale. See root `CLAUDE.md` guard rail 6 (no dangling deferred findings).
 
+**Nothing is currently open.** Every entry below is a `~~struck-through~~`
+resolved stub, kept because the *diagnosis* is the expensive part and is worth
+not re-deriving. Add a new entry above them when a defect is diagnosed but
+can't be fixed in the same session.
+
 **Scope:** *diagnosed defects* only. A deferral that isn't a defect — blocked on
 a credential, an operator step on merged code, or sized-but-unstarted work —
 goes to [followups.md](followups.md). Reasoning behind a deliberate design call
@@ -12,38 +17,47 @@ goes to [decisions.md](decisions.md).
 
 ---
 
-## A non-generatable recurring template silently skips every period
+## ~~A non-generatable recurring template silently skips every period~~ — FIXED 2026-08-16
 
-**Found:** 2026-08-15, in the background-sweep survey behind the
-`payment_erp_sync` / `vendor_rescreen` fixes.
+**Resolved**, both halves, in `services/recurring_invoices.py`.
 
-`services/recurring_invoices.generate_one` returns `None` for a template missing
-`amount` or `vendor_name`, logging a `WARNING` and nothing else. The sweep's
-"defensive" cursor advance then rolls `next_run_on` forward **anyway**
-(`recurring_invoices.py`, the `if template.next_run_on is not None and
-template.next_run_on <= run_on:` block near the end of `_sweep_tenant`).
+*The silent skip.* The defensive cursor advance was always right — a template
+that can't generate must not spin the sweep forever — so what was added is the
+missing other half. A skip now stamps a PII-free marker on
+`RecurringInvoiceTemplate.meta.generation_skip` (`record_generation_skip` —
+reason code, period, consecutive count, timestamp; settings-JSON, **no
+migration**), writes a `recurring_template.generation_skipped` audit row
+correlated on the template's own id, and rides a `last_skip` field on every
+`/api/recurring` response, rendered as a *Not generating* badge on the
+`/recurring` list. Past `MAX_CONSECUTIVE_SKIPS` (3) the sweep **pauses** the
+template and audits that too (`recurring_template.paused`, `actor_id` NULL,
+`source: "sweep"`) — the `services/scheduled_reports` auto-disable shape — so an
+unfixable schedule stops claiming to be live. `clear_generation_skip` resets the
+count on a successful generation, which is what makes `consecutive` mean
+consecutive. The "can it generate" verdict itself moved into one pure
+`not_generatable_reason`, shared by `generate_one`, the sweep and the router's
+`generate-now` 422, so the three can't drift.
 
-The guard itself is right — it exists so a template that can't generate can't
-spin the sweep forever. What's missing is the other half: the template stays
-`active`, `generated_count` never moves, `last_generated_at` never updates, and
-nothing surfaces the skip. Month after month, a subscription invoice that a
-tenant believes is being raised into the approval queue simply isn't, and the
-only trace is a log line. `GET /api/recurring/{id}/history` shows an empty run
-history that is indistinguishable from "nothing due yet".
+The skip count is deliberately **not** a `*_failures` field on `SweepResult`:
+`sweep_health.failure_count` sums those, and a template missing a vendor is a
+tenant configuration problem, not a broken sweep — counting it would leave the
+sweep permanently `degraded` for something no platform operator can fix. The
+auto-pause is what bounds it instead.
 
-**Same file, second issue:** `_sweep_tenant` has no per-template guard and a
-single commit at the end, so one template that raises aborts that tenant's whole
-tick and discards the invoices already generated on it — the identical shape
-fixed in `services/vendor_rescreen` (per-item re-read by id + per-item commit +
-a counted, logged skip) and in `services/payment_erp_sync`. Fix both together.
+*The per-tenant commit.* `_sweep_tenant` now selects template **ids**, then
+re-reads, guards and commits each template on its own — the `vendor_rescreen`
+shape. A template whose generation raises is rolled back, logged by exception
+CLASS only, and counted as `template_failures` (which *does* feed
+`sweep_health`), while its siblings keep the invoices they already generated.
 
-**Recommended fix.** Persist the skip rather than only logging it: stamp a
-reason on the template (a `meta`/settings-JSON marker needs no migration) and
-either pause the template after N consecutive non-generatable periods — the
-shape `services/scheduled_reports` already uses (`last_run_status` /
-`last_run_error` / auto-disable at 5 consecutive failures) — or raise it into
-the notification path AP managers already read. Then apply the per-template
-guard + per-template commit.
+Regression coverage in `backend/tests/test_recurring_invoices.py`: the persisted
+marker + audit row, the auto-pause after N periods (and that a paused template
+is left alone), the marker clearing once the template generates, the
+sibling-survives-a-poison-template proof, the PII-out-of-logs assertion, and the
+API's `last_skip` (present / absent / malformed-`meta` tolerated). Frontend map
+guarded by `frontend/src/lib/types/recurring.test.ts`. Documented in
+`backend/docs/recurring-invoices.md` § A skipped period is never silent and
+§ One template's failure never costs its siblings their work.
 
 ---
 
