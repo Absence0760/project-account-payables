@@ -183,6 +183,10 @@ async def _project_tenant(
                 horizon_days=settings.cashflow_shortfall_alerts_horizon_days,
                 include_pending=True,
                 entity_id=None,  # org-wide — see the module docstring on scope.
+                # Same currency the opening balance above was resolved in —
+                # subtracting raw invoice-currency outflows from it is what
+                # made this sweep email a shortfall that didn't exist.
+                reporting_currency=currency,
             )
     finally:
         await engine.dispose()

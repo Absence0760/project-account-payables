@@ -110,6 +110,9 @@ async def get_cashflow_forecast(
         horizon_days=horizon_days,
         include_pending=params.include_pending,
         entity_id=entity_id,
+        # Outflows in the org's reporting currency — the same currency this
+        # tool reports back and the same one the opening balance is in.
+        reporting_currency=await resolve_org_currency(org_id, control_db),
     )
     buckets = bucket_outflows(rows, granularity=params.granularity, today=today)
 
@@ -156,7 +159,12 @@ async def get_cash_position(
     today = datetime.now(UTC).date()
     horizon_days = _horizon(params.horizon_days)
     rows = await _commitment_rows(
-        db, today=today, horizon_days=horizon_days, include_pending=True, entity_id=entity_id
+        db,
+        today=today,
+        horizon_days=horizon_days,
+        include_pending=True,
+        entity_id=entity_id,
+        reporting_currency=await resolve_org_currency(org_id, control_db),
     )
     outflow_periods = bucket_outflows(rows, granularity=params.granularity, today=today)
 
@@ -218,7 +226,12 @@ async def run_payment_whatif(
     today = datetime.now(UTC).date()
     horizon_days = _horizon(params.horizon_days)
     rows = await _commitment_rows(
-        db, today=today, horizon_days=horizon_days, include_pending=True, entity_id=entity_id
+        db,
+        today=today,
+        horizon_days=horizon_days,
+        include_pending=True,
+        entity_id=entity_id,
+        reporting_currency=await resolve_org_currency(org_id, control_db),
     )
 
     scenarios: list[WhatifScenario] = []
@@ -268,7 +281,12 @@ async def propose_payment_plan(
     today = datetime.now(UTC).date()
     horizon_days = _horizon(params.horizon_days)
     rows = await _commitment_rows(
-        db, today=today, horizon_days=horizon_days, include_pending=True, entity_id=entity_id
+        db,
+        today=today,
+        horizon_days=horizon_days,
+        include_pending=True,
+        entity_id=entity_id,
+        reporting_currency=await resolve_org_currency(org_id, control_db),
     )
 
     currency = await resolve_org_currency(org_id, control_db)

@@ -190,17 +190,30 @@ async def _materialise_rows(
     if schedule.report_type == "cashflow_forecast":
         from app.api.analytics import _commitment_rows
         from app.config import settings
+        from app.database import control_session_factory
+        from app.models.organization import Organization
         from app.services.analytics import bucket_outflows
+        from app.services.currency_conversion import resolve_reporting_currency
 
         # ScheduledReport has no per-schedule granularity/horizon — mirror the
         # API export endpoint's own defaults (`granularity="week"`,
         # `horizon_days` from the same platform default the copilot uses).
         today = date.today()
+        # Same rollup the `vendor_spend` branch above does: outflows are
+        # expressed in the org's reporting currency, never summed raw across
+        # whatever currencies its suppliers happen to bill in.
+        async with control_session_factory() as ctrl_db:
+            org = (
+                await ctrl_db.execute(
+                    select(Organization).where(Organization.id == schedule.organization_id)
+                )
+            ).scalar_one_or_none()
         commitment_rows = await _commitment_rows(
             db,
             today=today,
             horizon_days=settings.cashflow_copilot_default_horizon_days,
             include_pending=True,
+            reporting_currency=resolve_reporting_currency(org.settings if org else None),
         )
         periods = bucket_outflows(commitment_rows, granularity="week", today=today)
         return exporter(periods)
