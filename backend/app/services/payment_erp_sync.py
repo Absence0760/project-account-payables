@@ -1,6 +1,9 @@
 """Sync payment data to the connected ERP after payment execution.
 
-Runs async in a background thread — doesn't block the payment run response.
+Runs as a detached asyncio task on the app's loop — doesn't block the payment
+run response. NOT a background thread with its own loop: the pass reaches
+`transition_invoice`'s notification hook, which uses the main-loop-bound
+`database.control_session_factory` (see `dispatch_payment_sync`).
 Records sync status on each payment for retry capability.
 
 **This module is the only code path that flips an invoice
@@ -50,7 +53,6 @@ its own two documented exits (accept / void).
 
 import asyncio
 import logging
-import threading
 import uuid
 from dataclasses import dataclass
 
@@ -106,31 +108,45 @@ class PaymentSyncResult:
     failed: int = 0
 
 
+#: Strong references to in-flight dispatch tasks. `asyncio` only holds a WEAK
+#: reference to a running task, so a fire-and-forget task with no other referent
+#: can be garbage-collected mid-await and vanish silently.
+_dispatch_tasks: set[asyncio.Task] = set()
+
+
 async def dispatch_payment_sync(
     run_id: uuid.UUID,
     org_id: uuid.UUID,
 ) -> None:
     """Trigger async ERP sync for a completed payment run.
 
-    Fire-and-forget: the thread is detached, so awaiting this only awaits the
-    thread *start*. A caller that needs the outcome must await
-    :func:`_sync_payments` directly (the retry endpoint does).
+    Fire-and-forget: awaiting this only schedules the pass. A caller that needs
+    the outcome must await :func:`_sync_payments` directly (the retry endpoint
+    does).
+
+    **Scheduled on the CALLER's running loop, deliberately not on a new loop in
+    a detached thread.** The pass reaches `transition_invoice`, whose
+    notification hook resolves recipients through the module-level
+    `database.control_session_factory` — an engine bound to the loop that
+    imported it, i.e. the app's main loop. Driving that from a second loop is
+    not merely unsupported, it is actively destructive: asyncpg raises
+    ``RuntimeError: got Future attached to a different loop`` AND can return the
+    half-used connection to the pool the REQUEST path draws from, so unrelated
+    control-plane requests then hang on it.
+
+    That was live: an ERP-less tenant's `invoice_paid` notification failed on
+    every run, and `PATCH /api/organization` intermittently timed out behind it.
+    Running here means the pass, the notification hook and the shared engines
+    are all on one loop, which is the same arrangement the `/sync-erp` retry
+    endpoint has always used by awaiting `_sync_payments` directly.
+
+    This is a pure-`await` I/O pass (DB + HTTP), so it yields to the request
+    loop rather than blocking it — the reason `extraction_dispatch` needs a
+    worker thread does not apply here.
     """
-    thread = threading.Thread(
-        target=_run_in_thread,
-        args=(run_id, org_id),
-        daemon=True,
-    )
-    thread.start()
-
-
-def _run_in_thread(run_id: uuid.UUID, org_id: uuid.UUID) -> None:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(_sync_payments(run_id, org_id))
-    finally:
-        loop.close()
+    task = asyncio.create_task(_sync_payments(run_id, org_id), name=f"payment-sync-{run_id}")
+    _dispatch_tasks.add(task)
+    task.add_done_callback(_dispatch_tasks.discard)
 
 
 async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> PaymentSyncResult:
@@ -175,7 +191,7 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> PaymentSyncRes
         # whole run here instead would strand every payment at
         # `payment_scheduled` with no exception row and no notification — and
         # on the primary dispatch path the returned count is discarded by
-        # `_run_in_thread`, so it would be invisible, which is exactly the
+        # the fire-and-forget dispatch task, so it would be invisible, which is exactly the
         # failure mode this module was rewritten to remove.
         import app.services.erp_adapters.dynamics_365_bc  # noqa: F401
         import app.services.erp_adapters.merge_dev  # noqa: F401
@@ -309,7 +325,7 @@ async def _sync_one_leg(
         # backend/CLAUDE.md § Conventions: every status transition takes the row
         # FOR UPDATE. The window is real, not theoretical: the manual retry
         # endpoint awaits this pass synchronously, so it can overlap the
-        # background thread a webhook just dispatched for the same run. Two
+        # background sync task a webhook just dispatched for the same run. Two
         # unlocked readers would both see `payment_scheduled`, both pass the
         # coverage check, and both transition — a duplicate audit row and a
         # duplicate "invoice paid" notification (which, unlike the outbound

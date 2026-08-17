@@ -38,7 +38,7 @@ def _redirect_database_url_to_slot(realdb, monkeypatch):
     control + tenant engines straight off `settings.database_url` /
     `org.db_name` every call, because in production it also runs detached
     from any request/test event loop (`dispatch_payment_sync` fires it on a
-    background thread with a brand-new loop, so it can't safely reuse a
+    detached asyncio task on the caller's own loop, so it can't safely reuse a
     pooled engine bound to a different loop). That means it can't pick up the
     per-slot control-plane DB the way code that reads
     `control_session_factory` does — the harness has to redirect the global
@@ -428,7 +428,7 @@ async def _open_erp_reconciliation_rows(realdb, key: str, invoice_id: uuid.UUID)
 
 async def test_failed_leg_opens_an_erp_reconciliation_exception(realdb):
     """The money moved; the invoice didn't advance. Before this, the only trace
-    was a WARNING line and a counter that died with the background thread — no
+    was a WARNING line and a counter that died with the fire-and-forget task — no
     row, no notification, nothing an AP manager could act on."""
     await _set_org_erp(realdb, "a", {"type": "mock", "integration_method": "direct"})
     run_id, invoice_id = await _seed_run(realdb, "a")
@@ -468,7 +468,7 @@ async def test_unsupported_erp_adapter_strands_visibly_not_silently(realdb):
 
     Resolving it as a pre-flight before the tenant session instead would abort
     the run with a single count — and on the primary dispatch path
-    (`dispatch_payment_sync` → `_run_in_thread`) that count is discarded, so
+    (`dispatch_payment_sync`'s detached task) that count is discarded, so
     every payment in the run would sit at `payment_scheduled` forever with no
     exception row, no notification, and no sweep to notice. That is precisely
     the invisibility this module was rewritten to remove.
@@ -670,7 +670,7 @@ async def test_retry_endpoint_is_idempotent(realdb):
 
 async def test_two_concurrent_passes_transition_the_invoice_once(realdb):
     """The retry endpoint awaits the pass synchronously, so a manual retry can
-    overlap the background thread a webhook just dispatched for the same run.
+    overlap the background sync task a webhook just dispatched for the same run.
 
     Without a row lock both passes read `payment_scheduled`, both clear the
     coverage check, and both call `transition_invoice` — a duplicate
@@ -840,3 +840,93 @@ async def test_retry_endpoint_404s_for_another_tenants_run(realdb):
     async with realdb.client(key="b", role="admin") as c:
         resp = await c.post(f"/api/payments/runs/{run_id}/sync-erp")
     assert resp.status_code == 404, resp.text
+
+
+# ---------------------------------------------------------------------------
+# The dispatch must stay on the caller's loop
+# ---------------------------------------------------------------------------
+
+
+async def test_dispatch_runs_on_the_callers_loop_not_a_new_one():
+    """`dispatch_payment_sync` must schedule the pass on the loop it is called
+    from, never on a fresh loop in a detached thread.
+
+    This is not a style preference. The pass reaches `transition_invoice`, whose
+    notification hook resolves recipients through the module-level
+    `database.control_session_factory` — an engine bound to the app's main loop.
+    Driving that from a second loop raises
+    `RuntimeError: got Future attached to a different loop` AND can hand the
+    half-used connection back to the pool the request path draws from, so
+    unrelated control-plane requests hang behind it. That was live: an ERP-less
+    tenant's `invoice_paid` notification failed on every run and
+    `PATCH /api/organization` intermittently timed out.
+
+    Asserting the loop identity is what makes the regression impossible to
+    reintroduce by "restoring" the thread for symmetry with
+    `extraction_dispatch`.
+    """
+    import asyncio
+
+    from app.services import payment_erp_sync
+
+    seen: dict[str, object] = {}
+    started = asyncio.Event()
+
+    async def _fake_sync(run_id, org_id):
+        seen["loop"] = asyncio.get_running_loop()
+        seen["args"] = (run_id, org_id)
+        started.set()
+        return payment_erp_sync.PaymentSyncResult()
+
+    original = payment_erp_sync._sync_payments
+    payment_erp_sync._sync_payments = _fake_sync
+    try:
+        run_id, org_id = uuid.uuid4(), uuid.uuid4()
+        await payment_erp_sync.dispatch_payment_sync(run_id, org_id)
+        await asyncio.wait_for(started.wait(), timeout=5)
+    finally:
+        payment_erp_sync._sync_payments = original
+
+    assert seen["args"] == (run_id, org_id)
+    assert seen["loop"] is asyncio.get_running_loop(), (
+        "the sync pass ran on a different event loop than its caller — the "
+        "shared control-plane engine cannot be used across loops"
+    )
+
+
+async def test_dispatch_keeps_a_strong_reference_to_the_task():
+    """A fire-and-forget `create_task` with no referent can be garbage-collected
+    mid-await, so the pass would vanish with no error and the invoice would
+    strand exactly as it did before. The module keeps its own set."""
+    import asyncio
+
+    from app.services import payment_erp_sync
+
+    release = asyncio.Event()
+    entered = asyncio.Event()
+
+    async def _blocking_sync(run_id, org_id):
+        entered.set()
+        await release.wait()
+        return payment_erp_sync.PaymentSyncResult()
+
+    original = payment_erp_sync._sync_payments
+    payment_erp_sync._sync_payments = _blocking_sync
+    try:
+        await payment_erp_sync.dispatch_payment_sync(uuid.uuid4(), uuid.uuid4())
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        assert len(payment_erp_sync._dispatch_tasks) == 1, (
+            "in-flight task is not strongly referenced — asyncio holds only a "
+            "weak reference and may collect it mid-await"
+        )
+        release.set()
+        # Let the done-callback run so the set drains rather than leaking.
+        for _ in range(10):
+            await asyncio.sleep(0)
+            if not payment_erp_sync._dispatch_tasks:
+                break
+    finally:
+        payment_erp_sync._sync_payments = original
+        release.set()
+
+    assert payment_erp_sync._dispatch_tasks == set(), "completed task was not discarded"

@@ -848,12 +848,13 @@ remains the local default.
 
 ### ERP Payment Sync
 
-After a payment run executes, the system syncs payment data to the connected ERP in a background thread:
+After a payment run executes, the system syncs payment data to the connected ERP
+on a detached asyncio task:
 
 ```
 Execute Payment Run (response sent immediately)
     |
-    └── Background thread:
+    └── Background task (same event loop):
         ├── For each COMPLETED payment in the run:
         │   - Push payment details to ERP (amount, method, reference, date)
         │   - Update invoice status: payment_scheduled → paid
@@ -879,7 +880,16 @@ Execute Payment Run (response sent immediately)
 - **A completed payment whose settlement doesn't cover the invoice is held
   here**, not marked `paid`, and counted separately in the sync's log line.
 - Sync runs async — **doesn't block** the payment run response
-- Uses the same background thread pattern as extraction dispatch (fresh DB engines per thread)
+- Runs as an `asyncio` task on the app's own loop — **deliberately NOT** the
+  worker-thread pattern `extraction_dispatch` uses. The pass reaches
+  `transition_invoice`, whose notification hook resolves recipients through the
+  module-level `database.control_session_factory`, an engine bound to the main
+  loop. Driving that from a second loop raises `RuntimeError: got Future
+  attached to a different loop` and can return the half-used connection to the
+  pool the *request* path draws from, so unrelated control-plane requests hang
+  behind it. This is a pure-`await` I/O pass, so it yields to the request loop
+  rather than blocking it — the reason extraction needs a thread does not apply.
+  Guarded by `test_dispatch_runs_on_the_callers_loop_not_a_new_one`.
 
 **Files:** `backend/app/services/payment_erp_sync.py`
 
@@ -917,7 +927,7 @@ moved, but the invoice stays `payment_scheduled`, the ERP is never told, and the
 invoice's aging and 1099 YTD totals are wrong from then on.
 
 That used to be invisible: a `logger.warning` carrying an exception class name
-and a per-run `failed` counter that died with the background thread. No
+and a per-run `failed` counter that died with the fire-and-forget task. No
 exception row, no notification, no persisted marker.
 
 Two things changed:
@@ -956,7 +966,7 @@ is why the two counters are separate rather than one being redefined.)
 
 **The invoice is taken `FOR UPDATE` before the status check**, like every other
 status transition in the codebase. The retry endpoint awaits the pass
-synchronously, so a manual retry can overlap the background thread a webhook
+synchronously, so a manual retry can overlap the background task a webhook
 just dispatched for the same run; two unlocked readers would both see
 `payment_scheduled`, both clear the coverage check, and both transition — a
 duplicate audit row and a duplicate "invoice paid" notification, which (unlike
