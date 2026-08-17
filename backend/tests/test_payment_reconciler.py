@@ -41,6 +41,15 @@ def _payment(*, status="submitted", submitted_at=None, provider_payment_id="px_1
         method="ach",
         amount=Decimal("1000.00"),
         payment_run_id=uuid.uuid4(),
+        # The settlement leg the backstop now runs on a completion: it looks
+        # the invoice up to verify what the rail says it settled against what
+        # AP authorized, and puts the verdict on the audit row.
+        invoice_id=uuid.uuid4(),
+        settled_amount=None,
+        settled_currency=None,
+        settled_amount_unstorable=False,
+        source_amount=None,
+        source_currency=None,
     )
 
 

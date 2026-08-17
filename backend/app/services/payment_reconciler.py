@@ -27,10 +27,15 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import settings
 from app.database import _make_tenant_url, control_session_factory
+from app.models.invoice import Invoice
 from app.models.organization import Organization
 from app.models.payment import Payment
 from app.services.payment_adapters import PaymentStatus, get_payment_adapter
-from app.services.payment_settlement import persistable_settled_amount
+from app.services.payment_settlement import SettlementVerification
+from app.services.payment_settlement_record import (
+    open_settlement_mismatch_exception,
+    record_settlement,
+)
 from app.services.sweep_health import SWEEP_PAYMENT_RECONCILER, run_sweep_loop
 
 logger = logging.getLogger(__name__)
@@ -45,8 +50,15 @@ class ReconcileResult:
     failures: int = 0  # tenants we couldn't reach
 
 
-async def _settle_from_poll(*, payment, adapter) -> None:
-    """Record what the processor settled for a payment THIS sweep completed.
+async def _settle_from_poll(
+    db,
+    *,
+    payment,
+    adapter,
+    org: Organization,
+) -> SettlementVerification:
+    """Verify + record what the processor settled for a payment THIS sweep
+    completed, and flag a discrepancy.
 
     ``get_payment_status`` returns a bare ``PaymentStatus`` by design, so a
     payment resolved by the backstop reached ``completed`` with no settled
@@ -55,36 +67,42 @@ async def _settle_from_poll(*, payment, adapter) -> None:
     case the backstop exists for (the webhook never arrived) was the case with
     the least evidence.
 
+    This used to persist the figure and stop there — no verdict, no audit
+    block, no exception — so a rail reporting a 10x overpayment settled
+    silently (over-settlement is `covered` by design) and a short settlement
+    stranded the invoice at `payment_scheduled` with nothing in the queue to
+    explain it. And because `payment_webhook` refuses an already-terminal
+    payment, a late webhook could never supply the missing verdict.
+
+    Now it runs the SAME `record_settlement` + `open_settlement_mismatch_exception`
+    pair the webhook does, so the two paths a payment can reach `completed` on
+    cannot disagree about what "verified" means.
+
     Best-effort on every axis, like every other optional-capability call: an
     adapter without ``fetch_settlement`` reports ``available=False``, and any
-    failure leaves the columns NULL — exactly where they already were. A
-    settlement fetch must never halt the sweep.
+    failure leaves the verdict `unverified` rather than halting the sweep.
     """
-    if not getattr(payment, "provider_payment_id", None):
-        return
-    try:
-        report = await adapter.fetch_settlement(payment.provider_payment_id)
-    except Exception as exc:  # noqa: BLE001 - best-effort by contract
-        # Class only, never the message — a processor SDK error string can
-        # embed partial account data (PII-out-of-logs invariant).
-        logger.info(
-            "[payment-reconciler] settlement fetch raised on %s: %s",
-            payment.id,
-            exc.__class__.__name__,
+    invoice = (
+        await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
+    ).scalar_one_or_none()
+    verification = await record_settlement(
+        db,
+        payment=payment,
+        adapter=adapter,
+        invoice=invoice,
+    )
+    if verification.is_discrepancy:
+        # Same payment-blocking `fraud_flag` the webhook raises — the
+        # electronic equivalent of Positive Pay's altered cheque. Without it
+        # a divergent settlement had no queue entry at all on this path.
+        await open_settlement_mismatch_exception(
+            db,
+            payment=payment,
+            invoice=invoice,
+            org=org,
+            verification=verification,
         )
-        return
-    if report.available and report.amount is not None:
-        # Same splitter the webhook uses, so the two cannot disagree about what
-        # `payments.settled_amount` can hold. A figure too wide for its
-        # NUMERIC(15, 2) is recorded as the flag instead of raising at the
-        # flush — here that would abort the sweep's whole tick, not just this
-        # payment. See `payment_settlement.persistable_settled_amount`.
-        storable, unstorable = persistable_settled_amount(report.amount)
-        if storable is not None:
-            payment.settled_amount = storable
-        if unstorable:
-            payment.settled_amount_unstorable = True
-        payment.settled_currency = report.currency
+    return verification
 
 
 async def _audit_reconcile_transition(
@@ -94,6 +112,7 @@ async def _audit_reconcile_transition(
     payment: Payment,
     previous_status: str | None,
     source: str,
+    settlement: SettlementVerification | None = None,
 ) -> None:
     """Append-only audit row for a reconciler-driven terminal transition.
 
@@ -123,6 +142,12 @@ async def _audit_reconcile_transition(
             "reference": payment.reference,
             "source": source,
             "payment_run_id": str(payment.payment_run_id) if payment.payment_run_id else None,
+            # The settlement verdict rides the SAME append-only row that
+            # records the money moving, exactly as it does on the webhook
+            # path — written on every completion (matched, mismatched and
+            # unverified alike), so a rail that reports no amount is a
+            # visible blind spot rather than a silent one.
+            **({"settlement": settlement.as_details()} if settlement else {}),
         },
     )
 
@@ -291,8 +316,11 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
                     payment.status = upstream.value
                     payment.completed_at = now
                     resolved += 1
+                    settlement: SettlementVerification | None = None
                     if payment.status == "completed":
-                        await _settle_from_poll(payment=payment, adapter=adapter)
+                        settlement = await _settle_from_poll(
+                            db, payment=payment, adapter=adapter, org=org
+                        )
                     if payment.status == "completed" and payment.payment_run_id:
                         runs_to_sync.add(payment.payment_run_id)
                     await _audit_reconcile_transition(
@@ -301,6 +329,7 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
                         payment=payment,
                         previous_status=previous_status,
                         source="reconciler_poll",
+                        settlement=settlement,
                     )
 
             if polled or aged_out:

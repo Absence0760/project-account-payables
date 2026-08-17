@@ -257,6 +257,9 @@ async def test_reconciler_records_the_settled_figure_when_it_settles_a_payment()
         correlation_id=uuid.uuid4(),
         invoice_id=uuid.uuid4(),
         method="ach",
+        source_amount=None,
+        source_currency=None,
+        settled_amount_unstorable=False,
     )
     adapter = MagicMock()
     adapter.provider_name = "mock"
@@ -265,12 +268,42 @@ async def test_reconciler_records_the_settled_figure_when_it_settles_a_payment()
         return_value=SettlementReport(available=True, amount=Decimal("250.00"), currency="USD")
     )
 
-    await payment_reconciler._settle_from_poll(  # type: ignore[attr-defined]
-        payment=payment, adapter=adapter
+    invoice = SimpleNamespace(
+        id=payment.invoice_id, currency="USD", amount=Decimal("500.00"), invoice_number="INV-1"
+    )
+    inv_res = MagicMock()
+    inv_res.scalar_one_or_none = MagicMock(return_value=invoice)
+    # First query is the invoice lookup; everything after belongs to the
+    # fraud_flag the mismatch now opens (its dedupe count, then whatever
+    # `create_exception` does). A generic result keeps this test about the
+    # settlement verdict rather than the exception service's own shape.
+    generic = MagicMock()
+    generic.scalar = MagicMock(return_value=0)
+    generic.scalar_one_or_none = MagicMock(return_value=None)
+    generic.scalars = MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+    calls = {"n": 0}
+
+    async def _execute(*_a, **_kw):
+        calls["n"] += 1
+        return inv_res if calls["n"] == 1 else generic
+
+    db = AsyncMock()
+    db.execute = _execute
+    db.add = MagicMock()
+    org = SimpleNamespace(id=uuid.uuid4(), settings={})
+
+    verification = await payment_reconciler._settle_from_poll(  # type: ignore[attr-defined]
+        db, payment=payment, adapter=adapter, org=org
     )
 
     assert payment.settled_amount == Decimal("250.00")
     assert payment.settled_currency == "USD"
+    # The backstop now returns the VERDICT too — a $250 settlement against a
+    # $500 authorization is a discrepancy, and the caller puts this on the
+    # append-only audit row. It used to persist the figure and stop, so a
+    # divergent settlement on this path had no verdict and no queue entry.
+    assert verification.is_discrepancy
+    assert verification.outcome == "amount_mismatch"
 
 
 @pytest.mark.asyncio
@@ -282,13 +315,100 @@ async def test_reconciler_settlement_fetch_failure_leaves_the_columns_null():
         provider_payment_id="px_1",
         settled_amount=None,
         settled_currency=None,
+        settled_amount_unstorable=False,
+        amount=Decimal("500.00"),
+        source_amount=None,
+        source_currency=None,
+        invoice_id=uuid.uuid4(),
     )
     adapter = MagicMock()
     adapter.provider_name = "mock"
     adapter.fetch_settlement = AsyncMock(side_effect=RuntimeError("processor down"))
 
-    await payment_reconciler._settle_from_poll(  # type: ignore[attr-defined]
-        payment=payment, adapter=adapter
+    invoice = SimpleNamespace(id=payment.invoice_id, currency="USD", invoice_number="INV-1")
+    inv_res = MagicMock()
+    inv_res.scalar_one_or_none = MagicMock(return_value=invoice)
+    db = AsyncMock()
+    db.execute = AsyncMock(side_effect=[inv_res])
+    db.add = MagicMock()
+    org = SimpleNamespace(id=uuid.uuid4(), settings={})
+
+    verification = await payment_reconciler._settle_from_poll(  # type: ignore[attr-defined]
+        db, payment=payment, adapter=adapter, org=org
     )
 
     assert payment.settled_amount is None
+    # A fetch failure leaves the verdict `unverified`, NOT a discrepancy — we
+    # learned nothing, and a blind spot must not masquerade as a mismatch.
+    assert verification.outcome == "unverified"
+    assert not verification.is_discrepancy
+
+
+@pytest.mark.asyncio
+async def test_reconciler_flags_a_settlement_discrepancy_it_resolved_itself():
+    """The backstop must open the same payment-blocking `fraud_flag` the
+    webhook opens.
+
+    It used to persist the settled figure and stop: no verdict on the audit
+    row, no exception. Over-settlement is `covered` by design, so a rail
+    reporting 10x what AP authorized flowed straight through
+    `settlement_coverage` and `payment_erp_sync` marked the invoice `paid` —
+    with nothing anywhere saying the amount was wrong. And since
+    `payment_webhook` refuses an already-terminal payment, a late webhook
+    could never supply the missing verdict.
+    """
+    from app.services import payment_reconciler
+
+    payment = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider_payment_id="px_over",
+        payment_run_id=uuid.uuid4(),
+        status="completed",
+        completed_at=None,
+        settled_amount=None,
+        settled_currency=None,
+        settled_amount_unstorable=False,
+        submitted_at=None,
+        amount=Decimal("500.00"),
+        source_amount=None,
+        source_currency=None,
+        correlation_id=uuid.uuid4(),
+        invoice_id=uuid.uuid4(),
+        method="ach",
+    )
+    adapter = MagicMock()
+    adapter.provider_name = "mock"
+    adapter.fetch_settlement = AsyncMock(
+        return_value=SettlementReport(available=True, amount=Decimal("5000.00"), currency="USD")
+    )
+
+    invoice = SimpleNamespace(id=payment.invoice_id, currency="USD", invoice_number="INV-OVER")
+    inv_res = MagicMock()
+    inv_res.scalar_one_or_none = MagicMock(return_value=invoice)
+    generic = MagicMock()
+    generic.scalar = MagicMock(return_value=0)
+    generic.scalar_one_or_none = MagicMock(return_value=None)
+    generic.scalars = MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+    calls = {"n": 0}
+
+    async def _execute(*_a, **_kw):
+        calls["n"] += 1
+        return inv_res if calls["n"] == 1 else generic
+
+    db = AsyncMock()
+    db.execute = _execute
+    added: list = []
+    db.add = MagicMock(side_effect=added.append)
+    org = SimpleNamespace(id=uuid.uuid4(), settings={})
+
+    verification = await payment_reconciler._settle_from_poll(  # type: ignore[attr-defined]
+        db, payment=payment, adapter=adapter, org=org
+    )
+
+    assert verification.outcome == "amount_mismatch"
+    assert verification.is_discrepancy
+    # A 10x over-settlement is still persisted — money moved, and refusing to
+    # record that does not un-move it. The control is the blocking exception.
+    assert payment.settled_amount == Decimal("5000.00")
+    flags = [row for row in added if getattr(row, "exception_type", None) == "fraud_flag"]
+    assert len(flags) == 1, f"expected one fraud_flag, got {[type(r).__name__ for r in added]}"
