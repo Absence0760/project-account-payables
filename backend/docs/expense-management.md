@@ -222,6 +222,36 @@ the working without re-deriving it. `mileage_miles` is settable from the web UI
 (`ExpenseModal`) as well as the API — before this it was API-only, which is the
 other reason the rate could never bite.
 
+#### Digit bounds — an over-range amount is a 422, not a 500
+
+Every request-side `Decimal` in `app/schemas/expense.py` carries `max_digits` /
+`decimal_places` matching the `Numeric(precision, scale)` of the column it lands
+in: `Expense.amount` and the four `ExpensePolicy` money thresholds are
+`Numeric(15, 2)`, `mileage_miles` is `Numeric(10, 2)`, `mileage_rate` is
+`Numeric(10, 4)`.
+
+Unbounded, `POST /api/expenses {"amount": "99999999999999999999.00"}` passed
+validation and blew up at the DB flush as an unhandled `NumericValueOutOfRangeError`
+— **a 500 for input the caller got wrong.** The same shape was live across the
+rest of the request surface (`POST /api/invoices` among them); the whole class is
+fixed and guarded by `backend/tests/test_schema_decimal_bounds.py`, which walks
+the live FastAPI route tree and fails when a new `Decimal` request field arrives
+without a bound or a written-down exemption.
+
+Two deliberate calls:
+
+- **`decimal_places` rejects rather than rounds.** Postgres silently rounds
+  `42.555` into a `Numeric(15, 2)`; the schema now answers 422. Quietly rounding
+  a submitted money value is a data-integrity defect of its own ("money is
+  exact"), and the constraint is not optional anyway — `max_digits` counts
+  *total* digits, so bounding only that would reject `0.1234567890123456`, which
+  the column accepts. The two are only correct together.
+- **`ge=0` only where a negative is meaningless.** The policy thresholds, the
+  per-diem, the mileage rate and `estimated_amount` are non-negative by
+  construction. `CorporateCardTransaction.amount` deliberately is **not** — a
+  card refund / merchant credit is a real negative line on the feed, and
+  rejecting it would drop genuine transactions.
+
 #### Threshold currency — what a policy's numbers mean
 
 A policy's money thresholds (`category_limit`, `per_diem_amount`,
@@ -410,6 +440,14 @@ but not mutate), tenant isolation, audit rows, exact `Numeric` money
 round-trips, and an explicit five-table existence check (create_all parity for
 the circular FK). The RBAC coverage gate (`tests/test_rbac.py`) confirms every
 expense route carries an auth dependency.
+
+`backend/tests/test_schema_decimal_bounds.py` — the digit-bound guard (see
+§ Digit bounds). Not expense-specific: it derives every `Decimal` request field
+from the live FastAPI route tree and requires each to be bounded to its column
+or explicitly exempted with a reason, so the class of bug filed against these
+schemas can't reappear here or anywhere else. It also pins the originally
+reported case (`ExpenseCreate.amount` at 20 integer digits → `ValidationError`,
+not a DB `DataError`).
 
 `backend/tests/test_expense_reporting.py` (WF2) — the report-summary math
 (grand total + per-category/per-status rollups, the empty-report and 404 cases,

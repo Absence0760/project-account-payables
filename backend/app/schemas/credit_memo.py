@@ -10,7 +10,8 @@ from app.schemas.money import MoneyAmount
 class CreditMemoCreate(BaseModel):
     memo_number: str = Field(..., max_length=100)
     vendor_id: str
-    amount: Decimal = Field(..., gt=0)
+    # Digits match `credit_memos.amount` Numeric(15, 2).
+    amount: Decimal = Field(..., gt=0, max_digits=15, decimal_places=2)
     currency: str = Field(default="USD", max_length=3)
     issued_date: date | None = None
     reason: str | None = None

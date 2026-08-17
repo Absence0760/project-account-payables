@@ -35,7 +35,8 @@ class PresentedItemIn(BaseModel):
     processing. Only a check number + amount — never an account number."""
 
     check_number: str | None = Field(default=None, max_length=100)
-    amount: OptionalMoneyAmount = None
+    # A cheque amount — the same quantity as `payments.amount` Numeric(15, 2).
+    amount: OptionalMoneyAmount = Field(default=None, max_digits=15, decimal_places=2)
 
 
 class ProcessReturnRequest(BaseModel):

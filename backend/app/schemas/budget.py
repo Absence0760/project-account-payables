@@ -26,7 +26,9 @@ class BudgetBase(BaseModel):
     period: str | None = Field(default=None, max_length=20)
     period_start: date | None = None
     period_end: date | None = None
-    amount: Decimal
+    # Digits match `budgets.amount` Numeric(15, 2). An allocation is never
+    # negative — `0` already expresses a frozen budget.
+    amount: Decimal = Field(ge=0, max_digits=15, decimal_places=2)
     currency: str = Field(default="USD", max_length=3)
     notes: str | None = None
 
@@ -44,7 +46,7 @@ class BudgetUpdate(BaseModel):
     period: str | None = Field(default=None, max_length=20)
     period_start: date | None = None
     period_end: date | None = None
-    amount: Decimal | None = None
+    amount: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     currency: str | None = Field(default=None, max_length=3)
     notes: str | None = None
 

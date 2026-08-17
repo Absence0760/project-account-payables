@@ -26,7 +26,8 @@ class StatementLineInput(BaseModel):
 
     invoice_number: str | None = Field(default=None, max_length=100)
     invoice_date: date | None = None
-    amount: MoneyAmount | None = Field(default=None, ge=0)
+    # Digits match `vendor_statement_recon_lines.statement_amount` Numeric(18, 2).
+    amount: MoneyAmount | None = Field(default=None, ge=0, max_digits=18, decimal_places=2)
     status: str | None = Field(default=None, max_length=40)
 
 

@@ -18,8 +18,9 @@ class InspectionCreate(BaseModel):
     result: str = "pass"
     inspected_date: date | None = None
     inspector: str | None = Field(default=None, max_length=255)
-    accepted_quantity: Decimal | None = Field(default=None, ge=0)
-    rejected_quantity: Decimal | None = Field(default=None, ge=0)
+    # Digits match `quality_inspections` Numeric(12, 4).
+    accepted_quantity: Decimal | None = Field(default=None, ge=0, max_digits=12, decimal_places=4)
+    rejected_quantity: Decimal | None = Field(default=None, ge=0, max_digits=12, decimal_places=4)
     deviation_notes: str | None = None
 
 

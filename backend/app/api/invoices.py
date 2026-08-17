@@ -9,7 +9,7 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
 from sqlalchemy import update as sa_update
@@ -626,15 +626,24 @@ class _LineItemInput(BaseModel):
     The handler used to accept ``list[dict]``, which let any payload
     through and threw a 500 on shape mismatches (with a full traceback
     in debug mode). Defining the shape moves shape errors to a clean 422.
+
+    Digits match ``invoice_line_items`` — ``quantity`` ``Numeric(12, 4)``, the
+    money columns ``Numeric(15, 2)``. Unbounded, an over-range value cleared
+    validation and raised ``NumericValueOutOfRangeError`` at the flush: the same
+    500-that-should-be-a-422 the schema modules carried. Deliberately NOT
+    ``ge=0`` — a line can legitimately be a credit or a rebate.
+    ``tests/test_schema_decimal_bounds.py`` guards this alongside the
+    ``app/schemas/`` models; it walks request bodies wherever they are declared,
+    which is what surfaced this one.
     """
 
     line_number: int | None = None
     item_code: str | None = None
     description: str | None = None
-    quantity: Decimal | None = None
-    unit_price: Decimal | None = None
-    tax: Decimal | None = None
-    total: Decimal | None = None
+    quantity: Decimal | None = Field(default=None, max_digits=12, decimal_places=4)
+    unit_price: Decimal | None = Field(default=None, max_digits=15, decimal_places=2)
+    tax: Decimal | None = Field(default=None, max_digits=15, decimal_places=2)
+    total: Decimal | None = Field(default=None, max_digits=15, decimal_places=2)
     gl_account: str | None = None
 
 

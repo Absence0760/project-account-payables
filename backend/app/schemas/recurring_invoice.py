@@ -45,7 +45,7 @@ class RecurringTemplateCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     vendor_id: str | None = None
     description: str | None = Field(default=None, max_length=500)
-    amount: MoneyAmount | None = Field(default=None, ge=0)
+    amount: MoneyAmount | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     currency: str = Field(default="USD", min_length=3, max_length=3)
     gl_account: str | None = Field(default=None, max_length=100)
     cost_center: str | None = Field(default=None, max_length=100)
@@ -57,7 +57,9 @@ class RecurringTemplateCreate(BaseModel):
     day_of_period: int = Field(default=1, ge=1, le=28)
     start_date: date
     end_date: date | None = None
-    variance_tolerance_pct: PercentNumber | None = Field(default=None, ge=0, le=100)
+    variance_tolerance_pct: PercentNumber | None = Field(
+        default=None, ge=0, le=100, max_digits=6, decimal_places=2
+    )
     notes: str | None = Field(default=None, max_length=500)
 
 
@@ -68,7 +70,7 @@ class RecurringTemplateUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     vendor_id: str | None = None
     description: str | None = Field(default=None, max_length=500)
-    amount: MoneyAmount | None = Field(default=None, ge=0)
+    amount: MoneyAmount | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     currency: str | None = Field(default=None, min_length=3, max_length=3)
     gl_account: str | None = Field(default=None, max_length=100)
     cost_center: str | None = Field(default=None, max_length=100)
@@ -80,7 +82,9 @@ class RecurringTemplateUpdate(BaseModel):
     day_of_period: int | None = Field(default=None, ge=1, le=28)
     start_date: date | None = None
     end_date: date | None = None
-    variance_tolerance_pct: PercentNumber | None = Field(default=None, ge=0, le=100)
+    variance_tolerance_pct: PercentNumber | None = Field(
+        default=None, ge=0, le=100, max_digits=6, decimal_places=2
+    )
     notes: str | None = Field(default=None, max_length=500)
 
 

@@ -13,9 +13,12 @@ class ContractLineItemBase(BaseModel):
     line_number: int | None = None
     item_code: str | None = Field(default=None, max_length=100)
     description: str | None = None
-    quantity: Decimal | None = None
-    unit_price: Decimal | None = None
-    total: Decimal | None = None
+    # Digits match `contract_line_items` — quantity Numeric(12, 4), the money
+    # columns Numeric(15, 2). Deliberately NOT `ge=0`: a contract line can
+    # carry a credit / rebate, so a negative is real data, not bad input.
+    quantity: Decimal | None = Field(default=None, max_digits=12, decimal_places=4)
+    unit_price: Decimal | None = Field(default=None, max_digits=15, decimal_places=2)
+    total: Decimal | None = Field(default=None, max_digits=15, decimal_places=2)
     gl_account: str | None = Field(default=None, max_length=100)
 
 
@@ -29,8 +32,10 @@ class ContractBase(BaseModel):
     description: str | None = None
     contract_type: ContractType = ContractType.purchase
     currency: str = Field(default="USD", max_length=3)
-    total_value: Decimal | None = None
-    spend_limit: Decimal | None = None
+    # Digits match `contracts.total_value` / `.spend_limit` Numeric(15, 2). A
+    # contract value / spend cap is never negative.
+    total_value: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    spend_limit: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     not_to_exceed: bool = False
     start_date: date | None = None
     end_date: date | None = None
@@ -58,8 +63,8 @@ class ContractUpdate(BaseModel):
     contract_type: ContractType | None = None
     vendor_id: str | None = None
     currency: str | None = Field(default=None, max_length=3)
-    total_value: Decimal | None = None
-    spend_limit: Decimal | None = None
+    total_value: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    spend_limit: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     not_to_exceed: bool | None = None
     start_date: date | None = None
     end_date: date | None = None
@@ -76,8 +81,8 @@ class ContractRenew(BaseModel):
     """Extend a contract to a new end date (and optionally bump value)."""
 
     end_date: date
-    total_value: Decimal | None = None
-    spend_limit: Decimal | None = None
+    total_value: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    spend_limit: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
 
 
 class ContractCreatePORequest(BaseModel):
@@ -88,7 +93,7 @@ class ContractCreatePORequest(BaseModel):
     back to ``total_value``)."""
 
     po_number: str | None = Field(default=None, max_length=100)
-    total: Decimal | None = None
+    total: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
 
 
 class ContractSpendSummary(BaseModel):

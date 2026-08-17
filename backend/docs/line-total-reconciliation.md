@@ -104,6 +104,16 @@ other rules).
   (`_canonical_lines` normalises Postgres' `Decimal("1.0000")` against the
   request's `Decimal("1")`), so re-saving an identical payload writes no row and
   the trail doesn't fill with no-ops.
+- **Every posted `Decimal` is digit-bounded to its column** — `_LineItemInput`
+  declares `quantity` `Numeric(12, 4)` and `unit_price` / `tax` / `total`
+  `Numeric(15, 2)`, matching `invoice_line_items`. Unbounded, an over-range line
+  cleared validation and raised `NumericValueOutOfRangeError` at the flush (a
+  500 for bad caller input); an over-scale one was silently rounded. Both are
+  now a clean 422. Deliberately **not** `ge=0` — a line can legitimately be a
+  credit or a rebate. Guarded by `tests/test_schema_decimal_bounds.py`, which
+  walks request bodies wherever they are declared — this model lives in
+  `app/api/invoices.py`, not `app/schemas/`, and a scan scoped to the schema
+  package would have missed it.
 - Re-runs `refresh_warnings`, so PO-match variance, price variance and the
   reconciliation are all re-derived against the **new** lines.
 - Response reports the outcome so the editor sees it immediately:

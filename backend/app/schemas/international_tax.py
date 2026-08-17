@@ -18,7 +18,7 @@ from app.schemas.money import MoneyAmount, OptionalMoneyAmount
 
 # --- VAT ---------------------------------------------------------------------
 class VATRequest(BaseModel):
-    net_amount: Decimal = Field(..., ge=0)
+    net_amount: Decimal = Field(..., ge=0, max_digits=15, decimal_places=2)
     supplier_country: str = Field(..., min_length=2, max_length=2)
     buyer_country: str | None = Field(None, min_length=2, max_length=2)
     buyer_vat_registered: bool = False
@@ -40,11 +40,12 @@ class VATResponse(BaseModel):
 
 # --- GST ---------------------------------------------------------------------
 class GSTRequest(BaseModel):
-    net_amount: Decimal = Field(..., ge=0)
+    net_amount: Decimal = Field(..., ge=0, max_digits=15, decimal_places=2)
     country: str = Field(..., min_length=2, max_length=2)
     rate_category: str | None = None
     interstate: bool = False  # India IGST vs CGST/SGST
-    province_rate: Decimal | None = Field(None, ge=0)  # Canada provincial component
+    # Canada provincial component. Digits mirror `intl_tax_records.tax_rate`.
+    province_rate: Decimal | None = Field(None, ge=0, max_digits=7, decimal_places=4)
 
 
 class GSTResponse(BaseModel):
@@ -60,10 +61,10 @@ class GSTResponse(BaseModel):
 
 # --- Withholding -------------------------------------------------------------
 class WithholdingRequest(BaseModel):
-    gross_amount: Decimal = Field(..., ge=0)
+    gross_amount: Decimal = Field(..., ge=0, max_digits=15, decimal_places=2)
     supplier_country: str = Field(..., min_length=2, max_length=2)
     category: str | None = None
-    treaty_rate: Decimal | None = Field(None, ge=0)
+    treaty_rate: Decimal | None = Field(None, ge=0, max_digits=7, decimal_places=4)
 
 
 class WithholdingResponse(BaseModel):
