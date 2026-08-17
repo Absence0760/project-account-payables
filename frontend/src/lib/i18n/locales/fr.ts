@@ -475,6 +475,12 @@ export const messages = {
 	'recurring.toast.ended': 'Modèle terminé',
 	'recurring.toast.endFailed': 'Échec de la clôture',
 	'recurring.toast.loadFailed': 'Échec du chargement des modèles',
+	'recurring.skip.pill': 'Ne génère pas',
+	'recurring.skip.title':
+		'{n, plural, one {# période ignorée} other {# périodes ignorées}} — dernière {period} : {reason}',
+	'recurring.skip.reason.missingAmount': 'aucun montant défini',
+	'recurring.skip.reason.missingVendor': 'aucun fournisseur défini',
+	'recurring.skip.reason.missingBoth': 'aucun fournisseur ni montant défini',
 	'recurring.rel.today': "aujourd'hui",
 	'recurring.rel.inDays': '{n, plural, one {dans # jour} other {dans # jours}}',
 	'recurring.rel.daysAgo': '{n, plural, one {il y a # jour} other {il y a # jours}}',

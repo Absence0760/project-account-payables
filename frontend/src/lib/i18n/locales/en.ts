@@ -491,6 +491,12 @@ export const en = {
 	'recurring.toast.ended': 'Template ended',
 	'recurring.toast.endFailed': 'End failed',
 	'recurring.toast.loadFailed': 'Failed to load templates',
+	'recurring.skip.pill': 'Not generating',
+	'recurring.skip.title':
+		'{n, plural, one {# period skipped} other {# periods skipped}} — last {period}: {reason}',
+	'recurring.skip.reason.missingAmount': 'no amount set',
+	'recurring.skip.reason.missingVendor': 'no vendor set',
+	'recurring.skip.reason.missingBoth': 'no vendor or amount set',
 	'recurring.rel.today': 'today',
 	'recurring.rel.inDays': '{n, plural, one {in # day} other {in # days}}',
 	'recurring.rel.daysAgo': '{n, plural, one {# day ago} other {# days ago}}',

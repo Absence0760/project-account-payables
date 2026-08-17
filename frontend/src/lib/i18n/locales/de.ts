@@ -476,6 +476,12 @@ export const messages = {
 	'recurring.toast.ended': 'Vorlage beendet',
 	'recurring.toast.endFailed': 'Beenden fehlgeschlagen',
 	'recurring.toast.loadFailed': 'Vorlagen konnten nicht geladen werden',
+	'recurring.skip.pill': 'Erstellt nicht',
+	'recurring.skip.title':
+		'{n, plural, one {# Periode übersprungen} other {# Perioden übersprungen}} — zuletzt {period}: {reason}',
+	'recurring.skip.reason.missingAmount': 'kein Betrag hinterlegt',
+	'recurring.skip.reason.missingVendor': 'kein Lieferant hinterlegt',
+	'recurring.skip.reason.missingBoth': 'kein Lieferant und kein Betrag hinterlegt',
 	'recurring.rel.today': 'heute',
 	'recurring.rel.inDays': '{n, plural, one {in # Tag} other {in # Tagen}}',
 	'recurring.rel.daysAgo': '{n, plural, one {vor # Tag} other {vor # Tagen}}',

@@ -1,6 +1,12 @@
 <script lang="ts">
 	import type { RecurringTemplate, RecurringStatus } from '$lib/types/recurring';
-	import { RECURRING_STATUSES, STATUS_LABELS, CADENCE_LABELS } from '$lib/types/recurring';
+	import type { MessageKey } from '$lib/i18n/messages';
+	import {
+		RECURRING_STATUSES,
+		STATUS_LABELS,
+		CADENCE_LABELS,
+		skipReasonKey
+	} from '$lib/types/recurring';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { appendUnique } from '$lib/utils/pagination';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
@@ -298,6 +304,13 @@
 		return s;
 	}
 
+	/** Why the last due period produced no invoice, in words. An unrecognised
+	 * backend code renders verbatim rather than blank. */
+	function skipReason(code: string): string {
+		const key = skipReasonKey(code);
+		return key ? m(key as MessageKey) : code;
+	}
+
 	/** Friendly relative "in 3 days" / "5 days ago" for the next run. */
 	function relativeRun(s: string | null): string {
 		if (!s) return '';
@@ -411,7 +424,21 @@
 						{/if}
 					</td>
 					<td class="right mono">{template.generated_count}</td>
-					<td><span class="badge {statusBadgeClass(template.status)}">{STATUS_LABELS[template.status]}</span></td>
+					<td>
+						<span class="badge {statusBadgeClass(template.status)}">{STATUS_LABELS[template.status]}</span>
+						{#if template.last_skip}
+							<span
+								class="badge skipped"
+								title={m('recurring.skip.title', {
+									n: template.last_skip.consecutive,
+									period: template.last_skip.period_key ?? '—',
+									reason: skipReason(template.last_skip.reason)
+								})}
+							>
+								{m('recurring.skip.pill')}
+							</span>
+						{/if}
+					</td>
 					<td class="actions">
 						{#if canCreate}
 							{#if template.status === 'active'}
@@ -518,4 +545,10 @@
 	.badge.active { background: rgba(31, 168, 106, 0.12); color: #1fa86a; }
 	.badge.paused { background: rgba(212, 148, 10, 0.12); color: #d4940a; }
 	.badge.ended { background: var(--bg); color: var(--text-muted); }
+	/* Calibrated token pair — see frontend/CLAUDE.md § Colour tokens. */
+	.badge.skipped {
+		margin-left: 6px;
+		background: var(--warning-tint);
+		color: var(--warning-on-tint);
+	}
 </style>

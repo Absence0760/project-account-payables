@@ -23,6 +23,49 @@ export const STATUS_LABELS: Record<RecurringStatus, string> = {
 	ended: 'Ended'
 };
 
+// A due period the background sweep could NOT generate an invoice for. The
+// backend persists it on the template (`meta.generation_skip`) and surfaces it
+// here so "nothing raised for months" is distinguishable from "nothing due
+// yet". PII-free: a reason code, the period, a count and a timestamp.
+// See `backend/docs/recurring-invoices.md` § A skipped period is never silent.
+export type GenerationSkipReason =
+	| 'missing_amount'
+	| 'missing_vendor'
+	| 'missing_amount_and_vendor';
+
+export interface GenerationSkip {
+	reason: GenerationSkipReason | string;
+	period_key: string | null;
+	consecutive: number;
+	last_skipped_at: string | null;
+}
+
+// Every reason code the backend sweep can emit
+// (`services/recurring_invoices.SKIP_MISSING_*`). Kept here, beside the
+// message-key map, so a code added on the backend fails the unit test rather
+// than silently rendering as a raw string in the UI.
+export const GENERATION_SKIP_REASONS: GenerationSkipReason[] = [
+	'missing_amount',
+	'missing_vendor',
+	'missing_amount_and_vendor'
+];
+
+const SKIP_REASON_KEYS: Record<string, string> = {
+	missing_amount: 'recurring.skip.reason.missingAmount',
+	missing_vendor: 'recurring.skip.reason.missingVendor',
+	missing_amount_and_vendor: 'recurring.skip.reason.missingBoth'
+};
+
+/**
+ * The i18n key describing a skip reason code, or `null` for a code this
+ * frontend doesn't know (the caller renders the raw code rather than a blank).
+ * Pure — the typed `MessageKey` cast happens at the call site so this module
+ * stays free of the i18n runtime.
+ */
+export function skipReasonKey(code: string): string | null {
+	return SKIP_REASON_KEYS[code] ?? null;
+}
+
 export interface RecurringTemplate {
 	id: string;
 	name: string;
@@ -48,6 +91,7 @@ export interface RecurringTemplate {
 	status: RecurringStatus;
 	variance_tolerance_pct: number | null;
 	notes: string | null;
+	last_skip: GenerationSkip | null;
 	created_at: string;
 	updated_at: string | null;
 }

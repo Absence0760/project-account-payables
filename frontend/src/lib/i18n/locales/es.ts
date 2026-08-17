@@ -476,6 +476,12 @@ export const messages = {
 	'recurring.toast.ended': 'Plantilla finalizada',
 	'recurring.toast.endFailed': 'Error al finalizar',
 	'recurring.toast.loadFailed': 'No se pudieron cargar las plantillas',
+	'recurring.skip.pill': 'No genera',
+	'recurring.skip.title':
+		'{n, plural, one {# periodo omitido} other {# periodos omitidos}} — último {period}: {reason}',
+	'recurring.skip.reason.missingAmount': 'sin importe definido',
+	'recurring.skip.reason.missingVendor': 'sin proveedor definido',
+	'recurring.skip.reason.missingBoth': 'sin proveedor ni importe definidos',
 	'recurring.rel.today': 'hoy',
 	'recurring.rel.inDays': '{n, plural, one {en # día} other {en # días}}',
 	'recurring.rel.daysAgo': '{n, plural, one {hace # día} other {hace # días}}',

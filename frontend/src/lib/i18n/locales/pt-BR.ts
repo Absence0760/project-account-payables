@@ -476,6 +476,12 @@ export const messages = {
 	'recurring.toast.ended': 'Modelo encerrado',
 	'recurring.toast.endFailed': 'Falha ao encerrar',
 	'recurring.toast.loadFailed': 'Falha ao carregar os modelos',
+	'recurring.skip.pill': 'Não está gerando',
+	'recurring.skip.title':
+		'{n, plural, one {# período ignorado} other {# períodos ignorados}} — último {period}: {reason}',
+	'recurring.skip.reason.missingAmount': 'sem valor definido',
+	'recurring.skip.reason.missingVendor': 'sem fornecedor definido',
+	'recurring.skip.reason.missingBoth': 'sem fornecedor nem valor definidos',
 	'recurring.rel.today': 'hoje',
 	'recurring.rel.inDays': '{n, plural, one {em # dia} other {em # dias}}',
 	'recurring.rel.daysAgo': '{n, plural, one {há # dia} other {há # dias}}',
