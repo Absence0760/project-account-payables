@@ -946,6 +946,8 @@ export const messages = {
 	'cfoMetrics.kpi.apBalance': 'Saldo de cuentas por pagar',
 	'cfoMetrics.kpi.rebateYield': 'Rendimiento de reembolsos de tarjeta',
 	'cfoMetrics.dpoTrend.title': 'Tendencia de DPO (6 meses)',
+	'cfoMetrics.dpoTrend.hint':
+		'Solo meses cerrados — el mes en curso no se incluye hasta que termina.',
 	'cfoMetrics.accruals.title': 'Devengos',
 	'cfoMetrics.accruals.openPo': 'Órdenes de compra abiertas',
 	'cfoMetrics.accruals.received': 'Recibido, no facturado',

@@ -135,7 +135,9 @@ Response:
 - `accounts_payable_balance`, `avg_daily_outflow`
 - `dpo_current` + `dpo_trend` (the last 6 **closed** months — the loop walks
   back from the 1st of the current month, so the newest point is the month that
-  just ended). See § DPO trend + drill-through below.
+  just ended). See § DPO trend + drill-through below. The `/cfo` chart names
+  this window (`CfoMetrics.svelte`'s `cfoMetrics.dpoTrend.hint`, under the
+  chart title) so "no data for this month yet" doesn't read as a bug.
 - `cash_conversion_cycle` (NULL when DSO/DIO not available — the
   AP-only product can't compute it)
 - `accruals.{open_po_amount, received_amount, unposted_invoice_amount, total_accrual}`

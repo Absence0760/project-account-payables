@@ -940,6 +940,7 @@ export const messages = {
 	'cfoMetrics.kpi.apBalance': '買掛金残高',
 	'cfoMetrics.kpi.rebateYield': 'カードリベート利回り',
 	'cfoMetrics.dpoTrend.title': 'DPO推移(6か月)',
+	'cfoMetrics.dpoTrend.hint': '完了した月のみ表示します。当月は終了するまで含まれません。',
 	'cfoMetrics.accruals.title': '未払費用',
 	'cfoMetrics.accruals.openPo': '未処理の発注書',
 	'cfoMetrics.accruals.received': '受領済み・未請求',
