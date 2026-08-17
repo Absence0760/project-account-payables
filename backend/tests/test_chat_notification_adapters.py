@@ -11,6 +11,12 @@ Asserts:
 - PII (bank/tax/address/payment-method) never reaches the rendered message.
 - A chat-send failure is swallowed by `_send_chat_best_effort` (it never
   propagates — the caller's transition survives).
+
+Every `_send_chat_best_effort` call below passes the invoice PK as the
+`invoice_id=` KEYWORD. That is deliberate and load-bearing: the parameter used
+to be called `entity_id`, which in this codebase otherwise means the
+multi-entity subsidiary FK, so it read as a tenant-scoping bug on sight.
+Renaming it back would `TypeError` here, which is the pin.
 """
 
 from __future__ import annotations
@@ -283,7 +289,7 @@ async def test_send_chat_best_effort_swallows_failure():
             organization_id=uuid.uuid4(),
             event_type="invoice_approved",
             invoice_ctx=_ctx(),
-            entity_id=uuid.uuid4(),
+            invoice_id=uuid.uuid4(),
         )
 
 
@@ -310,7 +316,7 @@ async def test_send_chat_best_effort_noop_when_disabled():
             organization_id=uuid.uuid4(),
             event_type="invoice_approved",
             invoice_ctx=_ctx(),
-            entity_id=uuid.uuid4(),
+            invoice_id=uuid.uuid4(),
         )
     assert built["count"] == 0
 
@@ -332,7 +338,7 @@ async def test_send_chat_best_effort_per_event_toggle():
             organization_id=uuid.uuid4(),
             event_type="invoice_paid",
             invoice_ctx=_ctx(),
-            entity_id=uuid.uuid4(),
+            invoice_id=uuid.uuid4(),
         )
         assert SENT == []
         # invoice_approved still on (default-on within an events map):
@@ -340,7 +346,7 @@ async def test_send_chat_best_effort_per_event_toggle():
             organization_id=uuid.uuid4(),
             event_type="invoice_approved",
             invoice_ctx=_ctx(),
-            entity_id=uuid.uuid4(),
+            invoice_id=uuid.uuid4(),
         )
         assert len(SENT) == 1
         assert SENT[0].event_type == "invoice_approved"

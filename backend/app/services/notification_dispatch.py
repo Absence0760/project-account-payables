@@ -294,11 +294,14 @@ async def notify_event(
     # per-recipient. Approval-lifecycle events only; entirely best-effort and
     # self-guarded so a chat-send failure never breaks the caller's transition.
     if entity_type == "invoice" and invoice_ctx is not None:
+        # `entity_id` is generic on `notify_event` (it keys whatever
+        # `entity_type` names); inside this branch it is provably the invoice
+        # PK, so it crosses the boundary under that name.
         await _send_chat_best_effort(
             organization_id=organization_id,
             event_type=event_type,
             invoice_ctx=invoice_ctx,
-            entity_id=entity_id,
+            invoice_id=entity_id,
             recipient_user_ids=recipient_user_ids,
         )
 
@@ -410,10 +413,16 @@ async def _send_chat_best_effort(
     organization_id: uuid.UUID,
     event_type: str,
     invoice_ctx,
-    entity_id: uuid.UUID | None,
+    invoice_id: uuid.UUID | None,
     recipient_user_ids: list[uuid.UUID] | None = None,
 ) -> None:
     """Post one approval event to the org's chat channel (Slack/Teams).
+
+    ``invoice_id`` is the invoice PK, deliberately NOT named ``entity_id``:
+    everywhere else in this codebase ``entity_id`` is the multi-entity
+    subsidiary FK, so the old name read as a tenant-scoping bug on every review
+    of this file. The caller narrows its generic ``entity_id`` to an invoice id
+    before calling (the chat fan-out only fires for ``entity_type=="invoice"``).
 
     Best-effort + fully self-guarded: any failure (config load, adapter build,
     transport) is swallowed and logged PII-free so the caller's transaction is
@@ -445,10 +454,10 @@ async def _send_chat_best_effort(
     # Deep link into the tenant app (no secrets / PII). Best-effort — omitted
     # when the slug or entity is missing.
     link: str | None = None
-    if slug and entity_id is not None:
+    if slug and invoice_id is not None:
         try:
             base = settings.tenant_url_template.format(slug=slug).rstrip("/")
-            link = f"{base}/invoices/{entity_id}"
+            link = f"{base}/invoices/{invoice_id}"
         except Exception:  # noqa: BLE001 — a bad template must not break dispatch
             link = None
 
@@ -456,7 +465,7 @@ async def _send_chat_best_effort(
         event_type=event_type,
         chat_config=chat_config,
         slug=slug,
-        invoice_id=entity_id,
+        invoice_id=invoice_id,
         recipient_user_ids=recipient_user_ids,
     )
 
