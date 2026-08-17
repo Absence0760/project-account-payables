@@ -21,6 +21,36 @@ forecast variance). Both are computed by pure functions in
 | CSV export | `app/services/report_export.py` + `/api/analytics/export/{report}` | invoice_register, vendor_spend, payment_register, aging_snapshot, cashflow_forecast, expense_register |
 | Scheduled delivery | `app/services/scheduled_reports.py` + migration 0020 | Per-tenant cron-like subscriptions; daily / weekly / monthly cadence; email via existing adapter |
 
+## Money serialisation
+
+**Every money field on every `/api/analytics/*` endpoint is an EXACT decimal
+string** (`"1500.00"`), never a JSON number — the project's Decimal invariant
+applied at the API boundary, so no figure a CFO reads has round-tripped through
+a binary float. `app/api/analytics.py::_money` is the module's single
+serialiser; route every new money field through it rather than calling `str()`
+inline, so this file can't half-migrate the way it did when `/drill/dpo` was
+the only corrected endpoint (`../../docs/decisions.md` §32).
+
+**What is deliberately NOT a string**, because it is not money and
+stringifying it would be a bug wearing compliance's clothes:
+
+| Kind | Fields |
+|---|---|
+| Day counts | `dpo_current`, `dpo_trend[].dpo`, `drill/dpo` `rows[].dpo`, `cash_conversion_cycle`, `weighted_avg_pay_date_days` |
+| Percentages | `supplier_concentration.{top_10_share_pct,top_50_share_pct,largest_vendor_share_pct}`, `drill/spend_concentration` `rows[].share_pct`, `fraud_rate_trend[].rate_pct`, `rebate_yield.yield_pct`, `forecast_variance` `rows[].variance_pct` |
+| Counts | every `count` / `*_count` / `invoice_count` / `exception_count` / `open_exceptions` |
+
+A `null` money field stays JSON `null` (`cash_position.threshold`,
+`cash_conversion_cycle`) — "not set" is not `"0"`.
+
+**Consumers.** `frontend/src/lib/types/analytics.ts` types these as
+`MoneyString`; render them with `<Money>` / `formatMoney` and get a number out
+of one only via `parseMoneyForLayout` (chart geometry + ordering — see
+`frontend/CLAUDE.md` § Money formatting). The Flutter app's
+`mobile/lib/models/cash_flow.dart` keeps them as display strings through
+`moneyToDisplay`, which passes a string through verbatim and still stringifies
+a legacy JSON number, so an app build older than this change keeps rendering.
+
 ## Operational metrics (dashboard)
 
 Existing fields stay: `pipeline`, `vendor_spend`, `aging`,
@@ -206,9 +236,9 @@ Read-only, admin + CFO only. All three resolve the tenant DB through
 `get_tenant_db`. Source rows: open invoices `LEFT JOIN payment_schedules`
 on `invoice_id`, timed on the schedule's `due_date` (falling back to
 `Invoice.due_date`), bounded to `[today, today + horizon_days]`. Money is
-`Decimal` end-to-end (floated only at the JSON boundary). No writes, no
-audit rows, no new migration — pure aggregate math, like
-`forecast_variance`.
+`Decimal` end-to-end and serialises as an **exact decimal string** (see
+[Money serialisation](#money-serialisation)). No writes, no audit rows, no new
+migration — pure aggregate math, like `forecast_variance`.
 
 **Committed vs pending status sets** (the rest — `rejected`, `paid`,
 `done`, `failed` — are excluded):
@@ -226,7 +256,8 @@ Monday-anchored. Default `granularity=week`, `horizon_days=90`.
 `GET /cashflow_whatif?granularity=…&horizon_days=N&grace_days=N` —
 compares three payment-timing scenarios, each with `total_outflow`,
 `total_discount_captured`, amount-weighted `weighted_avg_pay_date_days`,
-and bucketed `periods`:
+and bucketed `periods`. `weighted_avg_pay_date_days` is a day count, not
+money, and stays a JSON number:
 
 - `on_time` — pay on `due_date`, full amount.
 - `early` — pay on `discount_date` when present, net of
@@ -239,12 +270,15 @@ and bucketed `periods`:
 (`closing = opening − outflow`; receivables/inflows aren't modelled in an
 AP-only product). Periods that close below the effective threshold are flagged
 (`below_threshold`) and collected in `breaches[]` with the `shortfall`. Money
-params are parsed as `Decimal` strings (never floats); garbage → 400.
+params are parsed as `Decimal` strings (never floats); garbage → 400. A
+`threshold` of `null` on the response means none is set — deliberately not
+`"0"`, which would read as "alert on any positive balance".
 
 **Opening balance — resolution order** (first hit wins; the chosen source is
 echoed as `opening_balance_source`):
 
-1. `opening_balance` query param — explicit bring-your-own override → `"query"`.
+1. `opening_balance` query param — explicit bring-your-own override →
+   `"explicit"`.
 2. **Bank-balance auto-sync** — pulled from the org's configured
    payment/banking provider via the optional `PaymentAdapter.get_balance`
    capability → `"provider"` (with `opening_balance_currency`). Only attempted

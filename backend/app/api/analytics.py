@@ -162,6 +162,27 @@ async def _commitment_rows(
     return rows
 
 
+def _money(value: Decimal | int | None) -> str | None:
+    """Serialise a money figure as an EXACT decimal string (project invariant:
+    money never crosses the API boundary as a float).
+
+    The output half of `_parse_decimal_param`, and the module's ONE money
+    serialiser — every response below routes through it so this file can't
+    half-migrate the way it did while `/drill/dpo` was the only corrected
+    endpoint (`docs/decisions.md` §32).
+
+    Deliberately **not** applied to a day count (`dpo`, `weighted_avg_pay_date_days`,
+    `cash_conversion_cycle`), a percentage (`*_share_pct`, `rate_pct`,
+    `yield_pct`, `variance_pct`) or a row count: those are numbers, and
+    stringifying one would be a bug wearing compliance's clothes. `None` passes
+    through so a nullable figure stays JSON `null` rather than the string
+    `"None"`.
+    """
+    if value is None:
+        return None
+    return str(value)
+
+
 def _parse_decimal_param(raw: str | None, field: str) -> Decimal | None:
     """Parse an optional money query-param into Decimal, 400 on garbage.
     Used for `opening_balance` / `min_balance_threshold` — passed as
@@ -198,10 +219,10 @@ async def get_cashflow_forecast(
     )
     periods = bucket_outflows(rows, granularity=granularity, today=today)
     totals = {
-        "scheduled_amount": float(sum((p["scheduled_amount"] for p in periods), Decimal("0"))),
-        "committed_amount": float(sum((p["committed_amount"] for p in periods), Decimal("0"))),
-        "pending_amount": float(sum((p["pending_amount"] for p in periods), Decimal("0"))),
-        "discount_eligible_amount": float(
+        "scheduled_amount": _money(sum((p["scheduled_amount"] for p in periods), Decimal("0"))),
+        "committed_amount": _money(sum((p["committed_amount"] for p in periods), Decimal("0"))),
+        "pending_amount": _money(sum((p["pending_amount"] for p in periods), Decimal("0"))),
+        "discount_eligible_amount": _money(
             sum((p["discount_eligible_amount"] for p in periods), Decimal("0"))
         ),
         "count": sum(p["count"] for p in periods),
@@ -216,10 +237,10 @@ async def get_cashflow_forecast(
                 "period": p["period"],
                 "period_start": p["period_start"].isoformat(),
                 "period_end": p["period_end"].isoformat(),
-                "scheduled_amount": float(p["scheduled_amount"]),
-                "committed_amount": float(p["committed_amount"]),
-                "pending_amount": float(p["pending_amount"]),
-                "discount_eligible_amount": float(p["discount_eligible_amount"]),
+                "scheduled_amount": _money(p["scheduled_amount"]),
+                "committed_amount": _money(p["committed_amount"]),
+                "pending_amount": _money(p["pending_amount"]),
+                "discount_eligible_amount": _money(p["discount_eligible_amount"]),
                 "count": p["count"],
             }
             for p in periods
@@ -251,15 +272,16 @@ async def get_cashflow_whatif(
     def _serialise(result: dict) -> dict:
         return {
             "scenario": result["scenario"],
-            "total_outflow": float(result["total_outflow"]),
-            "total_discount_captured": float(result["total_discount_captured"]),
+            "total_outflow": _money(result["total_outflow"]),
+            "total_discount_captured": _money(result["total_discount_captured"]),
+            # A day count, not money — stays a JSON number.
             "weighted_avg_pay_date_days": float(result["weighted_avg_pay_date_days"]),
             "periods": [
                 {
                     "period": p["period"],
                     "period_start": p["period_start"].isoformat(),
                     "period_end": p["period_end"].isoformat(),
-                    "scheduled_amount": float(p["scheduled_amount"]),
+                    "scheduled_amount": _money(p["scheduled_amount"]),
                 }
                 for p in result["periods"]
             ],
@@ -358,21 +380,22 @@ async def get_cash_position(
     return {
         "granularity": granularity,
         "horizon_days": horizon_days,
-        "opening_balance": float(opening),
+        "opening_balance": _money(opening),
         "opening_balance_source": balance.source,
         "opening_balance_currency": balance.currency,
         "opening_balance_provider": balance.provider,
         "opening_balance_provider_skipped": balance.provider_skipped,
-        "threshold": float(threshold) if threshold is not None else None,
+        # `None` stays JSON null — "no threshold set" is not zero.
+        "threshold": _money(threshold),
         "periods": [
             {
                 "period": p["period"],
                 "period_start": p["period_start"].isoformat() if p["period_start"] else None,
                 "period_end": p["period_end"].isoformat() if p["period_end"] else None,
-                "opening": float(p["opening"]),
-                "outflow": float(p["outflow"]),
-                "inflow": float(p["inflow"]),
-                "closing": float(p["closing"]),
+                "opening": _money(p["opening"]),
+                "outflow": _money(p["outflow"]),
+                "inflow": _money(p["inflow"]),
+                "closing": _money(p["closing"]),
                 "below_threshold": p["below_threshold"],
             }
             for p in position
@@ -382,8 +405,8 @@ async def get_cash_position(
                 "period": b["period"],
                 "period_start": b["period_start"].isoformat() if b["period_start"] else None,
                 "period_end": b["period_end"].isoformat() if b["period_end"] else None,
-                "closing": float(b["closing"]),
-                "shortfall": float(b["shortfall"]),
+                "closing": _money(b["closing"]),
+                "shortfall": _money(b["shortfall"]),
             }
             for b in breaches
         ],

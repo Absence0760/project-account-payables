@@ -34,6 +34,19 @@ from app.models.payment import PaymentSchedule
 _TODAY = date.today()
 
 
+def _money(value) -> Decimal:
+    """Read a money field off a response body, asserting it is an EXACT
+    decimal string.
+
+    Money never crosses the API boundary as a float (project invariant), and
+    the `isinstance` check is the load-bearing half: `Decimal(str(1500.0))`
+    would compare equal to `Decimal("1500")` just fine, so a value-only
+    assertion would let this whole module regress to floats silently.
+    """
+    assert isinstance(value, str), f"money must serialise as a string, got {value!r}"
+    return Decimal(value)
+
+
 async def _add_invoice(
     realdb,
     key: str,
@@ -98,9 +111,9 @@ async def test_forecast_buckets_committed_and_pending(realdb):
     assert resp.status_code == 200
     body = resp.json()
     assert body["granularity"] == "month"
-    assert body["totals"]["committed_amount"] == 1000.0
-    assert body["totals"]["pending_amount"] == 500.0
-    assert body["totals"]["scheduled_amount"] == 1500.0
+    assert _money(body["totals"]["committed_amount"]) == Decimal("1000")
+    assert _money(body["totals"]["pending_amount"]) == Decimal("500")
+    assert _money(body["totals"]["scheduled_amount"]) == Decimal("1500")
 
 
 async def test_forecast_excludes_terminal_and_paid(realdb):
@@ -122,7 +135,7 @@ async def test_forecast_excludes_terminal_and_paid(realdb):
     async with realdb.client(key="a", role="cfo") as c:
         resp = await c.get("/api/analytics/cashflow_forecast")
     assert resp.status_code == 200
-    assert resp.json()["totals"]["scheduled_amount"] == 0.0
+    assert _money(resp.json()["totals"]["scheduled_amount"]) == Decimal("0")
 
 
 async def test_forecast_include_pending_false_drops_pipeline(realdb):
@@ -136,7 +149,7 @@ async def test_forecast_include_pending_false_drops_pipeline(realdb):
     async with realdb.client(key="a", role="cfo") as c:
         resp = await c.get("/api/analytics/cashflow_forecast?include_pending=false")
     assert resp.status_code == 200
-    assert resp.json()["totals"]["scheduled_amount"] == 0.0
+    assert _money(resp.json()["totals"]["scheduled_amount"]) == Decimal("0")
 
 
 async def test_forecast_bad_granularity_422(realdb):
@@ -176,10 +189,10 @@ async def test_whatif_early_captures_discount(realdb):
         resp = await c.get("/api/analytics/cashflow_whatif")
     assert resp.status_code == 200
     scenarios = resp.json()["scenarios"]
-    assert scenarios["early"]["total_discount_captured"] == 20.0
-    assert scenarios["early"]["total_outflow"] == 980.0
-    assert scenarios["on_time"]["total_outflow"] == 1000.0
-    assert scenarios["late"]["total_outflow"] == 1000.0
+    assert _money(scenarios["early"]["total_discount_captured"]) == Decimal("20")
+    assert _money(scenarios["early"]["total_outflow"]) == Decimal("980")
+    assert _money(scenarios["on_time"]["total_outflow"]) == Decimal("1000")
+    assert _money(scenarios["late"]["total_outflow"]) == Decimal("1000")
 
 
 async def test_whatif_clerk_forbidden(realdb):
@@ -234,10 +247,10 @@ async def test_cash_position_auto_seeds_from_provider_balance(realdb):
         assert resp.status_code == 200, resp.text
         body = resp.json()
         # Mock deterministic balance 250000 seeded automatically.
-        assert body["opening_balance"] == 250000.0
+        assert _money(body["opening_balance"]) == Decimal("250000")
         assert body["opening_balance_source"] == "provider"
         assert body["opening_balance_currency"] == "USD"
-        assert body["periods"][0]["closing"] == 200000.0
+        assert _money(body["periods"][0]["closing"]) == Decimal("200000")
     finally:
         await _set_org_settings(realdb, "a", lambda s: s.pop("payments", None))
 
@@ -255,7 +268,7 @@ async def test_cash_position_seed_balance_false_skips_provider(realdb):
             resp = await c.get("/api/analytics/cash_position?seed_balance=false")
         assert resp.status_code == 200
         body = resp.json()
-        assert body["opening_balance"] == 0.0
+        assert _money(body["opening_balance"]) == Decimal("0")
         assert body["opening_balance_source"] == "none"
     finally:
         await _set_org_settings(realdb, "a", lambda s: s.pop("payments", None))
@@ -273,7 +286,7 @@ async def test_cash_position_query_balance_beats_provider(realdb):
             resp = await c.get("/api/analytics/cash_position?opening_balance=1000")
         assert resp.status_code == 200
         body = resp.json()
-        assert body["opening_balance"] == 1000.0
+        assert _money(body["opening_balance"]) == Decimal("1000")
         # `explicit` (not `query`) — this endpoint now shares the copilot's
         # resolution chain, so the four source values have one vocabulary.
         assert body["opening_balance_source"] == "explicit"
@@ -302,7 +315,7 @@ async def test_cash_position_refuses_a_foreign_currency_provider_balance(realdb)
             resp = await c.get("/api/analytics/cash_position")
         assert resp.status_code == 200
         body = resp.json()
-        assert body["opening_balance"] == 4321.0
+        assert _money(body["opening_balance"]) == Decimal("4321")
         assert body["opening_balance_source"] == "settings"
         # The refusal is visible — otherwise indistinguishable from "no bank".
         assert body["opening_balance_provider_skipped"] == "currency_mismatch"
@@ -332,7 +345,7 @@ async def test_cash_position_falls_back_to_settings_when_provider_unsupported(re
             resp = await c.get("/api/analytics/cash_position")
         assert resp.status_code == 200
         body = resp.json()
-        assert body["opening_balance"] == 7777.0
+        assert _money(body["opening_balance"]) == Decimal("7777")
         assert body["opening_balance_source"] == "settings"
     finally:
 
@@ -368,7 +381,7 @@ async def test_cash_position_degrades_on_a_corrupt_persisted_balance(realdb):
             resp = await c.get("/api/analytics/cash_position")
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["opening_balance"] == 0.0
+        assert _money(body["opening_balance"]) == Decimal("0")
         assert body["opening_balance_source"] == "none"
     finally:
         await _set_org_settings(realdb, "a", lambda s: s.pop("cashflow", None))
@@ -397,10 +410,10 @@ async def test_cash_position_reads_persisted_threshold(realdb):
         assert resp.status_code == 200, resp.text
         body = resp.json()
         # Persisted threshold 500 applied (no query override): 1000-800=200 < 500.
-        assert body["threshold"] == 500.0
+        assert _money(body["threshold"]) == Decimal("500")
         assert body["periods"][0]["below_threshold"] is True
         assert len(body["breaches"]) == 1
-        assert body["breaches"][0]["shortfall"] == 300.0
+        assert _money(body["breaches"][0]["shortfall"]) == Decimal("300")
     finally:
         await _set_org_settings(realdb, "a", lambda s: s.pop("cashflow", None))
 
@@ -482,12 +495,12 @@ async def test_cash_position_with_opening_balance_and_breach(realdb):
         )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["opening_balance"] == 1000.0
+    assert _money(body["opening_balance"]) == Decimal("1000")
     assert body["opening_balance_source"] == "explicit"
-    assert body["periods"][0]["closing"] == 200.0
+    assert _money(body["periods"][0]["closing"]) == Decimal("200")
     assert body["periods"][0]["below_threshold"] is True
     assert len(body["breaches"]) == 1
-    assert body["breaches"][0]["shortfall"] == 300.0
+    assert _money(body["breaches"][0]["shortfall"]) == Decimal("300")
 
 
 async def test_cash_position_defaults_to_zero_with_source_none(realdb):
@@ -495,7 +508,7 @@ async def test_cash_position_defaults_to_zero_with_source_none(realdb):
         resp = await c.get("/api/analytics/cash_position")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["opening_balance"] == 0.0
+    assert _money(body["opening_balance"]) == Decimal("0")
     assert body["opening_balance_source"] == "none"
 
 
@@ -613,4 +626,4 @@ async def test_forecast_tenant_isolation(realdb):
     async with realdb.client(key="b", role="cfo") as c:
         resp = await c.get("/api/analytics/cashflow_forecast")
     assert resp.status_code == 200
-    assert resp.json()["totals"]["scheduled_amount"] == 0.0
+    assert _money(resp.json()["totals"]["scheduled_amount"]) == Decimal("0")

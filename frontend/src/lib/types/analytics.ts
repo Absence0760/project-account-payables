@@ -1,6 +1,14 @@
 // Response shapes for the predictive cash-flow forecasting endpoints
 // (backend/app/api/analytics.py). Hand-maintained — the project has no
 // codegen, mirroring src/lib/types/invoice.ts.
+//
+// Money is `MoneyString` — an EXACT decimal string, never a JSON number — so
+// no currency figure round-trips through a binary float. Render it with
+// `<Money>` / `formatMoney`; the only sanctioned way to get a number out of
+// one is `parseMoneyForLayout` (chart geometry + ordering only). A day count,
+// a percentage and a row count are genuinely numbers and stay `number`.
+
+import type { MoneyString } from '$lib/utils/money';
 
 export type CashflowGranularity = 'day' | 'week' | 'month';
 
@@ -8,10 +16,10 @@ export interface CashflowForecastPeriod {
 	period: string;
 	period_start: string;
 	period_end: string;
-	scheduled_amount: number;
-	committed_amount: number;
-	pending_amount: number;
-	discount_eligible_amount: number;
+	scheduled_amount: MoneyString;
+	committed_amount: MoneyString;
+	pending_amount: MoneyString;
+	discount_eligible_amount: MoneyString;
 	count: number;
 }
 
@@ -22,24 +30,25 @@ export interface CashflowForecast {
 	generated_at: string;
 	periods: CashflowForecastPeriod[];
 	totals: {
-		scheduled_amount: number;
-		committed_amount: number;
-		pending_amount: number;
-		discount_eligible_amount: number;
+		scheduled_amount: MoneyString;
+		committed_amount: MoneyString;
+		pending_amount: MoneyString;
+		discount_eligible_amount: MoneyString;
 		count: number;
 	};
 }
 
 export interface WhatIfScenario {
 	scenario: 'early' | 'on_time' | 'late';
-	total_outflow: number;
-	total_discount_captured: number;
+	total_outflow: MoneyString;
+	total_discount_captured: MoneyString;
+	/** A day count, not money. */
 	weighted_avg_pay_date_days: number;
 	periods: Array<{
 		period: string;
 		period_start: string;
 		period_end: string;
-		scheduled_amount: number;
+		scheduled_amount: MoneyString;
 	}>;
 }
 
@@ -58,10 +67,10 @@ export interface CashPositionPeriod {
 	period: string;
 	period_start: string | null;
 	period_end: string | null;
-	opening: number;
-	outflow: number;
-	inflow: number;
-	closing: number;
+	opening: MoneyString;
+	outflow: MoneyString;
+	inflow: MoneyString;
+	closing: MoneyString;
 	below_threshold: boolean;
 }
 
@@ -69,14 +78,14 @@ export interface CashPositionBreach {
 	period: string;
 	period_start: string | null;
 	period_end: string | null;
-	closing: number;
-	shortfall: number;
+	closing: MoneyString;
+	shortfall: MoneyString;
 }
 
 export interface CashPosition {
 	granularity: CashflowGranularity;
 	horizon_days: number;
-	opening_balance: number;
+	opening_balance: MoneyString;
 	// Provenance of the figure the curve starts from — the shared resolution
 	// chain in `services/cashflow.py::resolve_opening_balance` (the same one the
 	// cash-flow copilot uses, hence `explicit` rather than the endpoint's old
@@ -90,7 +99,8 @@ export interface CashPosition {
 	// because its account is in another currency than the org reports in — so a
 	// fallback to `settings`/`none` isn't mistaken for "no bank is connected".
 	opening_balance_provider_skipped: string | null;
-	threshold: number | null;
+	/** `null` means no threshold is set — deliberately not `"0"`. */
+	threshold: MoneyString | null;
 	periods: CashPositionPeriod[];
 	breaches: CashPositionBreach[];
 }

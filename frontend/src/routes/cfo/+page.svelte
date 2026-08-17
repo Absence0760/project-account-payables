@@ -4,7 +4,8 @@
 	import KpiCard from '$lib/components/ui/KpiCard.svelte';
 	import ByEntityBreakdown from '$lib/components/analytics/ByEntityBreakdown.svelte';
 	import CfoMetrics from '$lib/components/analytics/CfoMetrics.svelte';
-	import { formatMoney } from '$lib/utils/money';
+	import { formatMoney, isPositiveAmount, parseMoneyForLayout } from '$lib/utils/money';
+	import type { MoneyAmount } from '$lib/utils/money';
 	import { formatPeriod } from '$lib/utils/time';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { m } from '$lib/i18n/store.svelte';
@@ -27,8 +28,8 @@
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 
-	function fmt(n: number): string {
-		return formatMoney(n, { currency: orgCurrency.currency, whole: true });
+	function fmt(amount: MoneyAmount): string {
+		return formatMoney(amount, { currency: orgCurrency.currency, whole: true });
 	}
 
 	// `opening_balance_provider_skipped` means a live bank balance EXISTED and the
@@ -73,8 +74,11 @@
 		load();
 	});
 
+	// Chart geometry only. `parseMoneyForLayout` is the one sanctioned
+	// money-string → number conversion; the figures beside each bar are
+	// rendered from the exact strings via `fmt`, never from these numbers.
 	let maxScheduled = $derived(
-		Math.max(1, ...(forecast?.periods ?? []).map((p) => p.scheduled_amount))
+		Math.max(1, ...(forecast?.periods ?? []).map((p) => parseMoneyForLayout(p.scheduled_amount)))
 	);
 
 	async function exportCsv() {
@@ -162,7 +166,7 @@
 			<KpiCard value={fmt(forecast.totals.committed_amount)} label={m('cfo.kpi.committed')} />
 			<KpiCard value={fmt(forecast.totals.pending_amount)} label={m('cfo.kpi.pipeline')} />
 			<KpiCard
-				value={fmt(whatif?.scenarios.early.total_discount_captured ?? 0)}
+				value={fmt(whatif?.scenarios.early.total_discount_captured ?? '0')}
 				label={m('cfo.kpi.discountIfEarly')}
 				highlight="green"
 			/>
@@ -183,12 +187,12 @@
 							>
 								<div
 									class="cf-bar committed"
-									style="width:{(p.committed_amount / maxScheduled) * 100}%"
+									style="width:{(parseMoneyForLayout(p.committed_amount) / maxScheduled) * 100}%"
 									title={m('cfo.chart.committedTitle', { amount: fmt(p.committed_amount) })}
 								></div>
 								<div
 									class="cf-bar pending"
-									style="width:{(p.pending_amount / maxScheduled) * 100}%"
+									style="width:{(parseMoneyForLayout(p.pending_amount) / maxScheduled) * 100}%"
 									title={m('cfo.chart.pendingTitle', { amount: fmt(p.pending_amount) })}
 								></div>
 							</div>
@@ -216,7 +220,7 @@
 							<span class="scenario-title">{label}</span>
 							<span class="scenario-outflow">{fmt(s.total_outflow)}</span>
 							<span class="scenario-sub">{m('cfo.whatif.netOutflow')}</span>
-							{#if s.total_discount_captured > 0}
+							{#if isPositiveAmount(s.total_discount_captured)}
 								<span class="scenario-discount">{m('cfo.whatif.discountCaptured', { amount: fmt(s.total_discount_captured) })}</span>
 							{/if}
 							<span class="scenario-days">{m('cfo.whatif.daysToPay', { days: s.weighted_avg_pay_date_days })}</span>
