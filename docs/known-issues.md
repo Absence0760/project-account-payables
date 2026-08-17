@@ -47,54 +47,42 @@ guard + per-template commit.
 
 ---
 
-## A tenant with no ERP configured never gets an invoice to `paid`
+## ~~A tenant with no ERP configured never gets an invoice to `paid`~~ — FIXED 2026-08-16
 
-**Found:** 2026-08-15, while fixing the ERP sync-back's failed-leg strand.
+**Resolved** by narrowing the gate to what it actually guards.
+`services/payment_erp_sync._sync_payments` no longer returns early on an absent
+`settings.erp`; it carries `erp_config=None` into the leg loop, and
+`_sync_one_leg` resolves the ERP adapter (and would perform the push) only when
+a config exists. Every other per-leg guard is unchanged and shared by both
+paths — payment `completed`, invoice `payment_scheduled`, settlement covering,
+invoice taken `FOR UPDATE` — so an ERP-less tenant's settled invoices now reach
+`paid` while an in-flight payment is still skipped and a *named but unsupported*
+ERP type still fails its own leg into the de-duped `erp_reconciliation`
+exception (the recoverability semantics of [decisions.md §22](decisions.md) are
+untouched).
 
-`services/payment_erp_sync._sync_payments` returns early when the org has no
-`settings.erp`:
+`get_erp_adapter({})` is deliberately not called on the no-ERP path: it fails
+closed on an unusable config ([decisions.md §29](decisions.md)), which would
+turn "this tenant has no ERP" into a permanent strand plus an exception row for
+a situation that is not an error.
 
-```python
-erp_config = (org.settings or {}).get("erp")
-if not erp_config:
-    logger.info("[payment-sync] no ERP configured for org %s, skipping sync", org_id)
-    return PaymentSyncResult()
-```
+Kept as a stub because the *blast radius* is worth not re-deriving: this module
+is the only automatic writer of `payment_scheduled → paid` (the other two are
+the manual `POST /api/payments/{id}/settlement/accept` and `api/erp_webhook`,
+which by definition requires an ERP), so the early return left every settled
+invoice of a "direct schedule, no ERP" tenant at `payment_scheduled` forever —
+under-counting the aging report, the `/dashboard` pipeline, the vendor's payment
+history and the 1099 YTD totals, and never letting `retention_sweep` see the
+invoice as archivable. The payment row stayed correct throughout, which is what
+made it invisible from the payments page.
 
-That early return skips the **whole pass**, including the part that has nothing
-to do with an ERP: advancing `payment_scheduled → paid` for a payment the rail
-actually settled. And this module is the only automatic path that makes that
-transition. The other two writers of `InvoiceStatus.paid` are
-`POST /api/payments/{id}/settlement/accept` (a manual short-settlement release)
-and `api/erp_webhook` (which by definition requires an ERP).
-
-**Blast radius.** For an org that pays without an ERP — the "direct schedule, no
-ERP" branch the state machine explicitly supports (`approved →
-payment_scheduled` with no `sending_to_erp` leg) — every settled invoice sits at
-`payment_scheduled` indefinitely. Downstream that means the aging report, the
-`/dashboard` pipeline, the vendor's payment history, and the 1099 YTD totals all
-under-count paid spend, and `retention_sweep` never sees the invoice as
-archivable (`done`/`paid`). The payment row itself is correct throughout, so
-nothing looks wrong from the payments page — which is what makes it easy to
-miss.
-
-**Why it wasn't fixed here.** The current behaviour is *asserted*, with an
-explanatory docstring, by
-`backend/tests/test_payment_erp_sync.py::test_sync_skips_when_no_erp_configured`.
-Flipping it changes when invoices reach `paid` for a whole class of tenants, so
-it needs that test's intent revisited rather than a drive-by edit inside an
-unrelated round.
-
-**Recommended fix.** Narrow the gate to what it actually guards. The ERP config
-is only needed to resolve the adapter (`get_erp_adapter(erp_config)`), and the
-"push to ERP" step is presently a `logger.info` placeholder — so the gate is
-currently skipping the invoice transition and nothing else. Move the check so it
-guards adapter resolution and the (future) push, and let the leg loop run
-either way; the leg already skips any payment that isn't `completed` and any
-invoice that isn't `payment_scheduled`, so a no-ERP tenant would simply get its
-invoices marked `paid` on settlement. Update the test above to assert the new
-contract (no adapter call, invoice still advances) and note the change in
-`backend/docs/payments.md` § ERP Payment Sync.
+Regression coverage:
+`backend/tests/test_payment_erp_sync.py::test_no_erp_configured_still_advances_the_settled_invoice`
+(asserts the adapter is never resolved AND the invoice advances) plus
+`::test_no_erp_configured_does_not_strand_an_unsettled_invoice` (the no-ERP path
+reuses the same guards rather than a looser branch). Contract documented in
+`backend/docs/payments.md` § ERP Payment Sync → No ERP configured skips the
+push, not the transition.
 
 ---
 

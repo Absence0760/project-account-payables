@@ -31,6 +31,15 @@ its own rows by id and commits on its own, so an earlier success can never be
 undone by a later failure and no leg is left holding ORM state expired by
 another leg's rollback.
 
+**The ERP gate guards the ERP, not the transition.** A tenant with no
+``settings.erp`` — the "direct schedule, no ERP" branch the state machine
+explicitly supports — still gets its settled invoices marked ``paid`` here.
+The missing config skips resolving the adapter and the (future) push, and
+nothing else; the per-leg guards (payment ``completed``, invoice
+``payment_scheduled``, settlement covering) are identical either way. Returning
+early over the whole pass, as this module used to, stranded every such
+invoice at ``payment_scheduled`` forever while its payment row looked correct.
+
 The exit for a strand is ``POST /api/payments/runs/{run_id}/sync-erp``, which
 awaits this same pass and returns its counts. Voiding is NOT an exit here — the
 money moved, and ``/void`` sends the invoice back to ``approved`` where it
@@ -85,6 +94,9 @@ class PaymentSyncResult:
     #: Legs whose ERP-facing work completed. TRUE for a settled payment whose
     #: invoice was ALREADY `paid`, so a re-run reports the same count as the
     #: first pass — this counts legs that ran, not work that changed anything.
+    #: Also TRUE for a tenant with no ERP configured, where the ERP-facing work
+    #: is vacuously complete because there is none; `transitioned` is the count
+    #: that answers "did anything advance" on both paths.
     synced: int = 0
     #: Invoices this pass actually moved `payment_scheduled → paid`. The number
     #: an operator retrying a strand is asking about; `0` on a repeat call.
@@ -135,10 +147,24 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> PaymentSyncRes
                 logger.warning("[payment-sync] organization %s not found", org_id)
                 return PaymentSyncResult()
 
-        erp_config = (org.settings or {}).get("erp")
-        if not erp_config:
-            logger.info("[payment-sync] no ERP configured for org %s, skipping sync", org_id)
-            return PaymentSyncResult()
+        # An absent `settings.erp` gates exactly ONE thing: resolving the ERP
+        # adapter and pushing to it. It is deliberately NOT an early return over
+        # the whole pass, because the rest of the pass — advancing a settled
+        # payment's invoice `payment_scheduled → paid` — has nothing to do with
+        # an ERP, and this module is the only automatic writer of that
+        # transition. The state machine explicitly supports the direct-schedule
+        # branch (`approved → payment_scheduled`, no `sending_to_erp` leg), so
+        # returning here stranded every settled invoice of an ERP-less tenant at
+        # `payment_scheduled` forever — under-counting the aging report, the
+        # `/dashboard` pipeline, the vendor's payment history and the 1099 YTD
+        # totals, while the payment row itself looked perfectly correct.
+        erp_config = (org.settings or {}).get("erp") or None
+        if erp_config is None:
+            logger.info(
+                "[payment-sync] no ERP configured for org %s — no ERP push; settled "
+                "payments still advance their invoices to paid",
+                org_id,
+            )
 
         # Import adapters so the @register_adapter decorators populate the
         # registry before any leg resolves one. Deliberately NOT resolving the
@@ -171,7 +197,7 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> PaymentSyncRes
 
 
 async def _sync_run_legs(
-    db, *, run_id: uuid.UUID, org_id: uuid.UUID, erp_config: dict
+    db, *, run_id: uuid.UUID, org_id: uuid.UUID, erp_config: dict | None
 ) -> PaymentSyncResult:
     """Run one leg per payment in the run, each independently committed."""
     counts = {_SYNCED: 0, _SKIPPED: 0, _HELD: 0, _FAILED: 0}
@@ -220,9 +246,15 @@ async def _sync_run_legs(
 
 
 async def _sync_one_leg(
-    db, *, payment_id: uuid.UUID, run_id: uuid.UUID, org_id: uuid.UUID, erp_config: dict
+    db, *, payment_id: uuid.UUID, run_id: uuid.UUID, org_id: uuid.UUID, erp_config: dict | None
 ) -> tuple[str, bool]:
     """Sync one payment, committing on its own.
+
+    ``erp_config`` is ``None`` for a tenant that pays without an ERP. That
+    skips the adapter and the (future) push — and nothing else: the invoice
+    transition below is not ERP work and still runs, through the same guards
+    (settled payment, `payment_scheduled` invoice, covering settlement) every
+    other leg passes.
 
     Returns ``(outcome_key, invoice_moved_to_paid)``. The second element is
     separate because ``_SYNCED`` means "this leg's ERP-facing work completed",
@@ -261,9 +293,17 @@ async def _sync_one_leg(
         # contract — a strand must land in the queue an AP manager works —
         # and a config error strands exactly like a transport error does.
         # Resolved before the lock so a failure never holds one it can't use.
-        from app.services.erp_adapters import get_erp_adapter
+        #
+        # No ERP configured is NOT that case: there is nothing to resolve and
+        # nothing to push, so the leg carries on to the invoice transition with
+        # `adapter = None`. Calling `get_erp_adapter({})` here instead would
+        # fail closed and turn "this tenant has no ERP" into a permanent strand
+        # plus an exception row for a situation that is not an error.
+        adapter = None
+        if erp_config is not None:
+            from app.services.erp_adapters import get_erp_adapter
 
-        adapter = get_erp_adapter(erp_config)
+            adapter = get_erp_adapter(erp_config)
 
         # Row-lock the invoice before deciding whether to transition it —
         # backend/CLAUDE.md § Conventions: every status transition takes the row
@@ -289,15 +329,16 @@ async def _sync_one_leg(
             ).scalar_one_or_none()
 
         # In production, this would call `adapter.post_payment()` — the
-        # `adapter` resolved above is the one it would use. For now, log and
-        # mark as synced. Amount is not PII; goes through the module logger so
-        # it reaches the same aggregation/redaction pipeline as the rest of the
+        # `adapter` resolved above is the one it would use, and a leg with no
+        # ERP configured skips that call entirely. For now, log and mark as
+        # synced. Amount is not PII; goes through the module logger so it
+        # reaches the same aggregation/redaction pipeline as the rest of the
         # sync. The provider NAME is logged so an operator reading the strand
-        # can see which ERP the leg was aimed at.
+        # can see which ERP the leg was aimed at (or that there was none).
         logger.info(
             "[payment-sync] syncing payment %s via %s: invoice=%s, amount=%s, method=%s",
             payment.id,
-            adapter.erp_type,
+            adapter.erp_type if adapter is not None else "none (no ERP configured)",
             invoice.invoice_number if invoice else "?",
             f"{payment.amount:.2f}",
             payment.method,

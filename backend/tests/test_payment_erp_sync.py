@@ -149,12 +149,33 @@ async def test_sync_writes_audit_row(realdb):
     assert audit.details["new_status"] == "paid"
 
 
-async def test_sync_skips_when_no_erp_configured(realdb):
-    # No settings.erp -> the sync returns early and the invoice stays scheduled.
+async def test_no_erp_configured_still_advances_the_settled_invoice(realdb):
+    """An org that pays without an ERP must still reach `paid`.
+
+    The state machine explicitly supports the direct-schedule branch
+    (`approved → payment_scheduled` with no `sending_to_erp` leg), and this
+    module is the only automatic writer of `payment_scheduled → paid`. The
+    absent `settings.erp` gates ONE thing — resolving the ERP adapter and
+    pushing to it — so it must not also skip the invoice transition, which has
+    nothing to do with an ERP. It used to return early over the whole pass, so
+    every settled invoice for such a tenant sat at `payment_scheduled` forever
+    and the aging report, the `/dashboard` pipeline, the vendor's payment
+    history and the 1099 YTD totals all under-counted paid spend.
+    """
     await _set_org_erp(realdb, "a", None)
     run_id, invoice_id = await _seed_run(realdb, "a")
 
-    await _sync_payments(run_id, realdb.info("a").org_id)
+    # The ERP adapter must never be resolved — there is no ERP to push to, and
+    # resolving one anyway would fail closed on the empty config.
+    with patch(
+        "app.services.erp_adapters.get_erp_adapter",
+        side_effect=AssertionError("no ERP configured — the adapter must not be resolved"),
+    ) as get_adapter:
+        result = await _sync_payments(run_id, realdb.info("a").org_id)
+
+    assert get_adapter.call_count == 0
+    assert result.transitioned == 1
+    assert result.failed == 0
 
     mk = realdb.sessionmaker("a")
     async with mk() as s:
@@ -166,8 +187,53 @@ async def test_sync_skips_when_no_erp_configured(realdb):
                 .where(AuditLog.action == "invoice.paid_via_erp_sync")
             )
         ).scalar_one()
+    assert inv.status == InvoiceStatus.paid
+    assert audit_count == 1
+
+
+async def test_no_erp_configured_does_not_strand_an_unsettled_invoice(realdb):
+    """The no-ERP path reuses the SAME per-leg guards, not a looser branch.
+
+    An in-flight (`submitted`) payment must still be skipped — dropping the ERP
+    gate must not turn "no ERP" into "mark everything paid".
+    """
+    await _set_org_erp(realdb, "a", None)
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    run_id = uuid.uuid4()
+    invoice_id = uuid.uuid4()
+    async with mk() as s:
+        s.add(PaymentRun(id=run_id, status="completed", organization_id=org_id))
+        s.add(
+            Invoice(
+                id=invoice_id,
+                invoice_number="INV-NOERP-INFLIGHT",
+                vendor_name="Vendor Co",
+                amount=Decimal("100.00"),
+                status=InvoiceStatus.payment_scheduled,
+                organization_id=org_id,
+            )
+        )
+        await s.flush()
+        s.add(
+            Payment(
+                invoice_id=invoice_id,
+                payment_run_id=run_id,
+                amount=Decimal("100.00"),
+                method="ach",
+                status="submitted",
+            )
+        )
+        await s.commit()
+
+    result = await _sync_payments(run_id, org_id)
+
+    assert result.skipped == 1
+    assert result.transitioned == 0
+    async with mk() as s:
+        inv = (await s.execute(select(Invoice).where(Invoice.id == invoice_id))).scalar_one()
     assert inv.status == InvoiceStatus.payment_scheduled
-    assert audit_count == 0
 
 
 async def test_sync_missing_org_is_noop(realdb):
