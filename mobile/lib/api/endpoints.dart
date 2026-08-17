@@ -627,8 +627,13 @@ class AdminApi {
 class OrganizationApi {
   static final _api = ApiClient();
 
-  /// `GET /api/organization` — the org + its full settings JSONB. We project it
-  /// down to the safe editable subset (company + invoice defaults).
+  /// `GET /api/organization` — the org + the settings its caller's role may
+  /// read. The backend projects the JSONB by role
+  /// (`backend/app/services/org_settings_view.py`): a non-admin gets an
+  /// allow-list that keeps `company` and `invoice_defaults` — the two blocks
+  /// this screen renders — and drops the tenant's third-party credentials,
+  /// which every role could read before. We narrow further to the safe
+  /// editable subset here.
   static Future<OrgSettings> get() async {
     final data = await _api.get('/organization');
     return OrgSettings.fromJson(data);

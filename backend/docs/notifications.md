@@ -181,7 +181,13 @@ post arbitrary content into the customer's approval channel forever, with no
 authentication — a phishing surface aimed squarely at the people who approve
 payments. Three properties make that recoverable, and each is deliberate:
 
-- **Write-only.** No endpoint returns the stored URL. Reads report whether one
+- **Write-only, system-wide.** No endpoint returns the stored URL — not the
+  ones above, and not `GET /api/organization`, which serves the raw settings
+  JSONB and used to hand the credential to every authenticated role. That
+  endpoint's projection (`services/org_settings_view`) drops
+  `chat_notifications.webhook_url` for **every** role, admin included, and
+  `PATCH /api/organization` refuses a `chat_notifications` key outright so the
+  audited endpoint is the only writer. Reads report whether one
   is set plus its bare **hostname** — the token lives in the path (Slack
   `/services/T…/B…/<token>`, Teams `/webhookb2/<guid>@<guid>/…`), so the
   hostname answers "where does our approval channel post?" during an incident

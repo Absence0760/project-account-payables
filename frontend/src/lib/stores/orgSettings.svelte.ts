@@ -10,11 +10,14 @@ import { DEFAULT_CURRENCY } from '$lib/utils/money';
  * roll-ups where there is no single row to read from.
  *
  * Sourced from `Organization.settings.invoice_defaults.currency`
- * (`GET /api/organization`). That route is admin-gated, so for non-admin
- * roles the fetch 403s and we fall back to {@link DEFAULT_CURRENCY} —
- * which is exactly the pre-existing behaviour (everything was hardcoded
- * USD), so nothing regresses. Resilient by design: any failure degrades
- * to the default rather than breaking a dashboard render.
+ * (`GET /api/organization`). That route is open to any authenticated org
+ * user, but the settings it returns are projected by role: a non-admin gets
+ * an allow-list that deliberately keeps `invoice_defaults` (this store is
+ * one of the consumers it exists for) and drops the tenant's third-party
+ * credentials. See `backend/app/services/org_settings_view.py` — if a
+ * future field is needed here, it has to be added to that allow-list.
+ * Resilient by design: any failure degrades to {@link DEFAULT_CURRENCY}
+ * rather than breaking a dashboard render.
  *
  * Cached for the session after the first successful load; `reset()`
  * clears it (e.g. on logout / tenant switch).
@@ -48,8 +51,8 @@ class OrgSettingsStore {
 				}
 				this.#loaded = true;
 			} catch {
-				// Non-admin role (403) or transient error: keep the default.
-				// Don't mark loaded so an admin navigating later can still resolve it.
+				// Transient error (or a signed-out race): keep the default and
+				// don't mark loaded, so a later navigation can still resolve it.
 			} finally {
 				this.#inflight = null;
 			}

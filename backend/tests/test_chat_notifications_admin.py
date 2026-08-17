@@ -151,12 +151,18 @@ async def test_webhook_url_never_appears_in_any_response(realdb):
             assert TOKEN_FRAGMENT not in resp.text
             assert "/services/" not in resp.text
 
-        # It IS persisted — the endpoint stored the credential, it just doesn't
-        # serve it. (The generic `GET /api/organization` still returns the raw
-        # settings JSONB, which is a separate, pre-existing exposure tracked
-        # outside this round — assert only that the dedicated surface is clean.)
-        assert (await _stored_config(realdb))["webhook_url"] == SLACK_URL
+        # The property is system-wide, not local to this router: the generic
+        # `GET /api/organization` serves the settings JSONB and used to hand the
+        # credential back in full — to EVERY authed role, admin or not. Its
+        # projection now drops this key for every role, so "no endpoint returns
+        # it" is true rather than aspirational.
         assert org.status_code == 200
+        assert TOKEN_FRAGMENT not in org.text
+        assert "/services/" not in org.text
+
+        # It IS persisted — the endpoint stored the credential, it just never
+        # serves it back.
+        assert (await _stored_config(realdb))["webhook_url"] == SLACK_URL
     finally:
         await _reset(realdb)
 

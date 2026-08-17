@@ -184,8 +184,13 @@ async def get_chat_notifications(
 
     Admin-only on the READ too, unlike branding / data-residency: nothing in
     the app renders from this, and the response carries the webhook's hostname,
-    which is closer to the credential than anything a clerk needs. The webhook
-    URL itself is never returned, by any endpoint, ever.
+    which is closer to the credential than anything a clerk needs.
+
+    The webhook URL itself is never returned — by this endpoint or any other.
+    `GET /api/organization` serves the settings JSONB and used to hand it back
+    in full to every authenticated role; `services/org_settings_view` now drops
+    it there for **every** role, admin included, so this module's write-only
+    property holds system-wide rather than just locally.
     """
     return _status(_resolve_chat_config(org))
 
