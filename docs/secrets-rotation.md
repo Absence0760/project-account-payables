@@ -21,6 +21,7 @@ This is a SOC 2 prerequisite (`docs/soc2-readiness.md` § Secrets management).
 | GitHub Actions OIDC role | AWS IAM role (no static keys) | n/a — short-lived | n/a |
 | Per-tenant SCIM bearer tokens | `Organization.settings.sso.scim_bearer_hash` (sha256) | **On request** by tenant admin via `POST /api/organization/sso/scim-token` | Read/write users on that one tenant |
 | Per-tenant OIDC client secret | `Organization.settings.sso.client_secret` (encrypted at row) | **On request** by tenant admin | Mint OIDC tokens for that one tenant |
+| Per-tenant chat webhook URL (Slack / Teams) | `Organization.settings.chat_notifications.webhook_url` | **On request** by tenant admin via `PUT /api/organization/chat-notifications/webhook` | Post arbitrary content into that tenant's approval channel — a phishing surface aimed at the people who approve payments |
 
 **Triggers for an out-of-band rotation** — do these even if the cadence hasn't fired:
 - Suspected leak (commit, log, screenshot, employee departure)
@@ -119,6 +120,23 @@ Tenant admin self-serves via `POST /api/webhooks/{id}/rotate-secret`. The new se
 
 The receiver-side procedure — and the reason step 1 has to happen *before* you need it — is in [public-api.md](../backend/docs/public-api.md) § Rotating a signing secret. Audited as `webhook_subscription.secret_rotated`, recording the prefix and window, never either secret.
 
+### Per-tenant chat-notification webhook URL (Slack / Teams)
+
+A Slack or Teams **incoming-webhook URL is a credential, not an address**: the token lives in the path, and anyone holding the string can post arbitrary content into the tenant's approval channel forever, unauthenticated. That is a phishing surface pointed directly at the people who approve payments, so it belongs in this inventory even though it never enters a SOPS file (it's per-tenant config, like the SCIM bearer above).
+
+Tenant admin self-serves, admin-only, on `/organization` → **Chat Notifications**:
+
+1. **Delete the compromised webhook at the provider first** (Slack: the app's *Incoming Webhooks* page; Teams: the channel connector). *We cannot do this step* — the URL is issued by them and revoked by them. Until it's revoked there, the old URL still works no matter what we store.
+2. Create a replacement webhook at the provider and copy the new URL.
+3. `PUT /api/organization/chat-notifications/webhook` with the new URL. The replacement is **atomic**.
+4. If you need containment *before* you have a replacement, `DELETE /api/organization/chat-notifications/webhook` instead. The adapters already fail closed with no URL (a no-op plus a PII-free warning), so the fan-out stops immediately and the rest of the org's chat config is left alone. Idempotent.
+
+**Unlike the outbound-webhook signing secret above, there is deliberately no grace period.** That one rotates an HMAC *verifier* held by a counterparty, so an overlap window lets the receiver switch keys without dropping deliveries. This is a *destination*: we POST to exactly one URL, nobody else holds the old value, and keeping it live would mean posting every approval event into the compromised channel as well. An overlap here would extend the leak, not smooth a cutover.
+
+Nothing is "shown once" either — we don't mint this value, the provider does, so the admin already has it. **No endpoint ever returns the stored URL**; reads report only whether one is configured plus its bare hostname (`hooks.slack.com`), which is enough to answer "where does our approval channel post?" during an incident without handing back the token.
+
+Audited as `organization.chat_webhook_rotated` on both set/replace and removal (flagged `removed`), recording the previous and new **hostnames** only — never the URL. One action name covers the credential's whole lifecycle so an incident can be reconstructed with a single grep. Mechanics: [notifications.md](../backend/docs/notifications.md) § Rotating the webhook URL.
+
 ---
 
 ## Logging + audit
@@ -128,6 +146,7 @@ Every rotation must leave a paper trail:
 - **Code rotations** (`FEOH_SECRET_KEY`, third-party keys) — visible in git history because they touch `backend/.env.sops`. The rotator notes the secret name + date in the commit message (don't mention values).
 - **AWS rotations** (KMS, RDS) — CloudTrail captures the API call. Compliance vendor pulls it as evidence.
 - **Tenant rotations** (SCIM, OIDC) — application audit log writes a `tenant.scim_token_rotated` / `tenant.sso_secret_rotated` row (auth audit logging is on the SOC 2 prereq list — see `docs/soc2-readiness.md` § Logging).
+- **Tenant chat-webhook rotations** — `organization.chat_webhook_rotated` into the tenant trail, hostnames only. This one is worth pulling as evidence in its own right: it is the only record that a leaked approval-channel credential was replaced, and before the endpoint existed the change was an untracked hand-edit of the settings JSON.
 
 ---
 

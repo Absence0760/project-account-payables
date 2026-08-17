@@ -151,6 +151,67 @@ unknown key falls back to `mock` and never raises.
   **fail closed** when it's absent: a no-op + a PII-free warning, never an
   exception. There is **no hardcoded fallback** webhook URL.
 
+The shape rules for this block — it is write-only, a config save preserves it,
+and nothing derived from it may be logged beyond its hostname — live in the pure
+`services/chat_notifications_config`, which is its single owner. Don't reach
+into the raw dict from a new caller; go through `safe_status` / `apply_config` /
+`apply_webhook_url`.
+
+### Managing it — `/api/organization/chat-notifications`
+
+Admin-only, JWT-gated, every mutation audited (`api/chat_notifications.py`,
+mounted under `/api/organization/...` the same way `api/email_intake.py` hangs
+its admin surface there):
+
+| Endpoint | What it does |
+|---|---|
+| `GET /api/organization/chat-notifications` | `enabled` / `provider` / `events`, plus `webhook_configured` + `webhook_host` and the registry-derived `supported_providers` / `supported_events`. **Never the URL.** |
+| `PUT /api/organization/chat-notifications` | Update the non-credential settings. Validates the provider against the live adapter registry and every event key against `CHAT_EVENT_TYPES` (422 on an unknown one — a typo would otherwise persist as a toggle that reads as configured and does nothing). **Preserves `webhook_url`.** Audits `organization.chat_notifications_updated`. |
+| `PUT /api/organization/chat-notifications/webhook` | Set or replace the credential. Audits `organization.chat_webhook_rotated`. |
+| `DELETE /api/organization/chat-notifications/webhook` | Revoke it. Idempotent. Same audit action, flagged `removed: true`. |
+
+The read is admin-only too — unlike branding / data-residency, nothing in the
+app renders from this, and the response carries the webhook's hostname, which is
+closer to the credential than any non-admin role needs.
+
+### Rotating the webhook URL
+
+The URL is the credential for both real providers: whoever holds the string can
+post arbitrary content into the customer's approval channel forever, with no
+authentication — a phishing surface aimed squarely at the people who approve
+payments. Three properties make that recoverable, and each is deliberate:
+
+- **Write-only.** No endpoint returns the stored URL. Reads report whether one
+  is set plus its bare **hostname** — the token lives in the path (Slack
+  `/services/T…/B…/<token>`, Teams `/webhookb2/<guid>@<guid>/…`), so the
+  hostname answers "where does our approval channel post?" during an incident
+  without handing back the capability. That is also the only thing that reaches
+  the audit trail, which is shipped to CloudWatch and an S3 Object Lock WORM
+  bucket — a credential written there would be replicated *and* undeletable.
+- **No overlap window**, unlike `POST /api/webhooks/{id}/rotate-secret`. That
+  rotates an HMAC *signing secret* — a verifier held by a counterparty, so an
+  overlap lets the receiver switch keys with no dropped deliveries. This is a
+  *destination*: we POST to exactly one URL, nobody else holds the old value,
+  and keeping it live would mean posting every approval event into the
+  compromised channel too. The overlap would extend the leak, not smooth a
+  cutover. The replacement is atomic, and there is no `previous_*` slot to
+  leave a retired URL receiving.
+- **Nothing is "shown once."** We don't mint this value; the customer creates
+  the incoming webhook at Slack / Teams and pastes it, so they already hold it.
+  There is no one-time reveal to design around.
+- **Revoking the old URL at the provider is the customer's step** and we can't
+  do it for them. Until they delete it there, the old URL still works no matter
+  what we store. The operator procedure is in
+  [../../docs/secrets-rotation.md](../../docs/secrets-rotation.md)
+  § Per-tenant chat-notification webhook URL.
+
+The write path runs the **same** `is_public_url` SSRF rule the adapters apply at
+send time, so a URL that saves is a URL that will actually post — a write-path
+guard with different rules would let an admin store a target that quietly never
+fires. Every refusal answers with one generic, value-free 422: FastAPI's default
+validation body echoes the offending `input`, so the URL field carries no
+Pydantic constraints and all checks run in the handler instead.
+
 ### Wiring
 
 `notification_dispatch.notify_event` dispatches chat **after** the per-recipient
@@ -388,6 +449,17 @@ push setup). See `mobile/CLAUDE.md`.
   (httpx mocked, no network), fail-closed when no webhook URL, PII absent from
   the rendered message, and `_send_chat_best_effort` swallowing a send failure /
   honouring the enable + per-event gate (all pure / mocked — no DB).
+- `tests/test_chat_notifications_config.py` — the pure settings-block owner:
+  `safe_status` structurally cannot emit the URL, `webhook_host` returns the
+  hostname and never the token-bearing path/query, `apply_config` preserves the
+  credential, `apply_webhook_url` replaces atomically with no overlap slot and
+  removes the key rather than storing `""` (no DB, no network).
+- `tests/test_chat_notifications_admin.py` — the admin surface: admin-only on
+  every verb *including* the read, the URL absent from every response body and
+  from every refusal body, config-save preserves the credential, rotate replaces
+  atomically, delete revokes idempotently without disturbing the rest of the
+  config, both webhook verbs audit hostnames only, the SSRF gate matches the
+  sender's, and tenant isolation (real DB).
 - `tests/test_vendor_notification_prefs.py` — vendor prefs: pure mapping
   (`prefs_to_response` / `apply_pref_update`), the GET/PATCH portal endpoints
   (vendor-scoped, auth enforced, audited, caller-only), and the dispatch

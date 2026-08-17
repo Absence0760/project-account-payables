@@ -22,6 +22,7 @@ from app.api import (
     cards,
     cash_flow,
     catalogs,
+    chat_notifications,
     contracts,
     credit_memos,
     dashboard,
@@ -400,6 +401,9 @@ app.include_router(dashboard.router, prefix="/api")
 app.include_router(analytics.router, prefix="/api")
 app.include_router(assistant.router, prefix="/api")
 app.include_router(organization.router, prefix="/api")
+# Hangs off /api/organization/chat-notifications (its own module — see
+# api/chat_notifications.py; same shape as email_intake.admin_router).
+app.include_router(chat_notifications.router, prefix="/api")
 app.include_router(partner.router, prefix="/api")
 app.include_router(payments.router, prefix="/api")
 app.include_router(signup.router, prefix="/api")
