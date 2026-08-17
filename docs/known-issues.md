@@ -5,15 +5,61 @@ names the root cause, the evidence, blast radius, and a recommended fix
 approach — this is a staging area for real problems, not a place to let them
 go stale. See root `CLAUDE.md` guard rail 6 (no dangling deferred findings).
 
-**One entry is open** (the over-range settlement amount, below). Everything
-after it is a `~~struck-through~~` resolved stub, kept because the *diagnosis*
-is the expensive part and is worth not re-deriving. Add a new entry above them
-when a defect is diagnosed but can't be fixed in the same session.
+**Two entries are open** (the foreign-loop dispatchers and the over-range
+settlement amount, below). Everything after them is a `~~struck-through~~`
+resolved stub, kept because the *diagnosis* is the expensive part and is worth
+not re-deriving. Add a new entry above them when a defect is diagnosed but
+can't be fixed in the same session.
 
 **Scope:** *diagnosed defects* only. A deferral that isn't a defect — blocked on
 a credential, an operator step on merged code, or sized-but-unstarted work —
 goes to [followups.md](followups.md). Reasoning behind a deliberate design call
 goes to [decisions.md](decisions.md).
+
+---
+
+## `extraction_dispatch` / `erp_dispatch` still run on a foreign event loop — OPEN, diagnosed 2026-08-17
+
+**Found by** CI, the expensive way. The identical defect in `payment_erp_sync`
+is FIXED (it now schedules on the app's loop); these two siblings still use the
+old pattern and were left alone deliberately.
+
+**Root cause.** All three `*_dispatch` paths ran their work in a detached
+thread on a brand-new event loop (`asyncio.new_event_loop()`). Anything that
+work reaches which touches `database.control_session_factory` or the cached
+`_tenant_engines` is using an engine bound to the loop that imported it — the
+app's main loop. Cross-loop use of an asyncpg pool fails in both directions: it
+raises `RuntimeError: got Future attached to a different loop`, **and** it can
+return the half-used connection to the pool the request path draws from, so
+unrelated requests hang behind it.
+
+**Evidence it is real, not theoretical.** In `payment_erp_sync` this produced
+seven `RuntimeError`s in one CI run and nine failing e2e specs whose only
+symptom was `PATCH /api/organization` timing out — endpoints with no connection
+to payments at all. The failing call was
+`notification_dispatch._load_recipients`, reached from `transition_invoice`'s
+notification hook. Both remaining dispatchers reach `transition_invoice` too
+(`erp_dispatch` → `services/erp` → `sending_to_erp`/`sent_to_erp`;
+`extraction_dispatch` → `pending`/`ready_for_review`/`failed`).
+
+**Why it may not have bitten yet.** `_load_recipients` returns early on an
+empty id list, so a transition whose event resolves to no recipients never
+touches the control plane. That makes the blast radius depend on notification
+configuration rather than on code — which is exactly why it should not be left
+to chance.
+
+**Durable fix.** Same as the one applied to `payment_erp_sync`: schedule on the
+caller's loop (`asyncio.create_task`) with a strong reference, unless the work
+is genuinely blocking. `extraction_dispatch` is the one case that may truly
+need a worker thread (image/PDF processing is CPU-bound); if it keeps the
+thread, then everything reachable from it must construct its own engines inside
+that loop rather than importing the shared ones — the rule `_sync_payments`
+already follows for its OWN engines and broke only via the notification hook.
+
+**Trigger.** Before enabling `FEOH_ERP_MODE=local` on a deployed tenant with
+notifications on, or with the next change that touches either dispatcher.
+`backend/tests/test_payment_erp_sync.py::test_dispatch_runs_on_the_callers_loop_not_a_new_one`
+is the template for the regression test each needs.
 
 ---
 
