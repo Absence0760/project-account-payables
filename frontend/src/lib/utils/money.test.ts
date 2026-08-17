@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isPositiveAmount, sumMoney } from './money';
+import { isNegativeAmount, isPositiveAmount, parseMoneyForLayout, sumMoney } from './money';
 
 // sumMoney sums exact Decimal-string money amounts without going through
 // JS floats. The bug it fixes: `sum + Number(amount)` reduces coerce each
@@ -93,5 +93,76 @@ describe('isPositiveAmount', () => {
 		expect(isPositiveAmount('not-a-number')).toBe(false);
 		expect(isPositiveAmount(Number.NaN)).toBe(false);
 		expect(isPositiveAmount(Number.POSITIVE_INFINITY)).toBe(false);
+	});
+});
+
+// `parseMoneyForLayout` is the ONE sanctioned money-string → number
+// conversion: chart geometry and ordering, never a rendered figure. It exists
+// so the CFO surfaces can keep their bar charts while every money field on
+// the wire becomes an exact decimal string.
+
+describe('parseMoneyForLayout', () => {
+	it('parses an exact decimal string', () => {
+		expect(parseMoneyForLayout('1234.50')).toBe(1234.5);
+	});
+
+	it('passes a number through (endpoints not yet migrated off float)', () => {
+		expect(parseMoneyForLayout(1234.5)).toBe(1234.5);
+	});
+
+	it('parses a negative amount', () => {
+		expect(parseMoneyForLayout('-42.00')).toBe(-42);
+	});
+
+	it('returns 0 for absent / empty input so a chart width is never NaN', () => {
+		expect(parseMoneyForLayout(null)).toBe(0);
+		expect(parseMoneyForLayout(undefined)).toBe(0);
+		expect(parseMoneyForLayout('')).toBe(0);
+	});
+
+	it('returns 0 for unparseable input rather than throwing on a render path', () => {
+		expect(parseMoneyForLayout('not-a-number')).toBe(0);
+		expect(parseMoneyForLayout(Number.NaN)).toBe(0);
+		expect(parseMoneyForLayout(Number.POSITIVE_INFINITY)).toBe(0);
+	});
+
+	it('keeps a Math.max scale usable across a mixed-scale series', () => {
+		// The exact shape the CFO forecast chart uses: derive the scale from
+		// the series, then each bar's width as a share of it.
+		const series = ['0', '1500.00', '250.5'];
+		const max = Math.max(1, ...series.map(parseMoneyForLayout));
+		expect(max).toBe(1500);
+		expect((parseMoneyForLayout(series[2]) / max) * 100).toBeCloseTo(16.7, 1);
+	});
+});
+
+// `isNegativeAmount` mirrors `isPositiveAmount` — a predicate that decides
+// whether to tint a figure as a loss, never what the figure reads as.
+
+describe('isNegativeAmount', () => {
+	it('accepts a negative string-Decimal or number', () => {
+		expect(isNegativeAmount('-0.01')).toBe(true);
+		expect(isNegativeAmount(-1500)).toBe(true);
+	});
+
+	it('rejects zero in either shape', () => {
+		expect(isNegativeAmount('0.00')).toBe(false);
+		expect(isNegativeAmount(0)).toBe(false);
+		// -0 is zero, not a loss.
+		expect(isNegativeAmount('-0.00')).toBe(false);
+	});
+
+	it('rejects a positive amount', () => {
+		expect(isNegativeAmount('10.00')).toBe(false);
+		expect(isNegativeAmount(10)).toBe(false);
+	});
+
+	it('rejects absent / unparseable figures instead of throwing', () => {
+		expect(isNegativeAmount(null)).toBe(false);
+		expect(isNegativeAmount(undefined)).toBe(false);
+		expect(isNegativeAmount('')).toBe(false);
+		expect(isNegativeAmount('not-a-number')).toBe(false);
+		expect(isNegativeAmount(Number.NaN)).toBe(false);
+		expect(isNegativeAmount(Number.NEGATIVE_INFINITY)).toBe(false);
 	});
 });
