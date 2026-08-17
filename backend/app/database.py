@@ -1,5 +1,6 @@
-from collections.abc import AsyncGenerator
-from contextlib import AsyncExitStack
+from collections.abc import AsyncGenerator, Mapping
+from contextlib import AsyncExitStack, asynccontextmanager
+from contextvars import ContextVar
 
 from fastapi import Request
 from sqlalchemy.ext.asyncio import (
@@ -60,7 +61,99 @@ control_engine = create_async_engine(
     max_overflow=20,
 )
 
-control_session_factory = async_sessionmaker(control_engine, expire_on_commit=False)
+_default_control_session_factory = async_sessionmaker(control_engine, expire_on_commit=False)
+
+
+# ---------------------------------------------------------------------------
+# Ambient (dispatcher-scoped) engines
+# ---------------------------------------------------------------------------
+# `control_engine` and `_tenant_engines` belong to the event loop that first
+# drives them — in a running app, the one uvicorn owns. An asyncpg connection
+# is bound to its loop, so using one of these from a SECOND loop does not
+# merely fail: it raises `RuntimeError: got Future attached to a different
+# loop` AND can hand the half-used connection back to the pool the request
+# path draws from, after which unrelated requests hang on it. That is not
+# hypothetical — it took nine e2e specs red via `payment_erp_sync`, presenting
+# as `PATCH /api/organization` timing out (see docs/known-issues.md).
+#
+# `extraction_dispatch` genuinely needs its own loop in a worker thread: it
+# runs PyMuPDF rendering and Tesseract OSD, which are synchronous CPU work that
+# would stall the request loop. So the fix cannot be "never use another loop" —
+# it has to be "a foreign loop never touches these engines".
+#
+# The chokepoint is here rather than at the ~70 call sites, because the danger
+# is *reaching for a global*, and a new call site would reintroduce it. A
+# dispatcher declares its own loop-local engines once via
+# `dispatch_engine_scope`; every `control_session_factory()` /
+# `get_tenant_engine()` beneath it — including the ones inside
+# `notification_dispatch`, `audit_dispatch` and `webhooks.dispatch` that it
+# never calls directly — transparently uses those instead.
+#
+# A ContextVar is the right carrier: a new thread starts with an EMPTY context,
+# so a worker can never leak its engines into the request path, and
+# `asyncio.create_task` copies the context, so nested work inherits them.
+_ambient_control_sessionmaker: ContextVar[async_sessionmaker | None] = ContextVar(
+    "ambient_control_sessionmaker", default=None
+)
+_ambient_tenant_engines: ContextVar[dict[str, AsyncEngine] | None] = ContextVar(
+    "ambient_tenant_engines", default=None
+)
+
+
+def control_session_factory() -> AsyncSession:
+    """Open a control-plane session valid on the CALLER's event loop.
+
+    Deliberately a function, not the `async_sessionmaker` it replaced: every
+    call site already spells it `control_session_factory()`, so the indirection
+    costs nothing and no caller had to change. Returns the ambient
+    dispatcher-scoped session when one is bound (see above), otherwise the
+    app-loop default.
+    """
+    maker = _ambient_control_sessionmaker.get() or _default_control_session_factory
+    return maker()
+
+
+def in_dispatch_scope() -> bool:
+    """True when running under a `dispatch_engine_scope`.
+
+    Which means: on a dispatcher's own, short-lived event loop, whose engines
+    are disposed and whose loop is closed the moment the job finishes. Work
+    that intends to OUTLIVE the current call — a fire-and-forget task — must
+    not be started here; it would be abandoned mid-flight with its engines
+    pulled out from under it. Callers with a durable fallback (the webhook
+    delivery sweep) should take it instead.
+    """
+    return _ambient_control_sessionmaker.get() is not None
+
+
+@asynccontextmanager
+async def dispatch_engine_scope(
+    *,
+    control_sessionmaker: async_sessionmaker,
+    tenant_engines: Mapping[str, AsyncEngine] | None = None,
+) -> AsyncGenerator[None]:
+    """Bind loop-local engines for everything running inside this block.
+
+    For a dispatcher that runs on its own event loop. `control_sessionmaker`
+    and any `tenant_engines` passed in must have been created on THAT loop; the
+    caller keeps ownership of them (they are not disposed here, because the
+    dispatcher is still using them for its own work). Engines this scope has to
+    create itself — a tenant DB the caller never opened, which `dispatch_audit`
+    can ask for — are owned here and disposed on exit, so a worker can't leak a
+    pool per job.
+    """
+    pool: dict[str, AsyncEngine] = dict(tenant_engines or {})
+    borrowed = set(pool)
+    control_token = _ambient_control_sessionmaker.set(control_sessionmaker)
+    tenant_token = _ambient_tenant_engines.set(pool)
+    try:
+        yield
+    finally:
+        _ambient_control_sessionmaker.reset(control_token)
+        _ambient_tenant_engines.reset(tenant_token)
+        for name, engine in pool.items():
+            if name not in borrowed:
+                await engine.dispose()
 
 
 async def get_control_db(request: Request) -> AsyncGenerator[AsyncSession]:
@@ -92,6 +185,25 @@ def _make_tenant_url(db_name: str) -> str:
 
 
 def get_tenant_engine(db_name: str) -> AsyncEngine:
+    """Return a tenant engine valid on the CALLER's event loop.
+
+    Inside a `dispatch_engine_scope` this resolves against that scope's own
+    pool — never the module-level cache, whose engines belong to the app loop.
+    The scope-created engines are deliberately single-connection: a worker runs
+    one job at a time, and three workers × the default pool would be a large
+    share of PostgreSQL's `max_connections` for engines that live for one job.
+    """
+    ambient = _ambient_tenant_engines.get()
+    if ambient is not None:
+        if db_name not in ambient:
+            ambient[db_name] = create_async_engine(
+                _make_tenant_url(db_name),
+                echo=settings.debug,
+                pool_size=1,
+                max_overflow=0,
+            )
+        return ambient[db_name]
+
     if db_name not in _tenant_engines:
         _tenant_engines[db_name] = create_async_engine(
             _make_tenant_url(db_name),

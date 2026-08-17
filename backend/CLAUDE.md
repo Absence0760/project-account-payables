@@ -901,10 +901,58 @@ The auditor-export surface is `app/api/audit.py` (`/api/audit/export`, `/api/aud
 ## Dispatch modes
 
 Extraction, ERP push, and audit logging support two execution modes:
-- **local** (default) — jobs queued in-process; pool of 3 worker threads drains the queue. Each worker creates fresh engines with `pool_size=1, max_overflow=0` to avoid exhausting PostgreSQL connections.
+- **local** (default) — in-process. See the loop rule below for *how*.
 - **lambda** — sends message to SQS, processed by Lambda handler
 
 Files: `*_dispatch.py` (router), `*_lambda.py` (Lambda handler).
+
+### The event-loop rule (read before adding a dispatcher)
+
+`app/database.py`'s `control_engine` and `_tenant_engines` belong to the event
+loop that first drives them — in a running app, uvicorn's. **An asyncpg
+connection cannot cross event loops**, and the failure is not contained: it
+raises `RuntimeError: got Future attached to a different loop` *and* can return
+the half-used connection to the pool the **request path** draws from, after
+which unrelated endpoints hang on it. That is exactly how a broken
+`payment_erp_sync` presented — as `PATCH /api/organization` timing out, in e2e
+specs that had already passed their own assertions.
+
+What makes this easy to reintroduce: a dispatcher creating its own engines
+(they all did) is **not sufficient**. `transition_invoice` fires notification,
+audit and webhook hooks, and each opens its *own* control-plane session — and
+`dispatch_audit` its own tenant engine — by reaching for the module global.
+That is code a dispatcher never calls directly and cannot hand a session to.
+
+So there are exactly two correct shapes:
+
+| Shape | When | Who |
+|---|---|---|
+| `asyncio.create_task` on the caller's loop | the work is `await`-only I/O | `erp_dispatch`, `payment_erp_sync` |
+| worker thread + own loop, wrapped in `database.dispatch_engine_scope(...)` | the work genuinely blocks | `extraction_dispatch` |
+
+`extraction_dispatch` keeps its 3-worker pool because extraction runs PyMuPDF
+rendering and Tesseract OSD — synchronous CPU work that would stall the request
+loop — and because the pool doubles as the concurrency limiter that keeps bulk
+uploads under the AI providers' rate limits. It declares its loop-local engines
+once via `dispatch_engine_scope`; every `control_session_factory()` /
+`get_tenant_engine()` underneath then resolves to those instead of the globals,
+with no per-call-site change. Engines the scope creates itself are disposed on
+exit; ones passed in are the caller's to dispose.
+
+`control_session_factory` is therefore a **function**, not the
+`async_sessionmaker` it used to be — every call site already spelled it
+`control_session_factory()`, so nothing changed for callers. Code that needs to
+rebind the underlying sessionmaker (the pytest harness's
+`.configure(bind=...)`) must target `_default_control_session_factory`.
+
+Fire-and-forget tasks are held in a module-level set: `asyncio` keeps only a
+weak reference to a running task, so one with no other referent can be
+collected mid-await and vanish silently.
+
+Guarded by `tests/test_dispatch_engine_scope.py` (the indirection reaches
+`notification_dispatch` / `audit_dispatch` without either being edited, and a
+worker's scope never leaks into the request context) plus the loop-identity
+tests in `tests/test_erp_dispatch.py` and `tests/test_payment_erp_sync.py`.
 
 ## Authentication (`api/deps.py`)
 

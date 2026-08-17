@@ -144,13 +144,26 @@ async def _run_local(
 ) -> None:
     """Run extraction in-process with its own DB session and engine.
 
-    This runs in a background thread with its own event loop,
-    so we must create fresh engines (not reuse cached ones from the main loop).
+    This runs in a worker thread with its own event loop, so it must create
+    fresh engines — the module-level ones in `app.database` belong to the app's
+    loop, and an asyncpg connection cannot cross loops.
+
+    Creating them here was never enough on its own, though. The extraction
+    reaches `transition_invoice`, whose notification / audit / webhook hooks
+    each open their OWN control-plane session (and `dispatch_audit` its own
+    tenant engine) by reaching for those module-level globals — code this
+    function never calls directly and cannot pass a session to. Those calls ran
+    on the app's engines from this foreign loop, which raises and can poison
+    the connection pool the request path shares.
+
+    `dispatch_engine_scope` is what closes that: it binds these loop-local
+    engines for everything running underneath, so the hooks resolve to them
+    without knowing they exist. See `database.dispatch_engine_scope`.
     """
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-    from app.database import _make_tenant_url
+    from app.database import _make_tenant_url, dispatch_engine_scope
     from app.models.invoice import Invoice
     from app.models.organization import Organization
     from app.services.extraction import run_extraction
@@ -178,7 +191,19 @@ async def _run_local(
             tenant_factory = async_sessionmaker(tenant_engine, expire_on_commit=False)
 
             try:
-                async with tenant_factory() as db:
+                # Bind these loop-local engines for the whole extraction, so the
+                # transition hooks (notifications / audit / webhooks) resolve to
+                # them instead of the app-loop globals. `tenant_engines` seeds
+                # the scope with the engine we already opened, so `dispatch_audit`
+                # writing this tenant's audit row reuses it rather than standing
+                # up a second pool for the same database.
+                async with (
+                    dispatch_engine_scope(
+                        control_sessionmaker=ctrl_factory,
+                        tenant_engines={org.db_name: tenant_engine},
+                    ),
+                    tenant_factory() as db,
+                ):
                     try:
                         result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
                         invoice = result.scalar_one_or_none()
@@ -263,11 +288,14 @@ async def _mark_failed(invoice_id: uuid.UUID, org_id: uuid.UUID, reason: str) ->
     """Transition an invoice to 'failed' using a fresh DB session.
 
     Used by the worker when a job times out or crashes outside ``_run_local``.
+    Runs under its own `dispatch_engine_scope` for the same reason `_run_local`
+    does — this is still the worker's foreign loop, and `transition_invoice`
+    fires the same hooks that reach for the app-loop engines.
     """
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-    from app.database import _make_tenant_url
+    from app.database import _make_tenant_url, dispatch_engine_scope
     from app.models.invoice import Invoice, InvoiceStatus
     from app.models.organization import Organization
 
@@ -284,7 +312,13 @@ async def _mark_failed(invoice_id: uuid.UUID, org_id: uuid.UUID, reason: str) ->
         tenant_engine = create_async_engine(tenant_url, pool_size=1, max_overflow=0)
         try:
             tenant_factory = async_sessionmaker(tenant_engine, expire_on_commit=False)
-            async with tenant_factory() as db:
+            async with (
+                dispatch_engine_scope(
+                    control_sessionmaker=ctrl_factory,
+                    tenant_engines={org.db_name: tenant_engine},
+                ),
+                tenant_factory() as db,
+            ):
                 from app.services.workflow_engine import transition_invoice
 
                 result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))

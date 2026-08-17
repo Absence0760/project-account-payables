@@ -2,12 +2,16 @@
 
 import asyncio
 import json
-import threading
 import uuid
 
 import boto3
 
 from app.config import settings
+
+#: Strong references to in-flight local sends. `asyncio` keeps only a WEAK
+#: reference to a running task, so a fire-and-forget task with no other
+#: referent can be collected mid-await and disappear silently.
+_dispatch_tasks: set[asyncio.Task] = set()
 
 
 async def dispatch_erp(
@@ -19,25 +23,22 @@ async def dispatch_erp(
     if settings.erp_mode == "lambda":
         _send_to_sqs(invoice_id, org_id, actor_id)
     else:
-        thread = threading.Thread(
-            target=_run_in_thread,
-            args=(invoice_id, org_id, actor_id),
-            daemon=True,
+        # Scheduled on the CALLER's loop, deliberately not a detached thread
+        # running a second one. The send reaches `transition_invoice`, whose
+        # notification / audit / webhook hooks resolve through the app-loop
+        # engines in `app.database`; driving those from a foreign loop raises
+        # and can poison the pool the request path shares (see
+        # `database.dispatch_engine_scope`).
+        #
+        # Safe to run here because the whole send is `await`-only I/O: httpx to
+        # the ERP and asyncpg to the DB, with `asyncio.sleep` between retries.
+        # `extraction_dispatch` keeps its worker threads precisely because that
+        # is NOT true of extraction.
+        task = asyncio.create_task(
+            _run_local(invoice_id, org_id, actor_id), name=f"erp-send-{invoice_id}"
         )
-        thread.start()
-
-
-def _run_in_thread(
-    invoice_id: uuid.UUID,
-    org_id: uuid.UUID,
-    actor_id: uuid.UUID,
-) -> None:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(_run_local(invoice_id, org_id, actor_id))
-    finally:
-        loop.close()
+        _dispatch_tasks.add(task)
+        task.add_done_callback(_dispatch_tasks.discard)
 
 
 def _send_to_sqs(
@@ -96,17 +97,23 @@ async def _run_local(
         tenant_engine = create_async_engine(tenant_url)
         tenant_factory = async_sessionmaker(tenant_engine, expire_on_commit=False)
 
-        async with tenant_factory() as db:
-            try:
-                result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
-                invoice = result.scalar_one_or_none()
-                if not invoice:
-                    return
+        try:
+            async with tenant_factory() as db:
+                try:
+                    result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
+                    invoice = result.scalar_one_or_none()
+                    if not invoice:
+                        return
 
-                await send_to_erp_internal(db, invoice, actor_id=actor_id, erp_config=erp_config)
-            except Exception:
-                await db.rollback()
-
-        await tenant_engine.dispose()
+                    await send_to_erp_internal(
+                        db, invoice, actor_id=actor_id, erp_config=erp_config
+                    )
+                except Exception:
+                    await db.rollback()
+        finally:
+            # `finally`, not a trailing statement: the early `return` above and
+            # any raise from the session's own exit would otherwise skip it and
+            # leak a whole connection pool per send.
+            await tenant_engine.dispose()
     finally:
         await ctrl_engine.dispose()
