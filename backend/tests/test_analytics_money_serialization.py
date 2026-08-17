@@ -382,28 +382,28 @@ def test_money_preserves_scale_and_passes_none_through():
     assert _money(None) is None
 
 
-def test_analytics_module_has_no_second_money_serialiser():
-    """`_money` is the module's ONE money serialiser.
+def _bare_str_calls(source: str) -> list[str]:
+    """Find every bare `str(...)` in `source` that could be serialising money.
 
-    A source scan, because the failure it guards is a *new* response field
-    hand-serialised with `str(...)` — which works, looks right in review, and
-    silently reintroduces the scientific-notation and `"None"` holes `_money`
-    closes. `Decimal(str(...))` is the opposite direction (parsing a DB scalar
-    INTO a Decimal) and is fine, as is `str()` on a UUID.
+    Two exclusions, both narrow on purpose:
 
-    Uses the AST rather than a line regex so a docstring or comment mentioning
-    `str()` can't trip it — the scan must be about code, not prose.
+      - `Decimal(str(x))` — the opposite direction (parsing a DB scalar INTO a
+        Decimal), and the module's established idiom.
+      - `str(<name>_id)` / `str(<expr>.id)` — a UUID, not money. Matched on a
+        real `_id` suffix (or the bare name `id`), NOT on the two characters
+        `"id"`: `"total_paid"`, `"amount_paid"` and `"unpaid"` all end in
+        `i`+`d`, and those are exactly the names a new money field in THIS
+        module would carry (`paid_in_period` already exists). A loose suffix
+        check would have opened a hole in the middle of the guard.
+
+    Works on the AST, not on lines, so a docstring or comment mentioning
+    `str()` can't trip it — the scan is about code, not prose.
     """
     import ast
-    from pathlib import Path
 
-    import app.api.analytics as analytics_module
-
-    source = Path(analytics_module.__file__).read_text()
     tree = ast.parse(source)
 
-    # Every `str(...)` call that is the direct argument of a `Decimal(...)`
-    # call — the parse-a-DB-scalar idiom, not serialisation.
+    # `str(...)` calls that are a direct argument of a `Decimal(...)` call.
     inside_decimal: set[int] = set()
     for node in ast.walk(tree):
         if (
@@ -412,12 +412,14 @@ def test_analytics_module_has_no_second_money_serialiser():
             and node.func.id == "Decimal"
         ):
             for arg in node.args:
-                if isinstance(arg, ast.Call) and isinstance(arg.func, ast.Name):
-                    if arg.func.id == "str":
-                        inside_decimal.add(id(arg))
+                if (
+                    isinstance(arg, ast.Call)
+                    and isinstance(arg.func, ast.Name)
+                    and arg.func.id == "str"
+                ):
+                    inside_decimal.add(id(arg))
 
-    def _is_identifier_arg(call: ast.Call) -> bool:
-        """`str(inv_id)` / `str(e.id)` — a UUID, not money."""
+    def _is_uuid_arg(call: ast.Call) -> bool:
         if len(call.args) != 1:
             return False
         arg = call.args[0]
@@ -428,18 +430,63 @@ def test_analytics_module_has_no_second_money_serialiser():
             if isinstance(arg, ast.Attribute)
             else ""
         )
-        return name.endswith("id")
+        return name == "id" or name.endswith("_id")
 
-    offenders = [
+    return [
         f"line {node.lineno}: {ast.unparse(node)}"
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "str"
         and id(node) not in inside_decimal
-        and not _is_identifier_arg(node)
+        and not _is_uuid_arg(node)
     ]
+
+
+def test_analytics_module_has_no_second_money_serialiser():
+    """`_money` is the module's ONE money serialiser.
+
+    A source scan, because the failure it guards is a *new* response field
+    hand-serialised with `str(...)` — which works, looks right in review, and
+    silently reintroduces the scientific-notation and `"None"` holes `_money`
+    closes.
+    """
+    from pathlib import Path
+
+    import app.api.analytics as analytics_module
+
+    offenders = _bare_str_calls(Path(analytics_module.__file__).read_text())
     assert not offenders, (
         "bare `str(...)` in api/analytics.py — if it is a money field it must go "
         f"through `_money`: {offenders}"
     )
+
+
+def test_the_scan_catches_a_money_str_and_spares_the_two_idioms():
+    """A test for the guard itself, because a guard with a hole is worse than
+    none — it certifies the thing it stopped checking.
+
+    The `_paid` case is the one that mattered: a bare `"id"` suffix check
+    silently exempted `str(total_paid)`, which is exactly the shape a new money
+    field in this module would take.
+    """
+    caught = _bare_str_calls(
+        """
+def f(total_paid, amount_paid, unpaid_total):
+    return {
+        "a": str(total_paid),
+        "b": str(amount_paid),
+        "c": str(unpaid_total),
+    }
+"""
+    )
+    assert len(caught) == 3, caught
+
+    spared = _bare_str_calls(
+        """
+def f(row, inv_id, e):
+    amount = Decimal(str(row.amount or 0))
+    return {"amount": _money(amount), "id": str(inv_id), "entity": str(e.id)}
+"""
+    )
+    assert spared == [], spared
