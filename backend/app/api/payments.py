@@ -67,6 +67,7 @@ from app.services.payment_runs import (
 from app.services.payment_settlement import (
     SettlementVerification,
     describe_discrepancy,
+    persistable_settled_amount,
     settlement_coverage,
     verify_settlement,
 )
@@ -1029,6 +1030,7 @@ async def accept_settlement(
         target_currency=(invoice.currency if invoice else None),
         source_amount=payment.source_amount,
         source_currency=payment.source_currency,
+        settled_amount_unstorable=payment.settled_amount_unstorable,
     )
     # Nothing to accept. Refusing rather than no-op'ing keeps this endpoint
     # from becoming a general-purpose "force the invoice to paid" lever: a
@@ -3106,8 +3108,20 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
                 # than writing a zero: NULL means "no figure on record" and
                 # fails OPEN in the coverage check, while a 0 would read as a
                 # total shortfall and hold every such invoice forever.
-                if settlement.settled_amount is not None:
-                    payment.settled_amount = settlement.settled_amount
+                #
+                # A figure too wide for NUMERIC(15, 2) is recorded as the
+                # `settled_amount_unstorable` flag instead. Assigning it would
+                # raise at the flush and roll back this whole transaction —
+                # including the `fraud_flag` the verdict above already decided
+                # on and the record that the payment completed — after which
+                # the processor retries into the same failure forever. The
+                # figure itself survives verbatim on the audit row below.
+                storable, unstorable = persistable_settled_amount(settlement.settled_amount)
+                if storable is not None:
+                    payment.settled_amount = storable
+                    payment.settled_currency = settlement.settled_currency
+                if unstorable:
+                    payment.settled_amount_unstorable = True
                     payment.settled_currency = settlement.settled_currency
 
                 # Realized FX gain/loss, at the moment a foreign-currency

@@ -43,6 +43,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 
+from app.services.numeric_bounds import fits_numeric
+
 # One cent — the same band `positive_pay.DEFAULT_AMOUNT_TOLERANCE` uses for its
 # altered-cheque call and `bank_reconciliation.AMOUNT_MATCH_TOLERANCE` uses for
 # its statement match. Kept identical on purpose: three reconcilers disagreeing
@@ -272,6 +274,39 @@ COVERAGE_UNCERTAIN = "uncertain"
 REASON_NO_SETTLED_AMOUNT = "no_settled_amount_on_record"
 REASON_SETTLED_SHORT = "settled_below_every_authorized_leg"
 REASON_COVERAGE_CURRENCY_UNKNOWN = "settled_currency_matches_no_authorized_leg"
+REASON_SETTLED_AMOUNT_UNSTORABLE = "settled_amount_exceeded_the_column"
+
+#: The shape of ``payments.settled_amount``. Kept beside the code that decides
+#: what may be written into it so the two cannot drift.
+SETTLED_AMOUNT_NUMERIC = (15, 2)
+
+
+def persistable_settled_amount(amount: Decimal | None) -> tuple[Decimal | None, bool]:
+    """Split a reported figure into ``(what to store, was it unstorable)``.
+
+    ``payments.settled_amount`` is ``NUMERIC(15, 2)``. A processor reporting
+    more than 13 integer digits used to parse, verify, and then raise
+    ``NumericValueOutOfRangeError`` at the flush — taking the whole webhook
+    transaction with it, including the ``fraud_flag`` the verdict had already
+    decided on and the record that the payment completed at all. The handler
+    5xx'd and the processor retried into the identical failure, so the most
+    suspicious settlement a rail can report was the one nothing was recorded
+    about.
+
+    The unstorable case returns ``(None, True)`` rather than ``(None, False)``
+    on purpose. A bare NULL already means "no rail ever reported a figure",
+    which coverage deliberately fails OPEN on; collapsing a garbage report into
+    that would mark the invoice paid on the strength of a number we know is
+    wrong. The flag is what keeps the two distinguishable.
+
+    Both call sites — the webhook and the reconciler backstop — go through
+    here so they cannot disagree about what is storable.
+    """
+    if amount is None:
+        return None, False
+    if fits_numeric(amount, *SETTLED_AMOUNT_NUMERIC):
+        return amount, False
+    return None, True
 
 
 @dataclass(frozen=True)
@@ -306,6 +341,7 @@ def settlement_coverage(
     target_currency: str | None,
     source_amount: Decimal | None = None,
     source_currency: str | None = None,
+    settled_amount_unstorable: bool = False,
     tolerance: Decimal = SETTLEMENT_AMOUNT_TOLERANCE,
 ) -> SettlementCoverage:
     """Decide whether a recorded settlement discharges the invoice.
@@ -337,16 +373,27 @@ def settlement_coverage(
         invoice must not read as settled in full.
 
     ``uncertain``
-        A figure was reported in a currency matching no authorized leg. We
-        cannot say the invoice is covered — comparing across currencies
-        without a rate would be inventing an answer — so it holds like a
-        shortfall and a human reconciles.
+        A figure was reported that we cannot evaluate. Two ways in: it came in
+        a currency matching no authorized leg (comparing across currencies
+        without a rate would be inventing an answer), or it did not fit
+        ``payments.settled_amount`` at all and only the
+        ``settled_amount_unstorable`` flag survives (migration 0085). Either
+        way it holds like a shortfall and a human reconciles.
+
+        The unstorable case is checked FIRST and deliberately does not fall
+        through to the NULL branch below: ``settled_amount`` is NULL in both,
+        but NULL alone means "nothing was ever reported" and fails OPEN. A
+        garbage report is not an absent one, and must not be laundered into
+        "nothing contradicts this invoice being settled".
 
     Over-settlement is ``covered``: the vendor received at least what was
     authorized, so the invoice is discharged. It is still flagged by
     ``verify_settlement`` as an ``amount_mismatch`` — recording that too much
     moved is a separate concern from whether the payable is satisfied.
     """
+    if settled_amount_unstorable:
+        return SettlementCoverage(state=COVERAGE_UNCERTAIN, reason=REASON_SETTLED_AMOUNT_UNSTORABLE)
+
     if settled_amount is None:
         return SettlementCoverage(state=COVERAGE_COVERED, reason=REASON_NO_SETTLED_AMOUNT)
 

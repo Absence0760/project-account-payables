@@ -386,6 +386,7 @@ async def _sync_one_leg(
                 target_currency=invoice.currency,
                 source_amount=payment.source_amount,
                 source_currency=payment.source_currency,
+                settled_amount_unstorable=payment.settled_amount_unstorable,
             )
             if not coverage.completes_invoice:
                 logger.info(

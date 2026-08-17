@@ -30,6 +30,7 @@ from app.database import _make_tenant_url, control_session_factory
 from app.models.organization import Organization
 from app.models.payment import Payment
 from app.services.payment_adapters import PaymentStatus, get_payment_adapter
+from app.services.payment_settlement import persistable_settled_amount
 from app.services.sweep_health import SWEEP_PAYMENT_RECONCILER, run_sweep_loop
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,16 @@ async def _settle_from_poll(*, payment, adapter) -> None:
         )
         return
     if report.available and report.amount is not None:
-        payment.settled_amount = report.amount
+        # Same splitter the webhook uses, so the two cannot disagree about what
+        # `payments.settled_amount` can hold. A figure too wide for its
+        # NUMERIC(15, 2) is recorded as the flag instead of raising at the
+        # flush — here that would abort the sweep's whole tick, not just this
+        # payment. See `payment_settlement.persistable_settled_amount`.
+        storable, unstorable = persistable_settled_amount(report.amount)
+        if storable is not None:
+            payment.settled_amount = storable
+        if unstorable:
+            payment.settled_amount_unstorable = True
         payment.settled_currency = report.currency
 
 

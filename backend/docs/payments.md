@@ -714,7 +714,7 @@ verifier's *did the rail report what we authorized?*.
 |---|---|---|
 | `covered` | some authorized leg is satisfied, **or** nothing was ever reported | invoice proceeds to `paid` |
 | `short` | a figure was reported and falls below every currency-compatible leg by more than a cent | invoice held at `payment_scheduled` |
-| `uncertain` | reported in a currency matching no authorized leg | invoice held at `payment_scheduled` |
+| `uncertain` | reported in a currency matching no authorized leg, **or** reported a figure the column cannot hold | invoice held at `payment_scheduled` |
 
 Over-settlement is `covered`: the vendor is not short, so the payable is
 discharged even though the verifier still raises `amount_mismatch` on the same
@@ -722,6 +722,35 @@ numbers. And a NULL `settled_amount` is `covered` — it means an amount-free
 rail or a row predating `0083`, and treating "we don't know" as a shortfall
 would hold every invoice those rails settle. Absence is not evidence, exactly
 as the verifier treats a missing amount as `unverified`.
+
+##### A figure the column cannot hold
+
+`settled_amount` is `NUMERIC(15, 2)` — 13 integer digits. A processor reporting
+more than that used to parse (`payment_adapters.parse_amount` guards only
+against values so large that `quantize` itself raises), verify, and then raise
+`NumericValueOutOfRangeError` at the flush. That took the **whole webhook
+transaction** with it: the `fraud_flag` the verdict had already decided on was
+rolled back, the payment's completion was never recorded, the handler 5xx'd,
+and the processor retried into the identical failure. The single most
+suspicious settlement a rail can report was the one nothing was recorded about.
+
+`payment_settlement.persistable_settled_amount` is now the one splitter both
+writers use (the webhook and the reconciler backstop, so they cannot disagree
+about what is storable). An over-range figure leaves `settled_amount` NULL and
+sets `settled_amount_unstorable` (migration `0085`) instead.
+
+**Why a flag and not a NULL, and not a wider column.** NULL already means "no
+rail ever reported a figure" and deliberately fails OPEN; collapsing a garbage
+report into that would mark the invoice paid on the strength of a number we
+know is wrong. Widening the column just moves the cliff — no legitimate
+settlement is 14 integer digits, so a value that doesn't fit is a corrupt or
+hostile report, not a big payment. The flag makes coverage return `uncertain`,
+so the invoice holds behind the same two exits a shortfall has.
+
+The figure itself is not lost: `SettlementVerification.as_details` writes it as
+an exact decimal string onto the append-only `audit_log` row, whose `details`
+is JSONB and has no range limit. **The column carries the decision input; the
+audit row carries the evidence.**
 
 **A held invoice has two exits**, and having them is what makes the hold safe:
 
