@@ -81,6 +81,29 @@ due date. Adapters `quote(...)` terms and `request_funding(...)`.
 - `c2fo` — skeleton for a real SCF marketplace; **fails closed** without a key
   (no hardcoded secret). Selected per-org via `Organization.settings.financing.provider`.
 
+**Refusing is a return value, not an exception.** `base.FinancingAdapter.quote`
+is explicit: an implementation returns an ineligible `FinancingQuote` rather
+than raising when the provider declines — *a missing credential is the one case
+that may fail closed (raise)*. The `c2fo` skeleton used to `raise
+NotImplementedError` from both `quote` and `request_funding` even when fully
+credentialled, which nothing catches today only because the family has no
+production caller: the first one wired up would take a 500 from the one path
+whose entire contract is that it answers "not eligible". It now returns
+`eligible=False` / `funded=False` carrying the PII-free machine reason
+`provider_not_implemented`, with every money field zeroed and no `funding_date`
+claimed. `request_funding`'s `status` is `"unavailable"`, deliberately **not**
+`"declined"` — no financier ever saw the request, and a caller must not record a
+provider decision that never happened. No money moves, so a repeat call on the
+same `idempotency_key` is trivially idempotent.
+
+`test_connection` stays `False` on credentials alone, which is what makes the
+soft refusal safe: the operator learns the integration cannot fund anything at
+configuration time rather than on the first quote. That honest-probe rule is
+enforced registry-wide across **every** adapter family by
+`tests/test_adapter_contract_integrity.py` — an adapter whose method can never
+do its job must be declared there, with the consequence for the caller written
+down, and must report an unavailable probe.
+
 ## API (`/api/discounts`)
 
 | Method + path | Roles | Purpose |
