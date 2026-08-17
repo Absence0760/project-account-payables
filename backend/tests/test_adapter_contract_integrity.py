@@ -163,6 +163,15 @@ def _never_returns(func) -> bool:
     NotImplementedError`` **and** no ``return`` anywhere in the body. A method
     that can return a value on some branch is a real implementation with a
     guard, not a skeleton, and must not be flagged.
+
+    Known blind spots, accepted so the signal stays free of false positives:
+    a skeleton that reaches its ``NotImplementedError`` from inside a nested
+    ``if`` / ``try`` / ``with``, or that refuses by raising some *other*
+    exception type unconditionally, is not flagged. Widening either way would
+    catch the many legitimate fail-closed guards that raise on a missing
+    credential and then go on to do real work. Write new skeletons the way the
+    three declared ones are written — a bare top-level ``raise
+    NotImplementedError`` — so this guard sees them.
     """
     try:
         source = inspect.getsource(func)
