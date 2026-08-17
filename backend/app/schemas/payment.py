@@ -165,6 +165,18 @@ class PaymentRunResponse(BaseModel):
     payments_in_flight: int = 0
     payments_pending: int = 0
 
+    # The CFO sign-off gate, on the LIST shape. These columns have always
+    # existed on the row and `GET /runs/{id}` (a raw dict) has always returned
+    # them — but the list endpoint declares this model, and FastAPI strips
+    # whatever a response model doesn't declare. A client that reads the list
+    # therefore saw `requires_cfo_approval` as absent for every run, always,
+    # and could not tell an above-threshold run from any other: the mobile app
+    # renders no "CFO approval required" marker, its pre-flight gate evaluates
+    # false, and Execute goes out to a 403. The web app is unaffected only
+    # because its run modal happens to read the detail endpoint instead.
+    requires_cfo_approval: bool = False
+    cfo_approved_at: str | None = None
+
     model_config = {"from_attributes": True}
 
     @classmethod
@@ -190,6 +202,10 @@ class PaymentRunResponse(BaseModel):
             payments_failed=failed,
             payments_in_flight=in_flight,
             payments_pending=pending,
+            requires_cfo_approval=bool(getattr(pr, "requires_cfo_approval", False)),
+            cfo_approved_at=(
+                pr.cfo_approved_at.isoformat() if getattr(pr, "cfo_approved_at", None) else None
+            ),
         )
 
 
