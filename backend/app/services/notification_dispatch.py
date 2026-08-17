@@ -11,6 +11,17 @@ Both are **best-effort**. A failure here must never roll back or abort the
 caller's status transition / audit write, so the whole dispatch is wrapped in a
 guard and logs without PII (event type + notification id only, never the
 recipient's email address or any invoice banking field).
+
+**The two OUTBOUND send guards log the exception's class name, not
+``logger.exception``.** `.exception()` / `exc_info=True` append the traceback —
+and with it the exception's own text — no matter what the format string says,
+and both transports raise errors that carry exactly what this module promises
+not to log: httpx's ``HTTPStatusError`` embeds the request URL, which for a
+Slack/Teams incoming webhook IS the credential, and ``SMTPRecipientsRefused``
+embeds the addresses it refused. The remaining ``logger.exception`` calls here
+wrap DB reads and template renders, whose exceptions carry row ids and SQL
+rather than a credential or an address — there the traceback is the diagnostic
+value, so it stays.
 """
 
 from __future__ import annotations
@@ -329,9 +340,18 @@ async def _send_email_best_effort(
                 brand=brand,
             )
         )
-    except Exception:  # noqa: BLE001
-        # PII rule: log the event type only — never the recipient address.
-        logger.exception("notify_event: email send failed for event_type=%s", event_type)
+    except Exception as exc:  # noqa: BLE001
+        # Event type + exception CLASS only, for the same reason as the chat
+        # send below: `logger.exception` attaches the traceback whatever the
+        # format string says, and an SMTP failure carries the addresses it
+        # refused — `smtplib.SMTPRecipientsRefused` stringifies as
+        # `{'someone@customer.com': (550, b'…')}`. That is exactly the recipient
+        # address this call site has always promised not to log.
+        logger.warning(
+            "notify_event: email send failed for event_type=%s err=%s",
+            event_type,
+            type(exc).__name__,
+        )
 
 
 def _chat_event_enabled(chat_config: dict, event_type: str) -> bool:
@@ -486,6 +506,20 @@ async def _send_chat_best_effort(
     try:
         adapter = get_chat_notification_adapter(chat_config)
         await adapter.send(message)
-    except Exception:  # noqa: BLE001
-        # PII rule: log the event type only — never the webhook URL or amount.
-        logger.exception("notify_event: chat send failed for event_type=%s", event_type)
+    except Exception as exc:  # noqa: BLE001
+        # Event type + exception CLASS only — deliberately not `logger.exception`
+        # / `exc_info`, which append the traceback (and the exception's own text)
+        # regardless of the format string. The adapters end in
+        # `response.raise_for_status()`, and httpx's `HTTPStatusError` message
+        # embeds the request URL verbatim — which here IS the credential:
+        # "Client error '404 Not Found' for url 'https://hooks.slack.com/services/…/<token>'".
+        # So the first 4xx from a dead or rotated webhook used to write the org's
+        # chat credential into the application log. Same shape as
+        # `webhooks/delivery.process_delivery`, which already logs
+        # `err=type(exc).__name__`. The provider key is left out too: it is
+        # admin-supplied free text on a legacy row, so it is not ours to log.
+        logger.warning(
+            "notify_event: chat send failed for event_type=%s err=%s",
+            event_type,
+            type(exc).__name__,
+        )
