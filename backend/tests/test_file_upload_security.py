@@ -274,7 +274,7 @@ async def test_get_invoice_file_refuses_cross_tenant_file_key():
     proves the user is *some* authenticated user; the file key tells
     us which tenant owns it. Cross-check is mandatory."""
     from types import SimpleNamespace
-    from unittest.mock import patch
+    from unittest.mock import AsyncMock, patch
 
     from fastapi import HTTPException
 
@@ -284,7 +284,7 @@ async def test_get_invoice_file_refuses_cross_tenant_file_key():
     other_org = uuid.uuid4()
     cross_tenant_key = f"{other_org}/some-invoice/file.pdf"
 
-    with patch("app.api.workflow.get_file") as mk_get_file:
+    with patch("app.api.workflow.get_file", AsyncMock()) as mk_get_file:
         with pytest.raises(HTTPException) as exc:
             await get_invoice_file(file_key=cross_tenant_key, user=user)
 
@@ -298,14 +298,17 @@ async def test_get_invoice_file_same_org_succeeds():
     user's org, the file is fetched and returned. Without this, the
     cross-tenant test could pass because every request 404s."""
     from types import SimpleNamespace
-    from unittest.mock import patch
+    from unittest.mock import AsyncMock, patch
 
     from app.api.workflow import get_invoice_file
 
     user = SimpleNamespace(id=uuid.uuid4(), organization_id=uuid.uuid4())
     same_org_key = f"{user.organization_id}/inv-1/file.pdf"
 
-    with patch("app.api.workflow.get_file", return_value=(b"PDF content", "application/pdf")):
+    with patch(
+        "app.api.workflow.get_file",
+        AsyncMock(return_value=(b"PDF content", "application/pdf")),
+    ):
         resp = await get_invoice_file(file_key=same_org_key, user=user)
 
     # Response body is the file content.
@@ -319,7 +322,7 @@ async def test_get_invoice_file_returns_same_404_for_wrong_org_and_missing_file(
     must produce the same 404 with the same detail. A diff would
     let an attacker map other tenants' UUID prefixes."""
     from types import SimpleNamespace
-    from unittest.mock import patch
+    from unittest.mock import AsyncMock, patch
 
     from fastapi import HTTPException
 
@@ -335,7 +338,7 @@ async def test_get_invoice_file_returns_same_404_for_wrong_org_and_missing_file(
         )
 
     # Missing-file case (same-org key but S3 raises NoSuchKey)
-    with patch("app.api.workflow.get_file", side_effect=Exception("NoSuchKey")):
+    with patch("app.api.workflow.get_file", AsyncMock(side_effect=Exception("NoSuchKey"))):
         with pytest.raises(HTTPException) as exc_missing:
             await get_invoice_file(
                 file_key=f"{user.organization_id}/inv/x.pdf",

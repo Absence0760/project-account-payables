@@ -341,7 +341,7 @@ async def test_chat_file_download_rejects_other_invoice_key_in_same_org():
 
     served = {"called": False}
 
-    def _fake_get_file(_key):
+    async def _fake_get_file(_key):
         served["called"] = True
         return b"VICTIM-BYTES", "application/pdf"
 
@@ -383,7 +383,7 @@ async def test_chat_file_download_serves_own_invoice_key():
 
     with (
         patch.object(portal, "_portal_invoice_or_404", _own_invoice),
-        patch.object(portal, "get_file", lambda _k: (b"MINE", "application/pdf")),
+        patch.object(portal, "get_file", AsyncMock(return_value=(b"MINE", "application/pdf"))),
     ):
         resp = await portal.get_portal_chat_file(
             invoice_id=my_invoice_id, file_key=own_key, db=AsyncMock(), vu=vu
