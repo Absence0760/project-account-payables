@@ -877,6 +877,23 @@ Any user can set a delegate who receives their approval assignments while they a
 
 When a reviewer is OOO (has an active, non-expired delegation), approval assignments auto-route to their delegate. The audit trail records both the original assignee (`WorkflowStep.original_assigned_to`) and the delegate who actually performed the action.
 
+**Delegation is routing, not a privilege grant** — the delegate still needs
+`invoice.approve` to act on what lands in their queue, so delegating to a
+lower-privileged colleague confers nothing.
+
+What `POST` refuses, and why:
+
+| Input | Result |
+|---|---|
+| `delegate_to_id` that isn't a UUID, or an unparseable `until` | `422`. Both used to escape the handler as a bare `ValueError`, i.e. a 500 on ordinary bad input. |
+| `until` already in the past | `422` — it would leave the caller believing they are out of office while `resolve_assignee`'s `delegate_until > now` test never fires. |
+| A **deactivated** delegate | `404` (same opaque answer as unknown / other-org). `review.assign_reviewer` reassigns the invoice unconditionally, so approvals would land on an account that can never sign in and the invoice would sit owned by nobody. |
+| `until` with no timezone | Accepted, interpreted as **UTC**. A naive value handed to the `timestamptz` column is read in the DB *session's* timezone, while every consumer compares against `now(UTC)` — so the same wall-clock string meant a different expiry depending on server config. |
+
+Setting and clearing a delegate each write a PII-free audit row
+(`auth.delegation.set` / `auth.delegation.cleared` — ids and the window only):
+who receives approval assignments is an access-control fact.
+
 ---
 
 ## SCIM 2.0 (user provisioning from Okta + Entra)
