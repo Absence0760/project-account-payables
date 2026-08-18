@@ -34,13 +34,28 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Literal
 
 from app.models.vendor_statement_recon import (
     CLASS_AMOUNT_MISMATCH,
     CLASS_MATCHED,
     CLASS_MISSING_OUR_SIDE,
     CLASS_MISSING_THEIR_SIDE,
+)
+
+# Which separator is the decimal point. A statement is written in exactly one
+# convention throughout, which is the fact this module leans on — a single token
+# often cannot say which one it is in. The RULES live in
+# `services/decimal_convention` and are re-exported here (every existing caller
+# and test imports them from this module), because AI invoice extraction reads
+# model-produced money strings and must reach the same answer by the same rules
+# rather than re-deriving them — see `decisions.md` §27.
+from app.services.decimal_convention import (  # noqa: F401 — re-exported
+    AMOUNT_CONVENTION_EU,
+    AMOUNT_CONVENTION_US,
+    AmountConvention,
+    apply_convention,
+    convention_proved_by,
+    detect_convention,
 )
 from app.services.numeric_bounds import STATEMENT_NUMERIC, fits_numeric
 
@@ -227,14 +242,6 @@ def parse_date(raw: str | None) -> date | None:
     return None
 
 
-# Which separator is the decimal point. A statement is written in exactly one
-# of these conventions throughout, which is the fact this module leans on —
-# because a single token often cannot say which one it is in.
-AMOUNT_CONVENTION_US = "us"  # 1,234.56 — comma groups, period is the decimal
-AMOUNT_CONVENTION_EU = "eu"  # 1.234,56 — period groups, comma is the decimal
-
-AmountConvention = Literal["us", "eu"]
-
 # Stripped before the digits are read. Currency symbols can sit either side of
 # the number depending on locale (``$850.00`` vs ``850,00 €``), and a space or
 # non-breaking space is itself a thousands separator in French convention
@@ -267,70 +274,21 @@ def _amount_core(raw: str | None) -> tuple[str, bool] | None:
     return s, negative
 
 
-def _convention_proved_by(core: str) -> AmountConvention | None:
-    """Which convention this ONE token proves, or ``None`` if it proves nothing.
-
-    Three shapes are self-describing:
-
-    * **Both separators** (``1,234.56`` / ``1.234,56``) — the rightmost one is
-      the decimal point, because grouping separators never follow it.
-    * **The same separator twice or more** (``1,234,567``) — only grouping
-      repeats.
-    * **One separator with a one- or two-digit tail** (``850,00`` / ``850.5``) —
-      it must be the decimal point: money carries at most two decimal places,
-      and no grouping run is shorter than three digits. This is the shape the
-      old unconditional ``replace(",", "")`` got wrong, reading ``850,00`` as
-      ``85000``.
-
-    One shape is genuinely ambiguous and deliberately proves nothing: a single
-    separator with a **three-digit tail** (``1,234`` / ``1.234``) is a thousands
-    group under one convention and a three-decimal-place value under the other.
-    Resolving it is what :func:`detect_amount_convention` exists for; letting it
-    vote would be circular.
-    """
-    has_comma = "," in core
-    has_period = "." in core
-    if has_comma and has_period:
-        if core.rfind(".") > core.rfind(","):
-            return AMOUNT_CONVENTION_US
-        return AMOUNT_CONVENTION_EU
-    if not has_comma and not has_period:
-        return None
-    sep = "," if has_comma else "."
-    parts = core.split(sep)
-    if len(parts) > 2:
-        return AMOUNT_CONVENTION_US if sep == "," else AMOUNT_CONVENTION_EU
-    if len(parts[1]) in (1, 2):
-        return AMOUNT_CONVENTION_EU if sep == "," else AMOUNT_CONVENTION_US
-    return None
-
-
 def detect_amount_convention(raw_values: Iterable[str | None]) -> AmountConvention | None:
     """Resolve the decimal convention a whole statement is written in.
 
     A statement is internally consistent, so the full token set answers what a
     single token cannot — one unambiguous ``1.234,56`` anywhere in the document
-    settles every bare ``1.200`` in it.
-
-    Returns ``None`` when the document proves nothing (no separators at all, or
-    only ambiguous three-digit tails) **and** when its tokens contradict each
-    other. Both cases mean "no document-level answer"; per-token readings still
-    apply, so a contradictory document still parses its self-describing tokens
-    correctly rather than being dragged onto one convention wholesale.
+    settles every bare ``1.200`` in it. Thin wrapper over the shared
+    :func:`~app.services.decimal_convention.detect_convention`: this one knows
+    how to reduce a statement CELL to a core, that one owns the rules.
     """
-    votes: set[AmountConvention] = set()
+    cores = []
     for raw in raw_values:
         parsed = _amount_core(raw)
-        if parsed is None:
-            continue
-        proved = _convention_proved_by(parsed[0])
-        if proved is not None:
-            votes.add(proved)
-            if len(votes) > 1:
-                return None  # contradictory — no document-level answer
-    if len(votes) == 1:
-        return votes.pop()
-    return None
+        if parsed is not None:
+            cores.append(parsed[0])
+    return detect_convention(cores)
 
 
 def parse_amount(raw: str | None, *, convention: AmountConvention | None = None) -> Decimal | None:
@@ -364,16 +322,7 @@ def parse_amount(raw: str | None, *, convention: AmountConvention | None = None)
     if parsed is None:
         return None
     core, negative = parsed
-    reading = _convention_proved_by(core)
-    if reading is None and ("," in core or "." in core):
-        # Only the ambiguous three-digit-tail shape reaches here carrying a
-        # separator. Default to US when the document didn't answer, which is
-        # what this function always did.
-        reading = convention or AMOUNT_CONVENTION_US
-    if reading == AMOUNT_CONVENTION_EU:
-        core = core.replace(".", "").replace(",", ".")
-    else:
-        core = core.replace(",", "")
+    core = apply_convention(core, convention)
     try:
         amount = Decimal(core)
     except (InvalidOperation, ValueError):

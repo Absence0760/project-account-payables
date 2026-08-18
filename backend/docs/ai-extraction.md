@@ -160,6 +160,49 @@ Track Usage (ExtractionUsage record)
 Transition: pending → ready_for_review
 ```
 
+### Which separator is the decimal point
+
+A vision model transcribes what the page says, and an invoice printed in most of
+Europe says `1.234,56`. `_clean_decimal` used to strip every comma
+unconditionally, which produced silently wrong money with no error anywhere:
+
+| Model returned | Old reading | Correct |
+|---|---|---|
+| `850,00` | `85000` (100× over) | `850.00` |
+| `1.234,56` | `1.23456` (1000× under — it *parsed*) | `1234.56` |
+| `12.500,00` | `12.50000` | `12500.00` |
+| `1 234,56` | `123456` | `1234.56` |
+
+Nothing downstream caught it: the self-correction pass read the same tokens the
+same wrong way, so `subtotal + tax` still reconciled against the mangled total,
+and an in-band confidence could auto-approve it.
+
+**The unit that can answer is the document, not the token** — the call
+`decisions.md` §27 already made for supplier statements. The rules live in the
+pure `services/decimal_convention` (`convention_proved_by` / `detect_convention`
+/ `apply_convention`) and both readers use them, so an invoice field and a
+statement cell can't drift apart:
+
+- **Self-describing tokens are read on their own terms.** Both separators
+  present → the rightmost is the decimal point. A repeated separator → grouping
+  (and only when every run is a real three-digit group, so `1.2.3` stays
+  unparseable rather than becoming `123`). One separator with a one- or
+  two-digit tail → it is the decimal point.
+- **Only the genuinely ambiguous shape consults the document.** A single
+  separator with a three-digit tail (`1,234` / `1.234`) is a thousands group
+  under one convention and a three-decimal value under the other.
+  `extraction_amount_convention(result)` resolves it once from every money token
+  the model returned — header `amount`/`subtotal`/`tax_amount`/`discount`/
+  `shipping` plus each line's `unit_price`/`tax`/`total`. `tax_rate` and
+  `quantity` deliberately don't vote (a percentage and a count aren't written
+  under an amount's grouping habits). No document-level answer (nothing proved,
+  or the tokens contradict each other) keeps the historical US reading for that
+  one shape.
+- **One resolution per document.** `run_extraction` resolves the convention
+  before `_apply_extraction` and threads the same value into the line-item
+  cleaners and into `run_self_correction`, so the header, the lines and the
+  checker can't be read under different rules.
+
 ### Self-Correction Pass
 
 Runs after `_apply_extraction()`, before line items are saved. Implemented in `services/extraction_self_correction.py`.

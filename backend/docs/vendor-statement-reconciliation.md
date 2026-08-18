@@ -167,6 +167,19 @@ pinned to exactly three digits on purpose: it is what keeps a European dotted
 **date** (`15.01.2026`) out of the money bucket, which a looser `[\d.,]*` would
 swallow. Rationale: [decisions.md](../../docs/decisions.md) §27.
 
+**The rules themselves live in `services/decimal_convention`** — a pure module
+holding `convention_proved_by` / `detect_convention` / `apply_convention`.
+`detect_amount_convention` and `parse_amount` are thin wrappers that know how to
+reduce a statement *cell* to a core and then defer; the names stay importable
+from this module. The move happened because AI **invoice** extraction reads
+model-produced money strings and had the identical unconditional
+`replace(",", "")` on its own header and line-item amounts — the same
+hundredfold error, on the figure that drives the payment run. Two readers, one
+set of rules. (One behaviour change came with it: a repeated separator now only
+proves grouping when every run is a real three-digit group, so a malformed
+`1.2.3` reads as no amount instead of `123`.) See
+[ai-extraction.md](ai-extraction.md) § Which separator is the decimal point.
+
 Raises `StatementParseError` (→ a 422 at the route) only on a **structural**
 failure: an empty body / fewer than two rows (header + ≥1 data row), or a header
 carrying **neither** an invoice-number column **nor** an amount column. A single

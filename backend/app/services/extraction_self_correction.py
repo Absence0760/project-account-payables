@@ -12,8 +12,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
+from app.services.decimal_convention import AmountConvention
 from app.services.extraction_adapters.base import ExtractionResult
 
 # Tolerances for "approximately equal" checks.
@@ -34,13 +35,20 @@ class SelfCorrectionReport:
         return len(self.violations) > 0
 
 
-def _to_decimal(val: str | None) -> Decimal | None:
-    if val is None:
-        return None
-    try:
-        return Decimal(str(val).replace(",", "").replace("$", "").strip())
-    except (InvalidOperation, ValueError):
-        return None
+def _to_decimal(val: str | None, convention: AmountConvention | None = None) -> Decimal | None:
+    """Read one of the model's money strings the SAME way the invoice row did.
+
+    Delegates to ``extraction._clean_decimal``, which owns the sentinel
+    filtering, the currency/whitespace/percent stripping and — the part that
+    matters here — the decimal-convention rules. This used to strip every comma
+    itself, so on a European document it disagreed with the values actually
+    written to the invoice: ``1.234,56`` was unparseable (the arithmetic check
+    silently skipped) while ``850,00`` read as ``85000``. A checker that reads
+    the numbers differently from the writer isn't checking anything.
+    """
+    from app.services.extraction import _clean_decimal
+
+    return _clean_decimal(val, convention)
 
 
 def _parse_date(val: str | None) -> date | None:
@@ -79,16 +87,20 @@ def _approx_eq(a: Decimal, b: Decimal, tolerance: Decimal) -> bool:
 # ------------------------------------------------------------------
 
 
-def _check_total_reconciliation(result: ExtractionResult, report: SelfCorrectionReport) -> None:
+def _check_total_reconciliation(
+    result: ExtractionResult,
+    report: SelfCorrectionReport,
+    convention: AmountConvention | None = None,
+) -> None:
     """subtotal + tax + shipping − discount ≈ amount."""
-    amount = _to_decimal(result.amount.value)
+    amount = _to_decimal(result.amount.value, convention)
     if amount is None or amount == 0:
         return  # nothing to reconcile
 
-    subtotal = _to_decimal(result.subtotal.value) or Decimal(0)
-    tax = _to_decimal(result.tax_amount.value) or Decimal(0)
-    shipping = _to_decimal(result.shipping_amount.value) or Decimal(0)
-    discount = _to_decimal(result.discount_amount.value) or Decimal(0)
+    subtotal = _to_decimal(result.subtotal.value, convention) or Decimal(0)
+    tax = _to_decimal(result.tax_amount.value, convention) or Decimal(0)
+    shipping = _to_decimal(result.shipping_amount.value, convention) or Decimal(0)
+    discount = _to_decimal(result.discount_amount.value, convention) or Decimal(0)
 
     # If subtotal is missing, we can't reconcile — skip silently.
     if result.subtotal.value is None:
@@ -118,7 +130,11 @@ def _check_total_reconciliation(result: ExtractionResult, report: SelfCorrection
             _penalize(result, report, f)
 
 
-def _check_date_ordering(result: ExtractionResult, report: SelfCorrectionReport) -> None:
+def _check_date_ordering(
+    result: ExtractionResult,
+    report: SelfCorrectionReport,
+    convention: AmountConvention | None = None,
+) -> None:
     """due_date should be >= invoice_date."""
     inv_date = _parse_date(result.invoice_date.value)
     due = _parse_date(result.due_date.value)
@@ -137,17 +153,21 @@ def _check_date_ordering(result: ExtractionResult, report: SelfCorrectionReport)
         _penalize(result, report, "due_date")
 
 
-def _check_line_items_sum(result: ExtractionResult, report: SelfCorrectionReport) -> None:
+def _check_line_items_sum(
+    result: ExtractionResult,
+    report: SelfCorrectionReport,
+    convention: AmountConvention | None = None,
+) -> None:
     """sum(line_items.total) ≈ amount."""
     if not result.line_items:
         return
-    amount = _to_decimal(result.amount.value)
+    amount = _to_decimal(result.amount.value, convention)
     if amount is None or amount == 0:
         return
 
     li_sum = Decimal(0)
     for li in result.line_items:
-        t = _to_decimal(li.total.value)
+        t = _to_decimal(li.total.value, convention)
         if t is not None:
             li_sum += t
 
@@ -168,12 +188,16 @@ def _check_line_items_sum(result: ExtractionResult, report: SelfCorrectionReport
         _penalize(result, report, "amount")
 
 
-def _check_line_item_math(result: ExtractionResult, report: SelfCorrectionReport) -> None:
+def _check_line_item_math(
+    result: ExtractionResult,
+    report: SelfCorrectionReport,
+    convention: AmountConvention | None = None,
+) -> None:
     """quantity × unit_price ≈ total for each line item."""
     for i, li in enumerate(result.line_items):
-        qty = _to_decimal(li.quantity.value)
-        price = _to_decimal(li.unit_price.value)
-        total = _to_decimal(li.total.value)
+        qty = _to_decimal(li.quantity.value, convention)
+        price = _to_decimal(li.unit_price.value, convention)
+        total = _to_decimal(li.total.value, convention)
         if qty is None or price is None or total is None or total == 0:
             continue
 
@@ -212,12 +236,17 @@ async def run_self_correction(
     if not extraction_cfg.get("self_correction_enabled", True):
         return SelfCorrectionReport()
 
-    report = SelfCorrectionReport()
+    from app.services.extraction import extraction_amount_convention
 
-    _check_total_reconciliation(result, report)
-    _check_date_ordering(result, report)
-    _check_line_items_sum(result, report)
-    _check_line_item_math(result, report)
+    report = SelfCorrectionReport()
+    # One document, one decimal convention — resolved from the same money
+    # tokens `_apply_extraction` read, so the checker and the writer agree.
+    convention = extraction_amount_convention(result)
+
+    _check_total_reconciliation(result, report, convention)
+    _check_date_ordering(result, report, convention)
+    _check_line_items_sum(result, report, convention)
+    _check_line_item_math(result, report, convention)
 
     # Recompute overall confidence after penalties.
     #
