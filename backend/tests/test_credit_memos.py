@@ -879,9 +879,7 @@ async def test_credit_memo_mutations_are_entity_scoped(realdb):
         memo_id = made.json()["id"]
 
         c.headers["X-Entity-ID"] = default_id
-        applied = await c.post(
-            f"/api/credit-memos/{memo_id}/apply", json={"invoice_id": b_invoice}
-        )
+        applied = await c.post(f"/api/credit-memos/{memo_id}/apply", json={"invoice_id": b_invoice})
         assert applied.status_code == 404, applied.text
         voided = await c.post(f"/api/credit-memos/{memo_id}/void")
         assert voided.status_code == 404, voided.text

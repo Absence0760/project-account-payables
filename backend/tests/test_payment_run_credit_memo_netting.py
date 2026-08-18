@@ -236,6 +236,8 @@ async def test_fully_credited_invoice_cannot_be_staged_into_a_run(realdb):
 
     async with mk() as s:
         rows = (
-            await s.execute(select(Payment).where(Payment.invoice_id == uuid.UUID(invoice_id)))
-        ).scalars().all()
+            (await s.execute(select(Payment).where(Payment.invoice_id == uuid.UUID(invoice_id))))
+            .scalars()
+            .all()
+        )
         assert rows == []
