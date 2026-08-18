@@ -74,6 +74,11 @@ async def list_due_schedules(
     return list(result.scalars().all())
 
 
+# Report types whose rows are money summed across possibly-different invoice
+# currencies, so they need the org's reporting currency resolved up front.
+_REPORTING_CURRENCY_REPORTS = frozenset({"vendor_spend", "cashflow_forecast"})
+
+
 async def _generate_report_payload(
     db: AsyncSession,
     schedule: ScheduledReport,
@@ -88,17 +93,45 @@ async def _generate_report_payload(
     if exporter is None:
         raise ValueError(f"unknown report_type {schedule.report_type!r}")
 
+    # Resolve the org's reporting currency ONCE, here, where we legitimately
+    # hold a control-plane session — the money-rollup branches take a tenant
+    # session and must not reach past it (see `_materialise_rows`).
+    reporting_currency: str | None = None
+    if schedule.report_type in _REPORTING_CURRENCY_REPORTS:
+        from app.database import control_session_factory
+        from app.models.organization import Organization
+        from app.services.currency_conversion import resolve_reporting_currency
+
+        async with control_session_factory() as ctrl_db:
+            org = (
+                await ctrl_db.execute(
+                    select(Organization).where(Organization.id == schedule.organization_id)
+                )
+            ).scalar_one_or_none()
+        reporting_currency = resolve_reporting_currency(org.settings if org else None)
+
     # Lazy SQL — same shapes as the API export endpoint. We
     # delegate to a small helper per report so this function stays
     # short.
-    return await _materialise_rows(db, schedule, exporter)
+    return await _materialise_rows(db, schedule, exporter, reporting_currency)
 
 
 async def _materialise_rows(
     db: AsyncSession,
     schedule: ScheduledReport,
     exporter: Callable,
+    reporting_currency: str | None = None,
 ) -> str:
+    """Pull the rows for one report and hand them to its exporter.
+
+    ``reporting_currency`` is supplied by the caller that already knows the org
+    (``_generate_report_payload``). It is a parameter rather than a lookup
+    inside the money-rollup branches because those branches take a TENANT
+    session: opening a control-plane connection here reaches past the session
+    the caller handed us, which a caller holding a mocked or tenant-only
+    session cannot intercept. Absent, the branches fall back to the documented
+    platform default — a pure resolution with no database hit.
+    """
     from datetime import date
     from datetime import datetime as _dt
 
@@ -112,20 +145,15 @@ async def _materialise_rows(
         return exporter(rows.scalars().all())
 
     if schedule.report_type == "vendor_spend":
-        from app.database import control_session_factory
-        from app.models.organization import Organization
         from app.services.currency_conversion import (
             resolve_reporting_currency,
             vendor_rollup_to_reporting_currency,
         )
 
-        async with control_session_factory() as ctrl_db:
-            org = (
-                await ctrl_db.execute(
-                    select(Organization).where(Organization.id == schedule.organization_id)
-                )
-            ).scalar_one_or_none()
-        reporting_currency = resolve_reporting_currency(org.settings if org else None)
+        # Same as the cashflow branch below: the currency comes from the
+        # caller, so this branch never opens a control-plane connection behind
+        # the tenant session it was handed.
+        rollup_currency = reporting_currency or resolve_reporting_currency(None)
 
         rows = await db.execute(
             select(
@@ -158,7 +186,7 @@ async def _materialise_rows(
                 }
                 for vendor, amount, currency, rep_amt, rep_cur in rows.all()
             ],
-            reporting_currency=reporting_currency,
+            reporting_currency=rollup_currency,
         )
         return exporter(vendor_entries)
 
@@ -190,8 +218,6 @@ async def _materialise_rows(
     if schedule.report_type == "cashflow_forecast":
         from app.api.analytics import _commitment_rows
         from app.config import settings
-        from app.database import control_session_factory
-        from app.models.organization import Organization
         from app.services.analytics import bucket_outflows
         from app.services.currency_conversion import resolve_reporting_currency
 
@@ -199,21 +225,16 @@ async def _materialise_rows(
         # API export endpoint's own defaults (`granularity="week"`,
         # `horizon_days` from the same platform default the copilot uses).
         today = date.today()
-        # Same rollup the `vendor_spend` branch above does: outflows are
-        # expressed in the org's reporting currency, never summed raw across
-        # whatever currencies its suppliers happen to bill in.
-        async with control_session_factory() as ctrl_db:
-            org = (
-                await ctrl_db.execute(
-                    select(Organization).where(Organization.id == schedule.organization_id)
-                )
-            ).scalar_one_or_none()
+        # Outflows are expressed in the org's reporting currency, never summed
+        # raw across whatever currencies its suppliers happen to bill in. The
+        # currency comes from the caller (see this function's docstring) so
+        # this branch never reaches past the session it was handed.
         commitment_rows = await _commitment_rows(
             db,
             today=today,
             horizon_days=settings.cashflow_copilot_default_horizon_days,
             include_pending=True,
-            reporting_currency=resolve_reporting_currency(org.settings if org else None),
+            reporting_currency=reporting_currency or resolve_reporting_currency(None),
         )
         periods = bucket_outflows(commitment_rows, granularity="week", today=today)
         return exporter(periods)
