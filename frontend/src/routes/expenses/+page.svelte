@@ -315,6 +315,15 @@
 	// Reports has no local-mutation helper — every submit/approve/reject/attach
 	// re-fetches through `loadReports()` — so it needs no `supersedeInFlight()`;
 	// the sequencer here only stops two of those refreshes landing out of order.
+	// Three states, not two: a failed load must not read as "nothing matched".
+	let expensesEmptyMessage = $derived(
+		expenseStore.loading
+			? m('expenses.loading')
+			: expenseStore.errored
+				? m('expenses.empty.errored')
+				: m('expenses.empty')
+	);
+
 	const reportsSequence = createRequestSequencer();
 
 	async function loadReports(opts: { append?: boolean } = {}) {
@@ -940,7 +949,7 @@
 		<DataTable
 			columns={COLUMNS}
 			isEmpty={visibleExpenses.length === 0}
-			empty={expenseStore.loading ? m('expenses.loading') : m('expenses.empty')}
+			empty={expensesEmptyMessage}
 		>
 			{#snippet header()}
 				<tr>

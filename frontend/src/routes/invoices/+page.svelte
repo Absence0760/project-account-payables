@@ -235,6 +235,11 @@
 		return INVOICE_STATUSES.filter((s) => quick.has(s) || activeStatuses.includes(s));
 	});
 
+	// Three states, not two: a failed load must not read as "nothing matched".
+	let emptyMessage = $derived(
+		invoiceStore.errored ? m('invoices.empty.errored') : m('invoices.empty')
+	);
+
 	function statusCount(status: InvoiceStatus): number {
 		return invoiceStore.statusCounts[status] ?? 0;
 	}
@@ -540,7 +545,7 @@
 		</div>
 	{/if}
 
-	<DataTable isEmpty={invoiceStore.all.length === 0} empty={m('invoices.empty')} colspan={9} fixed stickyHeader>
+	<DataTable isEmpty={invoiceStore.all.length === 0} empty={emptyMessage} colspan={9} fixed stickyHeader>
 		{#snippet header()}
 			<tr>
 				<th class="checkbox-col"><input type="checkbox" aria-label={m('invoices.selectAllAria')} checked={allSelected} onchange={toggleSelectAll} /></th>

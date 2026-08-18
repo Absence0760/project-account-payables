@@ -20,6 +20,14 @@ function createPaymentStore() {
 	// The active filter params (status/method/search/amount), minus paging —
 	// remembered so loadMore() requests the next page with the same filters.
 	let lastParams: Record<string, string> = {};
+	// Did the most recent (non-append) load fail? The list empty-state reads
+	// this: without it a 500 / offline backend leaves `all` empty and the table
+	// renders "No … match your filters." — an outage indistinguishable from a
+	// filter that matched nothing. Set only when this is still the newest
+	// request (`isCurrentRequest`, the same rule the `loading` flag uses), and
+	// the error is re-thrown so callers that await a refresh keep their own
+	// error handling.
+	let errored = $state(false);
 
 	// Sequences every `load()` call (fetch and loadMore alike — one shared
 	// counter, latest-issued wins) so a slow response for an earlier
@@ -43,6 +51,10 @@ function createPaymentStore() {
 			payments = opts.append ? appendUnique(payments, res.items) : res.items;
 			total = res.total;
 			page = nextPage;
+			if (!opts.append) errored = false;
+		} catch (err) {
+			if (!opts.append && fetchSequence.isCurrentRequest(token)) errored = true;
+			throw err;
 		} finally {
 			if (fetchSequence.isCurrentRequest(token)) loading = false;
 		}
@@ -61,6 +73,7 @@ function createPaymentStore() {
 		get all() { return payments; },
 		get loading() { return loading; },
 		get total() { return total; },
+		get errored() { return errored; },
 		get hasMore() { return payments.length < total; },
 		fetch,
 		loadMore,
