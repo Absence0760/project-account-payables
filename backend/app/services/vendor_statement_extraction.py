@@ -40,6 +40,7 @@ from app.services.extraction_adapters.base import (
     STATEMENT_REASON_NO_TEXT_LAYER,
     STATEMENT_REASON_NOT_SUPPORTED,
     STATEMENT_REASON_PROVIDER_ERROR,
+    STATEMENT_REASON_PROVIDER_UNKNOWN,
     STATEMENT_REASON_UNREADABLE,
     ExtractionAdapter,
     StatementExtractionResult,
@@ -70,6 +71,10 @@ _REASON_MESSAGES = {
     STATEMENT_REASON_UNREADABLE: (
         "The extraction provider returned a response that could not be read. Try "
         "again, or upload the statement as a CSV."
+    ),
+    STATEMENT_REASON_PROVIDER_UNKNOWN: (
+        "The extraction provider configured for this organization is not recognised. "
+        "An administrator must correct it in Settings, or upload the statement as a CSV."
     ),
 }
 
@@ -113,18 +118,27 @@ def resolve_statement_adapter(org_settings: dict | None) -> ExtractionAdapter:
     re-deriving the config: that function owns the platform-vs-BYOK decision
     (which key is used, and whose) and duplicating it here would be duplicating
     a credential-selection rule — the exact kind of copy that silently rots.
-    """
-    # Importing the adapter modules is what registers them (decorator side
-    # effect), mirroring `extraction.run_extraction`.
-    import app.services.extraction_adapters.aws_textract  # noqa: F401
-    import app.services.extraction_adapters.claude_vision  # noqa: F401
-    import app.services.extraction_adapters.mock_adapter  # noqa: F401
-    import app.services.extraction_adapters.ollama  # noqa: F401
-    import app.services.extraction_adapters.openai_vision  # noqa: F401
-    from app.services.extraction import _resolve_extraction_config
-    from app.services.extraction_adapters import get_extraction_adapter
 
-    return get_extraction_adapter(_resolve_extraction_config(org_settings))
+    Raises :class:`StatementExtractionError` when the org names an extraction
+    provider we have no adapter for.
+    """
+    # `get_extraction_adapter` registers the built-in adapters itself, and
+    # RAISES on a provider name it has no adapter for rather than substituting
+    # `mock` — see `decisions.md` §29. Translate that into the same fail-closed
+    # 422 every other statement-read failure takes, so a config error can't
+    # 500 an upload (`resolve_statement_adapter` is called outside the caller's
+    # try block).
+    from app.services.extraction import _resolve_extraction_config
+    from app.services.extraction_adapters import (
+        UnknownExtractionProviderError,
+        get_extraction_adapter,
+    )
+
+    try:
+        return get_extraction_adapter(_resolve_extraction_config(org_settings))
+    except UnknownExtractionProviderError as exc:
+        logger.warning("statement extraction: unregistered provider configured")
+        raise StatementExtractionError(STATEMENT_REASON_PROVIDER_UNKNOWN) from exc
 
 
 def normalize_extracted_lines(

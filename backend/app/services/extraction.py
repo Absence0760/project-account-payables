@@ -17,6 +17,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceLineItem, InvoiceStatus
 from app.models.usage import ExtractionUsage
+from app.services.decimal_convention import (
+    AmountConvention,
+    apply_convention,
+    detect_convention,
+)
 from app.services.extraction_adapters.base import ExtractionResult
 from app.services.workflow_engine import (
     advance_workflow,
@@ -151,7 +156,8 @@ def decide_auto_approve(
 
     Two independent triggers (either fires it):
       1. Confidence — ``auto_approve_enabled`` and ``overall_confidence`` clears
-         ``auto_approve_threshold`` (default 0.95).
+         ``auto_approve_threshold`` (default 0.95). A score outside 0..1 counts
+         as 0 — see the guard below.
       2. Amount floor — ``auto_approve_below`` set and the invoice amount is
          strictly below it (the "skip review for small invoices" rule).
 
@@ -186,8 +192,17 @@ def decide_auto_approve(
     amount_dec = Decimal(str(amount or 0))
     gate_amount = amount_dec if aggregate_amount is None else Decimal(str(aggregate_amount))
 
+    # A confidence outside 0..1 is not evidence of anything — it is an adapter
+    # reporting on a scale we didn't ask for. Treating it as "very confident" is
+    # how a model answering `3` where the contract says `0.5` averages its way
+    # past the threshold and auto-approves an invoice nobody looked at. Adapters
+    # normalise their own fields (`extraction_adapters.base.coerce_confidence`);
+    # this is the gate's own guard, so a future adapter computing its overall
+    # score some other way still can't trip it.
+    confidence = overall_confidence if 0.0 <= overall_confidence <= 1.0 else 0.0
+
     auto_approved = False
-    if ext_cfg.get("auto_approve_enabled") and overall_confidence >= ext_cfg.get(
+    if ext_cfg.get("auto_approve_enabled") and confidence >= ext_cfg.get(
         "auto_approve_threshold", 0.95
     ):
         auto_approved = True
@@ -280,13 +295,13 @@ async def run_extraction(
     try:
         config = _resolve_extraction_config(org_settings)
 
-        # Import adapters to trigger registration
-        import app.services.extraction_adapters.aws_textract  # noqa: F401
-        import app.services.extraction_adapters.claude_vision  # noqa: F401
-        import app.services.extraction_adapters.einvoice_adapter  # noqa: F401
-        import app.services.extraction_adapters.mock_adapter  # noqa: F401
-        import app.services.extraction_adapters.ollama  # noqa: F401
-        import app.services.extraction_adapters.openai_vision  # noqa: F401
+        # `get_extraction_adapter` imports (and therefore registers) every
+        # built-in adapter itself, and RAISES `UnknownExtractionProviderError`
+        # on a provider name it has no adapter for rather than substituting the
+        # fixture-producing `mock` — see `decisions.md` §29. Here that travels
+        # the normal failure path below: the invoice lands in `failed` with an
+        # `extraction_failed` exception, which is exactly what a config error
+        # should look like to a reviewer.
         from app.services.extraction_adapters import get_extraction_adapter
 
         adapter = get_extraction_adapter(config)
@@ -400,8 +415,13 @@ async def run_extraction(
             result.vendor_name.value,
         )
 
+        # Which separator this document treats as the decimal point — resolved
+        # ONCE across every money token the model returned, so the header and
+        # the line items can't be read under different rules (`decisions.md` §27).
+        amount_convention = extraction_amount_convention(result)
+
         # Apply extracted fields to invoice
-        _apply_extraction(invoice, result)
+        _apply_extraction(invoice, result, amount_convention)
 
         # Self-correction pass — verify arithmetic, date ordering, line-item
         # math.  Lowers confidence on suspect fields and adds warnings.
@@ -461,10 +481,20 @@ async def run_extraction(
                 line_number=li.line_number,
                 item_code=li.item_code.value if li.item_code.value else None,
                 description=li.description.value if li.description.value else None,
-                quantity=_clean_decimal(li.quantity.value) if li.quantity.value else None,
-                unit_price=_clean_decimal(li.unit_price.value) if li.unit_price.value else None,
-                tax=_clean_decimal(li.tax.value) if li.tax.value else None,
-                total=_clean_decimal(li.total.value) if li.total.value else None,
+                quantity=(
+                    _clean_decimal(li.quantity.value, amount_convention)
+                    if li.quantity.value
+                    else None
+                ),
+                unit_price=(
+                    _clean_decimal(li.unit_price.value, amount_convention)
+                    if li.unit_price.value
+                    else None
+                ),
+                tax=_clean_decimal(li.tax.value, amount_convention) if li.tax.value else None,
+                total=(
+                    _clean_decimal(li.total.value, amount_convention) if li.total.value else None
+                ),
                 gl_account=li_gl,
             )
             db.add(line_item)
@@ -786,21 +816,28 @@ _NULL_SENTINELS = frozenset(
 # Currency symbols stripped before Decimal conversion. We keep the raw
 # value's currency code on `invoice.currency`; the amount column is the
 # numeric magnitude only.
-_CURRENCY_SYMBOLS = "$€£¥₹₽₩฿₪₦"
+_CURRENCY_SYMBOLS = "$\u20ac\u00a3\u00a5\u20b9\u20bd\u20a9\u0e3f\u20aa\u20a6"
+
+# Whitespace stripped from inside a number. A plain space — and the
+# non-breaking / narrow-no-break spaces a PDF renderer emits — is itself a
+# thousands separator in French convention (``1 234,56``).
+_NUMERIC_WHITESPACE = (" ", "\t", "\u00a0", "\u202f")
+
+# The money fields whose tokens vote on the document's decimal convention.
+# Deliberately money only: `tax_rate` is a percentage and `quantity` a count,
+# and neither is written under an amount's grouping habits.
+_HEADER_MONEY_FIELDS = ("amount", "subtotal", "tax_amount", "discount_amount", "shipping_amount")
+_LINE_MONEY_FIELDS = ("unit_price", "tax", "total")
 
 
-def _clean_decimal(val: str | None) -> Decimal | None:
-    """Clean a string value for Decimal conversion.
+def _amount_core(val: str | None) -> str | None:
+    """Reduce a model-produced numeric token to digits, separators and a sign.
 
-    Handles the common failure modes vision models produce:
-    - Currency symbols (`$`, `€`, `£`, ...)
-    - Thousands separators + spaces
-    - Percent signs (e.g. `8.25%` for tax_rate)
-    - Parenthesised negatives (`(123.45)` → `-123.45`, classic accounting)
-    - Unicode minus sign (`−` U+2212) used by Word-style invoices
-    - Sentinel "no value" strings (`null`, `N/A`, `-`, etc.)
-
-    Returns None on anything that can't be parsed — never raises.
+    Everything :func:`_clean_decimal` strips — sentinels, accounting
+    parentheses, currency symbols, internal whitespace, a percent sign, a
+    Unicode minus — happens here, so the string the decimal-convention rules
+    see is exactly the one that will be parsed. ``None`` when nothing numeric
+    survives.
     """
     if val is None:
         return None
@@ -812,17 +849,66 @@ def _clean_decimal(val: str | None) -> Decimal | None:
     if s.startswith("(") and s.endswith(")"):
         s = "-" + s[1:-1].strip()
 
-    # Strip currency symbols + separators
     for sym in _CURRENCY_SYMBOLS:
         s = s.replace(sym, "")
-    s = s.replace(",", "").replace(" ", "").replace("%", "")
+    for ws in _NUMERIC_WHITESPACE:
+        s = s.replace(ws, "")
+    s = s.replace("%", "")
     # Unicode minus → ASCII minus
     s = s.replace("\u2212", "-")
 
-    if s.casefold() in _NULL_SENTINELS:
+    if not s or s.casefold() in _NULL_SENTINELS:
+        return None
+    return s
+
+
+def extraction_amount_convention(result: ExtractionResult) -> AmountConvention | None:
+    """Which decimal convention THIS document's money is written in.
+
+    A vision model transcribes what the page says, and an invoice printed in
+    most of Europe says ``1.234,56``. The unit that can answer "is that comma a
+    decimal point?" is the document, not the token — so the whole extracted
+    money set votes once, exactly as a supplier statement's amount column does
+    (`decisions.md` §27). ``None`` means the document proved nothing (or
+    contradicted itself); every self-describing token is still read on its own
+    terms.
+    """
+    tokens = [getattr(result, f).value for f in _HEADER_MONEY_FIELDS]
+    for li in result.line_items:
+        tokens.extend(getattr(li, f).value for f in _LINE_MONEY_FIELDS)
+    cores = [core for core in (_amount_core(t) for t in tokens) if core is not None]
+    return detect_convention(cores)
+
+
+def _clean_decimal(val: str | None, convention: AmountConvention | None = None) -> Decimal | None:
+    """Clean a string value for Decimal conversion.
+
+    Handles the common failure modes vision models produce:
+    - Currency symbols (`$`, `€`, `£`, ...)
+    - Thousands separators + spaces (incl. the non-breaking kind)
+    - Percent signs (e.g. `8.25%` for tax_rate)
+    - Parenthesised negatives (`(123.45)` → `-123.45`, classic accounting)
+    - Unicode minus sign (`−` U+2212) used by Word-style invoices
+    - Sentinel "no value" strings (`null`, `N/A`, `-`, etc.)
+
+    **Which separator is the decimal point is decided by the rules in
+    `services/decimal_convention`, not by stripping every comma.** This used to
+    do `s.replace(",", "")` unconditionally, so a model transcribing a European
+    invoice's ``850,00`` produced ``85000`` — a hundredfold overstatement the
+    downstream arithmetic checks then agreed with, because subtotal and tax were
+    scaled identically — and ``1.234,56`` came back unparseable ``None``,
+    silently dropping the amount. ``convention`` is the document-level answer
+    from :func:`extraction_amount_convention`, consulted only for the genuinely
+    ambiguous shape (a single separator with a three-digit tail); omitting it
+    keeps the historical US reading there.
+
+    Returns None on anything that can't be parsed — never raises.
+    """
+    core = _amount_core(val)
+    if core is None:
         return None
     try:
-        return Decimal(s)
+        return Decimal(apply_convention(core, convention))
     except Exception:
         return None
 
@@ -937,7 +1023,11 @@ def _clean_date(val: str | None) -> date | None:
     return None
 
 
-def _apply_extraction(invoice: Invoice, result: ExtractionResult) -> None:
+def _apply_extraction(
+    invoice: Invoice,
+    result: ExtractionResult,
+    convention: AmountConvention | None = None,
+) -> None:
     """Apply extracted fields to the invoice record.
 
     Every field goes through a typed cleaner that:
@@ -948,7 +1038,14 @@ def _apply_extraction(invoice: Invoice, result: ExtractionResult) -> None:
     None of the cleaners overwrite an existing value with None — the model
     might miss a field that the human (or a previous extraction) already
     populated. We only assign when the cleaner returns a real value.
+
+    ``convention`` is the document's decimal convention. Callers that also read
+    the line items (``extract_invoice``) resolve it once and pass it here so the
+    header and the lines are read by the same rule; omitting it resolves it from
+    this result.
     """
+    if convention is None:
+        convention = extraction_amount_convention(result)
 
     # Free-form text fields — sentinel-filter only.
     for src, dst in (
@@ -976,7 +1073,7 @@ def _apply_extraction(invoice: Invoice, result: ExtractionResult) -> None:
         (result.discount_amount, "discount_amount"),
         (result.shipping_amount, "shipping_amount"),
     ):
-        d = _clean_decimal(src.value)
+        d = _clean_decimal(src.value, convention)
         if d is not None:
             setattr(invoice, dst, d)
 

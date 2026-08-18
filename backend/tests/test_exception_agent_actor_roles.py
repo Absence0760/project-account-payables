@@ -41,6 +41,25 @@ def _exception():
     )
 
 
+class _FakeSavepoint:
+    """Stand-in for ``AsyncSession.begin_nested()``'s async context manager.
+
+    The coordinator runs ``resolver.apply`` inside a SAVEPOINT so a refused
+    apply can't leave a partial mutation behind; ``AsyncMock.begin_nested()``
+    returns a coroutine, which ``async with`` rejects.
+    """
+
+    def __init__(self):
+        self.rolled_back = False
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self.rolled_back = exc_type is not None
+        return False  # never swallow — the coordinator's handlers decide
+
+
 def _mock_db(exc, invoice):
     """db.execute is awaited twice: the locked-exception read, then the invoice
     fetch. Each returns a result whose .scalar_one() yields the row."""
@@ -51,6 +70,8 @@ def _mock_db(exc, invoice):
     db = AsyncMock()
     db.execute = AsyncMock(side_effect=[exc_res, inv_res])
     db.add = MagicMock()
+    db.savepoint = _FakeSavepoint()
+    db.begin_nested = MagicMock(return_value=db.savepoint)
     return db
 
 
