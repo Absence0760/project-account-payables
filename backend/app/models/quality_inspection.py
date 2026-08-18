@@ -13,9 +13,11 @@ class QualityInspection(Base, EntityMixin, TimestampMixin):
     """Quality-inspection record — the 4th leg of 4-way matching.
 
     Pairs an invoice/PO/GR with an inspection outcome (``pass`` / ``fail`` /
-    ``partial``). ``po_matching.match_invoice_to_po`` looks one up (by ``gr_id``
-    when a GR was found, else by ``po_id``) to gate the match. ``entity_id``
-    comes from ``EntityMixin``; see ``docs/po-matching.md`` § 4-way.
+    ``partial``). ``po_matching.match_invoice_to_po`` looks one up to gate the
+    match: the receipt's own inspection first (``gr_id``), then a PO-level one
+    (``po_id`` with ``gr_id`` NULL) — the shape ``qms_sync`` writes whenever the
+    QMS knows the PO number but not the GR number. ``entity_id`` comes from
+    ``EntityMixin``; see ``docs/po-matching.md`` § 4-way.
     """
 
     __tablename__ = "quality_inspections"

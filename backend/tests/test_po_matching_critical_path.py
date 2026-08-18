@@ -48,6 +48,10 @@ from app.services.po_matching import match_invoice_to_po
 
 
 def _mk_db(*, po=None, gr=None, inspection=None):
+    # PO lookup, GR lookup, then the inspection leg — which can issue TWO
+    # queries (GR-scoped, then the PO-level fallback). Serve the inspection
+    # result for every call past the first two; see the fuller note on the
+    # matching helper in `test_po_matching_algorithm._mk_db`.
     po_res = MagicMock()
     po_res.scalar_one_or_none = MagicMock(return_value=po)
     # The GR leg fetches ALL receipts via `.scalars().all()` now.
@@ -57,8 +61,17 @@ def _mk_db(*, po=None, gr=None, inspection=None):
     gr_res.scalars = MagicMock(return_value=gr_scalars)
     insp_res = MagicMock()
     insp_res.scalar_one_or_none = MagicMock(return_value=inspection)
+
+    fixed = [po_res, gr_res]
+    calls = {"n": 0}
+
+    async def _execute(*_args, **_kwargs):
+        i = calls["n"]
+        calls["n"] += 1
+        return fixed[i] if i < len(fixed) else insp_res
+
     db = AsyncMock()
-    db.execute = AsyncMock(side_effect=[po_res, gr_res, insp_res])
+    db.execute = _execute
     return db
 
 
@@ -645,3 +658,110 @@ async def test_realdb_entityless_invoice_still_matches(realdb):
 
     assert match.status == "matched"
     assert match.po_total == Decimal("750.00")
+
+
+# ===========================================================================
+# 4-way leg — the inspection lookup must not go blind once a GR exists.
+#
+# `qms_sync` writes a PO-level inspection (`gr_id` NULL) whenever the QMS knows
+# the PO number but not the GR number, and `POST /api/inspections` accepts a
+# PO-only body. The lookup used to query the GR-scoped row *instead of* the
+# PO-level one whenever any receipt was booked, so those rows became invisible —
+# and the control failed OPEN in the worst direction: a `fail` verdict on
+# rejected goods never reached the matcher and the invoice read a clean 3-way
+# `matched`.
+# ===========================================================================
+
+
+async def _add_inspection(session, org_id, *, po_id, gr_id, result, notes=None):
+    from app.models.quality_inspection import QualityInspection
+
+    qi = QualityInspection(
+        inspection_number=f"QI-{uuid.uuid4().hex[:8]}",
+        po_id=po_id,
+        gr_id=gr_id,
+        result=result,
+        deviation_notes=notes,
+        organization_id=org_id,
+    )
+    session.add(qi)
+    await session.flush()
+    return qi
+
+
+@pytest.mark.asyncio
+async def test_realdb_po_level_failed_inspection_is_seen_when_a_gr_exists(realdb):
+    """The fail-open case: rejected goods must never read as a clean match."""
+    org_id = realdb.info("a").org_id
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        ent = await _default_entity_id(s)
+        po = await _add_po(s, org_id, ent, po_number="PO-INSP-FAILOPEN", total="1000.00")
+        await _add_gr(s, org_id, ent, po.id)
+        await _add_inspection(
+            s, org_id, po_id=po.id, gr_id=None, result="fail", notes="Goods rejected"
+        )
+        inv = await _add_invoice(s, org_id, ent, po_number="PO-INSP-FAILOPEN", amount="1000.00")
+        await s.commit()
+
+        match = await match_invoice_to_po(s, inv)
+
+    assert match.match_type == "4-way"
+    assert match.inspection_result == "fail"
+    assert match.status == "mismatch"
+    assert any(i.startswith("Failed quality") for i in match.issues)
+
+
+@pytest.mark.asyncio
+async def test_realdb_receipt_inspection_wins_over_the_po_level_one(realdb):
+    """Precedence is unchanged — the receipt's own verdict is the specific one."""
+    org_id = realdb.info("a").org_id
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        ent = await _default_entity_id(s)
+        po = await _add_po(s, org_id, ent, po_number="PO-INSP-PREC", total="1000.00")
+        gr = await _add_gr(s, org_id, ent, po.id)
+        await _add_inspection(s, org_id, po_id=po.id, gr_id=None, result="fail")
+        gr_qi = await _add_inspection(s, org_id, po_id=po.id, gr_id=gr.id, result="pass")
+        inv = await _add_invoice(s, org_id, ent, po_number="PO-INSP-PREC", amount="1000.00")
+        await s.commit()
+
+        match = await match_invoice_to_po(s, inv)
+
+    assert match.inspection_id == str(gr_qi.id)
+    assert match.inspection_result == "pass"
+    assert match.status == "matched"
+
+
+@pytest.mark.asyncio
+async def test_realdb_another_shipments_inspection_does_not_stand_in(realdb):
+    """The fallback is restricted to genuinely PO-level rows (`gr_id` NULL).
+
+    A different shipment's inspection also carries this `po_id`; letting it
+    substitute would swap one masking bug for another — shipment 2 passed, so
+    shipment 1 reads inspected."""
+    from datetime import UTC, datetime, timedelta
+
+    org_id = realdb.info("a").org_id
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        ent = await _default_entity_id(s)
+        po = await _add_po(s, org_id, ent, po_number="PO-INSP-OTHERGR", total="1000.00")
+        older_gr = await _add_gr(s, org_id, ent, po.id)
+        newest_gr = await _add_gr(s, org_id, ent, po.id)
+        # Stamp `created_at` explicitly: both rows are inserted in one
+        # transaction, so `now()` ties and `ORDER BY created_at DESC` would be
+        # non-deterministic about which receipt the matcher represents.
+        now = datetime.now(UTC)
+        older_gr.created_at = now - timedelta(hours=1)
+        newest_gr.created_at = now
+        # Only the OLDER shipment was inspected.
+        await _add_inspection(s, org_id, po_id=po.id, gr_id=older_gr.id, result="pass")
+        inv = await _add_invoice(s, org_id, ent, po_number="PO-INSP-OTHERGR", amount="1000.00")
+        await s.commit()
+
+        match = await match_invoice_to_po(s, inv)
+
+    assert match.gr_id == str(newest_gr.id)
+    assert match.inspection_result is None
+    assert match.match_type == "3-way"

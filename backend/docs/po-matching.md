@@ -76,12 +76,30 @@ The PO lookup and the GR lookup both pick a single deterministic row when a
 cannot crash on a duplicate.
 
 The 4-way leg runs **after** the 3-way GR block. It looks up the most recent
-`QualityInspection` — preferring the matched GR (`gr_id`), falling back to the
-PO (`po_id`). A `fail` blocks the invoice; a `partial` surfaces the accepted
-quantity (pay-only-accepted); a `pass` is a clean gate. When
+`QualityInspection` in two steps: the matched receipt's own (`gr_id == gr.id`),
+then — **whether or not a GR was found** — a PO-level one (`po_id == po.id`
+with `gr_id IS NULL`). A `fail` blocks the invoice; a `partial` surfaces the
+accepted quantity (pay-only-accepted); a `pass` is a clean gate. When
 `require_inspection` is on and no inspection exists for a found PO, the match
 flags `inspection_required` so the warnings layer can route a `quality_hold`
 exception.
+
+**Both steps matter, and the second one used to be skipped whenever a GR
+existed.** `qms_sync` writes a PO-level inspection (`gr_id` NULL) any time the
+QMS knows the PO number but not the GR number — `_resolve_gr_id` returns `None`
+— and `POST /api/inspections` accepts a PO-only body. Querying the GR-scoped row
+*instead of* the PO-level one made those rows invisible the moment any receipt
+was booked, and the control then failed **open** in the worst direction: a
+`fail` verdict on rejected goods never reached the matcher, the invoice read a
+clean `3-way` `matched`, no `quality_hold` was raised, and the supplier could be
+paid for goods the business had refused.
+
+The fallback is deliberately restricted to inspections with **no `gr_id` of
+their own**. An inspection belonging to a *different* shipment of the same PO
+also carries this `po_id`; letting it stand in for the receipt being matched
+would substitute one masking bug for another (shipment 2 passed, so shipment 1
+reads inspected). Covered by
+`backend/tests/test_po_matching_critical_path.py` § 4-way leg.
 
 ## Tolerance
 
