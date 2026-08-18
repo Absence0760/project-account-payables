@@ -31,6 +31,7 @@ from app.database import get_control_db
 from app.models.organization import Organization
 from app.services.audit_dispatch import dispatch_auth_audit
 from app.services.identity_provisioning import (
+    DeactivatedAccount,
     EmailDomainNotAllowed,
     extract_and_check_email,
     jit_provision,
@@ -258,7 +259,24 @@ async def sso_callback(
             detail="Your email domain isn't allowed to sign in to this workspace.",
         ) from exc
 
-    user = await jit_provision(db, org, email, sub, config.provider, claims)
+    try:
+        user = await jit_provision(db, org, email, sub, config.provider, claims)
+    except DeactivatedAccount as exc:
+        # The IdP vouched for them, but the app account is offboarded. Refuse
+        # here rather than minting a token `get_current_user` would reject on
+        # every subsequent call — and record the attempt, since sign-ins against
+        # a deactivated account are exactly what an access review wants to see.
+        await dispatch_auth_audit(
+            organization_id=org.id,
+            actor_id=exc.user_id,
+            action="auth.sso.login.failure",
+            entity_id=exc.user_id,
+            details={"tenant": tenant_slug, "ip": ip, "reason": "inactive"},
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="This account has been deactivated. Contact your administrator.",
+        ) from exc
 
     token, jti = create_access_token_with_jti(user.id, user.organization_id)
     await register_session(

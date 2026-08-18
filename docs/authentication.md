@@ -628,6 +628,35 @@ First SSO login provisions the user. Three match paths:
 
 New users get `ap_clerk` role by default (least privilege). The first user ever in an org gets `admin`.
 
+A match that lands on a **deactivated** account (`users.is_active = false`) raises
+`DeactivatedAccount` instead of returning the row, so neither SSO callback can
+mint a session for someone who has been offboarded — see
+[A deactivated account cannot sign in, on any path](#a-deactivated-account-cannot-sign-in-on-any-path).
+The raise happens *before* the email-link branch rebinds `sso_provider_id`, so a
+login attempt against a disabled account can't silently repoint its SSO identity
+either.
+
+### A deactivated account cannot sign in, on any path
+
+`users.is_active = false` is how offboarding is expressed — an admin flips it via
+`PATCH /api/admin/users/{id}`, or the IdP deprovisions through SCIM
+(`active: false`, `DELETE /scim/v2/Users/{id}`). Every sign-in entry point
+refuses such an account:
+
+| Path | Behaviour |
+|---|---|
+| `POST /api/auth/login` | Opaque `401 Invalid credentials`, checked alongside "no such account" so a deactivated account is indistinguishable from one that never existed. Burns the per-account failure budget; audits `auth.login.failure` with `reason: "inactive"`. |
+| `POST /api/auth/mfa/verify`, `POST /api/auth/mfa/passkey/authenticate/verify` | `401 Invalid challenge`. |
+| `POST /api/auth/sso/callback` | `403`; audits `auth.sso.login.failure` with `reason: "inactive"`. |
+| `POST /api/auth/saml/acs` | The router's single generic error; audits `auth.saml.login.failure` with `reason: "inactive"`. |
+| `POST /api/portal/auth/login` | Opaque `401`; audits `portal.login.failure` with `reason: "inactive"`. |
+
+`get_current_user` refuses an inactive user regardless, so a token minted for one
+was always inert. The reason these entry points check anyway: without it the
+caller was told the sign-in SUCCEEDED — the SPA stored a token and then 401'd on
+every call, the session counted against `FEOH_MAX_CONCURRENT_SESSIONS`, and the
+SOX trail recorded an `auth.login.success` for a terminated employee.
+
 ### OIDC endpoints
 
 | Method | Path | Purpose |

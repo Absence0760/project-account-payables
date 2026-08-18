@@ -231,7 +231,19 @@ async def login(
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
 
-    if not user or not user.hashed_password:
+    if not user or not user.hashed_password or not user.is_active:
+        # `is_active` belongs HERE, beside "no such account", not after the
+        # password check: a deactivated account must be indistinguishable from
+        # one that never existed, and the failure must still burn the per-account
+        # budget so a spray against an offboarded address stays throttled. Every
+        # other sign-in path already refuses an inactive account
+        # (`/mfa/verify`, the passkey verify, and the supplier-portal twin this
+        # branch mirrors) — only password login minted a token for one. That
+        # token was inert (`get_current_user` rejects it), but the SPA still
+        # "logged in" and then 401'd on every call, the session was tracked
+        # against the concurrent-session cap, and the SOX trail recorded an
+        # `auth.login.success` for a terminated employee.
+        #
         # Equalize timing with the wrong-password path below so the response
         # time doesn't reveal whether the email has an account (enumeration).
         dummy_verify()
@@ -246,7 +258,11 @@ async def login(
                 organization_id=user.organization_id,
                 actor_id=None,
                 action="auth.login.failure",
-                details={"email": body.email, "ip": ip, "reason": "no_password"},
+                details={
+                    "email": body.email,
+                    "ip": ip,
+                    "reason": "no_password" if not user.hashed_password else "inactive",
+                },
             )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if not pwd_context.verify(body.password, user.hashed_password):
