@@ -33,6 +33,7 @@ from app.models.invoice import Invoice
 from app.models.organization import Organization
 from app.models.payment import Payment, PaymentRun
 from app.models.user import User
+from app.tenant import apply_entity_scope
 
 logger = logging.getLogger(__name__)
 
@@ -368,6 +369,7 @@ async def create_payment_run_for_invoices(
     org: Organization,
     org_id: uuid.UUID,
     entity_id: uuid.UUID,
+    scope_entity_id: uuid.UUID | None,
     user: User,
     items: list[PaymentRunItemInput],
     plan_id: str | None = None,
@@ -379,6 +381,20 @@ async def create_payment_run_for_invoices(
     financial-integrity block (``PAYMENT_BLOCKING_EXCEPTION_TYPES``),
     credit-memo netting, and the CFO-approval-threshold computation. NEVER
     executes the run — it always lands ``status="draft"``.
+
+    ``entity_id`` is the entity newly-created rows are STAMPED with (the
+    caller's ``get_write_entity_id``, never ``None``). ``scope_entity_id`` is
+    the entity the caller has SELECTED (``get_entity_id``, ``None`` in the
+    consolidated view) and is what the invoice lookup is filtered by — the two
+    are deliberately separate, exactly as they are on ``POST /api/payments``.
+    Without the scope filter an operator with subsidiary B selected could stage
+    a run over subsidiary A's invoices: the run landed under B (visible and
+    executable from B's queue) while each payment was stamped with A's entity,
+    so executing it moved A's money from B's screen — on the one route in this
+    module that books it. An out-of-scope id is the same opaque
+    "One or more invoices not found" as a missing one, so the response can't
+    enumerate another entity's invoices (same posture as
+    ``api/payments.py::_get_scoped_payment``).
 
     ``plan_id``, when given, is a correlation-key idempotency anchor (the AI
     Cash-Flow Copilot's deterministic plan id —
@@ -407,7 +423,11 @@ async def create_payment_run_for_invoices(
             return existing_result
 
     invoice_ids = [item.invoice_id for item in items]
-    result = await db.execute(select(Invoice).where(Invoice.id.in_(invoice_ids)))
+    result = await db.execute(
+        apply_entity_scope(
+            select(Invoice).where(Invoice.id.in_(invoice_ids)), Invoice, scope_entity_id
+        )
+    )
     invoices = {inv.id: inv for inv in result.scalars().all()}
 
     if len(invoices) != len(invoice_ids):

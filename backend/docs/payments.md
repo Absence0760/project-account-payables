@@ -207,6 +207,29 @@ lifecycle with no second human. The control mirrors the invoice-approval
 than an explicit `false` keeps the secure default). A legacy run with a NULL
 `initiated_by` is never blocked (nothing to compare against).
 
+### A standalone payment can't be injected into a run
+
+`POST /api/payments` used to accept a `payment_run_id` in the body and write it
+straight to the FK: the run was never checked to exist, to be `draft`, or to
+belong to the caller's entity, and neither `run.total_amount` nor
+`run.requires_cfo_approval` was recomputed. Two consequences:
+
+- **The run-level CFO gate could be split around.** `requires_cfo_approval` is
+  computed once, at run creation, from the run's own `total_amount`, and
+  `/execute` reads only that flag. Injecting N legs each individually under
+  `payments.cfo_approval_above` left both untouched, so `/execute` dispatched
+  the inflated run with no sign-off. The per-payment CFO check on this endpoint
+  bounds each injected leg, not the run.
+- **A payment could be attached to a terminal run**, where nothing ever
+  dispatches it — the row stays `pending` forever, occupying the invoice's
+  `uq_payments_one_live_per_invoice` slot with `/void` as the only exit.
+
+A payment that belongs to a run is created BY the run
+(`services/payment_runs.create_payment_run_for_invoices`), which stamps the FK
+itself, so the field has no legitimate caller here and is gone from
+`PaymentCreate`. Pydantic ignores an unknown key, so a stray one is simply not
+honoured. Pinned by `tests/test_payment_create_cfo_gate.py`.
+
 ### Every by-id route is entity-scoped
 
 Multi-entity Phase 2 scopes reads and writes by the `X-Entity-ID` header. The
@@ -233,6 +256,20 @@ router. Two properties matter:
 The consolidated view (no header, or `X-Entity-ID: all`) still sees every
 entity's rows, so single-entity tenants and pre-multi-entity API consumers are
 unaffected. Pinned by `tests/test_payment_entity_scope.py`.
+
+**Run CREATION is scoped too**, one step earlier than the by-id routes.
+`POST /payments/runs` resolved its invoices with `WHERE id IN (…)` and no
+entity filter, so a run staged with subsidiary B selected could be built out of
+subsidiary A's invoices — the run landed under B (visible and executable from
+B's queue) while each payment was stamped with A's entity, so executing it
+moved A's money from B's screen. `create_payment_run_for_invoices` now takes
+the **selected** entity (`scope_entity_id`, from `get_entity_id`, nullable)
+separately from the entity new rows are **stamped** with (`entity_id`, from
+`get_write_entity_id`, never null) and filters the invoice lookup by the
+former. Same split `POST /payments` has always used, same opaque 404, and the
+consolidated view (`None`) is unrestricted exactly as before. The copilot's
+draft-run route passes the same selected entity its own commitment rows were
+built from, so the two can't diverge.
 
 ### Every run-state endpoint row-locks
 
@@ -1057,7 +1094,7 @@ Matching payments against bank statement entries:
 |---|---|---|
 | `GET` | `/api/payments` | List payments (paginated, filterable) |
 | `GET` | `/api/payments/{id}` | Get single payment |
-| `POST` | `/api/payments` | Create individual (standalone) payment. The amount is bound server-side to the invoice amount **net of applied credit memos**; `amount` in the body is optional and only a cross-check (422 on disagreement). See § Credit memos are netted on BOTH money paths. |
+| `POST` | `/api/payments` | Create individual (standalone) payment. The amount is bound server-side to the invoice amount **net of applied credit memos**; `amount` in the body is optional and only a cross-check (422 on disagreement). Always standalone — `payment_run_id` is **not** a request field (see § A standalone payment can't be injected into a run). Runs the same financial-integrity gate as a run. See § Credit memos are netted on BOTH money paths. |
 | `GET` | `/api/payments/runs/` | List payment runs |
 | `POST` | `/api/payments/runs` | Create a payment run (draft) |
 | `GET` | `/api/payments/runs/{id}` | Get payment run with its payments |

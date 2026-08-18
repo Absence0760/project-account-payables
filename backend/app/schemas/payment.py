@@ -57,7 +57,23 @@ class PaymentCreate(BaseModel):
     amount: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     method: PaymentMethod | None = None
     reference: str | None = Field(default=None, max_length=255)
-    payment_run_id: str | None = None
+    # No `payment_run_id`. It used to be accepted here and written straight to
+    # the FK with no validation at all — the run was never checked to exist, to
+    # be `draft`, or to belong to the caller's entity, and `run.total_amount` /
+    # `requires_cfo_approval` were not recomputed. That let a caller inject
+    # payments into any run: N legs each individually under
+    # `payments.cfo_approval_above` inflate a run whose CFO flag was frozen at
+    # creation, and `/execute` then dispatches the lot with no sign-off. It also
+    # let a payment be attached to an already-terminal run, where nothing ever
+    # dispatches it — leaving the row `pending` forever, occupying the invoice's
+    # `uq_payments_one_live_per_invoice` slot with `/void` the only exit.
+    #
+    # A payment that belongs to a run is created BY the run
+    # (`services/payment_runs.create_payment_run_for_invoices`), which stamps
+    # the FK itself. This endpoint books a STANDALONE payment and gates it with
+    # its own per-payment CFO check; there is no legitimate caller. No
+    # first-party client ever sent the field, and Pydantic ignores an unknown
+    # key, so a stray one is simply not honoured rather than 422-ing.
 
 
 class PaymentResponse(BaseModel):

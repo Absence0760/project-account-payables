@@ -1257,7 +1257,10 @@ async def create_payment(
         amount=net_amount,
         method=body.method.value if body.method else None,
         reference=body.reference,
-        payment_run_id=uuid.UUID(body.payment_run_id) if body.payment_run_id else None,
+        # Always standalone — `payment_run_id` is deliberately not a request
+        # field (see `schemas/payment.PaymentCreate`). A run stamps this FK on
+        # the payments it creates itself.
+        payment_run_id=None,
         correlation_id=uuid.uuid4(),
     )
     # Insert inside a savepoint so the DB-level unique index (the backstop for a
@@ -1396,6 +1399,11 @@ async def create_payment_run(
     user: User = Depends(require_permission(PERM_PAYMENT_RUN_APPROVE)),
     org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID = Depends(get_write_entity_id),
+    # The SELECTED entity (nullable — `None` is the consolidated view), kept
+    # separate from the write entity above: it is what the invoice lookup is
+    # filtered by, so a run staged with subsidiary B selected can't pull in
+    # subsidiary A's invoices. Same split `POST /api/payments` uses.
+    scope_entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Create a payment run from selected invoices.
 
@@ -1412,7 +1420,13 @@ async def create_payment_run(
         for item in body.items
     ]
     result = await create_payment_run_for_invoices(
-        db, org=org, org_id=org_id, entity_id=entity_id, user=user, items=items
+        db,
+        org=org,
+        org_id=org_id,
+        entity_id=entity_id,
+        scope_entity_id=scope_entity_id,
+        user=user,
+        items=items,
     )
     await db.commit()
 
