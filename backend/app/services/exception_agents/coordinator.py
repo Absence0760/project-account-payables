@@ -200,59 +200,53 @@ async def run_agent(
                     actor_id=actor_id,
                     actor_roles=actor_roles,
                 )
-        except NotApprovable as exc:
-            # The invoice can't legally reach `approved` from its current state.
-            # Downgrade to an escalation.
-            logger.info(
-                "Agent could not auto-approve invoice %s (status=%s); escalating",
-                invoice.id,
-                exc.status,
-            )
-            await _escalate(
-                db,
-                exception,
-                invoice,
-                actor_id,
-                f"Could not auto-approve: invoice is '{exc.status}', not ready_for_review.",
-            )
-            decision = _record(
-                db,
-                exception,
-                invoice,
-                action=ACTION_ESCALATED,
-                confidence=evaluation.confidence,
-                rationale=(
-                    f"Could not auto-approve: invoice is '{exc.status}', not "
-                    "ready_for_review. Escalated to a human."
-                ),
-                changes=None,
-                level=level,
-                agent_type=resolver.agent_type,
-            )
-            await db.commit()
-            return AgentRunResult(decision=decision, exception=exception)
-        except HTTPException as exc:
-            # The APPROVAL path refused. `review.approve_invoice` enforces
-            # segregation of duties, the named-approver gate, and the
-            # max-amount / CFO thresholds — the last against the same-vendor
-            # rolling AGGREGATE, which a resolver's own single-invoice
-            # pre-check cannot see. Each refusal is an `HTTPException`, and
-            # `NotApprovable` did not cover them: a 403 propagated out of
-            # `run_agent` to the route, so an AP manager resolving an exception
-            # on an invoice they uploaded themselves got a bare 403 with the
-            # exception left `open`, NO `AgentDecision` row, and nothing in the
-            # queue saying why. Every other way an apply can fail records a
-            # decision and escalates; so does this one now.
+        except (NotApprovable, HTTPException) as exc:
+            # Two families of refusal, one outcome — an escalation with a
+            # recorded decision.
+            #
+            # `NotApprovable`: the invoice can't legally reach `approved` from
+            # its current state (a resolver raises it before approving).
+            #
+            # `HTTPException`: the APPROVAL path itself refused.
+            # `review.approve_invoice` enforces segregation of duties, the
+            # named-approver gate, and the max-amount / CFO thresholds — the
+            # last against the same-vendor rolling AGGREGATE, which a resolver's
+            # own single-invoice pre-check cannot see. `NotApprovable` did not
+            # cover these, so a 403 propagated out of `run_agent` to the route:
+            # an AP manager resolving an exception on an invoice they uploaded
+            # themselves got a bare 403 with the exception left `open`, NO
+            # `AgentDecision` row, and nothing in the queue saying why. Every
+            # other way an apply can fail records a decision and escalates.
             #
             # A 5xx is a real fault, not a refusal — let it propagate.
-            if exc.status_code >= 500:
+            if isinstance(exc, HTTPException) and exc.status_code >= 500:
                 raise
-            reason = _refusal_reason(exc)
-            logger.info(
-                "Agent auto-approve refused for invoice %s (HTTP %s); escalating",
-                invoice.id,
-                exc.status_code,
-            )
+
+            # The SAVEPOINT rolled back, which EXPIRES every object the apply
+            # touched. Reading `invoice.id` below would then trigger a lazy
+            # refresh from a sync attribute access — `MissingGreenlet` under
+            # asyncio, which would turn a handled refusal back into a 500.
+            # Reload it explicitly, on the async path, before anything reads it.
+            await db.refresh(invoice)
+
+            if isinstance(exc, NotApprovable):
+                reason = (
+                    f"Could not auto-approve: invoice is '{exc.status}', not "
+                    "ready_for_review. Escalated to a human."
+                )
+                logger.info(
+                    "Agent could not auto-approve invoice %s (status=%s); escalating",
+                    invoice.id,
+                    exc.status,
+                )
+            else:
+                reason = _refusal_reason(exc)
+                logger.info(
+                    "Agent auto-approve refused for invoice %s (HTTP %s); escalating",
+                    invoice.id,
+                    exc.status_code,
+                )
+
             await _escalate(db, exception, invoice, actor_id, reason)
             decision = _record(
                 db,

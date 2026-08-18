@@ -150,6 +150,14 @@ cannot, because `approve_invoice` applies `corrections` — including `amount` �
 post-correction figure). Escalating after a threshold refusal without unwinding
 would commit the agent's amount change on an invoice nobody approved.
 
+A savepoint rollback **expires** every object the apply touched, so the handler
+re-loads the invoice (`await db.refresh(invoice)`) before anything reads it. A
+sync attribute access on an expired instance triggers a lazy refresh, which
+under asyncio raises `MissingGreenlet` — turning a handled refusal back into a
+500. The realdb half of `tests/test_exception_agent_approval_refusal.py` is what
+pins both halves: the refused amount change does not persist, and the escalation
+that follows does.
+
 ## Autonomy → threshold
 
 `Organization.settings.exception_agents.autonomy_level` controls **whether to

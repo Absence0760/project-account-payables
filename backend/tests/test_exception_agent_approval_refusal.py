@@ -28,6 +28,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException, status
+from sqlalchemy import select
 
 from app.services.exception_agents.base import ACTION_AUTO_RESOLVED, AgentEvaluation
 from app.services.exception_agents.coordinator import run_agent
@@ -183,3 +184,107 @@ async def test_a_server_error_is_not_swallowed_as_an_escalation():
     assert caught.value.status_code == 503
     assert exc.status == "open"
     db.commit.assert_not_awaited()
+
+
+# --------------------------------------------------------------------------- #
+# Against a real Postgres session — the SAVEPOINT is what unwinds the apply
+# --------------------------------------------------------------------------- #
+
+
+async def _seed_open_exception(mk, org_id):
+    """An Invoice + an OPEN exception on it. No PO / workflow needed: the
+    resolver is patched, so only the coordinator's own writes are exercised."""
+    from app.models.exception import Exception as APException
+    from app.models.invoice import Invoice
+
+    async with mk() as s:
+        inv = Invoice(
+            organization_id=org_id,
+            invoice_number="INV-REFUSAL-1",
+            vendor_name="Acme",
+            amount=Decimal("100.00"),
+        )
+        s.add(inv)
+        await s.commit()
+        await s.refresh(inv)
+
+        exc = APException(
+            invoice_id=inv.id,
+            exception_type="po_mismatch",
+            severity="warning",
+            status="open",
+            organization_id=org_id,
+        )
+        s.add(exc)
+        await s.commit()
+        await s.refresh(exc)
+        return inv.id, exc.id
+
+
+class _MutatingThenRefused:
+    """What `approve_invoice` does on a threshold refusal: apply the correction,
+    THEN hit the gate — so the refusal arrives with a dirty session."""
+
+    agent_type = "fake_v1"
+
+    async def evaluate(self, _db, *, exception, invoice, org_settings):
+        return AgentEvaluation(
+            recommended_action=ACTION_AUTO_RESOLVED,
+            confidence=Decimal("1"),
+            rationale="ok",
+            changes={"amount": {"old": "100.00", "new": "999.00"}},
+        )
+
+    async def apply(self, db, *, exception, invoice, evaluation, actor_id, actor_roles=None):
+        invoice.amount = Decimal("999.00")
+        await db.flush()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invoices above $500.00 require CFO approval.",
+        )
+
+
+@pytest.mark.asyncio
+async def test_refusal_unwinds_the_apply_and_still_commits_the_escalation(realdb):
+    """The mutation a refused apply made must not survive; the escalation must.
+
+    The pair the SAVEPOINT exists for, proven against real Postgres — the
+    escalation commits on the same session the refused apply dirtied.
+    """
+    from app.models.agent_decision import AgentDecision
+    from app.models.exception import Exception as APException
+    from app.models.invoice import Invoice
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+
+    inv_id, exc_id = await _seed_open_exception(mk, org_id)
+
+    with patch(
+        "app.services.exception_agents.coordinator.get_resolver",
+        return_value=_MutatingThenRefused(),
+    ):
+        async with mk() as s:
+            exc = await s.get(APException, exc_id)
+            result = await run_agent(
+                s,
+                exception=exc,
+                actor_id=actor_id,
+                org_settings={"exception_agents": {"autonomy_level": "aggressive"}},
+                actor_roles={"ap_manager"},
+            )
+            assert result.decision.action_taken == "escalated"
+
+    async with mk() as s:
+        # The refused correction did NOT persist.
+        assert (await s.get(Invoice, inv_id)).amount == Decimal("100.00")
+        # The escalation DID.
+        exc = await s.get(APException, exc_id)
+        assert exc.status == "escalated"
+        assert "CFO approval" in (exc.resolution or "")
+        decision = (
+            await s.execute(select(AgentDecision).where(AgentDecision.invoice_id == inv_id))
+        ).scalar_one()
+        assert decision.action_taken == "escalated"
+        assert "CFO approval" in decision.rationale
