@@ -548,6 +548,24 @@ Read `search` via `untrack(() => search)` in the params-builder, and untrack
 `syncUrl()` wholesale — it is a writer of URL state, never a dependency
 source. `tests-e2e/reactivity/search-debounce-race.spec.ts` is the guard.
 
+**A debounce `$effect` must return its own teardown.** A `$effect` that arms a
+timer and returns nothing leaves it armed when the component is destroyed, so
+the callback runs against a page the user already left: `syncUrl()` rewrites
+the address bar (SvelteKit's `replaceState` doesn't care which route is
+mounted), and a list-store reload writes a pre-navigation snapshot into a
+module-level store the *next* page shares. Always close the effect with
+
+```ts
+return () => clearTimeout(searchTimer);
+```
+
+Svelte also runs that teardown before each re-run, so it subsumes the
+`clearTimeout` at the top of the body rather than fighting it. Enforced across
+the tree by `src/lib/utils/effectTimerCleanup.test.ts`, a source scan that
+fails any `$effect` body containing `setTimeout(` / `setInterval(` without a
+matching `return () => clear…` — a deliberate static guard, because the
+symptom only shows inside a sub-second window that no non-flaky e2e can pin.
+
 ### Status filter chips
 
 Use **`<FilterChips>`** (`$lib/components/ui/FilterChips.svelte`) for the

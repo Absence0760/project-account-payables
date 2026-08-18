@@ -96,6 +96,11 @@
 		searchTimer = setTimeout(() => {
 			void loadPos({ search: q, status: s });
 		}, 250);
+		// Cancel a pending debounce on teardown: without it the timer fires
+		// after the page is gone and lands a stale list into the shared store.
+		return () => {
+			if (searchTimer) clearTimeout(searchTimer);
+		};
 	});
 
 	$effect(() => {

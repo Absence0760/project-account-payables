@@ -181,6 +181,10 @@
 		search;
 		clearTimeout(searchTimer);
 		searchTimer = setTimeout(() => syncUrl(), 300);
+		// Cancel a pending debounce on teardown: without it the timer fires
+		// after the page is gone, running syncUrl()/a list fetch against a route
+		// the user already left.
+		return () => clearTimeout(searchTimer);
 	});
 
 	$effect(() => {
