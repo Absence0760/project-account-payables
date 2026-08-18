@@ -714,3 +714,48 @@ async def test_deactivating_last_shared_workflow_refused_even_with_entity_active
     async with realdb.client(key="a", role="admin") as c:
         resp = await c.patch(f"/api/workflows/{shared_id}", json={"is_active": False})
     assert resp.status_code == 409, resp.text
+
+
+async def test_new_entity_inherits_the_org_default_instead_of_minting_a_stub(realdb):
+    """An entity with no definition of its own — and no shared fallback — must
+    inherit the org's existing default, not get a fresh auto-created one.
+
+    Minting one here is the accumulation bug `globalSetup.ts` fails the entire
+    e2e run over and `docs/known-issues.md` records: a SECOND `is_default=True`
+    row appears in a different entity scope. Because the auto-created stub has
+    every step disabled, it then shadows the real seeded default for no-entity
+    reads — every step reads disabled and invoices route through an empty
+    workflow.
+    """
+    from app.services.workflow_engine import get_or_create_workflow_definition
+
+    org_id = realdb.info("a").org_id
+    mk = realdb.sessionmaker("a")
+
+    async with realdb.client(key="a", role="admin") as c:
+        listing = await c.get("/api/workflows")  # seeds the org default
+        assert listing.status_code == 200
+        _default_id, new_entity_id = await _entities(c)
+
+    async with mk() as s:
+        # Resolve for the brand-new entity: nothing of its own, nothing shared.
+        defn = await get_or_create_workflow_definition(s, org_id, new_entity_id)
+        await s.commit()
+        # It inherited the seeded default rather than creating anything.
+        assert defn.name == "Default Workflow"
+
+    async with mk() as s:
+        defaults = (
+            (
+                await s.execute(
+                    select(WorkflowDefinition).where(
+                        WorkflowDefinition.organization_id == org_id,
+                        WorkflowDefinition.is_default.is_(True),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    # Exactly one is_default row org-wide — the invariant globalSetup guards.
+    assert len(defaults) == 1, [(d.name, str(d.entity_id)) for d in defaults]

@@ -523,6 +523,20 @@ than a bug fix or a product call rather than a defect:
       `frontend/tests-e2e/payments/execute.spec.ts`.
       **Trigger:** a product call on whether the modal counts as the
       confirmation step.
+- [ ] **`tests-e2e/discounts/money-path.spec.ts:228` is date-boundary flaky off
+      UTC.** "per-invoice ROI is the exact cost-of-forgoing-discount value"
+      asserts `days_accelerated === 20` from an invoice due in 30 days and an
+      offer deadline 10 days out. `makeInvoice` and `makeOffer` derive their
+      dates separately, so on a machine whose local date differs from UTC the
+      two straddle midnight and the assertion sees 21. CI runs in UTC and never
+      sees it; it reproduces reliably on a UTC-4 workstation after 20:00 local.
+      Diagnosed while triaging PR #315 — the spec is untouched by that PR and
+      the ROI primitive itself is correct.
+      **Durable fix:** derive both dates from one clock read passed into both
+      helpers (or assert the relationship `netDue - discountDeadline` rather
+      than a hardcoded 20).
+      **Trigger:** the next change to the discounts e2e specs, or the first
+      time it costs someone a local triage session.
 - [ ] **`api/cards.py::_normalize_charge_amount` divides by a flat 100.** Not
       ISO-4217-exponent aware, unlike
       `payment_adapters.base.minor_units_to_decimal`. Lithic is USD-only in

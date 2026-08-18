@@ -445,6 +445,28 @@ async def get_or_create_workflow_definition(
         if defn:
             return defn
 
+    # Last read before we mint anything: ANY active definition in the org,
+    # whatever its scope. An entity with no definition of its own and no shared
+    # fallback must inherit the org's existing default rather than get a fresh
+    # stub — minting one here is the accumulation bug
+    # `tests-e2e/fixtures/globalSetup.ts` fails the whole e2e run over and
+    # `docs/known-issues.md` records: a second `is_default=True` row appears in
+    # a different entity scope, and because the auto-created stub has every
+    # step disabled it can then shadow the real seeded default for no-entity
+    # reads. Creating is now reserved for an org that genuinely has NO active
+    # definition at all.
+    result = await db.execute(
+        select(WorkflowDefinition)
+        .where(
+            WorkflowDefinition.organization_id == organization_id,
+            WorkflowDefinition.is_active == True,  # noqa: E712
+        )
+        .order_by(*order)
+    )
+    defn = result.scalars().first()
+    if defn:
+        return defn
+
     # NULL — the SHARED org-wide bucket — deliberately, and unlike the other
     # three creation paths (`POST /api/workflows`, the `GET /api/workflows`
     # auto-seed, and `tenant_provisioning`), which all stamp the caller's

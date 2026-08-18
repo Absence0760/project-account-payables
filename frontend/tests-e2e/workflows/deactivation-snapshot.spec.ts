@@ -229,15 +229,24 @@ test.describe('workflow deactivation snapshot semantics', () => {
 		}
 	});
 
-	test('explicitly deactivating the active workflow without a replacement still preserves snapshots', async ({
+	test('deactivating the last active workflow is refused, and snapshots survive a legitimate swap', async ({
 		page
 	}) => {
-		// This is the "no other workflow active" edge case. PATCH the
-		// active workflow with is_active=false. The org now has no active
-		// workflow at all. Existing invoices still complete via their
-		// snapshot; new invoices get a definition from
-		// get_or_create_workflow_definition (which auto-creates one if
-		// none active — see workflow_engine.get_or_create_workflow_definition).
+		// Two things at once.
+		//
+		// (1) The org may NOT be left with zero active workflows. It used to
+		// be allowed, and `get_or_create_workflow_definition` would then
+		// lazily mint an "Invoice Processing" stub with every step disabled —
+		// so the next invoice sailed `new → done` with no approval, no
+		// signature, no audit row and no CFO gate. (Worse, when a shared
+		// default already exists that insert violates
+		// `uq_workflow_definitions_one_default` and 500s invoice upload.)
+		// The PATCH is now a 409.
+		//
+		// (2) The snapshot invariant this spec exists for is unchanged: an
+		// invoice completes from its OWN frozen snapshot even after the
+		// definition it came from stops being active. We reach that state the
+		// way a user actually can — by activating a replacement.
 		const wfsBefore = await listWorkflows(page);
 		const seedActive = wfsBefore.find((w) => w.is_active)!;
 		const seedSteps = seedActive.steps_config.steps;
@@ -253,6 +262,7 @@ test.describe('workflow deactivation snapshot semantics', () => {
 		);
 
 		const created: string[] = [];
+		const cleanupWorkflows: string[] = [];
 		try {
 			await patchWorkflow(page, seedActive.id, { steps: stepsForReview });
 
@@ -260,11 +270,18 @@ test.describe('workflow deactivation snapshot semantics', () => {
 			const x = await createInvoice(page, `nodef-${Date.now()}`);
 			created.push(x);
 
-			// Deactivate the seeded workflow directly. The one-active
-			// invariant kicks in only when activating something — explicitly
-			// setting is_active=false is allowed and leaves the org with
-			// zero active workflows.
-			await patchWorkflow(page, seedActive.id, { is_active: false });
+			// (1) Refused — this is the only active workflow.
+			const refused = await patchWorkflow(page, seedActive.id, { is_active: false });
+			expect(refused.status()).toBe(409);
+			const stillActive = await listWorkflows(page);
+			expect(stillActive.find((w) => w.id === seedActive.id)!.is_active).toBe(true);
+
+			// (2) Activate a replacement — that legitimately deactivates the
+			// seeded one, leaving invoice X's snapshot orphaned from any
+			// active definition, which is the state under test.
+			const replacementId = await createWorkflow(page, `replacement-${Date.now()}`, seedSteps);
+			cleanupWorkflows.push(replacementId);
+			await patchWorkflow(page, replacementId, { is_active: true });
 			const wfsMid = await listWorkflows(page);
 			expect(wfsMid.find((w) => w.id === seedActive.id)!.is_active).toBe(false);
 
@@ -274,10 +291,18 @@ test.describe('workflow deactivation snapshot semantics', () => {
 			expect(xStatus).toBe('ready_for_review');
 		} finally {
 			for (const id of created) hardDeleteInvoice(id);
+			// Restore the seeded workflow FIRST (activating it deactivates the
+			// replacement), then the replacement can be deleted — delete
+			// refuses an active definition.
 			await patchWorkflow(page, seedActive.id, {
 				is_active: true,
 				steps: seedSteps
 			});
+			for (const id of cleanupWorkflows) {
+				await page.request.delete(`${API_BASE}/api/workflows/${id}`, {
+					headers: await authedTenantHeaders(page)
+				});
+			}
 		}
 	});
 });
