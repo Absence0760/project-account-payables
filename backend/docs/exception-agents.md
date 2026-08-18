@@ -117,7 +117,38 @@ mutates state itself.
      resolution.
    - If `apply` raises `NotApprovable` (invoice not in `ready_for_review`):
      downgrade to `escalated`, nothing was committed.
+   - If `apply` raises an `HTTPException` below 500 — the **approval path's own
+     refusal** — downgrade to `escalated` the same way, with the refusal's
+     detail as the rationale a human reads in the queue. A 5xx is a fault, not
+     a refusal, and propagates. See § Every refusal ends in a decision row.
 5. Persist one `AgentDecision`, commit.
+
+### Every refusal ends in a decision row
+
+`resolver.apply` finishes in `review.approve_invoice`, which enforces controls
+no resolver pre-check can reproduce:
+
+- **Segregation of duties** — the user who uploaded the invoice cannot approve
+  it, and `actor_id` is the human who triggered the agent run. An AP manager
+  resolving an exception on their own upload trips this.
+- **The named-approver gate** (`approver_strategy: "specific"`).
+- **The max-amount / CFO thresholds measured against the same-vendor rolling
+  AGGREGATE** (`services/structuring`) — a resolver only ever sees the single
+  invoice, so a split payable can clear its own pre-check and still be refused.
+
+Each is an `HTTPException`, and the coordinator only caught `NotApprovable` —
+so those propagated out of `run_agent` to the route. The caller got a bare 403,
+the exception stayed `open`, no `AgentDecision` row was written, and nothing in
+the queue said why. Every *other* way an apply can fail records a decision and
+escalates; these now do too.
+
+The apply also runs inside a **SAVEPOINT** (`db.begin_nested()`). The
+`NotApprovable` path could assume "nothing was committed" because resolvers
+raise it *before* calling `approve_invoice`; the approval path's own refusals
+cannot, because `approve_invoice` applies `corrections` — including `amount` —
+*before* it enforces the money thresholds (deliberately, so the gate sees the
+post-correction figure). Escalating after a threshold refusal without unwinding
+would commit the agent's amount change on an invoice nobody approved.
 
 ## Autonomy → threshold
 

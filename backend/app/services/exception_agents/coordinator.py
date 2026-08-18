@@ -5,6 +5,7 @@ import uuid
 from dataclasses import dataclass
 from decimal import Decimal
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,6 +46,22 @@ class ExceptionNotActionable(Exception):  # noqa: N818
 class AgentRunResult:
     decision: AgentDecision
     exception: APException
+
+
+#: Bound on the approval path's own refusal text before it becomes the rationale
+#: a human reads in the queue. Every such detail is authored by us (a static
+#: string, or a threshold message naming amounts) — never provider output and
+#: never a PII field — but it is not this module's to size.
+_REFUSAL_DETAIL_LIMIT = 300
+
+
+def _refusal_reason(exc: HTTPException) -> str:
+    """Turn an approval refusal into the rationale the escalation carries."""
+    detail = exc.detail if isinstance(exc.detail, str) else ""
+    detail = detail.strip()[:_REFUSAL_DETAIL_LIMIT]
+    if not detail:
+        detail = "The approval was refused."
+    return f"Could not auto-approve: {detail} Escalated to a human."
 
 
 async def run_agent(
@@ -165,17 +182,27 @@ async def run_agent(
     if can_resolve:
         try:
             # resolver.apply MUST write the audit_log row(s) for the mutation.
-            await resolver.apply(
-                db,
-                exception=exception,
-                invoice=invoice,
-                evaluation=evaluation,
-                actor_id=actor_id,
-                actor_roles=actor_roles,
-            )
+            #
+            # Inside a SAVEPOINT so a refused apply leaves NOTHING behind. The
+            # `NotApprovable` path could assume that (resolvers raise it before
+            # calling `approve_invoice`), but the approval path's OWN refusals
+            # cannot: `review.approve_invoice` applies `corrections` — including
+            # `amount` — BEFORE it enforces the money thresholds, deliberately,
+            # so the gate sees the post-correction figure. Escalating after such
+            # a refusal without unwinding would commit the agent's amount change
+            # on an invoice nobody approved.
+            async with db.begin_nested():
+                await resolver.apply(
+                    db,
+                    exception=exception,
+                    invoice=invoice,
+                    evaluation=evaluation,
+                    actor_id=actor_id,
+                    actor_roles=actor_roles,
+                )
         except NotApprovable as exc:
             # The invoice can't legally reach `approved` from its current state.
-            # Nothing committed yet — downgrade to an escalation.
+            # Downgrade to an escalation.
             logger.info(
                 "Agent could not auto-approve invoice %s (status=%s); escalating",
                 invoice.id,
@@ -198,6 +225,42 @@ async def run_agent(
                     f"Could not auto-approve: invoice is '{exc.status}', not "
                     "ready_for_review. Escalated to a human."
                 ),
+                changes=None,
+                level=level,
+                agent_type=resolver.agent_type,
+            )
+            await db.commit()
+            return AgentRunResult(decision=decision, exception=exception)
+        except HTTPException as exc:
+            # The APPROVAL path refused. `review.approve_invoice` enforces
+            # segregation of duties, the named-approver gate, and the
+            # max-amount / CFO thresholds — the last against the same-vendor
+            # rolling AGGREGATE, which a resolver's own single-invoice
+            # pre-check cannot see. Each refusal is an `HTTPException`, and
+            # `NotApprovable` did not cover them: a 403 propagated out of
+            # `run_agent` to the route, so an AP manager resolving an exception
+            # on an invoice they uploaded themselves got a bare 403 with the
+            # exception left `open`, NO `AgentDecision` row, and nothing in the
+            # queue saying why. Every other way an apply can fail records a
+            # decision and escalates; so does this one now.
+            #
+            # A 5xx is a real fault, not a refusal — let it propagate.
+            if exc.status_code >= 500:
+                raise
+            reason = _refusal_reason(exc)
+            logger.info(
+                "Agent auto-approve refused for invoice %s (HTTP %s); escalating",
+                invoice.id,
+                exc.status_code,
+            )
+            await _escalate(db, exception, invoice, actor_id, reason)
+            decision = _record(
+                db,
+                exception,
+                invoice,
+                action=ACTION_ESCALATED,
+                confidence=evaluation.confidence,
+                rationale=reason,
                 changes=None,
                 level=level,
                 agent_type=resolver.agent_type,
