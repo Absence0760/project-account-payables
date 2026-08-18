@@ -236,6 +236,13 @@ Sets `approved_by="system (auto-approve)"`.
 
 Every extracted field includes a confidence score (0.0 to 1.0). The extraction prompt asks the AI to self-rate certainty per field.
 
+**A model's answer is not a validated input.** `extraction_adapters.base.coerce_confidence` forces every model-supplied score into the contract before it reaches `ExtractedField`; it is shared by `claude_vision`, `openai_vision` and `ollama` (they all parse this prompt through `claude_vision._parse_field`) and by the statement reader. Two things it stops:
+
+- **`null` / a string / any non-number.** These landed on `ExtractedField.confidence` verbatim, so `sum(confidences)` raised `TypeError` *inside* `extract()`. An extraction whose values were all read correctly failed outright — invoice to `failed`, an `extraction_failed` exception in the queue, re-key by hand.
+- **A score outside 0–1.** A model answering on a 0–100 scale lifts the **mean** past `auto_approve_threshold`. It doesn't take a whole document: one field at `3` among four at `0.5` averages exactly 1.0, fits the `Numeric(5, 4)` column, persists cleanly, and auto-approves an invoice the model itself rated 0.5 — straight past human review.
+
+Out of contract becomes **0.0, not a clamp to 1.0**: a number we can't interpret must never authorise an unattended approval, and 0.0 routes the invoice to a human. `decide_auto_approve` applies the same range check to `overall_confidence` itself, so an adapter that computes its own aggregate some other way still can't trip the gate. (`aws_textract` already divides Textract's 0–100 confidence by 100 and is unaffected.)
+
 | Confidence | Treatment |
 |---|---|
 | >= 0.9 | Auto-applied, no flag |

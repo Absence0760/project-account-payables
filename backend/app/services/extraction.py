@@ -156,7 +156,8 @@ def decide_auto_approve(
 
     Two independent triggers (either fires it):
       1. Confidence — ``auto_approve_enabled`` and ``overall_confidence`` clears
-         ``auto_approve_threshold`` (default 0.95).
+         ``auto_approve_threshold`` (default 0.95). A score outside 0..1 counts
+         as 0 — see the guard below.
       2. Amount floor — ``auto_approve_below`` set and the invoice amount is
          strictly below it (the "skip review for small invoices" rule).
 
@@ -191,8 +192,17 @@ def decide_auto_approve(
     amount_dec = Decimal(str(amount or 0))
     gate_amount = amount_dec if aggregate_amount is None else Decimal(str(aggregate_amount))
 
+    # A confidence outside 0..1 is not evidence of anything — it is an adapter
+    # reporting on a scale we didn't ask for. Treating it as "very confident" is
+    # how a model answering `3` where the contract says `0.5` averages its way
+    # past the threshold and auto-approves an invoice nobody looked at. Adapters
+    # normalise their own fields (`extraction_adapters.base.coerce_confidence`);
+    # this is the gate's own guard, so a future adapter computing its overall
+    # score some other way still can't trip it.
+    confidence = overall_confidence if 0.0 <= overall_confidence <= 1.0 else 0.0
+
     auto_approved = False
-    if ext_cfg.get("auto_approve_enabled") and overall_confidence >= ext_cfg.get(
+    if ext_cfg.get("auto_approve_enabled") and confidence >= ext_cfg.get(
         "auto_approve_threshold", 0.95
     ):
         auto_approved = True

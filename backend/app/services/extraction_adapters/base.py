@@ -52,6 +52,45 @@ def pdf_text_layer(pdf_bytes: bytes, *, min_chars: int = 50) -> str | None:
         return None
 
 
+def coerce_confidence(raw) -> float:
+    """A model's self-rated confidence, forced into the 0.0–1.0 contract.
+
+    Shared by every adapter that parses this prompt's JSON (`claude_vision`,
+    `openai_vision`, `ollama`), because a model's answer is not a validated
+    input — and the raw value used to travel straight onto ``ExtractedField``:
+
+    * ``null`` / a string / a missing number made ``sum(confidences)`` raise
+      ``TypeError`` inside ``extract()``, failing an extraction whose VALUES
+      were all read correctly — the invoice lands in ``failed`` with an
+      ``extraction_failed`` exception and has to be re-keyed by hand.
+    * a value **outside 0–1** (a model answering on a 0–100 scale) lifted the
+      MEAN past ``auto_approve_threshold``. One field at ``3`` among four at
+      ``0.5`` averages 1.0, fits ``Numeric(5, 4)``, persists, and
+      ``decide_auto_approve`` approves the invoice touchlessly — an extraction
+      the model actually rated 0.5 skips human review entirely.
+
+    Out of contract is therefore **0.0, not a clamp to 1.0**: a number we
+    cannot interpret must never be able to authorise an unattended approval,
+    and 0.0 routes the invoice to a human, which is the safe outcome. ``bool``
+    is rejected too (JSON ``true`` is not a confidence, and it is an ``int``).
+    """
+    if isinstance(raw, bool):
+        return 0.0
+    if isinstance(raw, str):
+        try:
+            raw = float(raw.strip())
+        except ValueError:
+            return 0.0
+    if not isinstance(raw, (int, float)):
+        return 0.0
+    value = float(raw)
+    if value != value or value in (float("inf"), float("-inf")):  # NaN / ±inf
+        return 0.0
+    if 0.0 <= value <= 1.0:
+        return value
+    return 0.0
+
+
 @dataclass
 class ExtractedField:
     """A single extracted field with confidence score."""
