@@ -7,8 +7,15 @@ event counts grouped by action, and the chronological trail table.
 
 Pure-function, mirroring ``remittance_pdf``: it takes the already-loaded export
 entries (``AuditExportEntry``) plus the issuing-org profile and the scope/period
-metadata, and returns the PDF bytes. No DB / network calls — the HTTP route loads
+metadata, and returns the PDF bytes. No DB queries — the HTTP route loads
 the rows and wraps the bytes in a ``Response``.
+
+**Blocking, and offloaded by the caller.** "No DB" is not "no I/O": the
+brand-logo embed (``branding.build_logo_flowable``) does a blocking DNS lookup
+and a blocking ``httpx.Client`` GET, and ReportLab lays the document out on the
+CPU. Every route therefore calls this through ``await
+asyncio.to_thread(render_..., ctx)`` rather than on the event loop;
+``tests/test_pdf_render_offloaded.py`` is the drift guard.
 
 PII discipline: this renderer NEVER reaches into a regulated value. It renders
 EXACTLY what the export entry already carries (action, entity type/id, actor

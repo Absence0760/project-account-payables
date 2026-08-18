@@ -9,6 +9,7 @@ review ones.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, date, datetime
 
@@ -305,7 +306,7 @@ async def download_vendor_1099(
         misc_box=misc_box,
         brand=get_brand_context(org.settings),
     )
-    pdf = render_1099_pdf(ctx)
+    pdf = await asyncio.to_thread(render_1099_pdf, ctx)
     filename = f"{form_type}-{year}-{vendor.id}.pdf"
     return Response(
         content=pdf,

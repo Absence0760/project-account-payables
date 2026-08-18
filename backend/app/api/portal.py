@@ -5,6 +5,7 @@ Every endpoint is vendor-scoped: the caller's `vendor_id` (from the JWT via
 A vendor user cannot reference another vendor's invoices even by guessing IDs.
 """
 
+import asyncio
 import logging
 import uuid
 from datetime import UTC, date, datetime
@@ -794,7 +795,7 @@ async def get_my_payment_remittance(
         ],
         brand=get_brand_context(org.settings if org else None),
     )
-    pdf_bytes = render_remittance_pdf(ctx)
+    pdf_bytes = await asyncio.to_thread(render_remittance_pdf, ctx)
     filename = f"remittance-{payment.reference or str(payment.id)[:8]}.pdf"
     return Response(
         content=pdf_bytes,
