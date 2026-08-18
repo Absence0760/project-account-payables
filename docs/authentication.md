@@ -907,7 +907,7 @@ Every SCIM request Authorization-headers a bearer token; the backend SHA-256s it
 | `GET` | `/Users/{id}` | Fetch one user. |
 | `POST` | `/Users` | Create. Returns 409 `uniqueness` on duplicate userName. |
 | `PUT` | `/Users/{id}` | **Full-resource replace.** Authentik (and RFC 7644 §3.5.1) update users via PUT, not PATCH. Returns 409 `uniqueness` if the new userName collides with another user. |
-| `PATCH` | `/Users/{id}` | Partial update. Supports the ops Okta + Entra send (active toggle, userName/externalId/name replace, root-object replace). |
+| `PATCH` | `/Users/{id}` | Partial update. Supports the ops Okta + Entra send (active toggle, userName/externalId/name replace, root-object replace). A `userName` op returns 409 `uniqueness` on a collision. |
 | `DELETE` | `/Users/{id}` | **Soft delete** — sets `is_active=false`. Preserves audit trail. |
 | `GET` | `/Groups` | List + paginate; `displayName eq` filter. |
 | `GET` | `/Groups/{id}` | Fetch one group. |
@@ -920,6 +920,15 @@ Both `PUT` and `PATCH` `db.refresh()` the row after the flush: the `UPDATE` fire
 `updated_at`'s server-side `onupdate`, which SQLAlchemy expires — reloading it in
 the async handler avoids a sync lazy-load (`MissingGreenlet` → 500) when the SCIM
 response reads `meta.lastModified`.
+
+**`userName` uniqueness is platform-wide, not per-tenant.** `users.email` carries
+a global `UNIQUE` constraint — it is the login identifier, and `/auth/login`
+resolves an account by address alone with no tenant hint. So `POST`, `PUT` and
+`PATCH` all check the address across every org (`scim._email_taken`, the same
+scope `admin.create_user` uses) and return 409 `uniqueness`. Scoping the check to
+the calling tenant would let an address already held in a *different* tenant slip
+past the guard and trip the DB constraint on flush — an unhandled 500 where the
+RFC requires a 409, which providers then retry forever.
 
 ### Filter syntax
 
