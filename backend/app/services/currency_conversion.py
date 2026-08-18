@@ -36,6 +36,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 
+from sqlalchemy import ColumnElement, and_, case, func, or_
+
 from app.config import settings
 from app.services.fx_adapters import FXAdapter, FXRate
 
@@ -201,6 +203,75 @@ def reporting_amount_for_row(
 
     # Foreign row with no usable lock — can't fabricate a rate here.
     return _quantize_money(Decimal(str(amount))), True
+
+
+@dataclass(frozen=True)
+class PaymentReportingAmountSql:
+    """SQL expressions for "what did this payment move, in the reporting
+    currency?" — plus the predicate that says whether that is knowable at all.
+
+    ``amount`` evaluates to the reporting-currency figure, or SQL ``NULL``
+    when none can be established. ``is_expressible`` is the two-valued
+    predicate for the same condition, so a caller can bucket the rows it must
+    leave OUT of a total instead of quietly adding them at face value.
+    """
+
+    amount: ColumnElement
+    is_expressible: ColumnElement[bool]
+
+
+def payment_reporting_amount_sql(
+    *,
+    reporting_currency: str,
+    payment_amount: ColumnElement,
+    payment_source_amount: ColumnElement,
+    payment_source_currency: ColumnElement,
+    invoice_currency: ColumnElement,
+) -> PaymentReportingAmountSql:
+    """Resolve a ``Payment`` row's outflow into the org's reporting currency.
+
+    **``Payment.amount`` is denominated in the INVOICE's currency, not the
+    org's home currency** — ``international_payments.prepare_international_payment``
+    sets ``amount=invoice.amount`` ("paid in invoice currency") and puts the
+    home-currency debit on ``source_amount``/``source_currency``. Any
+    aggregate that sums raw ``Payment.amount`` across a book containing one
+    foreign invoice is therefore a silent two-currency mixture.
+
+    Two rungs, most authoritative first:
+
+    1. ``source_amount`` when ``source_currency`` IS the reporting currency —
+       the exact home-currency cash outflow, at the rate locked onto the row
+       when the payment was submitted. This is the figure that actually left
+       the bank.
+    2. ``amount`` when the invoice's own currency IS the reporting currency —
+       the ordinary domestic case, and the only rung a single-currency tenant
+       ever reaches, so its numbers are unchanged.
+
+    Otherwise the figure is **not establishable** and both outputs say so.
+    Deliberately no third rung that falls back to face value: unlike a spend
+    dashboard (``reporting_amount_for_row``, which does fall back and flags
+    ``unconverted``), the consumers of this helper file regulated totals, where
+    adding 1 000 EUR to a USD figure as though it were 1 000 USD is a wrong
+    number on a filed form. Fetching a rate here is not an option either — a
+    rate looked up at read time makes a historical total move under the reader
+    (``docs/decisions.md`` §18 on locked-not-recomputed rates).
+
+    Pure: builds SQLAlchemy expressions, touches no session and no clock.
+    """
+    tgt = (reporting_currency or "USD").strip().upper()
+    home_leg = and_(
+        payment_source_amount.isnot(None),
+        func.upper(func.btrim(func.coalesce(payment_source_currency, ""))) == tgt,
+    )
+    invoice_leg = func.upper(func.btrim(func.coalesce(invoice_currency, tgt))) == tgt
+    return PaymentReportingAmountSql(
+        amount=case(
+            (home_leg, payment_source_amount),
+            (invoice_leg, payment_amount),
+            else_=None,
+        ),
+        is_expressible=or_(home_leg, invoice_leg),
+    )
 
 
 @dataclass(frozen=True)

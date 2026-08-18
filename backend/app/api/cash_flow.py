@@ -319,6 +319,11 @@ async def draft_run_from_plan(
         org=org,
         org_id=org.id,
         entity_id=write_entity_id,
+        # The SELECTED entity, the same one `_commitment_rows` above was scoped
+        # by — so the run can only ever stage invoices the caller's own view
+        # includes. `None` (consolidated) leaves the lookup unrestricted, which
+        # is what every other consolidated read does.
+        scope_entity_id=entity_id,
         user=user,
         items=items,
         plan_id=plan_id,

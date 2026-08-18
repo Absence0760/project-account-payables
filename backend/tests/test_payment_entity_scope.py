@@ -15,6 +15,12 @@ The fix is `_get_scoped_payment` / `_get_scoped_run`, mirroring
 including its opaque 404 (an out-of-scope id must be indistinguishable from a
 missing one, so the response can't enumerate another entity's rows).
 
+Run CREATION (`POST /runs`) was the same hole one step earlier: it resolved its
+invoices with no entity filter at all, so a run staged under subsidiary B could
+be built out of subsidiary A's invoices. `create_payment_run_for_invoices` now
+takes the SELECTED entity (`scope_entity_id`) separately from the entity new
+rows are stamped with, and filters the lookup by it.
+
 Runs against the opt-in `realdb` fixture (skips without `pnpm db:up`).
 """
 
@@ -24,6 +30,7 @@ import uuid
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import select
 
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.payment import Payment, PaymentRun
@@ -241,6 +248,60 @@ async def test_payment_run_routes_are_entity_scoped(realdb):
     async with mk() as s:
         run = await s.get(PaymentRun, uuid.UUID(run_id))
         assert run.status == "draft"
+
+
+async def test_payment_run_creation_is_entity_scoped(realdb):
+    """Staging a run is the one route in `services/payment_runs` that BOOKS
+    money, and its invoice lookup was the only by-id money query on this router
+    with no entity filter.
+
+    With subsidiary B selected an operator could build a run over subsidiary
+    A's invoices: the run landed under B — visible and executable from B's
+    queue — while each payment was stamped with A's entity, so executing it
+    moved A's money from B's screen. The sibling standalone
+    `POST /api/payments` had always scoped its lookup, which is what made this
+    an oversight rather than a decision."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+
+    async with realdb.client(key=TENANT, role="admin") as c:
+        default_id, other_id = await _entities(c, name="Pay Scope F", slug="pay-scope-f")
+
+    async with mk() as s:
+        inv = Invoice(
+            organization_id=org_id,
+            entity_id=uuid.UUID(default_id),
+            invoice_number="PSCOPE-RUNCREATE-1",
+            vendor_name="Scope Run Create Vendor",
+            amount=Decimal("400.00"),
+            currency="USD",
+            status=InvoiceStatus.approved,
+        )
+        s.add(inv)
+        await s.commit()
+        invoice_id = str(inv.id)
+
+    body = {"items": [{"invoice_id": invoice_id, "method": "ach"}]}
+
+    async with realdb.client(key=TENANT, role="admin") as c:
+        blocked = await c.post("/api/payments/runs", json=body, headers={"X-Entity-ID": other_id})
+        assert blocked.status_code == 404, blocked.text
+        # Opaque — the detail must not confirm the invoice exists elsewhere.
+        assert "not found" in blocked.json()["detail"].lower()
+
+        # Its own entity still stages it.
+        own = await c.post("/api/payments/runs", json=body, headers={"X-Entity-ID": default_id})
+        assert own.status_code == 201, own.text
+
+    # Nothing was booked by the refused attempt — one payment, from the
+    # successful call.
+    async with mk() as s:
+        rows = (
+            (await s.execute(select(Payment).where(Payment.invoice_id == uuid.UUID(invoice_id))))
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1
 
 
 async def test_standalone_payment_create_is_entity_scoped(realdb):

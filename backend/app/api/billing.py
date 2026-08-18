@@ -31,6 +31,7 @@ from app.models.user import User
 from app.services.billing import (
     PlanChangeError,
     change_plan,
+    current_period,
     get_active_subscription,
     rollup_usage,
 )
@@ -108,10 +109,17 @@ async def get_subscription(
             entitlements=dict(plan.entitlements or {}),
             trial_days=plan.trial_days,
         )
+        # Report the window the subscription is actually in, resolved by the
+        # same rule `change_plan` persists and the dunning grace clock reads
+        # (`services/billing/period.py`). Compute-on-read, no write: a row
+        # created before that rule existed carries NULL bounds, and echoing
+        # those told the customer their billing period was unknown while the
+        # plan-change screen quietly prorated `0.00` off the same absence.
+        window = current_period(subscription, now=datetime.now(UTC))
         sub_view = SubscriptionView(
             status=subscription.status,
-            current_period_start=subscription.current_period_start,
-            current_period_end=subscription.current_period_end,
+            current_period_start=window.start,
+            current_period_end=window.end,
             trial_end=subscription.trial_end,
             externally_managed=subscription.external_subscription_id is not None,
         )

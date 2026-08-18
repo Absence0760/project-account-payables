@@ -34,7 +34,11 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#251](https://github.com/Absence0760/project-account-payables/issues/251)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-08-17 against `fix/bug-hunt-round-9` — a five-agent
+**Last reconciled:** 2026-08-18 against the money-path pass of round 10 —
+seven defects fixed at the root, each reproduced with a failing test first (see
+§ Surfaced by the money-path bug hunt (round 10) for the remainder).
+
+Before that: 2026-08-17 against `fix/bug-hunt-round-9` — a five-agent
 bug hunt that confirmed ~50 findings and fixed 31 at the root (see § Surfaced by
 the five-agent bug hunt for the remainder, which is the largest single addition
 this file has taken).
@@ -558,6 +562,204 @@ than a bug fix or a product call rather than a defect:
       mispriced — recorded so the next person doesn't re-derive it.
       **Durable fix:** route it through `minor_units_to_decimal`.
       **Trigger:** adding a card provider or a non-USD card currency.
+
+### Surfaced by the money-path bug hunt (round 10), deliberately not fixed
+
+A hunt scoped to the money path (`api/{payments,credit_memos,discounts,cards,tax}`,
+`services/payment_*`, `services/discount_*`, `services/billing/`, and the
+payment / card / FX / financing adapter families) fixed seven defects at the
+root: the 1099 total summing invoice-currency payments as home currency; a
+subscription with no billing period, so every plan change prorated `0.00`; the
+standalone payment path skipping the financial-integrity exception gate;
+`/compliance/release` never handing off to the ERP sync; run creation not being
+entity-scoped; `POST /api/payments` accepting an unvalidated `payment_run_id`;
+and the financing dispatcher still falling back to `mock`.
+
+These are the remainder. Each was **confirmed by reading the code** (the seven
+above were each reproduced with a failing test first); none is fixed here
+because each is either outside that scope, or a design call rather than a
+defect with an obvious correct answer.
+
+- [ ] **The payment reconciler runs one transaction for a whole tenant and
+      holds `FOR UPDATE` locks across network calls.**
+      `services/payment_reconciler.py:249-336` — `db.refresh(payment,
+      with_for_update=True)` is inside the per-payment loop, the only
+      `db.commit()` is after it, so payment #1's row lock is held while
+      `await adapter.get_payment_status(...)` runs for #2…#N. Two effects: a
+      webhook for a locked payment blocks on `payment_webhook`'s own
+      `FOR UPDATE` for the rest of the sweep (and if that request is then
+      cancelled, `CancelledError` is a `BaseException` its `except Exception`
+      tail doesn't catch, so the Redis dedup claim is never released and the
+      provider's retry is deduped away for the full TTL); and any raise
+      mid-loop discards every terminal transition, `completed_at` and audit row
+      the sweep already decided for that tenant. `_dispatch_run_payments`
+      commits per payment for exactly this reason.
+      **Durable fix:** commit per payment inside the loop, mirroring
+      `_dispatch_run_payments`.
+      **Trigger:** the next change to the reconciler, or enabling
+      `FEOH_PAYMENT_RECONCILE_ENABLED` in a deployed env.
+- [ ] **An aged-out payment silently frees the invoice for a second payment.**
+      `services/payment_reconciler.py:254-278` — past
+      `FEOH_PAYMENT_RECONCILE_MAX_AGE_HOURS` (72h) a still-`submitted` payment
+      (real money possibly in flight) is flipped to `failed`, which is in
+      `LIVE_PAYMENT_TERMINAL_STATUSES`, so it leaves the
+      `uq_payments_one_live_per_invoice` slot. The invoice stays
+      `payment_scheduled` — a `PAYABLE_INVOICE_STATUSES` member — so it
+      reappears in `GET /payments/queue` and a fresh run will happily pay it
+      again. No exception row, no flag. The asymmetry is the tell:
+      `_RETRY_SAFE_FAILURE_PREFIXES` deliberately excludes
+      `reconciler_max_age_exceeded` so `/retry-failed` fails closed on exactly
+      this row, while the fresh-run path fails wide open on the same invoice.
+      Secondary: it stamps `completed_at` on a payment that never completed.
+      **Durable fix:** open a de-duped `erp_reconciliation`-style exception on
+      aged-out (which is payment-blocking, so a new run refuses the invoice
+      until a human reconciles the rail), and stop writing `completed_at`.
+      **Trigger:** enabling the reconciler in a deployed env.
+- [ ] **The cash-flow what-if claims discounts whose window has already
+      closed, and buckets their outflow into the past.**
+      `services/analytics.py:786-790` — the `early` scenario takes
+      `discount_date` unconditionally, with no `today <= discount_date` check,
+      while `api/analytics.py::_commitment_rows` bounds only the *due* date to
+      the horizon. A plain 2/10-net-30 invoice still open on day 15 is reported
+      as capturing 2% and has its outflow placed in the week containing day 10,
+      five days in the past — a negative term in `weighted_avg_pay_date_days`.
+      `bucket_outflows`' `discount_eligible_amount` (`analytics.py:718-723`)
+      has the same blind spot. Every other consumer of the same economics
+      enforces the window (`discount_offers._tier_achievable`,
+      `discount_optimizer.optimize`'s `capturable = today <= opp.pay_by`), and
+      `tests/test_analytics.py` only ever uses a future `discount_date`.
+      **Durable fix:** gate the `early` branch and `discount_eligible_amount`
+      on `today <= discount_date`, matching the optimizer.
+      **Trigger:** the next change to `/analytics/cashflow_whatif` or the
+      copilot's `run_payment_whatif` tool.
+- [ ] **`_commitment_rows` computes an `unconverted` flag nothing reads.**
+      `api/analytics.py:188-202` sets it per row and its docstring promises
+      "'we could not convert this' is visible rather than silent", but no
+      consumer reads the key: not `bucket_outflows`, not
+      `/analytics/{cashflow_forecast,cashflow_whatif,cash_position}`, not any
+      of the four copilot tools, not `cash_flow_alerts`. A €100,000 invoice
+      with a NULL `reporting_amount` is subtracted from a USD cash curve as
+      $100,000 and feeds the shortfall-alert email with nothing saying so.
+      Contrast the expense path, which surfaces `unconverted_count` and fails
+      the CFO gate closed.
+      **Durable fix:** carry the count out of `_commitment_rows` and surface it
+      on the forecast / cash-position / plan responses, the way `card_paid` and
+      `unconverted_payment_count` are surfaced on the 1099 report.
+      **Trigger:** the next multi-currency slice, or the first non-USD tenant
+      on the copilot.
+- [ ] **The discount optimizer and the plan assembler drop the offer's
+      currency.** `api/discounts.py:159-170` builds an `OfferOpportunity` from
+      `offer.base_amount` and never carries `offer.currency` (the dataclass has
+      no such field), so `discount_optimizer.optimize` compares outlays against
+      `cash_budget` as bare numbers, and `cash_flow_plan.assemble_plan`
+      substitutes an offer-currency row for a reporting-currency commitment row
+      on the cash curve. A ¥10,000,000 offer in a USD-reporting org puts a
+      ~$9.8M outflow on the curve and fabricates a shortfall the copilot then
+      narrates around. Same family: `/discounts/dashboard` sums
+      `captured_amount` across currencies and labels it `_org_currency(org)`,
+      and `build_bulk_offer` sums a vendor's open `Invoice.amount` values raw.
+      This is the same class as the 1099 defect fixed this round, which now
+      leaves a ready-made primitive.
+      **Durable fix:** carry `currency` on `OfferOpportunity` and refuse (or
+      convert via the invoice's locked `reporting_amount`) any offer not in the
+      reporting currency before it reaches `optimize` / `assemble_plan`;
+      exclude-and-count in the dashboard, mirroring
+      `currency_conversion.payment_reporting_amount_sql`.
+      **Trigger:** a multi-currency tenant using dynamic discounting, or the
+      next change to the optimizer.
+- [ ] **`/payments/summary` and `/payments/queue` sum `Payment.amount` across
+      currencies.** `api/payments.py:406-424` / `:346-403` — no grouping, no
+      currency in the response, no `source_amount` preference. Same defect the
+      1099 report carried until this round, and the same one
+      `services/compliance.py:199-215` and `docs/multi-currency.md` already
+      call out elsewhere. Also `api/analytics.py:766-775` (`paid_in_period` →
+      `avg_daily_outflow` → `wc_impact_5d`) and
+      `services/vendor_risk_scoring.py:145-157`. Reporting surfaces only — no
+      money moves on them. Minor, same area: `total_pending` omits
+      `pending_compliance`, so held money appears in neither KPI.
+      **Durable fix:** route each through
+      `currency_conversion.payment_reporting_amount_sql` (added this round) and
+      surface the excluded count, as the 1099 report now does.
+      **Trigger:** the next multi-currency reporting slice.
+- [ ] **`PaymentRun.status` is never recomputed after the dispatch pass, and
+      the rollup fails open on an all-`pending` run.**
+      `services/payment_runs.py:67-81` returns `completed` when nothing is
+      completed, failed or in flight — a fail-open default on a money-run
+      status. And the only writer of the persisted `PaymentRun.status` after
+      execution is `_dispatch_run_payments`'s final rollup: neither the
+      webhook, the reconciler, nor `/compliance/{release,dismiss}` touches it.
+      So a run that rolled up `submitted` (one payment held
+      `pending_compliance`) and then had that payment dismissed reports
+      `status: "submitted"`, `payments_failed: 1`, `retryable_failures: 1` —
+      and `/retry-failed` 409s because `RETRYABLE_RUN_STATUSES` is
+      `("partial", "failed")`. `/resume` and `/execute` 409 too: a dead end,
+      and precisely the "button that can't act" the `retryable_failures`
+      comment says it exists to prevent. Not reproduced end to end (the
+      all-`pending` half needs two interleaved `/resume` calls); the code paths
+      are confirmed by reading.
+      **Durable fix:** derive the run status from its payments on read (or
+      recompute it wherever a payment's status changes), and give the rollup a
+      non-`completed` answer for an all-`pending` run.
+      **Trigger:** the next report of a run stuck with a retryable failure it
+      won't retry.
+- [ ] **`void_payment` overwrites the regulated `completed_at`.**
+      `api/payments.py:745-748` stamps `completed_at = now` when voiding a
+      `completed` payment, destroying the real settlement timestamp; the audit
+      row records `previous_status` but not the previous timestamp.
+      `/retry-failed` explicitly refuses to overwrite the same two timestamps
+      and says why. Every downstream reader filters `status == "completed"`, so
+      the loss is evidentiary rather than arithmetic.
+      **Durable fix:** leave `completed_at` alone and record the void instant
+      on its own field (or only in the audit row).
+      **Trigger:** the next SOX evidence review, or a migration that adds a
+      `voided_at`.
+- [ ] **`/compliance/release` doesn't guard `_execute_single_payment`.**
+      `api/payments.py` — every other caller wraps it because "a live FX /
+      sanctions / processor adapter can raise anything", and marks the payment
+      `failed` so the attempt is recorded. Here it propagates: FastAPI 500s,
+      the session rolls back, and the payment reverts to `pending_compliance`
+      with no `provider_payment_id` recorded even if the processor accepted the
+      order. On the card leg a rollback after `persist_card` discards the
+      `VirtualCard` row while a real spendable card exists at the provider.
+      The reused `correlation_id` (the processor's idempotency key) mitigates
+      for rails that honour it, but is not a substitute for the record.
+      **Durable fix:** wrap the call the way `_dispatch_run_payments` does.
+      **Trigger:** the next change to the compliance-hold endpoints.
+- [ ] **Smaller confirmed items, grouped** — each read and confirmed, none
+      worth its own entry:
+      `api/discounts.py::create_offer` resolves the invoice for an
+      invoice-scoped offer with no `apply_entity_scope`, so an offer can be
+      created under entity A against entity B's invoice (advisory data, never
+      money — but the sibling credit-memo path was fixed for exactly this).
+      `api/cards.py::card_dashboard`'s `rebate_ytd` filters
+      `CardRebate.period >= f"{year}-01"` with no upper bound, so a row with a
+      future period would leak into YTD.
+      `POST /api/cash-flow/plans/{id}/capture-discounts` mutates offers with no
+      row lock (status-only, so the worst case is a duplicate audit row).
+      `_commitment_rows`' `outerjoin(PaymentSchedule)` is un-deduped, so an
+      invoice with two schedule rows is double-counted at full amount —
+      unreachable today because `PaymentSchedule` is only ever constructed in
+      `scripts/seed.py`, but `discount_auto_trigger._resolve_due_date` already
+      takes the latest-schedule precaution the forecast path skips.
+      `cashflow._coerce_decimal` returns `None` for a malformed persisted
+      `min_balance_threshold` and accepts `Decimal("NaN")`, either of which
+      silently opts an org out of shortfall alerting with no log line.
+      Three analytics endpoints use `date.today()` (host local) where every
+      other consumer of the same data uses UTC, so a non-UTC host can shift the
+      horizon filter and the week bucketing by a day — and `plan_id` embeds
+      `today.isoformat()`.
+      `POST /api/cash-flow/plans/{id}/draft-run` can only ever 422 for a
+      multi-currency tenant, because it hands every payable invoice in the
+      horizon to a builder that refuses a multi-currency run; the plan card's
+      button can never succeed there and the error isn't actionable from a plan
+      the user can't edit.
+      `_execute_single_payment` skips the FX leg, the credit-memo re-check
+      **and the entire compliance gate** when `invoice is None` — the inverse
+      of the two carefully-argued "no screenable vendor → hold, never pay
+      unscreened" branches directly above it; unreachable today only because
+      deleting an invoice cascades its payments.
+      **Durable fix / trigger:** each in the file it names, on the next slice
+      that touches it.
 
 ### AI Cash-Flow Copilot — Phase 3 deferred bucket
 

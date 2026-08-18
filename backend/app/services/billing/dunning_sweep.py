@@ -52,10 +52,26 @@ logger = logging.getLogger(__name__)
 async def run_dunning_once(control_db: AsyncSession, *, now: datetime | None = None) -> int:
     """Cancel ``past_due`` subscriptions past the grace window. Returns the count.
 
-    A ``past_due`` subscription whose ``current_period_end`` is older than
-    ``grace_days`` ago — or which has no period end recorded — is canceled. Each
-    cancellation writes a PII-free ``billing.subscription_canceled`` audit row
-    (dunning attribution, no human actor).
+    A ``past_due`` subscription whose current billing period ended more than
+    ``grace_days`` ago is canceled. Each cancellation writes a PII-free
+    ``billing.subscription_canceled`` audit row (dunning attribution, no human
+    actor).
+
+    Reads the **persisted** ``current_period_end``, deliberately NOT the
+    rolled-forward window ``period.current_period`` resolves for the summary
+    endpoint. The two answer different questions: the summary asks "which
+    period is this subscription in" (always ending in the future), while
+    dunning asks "how long has this gone unpaid", whose anchor is the last
+    period boundary the subscription actually billed at. Resolving forward here
+    would put the end date permanently in the future and the sweep could never
+    cancel anything.
+
+    Until ``plan_catalog.ensure_subscription`` started stamping the first
+    window, nothing wrote this column at all, so the "no period end recorded ⇒
+    overdue by default" branch below was the ONLY case: every ``past_due``
+    subscription was canceled on its first tick and
+    ``FEOH_BILLING_DUNNING_GRACE_DAYS`` could not apply to any subscription
+    that can exist. It remains the branch a pre-existing row takes.
     """
     now = now or datetime.now(UTC)
     grace = timedelta(days=settings.billing_dunning_grace_days)

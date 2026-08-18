@@ -904,6 +904,27 @@ async def release_compliance_hold(
 
     await db.commit()
     await db.refresh(payment)
+
+    # A release that SETTLES synchronously has to hand off to the ERP sync,
+    # exactly as `_dispatch_run_payments` does at the end of `/execute` — that
+    # module is the only path that flips an invoice `payment_scheduled → paid`,
+    # and nothing re-invokes it for a payment that is already `completed`.
+    # Without this, releasing a hold on a rail that confirms instantly (the
+    # virtual-card leg always does; so does any adapter returning `completed`)
+    # moved the money and left the invoice at `payment_scheduled` forever —
+    # under-counting the aging report, the `/dashboard` pipeline, the vendor's
+    # payment history and the 1099 YTD totals, while the payment row itself
+    # looked perfectly correct.
+    #
+    # After the commit so the pass sees the settled status (mirrors the
+    # webhook handler's ordering). A payment released into `submitted` /
+    # `processing` is deliberately NOT dispatched: its own webhook will, once
+    # the rail confirms.
+    if payment.status == "completed" and payment.payment_run_id:
+        from app.services import payment_erp_sync
+
+        await payment_erp_sync.dispatch_payment_sync(payment.payment_run_id, uuid.UUID(str(org.id)))
+
     return PaymentResponse.from_db(payment, invoice)
 
 
@@ -1135,6 +1156,25 @@ async def create_payment(
     if invoice.status not in PAYABLE_INVOICE_STATUSES:
         raise HTTPException(status_code=409, detail="Invoice is not approved for payment")
 
+    # Financial-integrity gate — the SAME one `POST /api/payments/runs` and
+    # `/retry-failed` run, via the same shared helper so the three can't drift.
+    # `PAYMENT_BLOCKING_EXCEPTION_TYPES` (duplicate / fraud_flag /
+    # line_total_mismatch) are `error`-severity flags that invoice APPROVAL does
+    # not gate on, so every path that books money has to re-check them —
+    # otherwise an invoice the run path refuses with a 409 can be paid by
+    # posting it here instead, which is exactly what this endpoint did. A
+    # settlement-amount mismatch, a Positive Pay altered cheque and a BEC
+    # bank-detail swap all land as `fraud_flag`; resolving or dismissing it is
+    # the human sign-off.
+    if await blocked_invoice_ids(db, [invoice.id]):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Invoice has an unresolved duplicate/fraud/line-total exception and "
+                f"can't be paid until it's cleared: {invoice.invoice_number}"
+            ),
+        )
+
     # The payment amount is the invoice amount NET OF APPLIED CREDIT MEMOS —
     # never a caller-supplied value. Trusting `body.amount` let an actor book a
     # $99,999 payment against a $500 approved invoice, so the figure is bound
@@ -1217,7 +1257,10 @@ async def create_payment(
         amount=net_amount,
         method=body.method.value if body.method else None,
         reference=body.reference,
-        payment_run_id=uuid.UUID(body.payment_run_id) if body.payment_run_id else None,
+        # Always standalone — `payment_run_id` is deliberately not a request
+        # field (see `schemas/payment.PaymentCreate`). A run stamps this FK on
+        # the payments it creates itself.
+        payment_run_id=None,
         correlation_id=uuid.uuid4(),
     )
     # Insert inside a savepoint so the DB-level unique index (the backstop for a
@@ -1356,6 +1399,11 @@ async def create_payment_run(
     user: User = Depends(require_permission(PERM_PAYMENT_RUN_APPROVE)),
     org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID = Depends(get_write_entity_id),
+    # The SELECTED entity (nullable — `None` is the consolidated view), kept
+    # separate from the write entity above: it is what the invoice lookup is
+    # filtered by, so a run staged with subsidiary B selected can't pull in
+    # subsidiary A's invoices. Same split `POST /api/payments` uses.
+    scope_entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Create a payment run from selected invoices.
 
@@ -1372,7 +1420,13 @@ async def create_payment_run(
         for item in body.items
     ]
     result = await create_payment_run_for_invoices(
-        db, org=org, org_id=org_id, entity_id=entity_id, user=user, items=items
+        db,
+        org=org,
+        org_id=org_id,
+        entity_id=entity_id,
+        scope_entity_id=scope_entity_id,
+        user=user,
+        items=items,
     )
     await db.commit()
 

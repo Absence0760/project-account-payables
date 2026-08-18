@@ -19,6 +19,8 @@ Covers, end to end over the real HTTP endpoints:
     the payment settles, and the exception resolves
   - `/release` and `/dismiss` both 409 on a payment that isn't
     `pending_compliance` (RBAC / guard coverage, not just the happy path)
+  - a `/release` that SETTLES hands off to the ERP sync (the only path that
+    marks the invoice `paid`), and one that stays held does not
 
 Runs against the opt-in `realdb` fixture (skips without `pnpm db:up`).
 """
@@ -28,6 +30,7 @@ from __future__ import annotations
 import uuid
 from datetime import date
 from decimal import Decimal
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
@@ -196,6 +199,59 @@ async def test_release_re_dispatches_once_a_vendor_is_attached(realdb):
         ).scalar_one()
         assert exc.status == "resolved"
         assert exc.resolution == "released"
+
+
+async def test_release_that_settles_hands_off_to_the_erp_sync(realdb, monkeypatch):
+    """`services/payment_erp_sync` is the ONLY path that flips an invoice
+    `payment_scheduled → paid`, and nothing re-invokes it for a payment that is
+    already `completed`.
+
+    `/release` calls `_execute_single_payment` directly, and that path can
+    settle synchronously (the virtual-card leg always does; so does any adapter
+    returning `completed`). It committed the money movement and never
+    dispatched the sync, so the invoice stranded at `payment_scheduled`
+    forever — under-counting the aging report, the `/dashboard` pipeline, the
+    vendor's payment history and the 1099 YTD totals while the payment row
+    looked correct. The handoff is asserted directly rather than via the
+    detached task, so the wiring is pinned without depending on its timing.
+    """
+    from app.services import payment_erp_sync
+
+    dispatched = AsyncMock()
+    monkeypatch.setattr(payment_erp_sync, "dispatch_payment_sync", dispatched)
+
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    invoice_id = await _seed_unscreenable_invoice(mk, org_id, number="PCH-006", amount="500.00")
+
+    async with realdb.client(key=TENANT, role="admin") as admin_client:
+        async with realdb.client(key=TENANT, role="ap_manager") as mgr_client:
+            run_id = await _create_and_execute_run(admin_client, mgr_client, invoice_id)
+
+        async with mk() as s:
+            payment_id = (
+                await s.execute(select(Payment.id).where(Payment.invoice_id == invoice_id))
+            ).scalar_one()
+
+        # A release that STAYS held moves no money, so it must not dispatch.
+        held = await admin_client.post(f"/api/payments/{payment_id}/compliance/release")
+        assert held.status_code == 200, held.text
+        assert held.json()["status"] == "pending_compliance"
+        assert dispatched.await_count == 0
+
+        async with mk() as s:
+            vendor = Vendor(name="Sync Handoff Co", organization_id=org_id)
+            s.add(vendor)
+            await s.flush()
+            inv = (await s.execute(select(Invoice).where(Invoice.id == invoice_id))).scalar_one()
+            inv.vendor_id = vendor.id
+            await s.commit()
+
+        released = await admin_client.post(f"/api/payments/{payment_id}/compliance/release")
+
+    assert released.status_code == 200, released.text
+    assert released.json()["status"] == "completed"
+    dispatched.assert_awaited_once_with(uuid.UUID(run_id), org_id)
 
 
 async def test_release_and_dismiss_409_on_a_non_held_payment(realdb):
