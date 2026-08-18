@@ -184,7 +184,28 @@ jobs:
 
       - name: Install Playwright browser
         working-directory: frontend
-        run: pnpm exec playwright install --with-deps chromium
+        run: pnpm exec playwright install chromium
+
+      # Split out of the step above, which used to be `install --with-deps`.
+      # On this runner image every Chromium shared library (libnss3, libgbm1,
+      # libatk, libcups2, xvfb, ...) is already the newest version, so the apt
+      # step adds nothing but 9 font packages (CJK / Cyrillic / Thai / bitmap).
+      # No spec makes a visual assertion -- `screenshot: 'only-on-failure'` in
+      # tests-e2e/playwright.config.ts is a debug artifact, and nothing calls
+      # toHaveScreenshot/toMatchSnapshot -- so a missing font cannot change a
+      # result. It only means non-Latin glyphs render as tofu in a failure
+      # screenshot, which is why this stays best-effort instead of being
+      # dropped outright.
+      #
+      # Bounded and non-blocking because `playwright install-deps` shells out to
+      # `apt-get update`, which reaches external Ubuntu mirrors: on 2026-08-18 it
+      # hung there for 22 minutes and ate the entire 25-minute Service e2e job
+      # budget (PR #316). A cosmetic dependency must not be able to fail the run.
+      - name: Install Playwright font deps (best-effort)
+        working-directory: frontend
+        timeout-minutes: 3
+        continue-on-error: true
+        run: pnpm exec playwright install-deps chromium
 
       - name: Run SSO e2e specs
         working-directory: frontend
