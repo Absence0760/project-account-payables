@@ -24,12 +24,13 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import case, extract, func, select
+from sqlalchemy import and_, case, extract, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invoice import Invoice
 from app.models.payment import Payment
 from app.models.vendor import Vendor
+from app.services.currency_conversion import payment_reporting_amount_sql
 from app.services.payment_methods import card_payment_method_clause
 
 # IRS 1099-NEC / 1099-MISC reporting threshold for the 2024+ tax years.
@@ -62,6 +63,13 @@ class VendorReportRow:
     # as ``tin_verified``.
     card_paid: Decimal = Decimal("0")
     card_payment_count: int = 0
+    # Completed payments whose outflow could not be expressed in the reporting
+    # currency at all (see ``currency_conversion.payment_reporting_amount_sql``).
+    # A COUNT and not a total, deliberately: summing figures across unknown
+    # currencies is exactly the mixture being refused. Non-zero means this
+    # vendor's box amount is UNDERSTATED and a human has to establish the
+    # home-currency figure before filing.
+    unconverted_payment_count: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -80,7 +88,19 @@ class VendorReportRow:
             "tin_verified": self.tin_verified,
             "card_paid": str(self.card_paid),
             "card_payment_count": self.card_payment_count,
+            "unconverted_payment_count": self.unconverted_payment_count,
         }
+
+
+def _total_unconverted_payments(rows: list[VendorReportRow]) -> int:
+    """Completed payments across every vendor row that could not be expressed
+    in the reporting currency, and so are missing from ``total_reportable``.
+
+    Surfaced alongside the totals for the same reason ``total_card_excluded``
+    is: money that has been deliberately left out of a filed figure must be
+    visible and reconcilable, never silently absent. Non-zero means the report
+    is not yet filable as it stands."""
+    return sum(r.unconverted_payment_count for r in rows)
 
 
 def _total_card_excluded(rows: list[VendorReportRow]) -> str:
@@ -99,9 +119,11 @@ class Report1099:
     rows: list[VendorReportRow]
     threshold_usd: Decimal = THRESHOLD_USD
     # The currency the reportable totals + per-vendor ``ytd_paid`` are actually
-    # denominated in — the org's reporting (home) currency. ``Payment.amount``
-    # is already home-currency, so this is a LABEL, never an FX conversion. 1099
-    # is a US/IRS concept (dollars), but a non-USD tenant's home currency is
+    # denominated in — the org's reporting (home) currency. Not a label applied
+    # after the fact: the aggregation only counts a payment it can PROVE is
+    # denominated in this currency (``currency_conversion.payment_reporting_amount_sql``),
+    # and counts the rest on ``unconverted_payment_count`` instead. 1099 is a
+    # US/IRS concept (dollars), but a non-USD tenant's home currency is
     # surfaced honestly here instead of being silently called "USD".
     currency: str = "USD"
 
@@ -124,6 +146,7 @@ class Report1099:
             # ``currency``.
             "total_reportable_usd": total_reportable,
             "total_card_excluded": _total_card_excluded(self.rows),
+            "unconverted_payment_count": _total_unconverted_payments(self.rows),
         }
 
     def to_dict(self) -> dict:
@@ -155,9 +178,19 @@ async def build_1099_report(
     treatment and the drift guard.
 
     ``reporting_currency`` is the org's reporting (home) currency, resolved by
-    the caller via ``currency_conversion.resolve_reporting_currency``. It only
-    LABELS the totals — ``Payment.amount`` is already home-currency, so no FX
-    conversion happens here.
+    the caller via ``currency_conversion.resolve_reporting_currency``. It is
+    **not** a label applied to whatever the SUM produced: ``Payment.amount`` is
+    denominated in the INVOICE's currency (see
+    ``international_payments.prepare_international_payment``), so a book with
+    one EUR invoice in it used to add 1 000 EUR into a USD box amount at face
+    value. ``currency_conversion.payment_reporting_amount_sql`` resolves each
+    payment's outflow into ``reporting_currency`` — the rate-locked
+    ``source_amount`` when the payment carries a home-currency leg, otherwise
+    ``amount`` when the invoice is already in that currency — and a payment
+    neither rung can establish is left OUT of ``ytd_paid`` / ``card_paid`` and
+    counted on ``unconverted_payment_count`` instead. Nothing is converted at
+    read time; a rate fetched on a read would make a filed historical total
+    move under the reader.
     """
     # Conditional aggregation splits the joined payments in one pass. ``case``
     # with no ``else_`` yields NULL on the other branch, which ``sum``/``count``
@@ -165,6 +198,14 @@ async def build_1099_report(
     # promote the aggregate off Numeric and mis-classify a vendor sitting
     # exactly at the $600 threshold) still governs the empty case.
     is_card = card_payment_method_clause(Payment.method)
+    reported = payment_reporting_amount_sql(
+        reporting_currency=reporting_currency,
+        payment_amount=Payment.amount,
+        payment_source_amount=Payment.source_amount,
+        payment_source_currency=Payment.source_currency,
+        invoice_currency=Invoice.currency,
+    )
+    countable = reported.is_expressible
     q = (
         select(
             Vendor.id.label("vendor_id"),
@@ -175,14 +216,15 @@ async def build_1099_report(
             Vendor.w9_received_date.label("w9_received_date"),
             Vendor.w9_file_key.label("w9_file_key"),
             Vendor.tin_verified_at.label("tin_verified_at"),
-            func.coalesce(func.sum(case((~is_card, Payment.amount))), Decimal("0")).label(
-                "ytd_paid"
-            ),
-            func.count(case((~is_card, Payment.id))).label("payment_count"),
-            func.coalesce(func.sum(case((is_card, Payment.amount))), Decimal("0")).label(
-                "card_paid"
-            ),
-            func.count(case((is_card, Payment.id))).label("card_payment_count"),
+            func.coalesce(
+                func.sum(case((and_(~is_card, countable), reported.amount))), Decimal("0")
+            ).label("ytd_paid"),
+            func.count(case((and_(~is_card, countable), Payment.id))).label("payment_count"),
+            func.coalesce(
+                func.sum(case((and_(is_card, countable), reported.amount))), Decimal("0")
+            ).label("card_paid"),
+            func.count(case((and_(is_card, countable), Payment.id))).label("card_payment_count"),
+            func.count(case((~countable, Payment.id))).label("unconverted_payment_count"),
         )
         .select_from(Vendor)
         .outerjoin(Invoice, Invoice.vendor_id == Vendor.id)
@@ -224,6 +266,7 @@ async def build_1099_report(
                 tin_verified=row.tin_verified_at is not None,
                 card_paid=Decimal(row.card_paid or Decimal("0")),
                 card_payment_count=int(row.card_payment_count or 0),
+                unconverted_payment_count=int(row.unconverted_payment_count or 0),
             )
         )
 
@@ -241,8 +284,19 @@ async def build_1099_report(
 
 
 def _row_needs_attention(row: VendorReportRow) -> bool:
-    """A 1099-eligible vendor over the $600 threshold that is missing either
-    a W-9 on file or a verified TIN can't be cleanly filed — surface it."""
+    """A 1099-eligible vendor that can't be cleanly filed as things stand.
+
+    Two ways in:
+
+    * over the $600 threshold and missing a W-9 on file or a verified TIN, or
+    * holding a completed payment whose outflow could not be expressed in the
+      reporting currency (``unconverted_payment_count``), which means the box
+      amount on record is UNDERSTATED by that payment. That one is flagged
+      regardless of the threshold, precisely because the missing money is what
+      could carry the vendor over it.
+    """
+    if row.is_1099_eligible and row.unconverted_payment_count:
+        return True
     return (
         row.is_1099_eligible and row.over_threshold and (not row.w9_on_file or not row.tin_verified)
     )
@@ -262,7 +316,7 @@ class Dashboard1099:
     rows: list[VendorReportRow]
     threshold_usd: Decimal = THRESHOLD_USD
     # See ``Report1099.currency`` — the reporting (home) currency the totals are
-    # denominated in. Label only, never an FX conversion.
+    # denominated in, enforced by the aggregation rather than asserted.
     currency: str = "USD"
 
     def summary(self) -> dict:
@@ -287,6 +341,7 @@ class Dashboard1099:
             # Back-compat alias — see ``Report1099.summary``.
             "total_reportable_usd": total_reportable,
             "total_card_excluded": _total_card_excluded(self.rows),
+            "unconverted_payment_count": _total_unconverted_payments(self.rows),
         }
 
     def to_dict(self) -> dict:

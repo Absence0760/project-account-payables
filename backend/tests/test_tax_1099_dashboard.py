@@ -240,6 +240,123 @@ async def test_every_non_card_rail_stays_reportable(realdb):
     assert Decimal(row["ytd_paid"]) == Decimal("800.00")
     assert row["payment_count"] == len(rails)
     assert Decimal(row["card_paid"]) == Decimal("100.00")
+    assert row["unconverted_payment_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Reporting currency — `Payment.amount` is in the INVOICE's currency
+# ---------------------------------------------------------------------------
+
+
+async def _foreign_paid_invoice(mk, org_id, vendor_id, *, amount, currency, source):
+    """A foreign-currency invoice + its completed international payment.
+
+    ``source`` is the home-currency debit tuple ``(amount, currency)`` the FX
+    path locks onto the row, or ``None`` for a payment booked without one.
+    """
+    async with mk() as s:
+        inv = Invoice(
+            organization_id=org_id,
+            invoice_number=f"INV-{currency}-{uuid.uuid4().hex[:8]}",
+            vendor_name="x",
+            amount=Decimal(amount),
+            currency=currency,
+            status=InvoiceStatus.paid,
+            vendor_id=vendor_id,
+        )
+        s.add(inv)
+        await s.commit()
+        await s.refresh(inv)
+        p = Payment(
+            invoice_id=inv.id,
+            amount=Decimal(amount),
+            source_amount=Decimal(source[0]) if source else None,
+            source_currency=source[1] if source else None,
+            method="international_wire",
+            status="completed",
+            completed_at=datetime(YEAR, 6, 1, tzinfo=UTC),
+        )
+        s.add(p)
+        await s.commit()
+
+
+async def test_foreign_invoice_reports_the_home_currency_leg(realdb):
+    """`Payment.amount` is denominated in the INVOICE's currency, so summing it
+    raw put EUR 1,000.00 into a USD box amount at face value. The reportable
+    figure is the rate-locked home-currency debit (`source_amount`) — what
+    actually left the bank."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    vid = await _vendor(mk, org_id, name="Euro Supplier", eligible=True, w9=True, tin_verified=True)
+    await _foreign_paid_invoice(
+        mk, org_id, vid, amount="1000.00", currency="EUR", source=("1100.00", "USD")
+    )
+
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.get(f"/api/tax/1099-report?year={YEAR}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["currency"] == "USD"
+
+    row = next(r for r in body["rows"] if r["vendor_name"] == "Euro Supplier")
+    assert Decimal(row["ytd_paid"]) == Decimal("1100.00")
+    assert row["payment_count"] == 1
+    assert row["unconverted_payment_count"] == 0
+    assert Decimal(body["total_reportable"]) == Decimal("1100.00")
+    assert body["unconverted_payment_count"] == 0
+
+
+async def test_foreign_invoice_without_a_home_leg_is_excluded_and_counted(realdb):
+    """No `source_amount` and a foreign invoice currency: nothing on record
+    establishes what left the bank in USD. The payment must NOT be summed at
+    face value — it is excluded and counted, so the understatement is visible
+    rather than silently baked into a filed figure."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    vid = await _vendor(mk, org_id, name="Yen Supplier", eligible=True, w9=True, tin_verified=True)
+    await _foreign_paid_invoice(mk, org_id, vid, amount="900000", currency="JPY", source=None)
+
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.get(f"/api/tax/1099-report?year={YEAR}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    row = next(r for r in body["rows"] if r["vendor_name"] == "Yen Supplier")
+    assert Decimal(row["ytd_paid"]) == Decimal("0")
+    assert row["payment_count"] == 0
+    assert row["over_threshold"] is False
+    assert row["unconverted_payment_count"] == 1
+    assert body["unconverted_payment_count"] == 1
+
+    # ...and the dashboard puts the vendor on the chase list, because the box
+    # amount on record is understated by exactly that payment.
+    async with realdb.client(key="a", role="cfo") as c:
+        dash = await c.get(f"/api/tax/1099-dashboard?year={YEAR}")
+    assert dash.status_code == 200, dash.text
+    drow = next(r for r in dash.json()["rows"] if r["vendor_name"] == "Yen Supplier")
+    assert drow["needs_attention"] is True
+
+
+async def test_home_currency_invoice_is_unaffected_by_a_foreign_source_account(realdb):
+    """An org reporting in USD that funds payments from a non-USD account still
+    reports its USD invoices at `Payment.amount` — the invoice-currency rung.
+    A single-currency tenant's numbers never change."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    vid = await _vendor(mk, org_id, name="Domestic Co", eligible=True, w9=True, tin_verified=True)
+    await _foreign_paid_invoice(
+        mk, org_id, vid, amount="750.00", currency="USD", source=("600.00", "GBP")
+    )
+
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.get(f"/api/tax/1099-report?year={YEAR}")
+    assert resp.status_code == 200, resp.text
+    row = next(r for r in resp.json()["rows"] if r["vendor_name"] == "Domestic Co")
+    assert Decimal(row["ytd_paid"]) == Decimal("750.00")
+    assert row["unconverted_payment_count"] == 0
 
 
 # ---------------------------------------------------------------------------
