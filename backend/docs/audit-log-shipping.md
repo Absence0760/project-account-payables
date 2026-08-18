@@ -121,6 +121,24 @@ reporting a failure nobody can act on. That is not hypothetical: a
 and jammed exactly this path (see the note in `services/retention_sweep.py`).
 Trimming that row fixed the symptom; the cap is now respected at the source.
 
+#### `ship()` is all-or-nothing in the bookkeeping, at-least-once at the sink
+
+Chunking makes that seam wider, not new. A batch already spanned one
+`PutLogEvents` call per `(tenant, day)` stream, and
+`FEOH_AUDIT_SHIPPING_PROVIDERS` already fanned out to several adapters — none
+of which composes into a transaction, so a later call failing cannot un-write an
+earlier one. What the shipper guarantees is its own bookkeeping: `shipped_at`
+is stamped only when every adapter's `ship()` returned cleanly, so a raise
+replays the **whole** batch on the next tick and the part the sink already
+accepted arrives twice.
+
+That is the deliberate direction — a duplicated audit event is identifiable
+(every shipped event carries the `audit_log` row's own `id`) and reconcilable on
+read, whereas a missing one is unrecoverable evidence. `base.py`'s module
+docstring is the contract, and
+`test_cloudwatch_ship_is_at_least_once_when_a_later_call_fails` pins the
+behaviour so it can't be mistaken for atomicity again.
+
 #### A 200 that dropped rows is a failure
 
 `PutLogEvents` can succeed while silently discarding events, reporting them in

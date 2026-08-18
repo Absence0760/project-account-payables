@@ -36,6 +36,15 @@ timestamp) still reaches the tamper-evidence store, the full row stays in the
 tenant DB and in the S3 Object Lock copy (which has no such limit), and the
 trail keeps moving instead of stopping forever on one row.
 
+Chunking makes the at-least-once seam wider, not new. A batch already spanned
+one `PutLogEvents` call per `(tenant, day)` stream, so a later call failing
+already left the earlier one's events in CloudWatch while the shipper — which
+stamps `shipped_at` only when `ship()` returns cleanly — replayed the whole
+batch next tick. Chunking adds more calls per stream, so it happens more often.
+That is the accepted direction: a duplicated audit event is identifiable by the
+row's own `id` and recoverable on read, a missing one is not. See
+`base.py`'s module docstring for the contract this pins down.
+
 A 200 that dropped rows is a failure
 ------------------------------------
 `PutLogEvents` can also return **success** while silently discarding events —

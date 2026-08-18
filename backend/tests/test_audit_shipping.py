@@ -533,6 +533,40 @@ async def test_cloudwatch_shrinks_a_single_row_past_the_per_event_cap():
 
 
 @pytest.mark.asyncio
+async def test_cloudwatch_ship_is_at_least_once_when_a_later_call_fails():
+    """A batch spans several PutLogEvents calls — one per (tenant, day) stream,
+    and more once it exceeds the 1 MiB cap. Nothing composes those into a
+    transaction, so a later call failing cannot un-write an earlier one: the
+    shipper leaves `shipped_at` NULL for the WHOLE batch and replays it, and the
+    already-accepted events arrive twice. Pinned rather than pretended away —
+    `base.py`'s contract says so, every event carries the row's own `id`, and a
+    duplicated audit row is recoverable where a missing one is not."""
+    from botocore.exceptions import ClientError
+
+    adapter, client = _cloudwatch_adapter()
+    accepted: list[str] = []
+
+    def put(**kwargs):
+        # Second call (the second day's stream) is the one that blows up.
+        if accepted:
+            raise ClientError({"Error": {"Code": "ThrottlingException"}}, "PutLogEvents")
+        accepted.append(kwargs["logStreamName"])
+        return {"nextSequenceToken": "t"}
+
+    client.put_log_events.side_effect = put
+
+    import dataclasses
+
+    day_one = _row()
+    day_two = dataclasses.replace(day_one, created_at=datetime(2026, 4, 22, tzinfo=UTC))
+    with pytest.raises(ClientError):
+        await adapter.ship([day_one, day_two])
+
+    # The first stream's write stands — the caller's retry re-sends it.
+    assert accepted == ["feoh_acme/2026-04-21"]
+
+
+@pytest.mark.asyncio
 async def test_cloudwatch_raises_when_the_api_reports_rejected_events():
     """PutLogEvents returns HTTP 200 with `rejectedLogEventsInfo` for events it
     silently discarded (too old for the group's retention, too far ahead).
