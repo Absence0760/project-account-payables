@@ -11,6 +11,7 @@ import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
+from sqlalchemy import delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -428,6 +429,26 @@ async def run_extraction(
         # Save line items if extracted. Drop GL codes that aren't in the
         # active chart of accounts so the invoice can still post but the
         # rejected codes don't end up in the ERP push.
+        #
+        # REPLACE, never append. Extraction is re-runnable on any `new` or
+        # `failed` invoice, and `PUT /api/invoices/{id}/line-items` is open until
+        # approval — so a clerk who hand-keys lines onto a manually-created (or
+        # extraction-disabled) invoice and then hits "Extract" used to end up
+        # with BOTH sets on the row. The summed lines then disagree with the
+        # header amount nothing recomputed, which raises a `line_total_mismatch`
+        # exception, and that type BLOCKS the payment run — so a duplicated line
+        # set silently strands the invoice, and any ERP push carries it.
+        # Extraction's read of the document is authoritative for the lines it
+        # produces, exactly as `_apply_extraction` already is for the header
+        # fields, and `PUT .../line-items` (itself delete-then-insert) is how a
+        # human re-asserts theirs afterwards.
+        #
+        # Guarded on a NON-EMPTY result: an extraction that found no lines at all
+        # is not evidence there are none, so it must not delete a human's work.
+        if result.line_items:
+            await db.execute(
+                sa_delete(InvoiceLineItem).where(InvoiceLineItem.invoice_id == invoice.id)
+            )
         invalid_gl_codes: list[str] = []
         for li in result.line_items:
             li_gl = li.gl_account.value if li.gl_account.value else None

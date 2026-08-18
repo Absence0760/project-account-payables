@@ -81,6 +81,29 @@ Gated by the `line_total_mismatch_enabled` rule (default `true` — set
 `settings.fraud_rules.line_total_mismatch_enabled: false` to opt out, like the
 other rules).
 
+## Extraction replaces the lines, it never appends
+
+`services/extraction.run_extraction` **deletes the invoice's existing
+`invoice_line_items` before inserting the extracted set** — but only when the
+extraction actually produced lines.
+
+Both halves matter. Extraction is re-runnable on any `new` or `failed` invoice
+(`POST /api/invoices/{id}/extract`, and the modal's Extract button), while
+`PUT .../line-items` stays open until approval — so a clerk who hand-keys lines
+onto a manually-created or extraction-disabled invoice and then extracts used to
+end up with BOTH sets persisted. Since nothing recomputes the header `amount`
+from the lines (that is this document's whole point), the doubled sum stops
+reconciling, a `line_total_mismatch` exception opens, and that type blocks the
+payment run: the invoice silently strands, and an ERP push carries the
+duplicates. Extraction's read of the document is authoritative for the lines it
+produced, exactly as it already is for the header fields; `PUT .../line-items`
+is how a human re-asserts theirs afterwards.
+
+The non-empty guard is the other half: an extraction that found no lines is not
+evidence that there are none, so it must not delete work a human keyed in.
+
+Covered by `backend/tests/test_extraction_line_items_replace.py`.
+
 ## `PUT /api/invoices/{id}/line-items`
 
 - RBAC unchanged: `admin` / `ap_manager` / `cfo`.
