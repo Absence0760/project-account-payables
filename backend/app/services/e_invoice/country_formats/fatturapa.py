@@ -71,6 +71,35 @@ def _rate_text(d: Decimal) -> str:
     return str(d.quantize(Decimal("0.01")))
 
 
+# VAT prefixes that differ from the ISO 3166-1 alpha-2 code they identify.
+# Greece is the only one: its VAT numbers start `EL`, its ISO code is `GR`.
+_VAT_PREFIX_ALIASES = {"EL": "GR"}
+
+
+def _split_id_fiscale(tax_id: str | None, country_code: str | None) -> tuple[str, str]:
+    """Split a VAT id into FatturaPA's ``(IdPaese, IdCodice)`` pair.
+
+    ``IdFiscaleIVA`` is a **two-part** identifier: ``IdPaese`` carries the ISO
+    3166-1 alpha-2 country and ``IdCodice`` carries the VAT number *without*
+    it. Our normalized model stores the full, country-prefixed id (which is
+    what `tax_rules.validate_tax_id` checks — the IT pattern is `^IT\\d{11}$`),
+    so emitting it verbatim produced ``IdPaese=IT`` beside
+    ``IdCodice=IT12345678901`` — the country stated twice, and an id the SdI
+    rejects as malformed.
+
+    The prefix is only stripped when it actually identifies the country being
+    emitted (directly, or via the EL→GR alias), so a bare Partita IVA or a
+    non-prefixed scheme passes through untouched.
+    """
+    paese = (country_code or FatturaPAFormat.country).strip().upper()
+    raw = (tax_id or "").strip()
+    if len(raw) > 2 and raw[:2].isalpha():
+        prefix = raw[:2].upper()
+        if prefix == paese or _VAT_PREFIX_ALIASES.get(prefix) == paese:
+            return paese, raw[2:]
+    return paese, raw
+
+
 @register_country_format("fatturapa")
 class FatturaPAFormat(CountryEInvoiceFormat):
     """FatturaPA (Italy) — ``FatturaElettronica`` v1.2 generator + validator."""
@@ -84,9 +113,10 @@ class FatturaPAFormat(CountryEInvoiceFormat):
         """``CedentePrestatore`` / ``CessionarioCommittente`` body — id + address."""
         dati = _el(parent, "DatiAnagrafici")
         if party.tax_id:
+            paese, codice = _split_id_fiscale(party.tax_id, party.country_code)
             id_iva = _el(dati, "IdFiscaleIVA")
-            _el(id_iva, "IdPaese", (party.country_code or self.country))
-            _el(id_iva, "IdCodice", party.tax_id)
+            _el(id_iva, "IdPaese", paese)
+            _el(id_iva, "IdCodice", codice)
         anagrafica = _el(dati, "Anagrafica")
         if party.name:
             _el(anagrafica, "Denominazione", party.name)
@@ -113,9 +143,12 @@ class FatturaPAFormat(CountryEInvoiceFormat):
 
         trasmissione = _el(header, "DatiTrasmissione")
         id_trasmittente = _el(trasmissione, "IdTrasmittente")
-        _el(id_trasmittente, "IdPaese", (doc.seller.country_code or self.country))
-        if doc.seller.tax_id:
-            _el(id_trasmittente, "IdCodice", doc.seller.tax_id)
+        # Same two-part identifier as IdFiscaleIVA — IdCodice excludes the
+        # country prefix that IdPaese already states.
+        paese_tx, codice_tx = _split_id_fiscale(doc.seller.tax_id, doc.seller.country_code)
+        _el(id_trasmittente, "IdPaese", paese_tx)
+        if codice_tx:
+            _el(id_trasmittente, "IdCodice", codice_tx)
         _el(trasmissione, "FormatoTrasmissione", _VERSIONE)
         _el(
             trasmissione,

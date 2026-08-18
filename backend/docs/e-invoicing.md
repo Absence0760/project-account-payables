@@ -267,7 +267,7 @@ a `format_code` and resolved by the export route's `?format=` parameter.
 
 | `format_code` | Country | Dialect emitted | Validation |
 |---------------|---------|-----------------|------------|
-| `fatturapa` | IT | `FatturaElettronica` v1.2 (`FPR12`) — `…Header` (DatiTrasmissione + CedentePrestatore/CessionarioCommittente) + `…Body` (DatiGeneraliDocumento, DatiBeniServizi, DatiRiepilogo) | seller **and** buyer Partita IVA required + IT-format; `payable_amount` |
+| `fatturapa` | IT | `FatturaElettronica` v1.2 (`FPR12`) — `…Header` (DatiTrasmissione + CedentePrestatore/CessionarioCommittente) + `…Body` (DatiGeneraliDocumento, DatiBeniServizi, DatiRiepilogo). `IdFiscaleIVA` / `IdTrasmittente` are **two-part** ids: `IdPaese` carries the ISO country and `IdCodice` the VAT number *without* it, so `_split_id_fiscale` strips the country prefix the normalized model stores (`IT12345678901` → `IT` + `12345678901`; Greece's `EL` maps to ISO `GR`). A non-prefixed id, or a prefix that doesn't identify the emitted country, passes through untouched. | seller **and** buyer Partita IVA required + IT-format; `payable_amount` |
 | `cfdi` | MX | `cfdi:Comprobante` v4.0 — Emisor / Receptor (RFC) + Conceptos + Impuestos | emisor **and** receptor RFC required + MX-format; `payable_amount`, `tax_exclusive_amount` |
 | `nfe` | BR | `NFe/infNFe` v4.00 — ide / emit / dest / det·prod / total·ICMSTot | emit CNPJ required + BR-format; `payable_amount` |
 | `dian` | CO | DIAN-profiled UBL 2.1 (`CustomizationID=10`, `ProfileID="DIAN 2.1…"`, `UBLExtensions` placeholder) | supplier NIT required + CO-format; `payable_amount` |

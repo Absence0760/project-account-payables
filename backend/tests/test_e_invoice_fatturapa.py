@@ -116,13 +116,44 @@ def test_cedente_and_cessionario_present():
     assert cedente is not None
     assert cessionario is not None
 
+    # IdFiscaleIVA is a two-part identifier: IdPaese carries the country,
+    # IdCodice the VAT number WITHOUT it. Emitting the model's full,
+    # country-prefixed id here stated the country twice ("IT" + "IT123…") and
+    # the SdI rejects that as a malformed Partita IVA.
+    sel_paese = cedente.find(f"{{{ns}}}DatiAnagrafici/{{{ns}}}IdFiscaleIVA/{{{ns}}}IdPaese")
     sel_id = cedente.find(f"{{{ns}}}DatiAnagrafici/{{{ns}}}IdFiscaleIVA/{{{ns}}}IdCodice")
     sel_name = cedente.find(f"{{{ns}}}DatiAnagrafici/{{{ns}}}Anagrafica/{{{ns}}}Denominazione")
-    assert sel_id.text == "IT12345678901"
+    assert sel_paese.text == "IT"
+    assert sel_id.text == "12345678901"
     assert sel_name.text == "Fornitore S.r.l."
 
+    buy_paese = cessionario.find(f"{{{ns}}}DatiAnagrafici/{{{ns}}}IdFiscaleIVA/{{{ns}}}IdPaese")
     buy_id = cessionario.find(f"{{{ns}}}DatiAnagrafici/{{{ns}}}IdFiscaleIVA/{{{ns}}}IdCodice")
-    assert buy_id.text == "IT98765432109"
+    assert buy_paese.text == "IT"
+    assert buy_id.text == "98765432109"
+
+
+def test_id_trasmittente_also_drops_the_country_prefix():
+    root = etree.fromstring(_fmt().generate(_full_doc()))
+    ns = _NS_FATTURAPA
+    tx = root.find(
+        f"{{{ns}}}FatturaElettronicaHeader/{{{ns}}}DatiTrasmissione/{{{ns}}}IdTrasmittente"
+    )
+    assert tx.find(f"{{{ns}}}IdPaese").text == "IT"
+    assert tx.find(f"{{{ns}}}IdCodice").text == "12345678901"
+
+
+def test_split_id_fiscale_leaves_a_non_prefixed_id_alone():
+    """A bare Partita IVA (or any non-prefixed scheme) passes through."""
+    from app.services.e_invoice.country_formats.fatturapa import _split_id_fiscale
+
+    assert _split_id_fiscale("12345678901", "IT") == ("IT", "12345678901")
+    # A prefix that does NOT identify the emitted country is not a country
+    # prefix — never strip it.
+    assert _split_id_fiscale("FR40123456789", "IT") == ("IT", "FR40123456789")
+    # Greece: VAT prefix EL, ISO code GR.
+    assert _split_id_fiscale("EL123456789", "GR") == ("GR", "123456789")
+    assert _split_id_fiscale(None, None) == ("IT", "")
 
 
 def test_codice_destinatario_from_buyer_reference():
