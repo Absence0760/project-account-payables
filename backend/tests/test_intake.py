@@ -48,6 +48,25 @@ def _payload(**over) -> dict:
 # ---------------------------------------------------------------------------
 
 
+async def test_requester_is_the_caller_not_a_client_supplied_id(realdb):
+    """`requester_user_id` is the SoD anchor a converted requisition inherits,
+    so it cannot be the creator's own input.
+
+    `convert_intake_to_requisition` copies it verbatim onto the
+    `PurchaseRequisition`, and `POST /api/requisitions/{id}/approve` compares
+    exactly that field against the approver. Accepting it from the body let a
+    single ap_manager raise an intake "for" an arbitrary uuid, convert it, and
+    then approve the resulting requisition themselves — no accomplice, no
+    second role. `POST /api/requisitions` already hard-sets the requester to
+    the caller; this path must agree.
+    """
+    planted = str(uuid.uuid4())
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        resp = await c.post("/api/intake", json=_payload(requester_user_id=planted))
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["requester_user_id"] != planted
+
+
 async def test_create_intake(realdb):
     mk = realdb.sessionmaker("a")
     org_id = realdb.info("a").org_id

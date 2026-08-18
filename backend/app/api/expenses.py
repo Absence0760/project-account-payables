@@ -879,12 +879,14 @@ async def create_report(
     org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
+    # The employee is always the authenticated caller — a report can't be raised
+    # on someone else's behalf, and the body field is ignored for safety (the
+    # same rule `expense_preapprovals.create_preapproval` states for its own
+    # requester). `employee_user_id` is the ONLY value report SoD compares
+    # against at approve time, so accepting it from the creator let one user
+    # raise a report "for" an arbitrary uuid and then approve it themselves —
+    # dual control on reimbursement gone, with no accomplice and no second role.
     employee_uuid = user.id
-    if body.employee_user_id:
-        try:
-            employee_uuid = uuid.UUID(body.employee_user_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid employee_user_id")
 
     report = ExpenseReport(
         report_number=body.report_number,

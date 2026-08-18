@@ -174,12 +174,15 @@ async def create_intake(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid vendor_id")
 
+    # The requester is always the authenticated caller — an intake can't be
+    # raised on someone else's behalf, and the body field is ignored for safety
+    # (`POST /api/requisitions` and `expense_preapprovals` both already do this).
+    # `convert_intake_to_requisition` copies this id verbatim onto the
+    # PurchaseRequisition, where it becomes the value `approve` checks
+    # segregation of duties against — so accepting it from the creator let one
+    # user raise an intake "for" an arbitrary uuid, convert it, and approve the
+    # resulting requisition themselves.
     requester_uuid = user.id
-    if body.requester_user_id:
-        try:
-            requester_uuid = uuid.UUID(body.requester_user_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid requester_user_id")
 
     request_number = body.request_number or await generate_request_number(db)
 

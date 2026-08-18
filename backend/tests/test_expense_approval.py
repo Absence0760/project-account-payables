@@ -211,6 +211,42 @@ async def test_approve_self_blocked_by_segregation(realdb):
     assert "segregation" in resp.json()["detail"].lower()
 
 
+async def test_report_employee_is_the_caller_not_a_client_supplied_id(realdb):
+    """`employee_user_id` on create is the ONLY thing report SoD compares
+    against, so it can't be the creator's own input.
+
+    Accepting it let one ap_manager raise a report "for" an arbitrary uuid and
+    then approve it themselves — `violates_segregation` compared the planted id
+    to the actor, never matched, and the dual-control on reimbursement was gone
+    with no accomplice and no second role. Mirrors the rule
+    `expense_preapprovals.create_preapproval` already states: the requester is
+    always the authenticated user.
+    """
+    planted = str(uuid.uuid4())
+    async with realdb.client(key="a", role="ap_manager") as c:
+        created = await c.post(
+            "/api/expense-reports",
+            json={"report_number": f"R-{uuid.uuid4().hex[:8]}", "employee_user_id": planted},
+        )
+        assert created.status_code == 201, created.text
+        rid = created.json()["id"]
+        assert created.json()["employee_user_id"] != planted
+
+        eid = (
+            await c.post("/api/expenses", json={"expense_date": "2026-06-01", "amount": "100.00"})
+        ).json()["id"]
+        await c.post(f"/api/expense-reports/{rid}/expenses", json={"expense_ids": [eid]})
+        await c.post(
+            f"/api/expenses/{eid}/receipt",
+            files={"file": ("r.pdf", b"%PDF-1.4 fake", "application/pdf")},
+        )
+        assert (await c.post(f"/api/expense-reports/{rid}/submit")).status_code == 200
+        # The same manager must still be refused — SoD anchors on the caller.
+        resp = await c.post(f"/api/expense-reports/{rid}/approve")
+    assert resp.status_code == 403, resp.text
+    assert "segregation" in resp.json()["detail"].lower()
+
+
 async def test_different_manager_approves(realdb):
     mk = realdb.sessionmaker("a")
     # clerk submits; a different manager approves.
