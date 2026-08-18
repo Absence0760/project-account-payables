@@ -557,6 +557,14 @@ class Settings(BaseSettings):
     # via sops (backend/.env.sops) in deployed envs, never committed plaintext.
     billing_stripe_api_key: str = ""
     billing_stripe_webhook_secret: str = ""
+    # Reject a Stripe billing webhook whose `Stripe-Signature` `t=` is more than
+    # this many seconds from now (replay-window guard; Stripe's own default
+    # tolerance is 5 minutes, and the same ±5-min window the Slack / Teams
+    # interactivity routes enforce). The Redis dedupe covers a REDELIVERY of the
+    # same event within its TTL; this covers an OLD, correctly-signed event
+    # being replayed at all. `<= 0` disables the age check — for an operator
+    # deliberately replaying an archived event during an incident.
+    billing_stripe_webhook_max_age_seconds: int = 300
     # Live Stripe Billing API base URL — overridable so tests / a sandbox can
     # point the adapter at a mock server. The adapter still fails closed without
     # an API key regardless of this value.

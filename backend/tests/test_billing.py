@@ -120,14 +120,17 @@ def test_stripe_webhook_rejected_without_valid_hmac():
 def test_stripe_webhook_accepts_valid_hmac():
     import hashlib
     import hmac
+    import time
 
     secret = "whsec_test"
     body = (
         b'{"id": "evt_9", "type": "customer.subscription.updated", '
         b'"data": {"object": {"id": "sub_9", "status": "past_due"}}}'
     )
-    # Stripe signs the timestamp-prefixed payload `t.body`, header `t=...,v1=...`.
-    ts = "1700000000"
+    # Stripe signs the timestamp-prefixed payload `t.body`, header `t=...,v1=...`,
+    # and `t` must be inside the replay-tolerance window — so sign as of NOW,
+    # exactly as a real delivery does.
+    ts = str(int(time.time()))
     sig = hmac.new(secret.encode(), b"%s.%s" % (ts.encode(), body), hashlib.sha256).hexdigest()
     adapter = StripeBillingAdapter({"stripe_api_key": "sk", "stripe_webhook_secret": secret})
     evt = adapter.parse_webhook({"Stripe-Signature": f"t={ts},v1={sig}"}, body)

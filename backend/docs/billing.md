@@ -187,6 +187,22 @@ Pipeline (mirrors the PEPPOL-inbound webhook, honouring invariant #9):
    unverifiable payload).
 4. **HMAC verify + normalize** inside the adapter's `parse_webhook` (fail-closed:
    no secret / bad signature / unparseable → `None` → silent 204).
+   Stripe's `Stripe-Signature` header is `t=<unix>,v1=<hex>` and its verification
+   procedure has **two** halves: re-derive the digest over `f"{t}.{body}"`, *and*
+   compare `t` against now within a tolerance. Only the digest half was
+   implemented, so a captured, correctly-signed event verified forever — the
+   `t` was signed over but never read. `FEOH_BILLING_STRIPE_WEBHOOK_MAX_AGE_SECONDS`
+   (default 300, the same ±5-minute window the Slack / Teams interactivity
+   routes enforce) closes it, in both directions: a far-FUTURE `t` is rejected
+   too, or a forged one would buy an arbitrarily long replay window.
+
+   The window is not a duplicate of step 5's dedupe. Dedupe stops the **same**
+   delivery being processed twice inside its 72h Redis TTL; the window stops an
+   **old** delivery being replayed at all. Past the TTL a captured
+   `customer.subscription.deleted` would otherwise cancel a subscription the
+   customer has since re-taken. Set the knob `<= 0` to disable the age check —
+   the escape hatch for an operator deliberately replaying an archived event
+   during an incident.
 5. **Dedupe by `event_id`** via `webhook_security.is_event_already_processed`
    (Redis `SET NX EX`, keyed `billing:<provider>:<event_id>`). A provider
    redelivery within the window short-circuits — the lifecycle effect ran exactly
@@ -530,6 +546,7 @@ dashboard and never sees the tab.
 | `FEOH_BILLING_PROVIDER` | `mock` | Billing adapter — `mock` (local-first default) \| `stripe_billing`. Per-org override `Organization.settings.billing.provider`. |
 | `FEOH_BILLING_STRIPE_API_KEY` | (empty) | Live Stripe Billing secret key — **no hardcoded fallback**; sops in deployed. The `stripe_billing` adapter fails closed without it. |
 | `FEOH_BILLING_STRIPE_WEBHOOK_SECRET` | (empty) | HMAC secret for Stripe webhook signature verification — no fallback; sops in deployed. |
+| `FEOH_BILLING_STRIPE_WEBHOOK_MAX_AGE_SECONDS` | `300` | Replay window on the `Stripe-Signature` `t=` timestamp (Stripe's own default tolerance, and the same ±5 min the Slack / Teams routes enforce). Rejects both too-old and too-far-future timestamps. Complements the `event_id` dedupe rather than duplicating it — see the webhook pipeline above. `<= 0` disables the age check, for an operator replaying an archived event. |
 | `FEOH_BILLING_STRIPE_API_BASE` | `https://api.stripe.com` | Stripe REST API base URL — overridable so a sandbox / test can point the adapter elsewhere. The adapter still fails closed without an API key regardless. |
 | `FEOH_BILLING_WEBHOOK_ENABLED` | `false` | Master switch for the inbound billing webhook route (`POST /api/billing/webhook/{provider}`). OFF in local dev (no outbound billing integration); flip ON in deployed envs. The route is HMAC-gated regardless; off → silent 204. **Boot guard**: refuses to start when this is `true` and `FEOH_BILLING_PROVIDER` is still `mock` (the mock adapter's `parse_webhook` does no signature verification) — pair with a real provider in deployed envs. |
 | `FEOH_BILLING_DUNNING_ENABLED` | `false` | Master switch for the dunning / past-due automation sweep. OFF by default; flip ON in deployed envs. The sweep only cancels subscriptions overdue past the grace window — it NEVER moves money. |
