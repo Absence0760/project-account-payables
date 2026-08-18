@@ -74,8 +74,17 @@ even though the frontend is a static site.
    `review.reject_invoice` **as the reviewer**. This is the same code the
    authenticated endpoints call, so segregation, thresholds, the CFO gate, the
    `invoice.approved` / `invoice.rejected` immutable audit row, and the approval
-   signature all happen exactly as normal.
-6. **Render** a success / info page.
+   signature all happen exactly as normal. The org's **`settings`** ride along
+   as `org_settings` — the same value the in-app endpoint passes — so this door
+   evaluates the tenant's own `fraud_rules`, `matching` PO tolerances,
+   `exceptions` routing and structuring window rather than the platform
+   defaults. Dropping it would make an approval mean something different
+   depending on which door it came through, and would let a rule the org turned
+   off open a payment-BLOCKING `fraud_flag` on this path only.
+6. **Render** a success / info page. On a **multi-level approval chain** the
+   invoice stays `ready_for_review` for the next approver, so the page says
+   "Approval recorded … it still needs a further approval" rather than
+   "approved" — the outcome is read off the resulting status, never assumed.
 
 If the action turns out not to be applicable or not permitted (invoice no longer
 awaiting review, segregation block, CFO gate, over the max-amount cap), the jti

@@ -247,7 +247,9 @@ async def email_action_perform(
 
     try:
         async with _tenant_session(org) as db:
-            result = await _apply_action(db, decoded, reviewer, reviewer_roles, reason)
+            result = await _apply_action(
+                db, decoded, reviewer, reviewer_roles, reason, org_settings=org.settings
+            )
             if result.committed:
                 await db.commit()
             else:
@@ -283,10 +285,17 @@ async def _apply_action(
     reviewer: User,
     reviewer_roles: set[str],
     reason: str,
+    *,
+    org_settings: dict | None = None,
 ) -> _ActionResult:
     """Run the approve/reject against a row-locked invoice. Returns whether to
     commit + the page to render. May raise HTTPException (threshold/segregation/
-    CFO gate) — the caller releases the jti claim and renders the detail."""
+    CFO gate) — the caller releases the jti claim and renders the detail.
+
+    ``org_settings`` must be threaded through: approving from an email is the
+    same decision as approving in-app, so it has to read the same org
+    ``fraud_rules`` / ``matching`` tolerances / structuring window. Omitting it
+    reverted all of them to the platform default for this one door."""
     from app.services.workflow_engine import get_invoice_for_update
 
     invoice = await get_invoice_for_update(db, decoded.invoice_id)
@@ -307,12 +316,27 @@ async def _apply_action(
             actor_id=reviewer.id,
             actor_name=reviewer.full_name,
             actor_roles=reviewer_roles,
+            org_settings=org_settings,
         )
+        # A multi-level approval chain records THIS level and leaves the invoice
+        # in `ready_for_review` for the next approver — `approve_invoice` returns
+        # early without transitioning. Reporting "has been approved" there tells
+        # the reviewer the payable is cleared when it still needs someone else,
+        # so read the resulting status rather than assuming the happy path.
+        if invoice.status is InvoiceStatus.approved:
+            return _ActionResult(
+                True,
+                _info_page(
+                    "Invoice approved",
+                    f"{_invoice_ref(invoice)} has been approved. Thank you.",
+                ),
+            )
         return _ActionResult(
             True,
             _info_page(
-                "Invoice approved",
-                f"{_invoice_ref(invoice)} has been approved. Thank you.",
+                "Approval recorded",
+                f"Your approval of {_invoice_ref(invoice)} has been recorded. It still "
+                "needs a further approval before it is cleared for payment.",
             ),
         )
 
