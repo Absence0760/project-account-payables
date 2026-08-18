@@ -278,6 +278,10 @@
 	// Financial fields are frozen once an invoice is approved: the backend 409s
 	// a PATCH that includes any of them (the signed-off amount is what the
 	// payment run pays — services/api/invoices.py `_FINANCIALLY_LOCKED_STATUSES`).
+	// `vendor` is in that frozen set too — re-saving it re-runs the vendor
+	// matcher and re-points `Invoice.vendor_id`, which is where the payment run
+	// reads the payee's bank details from, so WHO gets paid is frozen alongside
+	// HOW MUCH.
 	// Both Save and the workflow-submit button ("Send to ERP" / Mark Complete)
 	// reuse this field write, so once locked we must send only the non-financial
 	// metadata (GL coding, addresses, notes) — otherwise every write to an
@@ -295,7 +299,6 @@
 
 	function invoiceFieldPayload(): Record<string, unknown> {
 		const payload: Record<string, unknown> = {
-			vendor,
 			invoice_number,
 			due_date,
 			po_number,
@@ -311,6 +314,7 @@
 			project: project || null,
 		};
 		if (!financiallyLocked) {
+			payload.vendor = vendor;
 			payload.amount = amount;
 			payload.tax_rate = tax_rate;
 		}
