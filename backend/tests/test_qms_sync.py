@@ -20,7 +20,12 @@ from app.models.procurement import GoodsReceipt, PurchaseOrder
 from app.models.quality_inspection import QualityInspection
 from app.services import qms_sync
 from app.services.qms_adapters.base import QMSInspectionRecord
-from app.services.qms_sync import run_qms_sync_once, sync_tenant_inspections
+from app.services.qms_sync import (
+    normalize_disposition,
+    resolve_opted_in_qms_config,
+    run_qms_sync_once,
+    sync_tenant_inspections,
+)
 
 # ---------------------------------------------------------------------------
 # run_qms_sync_once — fan-out + opt-in gating (mocked)
@@ -100,6 +105,60 @@ async def test_run_once_continues_after_one_tenant_fails():
 
 
 # ---------------------------------------------------------------------------
+# resolve_opted_in_qms_config — the ONE opt-in rule, shared by the sweep and
+# the manual `POST /api/inspections/sync` route so the two cannot drift.
+# ---------------------------------------------------------------------------
+
+
+def test_opt_in_requires_an_org_block_or_a_platform_override():
+    with patch.object(qms_sync.settings, "qms_provider", "mock"):
+        # No settings at all, and no qms block → not opted in.
+        assert resolve_opted_in_qms_config(None) is None
+        assert resolve_opted_in_qms_config({}) is None
+        assert resolve_opted_in_qms_config({"qms": "not-a-dict"}) is None
+        # An explicit org block opts in.
+        assert resolve_opted_in_qms_config({"qms": {"provider": "generic"}}) == {
+            "provider": "generic"
+        }
+
+    # A platform override opts every org in with the default config.
+    with patch.object(qms_sync.settings, "qms_provider", "generic"):
+        assert resolve_opted_in_qms_config({}) == {"provider": "generic"}
+
+
+# ---------------------------------------------------------------------------
+# normalize_disposition — never resolve an unknown verdict to the permissive one
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("pass", "pass"),
+        ("fail", "fail"),
+        ("partial", "partial"),
+        # Case / whitespace is a reading, not a guess.
+        ("FAIL", "fail"),
+        (" Fail ", "fail"),
+        ("Partial", "partial"),
+        # Genuinely outside the vocabulary → None, and the caller SKIPS.
+        # Coercing these to "pass" is what cleared the 4-way quality gate for a
+        # rejected lot: "pass" is the one value `po_matching` treats as
+        # no-status-change, so the invoice became payable.
+        ("rejected", None),
+        ("REJECT", None),
+        ("quarantine", None),
+        ("", None),
+        ("   ", None),
+        (None, None),
+        (123, None),
+    ],
+)
+def test_normalize_disposition(raw, expected):
+    assert normalize_disposition(raw) == expected
+
+
+# ---------------------------------------------------------------------------
 # sync_tenant_inspections — real Postgres mutation
 # ---------------------------------------------------------------------------
 
@@ -155,7 +214,7 @@ async def test_sync_upsert_is_idempotent_and_resolves_docs(realdb):
             )
             await db.commit()
 
-    assert summary == {"fetched": 2, "created": 2, "updated": 0}
+    assert summary == {"fetched": 2, "created": 2, "updated": 0, "skipped": 0}
 
     async with mk() as db:
         rows = (await db.execute(select_qi(org_id))).scalars().all()
@@ -189,7 +248,7 @@ async def test_sync_upsert_is_idempotent_and_resolves_docs(realdb):
             )
             await db.commit()
 
-    assert summary2 == {"fetched": 2, "created": 0, "updated": 2}
+    assert summary2 == {"fetched": 2, "created": 0, "updated": 2, "skipped": 0}
 
     async with mk() as db:
         rows2 = (await db.execute(select_qi(org_id))).scalars().all()
@@ -239,6 +298,49 @@ def select_qi(org_id):
     from sqlalchemy import select
 
     return select(QualityInspection).where(QualityInspection.organization_id == org_id)
+
+
+@pytest.mark.asyncio
+async def test_sync_skips_a_record_whose_disposition_does_not_map(realdb):
+    """An unmappable verdict must persist NOTHING — not a permissive `pass`.
+
+    A QMS emitting its own vocabulary for a rejected lot ("REJECTED") used to
+    land as `result="pass"`, the one value `po_matching` treats as
+    no-status-change, so the rejected lot cleared the 4-way quality gate and the
+    invoice became payable. Leaving no row is the fail-closed outcome: an org
+    that sets `require_inspection` gets "Quality inspection required but
+    missing"; one that doesn't is unaffected.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    records = [
+        QMSInspectionRecord(
+            inspection_number="QMS-UNMAPPED",
+            result="REJECTED",  # a real QMS's own vocabulary, unmapped
+            po_number="PO-SKIP-1",
+        ),
+        # Case-only variance IS mappable and must still land, as `fail`.
+        QMSInspectionRecord(
+            inspection_number="QMS-SHOUTY",
+            result="FAIL",
+            po_number="PO-SKIP-1",
+        ),
+    ]
+    with patch.object(qms_sync, "get_qms_adapter", lambda cfg: _stub_adapter(records)):
+        async with mk() as db:
+            summary = await sync_tenant_inspections(
+                db, org_id=org_id, qms_config={"provider": "generic"}
+            )
+            await db.commit()
+
+    assert summary == {"fetched": 2, "created": 1, "updated": 0, "skipped": 1}
+
+    async with mk() as db:
+        rows = (await db.execute(select_qi(org_id))).scalars().all()
+    by_num = {r.inspection_number: r for r in rows}
+    assert "QMS-UNMAPPED" not in by_num
+    assert by_num["QMS-SHOUTY"].result == "fail"
 
 
 @pytest.mark.asyncio
