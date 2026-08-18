@@ -475,7 +475,7 @@ async def create_expense(
         # the CFO threshold the approval was granted under and, worse, null the
         # locked `reporting_*` figure that approval and its audit row were
         # derived from. Same rule as `attach_expenses` — a report only takes new
-        # lines while it is a draft (issue #155).
+        # lines while it is a draft.
         _require_draft_report(report)
     else:
         report = None
