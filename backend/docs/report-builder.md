@@ -69,7 +69,7 @@ free-form column name from the client.
 | `PATCH /{id}` | admin/ap_manager/cfo | Update a saved definition (re-validated). |
 | `DELETE /{id}` | admin/ap_manager/cfo | Delete (204). |
 | `POST /run` | all four | Run an ad-hoc spec (paginated), not saved. |
-| `POST /{id}/run` | all four | Run a saved spec. |
+| `POST /{id}/run` | all four | Run a saved spec. **`page` / `page_size` are QUERY params here**, unlike the ad-hoc sibling which takes them in the body — a client that sends them in the body gets page 1 every time, silently. |
 | `GET /{id}/export?format=csv\|pdf` | all four | Branded download. |
 
 Every mutation (`POST` / `PATCH` / `DELETE`) writes a PII-free audit row

@@ -94,6 +94,44 @@ async def test_create_expense_rejects_nonpositive_amount(realdb):
         assert patched.status_code == 422, patched.text
 
 
+async def test_expense_date_cannot_be_cleared_or_omitted(realdb):
+    """``expenses.expense_date`` is NOT NULL, so neither create nor update may
+    end up writing a null there.
+
+    Create already required it. The PATCH schema, however, typed it
+    ``date | None``: an explicit ``null`` passed validation, reached ``setattr``
+    in the handler and raised ``NotNullViolationError`` — a bare 500 on what is
+    plainly a client error. (The frontend's expense modal sent exactly that when
+    the date field was left blank.) It is now a 422; OMITTING the key still
+    leaves the stored date untouched, which is what makes the PATCH partial.
+    """
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        # Create without a date is a 422 (unchanged — the field is required).
+        assert (await c.post("/api/expenses", json={"amount": "10.00"})).status_code == 422
+        # …and an explicit null on create is too.
+        assert (
+            await c.post("/api/expenses", json={"expense_date": None, "amount": "10.00"})
+        ).status_code == 422
+
+        eid = (
+            await c.post("/api/expenses", json={"expense_date": "2026-06-01", "amount": "10.00"})
+        ).json()["id"]
+
+        # Explicitly clearing it: a 422, NOT a 500 from the DB constraint.
+        cleared = await c.patch(f"/api/expenses/{eid}", json={"expense_date": None})
+        assert cleared.status_code == 422, cleared.text
+
+        # Omitting it leaves the stored date alone — partial PATCH still works.
+        untouched = await c.patch(f"/api/expenses/{eid}", json={"merchant": "Lyft"})
+        assert untouched.status_code == 200, untouched.text
+        assert untouched.json()["expense_date"] == "2026-06-01"
+
+        # And a real date still updates.
+        moved = await c.patch(f"/api/expenses/{eid}", json={"expense_date": "2026-06-09"})
+        assert moved.status_code == 200, moved.text
+        assert moved.json()["expense_date"] == "2026-06-09"
+
+
 async def test_list_filter_and_get(realdb):
     async with realdb.client(key="a", role="ap_clerk") as c:
         await c.post("/api/expenses", json={"expense_date": "2026-06-01", "amount": "10.00"})

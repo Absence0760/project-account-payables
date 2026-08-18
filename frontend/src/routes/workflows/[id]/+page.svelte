@@ -573,6 +573,40 @@
 								/>
 								<p class="field-hint">{m('workflows.builder.approval.maxInvoiceAmountHint')}</p>
 							</div>
+
+							<div class="field-divider"></div>
+							<h4 class="field-section-title">{m('workflows.builder.approval.controlsTitle')}</h4>
+
+							<!--
+								Segregation of duties (approver ≠ uploader). Defaults ON — the
+								backend's own default — and is now visible so switching it OFF
+								is a deliberate act. `?? true` mirrors `approval_chain.py`'s
+								`.get("require_segregation", True)` so a legacy definition saved
+								without the key reads as ON here, exactly as the backend enforces
+								it, rather than rendering as OFF and being written back as OFF.
+							-->
+							{@const segregation = cfg.require_segregation ?? true}
+							<div class="field toggle-field">
+								<label id="approval-segregation-label" for="approval-segregation">
+									{m('workflows.builder.approval.requireSegregation')}
+								</label>
+								<button
+									id="approval-segregation"
+									class="toggle"
+									class:on={segregation}
+									role="switch"
+									aria-checked={segregation}
+									aria-labelledby="approval-segregation-label"
+									onclick={() => updateStepConfig(selectedIndex, 'require_segregation', !segregation)}
+								>
+									<span class="toggle-knob"></span>
+								</button>
+							</div>
+							<p class="field-hint" class:warning={!segregation}>
+								{segregation
+									? m('workflows.builder.approval.requireSegregationHint')
+									: m('workflows.builder.approval.requireSegregationWarning')}
+							</p>
 						{/if}
 
 						<!-- ERP Export config -->

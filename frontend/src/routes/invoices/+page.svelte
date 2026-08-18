@@ -69,18 +69,33 @@
 			}
 		}
 
-		await invoiceStore.fetch(buildParams());
-		await invoiceStore.fetchCounts();
+		// The refetch is the last thing that can throw, and it happens AFTER the
+		// files are already uploaded. Without the `finally` a failed refetch left
+		// `uploading` stuck true — the button read "Uploading…" forever, disabled,
+		// and re-picking the same file wouldn't even fire `change` (the input's
+		// value was never cleared). Only a page reload recovered.
+		try {
+			await invoiceStore.fetch(buildParams());
+			await invoiceStore.fetchCounts();
 
-		if (total === 1 && succeeded === 1) {
-			toast('Invoice uploaded successfully', 'success');
-		} else if (total > 1) {
-			toast(`Uploaded ${succeeded} of ${total} invoice${total > 1 ? 's' : ''}${failed ? ` (${failed} failed)` : ''}`, succeeded > 0 ? 'success' : 'error');
+			if (total === 1 && succeeded === 1) {
+				toast('Invoice uploaded successfully', 'success');
+			} else if (total > 1) {
+				toast(`Uploaded ${succeeded} of ${total} invoice${total > 1 ? 's' : ''}${failed ? ` (${failed} failed)` : ''}`, succeeded > 0 ? 'success' : 'error');
+			}
+		} catch (err) {
+			// The upload itself succeeded — say so, and say the list is stale.
+			toast(
+				err instanceof Error
+					? `Uploaded, but the list could not be refreshed: ${err.message}`
+					: 'Uploaded, but the list could not be refreshed',
+				'error'
+			);
+		} finally {
+			uploading = false;
+			uploadProgress = '';
+			input.value = '';
 		}
-
-		uploading = false;
-		uploadProgress = '';
-		input.value = '';
 	}
 
 	// Build query params from current filters and fetch from API

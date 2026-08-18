@@ -1,7 +1,7 @@
 // Typed helpers for the expense + expense-report endpoints. All requests route
 // through the shared `api` client (Bearer + X-Tenant-Slug + X-Entity-ID +
 // 401-bounce). Mirrors the pattern of `src/lib/api/contracts.ts`.
-import { api } from '$lib/api';
+import { api, formatApiDetail } from '$lib/api';
 import { PUBLIC_API_URL } from '$env/static/public';
 import { getTenantSlug } from '$lib/tenant';
 import { getSelectedEntityId } from '$lib/entity';
@@ -239,8 +239,9 @@ export function rejectPreapproval(id: string, reason?: string): Promise<ExpenseP
 /**
  * Discriminated result for the report `submit` action. The submit route can
  * 422 with a structured violation list (blocking policy violations) — the
- * shared `api` client collapses every non-OK body into `Error(body.detail)`,
- * losing a list-shaped `detail`. So submit hand-rolls its own `fetch` (the
+ * shared `api` client flattens every non-OK body into a single `Error` message
+ * (readably, via `formatApiDetail`, but still a string), losing the STRUCTURE of
+ * a list-shaped `detail`. So submit hand-rolls its own `fetch` (the
  * `api.ts::downloadBlob` private-fetch idiom: Bearer + tenant + entity headers)
  * to read the raw 422 JSON and surface the violations to the caller intact.
  */
@@ -282,8 +283,8 @@ export async function submitReport(id: string): Promise<SubmitReportResult> {
 	if (entity) headers['X-Entity-ID'] = entity;
 
 	// Sanctioned api-layer exception (downloadBlob idiom): the shared api.ts
-	// collapses a list-shaped 422 `detail` into Error("[object Object]"),
-	// destroying the policy-violation list. We hand-roll the same Bearer +
+	// flattens a list-shaped 422 `detail` into one Error message, destroying the
+	// policy-violation list the UI panel renders. We hand-roll the same Bearer +
 	// X-Tenant-Slug + X-Entity-ID headers + 401-bounce so the raw 422 JSON
 	// survives. Not a component; not a bypass.
 	const res = await fetch(`${base}/api/expense-reports/${id}/submit`, { // noqa: raw-fetch-in-component
@@ -307,8 +308,8 @@ export async function submitReport(id: string): Promise<SubmitReportResult> {
 	}
 
 	if (!res.ok) {
-		const body = (await res.json().catch(() => ({}))) as { detail?: string };
-		throw new Error(body.detail || `API error ${res.status}`);
+		const body = (await res.json().catch(() => ({}))) as { detail?: unknown };
+		throw new Error(formatApiDetail(body.detail, `API error ${res.status}`));
 	}
 
 	const report = (await res.json()) as ExpenseReport;

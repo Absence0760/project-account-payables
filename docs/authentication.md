@@ -401,6 +401,59 @@ exactly as before.
   instance-level SoD check (`check_segregation`, approver ≠ creator), which is
   unchanged.
 
+### Segregation of duties on a workflow's approval step
+
+`check_segregation` is driven by the approval step's own
+`require_segregation` flag, and **the default is ON everywhere**:
+`app/schemas/workflow.py` declares `require_segregation: bool = True`, and
+`services/approval_chain.py` reads `.get("require_segregation", True)` — so a
+definition that carries no key at all still blocks the uploader from approving
+their own invoice.
+
+The no-code builder used to undercut that: `DEFAULT_APPROVAL_CONFIG`
+(`frontend/src/lib/types/workflow.ts`) hardcoded `require_segregation: false`,
+and an explicit `false` is a real value, not an absent key. Every workflow
+created through `/workflows` or the builder's Add-step therefore shipped with
+self-approval permitted — and with no toggle anywhere in the UI it could
+neither be seen nor switched back on. Template-created workflows
+(`POST /api/workflows/from-template`) were never affected, which is why it
+stayed hidden.
+
+The default is now `true`, and the builder's approval-step editor renders a
+visible **Require segregation of duties** switch (with a warning line when it
+is off) so disabling the control is a deliberate, auditable choice rather than
+a silent default. `frontend/src/lib/types/workflow.test.ts` is the drift guard
+on the default; `frontend/tests-e2e/workflows/segregation-default.spec.ts`
+covers the persisted value and the toggle round-trip.
+
+### Approve and reject are not always the same role set
+
+Where a decision splits into an "approve" and a "reject" half, the two may
+carry **different** gates, and a frontend predicate that serves both will be
+wrong for one of them. The live example is expense reports
+(`app/api/expenses.py`):
+
+| Action | Roles | Extra gate |
+|--------|-------|-----------|
+| `POST /api/expense-reports/{id}/approve` | `admin` \| `ap_manager` \| `cfo` | above `settings.expense_approval.cfo_threshold` (default 5000) only `cfo` / `admin` may approve |
+| `POST /api/expense-reports/{id}/reject` | `admin` \| `ap_manager` | — |
+
+The `/expenses` Reports tab gated BOTH buttons on one manager-only predicate,
+so an over-threshold report 403'd for the `ap_manager` **and** showed the CFO no
+Approve button at all — the exact person the threshold escalates to could not
+act from the UI. The page now derives `canApproveReport` (the wider set) and
+`canDecideReport` (reject) separately; both keep the same SoD self-check, since
+the decider must never be the submitting employee. When adding a decision pair,
+check the two backends' `require_roles` independently rather than assuming they
+match. Guarded by `frontend/tests-e2e/expenses/cfo-report-approval.spec.ts`.
+
+The same asymmetry bit dynamic discounting in the other direction: accepting an
+early-payment offer allowed the CFO while declining it did not, so a CFO could
+commit cash early but not refuse. Accept and decline are two halves of one
+decision the CFO owns, so `POST /api/discounts/offers/{id}/decline` now carries
+the same gate as `/accept` (`admin` \| `ap_manager` \| `cfo`). Declining moves
+no money — it only flips status.
+
 ## Testing Auth via curl
 
 ```bash

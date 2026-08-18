@@ -134,6 +134,23 @@
 		}
 	}
 
+	// Track whether the loaded spec has been edited since load (so Run uses the
+	// ad-hoc endpoint reflecting the live edits rather than the stale saved one).
+	//
+	// The snapshot is taken IMPERATIVELY, at the one moment a definition is
+	// loaded — never in an `$effect`. An effect that calls `specForCompare()`
+	// reads the very state it snapshots, so every edit re-ran it and re-pinned
+	// the snapshot to the current spec; `dirtySinceLoad` was then permanently
+	// `false` and `run()` always executed the PERSISTED spec server-side while
+	// the builder showed the edited one.
+	let loadedSnapshot = $state('');
+	function specForCompare() {
+		return { dims, measures, filters, sortKey, sortDir, sourceKey };
+	}
+	const dirtySinceLoad = $derived(
+		loadedId ? JSON.stringify(specForCompare()) !== loadedSnapshot : false
+	);
+
 	// Reset the whole builder to a fresh spec on the given source.
 	function selectSource(key: string) {
 		sourceKey = key;
@@ -148,6 +165,7 @@
 		loadedId = null;
 		loadedName = '';
 		loadedDescription = '';
+		loadedSnapshot = '';
 		clearIdParam();
 	}
 
@@ -165,6 +183,9 @@
 		result = null;
 		runError = null;
 		currentPage = 1;
+		// Baseline for `dirtySinceLoad` — taken here, after the spec fields above
+		// are assigned, so it captures exactly what was persisted.
+		loadedSnapshot = JSON.stringify(specForCompare());
 	}
 
 	async function loadDefinition(id: string, { updateUrl = true } = {}) {
@@ -208,19 +229,6 @@
 			running = false;
 		}
 	}
-
-	// Track whether the loaded spec has been edited since load (so Run uses the
-	// ad-hoc endpoint reflecting the live edits rather than the stale saved one).
-	let loadedSnapshot = $state('');
-	$effect(() => {
-		if (loadedId) loadedSnapshot = JSON.stringify(specForCompare());
-	});
-	function specForCompare() {
-		return { dims, measures, filters, sortKey, sortDir, sourceKey };
-	}
-	const dirtySinceLoad = $derived(
-		loadedId ? JSON.stringify(specForCompare()) !== loadedSnapshot : false
-	);
 
 	function openSave() {
 		saveError = null;

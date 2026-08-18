@@ -65,7 +65,15 @@ class ExpenseUpdate(BaseModel):
     """PATCH — every field optional. ``status`` moves through dedicated flows in
     later workflows, not here."""
 
-    expense_date: date | None = None
+    # NOT `date | None`. ``expenses.expense_date`` is NOT NULL, so an explicit
+    # ``null`` used to pass validation, reach ``setattr`` in the PATCH handler
+    # and surface as an unhandled ``NotNullViolationError`` — a bare 500.
+    # Annotated non-optional with a `None` sentinel default: the handler reads
+    # `model_dump(exclude_unset=True)`, so OMITTING the key still leaves the
+    # stored date untouched, while SENDING `null` is now a 422 — which is what
+    # "you cannot clear a required column" should look like. (Pydantic v2 does
+    # not validate defaults, so the sentinel never trips validation itself.)
+    expense_date: date = Field(default=None)  # type: ignore[assignment]
     merchant: str | None = Field(default=None, max_length=255)
     category: str | None = Field(default=None, max_length=100)
     description: str | None = None

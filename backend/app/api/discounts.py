@@ -71,6 +71,9 @@ router = APIRouter(prefix="/discounts", tags=["discounts"])
 
 _READ_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK, ROLE_CFO)
 _WRITE_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER)
+# Deciding an offer — accept OR decline. The CFO owns the early-pay-vs-cash
+# trade-off, so both halves of that one decision carry the same gate; splitting
+# them let a CFO commit cash but not refuse.
 _ACCEPT_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)
 
 # Invoice statuses where payment is still pending — the set a vendor-wide bulk
@@ -372,7 +375,12 @@ async def decline_offer(
     offer_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     org_id: uuid.UUID = Depends(get_org_id),
-    user: User = Depends(require_roles(*_WRITE_ROLES)),
+    # `_ACCEPT_ROLES`, not `_WRITE_ROLES`: declining is the CHEAPER half of the
+    # same decision accept already grants the CFO. Gating it to admin/ap_manager
+    # left a CFO able to commit cash early but not to refuse the offer — and the
+    # `/discounts` UI (open to admin/ap_manager/cfo) showed them a Decline button
+    # the backend then 403'd. Declining moves no money; it only flips status.
+    user: User = Depends(require_roles(*_ACCEPT_ROLES)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     offer = await _get_offer_scoped(db, offer_id, entity_id)
