@@ -541,6 +541,7 @@ created:
 | `no_lines_found` | Readable, but no open items on it |
 | `provider_error` | Transport / non-200 / an adapter that raised |
 | `unreadable_response` | The provider returned something that isn't the agreed shape |
+| `provider_not_registered` | `settings.extraction.provider` names an adapter we don't have (a config error an admin fixes, not the uploader) |
 
 The reason codes are PII-free by construction and map to static user-facing
 messages. An adapter's own `error` text — which can echo a provider response

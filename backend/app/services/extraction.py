@@ -280,13 +280,13 @@ async def run_extraction(
     try:
         config = _resolve_extraction_config(org_settings)
 
-        # Import adapters to trigger registration
-        import app.services.extraction_adapters.aws_textract  # noqa: F401
-        import app.services.extraction_adapters.claude_vision  # noqa: F401
-        import app.services.extraction_adapters.einvoice_adapter  # noqa: F401
-        import app.services.extraction_adapters.mock_adapter  # noqa: F401
-        import app.services.extraction_adapters.ollama  # noqa: F401
-        import app.services.extraction_adapters.openai_vision  # noqa: F401
+        # `get_extraction_adapter` imports (and therefore registers) every
+        # built-in adapter itself, and RAISES `UnknownExtractionProviderError`
+        # on a provider name it has no adapter for rather than substituting the
+        # fixture-producing `mock` — see `decisions.md` §29. Here that travels
+        # the normal failure path below: the invoice lands in `failed` with an
+        # `extraction_failed` exception, which is exactly what a config error
+        # should look like to a reviewer.
         from app.services.extraction_adapters import get_extraction_adapter
 
         adapter = get_extraction_adapter(config)

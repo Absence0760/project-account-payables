@@ -20,6 +20,10 @@ STATEMENT_REASON_NO_TEXT_LAYER = "no_text_layer"
 STATEMENT_REASON_NO_LINES = "no_lines_found"
 STATEMENT_REASON_PROVIDER_ERROR = "provider_error"
 STATEMENT_REASON_UNREADABLE = "unreadable_response"
+# The org's `settings.extraction.provider` names an adapter we don't have. A
+# config error, not a document error — and the one reason code whose fix is an
+# admin's, not the uploader's.
+STATEMENT_REASON_PROVIDER_UNKNOWN = "provider_not_registered"
 
 
 def pdf_text_layer(pdf_bytes: bytes, *, min_chars: int = 50) -> str | None:

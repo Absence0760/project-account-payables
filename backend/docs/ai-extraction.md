@@ -387,12 +387,38 @@ provider also travels on the persisted result — `InvoiceExtractionResult.metho
 for an invoice, `meta.extraction.provider` for a statement run (surfaced in the
 run's provenance panel) — so `mock` output is never presented as a real read.
 
-**An unregistered `FEOH_EXTRACTION_PROVIDER` is refused at boot.** The
-dispatcher falls back to `mock` on an unknown provider name, so a typo would
-otherwise quietly turn a deployed pipeline into a fixture generator;
+**An unregistered `FEOH_EXTRACTION_PROVIDER` is refused at boot.**
 `config.py::_validate_extraction_provider` checks the value against
 `_EXTRACTION_PROVIDERS`, which `tests/test_extraction_provider_resolution.py`
 drift-guards against the live registry.
+
+**And an unregistered per-org provider is refused at the dispatcher.** The env
+override is only one of the two ways a provider gets named: a BYOK tenant sets
+`Organization.settings.extraction.provider`, which arrives from the tenant DB
+and which no boot ever sees. That name used to fall through to `mock` too — so
+a typo (`openai` for `openai_vision`) turned that tenant's pipeline into a
+fixture generator at 0.95 confidence, inside the band `decide_auto_approve`
+approves touchlessly, and `POST /api/organization/test-extraction` answered
+"Connected to `openai` successfully" because `mock.test_connection` returns
+`True`. `get_extraction_adapter` now raises `UnknownExtractionProviderError`
+instead (`decisions.md` §29, one layer down from §26). An org that has
+configured *no* provider at all still resolves to `mock` — that's the
+local-first default, not a misconfiguration.
+
+Each caller decides what the refusal means:
+
+| Caller | Behaviour |
+|---|---|
+| `extraction.extract_invoice` | Travels the normal failure path — invoice → `failed` with an `extraction_failed` exception. A config error strands the same way a provider outage does. |
+| `vendor_statement_extraction.resolve_statement_adapter` | `StatementExtractionError(provider_not_registered)` → the same 422 every other statement-read failure takes (it is called outside the caller's `try`, so an uncaught raise would 500 the upload). |
+| `POST /api/organization/test-extraction` | Returns `success: false` **naming the bad value** and listing the registered alternatives — the endpoint exists to catch this. |
+
+`str(UnknownExtractionProviderError)` deliberately does **not** echo the
+configured name: it lands on the `extraction_failed` exception description that
+every AP user reads, while only an admin owns the setting. The bounded raw value
+rides on `.provider` for the admin-only test endpoint. The dispatcher also
+imports the built-in adapter modules itself, so "no adapter registered" can
+never mean "that module wasn't imported by this call site".
 
 ## Code Structure
 
