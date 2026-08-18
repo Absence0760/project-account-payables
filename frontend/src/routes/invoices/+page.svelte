@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Invoice, InvoiceStatus, AdvancedSearchFilters } from '$lib/types/invoice';
-	import { INVOICE_STATUSES, STATUS_LABELS, EMPTY_ADVANCED_FILTERS, SYSTEM_MANAGED_STATUSES, commonTransitions } from '$lib/types/invoice';
+	import { INVOICE_STATUSES, STATUS_LABELS, EMPTY_ADVANCED_FILTERS, SYSTEM_MANAGED_STATUSES, IMMUTABLE_STATUSES, commonTransitions } from '$lib/types/invoice';
 	import { invoiceStore } from '$lib/stores/invoices.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { api } from '$lib/api';
@@ -385,8 +385,6 @@
 	let deletingId = $state<string | null>(null);
 	let confirmDeleteId = $state<string | null>(null);
 	let confirmBulkDelete = $state(false);
-
-	const IMMUTABLE_STATUSES = new Set(['done', 'sent_to_erp', 'sending_to_erp']);
 
 	async function deleteInvoice(id: string) {
 		deletingId = id;

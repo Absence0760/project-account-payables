@@ -53,6 +53,28 @@ export const SYSTEM_MANAGED_STATUSES: Set<InvoiceStatus> = new Set([
 	'done'
 ]);
 
+/**
+ * Statuses the server refuses to mutate or delete — the exact mirror of
+ * `backend/app/api/invoices.py::IMMUTABLE_STATUSES`. `DELETE /api/invoices/{id}`
+ * (and the bulk delete / bulk status endpoints) answer 409 for every one of
+ * them, so a UI control that acts on such a row is a guaranteed error toast.
+ *
+ * Distinct from {@link SYSTEM_MANAGED_STATUSES}, which is about *selection*:
+ * it additionally covers `pending` (mid-extraction — the server will happily
+ * delete it, but a user shouldn't bulk-act on a row the extractor is writing).
+ * Immutability is the server's rule; system-managed is the UI's. Keep this one
+ * in lockstep with the backend set — a page-local copy is how the row Delete
+ * action came to be offered on `posted_in_erp` / `payment_scheduled` / `paid`.
+ */
+export const IMMUTABLE_STATUSES: Set<InvoiceStatus> = new Set([
+	'sending_to_erp',
+	'sent_to_erp',
+	'posted_in_erp',
+	'payment_scheduled',
+	'paid',
+	'done'
+]);
+
 /** Valid manual status transitions per source status. */
 export const VALID_TRANSITIONS: Record<InvoiceStatus, InvoiceStatus[]> = {
 	// Mirror the backend workflow_engine VALID_TRANSITIONS. `rejected` is only
