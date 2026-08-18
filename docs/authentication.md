@@ -2,6 +2,19 @@
 
 JWT-based authentication using `python-jose` for token handling and `passlib` with bcrypt for password hashing. Tokens are server-side revocable via a Redis blocklist.
 
+**Hash and verify through the awaitable wrappers, never `pwd_context` directly.**
+`backend/app/utils/passwords.py` exposes `verify_password` / `hash_password` /
+`dummy_verify` as coroutines that run passlib in a worker thread via
+`asyncio.to_thread`. bcrypt is deliberately ~200 ms of pure CPU per call, so an
+inline `pwd_context.verify` in a login handler occupies the event loop for that
+whole window and every other in-flight request on the worker waits behind it —
+on the most concurrently-hit endpoint in the app, and on *every* attempt, since
+the not-found branch pays the same cost through `dummy_verify` for timing
+equalisation. The equalisation guarantee is unchanged: both paths take the same
+thread hop and the same bcrypt cost. `pwd_context` itself stays the single hash
+context (`bcrypt_sha256`); `backend/tests/test_password_hashing_offloaded.py`
+asserts the work leaves the loop thread and AST-scans `app/` for direct calls.
+
 ## Auth Flow
 
 1. User visits a tenant subdomain (e.g., `acme.localhost:7777`)
@@ -321,14 +334,23 @@ through `utils/url_safety.assert_public_url` — the guard every *other*
 admin-supplied URL this app fetches goes through (branding logo, chat
 webhooks, ERP and enrichment base URLs).
 
+`url_safety` exposes the guard in two forms over **one** policy body:
+`assert_public_url` / `is_public_url` (sync, blocking `socket.getaddrinfo`) for
+sync call sites, and `assert_public_url_async` / `is_public_url_async` (name
+resolution via `loop.getaddrinfo`) for every `async def` one. Every coroutine
+call site — SSO, the chat-webhook admin save, the Slack/Teams `send()`, the
+D365 and enrichment adapters — uses the awaitable pair, because a blocking DNS
+lookup on the event loop stalls *every* concurrent request for the length of
+the lookup, and a DNS timeout is measured in seconds.
+
 That is reachable **unauthenticated**: anyone can self-signup a tenant, `PATCH`
 an `sso.discovery_url` of `http://169.254.169.254/...`, and hit the public
 `GET /api/auth/sso/authorize?slug=<tenant>` to make the backend fetch cloud
 instance credentials on demand — or port-scan the VPC by telling reachable
 hosts apart from dead ones by the 302-vs-400 response.
 
-Now: `assert_public_url` runs at `resolve_sso_config` time (so a bad value is
-refused where it is read, not only where it is fetched) and again in
+Now: `assert_public_url_async` runs at `resolve_sso_config` time (so a bad value
+is refused where it is read, not only where it is fetched) and again in
 `fetch_discovery` / `fetch_jwks` / before the token `POST`. `_pinned_endpoint`
 additionally pins `token_endpoint` and `jwks_uri` to the discovery document's
 own issuer netloc — OIDC Discovery requires the document to be served under its
@@ -796,7 +818,7 @@ The QR code is returned inline as a `data:image/png;base64,...` URL so the front
 
 **Changing an existing factor is a step-up operation.** When the account already has a live factor, `/mfa/enroll` (and `/mfa/passkey/register` — see below) requires one of:
 
-- `password` — the account password, verified through the shared `pwd_context`, exactly like `/mfa/disable`; or
+- `password` — the account password, verified through the shared `verify_password` (the `pwd_context` wrapper), exactly like `/mfa/disable`; or
 - `code` — a code from the **currently enrolled** authenticator (for the user who has their phone but not their password manager); or
 - `assertion` — a **WebAuthn assertion from an already-registered passkey**, obtained from `POST /api/auth/mfa/step-up/passkey` for that same operation.
 

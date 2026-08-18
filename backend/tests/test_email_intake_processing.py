@@ -497,15 +497,17 @@ async def test_create_invoice_is_pending_zero_decimal_and_org_prefixed_key():
     att = _pdf("bill.pdf")
 
     entity_id = uuid.uuid4()
-    invoice_id = await _create_invoice_from_attachment(
-        tenant_db=db,
-        org_id=org_id,
-        entity_id=entity_id,
-        sender="vendor@x.com",
-        subject="March invoice",
-        attachment=att,
-        s3=s3,
-    )
+    # The upload goes through `storage._put_object` (which offloads boto3 to a
+    # worker thread), so the client is patched at its owner, not passed in.
+    with patch("app.services.storage._get_client", MagicMock(return_value=s3)):
+        invoice_id = await _create_invoice_from_attachment(
+            tenant_db=db,
+            org_id=org_id,
+            entity_id=entity_id,
+            sender="vendor@x.com",
+            subject="March invoice",
+            attachment=att,
+        )
 
     invoice = db.added[0]
     assert invoice.status == InvoiceStatus.pending

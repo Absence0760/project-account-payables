@@ -47,7 +47,7 @@ async def test_replace_file_succeeds_when_file_exists(realdb):
         invoice_id = await _create_invoice_with_file(c, "REPLACE-001")
         old_row = await _get_invoice_row(realdb, invoice_id)
         old_file_key = old_row.file_key
-        assert storage.get_file(old_file_key)[0]
+        assert (await storage.get_file(old_file_key))[0]
 
         replace = await c.put(
             f"/api/invoices/{invoice_id}/file",
@@ -63,8 +63,8 @@ async def test_replace_file_succeeds_when_file_exists(realdb):
 
     # Old object purged from storage; new one present.
     with pytest.raises(Exception):
-        storage.get_file(old_file_key)
-    assert storage.get_file(new_row.file_key)[0]
+        await storage.get_file(old_file_key)
+    assert (await storage.get_file(new_row.file_key))[0]
 
     mk = realdb.sessionmaker("a")
     async with mk() as s:
@@ -104,7 +104,7 @@ async def test_replace_file_with_same_filename_does_not_delete_the_new_upload(re
     new_row = await _get_invoice_row(realdb, invoice_id)
     assert new_row.file_key == old_file_key
     # The object must still exist, and must hold the NEW content.
-    content, _ = storage.get_file(new_row.file_key)
+    content, _ = await storage.get_file(new_row.file_key)
     assert content == b"%PDF-1.4 corrected content"
 
 
@@ -145,7 +145,7 @@ async def test_delete_file_succeeds(realdb):
         invoice_id = await _create_invoice_with_file(c, "DELETE-001")
         old_row = await _get_invoice_row(realdb, invoice_id)
         old_file_key = old_row.file_key
-        assert storage.get_file(old_file_key)[0]
+        assert (await storage.get_file(old_file_key))[0]
 
         resp = await c.delete(f"/api/invoices/{invoice_id}/file")
         assert resp.status_code == 200, resp.text
@@ -157,7 +157,7 @@ async def test_delete_file_succeeds(realdb):
     assert new_row.file_url is None
 
     with pytest.raises(Exception):
-        storage.get_file(old_file_key)
+        await storage.get_file(old_file_key)
 
     mk = realdb.sessionmaker("a")
     async with mk() as s:

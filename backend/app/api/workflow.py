@@ -658,7 +658,7 @@ async def get_invoice_file(file_key: str, user: User = Depends(get_current_user)
         raise HTTPException(status_code=404, detail="File not found")
 
     try:
-        content, content_type = get_file(file_key)
+        content, content_type = await get_file(file_key)
     except Exception:
         raise HTTPException(status_code=404, detail="File not found")
 

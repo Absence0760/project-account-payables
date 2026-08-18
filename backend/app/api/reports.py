@@ -17,6 +17,7 @@ Money is always an exact decimal string on the wire. See
 
 from __future__ import annotations
 
+import asyncio
 import io
 import uuid
 from datetime import UTC, date, datetime
@@ -381,7 +382,7 @@ async def export_report(
             brand=brand,
             note=truncation_note,
         )
-        pdf_bytes = render_analytics_report_pdf(ctx)
+        pdf_bytes = await asyncio.to_thread(render_analytics_report_pdf, ctx)
         filename = f"{safe_name}_{date.today().isoformat()}.pdf"
         return Response(
             content=pdf_bytes,

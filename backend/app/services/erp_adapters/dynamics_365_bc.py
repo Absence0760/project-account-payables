@@ -52,7 +52,7 @@ class BusinessCentralAdapter(ErpAdapter):
         resp.raise_for_status()
         return resp.json()["access_token"]
 
-    def _api_url(self, path: str) -> str:
+    async def _api_url(self, path: str) -> str:
         if settings.erp_d365_api_base:
             # OPERATOR-controlled override (env/process level, not tenant-admin
             # config) so local dev + e2e can point the adapter at the fake ERP
@@ -64,9 +64,9 @@ class BusinessCentralAdapter(ErpAdapter):
             base = self.config["base_url"].rstrip("/")
             # SSRF guard: base_url is admin-supplied config — refuse an internal
             # host before it's interpolated into a server-side request.
-            from app.utils.url_safety import assert_public_url
+            from app.utils.url_safety import assert_public_url_async
 
-            assert_public_url(base)
+            await assert_public_url_async(base)
         env = self.config.get("environment", "production")
         company = self.config.get("company_id", "")
         return f"{base}/{env}/api/v2.0/companies({company})/{path}"
@@ -84,7 +84,7 @@ class BusinessCentralAdapter(ErpAdapter):
         filter_expr = f"externalDocumentNumber eq '{external_document_number}'"
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(
-                self._api_url("purchaseInvoices"),
+                await self._api_url("purchaseInvoices"),
                 params={"$filter": filter_expr},
                 headers=headers,
             )
@@ -144,7 +144,7 @@ class BusinessCentralAdapter(ErpAdapter):
 
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
-                self._api_url("purchaseInvoices"),
+                await self._api_url("purchaseInvoices"),
                 json=body,
                 headers=headers,
             )
@@ -157,7 +157,7 @@ class BusinessCentralAdapter(ErpAdapter):
             try:
                 async with httpx.AsyncClient(timeout=30) as client:
                     post_resp = await client.post(
-                        self._api_url(f"purchaseInvoices({doc_id})/Microsoft.NAV.post"),
+                        await self._api_url(f"purchaseInvoices({doc_id})/Microsoft.NAV.post"),
                         headers=headers,
                     )
                 post_resp.raise_for_status()
@@ -187,7 +187,7 @@ class BusinessCentralAdapter(ErpAdapter):
 
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(
-                self._api_url(f"purchaseInvoices({erp_document_id})"),
+                await self._api_url(f"purchaseInvoices({erp_document_id})"),
                 headers=headers,
             )
 
@@ -227,7 +227,7 @@ class BusinessCentralAdapter(ErpAdapter):
 
         headers = {"Authorization": f"Bearer {token}"}
         items: list[VendorPayload] = []
-        url = self._api_url("vendors")
+        url = await self._api_url("vendors")
 
         async with httpx.AsyncClient(timeout=30) as client:
             for _ in range(10):
@@ -256,7 +256,7 @@ class BusinessCentralAdapter(ErpAdapter):
             headers = {"Authorization": f"Bearer {token}"}
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.get(
-                    self._api_url("vendors?$top=1"),
+                    await self._api_url("vendors?$top=1"),
                     headers=headers,
                 )
             return resp.status_code == 200

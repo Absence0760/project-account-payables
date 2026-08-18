@@ -9,10 +9,20 @@ legacy `bcrypt` scheme is kept in the schemes list so existing
 `$2b$...` hashes still verify; new hashes are emitted as
 `$bcrypt-sha256$...` and the deprecated="auto" policy will re-hash on
 verify when a user with a legacy hash next logs in.
+
+**bcrypt is deliberately slow, so it never runs on the event loop.** A single
+`pwd_context.verify` is ~200 ms of pure CPU at the configured cost — that is the
+point of the algorithm, and it is also why calling it inline from a login
+handler pins the whole worker for 200 ms while it serves nothing else. Use the
+awaitable wrappers `verify_password` / `hash_password` / `dummy_verify`, which
+run the work in a thread; `tests/test_password_hashing_offloaded.py` is the
+drift guard. The timing-equalisation guarantee is unaffected: the real and the
+dummy verification pay the same thread hop and the same bcrypt cost.
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
 import secrets
 import string
@@ -39,16 +49,38 @@ _DIGIT = re.compile(r"[0-9]")
 _DUMMY_HASH = pwd_context.hash("timing-equalizer-not-a-real-secret")
 
 
-def dummy_verify() -> None:
+async def verify_password(password: str, hashed: str) -> bool:
+    """Verify `password` against `hashed`, off the event loop.
+
+    The single entry point for checking a credential. bcrypt is ~200 ms of CPU
+    by design; run inline from a coroutine that is 200 ms in which the worker
+    answers no other request, and `/auth/login` is the most concurrently-hit
+    endpoint there is. The thread hop costs microseconds and gives the loop back.
+    """
+    return await asyncio.to_thread(pwd_context.verify, password, hashed)
+
+
+async def hash_password(password: str) -> str:
+    """Hash `password` with the shared context, off the event loop.
+
+    Same reasoning as `verify_password` — hashing costs the same ~200 ms.
+    """
+    return await asyncio.to_thread(pwd_context.hash, password)
+
+
+async def dummy_verify() -> None:
     """Run a throwaway password verification to match the wall-clock cost of a
-    real `pwd_context.verify`.
+    real `verify_password`.
 
     Login handlers must call this on the user-not-found branch: otherwise the
-    not-found path returns ~100ms faster than a wrong-password path (which runs
+    not-found path returns ~200ms faster than a wrong-password path (which runs
     bcrypt), letting an attacker time the difference to enumerate which emails
     have accounts. The result is intentionally ignored.
+
+    It goes through the same `asyncio.to_thread` hop as the real verification,
+    so the two paths stay indistinguishable end to end.
     """
-    pwd_context.verify("x", _DUMMY_HASH)
+    await asyncio.to_thread(pwd_context.verify, "x", _DUMMY_HASH)
 
 
 class PasswordError(ValueError):

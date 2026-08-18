@@ -10,8 +10,15 @@ for the CFO/finance export surface.
 Pure-function, mirroring ``remittance_pdf`` / ``audit_report_pdf``: it takes the
 already-loaded rows (CSV cell strings — the exact same data the CSV dialect
 emits, so the PDF is never broader than the CSV) plus the resolved tenant brand,
-and returns the PDF bytes. No DB / network calls — the HTTP route loads the rows
-and wraps the bytes in a ``Response``.
+and returns the PDF bytes. No DB queries — the HTTP route loads the rows and
+wraps the bytes in a ``Response``.
+
+**Blocking, and offloaded by the caller.** "No DB" is not "no I/O": the
+brand-logo embed (``branding.build_logo_flowable``) does a blocking DNS lookup
+and a blocking ``httpx.Client`` GET, and ReportLab lays the document out on the
+CPU. Every route therefore calls this through
+``await asyncio.to_thread(render_..., ctx)`` rather than on the event loop;
+``tests/test_pdf_render_offloaded.py`` is the drift guard.
 
 The logo embed is best-effort + bounded (``build_logo_flowable``): any failure
 (no URL, oversized, timeout, undecodable) falls back to the product-name text, so

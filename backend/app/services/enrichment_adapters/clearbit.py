@@ -57,9 +57,9 @@ class ClearbitAdapter:
             return VendorFirmographics(provider=self.provider_name, matched=False)
 
         # SSRF guard: base_url is admin-overridable — refuse an internal host.
-        from app.utils.url_safety import assert_public_url
+        from app.utils.url_safety import assert_public_url_async
 
-        assert_public_url(self.base_url)
+        await assert_public_url_async(self.base_url)
         headers = {"Authorization": f"Bearer {self.api_key}"}
         async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=False) as client:
             resp = await client.get(

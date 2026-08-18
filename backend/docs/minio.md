@@ -56,9 +56,34 @@ These are loaded in `backend/app/config.py` via pydantic-settings.
 2. **File reference** — the S3 object key and URL are saved on the `invoices` table (`file_key`, `file_url` columns)
 3. **File retrieval** — when viewing an invoice, the backend generates a presigned URL or serves the file from MinIO
 
+## Go through `services/storage` — boto3 is blocking
+
+Application code never calls boto3 for object storage directly. Every read,
+write and delete goes through `backend/app/services/storage.py`, whose three
+primitives — `_put_object` / `_get_object` / `_delete_object` — hand the
+blocking boto3 call to `asyncio.to_thread`.
+
+That is not stylistic. boto3 is synchronous and every file surface in this app
+(invoice upload, contract / expense / tax-form / chat attachments, the Positive
+Pay export, the inbound email and PEPPOL webhooks, the extraction fetch, every
+download proxy) is reached from an `async def`. A bare `put_object` there
+charges a full S3 round trip — up to `MAX_FILE_SIZE` of body — to the event
+loop, and for that whole window the worker answers no other request.
+
+Consequences for callers:
+
+- `storage.get_file(...)` and `storage.delete_file(...)` are **coroutines** —
+  `await` them. The `upload_*` helpers already were.
+- Need a shape the helpers don't cover (raw bytes, a system-generated file)?
+  Call `_put_object` / `_get_object`, not a fresh boto3 client.
+- `tests/test_storage_nonblocking.py` is the drift guard: it asserts the calls
+  leave the event-loop thread, and AST-scans `app/` for any module issuing a raw
+  `put_object` / `get_object` / `delete_object` outside the chokepoint.
+
 ## Using boto3
 
-The backend interacts with MinIO using the standard AWS `boto3` SDK. Example usage:
+`services/storage` interacts with MinIO using the standard AWS `boto3` SDK.
+Example of what it does under the hood (call the module, not this directly):
 
 ```python
 import boto3

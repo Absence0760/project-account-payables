@@ -13,6 +13,7 @@ This file does the SQL and the response shaping.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import UTC, date, datetime, timedelta
@@ -1600,7 +1601,7 @@ async def export_report(
             rows=data_rows,
             brand=brand,
         )
-        pdf_bytes = render_analytics_report_pdf(ctx)
+        pdf_bytes = await asyncio.to_thread(render_analytics_report_pdf, ctx)
         filename = f"{report}_{date.today().isoformat()}.pdf"
         return Response(
             content=pdf_bytes,

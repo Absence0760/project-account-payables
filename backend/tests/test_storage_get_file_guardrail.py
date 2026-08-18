@@ -17,20 +17,22 @@ from fastapi import HTTPException
 from app.services import storage
 
 
-def test_get_file_rejects_key_outside_expected_prefix_without_touching_s3():
+@pytest.mark.asyncio
+async def test_get_file_rejects_key_outside_expected_prefix_without_touching_s3():
     org_a = str(uuid.uuid4())
     org_b = str(uuid.uuid4())
     foreign_key = f"{org_b}/chat/{uuid.uuid4()}/secret.pdf"
 
     with patch.object(storage, "_get_client") as get_client:
         with pytest.raises(HTTPException) as exc:
-            storage.get_file(foreign_key, expected_prefix=f"{org_a}/")
+            await storage.get_file(foreign_key, expected_prefix=f"{org_a}/")
     assert exc.value.status_code == 404
     # The guard must short-circuit before any storage client is built/fetched.
     get_client.assert_not_called()
 
 
-def test_get_file_serves_key_inside_expected_prefix():
+@pytest.mark.asyncio
+async def test_get_file_serves_key_inside_expected_prefix():
     org_a = str(uuid.uuid4())
     own_key = f"{org_a}/invoices/{uuid.uuid4()}/mine.pdf"
 
@@ -41,6 +43,6 @@ def test_get_file_serves_key_inside_expected_prefix():
     fake_client.get_object = MagicMock(return_value=fake_response)
 
     with patch.object(storage, "_get_client", return_value=fake_client):
-        content, content_type = storage.get_file(own_key, expected_prefix=f"{org_a}/")
+        content, content_type = await storage.get_file(own_key, expected_prefix=f"{org_a}/")
     assert content == b"MINE"
     assert content_type == "application/pdf"

@@ -39,7 +39,7 @@ from jose import JWTError, jwt
 
 from app.config import settings
 from app.redis import block_token, get_redis, is_token_blocked
-from app.utils.passwords import pwd_context
+from app.utils.passwords import verify_password
 
 ALGORITHM = "HS256"
 
@@ -292,10 +292,11 @@ async def step_up_verified(
 
     Shared by the employee and supplier-portal surfaces so the two can't drift.
     Returns a plain bool; the caller decides the status code. Password
-    comparison goes through the shared `pwd_context` (bcrypt_sha256), TOTP
-    through `verify_totp` — both constant-time internally.
+    comparison goes through the shared `verify_password` (the `pwd_context`
+    bcrypt_sha256 wrapper, run off the event loop), TOTP through `verify_totp` —
+    both constant-time internally.
     """
-    if password and hashed_password and pwd_context.verify(password, hashed_password):
+    if password and hashed_password and await verify_password(password, hashed_password):
         return True
     if code and mfa_secret and await verify_totp(mfa_secret, code):
         return True

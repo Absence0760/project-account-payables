@@ -251,7 +251,7 @@ async def test_download_tax_form_own_file():
     ven = uuid.uuid4()
     key = f"{org}/tax-forms/{ven}/w9/w9.pdf"
     vendor = _vendor(id=ven, organization_id=org, w9_file_key=key)
-    with patch.object(portal, "get_file", MagicMock(return_value=(b"PDFBYTES", "application/pdf"))):
+    with patch.object(portal, "get_file", AsyncMock(return_value=(b"PDFBYTES", "application/pdf"))):
         resp = await get_my_tax_form_file(db=_db_returning(vendor), vu=_vu(vendor))
     assert resp.body == b"PDFBYTES"
     assert resp.media_type == "application/pdf"
@@ -274,7 +274,7 @@ async def test_download_tax_form_rejects_cross_tenant_key():
         organization_id=uuid.uuid4(),
         w9_file_key=f"{uuid.uuid4()}/tax-forms/{uuid.uuid4()}/w9/secret.pdf",
     )
-    with patch.object(portal, "get_file", MagicMock()) as gf:
+    with patch.object(portal, "get_file", AsyncMock()) as gf:
         with pytest.raises(HTTPException) as exc:
             await get_my_tax_form_file(db=_db_returning(vendor), vu=_vu(vendor))
     assert exc.value.status_code == 404

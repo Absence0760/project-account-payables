@@ -1,5 +1,6 @@
 """Payment endpoints."""
 
+import asyncio
 import logging
 import uuid
 from datetime import UTC, date, datetime
@@ -548,7 +549,7 @@ async def get_payment_remittance(
         ],
         brand=get_brand_context(org.settings),
     )
-    pdf_bytes = render_remittance_pdf(ctx)
+    pdf_bytes = await asyncio.to_thread(render_remittance_pdf, ctx)
 
     filename = f"remittance-{payment.reference or str(payment.id)[:8]}.pdf"
     return Response(

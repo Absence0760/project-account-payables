@@ -292,19 +292,19 @@ async def run_extraction(
         adapter = get_extraction_adapter(config)
         logger.info("[extraction] Using adapter: %s", adapter.provider_name)
 
-        # Fetch file bytes from S3/MinIO directly (authenticated)
+        # Fetch file bytes from S3/MinIO directly (authenticated). boto3 is
+        # blocking; `_get_object` runs it in a worker thread so the dispatcher's
+        # loop keeps draining while a large file downloads.
         from app.config import settings as app_settings
-        from app.services.storage import _get_client
+        from app.services.storage import _get_object
 
-        s3 = _get_client()
         file_key = invoice.file_key or ""
         logger.info(
             "[extraction] Fetching file from S3: bucket=%s, key=%s",
             app_settings.s3_bucket,
             file_key,
         )
-        s3_obj = s3.get_object(Bucket=app_settings.s3_bucket, Key=file_key)
-        file_bytes = s3_obj["Body"].read()
+        file_bytes, _file_content_type = await _get_object(file_key)
         logger.info("[extraction] File fetched: %s bytes", len(file_bytes))
 
         # Structured e-invoice auto-detect (pure, no network). A UBL / CII /

@@ -34,11 +34,12 @@ async def _fetch_invoice_bytes(invoice: Invoice) -> bytes | None:
     if not file_key:
         return None
     try:
-        from app.services.storage import _get_client
+        # boto3 is blocking; `_get_object` runs it in a worker thread so an
+        # approval never parks the event loop on an S3 round trip.
+        from app.services.storage import _get_object
 
-        s3 = _get_client()
-        obj = s3.get_object(Bucket=settings.s3_bucket, Key=file_key)
-        return obj["Body"].read()
+        content, _content_type = await _get_object(file_key)
+        return content
     except Exception as exc:
         _log.warning("Failed to fetch bytes for RAG embedding of %s: %s", invoice.id, exc)
         return None

@@ -58,8 +58,9 @@ from app.tenant import get_tenant_db, get_tenant_slug
 from app.utils.passwords import (
     PasswordError,
     dummy_verify,
-    pwd_context,
+    hash_password,
     validate_password_complexity,
+    verify_password,
 )
 
 router = APIRouter(prefix="/portal/auth", tags=["portal-auth"])
@@ -185,7 +186,7 @@ async def portal_login(
     if not vu or not vu.hashed_password or not vu.is_active:
         # Equalize timing with the wrong-password path so the response time
         # doesn't reveal whether a vendor account exists (enumeration).
-        dummy_verify()
+        await dummy_verify()
         await record_auth_failure(
             "portal_login", identity, window_seconds=LOGIN_FAILURE_WINDOW_SECONDS
         )
@@ -198,7 +199,7 @@ async def portal_login(
                 vu, ip=ip, reason="no_password" if not vu.hashed_password else "inactive"
             )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    if not pwd_context.verify(body.password, vu.hashed_password):
+    if not await verify_password(body.password, vu.hashed_password):
         await record_auth_failure(
             "portal_login", identity, window_seconds=LOGIN_FAILURE_WINDOW_SECONDS
         )
@@ -333,7 +334,9 @@ async def portal_change_password(
     minted under that password for the rest of its lifetime defeats the change.
     The session making the request is spared.
     """
-    if not vu.hashed_password or not pwd_context.verify(body.current_password, vu.hashed_password):
+    if not vu.hashed_password or not await verify_password(
+        body.current_password, vu.hashed_password
+    ):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
 
     try:
@@ -341,7 +344,7 @@ async def portal_change_password(
     except PasswordError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    vu.hashed_password = pwd_context.hash(body.new_password)
+    vu.hashed_password = await hash_password(body.new_password)
     vu.must_change_password = False
     await db.commit()
 

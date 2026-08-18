@@ -43,7 +43,7 @@ from app.services.session_management import revoke_user_sessions
 from app.utils.passwords import (
     PasswordError,
     generate_temp_password,
-    pwd_context,
+    hash_password,
     validate_password_complexity,
 )
 
@@ -408,7 +408,7 @@ async def create_user(
     new_user = User(
         email=body.email,
         full_name=body.full_name,
-        hashed_password=pwd_context.hash(temp_password),
+        hashed_password=await hash_password(temp_password),
         organization_id=org_id,
         must_change_password=True,
     )
@@ -503,7 +503,7 @@ async def update_user(
     password_changed = body.password is not None
     if password_changed:
         _validate_admin_set_password(body.password)
-        target.hashed_password = pwd_context.hash(body.password)
+        target.hashed_password = await hash_password(body.password)
         changed_fields.append("password")
 
     roles_changed = False

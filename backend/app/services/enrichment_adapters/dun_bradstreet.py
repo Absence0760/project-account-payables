@@ -62,9 +62,9 @@ class DunBradstreetAdapter:
             match_params["countryISOAlpha2Code"] = query.vendor_country.upper()
 
         # SSRF guard: base_url is admin-overridable — refuse an internal host.
-        from app.utils.url_safety import assert_public_url
+        from app.utils.url_safety import assert_public_url_async
 
-        assert_public_url(self.base_url)
+        await assert_public_url_async(self.base_url)
         async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=False) as client:
             # 1. Resolve the vendor to a DUNS via cleanseMatch.
             match_resp = await client.get(

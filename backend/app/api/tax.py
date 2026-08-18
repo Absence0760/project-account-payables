@@ -9,6 +9,7 @@ review ones.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, date, datetime
 
@@ -44,8 +45,7 @@ from app.services.branding import get_brand_context
 from app.services.currency_conversion import resolve_reporting_currency
 from app.services.storage import (
     ALLOWED_CONTENT_TYPES,
-    _ensure_bucket,
-    _get_client,
+    _put_object,
     _safe_filename,
 )
 from app.services.tax_1099 import build_1099_dashboard, build_1099_report
@@ -184,14 +184,8 @@ async def upload_vendor_w9(
         )
 
     file_key = f"{org_id}/w9/{vendor.id}/{_safe_filename(file.filename)}"
-    s3 = _get_client()
-    _ensure_bucket(s3)
-    s3.put_object(
-        Bucket=app_settings.s3_bucket,
-        Key=file_key,
-        Body=content,
-        ContentType=content_type,
-    )
+    # boto3 is blocking — `_put_object` runs it in a worker thread.
+    await _put_object(file_key, content, content_type)
 
     vendor.w9_file_key = file_key
     vendor.w9_received_date = date.today()
@@ -305,7 +299,7 @@ async def download_vendor_1099(
         misc_box=misc_box,
         brand=get_brand_context(org.settings),
     )
-    pdf = render_1099_pdf(ctx)
+    pdf = await asyncio.to_thread(render_1099_pdf, ctx)
     filename = f"{form_type}-{year}-{vendor.id}.pdf"
     return Response(
         content=pdf,

@@ -172,7 +172,7 @@ async def test_enroll_start_over_a_live_factor_with_a_wrong_password_is_refused(
 
     with (
         patch("app.api.auth.settings.mfa_enabled", True),
-        patch("app.api.auth.pwd_context.verify", return_value=False),
+        patch("app.utils.passwords.pwd_context.verify", return_value=False),
     ):
         with pytest.raises(HTTPException) as exc:
             await enroll_mfa_start(
@@ -197,7 +197,7 @@ async def test_enroll_start_with_password_step_up_keeps_the_live_factor_until_ve
 
     with (
         patch("app.api.auth.settings.mfa_enabled", True),
-        patch("app.api.auth.pwd_context.verify", return_value=True),
+        patch("app.utils.passwords.pwd_context.verify", return_value=True),
     ):
         resp = await enroll_mfa_start(
             body=MFAStepUpRequest(password="correct"), user=user, db=_passkey_db()
@@ -345,7 +345,7 @@ async def test_disable_mfa_requires_password_re_entry():
     user = _fake_user(mfa_secret="JBSWY3DPEHPK3PXP", mfa_enabled=True)
     db = AsyncMock()
 
-    with patch("app.api.auth.pwd_context.verify", return_value=False):
+    with patch("app.utils.passwords.pwd_context.verify", return_value=False):
         with pytest.raises(HTTPException) as exc:
             await disable_mfa(body=MFADisableRequest(password="guess"), user=user, db=db)
     assert exc.value.status_code == 400
@@ -373,7 +373,7 @@ async def test_disable_mfa_refused_when_org_requires_mfa():
     db = _db_returning_org(org)
 
     with (
-        patch("app.api.auth.pwd_context.verify", return_value=True),
+        patch("app.utils.passwords.pwd_context.verify", return_value=True),
         patch("app.api.auth.settings.mfa_enabled", True),
         patch("app.api.auth.mfa.org_requires_mfa", return_value=True),
     ):
@@ -405,7 +405,7 @@ async def test_disable_mfa_clears_secret_and_enrolled_at_on_success():
     db = _db_returning_org(org)
 
     with (
-        patch("app.api.auth.pwd_context.verify", return_value=True),
+        patch("app.utils.passwords.pwd_context.verify", return_value=True),
         patch("app.api.auth.mfa.org_requires_mfa", return_value=False),
     ):
         await disable_mfa(
@@ -503,7 +503,7 @@ async def test_step_up_failure_is_audited(monkeypatch):
 
     with (
         patch("app.api.auth.settings.mfa_enabled", True),
-        patch("app.api.auth.pwd_context.verify", return_value=False),
+        patch("app.utils.passwords.pwd_context.verify", return_value=False),
     ):
         with pytest.raises(HTTPException):
             await enroll_mfa_start(
@@ -530,7 +530,7 @@ async def test_step_up_is_rate_limited_per_account():
 
     with (
         patch("app.api.auth.settings.mfa_enabled", True),
-        patch("app.api.auth.pwd_context.verify", return_value=False),
+        patch("app.utils.passwords.pwd_context.verify", return_value=False),
     ):
         for _ in range(STEP_UP_RATE_LIMIT_PER_MINUTE + 2):
             try:

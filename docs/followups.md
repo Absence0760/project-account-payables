@@ -1026,6 +1026,7 @@ shared temp-password generator). This is the one it confirmed but did not fix:
       the first integrator who opens the docs URL.
 
 
+<<<<<<< HEAD
 ### Surfaced by the round-11 hunt (multi-currency / e-invoicing), not fixed
 
 The multi-currency / multi-entity / e-invoicing agent of round 11 fixed 6
@@ -1103,6 +1104,45 @@ carrying the seller's SKU, and DIAN's `InvoiceTypeCode` emitting UNCL1001
       generated document validates, and correct the qualification if it fails.
       **Trigger:** the SdI clearance slice, or any addition of XSD-backed
       validation to the national formats. **(c)**
+=======
+### Surfaced by the round-11 async / concurrency hunt, not fixed
+
+The round-11 cross-cutting sweep fixed five at the root (the SSRF guard's
+blocking DNS at every async call site, the PDF exports rendering on the event
+loop, blocking boto3 across the whole storage surface, the garbage-collectable
+webhook-delivery task, and bcrypt on the login loop). This is the one it
+confirmed and deliberately did not fix, because the durable answer changes
+transactional semantics for every caller of the money path:
+
+- [ ] **`transition_invoice` fans notifications out over the network while the
+      caller's transaction — and its row locks — are still open.**
+      `workflow_engine.transition_invoice` mutates the status, writes the audit
+      row, then `await`s `notification_dispatch.notify_event`, which sends one
+      email per recipient **serially** and then POSTs to Slack/Teams with a
+      10-second `httpx` timeout. None of that is committed work; the caller
+      commits afterwards. So the wall-clock cost of a third party is charged to
+      an open transaction. Two call sites make that concrete:
+      `payment_erp_sync._sync_one_payment` takes the invoice `SELECT … FOR
+      UPDATE` and only commits *after* the transition returns (the function
+      already commits early on the settlement-hold branch precisely to release
+      that lock, so the hazard is recognised — just not on the success path),
+      and `review.approve_invoice` holds `FOR UPDATE` on the `WorkflowInstance`.
+      A hung Slack webhook therefore holds a row lock on a live invoice for up
+      to ten seconds, and N recipients multiply the email leg linearly.
+      **Durable fix:** a post-commit dispatch hook — `transition_invoice`
+      records the intent, the caller's commit fires the fan-out (in-app
+      `Notification` rows still ride the caller's transaction, since those are
+      DB writes and *should*; only the outbound email/chat legs move). That is
+      deliberately not a bug-hunt patch: `notify_event` currently documents that
+      its rows are flushed by "the caller's existing commit", every transition
+      call site depends on that ordering, and moving the send after commit
+      changes what "best-effort" means when the commit fails. Parallelising the
+      email leg with a bounded `gather` would shrink N×T to T but leaves the
+      lock held, so it is not the fix.
+      **Trigger:** the next slice that touches the notification dispatch
+      chokepoint or `transition_invoice`'s contract — or the first production
+      report of approval/payment writes blocking on each other.
+>>>>>>> worktree-agent-ad5efda534c1ef2bb
 
 
 ### AI Cash-Flow Copilot — Phase 3 deferred bucket
