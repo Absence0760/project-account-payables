@@ -53,8 +53,18 @@ async def _make_paid_vendor(
     year: int,
     eligible: bool = True,
     w9: bool = True,
+    currency: str = "USD",
 ) -> uuid.UUID:
-    """Vendor + invoice + completed payment in the target year."""
+    """Vendor + invoice + completed payment in the target year.
+
+    ``currency`` is the INVOICE's currency, which is also what ``Payment.amount``
+    is denominated in (``prepare_international_payment`` sets
+    ``amount=invoice.amount``). The 1099 total only counts a payment it can
+    resolve into the org's reporting currency, so a test that sets a non-default
+    reporting currency has to say so here too — otherwise the payment is
+    correctly excluded as unconvertible. See
+    ``currency_conversion.payment_reporting_amount_sql``.
+    """
     mk = realdb.sessionmaker(key)
     org_id = realdb.info(key).org_id
     vendor_id = uuid.uuid4()
@@ -79,6 +89,7 @@ async def _make_paid_vendor(
                 vendor_name=name,
                 vendor_id=vendor_id,
                 amount=Decimal(amount),
+                currency=currency,
                 status=InvoiceStatus.paid,
             )
         )
@@ -146,12 +157,20 @@ async def test_1099_report_aggregates_completed_payments(realdb):
 
 
 async def test_1099_report_labels_totals_with_org_reporting_currency(realdb):
-    """A EUR-reporting tenant gets its 1099 totals labelled EUR, not "USD" —
-    the amounts are home-currency (no FX), so this is honest naming."""
+    """A EUR-reporting tenant with a EUR book gets its 1099 totals labelled EUR.
+
+    The invoice is EUR too, which is what makes the total establishable: the
+    report resolves each payment into the reporting currency and refuses to add
+    a figure it cannot convert, rather than summing face values under a home
+    -currency label. Leaving the invoice at the ``USD`` default here would
+    correctly report ``0`` with the payment counted as unconverted.
+    """
     org_id = realdb.info("a").org_id
     await _set_reporting_currency(realdb, org_id, "EUR")
     try:
-        await _make_paid_vendor(realdb, "a", name="EuroContractor", amount="1500.00", year=2026)
+        await _make_paid_vendor(
+            realdb, "a", name="EuroContractor", amount="1500.00", year=2026, currency="EUR"
+        )
         async with realdb.client(key="a", role="ap_manager") as c:
             resp = await c.get("/api/tax/1099-report", params={"year": 2026})
         assert resp.status_code == 200
