@@ -130,6 +130,29 @@ def test_conceptos_line_present():
     assert c.get("ObjetoImp") == "02"
 
 
+def test_seller_sku_goes_to_no_identificacion_not_the_sat_catalog_key():
+    """Regression: `ClaveProdServ` is a SAT `c_ClaveProdServ` catalog key.
+
+    `EInvoiceLine.item_code` is the SELLER's part number
+    (`cac:SellersItemIdentification` / `ram:SellerAssignedID`), so emitting it
+    as `ClaveProdServ` produced a CFDI the PAC refuses to stamp. CFDI has a
+    dedicated attribute for the seller's identifier — `NoIdentificacion` — so
+    the value is preserved, just in the right place.
+    """
+    doc = _full_doc()
+    doc.lines[0].item_code = "SKU-A"
+    root = etree.fromstring(_fmt().generate(doc))
+    c = root.find(f"{{{_NS_CFDI}}}Conceptos/{{{_NS_CFDI}}}Concepto")
+    assert c.get("ClaveProdServ") == "01010101"
+    assert c.get("NoIdentificacion") == "SKU-A"
+
+
+def test_no_identificacion_omitted_when_the_line_has_no_item_code():
+    root = etree.fromstring(_fmt().generate(_full_doc()))
+    c = root.find(f"{{{_NS_CFDI}}}Conceptos/{{{_NS_CFDI}}}Concepto")
+    assert c.get("NoIdentificacion") is None
+
+
 def test_money_serializes_as_2dp_decimal_not_float():
     root = etree.fromstring(_fmt().generate(_full_doc()))
     assert root.get("SubTotal") == "1000.00"
