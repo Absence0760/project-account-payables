@@ -687,7 +687,19 @@ def bucket_outflows(rows: list[dict], *, granularity: str = "week", today=None) 
 
         {period, period_start, period_end, scheduled_amount,
          committed_amount, pending_amount, discount_eligible_amount,
-         count}
+         count, unconverted_count}
+
+    ``unconverted_count`` is how many of the period's rows arrived with a
+    truthy ``unconverted`` flag — a foreign invoice whose reporting-currency
+    figure could not be established, which
+    ``api/analytics.py::_commitment_rows`` includes at FACE VALUE rather than
+    dropping (dropping would understate the outflow). That face value is a
+    different currency's number sitting in a reporting-currency total, so the
+    count is what stops it being silent: a single unconverted ¥10,000,000
+    invoice drags a $250,000 opening balance to a projected −$9.75M, and the
+    shortfall sweep emails the finance leaders about it. The flag was computed
+    on every row and read by nobody; carrying it here is what makes the
+    module-header promise ("visible rather than silent") true.
 
     ``today`` is accepted for symmetry / testability but does not filter —
     the API layer is responsible for the horizon window."""
@@ -709,6 +721,7 @@ def bucket_outflows(rows: list[dict], *, granularity: str = "week", today=None) 
                 "pending_amount": Decimal("0"),
                 "discount_eligible_amount": Decimal("0"),
                 "count": 0,
+                "unconverted_count": 0,
             },
         )
         b["scheduled_amount"] += amount
@@ -722,6 +735,8 @@ def bucket_outflows(rows: list[dict], *, granularity: str = "week", today=None) 
         ):
             b["discount_eligible_amount"] += amount
         b["count"] += 1
+        if r.get("unconverted"):
+            b["unconverted_count"] += 1
 
     out = []
     for key in sorted(buckets):
@@ -824,6 +839,9 @@ def apply_payment_timing_scenario(
                 "committed": r.get("committed", False),
                 "discount_date": None,
                 "discount_percent": None,
+                # Re-timing doesn't make a row convertible — carry the flag so
+                # the scenario's own periods report it too.
+                "unconverted": bool(r.get("unconverted")),
             }
         )
 
@@ -839,6 +857,10 @@ def apply_payment_timing_scenario(
         "total_discount_captured": _q(total_discount),
         "weighted_avg_pay_date_days": avg_days,
         "periods": periods,
+        # How much of `total_outflow` is a face-value figure in a currency we
+        # could not convert (see `bucket_outflows`). Comparing two scenarios'
+        # totals is only meaningful once this is 0.
+        "unconverted_count": sum(p["unconverted_count"] for p in periods),
     }
 
 
@@ -863,10 +885,17 @@ def compute_cash_position(
     Returns one row per period::
 
         {period, period_start, period_end, opening, outflow, inflow,
-         closing, below_threshold}
+         closing, below_threshold, unconverted_count}
 
     ``below_threshold`` is True iff a threshold is supplied and the
-    period's closing balance falls below it."""
+    period's closing balance falls below it.
+
+    ``unconverted_count`` rides through from ``bucket_outflows`` (0 when the
+    caller built the periods by hand). It is the caveat on the closing
+    balance: those rows entered the outflow at face value in another currency,
+    so a non-zero count means this period's `closing` — and every later
+    period's, since the balance carries forward — is not a figure to act on
+    until the conversion is resolved."""
     inflow_periods = inflow_periods or {}
     rows: list[dict] = []
     opening = Decimal(str(opening_balance or "0"))
@@ -885,6 +914,7 @@ def compute_cash_position(
                 "inflow": _q(inflow),
                 "closing": _q(closing),
                 "below_threshold": below,
+                "unconverted_count": int(p.get("unconverted_count", 0) or 0),
             }
         )
         opening = closing

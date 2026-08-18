@@ -525,6 +525,75 @@ def test_bucket_outflows_drops_rows_without_due_date():
     assert out[0]["scheduled_amount"] == Decimal("50.00")
 
 
+def test_bucket_outflows_counts_unconvertible_rows():
+    """`_commitment_rows` includes a foreign invoice with no usable FX lock at
+    FACE VALUE and flags it `unconverted`. The flag was computed on every row
+    and read by nobody, so a ¥10,000,000 invoice silently entered a USD curve
+    as 10,000,000 — enough to drag a $250k opening balance to a projected
+    −$9.75M that the shortfall sweep then emails the CFO about. The count is
+    what makes it visible."""
+    rows = [
+        {**_commit(date(2026, 6, 10), "10000000"), "unconverted": True},
+        {**_commit(date(2026, 6, 11), "1000"), "unconverted": False},
+        _commit(date(2026, 6, 12), "500"),  # no flag at all → not unconverted
+    ]
+    out = bucket_outflows(rows, granularity="week")
+    assert len(out) == 1
+    assert out[0]["count"] == 3
+    assert out[0]["unconverted_count"] == 1
+    # The amount is unchanged — dropping the row would understate the outflow.
+    assert out[0]["scheduled_amount"] == Decimal("10001500.00")
+
+
+def test_cash_position_carries_the_unconvertible_count_through():
+    """The caveat has to reach the curve, not stop at the buckets — the closing
+    balance carries forward, so one unconvertible row poisons every later
+    period."""
+    periods = bucket_outflows(
+        [{**_commit(date(2026, 6, 10), "10000000"), "unconverted": True}],
+        granularity="week",
+    )
+    rows = compute_cash_position(Decimal("250000"), periods)
+    assert rows[0]["unconverted_count"] == 1
+
+
+def test_cash_position_defaults_the_count_for_hand_built_periods():
+    """A caller that builds period dicts itself (the older tests, the alert
+    sweep's fixtures) must not KeyError."""
+    rows = compute_cash_position(
+        Decimal("1000"),
+        [
+            {
+                "period": "2026-06-01",
+                "period_start": date(2026, 6, 1),
+                "period_end": date(2026, 6, 7),
+                "scheduled_amount": Decimal("300"),
+            }
+        ],
+    )
+    assert rows[0]["unconverted_count"] == 0
+
+
+def test_whatif_reports_the_unconvertible_count():
+    """Re-timing a row doesn't make it convertible. Comparing `early` against
+    `late` totals only means something once this is 0."""
+    rows = [
+        {
+            **_commit(
+                date(2026, 6, 10),
+                "10000000",
+                discount_date=date(2026, 5, 30),
+                discount_percent=Decimal("2"),
+            ),
+            "unconverted": True,
+        },
+        {**_commit(date(2026, 6, 11), "1000"), "unconverted": False},
+    ]
+    for scenario in ("early", "on_time", "late"):
+        out = apply_payment_timing_scenario(rows, scenario=scenario, today=date(2026, 5, 20))
+        assert out["unconverted_count"] == 1, scenario
+
+
 def test_bucket_outflows_money_is_decimal_not_float():
     rows = [_commit(date(2026, 6, 1), "100.10")]
     out = bucket_outflows(rows, granularity="week")

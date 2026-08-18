@@ -243,6 +243,19 @@
 						{m(openingSkipReasonKey, { currency: position.opening_balance_currency })}
 					</p>
 				{/if}
+				<!-- The OUTFLOW half of the same currency guard. A foreign invoice
+				     with no rate lock is subtracted at face value (dropping it would
+				     understate the outflow), so a non-zero count means every closing
+				     balance below mixes currencies — and the balance carries forward,
+				     so one such row poisons the tail. -->
+				{#if position.unconverted_count > 0}
+					<p class="cf-skipped" role="alert" data-testid="unconverted-outflows">
+						{m('cfo.position.unconvertedOutflows', {
+							n: position.unconverted_count,
+							currency: position.opening_balance_currency
+						})}
+					</p>
+				{/if}
 				{#if position.opening_balance_source === 'none'}
 					<p class="cf-hint">{m('cfo.position.enterOpening')}</p>
 				{/if}

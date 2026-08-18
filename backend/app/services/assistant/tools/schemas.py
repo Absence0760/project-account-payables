@@ -161,6 +161,10 @@ class CashflowPeriod(BaseModel):
     pending: Decimal
     discount_eligible: Decimal
     count: int
+    # Rows in this period whose reporting-currency figure could not be
+    # established, so they were counted at FACE VALUE in another currency.
+    # See `services.analytics.bucket_outflows`.
+    unconverted_count: int = 0
 
 
 class CashflowForecastResult(BaseModel):
@@ -171,6 +175,9 @@ class CashflowForecastResult(BaseModel):
     total_scheduled: Decimal
     total_committed: Decimal
     total_pending: Decimal
+    # Non-zero means the totals above mix currencies — the copilot must say so
+    # rather than answering with a number nobody can act on.
+    unconverted_count: int = 0
 
 
 class CashPositionParams(BaseModel):
@@ -186,6 +193,7 @@ class CashPositionPeriod(BaseModel):
     outflow: Decimal
     closing: Decimal
     below_threshold: bool
+    unconverted_count: int = 0
 
 
 class CashPositionResult(BaseModel):
@@ -208,6 +216,10 @@ class CashPositionResult(BaseModel):
     min_balance_threshold: Decimal | None
     periods: list[CashPositionPeriod]
     first_shortfall_period: str | None
+    # The OUTFLOW-side twin of `opening_balance_provider_skipped`: commitments
+    # folded into the curve at face value in a currency we could not convert.
+    # The balance carries forward, so one such row poisons every later period.
+    unconverted_count: int = 0
 
 
 class PaymentWhatifParams(BaseModel):
@@ -228,6 +240,10 @@ class PaymentWhatifResult(BaseModel):
     horizon_days: int
     grace_days: int
     scenarios: list[WhatifScenario]
+    # A property of the commitment set, not of a scenario: rows included at
+    # face value in a currency we could not convert. Comparing two scenarios'
+    # outflows only means something at 0.
+    unconverted_count: int = 0
 
 
 class OptimizeDiscountsParams(BaseModel):

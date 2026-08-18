@@ -118,6 +118,7 @@ async def get_cashflow_forecast(
 
     periods: list[CashflowPeriod] = []
     total_scheduled = total_committed = total_pending = _ZERO
+    unconverted = 0
     for b in buckets:
         scheduled = Decimal(str(b["scheduled_amount"]))
         committed = Decimal(str(b["committed_amount"]))
@@ -125,6 +126,7 @@ async def get_cashflow_forecast(
         total_scheduled += scheduled
         total_committed += committed
         total_pending += pending
+        unconverted += int(b["unconverted_count"])
         periods.append(
             CashflowPeriod(
                 period=b["period"],
@@ -133,6 +135,7 @@ async def get_cashflow_forecast(
                 pending=pending,
                 discount_eligible=Decimal(str(b["discount_eligible_amount"])),
                 count=int(b["count"]),
+                unconverted_count=int(b["unconverted_count"]),
             )
         )
 
@@ -144,6 +147,7 @@ async def get_cashflow_forecast(
         total_scheduled=total_scheduled,
         total_committed=total_committed,
         total_pending=total_pending,
+        unconverted_count=unconverted,
     )
 
 
@@ -185,10 +189,12 @@ async def get_cash_position(
 
     periods: list[CashPositionPeriod] = []
     first_shortfall: str | None = None
+    unconverted = 0
     for p in position:
         below = bool(p["below_threshold"])
         if below and first_shortfall is None:
             first_shortfall = p["period"]
+        unconverted += int(p["unconverted_count"])
         periods.append(
             CashPositionPeriod(
                 period=p["period"],
@@ -196,6 +202,7 @@ async def get_cash_position(
                 outflow=Decimal(str(p["outflow"])),
                 closing=Decimal(str(p["closing"])),
                 below_threshold=below,
+                unconverted_count=int(p["unconverted_count"]),
             )
         )
 
@@ -211,6 +218,7 @@ async def get_cash_position(
         min_balance_threshold=threshold,
         periods=periods,
         first_shortfall_period=first_shortfall,
+        unconverted_count=unconverted,
     )
 
 
@@ -235,6 +243,7 @@ async def run_payment_whatif(
     )
 
     scenarios: list[WhatifScenario] = []
+    unconverted = 0
     for name in ("early", "on_time", "late"):
         s = apply_payment_timing_scenario(
             rows,
@@ -243,6 +252,9 @@ async def run_payment_whatif(
             grace_days=params.grace_days,
             today=today,
         )
+        # Identical across the three scenarios (they re-time the same rows) —
+        # take the last rather than summing, which would triple-count.
+        unconverted = int(s["unconverted_count"])
         scenarios.append(
             WhatifScenario(
                 scenario=name,
@@ -257,6 +269,7 @@ async def run_payment_whatif(
         horizon_days=horizon_days,
         grace_days=params.grace_days,
         scenarios=scenarios,
+        unconverted_count=unconverted,
     )
 
 

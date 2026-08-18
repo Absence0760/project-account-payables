@@ -269,8 +269,31 @@ migration — pure aggregate math, like `forecast_variance`.
 
 `GET /cashflow_forecast?granularity=day|week|month&horizon_days=N&include_pending=bool`
 — per-period `{scheduled_amount, committed_amount, pending_amount,
-discount_eligible_amount, count}` plus a `totals` rollup. Weeks are
-Monday-anchored. Default `granularity=week`, `horizon_days=90`.
+discount_eligible_amount, count, unconverted_count}` plus a `totals` rollup.
+Weeks are Monday-anchored. Default `granularity=week`, `horizon_days=90`.
+
+### `unconverted_count` — the outflow-side currency caveat
+
+Every commitment row is expressed in the org's **reporting** currency via the
+rate locked on the invoice (`_commitment_rows` → `reporting_amount_for_row`).
+A foreign invoice with no usable lock is included at **face value** — dropping
+it would understate the outflow — and flagged. That flag is now surfaced as
+`unconverted_count`: per period on `/cashflow_forecast` and `/cash_position`,
+and as a total on all three cash endpoints (and on the copilot's
+`get_cashflow_forecast` / `get_cash_position` / `run_payment_whatif` results).
+
+It matters because the face value is a *different currency's* number sitting
+in a reporting-currency total. One unconverted ¥10,000,000 invoice drags a
+$250,000 opening balance to a projected −$9.75M — and the shortfall sweep
+emails that to the finance leaders. The flag was computed on every row and read
+by nobody, so the number arrived with nothing to contradict it. Non-zero means
+the totals mix currencies and the curve is not a figure to act on until the
+conversion is resolved; it is the outflow-side twin of `cash_position`'s
+`opening_balance_provider_skipped: "currency_mismatch"`, which already guarded
+the opening-balance half of the same equation.
+
+It is a **count**, not money — a JSON number, listed in
+`tests/test_analytics_money_serialization.py`'s `NUMERIC_FIELDS`.
 
 `GET /cashflow_whatif?granularity=…&horizon_days=N&grace_days=N` —
 compares three payment-timing scenarios, each with `total_outflow`,

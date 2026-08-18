@@ -926,6 +926,8 @@ export const messages = {
 		'連携中の銀行残高は使用されていません。その資金口座はレポート通貨（{currency}）とは異なる通貨で保有されており、そこから予測を開始すると下の各時点残高が2つの通貨の混在になってしまいます。数値は保存済みの期首残高から開始しています。レポート通貨を口座に合わせるか、上で期首残高を入力してください。',
 	'cfo.position.providerSkipped':
 		'連携中の銀行残高は使用されていないため、下の予測はそこから開始していません。数値は保存済みの期首残高から開始しています。',
+	'cfo.position.unconvertedOutflows':
+		'未換算: {n, plural, other {# 件の請求書}}に {currency} への為替レートがなく、額面のまま集計されています。そのため下の残高推移は複数通貨が混在しています。これらの数値をもとに判断する前に、不足しているレートを登録してください。',
 	'cfo.position.colPeriod': '期間',
 	'cfo.position.colOpening': '期初',
 	'cfo.position.colOutflow': '支出',
