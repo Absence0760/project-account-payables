@@ -254,9 +254,19 @@ def test_handler_malformed_record_body_raises(module):
 
 
 class _ReaperSession:
+    """Stands in for the tenant session `_reap_tenant` opens.
+
+    Models the two-phase shape the reaper actually uses: the query selects
+    `Invoice.id` only, and each row is then re-read under `FOR UPDATE` via
+    `.get(...)` and re-checked before it is transitioned. A stub that returned
+    ORM objects straight from `execute` would let a regression of that
+    claim-and-recheck pass unnoticed.
+    """
+
     def __init__(self, stuck) -> None:
         self._stuck = stuck
         self.commit = AsyncMock()
+        self.rollback = AsyncMock()
 
     async def __aenter__(self) -> _ReaperSession:
         return self
@@ -265,9 +275,13 @@ class _ReaperSession:
         return False
 
     async def execute(self, *_a, **_k):
+        # `select(Invoice.id)` — ids, not entities.
         scalars = MagicMock()
-        scalars.all = MagicMock(return_value=self._stuck)
+        scalars.all = MagicMock(return_value=[inv.id for inv in self._stuck])
         return MagicMock(scalars=MagicMock(return_value=scalars))
+
+    async def get(self, _entity, ident, **_kw):
+        return next((inv for inv in self._stuck if inv.id == ident), None)
 
 
 @contextmanager
@@ -291,7 +305,12 @@ async def test_reap_tenant_transitions_stuck_invoice_as_system_action():
     from app.services import extraction_reaper
 
     created = datetime.now(UTC) - timedelta(seconds=900)
-    inv = SimpleNamespace(id=uuid.uuid4(), created_at=created, warnings=None)
+    inv = SimpleNamespace(
+        id=uuid.uuid4(),
+        created_at=created,
+        warnings=None,
+        status=InvoiceStatus.pending,
+    )
     transition = AsyncMock()
     cutoff = datetime.now(UTC) - timedelta(seconds=600)
 
