@@ -493,6 +493,189 @@ than a bug fix or a product call rather than a defect:
       **Durable fix:** route it through `minor_units_to_decimal`.
       **Trigger:** adding a card provider or a non-USD card currency.
 
+### Surfaced by the round-10 hunt (vendors / procurement / expenses), not fixed
+
+The vendors-procurement-expenses agent of round 10 fixed 7 findings at the root
+(deterministic CSV column pick, currency-scoped statement ledger, the
+create-with-`report_id` attach gate, the cXML `ItemIn` field scoping, the two
+client-settable SoD anchors, the QMS disposition + manual-sync gate, and the
+unconverted-line count). These are the remainder — each read and confirmed in
+the source, none reproduced with a probe, so treat the impact notes as
+diagnosis rather than demonstration.
+
+- [ ] **The sanctions adapter dispatcher substitutes `mock` for an unknown
+      provider, and the compensating control it documents does not exist.**
+      `backend/app/services/sanctions_adapters/dispatcher.py:44-45` resolves
+      `_REGISTRY.get(provider) or _REGISTRY["mock"]`, so a typo'd or absent
+      `settings.compliance.sanctions.provider` (`"worldcheck"` for the
+      registry's `refinitiv`, say) silently screens every vendor against the
+      mock's three-item fixture list and returns `clear` / risk 0. The
+      dispatcher's own docstring asserts that "the compliance service surfaces a
+      warning in its result so this misconfiguration is visible to the AP team"
+      — `services/compliance.py` never inspects `adapter.provider_name`, and
+      `services/vendor_screening.py` writes `result="clear"` unexamined. The
+      sibling ERP dispatcher was explicitly hardened away from this exact
+      pattern (`erp_adapters/dispatcher.py` → `UnknownErpAdapterError`, "Raised
+      instead of substituting `mock`"). Note
+      `tests/test_compliance.py::test_sanctions_dispatcher_falls_back_to_mock_on_unknown_provider`
+      pins the current fallback, so this is a deliberate design whose stated
+      mitigation was never built — not an oversight to silently invert.
+      **Durable fix:** build the documented control — have
+      `check_payment_compliance` append a reason and return `hold` when the
+      resolved provider is `mock` while the org asked for something else (and
+      surface the same on the vendor screening status). Changing the dispatcher
+      to raise, ERP-style, is the alternative and needs the pinning test
+      updated with a decisions.md entry.
+      **Trigger:** the next change to the compliance/sanctions path, or the
+      first real sanctions provider being configured for a tenant. **(c)**
+- [ ] **Manual bank-rec resolve has no `direction` guard — a credit can "clear"
+      an outgoing payment.** `backend/app/api/bank_reconciliation.py:851`
+      writes `tx.matched_payment_id` after validating the payment and refusing
+      one already claimed, but never checks `tx.direction`; amounts are stored
+      as absolute values with the direction on a separate flag. The auto-matcher
+      deliberately skips non-debits. A *credit* whose magnitude equals the
+      payment's settlement amount therefore passes `classify_discrepancy`
+      cleanly, counts toward `matched_count`, and — worse — the payment then
+      falls out of **all three** `/outstanding` buckets, contradicting that
+      endpoint's own "exactly one of the three buckets" contract: bucket 1
+      excludes it as claimed, buckets 2 and 3 require `direction == "debit"`
+      (lines 622 / 670). An uncleared payment silently leaves the month-end
+      worksheet.
+      **Durable fix:** refuse a non-`debit` transaction in `resolve_transaction`
+      with a 409 naming the direction (a credit is not a payment we made), or —
+      if manually pairing a refund is wanted — model it as its own link type
+      that the outstanding buckets account for.
+      **Trigger:** the next change to bank reconciliation, or the first
+      month-end close run against real statement data. **(c)**
+- [ ] **`POST /corporate-card-transactions/{id}/ignore` has no source-status
+      guard, and strands a matched pair.**
+      `backend/app/api/expense_cards.py:396-398` sets
+      `reconciliation_status = ignored` unconditionally, leaving
+      `matched_expense_id` and `expense.card_transaction_id` set. The pair is
+      then unreachable: `/unmatch` 409s ("not matched"), `/match` and
+      `/create-expense` 409 ("already matched"). Every sibling mutation on this
+      router declares its legal source state; `ignore` is the only one that
+      doesn't.
+      **Durable fix:** 409 on a matched transaction, or clear both FK legs the
+      way `/unmatch` does before flipping to `ignored`.
+      **Trigger:** the next WF4 corporate-card slice. **(c)**
+- [ ] **Corporate-card match suggestions compare amounts across currencies.**
+      `backend/app/services/expense_card_reconciliation.py:71-74` selects
+      candidates on `Expense.amount == txn.amount` with no
+      `Expense.currency == txn.currency` predicate, and
+      `POST /{id}/match` (`api/expense_cards.py:322-337`) performs no amount or
+      currency check at all — so a €100.00 expense is offered as an
+      *exact-amount* suggestion for a $100.00 card transaction and one click
+      links them. Docs list multi-currency card reconciliation as deferred, but
+      the safe form of not supporting it is filtering the candidate query, not
+      offering a false match; every other comparison in this module was closed
+      (CFO gate → reporting currency, policy thresholds → `threshold_currency`,
+      pre-approval cover → currency-matched SQL).
+      **Durable fix:** add the currency predicate to the candidate query and
+      re-check it in `/match`.
+      **Trigger:** the next WF4 corporate-card slice — pairs naturally with the
+      `ignore` guard above. **(c)**
+- [ ] **The corporate-card CSV importer drops the negative rows the schema
+      deliberately allows.** `backend/app/services/csv_import.py:438` rejects
+      `amount < 0`, while `schemas/expense.py:332-334` and
+      `docs/expense-management.md` § Digit bounds both state the opposite as a
+      deliberate call ("a card refund / merchant credit is a real negative line
+      on the feed, and rejecting it would drop genuine transactions").
+      `import-csv` is the only route that creates feed rows, so the documented
+      allowance is unreachable and every refund/chargeback line in a bank export
+      is refused — the feed no longer reconciles to the statement. Not silent
+      (the error rides the response), but the row is lost.
+      **Durable fix:** allow negatives on the card-transaction importer
+      specifically (the invoice importer's `> 0` rule is correct and separate),
+      or amend the schema + doc if the refusal is actually intended.
+      **Trigger:** the next WF4 corporate-card slice. **(c)**
+- [ ] **Budget `committed` drops requisitions that are explicitly FK-linked to
+      the budget but differ in entity or currency.**
+      `backend/app/services/budget_service.py:128-135` and `140-155` apply
+      `apply_entity_scope(..., budget.entity_id)` and
+      `PurchaseRequisition.currency == budget.currency` on top of
+      `PurchaseRequisition.budget_id == budget.id`. Unlike the invoice leg —
+      where attribution is a fuzzy free-text `dimension_value` match and the
+      narrowing is genuinely protective — a `budget_id` link is unambiguous, so
+      these filters can only remove deliberately-linked demand. Nothing
+      validates the link at the requisition end either (`api/requisitions.py`
+      stores any well-formed UUID). Net effect: `GET /budgets/{id}/spend`
+      reports `committed: 0` and `/budgets/check` answers
+      `would_overspend: false` for headroom already spoken for. The existing
+      tests seed both rows with `entity_id=None`, so `apply_entity_scope`
+      no-ops and the filter is never exercised.
+      **Durable fix:** drop the entity filter from the two `budget_id`-keyed
+      legs (the FK already scopes them), and refuse the link at write time —
+      `POST/PATCH /requisitions` should 404 an unknown `budget_id` and 422 a
+      currency mismatch — rather than accepting a link the rollup then ignores.
+      **Trigger:** the next procurement-budgets slice. **(c)**
+- [ ] **A mixed-currency punch-out cart is summed as one face-value figure.**
+      `backend/app/services/punchout_adapters/cxml.py` sets the cart currency
+      from the *last* parsed item, and `punchout_adapters/base.py::PunchoutCart.total`
+      sums every line total regardless of per-item currency;
+      `catalog_service.apply_returned_cart` writes that sum to
+      `PunchoutSession.cart_total` under the one label. Same class as the
+      vendor-statement ledger fixed this round. Also: `cart.currency` is
+      unbounded supplier input written into a `String(3)` column
+      (`models/procurement.py:377`), so a 4-character code raises a `DataError`
+      at commit and escapes the public return handler as a 500 — breaking that
+      endpoint's documented "every rejection path returns 204 silently".
+      **Durable fix:** refuse a cart carrying more than one distinct currency at
+      the `apply_returned_cart` chokepoint (all adapters covered), and normalise
+      + length-check `cart.currency` before it reaches the column.
+      **Trigger:** the next punch-out slice, or the first live supplier
+      integration. **(c)**
+- [ ] **`entities.py` and `gl_accounts.py` mutate without an audit row.**
+      Neither module imports `dispatch_audit`: `create_entity` / `update_entity`
+      and `create_gl_account` / `sync_gl_accounts_from_erp` write no trail. That
+      is the project invariant "status changes / mutations write an audit row",
+      and `create_entity` in particular mints the scope key every entity-scoped
+      money query is filtered by. `tests/test_audit_append_only.py` only
+      static-greps the payment/invoice handlers, so nothing fails.
+      **Durable fix:** add `dispatch_audit` to the four handlers (PII-free —
+      names and slugs only), and widen the audit static-grep guard to cover
+      every router that mutates tenant state.
+      **Trigger:** the next multi-entity or chart-of-accounts slice. **(c)**
+- [ ] **Two smaller confirmed items, grouped because each is a few lines.**
+      (i) `backend/app/api/bank_reconciliation.py:805` calls
+      `uuid.UUID(body.matched_payment_id)` on a schema-declared plain `str` with
+      no handler, so a malformed id is a 500 instead of a 422 — the same shape
+      as `api/requisitions.py:211-213` / `280-285`, where a well-formed but
+      non-existent `vendor_id` / `contract_id` / `budget_id` reaches an FK
+      violation at flush and surfaces as a 500 (`api/catalogs.py::_resolve_vendor_id`
+      shows the intended 404 pattern). (ii) `POST /api/enrichment/vendors/{id}/apply`
+      writes `Vendor.name` without the identity re-screen that
+      `PATCH /api/vendors/{id}` performs for the same field — stale screening
+      state, not a payment bypass (`check_payment_compliance` re-screens on the
+      live name), but the periodic re-screen sweep is off by default so the
+      dashboard can show a stale `clear` indefinitely.
+      **Durable fix:** validate/parse those ids into 4xx at the boundary; call
+      `_screen_best_effort` from the enrichment apply path when `name` changes.
+      **Trigger:** the next slice touching either router. **(c)**
+- [ ] **`VENDOR_FK_CHILDREN` has no drift guard.**
+      `backend/app/services/vendor_merge.py:97-115` is the single source of
+      truth for "what points at a vendor", and its docstring says a new table
+      with a `vendor_id` FK "MUST be added here or its rows would be left
+      dangling on a merge". Nothing enforces it. The list is currently
+      **complete** (verified against every model declaring `vendor_id`), so
+      this is a guard for the future, not a live defect.
+      **Durable fix:** a test that walks `Base.metadata` for tenant tables
+      carrying a `vendor_id` column and asserts each is in `VENDOR_FK_CHILDREN`
+      (or an explicit allowlist), mirroring `tests/test_payment_methods.py`'s
+      drift guard.
+      **Trigger:** the next `coverage-hunt`, or the next table to gain a
+      `vendor_id`. **(c)**
+
+Also noted, deliberately **not** recorded as defects: detail and mutate routes
+across procurement and expenses resolve rows by id without `apply_entity_scope`
+(only list/aggregate queries are scoped). That matches what
+[multi-entity.md](multi-entity.md) documents — its table is headed "List /
+aggregate scoped" — so entity is a view filter, not an authorization boundary,
+and tenant isolation is unaffected (per-tenant DB). `positive_pay.py` and
+`vendor_statement_recon.py` DO scope their detail reads, so the codebase is
+inconsistent about it; making that uniform is a design call for a multi-entity
+slice, not a bug fix.
+
 ### AI Cash-Flow Copilot — Phase 3 deferred bucket
 
 Phases 1–3 core shipped (read-only cash Q&A, `propose_payment_plan` +
