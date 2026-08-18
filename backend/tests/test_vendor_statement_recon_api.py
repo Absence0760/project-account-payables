@@ -903,7 +903,7 @@ async def test_deleting_a_run_removes_its_archived_document(realdb):
     from app.services import storage
 
     with pytest.raises(ClientError):
-        storage.get_file(created["file_key"])
+        await storage.get_file(created["file_key"])
 
 
 async def test_upload_unreadable_pdf_refuses_instead_of_inventing_lines(realdb):

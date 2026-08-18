@@ -544,7 +544,7 @@ async def get_expense_receipt(
     if prefix != str(user.organization_id):
         raise HTTPException(status_code=404, detail="File not found")
     try:
-        content, content_type = get_file(file_key)
+        content, content_type = await get_file(file_key)
     except Exception:
         raise HTTPException(status_code=404, detail="File not found")
     return Response(content=content, media_type=content_type)

@@ -1,5 +1,20 @@
-"""S3/MinIO file storage service."""
+"""S3/MinIO file storage service.
 
+**boto3 is synchronous, and this module is called from coroutines.** Every
+route that uploads or serves a stored file is an ``async def``, so a bare
+``put_object`` / ``get_object`` here would run a whole S3 round trip — up to
+``MAX_FILE_SIZE`` of body over the network — on the event loop, stalling every
+other in-flight request on that worker for its duration. So the three primitives
+below (``_put_object`` / ``_get_object`` / ``_delete_object``) are the only
+places boto3 is touched, and each hands the blocking call to
+``asyncio.to_thread``. This is the same arrangement the audit-shipping and SES
+adapters already use; ``tests/test_storage_nonblocking.py`` is the drift guard.
+
+Consequence for callers: ``get_file`` and ``delete_file`` are coroutines, not
+plain functions — ``await`` them.
+"""
+
+import asyncio
 import re
 import uuid
 
@@ -67,6 +82,49 @@ def _ensure_bucket(client):
         client.create_bucket(Bucket=settings.s3_bucket)
 
 
+# ---------------------------------------------------------------------------
+# The only three places boto3 is called. Each blocking round trip runs in a
+# worker thread so it never occupies the event loop (see the module docstring).
+# ---------------------------------------------------------------------------
+
+
+async def _put_object(file_key: str, content: bytes, content_type: str) -> None:
+    """Store ``content`` at ``file_key``, off the event loop."""
+
+    def _put() -> None:
+        client = _get_client()
+        _ensure_bucket(client)
+        client.put_object(
+            Bucket=settings.s3_bucket,
+            Key=file_key,
+            Body=content,
+            ContentType=content_type,
+        )
+
+    await asyncio.to_thread(_put)
+
+
+async def _get_object(file_key: str) -> tuple[bytes, str]:
+    """Fetch ``file_key``'s bytes + content type, off the event loop."""
+
+    def _get() -> tuple[bytes, str]:
+        client = _get_client()
+        response = client.get_object(Bucket=settings.s3_bucket, Key=file_key)
+        return response["Body"].read(), response.get("ContentType", "application/octet-stream")
+
+    return await asyncio.to_thread(_get)
+
+
+async def _delete_object(file_key: str) -> None:
+    """Delete ``file_key``, off the event loop."""
+
+    def _delete() -> None:
+        client = _get_client()
+        client.delete_object(Bucket=settings.s3_bucket, Key=file_key)
+
+    await asyncio.to_thread(_delete)
+
+
 async def upload_invoice_file(
     org_id: uuid.UUID,
     invoice_id: uuid.UUID,
@@ -86,14 +144,7 @@ async def upload_invoice_file(
 
     file_key = f"{org_id}/{invoice_id}/{_safe_filename(file.filename)}"
 
-    client = _get_client()
-    _ensure_bucket(client)
-    client.put_object(
-        Bucket=settings.s3_bucket,
-        Key=file_key,
-        Body=content,
-        ContentType=content_type,
-    )
+    await _put_object(file_key, content, content_type)
 
     # Store an API-relative URL — the file endpoint generates a presigned URL on demand
     file_url = f"/api/invoices/file/{file_key}"
@@ -125,14 +176,7 @@ async def upload_contract_file(
 
     file_key = f"{org_id}/contracts/{contract_id}/{_safe_filename(file.filename)}"
 
-    client = _get_client()
-    _ensure_bucket(client)
-    client.put_object(
-        Bucket=settings.s3_bucket,
-        Key=file_key,
-        Body=content,
-        ContentType=content_type,
-    )
+    await _put_object(file_key, content, content_type)
 
     file_url = f"/api/contracts/file/{file_key}"
     return file_key, file_url
@@ -165,14 +209,7 @@ async def upload_expense_receipt(
 
     file_key = f"{org_id}/expenses/{expense_id}/{_safe_filename(file.filename)}"
 
-    client = _get_client()
-    _ensure_bucket(client)
-    client.put_object(
-        Bucket=settings.s3_bucket,
-        Key=file_key,
-        Body=content,
-        ContentType=content_type,
-    )
+    await _put_object(file_key, content, content_type)
 
     file_url = f"/api/expenses/receipt/{file_key}"
     return file_key, file_url
@@ -213,14 +250,7 @@ async def upload_tax_form_file(
 
     file_key = f"{org_id}/tax-forms/{vendor_id}/{form_type}/{_safe_filename(file.filename)}"
 
-    client = _get_client()
-    _ensure_bucket(client)
-    client.put_object(
-        Bucket=settings.s3_bucket,
-        Key=file_key,
-        Body=content,
-        ContentType=content_type,
-    )
+    await _put_object(file_key, content, content_type)
 
     file_url = "/api/portal/company/tax-form/file"
     return file_key, file_url
@@ -255,14 +285,7 @@ async def upload_chat_file(
     safe_name = _safe_filename(file.filename)
     file_key = f"{org_id}/chat/{invoice_id}/{message_id}/{safe_name}"
 
-    client = _get_client()
-    _ensure_bucket(client)
-    client.put_object(
-        Bucket=settings.s3_bucket,
-        Key=file_key,
-        Body=content,
-        ContentType=content_type,
-    )
+    await _put_object(file_key, content, content_type)
     return file_key, safe_name, content_type, len(content)
 
 
@@ -296,14 +319,7 @@ async def upload_vendor_statement_file(
 
     file_key = f"{org_id}/vendor-statements/{reconciliation_id}/{_safe_filename(filename)}"
 
-    client = _get_client()
-    _ensure_bucket(client)
-    client.put_object(
-        Bucket=settings.s3_bucket,
-        Key=file_key,
-        Body=content,
-        ContentType=content_type or "application/octet-stream",
-    )
+    await _put_object(file_key, content, content_type or "application/octet-stream")
     return file_key
 
 
@@ -333,20 +349,13 @@ async def upload_positive_pay_file(
 
     file_key = f"{org_id}/positive-pay/{file_id}/{_safe_filename(filename)}"
 
-    client = _get_client()
-    _ensure_bucket(client)
-    client.put_object(
-        Bucket=settings.s3_bucket,
-        Key=file_key,
-        Body=content,
-        ContentType=content_type or "application/octet-stream",
-    )
+    await _put_object(file_key, content, content_type or "application/octet-stream")
 
     file_url = f"/api/positive-pay/{file_id}/download"
     return file_key, file_url
 
 
-def get_file(file_key: str, *, expected_prefix: str | None = None) -> tuple[bytes, str]:
+async def get_file(file_key: str, *, expected_prefix: str | None = None) -> tuple[bytes, str]:
     """Download a file from S3 and return (content, content_type).
 
     SECURITY — this is a raw object fetch with NO tenant/org scoping of its own.
@@ -368,14 +377,10 @@ def get_file(file_key: str, *, expected_prefix: str | None = None) -> tuple[byte
         # 404 (not 403) so a probe can't distinguish "wrong owner" from
         # "missing key" — matches the cross-tenant download guards elsewhere.
         raise HTTPException(status_code=404, detail="File not found")
-    client = _get_client()
-    response = client.get_object(Bucket=settings.s3_bucket, Key=file_key)
-    content = response["Body"].read()
-    content_type = response.get("ContentType", "application/octet-stream")
-    return content, content_type
+    return await _get_object(file_key)
 
 
-def delete_file(file_key: str) -> None:
+async def delete_file(file_key: str) -> None:
     """Best-effort delete of a stored object.
 
     Used when the owning DB row is removed and the bytes must not linger at
@@ -387,8 +392,7 @@ def delete_file(file_key: str) -> None:
     if not file_key:
         return
     try:
-        client = _get_client()
-        client.delete_object(Bucket=settings.s3_bucket, Key=file_key)
+        await _delete_object(file_key)
     except Exception:
         # The DB row is the source of truth; a bucket-lifecycle / retention
         # sweep is the backstop for any object this best-effort call misses.

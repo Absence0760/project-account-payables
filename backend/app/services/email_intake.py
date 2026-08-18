@@ -282,13 +282,9 @@ async def process_inbound_email(
 
     from app.database import _make_tenant_url
     from app.services.extraction_dispatch import dispatch_extraction
-    from app.services.storage import _ensure_bucket, _get_client
 
     tenant_engine = create_async_engine(_make_tenant_url(org.db_name), pool_size=1, max_overflow=0)
     tenant_factory = async_sessionmaker(tenant_engine, expire_on_commit=False)
-
-    s3 = _get_client()
-    _ensure_bucket(s3)
 
     try:
         async with tenant_factory() as tenant_db:
@@ -308,7 +304,6 @@ async def process_inbound_email(
                     sender=payload.sender,
                     subject=payload.subject,
                     attachment=att,
-                    s3=s3,
                 )
                 result.invoices_created.append(invoice_id)
             await tenant_db.commit()
@@ -364,7 +359,6 @@ async def _create_invoice_from_attachment(
     sender: str,
     subject: str,
     attachment: InboundAttachment,
-    s3,
 ) -> uuid.UUID:
     invoice = Invoice(
         invoice_number="",
@@ -380,15 +374,12 @@ async def _create_invoice_from_attachment(
     tenant_db.add(invoice)
     await tenant_db.flush()
 
-    from app.services.storage import _safe_filename
+    from app.services.storage import _put_object, _safe_filename
 
     file_key = f"{org_id}/{invoice.id}/{_safe_filename(attachment.filename)}"
-    s3.put_object(
-        Bucket=settings.s3_bucket,
-        Key=file_key,
-        Body=attachment.content,
-        ContentType=attachment.content_type,
-    )
+    # boto3 is blocking; `_put_object` hands it to a worker thread so this
+    # public webhook path never parks the event loop on an S3 round trip.
+    await _put_object(file_key, attachment.content, attachment.content_type)
     invoice.file_key = file_key
     invoice.file_url = f"{settings.s3_endpoint_url.rstrip('/')}/{settings.s3_bucket}/{file_key}"
     return invoice.id

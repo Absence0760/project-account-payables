@@ -1213,7 +1213,7 @@ async def get_my_tax_form_file(
     if prefix != str(vendor.organization_id):
         raise HTTPException(status_code=404, detail="File not found")
     try:
-        content, content_type = get_file(vendor.w9_file_key)
+        content, content_type = await get_file(vendor.w9_file_key)
     except Exception:
         raise HTTPException(status_code=404, detail="File not found")
     return Response(content=content, media_type=content_type)
@@ -1859,7 +1859,7 @@ async def get_portal_chat_file(
     if not file_key.startswith(expected_prefix):
         raise HTTPException(status_code=404, detail="File not found")
     try:
-        content, content_type = get_file(file_key)
+        content, content_type = await get_file(file_key)
     except Exception:
         raise HTTPException(status_code=404, detail="File not found")
     return Response(content=content, media_type=content_type)

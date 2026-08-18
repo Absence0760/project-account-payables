@@ -210,6 +210,7 @@ async def test_w9_upload_uses_sanitised_filename_in_s3_key(monkeypatch):
     from uuid import uuid4
 
     from app.api import tax as tax_mod
+    from app.services import storage
 
     captured: dict = {}
 
@@ -220,8 +221,8 @@ async def test_w9_upload_uses_sanitised_filename_in_s3_key(monkeypatch):
         )
         return client
 
-    monkeypatch.setattr(tax_mod, "_get_client", fake_client_factory)
-    monkeypatch.setattr(tax_mod, "_ensure_bucket", lambda c: None)
+    monkeypatch.setattr(storage, "_get_client", fake_client_factory)
+    monkeypatch.setattr(storage, "_ensure_bucket", lambda c: None)
 
     vendor = SimpleNamespace(
         id=uuid4(),
