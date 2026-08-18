@@ -1997,13 +1997,25 @@ async def bulk_status_change(
             await refresh_warnings(db, inv, org_settings=org.settings)
             updated += 1
         else:
-            await transition_invoice(
-                db,
-                inv,
-                target,
-                actor_id=user.id,
-                action_name="invoice.bulk_status_change",
-            )
+            # Same partial-success contract as the three branches above.
+            # `transition_invoice` 409s on a transition the state machine
+            # refuses, and an uncaught 409 here aborted the WHOLE request — so a
+            # mixed selection (say "mark done" over a list holding one
+            # `ready_for_review` invoice, which has no legal edge to `done`) not
+            # only failed, it rolled back every transition the batch had already
+            # made. The endpoint's declared response is `{updated, skipped}`;
+            # one member the machine won't move is a skip, not a batch failure.
+            try:
+                await transition_invoice(
+                    db,
+                    inv,
+                    target,
+                    actor_id=user.id,
+                    action_name="invoice.bulk_status_change",
+                )
+            except HTTPException:
+                skipped.append(str(inv.id))
+                continue
             await refresh_warnings(db, inv, org_settings=org.settings)
             updated += 1
     await db.commit()

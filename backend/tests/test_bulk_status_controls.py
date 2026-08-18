@@ -19,6 +19,11 @@ The same hole existed on the other branch and on the payment path:
   exception gate, the CFO threshold, run segregation and the sanctions screen —
   and freeze them into IMMUTABLE_STATUSES with no payment to void. It and the
   other system-driven states are now refused with a 422.
+- The remaining bare-`transition_invoice` branch (`new` / `pending` / `done`, and
+  `ready_for_review` for an invoice that isn't `rejected`) let a state-machine
+  409 escape UNCAUGHT, which aborted the whole request — so a mixed selection
+  rolled back every transition the batch had already made instead of reporting
+  the one member as `skipped`.
 """
 
 from __future__ import annotations
@@ -338,3 +343,36 @@ async def test_bulk_resubmit_reopens_a_review_step(realdb):
             .all()
         )
     assert any(s_.step_type == "approval" and s_.completed_at is None for s_ in steps), steps
+
+
+@pytest.mark.asyncio
+async def test_one_illegal_transition_is_skipped_not_a_batch_abort(realdb):
+    """A member the state machine refuses is `skipped`; the rest still land.
+
+    `ready_for_review → done` has no edge in VALID_TRANSITIONS, and the 409 it
+    raises used to escape the loop uncaught: the whole request failed AND the
+    sibling transition that had already succeeded was rolled back with it. The
+    endpoint's declared contract is `{updated, skipped}`.
+    """
+    info = realdb.info("a")
+    mk = realdb.sessionmaker("a")
+    ok_id = await _seed(mk, info.org_id, number="BULK-MIX-OK", status=InvoiceStatus.approved)
+    bad_id = await _seed(
+        mk, info.org_id, number="BULK-MIX-BAD", status=InvoiceStatus.ready_for_review
+    )
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/invoices/bulk/status",
+            json={"ids": [str(ok_id), str(bad_id)], "status": "done"},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["updated"] == 1
+    assert body["skipped"] == [str(bad_id)]
+
+    async with mk() as s:
+        ok = (await s.execute(select(Invoice).where(Invoice.id == ok_id))).scalar_one()
+        bad = (await s.execute(select(Invoice).where(Invoice.id == bad_id))).scalar_one()
+    assert ok.status == InvoiceStatus.done, "the legal transition must survive the batch"
+    assert bad.status == InvoiceStatus.ready_for_review, "the refused one must not move"
