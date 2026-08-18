@@ -647,3 +647,122 @@ async def test_line_items_frozen_after_approved(realdb):
             ],
         )
     assert resp.status_code == 409, resp.text
+
+
+# ---------------------------------------------------------------------------
+# The PAYEE is frozen once approved, not just the amount. `_execute_single_payment`
+# resolves the payee's `Vendor.bank_details` through `Invoice.vendor_id`, and
+# PATCH re-runs `match_and_link_vendor` whenever the vendor name is re-saved —
+# so re-typing `vendor` on an `approved` invoice used to silently re-point the
+# payment at a different supplier's bank account, with no vendor row touched
+# (bypassing the dual-control `VendorChangeRequest` BEC gate) and nothing
+# downstream contradicting it (the approval signature covers the amount and the
+# actor, never the payee).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_patch_cannot_repoint_the_payee_after_approved(realdb):
+    from app.models.vendor import Vendor
+
+    info = realdb.info("a")
+    mk = realdb.sessionmaker("a")
+    genuine_id, other_id, inv_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    async with mk() as s:
+        s.add(
+            Vendor(
+                id=genuine_id,
+                organization_id=info.org_id,
+                name="Genuine Supplier CP",
+                status="active",
+            )
+        )
+        s.add(
+            Vendor(
+                id=other_id,
+                organization_id=info.org_id,
+                name="Other Payee CP",
+                status="active",
+            )
+        )
+        s.add(
+            Invoice(
+                id=inv_id,
+                organization_id=info.org_id,
+                invoice_number="CP-PAYEE-1",
+                vendor_name="Genuine Supplier CP",
+                vendor_id=genuine_id,
+                amount=Decimal("5000.00"),
+                currency="USD",
+                status=InvoiceStatus.approved,
+            )
+        )
+        await s.commit()
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.patch(f"/api/invoices/{inv_id}", json={"vendor": "Other Payee CP"})
+    assert resp.status_code == 409, resp.text
+
+    async with mk() as s:
+        inv = (await s.execute(select(Invoice).where(Invoice.id == inv_id))).scalar_one()
+        assert inv.vendor_id == genuine_id, "approved invoice must keep its payee"
+        assert inv.vendor_name == "Genuine Supplier CP"
+
+
+@pytest.mark.asyncio
+async def test_patch_cannot_change_remit_to_after_approved(realdb):
+    """The other payment-destination field — what the remittance advice falls
+    back to when the vendor row carries no address, and the value the
+    `fraud_bank_change` rule watches."""
+    info = realdb.info("a")
+    inv_id = await _seed_invoice(
+        realdb.sessionmaker("a"),
+        info.org_id,
+        status=InvoiceStatus.approved,
+        number="CP-PAYEE-2",
+    )
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.patch(f"/api/invoices/{inv_id}", json={"remit_to_address": "1 Attacker Way"})
+    assert resp.status_code == 409, resp.text
+
+
+@pytest.mark.asyncio
+async def test_patch_can_still_repoint_the_payee_before_approval(realdb):
+    """The freeze is surgical: correcting the vendor on an invoice still in
+    review is the normal path (and the supported way to resolve a legacy
+    unlinked invoice), so it must keep working."""
+    from app.models.vendor import Vendor
+
+    info = realdb.info("a")
+    mk = realdb.sessionmaker("a")
+    other_id, inv_id = uuid.uuid4(), uuid.uuid4()
+    async with mk() as s:
+        s.add(
+            Vendor(
+                id=other_id,
+                organization_id=info.org_id,
+                name="Corrected Supplier CP",
+                status="active",
+            )
+        )
+        s.add(
+            Invoice(
+                id=inv_id,
+                organization_id=info.org_id,
+                invoice_number="CP-PAYEE-3",
+                vendor_name="Mis-extracted Name CP",
+                amount=Decimal("100.00"),
+                currency="USD",
+                status=InvoiceStatus.ready_for_review,
+            )
+        )
+        await s.commit()
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.patch(f"/api/invoices/{inv_id}", json={"vendor": "Corrected Supplier CP"})
+    assert resp.status_code == 200, resp.text
+
+    async with mk() as s:
+        inv = (await s.execute(select(Invoice).where(Invoice.id == inv_id))).scalar_one()
+        assert inv.vendor_id == other_id, "pre-approval vendor correction must still link"

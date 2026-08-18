@@ -232,15 +232,39 @@ async def match_invoice_to_po(
     # 4-way match: check for a quality inspection. Prefer one tied to the
     # goods receipt (the goods we actually received); fall back to one tied
     # to the PO. Take the most recent.
-    inspection_query = select(QualityInspection)
-    if gr is not None:
-        inspection_query = inspection_query.where(QualityInspection.gr_id == gr.id)
-    else:
-        inspection_query = inspection_query.where(QualityInspection.po_id == po.id)
-    inspection_query = inspection_query.order_by(QualityInspection.created_at.desc()).limit(1)
+    #
+    # The fallback has to run even when a GR EXISTS, which is the part that was
+    # missing: `gr is not None` used to make the GR-scoped lookup the ONLY one,
+    # so an inspection recorded against the PO alone became invisible the moment
+    # any receipt was booked. `qms_sync` produces exactly that row whenever the
+    # QMS knows the PO number but not the GR number (`_resolve_gr_id` returns
+    # None and `gr_id` stays NULL), and `POST /api/inspections` accepts a
+    # PO-only body too. The control then failed OPEN in the worst direction: a
+    # `fail` verdict on rejected goods never reached the matcher, the invoice
+    # read a clean `3-way` `matched`, and nothing raised the `quality_hold`
+    # exception — the goods are refused and the supplier is paid anyway.
+    #
+    # The fallback is restricted to inspections with NO `gr_id` of their own —
+    # a genuinely PO-level inspection. A row belonging to a *different*
+    # shipment of the same PO also carries this `po_id`, and letting that stand
+    # in for the receipt we're matching would substitute one masking bug for
+    # another (shipment 2 passed, so shipment 1 reads inspected).
+    async def _latest_inspection(*conditions):
+        q = (
+            select(QualityInspection)
+            .where(*conditions)
+            .order_by(QualityInspection.created_at.desc())
+            .limit(1)
+        )
+        return (await db.execute(q)).scalar_one_or_none()
 
-    inspection_result = await db.execute(inspection_query)
-    inspection = inspection_result.scalar_one_or_none()
+    inspection = None
+    if gr is not None:
+        inspection = await _latest_inspection(QualityInspection.gr_id == gr.id)
+    if inspection is None:
+        inspection = await _latest_inspection(
+            QualityInspection.po_id == po.id, QualityInspection.gr_id.is_(None)
+        )
 
     if inspection is not None:
         result.match_type = "4-way"

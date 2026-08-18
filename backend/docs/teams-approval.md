@@ -161,7 +161,12 @@ Two gates, layered, both fail closed:
    (single-use), and call `review.approve_invoice` / `review.reject_invoice` **as
    the reviewer**. Segregation of duties, the approval thresholds, the CFO gate,
    the `invoice.approved`/`invoice.rejected` immutable audit row, and the approval
-   digital signature all apply exactly as if they had logged in.
+   digital signature all apply exactly as if they had logged in — and the org's
+   `settings` ride along as `org_settings`, so the tenant's own `fraud_rules` /
+   `matching` PO tolerances / `exceptions` routing / structuring window govern
+   here too, never the platform defaults. On a **multi-level chain** the invoice
+   stays `ready_for_review` for the next approver, and the ack says the approval
+   was *recorded*, not that the invoice is approved.
 
 If the action turns out not applicable / not permitted (invoice no longer
 `ready_for_review`, segregation block, CFO gate, over the cap), the `jti` claim is

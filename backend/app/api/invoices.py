@@ -127,6 +127,19 @@ _PEPPOL_SENDABLE_STATUSES = {DBInvoiceStatus.approved} | IMMUTABLE_STATUSES
 # only starts at `sending_to_erp`, so an edit in the `approved` window slipped
 # through. Financial edits past approval must go back through reject → re-approve.
 _FINANCIALLY_LOCKED_STATUSES = {DBInvoiceStatus.approved} | IMMUTABLE_STATUSES
+# WHO gets paid is frozen alongside HOW MUCH. `_execute_single_payment` resolves
+# the payee's `Vendor.bank_details` through `Invoice.vendor_id` at execution
+# time, and this PATCH re-runs `match_and_link_vendor` whenever the vendor name
+# is re-saved — so re-typing `vendor` on an `approved` invoice silently
+# re-pointed the payment at a different supplier's bank account. That is the BEC
+# redirect the dual-control `VendorChangeRequest` gate exists to stop, reached
+# without touching a single vendor row: the approval signature covers the amount
+# and the actor, not the payee, so nothing downstream contradicts it either.
+# `vendor` is the wire name (`InvoiceUpdate.vendor`) — the check below runs
+# BEFORE the vendor → vendor_name remap, so both spellings are listed.
+# `remit_to_address` joins them as the other payment-destination field (it is
+# what `fraud_bank_change` watches, and the remittance advice falls back to it
+# when the vendor row carries no address).
 _FINANCIAL_FIELDS = frozenset(
     {
         "amount",
@@ -136,6 +149,9 @@ _FINANCIAL_FIELDS = frozenset(
         "discount_amount",
         "shipping_amount",
         "tax_rate",
+        "vendor",
+        "vendor_name",
+        "remit_to_address",
     }
 )
 
@@ -1981,13 +1997,25 @@ async def bulk_status_change(
             await refresh_warnings(db, inv, org_settings=org.settings)
             updated += 1
         else:
-            await transition_invoice(
-                db,
-                inv,
-                target,
-                actor_id=user.id,
-                action_name="invoice.bulk_status_change",
-            )
+            # Same partial-success contract as the three branches above.
+            # `transition_invoice` 409s on a transition the state machine
+            # refuses, and an uncaught 409 here aborted the WHOLE request — so a
+            # mixed selection (say "mark done" over a list holding one
+            # `ready_for_review` invoice, which has no legal edge to `done`) not
+            # only failed, it rolled back every transition the batch had already
+            # made. The endpoint's declared response is `{updated, skipped}`;
+            # one member the machine won't move is a skip, not a batch failure.
+            try:
+                await transition_invoice(
+                    db,
+                    inv,
+                    target,
+                    actor_id=user.id,
+                    action_name="invoice.bulk_status_change",
+                )
+            except HTTPException:
+                skipped.append(str(inv.id))
+                continue
             await refresh_warnings(db, inv, org_settings=org.settings)
             updated += 1
     await db.commit()

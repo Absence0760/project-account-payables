@@ -25,6 +25,44 @@ WorkflowInstance (per invoice, frozen)
   └── steps_config_snapshot: { steps: [...] } ← frozen at upload time
 ```
 
+### When there is no snapshot to read — fail CLOSED
+
+Not every invoice has a `WorkflowInstance`. `email_intake` and `peppol_receive`
+insert the invoice row without one (both ingest paths hand straight to
+extraction), and so does any legacy or directly-inserted row.
+
+The approval controls in `services/review` used to read their config *only* off
+`steps_config_snapshot` and return early when there was none. That was a hole,
+not a neutral default: `{}` skipped the `max_invoice_amount` cap, the
+`require_cfo_above` gate, the structuring guard **and** the named-approver
+check, so a $50,000 invoice that arrived by email cleared a $1,000 CFO gate on a
+lone `ap_manager`'s approval.
+
+`review.resolve_approval_config(db, invoice, instance)` is now the single
+resolver both the segregation/named-approver gates and the money gates read:
+
+1. the invoice's frozen `steps_config_snapshot` — unchanged, and still
+   authoritative whenever one exists;
+2. only when there is none, the org's currently-active definition, resolved
+   **read-only** by `workflow_engine.resolve_active_workflow_definition` (never
+   the get-or-CREATE variant — a definition must not appear as a side effect of
+   an approval);
+3. `{}` only when the org has no active definition at all, or its definition has
+   no approval step — which is genuinely nothing to enforce.
+
+This does **not** weaken the frozen-snapshot invariant. An in-flight invoice
+with a snapshot is still governed by the config it entered under, even after the
+org tightens the live definition; step 2 fills a gap that previously read as
+"ungated", it never overrides a snapshot. Covered by
+`backend/tests/test_approval_without_instance.py` and the unit cases in
+`test_approval_thresholds.py`.
+
+`review.assign_reviewer` had the mirror-image bug from the same cause: a missing
+instance made it `return` before its audit row and notification, so an
+email-intake invoice could be assigned with no `invoice.assigned_for_review`
+trail, no email/Slack/Teams alert, and no approval action token minted. Only the
+step-row update is now conditional on the instance.
+
 ### Single Active Workflow
 
 Only one workflow definition can be active per organization at any time.

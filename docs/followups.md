@@ -564,6 +564,50 @@ than a bug fix or a product call rather than a defect:
       mispriced — recorded so the next person doesn't re-derive it.
       **Durable fix:** route it through `minor_units_to_decimal`.
       **Trigger:** adding a card provider or a non-USD card currency.
+- [ ] **The exception-agent resolvers approve invoices with the PLATFORM's
+      fraud rules, not the org's.** Every HTTP approval door now threads
+      `org_settings` into `review.approve_invoice` (the single-invoice endpoint,
+      the email link, the Slack button, the Teams card and bulk-status), and
+      `tests/test_approval_org_settings.py` scans `app/api/` to keep it that
+      way. The four auto-resolvers that approve —
+      `services/exception_agents/resolvers/{amount_mismatch,missing_po,multi_po_split,gl_coding}.py`
+      — still call it (and, in `missing_po.py`, `refresh_warnings`) with no
+      `org_settings`, because `ExceptionResolver.apply()` has no such parameter
+      even though `coordinator.run_agent` holds the value and already passes it
+      to `evaluate()`. Consequence is the same one the API doors had: a fraud
+      rule the org disabled still opens a payment-BLOCKING `fraud_flag`, and a
+      stricter-than-default per-vendor PO tolerance is erased from
+      `invoice.po_match` by the agent's own recompute. Unattended, so nobody
+      sees it happen.
+      **Durable fix:** add `org_settings: dict | None = None` to
+      `ExceptionResolver.apply`, pass it from `coordinator.run_agent` (it is
+      already in scope), forward it in the four resolvers, and widen the
+      `test_approval_org_settings.py` scan from `app/api/` to `app/`.
+      **Trigger:** the next change to the exception-agent resolvers — kept out
+      of the round-9 hunt only because that package was another agent's area.
+- [ ] **Email-intake and PEPPOL-inbound invoices are created with no
+      `WorkflowInstance`.** `email_intake._create_invoice_from_attachment` and
+      `peppol_receive.receive_peppol_message` insert the `Invoice` and hand
+      straight to `dispatch_extraction`; every other ingress
+      (`POST /api/invoices/upload`, manual `POST /api/invoices`, the portal,
+      `recurring_invoices`, `intercompany`) calls
+      `workflow_engine.create_workflow_instance`. The **money** consequence is
+      already closed — `review.resolve_approval_config` now falls back
+      fail-closed to the org's active definition, and `assign_reviewer` no
+      longer skips its audit row + notification (see
+      `backend/docs/workflow-snapshots.md` § When there is no snapshot to read).
+      What remains is structural: these invoices have no frozen snapshot at all
+      (so a later definition edit *does* retroactively govern them, breaking the
+      per-invoice invariant for exactly the unattended paths), no `WorkflowStep`
+      rows, and no A/B experiment assignment — so they are invisible to the
+      approval queue's step-based reads and to `GET /api/invoices/{id}/workflow`.
+      **Durable fix:** call `create_workflow_instance(tenant_db, invoice)` right
+      after the `flush()` in both ingest paths, exactly as `create_invoice`
+      does. Both already run inside a tenant transaction, so it is a one-line
+      addition each plus a test that the snapshot is frozen at ingest.
+      **Trigger:** the next change to either inbound-webhook service — kept out
+      of the round-9 hunt because the inbound-webhook services were outside the
+      invoice-lifecycle agent's area.
 
 ### Surfaced by the money-path bug hunt (round 10), deliberately not fixed
 

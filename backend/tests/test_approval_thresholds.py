@@ -160,30 +160,94 @@ async def test_no_config_passes():
         await _enforce_approval_thresholds(db, invoice, actor_roles=set())
 
 
+def _definition(approval_config: dict | None):
+    """A WorkflowDefinition-like object carrying the given approval config."""
+    if approval_config is None:
+        return None
+    return SimpleNamespace(
+        steps_config={"steps": [{"type": "approval", "config": approval_config}]}
+    )
+
+
+def _patch_active_definition(approval_config: dict | None):
+    """Patch the read-only definition resolver the no-snapshot fallback uses."""
+    return patch(
+        "app.services.workflow_engine.resolve_active_workflow_definition",
+        new=AsyncMock(return_value=_definition(approval_config)),
+    )
+
+
 @pytest.mark.asyncio
-async def test_no_instance_passes():
-    """When get_workflow_instance returns None the function is a no-op."""
+async def test_no_instance_falls_back_to_the_active_definition():
+    """No WorkflowInstance is NOT "no rules apply" — it fails CLOSED.
+
+    The email-intake and PEPPOL-inbound ingest paths create invoices without an
+    instance, and returning early there skipped the max-amount cap, the CFO gate
+    and the structuring guard entirely. The org's active definition governs
+    instead."""
     from app.services.review import _enforce_approval_thresholds
 
     db = _db_mock()
     invoice = _make_invoice(amount=999999)
 
-    with patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=None)):
+    with (
+        patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=None)),
+        _patch_active_definition({"max_invoice_amount": 10000}),
+        pytest.raises(HTTPException) as exc,
+    ):
+        await _enforce_approval_thresholds(db, invoice, actor_roles=set())
+    assert exc.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_no_instance_and_no_definition_passes():
+    """The genuine no-op: the org has no active definition to enforce."""
+    from app.services.review import _enforce_approval_thresholds
+
+    db = _db_mock()
+    invoice = _make_invoice(amount=999999)
+
+    with (
+        patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=None)),
+        _patch_active_definition(None),
+    ):
         # Must not raise
         await _enforce_approval_thresholds(db, invoice, actor_roles=set())
 
 
 @pytest.mark.asyncio
-async def test_instance_with_no_snapshot_passes():
-    """An instance whose steps_config_snapshot is None is treated as unconfigured."""
+async def test_instance_with_no_snapshot_falls_back_to_the_active_definition():
+    """Same fallback for an instance whose snapshot was never written."""
     from app.services.review import _enforce_approval_thresholds
 
     db = _db_mock()
     invoice = _make_invoice(amount=999999)
     instance = SimpleNamespace(id=uuid.uuid4(), steps_config_snapshot=None)
 
-    with patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)):
-        # Must not raise
+    with (
+        patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)),
+        _patch_active_definition({"max_invoice_amount": 10000}),
+        pytest.raises(HTTPException) as exc,
+    ):
+        await _enforce_approval_thresholds(db, invoice, actor_roles=set())
+    assert exc.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_the_frozen_snapshot_wins_over_the_live_definition():
+    """The per-invoice invariant is untouched: a snapshot that imposes no cap is
+    NOT topped up from a live definition that does."""
+    from app.services.review import _enforce_approval_thresholds
+
+    db = _db_mock()
+    invoice = _make_invoice(amount=999999)
+    instance = _make_instance({"required": True})
+
+    with (
+        patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)),
+        _patch_active_definition({"max_invoice_amount": 10000}),
+    ):
+        # Must not raise — the snapshot governs, and it caps nothing.
         await _enforce_approval_thresholds(db, invoice, actor_roles=set())
 
 

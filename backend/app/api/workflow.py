@@ -276,12 +276,23 @@ async def approve_invoice(
     invoice_id: uuid.UUID,
     body: ApproveRequest | None = None,
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_permission(PERM_INVOICE_APPROVE)),
 ):
     invoice = await get_invoice_for_update(db, invoice_id)
     corrections = body.model_dump(exclude_unset=True) if body else None
 
     actor_roles = {r.name for r in user.roles} if user.roles else set()
+    # `org_settings` is not optional detail on this path — it carries the org's
+    # own `fraud_rules` (which rules raise a payment-BLOCKING exception), its
+    # `matching` per-vendor/commodity PO tolerances, its `exceptions` routing/SLA
+    # map, and the structuring-guard window the threshold gate measures against.
+    # Omitting it silently reverted every one of them to the platform default
+    # mid-approval: a rule an org had turned off still opened a `fraud_flag` that
+    # then refused the payment run, and an approve-with-corrections recomputed
+    # `invoice.po_match` at the default 5% tolerance, erasing a stricter rule's
+    # `po_mismatch` from the row. `POST /api/invoices/bulk/status` always passed
+    # it; the single-invoice endpoint didn't.
     await review_svc.approve_invoice(
         db,
         invoice,
@@ -289,6 +300,7 @@ async def approve_invoice(
         actor_name=user.full_name,
         actor_roles=actor_roles,
         corrections=corrections or None,
+        org_settings=org.settings,
     )
     return InvoiceResponse.from_db(invoice)
 
