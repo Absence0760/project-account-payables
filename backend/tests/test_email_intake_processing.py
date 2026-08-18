@@ -149,6 +149,40 @@ async def test_process_unknown_recipient_returns_error_and_touches_nothing():
     get_client.assert_not_called()
 
 
+async def test_unresolved_recipient_is_logged_without_the_intake_token(caplog):
+    """The recipient address is the tenant BEARER CREDENTIAL (`invoices+<token>@`),
+    and this branch is reached with a live, correct token every time an org
+    toggles intake off — so logging the address wrote a working credential (and
+    a third party's email address) into the application log."""
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="app.services.email_intake")
+    token = "S3cretIntakeTok"
+    with patch.object(email_intake, "resolve_tenant_from_recipient", AsyncMock(return_value=None)):
+        await email_intake.process_inbound_email(
+            MagicMock(),
+            InboundEmail(to=f"invoices+{token}@ap.example.com", sender="vendor@supplier.test"),
+        )
+
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert token not in logged
+    assert "vendor@supplier.test" not in logged
+    # Still diagnosable: an address with no `+token` at all (bad MX / wrong
+    # address) is distinguishable from a token nothing matched.
+    assert "token_present=True" in logged
+
+
+async def test_unresolved_recipient_without_a_token_reports_token_absent(caplog):
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="app.services.email_intake")
+    with patch.object(email_intake, "resolve_tenant_from_recipient", AsyncMock(return_value=None)):
+        await email_intake.process_inbound_email(
+            MagicMock(), InboundEmail(to="ap@ap.example.com", sender="v@x.com")
+        )
+    assert "token_present=False" in "\n".join(r.getMessage() for r in caplog.records)
+
+
 async def test_process_no_usable_attachments_returns_error():
     org = _org(token="aaa", enabled=True)
     create_engine = MagicMock()

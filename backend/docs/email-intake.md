@@ -220,6 +220,24 @@ Distinguish outcomes from the **backend log** (`Email intake processed:
 provider=... tenant=... invoices_created=N error=...`) or by watching the
 tenant's invoice queue, never from the HTTP response.
 
+### …and neither does the log carry the address
+
+The recipient address never reaches a log line either. Its `+<token>` part IS
+the tenant's bearer credential, and the unresolved branch is hit with a **live,
+correct** token every time an org simply toggles intake off — so logging the
+address wrote a working credential (plus a third party's email address) into
+the application log, where it is retained and shipped like any other line. The
+miss is logged by *shape* instead:
+
+```
+Email intake: recipient did not resolve to an enabled intake address (token_present=True)
+```
+
+`token_present=False` means the address carried no `invoices+<token>@` part at
+all — a wrong address or a mis-pointed MX — which is the distinction an
+operator actually acts on. To check a specific tenant's token, read it from
+`GET /api/organization/email-intake` (admin-gated), not from the log.
+
 ## Redelivery / duplicate handling
 
 Every inbound message is deduped by the provider's `Message-ID` (via the
@@ -242,6 +260,8 @@ for the dedup TTL window.
 |---|---|
 | 204 with no body | Unknown `{provider}` in the URL, a bad/missing signature, or a payload the adapter couldn't parse. Wrong URL — `{provider}` must be `ses`, `mailgun`, or `generic`. Check the backend log for the specific rejection reason (never surfaced in the response). |
 | 200 `{"status": "received"}` but no invoice appears | Could be an unresolved/disabled token, a duplicate delivery, no usable attachments, or an internal failure — the response can't tell you which. Check the backend log line for the real `error` / `invoices_created` count. |
+| "recipient did not resolve to an enabled intake address (token_present=True)" | The address carried a `+token` that matched no *enabled* tenant. Either the token is wrong, or that org's `email_intake.enabled` is false. Compare against `GET /api/organization/email-intake`; the log deliberately never prints the token. |
+| "…(token_present=False)" | The address had no `invoices+<token>@` part — a mis-pointed MX, or someone mailing the bare domain. |
 | Invoice created but stays in `pending` | Extraction worker not running / tenant ERP config broken. Same as any other upload failure — check `extraction_reaper` logs. |
 | "No usable PDF / image / XML attachments" (in the log) | Vendor attached `.docx` or `.zip`. Tell the vendor to send PDF, an image, or a structured e-invoice XML. |
 | "Duplicate delivery" (in the log) | The provider redelivered a message with a `Message-ID` already processed — expected behavior, not a bug. |

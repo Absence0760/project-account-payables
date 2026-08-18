@@ -20,7 +20,11 @@ isolated.
 Security:
     - Token in the recipient address is the tenant bearer — treat it like
       a password (constant-time compare against the stored token).
-      Leaked token = spam channel into that tenant's AP queue.
+      Leaked token = spam channel into that tenant's AP queue. Which is why
+      the recipient address never reaches a log line: a live token lands in
+      the unresolved branch every time an org toggles intake off, and the
+      address is a third party's PII besides. The miss is logged by shape
+      (was a ``+token`` present at all), not by value.
     - HMAC-SHA256 signature verification against
       ``settings.email_intake_signing_secret`` when the header is present.
     - Dedup by the provider's ``message_id`` (shared
@@ -236,7 +240,19 @@ async def process_inbound_email(
     org = await resolve_tenant_from_recipient(ctrl_db, payload.to)
     if org is None:
         result.error = "Unknown or disabled intake address"
-        logger.warning("Email intake: unresolved recipient %r", payload.to)
+        # The recipient address is NOT loggable: its ``+<token>`` part IS the
+        # tenant bearer credential (see this module's Security docstring —
+        # "treat it like a password"), and this branch is reached with a LIVE,
+        # correct token whenever an org has simply toggled intake off. It is
+        # also a third party's email address. So log the *shape* of the miss,
+        # which is what an operator actually diagnoses from — a bad MX / wrong
+        # address (no plus-token at all) reads differently from a token nothing
+        # matched — and never the address itself.
+        logger.warning(
+            "Email intake: recipient did not resolve to an enabled intake "
+            "address (token_present=%s)",
+            extract_token(payload.to) is not None,
+        )
         return result
 
     result.tenant_slug = org.slug
