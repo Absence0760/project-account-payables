@@ -1,10 +1,11 @@
 """Tests for the stuck-extraction reaper.
 
-DB-free: we mock the per-tenant sweep and the control session so we can
+Mostly DB-free: we mock the per-tenant sweep and the control session so we can
 assert on tenant iteration, threshold handling, and partial-failure
-tolerance. The DB-touching path (`_reap_tenant`) is exercised against a
-real Postgres in the local stack — see tests/test_api_contracts.py for
-the smoke pattern.
+tolerance. `_reap_tenant`'s locking discipline — a candidate re-read
+`FOR UPDATE` and re-checked before it is transitioned, so an extraction that
+lands mid-tick is not overwritten — needs the real-Postgres `realdb` harness
+and is covered at the bottom of this file.
 """
 
 from __future__ import annotations
@@ -109,6 +110,7 @@ async def test_reap_tenant_audit_detail_records_real_threshold_not_epoch():
     """The `threshold_seconds` audit detail must be the configured threshold
     (e.g. 600), NOT the cutoff datetime's Unix epoch (e.g. 1.7e9). A mislabel
     there makes the SOC 2 reaper audit row claim a nonsense timeout window."""
+    from app.models.invoice import InvoiceStatus
     from app.services import extraction_reaper
 
     now = datetime.now(UTC)
@@ -116,14 +118,19 @@ async def test_reap_tenant_audit_detail_records_real_threshold_not_epoch():
     stuck_invoice = SimpleNamespace(
         id="inv-1",
         created_at=now - timedelta(seconds=900),  # older than the cutoff
+        status=InvoiceStatus.pending,
         warnings=None,
     )
 
-    # Fake the per-tenant session machinery so no real DB is touched.
-    scalars = MagicMock(all=lambda: [stuck_invoice])
+    # Fake the per-tenant session machinery so no real DB is touched. The sweep
+    # is two-phase: `execute` yields candidate IDS, then each is re-read via
+    # `get(..., with_for_update=True)` and re-checked before it is transitioned.
+    scalars = MagicMock(all=lambda: [stuck_invoice.id])
     fake_session = MagicMock()
     fake_session.execute = AsyncMock(return_value=MagicMock(scalars=lambda: scalars))
+    fake_session.get = AsyncMock(return_value=stuck_invoice)
     fake_session.commit = AsyncMock()
+    fake_session.rollback = AsyncMock()
 
     session_cm = AsyncMock()
     session_cm.__aenter__.return_value = fake_session
@@ -153,6 +160,89 @@ async def test_reap_tenant_audit_detail_records_real_threshold_not_epoch():
 
     assert reaped == 1
     assert captured["details"]["threshold_seconds"] == 600  # not int(cutoff.timestamp())
+
+
+# ---------------------------------------------------------------------------
+# _reap_tenant locking — real Postgres
+# ---------------------------------------------------------------------------
+
+
+async def _add_pending_invoice(mk, org_id, *, created_at):
+    import uuid
+    from decimal import Decimal
+
+    from app.models.invoice import Invoice, InvoiceStatus
+
+    inv_id = uuid.uuid4()
+    async with mk() as s:
+        inv = Invoice(
+            id=inv_id,
+            organization_id=org_id,
+            correlation_id=uuid.uuid4(),
+            invoice_number=f"INV-{uuid.uuid4().hex[:8]}",
+            vendor_name="Acme",
+            amount=Decimal("10.00"),
+            status=InvoiceStatus.pending,
+        )
+        s.add(inv)
+        await s.flush()
+        inv.created_at = created_at  # server-defaulted; force it for the age test
+        await s.commit()
+    return inv_id
+
+
+@pytest.mark.asyncio
+async def test_reap_skips_an_invoice_whose_extraction_landed_mid_tick(realdb):
+    """An extraction that completes DURING a reap tick must not be overwritten.
+
+    The sweep used to load whole `Invoice` objects up front and transition them
+    from that snapshot. `transition_invoice` validates against the stale
+    in-memory `pending`, `pending -> failed` is a legal edge, so the UPDATE
+    stamped `failed` over the row's real, freshly-committed state — leaving a
+    successfully-extracted invoice `failed` with an `extraction_timeout`
+    warning, and unable to return (`failed -> ready_for_review` is not a legal
+    edge). Now each candidate is re-read `FOR UPDATE` and re-checked first.
+    """
+    from unittest.mock import AsyncMock, patch
+
+    from app.models.invoice import Invoice, InvoiceStatus
+    from app.services import extraction_reaper
+    from app.services.workflow_engine import transition_invoice as real_transition
+
+    org_id = realdb.info("a").org_id
+    db_name = realdb.info("a").db_name
+    mk = realdb.sessionmaker("a")
+    old = datetime.now(UTC) - timedelta(hours=2)
+
+    first = await _add_pending_invoice(mk, org_id, created_at=old)
+    second = await _add_pending_invoice(mk, org_id, created_at=old)
+
+    other_mk = realdb.sessionmaker("a")
+    calls: list = []
+
+    async def wrapper(db, inv, target, **kw):
+        calls.append(inv.id)
+        if len(calls) == 1:
+            # A concurrent extraction lands for the OTHER invoice while the
+            # reaper is still working through its candidate list.
+            async with other_mk() as s2:
+                row = await s2.get(Invoice, second if inv.id == first else first)
+                row.status = InvoiceStatus.ready_for_review
+                await s2.commit()
+        return await real_transition(db, inv, target, **kw)
+
+    with patch("app.services.workflow_engine.transition_invoice", AsyncMock(side_effect=wrapper)):
+        reaped = await extraction_reaper._reap_tenant(
+            db_name, datetime.now(UTC) - timedelta(hours=1), threshold_seconds=3600
+        )
+
+    async with mk() as s:
+        statuses = {i: (await s.get(Invoice, i)).status for i in (first, second)}
+
+    # Exactly one was genuinely stuck by the time its turn came; the other had
+    # completed and keeps the status extraction gave it.
+    assert reaped == 1
+    assert sorted(st.value for st in statuses.values()) == ["failed", "ready_for_review"]
 
 
 @pytest.mark.asyncio
