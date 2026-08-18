@@ -118,6 +118,44 @@ async def convert_amount(
     )
 
 
+def _lock_is_self_consistent(invoice, *, target_currency: str) -> bool:
+    """Does the persisted reporting lock still describe THIS row?
+
+    The lock is three persisted values — ``reporting_amount``,
+    ``reporting_fx_rate`` and ``reporting_currency`` — derived from two mutable
+    ones, ``amount`` and ``currency``. An AP user correcting a mis-extracted
+    figure (both are editable on ``PATCH /api/invoices/{id}`` right up to
+    approval) moves the inputs without touching the outputs, and the rollup
+    then reports the stale product as a *converted, trustworthy* number.
+
+    Two conditions have to hold, and both are checkable from the row alone —
+    no FX call, no extra column:
+
+    1. **The rate matches the currency pair's shape.** A same-currency lock is
+       exactly ``1``; a cross-currency lock is not. So a currency edit that
+       crosses the reporting currency in either direction (``USD → EUR`` on a
+       USD-reporting org, or back) contradicts the persisted rate.
+    2. **The figure reconciles.** ``quantize(amount * rate)`` must equal the
+       persisted ``reporting_amount``; if the amount moved, it won't.
+
+    KNOWN GAP: a currency edit between two *foreign* currencies (``EUR → GBP``
+    on a USD-reporting org) with the amount unchanged satisfies both — the row
+    does not record WHICH currency the rate was for, so it is not detectable
+    without a new column. Named in ``docs/followups.md`` rather than papered
+    over. It is the rare corner; the amount edit and the home-currency flip are
+    the common ones.
+    """
+    rate = invoice.reporting_fx_rate
+    if rate is None or rate <= 0:
+        return False
+    src = (invoice.currency or target_currency).upper()
+    same_currency = src == target_currency
+    if same_currency != (Decimal(str(rate)) == Decimal("1")):
+        return False
+    expected = _quantize_money(Decimal(str(invoice.amount)) * Decimal(str(rate)))
+    return expected == _quantize_money(Decimal(str(invoice.reporting_amount)))
+
+
 async def materialize_reporting_amount(
     invoice,
     *,
@@ -129,31 +167,47 @@ async def materialize_reporting_amount(
 
     Writes `reporting_currency`, `reporting_amount`, `reporting_fx_rate`,
     `reporting_fx_locked_at` in place (caller flushes/commits). The locked rate
-    is what every later rollup reads — we never re-fetch a rate for a row that's
-    already materialized, so historical conversions are stable.
+    is what every later rollup reads — we never re-fetch a rate for a row whose
+    lock still describes it, so historical conversions are stable.
 
-    Re-materializes (re-fetches a fresh rate) only when:
+    Re-materializes (re-fetches a fresh rate) when:
       - `force` is True, OR
       - the row has never been materialized (`reporting_amount` is None), OR
       - the org's reporting currency changed since the last lock, OR
-      - the invoice's own amount / currency changed in a way that invalidates
-        the stored figure (amount differs from rate*... — we detect the simple
-        case where currency changed).
+      - the invoice's own **currency** changed across the reporting currency,
+        which makes the persisted rate describe a pair the row no longer has
+        (see `_lock_is_self_consistent`).
 
-    Returns True if it (re)materialized, False if it left an already-current
-    lock untouched (idempotent no-op).
+    **Re-scales at the ALREADY-LOCKED rate — no FX call — when only the
+    invoice's `amount` changed.** That is the honest correction: the liability
+    was accrued at the rate in force when the invoice was booked, and a later
+    correction of the figure does not retroactively re-price it. It also means
+    an amount correction always fixes the reporting number even while the FX
+    provider is unreachable.
+
+    Returns True if it (re)materialized or re-scaled, False if it left an
+    already-current lock untouched (idempotent no-op).
     """
     tgt = reporting_currency.upper()
     src = (invoice.currency or tgt).upper()
 
-    needs = (
-        force
-        or invoice.reporting_amount is None
+    never_locked = (
+        invoice.reporting_amount is None
         or invoice.reporting_currency is None
         or invoice.reporting_currency.upper() != tgt
     )
-    if not needs:
-        return False
+
+    if not force and not never_locked:
+        if _lock_is_self_consistent(invoice, target_currency=tgt):
+            return False
+        rate = invoice.reporting_fx_rate
+        # Re-scale in place when the persisted rate still describes this row's
+        # currency pair — only the amount moved.
+        if rate is not None and rate > 0 and (src == tgt) == (Decimal(str(rate)) == Decimal("1")):
+            invoice.reporting_amount = _quantize_money(
+                Decimal(str(invoice.amount)) * Decimal(str(rate))
+            )
+            return True
 
     converted = await convert_amount(
         amount=invoice.amount,
@@ -161,9 +215,16 @@ async def materialize_reporting_amount(
         reporting_currency=tgt,
         fx_adapter=fx_adapter,
     )
+    stored_rate = converted.fx_rate.quantize(_RATE_QUANT)
     invoice.reporting_currency = converted.reporting_currency
-    invoice.reporting_amount = converted.amount
-    invoice.reporting_fx_rate = converted.fx_rate.quantize(_RATE_QUANT)
+    # Derive the stored figure from the STORED (8dp) rate, not the provider's
+    # full-precision one, so the persisted triple satisfies
+    # `amount * rate == reporting_amount` exactly. An auditor can re-derive it,
+    # and `_lock_is_self_consistent` above can use that identity to tell a
+    # stale lock from a current one. (Both shipped adapters quantize to 6dp, so
+    # this is identical to `converted.amount` today.)
+    invoice.reporting_amount = _quantize_money(Decimal(str(invoice.amount)) * stored_rate)
+    invoice.reporting_fx_rate = stored_rate
     invoice.reporting_fx_locked_at = converted.as_of
     return True
 
