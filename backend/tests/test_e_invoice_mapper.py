@@ -76,7 +76,9 @@ def test_maps_header_fields():
     assert doc.buyer_reference == "BUYER-REF"
     assert doc.order_reference == "PO-9000"
     assert doc.payment_terms_note == "Net 30"
-    assert doc.payment_means_code == "ach"
+    # UNCL4461 code, not our internal token — `cbc:PaymentMeansCode` is a
+    # code-list element. `ach` -> 30 (credit transfer).
+    assert doc.payment_means_code == "30"
 
 
 def test_seller_is_the_vendor():

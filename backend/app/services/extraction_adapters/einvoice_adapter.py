@@ -21,6 +21,7 @@ from app.services.e_invoice import (
     EInvoiceValidationError,
     parse_e_invoice,
 )
+from app.services.e_invoice.payment_means import payment_means_to_method
 from app.services.extraction_adapters.base import (
     ExtractedField,
     ExtractedLineItem,
@@ -28,18 +29,6 @@ from app.services.extraction_adapters.base import (
     ExtractionResult,
 )
 from app.services.extraction_adapters.dispatcher import register_extraction_adapter
-
-# UNCL4461 payment-means code → canonical payment_method token. The downstream
-# _normalize_payment_method cleaner re-validates against the dropdown options.
-_PAYMENT_MEANS_MAP = {
-    "30": "ach",  # Credit transfer
-    "58": "ach",  # SEPA credit transfer
-    "31": "wire",  # Debit transfer
-    "42": "wire",  # Payment to bank account
-    "20": "check",  # Cheque
-    "48": "credit_card",  # Bank card
-    "54": "credit_card",  # Credit card
-}
 
 
 def _decimal_str(value) -> str | None:
@@ -98,9 +87,11 @@ class EInvoiceExtractionAdapter(ExtractionAdapter):
             doc.payable_amount if doc.payable_amount is not None else doc.tax_inclusive_amount
         )
 
-        payment_method = None
-        if doc.payment_means_code:
-            payment_method = _PAYMENT_MEANS_MAP.get(doc.payment_means_code.strip())
+        # The code→token table is shared with the OUTBOUND mapper
+        # (`e_invoice/payment_means.py`) so the two directions can't drift and
+        # an exported document reads back as what it was. The downstream
+        # `_normalize_payment_method` cleaner re-validates against the dropdown.
+        payment_method = payment_means_to_method(doc.payment_means_code)
 
         # tax_rate only when the document carries exactly one distinct rate.
         distinct_rates = {t.rate for t in doc.taxes if t.rate is not None}
