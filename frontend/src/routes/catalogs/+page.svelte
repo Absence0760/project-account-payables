@@ -24,6 +24,7 @@
 	import { goto } from '$app/navigation';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
+	import { appendUnique } from '$lib/utils/pagination';
 	import { m } from '$lib/i18n/store.svelte';
 
 	const canCreate = $derived(auth.isManager); // admin | ap_manager
@@ -31,9 +32,17 @@
 	const canPunchout = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk'));
 
 	// --- List state ---
+	const PAGE_SIZE = 100;
+
 	let catalogs = $state<Catalog[]>([]);
 	let total = $state(0);
 	let loading = $state(false);
+	let pageNum = $state(1);
+	let loadingMore = $state(false);
+
+	// The list is paged: `total` is the whole filtered set, so a footer that
+	// says "Showing all {total}" is only true once every row is loaded.
+	let hasMore = $derived(catalogs.length < total);
 	let search = $state('');
 	let typeFilter = $state<string>('all'); // all | internal | punchout | preferred
 
@@ -79,31 +88,38 @@
 	// `frontend/CLAUDE.md` § Sequencing list fetches.
 	const fetchSequence = createRequestSequencer();
 
-	async function load() {
+	async function load(opts: { append?: boolean } = {}) {
+		const nextPage = opts.append ? pageNum + 1 : 1;
 		const token = fetchSequence.start();
-		loading = true;
+		if (opts.append) loadingMore = true;
+		else loading = true;
 		try {
 			const params: {
 				search?: string;
 				catalog_type?: string;
 				is_preferred?: boolean;
+				page?: number;
 				page_size: number;
-			} = { page_size: 100 };
+			} = { page: nextPage, page_size: PAGE_SIZE };
 			if (search.trim()) params.search = search.trim();
 			if (typeFilter === 'preferred') params.is_preferred = true;
 			else if (typeFilter !== 'all') params.catalog_type = typeFilter;
 			const res = await listCatalogs(params);
 			// Superseded by a newer load, or by a local delete.
 			if (!fetchSequence.canCommit(token)) return;
-			catalogs = res.items;
+			catalogs = opts.append ? appendUnique(catalogs, res.items) : res.items;
 			total = res.total;
+			pageNum = nextPage;
 		} catch (err) {
 			// `isCurrentRequest`, not `canCommit`: a load superseded by a local
 			// delete still failed, and no newer load is coming to report it.
 			if (!fetchSequence.isCurrentRequest(token)) return;
 			toast(err instanceof Error ? err.message : m('catalogs.toast.loadFailed'), 'error');
 		} finally {
-			if (fetchSequence.isCurrentRequest(token)) loading = false;
+			if (fetchSequence.isCurrentRequest(token)) {
+				loading = false;
+				loadingMore = false;
+			}
 		}
 	}
 
@@ -112,7 +128,7 @@
 	$effect(() => {
 		const q = search;
 		clearTimeout(searchTimer);
-		searchTimer = setTimeout(load, q === '' ? 0 : 280);
+		searchTimer = setTimeout(() => load(), q === '' ? 0 : 280);
 		return () => clearTimeout(searchTimer);
 	});
 
@@ -298,7 +314,19 @@
 		{/snippet}
 	</DataTable>
 
-	{#if total > 0}
+	{#if hasMore}
+		<div class="load-more-row">
+			<button
+				class="btn-load-more"
+				onclick={() => load({ append: true })}
+				disabled={loadingMore}
+			>
+				{loadingMore
+					? m('common.loading')
+					: m('catalogs.loadMore', { shown: catalogs.length, total })}
+			</button>
+		</div>
+	{:else if total > 0}
 		<div class="load-more-row">
 			<span class="load-more-end">{m('catalogs.showingAll', { total })}</span>
 		</div>

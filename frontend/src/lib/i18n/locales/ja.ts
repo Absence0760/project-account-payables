@@ -1032,6 +1032,7 @@ export const messages = {
 	'expenses.reports.col.amount': '金額',
 	'expenses.reports.openAria': 'レポート {number} を開く',
 	'expenses.reports.empty': '経費レポートはまだありません。',
+	'expenses.reports.loadMore': 'さらに読み込む（{total}件中{shown}件）',
 	'expenses.reports.showingAll': '{total, plural, other {全 # 件のレポートを表示中}}',
 	'expenses.reports.toast.created': 'レポートを作成しました',
 	'expenses.reports.toast.createFailed': '作成に失敗しました',
@@ -1086,6 +1087,7 @@ export const messages = {
 	'expenses.cards.unmatch': '照合を解除',
 	'expenses.cards.ignore': '無視',
 	'expenses.cards.empty': 'カード取引はありません。CSVをインポートするか、バーチャルカードを同期してください。',
+	'expenses.cards.loadMore': 'さらに読み込む（{total}件中{shown}件）',
 	'expenses.cards.showingAll': '{total, plural, other {全 # 件の取引を表示中}}',
 	'expenses.cards.toast.loadFailed': 'カード取引を読み込めませんでした',
 	'expenses.cards.toast.imported': '{n, plural, other {# 件の取引をインポートしました}}',
@@ -1224,6 +1226,7 @@ export const messages = {
 	'requisitions.toast.deleted': '購買依頼を削除しました',
 	'requisitions.toast.deleteFailed': '削除に失敗しました',
 	'requisitions.toast.loadFailed': '購買依頼の読み込みに失敗しました',
+	'requisitions.loadMore': 'さらに読み込む（{total}件中{shown}件）',
 	'requisitions.showingAll': '{total, plural, other {#件すべての購買依頼を表示中}}',
 
 	// Requisition create/edit modal (components/modals/RequisitionModal.svelte)
@@ -1307,6 +1310,7 @@ export const messages = {
 	'intake.toast.alreadyConverted': 'すでに変換済みです（{number}）',
 	'intake.toast.convertFailed': '変換に失敗しました',
 	'intake.toast.loadFailed': '受付リクエストの読み込みに失敗しました',
+	'intake.loadMore': 'さらに読み込む（{total}件中{shown}件）',
 	'intake.showingAll': '{total, plural, other {#件すべてのリクエストを表示中}}',
 
 	// Intake create/edit modal (components/modals/IntakeModal.svelte)
@@ -1376,6 +1380,7 @@ export const messages = {
 	'catalogs.guided.catalogLabel': 'カタログ：{name}',
 	'catalogs.guided.contractLabel': '契約：{number}',
 	'catalogs.guided.preferredTag': '優先',
+	'catalogs.loadMore': 'さらに読み込む（{total}件中{shown}件）',
 	'catalogs.showingAll': '{total, plural, other {#件すべてのカタログを表示中}}',
 
 	// Catalog create/edit modal (components/modals/CatalogModal.svelte)
@@ -1485,6 +1490,7 @@ export const messages = {
 	'budgets.toast.deleted': '予算を削除しました',
 	'budgets.toast.deleteFailed': '削除に失敗しました',
 	'budgets.toast.loadFailed': '予算の読み込みに失敗しました',
+	'budgets.loadMore': 'さらに読み込む（{total}件中{shown}件）',
 	'budgets.showingAll': '{total, plural, other {#件すべての予算を表示中}}',
 
 	// Budget create/edit modal (components/modals/BudgetModal.svelte)

@@ -33,6 +33,9 @@
 	import { replaceState } from '$app/navigation';
 	import { untrack } from 'svelte';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
+	import { appendUnique } from '$lib/utils/pagination';
+
+	const PAGE_SIZE = 50;
 
 	// Intake is broad-access — anyone in the org can raise / read / cancel.
 	const canCreate = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk', 'cfo'));
@@ -42,6 +45,12 @@
 	let items = $state<IntakeRequest[]>([]);
 	let total = $state(0);
 	let loading = $state(false);
+	let pageNum = $state(1);
+	let loadingMore = $state(false);
+
+	// The list is paged: `total` is the whole filtered set, so a footer that
+	// says "Showing all {total}" is only true once every row is loaded.
+	let hasMore = $derived(items.length < total);
 
 	let search = $state($page.url.searchParams.get('search') ?? '');
 	let statusFilter = $state<string>($page.url.searchParams.get('status') ?? 'all');
@@ -123,22 +132,32 @@
 	// even the first load. See `frontend/CLAUDE.md` § Sequencing list fetches.
 	const fetchSequence = createRequestSequencer();
 
-	async function load() {
+	async function load(opts: { append?: boolean } = {}) {
+		const nextPage = opts.append ? pageNum + 1 : 1;
 		const token = fetchSequence.start();
-		loading = true;
+		if (opts.append) loadingMore = true;
+		else loading = true;
 		try {
-			const res = await listIntake({ ...buildParams(), page_size: 50 });
+			const res = await listIntake({
+				...buildParams(),
+				page: nextPage,
+				page_size: PAGE_SIZE
+			});
 			// Superseded by a newer load, or by a local create/lifecycle edit.
 			if (!fetchSequence.canCommit(token)) return;
-			items = res.items;
+			items = opts.append ? appendUnique(items, res.items) : res.items;
 			total = res.total;
+			pageNum = nextPage;
 		} catch (err) {
 			// `isCurrentRequest`, not `canCommit`: a load superseded by a local
 			// edit still failed, and no newer load is coming to report it.
 			if (!fetchSequence.isCurrentRequest(token)) return;
 			toast(err instanceof Error ? err.message : m('intake.toast.loadFailed'), 'error');
 		} finally {
-			if (fetchSequence.isCurrentRequest(token)) loading = false;
+			if (fetchSequence.isCurrentRequest(token)) {
+				loading = false;
+				loadingMore = false;
+			}
 		}
 	}
 
@@ -376,7 +395,19 @@
 		{/snippet}
 	</DataTable>
 
-	{#if total > 0}
+	{#if hasMore}
+		<div class="load-more-row">
+			<button
+				class="btn-load-more"
+				onclick={() => load({ append: true })}
+				disabled={loadingMore}
+			>
+				{loadingMore
+					? m('common.loading')
+					: m('intake.loadMore', { shown: items.length, total })}
+			</button>
+		</div>
+	{:else if total > 0}
 		<div class="load-more-row">
 			<span class="load-more-end">{m('intake.showingAll', { total })}</span>
 		</div>

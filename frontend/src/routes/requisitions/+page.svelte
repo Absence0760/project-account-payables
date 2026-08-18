@@ -31,15 +31,24 @@
 	import { replaceState } from '$app/navigation';
 	import { onMount, untrack } from 'svelte';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
+	import { appendUnique } from '$lib/utils/pagination';
 	import { formatDate } from '$lib/utils/time';
 
 	const canCreate = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk'));
 	// approve / reject / convert = admin | ap_manager (convert is the money step).
 	const canApprove = $derived(auth.isManager);
 
+	const PAGE_SIZE = 100;
+
 	let requisitions = $state<Requisition[]>([]);
 	let total = $state(0);
 	let loading = $state(false);
+	let pageNum = $state(1);
+	let loadingMore = $state(false);
+
+	// The list is paged: `total` is the whole filtered set, so a footer that
+	// says "Showing all {total}" is only true once every row is loaded.
+	let hasMore = $derived(requisitions.length < total);
 
 	let search = $state($page.url.searchParams.get('search') ?? '');
 	let statusFilter = $state<string>($page.url.searchParams.get('status') ?? 'all');
@@ -116,24 +125,33 @@
 	// `frontend/CLAUDE.md` § Sequencing list fetches.
 	const fetchSequence = createRequestSequencer();
 
-	async function load() {
+	async function load(opts: { append?: boolean } = {}) {
+		const nextPage = opts.append ? pageNum + 1 : 1;
 		const token = fetchSequence.start();
-		loading = true;
+		if (opts.append) loadingMore = true;
+		else loading = true;
 		try {
-			const params: { status?: string; page_size: number } = { page_size: 100 };
+			const params: { status?: string; page?: number; page_size: number } = {
+				page: nextPage,
+				page_size: PAGE_SIZE
+			};
 			if (statusFilter !== 'all') params.status = statusFilter;
 			const res = await listRequisitions(params);
 			// Superseded by a newer load, or by a local create/lifecycle edit.
 			if (!fetchSequence.canCommit(token)) return;
-			requisitions = res.items;
+			requisitions = opts.append ? appendUnique(requisitions, res.items) : res.items;
 			total = res.total;
+			pageNum = nextPage;
 		} catch (err) {
 			// `isCurrentRequest`, not `canCommit`: a load superseded by a local
 			// edit still failed, and no newer load is coming to report it.
 			if (!fetchSequence.isCurrentRequest(token)) return;
 			toast(err instanceof Error ? err.message : m('requisitions.toast.loadFailed'), 'error');
 		} finally {
-			if (fetchSequence.isCurrentRequest(token)) loading = false;
+			if (fetchSequence.isCurrentRequest(token)) {
+				loading = false;
+				loadingMore = false;
+			}
 		}
 	}
 
@@ -347,7 +365,19 @@
 		{/snippet}
 	</DataTable>
 
-	{#if total > 0}
+	{#if hasMore}
+		<div class="load-more-row">
+			<button
+				class="btn-load-more"
+				onclick={() => load({ append: true })}
+				disabled={loadingMore}
+			>
+				{loadingMore
+					? m('common.loading')
+					: m('requisitions.loadMore', { shown: requisitions.length, total })}
+			</button>
+		</div>
+	{:else if total > 0}
 		<div class="load-more-row">
 			<span class="load-more-end">{m('requisitions.showingAll', { total })}</span>
 		</div>

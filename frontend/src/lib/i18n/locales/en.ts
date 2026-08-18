@@ -1075,6 +1075,7 @@ export const en = {
 	'expenses.reports.col.amount': 'Amount',
 	'expenses.reports.openAria': 'Open report {number}',
 	'expenses.reports.empty': 'No expense reports yet.',
+	'expenses.reports.loadMore': 'Load more ({shown} of {total})',
 	'expenses.reports.showingAll': '{total, plural, one {Showing all # report} other {Showing all # reports}}',
 	'expenses.reports.toast.created': 'Report created',
 	'expenses.reports.toast.createFailed': 'Create failed',
@@ -1129,6 +1130,7 @@ export const en = {
 	'expenses.cards.unmatch': 'Unmatch',
 	'expenses.cards.ignore': 'Ignore',
 	'expenses.cards.empty': 'No card transactions. Import a CSV or sync virtual cards.',
+	'expenses.cards.loadMore': 'Load more ({shown} of {total})',
 	'expenses.cards.showingAll': '{total, plural, one {Showing all # transaction} other {Showing all # transactions}}',
 	'expenses.cards.toast.loadFailed': 'Failed to load card transactions',
 	'expenses.cards.toast.imported': '{n, plural, one {Imported # transaction} other {Imported # transactions}}',
@@ -1267,6 +1269,7 @@ export const en = {
 	'requisitions.toast.deleted': 'Requisition deleted',
 	'requisitions.toast.deleteFailed': 'Delete failed',
 	'requisitions.toast.loadFailed': 'Failed to load requisitions',
+	'requisitions.loadMore': 'Load more ({shown} of {total})',
 	'requisitions.showingAll':
 		'{total, plural, one {Showing all # requisition} other {Showing all # requisitions}}',
 
@@ -1351,6 +1354,7 @@ export const en = {
 	'intake.toast.alreadyConverted': 'Already converted ({number})',
 	'intake.toast.convertFailed': 'Convert failed',
 	'intake.toast.loadFailed': 'Failed to load intake requests',
+	'intake.loadMore': 'Load more ({shown} of {total})',
 	'intake.showingAll':
 		'{total, plural, one {Showing all # request} other {Showing all # requests}}',
 
@@ -1421,6 +1425,7 @@ export const en = {
 	'catalogs.guided.catalogLabel': 'Catalog: {name}',
 	'catalogs.guided.contractLabel': 'Contract: {number}',
 	'catalogs.guided.preferredTag': 'Preferred',
+	'catalogs.loadMore': 'Load more ({shown} of {total})',
 	'catalogs.showingAll':
 		'{total, plural, one {Showing all # catalog} other {Showing all # catalogs}}',
 
@@ -1531,6 +1536,7 @@ export const en = {
 	'budgets.toast.deleted': 'Budget deleted',
 	'budgets.toast.deleteFailed': 'Delete failed',
 	'budgets.toast.loadFailed': 'Failed to load budgets',
+	'budgets.loadMore': 'Load more ({shown} of {total})',
 	'budgets.showingAll':
 		'{total, plural, one {Showing all # budget} other {Showing all # budgets}}',
 

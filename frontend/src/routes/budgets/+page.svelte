@@ -25,6 +25,9 @@
 	import { replaceState } from '$app/navigation';
 	import { untrack } from 'svelte';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
+	import { appendUnique } from '$lib/utils/pagination';
+
+	const PAGE_SIZE = 50;
 
 	// Mutations are admin / cfo only (financial config).
 	const canManage = $derived(auth.hasAnyRole('admin', 'cfo'));
@@ -37,6 +40,12 @@
 	let budgets = $state<Budget[]>([]);
 	let total = $state(0);
 	let loading = $state(false);
+	let pageNum = $state(1);
+	let loadingMore = $state(false);
+
+	// The list is paged: `total` is the whole filtered set, so a footer that
+	// says "Showing all {total}" is only true once every row is loaded.
+	let hasMore = $derived(budgets.length < total);
 
 	// --- Modal state ---
 	let showCreate = $state(false);
@@ -117,22 +126,32 @@
 	// fetches.
 	const fetchSequence = createRequestSequencer();
 
-	async function load() {
+	async function load(opts: { append?: boolean } = {}) {
+		const nextPage = opts.append ? pageNum + 1 : 1;
 		const token = fetchSequence.start();
-		loading = true;
+		if (opts.append) loadingMore = true;
+		else loading = true;
 		try {
-			const res = await listBudgets({ ...buildParams(), page_size: 50 });
+			const res = await listBudgets({
+				...buildParams(),
+				page: nextPage,
+				page_size: PAGE_SIZE
+			});
 			// Superseded by a newer load, or by a local create/edit/delete.
 			if (!fetchSequence.canCommit(token)) return;
-			budgets = res.items;
+			budgets = opts.append ? appendUnique(budgets, res.items) : res.items;
 			total = res.total;
+			pageNum = nextPage;
 		} catch (err) {
 			// `isCurrentRequest`, not `canCommit`: a load superseded by a local
 			// edit still failed, and no newer load is coming to report it.
 			if (!fetchSequence.isCurrentRequest(token)) return;
 			toast(err instanceof Error ? err.message : m('budgets.toast.loadFailed'), 'error');
 		} finally {
-			if (fetchSequence.isCurrentRequest(token)) loading = false;
+			if (fetchSequence.isCurrentRequest(token)) {
+				loading = false;
+				loadingMore = false;
+			}
 		}
 	}
 
@@ -271,7 +290,19 @@
 		{/snippet}
 	</DataTable>
 
-	{#if total > 0}
+	{#if hasMore}
+		<div class="load-more-row">
+			<button
+				class="btn-load-more"
+				onclick={() => load({ append: true })}
+				disabled={loadingMore}
+			>
+				{loadingMore
+					? m('common.loading')
+					: m('budgets.loadMore', { shown: budgets.length, total })}
+			</button>
+		</div>
+	{:else if total > 0}
 		<div class="load-more-row">
 			<span class="load-more-end">{m('budgets.showingAll', { total })}</span>
 		</div>

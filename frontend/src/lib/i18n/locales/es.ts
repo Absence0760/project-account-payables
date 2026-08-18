@@ -1039,6 +1039,7 @@ export const messages = {
 	'expenses.reports.col.amount': 'Importe',
 	'expenses.reports.openAria': 'Abrir informe {number}',
 	'expenses.reports.empty': 'Aún no hay informes de gastos.',
+	'expenses.reports.loadMore': 'Cargar más ({shown} de {total})',
 	'expenses.reports.showingAll': '{total, plural, one {Mostrando # informe} other {Mostrando los # informes}}',
 	'expenses.reports.toast.created': 'Informe creado',
 	'expenses.reports.toast.createFailed': 'Error al crear',
@@ -1093,6 +1094,7 @@ export const messages = {
 	'expenses.cards.unmatch': 'Desconciliar',
 	'expenses.cards.ignore': 'Ignorar',
 	'expenses.cards.empty': 'No hay transacciones de tarjeta. Importe un CSV o sincronice tarjetas virtuales.',
+	'expenses.cards.loadMore': 'Cargar más ({shown} de {total})',
 	'expenses.cards.showingAll': '{total, plural, one {Mostrando # transacción} other {Mostrando las # transacciones}}',
 	'expenses.cards.toast.loadFailed': 'No se pudieron cargar las transacciones de tarjeta',
 	'expenses.cards.toast.imported': '{n, plural, one {# transacción importada} other {# transacciones importadas}}',
@@ -1231,6 +1233,7 @@ export const messages = {
 	'requisitions.toast.deleted': 'Solicitud eliminada',
 	'requisitions.toast.deleteFailed': 'Error al eliminar',
 	'requisitions.toast.loadFailed': 'Error al cargar las solicitudes',
+	'requisitions.loadMore': 'Cargar más ({shown} de {total})',
 	'requisitions.showingAll':
 		'{total, plural, one {Mostrando la # solicitud} other {Mostrando las # solicitudes}}',
 
@@ -1315,6 +1318,7 @@ export const messages = {
 	'intake.toast.alreadyConverted': 'Ya convertida ({number})',
 	'intake.toast.convertFailed': 'Error al convertir',
 	'intake.toast.loadFailed': 'Error al cargar las peticiones de recepción',
+	'intake.loadMore': 'Cargar más ({shown} de {total})',
 	'intake.showingAll':
 		'{total, plural, one {Mostrando la # petición} other {Mostrando las # peticiones}}',
 
@@ -1385,6 +1389,7 @@ export const messages = {
 	'catalogs.guided.catalogLabel': 'Catálogo: {name}',
 	'catalogs.guided.contractLabel': 'Contrato: {number}',
 	'catalogs.guided.preferredTag': 'Preferido',
+	'catalogs.loadMore': 'Cargar más ({shown} de {total})',
 	'catalogs.showingAll':
 		'{total, plural, one {Mostrando el # catálogo} other {Mostrando los # catálogos}}',
 
@@ -1495,6 +1500,7 @@ export const messages = {
 	'budgets.toast.deleted': 'Presupuesto eliminado',
 	'budgets.toast.deleteFailed': 'Error al eliminar',
 	'budgets.toast.loadFailed': 'Error al cargar los presupuestos',
+	'budgets.loadMore': 'Cargar más ({shown} de {total})',
 	'budgets.showingAll':
 		'{total, plural, one {Mostrando el # presupuesto} other {Mostrando los # presupuestos}}',
 

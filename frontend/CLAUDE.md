@@ -451,7 +451,16 @@ items, then a centred Load More button below the table:
   load-more site — the list stores and the inline route/component loaders —
   uses it.
 - "Showing all N" is the empty-string-of-pagination state — confirms
-  for the user that they've reached the end.
+  for the user that they've reached the end. It is **only ever rendered
+  behind `{:else if total > 0}`**, never on its own: `total` is the
+  server's count of the whole filtered set, so a list that asks for one
+  capped page and then states "Showing all {total}" is asserting that
+  rows it never fetched do not exist. Six lists (budgets, intake,
+  catalogs, requisitions, and the `/expenses` Reports + Cards sub-lists)
+  shipped that way — 50 rows under a footer reading "Showing all 87",
+  with no control to reach the other 37. `src/lib/utils/pagedListFooter.test.ts`
+  is the guard: any file referencing a `<list>.showingAll` message must
+  also reference the matching `<list>.loadMore`.
 - Stores expose `total`, `page`, `hasMore`, and any mutating actions
   (create / delete / bulk-delete) keep `total` in sync without a
   refetch.

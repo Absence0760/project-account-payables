@@ -1038,6 +1038,7 @@ export const messages = {
 	'expenses.reports.col.amount': 'Montant',
 	'expenses.reports.openAria': 'Ouvrir le rapport {number}',
 	'expenses.reports.empty': 'Aucun rapport de dépenses pour le moment.',
+	'expenses.reports.loadMore': 'Charger plus ({shown} sur {total})',
 	'expenses.reports.showingAll': '{total, plural, one {Affichage du # rapport} other {Affichage des # rapports}}',
 	'expenses.reports.toast.created': 'Rapport créé',
 	'expenses.reports.toast.createFailed': 'Échec de la création',
@@ -1092,6 +1093,7 @@ export const messages = {
 	'expenses.cards.unmatch': 'Annuler le rapprochement',
 	'expenses.cards.ignore': 'Ignorer',
 	'expenses.cards.empty': 'Aucune transaction par carte. Importez un CSV ou synchronisez les cartes virtuelles.',
+	'expenses.cards.loadMore': 'Charger plus ({shown} sur {total})',
 	'expenses.cards.showingAll': '{total, plural, one {Affichage de la # transaction} other {Affichage des # transactions}}',
 	'expenses.cards.toast.loadFailed': 'Échec du chargement des transactions par carte',
 	'expenses.cards.toast.imported': '{n, plural, one {# transaction importée} other {# transactions importées}}',
@@ -1230,6 +1232,7 @@ export const messages = {
 	'requisitions.toast.deleted': 'Demande supprimée',
 	'requisitions.toast.deleteFailed': 'Échec de la suppression',
 	'requisitions.toast.loadFailed': 'Échec du chargement des demandes',
+	'requisitions.loadMore': 'Charger plus ({shown} sur {total})',
 	'requisitions.showingAll':
 		'{total, plural, one {Affichage de la # demande} other {Affichage des # demandes}}',
 
@@ -1314,6 +1317,7 @@ export const messages = {
 	'intake.toast.alreadyConverted': 'Déjà convertie ({number})',
 	'intake.toast.convertFailed': 'Échec de la conversion',
 	'intake.toast.loadFailed': 'Échec du chargement des requêtes de réception',
+	'intake.loadMore': 'Charger plus ({shown} sur {total})',
 	'intake.showingAll':
 		'{total, plural, one {Affichage de la # requête} other {Affichage des # requêtes}}',
 
@@ -1384,6 +1388,7 @@ export const messages = {
 	'catalogs.guided.catalogLabel': 'Catalogue : {name}',
 	'catalogs.guided.contractLabel': 'Contrat : {number}',
 	'catalogs.guided.preferredTag': 'Privilégié',
+	'catalogs.loadMore': 'Charger plus ({shown} sur {total})',
 	'catalogs.showingAll':
 		'{total, plural, one {Affichage du # catalogue} other {Affichage des # catalogues}}',
 
@@ -1494,6 +1499,7 @@ export const messages = {
 	'budgets.toast.deleted': 'Budget supprimé',
 	'budgets.toast.deleteFailed': 'Échec de la suppression',
 	'budgets.toast.loadFailed': 'Échec du chargement des budgets',
+	'budgets.loadMore': 'Charger plus ({shown} sur {total})',
 	'budgets.showingAll':
 		'{total, plural, one {Affichage du # budget} other {Affichage des # budgets}}',
 

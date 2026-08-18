@@ -71,6 +71,7 @@
 	import { replaceState } from '$app/navigation';
 	import { untrack } from 'svelte';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
+	import { appendUnique } from '$lib/utils/pagination';
 	import { m } from '$lib/i18n/store.svelte';
 
 	const canCreate = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk'));
@@ -286,9 +287,16 @@
 	}
 
 	// ============================ Reports tab ============================
+	const REPORTS_PAGE_SIZE = 50;
 	let reports = $state<ExpenseReport[]>([]);
 	let reportsLoading = $state(false);
 	let reportsTotal = $state(0);
+	let reportsPage = $state(1);
+	let reportsLoadingMore = $state(false);
+
+	// `reportsTotal` is the whole set, so the footer may only claim to be
+	// showing all of it once every row is actually loaded.
+	let reportsHasMore = $derived(reports.length < reportsTotal);
 	let activeReport = $state<ExpenseReport | null>(null);
 	let activeSummary = $state<ExpenseReportSummary | null>(null);
 	let showNewReport = $state(false);
@@ -309,16 +317,25 @@
 	// the sequencer here only stops two of those refreshes landing out of order.
 	const reportsSequence = createRequestSequencer();
 
-	async function loadReports() {
+	async function loadReports(opts: { append?: boolean } = {}) {
+		const nextPage = opts.append ? reportsPage + 1 : 1;
 		const token = reportsSequence.start();
-		reportsLoading = true;
+		if (opts.append) reportsLoadingMore = true;
+		else reportsLoading = true;
 		try {
-			const res = await listExpenseReports({ page_size: 50 });
+			const res = await listExpenseReports({
+				page: nextPage,
+				page_size: REPORTS_PAGE_SIZE
+			});
 			if (!reportsSequence.canCommit(token)) return;
-			reports = res.items;
+			reports = opts.append ? appendUnique(reports, res.items) : res.items;
 			reportsTotal = res.total;
+			reportsPage = nextPage;
 		} finally {
-			if (reportsSequence.isCurrentRequest(token)) reportsLoading = false;
+			if (reportsSequence.isCurrentRequest(token)) {
+				reportsLoading = false;
+				reportsLoadingMore = false;
+			}
 		}
 	}
 
@@ -682,9 +699,15 @@
 	}
 
 	// ============================ Cards tab (WF4) ============================
+	const CARDS_PAGE_SIZE = 50;
 	let cardTxns = $state<CorporateCardTransaction[]>([]);
 	let cardsLoading = $state(false);
 	let cardsTotal = $state(0);
+	let cardsPage = $state(1);
+	let cardsLoadingMore = $state(false);
+
+	// Same rule as the reports list: `cardsTotal` is the whole set.
+	let cardsHasMore = $derived(cardTxns.length < cardsTotal);
 	let reconFilter = $state<string>($page.url.searchParams.get('recon') ?? 'all');
 	let cardBusy = $state(false);
 	let cardFileInput = $state<HTMLInputElement>();
@@ -712,20 +735,30 @@
 	// post-mutation refresh landing out of order.
 	const cardsSequence = createRequestSequencer();
 
-	async function loadCardTxns() {
+	async function loadCardTxns(opts: { append?: boolean } = {}) {
+		const nextPage = opts.append ? cardsPage + 1 : 1;
 		const token = cardsSequence.start();
-		cardsLoading = true;
+		if (opts.append) cardsLoadingMore = true;
+		else cardsLoading = true;
 		try {
 			const params = reconFilter !== 'all' ? { reconciliation_status: reconFilter } : {};
-			const res = await listCardTransactions({ ...params, page_size: 50 });
+			const res = await listCardTransactions({
+				...params,
+				page: nextPage,
+				page_size: CARDS_PAGE_SIZE
+			});
 			if (!cardsSequence.canCommit(token)) return;
-			cardTxns = res.items;
+			cardTxns = opts.append ? appendUnique(cardTxns, res.items) : res.items;
 			cardsTotal = res.total;
+			cardsPage = nextPage;
 		} catch (err) {
 			if (!cardsSequence.isCurrentRequest(token)) return;
 			toast(err instanceof Error ? err.message : m('expenses.cards.toast.loadFailed'), 'error');
 		} finally {
-			if (cardsSequence.isCurrentRequest(token)) cardsLoading = false;
+			if (cardsSequence.isCurrentRequest(token)) {
+				cardsLoading = false;
+				cardsLoadingMore = false;
+			}
 		}
 	}
 
@@ -1133,7 +1166,22 @@
 					{/each}
 				{/snippet}
 			</DataTable>
-			{#if reportsTotal > 0}
+			{#if reportsHasMore}
+				<div class="load-more-row">
+					<button
+						class="btn-load-more"
+						onclick={() => loadReports({ append: true })}
+						disabled={reportsLoadingMore}
+					>
+						{reportsLoadingMore
+							? m('common.loading')
+							: m('expenses.reports.loadMore', {
+									shown: reports.length,
+									total: reportsTotal
+								})}
+					</button>
+				</div>
+			{:else if reportsTotal > 0}
 				<div class="load-more-row">
 					<span class="load-more-end">{m('expenses.reports.showingAll', { total: reportsTotal })}</span>
 				</div>
@@ -1292,7 +1340,19 @@
 				{/each}
 			{/snippet}
 		</DataTable>
-		{#if cardsTotal > 0}
+		{#if cardsHasMore}
+			<div class="load-more-row">
+				<button
+					class="btn-load-more"
+					onclick={() => loadCardTxns({ append: true })}
+					disabled={cardsLoadingMore}
+				>
+					{cardsLoadingMore
+						? m('common.loading')
+						: m('expenses.cards.loadMore', { shown: cardTxns.length, total: cardsTotal })}
+				</button>
+			</div>
+		{:else if cardsTotal > 0}
 			<div class="load-more-row">
 				<span class="load-more-end">{m('expenses.cards.showingAll', { total: cardsTotal })}</span>
 			</div>
