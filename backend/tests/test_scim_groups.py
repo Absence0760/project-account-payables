@@ -258,3 +258,92 @@ def test_scim_group_list_response_envelope():
     dumped = resp.model_dump()
     assert dumped["schemas"] == ["urn:ietf:params:scim:api:messages:2.0:ListResponse"]
     assert dumped["totalResults"] == 0
+
+
+# --- role resolution against a REAL control-plane DB -------------------------
+#
+# The recording mock above answers every SELECT with the same canned role list,
+# so it cannot see WHICH rows the WHERE clause would actually match. That blind
+# spot hid a live bug: `_resolve_role` filtered with
+# `Role.organization_id.in_([org_id, None])`, which Postgres renders as
+# `organization_id IN (:org, NULL)`. `IN` compares with `=`, and `NULL = NULL`
+# is NULL — so the four SYSTEM roles (the only rows with a NULL
+# `organization_id`) matched nothing and every group→role GRANT silently
+# no-oped, while the revoke branch (which resolves the role off the user's
+# existing `user_roles` rows, not through here) kept working. A tenant that
+# mapped an IdP group to `admin` therefore had `admin` stripped from everyone
+# outside the group and handed to nobody.
+#
+# These two run against real Postgres precisely because the predicate's SQL
+# semantics ARE the bug.
+
+
+@pytest.mark.asyncio
+async def test_resolve_role_finds_the_system_role(realdb):
+    """A system role (`organization_id IS NULL`) must resolve for any org."""
+    org_id = realdb.info("a").org_id
+    mk = realdb.control_sessionmaker()
+    async with mk() as s:
+        for name in ("admin", "ap_manager", "ap_clerk", "cfo"):
+            role = await sg._resolve_role(s, org_id, name)
+            assert role is not None, f"system role {name!r} did not resolve"
+            assert role.name == name
+            assert role.organization_id is None
+
+
+@pytest.mark.asyncio
+async def test_reconcile_grants_system_role_against_real_db(realdb, audit_calls):
+    """End-to-end: a mapped group must actually INSERT the `user_roles` row.
+
+    Uses a throwaway control-plane user — the seeded role users persist across
+    tests, so granting one of them a role would leak into every later run — and
+    removes it again in `finally`.
+    """
+    from sqlalchemy import delete, select
+
+    from app.models.user import Role, User, UserRole
+
+    org_id = realdb.info("a").org_id
+    mk = realdb.control_sessionmaker()
+    user_id = uuid.uuid4()
+
+    async with mk() as s:
+        s.add(
+            User(
+                id=user_id,
+                email=f"scim-grant-{user_id}@example.test",
+                full_name="SCIM Grant Probe",
+                hashed_password=None,
+                organization_id=org_id,
+                is_active=True,
+                must_change_password=False,
+            )
+        )
+        await s.commit()
+
+    try:
+        groups = {"g1": {"displayName": "AP Managers", "members": [str(user_id)]}}
+        role_map = {"AP Managers": "ap_manager"}
+        async with mk() as s:
+            await sg.reconcile_user_roles(s, org_id, user_id, groups, role_map)
+            await s.commit()
+
+        async with mk() as s:
+            granted = (
+                (
+                    await s.execute(
+                        select(Role.name)
+                        .join(UserRole, UserRole.role_id == Role.id)
+                        .where(UserRole.user_id == user_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert granted == ["ap_manager"]
+        assert [c["action"] for c in audit_calls] == ["auth.scim.role_granted"]
+    finally:
+        async with mk() as s:
+            await s.execute(delete(UserRole).where(UserRole.user_id == user_id))
+            await s.execute(delete(User).where(User.id == user_id))
+            await s.commit()
