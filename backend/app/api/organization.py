@@ -162,9 +162,49 @@ async def update_organization(
                     "change to it is audited."
                 ),
             )
+        # Custom domains have one sanctioned writer too — the audited
+        # `PUT /api/organization/branding/custom-domains`, which normalizes each
+        # host through the tenant resolver's own `normalize_custom_domain`, takes
+        # an advisory lock, and refuses a host already claimed by another org.
+        # The shallow `update()` below replaces the WHOLE `brand` key, so a
+        # `{"brand": {"custom_domains": [...]}}` PATCH would write the list with
+        # none of those checks — an unaudited way to claim another tenant's
+        # vanity hostname and make resolution ambiguous. Refuse the key.
+        incoming_brand = body.settings.get("brand")
+        if isinstance(incoming_brand, dict) and "custom_domains" in incoming_brand:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "brand.custom_domains is managed by "
+                    "/api/organization/branding/custom-domains, so that every "
+                    "change to it is normalized, checked for cross-tenant "
+                    "conflicts, and audited."
+                ),
+            )
+
         # Merge incoming keys into existing settings (don't replace the whole dict)
         existing = dict(org.settings or {})
+        prior_brand = existing.get("brand")
         existing.update(body.settings)
+        # ...and carry the stored domain list across a `brand` replacement, the
+        # same way `PUT /branding` does. Refusing the key above is not enough on
+        # its own: a brand PATCH that simply omits `custom_domains` would still
+        # drop every registered hostname, silently un-routing the tenant.
+        if "brand" in body.settings and isinstance(prior_brand, dict):
+            preserved = prior_brand.get("custom_domains")
+            if preserved is not None:
+                merged_brand = existing.get("brand")
+                if not isinstance(merged_brand, dict):
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            "brand must be an object; replacing it with a "
+                            "non-object would drop the registered custom domains."
+                        ),
+                    )
+                merged_brand = dict(merged_brand)
+                merged_brand["custom_domains"] = preserved
+                existing["brand"] = merged_brand
         org.settings = existing
 
     await db.commit()
@@ -430,18 +470,20 @@ async def update_custom_domains(
         if host in before:
             # Already ours — no conflict possible.
             continue
-        owner = (
+        owners = (
             (
                 await db.execute(
-                    select(Organization.id).where(
-                        Organization.settings.contains({"brand": {"custom_domains": [host]}})
-                    )
+                    select(Organization.id)
+                    .where(Organization.settings.contains({"brand": {"custom_domains": [host]}}))
+                    .order_by(Organization.created_at.asc(), Organization.id.asc())
                 )
             )
             .scalars()
-            .first()
+            .all()
         )
-        if owner is not None and owner != org.id:
+        # Every claimant, not just the first row: a duplicate that predates this
+        # guard could otherwise hide behind our own org's row and be re-saved.
+        if any(owner != org.id for owner in owners):
             # Generic message — do NOT echo the host, which would confirm to this
             # caller that a specific hostname is claimed by another tenant
             # (cross-tenant info disclosure + the endpoint's PII-free posture).

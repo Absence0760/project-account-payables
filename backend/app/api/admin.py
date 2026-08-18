@@ -329,6 +329,53 @@ def _authorize_role_grant(caller: User, roles_to_grant: list[Role]) -> None:
         )
 
 
+def _authorize_target_mutation(caller: User, target: User) -> None:
+    """Refuse a mutation of an account that outranks the caller.
+
+    ``_authorize_role_grant`` stops a ``user.manage`` holder from handing OUT
+    authority they don't hold. This is the other half: it stops them from
+    seizing authority that already sits on someone else's account. Resetting an
+    org admin's password (the actor chooses the value, so the complexity check
+    cannot help), deactivating them, moving their email to an address the actor
+    controls, stripping their roles, deleting them, or force-logging them out
+    are each a takeover or denial-of-service primitive that a permission scoped
+    to "manage users" must not confer.
+
+    Same rule as the grant guard, turned around onto the TARGET — one rule, two
+    directions, so neither can drift:
+
+    * The system ``admin`` role may only be acted on by a caller who is
+      themselves an admin. ``admin`` carries non-catalog superuser authority
+      (org settings, role CRUD) the permission subset check below can't see.
+    * The target's effective *catalog* permissions must be a subset of the
+      caller's — you can never mutate an account that can do more than you.
+
+    Self-mutation always passes: a user's own permissions are trivially a subset
+    of themselves, and an admin acting on an admin passes the first check too.
+    """
+    caller_holds_admin = any(
+        r.name == ROLE_ADMIN and r.organization_id is None for r in (caller.roles or ())
+    )
+    target_holds_admin = any(
+        r.name == ROLE_ADMIN and r.organization_id is None for r in (target.roles or ())
+    )
+    if target_holds_admin and not caller_holds_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only an admin may modify an admin account.",
+        )
+
+    target_perms = effective_permissions(target.roles)
+    caller_perms = getattr(caller, "effective_permissions", None)
+    if caller_perms is None:
+        caller_perms = effective_permissions(caller.roles)
+    if not target_perms <= set(caller_perms):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You cannot modify a user who holds permissions you do not hold.",
+        )
+
+
 def _validate_admin_set_password(password: str) -> None:
     """Run an admin-set password through the same complexity policy as
     self-service change-password (issue #158) — a ``user.manage`` actor must not
@@ -415,6 +462,20 @@ async def update_user(
     target = result.scalar_one_or_none()
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
+
+    # Every branch below except `full_name` either seizes control of the target
+    # account (password / email), disables it (`is_active`), or changes what it
+    # can do (`role_names` — including *removing* a role, which the grant guard
+    # never sees because it only inspects the roles being granted). Gate them
+    # all on the caller out-ranking the target. A rename carries no authority,
+    # so it stays open to any `user.manage` holder.
+    if (
+        body.password is not None
+        or body.email is not None
+        or body.is_active is not None
+        or body.role_names is not None
+    ):
+        _authorize_target_mutation(current_user, target)
 
     # Snapshot pre-state so we can decide whether to force-logout the target.
     previous_role_names = sorted(r.name for r in target.roles)
@@ -585,10 +646,17 @@ async def revoke_user_sessions_endpoint(
     one. Idempotent — with nothing signed in it reports ``revoked: 0``.
     """
     target = (
-        await db.execute(select(User).where(User.id == user_id, User.organization_id == org_id))
+        await db.execute(
+            select(User)
+            .where(User.id == user_id, User.organization_id == org_id)
+            .options(selectinload(User.roles))
+        )
     ).scalar_one_or_none()
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
+    # Force-logout is a denial primitive: repeated against an org admin it locks
+    # the only account that can undo the attacker's other changes out of the app.
+    _authorize_target_mutation(current_user, target)
 
     revoked = await revoke_user_sessions(user_id)
     await dispatch_auth_audit(
@@ -609,13 +677,18 @@ async def delete_user(
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     result = await db.execute(
-        select(User).where(User.id == user_id, User.organization_id == org_id)
+        select(User)
+        .where(User.id == user_id, User.organization_id == org_id)
+        .options(selectinload(User.roles))
     )
     target = result.scalar_one_or_none()
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
     if target.id == current_user.id:
         raise HTTPException(status_code=409, detail="Cannot delete yourself")
+    # Deleting an account you couldn't otherwise touch is the bluntest form of
+    # the same takeover — same rule as the PATCH branches above.
+    _authorize_target_mutation(current_user, target)
 
     # Pre-flight safety: refuse if the user is referenced by anything that
     # would be silently orphaned. The admin must reassign references first.
@@ -661,7 +734,7 @@ class BulkDeleteRequest(BaseModel):
 
 class BulkDeleteFailure(BaseModel):
     user_id: str
-    reason: str  # "not_found" | "self" | "blocked"
+    reason: str  # "not_found" | "self" | "forbidden" | "blocked"
     references: UserDeleteConflict | None = None
 
 
@@ -702,11 +775,21 @@ async def bulk_delete_users(
             continue
 
         result = await db.execute(
-            select(User).where(User.id == user_uuid, User.organization_id == org_id)
+            select(User)
+            .where(User.id == user_uuid, User.organization_id == org_id)
+            .options(selectinload(User.roles))
         )
         target = result.scalar_one_or_none()
         if not target:
             failed.append(BulkDeleteFailure(user_id=raw_id, reason="not_found"))
+            continue
+
+        # Same privilege guard the single delete applies — reported per row so
+        # one out-ranking target doesn't abort the rest of the batch.
+        try:
+            _authorize_target_mutation(current_user, target)
+        except HTTPException:
+            failed.append(BulkDeleteFailure(user_id=raw_id, reason="forbidden"))
             continue
 
         conflict = await _user_reference_counts(org.db_name, user_uuid)

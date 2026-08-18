@@ -1153,6 +1153,59 @@ async def get_me(
     return _user_response(user, org)
 
 
+# ---------------------------------------------------------------------------
+# Self-service password change — ONE writer, two routes
+#
+# `PATCH /api/auth/me` and `POST /api/auth/change-password` both let the
+# authenticated user set their own password. They diverged: only the latter ran
+# the complexity policy, so `/me` accepted a 6-character password that
+# `/change-password` (and every admin-set path) refuses. These two helpers are
+# the single implementation both now call, so a third caller can't reintroduce
+# the gap.
+# ---------------------------------------------------------------------------
+
+
+def _apply_new_password(user: User, new_password: str) -> None:
+    """Validate + set the caller's own password on the in-session User row.
+
+    Clears `must_change_password` for the same reason `/change-password`
+    always has: successfully setting a password means the temp credential the
+    flag exists to force out is no longer in play.
+    """
+    try:
+        validate_password_complexity(new_password)
+    except PasswordError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    user.hashed_password = pwd_context.hash(new_password)
+    user.must_change_password = False
+
+
+async def _revoke_sessions_after_password_change(user: User) -> None:
+    """Sign the user out everywhere EXCEPT the session that made the change.
+
+    A password change is most often made by someone who believes their
+    credential is compromised — and until now it left every other session of
+    theirs authenticating with the old token for the rest of its lifetime (up
+    to `FEOH_ACCESS_TOKEN_EXPIRE_MINUTES`). The admin-initiated reset has
+    revoked the target's sessions since issue #160 for exactly this reason; the
+    self-service paths, taken at precisely the moment it matters most, did not.
+
+    The caller's own session is spared so changing a password doesn't log you
+    out of the tab you did it in. Best-effort by construction: it runs AFTER the
+    commit, so a Redis hiccup can't roll back a password the user was told was
+    changed. Audited PII-free, same row `POST /auth/sessions/revoke-others`
+    writes.
+    """
+    revoked = await revoke_other_sessions(user.id, getattr(user, "session_jti", None))
+    await dispatch_auth_audit(
+        organization_id=user.organization_id,
+        actor_id=user.id,
+        action="auth.session.revoked",
+        entity_id=user.id,
+        details={"scope": "others", "revoked": len(revoked), "reason": "password_changed"},
+    )
+
+
 @router.patch("/me", response_model=UserResponse)
 async def update_me(
     body: UpdateProfileRequest,
@@ -1187,9 +1240,11 @@ async def update_me(
             body.current_password, user.hashed_password
         ):
             raise HTTPException(status_code=400, detail="Current password is incorrect")
-        user.hashed_password = pwd_context.hash(body.password)
+        _apply_new_password(user, body.password)
 
     await db.commit()
+    if body.password is not None:
+        await _revoke_sessions_after_password_change(user)
     org = await _load_user_org(db, user.organization_id)
     return _user_response(user, org)
 
@@ -1212,14 +1267,9 @@ async def change_password(
     ):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
 
-    try:
-        validate_password_complexity(body.new_password)
-    except PasswordError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    user.hashed_password = pwd_context.hash(body.new_password)
-    user.must_change_password = False
+    _apply_new_password(user, body.new_password)
     await db.commit()
+    await _revoke_sessions_after_password_change(user)
     org = await _load_user_org(db, user.organization_id)
     return _user_response(user, org)
 

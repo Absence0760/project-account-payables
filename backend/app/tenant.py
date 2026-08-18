@@ -68,8 +68,16 @@ async def resolve_tenant_slug_by_custom_domain(db: AsyncSession, host: str | Non
     # this exact host. Domains are stored normalized (lowercase, no port) so an
     # exact-element match is correct and uses the GIN-indexable @> operator on
     # the whole `settings` column (``settings @> '{"brand":{"custom_domains":["x"]}}'``).
-    stmt = select(Organization.slug).where(
-        Organization.settings.contains({"brand": {"custom_domains": [normalized]}})
+    # ORDER BY is load-bearing, not cosmetic: without it Postgres may return the
+    # matching rows in any order, so a host registered to two orgs (a duplicate
+    # that predates the uniqueness guard, or one written straight into the JSONB)
+    # would resolve to a DIFFERENT tenant from one request to the next. The
+    # oldest claimant wins, deterministically, with the id as the final tiebreak
+    # for two rows created in the same instant.
+    stmt = (
+        select(Organization.slug)
+        .where(Organization.settings.contains({"brand": {"custom_domains": [normalized]}}))
+        .order_by(Organization.created_at.asc(), Organization.id.asc())
     )
     try:
         result = await db.execute(stmt)

@@ -345,3 +345,72 @@ async def test_revoke_others_leaves_another_users_sessions_alone(fake_redis, cli
 
     assert f"token:blocked:{neighbour_jti}" not in fake_redis.strings
     assert [m for (_, m) in fake_redis.zsets[f"active_jtis:{neighbour}"]] == [neighbour_jti]
+
+
+# ---------------------------------------------------------------------------
+# The same primitive, reused by a self-service password change
+#
+# `POST /api/auth/change-password` and the `PATCH /api/auth/me` password branch
+# both call `_revoke_sessions_after_password_change`. Pinned here against the
+# real session service so the behaviour is proven once, where the Redis
+# structures actually exist — the handler-level tests (test_password_security.py)
+# only assert that each route reaches it.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def password_audit_calls(monkeypatch):
+    calls: list[dict] = []
+
+    async def _capture(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("app.api.auth.dispatch_auth_audit", _capture)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_password_change_revokes_every_session_but_the_callers(
+    fake_redis, password_audit_calls
+):
+    from app.api.auth import _revoke_sessions_after_password_change
+
+    user_id = uuid.uuid4()
+    mine, laptop, phone = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    await _seed(user_id, mine)
+    await _seed(user_id, laptop)
+    await _seed(user_id, phone)
+
+    user = SimpleNamespace(id=user_id, organization_id=ORG_ID, session_jti=mine)
+    await _revoke_sessions_after_password_change(user)
+
+    # The stolen sessions stop authenticating; the tab that made the change
+    # keeps working.
+    assert f"token:blocked:{laptop}" in fake_redis.strings
+    assert f"token:blocked:{phone}" in fake_redis.strings
+    assert f"token:blocked:{mine}" not in fake_redis.strings
+
+    assert [c["action"] for c in password_audit_calls] == ["auth.session.revoked"]
+    details = password_audit_calls[0]["details"]
+    assert details["scope"] == "others"
+    assert details["revoked"] == 2
+    assert details["reason"] == "password_changed"
+
+
+@pytest.mark.asyncio
+async def test_password_change_with_no_other_sessions_still_audits(
+    fake_redis, password_audit_calls
+):
+    """Idempotent: nothing else signed in reports `revoked: 0` rather than
+    failing — and never blocklists the caller's own session."""
+    from app.api.auth import _revoke_sessions_after_password_change
+
+    user_id = uuid.uuid4()
+    mine = str(uuid.uuid4())
+    await _seed(user_id, mine)
+
+    user = SimpleNamespace(id=user_id, organization_id=ORG_ID, session_jti=mine)
+    await _revoke_sessions_after_password_change(user)
+
+    assert f"token:blocked:{mine}" not in fake_redis.strings
+    assert password_audit_calls[0]["details"]["revoked"] == 0

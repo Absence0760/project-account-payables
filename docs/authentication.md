@@ -115,6 +115,30 @@ There is deliberately **no step-up gate**: all three only ever *remove* access, 
 
 The UI is the **Signed-in devices** card on `/profile`, next to the MFA and passkey cards.
 
+### A password change signs out every other session
+
+Changing your password is the action a user takes precisely *because* they
+believe a token has been stolen — so it must end the stolen session. The
+admin-initiated reset already did (`revoke_user_sessions`, with the stated
+rationale that a reset closes exactly that window); the three **self-service**
+paths did not, so an attacker's JWT kept authenticating for the rest of its
+lifetime while the user reasonably believed they had locked them out. On the
+supplier portal it was worse: there is no `/sessions` surface at all, so a
+vendor had no way to end a stolen portal session.
+
+`POST /api/auth/change-password` and the `password` branch of
+`PATCH /api/auth/me` now call `revoke_other_sessions(user.id, <caller's jti>)`
+after the commit — sparing the caller's own session, so they are not logged out
+of the tab they just used — and write the existing PII-free
+`auth.session.revoked` audit row. `POST /api/portal/auth/change-password`
+blocklists the vendor's current JTI and its tracked siblings.
+
+`PATCH /api/auth/me` was also the one password-setting path that never ran
+`validate_password_complexity`, and its schema allowed `min_length=6` against
+`ChangePasswordRequest`'s 12 — so any user could quietly drop to a
+six-character all-lowercase password and defeat the policy tenant-wide. All
+four paths now share one `_set_password` helper so a fifth cannot diverge.
+
 ### Logout
 
 `POST /api/auth/logout` now both blocklists the current JTI **and** drops it from the tracking set (via `end_session`). A user who logs out gains a free slot under the concurrent-session cap for their next login.
@@ -287,6 +311,40 @@ deterministically. Intentional; no migration needed (config is additive JSONB).
 (only when the IdP requires signed AuthnRequests) is a real secret → `FEOH_SAML_SP_*`
 via sops; empty by default so local Keycloak runs with no SP keypair.
 
+### Every admin-supplied SSO URL is SSRF-guarded
+
+`settings.sso.discovery_url` is admin-supplied config that the backend `GET`s
+directly, and the discovery document's `token_endpoint` (a `POST` target
+carrying the client secret and auth code) and `jwks_uri` (which supplies the
+key an ID token is verified against) were then used verbatim. None passed
+through `utils/url_safety.assert_public_url` — the guard every *other*
+admin-supplied URL this app fetches goes through (branding logo, chat
+webhooks, ERP and enrichment base URLs).
+
+That is reachable **unauthenticated**: anyone can self-signup a tenant, `PATCH`
+an `sso.discovery_url` of `http://169.254.169.254/...`, and hit the public
+`GET /api/auth/sso/authorize?slug=<tenant>` to make the backend fetch cloud
+instance credentials on demand — or port-scan the VPC by telling reachable
+hosts apart from dead ones by the 302-vs-400 response.
+
+Now: `assert_public_url` runs at `resolve_sso_config` time (so a bad value is
+refused where it is read, not only where it is fetched) and again in
+`fetch_discovery` / `fetch_jwks` / before the token `POST`. `_pinned_endpoint`
+additionally pins `token_endpoint` and `jwks_uri` to the discovery document's
+own issuer netloc — OIDC Discovery requires the document to be served under its
+own `issuer`, and this mirrors the check `api/auth_sso.py` already applied to
+`authorization_endpoint`, so a compromised or mis-served document cannot
+redirect either fetch off-host.
+
+**Local-first carve-out** (guard rail 7): the documented local IdP is Keycloak
+on `http://localhost:8088`, and a loopback address is exactly what the guard
+rejects. Outside a deployed environment (`settings.is_deployed`, the same
+discriminator the extraction-provider fallback uses) an unroutable address logs
+a warning instead of refusing. The URL *shape* check is unconditional either
+way, so a `file://` URL is refused in dev too. Refusals are PII-free: they name
+the field, never the URL (it can carry a tenant identifier) and never the
+resolved address.
+
 ## SSO-only mode
 
 `settings.sso.sso_only` (a per-tenant flag, shared by OIDC + SAML) closes
@@ -392,8 +450,22 @@ exactly as before.
   - **Admin-set passwords obey the complexity policy.** An admin resetting a
     user's password (`PATCH /api/admin/users/{id}` `password`) runs it through
     the same `validate_password_complexity` as self-service change-password
-    (min 12, upper/lower/digit), so a `user.manage` actor can't reset an
-    account to a trivial value and log in as it.
+    (min 12, upper/lower/digit).
+  - **You cannot act on an account more privileged than your own.**
+    Complexity alone never stopped the takeover it was once described as
+    stopping — the actor *chooses* the password, so how strong it is is
+    irrelevant to whether they can then use it. `_authorize_role_grant` guarded
+    only the `role_names` branch, so a holder of the documented `user.manage`
+    custom role could `PATCH` an org admin's **password**, watch
+    `revoke_user_sessions` end the real admin's sessions, and sign in as them —
+    or simply `DELETE` the admins, or revoke their sessions on a loop.
+    `_authorize_target_mutation` now runs on `password`, `is_active`, `email`,
+    role removal, `DELETE /api/admin/users/{id}` and
+    `POST /api/admin/users/{id}/revoke-sessions`: it refuses (403) when the
+    TARGET holds the system `admin` role and the caller does not, or when the
+    target's effective permissions are not a subset of the caller's. It shares
+    `permissions_for_role` / `effective_permissions` with the grant guard, so
+    the two rules cannot drift.
 - **Frontend** — `auth.can(perm)` mirrors `require_permission`; the gated
   controls converted so far are payment Execute, payment Void, and vendor
   Block/Unblock. The `/admin/roles` editor renders permission checkboxes from

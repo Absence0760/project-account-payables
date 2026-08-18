@@ -200,3 +200,65 @@ async def test_custom_domain_path_allows_matching_jwt_org():
         authorization=f"Bearer {token}",
     )
     assert org.id == acme_id
+
+
+# ---------------------------------------------------------------------------
+# Determinism: a duplicate registration must not flip which tenant resolves.
+#
+# The uniqueness guard on `PUT /branding/custom-domains` stops a *new*
+# duplicate, but rows predating it (or written straight into the JSONB) still
+# exist. Without an ORDER BY, Postgres may return the matching rows in any
+# order, so the same vanity host could resolve to a different tenant from one
+# request to the next — the resolution is only a candidate (the JWT org-claim
+# cross-check still gates access), but a non-deterministic one is a footgun
+# nobody can debug. Oldest claimant wins, every time.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_duplicate_custom_domain_resolves_deterministically(realdb):
+    from sqlalchemy import select
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.models.organization import Organization
+    from app.tenant import resolve_tenant_slug_by_custom_domain
+
+    host = "dupe.example.test"
+    org_ids = [realdb.info("a").org_id, realdb.info("b").org_id]
+    ctrl = realdb.control_sessionmaker()
+    try:
+        async with ctrl() as s:
+            orgs = (
+                (await s.execute(select(Organization).where(Organization.id.in_(org_ids))))
+                .scalars()
+                .all()
+            )
+            for org in orgs:
+                settings_blob = dict(org.settings or {})
+                brand = dict(settings_blob.get("brand") or {})
+                brand["custom_domains"] = [host]
+                settings_blob["brand"] = brand
+                org.settings = settings_blob
+                flag_modified(org, "settings")
+            await s.commit()
+            expected = min(orgs, key=lambda o: (o.created_at, o.id)).slug
+
+        # Repeat: a single lucky draw would pass without the ORDER BY.
+        for _ in range(5):
+            async with ctrl() as s:
+                assert await resolve_tenant_slug_by_custom_domain(s, host) == expected
+    finally:
+        async with ctrl() as s:
+            orgs = (
+                (await s.execute(select(Organization).where(Organization.id.in_(org_ids))))
+                .scalars()
+                .all()
+            )
+            for org in orgs:
+                settings_blob = dict(org.settings or {})
+                brand = dict(settings_blob.get("brand") or {})
+                brand.pop("custom_domains", None)
+                settings_blob["brand"] = brand
+                org.settings = settings_blob
+                flag_modified(org, "settings")
+            await s.commit()
