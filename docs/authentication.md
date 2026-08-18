@@ -912,6 +912,13 @@ Each tenant has its own SCIM bearer token. To generate one, the admin POSTs to `
 
 Re-calling the endpoint rotates the token: the old hash is overwritten, so any IdP still using the previous token starts seeing 401s.
 
+Every mint / rotation writes an `organization.scim_token_minted` audit row into
+the tenant trail, carrying the 8-char digest prefix and nothing else — never the
+token or its full digest. This is a tenant-wide user-provisioning credential
+(its holder can create, rename and deactivate accounts, and grant roles through
+group mapping), so it is audited like the other credential mints
+(`api_key.created`, `webhook_subscription.created`).
+
 Every SCIM request Authorization-headers a bearer token; the backend SHA-256s it and looks for a matching `scim_bearer_hash` across all orgs to resolve the tenant. Linear scan, acceptable while tenant count is <<1000.
 
 ### Endpoints (all under `/api/scim/v2`)
