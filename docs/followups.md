@@ -34,7 +34,13 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#251](https://github.com/Absence0760/project-account-payables/issues/251)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-08-17 against `fix/bug-hunt-round-9` — a five-agent
+**Last reconciled:** 2026-08-18 against round 10 — a five-agent bug hunt.
+Each agent fixed its findings at the root with a reproducing test first, and
+recorded what it confirmed but did not fix in its own section below. The pass
+is **additive**: nothing pre-existing was closed or re-verified, so every
+earlier entry stands as it was left on 2026-08-17.
+
+Before that: 2026-08-17 against `fix/bug-hunt-round-9` — a five-agent
 bug hunt that confirmed ~50 findings and fixed 31 at the root (see § Surfaced by
 the five-agent bug hunt for the remainder, which is the largest single addition
 this file has taken).
@@ -331,6 +337,72 @@ The hunt (branch `fix/bug-hunt-round-9`) confirmed ~50 findings and fixed 31
 at the root. These are the remainder — each real and reproduced, each larger
 than a bug fix or a product call rather than a defect:
 
+- [ ] **The email-intake webhook acks `200` on an internal failure, so a
+      transient outage silently loses the invoice — and the release-on-failure
+      code exists precisely for a retry that can now never come.**
+      `services/email_intake.process_inbound_email` releases its Redis dedup
+      claim and **re-raises** on any downstream failure (S3 / tenant DB /
+      Redis), commenting that this "lets the NEXT delivery of the same
+      message_id actually retry the work". `api/email_intake.py:129` then
+      catches that re-raise and returns the opaque `_ack()` — a `200`, which
+      tells SES / Mailgun the message was delivered, so there is no next
+      delivery. The vendor's invoice is gone with only a log line.
+      `api/billing_webhook.py` faced the identical choice and went the other
+      way ("we re-raise (→ 5xx) so the provider retries"); `api/erp_webhook.py`
+      has the same swallow-to-204 shape.
+      **The catch:** `backend/docs/email-intake.md` § "What the response does
+      NOT tell you" documents the uniform ack as covering "an internal error
+      while creating the invoice" — the stated reason being that the intake
+      signing secret is platform-wide, so a response that varies by outcome is
+      a per-tenant-token oracle. Returning 5xx only on OUR failure narrows that
+      oracle to "while the platform is already broken", which is a real but far
+      smaller exposure than losing invoices on every blip.
+      **Durable fix:** distinguish *decisions* (unknown/disabled token,
+      duplicate, no usable attachment, success → uniform 200 ack, unchanged)
+      from *our own failures* (→ a bodyless 5xx so the provider redelivers),
+      apply the same split to `erp_webhook`, and update the doc section + a
+      `decisions.md` entry recording the trade-off.
+      **Trigger:** a call on the oracle-vs-data-loss trade-off — this is the
+      decision, not the work; the work is a few lines in two routes.
+- [ ] **Scheduled reports drift later every run.**
+      `services/scheduled_reports.execute_schedule` bumps
+      `next_run_at = compute_next_run(cadence, now)` — from the moment the tick
+      happened to run, not from the `next_run_at` it was due at. The sweep
+      ticks hourly (`FEOH_SCHEDULED_REPORTS_TICK_SECONDS`), so a "daily 09:00"
+      report lands up to an hour later each day and walks around the clock
+      inside a month. Deliberately grouped with the entry below rather than
+      fixed on its own: the feature has no CRUD surface, so no row exists to
+      drift yet.
+      **Durable fix:** advance from the scheduled `next_run_at`, catching up in
+      whole cadence steps when a run is missed (never emitting a backlog burst).
+      **Trigger:** whichever way the `ScheduledReport` product call below goes —
+      fix it with the CRUD surface, or delete it with the model.
+- [ ] **A failed ERP post writes the provider's raw response body into the
+      append-only audit trail.** The three real ERP adapters build their failure
+      message from the response verbatim —
+      `backend/app/services/erp_adapters/netsuite.py:173`,
+      `merge_dev.py:174`, `dynamics_365_bc.py:178` all do
+      `message=f"… error {resp.status_code}: {resp.text}"`. `services/erp.py`
+      raises `RuntimeError(result.message)` and then stores `str(exc)` into
+      `details={"error": …}` on the `invoice.erp_failed` audit row (and into
+      `WorkflowInstance.state_data["last_error"]`). An ERP's validation error
+      routinely echoes the submitted fields back, and `InvoicePayload` carries
+      `vendor_tax_id`, `vendor_address`, `remit_to_address` and
+      `bill_to_address` — so that PII lands in an **immutable** row (migration
+      0022's BEFORE-DELETE trigger) and is then shipped to CloudWatch / S3
+      Object Lock by `audit_log_shipper`, where it cannot be redacted either.
+      It is also surfaced to every AP user through the audit export. Note the
+      same file already gets this right elsewhere: `stripe_billing._request`
+      raises `f"Stripe {op} failed: HTTP {resp.status_code}"` and has a test
+      pinning that the body never appears.
+      **Durable fix:** stop putting a provider body in `ResponseResult.message`
+      — carry the status code + a stable adapter-side reason code, and give the
+      adapters a separate, non-audited diagnostic channel for the body (or drop
+      it). The product call this needs is *where an ERP rejection's detail
+      should live* now that the audit row can't hold it, because today the
+      `last_error` is the only thing an AP user can act on.
+      **Trigger:** the next slice touching ERP failure handling or the ERP
+      adapter error contract.
 - [ ] **Every supplier-portal list truncates at 20 rows with no pager.**
       `frontend/src/routes/portal/{invoices,payments,purchase-orders,discount-offers}/+page.svelte`
       each fetch the bare URL, read only `res.items`, declare `total` and never
@@ -492,6 +564,463 @@ than a bug fix or a product call rather than a defect:
       mispriced — recorded so the next person doesn't re-derive it.
       **Durable fix:** route it through `minor_units_to_decimal`.
       **Trigger:** adding a card provider or a non-USD card currency.
+- [ ] **The exception-agent resolvers approve invoices with the PLATFORM's
+      fraud rules, not the org's.** Every HTTP approval door now threads
+      `org_settings` into `review.approve_invoice` (the single-invoice endpoint,
+      the email link, the Slack button, the Teams card and bulk-status), and
+      `tests/test_approval_org_settings.py` scans `app/api/` to keep it that
+      way. The four auto-resolvers that approve —
+      `services/exception_agents/resolvers/{amount_mismatch,missing_po,multi_po_split,gl_coding}.py`
+      — still call it (and, in `missing_po.py`, `refresh_warnings`) with no
+      `org_settings`, because `ExceptionResolver.apply()` has no such parameter
+      even though `coordinator.run_agent` holds the value and already passes it
+      to `evaluate()`. Consequence is the same one the API doors had: a fraud
+      rule the org disabled still opens a payment-BLOCKING `fraud_flag`, and a
+      stricter-than-default per-vendor PO tolerance is erased from
+      `invoice.po_match` by the agent's own recompute. Unattended, so nobody
+      sees it happen.
+      **Durable fix:** add `org_settings: dict | None = None` to
+      `ExceptionResolver.apply`, pass it from `coordinator.run_agent` (it is
+      already in scope), forward it in the four resolvers, and widen the
+      `test_approval_org_settings.py` scan from `app/api/` to `app/`.
+      **Trigger:** the next change to the exception-agent resolvers — kept out
+      of the round-9 hunt only because that package was another agent's area.
+- [ ] **Email-intake and PEPPOL-inbound invoices are created with no
+      `WorkflowInstance`.** `email_intake._create_invoice_from_attachment` and
+      `peppol_receive.receive_peppol_message` insert the `Invoice` and hand
+      straight to `dispatch_extraction`; every other ingress
+      (`POST /api/invoices/upload`, manual `POST /api/invoices`, the portal,
+      `recurring_invoices`, `intercompany`) calls
+      `workflow_engine.create_workflow_instance`. The **money** consequence is
+      already closed — `review.resolve_approval_config` now falls back
+      fail-closed to the org's active definition, and `assign_reviewer` no
+      longer skips its audit row + notification (see
+      `backend/docs/workflow-snapshots.md` § When there is no snapshot to read).
+      What remains is structural: these invoices have no frozen snapshot at all
+      (so a later definition edit *does* retroactively govern them, breaking the
+      per-invoice invariant for exactly the unattended paths), no `WorkflowStep`
+      rows, and no A/B experiment assignment — so they are invisible to the
+      approval queue's step-based reads and to `GET /api/invoices/{id}/workflow`.
+      **Durable fix:** call `create_workflow_instance(tenant_db, invoice)` right
+      after the `flush()` in both ingest paths, exactly as `create_invoice`
+      does. Both already run inside a tenant transaction, so it is a one-line
+      addition each plus a test that the snapshot is frozen at ingest.
+      **Trigger:** the next change to either inbound-webhook service — kept out
+      of the round-9 hunt because the inbound-webhook services were outside the
+      invoice-lifecycle agent's area.
+
+### Surfaced by the money-path bug hunt (round 10), deliberately not fixed
+
+A hunt scoped to the money path (`api/{payments,credit_memos,discounts,cards,tax}`,
+`services/payment_*`, `services/discount_*`, `services/billing/`, and the
+payment / card / FX / financing adapter families) fixed seven defects at the
+root: the 1099 total summing invoice-currency payments as home currency; a
+subscription with no billing period, so every plan change prorated `0.00`; the
+standalone payment path skipping the financial-integrity exception gate;
+`/compliance/release` never handing off to the ERP sync; run creation not being
+entity-scoped; `POST /api/payments` accepting an unvalidated `payment_run_id`;
+and the financing dispatcher still falling back to `mock`.
+
+These are the remainder. Each was **confirmed by reading the code** (the seven
+above were each reproduced with a failing test first); none is fixed here
+because each is either outside that scope, or a design call rather than a
+defect with an obvious correct answer.
+
+- [ ] **The payment reconciler runs one transaction for a whole tenant and
+      holds `FOR UPDATE` locks across network calls.**
+      `services/payment_reconciler.py:249-336` — `db.refresh(payment,
+      with_for_update=True)` is inside the per-payment loop, the only
+      `db.commit()` is after it, so payment #1's row lock is held while
+      `await adapter.get_payment_status(...)` runs for #2…#N. Two effects: a
+      webhook for a locked payment blocks on `payment_webhook`'s own
+      `FOR UPDATE` for the rest of the sweep (and if that request is then
+      cancelled, `CancelledError` is a `BaseException` its `except Exception`
+      tail doesn't catch, so the Redis dedup claim is never released and the
+      provider's retry is deduped away for the full TTL); and any raise
+      mid-loop discards every terminal transition, `completed_at` and audit row
+      the sweep already decided for that tenant. `_dispatch_run_payments`
+      commits per payment for exactly this reason.
+      **Durable fix:** commit per payment inside the loop, mirroring
+      `_dispatch_run_payments`.
+      **Trigger:** the next change to the reconciler, or enabling
+      `FEOH_PAYMENT_RECONCILE_ENABLED` in a deployed env.
+- [ ] **An aged-out payment silently frees the invoice for a second payment.**
+      `services/payment_reconciler.py:254-278` — past
+      `FEOH_PAYMENT_RECONCILE_MAX_AGE_HOURS` (72h) a still-`submitted` payment
+      (real money possibly in flight) is flipped to `failed`, which is in
+      `LIVE_PAYMENT_TERMINAL_STATUSES`, so it leaves the
+      `uq_payments_one_live_per_invoice` slot. The invoice stays
+      `payment_scheduled` — a `PAYABLE_INVOICE_STATUSES` member — so it
+      reappears in `GET /payments/queue` and a fresh run will happily pay it
+      again. No exception row, no flag. The asymmetry is the tell:
+      `_RETRY_SAFE_FAILURE_PREFIXES` deliberately excludes
+      `reconciler_max_age_exceeded` so `/retry-failed` fails closed on exactly
+      this row, while the fresh-run path fails wide open on the same invoice.
+      Secondary: it stamps `completed_at` on a payment that never completed.
+      **Durable fix:** open a de-duped `erp_reconciliation`-style exception on
+      aged-out (which is payment-blocking, so a new run refuses the invoice
+      until a human reconciles the rail), and stop writing `completed_at`.
+      **Trigger:** enabling the reconciler in a deployed env.
+- [ ] **The cash-flow what-if claims discounts whose window has already
+      closed, and buckets their outflow into the past.**
+      `services/analytics.py:786-790` — the `early` scenario takes
+      `discount_date` unconditionally, with no `today <= discount_date` check,
+      while `api/analytics.py::_commitment_rows` bounds only the *due* date to
+      the horizon. A plain 2/10-net-30 invoice still open on day 15 is reported
+      as capturing 2% and has its outflow placed in the week containing day 10,
+      five days in the past — a negative term in `weighted_avg_pay_date_days`.
+      `bucket_outflows`' `discount_eligible_amount` (`analytics.py:718-723`)
+      has the same blind spot. Every other consumer of the same economics
+      enforces the window (`discount_offers._tier_achievable`,
+      `discount_optimizer.optimize`'s `capturable = today <= opp.pay_by`), and
+      `tests/test_analytics.py` only ever uses a future `discount_date`.
+      **Durable fix:** gate the `early` branch and `discount_eligible_amount`
+      on `today <= discount_date`, matching the optimizer.
+      **Trigger:** the next change to `/analytics/cashflow_whatif` or the
+      copilot's `run_payment_whatif` tool.
+- [ ] **`_commitment_rows` computes an `unconverted` flag nothing reads.**
+      `api/analytics.py:188-202` sets it per row and its docstring promises
+      "'we could not convert this' is visible rather than silent", but no
+      consumer reads the key: not `bucket_outflows`, not
+      `/analytics/{cashflow_forecast,cashflow_whatif,cash_position}`, not any
+      of the four copilot tools, not `cash_flow_alerts`. A €100,000 invoice
+      with a NULL `reporting_amount` is subtracted from a USD cash curve as
+      $100,000 and feeds the shortfall-alert email with nothing saying so.
+      Contrast the expense path, which surfaces `unconverted_count` and fails
+      the CFO gate closed.
+      **Durable fix:** carry the count out of `_commitment_rows` and surface it
+      on the forecast / cash-position / plan responses, the way `card_paid` and
+      `unconverted_payment_count` are surfaced on the 1099 report.
+      **Trigger:** the next multi-currency slice, or the first non-USD tenant
+      on the copilot.
+- [ ] **The discount optimizer and the plan assembler drop the offer's
+      currency.** `api/discounts.py:159-170` builds an `OfferOpportunity` from
+      `offer.base_amount` and never carries `offer.currency` (the dataclass has
+      no such field), so `discount_optimizer.optimize` compares outlays against
+      `cash_budget` as bare numbers, and `cash_flow_plan.assemble_plan`
+      substitutes an offer-currency row for a reporting-currency commitment row
+      on the cash curve. A ¥10,000,000 offer in a USD-reporting org puts a
+      ~$9.8M outflow on the curve and fabricates a shortfall the copilot then
+      narrates around. Same family: `/discounts/dashboard` sums
+      `captured_amount` across currencies and labels it `_org_currency(org)`,
+      and `build_bulk_offer` sums a vendor's open `Invoice.amount` values raw.
+      This is the same class as the 1099 defect fixed this round, which now
+      leaves a ready-made primitive.
+      **Durable fix:** carry `currency` on `OfferOpportunity` and refuse (or
+      convert via the invoice's locked `reporting_amount`) any offer not in the
+      reporting currency before it reaches `optimize` / `assemble_plan`;
+      exclude-and-count in the dashboard, mirroring
+      `currency_conversion.payment_reporting_amount_sql`.
+      **Trigger:** a multi-currency tenant using dynamic discounting, or the
+      next change to the optimizer.
+- [ ] **`/payments/summary` and `/payments/queue` sum `Payment.amount` across
+      currencies.** `api/payments.py:406-424` / `:346-403` — no grouping, no
+      currency in the response, no `source_amount` preference. Same defect the
+      1099 report carried until this round, and the same one
+      `services/compliance.py:199-215` and `docs/multi-currency.md` already
+      call out elsewhere. Also `api/analytics.py:766-775` (`paid_in_period` →
+      `avg_daily_outflow` → `wc_impact_5d`) and
+      `services/vendor_risk_scoring.py:145-157`. Reporting surfaces only — no
+      money moves on them. Minor, same area: `total_pending` omits
+      `pending_compliance`, so held money appears in neither KPI.
+      **Durable fix:** route each through
+      `currency_conversion.payment_reporting_amount_sql` (added this round) and
+      surface the excluded count, as the 1099 report now does.
+      **Trigger:** the next multi-currency reporting slice.
+- [ ] **`PaymentRun.status` is never recomputed after the dispatch pass, and
+      the rollup fails open on an all-`pending` run.**
+      `services/payment_runs.py:67-81` returns `completed` when nothing is
+      completed, failed or in flight — a fail-open default on a money-run
+      status. And the only writer of the persisted `PaymentRun.status` after
+      execution is `_dispatch_run_payments`'s final rollup: neither the
+      webhook, the reconciler, nor `/compliance/{release,dismiss}` touches it.
+      So a run that rolled up `submitted` (one payment held
+      `pending_compliance`) and then had that payment dismissed reports
+      `status: "submitted"`, `payments_failed: 1`, `retryable_failures: 1` —
+      and `/retry-failed` 409s because `RETRYABLE_RUN_STATUSES` is
+      `("partial", "failed")`. `/resume` and `/execute` 409 too: a dead end,
+      and precisely the "button that can't act" the `retryable_failures`
+      comment says it exists to prevent. Not reproduced end to end (the
+      all-`pending` half needs two interleaved `/resume` calls); the code paths
+      are confirmed by reading.
+      **Durable fix:** derive the run status from its payments on read (or
+      recompute it wherever a payment's status changes), and give the rollup a
+      non-`completed` answer for an all-`pending` run.
+      **Trigger:** the next report of a run stuck with a retryable failure it
+      won't retry.
+- [ ] **`void_payment` overwrites the regulated `completed_at`.**
+      `api/payments.py:745-748` stamps `completed_at = now` when voiding a
+      `completed` payment, destroying the real settlement timestamp; the audit
+      row records `previous_status` but not the previous timestamp.
+      `/retry-failed` explicitly refuses to overwrite the same two timestamps
+      and says why. Every downstream reader filters `status == "completed"`, so
+      the loss is evidentiary rather than arithmetic.
+      **Durable fix:** leave `completed_at` alone and record the void instant
+      on its own field (or only in the audit row).
+      **Trigger:** the next SOX evidence review, or a migration that adds a
+      `voided_at`.
+- [ ] **`/compliance/release` doesn't guard `_execute_single_payment`.**
+      `api/payments.py` — every other caller wraps it because "a live FX /
+      sanctions / processor adapter can raise anything", and marks the payment
+      `failed` so the attempt is recorded. Here it propagates: FastAPI 500s,
+      the session rolls back, and the payment reverts to `pending_compliance`
+      with no `provider_payment_id` recorded even if the processor accepted the
+      order. On the card leg a rollback after `persist_card` discards the
+      `VirtualCard` row while a real spendable card exists at the provider.
+      The reused `correlation_id` (the processor's idempotency key) mitigates
+      for rails that honour it, but is not a substitute for the record.
+      **Durable fix:** wrap the call the way `_dispatch_run_payments` does.
+      **Trigger:** the next change to the compliance-hold endpoints.
+- [ ] **Smaller confirmed items, grouped** — each read and confirmed, none
+      worth its own entry:
+      `api/discounts.py::create_offer` resolves the invoice for an
+      invoice-scoped offer with no `apply_entity_scope`, so an offer can be
+      created under entity A against entity B's invoice (advisory data, never
+      money — but the sibling credit-memo path was fixed for exactly this).
+      `api/cards.py::card_dashboard`'s `rebate_ytd` filters
+      `CardRebate.period >= f"{year}-01"` with no upper bound, so a row with a
+      future period would leak into YTD.
+      `POST /api/cash-flow/plans/{id}/capture-discounts` mutates offers with no
+      row lock (status-only, so the worst case is a duplicate audit row).
+      `_commitment_rows`' `outerjoin(PaymentSchedule)` is un-deduped, so an
+      invoice with two schedule rows is double-counted at full amount —
+      unreachable today because `PaymentSchedule` is only ever constructed in
+      `scripts/seed.py`, but `discount_auto_trigger._resolve_due_date` already
+      takes the latest-schedule precaution the forecast path skips.
+      `cashflow._coerce_decimal` returns `None` for a malformed persisted
+      `min_balance_threshold` and accepts `Decimal("NaN")`, either of which
+      silently opts an org out of shortfall alerting with no log line.
+      Three analytics endpoints use `date.today()` (host local) where every
+      other consumer of the same data uses UTC, so a non-UTC host can shift the
+      horizon filter and the week bucketing by a day — and `plan_id` embeds
+      `today.isoformat()`.
+      `POST /api/cash-flow/plans/{id}/draft-run` can only ever 422 for a
+      multi-currency tenant, because it hands every payable invoice in the
+      horizon to a builder that refuses a multi-currency run; the plan card's
+      button can never succeed there and the error isn't actionable from a plan
+      the user can't edit.
+      `_execute_single_payment` skips the FX leg, the credit-memo re-check
+      **and the entire compliance gate** when `invoice is None` — the inverse
+      of the two carefully-argued "no screenable vendor → hold, never pay
+      unscreened" branches directly above it; unreachable today only because
+      deleting an invoice cascades its payments.
+      **Durable fix / trigger:** each in the file it names, on the next slice
+      that touches it.
+
+### Surfaced by the round-10 hunt (vendors / procurement / expenses), not fixed
+
+The vendors-procurement-expenses agent of round 10 fixed 7 findings at the root
+(deterministic CSV column pick, currency-scoped statement ledger, the
+create-with-`report_id` attach gate, the cXML `ItemIn` field scoping, the two
+client-settable SoD anchors, the QMS disposition + manual-sync gate, and the
+unconverted-line count). These are the remainder — each read and confirmed in
+the source, none reproduced with a probe, so treat the impact notes as
+diagnosis rather than demonstration.
+
+- [ ] **The sanctions adapter dispatcher substitutes `mock` for an unknown
+      provider, and the compensating control it documents does not exist.**
+      `backend/app/services/sanctions_adapters/dispatcher.py:44-45` resolves
+      `_REGISTRY.get(provider) or _REGISTRY["mock"]`, so a typo'd or absent
+      `settings.compliance.sanctions.provider` (`"worldcheck"` for the
+      registry's `refinitiv`, say) silently screens every vendor against the
+      mock's three-item fixture list and returns `clear` / risk 0. The
+      dispatcher's own docstring asserts that "the compliance service surfaces a
+      warning in its result so this misconfiguration is visible to the AP team"
+      — `services/compliance.py` never inspects `adapter.provider_name`, and
+      `services/vendor_screening.py` writes `result="clear"` unexamined. The
+      sibling ERP dispatcher was explicitly hardened away from this exact
+      pattern (`erp_adapters/dispatcher.py` → `UnknownErpAdapterError`, "Raised
+      instead of substituting `mock`"). Note
+      `tests/test_compliance.py::test_sanctions_dispatcher_falls_back_to_mock_on_unknown_provider`
+      pins the current fallback, so this is a deliberate design whose stated
+      mitigation was never built — not an oversight to silently invert.
+      **Durable fix:** build the documented control — have
+      `check_payment_compliance` append a reason and return `hold` when the
+      resolved provider is `mock` while the org asked for something else (and
+      surface the same on the vendor screening status). Changing the dispatcher
+      to raise, ERP-style, is the alternative and needs the pinning test
+      updated with a decisions.md entry.
+      **Trigger:** the next change to the compliance/sanctions path, or the
+      first real sanctions provider being configured for a tenant. **(c)**
+- [ ] **Manual bank-rec resolve has no `direction` guard — a credit can "clear"
+      an outgoing payment.** `backend/app/api/bank_reconciliation.py:851`
+      writes `tx.matched_payment_id` after validating the payment and refusing
+      one already claimed, but never checks `tx.direction`; amounts are stored
+      as absolute values with the direction on a separate flag. The auto-matcher
+      deliberately skips non-debits. A *credit* whose magnitude equals the
+      payment's settlement amount therefore passes `classify_discrepancy`
+      cleanly, counts toward `matched_count`, and — worse — the payment then
+      falls out of **all three** `/outstanding` buckets, contradicting that
+      endpoint's own "exactly one of the three buckets" contract: bucket 1
+      excludes it as claimed, buckets 2 and 3 require `direction == "debit"`
+      (lines 622 / 670). An uncleared payment silently leaves the month-end
+      worksheet.
+      **Durable fix:** refuse a non-`debit` transaction in `resolve_transaction`
+      with a 409 naming the direction (a credit is not a payment we made), or —
+      if manually pairing a refund is wanted — model it as its own link type
+      that the outstanding buckets account for.
+      **Trigger:** the next change to bank reconciliation, or the first
+      month-end close run against real statement data. **(c)**
+- [ ] **`POST /corporate-card-transactions/{id}/ignore` has no source-status
+      guard, and strands a matched pair.**
+      `backend/app/api/expense_cards.py:396-398` sets
+      `reconciliation_status = ignored` unconditionally, leaving
+      `matched_expense_id` and `expense.card_transaction_id` set. The pair is
+      then unreachable: `/unmatch` 409s ("not matched"), `/match` and
+      `/create-expense` 409 ("already matched"). Every sibling mutation on this
+      router declares its legal source state; `ignore` is the only one that
+      doesn't.
+      **Durable fix:** 409 on a matched transaction, or clear both FK legs the
+      way `/unmatch` does before flipping to `ignored`.
+      **Trigger:** the next WF4 corporate-card slice. **(c)**
+- [ ] **Corporate-card match suggestions compare amounts across currencies.**
+      `backend/app/services/expense_card_reconciliation.py:71-74` selects
+      candidates on `Expense.amount == txn.amount` with no
+      `Expense.currency == txn.currency` predicate, and
+      `POST /{id}/match` (`api/expense_cards.py:322-337`) performs no amount or
+      currency check at all — so a €100.00 expense is offered as an
+      *exact-amount* suggestion for a $100.00 card transaction and one click
+      links them. Docs list multi-currency card reconciliation as deferred, but
+      the safe form of not supporting it is filtering the candidate query, not
+      offering a false match; every other comparison in this module was closed
+      (CFO gate → reporting currency, policy thresholds → `threshold_currency`,
+      pre-approval cover → currency-matched SQL).
+      **Durable fix:** add the currency predicate to the candidate query and
+      re-check it in `/match`.
+      **Trigger:** the next WF4 corporate-card slice — pairs naturally with the
+      `ignore` guard above. **(c)**
+- [ ] **The corporate-card CSV importer drops the negative rows the schema
+      deliberately allows.** `backend/app/services/csv_import.py:438` rejects
+      `amount < 0`, while `schemas/expense.py:332-334` and
+      `docs/expense-management.md` § Digit bounds both state the opposite as a
+      deliberate call ("a card refund / merchant credit is a real negative line
+      on the feed, and rejecting it would drop genuine transactions").
+      `import-csv` is the only route that creates feed rows, so the documented
+      allowance is unreachable and every refund/chargeback line in a bank export
+      is refused — the feed no longer reconciles to the statement. Not silent
+      (the error rides the response), but the row is lost.
+      **Durable fix:** allow negatives on the card-transaction importer
+      specifically (the invoice importer's `> 0` rule is correct and separate),
+      or amend the schema + doc if the refusal is actually intended.
+      **Trigger:** the next WF4 corporate-card slice. **(c)**
+- [ ] **Budget `committed` drops requisitions that are explicitly FK-linked to
+      the budget but differ in entity or currency.**
+      `backend/app/services/budget_service.py:128-135` and `140-155` apply
+      `apply_entity_scope(..., budget.entity_id)` and
+      `PurchaseRequisition.currency == budget.currency` on top of
+      `PurchaseRequisition.budget_id == budget.id`. Unlike the invoice leg —
+      where attribution is a fuzzy free-text `dimension_value` match and the
+      narrowing is genuinely protective — a `budget_id` link is unambiguous, so
+      these filters can only remove deliberately-linked demand. Nothing
+      validates the link at the requisition end either (`api/requisitions.py`
+      stores any well-formed UUID). Net effect: `GET /budgets/{id}/spend`
+      reports `committed: 0` and `/budgets/check` answers
+      `would_overspend: false` for headroom already spoken for. The existing
+      tests seed both rows with `entity_id=None`, so `apply_entity_scope`
+      no-ops and the filter is never exercised.
+      **Durable fix:** drop the entity filter from the two `budget_id`-keyed
+      legs (the FK already scopes them), and refuse the link at write time —
+      `POST/PATCH /requisitions` should 404 an unknown `budget_id` and 422 a
+      currency mismatch — rather than accepting a link the rollup then ignores.
+      **Trigger:** the next procurement-budgets slice. **(c)**
+- [ ] **A mixed-currency punch-out cart is summed as one face-value figure.**
+      `backend/app/services/punchout_adapters/cxml.py` sets the cart currency
+      from the *last* parsed item, and `punchout_adapters/base.py::PunchoutCart.total`
+      sums every line total regardless of per-item currency;
+      `catalog_service.apply_returned_cart` writes that sum to
+      `PunchoutSession.cart_total` under the one label. Same class as the
+      vendor-statement ledger fixed this round. Also: `cart.currency` is
+      unbounded supplier input written into a `String(3)` column
+      (`models/procurement.py:377`), so a 4-character code raises a `DataError`
+      at commit and escapes the public return handler as a 500 — breaking that
+      endpoint's documented "every rejection path returns 204 silently".
+      **Durable fix:** refuse a cart carrying more than one distinct currency at
+      the `apply_returned_cart` chokepoint (all adapters covered), and normalise
+      + length-check `cart.currency` before it reaches the column.
+      **Trigger:** the next punch-out slice, or the first live supplier
+      integration. **(c)**
+- [ ] **`entities.py` and `gl_accounts.py` mutate without an audit row.**
+      Neither module imports `dispatch_audit`: `create_entity` / `update_entity`
+      and `create_gl_account` / `sync_gl_accounts_from_erp` write no trail. That
+      is the project invariant "status changes / mutations write an audit row",
+      and `create_entity` in particular mints the scope key every entity-scoped
+      money query is filtered by. `tests/test_audit_append_only.py` only
+      static-greps the payment/invoice handlers, so nothing fails.
+      **Durable fix:** add `dispatch_audit` to the four handlers (PII-free —
+      names and slugs only), and widen the audit static-grep guard to cover
+      every router that mutates tenant state.
+      **Trigger:** the next multi-entity or chart-of-accounts slice. **(c)**
+- [ ] **Two smaller confirmed items, grouped because each is a few lines.**
+      (i) `backend/app/api/bank_reconciliation.py:805` calls
+      `uuid.UUID(body.matched_payment_id)` on a schema-declared plain `str` with
+      no handler, so a malformed id is a 500 instead of a 422 — the same shape
+      as `api/requisitions.py:211-213` / `280-285`, where a well-formed but
+      non-existent `vendor_id` / `contract_id` / `budget_id` reaches an FK
+      violation at flush and surfaces as a 500 (`api/catalogs.py::_resolve_vendor_id`
+      shows the intended 404 pattern). (ii) `POST /api/enrichment/vendors/{id}/apply`
+      writes `Vendor.name` without the identity re-screen that
+      `PATCH /api/vendors/{id}` performs for the same field — stale screening
+      state, not a payment bypass (`check_payment_compliance` re-screens on the
+      live name), but the periodic re-screen sweep is off by default so the
+      dashboard can show a stale `clear` indefinitely.
+      **Durable fix:** validate/parse those ids into 4xx at the boundary; call
+      `_screen_best_effort` from the enrichment apply path when `name` changes.
+      **Trigger:** the next slice touching either router. **(c)**
+- [ ] **`VENDOR_FK_CHILDREN` has no drift guard.**
+      `backend/app/services/vendor_merge.py:97-115` is the single source of
+      truth for "what points at a vendor", and its docstring says a new table
+      with a `vendor_id` FK "MUST be added here or its rows would be left
+      dangling on a merge". Nothing enforces it. The list is currently
+      **complete** (verified against every model declaring `vendor_id`), so
+      this is a guard for the future, not a live defect.
+      **Durable fix:** a test that walks `Base.metadata` for tenant tables
+      carrying a `vendor_id` column and asserts each is in `VENDOR_FK_CHILDREN`
+      (or an explicit allowlist), mirroring `tests/test_payment_methods.py`'s
+      drift guard.
+      **Trigger:** the next `coverage-hunt`, or the next table to gain a
+      `vendor_id`. **(c)**
+
+Also noted, deliberately **not** recorded as defects: detail and mutate routes
+across procurement and expenses resolve rows by id without `apply_entity_scope`
+(only list/aggregate queries are scoped). That matches what
+[multi-entity.md](multi-entity.md) documents — its table is headed "List /
+aggregate scoped" — so entity is a view filter, not an authorization boundary,
+and tenant isolation is unaffected (per-tenant DB). `positive_pay.py` and
+`vendor_statement_recon.py` DO scope their detail reads, so the codebase is
+inconsistent about it; making that uniform is a design call for a multi-entity
+slice, not a bug fix.
+
+### Surfaced by the round-10 hunt (auth / tenant isolation), not fixed
+
+The auth / tenant-isolation agent of round 10 fixed 7 findings at the root
+(deactivated accounts refused at every sign-in entry point, the SCIM group→role
+mapping, the cross-tenant `userName` clash returning a SCIM 409, the out-of-app
+approval surfaces gated on `invoice.approve`, delegation validation, and the
+shared temp-password generator). This is the one it confirmed but did not fix:
+
+- [ ] **`GET /api/v1/docs` renders blank — its own CSP blocks every asset it
+      loads.** `api/v1_openapi.py::public_docs` returns FastAPI's
+      `get_swagger_ui_html`, whose only stylesheet, script and favicon are
+      third-party CDN URLs (`cdn.jsdelivr.net`, `fastapi.tiangolo.com`), while
+      `main.SecurityHeadersMiddleware` stamps
+      `Content-Security-Policy: default-src 'none'` on every response. Verified
+      by driving the route through the real ASGI app: 200, that CSP header, and
+      three cross-origin asset references — so any browser honouring the header
+      shows an empty page. The published *contract*, `GET /api/v1/openapi.json`,
+      is unaffected and is what integrators actually consume; only the
+      human-readable viewer is dead. It is recorded rather than patched because
+      each way out is a product call, not a mechanical fix: **vendor**
+      `swagger-ui-dist` and serve it from our own origin (works offline, honours
+      guard rail 7's local-first rule, costs ~1 MB of committed assets and a
+      version to keep current — the durable answer); **allowlist** the CDN in a
+      route-scoped CSP (three lines, but adds a third-party runtime dependency
+      to a page the platform serves, and still renders blank offline); or
+      **drop** `/v1/docs` and point `backend/docs/public-api.md` at the spec
+      URL. Do NOT relax the global CSP — it is what keeps the API origin unable
+      to load third-party script at all.
+      **Trigger:** the next slice touching the public Developer API surface, or
+      the first integrator who opens the docs URL.
+
 
 ### AI Cash-Flow Copilot — Phase 3 deferred bucket
 

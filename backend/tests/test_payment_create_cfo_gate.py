@@ -16,6 +16,13 @@ threshold fails CLOSED — every standalone payment then requires a CFO,
 mirroring `create_payment_run`'s identical fail-closed handling of the same
 setting.
 
+The same file also pins the OTHER way that gate could be walked around: the
+endpoint used to accept a `payment_run_id` in the body and write it straight to
+the FK unvalidated. `PaymentRun.requires_cfo_approval` is computed once from
+`total_amount` at run creation and never recomputed, so N legs each
+individually under the threshold could be injected into an existing run and
+`/execute` would dispatch the inflated total with no sign-off.
+
 All DB-backed via `realdb` (requires the dev Postgres; skips otherwise).
 """
 
@@ -173,3 +180,52 @@ async def test_malformed_threshold_fails_closed_for_non_cfo(realdb):
         assert resp.status_code == 201, resp.text
     finally:
         await _set_cfo_threshold(realdb, org_id=org_id, value=None)
+
+
+@pytest.mark.asyncio
+async def test_standalone_payment_cannot_be_injected_into_a_run(realdb):
+    """A caller-supplied `payment_run_id` must not attach a standalone payment
+    to an existing run.
+
+    It used to: the value was written straight to the FK with no check that the
+    run existed, was `draft`, or belonged to the caller's entity, and neither
+    `total_amount` nor `requires_cfo_approval` was recomputed. Injecting legs
+    each individually under `payments.cfo_approval_above` therefore inflated a
+    run whose CFO flag was frozen at creation, and `/execute` dispatched the lot
+    unsigned. Attaching to a terminal run was worse still — nothing ever
+    dispatches such a payment, so it sat `pending` forever holding the invoice's
+    live-payment slot.
+    """
+    from app.models.payment import Payment
+
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+
+    run_invoice = await _seed_approved_invoice(mk, org_id, Decimal("10.00"))
+    solo_invoice = await _seed_approved_invoice(mk, org_id, Decimal("10.00"))
+
+    async with realdb.client(key=TENANT, role="admin") as client:
+        created = await client.post(
+            "/api/payments/runs",
+            json={"items": [{"invoice_id": str(run_invoice), "method": "ach"}]},
+        )
+        assert created.status_code == 201, created.text
+        run_id = created.json()["id"]
+
+        resp = await client.post(
+            "/api/payments",
+            json={
+                "invoice_id": str(solo_invoice),
+                "amount": "10.00",
+                "method": "ach",
+                "payment_run_id": run_id,
+            },
+        )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["payment_run_id"] is None
+
+    async with mk() as s:
+        payment = (
+            await s.execute(select(Payment).where(Payment.invoice_id == solo_invoice))
+        ).scalar_one()
+        assert payment.payment_run_id is None

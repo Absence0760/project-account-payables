@@ -401,6 +401,26 @@ class StripeBillingAdapter(BillingAdapter):
         except ValueError as exc:
             raise BillingProviderError(f"Stripe {op} returned non-JSON") from exc
 
+    @staticmethod
+    def _timestamp_in_window(raw_timestamp: str) -> bool:
+        """Is the header's ``t=`` within the configured replay window?
+
+        Fail-closed on a non-numeric value. Rejects a timestamp too far in the
+        FUTURE as well as too far in the past — a clock-skewed or forged
+        far-future ``t`` would otherwise buy an attacker an arbitrarily long
+        replay window.
+        """
+        from app.config import settings
+
+        max_age = int(settings.billing_stripe_webhook_max_age_seconds)
+        if max_age <= 0:
+            return True
+        try:
+            sent_at = int(raw_timestamp)
+        except (TypeError, ValueError):
+            return False
+        return abs(int(datetime.now(UTC).timestamp()) - sent_at) <= max_age
+
     def _verify_stripe_signature(self, raw_header: str | None, body: bytes) -> bool:
         """Verify Stripe's ``Stripe-Signature`` scheme (not a bare body HMAC).
 
@@ -409,6 +429,21 @@ class StripeBillingAdapter(BillingAdapter):
         secret). We recompute that and constant-time-compare against each
         provided ``v1`` digest. Fail-closed: empty secret, missing/garbled
         header, or no match → ``False``.
+
+        **``t`` is checked, not just signed over.** Stripe's own verification
+        procedure has two steps, and only the digest half was implemented: the
+        timestamp must also be compared against now, within a tolerance
+        (`FEOH_BILLING_STRIPE_WEBHOOK_MAX_AGE_SECONDS`, default 300s — the same
+        ±5-minute window `/api/approvals/slack` and `/api/approvals/teams`
+        already enforce). Without it a captured, correctly-signed event verifies
+        forever, and the Redis dedupe only covers its own 72h TTL — so a
+        `customer.subscription.deleted` replayed later cancels a subscription
+        the customer has since re-taken. The window is not a duplicate of the
+        dedupe: dedupe stops the SAME delivery twice, the window stops an OLD
+        delivery at all.
+
+        ``<= 0`` disables the age check — deliberate, for an operator replaying
+        an archived event during an incident. It is a knob, not the default.
 
         (``webhook_security.verify_hmac_sha256`` can't be reused directly here —
         it HMACs the body alone, whereas Stripe signs the timestamp-prefixed
@@ -427,6 +462,8 @@ class StripeBillingAdapter(BillingAdapter):
             elif key == "v1" and value:
                 v1_signatures.append(value)
         if not timestamp or not v1_signatures:
+            return False
+        if not self._timestamp_in_window(timestamp):
             return False
         try:
             signed_payload = b"%s.%s" % (timestamp.encode("utf-8"), body)

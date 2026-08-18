@@ -99,3 +99,24 @@ async def test_list_scopes_by_entity(realdb):
         # Consolidated (no header) → both.
         allv = await c.get("/api/inspections")
         assert {r["inspection_number"] for r in allv.json()} == {"QI-US", "QI-DEF"}
+
+
+async def test_sync_refuses_when_no_qms_is_configured(realdb):
+    """The manual sync must apply the same opt-in rule the sweep does.
+
+    Without a `settings.qms` block, `get_qms_adapter(None)` resolves to the
+    `mock` adapter — so one call used to persist its three fabricated fixtures
+    (`QMS-INSP-001 pass / PO-1001` …) against the tenant's REAL purchase
+    orders, clearing or failing the 4-way quality gate on real invoices with
+    rows indistinguishable from genuine ones.
+    """
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post("/api/inspections/sync")
+        assert resp.status_code == 409, resp.text
+        assert "qms" in resp.json()["detail"].lower()
+
+        # And nothing from the mock fixture set landed.
+        listing = await c.get("/api/inspections")
+        assert not [
+            r for r in listing.json() if str(r["inspection_number"]).startswith("QMS-INSP-")
+        ]

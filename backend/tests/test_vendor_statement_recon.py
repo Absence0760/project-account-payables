@@ -27,11 +27,15 @@ from app.models.vendor_statement_recon import (
     CLASS_MISSING_THEIR_SIDE,
 )
 from app.services.vendor_statement_recon import (
+    _AMOUNT_HEADERS,
+    _DATE_HEADERS,
+    _INVOICE_HEADERS,
     AMOUNT_CONVENTION_EU,
     AMOUNT_CONVENTION_US,
     LedgerInvoice,
     StatementLine,
     StatementParseError,
+    _find_col,
     detect_amount_convention,
     line_unreconciled_amount,
     normalize_invoice_number,
@@ -221,6 +225,40 @@ def test_parse_csv_utf8_bom():
     assert len(lines) == 1
     # The BOM must not contaminate the first header.
     assert lines[0].invoice_number == "INV-1"
+
+
+# ---------------------------------------------------------------------------
+# Column selection — deterministic, leftmost-wins
+# ---------------------------------------------------------------------------
+#
+# `_find_col` used to iterate the CANDIDATE SET, and Python randomises string
+# hashing per process, so a statement carrying two columns that both match
+# (`Amount` and `Balance`) picked whichever candidate the set happened to yield
+# first — a different money column on a different worker, for the same file.
+# The pair of assertions below is hash-seed independent: a candidate-order scan
+# returns the same header name for BOTH column orderings, so one of the two
+# must fail whatever `PYTHONHASHSEED` is.
+
+
+def test_find_col_is_deterministic_leftmost_header_wins():
+    assert _find_col(["Invoice", "Amount", "Balance"], _AMOUNT_HEADERS) == "Amount"
+    assert _find_col(["Invoice", "Balance", "Amount"], _AMOUNT_HEADERS) == "Balance"
+
+
+def test_find_col_date_and_invoice_synonyms_also_take_the_leftmost():
+    assert _find_col(["Invoice Date", "Due Date"], _DATE_HEADERS) == "Invoice Date"
+    assert _find_col(["Due Date", "Invoice Date"], _DATE_HEADERS) == "Due Date"
+    assert _find_col(["Reference", "Invoice Number"], _INVOICE_HEADERS) == "Reference"
+    assert _find_col(["Invoice Number", "Reference"], _INVOICE_HEADERS) == "Invoice Number"
+
+
+def test_parse_csv_amount_column_beats_a_later_balance_column():
+    """A statement carrying both an `Amount` and a `Balance` column must always
+    read the leftmost one — never a hash-seed lottery between the two."""
+    csv = b"Invoice,Amount,Balance\nINV-1,100.00,900.00\n"
+    lines = parse_statement_csv(csv)
+    assert len(lines) == 1
+    assert lines[0].amount == Decimal("100.00")
 
 
 # ---------------------------------------------------------------------------

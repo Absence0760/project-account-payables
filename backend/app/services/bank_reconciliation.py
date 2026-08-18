@@ -282,11 +282,19 @@ _COUNTERPARTY_HEADERS = {"counterparty", "payee", "name", "merchant", "vendor"}
 
 def _find_col(headers: list[str], candidates: set[str]) -> str | None:
     """Return the first header in `headers` that matches any of
-    `candidates` (case + whitespace insensitive)."""
-    norm = {h.strip().lower(): h for h in headers}
-    for cand in candidates:
-        if cand in norm:
-            return norm[cand]
+    `candidates` (case + whitespace insensitive).
+
+    The scan walks `headers`, not `candidates`. `candidates` is a `set` and
+    CPython randomises string hashing per process, so iterating it made the
+    choice between two columns that BOTH match — a bank export carrying
+    `Date` *and* `Posted Date`, or `Amount` *and* `Value` — depend on
+    `PYTHONHASHSEED`: the same statement could import off a different column
+    on a different worker. Header order is deterministic, and the leftmost
+    matching column is what this docstring always promised.
+    """
+    for header in headers:
+        if header.strip().lower() in candidates:
+            return header
     return None
 
 

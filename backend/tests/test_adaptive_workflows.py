@@ -1692,7 +1692,12 @@ async def test_threshold_apply_writes_through_audited_patch_path(realdb):
             await s.execute(select(WorkflowDefinition).where(WorkflowDefinition.id == wf_id))
         ).scalar_one()
         approval = next(st for st in defn.steps_config["steps"] if st["type"] == "approval")
-        assert approval["config"]["auto_approve_below"] == 5000.0
+        # An exact decimal STRING, not a float — money never round-trips through
+        # a binary float, and it is what the manual PATCH path writes too
+        # (`WorkflowStepConfig.auto_approve_below` is a `Decimal`, dumped with
+        # `mode="json"`). Matches the response's own `new_threshold`, so the two
+        # halves of the same apply can no longer disagree about the type.
+        assert approval["config"]["auto_approve_below"] == "5000.00"
 
         # A WorkflowVersion snapshot of the PRIOR config was written.
         versions = (

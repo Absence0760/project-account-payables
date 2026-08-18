@@ -136,7 +136,7 @@ Three primitives back this (all in `app/tenant.py`):
 |------|-------------------------|----------------------|
 | Invoices | `GET /invoices`, `/invoices/counts` | create + upload + CSV import → write-entity; portal submit → vendor's; PO-flip → PO's; email intake → default |
 | Vendors | `GET /vendors`; **vendor matching** — `services/vendor_matching.match_vendor`'s three lookups run against the invoice's entity **∪ NULL** (see below) | create + ERP sync + CSV import → write-entity; AI-extraction match-miss → invoice's |
-| Payments | `GET /payments`, `/payments/queue`, `/payments/summary`, `/payments/runs/` | payment → its invoice's; payment run → write-entity (each payment still follows its own invoice) |
+| Payments | `GET /payments`, `/payments/queue`, `/payments/summary`, `/payments/runs/`; every by-id route (`services/payments` `_get_scoped_payment` / `_get_scoped_run`); **and the invoices `POST /payments/runs` may stage** (`create_payment_run_for_invoices`'s `scope_entity_id`) | payment → its invoice's; payment run → write-entity (each payment still follows its own invoice) |
 | Purchase orders | `GET /purchase-orders` | ERP sync → write-entity |
 | Goods receipts | `GET /goods-receipts` | (no API create path) |
 | Credit memos | `GET /credit-memos` | create → the vendor's entity |

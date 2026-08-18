@@ -73,7 +73,7 @@ If the linked requisition was deleted, the dangling link is rebuilt.
 | Method + path | Roles | Notes |
 |---|---|---|
 | `GET /intake` | admin / ap_manager / ap_clerk / cfo | paginated, entity-scoped; filter `?status=`, `?type=`, search `?search=` (number/title/vendor_name) |
-| `POST /intake` | admin / ap_manager / ap_clerk / cfo | `request_number` auto-generated (`INTK-<year>-<seq>`) when omitted |
+| `POST /intake` | admin / ap_manager / ap_clerk / cfo | `request_number` auto-generated (`INTK-<year>-<seq>`) when omitted. `requester_user_id` is **always the authenticated caller** — see below |
 | `GET /intake/{id}` | admin / ap_manager / ap_clerk / cfo | |
 | `PATCH /intake/{id}` | admin / ap_manager / ap_clerk / cfo | open-only (`422` otherwise) |
 | `DELETE /intake/{id}` | admin / ap_manager / ap_clerk / cfo | |
@@ -91,6 +91,22 @@ transitions are `admin / ap_manager / ap_clerk / cfo`. The reviewer actions
 (`approve`, `reject`, `convert-to-requisition`) are restricted to
 `admin / ap_manager`. Every route carries an auth dependency (enforced by
 `tests/test_rbac.py`).
+
+### The requester is the caller, never a body field
+
+`POST /intake` sets `requester_user_id` from the authenticated user and
+**ignores** any value in the body (the field stays on the schema so a stale
+client gets an intake owned by itself rather than a 422 — the same posture
+`POST /api/requisitions` and `POST /api/expense-preapprovals` already take).
+
+This is a segregation-of-duties control, not tidiness.
+`convert_intake_to_requisition` copies the id verbatim onto the
+`PurchaseRequisition`, and `POST /api/requisitions/{id}/approve` compares
+exactly that field against the approver. While the field was honoured, one
+ap_manager could raise an intake "for" an arbitrary uuid, approve it (intake
+approve has no SoD check by design — it is a triage step), convert it, and then
+approve the resulting requisition themselves: no accomplice, no second role,
+and a PO booked on a requisition nobody else ever saw.
 
 ## Invariants honoured
 

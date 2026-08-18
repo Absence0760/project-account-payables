@@ -77,7 +77,14 @@ class StatementLine:
 @dataclass
 class LedgerInvoice:
     """One of OUR open invoices, projected into a minimal shape the engine
-    needs — built by the router from `Invoice` rows."""
+    needs — built by the router from `Invoice` rows.
+
+    ``currency`` is carried for reporting only: the engine never converts and
+    never compares across currencies, so **the caller must hand in a
+    single-currency candidate set** (the router filters the ledger query to the
+    statement's own currency). A mixed set would let a EUR 1 000 invoice
+    amount-match a USD 1 000 statement line and displace the real one.
+    """
 
     id: uuid.UUID
     invoice_number: str
@@ -170,12 +177,21 @@ _STATUS_HEADERS = {"status", "state"}
 
 
 def _find_col(headers: list[str], candidates: set[str]) -> str | None:
-    """Return the first header that matches any candidate (case + whitespace
-    insensitive), else ``None``."""
-    norm = {h.strip().lower(): h for h in headers}
-    for cand in candidates:
-        if cand in norm:
-            return norm[cand]
+    """Return the first header **in ``headers`` order** that matches any
+    candidate (case + whitespace insensitive), else ``None``.
+
+    Scanning the headers rather than the candidate set is load-bearing.
+    ``candidates`` is a ``set`` and CPython randomises string hashing per
+    process, so iterating it made the choice between two columns that BOTH
+    match — a statement carrying ``Amount`` *and* ``Balance``, or ``Invoice
+    Date`` *and* ``Due Date`` — depend on ``PYTHONHASHSEED``. The same file
+    could then reconcile off a different money column on a different worker.
+    Header order is deterministic and is what this docstring always claimed:
+    the leftmost matching column wins.
+    """
+    for header in headers:
+        if header.strip().lower() in candidates:
+            return header
     return None
 
 

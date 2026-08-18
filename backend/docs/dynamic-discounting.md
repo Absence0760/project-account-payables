@@ -81,6 +81,17 @@ due date. Adapters `quote(...)` terms and `request_funding(...)`.
 - `c2fo` — skeleton for a real SCF marketplace; **fails closed** without a key
   (no hardcoded secret). Selected per-org via `Organization.settings.financing.provider`.
 
+**An unsupported provider name fails closed too.** `get_financing_adapter`
+resolves an absent/empty `provider` to `mock` (the local-first default) but
+raises `UnknownFinancingProviderError` for a NAMED provider it has no adapter
+for. It used to substitute `mock` there as well — the last dispatcher in the
+codebase still failing open, after `payment_adapters` / `erp_adapters` /
+`fx_adapters` all closed (`../../docs/decisions.md` §29). `mock` is not an
+inert stub: `request_funding` returns `funded=True` with a fabricated
+`mock-fund-<hash>` id, i.e. it records a supplier as paid by a financier that
+never saw the request, off a one-character typo in an admin-entered settings
+value. Closed before the first production caller lands rather than after.
+
 **Refusing is a return value, not an exception.** `base.FinancingAdapter.quote`
 is explicit: an implementation returns an ineligible `FinancingQuote` rather
 than raising when the provider declines — *a missing credential is the one case

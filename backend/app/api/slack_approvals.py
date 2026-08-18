@@ -43,12 +43,12 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.email_actions import (
-    _APPROVER_ROLES,
     _claim_jti,
     _load_reviewer,
     _release_jti,
     _resolve_org,
     _tenant_session,
+    may_approve,
 )
 from app.config import settings
 from app.database import get_control_db
@@ -197,7 +197,7 @@ async def slack_interactivity(
         logger.warning("slack interactivity: reviewer unavailable")
         return _ack()
     reviewer_roles = {r.name for r in (reviewer.roles or [])}
-    if not (reviewer_roles & _APPROVER_ROLES):
+    if not may_approve(reviewer):
         logger.warning("slack interactivity: reviewer not permitted")
         return _ack()
 
@@ -211,7 +211,9 @@ async def slack_interactivity(
 
     try:
         async with _tenant_session(org) as db:
-            committed, msg = await _apply_slack_action(db, decoded, reviewer, reviewer_roles)
+            committed, msg = await _apply_slack_action(
+                db, decoded, reviewer, reviewer_roles, org_settings=org.settings
+            )
             if committed:
                 await db.commit()
             else:
@@ -226,12 +228,18 @@ async def slack_interactivity(
         return _ack("Could not complete that action — please sign in to the app to review it.")
 
 
-async def _apply_slack_action(db, decoded, reviewer, reviewer_roles) -> tuple[bool, str]:
+async def _apply_slack_action(
+    db, decoded, reviewer, reviewer_roles, *, org_settings: dict | None = None
+) -> tuple[bool, str]:
     """Run approve/reject against a row-locked invoice. Returns (commit?, ack).
 
     Mirrors ``email_actions._apply_action`` but yields a plain ack string instead
     of an HTML page. May raise HTTPException (threshold / segregation / CFO gate)
-    — the caller releases the jti claim and acks generically."""
+    — the caller releases the jti claim and acks generically.
+
+    ``org_settings`` is threaded for the same reason as the email door: this is
+    the same approval decision, so it must read the org's own ``fraud_rules`` /
+    ``matching`` tolerances / structuring window, not the platform defaults."""
     from app.services.workflow_engine import get_invoice_for_update
 
     invoice = await get_invoice_for_update(db, decoded.invoice_id)
@@ -245,7 +253,15 @@ async def _apply_slack_action(db, decoded, reviewer, reviewer_roles) -> tuple[bo
             actor_id=reviewer.id,
             actor_name=reviewer.full_name,
             actor_roles=reviewer_roles,
+            org_settings=org_settings,
         )
+        # A multi-level chain leaves the invoice in `ready_for_review` for the
+        # next approver — don't ack "approved" for a payable that isn't cleared.
+        if invoice.status is not InvoiceStatus.approved:
+            return True, (
+                f"Your approval of invoice {invoice.invoice_number} was recorded. "
+                "It still needs a further approval."
+            )
         return True, f"Invoice {invoice.invoice_number} approved. Thank you."
 
     await review_svc.reject_invoice(

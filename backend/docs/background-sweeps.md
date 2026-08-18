@@ -223,6 +223,20 @@ The shape every such sweep uses instead is two-phase:
 real `SELECT … FOR UPDATE` on exactly one row. Ordering by id gives every
 replica the same lock order, so concurrent sweeps queue instead of deadlocking.
 
+**Step 2's re-check is correctness, not an optimisation.** `extraction_reaper`
+had step 1 only: it loaded whole `Invoice` objects up front and transitioned
+them from that snapshot. An extraction finishing *during* the tick was then
+silently overwritten — `transition_invoice` validates against the stale
+in-memory `pending`, `pending → failed` is a legal edge, and the UPDATE stamped
+`failed` over the row's real, freshly-committed state. A successfully-extracted
+invoice came out `failed`, carrying an `extraction_timeout` warning about an
+extraction that had actually succeeded, and could not come back:
+`failed → ready_for_review` is not a legal edge, so a reviewer had to re-run
+extraction on a document that was already done. The same window swallowed an
+invoice that had reached `approved` (`pending → approved` is legal too). The
+predicate the id query used is exactly the thing that can have changed under
+you, so re-testing it under the lock is the whole point of the shape.
+
 **Page, don't cap, unless the work removes itself from the candidate set.**
 Escalation doesn't change `state`, so a per-tick cap would re-serve the same
 lowest-id rows forever and never reach the rest; it keyset-paginates

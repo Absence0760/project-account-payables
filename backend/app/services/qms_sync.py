@@ -51,6 +51,26 @@ from app.tenant import resolve_default_entity_id
 logger = logging.getLogger(__name__)
 
 
+def normalize_disposition(raw: str | None) -> str | None:
+    """Map a QMS's disposition string onto our ``pass``/``fail``/``partial``
+    vocabulary, or ``None`` when it does not map.
+
+    Only case and surrounding whitespace are normalised: ``"FAIL"`` and
+    ``" Fail "`` are unambiguously ``fail``, which is a reading, not a guess.
+    Anything genuinely outside the vocabulary (``"rejected"``, ``"quarantine"``,
+    ``""``) returns ``None`` and the caller skips the record.
+
+    Pure — no DB, no I/O. Mapping a provider's own vocabulary is the adapter's
+    documented job (``qms_adapters/base.py``); this is the backstop for when an
+    adapter passes something through unmapped, and it must never resolve that
+    to the most permissive value.
+    """
+    if not isinstance(raw, str):
+        return None
+    candidate = raw.strip().lower()
+    return candidate if candidate in VALID_RESULTS else None
+
+
 @dataclass
 class QMSSyncResult:
     """Per-tenant sweep outcome for logging + tests."""
@@ -127,8 +147,29 @@ async def sync_tenant_inspections(
 
     created = 0
     updated = 0
+    skipped = 0
     for rec in records:
-        result = rec.result if rec.result in VALID_RESULTS else "pass"
+        result = normalize_disposition(rec.result)
+        if result is None:
+            # Skip rather than guess. This used to coerce to "pass", which is
+            # the one value `po_matching` treats as "no status change" — so a
+            # QMS emitting its own vocabulary for a rejected lot ("REJECTED",
+            # "quarantine") cleared the 4-way quality gate and made the invoice
+            # payable. Skipping leaves NO inspection row, which for an org that
+            # sets `require_inspection` is the fail-closed outcome ("Quality
+            # inspection required but missing"), and is a no-op for one that
+            # doesn't. Mapping the vocabulary is the adapter's contract
+            # (`qms_adapters/base.py`); this is the backstop for when it misses.
+            skipped += 1
+            logger.warning(
+                "[qms-sync] unrecognised inspection disposition, record skipped",
+                extra={
+                    "inspection_number": rec.inspection_number,
+                    "disposition": str(rec.result)[:32],
+                    "provider": adapter.provider_name,
+                },
+            )
+            continue
         po_id = await _resolve_po_id(db, org_id, rec.po_number)
         gr_id = await _resolve_gr_id(db, org_id, rec.gr_number)
 
@@ -206,7 +247,12 @@ async def sync_tenant_inspections(
     # sync.
     await _best_effort_rematch(db, org_id, records)
 
-    return {"fetched": len(records), "created": created, "updated": updated}
+    return {
+        "fetched": len(records),
+        "created": created,
+        "updated": updated,
+        "skipped": skipped,
+    }
 
 
 async def _best_effort_rematch(
@@ -251,13 +297,32 @@ async def _best_effort_rematch(
         )
 
 
-async def _org_qms_config(settings_blob: dict | None) -> dict | None:
-    """Extract the ``qms`` block from an org's settings JSONB (or None)."""
+def resolve_opted_in_qms_config(settings_blob: dict | None) -> dict | None:
+    """The QMS config to sync this org with, or ``None`` when it hasn't opted in.
+
+    The single owner of the opt-in rule, read by BOTH the background sweep and
+    the manual ``POST /api/inspections/sync`` route so the two cannot drift.
+
+    Opting in is either an org-level ``settings.qms`` block or a platform
+    provider override (``FEOH_QMS_PROVIDER != "mock"``, which opts every org in
+    with the default config). Without that, ``get_qms_adapter(None)`` falls back
+    to the ``mock`` adapter and its three fabricated fixtures
+    (``QMS-INSP-001 pass / PO-1001`` …) get resolved against the tenant's REAL
+    purchase orders and persisted as ``completed`` inspections — a fabricated
+    ``pass`` clears the 4-way quality gate for whatever invoice references that
+    PO, and a fabricated ``fail`` flips real invoices to ``mismatch``. The rows
+    are indistinguishable from real ones in the UI.
+    """
+    qms_config = None
     if isinstance(settings_blob, dict):
         qms = settings_blob.get("qms")
         if isinstance(qms, dict):
-            return qms
-    return None
+            qms_config = qms
+    if qms_config is None:
+        if settings.qms_provider == "mock":
+            return None
+        return {"provider": settings.qms_provider}
+    return qms_config
 
 
 async def run_qms_sync_once(*, since: datetime | None = None) -> QMSSyncResult:
@@ -278,13 +343,10 @@ async def run_qms_sync_once(*, since: datetime | None = None) -> QMSSyncResult:
         tenants = list(rows.all())
 
     for org_id, db_name, settings_blob in tenants:
-        qms_config = await _org_qms_config(settings_blob)
-        # Skip orgs that have not opted in. A platform provider override
-        # (FEOH_QMS_PROVIDER != "mock") opts every org in with the default config.
+        # Skip orgs that have not opted in — shared with the manual sync route.
+        qms_config = resolve_opted_in_qms_config(settings_blob)
         if qms_config is None:
-            if settings.qms_provider == "mock":
-                continue
-            qms_config = {"provider": settings.qms_provider}
+            continue
 
         result.tenants_scanned += 1
         try:

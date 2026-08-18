@@ -74,6 +74,29 @@ def test_rollup_excludes_unconverted_foreign_line_instead_of_summing_face_value(
     assert rollup.currency == "USD"
 
 
+def test_rollup_counts_an_id_less_unconverted_row():
+    """`unconverted_count` is the COUNT, not `len(unconverted_ids)`.
+
+    The ids list only collects rows that carried one, so deriving the count
+    from it undercounts an id-less row — and this count is what gates report
+    submission, so it must never undercount. The line is still excluded from
+    the total either way; the bug was that the gate stopped seeing it.
+    """
+    rollup = rollup_report_lines(
+        [
+            {"id": "a", "amount": Decimal("100.00"), "currency": "USD"},
+            {"amount": Decimal("200.00"), "currency": "EUR"},  # no id
+        ],
+        report_currency="USD",
+    )
+    assert rollup.total == Decimal("100.00")
+    assert rollup.unconverted_count == 1
+    assert rollup.unconverted_ids == ()
+    # The per-currency bucket already counted it correctly — the two must agree.
+    eur = next(b for b in rollup.by_currency if b.currency == "EUR")
+    assert eur.unconverted_count == 1
+
+
 def test_rollup_uses_the_locked_figure_not_the_face_amount():
     rollup = rollup_report_lines(
         [

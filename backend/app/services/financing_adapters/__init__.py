@@ -18,12 +18,14 @@ from app.services.financing_adapters.base import (
     FinancingQuote,
 )
 from app.services.financing_adapters.dispatcher import (
+    UnknownFinancingProviderError,
     get_financing_adapter,
     register_financing_adapter,
 )
 
 __all__ = [
     "FinancingAdapter",
+    "UnknownFinancingProviderError",
     "FinancingFundingResult",
     "FinancingQuote",
     "get_financing_adapter",

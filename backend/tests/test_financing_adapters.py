@@ -26,6 +26,7 @@ import pytest
 
 from app.services.financing_adapters import (
     FinancingQuote,
+    UnknownFinancingProviderError,
     get_financing_adapter,
 )
 from app.services.financing_adapters.c2fo import REASON_NOT_IMPLEMENTED, C2FOAdapter
@@ -53,9 +54,29 @@ def test_dispatcher_falls_back_to_mock_on_empty_config():
     assert isinstance(get_financing_adapter({}), MockFinancingAdapter)
 
 
-def test_dispatcher_falls_back_to_mock_on_unknown_provider():
-    adapter = get_financing_adapter({"provider": "no-such-financier"})
-    assert isinstance(adapter, MockFinancingAdapter)
+def test_dispatcher_fails_closed_on_a_named_unknown_provider():
+    """The last dispatcher in the codebase that still fell back to `mock` on a
+    NAMED provider it has no adapter for.
+
+    `MockFinancingAdapter.request_funding` is not an inert stub — it returns
+    `funded=True` with a fabricated `mock-fund-<hash>` id, i.e. it reports a
+    supplier as paid by a financier that never saw the request. A
+    one-character typo in `Organization.settings.financing.provider` was all it
+    took. Same call `payment_adapters` / `erp_adapters` / `fx_adapters` already
+    made (`decisions.md` §29), closed here before the first production caller
+    lands rather than after."""
+    with pytest.raises(UnknownFinancingProviderError) as exc:
+        get_financing_adapter({"provider": "no-such-financier"})
+    # The message names the bad value and what IS registered, so an admin can
+    # fix the setting — bounded, so an absurd value can't flood a log line.
+    assert "no-such-financier" in str(exc.value)
+    assert "mock" in str(exc.value)
+
+
+def test_unknown_financing_provider_name_is_bounded_in_the_error():
+    with pytest.raises(UnknownFinancingProviderError) as exc:
+        get_financing_adapter({"provider": "x" * 500})
+    assert len(exc.value.provider) <= 50
 
 
 def test_dispatcher_resolves_named_providers():

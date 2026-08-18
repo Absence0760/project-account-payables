@@ -236,10 +236,12 @@ async def _create_run(
     """Shared persist path for both the manual and CSV intake routes.
 
     Resolves the vendor (404 if not in entity scope), builds the candidate
-    ledger from that vendor's open invoices, runs the pure reconciliation
-    engine, and persists the run + its per-line results. Does NOT commit — the
-    caller owns the transaction boundary.
+    ledger from that vendor's open invoices **in the statement's own
+    currency**, runs the pure reconciliation engine, and persists the run + its
+    per-line results. Does NOT commit — the caller owns the transaction
+    boundary.
     """
+    run_currency = (currency or "USD").upper()
     vendor = (
         await db.execute(
             apply_entity_scope(select(Vendor).where(Vendor.id == vendor_id), Vendor, entity_id)
@@ -249,7 +251,18 @@ async def _create_run(
         raise HTTPException(status_code=404, detail="Vendor not found")
 
     # Candidate ledger: this vendor's invoices in the entity scope that aren't
-    # already settled (paid/done can't appear on an open-items statement).
+    # already settled (paid/done can't appear on an open-items statement), and
+    # that are denominated in the STATEMENT's currency.
+    #
+    # The currency filter is load-bearing, not hygiene. The engine compares a
+    # statement line's amount against a ledger invoice's as bare `Decimal`s —
+    # it has no rate and must not invent one — so a mixed-currency candidate
+    # set makes both classifications wrong at once: a EUR 1 000 invoice
+    # amount-matches a USD 1 000 statement line (reported `matched`), and the
+    # real USD 1 000 invoice it displaced then falls out as
+    # `missing_on_their_side`. Excluding the other currencies is also the right
+    # answer for the orphan leg: a supplier's USD statement of open items does
+    # not omit our EUR invoices, it simply isn't about them.
     ledger_rows = (
         (
             await db.execute(
@@ -257,6 +270,7 @@ async def _create_run(
                     select(Invoice).where(
                         Invoice.vendor_id == vendor_id,
                         Invoice.status.notin_(_LEDGER_EXCLUDED_STATUSES),
+                        func.upper(Invoice.currency) == run_currency,
                     ),
                     Invoice,
                     entity_id,
@@ -287,7 +301,7 @@ async def _create_run(
         vendor_name=vendor.name,
         statement_date=statement_date,
         statement_reference=statement_reference,
-        currency=(currency or "USD").upper(),
+        currency=run_currency,
         source_format=source_format,
         # Stamped by `_archive_source_file` after the flush below — the S3 key
         # embeds the run id, so the row has to exist first.

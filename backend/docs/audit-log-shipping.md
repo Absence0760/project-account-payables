@@ -41,9 +41,14 @@ rows out of every tenant DB and writes them to one or more WORM
 
 Simple + bounded. The largest tenant DB governs how quickly we drain
 — if you notice rows aging past a few ticks of the interval, raise
-`FEOH_AUDIT_SHIPPING_BATCH_SIZE`. A 500-row batch gzips to ~80KB of JSONL;
-CloudWatch accepts up to 10,000 events per `PutLogEvents`, so there's
-plenty of headroom.
+`FEOH_AUDIT_SHIPPING_BATCH_SIZE`. A 500-row batch gzips to ~80KB of JSONL.
+
+The batch size is **not** bounded by any sink's request limits, and must not
+be read as if it were: `PutLogEvents` caps a call at 10 000 events *and* at
+1 MiB, and audit `details` is free-form JSONB, so a handful of fat rows takes
+a default 500-row batch past the byte cap. The `cloudwatch` adapter chunks the
+batch to fit — see § `cloudwatch` below. Sizing the shipper's batch is a
+throughput decision; fitting a sink's request is the adapter's job.
 
 ### Why a per-tick engine
 
@@ -89,6 +94,67 @@ simple filter rather than a Log Insights scan.
 The adapter lazily creates the log group + streams on first use; the
 `ResourceAlreadyExistsException` is swallowed so repeated ticks don't
 bang on `CreateLogStream` with errors.
+
+#### The PutLogEvents caps are the adapter's problem, not the shipper's
+
+`PutLogEvents` refuses a call carrying more than **10 000 events** or more than
+**1 MiB** (the sum of the UTF-8 message bytes plus 26 bytes of framing per
+event), and refuses a single event over **256 KiB** on the same accounting.
+The adapter enforces all three:
+
+- each stream's events are sorted by timestamp, then **chunked** to fit both
+  per-call caps (`_chunk_events`, pure and unit-tested);
+- a single row that could not fit a call even alone has its `details` replaced
+  by a PII-free marker (`{"_details_truncated": true, "original_bytes": …,
+  "limit_bytes": …}`) so the row's *identity* — id, org, correlation, actor,
+  action, entity, timestamp — still lands in the tamper-evidence store. The
+  complete row keeps living in the tenant `audit_log` table and in the
+  `s3_objectlock` copy, which has no comparable limit. A count of truncated
+  rows is logged (never their ids or content).
+
+Why not just raise on an oversized batch? Because the shipper selects
+`shipped_at IS NULL` **oldest first**: a batch that can never be accepted is
+re-selected identically on every tick, so one fat row stops the tenant's whole
+audit trail from ever shipping again — head-of-line blocking, with the sweep
+reporting a failure nobody can act on. That is not hypothetical: a
+`retention.archived` row that inlined every archived invoice id grew past 1 MB
+and jammed exactly this path (see the note in `services/retention_sweep.py`).
+Trimming that row fixed the symptom; the cap is now respected at the source.
+
+#### `ship()` is all-or-nothing in the bookkeeping, at-least-once at the sink
+
+Chunking makes that seam wider, not new. A batch already spanned one
+`PutLogEvents` call per `(tenant, day)` stream, and
+`FEOH_AUDIT_SHIPPING_PROVIDERS` already fanned out to several adapters — none
+of which composes into a transaction, so a later call failing cannot un-write an
+earlier one. What the shipper guarantees is its own bookkeeping: `shipped_at`
+is stamped only when every adapter's `ship()` returned cleanly, so a raise
+replays the **whole** batch on the next tick and the part the sink already
+accepted arrives twice.
+
+That is the deliberate direction — a duplicated audit event is identifiable
+(every shipped event carries the `audit_log` row's own `id`) and reconcilable on
+read, whereas a missing one is unrecoverable evidence. `base.py`'s module
+docstring is the contract, and
+`test_cloudwatch_ship_is_at_least_once_when_a_later_call_fails` pins the
+behaviour so it can't be mistaken for atomicity again.
+
+#### A 200 that dropped rows is a failure
+
+`PutLogEvents` can succeed while silently discarding events, reporting them in
+the response's `rejectedLogEventsInfo` (too old for the log group's retention
+period, or too far in the future). The adapter reads that block and raises
+`AuditShippingRejected`, so the shipper leaves `shipped_at` NULL, the sweep's
+consecutive-failure streak climbs on `GET /api/health/sweeps`, and
+`retention_sweep`'s `audit_rows_overdue_unshipped` counts the rows. Marking
+them shipped would put a green light on evidence the WORM store never took —
+the same failure mode the boot-time `test_connection` probe below exists to
+prevent. The raised message carries only AWS's index fields, never a row body.
+
+If this fires, the usual cause is a backlog older than the log group's
+retention period: raise the retention on `FEOH_AUDIT_SHIPPING_CLOUDWATCH_GROUP`
+(or ship the backlog to `s3_objectlock`, which has no age limit) and the next
+tick drains it.
 
 ### `s3_objectlock` — S3 with Object Lock (Governance or Compliance mode)
 

@@ -110,8 +110,9 @@ async def get_1099_report(
     Aggregates ``completed`` payments by vendor for the given year. The
     response includes every vendor so the tenant can spot vendors they
     haven't yet flagged as 1099-eligible. The totals are labelled with the
-    org's reporting (home) currency — ``Payment.amount`` is already
-    home-currency, so this is honest naming, not an FX conversion.
+    org's reporting (home) currency, and the aggregation only counts a
+    payment it can PROVE is denominated in it — see
+    ``services/tax_1099.build_1099_report``.
     """
     report = await build_1099_report(db, org_id, year, resolve_reporting_currency(org.settings))
     return report.to_dict()
@@ -280,7 +281,10 @@ async def download_vendor_1099(
         raise HTTPException(status_code=400, detail="Unsupported form type")
 
     vendor = await _get_vendor_or_404(db, vendor_id)
-    report = await build_1099_report(db, org_id, year)
+    # The org's reporting currency, not the `USD` default: the aggregation
+    # uses it to decide which payments it can express, so passing nothing
+    # would drop a non-USD tenant's whole book out of the form amount.
+    report = await build_1099_report(db, org_id, year, resolve_reporting_currency(org.settings))
     row = next((r for r in report.rows if r.vendor_id == vendor.id), None)
     if row is None or row.ytd_paid <= 0:
         raise HTTPException(
@@ -395,7 +399,11 @@ async def file_1099_batch(
             detail="A concurrent 1099 filing submission is in progress for this key",
         ) from None
 
-    report = await build_1099_report(db, org_id, body.year)
+    # Reporting currency as above — the filed box amount must come from the
+    # same aggregation the report endpoint shows.
+    report = await build_1099_report(
+        db, org_id, body.year, resolve_reporting_currency(org.settings)
+    )
     filable = [r for r in report.rows if r.is_1099_eligible and r.over_threshold]
 
     forms = [

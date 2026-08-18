@@ -849,3 +849,63 @@ async def test_deliver_due_returns_only_the_deliveries_it_claimed(realdb, monkey
             assert row.status == DELIVERY_PENDING
     finally:
         await _cleanup(control_mk, sub.id)
+
+
+@pytest.mark.asyncio
+async def test_redeliver_claims_the_row_so_a_sweep_tick_cannot_double_send(realdb, monkeypatch):
+    """`POST /deliveries/{id}/redeliver` used to read the row UNLOCKED, commit it
+    back to `pending` with `next_attempt_at = now()`, and only THEN POST —
+    leaving the row due, unclaimed and in flight. A sweep tick landing in that
+    window claimed it and POSTed the same delivery a second time, with both
+    commits racing on `attempt_count`. The claim `deliver_due` and the emit
+    path's immediate attempt already take was missing on this one path."""
+    import asyncio
+
+    org_id = realdb.info("a").org_id
+    control_mk = realdb.control_sessionmaker()
+    sub, dlv = _make_sub_and_delivery(org_id)
+    dlv.status = DELIVERY_FAILED
+    dlv.attempt_count = 2
+    dlv.next_attempt_at = datetime.now(UTC)
+    await _persist(control_mk, sub, dlv)
+
+    sent: list = []
+    gate = asyncio.Event()
+
+    async def fake_post(target_url, body, signature, delivery, previous_signature=None):
+        first = not sent
+        sent.append(delivery.id)
+        if first:
+            # Freeze the redelivery INSIDE its outbound POST, so the sweep tick
+            # below lands in exactly the window the claim has to close.
+            await gate.wait()
+        return 200
+
+    monkeypatch.setattr(delivery_mod, "_post", fake_post)
+
+    try:
+        async with realdb.client(key="a", role="admin") as c:
+            task = asyncio.create_task(c.post(f"/api/webhooks/deliveries/{dlv.id}/redeliver"))
+            for _ in range(500):
+                await asyncio.sleep(0.01)
+                if sent:
+                    break
+            assert sent == [dlv.id], "the redelivery never reached its POST"
+
+            async with control_mk() as sweeper:
+                await delivery_mod.deliver_due(sweeper)
+
+            gate.set()
+            resp = await task
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["status"] == DELIVERY_DELIVERED
+
+        assert sent.count(dlv.id) == 1, "an in-flight redelivery must not be POSTed again"
+        async with control_mk() as s:
+            row = await s.get(WebhookDelivery, dlv.id)
+            # Counter reset by the redelivery, then exactly one attempt made.
+            assert row.attempt_count == 1
+            assert row.status == DELIVERY_DELIVERED
+    finally:
+        gate.set()
+        await _cleanup(control_mk, sub.id)

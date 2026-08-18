@@ -18,12 +18,14 @@ live subscription for an org.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.billing import Plan, Subscription
+from app.services.billing.period import add_months
 
 # Stable machine codes referenced throughout backend/docs/billing.md (its
 # `GET /api/billing/subscription` example uses exactly this "growth" /
@@ -113,11 +115,18 @@ async def ensure_subscription(
     if plan is None:
         return None
 
+    # Stamp the first billing window. Plans are flat monthly, and every reader
+    # of these columns (proration, the dunning grace clock, the subscription
+    # summary) is useless without them — leaving them NULL is what made every
+    # mid-period plan change prorate 0.00. See `services/billing/period.py`.
+    started = datetime.now(UTC)
     sub = Subscription(
         id=uuid.uuid4(),
         organization_id=organization_id,
         plan_id=plan.id,
         status="active",
+        current_period_start=started,
+        current_period_end=add_months(started, 1),
     )
     session.add(sub)
     await session.flush()

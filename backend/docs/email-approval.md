@@ -64,9 +64,14 @@ even though the frontend is a static site.
 1. **Verify** the token (signature + expiry). Invalid → friendly 400 page.
 2. **Resolve** the tenant org from the token's slug (control plane).
 3. **Load the reviewer** named in the token, scoped to that org, with roles —
-   must be active, in the right org, and hold an approver role
-   (`admin` / `ap_manager` / `cfo`, matching `require_roles(...)` on the in-app
-   approve/reject endpoints — the email door is never weaker than the app door).
+   must be active, in the right org, and hold the `invoice.approve` **granular
+   permission** (`email_actions.may_approve`, the shared gate the Slack and
+   Teams surfaces call too). That is the same permission
+   `require_permission(PERM_INVOICE_APPROVE)` enforces on the in-app
+   approve/reject endpoints, so the email door is never weaker than the app
+   door — and never narrower either: a custom role granting `invoice.approve`
+   works here exactly as it does in the app. For the four system roles it
+   resolves identically to `admin` / `ap_manager` / `cfo`.
 4. **Claim the token `jti`** in Redis (`SET NX EX`) — single-use. A replay shows
    "already used".
 5. **Open a short-lived tenant session**, row-lock the invoice, and — only if it
@@ -74,8 +79,17 @@ even though the frontend is a static site.
    `review.reject_invoice` **as the reviewer**. This is the same code the
    authenticated endpoints call, so segregation, thresholds, the CFO gate, the
    `invoice.approved` / `invoice.rejected` immutable audit row, and the approval
-   signature all happen exactly as normal.
-6. **Render** a success / info page.
+   signature all happen exactly as normal. The org's **`settings`** ride along
+   as `org_settings` — the same value the in-app endpoint passes — so this door
+   evaluates the tenant's own `fraud_rules`, `matching` PO tolerances,
+   `exceptions` routing and structuring window rather than the platform
+   defaults. Dropping it would make an approval mean something different
+   depending on which door it came through, and would let a rule the org turned
+   off open a payment-BLOCKING `fraud_flag` on this path only.
+6. **Render** a success / info page. On a **multi-level approval chain** the
+   invoice stays `ready_for_review` for the next approver, so the page says
+   "Approval recorded … it still needs a further approval" rather than
+   "approved" — the outcome is read off the resulting status, never assumed.
 
 If the action turns out not to be applicable or not permitted (invoice no longer
 awaiting review, segregation block, CFO gate, over the max-amount cap), the jti

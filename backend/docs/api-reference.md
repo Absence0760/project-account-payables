@@ -204,7 +204,7 @@ See [`docs/self-service-signup.md`](../../docs/self-service-signup.md) for the f
 | `PATCH`  | `/api/invoices/{id}`                | admin/manager/cfo | Update invoice |
 | `DELETE` | `/api/invoices/{id}`                | admin/manager/cfo | Delete invoice |
 | `POST`   | `/api/invoices/bulk/delete`         | admin/manager/cfo | Bulk delete |
-| `POST`   | `/api/invoices/bulk/status`         | admin/manager/cfo | Bulk status change |
+| `POST`   | `/api/invoices/bulk/status`         | admin/manager/cfo | Bulk status change. Partial-success: returns `{updated, skipped}`; a member the state machine refuses (or that fails a control on the `approved`/`rejected` paths) is listed in `skipped` and never aborts the batch. Only `new`/`pending`/`ready_for_review`/`approved`/`rejected`/`done` are settable — the rest 422 (they are workflow-engine driven). |
 | `POST`   | `/api/invoices/bulk/export`         | *     | Bulk export (CSV/JSON/XML) |
 | `POST`   | `/api/invoices/bulk-recode-gl`      | admin | Bulk GL re-code via vendor priors (+ optional AI fallback). Defaults to dry-run. See [`ai-extraction.md`](ai-extraction.md) § Bulk re-coding. |
 

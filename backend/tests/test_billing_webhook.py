@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -48,13 +49,19 @@ from app.services.billing_adapters.stripe_billing import (
 _WEBHOOK_SECRET = "whsec_test_billing"
 
 
-def _sign(body: bytes, secret: str = _WEBHOOK_SECRET, *, timestamp: str = "1700000000") -> str:
+def _sign(body: bytes, secret: str = _WEBHOOK_SECRET, *, timestamp: str | None = None) -> str:
     """Produce a real ``Stripe-Signature`` header: ``t=<ts>,v1=<hmac(t.body)>``.
 
     Stripe signs the timestamp-prefixed payload ``f"{t}.{body}"`` — NOT the body
     alone — so the test must build the header exactly as Stripe does or it would
     only ever exercise the reject path.
+
+    ``t`` defaults to NOW, as a real delivery's does: the adapter enforces
+    Stripe's replay-tolerance window, so a fixed epoch would fail every test
+    for the right reason and hide the wrong one.
     """
+    if timestamp is None:
+        timestamp = str(int(time.time()))
     signed_payload = b"%s.%s" % (timestamp.encode(), body)
     digest = hmac.new(secret.encode(), signed_payload, hashlib.sha256).hexdigest()
     return f"t={timestamp},v1={digest}"
@@ -191,6 +198,56 @@ async def test_stripe_provider_error_is_pii_free():
     # The error message names the op + status only — never the response body.
     assert "402" in str(exc.value)
     assert "cus_secret" not in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# Stripe-Signature replay window
+# ---------------------------------------------------------------------------
+
+
+def _signature_adapter() -> StripeBillingAdapter:
+    return StripeBillingAdapter({"stripe_webhook_secret": _WEBHOOK_SECRET})
+
+
+def test_stripe_signature_accepts_a_fresh_timestamp():
+    body = _stripe_event(event_id="evt_fresh", sub_id="sub_1", raw_status="active")
+    assert _signature_adapter()._verify_stripe_signature(_sign(body), body) is True
+
+
+def test_stripe_signature_rejects_an_old_but_correctly_signed_event():
+    """Stripe's verification procedure has two halves and only the digest half
+    was implemented, so a captured event verified forever. The Redis dedupe
+    covers a REDELIVERY of the same event inside its 72h TTL; it does not stop
+    an OLD event being replayed at all — a `customer.subscription.deleted`
+    replayed later cancels a subscription the customer has since re-taken."""
+    body = _stripe_event(event_id="evt_old", sub_id="sub_1", raw_status="canceled")
+    stale = str(int(time.time()) - 365 * 24 * 3600)
+    header = _sign(body, timestamp=stale)
+    assert _signature_adapter()._verify_stripe_signature(header, body) is False
+
+
+def test_stripe_signature_rejects_a_far_future_timestamp():
+    """A forged far-future `t` would otherwise buy an arbitrarily long window."""
+    body = _stripe_event(event_id="evt_future", sub_id="sub_1", raw_status="active")
+    ahead = str(int(time.time()) + 24 * 3600)
+    header = _sign(body, timestamp=ahead)
+    assert _signature_adapter()._verify_stripe_signature(header, body) is False
+
+
+def test_stripe_signature_rejects_a_non_numeric_timestamp():
+    body = _stripe_event(event_id="evt_bad_t", sub_id="sub_1", raw_status="active")
+    assert _signature_adapter()._verify_stripe_signature(_sign(body, timestamp="soon"), body) is (
+        False
+    )
+
+
+def test_stripe_signature_window_can_be_disabled_for_an_archived_replay(monkeypatch):
+    """`<= 0` is the documented escape hatch for an operator replaying an
+    archived event during an incident — a knob, never the default."""
+    monkeypatch.setattr(settings, "billing_stripe_webhook_max_age_seconds", 0)
+    body = _stripe_event(event_id="evt_archived", sub_id="sub_1", raw_status="active")
+    stale = str(int(time.time()) - 365 * 24 * 3600)
+    assert _signature_adapter()._verify_stripe_signature(_sign(body, timestamp=stale), body) is True
 
 
 # ---------------------------------------------------------------------------

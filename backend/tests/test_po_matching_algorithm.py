@@ -71,10 +71,15 @@ def _li(quantity=None, received=None):
 
 
 def _mk_db(*, po=None, gr=None, inspection=None):
-    """Three execute calls when a PO is found: PO lookup, GR lookup, then the
-    4-way quality-inspection lookup (added in the 4-way-matching slice). The
-    inspection result defaults to None so existing 2-way/3-way cases are
-    unaffected."""
+    """PO lookup, then GR lookup, then the 4-way quality-inspection lookup(s).
+
+    The inspection leg can issue TWO queries — one scoped to the goods receipt,
+    then a fallback scoped to the PO with no `gr_id` of its own (a PO-level
+    inspection recorded when the QMS knew the PO but not the GR number). So the
+    inspection result is served for *every* call past the first two rather than
+    being a fixed third element: a hardcoded three-element `side_effect` made
+    the harness's shape, not the matcher's behaviour, decide how many lookups
+    were legal. Defaults to None so 2-way/3-way cases are unaffected."""
     po_res = MagicMock()
     po_res.scalar_one_or_none = MagicMock(return_value=po)
 
@@ -88,8 +93,16 @@ def _mk_db(*, po=None, gr=None, inspection=None):
     insp_res = MagicMock()
     insp_res.scalar_one_or_none = MagicMock(return_value=inspection)
 
+    fixed = [po_res, gr_res]
+    calls = {"n": 0}
+
+    async def _execute(*_args, **_kwargs):
+        i = calls["n"]
+        calls["n"] += 1
+        return fixed[i] if i < len(fixed) else insp_res
+
     db = AsyncMock()
-    db.execute = AsyncMock(side_effect=[po_res, gr_res, insp_res])
+    db.execute = _execute
     return db
 
 

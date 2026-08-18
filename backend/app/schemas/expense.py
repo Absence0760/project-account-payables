@@ -133,7 +133,12 @@ class ExpenseReportBase(BaseModel):
 
 
 class ExpenseReportCreate(ExpenseReportBase):
-    # The submitting employee. Optional — defaults to the authenticated user.
+    # Accepted for wire compatibility and then IGNORED — the submitting employee
+    # is always the authenticated caller. It is the value report approval checks
+    # segregation of duties against, so it must not be the creator's own input.
+    # Kept on the schema (rather than removed) so an old client sending it gets
+    # a report owned by itself, not a 422. Same posture as
+    # `ExpensePreapprovalCreate.requester_user_id`.
     employee_user_id: str | None = None
 
 

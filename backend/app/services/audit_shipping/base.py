@@ -6,9 +6,24 @@ Lambda / CLI callers don't need a SQLAlchemy session) and write them to
 a WORM-compliant sink.
 
 The contract is narrow on purpose:
-- `ship(rows)` — write all rows. Raise on failure. Must be atomic from
-  the caller's perspective: either everything in the batch is durable
-  or the adapter raised.
+- `ship(rows)` — write all rows. Raise on failure. All-or-nothing in the
+  SHIPPER'S BOOKKEEPING, at-least-once at the SINK: `shipped_at` is
+  stamped only when `ship` returns cleanly, so a raise means the whole
+  batch is retried next tick — but rows the sink already accepted before
+  the raise stay accepted and arrive twice.
+
+  That is not a shortfall of any one adapter, it is what these sinks
+  are. A batch spans several `PutLogEvents` calls (one per
+  `(tenant, day)` stream, and more when the batch exceeds the API's 1 MiB
+  cap), `FEOH_AUDIT_SHIPPING_PROVIDERS` fans out to several adapters, and
+  none of that composes into a transaction — a later call failing cannot
+  un-write an earlier one. So this docstring used to promise atomicity
+  the code never had, while `ship()` below and `audit_log_shipper` both
+  already documented the replay. The reconciliation is on read: every
+  shipped event carries the `audit_log` row's own `id`, so a duplicate in
+  the WORM store is identifiable rather than a second event. Deliberate:
+  a duplicated audit row is recoverable, a MISSING one is not, so the
+  retry direction is the safe one.
 - `test_connection()` — liveness + WORM-config probe. `app/main.py`'s
   lifespan calls it once per configured adapter when
   `FEOH_AUDIT_SHIPPING_ENABLED` is on and `FEOH_DEBUG` is off, and
@@ -21,6 +36,24 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+
+
+class AuditShippingRejected(RuntimeError):
+    """A sink accepted the call but did NOT ingest every row.
+
+    Distinct from a transport error: the API returned success, so nothing else
+    would have noticed. CloudWatch's ``PutLogEvents`` is the case this exists
+    for — it answers 200 with a ``rejectedLogEventsInfo`` block naming the
+    events it silently dropped (too old for the log group's retention, too far
+    in the future). Swallowing that would stamp ``shipped_at`` on rows that
+    never reached the WORM store, which is precisely the "SOC 2 evidence
+    reading green with nothing behind it" failure the boot-time
+    ``test_connection`` probe already refuses to allow.
+
+    Raising keeps the rows unshipped, so the next tick retries, the sweep's
+    consecutive-failure streak climbs (``GET /api/health/sweeps``), and the
+    retention manifest's ``audit_rows_overdue_unshipped`` counts them.
+    """
 
 
 @dataclass(frozen=True)
@@ -77,9 +110,12 @@ class AuditShippingAdapter:
 
         Implementations should be idempotent where possible (replays on
         retry are expected — the shipper marks rows shipped only AFTER
-        every configured adapter has succeeded). But non-idempotent
-        adapters are acceptable as long as duplicates on the sink side
-        are downstream auditors' problem, not ours.
+        every configured adapter has succeeded, and a raise part-way
+        through a multi-call batch leaves the already-accepted part
+        accepted). But non-idempotent adapters are acceptable as long as
+        duplicates on the sink side are downstream auditors' problem, not
+        ours — every event carries the `audit_log` row's `id`, so a
+        replay is identifiable on read. See the module docstring.
         """
         raise NotImplementedError
 

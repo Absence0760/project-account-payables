@@ -82,6 +82,29 @@ async def _reap_tenant(db_name: str, cutoff: datetime, *, threshold_seconds: int
     Uses a fresh engine per call — same pattern as `extraction_dispatch._run_local`.
     The reaper runs in the FastAPI event loop, but tenant engines aren't
     cached for it; cheaper to spin one up than to plumb through the cache.
+
+    **Two-phase, one row locked at a time**, the shape every mutating sweep
+    uses (see `../docs/background-sweeps.md` § Locking): candidate ids are read
+    UNLOCKED, then each is re-read `FOR UPDATE`, re-checked against the
+    predicate the id query used, transitioned, and committed on its own — which
+    releases the lock before the next row is touched.
+
+    The re-check is the load-bearing part, not an optimisation. The sweep used
+    to load whole `Invoice` objects up front and transition them from that
+    snapshot, so an extraction that finished DURING the tick was silently
+    overwritten: `transition_invoice` validates against the STALE in-memory
+    `pending`, `pending → failed` is a legal edge, and the UPDATE then stamped
+    `failed` over the row's real, freshly-committed state. An invoice that had
+    reached `ready_for_review` (or `approved` — `pending → approved` is legal
+    too) came out `failed`, carrying an `extraction_timeout` warning about an
+    extraction that had actually succeeded, and with no way back:
+    `failed → ready_for_review` is not a legal edge, so the reviewer has to
+    re-run extraction to recover a document that was already done. Re-reading
+    under the lock means such a row is simply skipped.
+
+    Committing per row also stops one invoice's failure from discarding the
+    tick's other work — the same reason `vendor_rescreen` and
+    `recurring_invoices` moved off a single per-tenant transaction.
     """
     engine = create_async_engine(_make_tenant_url(db_name))
     factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -89,13 +112,17 @@ async def _reap_tenant(db_name: str, cutoff: datetime, *, threshold_seconds: int
 
     try:
         async with factory() as db:
-            stuck = (
+            stuck_ids = (
                 (
                     await db.execute(
-                        select(Invoice).where(
+                        select(Invoice.id)
+                        .where(
                             Invoice.status == InvoiceStatus.pending,
                             Invoice.created_at < cutoff,
                         )
+                        # Same lock order on every replica, so two reapers queue
+                        # instead of deadlocking on overlapping sets.
+                        .order_by(Invoice.id.asc())
                     )
                 )
                 .scalars()
@@ -104,7 +131,16 @@ async def _reap_tenant(db_name: str, cutoff: datetime, *, threshold_seconds: int
 
             from app.services.workflow_engine import transition_invoice
 
-            for inv in stuck:
+            for invoice_id in stuck_ids:
+                # `with_for_update` bypasses the identity map, so this is a real
+                # `SELECT ... FOR UPDATE` on exactly one row.
+                inv = await db.get(Invoice, invoice_id, with_for_update=True)
+                if inv is None or inv.status is not InvoiceStatus.pending:
+                    # Deleted, or extraction completed between the id read and
+                    # the lock. End the transaction so the lock is released now
+                    # rather than at the end of the tick.
+                    await db.rollback()
+                    continue
                 age = int((datetime.now(UTC) - inv.created_at).total_seconds())
                 # Route the system transition through transition_invoice so
                 # the SOC 2 audit-shipping pipeline captures the row, same
@@ -135,10 +171,10 @@ async def _reap_tenant(db_name: str, cutoff: datetime, *, threshold_seconds: int
                     }
                 )
                 inv.warnings = warnings
+                await db.commit()
                 reaped += 1
 
             if reaped:
-                await db.commit()
                 logger.info("[reaper] %s: reaped %d stuck invoice(s)", db_name, reaped)
     finally:
         await engine.dispose()

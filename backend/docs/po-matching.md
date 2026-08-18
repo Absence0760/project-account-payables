@@ -76,12 +76,30 @@ The PO lookup and the GR lookup both pick a single deterministic row when a
 cannot crash on a duplicate.
 
 The 4-way leg runs **after** the 3-way GR block. It looks up the most recent
-`QualityInspection` — preferring the matched GR (`gr_id`), falling back to the
-PO (`po_id`). A `fail` blocks the invoice; a `partial` surfaces the accepted
-quantity (pay-only-accepted); a `pass` is a clean gate. When
+`QualityInspection` in two steps: the matched receipt's own (`gr_id == gr.id`),
+then — **whether or not a GR was found** — a PO-level one (`po_id == po.id`
+with `gr_id IS NULL`). A `fail` blocks the invoice; a `partial` surfaces the
+accepted quantity (pay-only-accepted); a `pass` is a clean gate. When
 `require_inspection` is on and no inspection exists for a found PO, the match
 flags `inspection_required` so the warnings layer can route a `quality_hold`
 exception.
+
+**Both steps matter, and the second one used to be skipped whenever a GR
+existed.** `qms_sync` writes a PO-level inspection (`gr_id` NULL) any time the
+QMS knows the PO number but not the GR number — `_resolve_gr_id` returns `None`
+— and `POST /api/inspections` accepts a PO-only body. Querying the GR-scoped row
+*instead of* the PO-level one made those rows invisible the moment any receipt
+was booked, and the control then failed **open** in the worst direction: a
+`fail` verdict on rejected goods never reached the matcher, the invoice read a
+clean `3-way` `matched`, no `quality_hold` was raised, and the supplier could be
+paid for goods the business had refused.
+
+The fallback is deliberately restricted to inspections with **no `gr_id` of
+their own**. An inspection belonging to a *different* shipment of the same PO
+also carries this `po_id`; letting it stand in for the receipt being matched
+would substitute one masking bug for another (shipment 2 passed, so shipment 1
+reads inspected). Covered by
+`backend/tests/test_po_matching_critical_path.py` § 4-way leg.
 
 ## Tolerance
 
@@ -222,13 +240,35 @@ families (`financing_adapters`, `fx_adapters`, …):
   upsert it best-effort re-runs `invoice_warnings.refresh_warnings` (inside a
   SAVEPOINT) for invoices referencing the affected POs so a fresh quality verdict
   re-gates the 4-way match — never fails the sync.
+- **An unmappable disposition is SKIPPED, never coerced.**
+  `qms_sync.normalize_disposition` maps the provider's verdict onto
+  `pass`/`fail`/`partial`, normalising case and whitespace only (`"FAIL"` is a
+  reading, not a guess). Anything genuinely outside the vocabulary —
+  `"rejected"`, `"quarantine"`, `""` — yields no row and increments `skipped`,
+  with a PII-free warning naming the inspection number and the provider. It used
+  to fall back to **`pass`**, which is the one value the match treats as
+  no-status-change, so a QMS emitting its own vocabulary for a rejected lot
+  cleared the quality gate and the invoice became payable. Leaving no row is the
+  fail-closed outcome: an org with `require_inspection` gets "Quality inspection
+  required but missing", one without is unaffected. Mapping the vocabulary
+  remains the adapter's documented contract; this is the backstop.
+- **Opting in is one rule, shared** — `qms_sync.resolve_opted_in_qms_config`:
+  an org-level `settings.qms` block, or a platform provider override
+  (`FEOH_QMS_PROVIDER != "mock"`, which opts every org in with the default
+  config). Both the sweep and the manual route read it, so they cannot drift.
 - **Sweep** (`run_qms_sync_loop`): a long-lived asyncio task (mirrors
   `contract_renewal`) that sweeps every tenant DB on `FEOH_QMS_SYNC_INTERVAL_SECONDS`.
-  Disabled by default (`FEOH_QMS_SYNC_ENABLED=false`); orgs without a `settings.qms`
-  block are skipped while the platform provider is `mock`.
+  Disabled by default (`FEOH_QMS_SYNC_ENABLED=false`); orgs that have not opted
+  in are skipped.
 - **Manual trigger**: `POST /api/inspections/sync` (admin / ap_manager) runs one
-  sync for the current tenant from `Organization.settings.qms`, returning
-  `{fetched, created, updated}`.
+  sync for the current tenant, returning `{fetched, created, updated, skipped}`.
+  It applies the **same** opt-in rule and **409s** when the org has no QMS
+  configured. Without that guard `get_qms_adapter(None)` resolved to the `mock`
+  adapter, and one call persisted its three fabricated fixtures
+  (`QMS-INSP-001 pass / PO-1001` …) against the tenant's REAL purchase orders —
+  a synthetic `pass` clearing the quality gate on a real invoice, a synthetic
+  `fail` flipping others to `mismatch`, and rows indistinguishable from genuine
+  ones in the UI. The sweep already guarded this; the route did not.
 
 ## Data Models
 

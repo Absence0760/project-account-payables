@@ -24,6 +24,33 @@ from app.models.user import Role, User, UserRole
 logger = logging.getLogger(__name__)
 
 
+class DeactivatedAccount(ValueError):
+    """Raised when the IdP authenticated someone whose app account is disabled.
+
+    Offboarding is expressed as `users.is_active = false` — set by an admin
+    (`PATCH /api/admin/users/{id}`) or by an IdP deprovision (SCIM `active:
+    false`, `DELETE /scim/v2/Users/{id}`). The IdP may still authenticate that
+    person for a while (a stale session, a directory that hasn't converged, or
+    an app-level deactivation the IdP never learns about), so the SSO callback
+    is the place that has to say no.
+
+    Without this, both SSO callbacks happily minted an access token for a
+    deactivated account. The token was inert — `get_current_user` refuses an
+    inactive user — but the caller was told the sign-in SUCCEEDED, the session
+    was tracked, and an `auth.sso.login.success` / `auth.saml.login.success`
+    row landed in the SOX trail for someone who no longer has access. The
+    equivalent password-login branch has always refused; this closes the SSO
+    side.
+
+    Carries only the resolved user id — never the email — so the SAML caller
+    can keep its PII-out-of-logs posture.
+    """
+
+    def __init__(self, user_id: uuid.UUID) -> None:
+        self.user_id = user_id
+        super().__init__("This account has been deactivated.")
+
+
 class EmailDomainNotAllowed(ValueError):
     """Raised when a verified IdP email falls outside the tenant's allowlist.
 
@@ -65,6 +92,13 @@ async def jit_provision(
     3. New user with JIT-provisioned admin role if org has no users yet,
        otherwise ap_clerk (least-privilege default).
 
+    A matched-but-DEACTIVATED account raises `DeactivatedAccount` rather than
+    being returned, so neither SSO callback can mint a session for someone who
+    has been offboarded. Branch 3 always creates an active user, so only the two
+    match branches can trip it. The raise happens BEFORE any SSO re-link write,
+    so a disabled account can't have its `sso_provider_id` silently rebound by a
+    login attempt either.
+
     Note on provider transitions: the durable key is (sso_provider,
     sso_provider_id), so a tenant that switches a user from OIDC
     (provider="okta"/"entra") to SAML (provider="saml", subject=NameID)
@@ -82,6 +116,8 @@ async def jit_provision(
         )
     )
     user = result.scalar_one_or_none()
+    if user is not None and not user.is_active:
+        raise DeactivatedAccount(user.id)
 
     # 2. Link by email — first SSO login for an existing password user
     if user is None:
@@ -90,6 +126,8 @@ async def jit_provision(
         )
         user = result.scalar_one_or_none()
         if user is not None:
+            if not user.is_active:
+                raise DeactivatedAccount(user.id)
             user.sso_provider = provider
             user.sso_provider_id = sub
             logger.info("Linked SSO (%s) to existing user %s", provider, email)

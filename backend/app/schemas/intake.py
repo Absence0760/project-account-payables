@@ -42,7 +42,11 @@ class IntakeRequestBase(BaseModel):
 class IntakeRequestCreate(IntakeRequestBase):
     # Optional caller-supplied number; the service generates one when omitted.
     request_number: str | None = Field(default=None, max_length=50)
-    # The requester. Optional — defaults to the authenticated user.
+    # Accepted for wire compatibility and then IGNORED — the requester is always
+    # the authenticated caller. A converted requisition inherits this id and
+    # approval checks segregation of duties against it, so it must not be the
+    # creator's own input. Kept on the schema (rather than removed) so an old
+    # client sending it gets an intake owned by itself, not a 422.
     requester_user_id: str | None = None
 
 

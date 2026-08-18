@@ -462,13 +462,39 @@ async def redeliver(
     already-``delivered`` row would double-fire a side effect at the receiver.
     Resets the attempt counter and re-processes inline so the response reflects
     the new outcome.
+
+    **The row is CLAIMED for the whole redelivery** (``FOR UPDATE``, held from
+    the read until ``process_delivery`` commits), which is the same claim
+    ``deliver_due`` and the emit path's immediate attempt take. This endpoint
+    used to read the row unlocked, commit it back to ``pending`` with
+    ``next_attempt_at = now()``, and only THEN POST — leaving a window in which
+    the row was due, unclaimed and in flight, so a sweep tick landing there
+    picked it up and POSTed the same delivery a second time, with both commits
+    racing on ``attempt_count``. That is exactly the duplicate the claim was
+    introduced to close on the other two paths; this one was left open.
+
+    Holding the claim also serialises two admins hitting Redeliver at once: the
+    second waits for the first to finish and then re-reads the row, instead of
+    both passing the status guard on the same snapshot and both sending. What it
+    sees is the first attempt's real outcome — ``delivered`` (or ``dead``) gives
+    it the 409 the guard promises, while a first attempt that merely failed
+    again leaves the row ``failed``, so the second click is a genuine second
+    retry rather than a duplicate of an in-flight one.
+
+    The trade-off is deliberate: because the requeue is no longer committed
+    before the send, a failure in the send path's own commit rolls the row back
+    to its pre-request state rather than leaving it queued for the sweep. That
+    is the honest outcome — the admin sees the error and retries — and it is
+    strictly better than a silent double-send.
     """
     row = (
         await db.execute(
-            select(WebhookDelivery).where(
+            select(WebhookDelivery)
+            .where(
                 WebhookDelivery.id == delivery_id,
                 WebhookDelivery.organization_id == org.id,
             )
+            .with_for_update()
         )
     ).scalar_one_or_none()
     if row is None:
@@ -484,8 +510,9 @@ async def redeliver(
     row.status = DELIVERY_PENDING
     row.attempt_count = 0
     row.next_attempt_at = datetime.now(UTC)
-    await db.commit()
 
+    # Opens its own short-lived tenant session and is fail-soft, so it neither
+    # conflicts with the claim held here nor can break the redelivery.
     await dispatch_auth_audit(
         organization_id=org.id,
         actor_id=user.id,
@@ -494,8 +521,8 @@ async def redeliver(
         details={"event_type": row.event_type, "event_id": row.event_id},
     )
 
-    # Attempt inline so the caller sees the result. Best-effort — the row's
-    # outcome is persisted regardless; the sweep retries if this fails.
+    # Attempt inline so the caller sees the result. `process_delivery` commits,
+    # which is what releases the claim taken above.
     from app.services.webhooks.delivery import process_delivery
 
     await process_delivery(db, row)

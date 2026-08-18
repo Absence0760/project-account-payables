@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import time
 
 import pytest
 
@@ -31,7 +32,11 @@ from app.services.webhook_security import DEDUP_PREFIX
 _WEBHOOK_SECRET = "whsec_test_billing_release"
 
 
-def _sign(body: bytes, secret: str = _WEBHOOK_SECRET, *, timestamp: str = "1700000000") -> str:
+def _sign(body: bytes, secret: str = _WEBHOOK_SECRET, *, timestamp: str | None = None) -> str:
+    # `t` defaults to NOW: the adapter enforces Stripe's replay-tolerance
+    # window, so a fixed epoch would reject every request in this file.
+    if timestamp is None:
+        timestamp = str(int(time.time()))
     signed_payload = b"%s.%s" % (timestamp.encode(), body)
     digest = hmac.new(secret.encode(), signed_payload, hashlib.sha256).hexdigest()
     return f"t={timestamp},v1={digest}"

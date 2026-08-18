@@ -36,6 +36,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import selectinload
 
+from app.api.permissions import PERM_INVOICE_APPROVE, effective_permissions
 from app.config import settings
 from app.database import _make_tenant_url, get_control_db
 from app.models.invoice import Invoice, InvoiceStatus
@@ -52,12 +53,28 @@ logger = logging.getLogger(__name__)
 
 public_router = APIRouter(prefix="/invoices", tags=["email-approval"])
 
-# Roles permitted to approve / reject — matches require_roles(...) on the
-# authenticated approve/reject endpoints in workflow.py. The email path must not
-# be a weaker door than the in-app one.
-_APPROVER_ROLES = frozenset({"admin", "ap_manager", "cfo"})
-
 _CONSUMED_PREFIX = "email_action:consumed:"
+
+
+def may_approve(reviewer: User) -> bool:
+    """Is this reviewer allowed to decide an invoice, out of the app?
+
+    Gates on the same granular permission the in-app route does
+    (``workflow.py`` → ``require_permission(PERM_INVOICE_APPROVE)``), not on a
+    hardcoded role-name set. The out-of-app surfaces must not be a *weaker* door
+    than the in-app one — and they must not be a needlessly *narrower* one
+    either: the whole point of the permission layer is that an org can mint a
+    custom role carrying ``invoice.approve``, and such a reviewer could approve
+    in the app while every approval email, Slack button and Teams card sent to
+    them dead-ended on "not permitted".
+
+    For the four system roles this is exactly equivalent to the role-name set it
+    replaces — ``ROLE_DEFAULT_PERMISSIONS`` grants ``invoice.approve`` to
+    admin / ap_manager / cfo and to no one else — so nothing about the built-in
+    matrix changes. Shared with the Slack and Teams interactivity endpoints so
+    the three surfaces can't drift.
+    """
+    return PERM_INVOICE_APPROVE in effective_permissions(reviewer.roles or ())
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +244,7 @@ async def email_action_perform(
             "the app to review this invoice.",
         )
     reviewer_roles = {r.name for r in (reviewer.roles or [])}
-    if not (reviewer_roles & _APPROVER_ROLES):
+    if not may_approve(reviewer):
         return _info_page(
             "Not permitted",
             "Your account is not permitted to approve or reject invoices. Please "
@@ -247,7 +264,9 @@ async def email_action_perform(
 
     try:
         async with _tenant_session(org) as db:
-            result = await _apply_action(db, decoded, reviewer, reviewer_roles, reason)
+            result = await _apply_action(
+                db, decoded, reviewer, reviewer_roles, reason, org_settings=org.settings
+            )
             if result.committed:
                 await db.commit()
             else:
@@ -283,10 +302,17 @@ async def _apply_action(
     reviewer: User,
     reviewer_roles: set[str],
     reason: str,
+    *,
+    org_settings: dict | None = None,
 ) -> _ActionResult:
     """Run the approve/reject against a row-locked invoice. Returns whether to
     commit + the page to render. May raise HTTPException (threshold/segregation/
-    CFO gate) — the caller releases the jti claim and renders the detail."""
+    CFO gate) — the caller releases the jti claim and renders the detail.
+
+    ``org_settings`` must be threaded through: approving from an email is the
+    same decision as approving in-app, so it has to read the same org
+    ``fraud_rules`` / ``matching`` tolerances / structuring window. Omitting it
+    reverted all of them to the platform default for this one door."""
     from app.services.workflow_engine import get_invoice_for_update
 
     invoice = await get_invoice_for_update(db, decoded.invoice_id)
@@ -307,12 +333,27 @@ async def _apply_action(
             actor_id=reviewer.id,
             actor_name=reviewer.full_name,
             actor_roles=reviewer_roles,
+            org_settings=org_settings,
         )
+        # A multi-level approval chain records THIS level and leaves the invoice
+        # in `ready_for_review` for the next approver — `approve_invoice` returns
+        # early without transitioning. Reporting "has been approved" there tells
+        # the reviewer the payable is cleared when it still needs someone else,
+        # so read the resulting status rather than assuming the happy path.
+        if invoice.status is InvoiceStatus.approved:
+            return _ActionResult(
+                True,
+                _info_page(
+                    "Invoice approved",
+                    f"{_invoice_ref(invoice)} has been approved. Thank you.",
+                ),
+            )
         return _ActionResult(
             True,
             _info_page(
-                "Invoice approved",
-                f"{_invoice_ref(invoice)} has been approved. Thank you.",
+                "Approval recorded",
+                f"Your approval of {_invoice_ref(invoice)} has been recorded. It still "
+                "needs a further approval before it is cleared for payment.",
             ),
         )
 

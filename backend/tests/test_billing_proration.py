@@ -320,6 +320,26 @@ async def _seed_sub(realdb, *, org_id, plan_id, status="active"):
     return sub_id
 
 
+async def _seed_sub_without_period(realdb, *, org_id, plan_id, created_at):
+    """A subscription carrying NO billing window — the shape EVERY row had
+    before `plan_catalog.ensure_subscription` started stamping one, and the
+    shape every pre-existing row still has."""
+    sub_id = uuid.uuid4()
+    async with realdb.control_sessionmaker()() as s:
+        s.add(
+            Subscription(
+                id=sub_id,
+                organization_id=org_id,
+                plan_id=plan_id,
+                status="active",
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        await s.commit()
+    return sub_id
+
+
 async def _audit_actions(realdb, sub_id):
     async with realdb.sessionmaker("a")() as s:
         rows = (
@@ -386,6 +406,119 @@ async def test_plan_change_applies_proration_and_audits(realdb, _audit_engine_on
         # (99-49) * 15/30 = 25.00 upgrade charge.
         assert result.proration.amount == Decimal("25.00")
         assert "billing.plan_changed" in await _audit_actions(realdb, sub_id)
+    finally:
+        await _cleanup(realdb, org_id)
+
+
+@pytest.mark.asyncio
+async def test_production_created_subscription_carries_a_billing_window(realdb):
+    """`ensure_subscription` is the ONLY place a Subscription is built outside
+    tests, and it used to leave both period columns NULL — which is what made
+    every plan change below prorate 0.00."""
+    from app.services.billing.period import add_months
+    from app.services.billing.plan_catalog import ensure_subscription
+
+    org_id = realdb.info("a").org_id
+    try:
+        await _seed_plan(realdb, code="prtest_seeded", price="49.00")
+        async with realdb.control_sessionmaker()() as s:
+            sub = await ensure_subscription(s, organization_id=org_id, plan_code="prtest_seeded")
+            await s.commit()
+        assert sub is not None
+        assert sub.current_period_start is not None
+        assert sub.current_period_end is not None
+        assert sub.current_period_end == add_months(sub.current_period_start, 1)
+    finally:
+        await _cleanup(realdb, org_id)
+
+
+@pytest.mark.asyncio
+async def test_plan_change_prorates_a_subscription_with_no_stored_window(
+    realdb, _audit_engine_on_loop
+):
+    """The reproduced bug: a real subscription had no billing window, so
+    `change_plan` passed `now`/`now` into `compute_proration`, its
+    degenerate-window guard fired, and a $49 → $99 upgrade halfway through the
+    month adjusted nothing — while recording "0.00" as the correct figure on an
+    immutable audit row.
+
+    The window is now resolved from the subscription's own start (here
+    `created_at`, the only anchor a legacy row has) and persisted."""
+    org_id = realdb.info("a").org_id
+    try:
+        old_id = await _seed_plan(realdb, code="prtest_nowin_basic", price="49.00")
+        await _seed_plan(realdb, code="prtest_nowin_scale", price="99.00")
+        sub_id = await _seed_sub_without_period(
+            realdb, org_id=org_id, plan_id=old_id, created_at=datetime(2026, 6, 1, tzinfo=UTC)
+        )
+        async with realdb.control_sessionmaker()() as s:
+            org = (
+                await s.execute(select(Organization).where(Organization.id == org_id))
+            ).scalar_one()
+            result = await change_plan(
+                s,
+                org=org,
+                new_plan_code="prtest_nowin_scale",
+                actor_id=None,
+                change_at=datetime(2026, 6, 16, tzinfo=UTC),
+            )
+        # June 1 → July 1 is 30 days; 15 remain. (99-49) * 15/30 = 25.00.
+        assert result.proration.period_days == 30
+        assert result.proration.unused_days == 15
+        assert result.proration.amount == Decimal("25.00")
+
+        # ...and the resolved window is persisted, so the summary endpoint and
+        # the dunning grace clock stop reading NULL.
+        async with realdb.control_sessionmaker()() as s:
+            sub = (
+                await s.execute(select(Subscription).where(Subscription.id == sub_id))
+            ).scalar_one()
+        assert sub.current_period_start == datetime(2026, 6, 1, tzinfo=UTC)
+        assert sub.current_period_end == datetime(2026, 7, 1, tzinfo=UTC)
+    finally:
+        await _cleanup(realdb, org_id)
+
+
+@pytest.mark.asyncio
+async def test_plan_change_rolls_a_stale_window_forward_before_prorating(
+    realdb, _audit_engine_on_loop
+):
+    """A subscription whose stored window expired months ago must prorate
+    against the period it is ACTUALLY in — clamping into a stale window leaves
+    zero unused days and silently zeroes the adjustment again."""
+    org_id = realdb.info("a").org_id
+    try:
+        old_id = await _seed_plan(realdb, code="prtest_stale_basic", price="49.00")
+        await _seed_plan(realdb, code="prtest_stale_scale", price="99.00")
+        # Stored window: Jan 1 → Feb 1. Change lands mid-June.
+        sub_id = uuid.uuid4()
+        async with realdb.control_sessionmaker()() as s:
+            s.add(
+                Subscription(
+                    id=sub_id,
+                    organization_id=org_id,
+                    plan_id=old_id,
+                    status="active",
+                    current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+                    current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+                )
+            )
+            await s.commit()
+
+        async with realdb.control_sessionmaker()() as s:
+            org = (
+                await s.execute(select(Organization).where(Organization.id == org_id))
+            ).scalar_one()
+            result = await change_plan(
+                s,
+                org=org,
+                new_plan_code="prtest_stale_scale",
+                actor_id=None,
+                change_at=datetime(2026, 6, 16, tzinfo=UTC),
+            )
+        assert result.proration.period_days == 30  # June 1 → July 1
+        assert result.proration.unused_days == 15
+        assert result.proration.amount == Decimal("25.00")
     finally:
         await _cleanup(realdb, org_id)
 

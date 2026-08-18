@@ -231,7 +231,19 @@ async def login(
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
 
-    if not user or not user.hashed_password:
+    if not user or not user.hashed_password or not user.is_active:
+        # `is_active` belongs HERE, beside "no such account", not after the
+        # password check: a deactivated account must be indistinguishable from
+        # one that never existed, and the failure must still burn the per-account
+        # budget so a spray against an offboarded address stays throttled. Every
+        # other sign-in path already refuses an inactive account
+        # (`/mfa/verify`, the passkey verify, and the supplier-portal twin this
+        # branch mirrors) — only password login minted a token for one. That
+        # token was inert (`get_current_user` rejects it), but the SPA still
+        # "logged in" and then 401'd on every call, the session was tracked
+        # against the concurrent-session cap, and the SOX trail recorded an
+        # `auth.login.success` for a terminated employee.
+        #
         # Equalize timing with the wrong-password path below so the response
         # time doesn't reveal whether the email has an account (enumeration).
         dummy_verify()
@@ -246,7 +258,11 @@ async def login(
                 organization_id=user.organization_id,
                 actor_id=None,
                 action="auth.login.failure",
-                details={"email": body.email, "ip": ip, "reason": "no_password"},
+                details={
+                    "email": body.email,
+                    "ip": ip,
+                    "reason": "no_password" if not user.hashed_password else "inactive",
+                },
             )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if not pwd_context.verify(body.password, user.hashed_password):
@@ -1295,8 +1311,6 @@ async def get_delegation(
     user: User = Depends(get_current_user),
 ):
     """Get current user's delegation status."""
-    from datetime import UTC, datetime
-
     is_active = bool(
         user.delegate_to_id and user.delegate_until and user.delegate_until > datetime.now(UTC)
     )
@@ -1315,34 +1329,86 @@ async def get_delegation(
     )
 
 
+def _parse_delegate_until(raw: str) -> datetime:
+    """Parse the `until` instant, or raise a 422.
+
+    Two things this must not do, both of which it used to. First, raise a bare
+    `ValueError` out of the handler on an unparseable string — that is a 500 on
+    attacker-controlled input, not a validation error. Second, hand a NAIVE
+    datetime to a `timestamptz` column: asyncpg accepts it and Postgres reads it
+    in the *session's* timezone, so the same submitted wall-clock time means a
+    different instant depending on server config, while `get_delegation` and
+    `approval_chain.resolve_assignee` both compare it against `now(UTC)`. A
+    naive value is therefore interpreted as UTC here, explicitly.
+
+    An `until` already in the past is refused rather than stored: it would leave
+    the caller believing they are out of office while `resolve_assignee`'s
+    `delegate_until > now` test never fires.
+    """
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="`until` must be an ISO-8601 datetime.",
+        ) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    if parsed <= datetime.now(UTC):
+        raise HTTPException(status_code=422, detail="`until` must be in the future.")
+    return parsed
+
+
 @router.post("/delegation", response_model=DelegationResponse)
 async def set_delegation(
     body: SetDelegateRequest,
     db: AsyncSession = Depends(get_control_db),
     user: User = Depends(get_current_user),
 ):
-    """Set out-of-office delegation — approvals route to delegate."""
-    import uuid as _uuid
-    from datetime import datetime
+    """Set out-of-office delegation — approvals route to delegate.
 
-    delegate_id = _uuid.UUID(body.delegate_to_id)
+    Who receives your approval assignments is an access-control fact, so the
+    change is audited (PII-free — ids and the window only). It is not a
+    privilege grant: the delegate still has to hold `invoice.approve` to act, so
+    delegating to a lower-privileged colleague routes work to them without
+    conferring anything.
+    """
+    try:
+        delegate_id = uuid.UUID(body.delegate_to_id)
+    except (TypeError, ValueError) as exc:
+        # An unparseable id is a validation error, not a 500.
+        raise HTTPException(status_code=422, detail="`delegate_to_id` must be a UUID.") from exc
     if delegate_id == user.id:
         raise HTTPException(status_code=422, detail="Cannot delegate to yourself.")
 
-    # Verify delegate exists and is in same org
+    until = _parse_delegate_until(body.until)
+
+    # Verify the delegate exists, is in the same org, and can actually sign in.
+    # A DEACTIVATED delegate is the quiet failure mode this guard exists for:
+    # `review.assign_reviewer` reassigns the invoice to them unconditionally, so
+    # every routed approval would land on an account that can never open it, and
+    # the invoice sits in the queue owned by nobody.
     result = await db.execute(select(User).where(User.id == delegate_id))
     delegate = result.scalar_one_or_none()
-    if not delegate or delegate.organization_id != user.organization_id:
+    if not delegate or delegate.organization_id != user.organization_id or not delegate.is_active:
         raise HTTPException(status_code=404, detail="Delegate user not found.")
 
     user.delegate_to_id = delegate_id
-    user.delegate_until = datetime.fromisoformat(body.until)
+    user.delegate_until = until
     await db.commit()
+
+    await dispatch_auth_audit(
+        organization_id=user.organization_id,
+        actor_id=user.id,
+        action="auth.delegation.set",
+        entity_id=user.id,
+        details={"delegate_to_id": str(delegate_id), "until": until.isoformat()},
+    )
 
     return DelegationResponse(
         delegate_to_id=str(delegate_id),
         delegate_to_name=delegate.full_name,
-        until=user.delegate_until.isoformat(),
+        until=until.isoformat(),
         is_active=True,
     )
 
@@ -1352,7 +1418,17 @@ async def clear_delegation(
     db: AsyncSession = Depends(get_control_db),
     user: User = Depends(get_current_user),
 ):
-    """Clear out-of-office delegation."""
+    """Clear out-of-office delegation. Audited for the same reason setting it is."""
+    had_delegate = user.delegate_to_id
     user.delegate_to_id = None
     user.delegate_until = None
     await db.commit()
+
+    if had_delegate:
+        await dispatch_auth_audit(
+            organization_id=user.organization_id,
+            actor_id=user.id,
+            action="auth.delegation.cleared",
+            entity_id=user.id,
+            details={"delegate_to_id": str(had_delegate)},
+        )

@@ -110,6 +110,14 @@ sweep** — reconciliation is entirely user-triggered. The CSV-parsing helpers
   | Amount | `amount`, `balance`, `open balance`, `outstanding`, `amount due`, `total` |
   | Status | `status`, `state` |
 
+  When a statement carries **two** columns that both match one field — an
+  `Amount` *and* a `Balance`, an `Invoice Date` *and* a `Due Date` — the
+  **leftmost** one wins. `_find_col` therefore scans the header row, never the
+  synonym set: a `set` of strings iterates in hash order and CPython randomises
+  string hashing per process, so scanning the synonyms made the choice depend
+  on `PYTHONHASHSEED` and the same file could reconcile off a different money
+  column on a different worker.
+
 - Amount parser accepts `1234.56`, `1,234.56`, `$1,234.56`, `-1234.56`, and
   `(1,234.56)` (Quickbooks-style parenthesized negative → signed Decimal) — and
   their European equivalents `1.234,56`, `850,00`, `€1.234,56`, `1 234,56`. See
@@ -294,9 +302,23 @@ is entity-scoped.
 
 The candidate ledger for a run is **that vendor's** invoices in the entity scope
 whose status is `NOT IN (paid, done)` — a settled invoice can't be on a
-supplier's open-items statement. Both intake paths share `_create_run`, which
-resolves the vendor (404 if out of entity scope), builds the candidate ledger,
-runs `reconcile`, and persists the run + lines (mirrored by the seed helper).
+supplier's open-items statement — and that are **denominated in the run's own
+currency**. Both intake paths share `_create_run`, which resolves the vendor
+(404 if out of entity scope), builds the candidate ledger, runs `reconcile`, and
+persists the run + lines (mirrored by the seed helper).
+
+#### Why the ledger is single-currency
+
+A statement is written in one currency, and the engine holds no FX rate — it
+compares a statement line's amount against a ledger invoice's as bare
+`Decimal`s, and must not invent a rate on a read path. A mixed-currency
+candidate set therefore gets **both** classifications wrong from one mistake: a
+EUR 1 000 invoice amount-matches a USD 1 000 statement line (reported
+`matched`), and the real USD 1 000 invoice it displaced falls out as
+`missing_on_their_side`. Excluding the other currencies is also the honest
+answer for the orphan leg — a supplier's USD statement of open items does not
+*omit* our EUR invoices, it simply isn't about them. `LedgerInvoice.currency`
+is consequently carried for reporting only; **the caller owns the filter.**
 
 A run flips to `resolved` (`_recompute_run_status`) once no actionable line
 (`missing_on_our_side` / `amount_mismatch`) is still `unresolved`; resolving the

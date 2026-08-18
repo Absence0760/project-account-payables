@@ -367,12 +367,18 @@ async def _maybe_notify_transition(
 # ---------- workflow instance / step helpers ----------
 
 
-async def get_or_create_workflow_definition(
+async def resolve_active_workflow_definition(
     db: AsyncSession,
     organization_id: uuid.UUID,
     entity_id: uuid.UUID | None = None,
-) -> WorkflowDefinition:
-    """Resolve the active WorkflowDefinition that governs a new invoice.
+) -> WorkflowDefinition | None:
+    """Read-only resolve of the active WorkflowDefinition governing an invoice.
+
+    The selection half of ``get_or_create_workflow_definition`` — split out so a
+    caller that must NOT write (a control re-deriving an invoice's approval
+    config on the fly, e.g. ``review._enforce_approval_thresholds``) can ask the
+    same question without a definition appearing as a side effect of an
+    approval. Returns ``None`` when the org has no active definition at all.
 
     Selection precedence (multi-entity Phase 3 — see docs/multi-entity.md):
 
@@ -381,10 +387,18 @@ async def get_or_create_workflow_definition(
        tiebreak).
     2. Otherwise a shared / org-wide active definition (``entity_id IS NULL``) —
        same default-then-oldest ordering.
+    3. Otherwise ANY active definition in the org, whatever its scope. An entity
+       with no definition of its own and no shared fallback inherits the org's
+       existing default rather than getting a fresh stub.
 
-    When neither exists the org-wide default is auto-created with ``entity_id``
-    NULL (shared), so a single-entity tenant keeps getting exactly one org-wide
-    definition as before — backward compatible.
+    Step 3 is also what a no-entity (consolidated) call resolves directly, and
+    it must NOT prefer a NULL-scoped row blindly: a fully-disabled "Invoice
+    Processing" stub (auto-created by an earlier no-entity call, or left over
+    from migration 0029) is also ``is_default``, so a NULL-only lookup would
+    return the stub and shadow the seeded entity-scoped default — breaking
+    active-steps (every step reads disabled) and routing no-entity invoices
+    through an empty workflow. Oldest-default-wins returns the genuine seeded
+    definition instead.
     """
     # Deterministic ordering: prefer the explicit default, then the oldest
     # active definition as a stable tiebreak.
@@ -393,77 +407,48 @@ async def get_or_create_workflow_definition(
         WorkflowDefinition.created_at.asc(),
     )
 
-    if entity_id is not None:
+    async def _first(*extra_conditions) -> WorkflowDefinition | None:
         result = await db.execute(
             select(WorkflowDefinition)
             .where(
                 WorkflowDefinition.organization_id == organization_id,
-                WorkflowDefinition.entity_id == entity_id,
                 WorkflowDefinition.is_active == True,  # noqa: E712
+                *extra_conditions,
             )
             .order_by(*order)
         )
-        defn = result.scalars().first()
-        if defn:
-            return defn
+        return result.scalars().first()
 
     if entity_id is not None:
+        defn = await _first(WorkflowDefinition.entity_id == entity_id)
+        if defn:
+            return defn
         # An entity was requested but has no definition of its own — fall back
         # to a shared (entity_id IS NULL) org-wide definition.
-        result = await db.execute(
-            select(WorkflowDefinition)
-            .where(
-                WorkflowDefinition.organization_id == organization_id,
-                WorkflowDefinition.entity_id.is_(None),
-                WorkflowDefinition.is_active == True,  # noqa: E712
-            )
-            .order_by(*order)
-        )
-        defn = result.scalars().first()
-        if defn:
-            return defn
-    else:
-        # No entity context (consolidated / no X-Entity-ID view). Resolve the
-        # org's real default across ALL active definitions — NULL-scoped OR
-        # entity-scoped — ordered is_default-then-oldest. Crucially this must
-        # NOT prefer a NULL-scoped row blindly: a fully-disabled "Invoice
-        # Processing" stub (auto-created below by an earlier no-entity call, or
-        # left over from migration 0029) is also is_default, so a NULL-only
-        # lookup would return the stub and shadow the seeded entity-scoped
-        # default — breaking active-steps (every step reads disabled) and
-        # routing no-entity invoices through an empty workflow. Oldest-default-
-        # wins returns the genuine seeded definition instead.
-        result = await db.execute(
-            select(WorkflowDefinition)
-            .where(
-                WorkflowDefinition.organization_id == organization_id,
-                WorkflowDefinition.is_active == True,  # noqa: E712
-            )
-            .order_by(*order)
-        )
-        defn = result.scalars().first()
+        defn = await _first(WorkflowDefinition.entity_id.is_(None))
         if defn:
             return defn
 
-    # Last read before we mint anything: ANY active definition in the org,
-    # whatever its scope. An entity with no definition of its own and no shared
-    # fallback must inherit the org's existing default rather than get a fresh
-    # stub — minting one here is the accumulation bug
-    # `tests-e2e/fixtures/globalSetup.ts` fails the whole e2e run over and
-    # `docs/known-issues.md` records: a second `is_default=True` row appears in
-    # a different entity scope, and because the auto-created stub has every
-    # step disabled it can then shadow the real seeded default for no-entity
-    # reads. Creating is now reserved for an org that genuinely has NO active
-    # definition at all.
-    result = await db.execute(
-        select(WorkflowDefinition)
-        .where(
-            WorkflowDefinition.organization_id == organization_id,
-            WorkflowDefinition.is_active == True,  # noqa: E712
-        )
-        .order_by(*order)
-    )
-    defn = result.scalars().first()
+    return await _first()
+
+
+async def get_or_create_workflow_definition(
+    db: AsyncSession,
+    organization_id: uuid.UUID,
+    entity_id: uuid.UUID | None = None,
+) -> WorkflowDefinition:
+    """Resolve the active WorkflowDefinition that governs a new invoice, minting
+    the org-wide default when the org has none at all.
+
+    Selection is ``resolve_active_workflow_definition`` (see its docstring for
+    the precedence). Creating is reserved for an org that genuinely has NO
+    active definition: minting one otherwise is the accumulation bug
+    `tests-e2e/fixtures/globalSetup.ts` fails the whole e2e run over and
+    `docs/known-issues.md` records — a second ``is_default=True`` row appears in
+    a different entity scope, and because the auto-created stub has every step
+    disabled it can then shadow the real seeded default for no-entity reads.
+    """
+    defn = await resolve_active_workflow_definition(db, organization_id, entity_id)
     if defn:
         return defn
 

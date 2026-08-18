@@ -22,7 +22,11 @@ from app.services.audit_shipping import (
     mock_adapter,  # noqa: F401,E402
     s3_objectlock_adapter,  # noqa: F401,E402
 )
-from app.services.audit_shipping.base import AuditLogRow, AuditShippingAdapter
+from app.services.audit_shipping.base import (
+    AuditLogRow,
+    AuditShippingAdapter,
+    AuditShippingRejected,
+)
 from app.services.audit_shipping.dispatcher import (
     get_audit_shipping_adapter,
     get_audit_shipping_adapters,
@@ -33,6 +37,7 @@ from app.services.audit_shipping.dispatcher import (
 __all__ = [
     "AuditLogRow",
     "AuditShippingAdapter",
+    "AuditShippingRejected",
     "get_audit_shipping_adapter",
     "get_audit_shipping_adapters",
     "list_available_providers",

@@ -430,6 +430,23 @@ alike. A row already in flight is skipped rather than double-sent, and
 5 attempts per delivery rather than 5 per worker. `deliver_due` returns the
 number of deliveries it actually claimed and attempted.
 
+**The manual redelivery endpoint claims too**, and it is the path that was
+missed. `POST /api/webhooks/deliveries/{id}/redeliver` read the row unlocked,
+committed it back to `pending` with `next_attempt_at = now()`, and only then
+POSTed — reproducing the emit-path window exactly, so a sweep tick landing there
+sent the same delivery a second time. It now takes the row `FOR UPDATE` at the
+read and holds it until `process_delivery` commits, which also serialises two
+admins clicking Redeliver at once: the second waits for the first to finish and
+re-reads the row rather than both passing the status guard on the same snapshot.
+It then sees the first attempt's real outcome — `delivered`/`dead` gives it the
+documented `409`, while a first attempt that merely failed again leaves the row
+`failed`, so the second click is a genuine second retry, not a duplicate of an
+in-flight one. It uses a plain `FOR UPDATE` rather than `SKIP LOCKED` because
+an interactive request should wait for the truth, not silently no-op. The
+requeue is consequently not committed ahead of the send, so a failure in the
+send path's own commit rolls the row back to its pre-request state and the admin
+retries — the honest outcome, and strictly better than a silent double-send.
+
 ### Event sources wired
 
 **`invoice.approved` / `payment.settled`** are hooked into
