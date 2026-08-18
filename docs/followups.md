@@ -34,11 +34,29 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#251](https://github.com/Absence0760/project-account-payables/issues/251)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-08-16 against `improve/round-batch-3` — a three-agent
-round that closed **every remaining actionable `(c)` item**. What is left in
-this file is the `(a)` credential-blocked set, the `(b)` operator steps, and two
-`(c)` entries that are product calls rather than work (an unwired adapter family
-and the copilot's saved-plans bucket).
+**Last reconciled:** 2026-08-17 against round 8 (`feat: round 8 — exact money
+serialization, bulk-intake bounds, and the dependency backlog`, #312) plus one
+same-day follow-up. Round 8 closed every `(c)` entry that had been sitting in
+§ "Surfaced while closing the above, deliberately not fixed" — money is now
+exact throughout `api/analytics.py` (the 12 `float()` calls remaining there are
+`dpo`/`*_pct` fields, never money), every expense `Numeric` field is
+digit/scale-bounded, `chat_notifications.webhook_url` has an audited rotation
+endpoint, and `notification_dispatch._send_chat_best_effort` no longer names
+the invoice id `entity_id`. The follow-up closed the section's last two: a
+hint on the `/cfo` DPO trend chart naming its own closed-months window, and
+`frontend/tests-e2e/organization/data-residency.spec.ts` (the Data Residency
+panel's missing e2e coverage, modeled on the sibling Custom Domains spec).
+That empties the section, so it's removed rather than kept as a "— CLOSED"
+stub. What is left in this file is the `(a)` credential-blocked set, the `(b)`
+operator steps, and two `(c)` entries that are product calls rather than work
+(an unwired adapter family and the copilot's saved-plans bucket), plus the
+badge-spelling consistency sweep.
+
+**2026-08-16, against `improve/round-batch-3`** — a three-agent round that
+closed **every remaining actionable `(c)` item** as of that date. What was
+left afterward was the `(a)` credential-blocked set, the `(b)` operator steps,
+and two `(c)` entries that are product calls rather than work (an unwired
+adapter family and the copilot's saved-plans bucket).
 
 A later backend round added one more `(c)` entry — eight built-and-documented
 capabilities with no production caller — found while closing the
@@ -303,74 +321,6 @@ probes) were wiring gaps as described, and are now wired, tested and documented.
 
 Rationale for the non-obvious calls made while closing them:
 [decisions.md](decisions.md) §31–§34.
-
-### Surfaced while closing the above, deliberately not fixed
-
-Each is real, scoped, and out of the envelope of the round that found it:
-
-- [ ] **`api/analytics.py` serializes money as `float` in ~57 remaining places**
-      (`total_spend`, `accounts_payable_balance`, every `accruals.*`, the
-      cash-position curve, the FX exposure block,
-      `drill/spend_concentration`) — a module-wide violation of the Decimal
-      invariant. `/api/analytics/drill/dpo` was corrected in isolation only
-      because it has no shipped consumer; these do —
-      `frontend/src/lib/types/analytics.ts` types them `number` and
-      `CfoMetrics.svelte` calls `.toFixed()` on them.
-      **Durable fix:** exact decimal strings on the API plus a coordinated
-      frontend/mobile update, one panel at a time, behind a typed `Money` parse.
-      **Trigger:** the next round touching the CFO analytics response shape.
-- [ ] **No `Numeric` field in the expense schemas is digit/scale-bounded.**
-      `Expense.amount`, `mileage_miles`, and every `ExpensePolicy` money
-      threshold are bare `Decimal` in Pydantic while their columns are
-      `Numeric(10,2)` / `Numeric(15,2)` / `Numeric(10,4)`. An out-of-range value
-      passes validation and fails at the DB flush as an unhandled `DataError`
-      (a 500) rather than a 422. `mileage_miles` is now bounded `ge=0` — because
-      a negative there silently switched the new mileage enforcement *off* — but
-      not by digits; the rest are unbounded in both directions.
-      **Durable fix:** add `max_digits` / `decimal_places` (and `ge=0` where a
-      negative is meaningless) to `app/schemas/expense.py`, matching each
-      column. Schema-only, no migration.
-      **Trigger:** the next change touching expense schema validation.
-- [ ] **`Organization.settings.chat_notifications.webhook_url` has no rotation
-      path.** It is the per-org credential for both real chat providers and is
-      only settable by overwriting the settings JSON — there is no counterpart
-      to the webhook-subscription secret rotation (`POST
-      /webhooks/{id}/rotate-secret`, migration 0084) with its overlap window. A
-      leaked Teams/Slack incoming-webhook URL lets anyone post arbitrary content
-      into the customer's approval channel, and recovery is an untracked manual
-      edit.
-      **Durable fix:** an audited `PUT /organization/chat-notifications/webhook`
-      writing a PII-free `organization.chat_webhook_rotated` row (URL never
-      logged).
-      **Trigger:** the next slice touching org chat settings.
-- [ ] **`notification_dispatch._send_chat_best_effort` names the invoice id
-      `entity_id`.** The parameter carrying the invoice PK is called `entity_id`
-      and passed straight into `_build_chat_action_tokens(invoice_id=…)` and the
-      deep link. In this repo `entity_id` otherwise means the multi-entity
-      subsidiary FK, so it reads as a tenant-scoping bug on every review of that
-      file. Behaviour is correct and tested; it is a trap for the next reader.
-      **Durable fix:** rename to `invoice_id` through the dispatch chain.
-      **Trigger:** the next change to that file.
-- [ ] **The `/organization` Data Residency panel has no e2e spec**, while the
-      structurally identical Custom Domains panel on the same route does
-      (`frontend/tests-e2e/organization/custom-domains.spec.ts`). The panel
-      branches three ways on the alignment verdict (tint class + copy) and gates
-      its save button; only the backend contract is covered.
-      **Durable fix:** add
-      `frontend/tests-e2e/organization/data-residency.spec.ts` modelled on
-      `custom-domains.spec.ts` — assert the region picker persists a pin and
-      that the alignment box renders the misaligned state when the backend under
-      test declares a different `FEOH_DEPLOYED_REGION`.
-      **Trigger:** the next session that can bring the full stack up on
-      :7777/:8000 without colliding with a concurrent agent.
-- [ ] **The DPO trend silently excludes the current month.** Both surfaces walk
-      back from the 1st of the current month, so the newest point is the month
-      that just closed and today's invoices never appear. Defensible (a
-      part-month DPO misleads) but nowhere in the UI — the chart is labelled
-      only "DPO trend". Behaviour is now documented in
-      `backend/docs/analytics.md`; the label/tooltip is not.
-      **Durable fix:** name the window in the chart label or a tooltip.
-      **Trigger:** the next round touching the CFO dashboard.
 
 ### AI Cash-Flow Copilot — Phase 3 deferred bucket
 
