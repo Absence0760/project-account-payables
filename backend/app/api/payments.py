@@ -904,6 +904,27 @@ async def release_compliance_hold(
 
     await db.commit()
     await db.refresh(payment)
+
+    # A release that SETTLES synchronously has to hand off to the ERP sync,
+    # exactly as `_dispatch_run_payments` does at the end of `/execute` — that
+    # module is the only path that flips an invoice `payment_scheduled → paid`,
+    # and nothing re-invokes it for a payment that is already `completed`.
+    # Without this, releasing a hold on a rail that confirms instantly (the
+    # virtual-card leg always does; so does any adapter returning `completed`)
+    # moved the money and left the invoice at `payment_scheduled` forever —
+    # under-counting the aging report, the `/dashboard` pipeline, the vendor's
+    # payment history and the 1099 YTD totals, while the payment row itself
+    # looked perfectly correct.
+    #
+    # After the commit so the pass sees the settled status (mirrors the
+    # webhook handler's ordering). A payment released into `submitted` /
+    # `processing` is deliberately NOT dispatched: its own webhook will, once
+    # the rail confirms.
+    if payment.status == "completed" and payment.payment_run_id:
+        from app.services import payment_erp_sync
+
+        await payment_erp_sync.dispatch_payment_sync(payment.payment_run_id, uuid.UUID(str(org.id)))
+
     return PaymentResponse.from_db(payment, invoice)
 
 

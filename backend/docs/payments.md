@@ -564,6 +564,19 @@ currently `pending_compliance`, and resolve the invoice's open
 `payment_compliance_hold` exception (`resolution` = `"released"` or
 `"dismissed: <reason>"`) on success.
 
+**A release that settles hands off to the ERP sync**, exactly as the end of
+`/execute` does. `services/payment_erp_sync` is the only path that flips an
+invoice `payment_scheduled → paid` and nothing re-invokes it for an
+already-`completed` payment, so a release on a rail that confirms
+synchronously (the virtual-card leg always does; so does any adapter returning
+`completed`) used to move the money and strand the invoice at
+`payment_scheduled` forever — under-counting the aging report, the
+`/dashboard` pipeline, the vendor's payment history and the 1099 YTD totals
+while the payment row itself looked correct. A release that lands
+`submitted` / `processing` is deliberately not dispatched: its own webhook
+does that once the rail confirms. `dismiss` never dispatches — nothing
+settled.
+
 ### Payment processor adapters
 
 The actual money movement is handled by an adapter pattern in `backend/app/services/payment_adapters/` — same shape as ERP, extraction, and card adapters. Each adapter implements:
