@@ -78,6 +78,16 @@ regexes = [
     # so a real UUID-shaped secret elsewhere still trips the scanner.
     '''2f8c1f3e-4a6b-4c2d-9e1f-7b3a5c9d0e11''',
     '''9a1d0c77-1111-4222-8333-444455556666''',
+    # Synthetic passwords in the bug-hunt round-9 auth tests
+    # (backend/tests/test_admin_user_management.py — the privilege-escalation
+    # guard; backend/tests/test_portal_logout.py — the supplier-portal
+    # password-change session revocation). Both are intent-revealing fixture
+    # names, not credentials: `AttackerPass*` is the value the attacker tries
+    # to set on a more-privileged account, `BrandNewPass*` is the replacement a
+    # vendor rotates to. Narrow enough that a real key of the same shape still
+    # trips.
+    '''AttackerPass\d+''',
+    '''BrandNewPass\d+''',
     # FEOH_TEAMS_SECURITY_TOKEN's committed local-dev value in
     # backend/.env.development. It is base64 of the literal string
     # "dev-teams-security-token" — Teams verifies its HMAC with the

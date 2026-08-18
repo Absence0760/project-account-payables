@@ -88,8 +88,14 @@ async def upload_invoice(
         # Create workflow instance
         instance = await create_workflow_instance(db, invoice)
 
-        # Check if extraction is enabled in the active workflow
-        extraction_enabled = await is_step_enabled(db, org_id, "extraction")
+        # Check if extraction is enabled — read the snapshot `create_workflow_instance`
+        # just froze onto THIS invoice, never the live definition. Resolving the
+        # definition a second time can disagree with the frozen one (breaking the
+        # frozen-snapshot invariant, decisions §13) and, worse,
+        # `get_or_create_workflow_definition` INSERTs a definition when it finds
+        # none — inside the upload transaction. Every sibling call in this file
+        # passes `invoice_id`.
+        extraction_enabled = await is_step_enabled(db, org_id, "extraction", invoice_id=invoice.id)
         print(f"[upload] Invoice {invoice.id} created, extraction_enabled={extraction_enabled}")
 
         if extraction_enabled:
@@ -431,7 +437,7 @@ async def complete_invoice(
         # (a misconfigured high `auto_approve_below` must not slip a CFO-gated
         # amount past review). confidence 0.0 → only the amount floor can fire.
         from app.services.approval_chain import violates_segregation
-        from app.services.extraction import decide_auto_approve
+        from app.services.extraction import decide_auto_approve, resolve_gate_aggregate
 
         # Segregation of duties is another control gate the amount floor must
         # honour: if the caller uploaded this invoice and the org requires
@@ -439,11 +445,17 @@ async def complete_invoice(
         # effective approver of their own invoice. Degrade to human review (as
         # the CFO/max-amount gates already do) rather than 403 a legitimate
         # submission — a second pair of eyes still signs off.
+        # The max-amount / CFO gates inside decide_auto_approve are measured
+        # against the same same-vendor rolling aggregate `review`'s human path
+        # uses (the structuring guard), so splitting a payable can't slip each
+        # piece past the controls unattended.
+        gate_aggregate = await resolve_gate_aggregate(db, invoice, org_settings=org.settings)
         if decide_auto_approve(
             extraction_config,
             approval_config,
             overall_confidence=0.0,
             amount=invoice.amount,
+            aggregate_amount=gate_aggregate,
         ) and not violates_segregation(invoice, user.id, approval_config):
             from datetime import date
 

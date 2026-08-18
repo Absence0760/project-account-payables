@@ -137,6 +137,15 @@ class Settings(BaseSettings):
     discount_auto_capture_roi_threshold: float = 12.0
     discount_cost_of_capital_pct: float = 8.0
     approval_escalation_interval_seconds: int = 600
+    # How many candidate workflow instances the escalation sweep pages through
+    # at a time, per tenant. It is a PAGE size, not a per-tick cap: the sweep
+    # keyset-paginates by id until the tenant is exhausted, so nothing starves.
+    # The sweep used to `SELECT ... WHERE state='active' FOR UPDATE` with no
+    # LIMIT, locking every active instance in the tenant at once — which blocks
+    # `review.approve_invoice` (it takes the same row lock) for the whole tick,
+    # and deadlocks against a second replica sweeping in a different order. Now
+    # each row is locked individually, in id order, and released on commit.
+    approval_escalation_batch_size: int = 200
     # Background-sweep health (see backend/app/services/sweep_health.py). Every
     # long-lived sweep reports each tick's outcome into an in-process registry
     # served by GET /api/health/sweeps. This is how many CONSECUTIVE failed runs
@@ -786,6 +795,16 @@ class Settings(BaseSettings):
     # backend/docs/retention.md.
     retention_enabled: bool = False
     retention_interval_seconds: int = 86400
+    # Per-tenant, per-tick cap on invoices soft-archived by the retention sweep.
+    # The candidate query excludes already-archived rows in SQL and orders
+    # oldest-first, so a capped tick makes strict forward progress and the next
+    # tick resumes where it stopped. Without the cap the sweep loaded EVERY
+    # terminal invoice past the window on every tick — a set that only grows —
+    # and packed each id into one audit row; at a few million rows that is an
+    # OOM-scale tick plus a JSONB manifest large enough to head-of-line the
+    # audit shipper's 500-row batch (CloudWatch PutLogEvents caps at 1 MB).
+    # Same purpose + shape as `recurring_invoices_max_per_sweep`.
+    retention_batch_size: int = 500
     # Platform-default retention windows (months) when an org sets no per-class
     # override in `Organization.settings.retention`. 84 months = 7 years, the
     # common SOX / IRS records-retention baseline.

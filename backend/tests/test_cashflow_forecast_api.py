@@ -627,3 +627,67 @@ async def test_forecast_tenant_isolation(realdb):
         resp = await c.get("/api/analytics/cashflow_forecast")
     assert resp.status_code == 200
     assert _money(resp.json()["totals"]["scheduled_amount"]) == Decimal("0")
+
+
+# ---------------------------------------------------------------------------
+# multi-currency
+# ---------------------------------------------------------------------------
+
+
+async def test_forecast_outflows_are_in_the_reporting_currency(realdb):
+    """A foreign-currency invoice must contribute its REPORTING amount, not
+    its raw face value.
+
+    `_commitment_rows` used to select `Invoice.amount` — the invoice's own
+    currency — with no conversion, while every consumer subtracts those rows
+    from an opening balance that `cashflow.resolve_opening_balance` guarantees
+    is in the reporting currency (it REFUSES a provider balance in any other,
+    on exactly this ground). A ¥10,000,000 invoice against a $250,000 opening
+    balance projected a −$9.75M shortfall that does not exist — and the
+    shortfall sweep emails finance leaders about it, the copilot re-times
+    payments around it, and a draft payment run gets staged off that plan.
+    """
+    key = "a"
+    mk = realdb.sessionmaker(key)
+    due = _TODAY + timedelta(days=10)
+
+    async with mk() as s:
+        # Domestic: 1,000 USD, no lock needed (same currency, exact 1:1).
+        s.add(
+            Invoice(
+                organization_id=realdb.info(key).org_id,
+                invoice_number=f"CFFX-USD-{uuid.uuid4().hex[:6]}",
+                vendor_name="Domestic Supplies",
+                amount=Decimal("1000.00"),
+                currency="USD",
+                status=InvoiceStatus.approved,
+                invoice_date=_TODAY - timedelta(days=5),
+                due_date=due,
+            )
+        )
+        # Foreign: 10,000,000 JPY carrying a locked reporting amount of
+        # 65,000 USD. Raw-summed it would swamp the curve by ~150x.
+        s.add(
+            Invoice(
+                organization_id=realdb.info(key).org_id,
+                invoice_number=f"CFFX-JPY-{uuid.uuid4().hex[:6]}",
+                vendor_name="Foreign Supplies",
+                amount=Decimal("10000000.00"),
+                currency="JPY",
+                reporting_amount=Decimal("65000.00"),
+                reporting_currency="USD",
+                status=InvoiceStatus.approved,
+                invoice_date=_TODAY - timedelta(days=5),
+                due_date=due,
+            )
+        )
+        await s.commit()
+
+    async with realdb.client(key=key, role="cfo") as c:
+        resp = await c.get("/api/analytics/cashflow_forecast?granularity=month&horizon_days=90")
+    assert resp.status_code == 200, resp.text
+    totals = resp.json()["totals"]
+
+    # 1,000 USD + 65,000 USD — NOT 1,000 + 10,000,000.
+    assert _money(totals["scheduled_amount"]) == Decimal("66000.00"), totals
+    assert _money(totals["committed_amount"]) == Decimal("66000.00"), totals

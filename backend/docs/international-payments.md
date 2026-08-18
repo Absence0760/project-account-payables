@@ -153,6 +153,20 @@ sub-checks run in order; the most-severe verdict wins:
    refuse, not a hold — regulatory intent is that the AP team
    cannot override.
 
+   **The threshold is denominated in the org's home currency**
+   (`settings.payments.home_currency`), so the comparison must be made
+   against a home-currency amount. `Payment.amount` is in the *invoice's*
+   currency — comparing the two as bare numbers read a £900 payment as under
+   a 1000 threshold and skipped the refusal on a ~$1,150 transfer, i.e. it
+   failed open on exactly the corridors this gate governs. Callers therefore
+   pass `Payment.source_amount` (the home-currency leg the FX step locks) with
+   its `source_currency`; `check_payment_compliance`'s `payment_currency`
+   parameter is **required with no default**, so a new caller that doesn't say
+   what currency it holds fails loudly instead of silently picking a
+   direction. When the amount is not provably in the home currency the gate
+   **fails closed** and requires KYC. The AML trailing-12-month sum reads
+   `COALESCE(source_amount, amount)` for the same reason.
+
    The default high-risk set is `INTERNATIONAL_PAYMENT_METHODS`
    (`services/payment_methods.py`) — imported, not restated, so a new
    international rail can't ship with this gate silently off (see

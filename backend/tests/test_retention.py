@@ -325,3 +325,108 @@ async def test_policy_admin_only(realdb):
     async with realdb.client(key="a", role="cfo") as c:
         resp = await c.put("/api/retention-policy", json={"policy": {"invoices": 60}})
     assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Bounded candidate query — the sweep must not re-read the whole archive on
+# every tick, nor pack every archived id into one audit row (bug-hunt #9).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sweep_excludes_already_archived_rows_in_sql(realdb, monkeypatch):
+    """An already-archived invoice must not even be SELECTed again.
+
+    It used to be filtered in Python, so the candidate set was every terminal
+    invoice past the window — forever, and only growing. Proven here by capping
+    the batch at 1: with a SQL-level exclusion the second tick reaches the
+    SECOND invoice; without it the cap would keep re-serving the first.
+    """
+    org_id = realdb.info("a").org_id
+    mk = realdb.sessionmaker("a")
+    old = datetime.now(UTC) - timedelta(days=4000)
+    older = datetime.now(UTC) - timedelta(days=4100)
+
+    first = await _add_invoice(mk, org_id, status=InvoiceStatus.done, created_at=older)
+    second = await _add_invoice(mk, org_id, status=InvoiceStatus.done, created_at=old)
+
+    monkeypatch.setattr(retention_sweep.settings, "retention_batch_size", 1)
+
+    tmk = realdb.sessionmaker("a")
+    async with tmk() as db:
+        r1 = await sweep_tenant(db, organization_id=org_id, settings_dict={})
+        await db.commit()
+    assert r1.invoices_archived == 1
+
+    async with tmk() as db:
+        r2 = await sweep_tenant(db, organization_id=org_id, settings_dict={})
+        await db.commit()
+    assert r2.invoices_archived == 1, "the second tick must make progress, not re-serve the first"
+
+    # A third tick has nothing left to do.
+    async with tmk() as db:
+        r3 = await sweep_tenant(db, organization_id=org_id, settings_dict={})
+        await db.commit()
+    assert r3.invoices_archived == 0
+
+    async with mk() as s:
+        rows = (
+            (await s.execute(select(Invoice).where(Invoice.id.in_([first, second]))))
+            .scalars()
+            .all()
+        )
+    assert all((r.meta or {}).get("archived_at") for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_sweep_caps_the_batch_per_tick(realdb, monkeypatch):
+    """`FEOH_RETENTION_BATCH_SIZE` bounds one tick's work per tenant."""
+    org_id = realdb.info("a").org_id
+    mk = realdb.sessionmaker("a")
+    old = datetime.now(UTC) - timedelta(days=4000)
+    for _ in range(3):
+        await _add_invoice(mk, org_id, status=InvoiceStatus.done, created_at=old)
+
+    monkeypatch.setattr(retention_sweep.settings, "retention_batch_size", 2)
+
+    tmk = realdb.sessionmaker("a")
+    async with tmk() as db:
+        result = await sweep_tenant(db, organization_id=org_id, settings_dict={})
+        await db.commit()
+
+    assert result.invoices_archived == 2
+
+
+@pytest.mark.asyncio
+async def test_manifest_records_counts_not_an_unbounded_id_list(realdb, monkeypatch):
+    """The manifest must never carry the archived ids.
+
+    An unbounded `archived_invoice_ids` list grew with the archive; past ~1 MB
+    that single JSONB row head-of-lines the audit shipper's 500-row batch
+    (CloudWatch PutLogEvents caps at 1 MB), so nothing newer ever ships. The
+    per-invoice evidence is the `meta.archived_at` marker on the row itself.
+    """
+    org_id = realdb.info("a").org_id
+    mk = realdb.sessionmaker("a")
+    old = datetime.now(UTC) - timedelta(days=4000)
+    for _ in range(3):
+        await _add_invoice(mk, org_id, status=InvoiceStatus.done, created_at=old)
+
+    monkeypatch.setattr(retention_sweep.settings, "retention_batch_size", 2)
+
+    tmk = realdb.sessionmaker("a")
+    async with tmk() as db:
+        await sweep_tenant(db, organization_id=org_id, settings_dict={})
+        await db.commit()
+
+    async with mk() as s:
+        rows = (
+            (await s.execute(select(AuditLog).where(AuditLog.action == "retention.archived")))
+            .scalars()
+            .all()
+        )
+    details = rows[-1].details
+    assert "archived_invoice_ids" not in details
+    assert details["invoices_archived"] == 2
+    assert details["invoices_archive_batch_size"] == 2
+    assert details["invoices_archive_batch_capped"] is True

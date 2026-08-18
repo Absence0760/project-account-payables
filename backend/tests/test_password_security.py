@@ -224,3 +224,200 @@ def test_change_password_request_accepts_complex_password_at_schema_level():
 
     body = ChangePasswordRequest(current_password="anything", new_password="StrongPass123X")
     assert body.new_password == "StrongPass123X"
+
+
+# ---------------------------------------------------------------------------
+# `PATCH /api/auth/me` sets a password too — and used to skip the policy.
+#
+# The schema allowed `min_length=6` (against `ChangePasswordRequest`'s 12) and
+# the handler never called `validate_password_complexity`, so the one route the
+# profile screen uses accepted `abc123` while every other password-setting path
+# in the codebase refused it. Both routes now go through one `_apply_new_password`
+# helper, so a fourth caller can't diverge again.
+# ---------------------------------------------------------------------------
+
+
+def test_update_profile_request_rejects_short_password_at_schema_level():
+    import pydantic
+
+    from app.schemas.auth import UpdateProfileRequest
+
+    with pytest.raises(pydantic.ValidationError):
+        UpdateProfileRequest(password="Short1A", current_password="whatever")
+
+
+def test_update_profile_request_bounds_match_change_password():
+    """Pinned together on purpose — the two routes set the same credential."""
+    from app.schemas.auth import ChangePasswordRequest, UpdateProfileRequest
+
+    def _bounds(model, field):
+        meta = model.model_fields[field].metadata
+        return (
+            next(getattr(m, "min_length") for m in meta if hasattr(m, "min_length")),
+            next(getattr(m, "max_length") for m in meta if hasattr(m, "max_length")),
+        )
+
+    assert _bounds(UpdateProfileRequest, "password") == _bounds(
+        ChangePasswordRequest, "new_password"
+    )
+
+
+def test_apply_new_password_enforces_complexity_and_clears_the_forced_flag():
+    """The shared writer: a long-but-weak password (no upper, no digit) is a
+    422, and a successful set retires `must_change_password`."""
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from app.api.auth import _apply_new_password
+
+    user = SimpleNamespace(hashed_password="old", must_change_password=True)
+    with pytest.raises(HTTPException) as exc:
+        _apply_new_password(user, "allloweralpha")
+    assert exc.value.status_code == 422
+    assert user.hashed_password == "old"
+    assert user.must_change_password is True
+
+    _apply_new_password(user, "StrongPass123X")
+    assert user.hashed_password != "old"
+    assert user.must_change_password is False
+
+
+# ---------------------------------------------------------------------------
+# A self-service password change must drop the user's OTHER sessions.
+#
+# The admin-initiated reset has revoked the target's sessions since issue #160,
+# with the explicit rationale that a reset must close the window a leaked token
+# sits in. The self-service paths — taken at precisely the moment a user thinks
+# they are compromised — left every other session authenticating on the old
+# token until it expired. Exercised end-to-end against the real endpoints.
+# ---------------------------------------------------------------------------
+
+
+async def _throwaway_user(client):
+    """Create a disposable user and return (id, temp_password, token).
+
+    A throwaway keeps the seeded logins' passwords intact — control-plane user
+    rows are not reset between tests, so changing a seeded password would leak
+    into every later test in the session.
+    """
+    import uuid
+
+    from app.api.deps import create_access_token
+
+    suffix = uuid.uuid4().hex[:8]
+    resp = await client.post(
+        "/api/admin/users",
+        json={
+            "email": f"pwtest-{suffix}@acme.test",
+            "full_name": "Password Tester",
+            "role_names": ["ap_clerk"],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    return body["id"], body["temporary_password"], create_access_token
+
+
+@pytest.mark.asyncio
+async def test_change_password_revokes_the_callers_other_sessions(realdb, monkeypatch):
+    import uuid
+
+    calls: list = []
+
+    async def _capture(user):
+        calls.append(user.id)
+
+    monkeypatch.setattr("app.api.auth._revoke_sessions_after_password_change", _capture)
+
+    info = realdb.info("a")
+    async with realdb.client(key="a", role="admin") as c:
+        user_id, temp_password, mint = await _throwaway_user(c)
+        try:
+            token = mint(uuid.UUID(user_id), info.org_id)
+            resp = await c.post(
+                "/api/auth/change-password",
+                json={"current_password": temp_password, "new_password": "BrandNewPass123"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert resp.status_code == 200, resp.text
+            assert calls == [uuid.UUID(user_id)]
+        finally:
+            await c.delete(f"/api/admin/users/{user_id}")
+
+
+@pytest.mark.asyncio
+async def test_patch_me_password_enforces_complexity_and_revokes_other_sessions(
+    realdb, monkeypatch
+):
+    import uuid
+
+    calls: list = []
+
+    async def _capture(user):
+        calls.append(user.id)
+
+    monkeypatch.setattr("app.api.auth._revoke_sessions_after_password_change", _capture)
+
+    info = realdb.info("a")
+    async with realdb.client(key="a", role="admin") as c:
+        user_id, temp_password, mint = await _throwaway_user(c)
+        auth = {"Authorization": f"Bearer {mint(uuid.UUID(user_id), info.org_id)}"}
+        try:
+            # Long enough for the schema, but no uppercase and no digit — the
+            # complexity policy this route used to skip entirely.
+            weak = await c.patch(
+                "/api/auth/me",
+                json={"password": "alllowercasepw", "current_password": temp_password},
+                headers=auth,
+            )
+            assert weak.status_code == 422, weak.text
+            assert calls == []
+
+            # ...and the schema still catches a short one before the handler.
+            short = await c.patch(
+                "/api/auth/me",
+                json={"password": "Sh0rt", "current_password": temp_password},
+                headers=auth,
+            )
+            assert short.status_code == 422, short.text
+
+            ok = await c.patch(
+                "/api/auth/me",
+                json={"password": "BrandNewPass123", "current_password": temp_password},
+                headers=auth,
+            )
+            assert ok.status_code == 200, ok.text
+            assert calls == [uuid.UUID(user_id)]
+            # A password set through /me also retires the forced-change flag.
+            assert ok.json()["must_change_password"] is False
+        finally:
+            await c.delete(f"/api/admin/users/{user_id}")
+
+
+@pytest.mark.asyncio
+async def test_patch_me_without_a_password_does_not_touch_sessions(realdb, monkeypatch):
+    """Only the password branch revokes — renaming yourself must not sign you
+    out of your other devices."""
+    import uuid
+
+    calls: list = []
+
+    async def _capture(user):
+        calls.append(user.id)
+
+    monkeypatch.setattr("app.api.auth._revoke_sessions_after_password_change", _capture)
+
+    info = realdb.info("a")
+    async with realdb.client(key="a", role="admin") as c:
+        user_id, _temp, mint = await _throwaway_user(c)
+        try:
+            resp = await c.patch(
+                "/api/auth/me",
+                json={"full_name": "Renamed"},
+                headers={"Authorization": f"Bearer {mint(uuid.UUID(user_id), info.org_id)}"},
+            )
+            assert resp.status_code == 200, resp.text
+            assert calls == []
+        finally:
+            await c.delete(f"/api/admin/users/{user_id}")

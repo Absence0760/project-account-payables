@@ -176,14 +176,32 @@ def test_check_step_enabled_defaults_to_enabled_for_unknown_type():
     assert _check_step_enabled(cfg, "future_step_that_does_not_exist") is True
 
 
-def test_check_step_enabled_default_steps_are_all_disabled():
-    """DEFAULT_STEPS_CONFIG — the seed shape for a freshly-provisioned
-    org — must have every step disabled. The "everything off by
-    default" stance is the safe one: admins opt in to each gate."""
-    for step in DEFAULT_STEPS_CONFIG["steps"]:
-        assert step["enabled"] is False, (
-            f"step {step['type']} is enabled in DEFAULT_STEPS_CONFIG — "
-            "regression: defaults must be opt-in"
+def test_check_step_enabled_default_approval_is_on_and_the_rest_are_off():
+    """DEFAULT_STEPS_CONFIG is the FALLBACK for a tenant with no active
+    definition, and it must fail CLOSED on the one step that is a control.
+
+    "Everything off by default" read as the safe stance, but it was the unsafe
+    one: with approval disabled `complete_invoice` skips every branch and takes
+    the default `→ done` transition, so the invoice reaches a terminal,
+    immutable state with no approval, no approval signature, no
+    `invoice.approved` audit row, no segregation check and no CFO gate. A real
+    tenant no longer depends on this shape at all — `provision_tenant` seeds a
+    full enabled pipeline — but the fallback still has to be safe.
+
+    Extraction and ERP export stay off: they are conveniences, not controls,
+    and a tenant that reached this fallback should not have an AI or ERP
+    adapter called on its behalf without configuring one.
+    """
+    by_type = {s["type"]: s for s in DEFAULT_STEPS_CONFIG["steps"]}
+    assert by_type["approval"]["enabled"] is True, (
+        "approval is disabled in DEFAULT_STEPS_CONFIG — regression: the "
+        "fallback must not let an invoice reach `done` with no approval"
+    )
+    assert by_type["approval"]["config"]["required"] is True
+    for step_type in ("extraction", "erp_export"):
+        assert by_type[step_type]["enabled"] is False, (
+            f"step {step_type} is enabled in DEFAULT_STEPS_CONFIG — "
+            "regression: non-control steps stay opt-in"
         )
 
 

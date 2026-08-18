@@ -50,6 +50,23 @@ Invoice has po_number?
                                                                        quality_hold (error) raised
 ```
 
+### Matching is scoped to the invoice's entity
+
+The PO and GR lookups run against the invoice's own subsidiary
+(`invoice.entity_id`), derived inside `match_invoice_to_po` rather than threaded
+through each call site — the same shape `vendor_matching.match_and_link_vendor`
+uses. Scoping is **strict** (no `include_shared`): unlike a vendor or a GL
+account, a purchase order and a goods receipt belong to exactly one entity, so a
+NULL there is not a "shared" marker. An invoice whose own `entity_id` is NULL
+(unstamped / pre-multi-entity) stays unscoped, so single-entity tenants and
+legacy rows are unchanged.
+
+Without it, two subsidiaries that each number POs from `PO-1001` and share a
+supplier cross-match: the deterministic `created_at DESC LIMIT 1` pick could
+return the *other* entity's newer `PO-1001`, and the invoice read `matched` — the
+amount control having silently passed against a different subsidiary's order.
+`no_po` is the correct answer there, and it is one a clerk can act on.
+
 A PO may have **several** goods receipts (a PO filled by multiple shipments);
 the 3-way leg sums `quantity_received` across **every** GR for the PO, so a PO
 fully received over two deliveries reads as `matched`, not `partial`. The most

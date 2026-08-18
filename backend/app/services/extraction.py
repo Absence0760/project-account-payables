@@ -144,6 +144,7 @@ def decide_auto_approve(
     *,
     overall_confidence: float,
     amount: Decimal | float | None,
+    aggregate_amount: Decimal | float | None = None,
 ) -> bool:
     """Decide whether an extracted invoice may auto-approve, skipping human review.
 
@@ -163,8 +164,26 @@ def decide_auto_approve(
     When either gate would trip, the invoice falls back to human review rather
     than auto-approving past the control. Amount is compared with ``Decimal`` so
     a boundary value isn't misjudged by a float cast. Pure — no IO.
+
+    ``aggregate_amount`` is what those two gates are measured against: this
+    invoice's amount PLUS the same vendor's other recent invoices
+    (``services/structuring.vendor_recent_spend``), which is exactly what the
+    human path compares. Evaluating them on this invoice alone left the
+    structuring bypass wide open on the *unattended* path — split one payable
+    into several under-threshold invoices and each auto-approves past the
+    max-amount cap and the CFO gate with no human ever seeing it, which is
+    strictly worse than the human hole the guard was added to close. The caller
+    computes it (it holds the session); ``None`` falls back to ``amount``, so a
+    call site with no vendor link or with structuring disabled keeps the
+    single-invoice comparison.
+
+    ``auto_approve_below`` deliberately stays on the SINGLE invoice amount: it is
+    a "this document is too small to be worth a human's time" rule, not a spend
+    control. Aggregating it would make the floor stop firing for any frequent
+    vendor — turning a convenience knob into a second, silent threshold.
     """
     amount_dec = Decimal(str(amount or 0))
+    gate_amount = amount_dec if aggregate_amount is None else Decimal(str(aggregate_amount))
 
     auto_approved = False
     if ext_cfg.get("auto_approve_enabled") and overall_confidence >= ext_cfg.get(
@@ -187,11 +206,55 @@ def decide_auto_approve(
     from app.services.approval_chain import cfo_gate_applies
 
     max_amount = approval_cfg.get("max_invoice_amount")
-    exceeds_max = max_amount is not None and amount_dec > Decimal(str(max_amount))
-    needs_cfo = cfo_gate_applies(approval_cfg.get("require_cfo_above"), amount_dec)
+    exceeds_max = max_amount is not None and gate_amount > Decimal(str(max_amount))
+    needs_cfo = cfo_gate_applies(approval_cfg.get("require_cfo_above"), gate_amount)
     if exceeds_max or needs_cfo:
         return False
     return True
+
+
+async def resolve_gate_aggregate(
+    db: AsyncSession,
+    invoice: Invoice,
+    *,
+    org_settings: dict | None,
+) -> Decimal:
+    """Amount the money-control gates are measured against for ``invoice``.
+
+    ``invoice.amount`` plus the same vendor's other recent spend, exactly as
+    ``review._enforce_approval_thresholds`` computes it — the structuring guard.
+    Falls back to the bare amount when the invoice has no vendor link or the org
+    disabled ``structuring_enabled``. Never raises: the aggregate hardens a
+    control, so a lookup failure must degrade to the single-invoice comparison
+    (still gated) rather than break extraction.
+    """
+    amount = Decimal(str(invoice.amount or 0))
+    vendor_id = getattr(invoice, "vendor_id", None)
+    if vendor_id is None:
+        return amount
+
+    from app.services.structuring import get_structuring_config, vendor_recent_spend
+
+    cfg = get_structuring_config(org_settings)
+    if not cfg["enabled"]:
+        return amount
+    try:
+        recent = await vendor_recent_spend(
+            db,
+            vendor_id=vendor_id,
+            exclude_invoice_id=invoice.id,
+            window_days=cfg["window_days"],
+            currency=getattr(invoice, "currency", None) or "USD",
+            entity_id=getattr(invoice, "entity_id", None),
+        )
+    except Exception:  # noqa: BLE001 — degrade to the single-invoice gate, never break
+        logger.warning(
+            "[extraction] structuring aggregate lookup failed for invoice %s; "
+            "auto-approve gates fall back to the single-invoice amount",
+            invoice.id,
+        )
+        return amount
+    return amount + recent
 
 
 async def run_extraction(
@@ -556,11 +619,18 @@ async def run_extraction(
         if instance and instance.steps_config_snapshot:
             ext_cfg = get_step_config(instance.steps_config_snapshot, "extraction")
             approval_cfg = get_step_config(instance.steps_config_snapshot, "approval")
+            # The max-amount / CFO gates are measured against the same
+            # same-vendor rolling aggregate the human approval path uses, so a
+            # split payable can't auto-approve past a control that a reviewer
+            # would have been stopped by.
             auto_approved = decide_auto_approve(
                 ext_cfg,
                 approval_cfg,
                 overall_confidence=result.overall_confidence,
                 amount=invoice.amount,
+                aggregate_amount=await resolve_gate_aggregate(
+                    db, invoice, org_settings=org_settings
+                ),
             )
             if auto_approved:
                 target_status = InvoiceStatus.approved

@@ -34,8 +34,21 @@
 	// create / update / receipt upload = admin / ap_manager / ap_clerk.
 	const canEdit = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk'));
 
+	/** Today as `YYYY-MM-DD` in the user's own timezone — `toISOString()` would
+	 *  hand back the UTC day, which is the previous date for anyone west of
+	 *  Greenwich after 00:00 local. */
+	function todayLocalIso(): string {
+		const now = new Date();
+		const local = new Date(now.getTime() - now.getTimezoneOffset() * 60_000);
+		return local.toISOString().slice(0, 10);
+	}
+
 	/* eslint-disable svelte/state-referenced-locally -- modal receives a snapshot */
-	let expense_date = $state(expense?.expense_date ?? '');
+	// `expense_date` is REQUIRED (`ExpenseCreate.expense_date: date`, and the
+	// column is NOT NULL). Create mode seeds today so the field is never blank —
+	// an empty one used to POST `expense_date: null` and come back as a 422 whose
+	// `detail` is a list, rendering as the notorious "[object Object]" toast.
+	let expense_date = $state(expense?.expense_date ?? todayLocalIso());
 	let merchant = $state(expense?.merchant ?? '');
 	let category = $state(expense?.category ?? '');
 	let amount = $state<number | null>(expense?.amount ?? null);
@@ -94,11 +107,13 @@
 	}
 
 	async function handleSave() {
-		if (!merchant.trim() || amount == null) return;
+		// `expense_date` joins the guard: it is required by the API, and clearing
+		// it on an EDIT would PATCH an explicit null at a NOT NULL column.
+		if (!expense_date || !merchant.trim() || amount == null) return;
 		saving = true;
 		try {
 			const payload = {
-				expense_date: expense_date || null,
+				expense_date,
 				merchant: merchant.trim(),
 				category: category.trim() || null,
 				amount,
@@ -164,8 +179,8 @@
 
 		<div class="form-grid">
 			<label>
-				<span>{m('expenseModal.field.date')}</span>
-				<input type="date" bind:value={expense_date} disabled={!canEdit} />
+				<span>{m('expenseModal.field.date')} <em class="required">*</em></span>
+				<input type="date" bind:value={expense_date} required disabled={!canEdit} />
 			</label>
 			<label>
 				<span>{m('expenseModal.field.merchant')} <em class="required">*</em></span>

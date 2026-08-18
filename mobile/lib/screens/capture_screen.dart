@@ -24,6 +24,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
 
   Future<void> _capture({bool fromCamera = true}) async {
     final file = await CameraCapture.pickImage(fromCamera: fromCamera);
+    if (!mounted) return;
     if (file != null) {
       setState(() {
         _selectedFile = file;
@@ -35,6 +36,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
   /// Pick a document file (PDF / PNG / JPG / TIFF) from the device's storage.
   Future<void> _pickDocument() async {
     final file = await CameraCapture.pickDocument();
+    if (!mounted) return;
     if (file != null) {
       setState(() {
         _selectedFile = file;

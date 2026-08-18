@@ -61,6 +61,7 @@ from app.services.cashflow import (
 )
 from app.services.currency_conversion import (
     compute_unrealized_fx_gain_loss,
+    reporting_amount_for_row,
     resolve_reporting_currency,
     rollup_to_reporting_currency,
     vendor_rollup_to_reporting_currency,
@@ -108,6 +109,7 @@ async def _commitment_rows(
     horizon_days: int,
     include_pending: bool,
     entity_id: uuid.UUID | None = None,
+    reporting_currency: str | None = None,
 ) -> list[dict]:
     """Pull open invoices that represent future AP outflows and shape them
     into the commitment-row dicts the pure-math layer consumes.
@@ -117,6 +119,19 @@ async def _commitment_rows(
     back to `Invoice.due_date` with no discount. Rows are bounded to
     `[today, today + horizon_days]` on the effective due date so the query
     doesn't scan the whole back-catalogue.
+
+    **Every `amount` is expressed in the org's REPORTING currency**, via the
+    rate locked on the invoice (`Invoice.reporting_amount`) — never the raw
+    `Invoice.amount`, which is in the invoice's own currency. The consumers
+    all subtract these rows from an opening balance that
+    `cashflow.resolve_opening_balance` guarantees is in the reporting
+    currency (it REFUSES a provider balance in any other, on exactly this
+    ground). Subtracting a raw ¥10,000,000 invoice from a $250,000 opening
+    balance projected a −$9.75M shortfall that does not exist — and the
+    shortfall sweep emails finance leaders about it, the copilot re-times
+    payments around it, and a draft payment run gets staged off that plan.
+    A foreign invoice with no usable lock is counted at its face value and
+    flagged, so "we could not convert this" is visible rather than silent.
 
     Scoped to ``entity_id`` (the invoice's subsidiary) when set; ``None`` is
     the consolidated view (multi-entity Phase 2b)."""
@@ -135,6 +150,9 @@ async def _commitment_rows(
                 PaymentSchedule.due_date.label("sched_due"),
                 PaymentSchedule.discount_date,
                 PaymentSchedule.discount_percent,
+                Invoice.currency,
+                Invoice.reporting_amount,
+                Invoice.reporting_currency,
             )
             .outerjoin(PaymentSchedule, PaymentSchedule.invoice_id == Invoice.id)
             .where(Invoice.status.in_(statuses)),
@@ -143,17 +161,44 @@ async def _commitment_rows(
         )
     )
     committed_set = set(_COMMITTED_STATUSES)
+    # `resolve_reporting_currency(None)` is the canonical platform fallback —
+    # never a literal, so the default lives in one place.
+    target_currency = (reporting_currency or resolve_reporting_currency(None)).upper()
     rows: list[dict] = []
-    for inv_id, amount, status, inv_due, sched_due, discount_date, discount_percent in result.all():
+    for (
+        inv_id,
+        amount,
+        status,
+        inv_due,
+        sched_due,
+        discount_date,
+        discount_percent,
+        inv_currency,
+        rep_amount,
+        rep_currency,
+    ) in result.all():
         due = sched_due or inv_due
         if due is None or due < today or due > horizon_end:
             continue
         status_value = status.value if hasattr(status, "value") else status
+        # Same helper every sibling rollup in this module uses, so a cash
+        # projection and a spend report can't disagree about what an invoice
+        # is worth. No FX call on a read: the rate was locked when the invoice
+        # was booked, which is also what keeps the curve deterministic.
+        converted, unconverted = reporting_amount_for_row(
+            amount=Decimal(str(amount or 0)),
+            currency=inv_currency,
+            reporting_currency=target_currency,
+            persisted_reporting_currency=rep_currency,
+            persisted_reporting_amount=rep_amount,
+        )
         rows.append(
             {
                 "invoice_id": str(inv_id),
                 "due_date": due,
-                "amount": Decimal(str(amount or 0)),
+                "amount": converted,
+                "currency": target_currency,
+                "unconverted": unconverted,
                 "committed": status_value in committed_set,
                 "discount_date": discount_date,
                 "discount_percent": discount_percent,
@@ -209,6 +254,7 @@ async def get_cashflow_forecast(
     horizon_days: int = Query(90, ge=7, le=730),
     include_pending: bool = Query(True),
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(*_CFO_ROLES)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
@@ -224,6 +270,7 @@ async def get_cashflow_forecast(
         horizon_days=horizon_days,
         include_pending=include_pending,
         entity_id=entity_id,
+        reporting_currency=resolve_reporting_currency(org.settings),
     )
     periods = bucket_outflows(rows, granularity=granularity, today=today)
     totals = {
@@ -263,6 +310,7 @@ async def get_cashflow_whatif(
     horizon_days: int = Query(90, ge=7, le=730),
     grace_days: int = Query(15, ge=0, le=90),
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(*_CFO_ROLES)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
@@ -274,7 +322,12 @@ async def get_cashflow_whatif(
     bucketed period breakdown."""
     today = date.today()
     rows = await _commitment_rows(
-        db, today=today, horizon_days=horizon_days, include_pending=True, entity_id=entity_id
+        db,
+        today=today,
+        horizon_days=horizon_days,
+        include_pending=True,
+        entity_id=entity_id,
+        reporting_currency=resolve_reporting_currency(org.settings),
     )
 
     def _serialise(result: dict) -> dict:
@@ -360,7 +413,12 @@ async def get_cash_position(
     aren't modelled — `closing = opening - outflow`."""
     today = date.today()
     rows = await _commitment_rows(
-        db, today=today, horizon_days=horizon_days, include_pending=True, entity_id=entity_id
+        db,
+        today=today,
+        horizon_days=horizon_days,
+        include_pending=True,
+        entity_id=entity_id,
+        reporting_currency=resolve_reporting_currency(org.settings),
     )
     periods = bucket_outflows(rows, granularity=granularity, today=today)
 
@@ -1370,7 +1428,12 @@ async def export_report(
     if report == "cashflow_forecast":
         today = date.today()
         rows = await _commitment_rows(
-            db, today=today, horizon_days=horizon_days, include_pending=True, entity_id=entity_id
+            db,
+            today=today,
+            horizon_days=horizon_days,
+            include_pending=True,
+            entity_id=entity_id,
+            reporting_currency=resolve_reporting_currency(org.settings),
         )
         periods = bucket_outflows(rows, granularity=granularity, today=today)
         payload = EXPORTERS[report](periods)

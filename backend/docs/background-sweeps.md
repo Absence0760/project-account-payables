@@ -195,6 +195,47 @@ sweep is not a reason to pull a healthy process out of rotation; wiring it in
 would turn "the audit shipper's sink is misconfigured" into a rolling restart
 loop that fixes nothing.
 
+## Locking: a sweep must never hold what the request path needs
+
+A sweep that mutates rows the request path also locks has to bound the lock, not
+just the work. `approval_escalation` did neither: it ran
+
+```sql
+SELECT * FROM workflow_instances WHERE state = 'active' FOR UPDATE   -- no LIMIT
+```
+
+and held every one of those row locks until the end of the tick.
+`review.approve_invoice` takes the same row lock, so a tenant with 20 000 open
+invoices had its entire approval surface blocked once per tick — and with
+replicas (which the § Scope section below assumes), two sweeps locking
+overlapping sets in unspecified order deadlock, the tick aborts, and the streak
+counter above starts climbing for a reason no config change explains.
+
+The shape every such sweep uses instead is two-phase:
+
+1. Select candidate **ids**, unlocked, `ORDER BY id`, `LIMIT` a page.
+2. Per id: `db.get(Model, id, with_for_update=True)` → re-check the predicate
+   the id query used (it can have changed under you) → apply → `commit()`,
+   which releases the lock before the next row is touched. Nothing to write is
+   a `rollback()`, not a hold.
+
+`with_for_update` makes `Session.get` bypass the identity map, so step 2 is a
+real `SELECT … FOR UPDATE` on exactly one row. Ordering by id gives every
+replica the same lock order, so concurrent sweeps queue instead of deadlocking.
+
+**Page, don't cap, unless the work removes itself from the candidate set.**
+Escalation doesn't change `state`, so a per-tick cap would re-serve the same
+lowest-id rows forever and never reach the rest; it keyset-paginates
+(`WHERE id > :last`) until the tenant is exhausted, with
+`FEOH_APPROVAL_ESCALATION_BATCH_SIZE` as the page size. `retention_sweep` and
+`recurring_invoices` *can* cap, because an archived invoice / a generated period
+leaves the candidate set and the next tick resumes past it.
+
+`webhooks/delivery.deliver_due` is the same shape with one addition: the claim
+is `FOR UPDATE SKIP LOCKED`, because a delivery already in flight elsewhere
+should be skipped, not waited for (see `public-api.md` § A due delivery is
+claimed before it is sent).
+
 ## Scope: per-process, in-memory
 
 State resets on restart, and with several replicas each answers for itself.

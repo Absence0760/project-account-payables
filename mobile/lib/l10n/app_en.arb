@@ -149,6 +149,7 @@
   "approvalsTitle": "Pending Approvals",
   "approvalsAllCaughtUp": "All caught up!",
   "approvalsNoneWaiting": "No invoices waiting for approval",
+  "approvalsLoadError": "Could not load pending approvals",
   "approvalsPendingCount": "{count, plural, one {{count} invoice pending} other {{count} invoices pending}}",
   "@approvalsPendingCount": {
     "placeholders": {

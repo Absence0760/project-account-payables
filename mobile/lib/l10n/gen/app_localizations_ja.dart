@@ -379,6 +379,9 @@ class AppLocalizationsJa extends AppLocalizations {
   String get approvalsNoneWaiting => '承認待ちの請求書はありません';
 
   @override
+  String get approvalsLoadError => '承認待ちの請求書を読み込めませんでした';
+
+  @override
   String approvalsPendingCount(int count) {
     String _temp0 = intl.Intl.pluralLogic(
       count,

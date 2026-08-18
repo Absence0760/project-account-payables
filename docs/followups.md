@@ -34,7 +34,12 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#251](https://github.com/Absence0760/project-account-payables/issues/251)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-08-16 against `improve/round-batch-3` — a three-agent
+**Last reconciled:** 2026-08-17 against `fix/bug-hunt-round-9` — a five-agent
+bug hunt that confirmed ~50 findings and fixed 31 at the root (see § Surfaced by
+the five-agent bug hunt for the remainder, which is the largest single addition
+this file has taken).
+
+Before that: 2026-08-16 against `improve/round-batch-3` — a three-agent
 round that closed **every remaining actionable `(c)` item**. What is left in
 this file is the `(a)` credential-blocked set, the `(b)` operator steps, and two
 `(c)` entries that are product calls rather than work (an unwired adapter family
@@ -371,6 +376,174 @@ Each is real, scoped, and out of the envelope of the round that found it:
       `backend/docs/analytics.md`; the label/tooltip is not.
       **Durable fix:** name the window in the chart label or a tooltip.
       **Trigger:** the next round touching the CFO dashboard.
+
+### Surfaced by the five-agent bug hunt, deliberately not fixed
+
+The hunt (branch `fix/bug-hunt-round-9`) confirmed ~50 findings and fixed 31
+at the root. These are the remainder — each real and reproduced, each larger
+than a bug fix or a product call rather than a defect:
+
+- [ ] **Every supplier-portal list truncates at 20 rows with no pager.**
+      `frontend/src/routes/portal/{invoices,payments,purchase-orders,discount-offers}/+page.svelte`
+      each fetch the bare URL, read only `res.items`, declare `total` and never
+      read it, and render no pagination control — while all four routers
+      (`backend/app/api/portal.py`) return `{items, total, page, page_size}`
+      with `DEFAULT_PAGE_SIZE = 20`. A supplier with 25 invoices sees 20 and no
+      count; invoices 21+ and their chat threads are unreachable, older
+      remittances and PO flips likewise, and discount offers past the first 20
+      expire un-actionable. Raising `page_size` only moves the cliff to
+      `MAX_PAGE_SIZE`.
+      **Durable fix:** thread `?page=&page_size=` through `portalApi`, keep
+      `total` in page state, and reuse the AP app's Load-More control — four
+      routes, one shared pattern.
+      **Trigger:** the next slice touching the supplier portal's UI.
+- [ ] **Non-admins cannot submit an invoice when the approval step uses
+      `approver_strategy: "manual"`.** `InvoiceModal.svelte` sources the
+      approver picker from `GET /api/admin/users`, which is
+      `require_roles(ROLE_ADMIN)`. For every non-admin the call 403s,
+      `adminStore.users` stays `[]` with no catch, the `<select>` renders only
+      its placeholder, and Submit stays permanently disabled. On the seeded demo
+      tenant the workflow's approval step IS `manual`, so `demo+apclerk@acme.com`
+      — the role whose job is keying invoices in — cannot advance one. The
+      backend already intends managers to assign (`POST /{id}/assign` allows
+      admin **and** ap_manager); only the user-list endpoint blocks them.
+      **Durable fix:** a minimal assignable-reviewers endpoint (id +
+      full_name + is_active, no email or other PII) gated to the roles that may
+      assign, and point the picker at it. Do **not** widen
+      `GET /api/admin/users`.
+      **Trigger:** the next slice touching invoice submission or reviewer
+      assignment. Sized: one endpoint, one schema, one store call.
+- [ ] **`ScheduledReport` has no CRUD surface at all.** `grep -rn
+      "ScheduledReport" backend/app scripts/` finds no router, schema, seed or
+      script, and the frontend has zero references — so a row can only be
+      created by hand-written SQL and `list_due_schedules` returns `[]` on every
+      tick forever. Root `CLAUDE.md` advertises "`/analytics` … + scheduled-report
+      CRUD" and `backend/docs/analytics.md` says "an operator re-enables from the
+      admin UI"; neither exists. The sweep's own transaction-isolation defect was
+      fixed in this round (commit `a4184d08`) so the machinery is sound — it just
+      has no way to be reached.
+      **Durable fix:** add the `/analytics/scheduled-reports` CRUD router the
+      docs already describe, or — if the feature is being dropped — delete the
+      model, the sweep and the two flags in one change rather than leaving a
+      documented no-op.
+      **Trigger:** a product call on whether scheduled reports ship. This is the
+      decision, not the work; the work is small either way.
+- [ ] **Notification preferences cover 4 of the 7 event types, so
+      supplier-chat email cannot be muted.** `frontend/src/lib/types/notification.ts`
+      and `backend/app/schemas/notification.py` both enumerate only the four
+      `invoice_*` events, while `backend/app/models/notification.py` declares
+      seven. `chat_message`, `contract_renewal_due` and
+      `cash_shortfall_projected` go through the same `notify_event` writer, and
+      `resolve_prefs` defaults a missing key to **on** — so every supplier-chat
+      message emails the AP team with no opt-out.
+      **Durable fix:** extend both prefs schemas and the frontend union / labels
+      / order, with a roster drift guard mirroring
+      `tests/test_exception_type_labels`.
+      **Trigger:** the next change to notification preferences or the chat
+      notification path.
+- [ ] **Credit memos are created with no currency, dead-ending non-USD
+      tenants.** `frontend/src/routes/credit-memos/+page.svelte` omits
+      `currency` and its modal has no such input;
+      `backend/app/schemas/credit_memo.py` defaults `"USD"`, and
+      `api/credit_memos.py` then 409s any non-USD invoice on apply. There is no
+      PATCH on credit memos, so a EUR tenant's memo can never be applied or
+      corrected — and it displays as "$500".
+      **Durable fix:** a currency select defaulted from the org's reporting
+      currency, and default the schema from the invoice when one is named
+      rather than from a hardcoded `"USD"`.
+      **Trigger:** the next slice touching credit memos or multi-currency.
+- [ ] **Vendor bank-change approvals have no UI, so the dual-control gate is
+      unreachable from the app.** `/vendors` stages the change and toasts
+      "submitted for approval", but `grep -rn "change-requests" frontend/src/`
+      finds only the supplier portal's own read, and
+      `PERM_VENDOR_BANK_CHANGE_APPROVE` is exported and never referenced. The
+      backend queue (`api/vendors.py` `GET /change-requests`) and approve
+      endpoint both exist. Vendor banking therefore cannot be updated through
+      the app at all.
+      **Durable fix:** a `/vendors/change-requests` sub-route beside the
+      existing `/vendors/screening`, gated on the permission.
+      **Trigger:** the next slice touching vendor management. This is the
+      highest-value item in this list — a shipped control with no way to
+      exercise it.
+- [ ] **Four list surfaces are missing the app-wide request sequencer.**
+      `frontend/src/routes/{exceptions,purchase-orders,credit-memos,goods-receipts}/+page.svelte`.
+      `frontend/CLAUDE.md` § Sequencing list fetches enumerates the covered
+      surfaces and states "a new list surface wires it too"; these four don't.
+      Repro: click Load more, then change the filter chip — the page-1 replace
+      lands first, then the append pushes page-2 rows of the OLD filter onto the
+      new list and overwrites `total`/`page`.
+      **Durable fix:** wire `createRequestSequencer()` per the documented
+      three-call protocol; extend
+      `frontend/tests-e2e/reactivity/local-edit-vs-inflight-fetch.spec.ts`.
+      **Trigger:** the next change to any of those four routes.
+- [ ] **Filter chips that can never match.** `/expenses` offers `rejected` and
+      `reimbursed` (`frontend/src/lib/types/expense.ts`), but the only
+      `ExpenseStatus` writers in `api/expenses.py` are `submitted`/`approved`/
+      `draft`, and report rejection returns children to `draft`. `/requisitions`
+      offers `submitted`, but `RequisitionStatus.submitted` is never assigned —
+      submit jumps straight to `pending_approval` (the docstring at
+      `api/requisitions.py:335` still advertises the old graph). Both return an
+      empty list forever.
+      **Durable fix:** either drop the chips, or make the transitions stamp the
+      states their names promise — a product call on which of the two each case
+      wants.
+      **Trigger:** the next slice touching expenses or requisitions.
+- [ ] **Mobile offers Amount on an approved invoice, which the backend
+      refuses.** `mobile/lib/models/invoice.dart` mirrors `IMMUTABLE_STATUSES`
+      but not the narrower `_FINANCIALLY_LOCKED_STATUSES = {approved} |
+      IMMUTABLE_STATUSES` (`backend/app/api/invoices.py`). Editing an approved
+      invoice's amount 409s with a generic toast, and a combined
+      description+amount edit loses the description too. The web client already
+      implements exactly this guard (`InvoiceModal.svelte` →
+      `invoiceFieldPayload()`), so this is a parity gap.
+      **Durable fix:** add `isFinanciallyLocked`, render Amount read-only, and
+      omit it from the PATCH diff.
+      **Trigger:** the next slice touching the mobile invoice edit sheet.
+- [ ] **An orphaned extraction poll un-filters the invoice list.**
+      `frontend/src/lib/components/modals/InvoiceModal.svelte` — nothing
+      disables Close while `extracting`, and `pollForCompletion` runs up to 60s
+      after the modal unmounts, then calls the UNFILTERED `invoiceStore.fetch()`.
+      `closeInvoiceModal` has already re-applied the filters, so seconds later
+      the list silently becomes unfiltered while the status chips still show the
+      filter, and `lastParams` resets so Load-more paginates the wrong set. The
+      same hazard is explicitly avoided a few lines above for the approve path.
+      **Durable fix:** an `$effect` cleanup setting `cancelled = true`, checked
+      after each `await` in the poll, with the refresh going through a
+      host-supplied callback.
+      **Trigger:** the next change to `InvoiceModal`.
+- [ ] **Payment-run Execute is a single unarmed click.**
+      `RunDetailModal.svelte` — the one irreversible money-moving control in the
+      web app has no arm/confirm, while strictly less consequential actions do
+      (cancel-draft two-click in the same footer, void/compliance confirms,
+      credit-memo void, API-key revoke). Mobile *does* confirm. Stated fairly:
+      `payments/+page.svelte` documents the modal itself as the review surface
+      and the button label carries the amount, so this is a judgment call rather
+      than a defect of logic.
+      **Durable fix:** arm the commit (two-click or a confirm dialog), updating
+      `frontend/tests-e2e/payments/execute.spec.ts`.
+      **Trigger:** a product call on whether the modal counts as the
+      confirmation step.
+- [ ] **`tests-e2e/discounts/money-path.spec.ts:228` is date-boundary flaky off
+      UTC.** "per-invoice ROI is the exact cost-of-forgoing-discount value"
+      asserts `days_accelerated === 20` from an invoice due in 30 days and an
+      offer deadline 10 days out. `makeInvoice` and `makeOffer` derive their
+      dates separately, so on a machine whose local date differs from UTC the
+      two straddle midnight and the assertion sees 21. CI runs in UTC and never
+      sees it; it reproduces reliably on a UTC-4 workstation after 20:00 local.
+      Diagnosed while triaging PR #315 — the spec is untouched by that PR and
+      the ROI primitive itself is correct.
+      **Durable fix:** derive both dates from one clock read passed into both
+      helpers (or assert the relationship `netDue - discountDeadline` rather
+      than a hardcoded 20).
+      **Trigger:** the next change to the discounts e2e specs, or the first
+      time it costs someone a local triage session.
+- [ ] **`api/cards.py::_normalize_charge_amount` divides by a flat 100.** Not
+      ISO-4217-exponent aware, unlike
+      `payment_adapters.base.minor_units_to_decimal`. Lithic is USD-only in
+      practice and Nium is major-unit, so no currency currently in play is
+      mispriced — recorded so the next person doesn't re-derive it.
+      **Durable fix:** route it through `minor_units_to_decimal`.
+      **Trigger:** adding a card provider or a non-USD card currency.
 
 ### AI Cash-Flow Copilot — Phase 3 deferred bucket
 

@@ -11,6 +11,13 @@ required. The immediate attempt fires from ``dispatch.emit_event`` on the runnin
 loop; ``run_webhook_delivery_loop`` is the durable retry backstop, gated behind
 ``FEOH_WEBHOOKS_ENABLED`` (OFF by default in local dev).
 
+Because those two paths overlap in time (emit commits the row due-now, THEN
+spawns the immediate attempt), a delivery is **claimed** before it is sent:
+every load that is about to POST takes the row ``FOR UPDATE SKIP LOCKED``, so a
+row already in flight elsewhere is skipped rather than POSTed twice, and
+``attempt_count`` is a serialized read-modify-write. Without the claim the retry
+budget was ``MAX_ATTEMPTS`` per *worker*, not per delivery.
+
 PII discipline: the payloads themselves carry only invoice metadata (no bank /
 tax / PAN fields — built in ``dispatch.py``), and the logs here record the
 delivery id + status code + event type only, never the target URL's query string
@@ -175,31 +182,61 @@ async def process_delivery(db: AsyncSession, delivery: WebhookDelivery) -> Webho
 
 
 async def process_delivery_by_id(delivery_id: uuid.UUID) -> None:
-    """Load a delivery by id (own control-plane session) and process it once.
+    """Claim a delivery by id (own control-plane session) and process it once.
 
-    Used by the fire-and-forget immediate attempt. Best-effort: any failure is
-    logged, never raised (the outcome lives on the row).
+    Used by the fire-and-forget immediate attempt. The row is taken
+    ``FOR UPDATE SKIP LOCKED``: ``emit_event`` commits the row with
+    ``next_attempt_at = now()`` and only THEN spawns this attempt, so a sweep
+    tick landing in that window sees a due row and would POST the same delivery
+    a second time — a duplicate the customer's endpoint has to absorb, with two
+    commits racing on ``attempt_count``/``next_attempt_at`` so the 5-attempt
+    budget silently shrinks. Skipping a row another worker already holds means
+    the other worker is sending it; there is nothing to do here.
+
+    Best-effort: any failure is logged, never raised (the outcome lives on the
+    row).
     """
     from app.database import control_session_factory
 
     try:
         async with control_session_factory() as db:
             delivery = (
-                await db.execute(select(WebhookDelivery).where(WebhookDelivery.id == delivery_id))
+                await db.execute(
+                    select(WebhookDelivery)
+                    .where(WebhookDelivery.id == delivery_id)
+                    .with_for_update(skip_locked=True)
+                )
             ).scalar_one_or_none()
-            if delivery is not None:
-                await process_delivery(db, delivery)
+            if delivery is None:
+                # Already claimed by the sweep (or gone) — not our attempt.
+                await db.rollback()
+                return
+            await process_delivery(db, delivery)
     except Exception:  # noqa: BLE001
         logger.exception("webhook immediate delivery failed: delivery=%s", delivery_id)
 
 
 async def deliver_due(db: AsyncSession, *, limit: int = 100) -> int:
-    """Process every delivery whose retry is due. Returns the count attempted."""
+    """Process every delivery whose retry is due. Returns the count attempted.
+
+    Two-phase and one row claimed at a time. The due ids are read UNLOCKED, then
+    each is re-selected ``FOR UPDATE SKIP LOCKED`` with the due predicate
+    re-applied, processed, and committed — which releases the claim before the
+    next row is touched. Selecting the whole page ``FOR UPDATE`` up front would
+    not hold: ``process_delivery`` commits per row, and that commit ends the
+    transaction and drops the locks on every row still queued behind it.
+
+    The claim is what makes ``MAX_ATTEMPTS`` mean 5 attempts rather than 5 per
+    replica: ``attempt_count`` is now read-modify-written under the row lock,
+    so two workers can't both increment from the same value, and a delivery
+    already in flight (the immediate attempt from ``emit_event``, or another
+    replica's tick) is skipped instead of POSTed twice.
+    """
     now = datetime.now(UTC)
-    rows = (
+    due_ids = (
         (
             await db.execute(
-                select(WebhookDelivery)
+                select(WebhookDelivery.id)
                 .where(
                     WebhookDelivery.status.in_((DELIVERY_PENDING, DELIVERY_FAILED)),
                     WebhookDelivery.next_attempt_at.isnot(None),
@@ -212,9 +249,33 @@ async def deliver_due(db: AsyncSession, *, limit: int = 100) -> int:
         .scalars()
         .all()
     )
-    for delivery in rows:
+
+    attempted = 0
+    for delivery_id in due_ids:
+        # The predicate is repeated under the lock deliberately: between the id
+        # read and the claim another worker may have delivered or dead-lettered
+        # the row. Postgres re-evaluates the qualification against the latest
+        # tuple after locking, so a row that moved on is simply not returned.
+        delivery = (
+            await db.execute(
+                select(WebhookDelivery)
+                .where(
+                    WebhookDelivery.id == delivery_id,
+                    WebhookDelivery.status.in_((DELIVERY_PENDING, DELIVERY_FAILED)),
+                    WebhookDelivery.next_attempt_at.isnot(None),
+                    WebhookDelivery.next_attempt_at <= now,
+                )
+                .with_for_update(skip_locked=True)
+            )
+        ).scalar_one_or_none()
+        if delivery is None:
+            # Locked by another worker, or no longer due — end the transaction
+            # so we don't hold a snapshot open across the rest of the page.
+            await db.rollback()
+            continue
         await process_delivery(db, delivery)
-    return len(rows)
+        attempted += 1
+    return attempted
 
 
 async def run_webhook_delivery_loop() -> None:

@@ -43,6 +43,35 @@ from app.schemas.portal import (
 from app.services import mfa
 
 
+@pytest.fixture(autouse=True)
+def _session_capable_redis(monkeypatch):
+    """Portal sign-in now REGISTERS the session (a Redis zset + companion hash),
+    which is what gives "sign out my other devices" something to revoke. The
+    autouse conftest fake is key/value only, so swap in the richer stand-in for
+    ``app.redis`` here. ``app.services.mfa``'s Redis stays on the conftest fake.
+    """
+    from tests.test_session_management import FakeRedis
+
+    fake = FakeRedis()
+
+    async def _get_redis():
+        return fake
+
+    monkeypatch.setattr("app.redis.get_redis", _get_redis)
+    return fake
+
+
+def _fake_request() -> SimpleNamespace:
+    """Stand-in for the FastAPI Request the portal auth routes read.
+
+    A bare ``MagicMock()`` was enough while the routes only passed it to the
+    rate limiter, but a successful sign-in now RECORDS the session (client IP +
+    a coarse device label) — and a MagicMock IP isn't JSON-serialisable. This
+    stub exposes exactly the two attributes the code reads.
+    """
+    return SimpleNamespace(client=None, headers={"user-agent": "Chrome on macOS"})
+
+
 @pytest.fixture
 def mfa_on(monkeypatch):
     """Flip the platform MFA master switch on for the duration of a test."""
@@ -251,7 +280,7 @@ async def test_login_challenges_when_mfa_enrolled(mfa_on, monkeypatch):
 
     res = await portal_login(
         body=PortalLoginRequest(email=vu.email, password="pw"),
-        request=MagicMock(),
+        request=_fake_request(),
         slug="acme",
         db=db,
     )
@@ -273,7 +302,7 @@ async def test_login_no_challenge_when_not_enrolled(mfa_on, monkeypatch):
 
     res = await portal_login(
         body=PortalLoginRequest(email=vu.email, password="pw"),
-        request=MagicMock(),
+        request=_fake_request(),
         slug="acme",
         db=db,
     )
@@ -292,7 +321,7 @@ async def test_login_skips_mfa_when_master_switch_off(monkeypatch):
 
     res = await portal_login(
         body=PortalLoginRequest(email=vu.email, password="pw"),
-        request=MagicMock(),
+        request=_fake_request(),
         slug="acme",
         db=db,
     )
@@ -310,7 +339,7 @@ async def test_challenge_verify_mints_access_token(mfa_on, monkeypatch):
     code = pyotp.TOTP(secret).now()
     res = await portal_mfa_challenge(
         body=PortalMFAChallengeVerifyRequest(challenge_token=challenge, code=code),
-        request=MagicMock(),
+        request=_fake_request(),
         slug="acme",
         db=db,
     )
@@ -334,7 +363,7 @@ async def test_challenge_verify_wrong_code_rejected(mfa_on, monkeypatch):
     with pytest.raises(HTTPException) as exc:
         await portal_mfa_challenge(
             body=PortalMFAChallengeVerifyRequest(challenge_token=challenge, code="000000"),
-            request=MagicMock(),
+            request=_fake_request(),
             slug="acme",
             db=db,
         )
@@ -362,7 +391,7 @@ async def test_email_otp_request_sends_code_to_enrolled_vendor(mfa_on, monkeypat
     challenge = mfa.create_vendor_challenge_token(vu.id)
     res = await portal_request_email_otp(
         body=PortalMFAEmailChallengeRequest(challenge_token=challenge),
-        request=MagicMock(),
+        request=_fake_request(),
         db=db,
     )
     assert res is None  # 204
@@ -387,7 +416,7 @@ async def test_email_otp_request_silent_for_unenrolled_vendor(mfa_on, monkeypatc
     challenge = mfa.create_vendor_challenge_token(vu.id)
     res = await portal_request_email_otp(
         body=PortalMFAEmailChallengeRequest(challenge_token=challenge),
-        request=MagicMock(),
+        request=_fake_request(),
         db=db,
     )
     assert res is None
@@ -405,7 +434,7 @@ async def test_email_otp_request_rejects_employee_challenge(mfa_on, monkeypatch)
     with pytest.raises(HTTPException) as exc:
         await portal_request_email_otp(
             body=PortalMFAEmailChallengeRequest(challenge_token=employee_challenge),
-            request=MagicMock(),
+            request=_fake_request(),
             db=db,
         )
     assert exc.value.status_code == 401
@@ -426,7 +455,7 @@ async def test_challenge_verify_email_method_mints_token(mfa_on, monkeypatch):
         body=PortalMFAChallengeVerifyRequest(
             challenge_token=challenge, code="654321", method="email"
         ),
-        request=MagicMock(),
+        request=_fake_request(),
         slug="acme",
         db=db,
     )
@@ -454,7 +483,7 @@ async def test_challenge_verify_email_wrong_or_expired_code_rejected(mfa_on, mon
             body=PortalMFAChallengeVerifyRequest(
                 challenge_token=challenge, code="000000", method="email"
             ),
-            request=MagicMock(),
+            request=_fake_request(),
             slug="acme",
             db=db,
         )
@@ -569,7 +598,7 @@ async def test_challenge_endpoint_rejects_employee_challenge_token(mfa_on, monke
     with pytest.raises(HTTPException) as exc:
         await portal_mfa_challenge(
             body=PortalMFAChallengeVerifyRequest(challenge_token=employee_challenge, code=code),
-            request=MagicMock(),
+            request=_fake_request(),
             slug="acme",
             db=db,
         )

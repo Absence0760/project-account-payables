@@ -3,7 +3,6 @@ import 'package:flutter/services.dart';
 
 import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
 import 'package:feohledger_mobile/models/mfa_challenge.dart';
-import 'package:feohledger_mobile/screens/home_screen.dart';
 import 'package:feohledger_mobile/stores/auth_store.dart';
 import 'package:feohledger_mobile/utils/a11y.dart';
 
@@ -105,9 +104,10 @@ class _MfaScreenState extends State<MfaScreen> {
 
     if (!mounted) return;
     if (result.isSuccess) {
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const HomeScreen()),
-      );
+      // Pop back to the root route, which the AuthGate now renders as the home
+      // screen. Pushing HomeScreen over this route instead would bury the gate
+      // and strand the user here on a later forced (401) logout.
+      Navigator.of(context).pop();
     } else {
       final error = AuthStore.instance.error;
       if (error != null) A11y.announce(context, error);

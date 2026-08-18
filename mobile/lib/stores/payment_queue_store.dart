@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import 'package:feohledger_mobile/api/api_client.dart';
 import 'package:feohledger_mobile/api/endpoints.dart';
 import 'package:feohledger_mobile/models/payment.dart';
 import 'package:feohledger_mobile/models/payment_queue.dart';
@@ -119,7 +120,7 @@ class PaymentQueueStore extends ChangeNotifier {
       } catch (_) {}
       _fromCache = false;
       _loading = false;
-      _error = e.toString();
+      _error = describeApiError(e);
       notifyListeners();
     }
   }
@@ -129,7 +130,7 @@ class PaymentQueueStore extends ChangeNotifier {
       _runs = await PaymentApi.runs();
       notifyListeners();
     } catch (e) {
-      _error = e.toString();
+      _error = describeApiError(e);
       notifyListeners();
     }
   }
@@ -150,13 +151,18 @@ class PaymentQueueStore extends ChangeNotifier {
       await fetchRuns();
       return result['message'] as String? ?? 'Payment run created';
     } catch (e) {
-      _error = e.toString();
+      _error = describeApiError(e);
       notifyListeners();
       return null;
     }
   }
 
   /// Execute a draft run. Returns the server message, or null on failure.
+  ///
+  /// A refusal here is routine, not exceptional — the CFO-approval gate and the
+  /// segregation-of-duties check both answer 403 — so [error] carries the
+  /// server's own `detail` sentence (see [describeApiError]), never the raw
+  /// JSON body it arrived in.
   Future<String?> executeRun(String runId) async {
     try {
       final result = await PaymentApi.executeRun(runId);
@@ -164,7 +170,7 @@ class PaymentQueueStore extends ChangeNotifier {
       await fetchRuns();
       return result['message'] as String? ?? 'Payment run executed';
     } catch (e) {
-      _error = e.toString();
+      _error = describeApiError(e);
       notifyListeners();
       return null;
     }
@@ -178,7 +184,7 @@ class PaymentQueueStore extends ChangeNotifier {
       await fetchRuns();
       return result['message'] as String? ?? 'Payment run cancelled';
     } catch (e) {
-      _error = e.toString();
+      _error = describeApiError(e);
       notifyListeners();
       return null;
     }

@@ -296,8 +296,21 @@ class BulkDeleteResponse(BaseModel):
 
 
 class BulkStatusRequest(BaseModel):
+    """Bulk status change over a hand-picked set of invoices.
+
+    `status` is deliberately typed as the full `InvoiceStatus` enum rather than a
+    narrower Literal so an out-of-scope target gets a *named* 422 from the
+    endpoint's own whitelist (`api/invoices.BULK_STATUS_TARGETS`) explaining which
+    endpoint owns that transition, instead of a generic enum-mismatch error. The
+    whitelist — not this schema — is the gate.
+    """
+
     ids: list[str] = Field(..., min_length=1)
     status: InvoiceStatus
+    # Required when `status` is `rejected`: the endpoint routes rejections
+    # through `review.reject_invoice`, which records the reason on the audit row
+    # and on the `review_rejected` exception. Ignored for every other target.
+    reason: str | None = Field(default=None, max_length=1000)
 
 
 class BulkStatusResponse(BaseModel):

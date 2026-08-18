@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import 'package:feohledger_mobile/api/api_client.dart';
 import 'package:feohledger_mobile/api/endpoints.dart';
 import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
 import 'package:feohledger_mobile/models/contract.dart';
@@ -43,13 +44,17 @@ class _ContractDetailScreenState extends State<ContractDetailScreen> {
     });
     try {
       final contract = await ContractApi.getById(widget.contractId);
+      // The route can be popped while a slow GET (or its 10s timeout) is still
+      // in flight — setState after dispose throws.
+      if (!mounted) return;
       setState(() {
         _contract = contract;
         _loading = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _error = describeApiError(e);
         _loading = false;
       });
     }

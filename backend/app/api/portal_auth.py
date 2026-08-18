@@ -6,6 +6,7 @@ as every other tenant-scoped route.
 """
 
 import time
+import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -47,6 +48,11 @@ from app.services.rate_limit import (
     clear_auth_failures,
     record_auth_failure,
     resolve_client_ip,
+)
+from app.services.session_management import (
+    end_session,
+    register_session,
+    revoke_other_sessions,
 )
 from app.tenant import get_tenant_db, get_tenant_slug
 from app.utils.passwords import (
@@ -105,6 +111,40 @@ async def _audit_portal_login_failure(vu: VendorUser, *, ip: str, reason: str) -
         action="portal.login.failure",
         entity_id=vu.id,
         details={"ip": ip, "reason": reason},
+    )
+
+
+async def _mint_portal_session(
+    vu: VendorUser, request: Request, *, method: str
+) -> PortalTokenResponse:
+    """Mint a supplier-portal access token AND register it as a tracked session.
+
+    Employee sign-ins have been tracked in Redis (`active_jtis:<user_id>`) since
+    session management landed; the portal minted a bare JWT and tracked nothing.
+    That made "sign the supplier out of their other devices" impossible to
+    implement at all — which is why a portal password change used to leave every
+    other session of that supplier authenticating with the old token until it
+    expired. Tracking is what gives `revoke_other_sessions` something to revoke.
+
+    Uses the same helper as the employee surface, so the vendor user also
+    inherits the concurrent-session cap (`FEOH_MAX_CONCURRENT_SESSIONS`) — the
+    oldest session is evicted onto the blocklist past it. Vendor-user and
+    employee ids are both UUID4s in the same Redis keyspace, so a vendor's set
+    can never collide with an employee's.
+    """
+    token = create_vendor_access_token(vu.id, vu.vendor_id)
+    jti = decode_token(token).get("jti")
+    if jti:
+        await register_session(
+            vu.id,
+            jti,
+            ip=resolve_client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            method=method,
+        )
+    return PortalTokenResponse(
+        access_token=token,
+        must_change_password=vu.must_change_password,
     )
 
 
@@ -181,11 +221,7 @@ async def portal_login(
         challenge_token = mfa.create_vendor_challenge_token(vu.id)
         return PortalMFAChallengeResponse(mfa_challenge_token=challenge_token)
 
-    token = create_vendor_access_token(vu.id, vu.vendor_id)
-    return PortalTokenResponse(
-        access_token=token,
-        must_change_password=vu.must_change_password,
-    )
+    return await _mint_portal_session(vu, request, method="password")
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
@@ -204,7 +240,15 @@ async def portal_logout(authorization: str = Header()):
     if jti:
         exp = payload.get("exp", 0)
         ttl = max(int(exp - time.time()), 1)
-        await block_token(jti, ttl)
+        try:
+            vu_id = uuid.UUID(payload["sub"])
+        except (KeyError, ValueError, TypeError):
+            # Malformed subject — still revoke the token, just nothing to untrack.
+            await block_token(jti, ttl)
+        else:
+            # Blocklist AND drop it from the tracking set, so a signed-out
+            # session can't linger in the supplier's session list.
+            await end_session(vu_id, jti, ttl)
 
 
 @router.get("/me", response_model=PortalMeResponse)
@@ -278,7 +322,17 @@ async def portal_change_password(
     body: PortalChangePasswordRequest,
     vu: VendorUser = Depends(get_current_vendor_user),
     db: AsyncSession = Depends(get_tenant_db),
+    authorization: str | None = Header(default=None),
 ):
+    """Change the authenticated supplier user's password.
+
+    Signs the supplier out of every OTHER device on success — the same
+    guarantee the employee surface and the admin-initiated reset give. A
+    supplier changing their password is usually doing it because they think the
+    old one leaked; leaving the other sessions authenticating with a token
+    minted under that password for the rest of its lifetime defeats the change.
+    The session making the request is spared.
+    """
     if not vu.hashed_password or not pwd_context.verify(body.current_password, vu.hashed_password):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
 
@@ -290,6 +344,24 @@ async def portal_change_password(
     vu.hashed_password = pwd_context.hash(body.new_password)
     vu.must_change_password = False
     await db.commit()
+
+    # AFTER the commit, so a Redis hiccup can't roll back a password the caller
+    # was told was changed. `get_current_vendor_user` doesn't stash the JTI (it
+    # lives in the portal dependency tree, which deliberately shares nothing
+    # with the employee one), so the caller's own session is identified by
+    # re-decoding the bearer token the request already presented.
+    current_jti = None
+    if authorization and authorization.startswith("Bearer "):
+        current_jti = decode_token(authorization.removeprefix("Bearer ")).get("jti")
+    revoked = await revoke_other_sessions(vu.id, current_jti)
+    if vu.organization_id:
+        await dispatch_auth_audit(
+            organization_id=vu.organization_id,
+            actor_id=None,
+            action="portal.session.revoked",
+            entity_id=vu.id,
+            details={"scope": "others", "revoked": len(revoked), "reason": "password_changed"},
+        )
 
     vendor = (
         await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))
@@ -418,11 +490,7 @@ async def portal_mfa_challenge(
     # it can't be replayed to mint a second session (issue #162).
     await mfa.consume_challenge_token(claims.jti)
 
-    token = create_vendor_access_token(vu.id, vu.vendor_id)
-    return PortalTokenResponse(
-        access_token=token,
-        must_change_password=vu.must_change_password,
-    )
+    return await _mint_portal_session(vu, request, method="mfa")
 
 
 # Mirrors `api/auth.STEP_UP_RATE_LIMIT_PER_MINUTE` — a credential-management

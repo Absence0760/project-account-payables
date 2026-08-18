@@ -17,6 +17,15 @@ class ApiException implements Exception {
   String toString() => 'ApiException($statusCode): $message';
 }
 
+/// User-facing text for anything thrown out of [ApiClient].
+///
+/// [ApiException.toString] prefixes the status code (`ApiException(403): ...`),
+/// which belongs in a log, not in a snackbar. Use this wherever an error is
+/// rendered to a person; [ApiException.message] is already the server's
+/// human-readable `detail` (see [ApiClient.errorMessage]).
+String describeApiError(Object error) =>
+    error is ApiException ? error.message : error.toString();
+
 class ApiClient {
   static final ApiClient _instance = ApiClient._();
   factory ApiClient() => _instance;
@@ -77,15 +86,67 @@ class ApiClient {
 
   /// End the session everywhere it exists on the device: credentials, the
   /// offline SQLite cache, and the store singletons. This is the single exit
-  /// path — explicit logout, a 401 on any request (expired / revoked token),
-  /// and a failed session restore all land here — so no forced-logout route
-  /// can leave one user's financial data readable by the next one.
+  /// path — explicit logout, a 401 on a request that CARRIED a token (expired /
+  /// revoked), and a failed session restore all land here — so no forced-logout
+  /// route can leave one user's financial data readable by the next one.
+  ///
+  /// Only the two **session** keys are deleted, never `deleteAll()`: the same
+  /// [FlutterSecureStorage] also holds device preferences that outlive any
+  /// account — the biometric-unlock toggle (`BiometricService`) and the display
+  /// language (`LocaleStore`). Wiping those on sign-out silently turned Face ID
+  /// off and reset the UI language, which is not what ending a session means.
   Future<void> clearSession() async {
     _token = null;
     _tenantSlug = null;
     AppConfig.tenantSlug = null;
-    await _storage.deleteAll();
+    await _storage.delete(key: _tokenKey);
+    await _storage.delete(key: _tenantKey);
     await SessionManager.endSession();
+  }
+
+  /// Handle a 401 uniformly across every verb.
+  ///
+  /// A 401 only ends the session when a credential was actually **presented**.
+  /// `/auth/login`, `/auth/mfa/verify` and `/auth/mfa/challenge/email` return
+  /// 401 for a wrong password / mistyped code while no token exists yet — and
+  /// tearing the session down there deleted the `tenant_slug` the half-finished
+  /// login still needs. The user would then retype the code, authenticate
+  /// against the (control-plane-only) auth routes, land on the home screen, and
+  /// have every tenant-scoped request go out with no `X-Tenant-Slug`.
+  Future<void> _handleUnauthorized() async {
+    if (_token != null) await clearSession();
+  }
+
+  /// Human-readable text for a non-2xx response.
+  ///
+  /// FastAPI errors arrive as `{"detail": "..."}`; pasting that raw JSON into a
+  /// snackbar is how a legitimate refusal (e.g. the payment-run CFO gate) shows
+  /// up as `{"detail":"This run exceeds..."}` in the UI. Falls back to a plain
+  /// status line rather than echoing an un-decodable body (an HTML error page
+  /// is worse than saying nothing).
+  static String errorMessage(http.Response response) {
+    final body = response.body;
+    if (body.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(body);
+        if (decoded is Map<String, dynamic>) {
+          final detail = decoded['detail'];
+          if (detail is String && detail.trim().isNotEmpty) return detail;
+          // 422 validation errors: `detail` is a list of {loc, msg, type}.
+          if (detail is List) {
+            final messages = detail
+                .whereType<Map<String, dynamic>>()
+                .map((e) => e['msg'])
+                .whereType<String>()
+                .toList();
+            if (messages.isNotEmpty) return messages.join('; ');
+          }
+        }
+      } catch (_) {
+        // Not JSON — fall through to the status line.
+      }
+    }
+    return 'Request failed (${response.statusCode})';
   }
 
   /// Auth + tenant headers for JSON requests.
@@ -201,7 +262,7 @@ class ApiClient {
         .get(uri, headers: authHeaders)
         .timeout(const Duration(seconds: 30));
     if (response.statusCode == 401) {
-      await clearSession();
+      await _handleUnauthorized();
       throw ApiException(401, 'Unauthorized');
     }
     if (response.statusCode >= 400) {
@@ -232,11 +293,11 @@ class ApiClient {
         .timeout(const Duration(seconds: 30));
     debugPrint('[API] POST(bytes) $path → ${response.statusCode}');
     if (response.statusCode == 401) {
-      await clearSession();
+      await _handleUnauthorized();
       throw ApiException(401, 'Unauthorized');
     }
     if (response.statusCode >= 400) {
-      throw ApiException(response.statusCode, response.body);
+      throw ApiException(response.statusCode, errorMessage(response));
     }
     return (
       bytes: response.bodyBytes,
@@ -262,11 +323,11 @@ class ApiClient {
     // Same forced-logout treatment as every other verb — clearSession()'s
     // "a 401 on any request lands here" is only true if this path honours it.
     if (response.statusCode == 401) {
-      await clearSession();
+      await _handleUnauthorized();
       throw ApiException(401, 'Unauthorized');
     }
     if (response.statusCode >= 400) {
-      throw ApiException(response.statusCode, response.body);
+      throw ApiException(response.statusCode, errorMessage(response));
     }
   }
 
@@ -276,11 +337,11 @@ class ApiClient {
   /// of the session being torn down.
   Future<Map<String, dynamic>> _handleResponse(http.Response response) async {
     if (response.statusCode == 401) {
-      await clearSession();
+      await _handleUnauthorized();
       throw ApiException(401, 'Unauthorized');
     }
     if (response.statusCode >= 400) {
-      throw ApiException(response.statusCode, response.body);
+      throw ApiException(response.statusCode, errorMessage(response));
     }
     if (response.body.isEmpty) return {};
     return jsonDecode(response.body) as Map<String, dynamic>;
@@ -288,11 +349,11 @@ class ApiClient {
 
   Future<List<dynamic>> _handleListResponse(http.Response response) async {
     if (response.statusCode == 401) {
-      await clearSession();
+      await _handleUnauthorized();
       throw ApiException(401, 'Unauthorized');
     }
     if (response.statusCode >= 400) {
-      throw ApiException(response.statusCode, response.body);
+      throw ApiException(response.statusCode, errorMessage(response));
     }
     if (response.body.isEmpty) return [];
     final decoded = jsonDecode(response.body);

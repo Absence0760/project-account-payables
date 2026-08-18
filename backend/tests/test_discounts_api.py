@@ -376,6 +376,68 @@ async def test_clerk_cannot_create_offer(realdb):
     assert resp.status_code == 403
 
 
+async def test_cfo_can_decline_an_offer(realdb):
+    """Decline carries the SAME gate as accept.
+
+    The two are halves of one decision, and the CFO owns the early-pay-vs-cash
+    trade-off. Decline used to be gated to ``_WRITE_ROLES`` (admin/ap_manager)
+    while accept allowed the CFO — so a CFO could commit cash early but not
+    refuse the offer, which is backwards, and the ``/discounts`` page (open to
+    admin/ap_manager/cfo) rendered a Decline button the backend then 403'd.
+    Declining moves no money; it only flips status.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    invoice_id = await _add_invoice(mk, org_id)
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        offer_id = (
+            await c.post(
+                "/api/discounts/offers",
+                json={"scope": "invoice", "invoice_id": invoice_id, "tiers": _tiers()},
+            )
+        ).json()["id"]
+
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.post(f"/api/discounts/offers/{offer_id}/decline")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == OFFER_STATUS_DECLINED
+
+    # The refusal is on the record, attributed to the CFO who made it.
+    async with mk() as s:
+        row = (
+            await s.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "discount_offer.declined",
+                    AuditLog.entity_id == uuid.UUID(offer_id),
+                )
+            )
+        ).scalar_one()
+        assert row.entity_type == "discount_offer"
+
+
+async def test_clerk_cannot_decline_an_offer(realdb):
+    """Widening decline to the CFO must not widen it to everyone — a clerk is
+    still refused, exactly as they are on accept."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    invoice_id = await _add_invoice(mk, org_id)
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        offer_id = (
+            await c.post(
+                "/api/discounts/offers",
+                json={"scope": "invoice", "invoice_id": invoice_id, "tiers": _tiers()},
+            )
+        ).json()["id"]
+
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        assert (await c.post(f"/api/discounts/offers/{offer_id}/decline")).status_code == 403
+        assert (
+            await c.post(f"/api/discounts/offers/{offer_id}/accept", json={})
+        ).status_code == 403
+
+
 async def test_offer_not_visible_cross_tenant(realdb):
     mk_a = realdb.sessionmaker("a")
     org_a = realdb.info("a").org_id

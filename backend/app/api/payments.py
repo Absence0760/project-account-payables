@@ -66,10 +66,11 @@ from app.services.payment_runs import (
 )
 from app.services.payment_settlement import (
     SettlementVerification,
-    describe_discrepancy,
-    persistable_settled_amount,
     settlement_coverage,
-    verify_settlement,
+)
+from app.services.payment_settlement_record import (
+    open_settlement_mismatch_exception,
+    record_settlement,
 )
 from app.services.workflow_engine import transition_invoice
 from app.tenant import (
@@ -1641,59 +1642,6 @@ async def _open_compliance_hold_exception(
     )
 
 
-async def _open_settlement_mismatch_exception(
-    db: AsyncSession,
-    *,
-    payment: Payment,
-    invoice: Invoice | None,
-    org: Organization,
-    verification: SettlementVerification,
-) -> None:
-    """Raise a payment-blocking `fraud_flag` for a settlement that didn't
-    reconcile against what AP authorized.
-
-    `fraud_flag` deliberately, not a new taxonomy entry: it is exactly what
-    `api/positive_pay.py` raises for an ALTERED cheque — a payment instrument
-    presented at an amount we never wrote — and this is the electronic
-    equivalent, caught days earlier on rails where no cheque exists. It is
-    also in `PAYMENT_BLOCKING_EXCEPTION_TYPES`, so until a human resolves it
-    the invoice can't be swept into another payment run (which matters the
-    moment this payment is voided and the invoice returns to `approved`).
-
-    Dedupes on `(invoice_id, fraud_flag, open|escalated)` — the same rule
-    Positive Pay's own return processing uses. One open fraud flag on an
-    invoice is the signal; piling on a second adds noise, not information.
-    The description is PII-free (amounts, currency codes and the verdict —
-    the row already carries the invoice FK).
-    """
-    if invoice is None:
-        # A payment whose invoice row is gone still gets the audit row above;
-        # there is no queue entry to attach the flag to.
-        return
-    from app.services.exception_service import create_exception
-
-    already = (
-        await db.execute(
-            select(func.count()).where(
-                APException.invoice_id == invoice.id,
-                APException.exception_type == "fraud_flag",
-                APException.status.in_(["open", "escalated"]),
-            )
-        )
-    ).scalar() or 0
-    if already > 0:
-        return
-
-    await create_exception(
-        db,
-        exception_type="fraud_flag",
-        description=describe_discrepancy(verification),
-        organization_id=org.id,
-        severity="error",
-        invoice=invoice,
-    )
-
-
 async def _capture_discount_offers(
     db: AsyncSession,
     *,
@@ -1801,6 +1749,32 @@ async def _execute_single_payment(
     # Resolve invoice + vendor for the payload
     inv_result = await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
     invoice = inv_result.scalar_one_or_none()
+
+    # What the invoice is worth NOW, immediately before the adapter call.
+    # `payment.amount` was netted against applied credit memos when the row was
+    # booked (`payment_runs.net_payable_amount`), but `credit_memos.py` gates an
+    # application on neither invoice status nor an existing payment — so a
+    # credit recorded between booking and dispatch (a run sitting `draft`
+    # awaiting CFO sign-off, a payment held `pending_compliance`) leaves the
+    # row's amount stale and would overpay the vendor by the credit. That
+    # window is not hypothetical: `docs/dynamic-discounting.md` documents
+    # recording a credit memo as THE way to take an early-pay discount.
+    #
+    # The amount is never silently adjusted here — re-pricing money nobody
+    # re-approved is its own defect — so refuse and let a fresh run re-derive
+    # it through the full gate set. This mirrors `/retry-failed`'s
+    # `net_amount_changed` skip exactly, and is a refusal made BEFORE the
+    # adapter is called, hence retry-safe (`_RETRY_SAFE_FAILURE_PREFIXES`).
+    if invoice is not None:
+        from app.services.payment_runs import net_payable_amount as _net_payable_amount
+
+        current_net = await _net_payable_amount(db, invoice)
+        if current_net != payment.amount:
+            payment.status = "failed"
+            payment.failure_reason = "net_amount_changed"
+            payment.completed_at = now
+            return
+
     vendor_bank: dict | None = None
     if invoice and invoice.vendor_id:
         v_result = await db.execute(
@@ -1848,7 +1822,15 @@ async def _execute_single_payment(
         card_decision = await check_payment_compliance(
             db,
             vendor=v_card,
-            payment_amount=payment.amount,
+            # The home-currency leg when an FX rate was locked, else the
+            # invoice-currency amount tagged with its own currency — the gate
+            # fails closed when that isn't the threshold's currency.
+            payment_amount=payment.source_amount or payment.amount,
+            payment_currency=(
+                payment.source_currency
+                if payment.source_amount is not None
+                else (invoice.currency if invoice is not None else None)
+            ),
             payment_method=payment.method,
             org_settings=org.settings or {},
             organization_id=org.id,
@@ -2106,7 +2088,15 @@ async def _execute_single_payment(
         decision = await check_payment_compliance(
             db,
             vendor=v_full,
-            payment_amount=payment.amount,
+            # See the card leg above: the KYC threshold is a home-currency
+            # figure, so hand the gate the home-currency leg (locked by the FX
+            # step just above) and let it fail closed when it isn't available.
+            payment_amount=payment.source_amount or payment.amount,
+            payment_currency=(
+                payment.source_currency
+                if payment.source_amount is not None
+                else (invoice.currency if invoice is not None else None)
+            ),
             payment_method=payment.method,
             org_settings=org.settings or {},
             organization_id=org.id,
@@ -3075,55 +3065,21 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
                 # any failure at all leaves the settlement exactly where it
                 # was — `unverified` — because a settlement fetch must never
                 # break the webhook that is recording money movement.
-                reported_amount, reported_currency = event.amount, event.currency
-                if reported_amount is None and payment.provider_payment_id:
-                    try:
-                        report = await adapter.fetch_settlement(payment.provider_payment_id)
-                    except Exception as exc:  # noqa: BLE001 - best-effort by contract
-                        logger.warning(
-                            "settlement fetch failed for payment=%s: %s",
-                            payment.id,
-                            exc.__class__.__name__,
-                        )
-                    else:
-                        if report.available and report.amount is not None:
-                            reported_amount = report.amount
-                            reported_currency = report.currency
-
-                settlement = verify_settlement(
-                    reported_amount=reported_amount,
-                    reported_currency=reported_currency,
-                    target_amount=payment.amount,
-                    target_currency=(settled_invoice.currency if settled_invoice else None),
-                    source_amount=payment.source_amount,
-                    source_currency=payment.source_currency,
+                #
+                # `record_settlement` owns the fetch-fallback, the verdict and
+                # the column writes, and the reconciler backstop calls the SAME
+                # function — the two paths a payment can reach `completed` on
+                # must not disagree about what "verified" means (they used to:
+                # the backstop persisted a figure and skipped the verdict
+                # entirely).
+                settlement = await record_settlement(
+                    db,
+                    payment=payment,
+                    adapter=adapter,
+                    invoice=settled_invoice,
+                    reported_amount=event.amount,
+                    reported_currency=event.currency,
                 )
-                # Persist what the rail says it moved, beside what AP
-                # authorized. The audit row below is the immutable evidence;
-                # this is the queryable money state the ERP sync reads to
-                # decide whether the invoice may be marked `paid`
-                # (`payment_settlement.settlement_coverage`).
-                #
-                # A rail that reported nothing leaves the columns NULL rather
-                # than writing a zero: NULL means "no figure on record" and
-                # fails OPEN in the coverage check, while a 0 would read as a
-                # total shortfall and hold every such invoice forever.
-                #
-                # A figure too wide for NUMERIC(15, 2) is recorded as the
-                # `settled_amount_unstorable` flag instead. Assigning it would
-                # raise at the flush and roll back this whole transaction —
-                # including the `fraud_flag` the verdict above already decided
-                # on and the record that the payment completed — after which
-                # the processor retries into the same failure forever. The
-                # figure itself survives verbatim on the audit row below.
-                storable, unstorable = persistable_settled_amount(settlement.settled_amount)
-                if storable is not None:
-                    payment.settled_amount = storable
-                    payment.settled_currency = settlement.settled_currency
-                if unstorable:
-                    payment.settled_amount_unstorable = True
-                    payment.settled_currency = settlement.settled_currency
-
                 # Realized FX gain/loss, at the moment a foreign-currency
                 # invoice actually settles. The liability was accrued at the
                 # rate locked on the invoice when its reporting amount was
@@ -3210,7 +3166,7 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
                     # flags an altered cheque and bank_reconciliation flags a
                     # divergent debit — both record and flag, neither rewrites
                     # the settlement).
-                    await _open_settlement_mismatch_exception(
+                    await open_settlement_mismatch_exception(
                         db,
                         payment=payment,
                         invoice=settled_invoice,

@@ -250,7 +250,14 @@ async def test_exchange_code_posts_matching_redirect_uri(monkeypatch):
 
     monkeypatch.setattr(sso_module.httpx, "AsyncClient", _FakeClient)
 
-    discovery = {"token_endpoint": "https://idp.example/token"}
+    # `issuer` is required now: the token endpoint is pinned to the discovery
+    # document's own host before the POST (SSRF / endpoint-redirection guard),
+    # so a document without an anchor is refused. It has always been present in
+    # a real OIDC discovery document — this fixture just omitted it.
+    discovery = {
+        "issuer": "https://idp.example",
+        "token_endpoint": "https://idp.example/token",
+    }
     await sso_module.exchange_code_for_tokens(
         discovery, "client-id", "client-secret", "auth-code", "acme"
     )

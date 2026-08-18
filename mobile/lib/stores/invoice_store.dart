@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import 'package:feohledger_mobile/api/api_client.dart';
 import 'package:feohledger_mobile/api/endpoints.dart';
 import 'package:feohledger_mobile/models/audit_entry.dart';
 import 'package:feohledger_mobile/models/invoice.dart';
@@ -53,6 +54,22 @@ class InvoiceStore extends ChangeNotifier with SequencedFetch {
   List<Invoice> _invoices = [];
   bool _loading = false;
   String? _error;
+
+  // ----- Approvals queue -----
+  // The Approvals tab's list is fetched SEPARATELY, server-filtered to
+  // `ready_for_review`, and never shares the Invoices tab's filter, list or
+  // request sequence. It used to be a client-side `.where()` over whatever the
+  // Invoices tab last fetched, so tapping a status chip there (e.g. `paid`)
+  // emptied the approvals queue — and because both screens live in one
+  // IndexedStack, switching tabs never re-fetched and pull-to-refresh re-applied
+  // the same wrong filter.
+  static const pendingApprovalStatus = 'ready_for_review';
+  final RequestSequence _pendingSeq = RequestSequence();
+  List<Invoice> _pending = [];
+  bool _pendingLoading = false;
+  String? _pendingError;
+  bool _pendingFromCache = false;
+  bool _pendingLoaded = false;
   String? _statusFilter;
   String? _searchQuery;
   InvoiceSearchFilters _filters = InvoiceSearchFilters.empty;
@@ -77,8 +94,12 @@ class InvoiceStore extends ChangeNotifier with SequencedFetch {
   int get selectedCount => _selectedIds.length;
   bool isSelected(String id) => _selectedIds.contains(id);
 
-  List<Invoice> get pendingApproval =>
-      _invoices.where((i) => i.status == InvoiceStatus.readyForReview).toList();
+  /// Invoices awaiting approval, as returned by the server for
+  /// `status=ready_for_review` — NOT a slice of [invoices].
+  List<Invoice> get pending => _pending;
+  bool get pendingLoading => _pendingLoading;
+  String? get pendingError => _pendingError;
+  bool get pendingFromCache => _pendingFromCache;
 
   /// Drop all in-memory state. Called on logout / forced logout through
   /// `SessionManager.endSession` — these are process-lifetime singletons, so
@@ -88,6 +109,12 @@ class InvoiceStore extends ChangeNotifier with SequencedFetch {
     _invoices = [];
     _loading = false;
     _error = null;
+    _pending = [];
+    _pendingLoading = false;
+    _pendingError = null;
+    _pendingFromCache = false;
+    _pendingLoaded = false;
+    _pendingSeq.reset();
     _statusFilter = null;
     _searchQuery = null;
     _filters = InvoiceSearchFilters.empty;
@@ -213,10 +240,76 @@ class InvoiceStore extends ChangeNotifier with SequencedFetch {
     }
   }
 
+  /// Load the approvals queue — `GET /api/invoices?status=ready_for_review`.
+  ///
+  /// A dedicated request with its own [RequestSequence] and its own cache key:
+  /// it must not disturb (or be disturbed by) the Invoices tab's [fetch], and
+  /// it must not read `_statusFilter`, which belongs to that tab's chips.
+  Future<void> fetchPending() async {
+    final token = _pendingSeq.next();
+    _pendingLoading = true;
+    _pendingError = null;
+    notifyListeners();
+
+    const cacheKey = 'invoices_pending_approval';
+    try {
+      final result = await InvoiceApi.list(status: pendingApprovalStatus);
+      if (!_pendingSeq.isCurrent(token)) return; // superseded — discard
+      _pending = result;
+      _pendingFromCache = false;
+      _pendingLoading = false;
+      _pendingLoaded = true;
+
+      await OfflineStore.instance.put(
+        cacheKey,
+        _pending.map(_invoiceToJson).toList(),
+      );
+
+      notifyListeners();
+    } catch (e) {
+      if (!_pendingSeq.isCurrent(token)) return;
+      // Same offline posture as [fetch]: a cached queue beats an error screen.
+      try {
+        final cached = await OfflineStore.instance.get(cacheKey);
+        if (cached != null) {
+          if (!_pendingSeq.isCurrent(token)) return;
+          _pending = (cached as List)
+              .map((j) => Invoice.fromJson(j as Map<String, dynamic>))
+              .toList();
+          _pendingFromCache = true;
+          _pendingLoading = false;
+          _pendingLoaded = true;
+          notifyListeners();
+          return;
+        }
+      } catch (_) {}
+      if (!_pendingSeq.isCurrent(token)) return;
+      _pendingFromCache = false;
+      _pendingLoading = false;
+      // Surfaced as an error state, never as an empty "all caught up" queue —
+      // an approvals list that silently reads empty on a failed request is
+      // indistinguishable from having nothing to approve.
+      _pendingError = describeApiError(e);
+      notifyListeners();
+    }
+  }
+
+  /// Refresh every list this store currently serves after a mutation.
+  ///
+  /// The Invoices tab and the Approvals tab are separate fetches, so refreshing
+  /// only the former would leave the approvals queue holding a row that is no
+  /// longer pending. The approvals fetch is skipped until that list has been
+  /// loaded at least once, so the Invoices tab doesn't issue a second request
+  /// for a screen the user has never opened.
+  Future<void> _refreshAfterMutation() async {
+    await fetch();
+    if (_pendingLoaded) await fetchPending();
+  }
+
   Future<bool> approve(String id) async {
     try {
       await InvoiceApi.approve(id);
-      await fetch();
+      await _refreshAfterMutation();
       return true;
     } catch (e) {
       _error = e.toString();
@@ -228,7 +321,7 @@ class InvoiceStore extends ChangeNotifier with SequencedFetch {
   Future<bool> reject(String id, String reason) async {
     try {
       await InvoiceApi.reject(id, reason);
-      await fetch();
+      await _refreshAfterMutation();
       return true;
     } catch (e) {
       _error = e.toString();
@@ -245,7 +338,7 @@ class InvoiceStore extends ChangeNotifier with SequencedFetch {
   Future<Invoice?> update(String id, Map<String, dynamic> changes) async {
     try {
       final updated = await InvoiceApi.update(id, changes);
-      await fetch();
+      await _refreshAfterMutation();
       return updated;
     } catch (e) {
       _error = e.toString();
@@ -271,7 +364,7 @@ class InvoiceStore extends ChangeNotifier with SequencedFetch {
     try {
       final result = await InvoiceApi.bulkDelete(ids);
       exitSelectionMode();
-      await fetch();
+      await _refreshAfterMutation();
       return result;
     } catch (e) {
       _error = e.toString();
@@ -289,7 +382,7 @@ class InvoiceStore extends ChangeNotifier with SequencedFetch {
     try {
       final result = await InvoiceApi.bulkStatus(ids, status);
       exitSelectionMode();
-      await fetch();
+      await _refreshAfterMutation();
       return result;
     } catch (e) {
       _error = e.toString();

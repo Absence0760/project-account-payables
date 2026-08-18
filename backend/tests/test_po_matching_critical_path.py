@@ -533,3 +533,115 @@ async def test_realdb_duplicate_po_number_no_vendor_does_not_crash(realdb):
     # A deterministic single PO is chosen; matching still returns a verdict.
     assert match.po_number == "PO-DUPNUM"
     assert match.status in ("matched", "mismatch")
+
+
+# ---------------------------------------------------------------------------
+# Entity scoping — a PO belongs to exactly ONE subsidiary
+# ---------------------------------------------------------------------------
+
+
+async def _make_entity(session, org_id, slug):
+    from app.models.entity import Entity
+
+    eid = uuid.uuid4()
+    session.add(
+        Entity(
+            id=eid,
+            organization_id=org_id,
+            name=slug.title(),
+            slug=slug,
+            is_default=False,
+            is_active=True,
+        )
+    )
+    await session.flush()
+    return eid
+
+
+@pytest.mark.asyncio
+async def test_realdb_po_lookup_is_entity_scoped(realdb):
+    """Two subsidiaries each number a PO `PO-1001` and share a supplier. The
+    lookup picks `created_at DESC LIMIT 1`, so entity A's invoice used to match
+    entity B's NEWER PO and read `matched` — the amount control silently passed
+    against a different subsidiary's order."""
+    from app.models.vendor import Vendor
+
+    org_id = realdb.info("a").org_id
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        ent_a = await _default_entity_id(s)
+        ent_b = await _make_entity(s, org_id, f"sub-b-{uuid.uuid4().hex[:6]}")
+        vendor_id = uuid.uuid4()
+        s.add(Vendor(id=vendor_id, organization_id=org_id, name="Shared Supplier"))
+        await s.flush()
+
+        # A's PO first, B's second — B's is the newer row the LIMIT 1 would take.
+        await _add_po(s, org_id, ent_a, po_number="PO-1001", total="1000.00", vendor_id=vendor_id)
+        await _add_po(s, org_id, ent_b, po_number="PO-1001", total="9999.00", vendor_id=vendor_id)
+        inv_a = await _add_invoice(
+            s, org_id, ent_a, po_number="PO-1001", amount="1000.00", vendor_id=vendor_id
+        )
+        await s.commit()
+
+        match = await match_invoice_to_po(s, inv_a)
+
+    assert match.status == "matched", match.issues
+    assert match.po_total == Decimal("1000.00")
+
+
+@pytest.mark.asyncio
+async def test_realdb_po_in_another_entity_is_not_found(realdb):
+    """A PO booked under a sibling subsidiary must be invisible, not a match —
+    `no_po` is the honest answer a clerk can act on."""
+    org_id = realdb.info("a").org_id
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        ent_a = await _default_entity_id(s)
+        ent_b = await _make_entity(s, org_id, f"sub-c-{uuid.uuid4().hex[:6]}")
+        await _add_po(s, org_id, ent_b, po_number="PO-OTHER-ENTITY", total="500.00")
+        inv_a = await _add_invoice(s, org_id, ent_a, po_number="PO-OTHER-ENTITY", amount="500.00")
+        await s.commit()
+
+        match = await match_invoice_to_po(s, inv_a)
+
+    assert match.status == "no_po"
+    assert match.po_id is None
+
+
+@pytest.mark.asyncio
+async def test_realdb_goods_receipt_lookup_is_entity_scoped(realdb):
+    """A receipt booked under another subsidiary must not satisfy this
+    invoice's 3-way leg."""
+    org_id = realdb.info("a").org_id
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        ent_a = await _default_entity_id(s)
+        ent_b = await _make_entity(s, org_id, f"sub-d-{uuid.uuid4().hex[:6]}")
+        po = await _add_po(s, org_id, ent_a, po_number="PO-GR-SCOPE", total="1000.00", lines=["10"])
+        # Receipt booked under the WRONG entity — it must be ignored entirely.
+        await _add_gr(s, org_id, ent_b, po.id, received=["10"])
+        inv = await _add_invoice(s, org_id, ent_a, po_number="PO-GR-SCOPE", amount="1000.00")
+        await s.commit()
+
+        match = await match_invoice_to_po(s, inv)
+
+    assert match.match_type == "2-way", "a sibling entity's GR must not open the 3-way leg"
+    assert match.gr_id is None
+
+
+@pytest.mark.asyncio
+async def test_realdb_entityless_invoice_still_matches(realdb):
+    """A NULL `entity_id` invoice (pre-multi-entity / unstamped) stays unscoped,
+    so single-entity tenants and legacy rows are unchanged."""
+    org_id = realdb.info("a").org_id
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        ent = await _default_entity_id(s)
+        await _add_po(s, org_id, ent, po_number="PO-LEGACY", total="750.00")
+        inv = await _add_invoice(s, org_id, None, po_number="PO-LEGACY", amount="750.00")
+        await s.commit()
+
+        match = await match_invoice_to_po(s, inv)
+
+    assert match.status == "matched"
+    assert match.po_total == Decimal("750.00")

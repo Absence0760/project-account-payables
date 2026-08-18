@@ -48,9 +48,22 @@ For each tenant, invoices in a **terminal** state (`done` / `paid`) whose
 `created_at` is older than the `invoices_months` window get an `archived_at`
 marker stamped into their `meta` JSONB bag. No row is destroyed; the marker is
 the privileged, fully-reversible archival action — and **no schema change** is
-needed. The sweep is idempotent: an already-marked invoice is skipped, so a
-re-run never double-archives. In-flight (non-terminal) invoices are never
-archived regardless of age.
+needed. In-flight (non-terminal) invoices are never archived regardless of age.
+
+**The candidate query is bounded on both axes**, and both bounds are
+load-bearing:
+
+- **Already-archived rows are excluded in SQL**
+  (`invoices.meta->>'archived_at' IS NULL`), not skipped in Python. The
+  idempotency check used to be a `continue` inside the loop, so every tick
+  re-loaded the tenant's entire archive — a set that only ever grows. The
+  Python check remains as a backstop; the SQL exclusion is what makes the sweep
+  cost proportional to the work actually left.
+- **The batch is capped** at `FEOH_RETENTION_BATCH_SIZE` (default 500) per
+  tenant per tick, oldest first. Because archived rows leave the candidate set,
+  a capped tick makes strict forward progress and the next tick resumes where it
+  stopped — no starvation. Same shape as
+  `FEOH_RECURRING_INVOICES_MAX_PER_SWEEP` and the audit shipper's batch size.
 
 ### Audit records (WORM) — verify, never delete
 
@@ -70,9 +83,18 @@ and recording a manifest:
 
 When a sweep archives anything or observes overdue audit rows, it writes a
 `retention.archived` audit row (system actor, PII-free `details`): the resolved
-window months per class, the count + ids of archived invoices, and the audit
-overdue/unshipped counts, plus a note that audit rows are immutable and never
-deleted. An idle tenant writes no manifest (no no-op spam).
+window months per class, the **count** of archived invoices, the batch size and
+whether the batch was capped (`invoices_archive_batch_size` /
+`invoices_archive_batch_capped` — a capped tick means more remain), and the
+audit overdue/unshipped counts, plus a note that audit rows are immutable and
+never deleted. An idle tenant writes no manifest (no no-op spam).
+
+**Counts, never the ids.** The manifest used to inline every archived invoice
+id, so one JSONB row grew with the archive; past ~1 MB that single row
+head-of-lines the audit shipper's 500-row batch (CloudWatch `PutLogEvents` caps
+a batch at 1 MB), and nothing newer ships. The per-invoice evidence is the
+`meta.archived_at` marker on the invoice row itself, which is durable,
+queryable, and cannot grow without bound.
 
 ## Environment variables
 
@@ -81,6 +103,7 @@ deleted. An idle tenant writes no manifest (no no-op spam).
 | `FEOH_RETENTION_ENABLED` | `false` | Master switch for the enforcement sweep. Keep `false` in local dev; flip on in deployed envs. |
 | `FEOH_RETENTION_INTERVAL_SECONDS` | `86400` | Sweep interval. |
 | `FEOH_RETENTION_DEFAULT_MONTHS` | `84` | Platform-default window (months) when an org sets no per-class override. |
+| `FEOH_RETENTION_BATCH_SIZE` | `500` | Max invoices soft-archived per tenant per tick, oldest first. A page, not a cap on total work: archived rows leave the candidate set, so the next tick resumes. |
 
 ## Why no migration
 
@@ -94,6 +117,8 @@ change**. A future slice that wants a first-class `Invoice.archived_at` column
 
 `backend/tests/test_retention.py`: resolver (override → default, malformed →
 default); per-tenant failure isolation; sweep archives only overdue terminal
-invoices; idempotent (no double-archive); writes the manifest; **never deletes
-audit rows** (composes with the immutability trigger); policy GET/PUT + audit
-row; `422` on unknown class / non-positive window; RBAC (admin-only, 401/403).
+invoices; idempotent (no double-archive); already-archived rows excluded in SQL
+(a batch of 1 still reaches the *second* invoice on the next tick); the batch
+cap; the manifest carries counts and **no** id list; **never deletes audit
+rows** (composes with the immutability trigger); policy GET/PUT + audit row;
+`422` on unknown class / non-positive window; RBAC (admin-only, 401/403).

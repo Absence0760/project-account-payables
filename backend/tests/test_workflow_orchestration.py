@@ -114,7 +114,16 @@ async def test_create_workflow_instance_snapshots_the_live_definition_at_creatio
 async def test_create_workflow_instance_uses_default_config_when_definition_is_default():
     """Fresh tenant — `get_or_create_workflow_definition` returns a
     new definition seeded from `DEFAULT_STEPS_CONFIG`. The snapshot
-    matches that shape (all steps disabled, opt-in)."""
+    matches that shape.
+
+    Approval is ENABLED there and the other two are not. That fallback is what
+    a tenant with no active definition gets, and with approval disabled
+    `complete_invoice` falls through every branch to the default `→ done`
+    transition — the invoice reaches a terminal, immutable state with no
+    approval, no approval signature, no `invoice.approved` audit row, no
+    segregation check and no CFO gate. A fallback must fail CLOSED on the
+    control; extraction and ERP export are conveniences and stay off so a
+    fresh tenant never calls an adapter it did not configure."""
     defn = SimpleNamespace(id=uuid.uuid4(), steps_config=DEFAULT_STEPS_CONFIG)
     db = AsyncMock()
     db.add = MagicMock()
@@ -126,9 +135,11 @@ async def test_create_workflow_instance_uses_default_config_when_definition_is_d
     ):
         instance = await create_workflow_instance(db, _invoice())
 
-    # All three steps disabled by default.
-    for step in instance.steps_config_snapshot["steps"]:
-        assert step["enabled"] is False
+    by_type = {s["type"]: s for s in instance.steps_config_snapshot["steps"]}
+    assert by_type["approval"]["enabled"] is True
+    assert by_type["approval"]["config"]["required"] is True
+    assert by_type["extraction"]["enabled"] is False
+    assert by_type["erp_export"]["enabled"] is False
 
 
 # ---------------------------------------------------------------------------

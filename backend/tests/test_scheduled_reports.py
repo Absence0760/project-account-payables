@@ -179,7 +179,11 @@ async def test_execute_schedule_generator_error_persisted_not_raised():
         outcome = await execute_schedule(db, sched, now=datetime.now(UTC))
 
     assert outcome["status"] == "failure"
-    assert "unknown report_type" in (outcome["error"] or "")
+    # Class name only — never `str(exc)`. A DB-level error message echoes the
+    # offending row's values, and `last_run_error` is surfaced to every AP
+    # user (the email branch already stored only the class).
+    assert outcome["error"] == "report generation failed: ValueError"
+    assert "unknown report_type" not in (outcome["error"] or "")
 
 
 @pytest.mark.asyncio
@@ -455,3 +459,51 @@ async def test_run_once_aggregates_and_isolates_tenant_failures():
     assert result.tenants_scanned == 2
     assert result.schedules_run == 2
     assert result.failures == 1  # feoh_b's exception counted, feoh_a still ran
+
+
+@pytest.mark.asyncio
+async def test_sweep_commits_each_schedule_independently():
+    """One schedule blowing up must not roll back the schedules that already
+    generated AND EMAILED successfully.
+
+    The sweep used to share ONE transaction across a tenant's whole batch and
+    commit once at the end — after every email had already gone out. A
+    DB-level error in schedule N (a statement timeout, a tenant behind on a
+    migration) aborted the transaction, so `_mark_failure`'s own write raised
+    `PendingRollbackError` and unwound the loop: schedule 1's `next_run_at`
+    never moved, so it re-emailed its report on every tick forever, while
+    schedule N's retry counter never persisted so the 5-strike auto-disable
+    could not fire.
+    """
+    import app.services.scheduled_reports as sr
+
+    good = _schedule()
+    bad = _schedule()
+
+    db = AsyncMock()
+    db.commit = AsyncMock()
+    db.rollback = AsyncMock()
+    factory = MagicMock()
+    factory.return_value.__aenter__ = AsyncMock(return_value=db)
+    factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    async def _execute(_db, schedule, *, now):
+        if schedule is bad:
+            raise RuntimeError("transaction is aborted")
+        return {"status": "success", "error": None, "next_run_at": now}
+
+    # `_sweep_tenant` imports these lazily from sqlalchemy, so patch them there.
+    with (
+        patch("sqlalchemy.ext.asyncio.create_async_engine") as mk_engine,
+        patch("sqlalchemy.ext.asyncio.async_sessionmaker", return_value=factory),
+        patch.object(sr, "list_due_schedules", AsyncMock(return_value=[good, bad])),
+        patch.object(sr, "execute_schedule", _execute),
+    ):
+        mk_engine.return_value.dispose = AsyncMock()
+        run, failed = await sr._sweep_tenant("feoh_a", now=datetime.now(UTC))
+
+    assert (run, failed) == (2, 1)
+    # The good schedule's bookkeeping was committed before the bad one ran...
+    assert db.commit.await_count == 1
+    # ...and the bad one rolled back only its own work.
+    assert db.rollback.await_count == 1

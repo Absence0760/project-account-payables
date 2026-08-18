@@ -17,6 +17,7 @@ discovery document. Tenant-scoped config lives on Organization.settings.sso:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import hashlib
@@ -26,7 +27,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import httpx
 from joserfc import jwt
@@ -35,6 +36,7 @@ from joserfc.jwk import KeySet
 
 from app.config import settings
 from app.redis import get_redis
+from app.utils.url_safety import UnsafeUrlError, assert_public_url
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +110,90 @@ def is_sso_only(org_settings: dict | None) -> bool:
     return bool(sso.get("enabled") and sso.get("sso_only"))
 
 
+def _assert_sso_url_shape(url: str, *, what: str) -> None:
+    """Cheap, DNS-free sanity check on an SSO URL.
+
+    Runs on the *resolve* path, which the PUBLIC `GET /api/auth/sso/config`
+    endpoint reaches on every request — so it deliberately does no name
+    resolution. `_assert_sso_url_public` below is the real SSRF guard and runs
+    at each fetch site (off-thread), which is where a request actually leaves
+    the process.
+    """
+    parsed = urlparse(url or "")
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise SSOConfigError(f"SSO {what} must be an http(s) URL.")
+
+
+async def _assert_sso_url_public(url: str, *, what: str, error: type[ValueError]) -> None:
+    """SSRF guard for a URL this process is about to fetch server-side.
+
+    The discovery URL is admin-supplied, and the token / JWKS endpoints come
+    from whatever that URL served — so all three are attacker-influenced input
+    to a server-side request, reachable unauthenticated through
+    `GET /api/auth/sso/authorize?slug=<tenant>` after a public self-signup.
+    Without this, pointing `discovery_url` at `http://169.254.169.254/...` makes
+    the backend fetch cloud instance credentials on demand. Same
+    `assert_public_url` every other admin-supplied URL this app fetches goes
+    through (branding logo, chat webhooks, ERP / enrichment base URLs).
+
+    Resolution is a blocking `getaddrinfo`, so it runs off the event loop.
+
+    **Non-deployed environments log instead of refusing.** The documented
+    local IdP is Keycloak on `http://localhost:8088` (`pnpm idp:up` +
+    `pnpm idp:seed`), and a loopback address is exactly what the guard exists
+    to reject — enforcing it everywhere would make local-first SSO impossible
+    (root `CLAUDE.md` guard rail 7). `settings.is_deployed` is the same
+    discriminator the extraction-provider fallback uses; the *shape* check
+    above is unconditional either way, so a `file://` URL is refused in dev too.
+    """
+    try:
+        await asyncio.to_thread(assert_public_url, url)
+    except UnsafeUrlError as exc:
+        if settings.is_deployed:
+            # PII-free: names the field, never the URL (it can carry a tenant
+            # identifier) and never the resolved address.
+            logger.warning("SSO %s is not publicly routable; refusing to fetch it", what)
+            raise error(f"SSO {what} must be a publicly routable http(s) URL.") from exc
+        logger.warning(
+            "SSO %s resolves to a non-public address; allowed because this is not a "
+            "deployed environment (local IdP)",
+            what,
+        )
+
+
+def _pinned_endpoint(discovery_doc: dict, key: str) -> str:
+    """Return `discovery_doc[key]`, pinned to the document's own issuer host.
+
+    The discovery document is fetched from the tenant's configured
+    `discovery_url`, but every endpoint inside it is then used verbatim — so a
+    compromised or mis-served document could point the token POST (which
+    carries the client secret and the auth code) or the JWKS fetch (which
+    supplies the key the ID token is verified against) at an arbitrary host.
+    OIDC Discovery requires the document to be served under its own `issuer`,
+    so the issuer's netloc is the host-of-record; this mirrors the check
+    `api/auth_sso.py` already applies to `authorization_endpoint`.
+    """
+    raw = discovery_doc.get(key)
+    issuer = discovery_doc.get("issuer")
+    if not isinstance(raw, str) or not raw or not isinstance(issuer, str) or not issuer:
+        raise SSOValidationError("Identity provider configuration is incomplete.")
+    issuer_netloc = urlparse(issuer).netloc
+    parsed = urlparse(raw)
+    if (
+        not issuer_netloc
+        or parsed.scheme not in ("http", "https")
+        or parsed.netloc != issuer_netloc
+    ):
+        logger.warning(
+            "SSO discovery: %s host %r does not match issuer host %r",
+            key,
+            parsed.netloc,
+            issuer_netloc,
+        )
+        raise SSOValidationError("Identity provider configuration is inconsistent.")
+    return raw
+
+
 def resolve_sso_config(org_settings: dict | None) -> ResolvedSSOConfig | None:
     """Pull + validate the OIDC SSO block from Organization.settings. Returns
     None if OIDC SSO isn't configured for this tenant (incl. when the tenant is
@@ -127,6 +213,7 @@ def resolve_sso_config(org_settings: dict | None) -> ResolvedSSOConfig | None:
         raise SSOConfigError(
             "SSO is enabled but discovery_url/client_id/client_secret are missing."
         )
+    _assert_sso_url_shape(discovery, what="discovery_url")
     return ResolvedSSOConfig(
         provider=sso.get("provider") or "oidc",
         discovery_url=discovery,
@@ -250,7 +337,14 @@ def resolve_saml_config(org_settings: dict | None, tenant_slug: str) -> Resolved
 
 
 async def fetch_discovery(discovery_url: str) -> dict[str, Any]:
-    """Return the OIDC provider's discovery document, cached in Redis."""
+    """Return the OIDC provider's discovery document, cached in Redis.
+
+    The URL is admin-supplied, so it goes through the SSRF guard before any
+    request — and *before* the cache read too, so a value that was poisoned
+    into the cache under an older build can't be served back.
+    """
+    _assert_sso_url_shape(discovery_url, what="discovery_url")
+    await _assert_sso_url_public(discovery_url, what="discovery_url", error=SSOConfigError)
     r = await get_redis()
     key = f"{DISCOVERY_CACHE_PREFIX}{hashlib.sha256(discovery_url.encode()).hexdigest()}"
     cached = await r.get(key)
@@ -267,6 +361,14 @@ async def fetch_discovery(discovery_url: str) -> dict[str, Any]:
 
 
 async def fetch_jwks(jwks_uri: str) -> dict[str, Any]:
+    """Return the IdP's JWKS, cached in Redis.
+
+    `jwks_uri` comes from the discovery document (already pinned to its issuer
+    host by `_pinned_endpoint`); the SSRF guard here is the second, independent
+    rung — this function is also a direct-call surface.
+    """
+    _assert_sso_url_shape(jwks_uri, what="jwks_uri")
+    await _assert_sso_url_public(jwks_uri, what="jwks_uri", error=SSOValidationError)
     r = await get_redis()
     key = f"{JWKS_CACHE_PREFIX}{hashlib.sha256(jwks_uri.encode()).hexdigest()}"
     cached = await r.get(key)
@@ -413,10 +515,16 @@ async def exchange_code_for_tokens(
 
     The redirect_uri here MUST exactly match the one sent during authorize —
     OIDC token exchange validates it as a defence against code-injection attacks.
+
+    The endpoint itself is pinned to the discovery document's own issuer host and
+    SSRF-guarded before the POST — this request carries the client secret and the
+    authorization code, so a redirected token endpoint hands both to an attacker.
     """
+    token_endpoint = _pinned_endpoint(discovery_doc, "token_endpoint")
+    await _assert_sso_url_public(token_endpoint, what="token_endpoint", error=SSOValidationError)
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.post(
-            discovery_doc["token_endpoint"],
+            token_endpoint,
             data={
                 "grant_type": "authorization_code",
                 "code": code,
@@ -436,7 +544,7 @@ async def validate_id_token(
     id_token: str, discovery_doc: dict, client_id: str, expected_nonce: str
 ) -> dict[str, Any]:
     """Verify the ID token signature + standard claims. Returns decoded claims."""
-    jwks = await fetch_jwks(discovery_doc["jwks_uri"])
+    jwks = await fetch_jwks(_pinned_endpoint(discovery_doc, "jwks_uri"))
     try:
         key_set = KeySet.import_key_set(jwks)
         # decode() verifies the signature against the JWKS, restricted to the

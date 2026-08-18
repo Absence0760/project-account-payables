@@ -115,7 +115,7 @@ async def lifespan(app: FastAPI):
                 "signed webhook deliveries at loopback/private/metadata addresses"
             )
         if settings.audit_shipping_enabled:
-            from app.services.audit_log_shipper import _parse_providers
+            from app.services.audit_log_shipper import _build_adapters, _parse_providers
             from app.services.audit_shipping.dispatcher import list_available_providers
 
             configured = _parse_providers(settings.audit_shipping_providers)
@@ -127,6 +127,27 @@ async def lifespan(app: FastAPI):
                     "would otherwise silently fall back to the no-op mock adapter and mark "
                     "rows shipped while nothing reaches the real sink."
                 )
+            # Probe every configured sink before serving. `test_connection()` is
+            # where the real WORM checks live — `s3_objectlock` verifies the
+            # bucket actually HAS Object Lock enabled (it can only be turned on
+            # at bucket-creation time, so a missing config is unfixable at
+            # runtime). Nothing called it, so a bucket without Object Lock
+            # accepted every `put_object`, the shipper stamped `shipped_at`, and
+            # `retention_sweep` then reported `audit_rows_overdue_unshipped: 0`
+            # — SOC 2 evidence reading green with no WORM guarantee behind it.
+            # Refusing to boot mirrors the unknown-provider guard above: a sink
+            # that cannot hold the evidence is a deploy error, not a warning.
+            for adapter in _build_adapters():
+                if not await adapter.test_connection():
+                    raise RuntimeError(
+                        f"Audit-shipping sink '{adapter.provider_name}' failed its startup "
+                        "test_connection() — refusing to start. Shipping to an unverified "
+                        "sink marks audit rows shipped while the WORM/tamper-evidence "
+                        "guarantee they are shipped FOR does not exist. Check "
+                        "FEOH_AUDIT_SHIPPING_* config (for s3_objectlock: the bucket must "
+                        "exist and have Object Lock enabled — it cannot be enabled after "
+                        "bucket creation)."
+                    )
 
     # Background reaper for invoices stuck in `pending` extraction. Started
     # on app boot, cancelled cleanly on shutdown. Toggleable via

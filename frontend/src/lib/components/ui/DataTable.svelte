@@ -56,7 +56,11 @@
 		</thead>
 		<tbody>
 			{#if isEmpty}
-				<tr><td class="empty" colspan={emptySpan}>{empty}</td></tr>
+				<!-- `data-testid` is a real API, not scaffolding: it is the one
+				     deterministic handle a test has on "the table is asserting
+				     something about an empty result set" (loading / errored /
+				     genuinely empty are distinguished by the message text). -->
+				<tr><td class="empty" colspan={emptySpan} data-testid="table-empty">{empty}</td></tr>
 			{:else}
 				{@render body()}
 			{/if}

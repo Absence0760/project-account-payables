@@ -1,6 +1,11 @@
 import { PUBLIC_API_URL } from '$env/static/public';
 import { getTenantSlug } from '$lib/tenant';
 import { getSelectedEntityId } from '$lib/entity';
+import { formatApiDetail } from '$lib/utils/apiError';
+
+// Re-exported so callers that already import from `$lib/api` (e.g. the
+// hand-rolled fetch in `api/expenses.ts`) don't need a second import path.
+export { formatApiDetail };
 
 const BASE = PUBLIC_API_URL.replace(/\/+$/, '');
 
@@ -69,12 +74,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 			window.location.href = '/login';
 		}
 		const body = await res.json().catch(() => ({}));
-		throw new ApiError(body.detail || 'Unauthorized', res.status);
+		throw new ApiError(formatApiDetail(body.detail, 'Unauthorized'), res.status);
 	}
 
 	if (!res.ok) {
 		const body = await res.json().catch(() => ({}));
-		throw new ApiError(body.detail || `API error ${res.status}`, res.status);
+		throw new ApiError(formatApiDetail(body.detail, `API error ${res.status}`), res.status);
 	}
 
 	if (res.status === 204) return undefined as T;

@@ -205,7 +205,14 @@ export interface ExpenseReportSummary {
 // Payload shapes for create / update (request side). Money goes out as a
 // number — the backend coerces to Decimal. Optional fields default server-side.
 export interface ExpenseCreate {
-	expense_date: string | null;
+	/**
+	 * Required, `YYYY-MM-DD`. The column is NOT NULL and both `ExpenseCreate`
+	 * and `ExpenseUpdate` type it as a bare `date` server-side — a null here is
+	 * a 422 on create and (before the schema was tightened) a 500 on PATCH.
+	 * `updateExpense` takes `Partial<ExpenseCreate>`, so a PATCH may still omit
+	 * the field entirely; it may never send it empty.
+	 */
+	expense_date: string;
 	merchant: string | null;
 	category: string | null;
 	description: string | null;

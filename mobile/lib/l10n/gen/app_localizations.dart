@@ -821,6 +821,12 @@ abstract class AppLocalizations {
   /// **'No invoices waiting for approval'**
   String get approvalsNoneWaiting;
 
+  /// No description provided for @approvalsLoadError.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not load pending approvals'**
+  String get approvalsLoadError;
+
   /// No description provided for @approvalsPendingCount.
   ///
   /// In en, this message translates to:

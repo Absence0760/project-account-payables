@@ -138,6 +138,16 @@ def _queue_db(
         inv_res = MagicMock()
         inv_res.scalar_one_or_none = MagicMock(return_value=inv)
         per_pay_results.append(inv_res)
+        if inv is not None:
+            # `_execute_single_payment` re-derives the invoice's net payable
+            # (invoice amount − applied credit memos) immediately before the
+            # adapter call, so a credit recorded after the run was built can't
+            # pay the stale figure. Model that SUM here: no credits applied.
+            # Only fires when the invoice resolved — mirrors the guard in
+            # `_execute_single_payment`.
+            credit_res = MagicMock()
+            credit_res.scalar_one = MagicMock(return_value=Decimal("0"))
+            per_pay_results.append(credit_res)
 
         bank_res = MagicMock()
         bank_res.scalar_one_or_none = MagicMock(return_value=None)

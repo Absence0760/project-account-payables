@@ -59,9 +59,20 @@ export function runReport(spec: ReportSpec, opts: RunOptions = {}): Promise<Repo
 	return api.post<ReportResult>('/api/reports/run', { ...spec, ...opts });
 }
 
-/** Run a saved definition's spec. Read by all roles. */
+/** Run a saved definition's spec. Read by all roles.
+ *
+ *  `page` / `page_size` go in the QUERY STRING, not the body: `POST
+ *  /api/reports/{id}/run` declares both as `Query(...)` (the spec comes from the
+ *  stored row, so there is no body schema to carry them). Sent as a body they
+ *  were dropped on the floor and every saved-report run came back as page 1 —
+ *  the ad-hoc sibling reads them from the body, hence the asymmetry. Matches how
+ *  `downloadReportExport` already builds its query. */
 export function runSavedReport(id: string, opts: RunOptions = {}): Promise<ReportResult> {
-	return api.post<ReportResult>(`/api/reports/${id}/run`, opts);
+	const qs = new URLSearchParams();
+	if (opts.page != null) qs.set('page', String(opts.page));
+	if (opts.page_size != null) qs.set('page_size', String(opts.page_size));
+	const query = qs.toString();
+	return api.post<ReportResult>(`/api/reports/${id}/run${query ? `?${query}` : ''}`, {});
 }
 
 /** Download a saved report as a branded CSV / PDF file (all roles). Returns a

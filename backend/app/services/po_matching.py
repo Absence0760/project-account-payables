@@ -14,6 +14,7 @@ from sqlalchemy.orm import selectinload
 from app.models.invoice import Invoice
 from app.models.procurement import GoodsReceipt, PurchaseOrder
 from app.models.quality_inspection import QualityInspection
+from app.tenant import apply_entity_scope
 
 
 def _to_decimal(value, default: Decimal = Decimal("0")) -> Decimal:
@@ -97,6 +98,17 @@ async def match_invoice_to_po(
     3. If GR exists for the PO, verify quantities (3-way match)
     4. If a quality inspection exists, fold its verdict in (4-way match)
 
+    The PO / GR lookups are confined to the invoice's own subsidiary
+    (``invoice.entity_id``) — derived here rather than threaded through each call
+    site, the same way ``vendor_matching.match_and_link_vendor`` does it. Two
+    subsidiaries that each number their POs from ``PO-1001`` and share a supplier
+    would otherwise cross-match: the ``created_at DESC LIMIT 1`` pick could return
+    the OTHER entity's newer ``PO-1001`` and read ``matched``, silently passing the
+    amount control against a different subsidiary's order. Scoping is STRICT (no
+    ``include_shared``) — unlike a vendor or a GL account, a purchase order belongs
+    to exactly one entity; an invoice with a NULL ``entity_id`` (unstamped /
+    pre-multi-entity) is unscoped, so single-entity tenants are unchanged.
+
     Args:
         tolerance_pct: Allowed variance percentage (default 5%)
         require_inspection: When True, a PO match with no inspection record is
@@ -112,7 +124,8 @@ async def match_invoice_to_po(
         result.status = "no_po"
         return result
 
-    # Find PO by number
+    # Find PO by number, confined to the invoice's own entity (see docstring).
+    entity_id = getattr(invoice, "entity_id", None)
     po_query = (
         select(PurchaseOrder)
         .where(
@@ -120,6 +133,7 @@ async def match_invoice_to_po(
         )
         .options(selectinload(PurchaseOrder.line_items))
     )
+    po_query = apply_entity_scope(po_query, PurchaseOrder, entity_id)
 
     # If invoice has a vendor_id, also match on vendor
     if invoice.vendor_id:
@@ -181,18 +195,16 @@ async def match_invoice_to_po(
     # crashed the matcher. The received-quantity comparison sums across every GR
     # (so a PO fully filled by two shipments is `matched`, not falsely `partial`);
     # the newest GR is the representative row for `gr_id` + the inspection leg.
-    grs = (
-        (
-            await db.execute(
-                select(GoodsReceipt)
-                .where(GoodsReceipt.po_id == po.id)
-                .options(selectinload(GoodsReceipt.line_items))
-                .order_by(GoodsReceipt.created_at.desc())
-            )
-        )
-        .scalars()
-        .all()
+    gr_query = (
+        select(GoodsReceipt)
+        .where(GoodsReceipt.po_id == po.id)
+        .options(selectinload(GoodsReceipt.line_items))
+        .order_by(GoodsReceipt.created_at.desc())
     )
+    # Same strict entity scope as the PO lookup — a receipt booked under a
+    # different subsidiary must never satisfy this invoice's 3-way leg.
+    gr_query = apply_entity_scope(gr_query, GoodsReceipt, entity_id)
+    grs = (await db.execute(gr_query)).scalars().all()
     gr = grs[0] if grs else None
 
     if gr:

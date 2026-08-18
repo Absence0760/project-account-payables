@@ -267,7 +267,9 @@ gated on the `organizations` table existing — mirrors 0055).
   `status` (`pending`/`delivered`/`failed`/`dead`), `attempt_count`,
   `next_attempt_at`, `last_attempt_at`, `response_code`. Unique on
   `(subscription_id, event_id)` (`uq_webhook_delivery_sub_event`) — the dedupe
-  guard so a re-fired/replayed event can't queue the same delivery twice.
+  guard so a re-fired/replayed event can't queue the same delivery twice. Note
+  what that makes `event_id`: an **occurrence** identity, never a bare entity id
+  (see § The event id identifies the OCCURRENCE, not the entity).
 
 ### Event catalog
 
@@ -341,11 +343,30 @@ records the prefix and the window — never either secret.
 ### Payload
 
 ```jsonc
-{ "id": "invoice.approved:<invoice-id>", "type": "invoice.approved",
+{ "id": "invoice.approved:<occurrence-id>", "type": "invoice.approved",
   "created_at": "<iso8601>", "organization_id": "<org-id>",
   "data": { "invoice_id": "…", "invoice_number": "…", "vendor_name": "…",
             "amount": "123.45", "currency": "USD", "status": "approved" } }
 ```
+
+#### The event id identifies the OCCURRENCE, not the entity
+
+`<occurrence-id>` is a fresh id minted by `workflow_engine.transition_invoice`
+for the transition it just committed — **not** the invoice id. An invoice
+reaches `approved` more than once (`POST /api/payments/{id}/void` takes a paid
+invoice back to `approved`) and `paid` more than once (a later run re-pays it),
+and the integrator has to hear about each one.
+
+Keyed on the invoice, the second occurrence was permanently undeliverable: the
+`(subscription_id, event_id)` unique index rejected the insert and the emitter's
+`IntegrityError` branch swallowed it silently — and even with the index gone,
+the payload `id` would still repeat, so a conforming receiver deduping on
+`X-Webhook-Event-Id` would drop it too. The customer's ERP was never told the
+invoice had been voided and re-paid.
+
+Re-emitting the SAME occurrence (same id) still collapses to one delivery — that
+is what makes a replay safe. `exception.raised` is unaffected: an exception row's
+id is already occurrence-unique, since a re-raised exception is a new row.
 
 `exception.raised` carries the exception classification plus the same invoice
 metadata (and a deep link):
@@ -390,6 +411,25 @@ PII-free — invoice/exception metadata only, no bank/tax/PAN fields.
   emit attempt handles the happy path. Local-first: delivery is an in-process
   `httpx` POST — no cloud queue.
 
+#### A due delivery is claimed before it is sent
+
+The immediate attempt and the sweep overlap in time: `emit_event` commits the
+row with `next_attempt_at = now()` and only *then* spawns the immediate attempt,
+which may spend up to 10 s inside the POST. A 60-second sweep tick landing in
+that window used to select the same row and POST it a second time, with the two
+commits racing on `attempt_count` / `next_attempt_at` — so with N replicas a
+transient receiver outage dead-lettered after roughly `5/N` rounds instead of the
+documented 5 attempts.
+
+Every load that is about to POST therefore **claims** the row
+`FOR UPDATE SKIP LOCKED` — `deliver_due` (two-phase: an unlocked due-id page,
+then one claimed row at a time, because `process_delivery` commits per row and
+that commit would drop a page-wide lock anyway) and `process_delivery_by_id`
+alike. A row already in flight is skipped rather than double-sent, and
+`attempt_count` becomes a serialized read-modify-write, so `MAX_ATTEMPTS` means
+5 attempts per delivery rather than 5 per worker. `deliver_due` returns the
+number of deliveries it actually claimed and attempted.
+
 ### Event sources wired
 
 **`invoice.approved` / `payment.settled`** are hooked into
@@ -397,7 +437,8 @@ PII-free — invoice/exception metadata only, no bank/tax/PAN fields.
 alongside the existing notification hook, keyed off the resulting status:
 `approved` → `invoice.approved`, `paid` → `payment.settled`. Every path that
 converges on those statuses (the ERP-sync / payment-webhook / direct-schedule
-paths) emits exactly once, here.
+paths) emits exactly once, here — once per *transition*, each carrying the
+occurrence id that transition minted.
 
 **`exception.raised`** is emitted from the shared exception-create chokepoint
 `services/exception_service.create_exception`. Every `Exception` row in the

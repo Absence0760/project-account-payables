@@ -33,3 +33,19 @@ e528965cee45f3b60a1d922de2db051ada7245e3:backend/tests/test_admin_user_managemen
 # re-trips the identical rule against THIS file, which is how the first attempt
 # at this entry failed.
 1dc50de72172c1a1c0a055a15551db3728f052ca:backend/app/services/billing_adapters/stripe_billing.py:generic-api-key:193
+
+# Bug-hunt round 9 (PR #315): three synthetic test passwords flagged by
+# generic-api-key on ENTROPY, in the new auth-hardening coverage. Both literals
+# are also allowlisted by regex in .gitleaks.toml (`AttackerPass\d+`,
+# `BrandNewPass\d+`) — the fingerprints are here as well because this file's
+# header records that the identical regex-allowlist route did not suppress the
+# sibling `StrongPass123` case, which still tripped on entropy.
+#
+#   test_admin_user_management.py:544 — the password a `user.manage` holder
+#     tries to set on an org admin, in the test proving that is now refused.
+#   test_portal_logout.py:161, :194 — the replacement password a vendor rotates
+#     to, in the tests proving a portal password change revokes sibling
+#     sessions.
+0a8c049d7087e68583ff51d5c1e0bfbc8db23721:backend/tests/test_admin_user_management.py:generic-api-key:544
+0a8c049d7087e68583ff51d5c1e0bfbc8db23721:backend/tests/test_portal_logout.py:generic-api-key:161
+0a8c049d7087e68583ff51d5c1e0bfbc8db23721:backend/tests/test_portal_logout.py:generic-api-key:194

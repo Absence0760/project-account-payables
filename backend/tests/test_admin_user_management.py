@@ -17,7 +17,11 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from app.api.admin import _authorize_role_grant, _validate_admin_set_password
+from app.api.admin import (
+    _authorize_role_grant,
+    _authorize_target_mutation,
+    _validate_admin_set_password,
+)
 from app.api.deps import ROLE_ADMIN, ROLE_AP_CLERK
 from app.api.permissions import (
     ALL_PERMISSIONS,
@@ -411,3 +415,219 @@ async def test_admin_revoke_sessions_requires_user_manage(realdb, monkeypatch):
 
     assert resp.status_code == 403
     assert calls == []
+
+
+# --------------------------------------------------------------------------
+# _authorize_target_mutation — the other half of the escalation guard.
+#
+# `_authorize_role_grant` stops a `user.manage` holder from handing OUT
+# authority they don't hold. It never inspected the TARGET, so the same actor
+# could reset an org admin's password (they choose the value, so the complexity
+# check above is no obstacle), deactivate them, move their email, strip their
+# roles, delete them, or force-log them out — every one of which is a takeover
+# or lock-out of an account that outranks them.
+# --------------------------------------------------------------------------
+
+
+def _target(roles: list[SimpleNamespace]) -> SimpleNamespace:
+    return SimpleNamespace(roles=roles)
+
+
+def test_target_mutation_admin_caller_may_touch_an_admin():
+    caller = _caller([_sys_role(ROLE_ADMIN)])
+    _authorize_target_mutation(caller, _target([_sys_role(ROLE_ADMIN)]))  # no raise
+
+
+def test_target_mutation_user_manage_only_caller_cannot_touch_an_admin():
+    """The exploit: a custom 'User Admin' role carrying ONLY user.manage aims
+    at the org admin's account."""
+    caller = _caller([_custom_role([PERM_USER_MANAGE], name="UserAdmin")])
+    with pytest.raises(HTTPException) as exc:
+        _authorize_target_mutation(caller, _target([_sys_role(ROLE_ADMIN)]))
+    assert exc.value.status_code == 403
+
+
+def test_target_mutation_full_catalog_non_admin_still_cannot_touch_an_admin():
+    """Holding every catalog permission is still not `admin` — the system role
+    carries non-catalog authority the subset check can't see."""
+    caller = _caller([_custom_role(list(ALL_PERMISSIONS), name="Everything")])
+    with pytest.raises(HTTPException) as exc:
+        _authorize_target_mutation(caller, _target([_sys_role(ROLE_ADMIN)]))
+    assert exc.value.status_code == 403
+
+
+def test_target_mutation_refuses_target_holding_a_permission_caller_lacks():
+    """No admin role on either side — a user.manage-only caller still can't
+    seize an account that can execute payments."""
+    caller = _caller([_custom_role([PERM_USER_MANAGE], name="UserAdmin")])
+    target = _target([_custom_role([PERM_USER_MANAGE, PERM_PAYMENT_EXECUTE], name="Payer")])
+    with pytest.raises(HTTPException) as exc:
+        _authorize_target_mutation(caller, target)
+    assert exc.value.status_code == 403
+
+
+def test_target_mutation_allows_a_strictly_lesser_target():
+    caller = _caller([_custom_role([PERM_USER_MANAGE, PERM_PAYMENT_EXECUTE], name="Ops")])
+    _authorize_target_mutation(caller, _target([_sys_role(ROLE_AP_CLERK)]))  # no raise
+
+
+def test_target_mutation_allows_self():
+    """A user is trivially a subset of themselves — editing your own account
+    must not be blocked by the guard."""
+    roles = [_custom_role([PERM_USER_MANAGE], name="UserAdmin")]
+    caller = _caller(roles)
+    _authorize_target_mutation(caller, _target(roles))
+
+
+def test_target_mutation_falls_back_when_effective_permissions_missing():
+    """Mirrors the grant guard: a caller object without the transient
+    `effective_permissions` attribute is resolved from its roles instead."""
+    caller = SimpleNamespace(roles=[_sys_role(ROLE_ADMIN)])
+    _authorize_target_mutation(caller, _target([_sys_role(ROLE_ADMIN)]))
+
+
+# --------------------------------------------------------------------------
+# End-to-end: a `user.manage`-only principal against the real endpoints.
+# --------------------------------------------------------------------------
+
+
+async def _make_user_manage_principal(client, org_id):
+    """Create a custom role granting ONLY user.manage + a user holding it.
+
+    Returns (token, user_id, role_id) — the caller cleans both rows up.
+    """
+    from app.api.deps import create_access_token
+
+    suffix = uuid.uuid4().hex[:8]
+    role_resp = await client.post(
+        "/api/admin/roles",
+        json={"name": f"UserAdmin-{suffix}", "permissions": [PERM_USER_MANAGE]},
+    )
+    assert role_resp.status_code == 201, role_resp.text
+    role_id = role_resp.json()["id"]
+
+    user_resp = await client.post(
+        "/api/admin/users",
+        json={
+            "email": f"useradmin-{suffix}@acme.test",
+            "full_name": "User Admin",
+            "role_names": [f"UserAdmin-{suffix}"],
+        },
+    )
+    assert user_resp.status_code == 201, user_resp.text
+    user_id = user_resp.json()["id"]
+    return create_access_token(uuid.UUID(user_id), org_id), user_id, role_id
+
+
+@pytest.mark.asyncio
+async def test_user_manage_only_caller_cannot_reset_an_admins_password(realdb):
+    """The headline takeover: reset the org admin's password to a value the
+    attacker chose, then sign in as them. Must be 403, and the admin's stored
+    hash must be untouched."""
+    from app.models.user import User
+
+    info = realdb.info("a")
+    admin_id = info.users["admin"]
+    async with realdb.client(key="a", role="admin") as c:
+        token, actor_id, role_id = await _make_user_manage_principal(c, info.org_id)
+        try:
+            ctrl = realdb.control_sessionmaker()
+            async with ctrl() as s:
+                before = (
+                    (await s.execute(select(User).where(User.id == admin_id)))
+                    .scalar_one()
+                    .hashed_password
+                )
+
+            resp = await c.patch(
+                f"/api/admin/users/{admin_id}",
+                json={"password": "AttackerPass123"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert resp.status_code == 403, resp.text
+
+            async with ctrl() as s:
+                after = (
+                    (await s.execute(select(User).where(User.id == admin_id)))
+                    .scalar_one()
+                    .hashed_password
+                )
+            assert after == before
+        finally:
+            await c.delete(f"/api/admin/users/{actor_id}")
+            await c.delete(f"/api/admin/roles/{role_id}")
+
+
+@pytest.mark.asyncio
+async def test_user_manage_only_caller_cannot_deactivate_or_delete_an_admin(realdb):
+    info = realdb.info("a")
+    admin_id = info.users["admin"]
+    async with realdb.client(key="a", role="admin") as c:
+        token, actor_id, role_id = await _make_user_manage_principal(c, info.org_id)
+        auth = {"Authorization": f"Bearer {token}"}
+        try:
+            deactivate = await c.patch(
+                f"/api/admin/users/{admin_id}", json={"is_active": False}, headers=auth
+            )
+            assert deactivate.status_code == 403, deactivate.text
+
+            steal_email = await c.patch(
+                f"/api/admin/users/{admin_id}",
+                json={"email": f"attacker-{uuid.uuid4().hex[:6]}@evil.test"},
+                headers=auth,
+            )
+            assert steal_email.status_code == 403, steal_email.text
+
+            demote = await c.patch(
+                f"/api/admin/users/{admin_id}", json={"role_names": []}, headers=auth
+            )
+            assert demote.status_code == 403, demote.text
+
+            delete = await c.delete(f"/api/admin/users/{admin_id}", headers=auth)
+            assert delete.status_code == 403, delete.text
+
+            revoke = await c.post(
+                f"/api/admin/users/{admin_id}/revoke-sessions", json={}, headers=auth
+            )
+            assert revoke.status_code == 403, revoke.text
+
+            bulk = await c.post(
+                "/api/admin/users/bulk-delete", json={"user_ids": [str(admin_id)]}, headers=auth
+            )
+            assert bulk.status_code == 200, bulk.text
+            assert bulk.json()["deleted"] == []
+            assert [f["reason"] for f in bulk.json()["failed"]] == ["forbidden"]
+        finally:
+            await c.delete(f"/api/admin/users/{actor_id}")
+            await c.delete(f"/api/admin/roles/{role_id}")
+
+
+@pytest.mark.asyncio
+async def test_user_manage_only_caller_may_still_manage_a_lesser_user(realdb):
+    """The guard must not break the legitimate use it was built for: a
+    user.manage holder administering an ordinary clerk."""
+    info = realdb.info("a")
+    async with realdb.client(key="a", role="admin") as c:
+        token, actor_id, role_id = await _make_user_manage_principal(c, info.org_id)
+        auth = {"Authorization": f"Bearer {token}"}
+        suffix = uuid.uuid4().hex[:8]
+        created = await c.post(
+            "/api/admin/users",
+            json={
+                "email": f"clerk-{suffix}@acme.test",
+                "full_name": "A Clerk",
+                "role_names": ["ap_clerk"],
+            },
+            headers=auth,
+        )
+        assert created.status_code == 201, created.text
+        clerk_id = created.json()["id"]
+        try:
+            resp = await c.patch(
+                f"/api/admin/users/{clerk_id}", json={"password": "ClerkPass123"}, headers=auth
+            )
+            assert resp.status_code == 200, resp.text
+        finally:
+            await c.delete(f"/api/admin/users/{clerk_id}")
+            await c.delete(f"/api/admin/users/{actor_id}")
+            await c.delete(f"/api/admin/roles/{role_id}")

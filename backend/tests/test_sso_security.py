@@ -440,3 +440,165 @@ def test_redirect_uri_includes_tenant_slug():
     assert uri_acme != uri_tf
     assert "acme" in uri_acme
     assert "techflow" in uri_tf
+
+
+# ---------------------------------------------------------------------------
+# SSRF: admin-supplied SSO URLs are fetched server-side
+#
+# `settings.sso.discovery_url` is entered by a tenant admin and fetched by the
+# backend; the document it serves then supplies `token_endpoint` (POSTed with
+# the client secret + auth code) and `jwks_uri` (the key the ID token is
+# verified against). All three were used verbatim, and the discovery fetch is
+# reachable unauthenticated via `GET /api/auth/sso/authorize?slug=<tenant>`
+# after a public self-signup — so pointing it at `http://169.254.169.254/...`
+# made the backend read cloud instance credentials on demand.
+#
+# Two independent controls, both pinned here:
+#   * `assert_public_url` (the guard every other admin-supplied URL this app
+#     fetches already goes through), enforced in DEPLOYED environments;
+#   * netloc pinning of token_endpoint / jwks_uri to the discovery document's
+#     own issuer, mirroring what `api/auth_sso.py` does for
+#     `authorization_endpoint`.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def deployed(monkeypatch):
+    """Pretend this process is a deployed stack (the guard's enforcing mode)."""
+    from app.config import settings as app_settings
+
+    monkeypatch.setattr(app_settings, "environment", "production")
+    return app_settings
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "ftp://idp.example/.well-known/openid-configuration",
+        "file:///etc/passwd",
+        "not-a-url",
+        "https://",
+    ],
+)
+def test_resolve_sso_config_rejects_a_non_http_discovery_url(bad):
+    """Refused at resolve time, before anything is fetched — and in every
+    environment, since no local IdP needs a non-http(s) scheme."""
+    from app.services.sso import SSOConfigError, resolve_sso_config
+
+    cfg = {
+        "sso": {
+            "enabled": True,
+            "discovery_url": bad,
+            "client_id": "cid",
+            "client_secret": "sec",
+        }
+    }
+    with pytest.raises(SSOConfigError):
+        resolve_sso_config(cfg)
+
+
+@pytest.mark.asyncio
+async def test_fetch_discovery_refuses_an_internal_address_when_deployed(deployed, monkeypatch):
+    """The cloud metadata endpoint is the payload that matters: no HTTP request
+    may leave the process, and nothing may be read from cache either."""
+    from app.services import sso
+
+    def _boom(*_a, **_kw):
+        raise AssertionError("fetch_discovery must not open a client for an internal URL")
+
+    monkeypatch.setattr(sso.httpx, "AsyncClient", _boom)
+
+    with pytest.raises(sso.SSOConfigError):
+        await sso.fetch_discovery("http://169.254.169.254/.well-known/openid-configuration")
+
+
+@pytest.mark.asyncio
+async def test_fetch_jwks_refuses_an_internal_address_when_deployed(deployed, monkeypatch):
+    from app.services import sso
+
+    def _boom(*_a, **_kw):
+        raise AssertionError("fetch_jwks must not open a client for an internal URL")
+
+    monkeypatch.setattr(sso.httpx, "AsyncClient", _boom)
+
+    with pytest.raises(sso.SSOValidationError):
+        await sso.fetch_jwks("http://127.0.0.1:9000/jwks")
+
+
+@pytest.mark.asyncio
+async def test_internal_sso_url_is_allowed_outside_a_deployed_environment():
+    """Local-first (root CLAUDE.md guard rail 7): the documented local IdP is
+    Keycloak on `http://localhost:8088`, which is exactly the shape the guard
+    rejects. Outside a deployed environment it logs instead of refusing."""
+    from app.config import settings as app_settings
+    from app.services import sso
+
+    assert not app_settings.is_deployed  # the test env is "development"
+    await sso._assert_sso_url_public(
+        "http://localhost:8088/realms/feohledger/.well-known/openid-configuration",
+        what="discovery_url",
+        error=sso.SSOConfigError,
+    )
+
+
+def test_pinned_endpoint_accepts_an_endpoint_on_the_issuer_host():
+    from app.services import sso
+
+    doc = {"issuer": "https://idp.test", "token_endpoint": "https://idp.test/oauth2/token"}
+    assert sso._pinned_endpoint(doc, "token_endpoint") == "https://idp.test/oauth2/token"
+
+
+@pytest.mark.parametrize(
+    "doc",
+    [
+        {"issuer": "https://idp.test", "token_endpoint": "https://evil.test/token"},
+        {"issuer": "https://idp.test", "token_endpoint": "http://169.254.169.254/token"},
+        {"issuer": "https://idp.test"},  # endpoint missing entirely
+        {"token_endpoint": "https://idp.test/token"},  # issuer missing — no anchor
+        {"issuer": "not-a-url", "token_endpoint": "https://idp.test/token"},
+    ],
+    ids=["other-host", "metadata-host", "no-endpoint", "no-issuer", "issuer-not-a-url"],
+)
+def test_pinned_endpoint_rejects_anything_off_the_issuer_host(doc):
+    from app.services import sso
+
+    with pytest.raises(sso.SSOValidationError):
+        sso._pinned_endpoint(doc, "token_endpoint")
+
+
+@pytest.mark.asyncio
+async def test_exchange_code_refuses_a_token_endpoint_on_another_host(monkeypatch):
+    """This POST carries the client secret AND the authorization code — a
+    redirected token endpoint hands both to the attacker."""
+    from app.services import sso
+
+    class _Boom:
+        def __init__(self, *_a, **_kw):
+            raise AssertionError("no request may be made to an unpinned token endpoint")
+
+    monkeypatch.setattr(sso.httpx, "AsyncClient", _Boom)
+
+    doc = {"issuer": "https://idp.example", "token_endpoint": "https://evil.example/token"}
+    with pytest.raises(sso.SSOValidationError):
+        await sso.exchange_code_for_tokens(doc, "cid", "secret", "code", "acme")
+
+
+@pytest.mark.asyncio
+async def test_validate_id_token_refuses_a_jwks_uri_on_another_host(signing_key):
+    """The JWKS supplies the key the signature is checked against, so an
+    attacker-controlled one verifies an attacker-signed ID token."""
+    from app.services import sso
+
+    async def _boom(_url):
+        raise AssertionError("no JWKS fetch may be made off the issuer host")
+
+    doc = {"issuer": _ISSUER, "jwks_uri": "https://evil.test/jwks"}
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("app.services.sso.fetch_jwks", _boom)
+        with pytest.raises(sso.SSOValidationError):
+            await sso.validate_id_token(
+                id_token=_sign(signing_key, _claims()),
+                discovery_doc=doc,
+                client_id=_CLIENT_ID,
+                expected_nonce="the-real-nonce",
+            )

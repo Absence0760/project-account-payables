@@ -34,7 +34,13 @@ from app.schemas.workflow import (
 )
 from app.services.audit_dispatch import dispatch_audit
 from app.services.workflow_engine import DEFAULT_STEPS_CONFIG
-from app.tenant import apply_entity_scope, get_entity_id, get_tenant_db
+from app.tenant import (
+    apply_entity_scope,
+    get_entity_id,
+    get_tenant_db,
+    get_write_entity_id,
+    resolve_default_entity_id,
+)
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 
@@ -57,6 +63,42 @@ async def _get_workflow_or_404(
     if not defn:
         raise HTTPException(status_code=404, detail="Workflow not found")
     return defn
+
+
+def _entity_scope_predicate(entity_id: uuid.UUID | None):
+    """NULL-safe equality on ``WorkflowDefinition.entity_id``.
+
+    A definition either belongs to one subsidiary (``entity_id`` set) or is the
+    shared / org-wide fallback (``entity_id IS NULL``) — the two buckets
+    ``get_or_create_workflow_definition`` resolves in precedence order. SQL
+    treats ``NULL = NULL`` as unknown, so the shared bucket needs ``IS NULL``
+    rather than an equality test.
+    """
+    if entity_id is None:
+        return WorkflowDefinition.entity_id.is_(None)
+    return WorkflowDefinition.entity_id == entity_id
+
+
+async def _active_definition_count(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    entity_id: uuid.UUID | None,
+    exclude_id: uuid.UUID | None = None,
+) -> int:
+    """Count the ACTIVE definitions in one entity scope, excluding ``exclude_id``."""
+    query = (
+        select(func.count())
+        .select_from(WorkflowDefinition)
+        .where(
+            WorkflowDefinition.organization_id == org_id,
+            WorkflowDefinition.is_active.is_(True),
+            _entity_scope_predicate(entity_id),
+        )
+    )
+    if exclude_id is not None:
+        query = query.where(WorkflowDefinition.id != exclude_id)
+    return int((await db.execute(query)).scalar() or 0)
 
 
 async def _next_version_number(db: AsyncSession, definition_id: uuid.UUID) -> int:
@@ -210,6 +252,14 @@ async def list_workflows(
     # `?page=2` can't trigger a second default. After creation the first page
     # holds exactly that row.
     if total == 0:
+        # Same entity stamp as every other creation path (create_workflow,
+        # workflow_engine's lazy fallback, tenant_provisioning). A NULL here put
+        # this row in the SHARED bucket while `POST /api/workflows` put its rows
+        # in the caller's entity bucket, so activating a new workflow could not
+        # deactivate this one and the tenant ended up with two active
+        # definitions. Migration 0029 backfilled every existing tenant's
+        # definitions onto the default entity; NULL is a bucket no tenant's real
+        # rows occupy.
         default = WorkflowDefinition(
             name="Default Workflow",
             description="Standard invoice processing: extract, review, and send to ERP.",
@@ -217,6 +267,7 @@ async def list_workflows(
             is_active=True,
             is_default=True,
             organization_id=org_id,
+            entity_id=entity_id or await resolve_default_entity_id(db),
         )
         db.add(default)
         await db.flush()
@@ -244,6 +295,7 @@ async def create_workflow(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN)),
     org_id: uuid.UUID = Depends(get_org_id),
+    write_entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
     # mode="json" — a step's config can carry Decimal money fields
     # (ApprovalStepConfig.auto_approve_below, ApprovalLevelConfig.max_amount,
@@ -253,6 +305,14 @@ async def create_workflow(
     # matching what `_to_decimal` (workflow_engine.py) already coerces back.
     steps_config = {"steps": [s.model_dump(mode="json") for s in body.steps]}
     # New workflows start inactive — user must explicitly activate
+    # Stamp the caller's entity, like every other entity-scoped create. This
+    # left `entity_id` NULL, which put every UI-created definition in the
+    # SHARED bucket — a bucket no migrated tenant's rows actually occupy,
+    # because migration 0029 backfilled `workflow_definitions.entity_id` to the
+    # default entity. Harmless while peer-deactivation was org-wide; once that
+    # was correctly scoped to the definition's own entity, a newly activated
+    # workflow stopped deactivating the seeded default and the tenant had two
+    # active definitions.
     defn = WorkflowDefinition(
         name=body.name,
         description=body.description,
@@ -260,6 +320,7 @@ async def create_workflow(
         is_active=False,
         is_default=False,
         organization_id=org_id,
+        entity_id=write_entity_id,
     )
     db.add(defn)
     await db.flush()
@@ -431,17 +492,50 @@ async def update_workflow(
         defn.description = body.description
     if body.is_active is not None:
         if body.is_active and not defn.is_active:
-            # Enforce the one-active-workflow invariant: when this
-            # workflow flips inactive → active, deactivate any peer
-            # that's currently active in this org.
+            # Enforce the one-active-workflow invariant PER ENTITY SCOPE: when
+            # this workflow flips inactive → active, deactivate any peer that's
+            # currently active in the SAME scope (its own subsidiary, or the
+            # shared entity_id IS NULL bucket). Org-wide deactivation would take
+            # a sibling subsidiary's definition — and the shared fallback — down
+            # with it, defeating the per-entity resolution
+            # `get_or_create_workflow_definition` performs (multi-entity Phase 3,
+            # docs/multi-entity.md).
             await db.execute(
                 sql_update(WorkflowDefinition)
                 .where(
                     WorkflowDefinition.organization_id == org_id,
                     WorkflowDefinition.id != workflow_id,
+                    _entity_scope_predicate(defn.entity_id),
                 )
                 .values(is_active=False)
             )
+        elif not body.is_active and defn.is_active:
+            # Refuse a deactivation that would leave this scope with NO active
+            # definition. `get_or_create_workflow_definition` would then lazily
+            # mint an "Invoice Processing" stub with is_default=True — which
+            # collides with any existing shared default under
+            # `uq_workflow_definitions_one_default` (migration 0050) and 500s
+            # invoice create/upload. Mirrors the default/active/in-flight guards
+            # `delete_workflow` already applies.
+            own_scope = await _active_definition_count(
+                db, org_id=org_id, entity_id=defn.entity_id, exclude_id=workflow_id
+            )
+            shared_fallback = 0
+            if defn.entity_id is not None:
+                # An entity with no definition of its own legitimately falls back
+                # to a shared (entity_id IS NULL) one, so that still resolves.
+                shared_fallback = await _active_definition_count(
+                    db, org_id=org_id, entity_id=None, exclude_id=workflow_id
+                )
+            if own_scope + shared_fallback == 0:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Cannot deactivate the last active workflow — new invoices "
+                        "would have no definition to snapshot. Activate another "
+                        "workflow first."
+                    ),
+                )
         defn.is_active = body.is_active
     if body.steps is not None:
         # mode="json" — see the identical comment on the create-workflow path

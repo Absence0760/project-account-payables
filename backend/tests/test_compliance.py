@@ -69,6 +69,13 @@ def _mock_db_with_zero_trailing_spend():
     """Mock DB that returns 0 on the trailing-12m sum + accepts adds."""
     res = MagicMock()
     res.scalar = MagicMock(return_value=Decimal("0"))
+    # `_execute_single_payment` re-derives the invoice's net payable (amount −
+    # applied credit memos) immediately before the adapter/card call, so a
+    # credit recorded after the run was built can never pay the stale figure.
+    # Model that SUM: no credits applied.
+    credit_res = MagicMock()
+    credit_res.scalar_one = MagicMock(return_value=Decimal("0"))
+
     db = AsyncMock()
     db.execute = AsyncMock(return_value=res)
     db.add = MagicMock()
@@ -144,6 +151,7 @@ async def test_clear_screening_and_low_amount_returns_allow():
         db,
         vendor=vendor,
         payment_amount=Decimal("500.00"),
+        payment_currency="USD",
         payment_method="sepa",
         org_settings={},
         organization_id=uuid.uuid4(),
@@ -164,6 +172,7 @@ async def test_sanctions_match_returns_refuse_with_sanitised_reason():
         db,
         vendor=vendor,
         payment_amount=Decimal("100.00"),
+        payment_currency="USD",
         payment_method="international_wire",
         org_settings={},
         organization_id=uuid.uuid4(),
@@ -186,6 +195,7 @@ async def test_review_required_screening_returns_hold():
         db,
         vendor=vendor,
         payment_amount=Decimal("100.00"),
+        payment_currency="USD",
         payment_method="international_wire",
         org_settings={},
         organization_id=uuid.uuid4(),
@@ -207,6 +217,7 @@ async def test_kyc_gap_on_high_risk_corridor_refuses_payment():
         db,
         vendor=vendor,
         payment_amount=Decimal("5000.00"),
+        payment_currency="USD",
         payment_method="sepa",
         org_settings={},
         organization_id=uuid.uuid4(),
@@ -224,8 +235,80 @@ async def test_kyc_verified_vendor_above_threshold_allows_payment():
         db,
         vendor=vendor,
         payment_amount=Decimal("5000.00"),
+        payment_currency="USD",
         payment_method="sepa",
         org_settings={},
+        organization_id=uuid.uuid4(),
+    )
+    assert decision.verdict == "allow"
+
+
+@pytest.mark.asyncio
+async def test_kyc_gate_compares_in_the_home_currency_not_bare_numbers():
+    """`Payment.amount` is in the INVOICE's currency; `kyc_required_above` is a
+    home-currency figure. Comparing them as bare numbers read a £900 payment as
+    under a 1000 threshold and skipped the KYC refusal on a ~$1,150
+    cross-border transfer — fail-open on exactly the corridors the gate exists
+    for. Callers now pass the home-currency leg (`Payment.source_amount`).
+    """
+    vendor = _vendor(kyc_status="pending")
+    db = _mock_db_with_zero_trailing_spend()
+    decision = await check_payment_compliance(
+        db,
+        vendor=vendor,
+        # The home-currency leg the FX step locked, not the £900 invoice figure.
+        payment_amount=Decimal("1150.00"),
+        payment_currency="USD",
+        payment_method="international_wire",
+        org_settings={
+            "payments": {"home_currency": "USD"},
+            "compliance": {"kyc_required_above": "1000"},
+        },
+        organization_id=uuid.uuid4(),
+    )
+    assert decision.verdict == "refuse"
+    assert any("requires KYC" in r for r in decision.reasons)
+
+
+@pytest.mark.asyncio
+async def test_kyc_gate_fails_closed_when_the_amount_is_not_in_the_threshold_currency():
+    """No FX rate was locked, so all we hold is a foreign-currency figure. An
+    unverifiable comparison must not resolve in the direction that skips a
+    control the docs describe as non-overridable — require KYC instead.
+    """
+    vendor = _vendor(kyc_status="pending")
+    db = _mock_db_with_zero_trailing_spend()
+    decision = await check_payment_compliance(
+        db,
+        vendor=vendor,
+        payment_amount=Decimal("900.00"),
+        payment_currency="GBP",
+        payment_method="international_wire",
+        org_settings={
+            "payments": {"home_currency": "USD"},
+            "compliance": {"kyc_required_above": "1000"},
+        },
+        organization_id=uuid.uuid4(),
+    )
+    assert decision.verdict == "refuse"
+
+
+@pytest.mark.asyncio
+async def test_unknown_amount_currency_does_not_gate_a_domestic_rail():
+    """Fail-closed applies only inside the high-risk corridor set — an `ach`
+    payment is never KYC-gated regardless of what currency we can prove."""
+    vendor = _vendor(kyc_status="pending")
+    db = _mock_db_with_zero_trailing_spend()
+    decision = await check_payment_compliance(
+        db,
+        vendor=vendor,
+        payment_amount=Decimal("900.00"),
+        payment_currency=None,
+        payment_method="ach",
+        org_settings={
+            "payments": {"home_currency": "USD"},
+            "compliance": {"kyc_required_above": "1000"},
+        },
         organization_id=uuid.uuid4(),
     )
     assert decision.verdict == "allow"
@@ -241,6 +324,7 @@ async def test_kyc_threshold_override_lifts_floor():
         db,
         vendor=vendor,
         payment_amount=Decimal("5000.00"),
+        payment_currency="USD",
         payment_method="sepa",
         org_settings={"compliance": {"kyc_required_above": "10000"}},
         organization_id=uuid.uuid4(),
@@ -260,6 +344,7 @@ async def test_kyc_gate_covers_every_international_rail(method):
         db,
         vendor=vendor,
         payment_amount=Decimal("5000.00"),
+        payment_currency="USD",
         payment_method=method,
         org_settings={},
         organization_id=uuid.uuid4(),
@@ -286,6 +371,7 @@ async def test_high_risk_corridor_override_is_case_insensitive():
         db,
         vendor=vendor,
         payment_amount=Decimal("5000.00"),
+        payment_currency="USD",
         payment_method="sepa",
         org_settings={"compliance": {"high_risk_corridor_methods": [" SEPA "]}},
         organization_id=uuid.uuid4(),
@@ -303,6 +389,7 @@ async def test_blank_high_risk_override_falls_back_to_the_default_set():
         db,
         vendor=vendor,
         payment_amount=Decimal("5000.00"),
+        payment_currency="USD",
         payment_method="sepa",
         org_settings={"compliance": {"high_risk_corridor_methods": ["", "   ", None]}},
         organization_id=uuid.uuid4(),
@@ -321,6 +408,7 @@ async def test_kyc_not_required_for_domestic_corridors():
         db,
         vendor=vendor,
         payment_amount=Decimal("50000.00"),
+        payment_currency="USD",
         payment_method="ach",
         org_settings={},
         organization_id=uuid.uuid4(),
@@ -338,6 +426,13 @@ async def test_aml_trailing_spend_threshold_triggers_hold():
     # Mock the trailing-spend lookup to return $95k.
     res = MagicMock()
     res.scalar = MagicMock(return_value=Decimal("95000"))
+    # `_execute_single_payment` re-derives the invoice's net payable (amount −
+    # applied credit memos) immediately before the adapter/card call, so a
+    # credit recorded after the run was built can never pay the stale figure.
+    # Model that SUM: no credits applied.
+    credit_res = MagicMock()
+    credit_res.scalar_one = MagicMock(return_value=Decimal("0"))
+
     db = AsyncMock()
     db.execute = AsyncMock(return_value=res)
     db.add = MagicMock()
@@ -346,6 +441,7 @@ async def test_aml_trailing_spend_threshold_triggers_hold():
         db,
         vendor=vendor,
         payment_amount=Decimal("10000"),
+        payment_currency="USD",
         payment_method="sepa",  # high-risk but vendor KYC verified
         org_settings={},
         organization_id=uuid.uuid4(),
@@ -357,6 +453,7 @@ async def test_aml_trailing_spend_threshold_triggers_hold():
         db,
         vendor=vendor,
         payment_amount=Decimal("10000"),
+        payment_currency="USD",
         payment_method="sepa",
         org_settings={},
         organization_id=uuid.uuid4(),
@@ -372,6 +469,13 @@ async def test_aml_threshold_zero_disables_check():
     vendor = _vendor(kyc_status="verified")
     res = MagicMock()
     res.scalar = MagicMock(return_value=Decimal("999999"))  # well above default
+    # `_execute_single_payment` re-derives the invoice's net payable (amount −
+    # applied credit memos) immediately before the adapter/card call, so a
+    # credit recorded after the run was built can never pay the stale figure.
+    # Model that SUM: no credits applied.
+    credit_res = MagicMock()
+    credit_res.scalar_one = MagicMock(return_value=Decimal("0"))
+
     db = AsyncMock()
     db.execute = AsyncMock(return_value=res)
     db.add = MagicMock()
@@ -380,6 +484,7 @@ async def test_aml_threshold_zero_disables_check():
         db,
         vendor=vendor,
         payment_amount=Decimal("10000"),
+        payment_currency="USD",
         payment_method="sepa",
         org_settings={"compliance": {"aml_spend_alert_threshold": "0"}},
         organization_id=uuid.uuid4(),
@@ -407,6 +512,7 @@ async def test_sanctions_check_row_persisted_with_full_audit_trail():
         db,
         vendor=vendor,
         payment_amount=Decimal("100"),
+        payment_currency="USD",
         payment_method="international_wire",
         org_settings={},
         organization_id=org_id,
@@ -540,12 +646,20 @@ async def test_execute_payment_run_refuses_sanctions_matched_vendor_without_call
     trailing_spend_res = MagicMock()
     trailing_spend_res.scalar = MagicMock(return_value=Decimal("0"))
 
+    # `_execute_single_payment` re-derives the invoice's net payable (amount −
+    # applied credit memos) immediately before the adapter/card call, so a
+    # credit recorded after the run was built can never pay the stale figure.
+    # Model that SUM: no credits applied.
+    credit_res = MagicMock()
+    credit_res.scalar_one = MagicMock(return_value=Decimal("0"))
+
     db = AsyncMock()
     db.execute = AsyncMock(
         side_effect=[
             run_res,
             pay_res,
             inv_res,
+            credit_res,
             bank_res,
             vendor_lookup_res,
             trailing_spend_res,
@@ -673,6 +787,13 @@ async def test_execute_payment_run_holds_virtual_card_for_null_vendor_invoice():
     no_existing_exception = MagicMock()
     no_existing_exception.scalar_one_or_none = MagicMock(return_value=None)
 
+    # `_execute_single_payment` re-derives the invoice's net payable (amount −
+    # applied credit memos) immediately before the adapter/card call, so a
+    # credit recorded after the run was built can never pay the stale figure.
+    # Model that SUM: no credits applied.
+    credit_res = MagicMock()
+    credit_res.scalar_one = MagicMock(return_value=Decimal("0"))
+
     db = AsyncMock()
     # Four queries fire before the hold: run lookup, payments fan-out,
     # invoice lookup, the compliance-hold-exception dedupe check. The vendor
@@ -680,7 +801,7 @@ async def test_execute_payment_run_holds_virtual_card_for_null_vendor_invoice():
     # query runs. The final rollup query then re-reads every payment on the
     # run to compute the run's final status.
     db.execute = AsyncMock(
-        side_effect=[run_res, pay_res, inv_res, no_existing_exception, rollup_res]
+        side_effect=[run_res, pay_res, inv_res, credit_res, no_existing_exception, rollup_res]
     )
     db.commit = AsyncMock()
     db.add = MagicMock()

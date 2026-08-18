@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import 'package:feohledger_mobile/api/api_client.dart';
 import 'package:feohledger_mobile/api/endpoints.dart';
 import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
 import 'package:feohledger_mobile/models/payment.dart';
@@ -31,11 +32,16 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
       _error = null;
     });
     try {
-      _payments = await PaymentApi.list();
-      setState(() => _loading = false);
-    } catch (e) {
+      final payments = await PaymentApi.list();
+      if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _payments = payments;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = describeApiError(e);
         _loading = false;
       });
     }
