@@ -102,8 +102,12 @@ s3://<bucket>/audit/<tenant_db>/<YYYY>/<MM>/<DD>/<ISO-stamp>-<uuid>.jsonl.gz
 
 - Object Lock **must** be enabled at bucket creation time — it cannot
   be turned on later. The adapter's `test_connection()` checks this
-  via `get_object_lock_configuration` and refuses to ship if the bucket
-  isn't configured.
+  via `get_object_lock_configuration` and returns `False` if the bucket
+  isn't configured. **`app/main.py`'s lifespan is what calls it** (see
+  § Startup probe below) and refuses to boot on a `False`. `ship()`
+  itself does not re-check: the bucket property can't change after
+  creation, so re-probing per batch would be an S3 round-trip per tick
+  for an answer the boot probe already has.
 - The bucket **must** have a default retention period set (Governance
   or Compliance mode). Without one, objects are written normally and
   can be deleted — defeating the WORM guarantee.
@@ -114,6 +118,26 @@ s3://<bucket>/audit/<tenant_db>/<YYYY>/<MM>/<DD>/<ISO-stamp>-<uuid>.jsonl.gz
   IAM principals delete early; Compliance mode locks even root.
 - Versioning must also be enabled — S3 Object Lock is implemented on
   top of object versions.
+
+## Startup probe — a sink that can't hold the evidence stops the boot
+
+When `FEOH_AUDIT_SHIPPING_ENABLED` is on and `FEOH_DEBUG` is off, the
+lifespan builds every configured adapter and `await`s its
+`test_connection()`. A `False` raises and the process does not start.
+
+This closes a control that existed only on paper. Nothing in production
+called `test_connection()` — it had test-only callers — so with a bucket
+that lacked Object Lock every `put_object` succeeded, `_ship_tenant`
+stamped `shipped_at` on the batch, and `retention_sweep` then reported
+`audit_rows_overdue_unshipped: 0`. The SOC 2 evidence trail read green
+end to end with no WORM guarantee anywhere behind it, and nothing in the
+system could tell.
+
+Refusing to boot (rather than warning) mirrors the unknown-provider guard
+beside it: shipping to an unverified sink is worse than not shipping,
+because it marks the rows shipped. Both guards are deployed-only —
+`FEOH_DEBUG=true` local dev is unaffected, and so is any environment with
+`FEOH_AUDIT_SHIPPING_ENABLED` off.
 
 ## How to add a new shipping provider
 

@@ -196,6 +196,15 @@ async def transition_invoice(
     old_status = invoice.status.value
     invoice.status = target_status
 
+    # One id per transition OCCURRENCE. An invoice legitimately reaches
+    # `approved` (and `paid`) more than once — `POST /api/payments/{id}/void`
+    # takes it back to `approved` and a later run settles it again — so the
+    # outbound webhook event id has to be minted per transition, not per
+    # invoice. Keyed on the invoice id, the second genuine occurrence was
+    # swallowed by the `(subscription_id, event_id)` dedupe index and the
+    # customer's ERP never heard about the void-and-re-pay.
+    occurrence_id = uuid.uuid4()
+
     await dispatch_audit(
         db,
         correlation_id=invoice.correlation_id,
@@ -230,27 +239,36 @@ async def transition_invoice(
     # exactly once. `emit_event` opens its own control-plane session, never
     # raises into here, and is a silent no-op when FEOH_WEBHOOKS_ENABLED is off.
     try:
-        await _maybe_emit_webhook(invoice, target_status)
+        await _maybe_emit_webhook(invoice, target_status, occurrence_id=occurrence_id)
     except Exception:  # noqa: BLE001 — a webhook emit must never break the transition
         _log.exception("webhook emit hook failed for invoice transition to %s", target_status.value)
     return invoice
 
 
-async def _maybe_emit_webhook(invoice: Invoice, target_status: InvoiceStatus) -> None:
+async def _maybe_emit_webhook(
+    invoice: Invoice,
+    target_status: InvoiceStatus,
+    *,
+    occurrence_id: uuid.UUID | None = None,
+) -> None:
     """Map an invoice status transition to an outbound webhook event + emit.
 
     Only `approved` → `invoice.approved` and `paid` → `payment.settled` are
-    emitted this slice (exception.raised is deferred — see
-    backend/docs/public-api.md § Outbound webhooks).
+    emitted here (`exception.raised` is emitted from
+    `exception_service.create_exception`).
+
+    `occurrence_id` is the caller's per-transition id and becomes the event's
+    dedupe key. Re-emitting the SAME transition (same id) still dedupes; a NEW
+    transition mints a new id and therefore a new, deliverable event.
     """
     if target_status is InvoiceStatus.approved:
         from app.services.webhooks import emit_invoice_approved
 
-        await emit_invoice_approved(invoice)
+        await emit_invoice_approved(invoice, occurrence_id=occurrence_id)
     elif target_status is InvoiceStatus.paid:
         from app.services.webhooks import emit_payment_settled
 
-        await emit_payment_settled(invoice)
+        await emit_payment_settled(invoice, occurrence_id=occurrence_id)
 
 
 async def _maybe_notify_transition(

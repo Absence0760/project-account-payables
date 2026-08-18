@@ -50,6 +50,25 @@ def _money_str(value) -> str | None:
     return str(value)
 
 
+def _occurrence_key(occurrence_id) -> str:
+    """Normalise a caller-supplied occurrence id into an ``event_key``.
+
+    The key must identify the OCCURRENCE, not the entity. An entity-keyed id
+    (the invoice id) made every event after the first for that invoice
+    permanently undeliverable: the ``(subscription_id, event_id)`` unique index
+    swallows the insert, and a conforming receiver deduping on
+    ``X-Webhook-Event-Id`` would drop it even without the index. An invoice
+    genuinely reaches ``approved`` more than once (void → re-approve) and
+    ``paid`` more than once (void → re-pay), and the customer's ERP has to hear
+    about each one.
+
+    ``None`` mints a fresh id, so a bare call is one occurrence. Passing the
+    SAME id twice still dedupes — that is what makes a replay of one transition
+    safe.
+    """
+    return str(occurrence_id) if occurrence_id is not None else str(uuid.uuid4())
+
+
 async def emit_event(
     *,
     organization_id: uuid.UUID,
@@ -59,10 +78,12 @@ async def emit_event(
 ) -> None:
     """Enqueue + best-effort deliver a webhook event. Never raises.
 
-    ``event_key`` is a stable, caller-supplied identity for the event occurrence
-    (e.g. the invoice id) — combined with ``event_type`` it forms the per-event
-    id used for dedupe, so the same approval firing twice produces ONE delivery
-    per subscription.
+    ``event_key`` is a stable, caller-supplied identity for the event
+    OCCURRENCE — combined with ``event_type`` it forms the per-event id used for
+    dedupe, so re-emitting the same occurrence produces ONE delivery per
+    subscription. It must NOT be a bare entity id for an event an entity can
+    raise more than once (an invoice can be approved, voided and re-approved);
+    ``_occurrence_key`` is the helper the typed emitters use.
     """
     if not settings.webhooks_enabled:
         # Master kill switch OFF (local-dev default): emit is a silent no-op so
@@ -177,12 +198,17 @@ def _spawn_immediate_attempt(delivery_id: uuid.UUID) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def emit_invoice_approved(invoice) -> None:
-    """Emit ``invoice.approved`` for a freshly-approved invoice."""
+async def emit_invoice_approved(invoice, *, occurrence_id=None) -> None:
+    """Emit ``invoice.approved`` for a freshly-approved invoice.
+
+    ``occurrence_id`` identifies THIS approval, not the invoice — see
+    ``_occurrence_key``. ``workflow_engine.transition_invoice`` passes the id it
+    minted for the transition it just committed.
+    """
     await emit_event(
         organization_id=invoice.organization_id,
         event_type=EVENT_INVOICE_APPROVED,
-        event_key=str(invoice.id),
+        event_key=_occurrence_key(occurrence_id),
         data={
             "invoice_id": str(invoice.id),
             "invoice_number": getattr(invoice, "invoice_number", None),
@@ -194,12 +220,17 @@ async def emit_invoice_approved(invoice) -> None:
     )
 
 
-async def emit_payment_settled(invoice) -> None:
-    """Emit ``payment.settled`` when an invoice reaches the ``paid`` state."""
+async def emit_payment_settled(invoice, *, occurrence_id=None) -> None:
+    """Emit ``payment.settled`` when an invoice reaches the ``paid`` state.
+
+    ``occurrence_id`` identifies THIS settlement, not the invoice — a voided and
+    re-paid invoice settles twice and must deliver twice. See
+    ``_occurrence_key``.
+    """
     await emit_event(
         organization_id=invoice.organization_id,
         event_type=EVENT_PAYMENT_SETTLED,
-        event_key=str(invoice.id),
+        event_key=_occurrence_key(occurrence_id),
         data={
             "invoice_id": str(invoice.id),
             "invoice_number": getattr(invoice, "invoice_number", None),

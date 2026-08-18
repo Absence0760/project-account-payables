@@ -19,7 +19,11 @@ For deletable business records we soft-archive terminal-state invoices: an
 ``invoices_months`` window gets an ``archived_at`` marker stamped into its
 ``meta`` JSONB bag. No row is destroyed and no schema change is needed — the
 marker is the privileged archival action, fully reversible, and the sweep is
-idempotent (already-marked rows are skipped, so a re-run never double-archives).
+idempotent (already-marked rows are excluded in SQL, so a re-run never
+double-archives and never re-reads the archive). Each tick archives at most
+``FEOH_RETENTION_BATCH_SIZE`` invoices per tenant, oldest first, so a large
+backlog drains over several ticks instead of one unbounded one; the manifest
+records only counts, never the archived ids.
 
 Mirrors ``contract_renewal`` / ``qms_sync``: a long-lived asyncio loop started
 in ``main.lifespan``, fresh per-tenant engine, one tenant's failure logged but
@@ -106,20 +110,33 @@ async def sweep_tenant(
     inv_months = resolve_retention_months(settings_dict, "invoices")
     inv_cutoff = ref_now - timedelta(days=inv_months * _DAYS_PER_MONTH)
 
+    # Already-archived rows are excluded IN SQL, and the batch is capped. Both
+    # matter: the marker-based idempotency used to be a Python-side `continue`
+    # over an unbounded result set, so every tick re-loaded every invoice ever
+    # archived — a set that only grows, forever. With the exclusion the query
+    # returns only genuine work, and with the cap a large backlog drains over
+    # several ticks (oldest first) instead of one unbounded tick.
+    cap = int(settings.retention_batch_size)
     candidates = (
         (
             await db.execute(
-                select(Invoice).where(
+                select(Invoice)
+                .where(
                     Invoice.status.in_(_ARCHIVABLE_INVOICE_STATES),
                     Invoice.created_at < inv_cutoff,
+                    # `->>` so a JSON-null marker reads as absent too, matching
+                    # the Python truthiness check kept below as a backstop.
+                    Invoice.meta["archived_at"].astext.is_(None),
                 )
+                .order_by(Invoice.created_at.asc(), Invoice.id.asc())
+                .limit(cap)
             )
         )
         .scalars()
         .all()
     )
 
-    archived_ids: list[str] = []
+    archived = 0
     for invoice in candidates:
         meta = dict(invoice.meta or {})
         if meta.get("archived_at"):
@@ -127,9 +144,12 @@ async def sweep_tenant(
         meta["archived_at"] = ref_now.isoformat()
         invoice.meta = meta
         flag_modified(invoice, "meta")
-        archived_ids.append(str(invoice.id))
+        archived += 1
 
-    result.invoices_archived = len(archived_ids)
+    result.invoices_archived = archived
+    # A full batch means more remain — the manifest says so rather than leaving
+    # an operator to infer it from a suspiciously round number.
+    batch_capped = len(candidates) >= cap
 
     # --- Audit class: verify WORM-shipment, never delete --------------------
     audit_months = resolve_retention_months(settings_dict, "audit_log")
@@ -156,8 +176,9 @@ async def sweep_tenant(
     # --- Audited manifest of this sweep -------------------------------------
     # Only write a row when the sweep actually did / observed something, so an
     # idle tenant doesn't append a no-op manifest every tick. The details are a
-    # PII-free retention manifest (counts + window months + archived ids).
-    if archived_ids or overdue_total:
+    # PII-free retention manifest — counts + window months ONLY, never the
+    # archived ids (see the note on the details dict below).
+    if archived or overdue_total:
         await dispatch_audit(
             db,
             correlation_id=uuid.uuid4(),
@@ -169,8 +190,14 @@ async def sweep_tenant(
             details={
                 "invoices_months": inv_months,
                 "audit_log_months": audit_months,
-                "invoices_archived": len(archived_ids),
-                "archived_invoice_ids": archived_ids,
+                "invoices_archived": archived,
+                # Counts only. The per-invoice evidence is the `meta.archived_at`
+                # marker on the row itself, which is durable, queryable and
+                # unbounded-safe; inlining every id here produced one audit row
+                # that grew with the archive and, past ~1 MB, jammed the audit
+                # shipper's batch so nothing newer could ship.
+                "invoices_archive_batch_size": cap,
+                "invoices_archive_batch_capped": batch_capped,
                 "audit_rows_overdue": int(overdue_total),
                 "audit_rows_overdue_unshipped": int(overdue_unshipped),
                 "audit_log_note": (

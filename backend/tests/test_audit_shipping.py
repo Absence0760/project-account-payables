@@ -518,3 +518,110 @@ async def test_s3_objectlock_test_connection_fails_without_object_lock():
         adapter = s3_mod.S3ObjectLockAdapter({"bucket_name": "plain-bucket"})
 
     assert await adapter.test_connection() is False
+
+
+# ---------------------------------------------------------------------------
+# Startup probe — the Object-Lock check must actually be CALLED (bug-hunt #9).
+# ---------------------------------------------------------------------------
+
+
+def _clear_other_boot_guards(main_mod, monkeypatch):
+    """Silence every boot guard except the audit-shipping one under test.
+
+    The committed `.env.development` turns several on for local-dev
+    convenience, and under FEOH_DEBUG=false they would fire first.
+    """
+    monkeypatch.setattr(main_mod.settings, "debug", False)
+    monkeypatch.setattr(main_mod.settings, "secret_key", "a-real-non-default-secret-key")
+    monkeypatch.setattr(main_mod.settings, "email_intake_domain", "")
+    monkeypatch.setattr(main_mod.settings, "peppol_inbound_enabled", False)
+    monkeypatch.setattr(main_mod.settings, "billing_webhook_enabled", False)
+    monkeypatch.setattr(main_mod.settings, "webhooks_allow_private_targets", False)
+    monkeypatch.setattr(main_mod.settings, "punchout_provider", "mock")
+
+
+@pytest.mark.asyncio
+async def test_lifespan_refuses_boot_when_a_sink_fails_its_probe(monkeypatch):
+    """A sink whose `test_connection()` is False must stop the process.
+
+    This is the S3 Object-Lock case: `put_object` succeeds happily against a
+    bucket with no Object Lock, the shipper stamps `shipped_at`, and the
+    retention sweep then reports `audit_rows_overdue_unshipped: 0` — SOC 2
+    evidence reading green with no WORM guarantee. `test_connection` is the
+    only thing that can tell, and nothing used to call it.
+    """
+    import app.main as main_mod
+    from app.services import audit_log_shipper
+
+    _clear_other_boot_guards(main_mod, monkeypatch)
+    monkeypatch.setattr(main_mod.settings, "audit_shipping_enabled", True)
+    monkeypatch.setattr(main_mod.settings, "audit_shipping_providers", "s3_objectlock")
+
+    bad = SimpleNamespace(
+        provider_name="s3_objectlock",
+        test_connection=AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(audit_log_shipper, "_build_adapters", lambda: [bad])
+
+    with pytest.raises(RuntimeError, match="s3_objectlock"):
+        async with main_mod.lifespan(main_mod.app):
+            pass
+
+    bad.test_connection.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_lifespan_probes_every_configured_sink_and_boots_when_all_pass(monkeypatch):
+    """Every configured adapter is probed — not just the first — and a clean
+    probe lets the process start."""
+    import app.main as main_mod
+    from app.services import audit_log_shipper
+
+    _clear_other_boot_guards(main_mod, monkeypatch)
+    monkeypatch.setattr(main_mod.settings, "audit_shipping_enabled", True)
+    monkeypatch.setattr(main_mod.settings, "audit_shipping_providers", "cloudwatch,s3_objectlock")
+    # Don't actually start the sweeps for this boot.
+    monkeypatch.setattr(main_mod.settings, "extraction_reaper_enabled", False)
+
+    probes = [
+        SimpleNamespace(provider_name="cloudwatch", test_connection=AsyncMock(return_value=True)),
+        SimpleNamespace(
+            provider_name="s3_objectlock", test_connection=AsyncMock(return_value=True)
+        ),
+    ]
+    monkeypatch.setattr(audit_log_shipper, "_build_adapters", lambda: probes)
+    monkeypatch.setattr(
+        audit_log_shipper, "ship_once", AsyncMock(return_value=SimpleNamespace(failures=0))
+    )
+
+    async with main_mod.lifespan(main_mod.app):
+        pass
+
+    for probe in probes:
+        probe.test_connection.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_lifespan_skips_the_probe_when_shipping_disabled(monkeypatch):
+    """The probe rides the same `audit_shipping_enabled` gate as the sweep — an
+    org not shipping must not pay an AWS round-trip at boot."""
+    import app.main as main_mod
+    from app.services import audit_log_shipper
+
+    _clear_other_boot_guards(main_mod, monkeypatch)
+    monkeypatch.setattr(main_mod.settings, "audit_shipping_enabled", False)
+    monkeypatch.setattr(main_mod.settings, "extraction_reaper_enabled", False)
+
+    called = False
+
+    def _build():
+        nonlocal called
+        called = True
+        return []
+
+    monkeypatch.setattr(audit_log_shipper, "_build_adapters", _build)
+
+    async with main_mod.lifespan(main_mod.app):
+        pass
+
+    assert called is False
