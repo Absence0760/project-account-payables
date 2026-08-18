@@ -762,6 +762,7 @@ defect with an obvious correct answer.
       deleting an invoice cascades its payments.
       **Durable fix / trigger:** each in the file it names, on the next slice
       that touches it.
+
 ### Surfaced by the round-10 hunt (vendors / procurement / expenses), not fixed
 
 The vendors-procurement-expenses agent of round 10 fixed 7 findings at the root
