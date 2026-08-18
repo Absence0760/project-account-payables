@@ -141,6 +141,7 @@ export const messages = {
 	'invoices.col.status': 'Estado',
 	'invoices.selectAllAria': 'Seleccionar todas las facturas',
 	'invoices.empty': 'Ninguna factura coincide con sus filtros.',
+	'invoices.empty.errored': 'No se pudieron cargar las facturas. Inténtalo de nuevo.',
 	'invoices.row.delete': 'Eliminar',
 	'invoices.row.confirm': 'Confirmar',
 	'invoices.loadMore': 'Cargar más ({shown} de {total})',
@@ -192,6 +193,7 @@ export const messages = {
 	'payments.selectAllPayableAria': 'Seleccionar todas las facturas pagaderas',
 	'payments.overdue': 'Vencida',
 	'payments.history.empty': 'Ningún pago coincide con sus filtros.',
+	'payments.history.empty.errored': 'No se pudieron cargar los pagos. Inténtalo de nuevo.',
 	'payments.history.remittance': 'Comprobante de pago',
 	'payments.history.void': 'Anular',
 	'payments.history.complianceRelease': 'Liberar',
@@ -340,6 +342,7 @@ export const messages = {
 	'contracts.col.value': 'Valor',
 	'contracts.col.spend': 'Gasto',
 	'contracts.empty': 'Ningún contrato coincide con sus filtros.',
+	'contracts.empty.errored': 'No se pudieron cargar los contratos. Inténtalo de nuevo.',
 	'contracts.notFound': 'Contrato no encontrado',
 	'contracts.row.open': 'Abrir contrato {number}',
 	'contracts.overSpendLimit': 'Por encima del límite de gasto',
@@ -990,6 +993,7 @@ export const messages = {
 	'expenses.search.aria': 'Buscar gastos',
 	'expenses.loading': 'Cargando…',
 	'expenses.empty': 'Ningún gasto coincide con sus filtros.',
+	'expenses.empty.errored': 'No se pudieron cargar los gastos. Inténtalo de nuevo.',
 	'expenses.col.date': 'Fecha',
 	'expenses.col.merchant': 'Comercio',
 	'expenses.col.category': 'Categoría',
@@ -1041,6 +1045,7 @@ export const messages = {
 	'expenses.reports.col.amount': 'Importe',
 	'expenses.reports.openAria': 'Abrir informe {number}',
 	'expenses.reports.empty': 'Aún no hay informes de gastos.',
+	'expenses.reports.loadMore': 'Cargar más ({shown} de {total})',
 	'expenses.reports.showingAll': '{total, plural, one {Mostrando # informe} other {Mostrando los # informes}}',
 	'expenses.reports.toast.created': 'Informe creado',
 	'expenses.reports.toast.createFailed': 'Error al crear',
@@ -1095,6 +1100,7 @@ export const messages = {
 	'expenses.cards.unmatch': 'Desconciliar',
 	'expenses.cards.ignore': 'Ignorar',
 	'expenses.cards.empty': 'No hay transacciones de tarjeta. Importe un CSV o sincronice tarjetas virtuales.',
+	'expenses.cards.loadMore': 'Cargar más ({shown} de {total})',
 	'expenses.cards.showingAll': '{total, plural, one {Mostrando # transacción} other {Mostrando las # transacciones}}',
 	'expenses.cards.toast.loadFailed': 'No se pudieron cargar las transacciones de tarjeta',
 	'expenses.cards.toast.imported': '{n, plural, one {# transacción importada} other {# transacciones importadas}}',
@@ -1233,6 +1239,7 @@ export const messages = {
 	'requisitions.toast.deleted': 'Solicitud eliminada',
 	'requisitions.toast.deleteFailed': 'Error al eliminar',
 	'requisitions.toast.loadFailed': 'Error al cargar las solicitudes',
+	'requisitions.loadMore': 'Cargar más ({shown} de {total})',
 	'requisitions.showingAll':
 		'{total, plural, one {Mostrando la # solicitud} other {Mostrando las # solicitudes}}',
 
@@ -1317,6 +1324,7 @@ export const messages = {
 	'intake.toast.alreadyConverted': 'Ya convertida ({number})',
 	'intake.toast.convertFailed': 'Error al convertir',
 	'intake.toast.loadFailed': 'Error al cargar las peticiones de recepción',
+	'intake.loadMore': 'Cargar más ({shown} de {total})',
 	'intake.showingAll':
 		'{total, plural, one {Mostrando la # petición} other {Mostrando las # peticiones}}',
 
@@ -1387,6 +1395,7 @@ export const messages = {
 	'catalogs.guided.catalogLabel': 'Catálogo: {name}',
 	'catalogs.guided.contractLabel': 'Contrato: {number}',
 	'catalogs.guided.preferredTag': 'Preferido',
+	'catalogs.loadMore': 'Cargar más ({shown} de {total})',
 	'catalogs.showingAll':
 		'{total, plural, one {Mostrando el # catálogo} other {Mostrando los # catálogos}}',
 
@@ -1497,6 +1506,7 @@ export const messages = {
 	'budgets.toast.deleted': 'Presupuesto eliminado',
 	'budgets.toast.deleteFailed': 'Error al eliminar',
 	'budgets.toast.loadFailed': 'Error al cargar los presupuestos',
+	'budgets.loadMore': 'Cargar más ({shown} de {total})',
 	'budgets.showingAll':
 		'{total, plural, one {Mostrando el # presupuesto} other {Mostrando los # presupuestos}}',
 

@@ -49,6 +49,15 @@
 	let vendors = $state<VendorOption[]>([]);
 
 	// Modal state: null = create; a Contract = detail/edit.
+	// Three states, not two: a failed load must not read as "nothing matched".
+	let emptyMessage = $derived(
+		contractStore.loading
+			? m('common.loading')
+			: contractStore.errored
+				? m('contracts.empty.errored')
+				: m('contracts.empty')
+	);
+
 	let showCreate = $state(false);
 	let editing = $state<Contract | null>(null);
 
@@ -110,6 +119,10 @@
 			syncUrl();
 			contractStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
 		}, 300);
+		// Cancel a pending debounce on teardown: without it the timer fires
+		// after the page is gone, running syncUrl()/a list fetch against a route
+		// the user already left.
+		return () => clearTimeout(searchTimer);
 	});
 
 	$effect(() => {
@@ -189,7 +202,7 @@
 	<DataTable
 		columns={COLUMNS}
 		isEmpty={contractStore.all.length === 0}
-		empty={contractStore.loading ? m('common.loading') : m('contracts.empty')}
+		empty={emptyMessage}
 	>
 		{#snippet body()}
 			{#each contractStore.all as contract (contract.id)}

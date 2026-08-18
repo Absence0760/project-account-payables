@@ -13,6 +13,8 @@
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { formatDate } from '$lib/utils/time';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
+	import { untrack } from 'svelte';
 
 	const COLUMNS = $derived([
 		{ label: m('purchaseOrders.col.poNumber') },
@@ -76,26 +78,42 @@
 		void loadPos();
 	});
 
-	// `filterEffectRan` skips this effect's own mount-time run: a Svelte
-	// `$effect` always fires once immediately regardless of whether its
-	// tracked values actually changed, so without the guard this queued a
-	// SECOND, redundant `loadPos()` ~250ms after the effect above already
-	// loaded the page once. `loadPos()` replaces `pos` wholesale, so a
-	// `syncFromErp()` or `loadMore()` click inside that window could be
-	// overwritten by the delayed duplicate resolving afterward — same class
-	// of bug fixed in UsersPanel.svelte.
-	let filterEffectRan = false;
+	// A status chip is a discrete action, so it fetches immediately — it used
+	// to share the text box's 250ms timer, which made every chip click wait a
+	// quarter-second for no reason. `search` is read through `untrack` so this
+	// effect depends on `statusFilter` alone (the request still carries the
+	// live search term).
+	//
+	// Both effects skip their own mount-time run: a Svelte `$effect` always
+	// fires once immediately regardless of whether its tracked value actually
+	// changed, so without the guard each would queue a redundant `loadPos()`
+	// on top of the mount load above.
+	let statusEffectRan = false;
+	$effect(() => {
+		const s = statusFilter;
+		if (!statusEffectRan) {
+			statusEffectRan = true;
+			return;
+		}
+		void loadPos({ search: untrack(() => search), status: s });
+	});
+
+	let searchEffectRan = false;
 	$effect(() => {
 		const q = search;
-		const s = statusFilter;
-		if (!filterEffectRan) {
-			filterEffectRan = true;
+		if (!searchEffectRan) {
+			searchEffectRan = true;
 			return;
 		}
 		if (searchTimer) clearTimeout(searchTimer);
 		searchTimer = setTimeout(() => {
-			void loadPos({ search: q, status: s });
+			void loadPos({ search: q, status: untrack(() => statusFilter) });
 		}, 250);
+		// Cancel a pending debounce on teardown: without it the timer fires
+		// after the page is gone and lands a stale list into the shared store.
+		return () => {
+			if (searchTimer) clearTimeout(searchTimer);
+		};
 	});
 
 	$effect(() => {
@@ -106,9 +124,19 @@
 		void loadDetail(detailId);
 	});
 
+	// Sequences every `loadPos` call (mount, chip, debounced search, load-more —
+	// one shared counter, latest-issued wins) so a slow response for an earlier
+	// search/filter can't land after a faster later one and clobber the list,
+	// and so a load-more can't append the previous filter's page onto the new
+	// one. This page mutates nothing in place — `syncFromErp` re-fetches — so it
+	// needs no `supersedeInFlight()` call. See `frontend/CLAUDE.md` § Sequencing
+	// list fetches.
+	const fetchSequence = createRequestSequencer();
+
 	async function loadPos(
 		opts: { search?: string; status?: string; append?: boolean; nextPage?: number } = {}
 	) {
+		const token = fetchSequence.start();
 		loading = !opts.append;
 		try {
 			const nextPage = opts.nextPage ?? 1;
@@ -121,13 +149,17 @@
 			const data = await api.get<{ items: POListItem[]; total: number }>(
 				`/api/purchase-orders?${params}`
 			);
+			// Superseded by a newer load — discard rather than clobber.
+			if (!fetchSequence.canCommit(token)) return;
 			pos = opts.append ? appendUnique(pos, data.items) : data.items;
 			total = data.total;
 			page = nextPage;
 		} catch (err) {
+			// `isCurrentRequest`, not `canCommit`: only the newest request reports.
+			if (!fetchSequence.isCurrentRequest(token)) return;
 			toast(err instanceof Error ? err.message : m('purchaseOrders.toast.loadListFailed'), 'error');
 		} finally {
-			loading = false;
+			if (fetchSequence.isCurrentRequest(token)) loading = false;
 		}
 	}
 
@@ -183,7 +215,11 @@
 		<SearchBox bind:value={search} placeholder={m('purchaseOrders.search.placeholder')} ariaLabel={m('purchaseOrders.search.aria')} />
 		<FilterChips
 			chips={[
-				{ key: 'all', label: m('common.all'), count: total },
+				// `total` counts the CURRENT filter's result set, not the whole one,
+				// so rendering it on the All chip while another chip is active
+				// labelled the filtered count "All". Show it only while All IS the
+				// active filter, where the number is true.
+				{ key: 'all', label: m('common.all'), ...(statusFilter === 'all' ? { count: total } : {}) },
 				{ key: 'open', label: m('purchaseOrders.filter.open') },
 				{ key: 'closed', label: m('purchaseOrders.filter.closed') },
 				{ key: 'cancelled', label: m('purchaseOrders.filter.cancelled') }

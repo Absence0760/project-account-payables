@@ -34,9 +34,17 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#251](https://github.com/Absence0760/project-account-payables/issues/251)
 for the tracker view. Keep the two reconciled when either moves.
 
+<<<<<<< HEAD
 **Last reconciled:** 2026-08-18 against round 11 — a five-agent bug hunt, whose
 additions are in § Surfaced by the round-11 hunt. Like round 10 the pass is
 **additive**: nothing pre-existing was closed or re-verified.
+=======
+**Last reconciled:** 2026-08-18 against round 11 — the SvelteKit-frontend
+agent, which fixed 8 findings at the root (each reproduced by a failing test
+first) and recorded the rest in § Surfaced by the round-11 hunt (SvelteKit
+frontend). That pass is **additive** too: nothing pre-existing was closed or
+re-verified.
+>>>>>>> worktree-agent-a6c375ffdafb49cb5
 
 Before that: 2026-08-18 against round 10 — a five-agent bug hunt.
 Each agent fixed its findings at the root with a reproducing test first, and
@@ -1026,6 +1034,7 @@ shared temp-password generator). This is the one it confirmed but did not fix:
       the first integrator who opens the docs URL.
 
 
+<<<<<<< HEAD
 ### Surfaced by the round-11 hunt (multi-currency / e-invoicing), not fixed
 
 The multi-currency / multi-entity / e-invoicing agent of round 11 fixed 6
@@ -1243,6 +1252,177 @@ a mechanical one:
       **Trigger:** the next multi-entity slice, or the first pilot tenant that
       runs more than one entity with a shared supplier base.
 
+=======
+### Surfaced by the round-11 hunt (SvelteKit frontend), not fixed
+
+Round 11's frontend agent fixed 8 findings at the root, each with a reproducing
+test written first (the row-Delete gate on `/invoices`, the `/profile`
+full-name field, the search-debounce teardown across 13 surfaces, the six lists
+that claimed "Showing all N" over a capped page, the four list stores that
+rendered a failed load as an empty result set, the `/profile` passkey
+fail-closed, the `/exceptions` stale bulk selection, and the
+`/purchase-orders` sequencer + chip + All-count trio). These are the ones it
+confirmed by reading the exact code path but deliberately did not fix.
+
+**(c) — needs a backend leg first**
+
+- [ ] **`/requisitions` and `/expenses` search only ever matches rows already
+      loaded.** `routes/requisitions/+page.svelte` filters client-side over
+      `requisitions` (number / title / department) and never passes `search` to
+      `listRequisitions`; `routes/expenses/+page.svelte` does the same over
+      `expenseStore.all` and says so in a comment. Round 11 added Load-more to
+      both, so every row is now *reachable*, but a term matching a row on a
+      later page still finds nothing until the user pages to it. **Durable
+      fix:** send the term server-side. It is deferred because doing so today
+      would *regress* requisitions —
+      `backend/app/api/requisitions.py::list_requisitions` searches
+      `requisition_number` + `title` only, so a department-only match that the
+      client filter finds within the loaded page would start returning nothing.
+      Add the `department` leg (and an equivalent `search` param to the expense
+      list endpoint), then move both pages onto it and delete the client filter.
+      **Trigger:** the next backend slice touching either list endpoint.
+
+- [ ] **`/purchase-orders` has no whole-set count endpoint.** Round 11 stopped
+      the All chip rendering the *filtered* total as if it were the whole one,
+      by showing the count only while All is the active filter. The other
+      lists solve this properly with a search-aware `/counts` route
+      (`/api/vendors/counts`, `/api/payments/counts`, `/api/invoices/counts`).
+      **Durable fix:** add `GET /api/purchase-orders/counts` in the same shape
+      and give every chip a live count. **Trigger:** the next slice on the
+      purchase-orders API.
+
+- [ ] **The `/payments` queue offers rows the backend hard-409s.**
+      `GET /api/payments/queue` selects on payable status + not-already-paid and
+      returns nothing about exceptions, so every queue row is selectable — but
+      `services/payment_runs.create_payment_run_for_invoices` refuses the
+      **whole run** when any selected invoice carries an unresolved
+      `duplicate` / `fraud_flag` / `line_total_mismatch`. Select twenty rows
+      where one is blocked and the draft fails with no advance signal and no
+      indication which row is at fault. **Durable fix:** surface the blocking
+      exception on the queue payload (a `blocked` flag + reason), disable that
+      row's checkbox and label why. Frontend-only guesswork can't do it — the
+      queue endpoint has to say so. **Trigger:** the next payments slice.
+
+- [ ] **The payments pay-bar sums across currencies.** `selectedTotal` /
+      `selectedSavings` (`routes/payments/+page.svelte`) run `sumMoney` over the
+      selected queue rows and render the result in the org default currency,
+      while each row carries its own `currency`. A EUR 100 + USD 100 selection
+      reads as one number. This is **not** a frontend-only defect: the backend's
+      own `/queue` response computes `total_amount` / `total_savings` the same
+      way (`api/payments.py`), so a fix that starts in the UI would just
+      disagree with the API. **Durable fix:** decide the multi-currency rollup
+      rule once in `backend/docs/multi-currency.md` terms (group by currency, or
+      convert at a locked rate) and apply it on both sides. **Trigger:** the
+      first multi-currency tenant, or the next multi-currency slice.
+
+**(c) — frontend-only, sized and unstarted**
+
+- [ ] **`/notifications`' All chip shows the unread count while the Unread
+      filter is active.** `routes/notifications/+page.svelte` renders
+      `{key:'all', count: total}` and `{key:'unread', count: unread}`, but
+      `stores/notifications.svelte.ts::load` sets `total` from whichever
+      response it just took — including the `unread_only=true` one — so both
+      chips display the same number and one of them is mislabelled. Related:
+      `markAllRead` zeroes `unread` without refreshing `total`, so the footer's
+      "Showing all N" then describes a filter no row matches. **Durable fix:**
+      keep the unfiltered total separate from the filtered one in the store
+      (the shape `/vendors` uses), and refresh it after a mark-all.
+      **Trigger:** the next notifications slice.
+
+- [ ] **`/credit-memos` fires two unsequenced loads on mount and has no loading
+      state.** Both `$effect(() => { loadAll(); })` (which awaits `loadMemos`)
+      and `$effect(() => { statusFilter; loadMemos(); })` run on mount, so two
+      page-1 requests race and whichever lands last wins. `loadMemos` never
+      touches `loading`, so a status-chip change shows stale rows with no
+      spinner, and `hasMore` flickers off the losing response. **Durable fix:**
+      one `createRequestSequencer`, a `searchEffectRan`-style mount guard on the
+      filter effect, and `loading` set/cleared in `loadMemos` under
+      `isCurrentRequest` — the pattern `/budgets` and `/recurring` already
+      carry. **Trigger:** the next credit-memo slice.
+
+- [ ] **Several list loaders still have no request sequencer.** Round 11 closed
+      the last one with a *debounced search* (`/purchase-orders`). These have a
+      filter or a load-more but no debounce, so the race needs two fast clicks
+      rather than typing: `routes/exceptions/+page.svelte::loadExceptions`,
+      `routes/payments/+page.svelte::loadQueue`/`loadRuns`/`loadCards`,
+      `components/exceptions/AgentDashboard.svelte::loadDecisions`,
+      `routes/portal/discount-offers/+page.svelte::refresh`,
+      `routes/admin/webhooks/+page.svelte::loadDeliveries`,
+      `routes/goods-receipts/+page.svelte` and
+      `routes/credit-memos/+page.svelte` (load-more only). **Durable fix:** the
+      documented `createRequestSequencer` wiring, one sequencer per independent
+      list. **Trigger:** the next slice touching any of them; do them
+      opportunistically rather than as one sweep.
+
+- [ ] **`/workflows` holds a `Set<string>` selection it never prunes.**
+      `routes/workflows/+page.svelte` has no `pruneSelection` import, so a
+      `workflowStore.fetch()` / `loadMore()` (or the store's in-place mutators)
+      can drop a selected row while its id stays in `selectedIds` and gets fed
+      to `bulkRemove`. Lower risk than the queues because the page has no
+      filter or search — which is exactly why it was skipped. **Durable fix:**
+      the same `$effect` + `pruneSelection` guard `/invoices`, `/exceptions`,
+      `/expenses` and `/payments` carry. **Trigger:** the first filter or
+      search added to the workflows list.
+
+- [ ] **`timeAgo` is the one date helper the locale picker doesn't move.**
+      `utils/time.ts::timeAgo` returns hardcoded English ("Just now", "5m ago",
+      "2d ago") while its `formatDate` / `formatPeriod` siblings in the same
+      file localize off the active picker locale. It renders on
+      `/notifications` and the sidebar bell popover, so a German user sees
+      German labels around English relative times. **Durable fix:**
+      `Intl.RelativeTimeFormat` keyed on `getActiveFormatLocale()`, or ICU
+      plural message keys. **Trigger:** the next i18n slice.
+
+- [ ] **Money and dates don't re-render when the locale changes.**
+      `i18n/formatLocale.ts` is a deliberately framework-free holder (so pure
+      `money.ts` needn't import the Svelte runtime), which means `formatMoney` /
+      `formatDate` have no reactive dependency on it. `initLocale()` applies a
+      stored non-English locale asynchronously — the catalogue is a lazy
+      `import()` — so on a page load with `feoh_locale=de` the labels switch to
+      German (the `dict` rune re-renders every `m()` call site) while every
+      money cell and date stays in the browser locale until that component
+      remounts. **Durable fix:** give the holder a subscription the formatters'
+      call sites can read reactively (Svelte 5's `createSubscriber` keeps
+      `money.ts` importable under vitest's node environment), or set the format
+      locale synchronously in `initLocale` *before* awaiting the catalogue and
+      accept that a mid-session switch still needs a remount. Note the second is
+      a partial fix — say which one is being taken. **Trigger:** the next i18n
+      slice, or the first report of mixed-locale figures.
+
+- [ ] **`/invoices` bulk export hand-rolls `fetch`.**
+      `routes/invoices/+page.svelte::bulkExport` builds its own request because
+      it needs a POST that returns a blob and `api.downloadBlob` is GET-only. It
+      therefore omits `X-Entity-ID` (so the export isn't entity-scoped the way
+      the list it was selected from is) and skips the 401 clear-and-bounce.
+      **Durable fix:** add a `downloadBlobPost(path, body)` to `lib/api.ts`
+      composed from the same `authHeaders()` the streaming helper uses, and move
+      the call onto it. **Trigger:** the next slice touching invoice export, or
+      any new POST-returning-a-file endpoint.
+
+- [ ] **Fire-and-forget store loads leave unhandled promise rejections.** The
+      list-store loaders re-throw on purpose (so an awaiting caller keeps its own
+      handling — `/invoices`' post-upload toast depends on it), but the mount /
+      filter `$effect`s call them without `await` or `.catch`, so a failed load
+      logs `[Unhandled rejection] ApiError` in the console. Harmless today (the
+      new `errored` flag is what the UI reads) but noisy, and it hides real
+      rejections. **Durable fix:** `.catch(() => {})` at the fire-and-forget
+      call sites with a comment pointing at the store's `errored` flag.
+      **Trigger:** the next slice touching those effects.
+
+**(c) — a product call, not a defect**
+
+- [ ] **`/discounts` locks out `ap_clerk` although the API grants it read.**
+      `routes/discounts/+page.svelte` redirects anyone who isn't
+      admin / ap_manager / cfo, and its comment claims "the backend 403s
+      everyone else" — but `api/discounts.py::_READ_ROLES` includes
+      `ROLE_AP_CLERK`, so the dashboard, the offer list and the per-invoice ROI
+      are all readable by a clerk. `nav.ts` hides the link from clerks too, so
+      this is a closed, consistent product decision rather than a dead end —
+      but the code comment is wrong and the two layers disagree with the API.
+      **Durable fix:** decide which is intended, then make all three agree (open
+      the page + nav to clerks, or narrow `_READ_ROLES`). Fix the comment either
+      way. **Trigger:** the next RBAC review or discounts slice.
+>>>>>>> worktree-agent-a6c375ffdafb49cb5
 
 
 ### AI Cash-Flow Copilot — Phase 3 deferred bucket

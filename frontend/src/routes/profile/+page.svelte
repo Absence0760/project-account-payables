@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { api } from '$lib/api';
 	import { toast } from '$lib/components/ui/Toast.svelte';
@@ -70,9 +71,16 @@
 	let savingPassword = $state(false);
 
 	$effect(() => {
-		// Sync local edit field when the user loads / changes
-		if (auth.user && !fullName) {
-			fullName = auth.user.full_name;
+		// Seed the local edit field once the user record lands (and again if the
+		// account itself changes). `fullName` is read through `untrack`: a tracked
+		// read would make this effect depend on the very state it writes, so
+		// backspacing the input to empty re-fired it and instantly re-filled the
+		// field with the stored name — the user could never clear it to retype.
+		// Depending on `auth.user` alone keeps the seed while leaving the field
+		// entirely under the user's control once it exists.
+		const u = auth.user;
+		if (u && !untrack(() => fullName)) {
+			fullName = u.full_name;
 		}
 	});
 
@@ -181,6 +189,8 @@
 	let passkeyPassword = $state('');
 	let registeringPasskey = $state(false);
 	let passkeysLoaded = $state(false);
+	let passkeysError = $state(false);
+	let passkeysBusy = $state(false);
 	const webAuthnOk = isWebAuthnSupported();
 
 	$effect(() => {
@@ -192,10 +202,29 @@
 	async function loadPasskeys() {
 		try {
 			passkeys = await auth.listPasskeys();
+			passkeysError = false;
 		} catch {
-			passkeys = [];
+			// Keep the list unknown (`null`), never an empty array. An empty array
+			// is a *claim* — "this account has no passkeys" — and the step-up
+			// decision below is built on it, so a failed fetch used to both tell
+			// the user their passkeys were gone and disarm the proof the server
+			// still demands, turning every Add/Remove into an opaque 400.
+			passkeys = null;
+			passkeysError = true;
 		} finally {
 			passkeysLoaded = true;
+		}
+	}
+
+	/** Retry wrapper — `loadPasskeys` can't reset `passkeysLoaded` itself (the
+	 * mount `$effect` keys off it and would re-fire), so the busy state carries
+	 * the feedback instead. Mirrors `retrySessions` below. */
+	async function retryPasskeys() {
+		passkeysBusy = true;
+		try {
+			await loadPasskeys();
+		} finally {
+			passkeysBusy = false;
 		}
 	}
 
@@ -203,14 +232,22 @@
 	// operation server-side — otherwise a stolen session could bind an
 	// attacker's authenticator. Mirror that here so the form asks for the
 	// password only when it's actually required.
+	// Fails CLOSED on an unknown list: if the fetch failed we cannot rule out a
+	// live factor, and the server will demand a proof regardless — so ask for
+	// one rather than submit without and collect an opaque 400.
 	const needsPasskeyStepUp = $derived(
-		Boolean(auth.user?.mfa_enabled) || (passkeys?.length ?? 0) > 0,
+		Boolean(auth.user?.mfa_enabled) || (passkeys?.length ?? 0) > 0 || passkeysError,
 	);
 	// A registered passkey is itself a step-up credential. That matters most for
 	// an SSO-only account: no password, no authenticator code, so without this
 	// its passkey is the only thing it can be challenged on — and factor
 	// management would otherwise be closed to it entirely.
-	const hasPasskey = $derived((passkeys?.length ?? 0) > 0 && webAuthnOk);
+	// `passkeysError` counts here too: the step-up ceremony's options come from
+	// the server (`POST /auth/mfa/step-up/passkey`), not from this list, so a
+	// failed list fetch is no reason to withhold the one credential an SSO-only
+	// account has. If there really is no passkey the server refuses — which is
+	// the honest answer, not a bypass.
+	const hasPasskey = $derived(((passkeys?.length ?? 0) > 0 || passkeysError) && webAuthnOk);
 	const canStepUp = $derived(!needsPasskeyStepUp || Boolean(passkeyPassword) || hasPasskey);
 
 	/** Whichever proof the user has actually offered. A typed password wins (it
@@ -631,6 +668,20 @@
 							</li>
 						{/each}
 					</ul>
+				{:else if passkeysError}
+					<p class="warn">
+						Couldn't load your passkeys, so we can't say which ones are registered.
+					</p>
+					<div class="actions">
+						<button
+							type="button"
+							class="secondary"
+							disabled={passkeysBusy}
+							onclick={retryPasskeys}
+						>
+							{passkeysBusy ? 'Retrying…' : 'Try again'}
+						</button>
+					</div>
 				{:else if passkeysLoaded}
 					<div class="status disabled">No passkeys yet</div>
 				{/if}

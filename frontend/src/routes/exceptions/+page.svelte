@@ -148,8 +148,6 @@
 			exceptions = opts.append ? appendUnique(exceptions, data.items) : data.items;
 			total = data.total;
 			page = nextPage;
-			// Drop selections for ids that fell off the list.
-			selectedIds = pruneSelection(selectedIds, exceptions.map((e) => e.id));
 		} catch {
 			errored = true;
 			if (!opts.append) exceptions = [];
@@ -157,6 +155,13 @@
 		} finally {
 			loadingMore = false;
 			loading = false;
+			// Prune on BOTH paths, against the rows the bulk action can actually
+			// act on. The catch empties the table, and it used to leave the
+			// selection behind it — the bulk bar counted ids over zero visible
+			// rows and Resolve would still POST them. Scoping to `selectableIds`
+			// (open / escalated) rather than every loaded row also drops a
+			// selection whose exception someone else resolved between loads.
+			selectedIds = pruneSelection(selectedIds, selectableIds);
 		}
 	}
 

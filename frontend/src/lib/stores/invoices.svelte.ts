@@ -17,6 +17,14 @@ function createInvoiceStore() {
 	let page = $state(1);
 	let statusCounts = $state<Record<string, number>>({});
 	let lastParams = $state<Record<string, string>>({});
+	// Did the most recent (non-append) load fail? The list empty-state reads
+	// this: without it a 500 / offline backend leaves `all` empty and the table
+	// renders "No … match your filters." — an outage indistinguishable from a
+	// filter that matched nothing. Set only when this is still the newest
+	// request (`isCurrentRequest`, the same rule the `loading` flag uses), and
+	// the error is re-thrown so callers that await a refresh keep their own
+	// error handling.
+	let errored = $state(false);
 
 	// Sequences `fetch`/`loadMore` calls (they share one counter — whichever
 	// was issued last wins) so a slow response for an earlier search/filter
@@ -40,6 +48,10 @@ function createInvoiceStore() {
 			total = res.total;
 			page = res.page;
 			lastParams = params ?? {};
+			errored = false;
+		} catch (err) {
+			if (fetchSequence.isCurrentRequest(token)) errored = true;
+			throw err;
 		} finally {
 			if (fetchSequence.isCurrentRequest(token)) loading = false;
 		}
@@ -100,6 +112,7 @@ function createInvoiceStore() {
 		get total() { return total; },
 		get page() { return page; },
 		get hasMore() { return invoices.length < total; },
+		get errored() { return errored; },
 		get statusCounts() { return statusCounts; },
 		fetch,
 		loadMore,

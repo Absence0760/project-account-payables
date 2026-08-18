@@ -158,6 +158,7 @@ export const en = {
 	'invoices.col.status': 'Status',
 	'invoices.selectAllAria': 'Select all invoices',
 	'invoices.empty': 'No invoices match your filters.',
+	'invoices.empty.errored': 'Could not load invoices. Try again.',
 	'invoices.row.delete': 'Delete',
 	'invoices.row.confirm': 'Confirm',
 	'invoices.loadMore': 'Load more ({shown} of {total})',
@@ -209,6 +210,7 @@ export const en = {
 	'payments.selectAllPayableAria': 'Select all payable invoices',
 	'payments.overdue': 'Overdue',
 	'payments.history.empty': 'No payments match your filters.',
+	'payments.history.empty.errored': 'Could not load payments. Try again.',
 	'payments.history.remittance': 'Remittance',
 	'payments.history.void': 'Void',
 	'payments.history.complianceRelease': 'Release',
@@ -355,6 +357,7 @@ export const en = {
 	'contracts.col.value': 'Value',
 	'contracts.col.spend': 'Spend',
 	'contracts.empty': 'No contracts match your filters.',
+	'contracts.empty.errored': 'Could not load contracts. Try again.',
 	'contracts.notFound': 'Contract not found',
 	'contracts.row.open': 'Open contract {number}',
 	'contracts.overSpendLimit': 'Over spend limit',
@@ -1026,6 +1029,7 @@ export const en = {
 	'expenses.search.aria': 'Search expenses',
 	'expenses.loading': 'Loading…',
 	'expenses.empty': 'No expenses match your filters.',
+	'expenses.empty.errored': 'Could not load expenses. Try again.',
 	'expenses.col.date': 'Date',
 	'expenses.col.merchant': 'Merchant',
 	'expenses.col.category': 'Category',
@@ -1077,6 +1081,7 @@ export const en = {
 	'expenses.reports.col.amount': 'Amount',
 	'expenses.reports.openAria': 'Open report {number}',
 	'expenses.reports.empty': 'No expense reports yet.',
+	'expenses.reports.loadMore': 'Load more ({shown} of {total})',
 	'expenses.reports.showingAll': '{total, plural, one {Showing all # report} other {Showing all # reports}}',
 	'expenses.reports.toast.created': 'Report created',
 	'expenses.reports.toast.createFailed': 'Create failed',
@@ -1131,6 +1136,7 @@ export const en = {
 	'expenses.cards.unmatch': 'Unmatch',
 	'expenses.cards.ignore': 'Ignore',
 	'expenses.cards.empty': 'No card transactions. Import a CSV or sync virtual cards.',
+	'expenses.cards.loadMore': 'Load more ({shown} of {total})',
 	'expenses.cards.showingAll': '{total, plural, one {Showing all # transaction} other {Showing all # transactions}}',
 	'expenses.cards.toast.loadFailed': 'Failed to load card transactions',
 	'expenses.cards.toast.imported': '{n, plural, one {Imported # transaction} other {Imported # transactions}}',
@@ -1269,6 +1275,7 @@ export const en = {
 	'requisitions.toast.deleted': 'Requisition deleted',
 	'requisitions.toast.deleteFailed': 'Delete failed',
 	'requisitions.toast.loadFailed': 'Failed to load requisitions',
+	'requisitions.loadMore': 'Load more ({shown} of {total})',
 	'requisitions.showingAll':
 		'{total, plural, one {Showing all # requisition} other {Showing all # requisitions}}',
 
@@ -1353,6 +1360,7 @@ export const en = {
 	'intake.toast.alreadyConverted': 'Already converted ({number})',
 	'intake.toast.convertFailed': 'Convert failed',
 	'intake.toast.loadFailed': 'Failed to load intake requests',
+	'intake.loadMore': 'Load more ({shown} of {total})',
 	'intake.showingAll':
 		'{total, plural, one {Showing all # request} other {Showing all # requests}}',
 
@@ -1423,6 +1431,7 @@ export const en = {
 	'catalogs.guided.catalogLabel': 'Catalog: {name}',
 	'catalogs.guided.contractLabel': 'Contract: {number}',
 	'catalogs.guided.preferredTag': 'Preferred',
+	'catalogs.loadMore': 'Load more ({shown} of {total})',
 	'catalogs.showingAll':
 		'{total, plural, one {Showing all # catalog} other {Showing all # catalogs}}',
 
@@ -1533,6 +1542,7 @@ export const en = {
 	'budgets.toast.deleted': 'Budget deleted',
 	'budgets.toast.deleteFailed': 'Delete failed',
 	'budgets.toast.loadFailed': 'Failed to load budgets',
+	'budgets.loadMore': 'Load more ({shown} of {total})',
 	'budgets.showingAll':
 		'{total, plural, one {Showing all # budget} other {Showing all # budgets}}',
 
