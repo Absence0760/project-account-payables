@@ -5,8 +5,34 @@ from app.services.extraction_adapters.base import (
     ExtractedLineItem,
     ExtractionAdapter,
     ExtractionResult,
+    coerce_confidence,
 )
 from app.services.extraction_adapters.dispatcher import register_extraction_adapter
+
+
+def _field_confidence(field: dict) -> float:
+    """How much to trust this Textract summary/line field, in 0.0-1.0.
+
+    Textract reports TWO confidences per field and they answer different
+    questions: ``Type.Confidence`` is "is this field the TOTAL?" and
+    ``ValueDetection.Confidence`` is "does it really say 1500.00?". This adapter
+    read only the first, so a crisply-classified but barely-legible figure —
+    type 99.5, value 41.0 — arrived as 0.995. That is the number the
+    auto-approve gate and the per-field review flags key off, so a total the OCR
+    was 41% sure of presented as a 99% read.
+
+    Both must hold for the mapped field to be worth trusting, so take the
+    lower. Textract's scale is 0-100; the shared ``coerce_confidence`` bounds
+    the result (a missing key is 0 — conservative, and the right default when
+    we cannot tell how good a read was).
+    """
+    type_conf = field.get("Type", {}).get("Confidence", 0)
+    value_conf = field.get("ValueDetection", {}).get("Confidence", 0)
+    try:
+        lower = min(float(type_conf), float(value_conf))
+    except (TypeError, ValueError):
+        return 0.0
+    return coerce_confidence(lower / 100)
 
 
 @register_extraction_adapter("aws_textract")
@@ -86,7 +112,7 @@ class AWSTextractAdapter(ExtractionAdapter):
                 field_type = field.get("Type", {}).get("Text", "")
                 value_obj = field.get("ValueDetection", {})
                 value = value_obj.get("Text")
-                confidence = field.get("Type", {}).get("Confidence", 0) / 100
+                confidence = _field_confidence(field)
 
                 attr_name = field_map.get(field_type)
                 if attr_name and value:
@@ -99,7 +125,7 @@ class AWSTextractAdapter(ExtractionAdapter):
                     for field in item.get("LineItemExpenseFields", []):
                         field_type = field.get("Type", {}).get("Text", "")
                         value = field.get("ValueDetection", {}).get("Text")
-                        conf = field.get("Type", {}).get("Confidence", 0) / 100
+                        conf = _field_confidence(field)
                         if field_type == "ITEM" and value:
                             li.description = ExtractedField(value, conf)
                         elif field_type == "QUANTITY" and value:
