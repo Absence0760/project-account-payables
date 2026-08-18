@@ -331,6 +331,72 @@ The hunt (branch `fix/bug-hunt-round-9`) confirmed ~50 findings and fixed 31
 at the root. These are the remainder — each real and reproduced, each larger
 than a bug fix or a product call rather than a defect:
 
+- [ ] **The email-intake webhook acks `200` on an internal failure, so a
+      transient outage silently loses the invoice — and the release-on-failure
+      code exists precisely for a retry that can now never come.**
+      `services/email_intake.process_inbound_email` releases its Redis dedup
+      claim and **re-raises** on any downstream failure (S3 / tenant DB /
+      Redis), commenting that this "lets the NEXT delivery of the same
+      message_id actually retry the work". `api/email_intake.py:129` then
+      catches that re-raise and returns the opaque `_ack()` — a `200`, which
+      tells SES / Mailgun the message was delivered, so there is no next
+      delivery. The vendor's invoice is gone with only a log line.
+      `api/billing_webhook.py` faced the identical choice and went the other
+      way ("we re-raise (→ 5xx) so the provider retries"); `api/erp_webhook.py`
+      has the same swallow-to-204 shape.
+      **The catch:** `backend/docs/email-intake.md` § "What the response does
+      NOT tell you" documents the uniform ack as covering "an internal error
+      while creating the invoice" — the stated reason being that the intake
+      signing secret is platform-wide, so a response that varies by outcome is
+      a per-tenant-token oracle. Returning 5xx only on OUR failure narrows that
+      oracle to "while the platform is already broken", which is a real but far
+      smaller exposure than losing invoices on every blip.
+      **Durable fix:** distinguish *decisions* (unknown/disabled token,
+      duplicate, no usable attachment, success → uniform 200 ack, unchanged)
+      from *our own failures* (→ a bodyless 5xx so the provider redelivers),
+      apply the same split to `erp_webhook`, and update the doc section + a
+      `decisions.md` entry recording the trade-off.
+      **Trigger:** a call on the oracle-vs-data-loss trade-off — this is the
+      decision, not the work; the work is a few lines in two routes.
+- [ ] **Scheduled reports drift later every run.**
+      `services/scheduled_reports.execute_schedule` bumps
+      `next_run_at = compute_next_run(cadence, now)` — from the moment the tick
+      happened to run, not from the `next_run_at` it was due at. The sweep
+      ticks hourly (`FEOH_SCHEDULED_REPORTS_TICK_SECONDS`), so a "daily 09:00"
+      report lands up to an hour later each day and walks around the clock
+      inside a month. Deliberately grouped with the entry below rather than
+      fixed on its own: the feature has no CRUD surface, so no row exists to
+      drift yet.
+      **Durable fix:** advance from the scheduled `next_run_at`, catching up in
+      whole cadence steps when a run is missed (never emitting a backlog burst).
+      **Trigger:** whichever way the `ScheduledReport` product call below goes —
+      fix it with the CRUD surface, or delete it with the model.
+- [ ] **A failed ERP post writes the provider's raw response body into the
+      append-only audit trail.** The three real ERP adapters build their failure
+      message from the response verbatim —
+      `backend/app/services/erp_adapters/netsuite.py:173`,
+      `merge_dev.py:174`, `dynamics_365_bc.py:178` all do
+      `message=f"… error {resp.status_code}: {resp.text}"`. `services/erp.py`
+      raises `RuntimeError(result.message)` and then stores `str(exc)` into
+      `details={"error": …}` on the `invoice.erp_failed` audit row (and into
+      `WorkflowInstance.state_data["last_error"]`). An ERP's validation error
+      routinely echoes the submitted fields back, and `InvoicePayload` carries
+      `vendor_tax_id`, `vendor_address`, `remit_to_address` and
+      `bill_to_address` — so that PII lands in an **immutable** row (migration
+      0022's BEFORE-DELETE trigger) and is then shipped to CloudWatch / S3
+      Object Lock by `audit_log_shipper`, where it cannot be redacted either.
+      It is also surfaced to every AP user through the audit export. Note the
+      same file already gets this right elsewhere: `stripe_billing._request`
+      raises `f"Stripe {op} failed: HTTP {resp.status_code}"` and has a test
+      pinning that the body never appears.
+      **Durable fix:** stop putting a provider body in `ResponseResult.message`
+      — carry the status code + a stable adapter-side reason code, and give the
+      adapters a separate, non-audited diagnostic channel for the body (or drop
+      it). The product call this needs is *where an ERP rejection's detail
+      should live* now that the audit row can't hold it, because today the
+      `last_error` is the only thing an AP user can act on.
+      **Trigger:** the next slice touching ERP failure handling or the ERP
+      adapter error contract.
 - [ ] **Every supplier-portal list truncates at 20 rows with no pager.**
       `frontend/src/routes/portal/{invoices,payments,purchase-orders,discount-offers}/+page.svelte`
       each fetch the bare URL, read only `res.items`, declare `total` and never
