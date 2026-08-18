@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { api } from '$lib/api';
 	import { toast } from '$lib/components/ui/Toast.svelte';
@@ -70,9 +71,16 @@
 	let savingPassword = $state(false);
 
 	$effect(() => {
-		// Sync local edit field when the user loads / changes
-		if (auth.user && !fullName) {
-			fullName = auth.user.full_name;
+		// Seed the local edit field once the user record lands (and again if the
+		// account itself changes). `fullName` is read through `untrack`: a tracked
+		// read would make this effect depend on the very state it writes, so
+		// backspacing the input to empty re-fired it and instantly re-filled the
+		// field with the stored name — the user could never clear it to retype.
+		// Depending on `auth.user` alone keeps the seed while leaving the field
+		// entirely under the user's control once it exists.
+		const u = auth.user;
+		if (u && !untrack(() => fullName)) {
+			fullName = u.full_name;
 		}
 	});
 
