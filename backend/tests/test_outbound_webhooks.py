@@ -22,6 +22,8 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -539,3 +541,311 @@ def test_payload_money_is_string_not_float():
     assert _money_str(None) is None
     # And it round-trips through json without a float.
     assert json.loads(json.dumps({"amount": _money_str(Decimal("0.10"))}))["amount"] == "0.10"
+
+
+# ---------------------------------------------------------------------------
+# event_id must identify the OCCURRENCE, not the entity (bug-hunt #9).
+# ---------------------------------------------------------------------------
+
+
+def test_occurrence_key_mints_a_fresh_id_when_none_given():
+    from app.services.webhooks.dispatch import _occurrence_key
+
+    keys = {_occurrence_key(None) for _ in range(20)}
+    assert len(keys) == 20
+
+
+def test_occurrence_key_is_stable_for_a_supplied_id():
+    """The SAME occurrence must produce the SAME key — that is what makes a
+    replay of one transition dedupe instead of double-delivering."""
+    from app.services.webhooks.dispatch import _occurrence_key
+
+    occ = uuid.uuid4()
+    assert _occurrence_key(occ) == _occurrence_key(occ) == str(occ)
+
+
+def test_event_id_fits_the_column():
+    """`webhook_deliveries.event_id` is String(64)."""
+    from app.models.webhook import EVENT_PAYMENT_SETTLED
+    from app.services.webhooks.dispatch import _occurrence_key
+
+    event_id = f"{EVENT_PAYMENT_SETTLED}:{_occurrence_key(uuid.uuid4())}"
+    assert len(event_id) <= 64
+
+
+@pytest.mark.asyncio
+async def test_transition_mints_a_new_occurrence_per_transition(monkeypatch):
+    """`approved` is reachable more than once for one invoice (void → re-approve).
+
+    Each arrival must carry its own occurrence id, or the second one is
+    swallowed by the `(subscription_id, event_id)` dedupe index and the
+    customer's ERP is never told the invoice was voided and re-approved.
+    """
+    from unittest.mock import AsyncMock
+
+    from app.models.invoice import InvoiceStatus
+    from app.services import webhooks as webhooks_pkg
+    from app.services import workflow_engine as we
+
+    captured: list = []
+
+    async def _fake_emit(invoice, *, occurrence_id=None):
+        captured.append(occurrence_id)
+
+    monkeypatch.setattr(webhooks_pkg, "emit_invoice_approved", _fake_emit)
+    monkeypatch.setattr(we, "dispatch_audit", AsyncMock())
+    monkeypatch.setattr(we, "_maybe_notify_transition", AsyncMock())
+
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    invoice = SimpleNamespace(
+        id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        correlation_id=uuid.uuid4(),
+        status=InvoiceStatus.ready_for_review,
+    )
+    db = MagicMock()
+
+    await we.transition_invoice(db, invoice, InvoiceStatus.approved, action_name="invoice.approved")
+    # `POST /api/payments/{id}/void` takes a paid invoice back to `approved`.
+    invoice.status = InvoiceStatus.paid
+    await we.transition_invoice(db, invoice, InvoiceStatus.approved, action_name="invoice.approved")
+
+    assert len(captured) == 2
+    assert all(occ is not None for occ in captured)
+    assert captured[0] != captured[1], "a second genuine approval must be a NEW event"
+
+
+@pytest.mark.asyncio
+async def test_re_approval_of_the_same_invoice_queues_a_second_delivery(realdb, monkeypatch):
+    """Two occurrences of `invoice.approved` on ONE invoice → two deliveries.
+
+    Regression: `event_key` used to be the invoice id, so the second approval
+    collided with the first on `uq_webhook_delivery_sub_event` and was dropped
+    on the `IntegrityError` branch — silently.
+    """
+    from sqlalchemy import select
+
+    from app.config import settings
+    from app.services.webhooks import dispatch as dispatch_mod
+
+    org_id = realdb.info("a").org_id
+    control_mk = realdb.control_sessionmaker()
+    sub, _ = _make_sub_and_delivery(org_id)
+    sub.event_types = [EVENT_INVOICE_APPROVED]
+    await _persist(control_mk, sub)
+
+    monkeypatch.setattr(settings, "webhooks_enabled", True)
+    monkeypatch.setattr(dispatch_mod, "_spawn_immediate_attempt", lambda did: None)
+
+    invoice = SimpleNamespace(
+        id=uuid.uuid4(),
+        organization_id=org_id,
+        invoice_number="INV-9",
+        vendor_name="Acme",
+        amount=Decimal("100.00"),
+        currency="USD",
+        status=SimpleNamespace(value="approved"),
+    )
+
+    async def _rows():
+        async with control_mk() as s:
+            return (
+                (
+                    await s.execute(
+                        select(WebhookDelivery).where(WebhookDelivery.subscription_id == sub.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+    try:
+        first, second = uuid.uuid4(), uuid.uuid4()
+        await dispatch_mod.emit_invoice_approved(invoice, occurrence_id=first)
+        await dispatch_mod.emit_invoice_approved(invoice, occurrence_id=second)
+
+        rows = await _rows()
+        assert len(rows) == 2, "each genuine approval must queue its own delivery"
+        assert {r.event_id for r in rows} == {
+            f"{EVENT_INVOICE_APPROVED}:{first}",
+            f"{EVENT_INVOICE_APPROVED}:{second}",
+        }
+        # The payload's own `id` is the same occurrence-unique value, so a
+        # receiver deduping on X-Webhook-Event-Id keeps both too.
+        assert {r.payload["id"] for r in rows} == {r.event_id for r in rows}
+
+        # Replaying the FIRST occurrence still dedupes — no third row.
+        await dispatch_mod.emit_invoice_approved(invoice, occurrence_id=first)
+        assert len(await _rows()) == 2
+    finally:
+        await _cleanup(control_mk, sub.id)
+
+
+@pytest.mark.asyncio
+async def test_re_settlement_of_the_same_invoice_queues_a_second_delivery(realdb, monkeypatch):
+    """Void-and-re-pay settles one invoice twice; both must be delivered."""
+    from sqlalchemy import select
+
+    from app.config import settings
+    from app.services.webhooks import dispatch as dispatch_mod
+
+    org_id = realdb.info("a").org_id
+    control_mk = realdb.control_sessionmaker()
+    sub, _ = _make_sub_and_delivery(org_id)
+    sub.event_types = [EVENT_PAYMENT_SETTLED]
+    await _persist(control_mk, sub)
+
+    monkeypatch.setattr(settings, "webhooks_enabled", True)
+    monkeypatch.setattr(dispatch_mod, "_spawn_immediate_attempt", lambda did: None)
+
+    invoice = SimpleNamespace(
+        id=uuid.uuid4(),
+        organization_id=org_id,
+        invoice_number="INV-10",
+        vendor_name="Acme",
+        amount=Decimal("250.00"),
+        currency="USD",
+        status=SimpleNamespace(value="paid"),
+    )
+
+    try:
+        await dispatch_mod.emit_payment_settled(invoice, occurrence_id=uuid.uuid4())
+        await dispatch_mod.emit_payment_settled(invoice, occurrence_id=uuid.uuid4())
+        async with control_mk() as s:
+            rows = (
+                (
+                    await s.execute(
+                        select(WebhookDelivery).where(WebhookDelivery.subscription_id == sub.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert len(rows) == 2
+        # Money still serialises exactly, never as a float.
+        assert {r.payload["data"]["amount"] for r in rows} == {"250.00"}
+    finally:
+        await _cleanup(control_mk, sub.id)
+
+
+# ---------------------------------------------------------------------------
+# A due delivery is CLAIMED before it is sent (bug-hunt #9).
+# ---------------------------------------------------------------------------
+
+
+def _post_recorder(monkeypatch, code: int = 200):
+    """Stub `_post`, recording the delivery ids it was asked to send."""
+    sent: list = []
+
+    async def fake_post(target_url, body, signature, delivery, previous_signature=None):
+        sent.append(delivery.id)
+        return code
+
+    monkeypatch.setattr(delivery_mod, "_post", fake_post)
+    return sent
+
+
+@pytest.mark.asyncio
+async def test_deliver_due_skips_a_delivery_another_worker_holds(realdb, monkeypatch):
+    """`emit_event` commits the row due-now and THEN spawns the immediate
+    attempt, so a sweep tick landing in that window used to POST the same
+    delivery a second time — and the two commits raced on `attempt_count`, so
+    a transient outage dead-lettered after ~5/N rounds instead of 5 attempts.
+    """
+    from sqlalchemy import select
+
+    org_id = realdb.info("a").org_id
+    control_mk = realdb.control_sessionmaker()
+    sub, dlv = _make_sub_and_delivery(org_id)
+    dlv.next_attempt_at = datetime.now(UTC) - timedelta(seconds=1)
+    await _persist(control_mk, sub, dlv)
+    sent = _post_recorder(monkeypatch)
+
+    try:
+        async with control_mk() as holder:
+            # Stand in for the worker already sending this delivery.
+            await holder.execute(
+                select(WebhookDelivery).where(WebhookDelivery.id == dlv.id).with_for_update()
+            )
+            async with control_mk() as sweeper:
+                await delivery_mod.deliver_due(sweeper)
+            assert dlv.id not in sent, "a delivery in flight must not be POSTed twice"
+            await holder.rollback()
+
+        # Once the claim is released the sweep picks it up normally.
+        async with control_mk() as sweeper:
+            await delivery_mod.deliver_due(sweeper)
+        assert sent.count(dlv.id) == 1
+
+        async with control_mk() as s:
+            row = await s.get(WebhookDelivery, dlv.id)
+            assert row.status == DELIVERY_DELIVERED
+            assert row.attempt_count == 1
+    finally:
+        await _cleanup(control_mk, sub.id)
+
+
+@pytest.mark.asyncio
+async def test_immediate_attempt_skips_a_delivery_the_sweep_holds(realdb, monkeypatch):
+    """The fire-and-forget attempt from `emit_event` claims the row too."""
+    from sqlalchemy import select
+
+    org_id = realdb.info("a").org_id
+    control_mk = realdb.control_sessionmaker()
+    sub, dlv = _make_sub_and_delivery(org_id)
+    await _persist(control_mk, sub, dlv)
+    sent = _post_recorder(monkeypatch)
+
+    # `process_delivery_by_id` opens its OWN control session — point it at the
+    # test harness's control DB.
+    monkeypatch.setattr("app.database.control_session_factory", control_mk)
+
+    try:
+        async with control_mk() as holder:
+            await holder.execute(
+                select(WebhookDelivery).where(WebhookDelivery.id == dlv.id).with_for_update()
+            )
+            await delivery_mod.process_delivery_by_id(dlv.id)
+            assert sent == []
+            await holder.rollback()
+
+        await delivery_mod.process_delivery_by_id(dlv.id)
+        assert sent == [dlv.id]
+    finally:
+        await _cleanup(control_mk, sub.id)
+
+
+@pytest.mark.asyncio
+async def test_deliver_due_returns_only_the_deliveries_it_claimed(realdb, monkeypatch):
+    """The count the sweep reports is attempts MADE, not rows seen — a skipped
+    (already-claimed) row must not be counted as progress."""
+    from sqlalchemy import select
+
+    org_id = realdb.info("a").org_id
+    control_mk = realdb.control_sessionmaker()
+    sub, dlv = _make_sub_and_delivery(org_id)
+    dlv.next_attempt_at = datetime.now(UTC) - timedelta(seconds=1)
+    await _persist(control_mk, sub, dlv)
+    sent = _post_recorder(monkeypatch)
+
+    try:
+        async with control_mk() as holder:
+            await holder.execute(
+                select(WebhookDelivery).where(WebhookDelivery.id == dlv.id).with_for_update()
+            )
+            async with control_mk() as sweeper:
+                attempted = await delivery_mod.deliver_due(sweeper, limit=50)
+            await holder.rollback()
+        assert dlv.id not in sent
+        # Every counted attempt was actually sent — the skipped row is not
+        # reported as progress the retry budget already paid for.
+        assert attempted == len(sent)
+
+        async with control_mk() as s:
+            row = await s.get(WebhookDelivery, dlv.id)
+            assert row.attempt_count == 0
+            assert row.status == DELIVERY_PENDING
+    finally:
+        await _cleanup(control_mk, sub.id)

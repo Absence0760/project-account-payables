@@ -827,6 +827,20 @@ settlement exactly where it was. The conversion helpers likewise return `None`
 (never `Decimal("0")`) for anything unparseable, so an absent figure can never
 read as a total under-settlement.
 
+**One recorder, both paths.** Fetching the missing figure, running
+`verify_settlement`, persisting `settled_amount`/`settled_currency` and raising
+the `fraud_flag` on a discrepancy all live in
+`services/payment_settlement_record.py`, and the webhook and the reconciler
+call the *same* functions. They had drifted: the backstop persisted a figure
+and stopped there — no verdict, no `details.settlement` on the audit row, no
+exception. So a rail reporting a 10× overpayment settled silently (over-
+settlement is `covered` by design, so `payment_erp_sync` marked the invoice
+`paid`), and a short settlement stranded the invoice at `payment_scheduled`
+with nothing in the queue to explain it. Because `payment_webhook` refuses an
+already-terminal payment, a late webhook could never supply the missing
+verdict either. The verdict now rides the reconciler's append-only audit row
+exactly as it does the webhook's, on every completion.
+
 **Tests:** `tests/test_payment_settlement.py` (the verdict table + the coverage
 classifier), `tests/test_payment_settlement_adapters.py` (per-provider
 extraction + the minor-unit exponent round-trip),
@@ -1190,7 +1204,7 @@ Decimal `amount` as a string, and the reference — never bank/account values.
 | Action | Trigger | Entity |
 |---|---|---|
 | `payment_run.executed` | A run is executed (`POST /runs/{id}/execute`); rolls up `payments_completed` / `_in_flight` / `_failed` / `cards_issued` + `total_amount` | `payment_run` |
-| `payment.completed` | A child payment settled (mock adapter or, in prod, a webhook). A webhook-driven completion also carries `details.settlement` — the settlement-amount verdict (`matched` / `amount_mismatch` / `currency_mismatch` / `unverified`) with the settled + authorized amounts as exact strings and the signed variance. See § Settlement-amount verification | `payment` |
+| `payment.completed` | A child payment settled (mock adapter or, in prod, a webhook). Any completion that ran the settlement verifier — the webhook path AND the reconciler backstop — also carries `details.settlement` — the settlement-amount verdict (`matched` / `amount_mismatch` / `currency_mismatch` / `unverified`) with the settled + authorized amounts as exact strings and the signed variance. See § Settlement-amount verification | `payment` |
 | `payment.failed` | A child payment failed during execution | `payment` |
 | `payment.submitted` / `payment.processing` | A child payment is in flight awaiting the processor webhook | `payment` |
 | `payment.pending_compliance` | A child payment held by the sanctions/KYC gate | `payment` |

@@ -217,7 +217,12 @@ void main() {
     expect(find.byIcon(Icons.logout), findsOneWidget);
   });
 
-  testWidgets('tapping Sign Out logs the user out and navigates to login',
+  // Sign Out ends the session and nothing more. Returning to login is the root
+  // AuthGate's job (test/auth_gate_test.dart) — this screen used to rebuild the
+  // whole navigator stack with `pushAndRemoveUntil(..., (_) => false)`, which
+  // removed the gate route itself and left the app with no reactive auth
+  // routing for the rest of its lifetime.
+  testWidgets('tapping Sign Out ends the session without rebuilding the stack',
       (tester) async {
     await _loginAs();
     expect(AuthStore.instance.loggedIn, isTrue);
@@ -233,6 +238,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(AuthStore.instance.loggedIn, isFalse);
-    expect(find.byType(LoginScreen), findsOneWidget);
+    expect(
+      find.byType(LoginScreen),
+      findsNothing,
+      reason: 'the screen must not navigate — the AuthGate re-routes',
+    );
   });
 }

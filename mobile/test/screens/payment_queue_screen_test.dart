@@ -62,8 +62,37 @@ http.Response _queueResponse(List<Map<String, dynamic>> items) => _json({
       'total_savings': 0,
     });
 
+/// One row of `GET /api/payments/runs/`, mirroring `PaymentRunResponse` in
+/// `backend/app/schemas/payment.py` field for field. Hand-written fixtures
+/// carrying only the keys the model reads are how the CFO-approval gate stayed
+/// "covered" while the response schema declared no such field.
+Map<String, dynamic> _runResponse({
+  String id = 'run1',
+  String status = 'draft',
+  double totalAmount = 5000.0,
+  int paymentCount = 2,
+  bool requiresCfoApproval = false,
+  String? cfoApprovedAt,
+}) =>
+    {
+      'id': id,
+      'status': status,
+      'total_amount': totalAmount,
+      'initiated_by': 'u1',
+      'executed_at': null,
+      'created_at': '2026-01-10T12:00:00',
+      'payment_count': paymentCount,
+      'payments_completed': 0,
+      'payments_failed': 0,
+      'payments_in_flight': 0,
+      'payments_pending': paymentCount,
+      'requires_cfo_approval': requiresCfoApproval,
+      'cfo_approved_at': cfoApprovedAt,
+    };
+
 MockClient _screenClient({
   List<Map<String, dynamic>>? queue,
+  List<Map<String, dynamic>>? runs,
   http.Response Function(http.Request req)? onPost,
 }) {
   return MockClient((req) async {
@@ -76,7 +105,8 @@ MockClient _screenClient({
     }
     if (path.endsWith('/payments/summary')) return _json(_summary);
     if (path.contains('/payments/runs')) {
-      return _json({'items': <Map<String, dynamic>>[], 'total': 0});
+      final items = runs ?? <Map<String, dynamic>>[];
+      return _json({'items': items, 'total': items.length});
     }
     return _json({});
   });
@@ -206,5 +236,130 @@ void main() {
     await _pumpUntil(tester, find.text('No invoices awaiting payment'));
 
     expect(find.text('No invoices awaiting payment'), findsOneWidget);
+  });
+
+  // The CFO-approval gate. `GET /api/payments/runs/` must declare
+  // `requires_cfo_approval` / `cfo_approved_at` on `PaymentRunResponse` for
+  // this to be reachable at all — without them FastAPI strips the keys, both
+  // parse false for every run, and Execute goes to the server only to come
+  // back 403.
+  group('CFO-approval gate', () {
+    Future<void> openRunsTab(WidgetTester tester) async {
+      await _pumpUntil(tester, find.text('Runs'));
+      await tester.tap(find.text('Runs'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+    }
+
+    testWidgets('a run awaiting sign-off is flagged and Execute never reaches '
+        'the server', (tester) async {
+      var executeCalls = 0;
+      await loginThen(
+        ['ap_manager'],
+        _screenClient(
+          queue: [],
+          runs: [_runResponse(requiresCfoApproval: true)],
+          onPost: (req) {
+            if (req.url.path.endsWith('/execute')) executeCalls++;
+            return _json({'message': 'ok'});
+          },
+        ),
+      );
+
+      await tester.pumpWidget(_localized(const PaymentQueueScreen()));
+      await openRunsTab(tester);
+
+      expect(find.textContaining('CFO approval required'), findsOneWidget);
+
+      await tester.tap(find.byType(PopupMenuButton<String>));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Execute'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(executeCalls, 0, reason: 'the pre-flight gate must short-circuit');
+      expect(
+        find.text('This run needs CFO approval before it can be executed.'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('a signed-off run executes normally', (tester) async {
+      var executeCalls = 0;
+      await loginThen(
+        ['cfo'],
+        _screenClient(
+          queue: [],
+          runs: [
+            _runResponse(
+              requiresCfoApproval: true,
+              cfoApprovedAt: '2026-01-11T09:00:00',
+            ),
+          ],
+          onPost: (req) {
+            if (req.url.path.endsWith('/execute')) executeCalls++;
+            return _json({'message': 'Payment run executed'});
+          },
+        ),
+      );
+
+      await tester.pumpWidget(_localized(const PaymentQueueScreen()));
+      await openRunsTab(tester);
+
+      expect(find.textContaining('CFO approval required'), findsNothing);
+
+      await tester.tap(find.byType(PopupMenuButton<String>));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Execute'));
+      await tester.pumpAndSettle();
+      // Confirm the "Execute payment run?" dialog.
+      await tester.tap(find.widgetWithText(FilledButton, 'Execute'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(executeCalls, 1);
+    });
+
+    testWidgets('a 403 from the server surfaces its sentence, not raw JSON',
+        (tester) async {
+      await loginThen(
+        ['ap_manager'],
+        _screenClient(
+          queue: [],
+          // The server says sign-off is not required (e.g. the threshold moved
+          // after the run was drafted), so the pre-flight gate lets it through
+          // and the refusal comes back over the wire.
+          runs: [_runResponse()],
+          onPost: (req) {
+            if (req.url.path.endsWith('/execute')) {
+              return _json(
+                {'detail': 'This run exceeds the CFO-approval threshold.'},
+                403,
+              );
+            }
+            return _json({'message': 'ok'});
+          },
+        ),
+      );
+
+      await tester.pumpWidget(_localized(const PaymentQueueScreen()));
+      await openRunsTab(tester);
+
+      await tester.tap(find.byType(PopupMenuButton<String>));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Execute'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Execute'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(
+        find.text(
+          'Failed to execute: This run exceeds the CFO-approval threshold.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.textContaining('{"detail"'), findsNothing);
+    });
   });
 }

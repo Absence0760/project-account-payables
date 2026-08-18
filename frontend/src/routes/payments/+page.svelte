@@ -497,23 +497,34 @@
 		await loadCards({ append: true, nextPage: cardsPage + 1 });
 	}
 
-	let revealedCard = $state<{ pan: string; cvv: string; expires: string; last_four: string } | null>(
-		null
-	);
+	// The AP-side reveal renders exactly what `CardDetailsResponse` declares
+	// (`backend/app/schemas/virtual_card.py`): `{card_number, exp_month, exp_year,
+	// cvv}`. FastAPI strips anything the response_model doesn't declare, so the
+	// supplier-portal shape (`{pan, expires_at, last_four}`) that used to be typed
+	// here arrived `undefined` — a blank card number and no expiry. Don't widen
+	// the backend schema to suit the client; `backend/app/api/portal.py` records
+	// that reading `details.pan` was a prior break.
+	let revealedCard = $state<{ cardNumber: string; cvv: string; expires: string } | null>(null);
+
+	/** `exp_month` / `exp_year` → the `MM/YYYY` printed on the card. Kept dumb on
+	 *  purpose: these are card-face digits, not a date to localize. */
+	function formatCardExpiry(month: number, year: number): string {
+		if (!Number.isFinite(month) || !Number.isFinite(year)) return '—';
+		return `${String(month).padStart(2, '0')}/${year}`;
+	}
 
 	async function revealCard(cardId: string) {
 		try {
 			const resp = await api.get<{
-				pan: string;
+				card_number: string;
+				exp_month: number;
+				exp_year: number;
 				cvv: string;
-				expires_at: string;
-				last_four: string;
 			}>(`/api/cards/${cardId}/details`);
 			revealedCard = {
-				pan: resp.pan,
+				cardNumber: resp.card_number,
 				cvv: resp.cvv,
-				expires: resp.expires_at,
-				last_four: resp.last_four
+				expires: formatCardExpiry(resp.exp_month, resp.exp_year)
 			};
 		} catch (err) {
 			toast(err instanceof Error ? err.message : 'Card not viewable', 'error');
@@ -947,15 +958,15 @@
 		<div class="card-details">
 			<div class="card-row">
 				<span class="card-label">{m('payments.cardDetails.cardNumber')}</span>
-				<span class="card-value mono">{revealedCard.pan}</span>
+				<span class="card-value mono" data-testid="card-details-number">{revealedCard.cardNumber}</span>
 			</div>
 			<div class="card-row">
 				<span class="card-label">{m('payments.cardDetails.cvv')}</span>
-				<span class="card-value mono">{revealedCard.cvv}</span>
+				<span class="card-value mono" data-testid="card-details-cvv">{revealedCard.cvv}</span>
 			</div>
 			<div class="card-row">
 				<span class="card-label">{m('payments.cardDetails.expires')}</span>
-				<span class="card-value mono">{formatDate(revealedCard.expires)}</span>
+				<span class="card-value mono" data-testid="card-details-expires">{revealedCard.expires}</span>
 			</div>
 		</div>
 		<div class="modal-footer">

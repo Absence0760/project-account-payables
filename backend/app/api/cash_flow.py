@@ -63,6 +63,7 @@ from app.services.assistant.usage import AssistantBudgetExceeded
 from app.services.audit_dispatch import dispatch_audit
 from app.services.cash_flow_plan import compute_plan_id
 from app.services.cashflow import resolve_cash_thresholds
+from app.services.currency_conversion import resolve_reporting_currency
 from app.services.payment_runs import PaymentRunItemInput, create_payment_run_for_invoices
 from app.tenant import get_entity_id, get_tenant, get_tenant_db, get_write_entity_id
 
@@ -288,6 +289,7 @@ async def draft_run_from_plan(
         horizon_days=horizon_days,
         include_pending=True,
         entity_id=entity_id,
+        reporting_currency=resolve_reporting_currency(org.settings),
     )
     candidate_ids = {uuid.UUID(r["invoice_id"]) for r in rows if r.get("invoice_id")}
     if not candidate_ids:

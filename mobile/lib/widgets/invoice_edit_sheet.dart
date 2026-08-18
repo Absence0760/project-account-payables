@@ -136,7 +136,7 @@ class _InvoiceEditSheetState extends State<InvoiceEditSheet> {
       firstDate: DateTime(2000),
       lastDate: DateTime(2100),
     );
-    if (picked != null) setState(() => _dueDate = picked);
+    if (picked != null && mounted) setState(() => _dueDate = picked);
   }
 
   @override

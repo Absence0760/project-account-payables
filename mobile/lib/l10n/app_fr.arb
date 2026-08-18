@@ -129,6 +129,7 @@
   "approvalsTitle": "Approbations en attente",
   "approvalsAllCaughtUp": "Tout est à jour !",
   "approvalsNoneWaiting": "Aucune facture en attente d'approbation",
+  "approvalsLoadError": "Impossible de charger les approbations en attente",
   "approvalsPendingCount": "{count, plural, one {{count} facture en attente} other {{count} factures en attente}}",
   "approvalActionApprove": "Approuver",
   "approvalActionReject": "Rejeter",

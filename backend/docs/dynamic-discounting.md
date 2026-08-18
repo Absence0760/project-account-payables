@@ -112,7 +112,7 @@ down, and must report an unavailable probe.
 | `POST /offers` | admin, ap_manager | create an offer (invoice base_amount defaults from the invoice) |
 | `GET /offers/{id}` | all four | detail (entity-scoped) |
 | `POST /offers/{id}/accept` | admin, ap_manager, **cfo** | accept at a tier (`tier_days` or best tier today) |
-| `POST /offers/{id}/decline` | admin, ap_manager | decline |
+| `POST /offers/{id}/decline` | admin, ap_manager, **cfo** | decline |
 | `GET /invoices/{id}/roi` | all four | annualized ROI of paying the invoice early (open offer's best tier, else the static `PaymentSchedule` term) |
 | `POST /optimize` | all four | rank open offers by ROI and select within an optional `{cash_budget}` |
 | `POST /bulk-negotiate` | admin, ap_manager | one vendor-scoped offer across the vendor's open invoices |
@@ -278,5 +278,5 @@ portal nav.
   accept idempotency (double-accept is a safe 409, no double-count), the
   accept-never-moves-money boundary (no `Payment` row appears), the
   optimizer's APR ranking + cash-budget binding (entity-scoped for
-  determinism), accept/decline RBAC (accept also cfo), and cross-tenant
+  determinism), accept/decline RBAC (both also cfo), and cross-tenant
   isolation of offers.

@@ -833,4 +833,91 @@ void main() {
 
     expect(find.text('ERP Status'), findsNothing);
   });
+
+  // `_load()` awaited the detail GET and then called setState in BOTH branches
+  // with no `mounted` check (while the sibling `_loadActivity` had one), so
+  // backing out of an invoice before a slow GET — or its 10s timeout — resolved
+  // threw "setState() called after dispose()".
+  group('route popped mid-load', () {
+    Future<void> pushPopComplete(
+      WidgetTester tester,
+      Completer<void> gate,
+    ) async {
+      final navigator = GlobalKey<NavigatorState>();
+      await tester.pumpWidget(MaterialApp(
+        navigatorKey: navigator,
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: const Scaffold(body: Text('list')),
+      ));
+
+      navigator.currentState!.push(
+        MaterialPageRoute(
+          builder: (_) => const InvoiceDetailScreen(invoiceId: '1'),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(find.byType(InvoiceDetailScreen), findsOneWidget,
+          reason: 'the detail route must be mounted before we pop it');
+
+      // Back out while the detail GET is still in flight, and wait on the real
+      // signal — the route leaving the tree — rather than a fixed delay.
+      navigator.currentState!.pop();
+      await tester.pump();
+      final gone = find.byType(InvoiceDetailScreen);
+      for (var i = 0; i < 40 && gone.evaluate().isNotEmpty; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(gone, findsNothing,
+          reason: 'the detail route must be gone (its State disposed)');
+
+      gate.complete();
+      for (var i = 0; i < 10; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+    }
+
+    testWidgets('a late success response does not setState after dispose',
+        (tester) async {
+      final gate = Completer<void>();
+      // The invoice GET hangs until the test releases it.
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          if (req.method == 'GET' &&
+              req.url.path.startsWith('/api/invoices/') &&
+              !req.url.path.endsWith('/audit-log')) {
+            await gate.future;
+            return _json(_invoiceJson('1'));
+          }
+          return _json(<String, dynamic>{});
+        }),
+      );
+
+      await pushPopComplete(tester, gate);
+
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('a late failure response does not setState after dispose',
+        (tester) async {
+      final gate = Completer<void>();
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          if (req.method == 'GET' &&
+              req.url.path.startsWith('/api/invoices/') &&
+              !req.url.path.endsWith('/audit-log')) {
+            await gate.future;
+            return http.Response('boom', 500);
+          }
+          return _json(<String, dynamic>{});
+        }),
+      );
+
+      await pushPopComplete(tester, gate);
+
+      expect(tester.takeException(), isNull);
+    });
+  });
 }

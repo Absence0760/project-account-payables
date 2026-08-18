@@ -116,7 +116,29 @@ def _config(org_settings: dict | None) -> dict:
     return (org_settings or {}).get("compliance") or {}
 
 
-def _kyc_required_for(method: str, amount: Decimal, org_settings: dict | None) -> bool:
+def _kyc_required_for(
+    method: str,
+    amount: Decimal,
+    org_settings: dict | None,
+    *,
+    amount_currency: str | None = None,
+) -> bool:
+    """Does this payment need a KYC-verified vendor?
+
+    `amount` must be denominated in the SAME currency as the configured
+    `kyc_required_above` threshold — the org's home currency (the threshold is
+    documented as a source-currency figure). `Payment.amount` is in the
+    INVOICE's currency, so on exactly the corridors this gate governs — the
+    international ones — comparing it against the threshold as bare numbers
+    reads a £900 payment as under a 1000 (home-currency) threshold and skips
+    the check on a ~$1,150 cross-border transfer.
+
+    Callers therefore pass the home-currency leg (`Payment.source_amount`)
+    together with its currency. When we cannot PROVE the amount is in the
+    threshold's currency we **fail closed** and require KYC: an unverifiable
+    comparison must not be resolved in the direction that skips a control the
+    docs describe as non-overridable.
+    """
     cfg = _config(org_settings)
     # Both sides are normalised: an admin typing "SEPA" into the per-org
     # override used to silently disable the KYC gate for that corridor, because
@@ -132,7 +154,22 @@ def _kyc_required_for(method: str, amount: Decimal, org_settings: dict | None) -
     if normalize_payment_method(method) not in high_risk:
         return False
     threshold = Decimal(str(cfg.get("kyc_required_above", _DEFAULT_KYC_REQUIRED_ABOVE)))
+    home_currency = _home_currency(org_settings)
+    if (amount_currency or "").strip().upper() != home_currency:
+        # Not provably comparable (a foreign-currency leg, or an FX rate we
+        # never locked). Require KYC rather than wave the payment through on a
+        # number-vs-number comparison across two currencies.
+        return True
     return amount >= threshold
+
+
+def _home_currency(org_settings: dict | None) -> str:
+    """The org's home currency — the denomination of every money threshold in
+    `settings.compliance`. Same source `_execute_single_payment` reads when it
+    decides whether a payment needs an FX leg at all, so the two can't drift.
+    """
+    pmt = (org_settings or {}).get("payments") or {}
+    return ((pmt.get("home_currency") or "USD") or "USD").strip().upper()
 
 
 def _aml_threshold(org_settings: dict | None) -> Decimal:
@@ -159,8 +196,14 @@ async def _trailing_12m_spend(
     cutoff = datetime.now(UTC) - timedelta(days=365)
     from app.models.invoice import Invoice
 
+    # `Payment.amount` is in the INVOICE's currency; `Payment.source_amount` is
+    # the home-currency leg locked at submission for an international payment.
+    # Summing raw `amount` across a vendor billing in several currencies makes
+    # the AML total a meaningless mixture, so prefer the home-currency figure
+    # wherever one was locked. The threshold this feeds is a home-currency
+    # number.
     result = await db.execute(
-        select(func.coalesce(func.sum(Payment.amount), 0))
+        select(func.coalesce(func.sum(func.coalesce(Payment.source_amount, Payment.amount)), 0))
         .select_from(Payment)
         .join(Invoice, Invoice.id == Payment.invoice_id)
         .where(
@@ -177,6 +220,12 @@ async def check_payment_compliance(
     *,
     vendor: Vendor,
     payment_amount: Decimal,
+    # REQUIRED, deliberately with no default: the KYC threshold is denominated
+    # in the org's home currency, so a caller that doesn't say what currency
+    # `payment_amount` is in must fail loudly here rather than silently pick a
+    # direction. Pass `Payment.source_currency` when an FX rate was locked,
+    # otherwise the invoice's own currency.
+    payment_currency: str | None,
     payment_method: str,
     org_settings: dict | None,
     organization_id: uuid.UUID,
@@ -262,7 +311,9 @@ async def check_payment_compliance(
         reasons.append(adverse_media_reason(screening.provider))
 
     # ---------- 2. KYC status on high-risk corridors -------------------------
-    if _kyc_required_for(payment_method, payment_amount, org_settings):
+    if _kyc_required_for(
+        payment_method, payment_amount, org_settings, amount_currency=payment_currency
+    ):
         if vendor.kyc_status != "verified":
             reasons.append(
                 f"corridor '{payment_method}' requires KYC; vendor.kyc_status='{vendor.kyc_status}'"

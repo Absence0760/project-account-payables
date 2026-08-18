@@ -88,11 +88,15 @@ class InvoiceApi {
     DateTime? dueDateFrom,
     DateTime? dueDateTo,
     int page = 1,
-    int perPage = 20,
+    int pageSize = 20,
   }) async {
     final params = <String, String>{
       'page': page.toString(),
-      'per_page': perPage.toString(),
+      // `page_size` — the name `app/api/pagination.py::pagination_params`
+      // declares. FastAPI silently drops an unknown `per_page`, so the old
+      // spelling meant every one of these lists was served at the server's
+      // default size no matter what the caller asked for.
+      'page_size': pageSize.toString(),
     };
     if (status != null) params['status'] = status;
     if (search != null) params['search'] = search;
@@ -274,11 +278,15 @@ class ExceptionApi {
   static Future<List<ApException>> list({
     String? status,
     int page = 1,
-    int perPage = 20,
+    int pageSize = 20,
   }) async {
     final params = <String, String>{
       'page': page.toString(),
-      'per_page': perPage.toString(),
+      // `page_size` — the name `app/api/pagination.py::pagination_params`
+      // declares. FastAPI silently drops an unknown `per_page`, so the old
+      // spelling meant every one of these lists was served at the server's
+      // default size no matter what the caller asked for.
+      'page_size': pageSize.toString(),
     };
     if (status != null) params['status'] = status;
 
@@ -483,11 +491,15 @@ class PaymentApi {
   static Future<List<Payment>> list({
     String? status,
     int page = 1,
-    int perPage = 20,
+    int pageSize = 20,
   }) async {
     final params = <String, String>{
       'page': page.toString(),
-      'per_page': perPage.toString(),
+      // `page_size` — the name `app/api/pagination.py::pagination_params`
+      // declares. FastAPI silently drops an unknown `per_page`, so the old
+      // spelling meant every one of these lists was served at the server's
+      // default size no matter what the caller asked for.
+      'page_size': pageSize.toString(),
     };
     if (status != null) params['status'] = status;
 
@@ -655,11 +667,15 @@ class VendorApi {
     String? status,
     String? search,
     int page = 1,
-    int perPage = 20,
+    int pageSize = 20,
   }) async {
     final params = <String, String>{
       'page': page.toString(),
-      'per_page': perPage.toString(),
+      // `page_size` — the name `app/api/pagination.py::pagination_params`
+      // declares. FastAPI silently drops an unknown `per_page`, so the old
+      // spelling meant every one of these lists was served at the server's
+      // default size no matter what the caller asked for.
+      'page_size': pageSize.toString(),
     };
     if (status != null) params['status'] = status;
     if (search != null) params['search'] = search;

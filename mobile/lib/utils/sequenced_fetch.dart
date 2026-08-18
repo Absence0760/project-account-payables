@@ -31,22 +31,44 @@
 ///   }
 /// }
 /// ```
+/// One monotonic request counter.
+///
+/// [SequencedFetch] mixes in a single instance for a store's primary `fetch()`.
+/// A store that owns a **second**, independent list (e.g. `InvoiceStore`'s
+/// approvals queue, which is fetched on its own filter and must not be
+/// cancelled by — or cancel — the main list's requests) holds another instance
+/// of its own rather than sharing the mixin's counter.
+class RequestSequence {
+  int _seq = 0;
+
+  /// Call once at the start of a new request, before any `await`.
+  int next() => ++_seq;
+
+  /// True if [token] is still the latest request issued on this sequence.
+  bool isCurrent(int token) => token == _seq;
+
+  /// Test seam: reset the counter so tests aren't coupled to prior state.
+  void reset() {
+    _seq = 0;
+  }
+}
+
 mixin SequencedFetch {
-  int _requestSeq = 0;
+  final RequestSequence _requestSeq = RequestSequence();
 
   /// Call once at the start of a new request, before any `await`. Returns a
   /// token to check when that request's response resolves.
-  int nextRequestToken() => ++_requestSeq;
+  int nextRequestToken() => _requestSeq.next();
 
   /// True if [token] is still the latest request issued — i.e. no newer
   /// `fetch()` call has started since. False means a newer request has
   /// already superseded this one; its response should be silently discarded
   /// rather than applied to store state.
-  bool isCurrentRequest(int token) => token == _requestSeq;
+  bool isCurrentRequest(int token) => _requestSeq.isCurrent(token);
 
   /// Test seam: reset the sequence counter. Stores' own `debugReset()` should
   /// call this so tests aren't coupled to prior singleton state.
   void debugResetSequence() {
-    _requestSeq = 0;
+    _requestSeq.reset();
   }
 }

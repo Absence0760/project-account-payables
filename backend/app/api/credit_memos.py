@@ -124,15 +124,44 @@ async def list_credit_memos(
     )
 
 
+async def _get_scoped_memo(
+    db: AsyncSession,
+    memo_id: uuid.UUID,
+    entity_id: uuid.UUID | None,
+) -> CreditMemo:
+    """Fetch one `CreditMemo` **within the caller's selected entity**, or 404.
+
+    `list_credit_memos` honours `X-Entity-ID`, but every by-id mutation used to
+    resolve on the primary key alone — so a user with subsidiary A selected
+    could apply or void a memo against subsidiary B's invoice, reducing what
+    B's next payment run pays, and then not even see the memo in their own
+    list. Mirrors `api/payments.py::_get_scoped_payment` including its
+    **opaque 404**, so an out-of-scope id can't be used to enumerate another
+    entity's memos.
+    """
+    query = apply_entity_scope(
+        select(CreditMemo).where(CreditMemo.id == memo_id), CreditMemo, entity_id
+    )
+    memo = (await db.execute(query)).scalar_one_or_none()
+    if memo is None:
+        raise HTTPException(status_code=404, detail="Credit memo not found")
+    return memo
+
+
 @router.post("", response_model=CreditMemoResponse, status_code=status.HTTP_201_CREATED)
 async def create_credit_memo(
     body: CreditMemoCreate,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
     org_id: uuid.UUID = Depends(get_org_id),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     vendor_uuid = uuid.UUID(body.vendor_id)
-    vendor_result = await db.execute(select(Vendor).where(Vendor.id == vendor_uuid))
+    # Entity-scoped like the list endpoint: naming another subsidiary's vendor
+    # by id must not be a way to credit that subsidiary's invoices.
+    vendor_result = await db.execute(
+        apply_entity_scope(select(Vendor).where(Vendor.id == vendor_uuid), Vendor, entity_id)
+    )
     vendor = vendor_result.scalar_one_or_none()
     if not vendor:
         raise HTTPException(status_code=404, detail="Vendor not found")
@@ -146,7 +175,9 @@ async def create_credit_memo(
         # over-application guard below (the invoice is the natural
         # serialization point for "credits applied to this invoice").
         inv_result = await db.execute(
-            select(Invoice).where(Invoice.id == invoice_uuid).with_for_update()
+            apply_entity_scope(
+                select(Invoice).where(Invoice.id == invoice_uuid), Invoice, entity_id
+            ).with_for_update()
         )
         invoice = inv_result.scalar_one_or_none()
         if not invoice:
@@ -228,11 +259,9 @@ async def apply_credit_memo(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
     org_id: uuid.UUID = Depends(get_org_id),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    result = await db.execute(select(CreditMemo).where(CreditMemo.id == memo_id))
-    memo = result.scalar_one_or_none()
-    if not memo:
-        raise HTTPException(status_code=404, detail="Credit memo not found")
+    memo = await _get_scoped_memo(db, memo_id, entity_id)
     if memo.status != "open":
         raise HTTPException(
             status_code=409,
@@ -245,7 +274,9 @@ async def apply_credit_memo(
     # rationale). Without this, two applies can both read the same
     # already-applied sum and both pass, over-crediting the invoice.
     inv_result = await db.execute(
-        select(Invoice).where(Invoice.id == invoice_uuid).with_for_update()
+        apply_entity_scope(
+            select(Invoice).where(Invoice.id == invoice_uuid), Invoice, entity_id
+        ).with_for_update()
     )
     invoice = inv_result.scalar_one_or_none()
     if not invoice:
@@ -318,11 +349,9 @@ async def void_credit_memo(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
     org_id: uuid.UUID = Depends(get_org_id),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    result = await db.execute(select(CreditMemo).where(CreditMemo.id == memo_id))
-    memo = result.scalar_one_or_none()
-    if not memo:
-        raise HTTPException(status_code=404, detail="Credit memo not found")
+    memo = await _get_scoped_memo(db, memo_id, entity_id)
     if memo.status == "applied":
         raise HTTPException(
             status_code=409, detail="Applied credit memos cannot be voided (immutable for audit)"

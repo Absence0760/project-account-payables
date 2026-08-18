@@ -180,7 +180,13 @@ class MFAEmailChallengeRequest(BaseModel):
 
 class UpdateProfileRequest(BaseModel):
     full_name: str | None = Field(default=None, max_length=255)
-    password: str | None = Field(default=None, min_length=6)
+    # Same bounds as `ChangePasswordRequest.new_password` — this field sets the
+    # account password through the identical code path, and a laxer `min_length`
+    # here let a 6-character password past the schema before the complexity
+    # policy (min 12) was ever consulted. The route runs
+    # `validate_password_complexity` regardless; matching the bounds keeps the
+    # 422 shape consistent between the two self-service routes.
+    password: str | None = Field(default=None, min_length=12, max_length=128)
     current_password: str | None = Field(default=None, min_length=1)
     # Email-language preference. Validated against the supported locale set at
     # the route (422 on an unknown value); empty string clears it (→ English).

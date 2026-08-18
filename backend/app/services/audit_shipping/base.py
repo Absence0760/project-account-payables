@@ -9,8 +9,11 @@ The contract is narrow on purpose:
 - `ship(rows)` — write all rows. Raise on failure. Must be atomic from
   the caller's perspective: either everything in the batch is durable
   or the adapter raised.
-- `test_connection()` — cheap liveness probe used at startup + by
-  admin-facing test endpoints.
+- `test_connection()` — liveness + WORM-config probe. `app/main.py`'s
+  lifespan calls it once per configured adapter when
+  `FEOH_AUDIT_SHIPPING_ENABLED` is on and `FEOH_DEBUG` is off, and
+  refuses to start the process on a False. There is no admin-facing
+  test endpoint for audit shipping; boot is the only caller.
 """
 
 from __future__ import annotations
@@ -81,5 +84,11 @@ class AuditShippingAdapter:
         raise NotImplementedError
 
     async def test_connection(self) -> bool:
-        """Cheap connectivity + config check. Return False on any error."""
+        """Connectivity + WORM-config check. Return False on any error.
+
+        Called from the lifespan boot guard, which refuses to start the
+        process when this returns False — so an adapter must return False
+        (not True, not raise) for any condition that would make its ship
+        untrustworthy as tamper-evident evidence.
+        """
         raise NotImplementedError

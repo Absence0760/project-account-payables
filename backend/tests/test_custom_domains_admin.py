@@ -218,3 +218,110 @@ async def test_branding_save_preserves_custom_domains(realdb):
         assert cd.json()["custom_domains"] == ["keepme.acme.test"]
     finally:
         await _reset(realdb, "a")
+
+
+# ---------------------------------------------------------------------------
+# The generic settings PATCH must not be a second, unguarded writer.
+#
+# `PATCH /api/organization` shallow-merges a free-form settings dict, so
+# `{"brand": {"custom_domains": [...]}}` replaced the whole brand key — writing
+# the domain list with no normalization, no advisory lock, no cross-org
+# uniqueness check and no audit row: every control the dedicated endpoint
+# exists to enforce. The same handler already refuses `chat_notifications` for
+# exactly this reason.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_patch_organization_settings_refuses_custom_domains(realdb):
+    try:
+        async with realdb.client(key="a", role="admin") as c:
+            await c.put(
+                "/api/organization/branding/custom-domains",
+                json={"custom_domains": ["ours.acme.test"]},
+            )
+            resp = await c.patch(
+                "/api/organization",
+                json={"settings": {"brand": {"custom_domains": ["hijacked.acme.test"]}}},
+            )
+            assert resp.status_code == 422, resp.text
+            assert "custom-domains" in resp.json()["detail"]
+
+            # Nothing was written.
+            cd = await c.get("/api/organization/branding/custom-domains")
+        assert cd.json()["custom_domains"] == ["ours.acme.test"]
+    finally:
+        await _reset(realdb, "a")
+
+
+@pytest.mark.asyncio
+async def test_patch_organization_settings_cannot_claim_another_tenants_host(realdb):
+    """The uniqueness guard the bypass defeated: tenant b registers a host,
+    tenant a tries to claim it through the generic settings merge."""
+    try:
+        async with realdb.client(key="b", role="admin") as c:
+            assert (
+                await c.put(
+                    "/api/organization/branding/custom-domains",
+                    json={"custom_domains": ["contested.example.test"]},
+                )
+            ).status_code == 200
+
+        async with realdb.client(key="a", role="admin") as c:
+            resp = await c.patch(
+                "/api/organization",
+                json={"settings": {"brand": {"custom_domains": ["contested.example.test"]}}},
+            )
+            assert resp.status_code == 422, resp.text
+            # And the dedicated endpoint still refuses it with the 409 it always did.
+            dedicated = await c.put(
+                "/api/organization/branding/custom-domains",
+                json={"custom_domains": ["contested.example.test"]},
+            )
+            assert dedicated.status_code == 409, dedicated.text
+    finally:
+        await _reset(realdb, "a")
+        await _reset(realdb, "b")
+
+
+@pytest.mark.asyncio
+async def test_patch_organization_settings_brand_preserves_custom_domains(realdb):
+    """Refusing the key isn't enough on its own: a brand PATCH that merely
+    OMITS custom_domains would still drop every registered host, silently
+    un-routing the tenant."""
+    try:
+        async with realdb.client(key="a", role="admin") as c:
+            await c.put(
+                "/api/organization/branding/custom-domains",
+                json={"custom_domains": ["keepme.acme.test"]},
+            )
+            resp = await c.patch(
+                "/api/organization",
+                json={"settings": {"brand": {"product_name": "Acme Pay"}}},
+            )
+            assert resp.status_code == 200, resp.text
+            cd = await c.get("/api/organization/branding/custom-domains")
+            assert cd.json()["custom_domains"] == ["keepme.acme.test"]
+            # ...and the branding field the PATCH actually meant to set landed.
+            brand = (await c.get("/api/organization")).json()["settings"]["brand"]
+        assert brand["product_name"] == "Acme Pay"
+    finally:
+        await _reset(realdb, "a")
+
+
+@pytest.mark.asyncio
+async def test_patch_organization_settings_refuses_non_object_brand_over_domains(realdb):
+    """Replacing `brand` with a non-object would drop the domain list with no
+    place to put it back — refuse rather than silently un-route the tenant."""
+    try:
+        async with realdb.client(key="a", role="admin") as c:
+            await c.put(
+                "/api/organization/branding/custom-domains",
+                json={"custom_domains": ["keepme2.acme.test"]},
+            )
+            resp = await c.patch("/api/organization", json={"settings": {"brand": "nope"}})
+            assert resp.status_code == 422, resp.text
+            cd = await c.get("/api/organization/branding/custom-domains")
+        assert cd.json()["custom_domains"] == ["keepme2.acme.test"]
+    finally:
+        await _reset(realdb, "a")

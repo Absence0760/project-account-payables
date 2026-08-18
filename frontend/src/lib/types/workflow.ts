@@ -233,7 +233,14 @@ export const DEFAULT_APPROVAL_CONFIG: ApprovalStepConfig = {
 	require_cfo_above: null,
 	max_invoice_amount: null,
 	approval_chain: [],
-	require_segregation: false,
+	// Segregation of duties (approver ≠ uploader) is the classic AP invariant and
+	// the backend's own default (`schemas/workflow.py`, `approval_chain.py` reads
+	// `.get("require_segregation", True)`). A UI-created workflow MUST NOT ship a
+	// weaker default than a template- or API-created one: an explicit `false` here
+	// is a real value that silently enabled self-approval on every workflow built
+	// in the builder. Turning it off is now a deliberate, visible choice in the
+	// approval-step editor.
+	require_segregation: true,
 };
 
 export const DEFAULT_ERP_CONFIG: ErpExportStepConfig = {

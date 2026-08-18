@@ -129,6 +129,7 @@
   "approvalsTitle": "Ausstehende Freigaben",
   "approvalsAllCaughtUp": "Alles erledigt!",
   "approvalsNoneWaiting": "Keine Rechnungen warten auf Freigabe",
+  "approvalsLoadError": "Ausstehende Freigaben konnten nicht geladen werden",
   "approvalsPendingCount": "{count, plural, one {{count} Rechnung ausstehend} other {{count} Rechnungen ausstehend}}",
   "approvalActionApprove": "Freigeben",
   "approvalActionReject": "Ablehnen",

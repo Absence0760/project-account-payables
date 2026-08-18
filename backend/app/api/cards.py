@@ -404,7 +404,11 @@ async def generate_cards(
         decision = await check_payment_compliance(
             db,
             vendor=vendor,
+            # `inv.amount` is in the invoice's own currency; the KYC threshold
+            # is a home-currency figure, so hand the gate the currency and let
+            # it fail closed when the two can't be compared.
             payment_amount=inv.amount,
+            payment_currency=inv.currency,
             payment_method="virtual_card",
             org_settings=org.settings or {},
             organization_id=org_id,

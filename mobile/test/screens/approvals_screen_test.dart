@@ -28,6 +28,18 @@ http.Response _list(List<Map<String, dynamic>> items) => http.Response(
       headers: {'content-type': 'application/json'},
     );
 
+/// A fake that filters SERVER-side on `?status=`, the way the real
+/// `GET /api/invoices` does. The approvals queue is a server-filtered request
+/// now, so a fake that ignored the param would let a client-side filter pass.
+MockClient _apiWith(List<Map<String, dynamic>> all) => MockClient((req) async {
+      final status = req.url.queryParameters['status'];
+      return _list(
+        status == null
+            ? all
+            : all.where((i) => i['status'] == status).toList(),
+      );
+    });
+
 Map<String, dynamic> _invoiceJson(
   String id, {
   String status = 'ready_for_review',
@@ -67,14 +79,12 @@ void main() {
     FlutterSecureStorage.setMockInitialValues({});
     await OfflineStore.instance.clear();
     ApiClient().debugConfigure();
-    // Drain any pending approval the previous test left in the singleton by
-    // fetching an empty list through a throwaway mock, so the screen under
-    // test starts from an empty store. (The store filters client-side, so the
-    // leaky _statusFilter never affects the mocked responses below.)
+    // Drain any queue the previous test left in the singleton so the screen
+    // under test starts empty.
     ApiClient().debugConfigure(
       client: MockClient((req) async => _list([])),
     );
-    await store.fetch();
+    await store.fetchPending();
   });
 
   testWidgets('shows the spinner while the initial fetch is in flight',
@@ -115,31 +125,87 @@ void main() {
     expect(find.byType(InvoiceListTile), findsNothing);
   });
 
-  testWidgets('non-pending invoices alone still render the empty state',
-      (tester) async {
-    // Approved/pending invoices exist but none are ready_for_review.
+  testWidgets('asks the server for ready_for_review rather than filtering a '
+      'list the Invoices tab happened to fetch', (tester) async {
+    String? sentStatus;
     ApiClient().debugConfigure(
-      client: MockClient((req) async => _list([
-            _invoiceJson('1', status: 'approved'),
-            _invoiceJson('2', status: 'pending'),
-          ])),
+      client: MockClient((req) async {
+        sentStatus = req.url.queryParameters['status'];
+        return _list([]);
+      }),
     );
 
     await tester.pumpWidget(_localized());
     await _pumpUntil(tester, find.text('All caught up!'));
 
+    expect(sentStatus, 'ready_for_review');
     expect(find.text('All caught up!'), findsOneWidget);
     expect(find.byType(InvoiceListTile), findsNothing);
+  });
+
+  // The regression: both tabs are children of one IndexedStack, so switching
+  // to Approvals never re-ran initState. The screen rendered a client-side
+  // slice of whatever the Invoices tab last fetched — pick the `paid` chip
+  // there and the approvals queue read "All caught up!" while invoices sat in
+  // ready_for_review, with pull-to-refresh unable to correct it.
+  testWidgets('a status chip picked on the Invoices tab cannot empty the '
+      'approvals queue', (tester) async {
+    ApiClient().debugConfigure(
+      client: _apiWith([
+        _invoiceJson('1', status: 'ready_for_review', vendor: 'Vendor One'),
+        _invoiceJson('2', status: 'paid', vendor: 'Vendor Two'),
+      ]),
+    );
+
+    // The user filters the (shared, singleton) Invoices list to `paid` first.
+    store.setStatusFilter('paid');
+    await tester.pumpWidget(_localized());
+    await _pumpUntil(tester, find.byType(InvoiceListTile));
+
+    expect(find.byType(InvoiceListTile), findsOneWidget);
+    expect(find.text('Vendor One'), findsOneWidget);
+    expect(find.text('All caught up!'), findsNothing);
+
+    // Pull-to-refresh re-issues the approvals request, not the Invoices one.
+    await tester.fling(find.byType(ListView), const Offset(0, 400), 1000);
+    await _pumpUntil(tester, find.byType(InvoiceListTile));
+    expect(find.text('Vendor One'), findsOneWidget);
+  });
+
+  testWidgets('a failed load shows an error + Retry, never "All caught up!"',
+      (tester) async {
+    // Drop the queue the setUp drain cached — with a cache present the store
+    // (correctly) serves it instead of surfacing the error, which is the
+    // offline path covered in invoice_store_test.
+    await OfflineStore.instance.clear();
+    var calls = 0;
+    ApiClient().debugConfigure(
+      client: MockClient((req) async {
+        calls++;
+        if (calls == 1) return http.Response('boom', 500);
+        return _list([_invoiceJson('1')]);
+      }),
+    );
+
+    await tester.pumpWidget(_localized());
+    await _pumpUntil(tester, find.text('Could not load pending approvals'));
+
+    expect(find.text('Could not load pending approvals'), findsOneWidget);
+    expect(find.text('All caught up!'), findsNothing);
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Retry'));
+    await _pumpUntil(tester, find.byType(InvoiceListTile));
+    expect(find.byType(InvoiceListTile), findsOneWidget);
   });
 
   testWidgets('lists only the ready_for_review invoices with a plural count',
       (tester) async {
     ApiClient().debugConfigure(
-      client: MockClient((req) async => _list([
-            _invoiceJson('1', status: 'ready_for_review', vendor: 'Vendor One'),
-            _invoiceJson('2', status: 'approved', vendor: 'Vendor Two'),
-            _invoiceJson('3', status: 'ready_for_review', vendor: 'Vendor Three'),
-          ])),
+      client: _apiWith([
+        _invoiceJson('1', status: 'ready_for_review', vendor: 'Vendor One'),
+        _invoiceJson('2', status: 'approved', vendor: 'Vendor Two'),
+        _invoiceJson('3', status: 'ready_for_review', vendor: 'Vendor Three'),
+      ]),
     );
 
     await tester.pumpWidget(_localized());

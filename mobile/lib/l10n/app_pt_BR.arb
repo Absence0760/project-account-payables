@@ -119,6 +119,7 @@
   "approvalsTitle": "Aprovações pendentes",
   "approvalsAllCaughtUp": "Tudo em dia!",
   "approvalsNoneWaiting": "Nenhuma fatura aguardando aprovação",
+  "approvalsLoadError": "Não foi possível carregar as aprovações pendentes",
   "approvalsPendingCount": "{count, plural, one {{count} fatura pendente} other {{count} faturas pendentes}}",
   "approvalActionApprove": "Aprovar",
   "approvalActionReject": "Rejeitar",

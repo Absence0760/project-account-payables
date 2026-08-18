@@ -74,6 +74,11 @@ async def list_due_schedules(
     return list(result.scalars().all())
 
 
+# Report types whose rows are money summed across possibly-different invoice
+# currencies, so they need the org's reporting currency resolved up front.
+_REPORTING_CURRENCY_REPORTS = frozenset({"vendor_spend", "cashflow_forecast"})
+
+
 async def _generate_report_payload(
     db: AsyncSession,
     schedule: ScheduledReport,
@@ -88,17 +93,45 @@ async def _generate_report_payload(
     if exporter is None:
         raise ValueError(f"unknown report_type {schedule.report_type!r}")
 
+    # Resolve the org's reporting currency ONCE, here, where we legitimately
+    # hold a control-plane session — the money-rollup branches take a tenant
+    # session and must not reach past it (see `_materialise_rows`).
+    reporting_currency: str | None = None
+    if schedule.report_type in _REPORTING_CURRENCY_REPORTS:
+        from app.database import control_session_factory
+        from app.models.organization import Organization
+        from app.services.currency_conversion import resolve_reporting_currency
+
+        async with control_session_factory() as ctrl_db:
+            org = (
+                await ctrl_db.execute(
+                    select(Organization).where(Organization.id == schedule.organization_id)
+                )
+            ).scalar_one_or_none()
+        reporting_currency = resolve_reporting_currency(org.settings if org else None)
+
     # Lazy SQL — same shapes as the API export endpoint. We
     # delegate to a small helper per report so this function stays
     # short.
-    return await _materialise_rows(db, schedule, exporter)
+    return await _materialise_rows(db, schedule, exporter, reporting_currency)
 
 
 async def _materialise_rows(
     db: AsyncSession,
     schedule: ScheduledReport,
     exporter: Callable,
+    reporting_currency: str | None = None,
 ) -> str:
+    """Pull the rows for one report and hand them to its exporter.
+
+    ``reporting_currency`` is supplied by the caller that already knows the org
+    (``_generate_report_payload``). It is a parameter rather than a lookup
+    inside the money-rollup branches because those branches take a TENANT
+    session: opening a control-plane connection here reaches past the session
+    the caller handed us, which a caller holding a mocked or tenant-only
+    session cannot intercept. Absent, the branches fall back to the documented
+    platform default — a pure resolution with no database hit.
+    """
     from datetime import date
     from datetime import datetime as _dt
 
@@ -112,20 +145,15 @@ async def _materialise_rows(
         return exporter(rows.scalars().all())
 
     if schedule.report_type == "vendor_spend":
-        from app.database import control_session_factory
-        from app.models.organization import Organization
         from app.services.currency_conversion import (
             resolve_reporting_currency,
             vendor_rollup_to_reporting_currency,
         )
 
-        async with control_session_factory() as ctrl_db:
-            org = (
-                await ctrl_db.execute(
-                    select(Organization).where(Organization.id == schedule.organization_id)
-                )
-            ).scalar_one_or_none()
-        reporting_currency = resolve_reporting_currency(org.settings if org else None)
+        # Same as the cashflow branch below: the currency comes from the
+        # caller, so this branch never opens a control-plane connection behind
+        # the tenant session it was handed.
+        rollup_currency = reporting_currency or resolve_reporting_currency(None)
 
         rows = await db.execute(
             select(
@@ -158,7 +186,7 @@ async def _materialise_rows(
                 }
                 for vendor, amount, currency, rep_amt, rep_cur in rows.all()
             ],
-            reporting_currency=reporting_currency,
+            reporting_currency=rollup_currency,
         )
         return exporter(vendor_entries)
 
@@ -191,16 +219,22 @@ async def _materialise_rows(
         from app.api.analytics import _commitment_rows
         from app.config import settings
         from app.services.analytics import bucket_outflows
+        from app.services.currency_conversion import resolve_reporting_currency
 
         # ScheduledReport has no per-schedule granularity/horizon — mirror the
         # API export endpoint's own defaults (`granularity="week"`,
         # `horizon_days` from the same platform default the copilot uses).
         today = date.today()
+        # Outflows are expressed in the org's reporting currency, never summed
+        # raw across whatever currencies its suppliers happen to bill in. The
+        # currency comes from the caller (see this function's docstring) so
+        # this branch never reaches past the session it was handed.
         commitment_rows = await _commitment_rows(
             db,
             today=today,
             horizon_days=settings.cashflow_copilot_default_horizon_days,
             include_pending=True,
+            reporting_currency=reporting_currency or resolve_reporting_currency(None),
         )
         periods = bucket_outflows(commitment_rows, granularity="week", today=today)
         return exporter(periods)
@@ -286,7 +320,11 @@ async def execute_schedule(
     try:
         payload = await _generate_report_payload(db, schedule)
     except Exception as exc:  # noqa: BLE001
-        err = str(exc)[:500]
+        # Class name only, never `str(exc)`. A DB-level error message echoes
+        # the offending row's values, and `last_run_error` is surfaced to
+        # every AP user — the same reason the email branch below already
+        # stores only the class (PII-out-of-error-responses invariant).
+        err = f"report generation failed: {exc.__class__.__name__}"
         await _mark_failure(db, schedule, err, now)
         return {"status": "failure", "error": err, "next_run_at": schedule.next_run_at}
 
@@ -398,12 +436,36 @@ async def _sweep_tenant(db_name: str, *, now: datetime) -> tuple[int, int]:
         async with factory() as db:
             due = await list_due_schedules(db, now=now)
             for schedule in due:
-                outcome = await execute_schedule(db, schedule, now=now)
+                # One transaction PER SCHEDULE. Sharing one across the tenant's
+                # whole batch meant a DB-level error in schedule N (a statement
+                # timeout, a tenant behind on a migration) aborted the
+                # transaction, so `_mark_failure`'s own write raised
+                # `PendingRollbackError` and unwound the loop — rolling back
+                # the `next_run_at` bumps of every schedule that had ALREADY
+                # generated and EMAILED successfully. Those re-sent their
+                # report on every tick, forever, while the failing one's
+                # retry counter never persisted so the documented 5-strike
+                # auto-disable could never fire. Same shape
+                # `recurring_invoices` and `vendor_rescreen` already adopted.
+                try:
+                    outcome = await execute_schedule(db, schedule, now=now)
+                    await db.commit()
+                except Exception:  # noqa: BLE001
+                    # `execute_schedule` promises not to raise, but its own
+                    # bookkeeping write can when the session is already
+                    # poisoned. Roll back so the NEXT schedule starts clean.
+                    await db.rollback()
+                    logger.warning(
+                        "[scheduled-reports] schedule %s failed in tenant %s",
+                        schedule.id,
+                        db_name,
+                    )
+                    run += 1
+                    failed += 1
+                    continue
                 run += 1
                 if outcome["status"] == "failure":
                     failed += 1
-            if due:
-                await db.commit()
     finally:
         await engine.dispose()
     return run, failed

@@ -792,3 +792,105 @@ async def test_tenant_isolation_void_cross_tenant(realdb):
     async with realdb.client(key="b", role="ap_manager") as c:
         resp = await c.post(f"/api/credit-memos/{memo_id}/void")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# entity scoping
+# ---------------------------------------------------------------------------
+
+
+async def _entities(client, *, name: str, slug: str) -> tuple[str, str]:
+    """Create a second entity; return (default_entity_id, new_entity_id)."""
+    r = await client.post("/api/entities", json={"name": name, "slug": slug})
+    assert r.status_code == 201, r.text
+    other_id = r.json()["id"]
+    listing = await client.get("/api/entities")
+    default_id = next(e["id"] for e in listing.json() if e["is_default"])
+    return default_id, other_id
+
+
+async def _seed_scoped_vendor_invoice(mk, org_id, *, entity_id, number: str) -> tuple[str, str]:
+    import uuid as _uuid
+
+    async with mk() as s:
+        v = Vendor(
+            organization_id=org_id, entity_id=_uuid.UUID(entity_id), name=f"CM Scope {number}"
+        )
+        s.add(v)
+        await s.flush()
+        inv = Invoice(
+            organization_id=org_id,
+            entity_id=_uuid.UUID(entity_id),
+            invoice_number=number,
+            vendor_name=v.name,
+            vendor_id=v.id,
+            amount=Decimal("1000.00"),
+            currency="USD",
+            status=InvoiceStatus.approved,
+        )
+        s.add(inv)
+        await s.commit()
+        await s.refresh(v)
+        await s.refresh(inv)
+        return str(v.id), str(inv.id)
+
+
+async def test_credit_memo_mutations_are_entity_scoped(realdb):
+    """Applying a credit reduces what a payment run pays, so naming another
+    subsidiary's ids must not reach across the entity boundary.
+
+    `list_credit_memos` honoured `X-Entity-ID` from the start, but every by-id
+    mutation resolved on the primary key alone — so an entity-A user could
+    create, apply or void a memo against entity B's invoice, cutting B's next
+    payment, and then not even see the memo in their own list. Opaque 404 on
+    every path, mirroring `api/payments.py::_get_scoped_payment`.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    async with realdb.client(key="a", role="admin") as c:
+        default_id, other_id = await _entities(c, name="CM Sub", slug="cm-sub")
+
+    b_vendor, b_invoice = await _seed_scoped_vendor_invoice(
+        mk, org_id, entity_id=other_id, number="CMSCOPE-B-1"
+    )
+
+    async with realdb.client(key="a", role="admin") as c:
+        # Entity A selected: entity B's vendor is not reachable.
+        c.headers["X-Entity-ID"] = default_id
+        resp = await c.post(
+            "/api/credit-memos",
+            json={
+                "memo_number": "CM-SCOPE-1",
+                "vendor_id": b_vendor,
+                "amount": "400.00",
+                "invoice_id": b_invoice,
+            },
+        )
+        assert resp.status_code == 404, resp.text
+
+        # Create the memo properly from entity B, then try to reach it from A.
+        c.headers["X-Entity-ID"] = other_id
+        made = await c.post(
+            "/api/credit-memos",
+            json={"memo_number": "CM-SCOPE-2", "vendor_id": b_vendor, "amount": "100.00"},
+        )
+        assert made.status_code == 201, made.text
+        memo_id = made.json()["id"]
+
+        c.headers["X-Entity-ID"] = default_id
+        applied = await c.post(f"/api/credit-memos/{memo_id}/apply", json={"invoice_id": b_invoice})
+        assert applied.status_code == 404, applied.text
+        voided = await c.post(f"/api/credit-memos/{memo_id}/void")
+        assert voided.status_code == 404, voided.text
+
+    # Nothing was applied against entity B's invoice.
+    async with mk() as s:
+        total = (
+            await s.execute(
+                select(func.coalesce(func.sum(CreditMemo.amount), Decimal("0"))).where(
+                    CreditMemo.status == "applied"
+                )
+            )
+        ).scalar_one()
+        assert total == Decimal("0")

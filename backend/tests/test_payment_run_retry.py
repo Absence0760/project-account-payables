@@ -867,3 +867,39 @@ async def test_retry_skips_when_an_applied_credit_memo_changed_the_net_amount(re
         payment = await s.get(Payment, uuid.UUID(payment_id))
         assert payment.amount == Decimal("100.00")
         assert len(await _payments_for_invoice_in_session(s, payment.invoice_id)) == 1
+
+
+async def test_runs_list_surfaces_the_cfo_approval_gate(realdb):
+    """`requires_cfo_approval` / `cfo_approved_at` must be on the LIST shape.
+
+    Both columns have always existed on the row and `GET /runs/{id}` has
+    always returned them, but the list endpoint declares
+    `PaymentRunResponse` and FastAPI strips whatever a response model does
+    not declare. So a client reading the list saw `requires_cfo_approval`
+    absent for every run, always, and could not tell an above-threshold run
+    from any other — the mobile app's pre-flight gate evaluated false and
+    Execute went out to a 403 it rendered as a raw JSON body.
+    """
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+
+    run_id, _ = await _seed_run(
+        mk,
+        org_id,
+        run_status="draft",
+        payments=[("CFOGATE-LIST-1", "pending", None)],
+    )
+    async with mk() as s:
+        run = (
+            await s.execute(select(PaymentRun).where(PaymentRun.id == uuid.UUID(run_id)))
+        ).scalar_one()
+        run.requires_cfo_approval = True
+        await s.commit()
+
+    async with realdb.client(key=TENANT, role="admin") as c:
+        r = await c.get("/api/payments/runs/")
+    assert r.status_code == 200, r.text
+    item = next(i for i in r.json()["items"] if i["id"] == run_id)
+    assert item["requires_cfo_approval"] is True
+    # Not yet signed off — the gate is live.
+    assert item["cfo_approved_at"] is None

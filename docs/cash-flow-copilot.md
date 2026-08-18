@@ -430,6 +430,22 @@ design-only — everything else on this page is shipped.
    set a reporting currency or a BYO opening balance, not for us to guess. A
    blank / unknown provider currency fails closed the same way.
 
+   **The outflow side had the mirror-image defect and is now fixed too.**
+   `analytics._commitment_rows` selected `Invoice.amount` — each invoice's OWN
+   currency — with no conversion, so the premise the paragraph above rests on
+   ("every outflow subtracted from the opening balance is denominated in the
+   org's reporting currency") was true of the balance and false of the
+   outflows. A ¥10,000,000 invoice subtracted from a $250,000 opening balance
+   projected a −$9.75M shortfall that did not exist: the alert sweep emails
+   every finance leader about it, `propose_payment_plan` re-times payments
+   around it, and `POST /plans/{id}/draft-run` stages a payment run off that
+   plan. A GBP invoice under-counts in the same way and can hide a REAL
+   shortfall. Every row now goes through `currency_conversion.reporting_amount_for_row`
+   — the same helper every sibling rollup in `api/analytics.py` uses, reading
+   the rate locked on the invoice, never fetching one on a read — and carries
+   an `unconverted` flag so a row we could not convert is visible rather than
+   silently mixed in.
+
    `GET /api/analytics/cash_position` now returns the same provenance
    (`opening_balance_source` / `_currency` / `_provider` /
    `_provider_skipped`). Its explicit-override source value changed from

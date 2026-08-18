@@ -4,8 +4,16 @@ Each `ship(rows)` call writes a single gzip-compressed JSONL file to S3
 under `audit/<tenant>/<YYYY>/<MM>/<DD>/<timestamp>-<uuid>.jsonl.gz`. The
 bucket is expected to have Object Lock enabled in Governance mode with a
 default retention period configured by infra (see docs) — the adapter
-does NOT configure Object Lock itself. We `head_bucket` on construction
-so a misconfigured bucket fails the startup self-test loudly.
+does NOT configure Object Lock itself.
+
+`__init__` does no network I/O: it only resolves the bucket name (raising
+if none is configured) and builds the boto3 client. The bucket check lives
+in `test_connection()`, which `head_bucket`s AND reads
+`get_object_lock_configuration`; `app/main.py`'s lifespan calls it for
+every configured adapter and REFUSES TO BOOT on a False, so a bucket
+without Object Lock can never be shipped to. `ship()` deliberately does
+not re-check per batch — that would be an extra S3 round-trip on every
+tick for a bucket property that cannot change after creation.
 
 One object per batch is intentional: it keeps the ship atomic (either
 the PUT succeeded or it didn't), preserves the natural batch boundary

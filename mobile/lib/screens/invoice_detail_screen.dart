@@ -56,13 +56,17 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
     });
     try {
       final invoice = await InvoiceApi.getById(widget.invoiceId);
+      // The route can be popped while a slow GET (or its 10s timeout) is still
+      // in flight — setState after dispose throws. Matches _loadActivity below.
+      if (!mounted) return;
       setState(() {
         _invoice = invoice;
         _loading = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _error = describeApiError(e);
         _loading = false;
       });
     }

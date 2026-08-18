@@ -373,6 +373,30 @@ auto-releases on rollback; no DB constraint is needed since the domains live in
 a JSONB array, and admin-config writes are rare enough that one global lock is
 cheap).
 
+**This endpoint is the only writer.** `PATCH /api/organization` takes a
+free-form `settings` dict and shallow-merges it, so a
+`{"brand": {"custom_domains": [...]}}` payload replaced the whole `brand` key
+and stored vanity hostnames with **none** of the controls above — no
+normalization, no advisory lock, no cross-org uniqueness check, no audit row.
+Since anyone can self-signup a tenant and become its admin, that let an
+attacker claim a hostname already registered to a victim: with two orgs
+matching, `resolve_tenant_slug_by_custom_domain` returned `.scalars().first()`
+with no ordering, so requests on that host that carry no `X-Tenant-Slug` — which
+is exactly what the SPA sends on a two-label vanity apex — could resolve to the
+attacker's org. The unauthenticated `GET /api/portal/branding` would then serve
+the *attacker's* product name, logo and support/legal URLs on the victim's own
+supplier-portal domain (a ready-made phishing surface aimed at the victim's
+suppliers), and `POST /api/portal/auth/login` would resolve to the attacker's
+tenant DB so the victim's suppliers could no longer sign in. The JWT
+`org`-claim cross-check does not help here: these are the documented
+public-by-design routes where it is deliberately skipped.
+
+`PATCH /api/organization` now refuses a `brand.custom_domains` key with a 422
+naming this endpoint — the same treatment it already gave `chat_notifications`,
+and for the same reason (a second, unaudited writer). The resolver additionally
+takes a deterministic `ORDER BY`, so a duplicate that predates the fix resolves
+consistently instead of flapping.
+
 Every mutation audits `organization.custom_domains_updated` into the tenant
 trail, **PII-free**: it records only the host **count** (old → new), never the
 hostnames themselves (tenant infra config kept out of the trail). A branding

@@ -54,6 +54,13 @@
 	let total = $state(0);
 	let page = $state(1);
 	let loadingMore = $state(false);
+	// The initial / filter-change fetch has its own state. Without it the table
+	// rendered the "No open exceptions. Everything looks good!" empty message
+	// while the request was still in flight — and PERMANENTLY after a failed one,
+	// asserting there were no open duplicates, fraud flags, compliance holds or
+	// line-total mismatches when we simply hadn't been able to look.
+	let loading = $state(true);
+	let errored = $state(false);
 	let summary = $state<Summary | null>(null);
 	let statusFilter = $state('open');
 	let typeFilter = $state<string | null>(null);
@@ -127,6 +134,8 @@
 	async function loadExceptions(opts: { append?: boolean; nextPage?: number } = {}) {
 		const nextPage = opts.nextPage ?? 1;
 		if (opts.append) loadingMore = true;
+		else loading = true;
+		errored = false;
 		try {
 			const params = new URLSearchParams();
 			if (statusFilter !== 'all') params.set('status', statusFilter);
@@ -142,9 +151,12 @@
 			// Drop selections for ids that fell off the list.
 			selectedIds = pruneSelection(selectedIds, exceptions.map((e) => e.id));
 		} catch {
+			errored = true;
+			if (!opts.append) exceptions = [];
 			toast('Failed to load exceptions', 'error');
 		} finally {
 			loadingMore = false;
+			loading = false;
 		}
 	}
 
@@ -308,10 +320,16 @@
 			: []
 	);
 
+	// Order matters: "still loading" and "we failed to look" both outrank any
+	// claim about what the queue contains.
 	let emptyMessage = $derived(
-		statusFilter === 'open'
-			? m('exceptions.empty.open')
-			: m('exceptions.empty.other')
+		loading
+			? m('common.loading')
+			: errored
+				? m('exceptions.empty.errored')
+				: statusFilter === 'open'
+					? m('exceptions.empty.open')
+					: m('exceptions.empty.other')
 	);
 </script>
 

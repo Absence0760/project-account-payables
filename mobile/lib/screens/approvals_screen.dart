@@ -20,7 +20,11 @@ class _ApprovalsScreenState extends State<ApprovalsScreen> {
   void initState() {
     super.initState();
     SchedulerBinding.instance.addPostFrameCallback((_) {
-      InvoiceStore.instance.fetch();
+      // The approvals queue is its own server-filtered request — NOT the
+      // Invoices tab's list. Both screens are children of one IndexedStack, so
+      // this initState fires once for the app's lifetime; every later refresh
+      // comes from the RefreshIndicator or a mutation.
+      InvoiceStore.instance.fetchPending();
     });
   }
 
@@ -33,10 +37,32 @@ class _ApprovalsScreenState extends State<ApprovalsScreen> {
         listenable: InvoiceStore.instance,
         builder: (context, _) {
           final store = InvoiceStore.instance;
-          final pending = store.pendingApproval;
+          final pending = store.pending;
 
-          if (store.loading && store.invoices.isEmpty) {
+          if (store.pendingLoading && pending.isEmpty) {
             return const Center(child: CircularProgressIndicator());
+          }
+
+          if (store.pendingError != null && pending.isEmpty) {
+            // Never fall through to "All caught up!" on a failed load — an
+            // empty approvals queue and an unreachable one look identical to a
+            // reviewer, and only one of them means there is nothing to do.
+            return Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.error_outline,
+                      size: 48, color: Colors.red.shade700),
+                  const SizedBox(height: 12),
+                  Text(l.approvalsLoadError),
+                  const SizedBox(height: 12),
+                  FilledButton(
+                    onPressed: store.fetchPending,
+                    child: Text(l.commonRetry),
+                  ),
+                ],
+              ),
+            );
           }
 
           if (pending.isEmpty) {
@@ -61,7 +87,7 @@ class _ApprovalsScreenState extends State<ApprovalsScreen> {
           }
 
           return RefreshIndicator(
-            onRefresh: store.fetch,
+            onRefresh: store.fetchPending,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [

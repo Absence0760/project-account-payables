@@ -83,9 +83,18 @@ DEFAULT_STEPS_CONFIG = {
             "number": 2,
             "type": "approval",
             "name": "Manager Approval",
-            "enabled": False,
+            # Approval is ON in the fallback, deliberately. This config is what
+            # `get_or_create_workflow_definition` mints when a tenant has NO
+            # active definition, and with approval disabled `complete_invoice`
+            # falls through every branch to the default `→ done` transition:
+            # the invoice reaches a terminal, immutable state with no approval,
+            # no approval signature, no `invoice.approved` audit row, no
+            # segregation check and no CFO gate. A fallback must fail CLOSED.
+            # `provision_tenant` seeds a real definition so this is a backstop,
+            # not the operative config for any tenant.
+            "enabled": True,
             "config": {
-                "required": False,
+                "required": True,
                 "approver_id": None,
                 "approver_strategy": "manual",
                 "require_segregation": True,
@@ -187,6 +196,15 @@ async def transition_invoice(
     old_status = invoice.status.value
     invoice.status = target_status
 
+    # One id per transition OCCURRENCE. An invoice legitimately reaches
+    # `approved` (and `paid`) more than once — `POST /api/payments/{id}/void`
+    # takes it back to `approved` and a later run settles it again — so the
+    # outbound webhook event id has to be minted per transition, not per
+    # invoice. Keyed on the invoice id, the second genuine occurrence was
+    # swallowed by the `(subscription_id, event_id)` dedupe index and the
+    # customer's ERP never heard about the void-and-re-pay.
+    occurrence_id = uuid.uuid4()
+
     await dispatch_audit(
         db,
         correlation_id=invoice.correlation_id,
@@ -221,27 +239,36 @@ async def transition_invoice(
     # exactly once. `emit_event` opens its own control-plane session, never
     # raises into here, and is a silent no-op when FEOH_WEBHOOKS_ENABLED is off.
     try:
-        await _maybe_emit_webhook(invoice, target_status)
+        await _maybe_emit_webhook(invoice, target_status, occurrence_id=occurrence_id)
     except Exception:  # noqa: BLE001 — a webhook emit must never break the transition
         _log.exception("webhook emit hook failed for invoice transition to %s", target_status.value)
     return invoice
 
 
-async def _maybe_emit_webhook(invoice: Invoice, target_status: InvoiceStatus) -> None:
+async def _maybe_emit_webhook(
+    invoice: Invoice,
+    target_status: InvoiceStatus,
+    *,
+    occurrence_id: uuid.UUID | None = None,
+) -> None:
     """Map an invoice status transition to an outbound webhook event + emit.
 
     Only `approved` → `invoice.approved` and `paid` → `payment.settled` are
-    emitted this slice (exception.raised is deferred — see
-    backend/docs/public-api.md § Outbound webhooks).
+    emitted here (`exception.raised` is emitted from
+    `exception_service.create_exception`).
+
+    `occurrence_id` is the caller's per-transition id and becomes the event's
+    dedupe key. Re-emitting the SAME transition (same id) still dedupes; a NEW
+    transition mints a new id and therefore a new, deliverable event.
     """
     if target_status is InvoiceStatus.approved:
         from app.services.webhooks import emit_invoice_approved
 
-        await emit_invoice_approved(invoice)
+        await emit_invoice_approved(invoice, occurrence_id=occurrence_id)
     elif target_status is InvoiceStatus.paid:
         from app.services.webhooks import emit_payment_settled
 
-        await emit_payment_settled(invoice)
+        await emit_payment_settled(invoice, occurrence_id=occurrence_id)
 
 
 async def _maybe_notify_transition(
@@ -418,6 +445,41 @@ async def get_or_create_workflow_definition(
         if defn:
             return defn
 
+    # Last read before we mint anything: ANY active definition in the org,
+    # whatever its scope. An entity with no definition of its own and no shared
+    # fallback must inherit the org's existing default rather than get a fresh
+    # stub — minting one here is the accumulation bug
+    # `tests-e2e/fixtures/globalSetup.ts` fails the whole e2e run over and
+    # `docs/known-issues.md` records: a second `is_default=True` row appears in
+    # a different entity scope, and because the auto-created stub has every
+    # step disabled it can then shadow the real seeded default for no-entity
+    # reads. Creating is now reserved for an org that genuinely has NO active
+    # definition at all.
+    result = await db.execute(
+        select(WorkflowDefinition)
+        .where(
+            WorkflowDefinition.organization_id == organization_id,
+            WorkflowDefinition.is_active == True,  # noqa: E712
+        )
+        .order_by(*order)
+    )
+    defn = result.scalars().first()
+    if defn:
+        return defn
+
+    # NULL — the SHARED org-wide bucket — deliberately, and unlike the other
+    # three creation paths (`POST /api/workflows`, the `GET /api/workflows`
+    # auto-seed, and `tenant_provisioning`), which all stamp the caller's
+    # entity to match migration 0029's backfill.
+    #
+    # This one is different because it is the LAST-RESORT fallback: nothing
+    # resolved for the requested entity and nothing shared exists either. A
+    # shared row serves every entity at once, which is what a fallback should
+    # do; stamping the requesting entity would mint one stub per entity and
+    # couple each to that entity's lifetime (deleting the entity then fails on
+    # this row's FK). The one-active-per-scope invariant is unaffected — the
+    # paths a user actually creates definitions through all agree, and this
+    # fires only when there is nothing to conflict with.
     defn = WorkflowDefinition(
         name="Invoice Processing",
         description="Upload → Review → ERP → Done",

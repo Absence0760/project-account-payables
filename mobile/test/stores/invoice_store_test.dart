@@ -93,22 +93,23 @@ void main() {
   });
 
   group('filters', () {
-    test('pendingApproval returns only ready_for_review invoices', () async {
+    test('list requests carry page_size, the name the backend declares',
+        () async {
+      // FastAPI's pagination dependency declares `page_size`; an unknown
+      // `per_page` is silently dropped, so the old spelling meant the caller's
+      // page size never reached the server.
+      Map<String, String>? params;
       ApiClient().debugConfigure(
-        client: MockClient((req) async => _list([
-              _invoiceJson('1', status: 'ready_for_review'),
-              _invoiceJson('2', status: 'pending'),
-              _invoiceJson('3', status: 'ready_for_review'),
-            ])),
+        client: MockClient((req) async {
+          params ??= req.url.queryParameters;
+          return _list([]);
+        }),
       );
 
       await store.fetch();
 
-      expect(store.invoices, hasLength(3));
-      expect(
-        store.pendingApproval.map((i) => i.id),
-        ['1', '3'],
-      );
+      expect(params!['page_size'], '20');
+      expect(params!.containsKey('per_page'), isFalse);
     });
 
     test('setStatusFilter updates the getter and carries it into the request',
@@ -625,6 +626,141 @@ void main() {
 
       expect(result, isNull);
       expect(store.error, isNotNull);
+    });
+  });
+
+  // The Approvals tab used to render a client-side `.where()` over whatever the
+  // Invoices tab had last fetched. Both screens live in one IndexedStack, so
+  // picking a status chip on Invoices (e.g. `paid`) emptied the approvals queue
+  // and nothing re-fetched on tab switch; pull-to-refresh re-applied the same
+  // wrong filter, so it could not self-correct.
+  group('fetchPending (approvals queue)', () {
+    test('asks the server for ready_for_review, not a client-side slice',
+        () async {
+      String? sentStatus;
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          sentStatus = req.url.queryParameters['status'];
+          return _list([_invoiceJson('1', status: 'ready_for_review')]);
+        }),
+      );
+
+      await store.fetchPending();
+
+      expect(sentStatus, 'ready_for_review');
+      expect(store.pending.map((i) => i.id), ['1']);
+      expect(store.pendingError, isNull);
+      expect(store.pendingLoading, isFalse);
+    });
+
+    test('does not read or mutate the Invoices tab filter', () async {
+      final statuses = <String?>[];
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          statuses.add(req.url.queryParameters['status']);
+          return _list(
+            req.url.queryParameters['status'] == 'ready_for_review'
+                ? [_invoiceJson('9', status: 'ready_for_review')]
+                : [_invoiceJson('1', status: 'paid')],
+          );
+        }),
+      );
+
+      // The user filters the Invoices tab to `paid` …
+      store.setStatusFilter('paid');
+      await Future<void>.delayed(Duration.zero);
+      // … and then opens Approvals.
+      await store.fetchPending();
+
+      expect(statuses, contains('paid'));
+      expect(statuses, contains('ready_for_review'));
+      // The approvals queue is unaffected by the other tab's chip …
+      expect(store.pending.map((i) => i.id), ['9']);
+      // … and the chip itself is untouched.
+      expect(store.statusFilter, 'paid');
+      expect(store.invoices.map((i) => i.id), ['1']);
+    });
+
+    test('falls back to its own cached queue when the network fails', () async {
+      ApiClient().debugConfigure(
+        client: MockClient(
+          (req) async => _list([_invoiceJson('1', status: 'ready_for_review')]),
+        ),
+      );
+      await store.fetchPending();
+      expect(store.pendingFromCache, isFalse);
+
+      ApiClient().debugConfigure(
+        client: MockClient((req) async => throw Exception('offline')),
+      );
+      await store.fetchPending();
+
+      expect(store.pending.map((i) => i.id), ['1']);
+      expect(store.pendingFromCache, isTrue);
+      expect(store.pendingError, isNull);
+    });
+
+    test('surfaces an error rather than an empty queue when nothing is cached',
+        () async {
+      ApiClient().debugConfigure(
+        client: MockClient((req) async => http.Response('boom', 500)),
+      );
+
+      await store.fetchPending();
+
+      // An empty approvals list and an unreachable one must not look alike.
+      expect(store.pendingError, isNotNull);
+      expect(store.pending, isEmpty);
+    });
+
+    test('approving refreshes the approvals queue, not just the invoice list',
+        () async {
+      var approved = false;
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          if (req.method == 'POST' && req.url.path.endsWith('/approve')) {
+            approved = true;
+            return http.Response(
+              jsonEncode(_invoiceJson('1', status: 'approved')),
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          if (req.url.queryParameters['status'] == 'ready_for_review') {
+            return _list(
+              approved ? [] : [_invoiceJson('1', status: 'ready_for_review')],
+            );
+          }
+          return _list([]);
+        }),
+      );
+
+      await store.fetchPending();
+      expect(store.pending, hasLength(1));
+
+      expect(await store.approve('1'), isTrue);
+
+      expect(store.pending, isEmpty);
+    });
+
+    test('a superseded pending fetch never clobbers a newer one', () async {
+      final gate = Completer<http.Response>();
+      var call = 0;
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          call++;
+          if (call == 1) return gate.future; // slow first request
+          return _list([_invoiceJson('2', status: 'ready_for_review')]);
+        }),
+      );
+
+      final slow = store.fetchPending();
+      final fast = store.fetchPending();
+      await fast;
+      gate.complete(_list([_invoiceJson('1', status: 'ready_for_review')]));
+      await slow;
+
+      expect(store.pending.map((i) => i.id), ['2']);
     });
   });
 }

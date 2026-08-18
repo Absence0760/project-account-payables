@@ -720,6 +720,16 @@ def _execute_db(run, payments, invoice_by_id, vendor_by_invoice=None, completing
         inv_res = MagicMock()
         inv_res.scalar_one_or_none = MagicMock(return_value=inv)
         per_pay_results.append(inv_res)
+        if inv is not None:
+            # `_execute_single_payment` re-derives the invoice's net payable
+            # (invoice amount − applied credit memos) immediately before the
+            # adapter call, so a credit recorded after the run was built can't
+            # pay the stale figure. Model that SUM here: no credits applied.
+            # Only fires when the invoice resolved — mirrors the guard in
+            # `_execute_single_payment`.
+            credit_res = MagicMock()
+            credit_res.scalar_one = MagicMock(return_value=Decimal("0"))
+            per_pay_results.append(credit_res)
         # For any invoice with a vendor_id the executor issues two follow-on
         # SELECTs, in order: (1) the vendor's bank_details (for the payload /
         # intl-leg detection) and (2) the full Vendor row for the compliance

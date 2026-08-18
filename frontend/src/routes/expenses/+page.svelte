@@ -74,8 +74,13 @@
 	import { m } from '$lib/i18n/store.svelte';
 
 	const canCreate = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk'));
-	// Policy CRUD + report/pre-approval approve/reject = admin | ap_manager.
+	// Policy CRUD + report/pre-approval REJECT = admin | ap_manager.
 	const canManagePolicies = $derived(auth.isManager);
+	// Report APPROVE is admin | ap_manager | cfo — and above the org's
+	// `expense_approval.cfo_threshold` the backend demands cfo/admin, so the CFO
+	// must be able to see the button. `auth.isCfo` = admin|cfo, so the union with
+	// `isManager` is exactly those three roles.
+	const canApproveReports = $derived(auth.isManager || auth.isCfo);
 
 	// --- Tabs ---
 	type Tab = 'expenses' | 'reports' | 'policies' | 'preapprovals' | 'cards';
@@ -463,10 +468,20 @@
 		}
 	}
 
-	// True when the signed-in user can approve/reject this report: a manager who
-	// is NOT the report owner (segregation of duties — approver != submitter).
+	// Reject is admin | ap_manager (`POST /expense-reports/{id}/reject`), and never
+	// by the report's own owner (segregation of duties — decider != submitter).
 	function canDecideReport(r: ExpenseReport): boolean {
 		return canManagePolicies && r.status === 'submitted' && auth.user?.id !== r.employee_user_id;
+	}
+
+	// Approve is a WIDER role set than reject: admin | ap_manager | cfo
+	// (`POST /expense-reports/{id}/approve`). Above
+	// `settings.expense_approval.cfo_threshold` the backend REQUIRES cfo/admin —
+	// so gating Approve on the manager-only predicate hid the button from the
+	// exact person the CFO gate escalates to, leaving a large report with no
+	// approver at all. Same SoD self-check.
+	function canApproveReport(r: ExpenseReport): boolean {
+		return canApproveReports && r.status === 'submitted' && auth.user?.id !== r.employee_user_id;
 	}
 
 	function exportReportCsv() {
@@ -987,8 +1002,10 @@
 						{#if canCreate && activeReport.status === 'draft'}
 							<button class="btn-primary" disabled={reportBusy} onclick={submitReport}>{m('expenses.reports.submit')}</button>
 						{/if}
-						{#if canDecideReport(activeReport)}
+						{#if canApproveReport(activeReport)}
 							<button class="btn-primary" disabled={reportBusy} onclick={approveActiveReport}>{m('expenses.reports.approve')}</button>
+						{/if}
+						{#if canDecideReport(activeReport)}
 							<button class="btn-secondary danger" disabled={reportBusy} onclick={() => (showReject = true)}>{m('expenses.reports.reject')}</button>
 						{/if}
 					</div>

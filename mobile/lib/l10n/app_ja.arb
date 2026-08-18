@@ -119,6 +119,7 @@
   "approvalsTitle": "承認待ち",
   "approvalsAllCaughtUp": "すべて完了しました！",
   "approvalsNoneWaiting": "承認待ちの請求書はありません",
+  "approvalsLoadError": "承認待ちの請求書を読み込めませんでした",
   "approvalsPendingCount": "{count, plural, other {{count}件の請求書が承認待ち}}",
   "approvalActionApprove": "承認",
   "approvalActionReject": "却下",

@@ -387,6 +387,10 @@ class AppLocalizationsEs extends AppLocalizations {
   String get approvalsNoneWaiting => 'No hay facturas esperando aprobación';
 
   @override
+  String get approvalsLoadError =>
+      'No se pudieron cargar las aprobaciones pendientes';
+
+  @override
   String approvalsPendingCount(int count) {
     String _temp0 = intl.Intl.pluralLogic(
       count,

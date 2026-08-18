@@ -99,38 +99,72 @@ async def escalate_once(*, now: datetime | None = None) -> EscalateResult:
 async def _escalate_tenant(db_name: str, now: datetime, *, org_id: uuid.UUID | None = None) -> int:
     """Mutate every active instance whose current chain level is overdue.
 
-    Reads only `state="active"` rows — completed/abandoned instances don't
-    move money and shouldn't bring a sweeper down if their JSON is malformed.
+    Reads only `state="active"` rows carrying an ``approval_levels`` chain —
+    completed/abandoned instances don't move money, and one with no chain can
+    never escalate, so neither is worth locking.
 
-    The instance rows are locked ``FOR UPDATE`` for the sweep so an escalation
-    can't clobber a concurrent approval: the approve path (review.approve_invoice)
-    takes the same row lock, so escalation either waits for an in-flight approval
-    to commit (then reads the fresh state_data) or holds the row while it
-    escalates. Each escalation writes an ``invoice.approval_escalated`` audit row
-    — expanding who may approve an invoice is a material control event and must
-    be reconstructable from the immutable trail, not just mutable state_data.
+    **Two-phase, one row locked at a time.** Candidate ids are selected
+    UNLOCKED, keyset-paginated by id (``approval_escalation_batch_size`` per
+    page); each id is then re-read with ``FOR UPDATE``, escalated, and committed
+    on its own, which releases the lock before the next row is touched. The
+    sweep used to select every active instance ``FOR UPDATE`` in one unbounded
+    statement and hold all of it to the end of the tick: ``review.approve_invoice``
+    takes the same row lock, so a tenant with a large open queue had its ENTIRE
+    approval surface blocked behind each tick, and two replicas locking
+    overlapping sets in unspecified order deadlocked and aborted the tick.
+    Ordering by id gives every replica the same lock order, so they queue
+    instead of deadlocking.
+
+    Paginating rather than capping is deliberate: escalation does not change
+    ``state``, so a capped sweep would re-examine the same lowest-id rows every
+    tick and never reach the rest. The row lock still serialises against a
+    concurrent approval — escalation either waits for it to commit (then reads
+    the fresh ``state_data``) or holds the one row while it escalates.
+
+    Each escalation writes an ``invoice.approval_escalated`` audit row —
+    expanding who may approve an invoice is a material control event and must be
+    reconstructable from the immutable trail, not just mutable state_data.
     """
+    page_size = int(settings.approval_escalation_batch_size)
     engine = create_async_engine(_make_tenant_url(db_name))
     factory = async_sessionmaker(engine, expire_on_commit=False)
     escalated = 0
 
     try:
         async with factory() as db:
-            instances = (
-                (
-                    await db.execute(
-                        select(WorkflowInstance)
-                        .where(WorkflowInstance.state == "active")
-                        .with_for_update()
+            after: uuid.UUID | None = None
+            while True:
+                query = (
+                    select(WorkflowInstance.id)
+                    .where(
+                        WorkflowInstance.state == "active",
+                        # No chain, nothing to escalate — skip it in SQL rather
+                        # than paying a lock + a JSON parse to learn that.
+                        WorkflowInstance.state_data["approval_levels"].astext.isnot(None),
                     )
+                    .order_by(WorkflowInstance.id.asc())
+                    .limit(page_size)
                 )
-                .scalars()
-                .all()
-            )
+                if after is not None:
+                    query = query.where(WorkflowInstance.id > after)
+                instance_ids = (await db.execute(query)).scalars().all()
+                if not instance_ids:
+                    break
+                after = instance_ids[-1]
 
-            for inst in instances:
-                if apply_escalation(inst, now=now):
-                    escalated += 1
+                for instance_id in instance_ids:
+                    # `with_for_update` bypasses the identity map, so this is a
+                    # real `SELECT ... FOR UPDATE` on exactly one row.
+                    inst = await db.get(WorkflowInstance, instance_id, with_for_update=True)
+                    if inst is None or inst.state != "active":
+                        # Deleted or completed between the id read and the lock.
+                        await db.rollback()
+                        continue
+                    if not apply_escalation(inst, now=now):
+                        # Nothing to write — end the transaction so the row lock
+                        # is released immediately instead of at end of tick.
+                        await db.rollback()
+                        continue
                     if org_id is not None:
                         await dispatch_audit(
                             db,
@@ -142,9 +176,13 @@ async def _escalate_tenant(db_name: str, now: datetime, *, org_id: uuid.UUID | N
                             entity_id=inst.invoice_id,
                             details=_last_escalation_detail(inst),
                         )
+                    await db.commit()
+                    escalated += 1
+
+                if len(instance_ids) < page_size:
+                    break
 
             if escalated:
-                await db.commit()
                 logger.info(
                     "[approval-escalation] %s: escalated %d instance(s)", db_name, escalated
                 )
