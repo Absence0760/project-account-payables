@@ -10,6 +10,7 @@ from app.services.billing.entitlements import (
     get_entitlements,
     has_entitlement,
 )
+from app.services.billing.period import BillingPeriod, current_period
 from app.services.billing.plan_change import (
     PlanChangeError,
     PlanChangeResult,
@@ -23,6 +24,8 @@ from app.services.billing.provisioning import (
 from app.services.billing.usage_rollup import UsageRollup, rollup_usage
 
 __all__ = [
+    "BillingPeriod",
+    "current_period",
     "UsageRollup",
     "rollup_usage",
     "get_active_subscription",

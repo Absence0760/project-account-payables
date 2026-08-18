@@ -293,6 +293,51 @@ the new one. **Positive** = extra charge (upgrade), **negative** = credit
 - No float anywhere. A degenerate / inverted window or zero remaining days yields
   `0.00` without dividing.
 
+## The billing period (`services/billing/period.py`)
+
+The window `compute_proration` divides by. Plans are flat **monthly**
+(`Plan.monthly_price`), so a period is a calendar month anchored on when the
+subscription started — `add_months` clamps the day (31 Jan + 1 month is the end
+of February, never 3 March).
+
+`current_period(subscription, now=…) -> BillingPeriod` is the single rule its
+three readers share:
+
+| Reader | Uses it for |
+|--------|-------------|
+| `plan_change.change_plan` | the proration window — **and persists** the resolved bounds back onto the row |
+| `GET /api/billing/subscription` | what the customer is shown (compute-on-read, no write) |
+| `dunning_sweep` | **no** — see below |
+
+Precedence: a persisted window that actually contains `now` wins verbatim (so a
+provider-synced window is never recomputed); otherwise the window is resolved
+by rolling whole months forward from `current_period_start`, else `created_at`,
+else `now`. It is never degenerate, including when `now` precedes the anchor.
+
+**Why this module exists.** Nothing wrote `current_period_start` /
+`current_period_end` — `plan_catalog.ensure_subscription`, the only place a
+`Subscription` is constructed outside tests, set `id` / `organization_id` /
+`plan_id` / `status` and stopped. Both columns were permanently `NULL`, so
+`change_plan`'s `subscription.current_period_start or now` fallback handed
+`compute_proration` a zero-length window, its degenerate-window guard fired,
+and **every** mid-period plan change prorated `0.00` — returned to the
+`/billing` UI under an "applies immediately, prorates the current period"
+notice, and written as `proration_amount: "0.00"` into the immutable
+`billing.plan_changed` audit row. `ensure_subscription` now stamps the first
+window at creation, and `change_plan` self-heals a legacy `NULL` (or expired)
+one.
+
+**The dunning sweep deliberately reads the raw column, not this.** The two
+answer different questions: the summary asks *which period is this
+subscription in* (always ending in the future), dunning asks *how long has this
+gone unpaid*, whose anchor is the last boundary the subscription actually
+billed at. Resolving forward there would put the end date permanently ahead of
+`now` and the sweep could never cancel anything.
+
+**The provider is authoritative once it is wired.** `ProviderSubscription`
+carries no period bounds yet; when it does, the synced values must win, and
+overwriting the locally-resolved window with them is always safe.
+
 ## Plan change (`services/billing/plan_change.py` + `POST /api/billing/change-plan`)
 
 `change_plan(control_db, org=…, new_plan_code=…, actor_id=…, change_at=None)`:
@@ -305,7 +350,10 @@ the new one. **Positive** = extra charge (upgrade), **negative** = credit
    zero proration, no mutation, no provider call, **no audit row** (mirrors the
    `transition_invoice` / `apply_billing_event` no-op rule). A retry of the same
    change therefore can't double-charge;
-4. compute the proration (`compute_proration`, pure Decimal);
+4. resolve the subscription's current billing window (`period.current_period`)
+   and **persist** it, then compute the proration (`compute_proration`, pure
+   Decimal) against it — see § The billing period for why the persisted bounds
+   can be absent or stale;
 5. `provision_org_billing` (resolve-or-create customer + the new plan's price) —
    fails closed before any mutation with the live adapter and no key;
 6. drop any stale **canceled** subscription row for the target plan (guards the
@@ -534,7 +582,7 @@ dashboard and never sees the tab.
 | `FEOH_BILLING_WEBHOOK_ENABLED` | `false` | Master switch for the inbound billing webhook route (`POST /api/billing/webhook/{provider}`). OFF in local dev (no outbound billing integration); flip ON in deployed envs. The route is HMAC-gated regardless; off → silent 204. **Boot guard**: refuses to start when this is `true` and `FEOH_BILLING_PROVIDER` is still `mock` (the mock adapter's `parse_webhook` does no signature verification) — pair with a real provider in deployed envs. |
 | `FEOH_BILLING_DUNNING_ENABLED` | `false` | Master switch for the dunning / past-due automation sweep. OFF by default; flip ON in deployed envs. The sweep only cancels subscriptions overdue past the grace window — it NEVER moves money. |
 | `FEOH_BILLING_DUNNING_INTERVAL_SECONDS` | `3600` | Dunning sweep tick interval. |
-| `FEOH_BILLING_DUNNING_GRACE_DAYS` | `14` | Grace window (days from `current_period_end`) a subscription may sit `past_due` before the dunning sweep cancels it. |
+| `FEOH_BILLING_DUNNING_GRACE_DAYS` | `14` | Grace window (days from the persisted `current_period_end`) a subscription may sit `past_due` before the dunning sweep cancels it. A row with no period end recorded (one created before `ensure_subscription` stamped one) is overdue by default. |
 
 ## Tests
 
@@ -577,5 +625,15 @@ ids, all against a mocked `httpx` transport; fail-closed without a key); and the
 plan-change service + `POST /api/billing/change-plan` endpoint on the
 real-Postgres harness (applies proration + audit row, idempotent same-plan
 no-op, retry no-op, no-live-sub / unknown-plan errors, provisioning persistence,
-clerk RBAC 403). The `change_plan` audit row uses the `_audit_engine_on_loop`
-fixture (same loop-binding workaround as the webhook suite).
+clerk RBAC 403), plus the billing-window regressions: `ensure_subscription`
+stamps a one-month window, a subscription with **no** stored window still
+prorates (the bug where every change returned `0.00`), and a stale window rolls
+forward before the proration is computed. The `change_plan` audit row uses the
+`_audit_engine_on_loop` fixture (same loop-binding workaround as the webhook
+suite).
+
+`backend/tests/test_billing_period.py` — the pure period rules: `add_months`
+day clamping / year crossing / backwards, the window containing `now`, the
+half-open boundary, `now` before the anchor, a month-end anchor, and
+`current_period`'s precedence (persisted window honoured, stale window rolled
+forward, `created_at` fallback, never degenerate).

@@ -13,8 +13,11 @@ billing period:
      a zero proration, mutates nothing, writes no audit row (mirrors
      `transition_invoice` / `apply_billing_event`'s no-op rule). A retry of the
      same change therefore can't double-charge.
-  3. Compute the prorated adjustment (`compute_proration`, pure Decimal) off the
-     locked baseline.
+  3. Resolve (and persist) the subscription's current billing window via
+     `period.current_period`, then compute the prorated adjustment
+     (`compute_proration`, pure Decimal) off the locked baseline. Nothing used
+     to write `current_period_start`/`_end`, so this step used to divide by a
+     zero-length window and prorate `0.00` on every change.
   4. Resolve-or-create the provider customer + the NEW plan's price
      (`provision_org_billing`) so the live adapter has what it needs.
   5. Repoint the subscription at the new plan, persist, and write an append-only
@@ -43,6 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.billing import Plan, Subscription
 from app.models.organization import Organization
 from app.services.audit_dispatch import dispatch_auth_audit
+from app.services.billing.period import current_period
 from app.services.billing.proration import ProrationResult, compute_proration
 from app.services.billing.provisioning import provision_org_billing
 
@@ -153,11 +157,24 @@ async def change_plan(
             reason="already_on_plan",
         )
 
+    # Resolve the window the subscription is actually in, and PERSIST it. The
+    # old `subscription.current_period_start or now` / `... or now` fallback
+    # handed `compute_proration` a zero-length window on every real
+    # subscription — nothing ever wrote those columns — so its
+    # degenerate-window guard short-circuited and every plan change prorated
+    # `0.00` while reporting that figure as correct. `current_period` is the
+    # one rule the summary endpoint and the dunning grace clock read too, so
+    # writing the resolved window back here also un-sticks a row those two
+    # were reading as NULL. See `services/billing/period.py`.
+    period = current_period(subscription, now=now)
+    subscription.current_period_start = period.start
+    subscription.current_period_end = period.end
+
     proration = compute_proration(
         old_monthly=current_plan.monthly_price,
         new_monthly=new_plan.monthly_price,
-        period_start=subscription.current_period_start or now,
-        period_end=subscription.current_period_end or now,
+        period_start=period.start,
+        period_end=period.end,
         change_at=now,
     )
 
