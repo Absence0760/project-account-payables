@@ -29,7 +29,7 @@ from lxml import etree
 
 from app.services.e_invoice._xml import (
     find_all_local,
-    local_name,
+    find_path,
     parse_secure,
     to_decimal,
 )
@@ -104,35 +104,58 @@ def parse_cxml_order_message(body: bytes) -> PunchoutCart | None:
     return PunchoutCart(buyer_cookie=buyer_cookie, items=items, currency=currency)
 
 
+def _first_text_within(scope: etree._Element | None, name: str) -> str | None:
+    """Text of the first descendant of ``scope`` with the given local name."""
+    if scope is None:
+        return None
+    for el in find_all_local(scope, name):
+        if el.text and el.text.strip():
+            return el.text.strip()
+    return None
+
+
 def _parse_item_in(item_in: etree._Element) -> PunchoutCartItem | None:
     """Parse one ``<ItemIn quantity="N">`` element into a cart item.
 
     cXML shape: ``ItemIn[@quantity] > ItemDetail > (UnitPrice/Money[@currency],
     Description, UnitOfMeasure)`` and ``ItemIn > ItemID > SupplierPartID``.
+
+    **Every lookup is scoped to the sub-element that owns that field**, and this
+    is load-bearing rather than tidiness. ``ItemIn`` legally carries ``Shipping``,
+    ``Tax``, ``SpendDetail`` and ``Distribution > Charge`` as SIBLINGS of
+    ``ItemDetail``, and each of those contains its own ``<Money>`` and
+    ``<Description>``. A scan over every descendant let the LAST one win, so a
+    cart line quoting 250.00 with 200.00 of tax was booked at 200.00 and
+    described as "Sales tax" — a plausible-looking price that then flowed into a
+    requisition, a PO, and the budget's committed spend.
+
+    A cart with no ``ItemDetail`` at all yields no price (``0``) rather than
+    borrowing a number from a sibling block: a zero line is visibly wrong to the
+    buyer approving the requisition, a tax-priced one is not. Same
+    skip-rather-than-guess call the offline statement reader makes.
     """
     qty = to_decimal(item_in.get("quantity")) or Decimal("1")
 
     unit_price = Decimal("0")
     currency = "USD"
-    description: str | None = None
-    uom: str | None = None
-    sku: str | None = None
 
-    for el in item_in.iter():
-        if not isinstance(el.tag, str):
-            continue
-        name = local_name(el)
-        if name == "Money":
-            parsed = to_decimal(el.text)
-            if parsed is not None:
-                unit_price = parsed
-            currency = el.get("currency") or currency
-        elif name == "Description" and el.text:
-            description = el.text.strip() or description
-        elif name == "UnitOfMeasure" and el.text:
-            uom = el.text.strip() or uom
-        elif name == "SupplierPartID" and el.text:
-            sku = el.text.strip() or sku
+    detail = find_path(item_in, "ItemDetail")
+    # Prefer the exact ``ItemDetail > UnitPrice > Money`` path; fall back to the
+    # first Money anywhere INSIDE ItemDetail (a supplier nesting it one level
+    # deeper is still unambiguously quoting this line's price) — never outside.
+    money = find_path(item_in, "ItemDetail", "UnitPrice", "Money")
+    if money is None and detail is not None:
+        monies = find_all_local(detail, "Money")
+        money = monies[0] if monies else None
+    if money is not None:
+        parsed = to_decimal(money.text)
+        if parsed is not None:
+            unit_price = parsed
+        currency = money.get("currency") or currency
+
+    description = _first_text_within(detail, "Description")
+    uom = _first_text_within(detail, "UnitOfMeasure")
+    sku = _first_text_within(find_path(item_in, "ItemID"), "SupplierPartID")
 
     return PunchoutCartItem(
         description=description or sku or "Item",

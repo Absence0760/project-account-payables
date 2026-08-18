@@ -98,7 +98,7 @@ string-Decimal amounts — never PII.
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/expenses` | List, paginated, entity-scoped (`X-Entity-ID`); `?status=` + `?report_id=` filters. |
-| POST | `/api/expenses` | Create an expense. `amount` must be **strictly positive** (`gt=0` → 422 otherwise; a negative line could net a report under the CFO threshold while hiding a large expense). Lands under the selected entity (or the tenant default). If `report_id` is supplied, the report's `total_amount` is recomputed. |
+| POST | `/api/expenses` | Create an expense. `amount` must be **strictly positive** (`gt=0` → 422 otherwise; a negative line could net a report under the CFO threshold while hiding a large expense). Lands under the selected entity (or the tenant default). If `report_id` is supplied this **is** an attach and gates like one: the target report must still be a `draft` (**409** otherwise, same rule as `POST /api/expense-reports/{id}/expenses`), and its `total_amount` is then recomputed. Creating straight onto a locked report used to be the one attach path with no gate — it moved an approved report's total past the CFO threshold it was approved under, and nulled the locked `reporting_*` figure that decision was derived from. |
 | GET | `/api/expenses/receipt/{file_key:path}` | Download proxy for a stored receipt. Cross-tenant-checked (first key segment must equal the caller's org); same 404 for wrong-org and missing-file. Declared before `/{expense_id}` so `receipt` isn't captured as an id. |
 | POST | `/api/expenses/{id}/receipt` | Upload a receipt to S3 (`upload_expense_receipt`) and stamp `receipt_file_key`. |
 | GET | `/api/expenses/export` | **(WF2)** Stream the filtered expense register as `text/csv` (`expenses_<today>.csv` via Content-Disposition). `?status=&category=&date_from=&date_to=&report_id=`; entity-scoped, no pagination (full filtered set). Outer-joins `GLAccount` (gl code) + `ExpenseReport` (report number) so an uncoded/unattached expense still emits a row. Serialised by `report_export.export_expense_register` (the `expense_register` exporter). Read RBAC (incl. CFO). Declared before `/{expense_id}`. |
@@ -107,7 +107,7 @@ string-Decimal amounts — never PII.
 | PATCH | `/api/expenses/{id}` | Update mutable fields (`amount` still `gt=0`). Audits only when a field actually changed. An `amount` change or a `report_id` move recomputes the affected report total(s) — and is **409** if any affected report has left `draft` into a locked state (submitted/pending_approval/approved/reimbursed), so an edit can't silently move a total the CFO gate / approval signature already ran against. |
 | DELETE | `/api/expenses/{id}` | Delete an expense; recomputes the owning report total if it was attached. **409** if the owning report is locked (submitted/approved/…) — deleting would shrink a total past its approval. |
 | GET | `/api/expense-reports` | List, paginated, entity-scoped; `?status=` filter. |
-| POST | `/api/expense-reports` | Create a report. `employee_user_id` defaults to the caller. |
+| POST | `/api/expense-reports` | Create a report. `employee_user_id` is **always the authenticated caller** — a report can't be raised on someone else's behalf. The body field is accepted for wire compatibility and ignored (a stale client gets a report owned by itself rather than a 422), the same posture `POST /api/expense-preapprovals` takes with its `requester_user_id`. Honouring it would have handed the creator the one value approval checks SoD against, so one user could raise a report "for" an arbitrary uuid and then approve it themselves. |
 | GET | `/api/expense-reports/{id}` | Get one report (with its expenses). |
 | GET | `/api/expense-reports/{id}/summary` | **(WF2)** Aggregate the report's attached expenses: `{ total, count, by_category: [{category, total, count}], by_status: [{status, total, count}] }`. SUMs run in Postgres over the `Numeric` column (exact); serialised as float to match `ExpenseResponse.amount` (read-only display rollup). Read RBAC (incl. CFO). |
 | PATCH | `/api/expense-reports/{id}` | Update mutable report fields. **409** once the report is locked (submitted/pending_approval/approved/reimbursed) — report-level fields (currency in particular) reinterpret a total the approval already ran against. |
@@ -387,7 +387,9 @@ Rules that keep the numbers honest:
 - **Locked, never recomputed on read.** No read path calls the FX adapter, so a
   market move cannot rewrite a submitted report's total. Re-locking happens only
   on a write that changes what is being converted — and those writes are already
-  refused once the report leaves `draft` (`_require_report_unlocked`, issue #155).
+  refused once the report leaves `draft` (`_require_report_unlocked`, issue #155)
+  — including the third attach path, `POST /api/expenses` carrying a `report_id`,
+  which gates on `_require_draft_report` exactly like the explicit attach route.
 - **Unconvertible is excluded, not face-valued.** A foreign line with no usable
   lock contributes nothing to the total and is counted in `unconverted_count`.
   Attaching a line we cannot convert is refused with **422** (currency codes

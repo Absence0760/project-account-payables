@@ -488,3 +488,78 @@ async def test_boot_allows_live_provider_with_return_secret(monkeypatch):
 
     async with lifespan(object()):
         pass
+
+
+# ---------------------------------------------------------------------------
+# cXML PunchOutOrderMessage parsing — pure, no DB.
+#
+# A real supplier cart carries `Shipping`, `Tax`, `SpendDetail` and
+# `Distribution` blocks as SIBLINGS of `ItemDetail` inside `ItemIn`, and each of
+# them contains its own `<Money>` and `<Description>`. Price / description /
+# UoM must therefore be read from `ItemDetail` specifically — scanning every
+# descendant lets the LAST such block win, pricing the line off the tax figure.
+# ---------------------------------------------------------------------------
+
+
+def _cxml_cart(buyer_cookie: str, item_in_body: str) -> bytes:
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        "<cXML><Message><PunchOutOrderMessage>"
+        f"<BuyerCookie>{buyer_cookie}</BuyerCookie>"
+        "<PunchOutOrderMessageHeader/>"
+        f"{item_in_body}"
+        "</PunchOutOrderMessage></Message></cXML>"
+    ).encode()
+
+
+def test_cxml_price_comes_from_item_detail_not_a_trailing_tax_block():
+    from app.services.punchout_adapters.cxml import parse_cxml_order_message
+
+    body = _cxml_cart(
+        "cookie-1",
+        '<ItemIn quantity="10">'
+        "<ItemID><SupplierPartID>SKU-1</SupplierPartID></ItemID>"
+        "<ItemDetail>"
+        '<UnitPrice><Money currency="USD">250.00</Money></UnitPrice>'
+        "<Description>Laptop dock</Description>"
+        "<UnitOfMeasure>EA</UnitOfMeasure>"
+        "</ItemDetail>"
+        # Legal cXML siblings, each carrying their own Money + Description.
+        '<Shipping><Money currency="USD">15.00</Money>'
+        "<Description>Ground</Description></Shipping>"
+        '<Tax><Money currency="USD">200.00</Money>'
+        "<Description>Sales tax</Description></Tax>"
+        "</ItemIn>",
+    )
+    cart = parse_cxml_order_message(body)
+    assert cart is not None
+    assert len(cart.items) == 1
+    item = cart.items[0]
+    assert item.unit_price == Decimal("250.00")
+    assert item.description == "Laptop dock"
+    assert item.uom == "EA"
+    assert item.sku == "SKU-1"
+    assert item.quantity == Decimal("10")
+    # 10 x 250.00 — never 10 x 200.00 (the tax figure).
+    assert cart.total == Decimal("2500.00")
+
+
+def test_cxml_plain_item_without_sibling_money_blocks_still_parses():
+    from app.services.punchout_adapters.cxml import parse_cxml_order_message
+
+    body = _cxml_cart(
+        "cookie-2",
+        '<ItemIn quantity="2">'
+        "<ItemID><SupplierPartID>SKU-9</SupplierPartID></ItemID>"
+        "<ItemDetail>"
+        '<UnitPrice><Money currency="EUR">10.50</Money></UnitPrice>'
+        "<Description>Widget</Description>"
+        "</ItemDetail>"
+        "</ItemIn>",
+    )
+    cart = parse_cxml_order_message(body)
+    assert cart is not None
+    assert cart.items[0].unit_price == Decimal("10.50")
+    assert cart.items[0].currency == "EUR"
+    assert cart.currency == "EUR"
+    assert cart.total == Decimal("21.00")

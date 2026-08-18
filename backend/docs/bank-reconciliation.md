@@ -125,6 +125,13 @@ whitespace insensitive):
 | Reference | `Reference`, `Ref`, `Trace Number`, `Trace`, `Check Number` |
 | Counterparty | `Counterparty`, `Payee`, `Name`, `Merchant`, `Vendor` |
 
+When an export carries **two** columns that both match one field — a `Date`
+*and* a `Posted Date`, an `Amount` *and* a `Value` — the **leftmost** one wins.
+`_find_col` scans the header row, never the synonym set: a `set` of strings
+iterates in hash order and CPython randomises string hashing per process, so
+scanning the synonyms made the choice depend on `PYTHONHASHSEED` — the same
+statement could import off a different column on a different worker.
+
 Amount parser handles:
 - `1234.56`, `1,234.56`, `$1,234.56`
 - `-1234.56` (negative as debit)

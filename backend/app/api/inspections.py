@@ -9,7 +9,7 @@ router is the CRUD surface that creates those rows. See
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,7 +25,7 @@ from app.models.organization import Organization
 from app.models.quality_inspection import QualityInspection
 from app.models.user import User
 from app.schemas.inspection import VALID_RESULTS, InspectionCreate
-from app.services.qms_sync import sync_tenant_inspections
+from app.services.qms_sync import resolve_opted_in_qms_config, sync_tenant_inspections
 from app.tenant import (
     apply_entity_scope,
     get_entity_id,
@@ -127,15 +127,30 @@ async def sync_inspections(
     """Pull quality inspections from the org's configured QMS into
     ``quality_inspections``. Idempotent (upsert keyed on
     ``(organization_id, inspection_number)``). Reads the QMS config from
-    ``Organization.settings.qms`` on the control plane; falls back to the
-    platform-default provider when unset. Returns ``{fetched, created,
-    updated}``."""
+    ``Organization.settings.qms`` on the control plane. Returns
+    ``{fetched, created, updated, skipped}``.
+
+    **409 when the org has no QMS configured.** Opting in is the same rule the
+    background sweep applies (`qms_sync.resolve_opted_in_qms_config`, shared so
+    the two can't drift): an org-level `settings.qms` block, or a platform
+    provider override. Without one, `get_qms_adapter(None)` resolves to the
+    `mock` adapter, and a single call would persist its three fabricated
+    fixtures against the tenant's real purchase orders — a synthetic `pass`
+    clearing the 4-way quality gate on a real invoice, a synthetic `fail`
+    flipping others to `mismatch`, both indistinguishable from real rows.
+    """
     settings_blob = (
         await control_db.execute(select(Organization.settings).where(Organization.id == org_id))
     ).scalar_one_or_none()
-    qms_config = None
-    if isinstance(settings_blob, dict) and isinstance(settings_blob.get("qms"), dict):
-        qms_config = settings_blob["qms"]
+    qms_config = resolve_opted_in_qms_config(settings_blob)
+    if qms_config is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "No QMS is configured for this organization. Set "
+                "settings.qms.provider before syncing inspections."
+            ),
+        )
 
     return await sync_tenant_inspections(
         db,

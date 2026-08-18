@@ -59,11 +59,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.services.bank_reconciliation import (
+    _AMOUNT_HEADERS,
+    _DATE_HEADERS,
     MATCH_METHOD_AMOUNT_MISMATCH,
     MATCH_METHOD_CURRENCY_MISMATCH,
     MATCH_METHOD_PROVIDER_ID,
     MATCH_METHOD_STATUS_CONFLICT,
     StatementImportError,
+    _find_col,
     classify_discrepancy,
     is_amount_mismatch,
     is_reconciled,
@@ -106,6 +109,41 @@ def test_parse_simple_iso_dates_and_signed_amount_column():
     assert txs[0].amount == Decimal("1234.56")
     assert txs[1].direction == "credit"
     assert txs[1].amount == Decimal("250.00")
+
+
+def test_find_col_is_deterministic_leftmost_header_wins():
+    """`_find_col` scans the HEADERS, not the candidate set.
+
+    A set of strings iterates in hash order, and CPython randomises string
+    hashing per process — so scanning the candidates made the choice between
+    two columns that both match (`Date` and `Posted Date`; `Amount` and
+    `Value`) depend on `PYTHONHASHSEED`, i.e. the same statement could import
+    off a different column on a different worker. These assertions are
+    seed-independent: a candidate-order scan yields the same header name for
+    both column orderings, so one of each pair must fail.
+    """
+    assert _find_col(["Date", "Posted Date", "Amount"], _DATE_HEADERS) == "Date"
+    assert _find_col(["Posted Date", "Date", "Amount"], _DATE_HEADERS) == "Posted Date"
+    assert _find_col(["Amount", "Value"], _AMOUNT_HEADERS) == "Amount"
+    assert _find_col(["Value", "Amount"], _AMOUNT_HEADERS) == "Value"
+
+
+def test_parse_uses_the_leftmost_matching_date_column():
+    """A bank export carrying both `Date` and `Posted Date` must always read
+    the leftmost one — never a hash-seed lottery between the two."""
+    raw = _csv(
+        "Date,Posted Date,Description,Amount",
+        "2026-05-01,2026-05-03,Acme Corp,-100.00",
+    )
+    _, txs = parse_csv_statement(
+        raw_csv=raw,
+        organization_id=uuid.uuid4(),
+        account_identifier="****1234",
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 5, 31),
+    )
+    assert len(txs) == 1
+    assert txs[0].transaction_date == date(2026, 5, 1)
 
 
 def test_parse_separate_debit_and_credit_columns():

@@ -55,6 +55,7 @@ async def _add_invoice(
     amount="1000.00",
     status=InvoiceStatus.approved,
     invoice_date=None,
+    currency="USD",
 ) -> str:
     async with mk() as s:
         inv = Invoice(
@@ -64,7 +65,7 @@ async def _add_invoice(
             vendor_name="Globex Industrial",
             vendor_id=uuid.UUID(vendor_id),
             amount=Decimal(amount),
-            currency="USD",
+            currency=currency,
             invoice_date=invoice_date or _TODAY,
             due_date=_TODAY + timedelta(days=30),
             status=status,
@@ -146,6 +147,52 @@ async def test_create_from_lines_classifies_and_audits(realdb):
             )
         ).scalar_one()
         assert audit.entity_type == "vendor_statement_reconciliation"
+
+
+async def test_ledger_candidates_are_scoped_to_the_statement_currency(realdb):
+    """A statement is denominated in ONE currency, and the engine compares bare
+    ``Decimal``s — it holds no rate and must not invent one.
+
+    So the candidate ledger has to be filtered to the statement's currency
+    before it reaches the engine. Without that filter a EUR 1 000 invoice
+    amount-matches a USD 1 000 statement line and *displaces* the real USD
+    invoice, which then falls out as ``missing_on_their_side``: both halves
+    wrong from one mixed-currency candidate set. The EUR invoice must also not
+    be reported missing — a supplier's USD statement of open items is simply
+    not about it.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id)
+    # Same number so leg 1 (invoice-number) can't be what saves us, and the
+    # same amount so leg 2 (amount + date) would happily take the EUR row.
+    await _add_invoice(
+        mk, org_id, vendor_id=vendor_id, invoice_number="INV-EUR", amount="1000.00", currency="EUR"
+    )
+    await _add_invoice(
+        mk, org_id, vendor_id=vendor_id, invoice_number="INV-USD", amount="1000.00", currency="USD"
+    )
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/vendor-statements",
+            json={
+                "vendor_id": vendor_id,
+                "statement_date": _TODAY.isoformat(),
+                "currency": "USD",
+                "lines": [_line("INV-USD", "1000.00")],
+            },
+        )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+
+    # Exactly one line: the USD invoice, matched. The EUR invoice is neither a
+    # match candidate nor an orphan.
+    assert body["summary"]["line_count"] == 1
+    assert body["summary"]["matched_count"] == 1
+    assert body["summary"]["missing_their_side_count"] == 0
+    assert body["lines"][0]["classification"] == "matched"
+    assert body["lines"][0]["matched_invoice_number"] == "INV-USD"
 
 
 async def test_create_amount_mismatch_line(realdb):

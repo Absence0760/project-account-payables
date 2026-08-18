@@ -263,7 +263,12 @@ def rollup_report_lines(rows: list[dict], *, report_currency: str) -> ReportRoll
         currency=tgt,
         total=_quantize_money(total),
         count=sum(b.count for b in by_currency),
-        unconverted_count=len(unconverted_ids),
+        # The COUNT, not `len(unconverted_ids)`. `unconverted_ids` only collects
+        # rows that carried an id, so deriving the count from it silently
+        # undercounts an id-less row — and this count is what gates submission
+        # (`api/expenses.py` refuses while it is non-zero). A caller that can
+        # produce a row is not obliged to produce an id for it.
+        unconverted_count=unconverted,
         unconverted_ids=tuple(unconverted_ids),
         by_currency=by_currency,
     )

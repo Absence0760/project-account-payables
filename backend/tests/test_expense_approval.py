@@ -211,6 +211,42 @@ async def test_approve_self_blocked_by_segregation(realdb):
     assert "segregation" in resp.json()["detail"].lower()
 
 
+async def test_report_employee_is_the_caller_not_a_client_supplied_id(realdb):
+    """`employee_user_id` on create is the ONLY thing report SoD compares
+    against, so it can't be the creator's own input.
+
+    Accepting it let one ap_manager raise a report "for" an arbitrary uuid and
+    then approve it themselves — `violates_segregation` compared the planted id
+    to the actor, never matched, and the dual-control on reimbursement was gone
+    with no accomplice and no second role. Mirrors the rule
+    `expense_preapprovals.create_preapproval` already states: the requester is
+    always the authenticated user.
+    """
+    planted = str(uuid.uuid4())
+    async with realdb.client(key="a", role="ap_manager") as c:
+        created = await c.post(
+            "/api/expense-reports",
+            json={"report_number": f"R-{uuid.uuid4().hex[:8]}", "employee_user_id": planted},
+        )
+        assert created.status_code == 201, created.text
+        rid = created.json()["id"]
+        assert created.json()["employee_user_id"] != planted
+
+        eid = (
+            await c.post("/api/expenses", json={"expense_date": "2026-06-01", "amount": "100.00"})
+        ).json()["id"]
+        await c.post(f"/api/expense-reports/{rid}/expenses", json={"expense_ids": [eid]})
+        await c.post(
+            f"/api/expenses/{eid}/receipt",
+            files={"file": ("r.pdf", b"%PDF-1.4 fake", "application/pdf")},
+        )
+        assert (await c.post(f"/api/expense-reports/{rid}/submit")).status_code == 200
+        # The same manager must still be refused — SoD anchors on the caller.
+        resp = await c.post(f"/api/expense-reports/{rid}/approve")
+    assert resp.status_code == 403, resp.text
+    assert "segregation" in resp.json()["detail"].lower()
+
+
 async def test_different_manager_approves(realdb):
     mk = realdb.sessionmaker("a")
     # clerk submits; a different manager approves.
@@ -416,6 +452,29 @@ async def test_cannot_attach_to_approved_report(realdb):
         report = (await c.get(f"/api/expense-reports/{rid}")).json()
     assert report["status"] == "approved"
     assert report["total_amount"] == 100.0
+
+
+async def test_cannot_create_an_expense_straight_onto_an_approved_report(realdb):
+    """`POST /api/expenses` with a `report_id` is a second attach path.
+
+    `POST /expense-reports/{id}/expenses` and `PATCH /expenses/{id}
+    {"report_id":…}` both refuse a locked report; creating the expense with
+    the `report_id` already set went around both — it recomputed the approved
+    report's total AND nulled the reporting-currency figure the CFO gate and
+    the approval audit row were derived from.
+    """
+    rid, _ = await _submit_and_approve(realdb)
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        resp = await c.post(
+            "/api/expenses",
+            json={"expense_date": "2026-06-02", "amount": "50000.00", "report_id": rid},
+        )
+        assert resp.status_code == 409, resp.text
+        report = (await c.get(f"/api/expense-reports/{rid}")).json()
+    assert report["status"] == "approved"
+    # The $50k line never landed, and the locked reporting figure survives.
+    assert report["total_amount"] == 100.0
+    assert Decimal(report["reporting_amount"]) == Decimal("100.00")
 
 
 async def test_cannot_edit_amount_of_expense_on_approved_report(realdb):

@@ -172,6 +172,20 @@ Registered:
   (`punchout_not_configured`), mirroring the PEPPOL `as4_gateway` posture. The
   OCI shape slots in behind the same interface (`protocol="oci"`).
 
+#### Every cXML `ItemIn` field is read from the sub-element that owns it
+
+`_parse_item_in` resolves the price from `ItemDetail > UnitPrice > Money`, the
+description and UoM from inside `ItemDetail`, and the SKU from `ItemID` —
+never by scanning the whole `ItemIn` subtree. That scoping is load-bearing:
+cXML lets `ItemIn` carry `Shipping`, `Tax`, `SpendDetail` and
+`Distribution > Charge` as **siblings** of `ItemDetail`, each with its own
+`<Money>` and `<Description>`. A whole-subtree scan let the last one win, so a
+line quoting 250.00 with 200.00 of tax booked at 200.00 and described as
+"Sales tax" — a plausible price that then flowed into the requisition, the PO,
+and the budget's committed spend. An `ItemIn` with no `ItemDetail` yields no
+price (`0`) rather than borrowing a sibling block's number: a zero line is
+visibly wrong to the buyer approving the requisition, a tax-priced one is not.
+
 ### Session lifecycle
 
 `PunchoutSession` (tenant-scoped, migration `0045_punchout_sessions`) carries
