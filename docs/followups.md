@@ -34,7 +34,12 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#251](https://github.com/Absence0760/project-account-payables/issues/251)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-08-17 against `fix/bug-hunt-round-9` — a five-agent
+**Last reconciled:** 2026-08-18 against the round-10 hunt — additive only. The
+vendors / procurement / expenses agent fixed 7 findings at the root and recorded
+10 more in § Surfaced by the round-10 hunt; nothing pre-existing was closed or
+re-verified, so every earlier entry stands as it was left on 2026-08-17.
+
+Before that: 2026-08-17 against `fix/bug-hunt-round-9` — a five-agent
 bug hunt that confirmed ~50 findings and fixed 31 at the root (see § Surfaced by
 the five-agent bug hunt for the remainder, which is the largest single addition
 this file has taken).
