@@ -297,15 +297,6 @@ async def _best_effort_rematch(
         )
 
 
-async def _org_qms_config(settings_blob: dict | None) -> dict | None:
-    """Extract the ``qms`` block from an org's settings JSONB (or None)."""
-    if isinstance(settings_blob, dict):
-        qms = settings_blob.get("qms")
-        if isinstance(qms, dict):
-            return qms
-    return None
-
-
 def resolve_opted_in_qms_config(settings_blob: dict | None) -> dict | None:
     """The QMS config to sync this org with, or ``None`` when it hasn't opted in.
 
