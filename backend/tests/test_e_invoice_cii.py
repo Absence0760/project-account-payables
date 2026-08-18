@@ -77,3 +77,44 @@ def test_cii_lines():
     assert line.tax_rate == Decimal("20.00")
     assert isinstance(line.quantity, Decimal)
     assert isinstance(line.line_total, Decimal)
+
+
+def test_cii_line_tax_amount_is_read():
+    """Regression: `ram:ApplicableTradeTax/ram:CalculatedAmount` on a LINE.
+
+    The UBL parser has always read the per-line tax figure
+    (`cac:TaxTotal/cbc:TaxAmount`); the CII parser did not, so every Factur-X /
+    ZUGFeRD line arrived with `tax_amount=None` and the `einvoice` extraction
+    adapter — which maps `line.tax_amount` onto `ExtractedLineItem.tax` — wrote
+    a NULL tax onto every `InvoiceLineItem` of a document that stated one.
+
+    The shipped fixture's line carries only a rate, so this asserts against a
+    line-level `CalculatedAmount` explicitly.
+    """
+    xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rsm:CrossIndustryInvoice
+    xmlns:rsm="urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100"
+    xmlns:ram="urn:un:unece:uncefact:data:standard:ReusableAggregateBusinessInformationEntity:100"
+    xmlns:udt="urn:un:unece:uncefact:data:standard:UnqualifiedDataType:100">
+  <rsm:ExchangedDocument><ram:ID>CII-TAX-1</ram:ID></rsm:ExchangedDocument>
+  <rsm:SupplyChainTradeTransaction>
+    <ram:IncludedSupplyChainTradeLineItem>
+      <ram:AssociatedDocumentLineDocument>
+        <ram:LineID>1</ram:LineID>
+      </ram:AssociatedDocumentLineDocument>
+      <ram:SpecifiedLineTradeSettlement>
+        <ram:ApplicableTradeTax>
+          <ram:CalculatedAmount>240.00</ram:CalculatedAmount>
+          <ram:RateApplicablePercent>20.00</ram:RateApplicablePercent>
+        </ram:ApplicableTradeTax>
+        <ram:SpecifiedTradeSettlementLineMonetarySummation>
+          <ram:LineTotalAmount>1200.00</ram:LineTotalAmount>
+        </ram:SpecifiedTradeSettlementLineMonetarySummation>
+      </ram:SpecifiedLineTradeSettlement>
+    </ram:IncludedSupplyChainTradeLineItem>
+  </rsm:SupplyChainTradeTransaction>
+</rsm:CrossIndustryInvoice>"""
+    line = parse_cii(xml).lines[0]
+    assert line.tax_amount == Decimal("240.00")
+    assert isinstance(line.tax_amount, Decimal)
+    assert line.tax_rate == Decimal("20.00")

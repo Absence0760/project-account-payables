@@ -173,11 +173,19 @@ def _build_line(parent: etree._Element, line: EInvoiceLine, currency: str | None
         qty = _ram(delivery, "BilledQuantity", _quantity_text(line.quantity))
         qty.set("unitCode", line.unit_code or _DEFAULT_UNIT_CODE)
 
-    if line.tax_rate is not None or line.line_total is not None:
+    if line.tax_rate is not None or line.tax_amount is not None or line.line_total is not None:
         settlement = _ram(line_el, "SpecifiedLineTradeSettlement")
-        if line.tax_rate is not None:
+        if line.tax_rate is not None or line.tax_amount is not None:
             line_tax = _ram(settlement, "ApplicableTradeTax")
-            _ram(line_tax, "RateApplicablePercent", _amount_text(line.tax_rate))
+            # CalculatedAmount is the line's tax figure — the inverse of what
+            # `cii._parse_line` reads, and the same value `generate_ubl` emits
+            # as `cac:TaxTotal/cbc:TaxAmount`. `mapper` fills it from
+            # `InvoiceLineItem.tax`, so omitting it dropped per-line tax from
+            # every exported CII / Factur-X document.
+            if line.tax_amount is not None:
+                _ram(line_tax, "CalculatedAmount", _amount_text(line.tax_amount))
+            if line.tax_rate is not None:
+                _ram(line_tax, "RateApplicablePercent", _amount_text(line.tax_rate))
         if line.line_total is not None:
             summation = _ram(settlement, "SpecifiedTradeSettlementLineMonetarySummation")
             _ram(summation, "LineTotalAmount", _amount_text(line.line_total))
