@@ -44,21 +44,65 @@ async def _fetch_invoice_bytes(invoice: Invoice) -> bytes | None:
         return None
 
 
+async def resolve_approval_config(
+    db: AsyncSession,
+    invoice: Invoice,
+    instance=None,
+) -> dict:
+    """The approval-step config governing THIS invoice's approval.
+
+    The frozen per-invoice snapshot first (the invariant: an in-flight invoice
+    is governed by the config it entered under, not the live definition), and —
+    only when there is no snapshot to read — the org's currently-active
+    definition as a **fail-closed** fallback.
+
+    That fallback is the whole point. Not every invoice has a
+    ``WorkflowInstance``: the email-intake and PEPPOL-inbound ingest paths
+    create the row without one, and so does any legacy / directly-inserted
+    invoice. Returning ``{}`` there did not mean "no rules apply" — it meant the
+    max-amount cap, the CFO gate, the structuring guard and the named-approver
+    check were ALL skipped, so a $50,000 invoice that arrived by email cleared a
+    $1,000 ``require_cfo_above`` on a lone ap_manager's approval. A money
+    control must not be contingent on a bookkeeping row existing.
+
+    Resolution is read-only (``resolve_active_workflow_definition``, never the
+    get-or-CREATE variant) — a definition must never appear as a side effect of
+    an approval. ``{}`` now means only "this org has no active definition, or
+    its definition has no approval step", which is genuinely nothing to enforce.
+
+    Pass ``instance`` when the caller already loaded it, to save a query.
+    """
+    from app.services.workflow_engine import resolve_active_workflow_definition
+
+    if instance is None:
+        instance = await get_workflow_instance(db, invoice.id)
+    snapshot = getattr(instance, "steps_config_snapshot", None) if instance else None
+    if not snapshot:
+        defn = await resolve_active_workflow_definition(
+            db, invoice.organization_id, getattr(invoice, "entity_id", None)
+        )
+        snapshot = defn.steps_config if defn else None
+    if not snapshot:
+        return {}
+    return get_step_config(snapshot, "approval") or {}
+
+
 async def _enforce_approval_thresholds(
     db: AsyncSession,
     invoice: Invoice,
     actor_roles: set[str],
     *,
     org_settings: dict | None = None,
+    approval_config: dict | None = None,
 ) -> None:
     """Check approval thresholds from the workflow snapshot. Raises on violation."""
     from fastapi import HTTPException, status
 
-    instance = await get_workflow_instance(db, invoice.id)
-    if not instance or not instance.steps_config_snapshot:
-        return
-
-    config = get_step_config(instance.steps_config_snapshot, "approval")
+    config = (
+        approval_config
+        if approval_config is not None
+        else await resolve_approval_config(db, invoice)
+    )
     if not config:
         return
 
@@ -159,11 +203,13 @@ async def approve_invoice(
         check_segregation,
     )
 
-    # Read approval config from workflow snapshot
+    # Read the approval config: the invoice's frozen snapshot, falling back —
+    # fail-CLOSED — to the org's active definition when it has none. See
+    # `resolve_approval_config`. Resolved ONCE and threaded into
+    # `_enforce_approval_thresholds` below, so the segregation / named-approver
+    # gates and the money gates can never read different configs.
     instance = await get_workflow_instance(db, invoice.id)
-    approval_config: dict = {}
-    if instance and instance.steps_config_snapshot:
-        approval_config = get_step_config(instance.steps_config_snapshot, "approval")
+    approval_config: dict = await resolve_approval_config(db, invoice, instance)
 
     # Segregation of duties: uploader cannot approve
     check_segregation(invoice, actor_id, approval_config)
@@ -222,8 +268,16 @@ async def approve_invoice(
         except Exception as exc:  # noqa: BLE001
             _log.warning("refresh_warnings after corrections failed for %s: %s", invoice.id, exc)
 
-    # Threshold enforcement — runs against the now-corrected invoice amount.
-    await _enforce_approval_thresholds(db, invoice, actor_roles or set(), org_settings=org_settings)
+    # Threshold enforcement — runs against the now-corrected invoice amount, and
+    # against the SAME approval config the segregation / named-approver gates
+    # above read.
+    await _enforce_approval_thresholds(
+        db,
+        invoice,
+        actor_roles or set(),
+        org_settings=org_settings,
+        approval_config=approval_config,
+    )
 
     # Upsert the RAG embedding using the invoice's NOW-correct fields.
     # Best-effort: failures (S3 unavailable, no text layer, embedding API
@@ -460,31 +514,39 @@ async def assign_reviewer(
     invoice.assigned_to_id = reviewer_id
     invoice.assigned_to = reviewer_name
 
+    # Mirror the assignment onto the open approval step, when there is one.
+    #
+    # A missing WorkflowInstance must NOT short-circuit the rest of this
+    # function. It used to `return` here, so an invoice with no instance — the
+    # email-intake and PEPPOL-inbound ingest paths create one without, and so
+    # does any legacy row — had its assignee written with **no
+    # `invoice.assigned_for_review` audit row and no notification**. The
+    # reviewer was never told, and no email / Slack / Teams approval token was
+    # ever minted (that happens inside `notify_event`), so the invoice sat
+    # assigned-but-silent. The step row is a nice-to-have; the audit trail and
+    # telling the human are not.
     instance = await get_workflow_instance(db, invoice.id)
-    if not instance:
-        return
+    if instance is not None:
+        from app.models.workflow import WorkflowStep
 
-    # Find the current review step and assign it
-    from app.models.workflow import WorkflowStep
-
-    # Steps are now persisted under the canonical "approval" type, but rows
-    # written before that normalisation may still carry the legacy "review"
-    # alias — match both so reassignment finds either.
-    result = await db.execute(
-        select(WorkflowStep)
-        .where(
-            WorkflowStep.instance_id == instance.id,
-            WorkflowStep.step_type.in_(("approval", "review")),
-            WorkflowStep.completed_at.is_(None),
+        # Steps are now persisted under the canonical "approval" type, but rows
+        # written before that normalisation may still carry the legacy "review"
+        # alias — match both so reassignment finds either.
+        result = await db.execute(
+            select(WorkflowStep)
+            .where(
+                WorkflowStep.instance_id == instance.id,
+                WorkflowStep.step_type.in_(("approval", "review")),
+                WorkflowStep.completed_at.is_(None),
+            )
+            .order_by(WorkflowStep.created_at.desc())
+            .limit(1)
         )
-        .order_by(WorkflowStep.created_at.desc())
-        .limit(1)
-    )
-    step = result.scalar_one_or_none()
-    if step:
-        step.assigned_to = reviewer_id
-        if original_id:
-            step.original_assigned_to = original_id
+        step = result.scalar_one_or_none()
+        if step:
+            step.assigned_to = reviewer_id
+            if original_id:
+                step.original_assigned_to = original_id
 
     await dispatch_audit(
         db,

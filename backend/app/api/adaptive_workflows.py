@@ -1205,7 +1205,15 @@ async def apply_threshold_recommendation(
     # approval step. If no approval step exists, append one so the threshold has
     # somewhere to live (mirrors DEFAULT_STEPS_CONFIG's approval shape).
     new_steps_config = {"steps": [dict(s) for s in (defn.steps_config or {}).get("steps", [])]}
-    new_threshold = float(rec.recommended_threshold)
+    # Exact decimal STRING, never float — `auto_approve_below` is a money
+    # threshold (`WorkflowStepConfig.auto_approve_below` is a `Decimal`), and
+    # every other writer of this JSONB key goes through `model_dump(mode="json")`,
+    # which serialises it as a string. A float here both breaks the money
+    # invariant and makes the same key hold two types depending on which path
+    # last wrote it — so the editor's own no-op re-save then compares
+    # `2500.0 != "2500.00"`, snapshots a spurious WorkflowVersion and writes an
+    # audit row for a change nobody made.
+    new_threshold = str(rec.recommended_threshold)
     found = False
     for step in new_steps_config["steps"]:
         if step.get("type") == "approval":
