@@ -321,14 +321,23 @@ through `utils/url_safety.assert_public_url` — the guard every *other*
 admin-supplied URL this app fetches goes through (branding logo, chat
 webhooks, ERP and enrichment base URLs).
 
+`url_safety` exposes the guard in two forms over **one** policy body:
+`assert_public_url` / `is_public_url` (sync, blocking `socket.getaddrinfo`) for
+sync call sites, and `assert_public_url_async` / `is_public_url_async` (name
+resolution via `loop.getaddrinfo`) for every `async def` one. Every coroutine
+call site — SSO, the chat-webhook admin save, the Slack/Teams `send()`, the
+D365 and enrichment adapters — uses the awaitable pair, because a blocking DNS
+lookup on the event loop stalls *every* concurrent request for the length of
+the lookup, and a DNS timeout is measured in seconds.
+
 That is reachable **unauthenticated**: anyone can self-signup a tenant, `PATCH`
 an `sso.discovery_url` of `http://169.254.169.254/...`, and hit the public
 `GET /api/auth/sso/authorize?slug=<tenant>` to make the backend fetch cloud
 instance credentials on demand — or port-scan the VPC by telling reachable
 hosts apart from dead ones by the 302-vs-400 response.
 
-Now: `assert_public_url` runs at `resolve_sso_config` time (so a bad value is
-refused where it is read, not only where it is fetched) and again in
+Now: `assert_public_url_async` runs at `resolve_sso_config` time (so a bad value
+is refused where it is read, not only where it is fetched) and again in
 `fetch_discovery` / `fetch_jwks` / before the token `POST`. `_pinned_endpoint`
 additionally pins `token_endpoint` and `jwks_uri` to the discovery document's
 own issuer netloc — OIDC Discovery requires the document to be served under its

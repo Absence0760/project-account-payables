@@ -32,7 +32,6 @@ this module does persistence, RBAC and the audit write. See
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -132,13 +131,14 @@ async def _assert_public_webhook(url: str) -> None:
     Runs the **same** `is_public_url` rule the Slack / Teams adapters apply at
     send time, so "saved" implies "the sender will not silently skip it" — a
     write-path guard with different rules from the send-path guard would let an
-    admin store a URL that quietly never posts. `assert_public_url` does a DNS
-    lookup, so it goes through a thread rather than blocking the event loop.
+    admin store a URL that quietly never posts. The DNS lookup goes through the
+    awaitable form of the guard, so a slow resolver suspends this request
+    instead of stalling the worker.
     """
-    from app.utils.url_safety import UnsafeUrlError, assert_public_url
+    from app.utils.url_safety import UnsafeUrlError, assert_public_url_async
 
     try:
-        await asyncio.to_thread(assert_public_url, url)
+        await assert_public_url_async(url)
     except UnsafeUrlError:
         raise HTTPException(status_code=422, detail=REJECT_DETAIL) from None
 
