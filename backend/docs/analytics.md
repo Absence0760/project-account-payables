@@ -279,10 +279,22 @@ and bucketed `periods`. `weighted_avg_pay_date_days` is a day count, not
 money, and stays a JSON number:
 
 - `on_time` — pay on `due_date`, full amount.
-- `early` — pay on `discount_date` when present, net of
-  `discount_percent` (the captured discount is reported separately); rows
-  without a discount fall back to the due date at full amount.
+- `early` — pay on `discount_date` when that window is **still open**
+  (`discount_date >= today`), net of `discount_percent` (the captured
+  discount is reported separately); rows without a discount — and rows whose
+  window has already **elapsed** — fall back to the due date at full amount.
 - `late` — pay `due_date + grace_days`, full amount, discount forfeited.
+
+The elapsed-window guard matters because the source rows are bounded on their
+**due** date only: an in-horizon invoice on `2/10 net 60` terms routinely
+carries a `discount_date` weeks in the past. Claiming it overstated
+`total_discount_captured`, timed the outflow on a date before `today` (buckets
+entirely inside a period that has already closed, and a **negative**
+`weighted_avg_pay_date_days`), and invited a payment run funded against savings
+that were no longer available. The rule matches
+`services/discount_optimizer.optimize`, which has always treated an elapsed
+deadline as not capturable — so the what-if card and the optimizer agree about
+which discounts are still on the table.
 
 `GET /cash_position?granularity=…&horizon_days=N&opening_balance=STR&min_balance_threshold=STR&seed_balance=bool`
 — running balance carried forward per period

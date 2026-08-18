@@ -598,6 +598,72 @@ def test_whatif_early_without_discount_falls_back_to_due_date():
     assert out["total_outflow"] == Decimal("1000.00")
 
 
+def test_whatif_early_ignores_an_elapsed_discount_window():
+    """A discount whose deadline already passed is NOT capturable.
+
+    The commitment rows are bounded on their DUE date only, so an in-horizon
+    invoice on `2/10 net 60` terms arrives with a `discount_date` weeks in the
+    past. Claiming that discount overstated the savings AND timed the outflow
+    on a date before `today` — bucketing cash out in a period that has already
+    closed and reporting a NEGATIVE weighted average days-to-pay.
+    """
+    today = date(2026, 5, 20)
+    rows = [
+        _commit(
+            date(2026, 6, 10),
+            "1000",
+            discount_date=date(2026, 5, 10),  # window shut 10 days ago
+            discount_percent=Decimal("2"),
+        ),
+    ]
+    out = apply_payment_timing_scenario(rows, scenario="early", today=today)
+    # No savings are claimed, and the full amount leaves on the due date.
+    assert out["total_discount_captured"] == Decimal("0.00")
+    assert out["total_outflow"] == Decimal("1000.00")
+    # Cash leaves in the FUTURE, and every bucket sits at or after today.
+    assert out["weighted_avg_pay_date_days"] > 0
+    assert out["periods"]
+    assert all(p["period_end"] >= today for p in out["periods"])
+
+
+def test_whatif_early_still_captures_a_window_open_today():
+    """The boundary is inclusive — a deadline of exactly `today` is live."""
+    today = date(2026, 5, 20)
+    rows = [
+        _commit(
+            date(2026, 6, 10),
+            "1000",
+            discount_date=today,
+            discount_percent=Decimal("2"),
+        ),
+    ]
+    out = apply_payment_timing_scenario(rows, scenario="early", today=today)
+    assert out["total_discount_captured"] == Decimal("20.00")
+    assert out["total_outflow"] == Decimal("980.00")
+
+
+def test_whatif_early_mixes_live_and_elapsed_windows():
+    """Only the live window contributes savings; the elapsed one pays in full."""
+    today = date(2026, 5, 20)
+    rows = [
+        _commit(
+            date(2026, 6, 10),
+            "1000",
+            discount_date=date(2026, 5, 30),  # still open
+            discount_percent=Decimal("2"),
+        ),
+        _commit(
+            date(2026, 6, 20),
+            "2000",
+            discount_date=date(2026, 5, 1),  # elapsed
+            discount_percent=Decimal("3"),
+        ),
+    ]
+    out = apply_payment_timing_scenario(rows, scenario="early", today=today)
+    assert out["total_discount_captured"] == Decimal("20.00")
+    assert out["total_outflow"] == Decimal("2980.00")
+
+
 # ---------------------------------------------------------------------------
 # Cash position + threshold breaches
 # ---------------------------------------------------------------------------

@@ -749,12 +749,28 @@ def apply_payment_timing_scenario(
     """What-if engine for payment timing. ``scenario``:
 
     - ``on_time`` → pay each row on its ``due_date``, full amount.
-    - ``early``   → pay on ``discount_date`` when present, taking the
-      ``discount_percent`` reduction; net outflow is reduced and the
-      captured discount reported separately. Rows without a discount fall
-      back to paying on ``due_date`` at full amount.
+    - ``early``   → pay on ``discount_date`` when the window is STILL OPEN
+      (``discount_date >= today``), taking the ``discount_percent``
+      reduction; net outflow is reduced and the captured discount reported
+      separately. Rows without a discount — and rows whose discount window
+      has already ELAPSED — fall back to paying on ``due_date`` at full
+      amount.
     - ``late``    → pay ``due_date + grace_days``, full amount, no
       discount (you forfeit any early-pay discount by paying late).
+
+    The elapsed-window guard is load-bearing, not defensive coding. The
+    commitment rows this consumes are bounded on their DUE date only (see
+    ``api/analytics.py::_commitment_rows``), so an in-horizon invoice on
+    ``2/10 net 60`` terms routinely arrives with a ``discount_date`` that
+    passed weeks ago. Without the guard the ``early`` card claimed a
+    discount nobody can still take, timed the outflow on a date in the
+    PAST — producing periods entirely before ``today`` and a negative
+    ``weighted_avg_pay_date_days`` — and told a CFO to fund a payment run
+    against savings that do not exist. Same rule the discount optimizer
+    already applies (``discount_optimizer.optimize``: "capturable only
+    while the discount deadline has not elapsed"), so the what-if card and
+    the optimizer can't disagree about which discounts are still on the
+    table.
 
     Returns::
 
@@ -784,13 +800,15 @@ def apply_payment_timing_scenario(
             continue
         amount = _row_amount(r)
         discount_date = r.get("discount_date")
-        if scenario == "early" and discount_date is not None:
+        # `discount_date >= today` — an elapsed window is no longer capturable,
+        # so the row is NOT an early-pay candidate at all (see the docstring).
+        if scenario == "early" and discount_date is not None and discount_date >= today:
             pay_date = discount_date
             net, captured = _discount_net(amount, r.get("discount_percent"))
         elif scenario == "late":
             pay_date = due + timedelta(days=grace_days)
             net, captured = amount, Decimal("0")
-        else:  # on_time, or early with no discount available
+        else:  # on_time, or early with no discount still available
             pay_date = due
             net, captured = amount, Decimal("0")
 
