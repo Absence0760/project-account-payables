@@ -1022,6 +1022,42 @@ shared temp-password generator). This is the one it confirmed but did not fix:
       the first integrator who opens the docs URL.
 
 
+### Surfaced by the round-11 hunt (AI surfaces), not fixed
+
+The AI-surfaces agent of round 11 fixed 5 findings at the root (the extraction
+dispatcher's fixture-adapter fallback, the decimal-convention misreading of
+model-produced money, the unbounded model confidence, the exception agent's
+escaping approval refusal, and Textract's wrong confidence field). This is the
+one it confirmed but did not fix, because the fix is a product call rather than
+a mechanical one:
+
+- [ ] **Semantic duplicate detection is not entity-scoped, and the warning it
+      writes carries another subsidiary's invoice data.**
+      `services/duplicate_detection.find_semantic_duplicates` queries
+      `invoice_embeddings` with no entity filter, so in a multi-entity tenant a
+      subsidiary-A invoice can be flagged as a near-duplicate of a
+      subsidiary-B one. Two consequences: the resulting `duplicate` Exception is
+      in `api/payments.PAYMENT_BLOCKING_EXCEPTION_TYPES`, so a cross-entity
+      false positive blocks A's payment run until a human clears it; and
+      `matches_to_warning` puts the matched invoices' `invoice_number`,
+      `vendor_name` and `amount` into `invoice.warnings`, which the detail modal
+      renders — data from an entity the viewer is otherwise scoped away from.
+      Every sibling reader *is* scoped: `services/rag.retrieve_similar` takes an
+      `entity_id`, the assistant's `find_invoices_by_text` threads it "so
+      'search' can't silently widen past the subsidiary the user has selected",
+      and `vendor_matching._candidate_query` scopes for the same reason. Only
+      this one doesn't. **It is not obviously a bug**, which is why it is here:
+      the same invoice billed to two subsidiaries of one group is a *real*
+      duplicate and exactly what a group AP team wants caught, so silently
+      scoping it would remove a genuine control. The durable fix is to decide
+      the semantics explicitly — either scope the search and accept the missed
+      cross-entity double-bill, or keep it cross-entity and make the warning
+      say so while redacting the sibling entity's fields (it only needs to say
+      "a near-identical invoice exists under another entity", not name it).
+      **Trigger:** the next multi-entity slice, or the first pilot tenant that
+      runs more than one entity with a shared supplier base.
+
+
 ### AI Cash-Flow Copilot — Phase 3 deferred bucket
 
 Phases 1–3 core shipped (read-only cash Q&A, `propose_payment_plan` +
