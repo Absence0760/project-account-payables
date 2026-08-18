@@ -84,6 +84,29 @@ def _scim_http_error(status: int, detail: str, scim_type: str | None = None) -> 
     return HTTPException(status_code=status, detail=body)
 
 
+async def _email_taken(
+    db: AsyncSession, email: str, *, exclude_user_id: uuid.UUID | None = None
+) -> bool:
+    """Is this `userName` already a `users.email` ANYWHERE on the platform?
+
+    Scoped platform-wide, not to the calling tenant, because `users.email`
+    carries a global UNIQUE constraint — it is the login identifier, and
+    `/auth/login` resolves an account by address alone with no tenant hint.
+
+    Checking only `organization_id == org.id` (which is what create and PUT used
+    to do, and which PATCH did not do at all) meant an IdP pushing an address
+    already held in a DIFFERENT tenant sailed past the guard and tripped the DB
+    constraint on flush: an unhandled IntegrityError, i.e. a 500, where RFC 7644
+    §3.3 requires a 409 `uniqueness`. Providers treat a 5xx as retryable, so the
+    same doomed write came back on every reconcile cycle. `admin.create_user` /
+    `admin.update_user` have always checked globally; this brings SCIM in line.
+    """
+    stmt = select(User.id).where(User.email == email)
+    if exclude_user_id is not None:
+        stmt = stmt.where(User.id != exclude_user_id)
+    return (await db.execute(stmt)).scalar_one_or_none() is not None
+
+
 # ---------------------------------------------------------------------------
 # Domain mapping: User row <-> SCIM representation.
 # ---------------------------------------------------------------------------
@@ -235,11 +258,8 @@ async def create_user(
 ):
     email = _extract_primary_email(body.emails, body.userName).lower().strip()
 
-    # SCIM requires 409 on duplicate userName.
-    existing = (
-        await db.execute(select(User).where(User.email == email, User.organization_id == org.id))
-    ).scalar_one_or_none()
-    if existing is not None:
+    # SCIM requires 409 on duplicate userName. Platform-wide — see `_email_taken`.
+    if await _email_taken(db, email):
         raise _scim_http_error(409, f"User with userName {email} already exists.", "uniqueness")
 
     sso = (org.settings or {}).get("sso") or {}
@@ -283,17 +303,8 @@ async def replace_user(
 
     email = _extract_primary_email(body.emails, body.userName).lower().strip()
     # Uniqueness invariant: PUT must not rename this user onto another user's
-    # userName within the same org.
-    clash = (
-        await db.execute(
-            select(User).where(
-                User.email == email,
-                User.organization_id == org.id,
-                User.id != user.id,
-            )
-        )
-    ).scalar_one_or_none()
-    if clash is not None:
+    # userName. Platform-wide — see `_email_taken`.
+    if await _email_taken(db, email, exclude_user_id=user.id):
         raise _scim_http_error(409, f"User with userName {email} already exists.", "uniqueness")
 
     user.email = email
@@ -318,13 +329,23 @@ async def patch_user(
 ):
     """Apply a subset of PATCH operations. We support the ops Okta + Entra
     send for user lifecycle: setting active=false on deprovision, replacing
-    name/email, updating externalId."""
+    name/email, updating externalId.
+
+    A `userName` op runs through the same uniqueness guard create and PUT use.
+    PATCH had none at all, so an IdP renaming a user onto an address already in
+    use hit the DB's global UNIQUE on flush — an unhandled 500 instead of the
+    409 `uniqueness` RFC 7644 §3.5.2 calls for. The rename is staged in a local
+    and only applied once it is known to be free, so a rejected PATCH cannot
+    leave a half-applied op on the session.
+    """
     result = await db.execute(
         select(User).where(User.id == user_id, User.organization_id == org.id)
     )
     user = result.scalar_one_or_none()
     if user is None:
         raise _scim_http_error(404, f"User {user_id} not found.")
+
+    new_email: str | None = None
 
     for op in body.Operations:
         action = (op.op or "").lower()
@@ -339,7 +360,7 @@ async def patch_user(
             user.is_active = bool(value) if action != "remove" else False
         elif path == "userName" and action in ("replace", "add"):
             if isinstance(value, str):
-                user.email = value.lower().strip()
+                new_email = value.lower().strip()
         elif path == "externalId" and action in ("replace", "add"):
             if isinstance(value, str):
                 user.sso_provider_id = value
@@ -348,16 +369,23 @@ async def patch_user(
             if "active" in value:
                 user.is_active = bool(value["active"])
             if "userName" in value and isinstance(value["userName"], str):
-                user.email = value["userName"].lower().strip()
+                new_email = value["userName"].lower().strip()
             if "externalId" in value and isinstance(value["externalId"], str):
                 user.sso_provider_id = value["externalId"]
             if "name" in value and isinstance(value["name"], dict):
                 name = value["name"]
-                user.full_name = _extract_full_name(SCIMName(**name), user.email)
+                user.full_name = _extract_full_name(SCIMName(**name), new_email or user.email)
         else:
             # Silently ignore unsupported ops — SCIM lets the server do this,
             # and IdPs sometimes push ops we don't model (phoneNumbers etc.)
             logger.debug("Ignoring unsupported SCIM PATCH op: %s %s", action, path)
+
+    if new_email is not None and new_email != user.email:
+        if await _email_taken(db, new_email, exclude_user_id=user.id):
+            raise _scim_http_error(
+                409, f"User with userName {new_email} already exists.", "uniqueness"
+            )
+        user.email = new_email
 
     await db.flush()
     # The UPDATE fires `updated_at`'s server-side `onupdate=func.now()`, which

@@ -64,9 +64,14 @@ even though the frontend is a static site.
 1. **Verify** the token (signature + expiry). Invalid → friendly 400 page.
 2. **Resolve** the tenant org from the token's slug (control plane).
 3. **Load the reviewer** named in the token, scoped to that org, with roles —
-   must be active, in the right org, and hold an approver role
-   (`admin` / `ap_manager` / `cfo`, matching `require_roles(...)` on the in-app
-   approve/reject endpoints — the email door is never weaker than the app door).
+   must be active, in the right org, and hold the `invoice.approve` **granular
+   permission** (`email_actions.may_approve`, the shared gate the Slack and
+   Teams surfaces call too). That is the same permission
+   `require_permission(PERM_INVOICE_APPROVE)` enforces on the in-app
+   approve/reject endpoints, so the email door is never weaker than the app
+   door — and never narrower either: a custom role granting `invoice.approve`
+   works here exactly as it does in the app. For the four system roles it
+   resolves identically to `admin` / `ap_manager` / `cfo`.
 4. **Claim the token `jti`** in Redis (`SET NX EX`) — single-use. A replay shows
    "already used".
 5. **Open a short-lived tenant session**, row-lock the invoice, and — only if it

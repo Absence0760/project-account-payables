@@ -31,7 +31,7 @@ import logging
 import re
 import uuid
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.organization import Organization
@@ -168,11 +168,21 @@ def apply_patch_ops(data: dict, operations) -> dict:
 
 async def _resolve_role(db: AsyncSession, org_id, role_name: str) -> Role | None:
     """Find the Role by name, preferring an org-scoped custom role over the
-    system role of the same name."""
+    system role of the same name.
+
+    The predicate is `== org_id OR IS NULL`, never `IN (org_id, None)`. SQL's
+    `IN` compares with `=`, and `NULL = NULL` is NULL — so an `organization_id
+    IN (:org, NULL)` list silently matches no system role at all (system roles
+    are exactly the rows with a NULL `organization_id`). That made every
+    group→role GRANT a no-op for the four built-in roles while the revoke
+    branch — which looks the role up off the user's existing `user_roles` rows,
+    not through here — kept working, turning a mapped group into a one-way
+    strip of `admin`/`ap_manager`/`cfo`/`ap_clerk`.
+    """
     result = await db.execute(
         select(Role).where(
             Role.name == role_name,
-            Role.organization_id.in_([org_id, None]),
+            or_(Role.organization_id == org_id, Role.organization_id.is_(None)),
         )
     )
     roles = result.scalars().all()

@@ -628,6 +628,35 @@ First SSO login provisions the user. Three match paths:
 
 New users get `ap_clerk` role by default (least privilege). The first user ever in an org gets `admin`.
 
+A match that lands on a **deactivated** account (`users.is_active = false`) raises
+`DeactivatedAccount` instead of returning the row, so neither SSO callback can
+mint a session for someone who has been offboarded — see
+[A deactivated account cannot sign in, on any path](#a-deactivated-account-cannot-sign-in-on-any-path).
+The raise happens *before* the email-link branch rebinds `sso_provider_id`, so a
+login attempt against a disabled account can't silently repoint its SSO identity
+either.
+
+### A deactivated account cannot sign in, on any path
+
+`users.is_active = false` is how offboarding is expressed — an admin flips it via
+`PATCH /api/admin/users/{id}`, or the IdP deprovisions through SCIM
+(`active: false`, `DELETE /scim/v2/Users/{id}`). Every sign-in entry point
+refuses such an account:
+
+| Path | Behaviour |
+|---|---|
+| `POST /api/auth/login` | Opaque `401 Invalid credentials`, checked alongside "no such account" so a deactivated account is indistinguishable from one that never existed. Burns the per-account failure budget; audits `auth.login.failure` with `reason: "inactive"`. |
+| `POST /api/auth/mfa/verify`, `POST /api/auth/mfa/passkey/authenticate/verify` | `401 Invalid challenge`. |
+| `POST /api/auth/sso/callback` | `403`; audits `auth.sso.login.failure` with `reason: "inactive"`. |
+| `POST /api/auth/saml/acs` | The router's single generic error; audits `auth.saml.login.failure` with `reason: "inactive"`. |
+| `POST /api/portal/auth/login` | Opaque `401`; audits `portal.login.failure` with `reason: "inactive"`. |
+
+`get_current_user` refuses an inactive user regardless, so a token minted for one
+was always inert. The reason these entry points check anyway: without it the
+caller was told the sign-in SUCCEEDED — the SPA stored a token and then 401'd on
+every call, the session counted against `FEOH_MAX_CONCURRENT_SESSIONS`, and the
+SOX trail recorded an `auth.login.success` for a terminated employee.
+
 ### OIDC endpoints
 
 | Method | Path | Purpose |
@@ -848,6 +877,23 @@ Any user can set a delegate who receives their approval assignments while they a
 
 When a reviewer is OOO (has an active, non-expired delegation), approval assignments auto-route to their delegate. The audit trail records both the original assignee (`WorkflowStep.original_assigned_to`) and the delegate who actually performed the action.
 
+**Delegation is routing, not a privilege grant** — the delegate still needs
+`invoice.approve` to act on what lands in their queue, so delegating to a
+lower-privileged colleague confers nothing.
+
+What `POST` refuses, and why:
+
+| Input | Result |
+|---|---|
+| `delegate_to_id` that isn't a UUID, or an unparseable `until` | `422`. Both used to escape the handler as a bare `ValueError`, i.e. a 500 on ordinary bad input. |
+| `until` already in the past | `422` — it would leave the caller believing they are out of office while `resolve_assignee`'s `delegate_until > now` test never fires. |
+| A **deactivated** delegate | `404` (same opaque answer as unknown / other-org). `review.assign_reviewer` reassigns the invoice unconditionally, so approvals would land on an account that can never sign in and the invoice would sit owned by nobody. |
+| `until` with no timezone | Accepted, interpreted as **UTC**. A naive value handed to the `timestamptz` column is read in the DB *session's* timezone, while every consumer compares against `now(UTC)` — so the same wall-clock string meant a different expiry depending on server config. |
+
+Setting and clearing a delegate each write a PII-free audit row
+(`auth.delegation.set` / `auth.delegation.cleared` — ids and the window only):
+who receives approval assignments is an access-control fact.
+
 ---
 
 ## SCIM 2.0 (user provisioning from Okta + Entra)
@@ -866,6 +912,13 @@ Each tenant has its own SCIM bearer token. To generate one, the admin POSTs to `
 
 Re-calling the endpoint rotates the token: the old hash is overwritten, so any IdP still using the previous token starts seeing 401s.
 
+Every mint / rotation writes an `organization.scim_token_minted` audit row into
+the tenant trail, carrying the 8-char digest prefix and nothing else — never the
+token or its full digest. This is a tenant-wide user-provisioning credential
+(its holder can create, rename and deactivate accounts, and grant roles through
+group mapping), so it is audited like the other credential mints
+(`api_key.created`, `webhook_subscription.created`).
+
 Every SCIM request Authorization-headers a bearer token; the backend SHA-256s it and looks for a matching `scim_bearer_hash` across all orgs to resolve the tenant. Linear scan, acceptable while tenant count is <<1000.
 
 ### Endpoints (all under `/api/scim/v2`)
@@ -878,7 +931,7 @@ Every SCIM request Authorization-headers a bearer token; the backend SHA-256s it
 | `GET` | `/Users/{id}` | Fetch one user. |
 | `POST` | `/Users` | Create. Returns 409 `uniqueness` on duplicate userName. |
 | `PUT` | `/Users/{id}` | **Full-resource replace.** Authentik (and RFC 7644 §3.5.1) update users via PUT, not PATCH. Returns 409 `uniqueness` if the new userName collides with another user. |
-| `PATCH` | `/Users/{id}` | Partial update. Supports the ops Okta + Entra send (active toggle, userName/externalId/name replace, root-object replace). |
+| `PATCH` | `/Users/{id}` | Partial update. Supports the ops Okta + Entra send (active toggle, userName/externalId/name replace, root-object replace). A `userName` op returns 409 `uniqueness` on a collision. |
 | `DELETE` | `/Users/{id}` | **Soft delete** — sets `is_active=false`. Preserves audit trail. |
 | `GET` | `/Groups` | List + paginate; `displayName eq` filter. |
 | `GET` | `/Groups/{id}` | Fetch one group. |
@@ -891,6 +944,15 @@ Both `PUT` and `PATCH` `db.refresh()` the row after the flush: the `UPDATE` fire
 `updated_at`'s server-side `onupdate`, which SQLAlchemy expires — reloading it in
 the async handler avoids a sync lazy-load (`MissingGreenlet` → 500) when the SCIM
 response reads `meta.lastModified`.
+
+**`userName` uniqueness is platform-wide, not per-tenant.** `users.email` carries
+a global `UNIQUE` constraint — it is the login identifier, and `/auth/login`
+resolves an account by address alone with no tenant hint. So `POST`, `PUT` and
+`PATCH` all check the address across every org (`scim._email_taken`, the same
+scope `admin.create_user` uses) and return 409 `uniqueness`. Scoping the check to
+the calling tenant would let an address already held in a *different* tenant slip
+past the guard and trip the DB constraint on flush — an unhandled 500 where the
+RFC requires a 409, which providers then retry forever.
 
 ### Filter syntax
 

@@ -51,6 +51,7 @@ from app.database import get_control_db
 from app.models.organization import Organization
 from app.services.audit_dispatch import dispatch_auth_audit
 from app.services.identity_provisioning import (
+    DeactivatedAccount,
     EmailDomainNotAllowed,
     extract_and_check_email,
     jit_provision,
@@ -407,7 +408,14 @@ async def saml_acs(request: Request, db: AsyncSession = Depends(get_control_db))
     except EmailDomainNotAllowed as exc:
         raise await _fail("domain_blocked") from exc
 
-    user = await jit_provision(db, org, email, sub, config.provider, {"name": name})
+    try:
+        user = await jit_provision(db, org, email, sub, config.provider, {"name": name})
+    except DeactivatedAccount as exc:
+        # The IdP vouched for them, but the app account is offboarded. Refuse
+        # rather than minting a token `get_current_user` would reject on every
+        # subsequent call. `_fail` keeps the PII-free audit + the one generic
+        # error this endpoint returns for every rejection.
+        raise await _fail("inactive") from exc
 
     token, jti = create_access_token_with_jti(user.id, user.organization_id)
     await register_session(

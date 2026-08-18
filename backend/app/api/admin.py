@@ -1,7 +1,5 @@
 """User management endpoints for organization admins."""
 
-import secrets
-import string
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -42,14 +40,14 @@ from app.schemas.admin import (
 )
 from app.services.audit_dispatch import dispatch_auth_audit
 from app.services.session_management import revoke_user_sessions
-from app.utils.passwords import PasswordError, pwd_context, validate_password_complexity
+from app.utils.passwords import (
+    PasswordError,
+    generate_temp_password,
+    pwd_context,
+    validate_password_complexity,
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
-
-
-def _generate_temp_password(length: int = 12) -> str:
-    alphabet = string.ascii_letters + string.digits
-    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 def _role_to_response(role: Role) -> RoleResponse:
@@ -400,7 +398,13 @@ async def create_user(
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Email already in use")
 
-    temp_password = _generate_temp_password()
+    # The SHARED generator (`utils/passwords`), not a local one. The local copy
+    # this replaces drew 12 characters from `ascii_letters + digits` with no
+    # guarantee of case mix or a digit, so an admin-created account could be
+    # handed a temp credential that `validate_password_complexity` — the policy
+    # every other password on the platform must satisfy — would itself refuse.
+    # Signup and partner provisioning already use this one.
+    temp_password = generate_temp_password()
     new_user = User(
         email=body.email,
         full_name=body.full_name,

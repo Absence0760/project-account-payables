@@ -576,6 +576,15 @@ async def mint_scim_token(
     in `org.settings.sso.scim_bearer_hash`. Rotating is a re-call: the previous
     hash is overwritten and any IdP still using the old token will start
     getting 401s, which is the desired behaviour.
+
+    Audited (`organization.scim_token_minted`). This token is a tenant-wide
+    user-provisioning credential — whoever holds it can create, rename and
+    deactivate accounts in this org, and grant roles through group mapping — so
+    minting or rotating it is exactly the access event an auditor expects to
+    find, and it is the one credential mint on the platform that wasn't
+    recording one (`api_key.created` and `webhook_subscription.created` both
+    do). PII-free and secret-free: the digest prefix is a non-secret label that
+    lets an operator tell which token is live without revealing it.
     """
     raw, digest = generate_scim_token()
 
@@ -592,6 +601,16 @@ async def mint_scim_token(
     org.scim_bearer_hash = digest
 
     await db.commit()
+
+    await dispatch_auth_audit(
+        organization_id=org.id,
+        actor_id=user.id,
+        action="organization.scim_token_minted",
+        entity_type="organization",
+        entity_id=org.id,
+        details={"bearer_hash_prefix": digest[:8]},
+    )
+
     return SCIMTokenResponse(token=raw, bearer_hash_prefix=digest[:8])
 
 

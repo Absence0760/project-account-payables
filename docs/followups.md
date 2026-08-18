@@ -990,6 +990,38 @@ and tenant isolation is unaffected (per-tenant DB). `positive_pay.py` and
 inconsistent about it; making that uniform is a design call for a multi-entity
 slice, not a bug fix.
 
+### Surfaced by the round-10 hunt (auth / tenant isolation), not fixed
+
+The auth / tenant-isolation agent of round 10 fixed 7 findings at the root
+(deactivated accounts refused at every sign-in entry point, the SCIM group→role
+mapping, the cross-tenant `userName` clash returning a SCIM 409, the out-of-app
+approval surfaces gated on `invoice.approve`, delegation validation, and the
+shared temp-password generator). This is the one it confirmed but did not fix:
+
+- [ ] **`GET /api/v1/docs` renders blank — its own CSP blocks every asset it
+      loads.** `api/v1_openapi.py::public_docs` returns FastAPI's
+      `get_swagger_ui_html`, whose only stylesheet, script and favicon are
+      third-party CDN URLs (`cdn.jsdelivr.net`, `fastapi.tiangolo.com`), while
+      `main.SecurityHeadersMiddleware` stamps
+      `Content-Security-Policy: default-src 'none'` on every response. Verified
+      by driving the route through the real ASGI app: 200, that CSP header, and
+      three cross-origin asset references — so any browser honouring the header
+      shows an empty page. The published *contract*, `GET /api/v1/openapi.json`,
+      is unaffected and is what integrators actually consume; only the
+      human-readable viewer is dead. It is recorded rather than patched because
+      each way out is a product call, not a mechanical fix: **vendor**
+      `swagger-ui-dist` and serve it from our own origin (works offline, honours
+      guard rail 7's local-first rule, costs ~1 MB of committed assets and a
+      version to keep current — the durable answer); **allowlist** the CDN in a
+      route-scoped CSP (three lines, but adds a third-party runtime dependency
+      to a page the platform serves, and still renders blank offline); or
+      **drop** `/v1/docs` and point `backend/docs/public-api.md` at the spec
+      URL. Do NOT relax the global CSP — it is what keeps the API origin unable
+      to load third-party script at all.
+      **Trigger:** the next slice touching the public Developer API surface, or
+      the first integrator who opens the docs URL.
+
+
 ### AI Cash-Flow Copilot — Phase 3 deferred bucket
 
 Phases 1–3 core shipped (read-only cash Q&A, `propose_payment_plan` +
