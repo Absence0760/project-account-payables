@@ -474,9 +474,12 @@ async def redeliver(
     introduced to close on the other two paths; this one was left open.
 
     Holding the claim also serialises two admins hitting Redeliver at once: the
-    second waits, then sees the row already moved out of ``failed``/``dead`` and
-    gets the 409 the status guard promises, instead of both passing the guard
-    and both sending.
+    second waits for the first to finish and then re-reads the row, instead of
+    both passing the status guard on the same snapshot and both sending. What it
+    sees is the first attempt's real outcome — ``delivered`` (or ``dead``) gives
+    it the 409 the guard promises, while a first attempt that merely failed
+    again leaves the row ``failed``, so the second click is a genuine second
+    retry rather than a duplicate of an in-flight one.
 
     The trade-off is deliberate: because the requeue is no longer committed
     before the send, a failure in the send path's own commit rolls the row back
