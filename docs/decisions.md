@@ -1466,3 +1466,55 @@ override and would refuse a submission for an under-claim that costs nothing.
 The approver is the control point, and the violation carries the expected figure
 plus its working so the badge says what to pay. Fail *informative*, not falsely
 reassuring — and not falsely obstructive either.
+
+## 35. A figure we cannot establish is excluded and counted, never estimated at face value
+
+Rounds 10 and 11 found the same defect five times, in five unrelated modules,
+and fixed it the same way each time. Recording it once so the sixth is caught in
+review rather than in production.
+
+The shape is always this: `Payment.amount` is denominated in the **invoice's**
+currency — `international_payments.prepare_international_payment` sets
+`amount=invoice.amount` and puts the home-currency debit on
+`source_amount`/`source_currency`. Any aggregate that sums raw `Payment.amount`
+across a book containing one foreign invoice is therefore a silent two-currency
+mixture, and every one of these labelled that mixture with the org's reporting
+currency. The 1099 report summed it onto a **filed tax form** (a EUR 1 000
+invoice paid on a USD 1 100 wire reported `ytd_paid: "1000.00", currency:
+"USD"`, which can also push a vendor across the $600 threshold); vendor risk
+scoring fed it to a ramp whose full-exposure point is a bare `100000`, pinning a
+¥10 000 000 payer at the maximum sub-score; the discount optimizer added a EUR
+1 000 offer to a USD 1 000 one and checked the sum against a single-currency
+cash budget; the cash-position curve produced a **−9 751 000** closing balance;
+the reporting-currency lock kept a stale figure and reported it as *converted*.
+
+**The rejected fix in every case was a face-value fallback** — treat 1 000 EUR
+as 1 000 USD when no rate is available, optionally flagging it. That is what
+`reporting_amount_for_row` does for a spend dashboard, and there it is right: an
+approximate total with a caveat beats a blank panel. It is wrong the moment the
+number is *filed, gates a control, or is compared against a threshold*, because
+the caveat rides a different field from the number and only the number gets
+read. One of these had already shipped the caveat — `_commitment_rows` computed
+an `unconverted` flag whose docstring promised it made foreign rows "visible
+rather than silent", and grep found **zero readers**. A flag nobody reads is not
+a mitigation.
+
+**Fetching a rate at read time was rejected too.** It makes a historical total
+move under the reader, which §18 already settled for locked-not-recomputed
+rates, and it puts an FX outage on the path of a tax report.
+
+So `currency_conversion.payment_reporting_amount_sql` resolves two rungs, most
+authoritative first — the rate-locked `source_amount` when its currency IS the
+reporting currency, else `amount` when the invoice's own currency is. There is
+deliberately no third rung. What neither rung establishes is **excluded from the
+total and counted separately** (`unconverted_payment_count`,
+`unconverted_payments`, `unconverted_count`, `unconvertible`), the count is
+surfaced on the API, the `/cfo` card and the copilot tools, and an affected
+vendor is flagged `needs_attention`. A single-currency tenant only ever reaches
+rung 2, so its numbers are byte-identical — which is why this was invisible for
+so long.
+
+The general rule, beyond currency: **when a value cannot be established, say so
+in the result and leave it out of the arithmetic.** Do not substitute a
+plausible stand-in and record the doubt somewhere the consumer does not look.
+Same instinct as §34 — the reassuring default is the one nobody investigates.
