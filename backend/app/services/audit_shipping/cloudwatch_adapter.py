@@ -194,15 +194,27 @@ class CloudWatchAdapter(AuditShippingAdapter):
         CloudWatch reports events it silently discarded (too old for the log
         group's retention, too far in the future) in the SUCCESS response. Left
         unread, the shipper stamps `shipped_at` on rows the WORM store never
-        took. PII-free: only the index fields AWS returns, never a message.
+        took.
+
+        PII-free by construction: the message names AWS's reason fields and
+        their INTEGER batch offsets (`tooOldLogEventEndIndex` etc.) — positions
+        in a batch we built — and never a log event's own message. A
+        non-integer value is dropped rather than stringified, so a future field
+        carrying text cannot leak through here.
         """
         if not isinstance(response, dict):
             return
         rejected = response.get("rejectedLogEventsInfo")
         if not rejected:
             return
+        detail = (
+            {k: v for k, v in sorted(rejected.items()) if isinstance(v, int)}
+            if isinstance(rejected, dict)
+            else {}
+        )
+        reason = detail or sorted(rejected)
         raise AuditShippingRejected(
-            f"CloudWatch rejected events from a batch of {event_count}: {sorted(rejected)}"
+            f"CloudWatch rejected events from a batch of {event_count}: {reason}"
         )
 
     # -- adapter API ---------------------------------------------------------
