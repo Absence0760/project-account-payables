@@ -426,15 +426,36 @@ disabled by default so local dev / tests never email) ticks every
 `FEOH_SCHEDULED_REPORTS_TICK_SECONDS`. Each tick `run_scheduled_reports_once`
 fans out across every tenant DB (`_sweep_tenant`), calls `list_due_schedules`,
 then `execute_schedule` per due row — one tenant's failure never halts the
-sweep. Success bumps `next_run_at` forward by the cadence and clears the error;
-failure persists a `[retry N]` marker and bumps the count. After
-five consecutive failures the row is auto-disabled so the queue
-doesn't loop forever — an operator re-enables from the admin UI
-after fixing the underlying issue.
+sweep.
+
+**Delivery is per-recipient**, and `last_run_status` has three values:
+
+| Status | When | `next_run_at` | Counts toward auto-disable |
+|---|---|---|---|
+| `success` | every recipient took the report | bumped by the cadence | — (clears the chain) |
+| `partial` | some took it, some didn't | **bumped** | no |
+| `failure` | generation failed, no recipients configured, or NOBODY took it | untouched → next tick retries | yes (`[retry N]`) |
+
+A `partial` still advances `next_run_at` because the alternative is worse: a
+retry redelivers to everyone who already has the report. The whole loop used to
+sit inside one `try`, so a bad address at position 2 of 5 skipped positions 3-5
+entirely *and* held `next_run_at`, re-sending to position 1 on each of the five
+retry ticks before the auto-disable — while 3-5 never received it once and then
+lost the schedule. Each address is now attempted independently, and a `partial`
+is deliberately **not** a strike: disabling the schedule over one unreachable
+recipient punishes the ones it is still reaching. The durable fix for a
+persistently bad address is an operator correcting or removing it — the failure
+count on `last_run_error` is what tells them to.
+
+After five consecutive `failure`s the row is auto-disabled so the queue doesn't
+loop forever — an operator re-enables from the admin UI after fixing the
+underlying issue. The tenant sweep counts a `partial` as a failed run for
+`sweep_health` (`GET /api/health/sweeps`), so an undelivered recipient shows up
+there rather than rounding to "healthy".
 
 Email-adapter exceptions never leak provider-side details into
-`last_run_error` (invariant #7); only the exception class name
-is stored.
+`last_run_error` (invariant #7); only the exception class name — and, for a
+partial, the failed/total **counts** — are stored.
 
 ## Known gaps
 
@@ -448,7 +469,7 @@ is stored.
 |---|---|
 | `tests/test_analytics.py` | 27 cases — every compute_* function: DPO formula, CCC None-on-missing-legs, working-capital monotonicity, supplier concentration flag threshold, fraud-rate zero-invoice safety, rebate annualisation, forecast-variance sign convention, processing-time min-sample collapse, approval-bottleneck rollup + unassigned bucket, discount-capture empty safety |
 | `tests/test_report_export.py` | 11 cases — registry pins all four reports; per-report header column-order pinned; enum-status reads `.value`; missing fields emit empty (not "None"); orphan payment-with-null-invoice still emitted |
-| `tests/test_scheduled_reports.py` | 11 cases — cadence delta math; unknown-cadence fallback; happy-path generates → emails every recipient → updates next_run_at; generator-error / empty-recipients / email-adapter-error all persist a failure marker without raising; PII guardrail (no SMTP transport details in `last_run_error`); five-consecutive-failures disables the row, first failure leaves enabled alone |
+| `tests/test_scheduled_reports.py` | 20 cases — cadence delta math; unknown-cadence fallback; happy-path generates → emails every recipient → updates next_run_at; generator-error / empty-recipients / email-adapter-error all persist a failure marker without raising; PII guardrail (no SMTP transport details in `last_run_error`); five-consecutive-failures disables the row, first failure leaves enabled alone; **per-recipient delivery** — one bad address doesn't block the ones after it, a partial advances `next_run_at` and isn't a strike, a total failure holds `next_run_at` and still attempts every address |
 | `tests/test_dashboard_aggregations.py` | Existing — extended through the new branches via the try/except absorption pattern |
 | `tests/test_cashflow_balance.py` | Unit — `get_balance` capability (base-class default unsupported; mock deterministic + config override + simulated-unsupported); `fetch_provider_balance` best-effort (mock balance, None on unsupported, swallows adapter error); persisted-threshold resolve/store round-trip + garbage tolerance + key preservation/clear |
 | `tests/test_cashflow_forecast_api.py` (cash-position additions) | API — auto-seed opening balance from the mock provider (`source: provider`); `seed_balance=false` skips it; query param beats provider; provider-unsupported falls back to `settings`; persisted threshold applied without a query override; `cash-position-settings` GET/PUT round-trip; negative → 422; RBAC (ap_clerk 403, admin/cfo 200) |
