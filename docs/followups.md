@@ -1026,7 +1026,6 @@ shared temp-password generator). This is the one it confirmed but did not fix:
       the first integrator who opens the docs URL.
 
 
-<<<<<<< HEAD
 ### Surfaced by the round-11 hunt (multi-currency / e-invoicing), not fixed
 
 The multi-currency / multi-entity / e-invoicing agent of round 11 fixed 6
@@ -1104,7 +1103,7 @@ carrying the seller's SKU, and DIAN's `InvoiceTypeCode` emitting UNCL1001
       generated document validates, and correct the qualification if it fails.
       **Trigger:** the SdI clearance slice, or any addition of XSD-backed
       validation to the national formats. **(c)**
-=======
+
 ### Surfaced by the round-11 async / concurrency hunt, not fixed
 
 The round-11 cross-cutting sweep fixed five at the root (the SSRF guard's
@@ -1142,7 +1141,7 @@ transactional semantics for every caller of the money path:
       **Trigger:** the next slice that touches the notification dispatch
       chokepoint or `transition_invoice`'s contract — or the first production
       report of approval/payment writes blocking on each other.
->>>>>>> worktree-agent-ad5efda534c1ef2bb
+
 
 
 ### AI Cash-Flow Copilot — Phase 3 deferred bucket
