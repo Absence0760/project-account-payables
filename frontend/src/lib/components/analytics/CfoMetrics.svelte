@@ -77,6 +77,7 @@
 		{#if data.dpo_trend.length > 0}
 			<div class="cfm-subsection">
 				<h3>{m('cfoMetrics.dpoTrend.title')}</h3>
+				<p class="cfm-trend-hint">{m('cfoMetrics.dpoTrend.hint')}</p>
 				<div class="cf-bars">
 					{#each data.dpo_trend as r (r.month)}
 						<div class="cf-bar-row">
@@ -259,6 +260,12 @@
 		font-weight: 600;
 		color: var(--text-muted);
 		margin: 0 0 10px;
+	}
+
+	.cfm-trend-hint {
+		font-size: 0.75rem;
+		color: var(--text-muted);
+		margin: -6px 0 10px;
 	}
 
 	.cfm-stat-grid {

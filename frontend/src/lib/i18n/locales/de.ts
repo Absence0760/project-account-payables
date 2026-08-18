@@ -947,6 +947,8 @@ export const messages = {
 	'cfoMetrics.kpi.apBalance': 'Verbindlichkeitssaldo',
 	'cfoMetrics.kpi.rebateYield': 'Karten-Rückvergütungsrendite',
 	'cfoMetrics.dpoTrend.title': 'DPO-Trend (6 Monate)',
+	'cfoMetrics.dpoTrend.hint':
+		'Nur abgeschlossene Monate — der laufende Monat wird erst nach seinem Ende einbezogen.',
 	'cfoMetrics.accruals.title': 'Abgrenzungen',
 	'cfoMetrics.accruals.openPo': 'Offene Bestellungen',
 	'cfoMetrics.accruals.received': 'Erhalten, nicht fakturiert',

@@ -984,6 +984,7 @@ export const en = {
 	'cfoMetrics.kpi.apBalance': 'Accounts payable balance',
 	'cfoMetrics.kpi.rebateYield': 'Card rebate yield',
 	'cfoMetrics.dpoTrend.title': 'DPO trend (6 months)',
+	'cfoMetrics.dpoTrend.hint': "Closed months only — this month isn't included until it ends.",
 	'cfoMetrics.accruals.title': 'Accruals',
 	'cfoMetrics.accruals.openPo': 'Open POs',
 	'cfoMetrics.accruals.received': 'Received, not invoiced',

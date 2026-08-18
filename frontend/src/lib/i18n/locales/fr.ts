@@ -946,6 +946,8 @@ export const messages = {
 	'cfoMetrics.kpi.apBalance': 'Solde des comptes fournisseurs',
 	'cfoMetrics.kpi.rebateYield': 'Rendement des remises carte',
 	'cfoMetrics.dpoTrend.title': 'Tendance du DPO (6 mois)',
+	'cfoMetrics.dpoTrend.hint':
+		"Mois clos uniquement — le mois en cours n'est inclus qu'une fois terminé.",
 	'cfoMetrics.accruals.title': 'Charges à payer',
 	'cfoMetrics.accruals.openPo': 'Bons de commande ouverts',
 	'cfoMetrics.accruals.received': 'Reçu, non facturé',
