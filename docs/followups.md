@@ -1048,6 +1048,27 @@ offers across currencies). These are the ones it confirmed but did not fix:
       concurrent agent may hold it. **Trigger:** the next slice touching the
       discounts page, or the first multi-currency pilot tenant.
 
+- [ ] **`scheduled_reports` has a complete runner and no CRUD surface.**
+      Nothing under `app/api/` references the `ScheduledReport` model — the
+      only code that touches the table is `services/scheduled_reports.py`
+      (verified by grep and by the `@router` inventory of
+      `app/api/analytics.py`, which has no scheduled-report route), yet root
+      `CLAUDE.md` advertised "scheduled-report CRUD" under `/analytics` and
+      the module docstring told operators to "re-enable from the admin UI".
+      Consequence: a tenant cannot create, edit, list or re-enable a schedule
+      through the product; rows exist only via a seed or direct SQL, and the
+      documented 5-strike auto-disable is therefore a one-way door. The docs
+      were corrected in the same round-11 change that fixed the runner's
+      per-recipient delivery, so the claim no longer misleads — the feature
+      gap remains. **Durable fix:** a small admin-gated CRUD router
+      (`GET`/`POST`/`PATCH`/`DELETE /api/analytics/scheduled-reports`),
+      validating `report_type` against `report_export.EXPORTERS` and `cadence`
+      against `_CADENCE_DELTA`, recipients as a bounded email list, with an
+      audit row per mutation — plus the `/analytics` UI panel. Not built here
+      because it is feature work, not a defect fix. **Trigger:** the first
+      tenant that asks for a recurring emailed report, or flipping
+      `FEOH_SCHEDULED_REPORTS_ENABLED` on in a deployed env.
+
 - [ ] **`api/analytics.py` and `services/scheduled_reports.py` still call
       `date.today()` where the rest of the cash-flow stack uses
       `datetime.now(UTC).date()`.** `app/api/cash_flow.py` and every copilot

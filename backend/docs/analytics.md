@@ -432,6 +432,14 @@ shape.
 
 ## Scheduled report delivery
 
+> **No CRUD API exists yet.** Nothing under `app/api/` references
+> `ScheduledReport` — the only code that touches the table is
+> `services/scheduled_reports.py` (the runner) — so a row can currently only be
+> created by a seed or direct SQL, and there is no admin UI to re-enable a
+> schedule the 5-strike rule disabled. The runner below is complete and tested;
+> its input surface is not. Tracked in
+> [followups.md](../../docs/followups.md) § round-11.
+
 Migration 0020 adds `scheduled_reports`. Rows:
 
 - `name` — display label
@@ -471,8 +479,9 @@ persistently bad address is an operator correcting or removing it — the failur
 count on `last_run_error` is what tells them to.
 
 After five consecutive `failure`s the row is auto-disabled so the queue doesn't
-loop forever — an operator re-enables from the admin UI after fixing the
-underlying issue. The tenant sweep counts a `partial` as a failed run for
+loop forever — an operator re-enables it after fixing the underlying issue
+(today that means flipping `enabled` directly, since no CRUD API or admin UI
+exists — see the note at the top of this section). The tenant sweep counts a `partial` as a failed run for
 `sweep_health` (`GET /api/health/sweeps`), so an undelivered recipient shows up
 there rather than rounding to "healthy".
 

@@ -20,8 +20,10 @@ Failures don't block: `last_run_status='failure'` + truncated
 error message is saved, next_run_at stays at the original time so
 the next tick retries. Repeated failures cap at 5 retries by
 flipping `enabled=false` (so the queue doesn't loop forever on a
-broken provider). Operators re-enable from the admin UI after
-fixing.
+broken provider). An operator re-enables it after fixing — today by
+flipping the column directly: nothing under `app/api/` references
+`ScheduledReport`, so this table has no CRUD surface yet (see
+`docs/analytics.md` § Scheduled report delivery).
 
 Delivery is per-recipient, so `last_run_status` has three values:
 
