@@ -59,6 +59,42 @@ async def _get_workflow_or_404(
     return defn
 
 
+def _entity_scope_predicate(entity_id: uuid.UUID | None):
+    """NULL-safe equality on ``WorkflowDefinition.entity_id``.
+
+    A definition either belongs to one subsidiary (``entity_id`` set) or is the
+    shared / org-wide fallback (``entity_id IS NULL``) — the two buckets
+    ``get_or_create_workflow_definition`` resolves in precedence order. SQL
+    treats ``NULL = NULL`` as unknown, so the shared bucket needs ``IS NULL``
+    rather than an equality test.
+    """
+    if entity_id is None:
+        return WorkflowDefinition.entity_id.is_(None)
+    return WorkflowDefinition.entity_id == entity_id
+
+
+async def _active_definition_count(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    entity_id: uuid.UUID | None,
+    exclude_id: uuid.UUID | None = None,
+) -> int:
+    """Count the ACTIVE definitions in one entity scope, excluding ``exclude_id``."""
+    query = (
+        select(func.count())
+        .select_from(WorkflowDefinition)
+        .where(
+            WorkflowDefinition.organization_id == org_id,
+            WorkflowDefinition.is_active.is_(True),
+            _entity_scope_predicate(entity_id),
+        )
+    )
+    if exclude_id is not None:
+        query = query.where(WorkflowDefinition.id != exclude_id)
+    return int((await db.execute(query)).scalar() or 0)
+
+
 async def _next_version_number(db: AsyncSession, definition_id: uuid.UUID) -> int:
     current = (
         await db.execute(
@@ -431,17 +467,50 @@ async def update_workflow(
         defn.description = body.description
     if body.is_active is not None:
         if body.is_active and not defn.is_active:
-            # Enforce the one-active-workflow invariant: when this
-            # workflow flips inactive → active, deactivate any peer
-            # that's currently active in this org.
+            # Enforce the one-active-workflow invariant PER ENTITY SCOPE: when
+            # this workflow flips inactive → active, deactivate any peer that's
+            # currently active in the SAME scope (its own subsidiary, or the
+            # shared entity_id IS NULL bucket). Org-wide deactivation would take
+            # a sibling subsidiary's definition — and the shared fallback — down
+            # with it, defeating the per-entity resolution
+            # `get_or_create_workflow_definition` performs (multi-entity Phase 3,
+            # docs/multi-entity.md).
             await db.execute(
                 sql_update(WorkflowDefinition)
                 .where(
                     WorkflowDefinition.organization_id == org_id,
                     WorkflowDefinition.id != workflow_id,
+                    _entity_scope_predicate(defn.entity_id),
                 )
                 .values(is_active=False)
             )
+        elif not body.is_active and defn.is_active:
+            # Refuse a deactivation that would leave this scope with NO active
+            # definition. `get_or_create_workflow_definition` would then lazily
+            # mint an "Invoice Processing" stub with is_default=True — which
+            # collides with any existing shared default under
+            # `uq_workflow_definitions_one_default` (migration 0050) and 500s
+            # invoice create/upload. Mirrors the default/active/in-flight guards
+            # `delete_workflow` already applies.
+            own_scope = await _active_definition_count(
+                db, org_id=org_id, entity_id=defn.entity_id, exclude_id=workflow_id
+            )
+            shared_fallback = 0
+            if defn.entity_id is not None:
+                # An entity with no definition of its own legitimately falls back
+                # to a shared (entity_id IS NULL) one, so that still resolves.
+                shared_fallback = await _active_definition_count(
+                    db, org_id=org_id, entity_id=None, exclude_id=workflow_id
+                )
+            if own_scope + shared_fallback == 0:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Cannot deactivate the last active workflow — new invoices "
+                        "would have no definition to snapshot. Activate another "
+                        "workflow first."
+                    ),
+                )
         defn.is_active = body.is_active
     if body.steps is not None:
         # mode="json" — see the identical comment on the create-workflow path

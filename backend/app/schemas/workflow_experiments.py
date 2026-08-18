@@ -24,6 +24,16 @@ def _validate_variant_config(v: dict | None) -> dict | None:
     auto-approve, the approval thresholds (max-amount / CFO gate), and
     segregation. Reject it at the boundary rather than freeze an unreadable
     snapshot.
+
+    The same reasoning extends one level down, to each step's ``type``: a typo'd
+    ``"aproval"`` is structurally fine but is not a type the engine recognises,
+    so ``get_step_config(snapshot, "approval")`` returns ``{}`` and
+    ``review._enforce_approval_thresholds`` returns early — dropping the
+    max-amount cap, the CFO gate and the approver-strategy check for roughly half
+    the tenant's invoices. That is exactly the failure ``decisions §32`` closed
+    for ``POST /api/workflows/import``, so this runs the SAME gate
+    (``workflow_builder.validate_builder_steps``) — which also checks the builder
+    step-config shapes and ``condition`` goto targets.
     """
     if v is None:
         return v
@@ -33,6 +43,12 @@ def _validate_variant_config(v: dict | None) -> dict | None:
     for step in steps:
         if not isinstance(step, dict) or "type" not in step:
             raise ValueError("each step in a variant config must be an object with a 'type'")
+
+    from app.services.workflow_builder import validate_builder_steps
+
+    errors = validate_builder_steps(steps)
+    if errors:
+        raise ValueError("invalid variant config: " + "; ".join(errors))
     return v
 
 

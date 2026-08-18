@@ -75,6 +75,11 @@ All transitions are enforced by a state machine in `services/workflow_engine.py`
 2. Store file in S3/MinIO under `{organization_id}/{invoice_id}/{filename}`.
 3. Create the Invoice record with `status=new` and placeholder fields (`invoice_number="PENDING"`, `amount=0`). Populate `file_key` and `file_url`.
 4. Create a WorkflowInstance and the first WorkflowStep (`type=extraction`).
+   Whether extraction runs at all is read from the snapshot that instance just
+   froze (`is_step_enabled(..., invoice_id=invoice.id)`), never by re-resolving
+   the live definition — a second resolution can disagree with the frozen one
+   (breaking the snapshot invariant, `decisions §13`) and `get_or_create_workflow_definition`
+   *inserts* a definition when it finds none, inside the upload transaction.
 5. Transition invoice to `pending`.
 6. Dispatch async AI extraction task.
 7. Return `202 Accepted` with the invoice ID and `correlation_id`.
@@ -132,7 +137,22 @@ gate. The malformed value is logged PII-free (a money threshold, not a secret)
 for an admin to correct. The payment-run CFO gate (`payments.cfo_approval_above`)
 enforces the same fail-closed discipline inline (see `payments.md`).
 
-**Structuring guard**: both gates above compare against `invoice.amount` **plus** the same vendor's other invoice amounts over a trailing window (`services/structuring.py`, called from `review._enforce_approval_thresholds`) — closing the "split one large payable into several under-threshold invoices with distinct invoice numbers" bypass (the exact-match duplicate check in `invoice_warnings.py` never fires on distinct numbers, and per-invoice thresholds never aggregated). Config lives alongside the other fraud-rule knobs on `Organization.settings.fraud_rules`: `structuring_enabled` (default `true`) and `structuring_window_days` (default `7`). Rejected/failed invoices don't count toward the aggregate; everything else does, including still-pending ones. The rejection/CFO-required message names the aggregate and the vendor's other recent spend when the single invoice alone would have passed.
+**Structuring guard**: both gates above compare against `invoice.amount` **plus** the same vendor's other invoice amounts over a trailing window (`services/structuring.py`, called from `review._enforce_approval_thresholds` on the human path and from `extraction.resolve_gate_aggregate` on the unattended one) — closing the "split one large payable into several under-threshold invoices with distinct invoice numbers" bypass (the exact-match duplicate check in `invoice_warnings.py` never fires on distinct numbers, and per-invoice thresholds never aggregated). Config lives alongside the other fraud-rule knobs on `Organization.settings.fraud_rules`: `structuring_enabled` (default `true`) and `structuring_window_days` (default `7`). Rejected/failed invoices don't count toward the aggregate; everything else does, including still-pending ones. The rejection/CFO-required message names the aggregate and the vendor's other recent spend when the single invoice alone would have passed.
+
+**The auto-approve path measures the same aggregate.** `extraction.decide_auto_approve`
+(the revoke check above) stays PURE and takes the figure as an `aggregate_amount`
+argument; both call sites — `extraction.run_extraction` and
+`api/workflow.complete_invoice`'s amount-floor path — compute it with the shared
+`extraction.resolve_gate_aggregate`, which is `review`'s own computation
+(`invoice.amount + vendor_recent_spend(...)`, guarded by
+`structuring.get_structuring_config`). Evaluating the gates against this invoice
+alone left the split-payable bypass wide open on the path with *no human in it* —
+strictly worse than the human hole the guard was added to close. `resolve_gate_aggregate`
+never raises: a lookup failure degrades to the single-invoice comparison (still
+gated) rather than breaking extraction. `auto_approve_below` deliberately keeps
+measuring the **single** invoice — it is a "too small to be worth a human's time"
+convenience, not a spend control, and aggregating it would quietly stop it firing
+for any frequent vendor.
 
 ### Multi-Level Approval Chains
 
@@ -316,6 +336,26 @@ name, never quietly coerced into something plausible.
 2. Otherwise a shared / org-wide active definition (`entity_id IS NULL`) — same default-then-oldest ordering.
 
 If neither exists the org-wide default is auto-created with `entity_id = NULL` and `is_default = true`, so a single-entity tenant keeps getting exactly one org-wide definition — fully backward compatible. The resolved definition's `steps_config` is then snapshotted onto the `WorkflowInstance` as usual (in-flight invoices never see a later edit).
+
+##### Activate / deactivate are scoped to the definition's own bucket
+
+`PATCH /api/workflows/{id} {"is_active": …}` operates **inside one entity
+scope**, never org-wide:
+
+- **Activating** deactivates only the peers in the SAME bucket — the definition's
+  own `entity_id`, or (NULL-safe) the shared bucket when it is the shared one.
+  The peer-deactivation `UPDATE` used to carry no `entity_id` predicate, so
+  activating subsidiary A's definition silently deactivated subsidiary B's *and*
+  the shared org-wide fallback, defeating the per-entity resolution above.
+- **Deactivating** is refused with **409** when it would leave the scope with no
+  active definition at all. An entity-scoped definition may still be deactivated
+  while an active shared definition remains (falling back to it is the documented
+  behaviour); the last active shared one may not. Without the guard, the next
+  invoice hits the lazy auto-create above — which mints an `is_default = true`
+  row that collides with any existing shared default under
+  `uq_workflow_definitions_one_default`, turning an ordinary invoice
+  create/upload into a 500. Mirrors the default / active / in-flight-instances
+  guards `DELETE /api/workflows/{id}` already applies.
 
 At most one `is_default = true` definition may exist per `(organization_id, entity_id)`, enforced by the partial unique index `uq_workflow_definitions_one_default` on `(organization_id, COALESCE(entity_id, '00000000-…-0000'::uuid)) WHERE is_default = true` (the COALESCE sentinel collapses the NULL/shared bucket to a single key, since SQL treats `NULL != NULL`). The index is declared on the model (so fresh `create_all` tenants get it) and installed on existing tenants by migration `0050_workflow_per_entity_default` (which first demotes any pre-existing duplicate defaults, keeping the earliest `created_at` per group). See `../../docs/multi-entity.md`.
 

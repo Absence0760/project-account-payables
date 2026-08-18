@@ -486,3 +486,214 @@ async def test_bulk_delete_rbac(realdb):
     async with realdb.client(key="a", role="ap_manager") as c:
         resp = await c.post("/api/workflows/bulk-delete", json={"workflow_ids": []})
     assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# activate / deactivate are scoped to the definition's OWN entity bucket
+# ---------------------------------------------------------------------------
+
+
+async def _entities(c):
+    """(default_entity_id, new_entity_id) — creates the second one."""
+    r = await c.post("/api/entities", json={"name": "US Inc", "slug": "us-scope"})
+    assert r.status_code == 201, r.text
+    us = r.json()["id"]
+    default_id = next(e["id"] for e in (await c.get("/api/entities")).json() if e["is_default"])
+    return uuid.UUID(default_id), uuid.UUID(us)
+
+
+async def test_activating_entity_workflow_leaves_other_entities_active(realdb):
+    """Activating subsidiary A's definition must not deactivate subsidiary B's,
+    nor the shared org-wide one — the peer-deactivation UPDATE was org-wide with
+    no entity predicate, so one click took every other entity's routing down."""
+    org_id = realdb.info("a").org_id
+    mk = realdb.sessionmaker("a")
+
+    async with realdb.client(key="a", role="admin") as c:
+        default_id, us_id = await _entities(c)
+
+    async with mk() as s:
+        shared = WorkflowDefinition(
+            name="Shared",
+            steps_config={"steps": []},
+            is_active=True,
+            is_default=True,
+            organization_id=org_id,
+            entity_id=None,
+        )
+        other = WorkflowDefinition(
+            name="Default-entity WF",
+            steps_config={"steps": []},
+            is_active=True,
+            is_default=False,
+            organization_id=org_id,
+            entity_id=default_id,
+        )
+        target = WorkflowDefinition(
+            name="US WF",
+            steps_config={"steps": []},
+            is_active=False,
+            is_default=False,
+            organization_id=org_id,
+            entity_id=us_id,
+        )
+        s.add_all([shared, other, target])
+        await s.commit()
+        shared_id, other_id, target_id = shared.id, other.id, target.id
+
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.patch(f"/api/workflows/{target_id}", json={"is_active": True})
+    assert resp.status_code == 200, resp.text
+
+    async with mk() as s:
+        rows = {
+            d.id: d.is_active
+            for d in (
+                await s.execute(
+                    select(WorkflowDefinition).where(
+                        WorkflowDefinition.organization_id == org_id,
+                        WorkflowDefinition.id.in_([shared_id, other_id, target_id]),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        }
+    assert rows[target_id] is True
+    # Neither the shared fallback nor the sibling entity's definition was touched.
+    assert rows[shared_id] is True
+    assert rows[other_id] is True
+
+
+async def test_activating_entity_workflow_deactivates_only_its_own_entity_peer(realdb):
+    org_id = realdb.info("a").org_id
+    mk = realdb.sessionmaker("a")
+
+    async with realdb.client(key="a", role="admin") as c:
+        _default_id, us_id = await _entities(c)
+
+    async with mk() as s:
+        peer = WorkflowDefinition(
+            name="US old",
+            steps_config={"steps": []},
+            is_active=True,
+            is_default=False,
+            organization_id=org_id,
+            entity_id=us_id,
+        )
+        target = WorkflowDefinition(
+            name="US new",
+            steps_config={"steps": []},
+            is_active=False,
+            is_default=False,
+            organization_id=org_id,
+            entity_id=us_id,
+        )
+        s.add_all([peer, target])
+        await s.commit()
+        peer_id, target_id = peer.id, target.id
+
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.patch(f"/api/workflows/{target_id}", json={"is_active": True})
+    assert resp.status_code == 200, resp.text
+
+    async with mk() as s:
+        rows = {
+            d.id: d.is_active
+            for d in (
+                await s.execute(
+                    select(WorkflowDefinition).where(
+                        WorkflowDefinition.id.in_([peer_id, target_id])
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        }
+    assert rows[target_id] is True
+    assert rows[peer_id] is False
+
+
+async def test_deactivating_the_last_active_workflow_is_refused(realdb):
+    """Zero active definitions makes `get_or_create_workflow_definition` mint an
+    is_default stub, which collides with the existing shared default under
+    uq_workflow_definitions_one_default and 500s invoice create/upload."""
+    async with realdb.client(key="a", role="admin") as c:
+        listing = await c.get("/api/workflows")  # seeds the active default
+        assert listing.status_code == 200
+        only_id = listing.json()["items"][0]["id"]
+
+        resp = await c.patch(f"/api/workflows/{only_id}", json={"is_active": False})
+        assert resp.status_code == 409, resp.text
+        assert "last active workflow" in resp.json()["detail"]
+
+        # Still active, and invoice creation still works.
+        assert (await c.get(f"/api/workflows/{only_id}")).json()["is_active"] is True
+        created = await c.post(
+            "/api/invoices",
+            json={
+                "vendor": "Guard Vendor",
+                "invoice_number": f"WF-GUARD-{uuid.uuid4().hex[:8]}",
+                "amount": "10.00",
+            },
+        )
+        assert created.status_code == 201, created.text
+
+
+async def test_deactivating_entity_workflow_allowed_when_shared_fallback_remains(realdb):
+    """An entity legitimately falls back to the shared org-wide definition, so
+    deactivating its own is fine as long as that fallback is active."""
+    org_id = realdb.info("a").org_id
+    mk = realdb.sessionmaker("a")
+
+    async with realdb.client(key="a", role="admin") as c:
+        listing = await c.get("/api/workflows")  # seeds the shared active default
+        assert listing.status_code == 200
+        _default_id, us_id = await _entities(c)
+
+    async with mk() as s:
+        own = WorkflowDefinition(
+            name="US only",
+            steps_config={"steps": []},
+            is_active=True,
+            is_default=False,
+            organization_id=org_id,
+            entity_id=us_id,
+        )
+        s.add(own)
+        await s.commit()
+        own_id = own.id
+
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.patch(f"/api/workflows/{own_id}", json={"is_active": False})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["is_active"] is False
+
+
+async def test_deactivating_last_shared_workflow_refused_even_with_entity_actives(realdb):
+    """A subsidiary with no definition of its own falls through to the shared
+    bucket; emptying it strands that subsidiary on the lazy stub."""
+    org_id = realdb.info("a").org_id
+    mk = realdb.sessionmaker("a")
+
+    async with realdb.client(key="a", role="admin") as c:
+        listing = await c.get("/api/workflows")
+        shared_id = listing.json()["items"][0]["id"]
+        _default_id, us_id = await _entities(c)
+
+    async with mk() as s:
+        s.add(
+            WorkflowDefinition(
+                name="US only",
+                steps_config={"steps": []},
+                is_active=True,
+                is_default=False,
+                organization_id=org_id,
+                entity_id=us_id,
+            )
+        )
+        await s.commit()
+
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.patch(f"/api/workflows/{shared_id}", json={"is_active": False})
+    assert resp.status_code == 409, resp.text

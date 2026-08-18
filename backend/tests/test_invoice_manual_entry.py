@@ -219,3 +219,91 @@ async def test_attach_file_rejects_disallowed_content_type(realdb):
     async with mk() as s:
         inv = (await s.execute(select(Invoice).where(Invoice.id == invoice_id))).scalar_one()
         assert inv.file_key is None
+
+
+async def test_manual_create_writes_an_invoice_created_audit_row(realdb):
+    """Manual entry produced NO audit row at all: the invoice stays at `new`, so
+    `transition_invoice` never fires and a SOX export opened at
+    `invoice.approved` with the creation event, actor and timestamp missing.
+    Every sibling ingest path audits (`invoice.uploaded`, `invoice.file_attached`,
+    `invoice.edited`), and `services/recurring_invoices` already writes exactly
+    this action."""
+    import uuid
+
+    number = f"MANUAL-AUDIT-{uuid.uuid4().hex[:8]}"
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/invoices",
+            json={
+                "vendor": "Audited Manual Vendor",
+                "invoice_number": number,
+                "amount": "1234.56",
+                "currency": "USD",
+            },
+        )
+    assert resp.status_code == 201, resp.text
+    invoice_id = resp.json()["id"]
+    actor_id = realdb.info("a").users["ap_manager"]
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        rows = (
+            (
+                await s.execute(
+                    select(AuditLog).where(
+                        AuditLog.entity_id == invoice_id,
+                        AuditLog.action == "invoice.created",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(rows) == 1, [r.action for r in rows]
+    row = rows[0]
+    assert row.entity_type == "invoice"
+    assert row.actor_id == actor_id
+    assert row.created_at is not None
+    details = row.details or {}
+    assert details["source"] == "manual"
+    assert details["invoice_number"] == number
+    # Money is an exact decimal STRING on the wire — never a float.
+    assert details["amount"] == "1234.56"
+    assert isinstance(details["amount"], str)
+    assert details["currency"] == "USD"
+    assert details["status"] == "new"
+    assert details["vendor_action"] in {"linked", "created"}
+    # PII-free: no address / tax id / bank detail leaks into the trail.
+    assert set(details) == {
+        "source",
+        "invoice_number",
+        "amount",
+        "currency",
+        "vendor_action",
+        "status",
+    }
+
+
+async def test_manual_create_audit_row_is_on_the_invoice_trail(realdb):
+    """The row must be correlation-keyed to the invoice so `/api/audit/invoice/{id}`
+    (the SOX per-invoice export) actually returns it."""
+    import uuid
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/invoices",
+            json={
+                "vendor": "Trail Vendor",
+                "invoice_number": f"MANUAL-TRAIL-{uuid.uuid4().hex[:8]}",
+                "amount": "10.00",
+            },
+        )
+    assert resp.status_code == 201, resp.text
+    invoice_id = resp.json()["id"]
+
+    async with realdb.client(key="a", role="admin") as c:
+        trail = await c.get(f"/api/audit/invoice/{invoice_id}")
+    assert trail.status_code == 200, trail.text
+    entries = trail.json()
+    actions = [e["action"] for e in entries]
+    assert "invoice.created" in actions, actions

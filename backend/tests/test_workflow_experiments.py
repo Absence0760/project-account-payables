@@ -262,6 +262,94 @@ def test_experiment_update_validates_config_when_present():
         ExperimentUpdate(config_a={"not_steps": []})
 
 
+def test_experiment_create_rejects_unknown_step_type():
+    """A variant config is frozen VERBATIM onto assigned invoices'
+    `steps_config_snapshot`, so a typo'd type ("aproval") persists and is then
+    silently ignored at runtime: `get_step_config(snapshot, "approval")` returns
+    {} and `review._enforce_approval_thresholds` returns early, dropping the
+    max-amount cap, the CFO gate and the approver-strategy check for ~half the
+    tenant's invoices. Same gate `POST /api/workflows/import` runs
+    (decisions §32)."""
+    import pytest
+    from pydantic import ValidationError
+
+    from app.schemas.workflow_experiments import ExperimentCreate
+
+    with pytest.raises(ValidationError) as exc:
+        ExperimentCreate(
+            name="x",
+            workflow_definition_id=uuid.uuid4(),
+            config_a={"steps": [{"number": 1, "type": "aproval"}]},
+            config_b={"steps": [{"number": 1, "type": "approval"}]},
+        )
+    assert "aproval" in str(exc.value)
+
+
+def test_experiment_update_rejects_unknown_step_type():
+    import pytest
+    from pydantic import ValidationError
+
+    from app.schemas.workflow_experiments import ExperimentUpdate
+
+    with pytest.raises(ValidationError):
+        ExperimentUpdate(config_b={"steps": [{"number": 1, "type": "erp_exprot"}]})
+
+
+def test_experiment_create_rejects_dangling_condition_goto():
+    """`validate_builder_steps` also cross-checks builder config, so a variant
+    branching to a step that isn't in the variant is refused too."""
+    import pytest
+    from pydantic import ValidationError
+
+    from app.schemas.workflow_experiments import ExperimentCreate
+
+    with pytest.raises(ValidationError) as exc:
+        ExperimentCreate(
+            name="x",
+            workflow_definition_id=uuid.uuid4(),
+            config_a={
+                "steps": [
+                    {
+                        "number": 1,
+                        "type": "condition",
+                        "config": {
+                            "rules": [{"field": "amount", "operator": "gt", "value": 100}],
+                            "on_true_goto": 99,
+                        },
+                    }
+                ]
+            },
+            config_b={"steps": [{"number": 1, "type": "approval"}]},
+        )
+    assert "does not exist" in str(exc.value)
+
+
+def test_experiment_create_accepts_builder_step_types():
+    """The builder types are legitimate in a variant — only UNKNOWN types are
+    refused, so the gate must not narrow what an experiment may test."""
+    from app.schemas.workflow_experiments import ExperimentCreate
+
+    exp = ExperimentCreate(
+        name="x",
+        workflow_definition_id=uuid.uuid4(),
+        config_a={
+            "steps": [
+                {"number": 1, "type": "approval"},
+                {
+                    "number": 2,
+                    "type": "condition",
+                    "config": {
+                        "rules": [{"field": "amount", "operator": "gt", "value": 100}],
+                        "on_true_goto": 1,
+                    },
+                },
+            ]
+        },
+        config_b={"steps": [{"number": 1, "type": "approval"}]},
+    )
+    assert exp.config_a["steps"][1]["type"] == "condition"
+
+
 # ---------------------------------------------------------------------------
 # Real-DB / API tests (realdb fixture)
 # ---------------------------------------------------------------------------

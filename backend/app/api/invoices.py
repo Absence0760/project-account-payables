@@ -883,7 +883,33 @@ async def create_invoice(
     # pipeline uses, so a manual entry and an extracted one land on the same
     # vendor row; an unmatched name creates an `unverified` vendor stamped
     # `source="manual"` for an AP steward to confirm.
-    await match_and_link_vendor(db, invoice, org.id, source="manual")
+    _, vendor_action = await match_and_link_vendor(db, invoice, org.id, source="manual")
+    # Manual entry is the one ingest path that produced NO audit row at all: the
+    # invoice stays at `new`, so `transition_invoice` never fires, and every
+    # sibling path (`invoice.uploaded`, `invoice.file_attached`,
+    # `invoice.edited`) audits. A SOX export therefore opened at
+    # `invoice.approved` with the creation event, its actor and its timestamp
+    # missing. PII-free — the invoice number, the exact-string amount, the
+    # currency and the vendor-LINK outcome, matching what
+    # `services/recurring_invoices` records for a generated invoice.
+    await dispatch_audit(
+        db,
+        correlation_id=invoice.correlation_id,
+        organization_id=org.id,
+        actor_id=user.id,
+        action="invoice.created",
+        entity_type="invoice",
+        entity_id=invoice.id,
+        details={
+            "source": "manual",
+            "invoice_number": invoice.invoice_number,
+            # Exact decimal string — money is never a float on the wire.
+            "amount": str(invoice.amount),
+            "currency": invoice.currency,
+            "vendor_action": vendor_action,
+            "status": DBInvoiceStatus.new.value,
+        },
+    )
     # Run the same duplicate/fraud detection every extracted invoice gets.
     # Manual entry runs no extraction, so without this the exact-match
     # duplicate check, round-amount/rush-payment heuristics, etc. are dark
@@ -1812,6 +1838,50 @@ async def bulk_delete(
     return BulkDeleteResponse(deleted=deleted, skipped=skipped)
 
 
+# `POST /bulk/status` is a convenience wrapper over the ordinary queue/review
+# transitions — NOT a second, ungated way into the payment or ERP path. Every
+# target it may drive is whitelisted here and routed through the service that
+# OWNS that transition; a target absent from the whitelist is refused with a 422
+# naming the endpoint that does own it, rather than applied with a bare
+# `transition_invoice` that skips every control living in that owner.
+#
+# `payment_scheduled` in particular used to be a legal edge off `approved`, so a
+# bulk call could mark a batch scheduled with no PaymentRun / Payment behind it —
+# past the payment-blocking exception gate, the CFO threshold, run segregation and
+# the sanctions/KYC screen — and freeze it into IMMUTABLE_STATUSES with no payment
+# to void.
+BULK_STATUS_REFUSALS: dict[DBInvoiceStatus, str] = {
+    DBInvoiceStatus.payment_scheduled: (
+        "payment scheduling is owned by POST /api/payments/runs, which enforces the "
+        "payment-blocking exception gate, the CFO threshold, run segregation and the "
+        "sanctions/KYC screen"
+    ),
+    DBInvoiceStatus.paid: (
+        "settlement is recorded by the payment processor's webhook, never set by hand"
+    ),
+    DBInvoiceStatus.sending_to_erp: "use POST /api/invoices/{id}/send-to-erp",
+    DBInvoiceStatus.sent_to_erp: "the ERP adapter records its own confirmation",
+    DBInvoiceStatus.posted_in_erp: "the inbound ERP webhook records the posting",
+    DBInvoiceStatus.failed: (
+        "the extraction reaper and the ERP push own this state; retry via "
+        "POST /api/invoices/{id}/extract"
+    ),
+}
+
+# Targets a human may legitimately drive in bulk. Each is routed below through
+# its owning service where one exists (`approved` / `rejected` / a resubmit).
+BULK_STATUS_TARGETS: frozenset[DBInvoiceStatus] = frozenset(
+    {
+        DBInvoiceStatus.new,
+        DBInvoiceStatus.pending,
+        DBInvoiceStatus.ready_for_review,
+        DBInvoiceStatus.approved,
+        DBInvoiceStatus.rejected,
+        DBInvoiceStatus.done,
+    }
+)
+
+
 @router.post("/bulk/status", response_model=BulkStatusResponse)
 async def bulk_status_change(
     body: BulkStatusRequest,
@@ -1819,11 +1889,28 @@ async def bulk_status_change(
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
+    target = DBInvoiceStatus(body.status.value)
+    if target not in BULK_STATUS_TARGETS:
+        reason = BULK_STATUS_REFUSALS.get(target, "it is driven by the workflow engine")
+        raise HTTPException(
+            status_code=422,
+            detail=(f"Bulk status change cannot set '{target.value}' — {reason}."),
+        )
+
+    reason_text = (body.reason or "").strip()
+    if target == DBInvoiceStatus.rejected and not reason_text:
+        # `review.reject_invoice` records the reason on the audit row AND on the
+        # `review_rejected` exception the AP queue works from; a reasonless bulk
+        # rejection would leave the supplier with nothing to correct.
+        raise HTTPException(
+            status_code=422,
+            detail="A rejection reason is required when bulk-rejecting invoices.",
+        )
+
     ids = [uuid.UUID(i) for i in body.ids]
     result = await db.execute(select(Invoice).where(Invoice.id.in_(ids)))
     invoices = result.scalars().all()
 
-    target = DBInvoiceStatus(body.status.value)
     updated = 0
     skipped: list[str] = []
     # Bulk-approving must NOT bypass the approval controls. Routing a transition
@@ -1833,13 +1920,20 @@ async def bulk_status_change(
     # invoice through the same review.approve_invoice path the single-invoice
     # endpoint uses; an invoice that fails a control (403/422) is skipped, not
     # aborting the batch.
-    approving = target == DBInvoiceStatus.approved
+    #
+    # `rejected` is the same story on the other branch: a bare transition wrote no
+    # `review_rejected` exception, never bumped `rejection_count`, and — the part
+    # that actually corrupts a later approval — never CLEARED
+    # `WorkflowInstance.state_data["approval_levels"]`, so a reworked invoice
+    # resumed its approval chain at the level it was rejected at and counted a
+    # pre-correction approval as still valid. `review.reject_invoice` is the
+    # single chokepoint that clears it.
     actor_roles = {r.name for r in user.roles}
     for inv in invoices:
         if inv.status in IMMUTABLE_STATUSES:
             skipped.append(str(inv.id))
             continue
-        if approving:
+        if target == DBInvoiceStatus.approved:
             from app.services.review import approve_invoice
 
             try:
@@ -1856,6 +1950,35 @@ async def bulk_status_change(
                 # keep processing the rest of the batch.
                 skipped.append(str(inv.id))
                 continue
+            updated += 1
+        elif target == DBInvoiceStatus.rejected:
+            from app.services.review import reject_invoice
+
+            try:
+                await reject_invoice(
+                    db,
+                    inv,
+                    actor_id=user.id,
+                    actor_name=user.full_name,
+                    reason=reason_text,
+                )
+            except HTTPException:
+                # Not in `ready_for_review` — skip, same as the approve branch.
+                skipped.append(str(inv.id))
+                continue
+            updated += 1
+        elif target == DBInvoiceStatus.ready_for_review and inv.status == DBInvoiceStatus.rejected:
+            # `rejected → ready_for_review` is a RESUBMIT: its owner opens the new
+            # review WorkflowStep the approval queue works from. A bare transition
+            # put the invoice back in the queue with no open step to act on.
+            from app.services.review import resubmit_invoice
+
+            try:
+                await resubmit_invoice(db, inv, actor_id=user.id)
+            except HTTPException:
+                skipped.append(str(inv.id))
+                continue
+            await refresh_warnings(db, inv, org_settings=org.settings)
             updated += 1
         else:
             await transition_invoice(
