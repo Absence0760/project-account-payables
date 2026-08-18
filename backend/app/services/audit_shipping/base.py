@@ -23,6 +23,24 @@ from dataclasses import dataclass
 from datetime import datetime
 
 
+class AuditShippingRejected(RuntimeError):
+    """A sink accepted the call but did NOT ingest every row.
+
+    Distinct from a transport error: the API returned success, so nothing else
+    would have noticed. CloudWatch's ``PutLogEvents`` is the case this exists
+    for — it answers 200 with a ``rejectedLogEventsInfo`` block naming the
+    events it silently dropped (too old for the log group's retention, too far
+    in the future). Swallowing that would stamp ``shipped_at`` on rows that
+    never reached the WORM store, which is precisely the "SOC 2 evidence
+    reading green with nothing behind it" failure the boot-time
+    ``test_connection`` probe already refuses to allow.
+
+    Raising keeps the rows unshipped, so the next tick retries, the sweep's
+    consecutive-failure streak climbs (``GET /api/health/sweeps``), and the
+    retention manifest's ``audit_rows_overdue_unshipped`` counts them.
+    """
+
+
 @dataclass(frozen=True)
 class AuditLogRow:
     """A snapshot of one `audit_log` row, ready to ship.

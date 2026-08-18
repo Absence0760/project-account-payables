@@ -29,7 +29,12 @@ from app.services.audit_shipping import (
 # ---------------------------------------------------------------------------
 
 
-def _row(*, tenant_db: str = "feoh_acme", action: str = "invoice.approved") -> AuditLogRow:
+def _row(
+    *,
+    tenant_db: str = "feoh_acme",
+    action: str = "invoice.approved",
+    details: dict | None = None,
+) -> AuditLogRow:
     return AuditLogRow(
         id=uuid.uuid4(),
         tenant_db=tenant_db,
@@ -39,7 +44,7 @@ def _row(*, tenant_db: str = "feoh_acme", action: str = "invoice.approved") -> A
         action=action,
         entity_type="invoice",
         entity_id=uuid.uuid4(),
-        details={"field": "value"},
+        details={"field": "value"} if details is None else details,
         created_at=datetime(2026, 4, 21, 12, 0, 0, tzinfo=UTC),
     )
 
@@ -447,6 +452,120 @@ async def test_cloudwatch_adapter_groups_rows_by_tenant_and_day():
         call.kwargs["logStreamName"] for call in fake_client.put_log_events.call_args_list
     }
     assert stream_names == {"feoh_a/2026-04-21", "feoh_b/2026-04-21"}
+
+
+def _cloudwatch_adapter():
+    """A CloudWatch adapter over a fake boto3 client. Returns (adapter, client)."""
+    from app.services.audit_shipping import cloudwatch_adapter as cw_mod
+
+    fake_client = MagicMock()
+    fake_client.exceptions.ResourceAlreadyExistsException = type(
+        "FakeAlreadyExists", (Exception,), {}
+    )
+    fake_client.put_log_events.return_value = {"nextSequenceToken": "t"}
+    with patch("boto3.client", return_value=fake_client):
+        adapter = cw_mod.CloudWatchAdapter({})
+    return adapter, fake_client
+
+
+def _put_calls(fake_client) -> list[list[dict]]:
+    return [call.kwargs["logEvents"] for call in fake_client.put_log_events.call_args_list]
+
+
+def test_chunk_events_is_pure_and_respects_both_caps():
+    """Pure chunker: never more than the event cap, never over the byte cap."""
+    from app.services.audit_shipping import cloudwatch_adapter as cw
+
+    events = [{"timestamp": i, "message": "x" * 100_000} for i in range(30)]
+    chunks = list(cw._chunk_events(events))
+
+    assert sum(len(c) for c in chunks) == len(events)  # nothing dropped
+    assert [e["timestamp"] for c in chunks for e in c] == list(range(30))  # order kept
+    for chunk in chunks:
+        assert len(chunk) <= cw.MAX_EVENTS_PER_CALL
+        assert sum(cw._event_size(e) for e in chunk) <= cw.MAX_BATCH_BYTES
+
+
+@pytest.mark.asyncio
+async def test_cloudwatch_splits_a_batch_over_the_put_log_events_size_cap():
+    """A default-size shipper batch of fat audit rows exceeds PutLogEvents'
+    1 MiB cap. Sent as one call AWS answers InvalidParameterException, `ship`
+    raises, the rows stay unshipped, and the next tick re-selects the identical
+    oldest-first batch — nothing newer for that tenant ever ships again."""
+    from app.services.audit_shipping import cloudwatch_adapter as cw
+
+    adapter, client = _cloudwatch_adapter()
+    # 500 rows == FEOH_AUDIT_SHIPPING_BATCH_SIZE's default, ~4 KB of details each.
+    await adapter.ship([_row(details={"blob": "x" * 4000}) for _ in range(500)])
+
+    calls = _put_calls(client)
+    assert len(calls) > 1, "the oversized batch must be split, not sent as one call"
+    for events in calls:
+        assert len(events) <= cw.MAX_EVENTS_PER_CALL
+        assert sum(cw._event_size(e) for e in events) <= cw.MAX_BATCH_BYTES
+    assert sum(len(e) for e in calls) == 500  # every row still shipped
+
+
+@pytest.mark.asyncio
+async def test_cloudwatch_shrinks_a_single_row_past_the_per_event_cap():
+    """One row bigger than the 256 KiB per-event cap can never be ingested as
+    is. Raising would block every newer row for that tenant forever, so its
+    `details` is replaced with a PII-free marker and the row's identity still
+    reaches the WORM store."""
+    from app.services.audit_shipping import cloudwatch_adapter as cw
+
+    adapter, client = _cloudwatch_adapter()
+    await adapter.ship([_row(details={"blob": "x" * 400_000}), _row()])
+
+    events = [e for call in _put_calls(client) for e in call]
+    assert len(events) == 2
+    for event in events:
+        assert cw._event_size(event) <= cw.MAX_EVENT_BYTES
+
+    payloads = [json.loads(e["message"]) for e in events]
+    marked = [p for p in payloads if p["details"].get(cw.TRUNCATION_KEY)]
+    assert len(marked) == 1
+    # Identity survives — the point of shipping a shrunk row rather than none.
+    assert marked[0]["id"] and marked[0]["action"] == "invoice.approved"
+    assert marked[0]["details"]["limit_bytes"] == cw.MAX_EVENT_BYTES
+    # The untouched row keeps its real details.
+    assert [p for p in payloads if p not in marked][0]["details"] == {"field": "value"}
+
+
+@pytest.mark.asyncio
+async def test_cloudwatch_raises_when_the_api_reports_rejected_events():
+    """PutLogEvents returns HTTP 200 with `rejectedLogEventsInfo` for events it
+    silently discarded (too old for the group's retention, too far ahead).
+    Swallowing that stamps `shipped_at` on rows the WORM store never took."""
+    from app.services.audit_shipping import AuditShippingRejected
+
+    adapter, client = _cloudwatch_adapter()
+    client.put_log_events.return_value = {
+        "nextSequenceToken": "t",
+        "rejectedLogEventsInfo": {"tooOldLogEventEndIndex": 3},
+    }
+
+    with pytest.raises(AuditShippingRejected):
+        await adapter.ship([_row() for _ in range(5)])
+
+
+@pytest.mark.asyncio
+async def test_cloudwatch_rejection_message_carries_no_row_content():
+    """The raised message reaches the log sink — index fields only, never a
+    message body (PII-out-of-logs)."""
+    from app.services.audit_shipping import AuditShippingRejected
+
+    adapter, client = _cloudwatch_adapter()
+    client.put_log_events.return_value = {
+        "rejectedLogEventsInfo": {"expiredLogEventEndIndex": 1},
+    }
+    secret_vendor = "Definitely Confidential Supplies GmbH"
+
+    with pytest.raises(AuditShippingRejected) as exc:
+        await adapter.ship([_row(details={"vendor_name": secret_vendor})])
+
+    assert secret_vendor not in str(exc.value)
+    assert "expiredLogEventEndIndex" in str(exc.value)
 
 
 @pytest.mark.asyncio
