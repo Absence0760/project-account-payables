@@ -205,10 +205,34 @@ Playwright's `--shard=N/14` flag. Each shard:
 - pnpm 9 + Node 20 →
   `pnpm install --frozen-lockfile` →
   `pnpm build` →
-  `pnpm exec playwright install --with-deps chromium`
+  `pnpm exec playwright install chromium` (browser binaries, restored from
+  the `~/.cache/ms-playwright` cache) →
+  `pnpm exec playwright install-deps chromium` as a **separate, bounded,
+  non-blocking** step (see *Why the font deps are best-effort* below)
 - `PLAYWRIGHT_WORKERS=1 pnpm exec playwright test --config=… --shard=${{ matrix.shard }}/14`
 - Playwright report + backend log uploaded as
   `playwright-report-shard-${N}` / `backend-log-shard-${N}` on failure
+
+### Why the font deps are best-effort
+
+`playwright install --with-deps` used to do both halves in one step. On the
+GitHub runner image every Chromium shared library (`libnss3`, `libgbm1`,
+`libatk`, `libcups2`, `xvfb`, …) is already the newest version, so the `apt`
+half installs nothing but **9 font packages** — CJK, Cyrillic, Thai, Unifont,
+FreeFont and the X11 bitmap fonts.
+
+Nothing in this suite asserts on rendering: there are no `toHaveScreenshot` /
+`toMatchSnapshot` callers, and `screenshot: 'only-on-failure'` in
+`playwright.config.ts` produces a debug artifact, not an assertion. A missing
+font therefore cannot change a result — it only means non-Latin glyphs render
+as tofu in a failure screenshot. That is worth keeping, which is why the step
+still runs, but it is not worth failing a run over.
+
+It is split out, capped at `timeout-minutes: 3`, and marked
+`continue-on-error: true` because `install-deps` shells out to `apt-get
+update`, which reaches external Ubuntu mirrors. On 2026-08-18 that call hung
+for 22 minutes and consumed the entire 25-minute `service-e2e` job budget
+(PR #316) — a cosmetic dependency must not be able to time out the job.
 
 Effective parallelism is **14 shards × 1 worker = 14** parallel test
 processes spread across 14 separate runner VMs. `fail-fast: false`
