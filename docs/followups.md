@@ -1022,6 +1022,52 @@ shared temp-password generator). This is the one it confirmed but did not fix:
       the first integrator who opens the docs URL.
 
 
+### Surfaced by the round-11 hunt (analytics / reporting / cash-flow), not fixed
+
+The analytics agent of round 11 fixed 5 findings at the root (the what-if
+claiming an elapsed discount, the unconvertible-outflow count nobody read,
+vendor-risk payment volume summed across currencies, scheduled reports
+re-emailing already-notified recipients, and the discount optimizer summing
+offers across currencies). These are the ones it confirmed but did not fix:
+
+- [ ] **`/discounts` gives no reason when foreign offers are excluded from
+      "projected savings".** The optimizer now excludes an offer denominated in
+      anything other than the org's reporting currency from
+      `total_savings_*` / `total_outlay_selected` and reports the count
+      (`OptimizerResponse.unconvertible_count`,
+      `DiscountDashboard.unconvertible_offer_count`) — so the numbers are
+      honest, but a multi-currency tenant sees a projected-savings figure that
+      is quietly lower than the offers on screen imply, with nothing on the page
+      explaining why. **Durable fix:** render a notice on
+      `frontend/src/routes/discounts/+page.svelte` from those counts, modelled
+      exactly on the `/cfo` cash-position card's
+      `cfo.position.unconvertedOutflows` notice this same round added (one
+      message key across the six locales, guarded by
+      `src/lib/i18n/plural_messages.test.ts`). Not done here only because
+      `/discounts` is a different surface from this agent's area and a
+      concurrent agent may hold it. **Trigger:** the next slice touching the
+      discounts page, or the first multi-currency pilot tenant.
+
+- [ ] **`api/analytics.py` and `services/scheduled_reports.py` still call
+      `date.today()` where the rest of the cash-flow stack uses
+      `datetime.now(UTC).date()`.** `app/api/cash_flow.py` and every copilot
+      tool resolve "today" in UTC; the CFO dashboard endpoints, the drill-
+      throughs, the CSV export and the scheduled-report materializer resolve it
+      in the SERVER's local timezone. On a UTC container (the deployed shape)
+      the two agree, so this is latent, not live — but they are the same
+      "today" that bounds `_commitment_rows`' horizon and computes a
+      `plan_id`, so on a non-UTC host a copilot plan and the `/cfo` chart it is
+      supposed to agree with can be built from different row sets for part of
+      each day, and a plan proposed near midnight can 409 as stale against its
+      own enact call. **Durable fix:** one `utc_today()` helper (or inline
+      `datetime.now(UTC).date()`) at each site, plus a source-scan drift guard
+      in the shape of `tests/test_payment_methods.py`'s. Not bundled into this
+      round's commits because it touches ~10 call sites across two modules with
+      no behaviour change to test against on a UTC box, and it deserves its own
+      reviewable diff. **Trigger:** the next change to `api/analytics.py`'s
+      request handlers, or any decision to run the backend on a non-UTC host.
+
+
 ### AI Cash-Flow Copilot — Phase 3 deferred bucket
 
 Phases 1–3 core shipped (read-only cash Q&A, `propose_payment_plan` +

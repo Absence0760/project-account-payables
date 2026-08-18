@@ -261,6 +261,10 @@ class DiscountRecommendation(BaseModel):
     savings: Decimal
     pay_by: str
     selected: bool
+    # `base_amount` / `savings` are in THIS offer's currency, which — when true
+    # — is not the `currency` the result's totals are in, so this offer was left
+    # out of every one of them. See `discount_optimizer.optimize`.
+    unconvertible: bool = False
 
 
 class OptimizeDiscountsResult(BaseModel):
@@ -269,6 +273,9 @@ class OptimizeDiscountsResult(BaseModel):
     total_savings_available: Decimal
     total_savings_selected: Decimal
     total_outlay_selected: Decimal
+    # Ranked offers excluded from the totals because they are in another
+    # currency — the copilot must say so rather than report a mixed sum.
+    unconvertible_count: int = 0
     recommendations: list[DiscountRecommendation]
 
 
