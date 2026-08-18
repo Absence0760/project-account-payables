@@ -467,6 +467,16 @@ async def create_expense(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid report_id")
         report = await _get_report_or_404(db, report_uuid)
+        # Creating an expense with `report_id` already set IS an attach, and it
+        # must gate exactly like the two other attach paths
+        # (`POST /expense-reports/{id}/expenses` and a `PATCH` that moves an
+        # expense onto a report). Without this a clerk could add a line to an
+        # APPROVED report: the recompute below would move `total_amount` past
+        # the CFO threshold the approval was granted under and, worse, null the
+        # locked `reporting_*` figure that approval and its audit row were
+        # derived from. Same rule as `attach_expenses` — a report only takes new
+        # lines while it is a draft (issue #155).
+        _require_draft_report(report)
     else:
         report = None
 

@@ -418,6 +418,29 @@ async def test_cannot_attach_to_approved_report(realdb):
     assert report["total_amount"] == 100.0
 
 
+async def test_cannot_create_an_expense_straight_onto_an_approved_report(realdb):
+    """`POST /api/expenses` with a `report_id` is a second attach path.
+
+    `POST /expense-reports/{id}/expenses` and `PATCH /expenses/{id}
+    {"report_id":…}` both refuse a locked report; creating the expense with
+    the `report_id` already set went around both — it recomputed the approved
+    report's total AND nulled the reporting-currency figure the CFO gate and
+    the approval audit row were derived from.
+    """
+    rid, _ = await _submit_and_approve(realdb)
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        resp = await c.post(
+            "/api/expenses",
+            json={"expense_date": "2026-06-02", "amount": "50000.00", "report_id": rid},
+        )
+        assert resp.status_code == 409, resp.text
+        report = (await c.get(f"/api/expense-reports/{rid}")).json()
+    assert report["status"] == "approved"
+    # The $50k line never landed, and the locked reporting figure survives.
+    assert report["total_amount"] == 100.0
+    assert Decimal(report["reporting_amount"]) == Decimal("100.00")
+
+
 async def test_cannot_edit_amount_of_expense_on_approved_report(realdb):
     rid, eid = await _submit_and_approve(realdb)
     async with realdb.client(key="a", role="ap_clerk") as c:

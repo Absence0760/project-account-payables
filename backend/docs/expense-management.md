@@ -98,7 +98,7 @@ string-Decimal amounts — never PII.
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/expenses` | List, paginated, entity-scoped (`X-Entity-ID`); `?status=` + `?report_id=` filters. |
-| POST | `/api/expenses` | Create an expense. `amount` must be **strictly positive** (`gt=0` → 422 otherwise; a negative line could net a report under the CFO threshold while hiding a large expense). Lands under the selected entity (or the tenant default). If `report_id` is supplied, the report's `total_amount` is recomputed. |
+| POST | `/api/expenses` | Create an expense. `amount` must be **strictly positive** (`gt=0` → 422 otherwise; a negative line could net a report under the CFO threshold while hiding a large expense). Lands under the selected entity (or the tenant default). If `report_id` is supplied this **is** an attach and gates like one: the target report must still be a `draft` (**409** otherwise, same rule as `POST /api/expense-reports/{id}/expenses`), and its `total_amount` is then recomputed. Creating straight onto a locked report used to be the one attach path with no gate — it moved an approved report's total past the CFO threshold it was approved under, and nulled the locked `reporting_*` figure that decision was derived from. |
 | GET | `/api/expenses/receipt/{file_key:path}` | Download proxy for a stored receipt. Cross-tenant-checked (first key segment must equal the caller's org); same 404 for wrong-org and missing-file. Declared before `/{expense_id}` so `receipt` isn't captured as an id. |
 | POST | `/api/expenses/{id}/receipt` | Upload a receipt to S3 (`upload_expense_receipt`) and stamp `receipt_file_key`. |
 | GET | `/api/expenses/export` | **(WF2)** Stream the filtered expense register as `text/csv` (`expenses_<today>.csv` via Content-Disposition). `?status=&category=&date_from=&date_to=&report_id=`; entity-scoped, no pagination (full filtered set). Outer-joins `GLAccount` (gl code) + `ExpenseReport` (report number) so an uncoded/unattached expense still emits a row. Serialised by `report_export.export_expense_register` (the `expense_register` exporter). Read RBAC (incl. CFO). Declared before `/{expense_id}`. |
@@ -387,7 +387,9 @@ Rules that keep the numbers honest:
 - **Locked, never recomputed on read.** No read path calls the FX adapter, so a
   market move cannot rewrite a submitted report's total. Re-locking happens only
   on a write that changes what is being converted — and those writes are already
-  refused once the report leaves `draft` (`_require_report_unlocked`, issue #155).
+  refused once the report leaves `draft` (`_require_report_unlocked`, issue #155)
+  — including the third attach path, `POST /api/expenses` carrying a `report_id`,
+  which gates on `_require_draft_report` exactly like the explicit attach route.
 - **Unconvertible is excluded, not face-valued.** A foreign line with no usable
   lock contributes nothing to the total and is counted in `unconverted_count`.
   Attaching a line we cannot convert is refused with **422** (currency codes
