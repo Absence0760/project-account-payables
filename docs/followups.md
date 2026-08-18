@@ -34,7 +34,11 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#251](https://github.com/Absence0760/project-account-payables/issues/251)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-08-18 against round 10 — a five-agent bug hunt.
+**Last reconciled:** 2026-08-18 against round 11 — a five-agent bug hunt, whose
+additions are in § Surfaced by the round-11 hunt. Like round 10 the pass is
+**additive**: nothing pre-existing was closed or re-verified.
+
+Before that: 2026-08-18 against round 10 — a five-agent bug hunt.
 Each agent fixed its findings at the root with a reproducing test first, and
 recorded what it confirmed but did not fix in its own section below. The pass
 is **additive**: nothing pre-existing was closed or re-verified, so every
@@ -1020,6 +1024,85 @@ shared temp-password generator). This is the one it confirmed but did not fix:
       to load third-party script at all.
       **Trigger:** the next slice touching the public Developer API surface, or
       the first integrator who opens the docs URL.
+
+
+### Surfaced by the round-11 hunt (multi-currency / e-invoicing), not fixed
+
+The multi-currency / multi-entity / e-invoicing agent of round 11 fixed 6
+findings at the root, each reproduced with a probe first: the reporting-amount
+lock surviving an amount/currency correction, the internal `payment_method`
+token emitted as a UNCL4461 code, CII dropping per-line tax in both directions,
+FatturaPA's `IdCodice` duplicating the country prefix, CFDI's `ClaveProdServ`
+carrying the seller's SKU, and DIAN's `InvoiceTypeCode` emitting UNCL1001
+`380`. These are what it confirmed and deliberately did not fix:
+
+- [ ] **A foreign→foreign currency correction still can't invalidate the
+      reporting lock.** `backend/app/services/currency_conversion.py::_lock_is_self_consistent`
+      now catches an amount edit (the figure stops reconciling) and a currency
+      edit that crosses the org's reporting currency (the persisted rate stops
+      matching the pair's shape — a same-currency lock is exactly `1`). It
+      cannot catch `EUR → GBP` on a USD-reporting org with the amount
+      unchanged: both checks still pass, because the row records the rate but
+      not **which currency it was for**. Rare (a currency correction between
+      two foreign currencies), and it fails toward a stale figure the rollup
+      still labels converted.
+      **Durable fix:** persist `invoices.reporting_source_currency` beside the
+      existing four `reporting_*` columns and compare it directly — the check
+      then becomes exact and the shape heuristic can go. It needs a tenant-DB
+      migration, which is why it wasn't bundled into a fix that otherwise
+      needed none.
+      **Trigger:** the next migration that touches `invoices` for another
+      reason — ride along rather than fanning out a column of its own. **(c)**
+- [ ] **CFDI states `ObjetoImp="02"` but emits no per-line tax block.**
+      `backend/app/services/e_invoice/country_formats/cfdi.py` stamps every
+      `cfdi:Concepto` with `ObjetoImp="02"` ("sí objeto de impuesto") and emits
+      only the document-level `cfdi:Impuestos/@TotalImpuestosTrasladados`; the
+      line's own `cfdi:Impuestos/cfdi:Traslados/cfdi:Traslado`
+      (`Base`/`Impuesto`/`TipoFactor`/`TasaOCuota`/`Importe`) is absent.
+      Verified by generating from a mapper-built document and reading the XML.
+      SAT's validation rules require the Traslado when a concept is declared
+      subject to tax, so a PAC would refuse to stamp it — but that is an
+      external claim this repo cannot assert offline, and the module's
+      docstring already scopes it to "a faithful CORE subset derivable from the
+      normalized model".
+      **Durable fix:** emit the line Traslado from `line.line_total` (Base),
+      `line.tax_amount` (Importe) and `line.tax_rate` (TasaOCuota, as a 6-dp
+      fraction), falling back to the document's single distinct rate; when
+      none of that is establishable, emit `ObjetoImp="01"` rather than claiming
+      "02" with no evidence. `mapper` already fills `line.tax_amount`; it does
+      **not** fill `line.tax_rate`, so that fallback is load-bearing.
+      **Trigger:** the CFDI clearance slice (SAT-PAC stamping), or the first
+      real Mexican tenant. **(c)**
+- [ ] **`generate_ubl` declares no `CustomizationID` / `ProfileID`, and the
+      PEPPOL send path transmits it as BIS Billing 3.0.**
+      `backend/app/services/e_invoice/generate.py` emits `cbc:ID`, `IssueDate`,
+      `InvoiceTypeCode`, `DocumentCurrencyCode` … but neither of the two
+      elements PEPPOL BIS Billing 3.0 makes mandatory, and
+      `services/peppol_send` puts that document on the network. The `mock`
+      adapter validates nothing, so nothing local catches it. It was **not**
+      patched by simply adding the two strings: they are a *conformance
+      claim*, and the document does not otherwise meet BIS 3.0 (no
+      `cbc:EndpointID` on either party, and `cac:TaxSubtotal` at line level
+      carries only `TaxCategory/Percent` where the schema requires
+      `cbc:TaxableAmount` + `cbc:TaxAmount`). Declaring conformance you don't
+      meet is worse than not declaring it.
+      **Durable fix:** one slice that brings `generate_ubl` up to BIS Billing
+      3.0 — endpoint ids, complete `TaxSubtotal`s, the two profile elements —
+      validated against the official Schematron rather than by inspection.
+      **Trigger:** the PEPPOL `as4_gateway` slice, i.e. the first time a real
+      Access Point validates what we send. **(c)**
+- [ ] **FatturaPA namespace-qualifies every element, not just the root.**
+      `country_formats/fatturapa.py` builds all children in the FatturaPA
+      target namespace (`<p:FatturaElettronicaHeader>`, `<p:DatiTrasmissione>`,
+      …). Real FatturaPA instances qualify **only** the root — the v1.2 schema
+      leaves `elementFormDefault` unqualified. This is recorded rather than
+      changed because the repo carries no FatturaPA XSD to validate against, so
+      it would be a fix asserted from memory; the change itself is one line
+      (build children with no namespace).
+      **Durable fix:** vendor the v1.2 XSD into `tests/fixtures/`, assert the
+      generated document validates, and correct the qualification if it fails.
+      **Trigger:** the SdI clearance slice, or any addition of XSD-backed
+      validation to the national formats. **(c)**
 
 
 ### AI Cash-Flow Copilot — Phase 3 deferred bucket
