@@ -968,6 +968,8 @@ export const en = {
 		'Your connected bank balance was not used: that funding account is held in a different currency than your {currency} reporting currency, and seeding the projection from it would make every running balance below a mixture of two currencies. The figures start from your saved opening balance instead. Set the reporting currency to match the account, or enter an opening balance above.',
 	'cfo.position.providerSkipped':
 		'Your connected bank balance was not used, so the projection below does not start from it. The figures start from your saved opening balance instead.',
+	'cfo.position.unconvertedOutflows':
+		'Unconverted: {n, plural, one {# invoice} other {# invoices}} with no exchange rate into {currency}, counted at face value — so the running balance below mixes currencies. Book the missing rate before acting on these figures.',
 	'cfo.position.colPeriod': 'Period',
 	'cfo.position.colOpening': 'Opening',
 	'cfo.position.colOutflow': 'Outflow',

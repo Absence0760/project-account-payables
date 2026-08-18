@@ -931,6 +931,8 @@ export const messages = {
 		'Le solde de votre banque connectée n’a pas été utilisé : ce compte est tenu dans une devise différente de votre devise de reporting {currency}, et amorcer la projection à partir de lui ferait de chaque solde courant ci-dessous un mélange de deux devises. Les chiffres partent de votre solde d’ouverture enregistré. Alignez la devise de reporting sur le compte, ou saisissez un solde d’ouverture ci-dessus.',
 	'cfo.position.providerSkipped':
 		'Le solde de votre banque connectée n’a pas été utilisé : la projection ci-dessous n’en part donc pas. Les chiffres partent de votre solde d’ouverture enregistré.',
+	'cfo.position.unconvertedOutflows':
+		'Non converti : {n, plural, one {# facture} other {# factures}} sans taux de change vers {currency}, comptabilisées à leur valeur faciale — le solde courant ci-dessous mélange donc des devises. Enregistrez le taux manquant avant d’agir sur ces chiffres.',
 	'cfo.position.colPeriod': 'Période',
 	'cfo.position.colOpening': 'Ouverture',
 	'cfo.position.colOutflow': 'Sortie',

@@ -932,6 +932,8 @@ export const messages = {
 		'No se usó el saldo de su banco conectado: esa cuenta está denominada en una moneda distinta de su moneda de reporte {currency}, y partir de ella haría que cada saldo corriente de abajo fuera una mezcla de dos monedas. Las cifras parten de su saldo inicial guardado. Ajuste la moneda de reporte a la de la cuenta, o introduzca un saldo inicial arriba.',
 	'cfo.position.providerSkipped':
 		'No se usó el saldo de su banco conectado, así que la proyección de abajo no parte de él. Las cifras parten de su saldo inicial guardado.',
+	'cfo.position.unconvertedOutflows':
+		'Sin convertir: {n, plural, one {# factura} other {# facturas}} sin tipo de cambio a {currency}, contabilizadas por su valor nominal: el saldo corriente de abajo mezcla monedas. Registre el tipo de cambio que falta antes de actuar sobre estas cifras.',
 	'cfo.position.colPeriod': 'Período',
 	'cfo.position.colOpening': 'Apertura',
 	'cfo.position.colOutflow': 'Salida',

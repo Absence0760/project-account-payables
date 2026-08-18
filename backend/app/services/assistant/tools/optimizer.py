@@ -92,6 +92,11 @@ async def run_discount_optimization(
         cash_budget=cash_budget,
         cost_of_capital_pct=cost_of_capital,
         today=today,
+        # Every total the result carries is reported (and, in the plan, charted)
+        # in the org's reporting currency, and `cash_budget` is a figure in it —
+        # so an offer in another currency is excluded from the sums rather than
+        # added at face value. See `discount_optimizer.optimize`.
+        reporting_currency=await resolve_org_currency(org_id, control_db),
     )
     return result, offers
 
@@ -125,6 +130,7 @@ def build_discount_recommendations(result, offers, vmap, imap) -> list[DiscountR
                 savings=r.roi.savings,
                 pay_by=r.opportunity.pay_by.isoformat(),
                 selected=r.selected,
+                unconvertible=r.unconvertible,
             )
         )
     return recommendations
@@ -159,5 +165,6 @@ async def optimize_discount_capture(
         total_savings_available=result.total_savings_available,
         total_savings_selected=result.total_savings_selected,
         total_outlay_selected=result.total_outlay_selected,
+        unconvertible_count=result.unconvertible_count,
         recommendations=recommendations,
     )

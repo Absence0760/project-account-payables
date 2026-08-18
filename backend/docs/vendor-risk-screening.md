@@ -200,8 +200,33 @@ negative news still moves the score, matching the compliance gate, which holds
 that payment. A `match` still dominates at 100. Rows written before the
 taxonomy shipped score exactly as they did before.
 
+### Payment volume is a reporting-currency figure
+
+The payment-history signal ramps its exposure sub-score linearly to 100 at
+`_VOLUME_FULL_EXPOSURE` (100,000) — **a bare number in the org's reporting
+currency**. `Payment.amount`, however, is denominated in the *invoice's*
+currency (`international_payments.prepare_international_payment` sets
+`amount=invoice.amount` and puts the home-currency debit on `source_amount` /
+`source_currency`), so a raw `SUM` mixed currencies: one ordinary
+¥10,000,000 invoice added 10,000,000 to a USD ramp and pinned the sub-score at
+100. Stacked on a `review_required` screen that read 48/`medium` where the
+truthful score is 33/`low`.
+
+`_payment_history` therefore resolves each payment through the SAME
+`currency_conversion.payment_reporting_amount_sql` the 1099 report uses — the
+locked `source_amount` when the payment carries a home-currency leg, else
+`amount` when the invoice is already in the reporting currency. A payment
+neither rung can establish is left OUT of the volume and counted on
+`risk_factors.payment_history.unconverted_payments`; it still counts toward
+`payment_count`, so the vendor never reads as untouched. Nothing is converted
+at read time — a rate fetched on a read would make the score move under the
+reader (`../../docs/decisions.md` §18). The factor breakdown carries the
+`currency` alongside the figure so the comparison is legible rather than
+implicitly USD.
+
 `GET /api/vendors/{id}/risk` reads the persisted score;
-`POST /api/vendors/{id}/risk/recompute` recomputes + persists;
+`POST /api/vendors/{id}/risk/recompute` recomputes + persists (it resolves the
+org's reporting currency from `get_tenant`'s `Organization.settings`);
 `GET /api/vendors/risk/summary` returns the org-wide distribution by bucket.
 
 ## Providers

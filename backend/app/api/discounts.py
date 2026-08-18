@@ -163,6 +163,10 @@ async def _build_opportunity(
         vendor_name=None,
         invoice_number=None,
         base_amount=offer.base_amount,
+        # `base_amount`'s own currency. The optimizer's totals are sums, and a
+        # sum across currencies is not a number — see `optimize`'s
+        # `reporting_currency` guard.
+        currency=(offer.currency or "USD").upper(),
         tier_days=int(tier["days"]),
         discount_percent=offers_svc.tier_percent(tier),
         pay_by=pay_by,
@@ -532,7 +536,14 @@ async def optimize_discounts(
 
     vmap, imap = await _name_maps(db, rows)
     result = optimize(
-        opportunities, cash_budget=cash_budget, cost_of_capital_pct=cost_of_capital, today=today
+        opportunities,
+        cash_budget=cash_budget,
+        cost_of_capital_pct=cost_of_capital,
+        today=today,
+        # The totals below — and `cash_budget` itself — are in the org's
+        # reporting currency; an offer in any other one is excluded from them
+        # and reported on `unconvertible_count` instead of being added in.
+        reporting_currency=_org_currency(org),
     )
 
     recs: list[OptimizerRecommendation] = []
@@ -559,15 +570,18 @@ async def optimize_discounts(
                 roi=_roi_response(r.roi),
                 selected=r.selected,
                 cumulative_outlay=r.cumulative_outlay,
+                unconvertible=r.unconvertible,
             )
         )
 
     return OptimizerResponse(
         cash_budget=cash_budget,
+        currency=_org_currency(org),
         cost_of_capital_pct=result.cost_of_capital_pct,
         total_savings_available=result.total_savings_available,
         total_savings_selected=result.total_savings_selected,
         total_outlay_selected=result.total_outlay_selected,
+        unconvertible_count=result.unconvertible_count,
         recommendations=recs,
     )
 
@@ -725,6 +739,9 @@ async def dashboard(
         cash_budget=None,
         cost_of_capital_pct=_cost_of_capital(org),
         today=today,
+        # `projected_savings` below is reported with `currency=_org_currency(org)`,
+        # so it must only sum offers actually denominated in it.
+        reporting_currency=_org_currency(org),
     )
 
     total = (captured_count or 0) + missed_count
@@ -743,4 +760,5 @@ async def dashboard(
         open_offer_count=len(open_offers),
         projected_savings=result.total_savings_selected,
         currency=_org_currency(org),
+        unconvertible_offer_count=result.unconvertible_count,
     )

@@ -282,6 +282,10 @@ async def get_cashflow_forecast(
             sum((p["discount_eligible_amount"] for p in periods), Decimal("0"))
         ),
         "count": sum(p["count"] for p in periods),
+        # Rows counted at FACE VALUE because their reporting-currency figure
+        # could not be established (see `_commitment_rows`). A count, not
+        # money. Non-zero means the totals above mix currencies.
+        "unconverted_count": sum(p["unconverted_count"] for p in periods),
     }
     return {
         "granularity": granularity,
@@ -298,6 +302,7 @@ async def get_cashflow_forecast(
                 "pending_amount": _money(p["pending_amount"]),
                 "discount_eligible_amount": _money(p["discount_eligible_amount"]),
                 "count": p["count"],
+                "unconverted_count": p["unconverted_count"],
             }
             for p in periods
         ],
@@ -338,12 +343,17 @@ async def get_cashflow_whatif(
             "total_discount_captured": _money(result["total_discount_captured"]),
             # A day count, not money — stays a JSON number.
             "weighted_avg_pay_date_days": float(result["weighted_avg_pay_date_days"]),
+            # A count, not money: rows included at face value because their
+            # reporting-currency figure could not be established. Comparing
+            # two scenarios' outflows only means something at 0.
+            "unconverted_count": result["unconverted_count"],
             "periods": [
                 {
                     "period": p["period"],
                     "period_start": p["period_start"].isoformat(),
                     "period_end": p["period_end"].isoformat(),
                     "scheduled_amount": _money(p["scheduled_amount"]),
+                    "unconverted_count": p["unconverted_count"],
                 }
                 for p in result["periods"]
             ],
@@ -452,6 +462,13 @@ async def get_cash_position(
         "opening_balance_currency": balance.currency,
         "opening_balance_provider": balance.provider,
         "opening_balance_provider_skipped": balance.provider_skipped,
+        # The OUTFLOW half of the same currency guard the opening balance
+        # already reports via `opening_balance_provider_skipped`: how many
+        # commitments entered the curve at face value because their
+        # reporting-currency figure could not be established. Non-zero means
+        # every `closing` below is a mixed-currency number — the curve carries
+        # the balance forward, so one unconvertible row poisons the tail.
+        "unconverted_count": sum(p["unconverted_count"] for p in position),
         # `None` stays JSON null — "no threshold set" is not zero.
         "threshold": _money(threshold),
         "periods": [
@@ -464,6 +481,7 @@ async def get_cash_position(
                 "inflow": _money(p["inflow"]),
                 "closing": _money(p["closing"]),
                 "below_threshold": p["below_threshold"],
+                "unconverted_count": p["unconverted_count"],
             }
             for p in position
         ],

@@ -932,6 +932,8 @@ export const messages = {
 		'O saldo do seu banco conectado não foi usado: essa conta é mantida em uma moeda diferente da sua moeda de relatório {currency}, e partir dela faria com que cada saldo corrente abaixo fosse uma mistura de duas moedas. Os números partem do seu saldo inicial salvo. Ajuste a moeda de relatório à da conta, ou informe um saldo inicial acima.',
 	'cfo.position.providerSkipped':
 		'O saldo do seu banco conectado não foi usado, então a projeção abaixo não parte dele. Os números partem do seu saldo inicial salvo.',
+	'cfo.position.unconvertedOutflows':
+		'Não convertido: {n, plural, one {# nota fiscal} other {# notas fiscais}} sem taxa de câmbio para {currency}, contabilizadas pelo valor de face — então o saldo corrente abaixo mistura moedas. Registre a taxa que falta antes de agir com base nestes números.',
 	'cfo.position.colPeriod': 'Período',
 	'cfo.position.colOpening': 'Abertura',
 	'cfo.position.colOutflow': 'Saída',

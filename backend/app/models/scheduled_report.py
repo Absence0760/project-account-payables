@@ -31,7 +31,11 @@ class ScheduledReport(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # 'success' | 'failure' | None (never run yet).
+    # 'success' | 'partial' | 'failure' | None (never run yet). `partial` =
+    # the report reached some recipients but not all; `next_run_at` still
+    # advanced (a retry would duplicate for the ones who got it) and the
+    # 5-strike auto-disable does not count it. See
+    # `services/scheduled_reports.execute_schedule`.
     last_run_status: Mapped[str | None] = mapped_column(String(20))
     # Truncated to 500 chars so a noisy provider error doesn't blow
     # up the column.

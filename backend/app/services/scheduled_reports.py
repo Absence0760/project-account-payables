@@ -20,8 +20,21 @@ Failures don't block: `last_run_status='failure'` + truncated
 error message is saved, next_run_at stays at the original time so
 the next tick retries. Repeated failures cap at 5 retries by
 flipping `enabled=false` (so the queue doesn't loop forever on a
-broken provider). Operators re-enable from the admin UI after
-fixing.
+broken provider). An operator re-enables it after fixing — today by
+flipping the column directly: nothing under `app/api/` references
+`ScheduledReport`, so this table has no CRUD surface yet (see
+`docs/analytics.md` § Scheduled report delivery).
+
+Delivery is per-recipient, so `last_run_status` has three values:
+
+  - `success` — every recipient took the report; `next_run_at` bumped.
+  - `partial` — some did, some didn't. `next_run_at` is bumped ANYWAY,
+    because a retry would redeliver to the recipients who already have
+    it; the count of failures rides on `last_run_error`. A partial does
+    NOT accumulate toward the 5-strike auto-disable — one bad address
+    must not disable a schedule that is still reaching everyone else.
+  - `failure` — generation failed, no recipients are configured, or
+    NOBODY took it. `next_run_at` untouched; the next tick retries.
 """
 
 from __future__ import annotations
@@ -310,11 +323,12 @@ async def execute_schedule(
     """Run one schedule end-to-end: generate, email, update the
     bookkeeping. Returns a small dict the caller / tests can
     assert on:
-      `{"status": "success" | "failure", "error": str | None,
+      `{"status": "success" | "partial" | "failure", "error": str | None,
         "next_run_at": datetime}`.
     The function NEVER raises — failures are surfaced as the
     "failure" status with an error message, AND persisted on the
-    row, so the runner loop can keep ticking.
+    row, so the runner loop can keep ticking. See the module docstring
+    for what separates `partial` from `failure`.
     """
     now = now or datetime.now(UTC)
     try:
@@ -333,9 +347,23 @@ async def execute_schedule(
         await _mark_failure(db, schedule, err, now)
         return {"status": "failure", "error": err, "next_run_at": schedule.next_run_at}
 
+    # Each recipient is an INDEPENDENT delivery — one address failing must not
+    # abort the ones after it, and must not replay the ones before it.
+    #
+    # The loop used to be wrapped in a single try/except: a failure at
+    # recipient 2 of 5 skipped 3-5 entirely AND left `next_run_at` untouched,
+    # so the next tick regenerated the same report and re-sent it to recipient
+    # 1 — up to five times before the auto-disable, while 3-5 never received it
+    # once and then lost the schedule altogether.
     adapter = get_email_adapter()
-    try:
-        for recipient in schedule.recipients:
+    delivered = 0
+    failed = 0
+    # Only the exception CLASS is kept. An SMTP transport error echoes relay
+    # banners and recipient addresses, and `last_run_error` is surfaced to
+    # every AP user (PII-out-of-error-responses invariant).
+    last_error_class: str | None = None
+    for recipient in schedule.recipients:
+        try:
             await adapter.send(
                 EmailMessage(
                     to=str(recipient),
@@ -348,28 +376,47 @@ async def execute_schedule(
                     body_html=None,
                 )
             )
-    except Exception as exc:  # noqa: BLE001
-        # Email-adapter exceptions can carry SMTP transport details
-        # which sometimes echo recipient addresses back; we truncate
-        # but otherwise preserve so the AP team can debug.
-        err = f"email failed: {exc.__class__.__name__}"
+        except Exception as exc:  # noqa: BLE001 — one address must not stop the rest
+            failed += 1
+            last_error_class = exc.__class__.__name__
+            continue
+        delivered += 1
+
+    if delivered == 0:
+        # Nobody received this period's report, so a retry is free of
+        # duplicates — leave `next_run_at` alone and let the next tick try
+        # again (auto-disabling after the 5th consecutive failure).
+        err = f"email failed: {last_error_class}"
         await _mark_failure(db, schedule, err, now)
         return {"status": "failure", "error": err, "next_run_at": schedule.next_run_at}
 
-    # Success — bump next_run_at by the cadence.
+    # At least one recipient HAS the report for this period. Bump `next_run_at`
+    # either way: replaying the run to redeliver to the failures would send a
+    # duplicate to everyone who already got it, and the report is a periodic
+    # snapshot, not a transaction that must reach every party. A persistently
+    # bad address is an operator fix (remove/correct it), which is why a
+    # partial does NOT accumulate toward the 5-strike auto-disable — disabling
+    # the schedule would punish the recipients it is still reaching.
     next_run = compute_next_run(schedule.cadence, now)
+    if failed:
+        status = "partial"
+        total = delivered + failed
+        err = f"email failed for {failed} of {total} recipients: {last_error_class}"[:500]
+    else:
+        status = "success"
+        err = None
     await db.execute(
         update(ScheduledReport)
         .where(ScheduledReport.id == schedule.id)
         .values(
             last_run_at=now,
-            last_run_status="success",
-            last_run_error=None,
+            last_run_status=status,
+            last_run_error=err,
             next_run_at=next_run,
             updated_at=now,
         )
     )
-    return {"status": "success", "error": None, "next_run_at": next_run}
+    return {"status": status, "error": err, "next_run_at": next_run}
 
 
 async def _mark_failure(
@@ -464,7 +511,11 @@ async def _sweep_tenant(db_name: str, *, now: datetime) -> tuple[int, int]:
                     failed += 1
                     continue
                 run += 1
-                if outcome["status"] == "failure":
+                # A `partial` counts too: some recipient did not get the
+                # report, which `sweep_health` should surface rather than
+                # round down to "healthy" (the exact blind spot the sweep
+                # registry exists to close).
+                if outcome["status"] != "success":
                     failed += 1
     finally:
         await engine.dispose()

@@ -26,6 +26,7 @@ def _opp(
     pay_by: date,
     due_date: date | None = None,
     tier_days: int = 10,
+    currency: str = "USD",
 ) -> OfferOpportunity:
     # Default the net due date 20 days after the discount deadline, so
     # days_accelerated = days_between(pay_by, due_date) = 20 unless overridden.
@@ -36,6 +37,7 @@ def _opp(
         vendor_name=f"Vendor {offer_id}",
         invoice_number=f"INV-{offer_id}",
         base_amount=Decimal(base),
+        currency=currency,
         tier_days=tier_days,
         discount_percent=Decimal(percent),
         pay_by=pay_by,
@@ -169,3 +171,75 @@ def test_past_deadline_is_not_capturable_and_never_selected():
     assert rec.selected is False  # ...but the deadline has passed.
     assert result.total_savings_available == Decimal("0.00")
     assert result.total_savings_selected == Decimal("0.00")
+
+
+# ---------------------------------------------------------------------------
+# Currency guard — every total is a SUM, and a sum needs one currency
+# ---------------------------------------------------------------------------
+
+
+def test_foreign_currency_offer_is_excluded_from_the_totals():
+    """A EUR offer and a USD offer used to be added into one figure the caller
+    then labelled with the org's reporting currency — "$1,960 committed, $40
+    saved" for €1,000 + $1,000. Only the reporting-currency offer counts."""
+    usd = _opp("usd", base="1000.00", percent="2.00", pay_by=date(2026, 1, 21))
+    eur = _opp("eur", base="1000.00", percent="2.00", pay_by=date(2026, 1, 21), currency="EUR")
+    result = optimize(
+        [usd, eur],
+        cash_budget=None,
+        cost_of_capital_pct=Decimal("8.00"),
+        today=_TODAY,
+        reporting_currency="USD",
+    )
+    assert result.total_savings_selected == Decimal("20.00")
+    assert result.total_savings_available == Decimal("20.00")
+    assert result.total_outlay_selected == Decimal("980.00")
+    assert result.unconvertible_count == 1
+    by_id = {r.opportunity.offer_id: r for r in result.recommendations}
+    assert by_id["eur"].unconvertible is True
+    assert by_id["usd"].unconvertible is False
+    # Unconstrained selection involves no cross-currency arithmetic, so a
+    # worthwhile foreign discount is still recommended — it just isn't summed.
+    assert by_id["eur"].selected is True
+
+
+def test_foreign_currency_offer_is_never_selected_against_a_cash_budget():
+    """A cash budget IS a reporting-currency figure. An outlay in another
+    currency cannot be measured against it, so it must not consume it."""
+    eur = _opp("eur", base="1000.00", percent="2.00", pay_by=date(2026, 1, 21), currency="EUR")
+    usd = _opp("usd", base="900.00", percent="2.00", pay_by=date(2026, 1, 21))
+    result = optimize(
+        [eur, usd],
+        cash_budget=Decimal("1000.00"),
+        cost_of_capital_pct=Decimal("8.00"),
+        today=_TODAY,
+        reporting_currency="USD",
+    )
+    by_id = {r.opportunity.offer_id: r for r in result.recommendations}
+    assert by_id["eur"].selected is False
+    # The USD offer still fits — the EUR one didn't eat the budget.
+    assert by_id["usd"].selected is True
+    assert result.total_outlay_selected == Decimal("882.00")  # 900 - 18
+
+
+def test_currency_match_is_case_and_whitespace_insensitive():
+    opp = _opp("x", base="1000.00", percent="2.00", pay_by=date(2026, 1, 21), currency=" usd ")
+    result = optimize(
+        [opp],
+        cash_budget=None,
+        cost_of_capital_pct=Decimal("8.00"),
+        today=_TODAY,
+        reporting_currency="USD",
+    )
+    assert result.unconvertible_count == 0
+    assert result.total_savings_selected == Decimal("20.00")
+
+
+def test_no_reporting_currency_disables_the_guard():
+    """Pure/unit callers that pass no reporting currency behave exactly as
+    before — the guard is opt-in so a single-currency caller is unchanged."""
+    eur = _opp("eur", base="1000.00", percent="2.00", pay_by=date(2026, 1, 21), currency="EUR")
+    result = optimize([eur], cash_budget=None, cost_of_capital_pct=Decimal("8.00"), today=_TODAY)
+    assert result.unconvertible_count == 0
+    assert result.total_savings_selected == Decimal("20.00")
+    assert result.recommendations[0].unconvertible is False

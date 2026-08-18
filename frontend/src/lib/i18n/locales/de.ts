@@ -932,6 +932,8 @@ export const messages = {
 		'Ihr verbundener Bankbestand wurde nicht verwendet: Dieses Konto wird in einer anderen Währung als Ihrer Berichtswährung {currency} geführt, und die Prognose daraus zu speisen würde jeden laufenden Saldo unten zu einer Mischung aus zwei Währungen machen. Die Zahlen beginnen stattdessen bei Ihrem gespeicherten Anfangsbestand. Passen Sie die Berichtswährung an das Konto an oder geben Sie oben einen Anfangsbestand ein.',
 	'cfo.position.providerSkipped':
 		'Ihr verbundener Bankbestand wurde nicht verwendet, die Prognose unten beginnt also nicht damit. Die Zahlen beginnen stattdessen bei Ihrem gespeicherten Anfangsbestand.',
+	'cfo.position.unconvertedOutflows':
+		'Nicht umgerechnet: {n, plural, one {# Rechnung} other {# Rechnungen}} ohne Wechselkurs in {currency}, zum Nennwert gezählt — der laufende Saldo unten vermischt dadurch Währungen. Erfassen Sie den fehlenden Kurs, bevor Sie auf Basis dieser Zahlen handeln.',
 	'cfo.position.colPeriod': 'Periode',
 	'cfo.position.colOpening': 'Anfang',
 	'cfo.position.colOutflow': 'Abfluss',

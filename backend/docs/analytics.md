@@ -269,8 +269,31 @@ migration — pure aggregate math, like `forecast_variance`.
 
 `GET /cashflow_forecast?granularity=day|week|month&horizon_days=N&include_pending=bool`
 — per-period `{scheduled_amount, committed_amount, pending_amount,
-discount_eligible_amount, count}` plus a `totals` rollup. Weeks are
-Monday-anchored. Default `granularity=week`, `horizon_days=90`.
+discount_eligible_amount, count, unconverted_count}` plus a `totals` rollup.
+Weeks are Monday-anchored. Default `granularity=week`, `horizon_days=90`.
+
+### `unconverted_count` — the outflow-side currency caveat
+
+Every commitment row is expressed in the org's **reporting** currency via the
+rate locked on the invoice (`_commitment_rows` → `reporting_amount_for_row`).
+A foreign invoice with no usable lock is included at **face value** — dropping
+it would understate the outflow — and flagged. That flag is now surfaced as
+`unconverted_count`: per period on `/cashflow_forecast` and `/cash_position`,
+and as a total on all three cash endpoints (and on the copilot's
+`get_cashflow_forecast` / `get_cash_position` / `run_payment_whatif` results).
+
+It matters because the face value is a *different currency's* number sitting
+in a reporting-currency total. One unconverted ¥10,000,000 invoice drags a
+$250,000 opening balance to a projected −$9.75M — and the shortfall sweep
+emails that to the finance leaders. The flag was computed on every row and read
+by nobody, so the number arrived with nothing to contradict it. Non-zero means
+the totals mix currencies and the curve is not a figure to act on until the
+conversion is resolved; it is the outflow-side twin of `cash_position`'s
+`opening_balance_provider_skipped: "currency_mismatch"`, which already guarded
+the opening-balance half of the same equation.
+
+It is a **count**, not money — a JSON number, listed in
+`tests/test_analytics_money_serialization.py`'s `NUMERIC_FIELDS`.
 
 `GET /cashflow_whatif?granularity=…&horizon_days=N&grace_days=N` —
 compares three payment-timing scenarios, each with `total_outflow`,
@@ -279,10 +302,22 @@ and bucketed `periods`. `weighted_avg_pay_date_days` is a day count, not
 money, and stays a JSON number:
 
 - `on_time` — pay on `due_date`, full amount.
-- `early` — pay on `discount_date` when present, net of
-  `discount_percent` (the captured discount is reported separately); rows
-  without a discount fall back to the due date at full amount.
+- `early` — pay on `discount_date` when that window is **still open**
+  (`discount_date >= today`), net of `discount_percent` (the captured
+  discount is reported separately); rows without a discount — and rows whose
+  window has already **elapsed** — fall back to the due date at full amount.
 - `late` — pay `due_date + grace_days`, full amount, discount forfeited.
+
+The elapsed-window guard matters because the source rows are bounded on their
+**due** date only: an in-horizon invoice on `2/10 net 60` terms routinely
+carries a `discount_date` weeks in the past. Claiming it overstated
+`total_discount_captured`, timed the outflow on a date before `today` (buckets
+entirely inside a period that has already closed, and a **negative**
+`weighted_avg_pay_date_days`), and invited a payment run funded against savings
+that were no longer available. The rule matches
+`services/discount_optimizer.optimize`, which has always treated an elapsed
+deadline as not capturable — so the what-if card and the optimizer agree about
+which discounts are still on the table.
 
 `GET /cash_position?granularity=…&horizon_days=N&opening_balance=STR&min_balance_threshold=STR&seed_balance=bool`
 — running balance carried forward per period
@@ -397,6 +432,14 @@ shape.
 
 ## Scheduled report delivery
 
+> **No CRUD API exists yet.** Nothing under `app/api/` references
+> `ScheduledReport` — the only code that touches the table is
+> `services/scheduled_reports.py` (the runner) — so a row can currently only be
+> created by a seed or direct SQL, and there is no admin UI to re-enable a
+> schedule the 5-strike rule disabled. The runner below is complete and tested;
+> its input surface is not. Tracked in
+> [followups.md](../../docs/followups.md) § round-11.
+
 Migration 0020 adds `scheduled_reports`. Rows:
 
 - `name` — display label
@@ -414,15 +457,37 @@ disabled by default so local dev / tests never email) ticks every
 `FEOH_SCHEDULED_REPORTS_TICK_SECONDS`. Each tick `run_scheduled_reports_once`
 fans out across every tenant DB (`_sweep_tenant`), calls `list_due_schedules`,
 then `execute_schedule` per due row — one tenant's failure never halts the
-sweep. Success bumps `next_run_at` forward by the cadence and clears the error;
-failure persists a `[retry N]` marker and bumps the count. After
-five consecutive failures the row is auto-disabled so the queue
-doesn't loop forever — an operator re-enables from the admin UI
-after fixing the underlying issue.
+sweep.
+
+**Delivery is per-recipient**, and `last_run_status` has three values:
+
+| Status | When | `next_run_at` | Counts toward auto-disable |
+|---|---|---|---|
+| `success` | every recipient took the report | bumped by the cadence | — (clears the chain) |
+| `partial` | some took it, some didn't | **bumped** | no |
+| `failure` | generation failed, no recipients configured, or NOBODY took it | untouched → next tick retries | yes (`[retry N]`) |
+
+A `partial` still advances `next_run_at` because the alternative is worse: a
+retry redelivers to everyone who already has the report. The whole loop used to
+sit inside one `try`, so a bad address at position 2 of 5 skipped positions 3-5
+entirely *and* held `next_run_at`, re-sending to position 1 on each of the five
+retry ticks before the auto-disable — while 3-5 never received it once and then
+lost the schedule. Each address is now attempted independently, and a `partial`
+is deliberately **not** a strike: disabling the schedule over one unreachable
+recipient punishes the ones it is still reaching. The durable fix for a
+persistently bad address is an operator correcting or removing it — the failure
+count on `last_run_error` is what tells them to.
+
+After five consecutive `failure`s the row is auto-disabled so the queue doesn't
+loop forever — an operator re-enables it after fixing the underlying issue
+(today that means flipping `enabled` directly, since no CRUD API or admin UI
+exists — see the note at the top of this section). The tenant sweep counts a `partial` as a failed run for
+`sweep_health` (`GET /api/health/sweeps`), so an undelivered recipient shows up
+there rather than rounding to "healthy".
 
 Email-adapter exceptions never leak provider-side details into
-`last_run_error` (invariant #7); only the exception class name
-is stored.
+`last_run_error` (invariant #7); only the exception class name — and, for a
+partial, the failed/total **counts** — are stored.
 
 ## Known gaps
 
@@ -436,7 +501,7 @@ is stored.
 |---|---|
 | `tests/test_analytics.py` | 27 cases — every compute_* function: DPO formula, CCC None-on-missing-legs, working-capital monotonicity, supplier concentration flag threshold, fraud-rate zero-invoice safety, rebate annualisation, forecast-variance sign convention, processing-time min-sample collapse, approval-bottleneck rollup + unassigned bucket, discount-capture empty safety |
 | `tests/test_report_export.py` | 11 cases — registry pins all four reports; per-report header column-order pinned; enum-status reads `.value`; missing fields emit empty (not "None"); orphan payment-with-null-invoice still emitted |
-| `tests/test_scheduled_reports.py` | 11 cases — cadence delta math; unknown-cadence fallback; happy-path generates → emails every recipient → updates next_run_at; generator-error / empty-recipients / email-adapter-error all persist a failure marker without raising; PII guardrail (no SMTP transport details in `last_run_error`); five-consecutive-failures disables the row, first failure leaves enabled alone |
+| `tests/test_scheduled_reports.py` | 20 cases — cadence delta math; unknown-cadence fallback; happy-path generates → emails every recipient → updates next_run_at; generator-error / empty-recipients / email-adapter-error all persist a failure marker without raising; PII guardrail (no SMTP transport details in `last_run_error`); five-consecutive-failures disables the row, first failure leaves enabled alone; **per-recipient delivery** — one bad address doesn't block the ones after it, a partial advances `next_run_at` and isn't a strike, a total failure holds `next_run_at` and still attempts every address |
 | `tests/test_dashboard_aggregations.py` | Existing — extended through the new branches via the try/except absorption pattern |
 | `tests/test_cashflow_balance.py` | Unit — `get_balance` capability (base-class default unsupported; mock deterministic + config override + simulated-unsupported); `fetch_provider_balance` best-effort (mock balance, None on unsupported, swallows adapter error); persisted-threshold resolve/store round-trip + garbage tolerance + key preservation/clear |
 | `tests/test_cashflow_forecast_api.py` (cash-position additions) | API — auto-seed opening balance from the mock provider (`source: provider`); `seed_balance=false` skips it; query param beats provider; provider-unsupported falls back to `settings`; persisted threshold applied without a query override; `cash-position-settings` GET/PUT round-trip; negative → 422; RBAC (ap_clerk 403, admin/cfo 200) |

@@ -34,12 +34,13 @@ from app.api.deps import (
     get_org_id,
     require_roles,
 )
+from app.models.organization import Organization
 from app.models.user import User
 from app.models.vendor import Vendor
 from app.schemas.sanctions import VendorRiskResponse, VendorRiskSummaryItem
 from app.services.audit_dispatch import dispatch_audit
 from app.services.vendor_risk_scoring import recompute_and_persist
-from app.tenant import get_tenant_db
+from app.tenant import get_tenant, get_tenant_db
 
 router = APIRouter(prefix="/vendors", tags=["vendor-risk"])
 
@@ -93,11 +94,18 @@ async def recompute_vendor_risk(
     vendor_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     org_id: uuid.UUID = Depends(get_org_id),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
 ):
     """Recompute the vendor's composite risk from current signals
     (latest sanctions check + open fraud flags + payment history) and
-    persist it onto the vendor row. Returns the fresh assessment."""
+    persist it onto the vendor row. Returns the fresh assessment.
+
+    `org.settings` is what resolves the org's REPORTING currency — the payment
+    -history signal expresses its trailing volume in that currency and compares
+    it against a threshold denominated in it, so without the settings the
+    scorer would fall back to the platform default and judge a EUR book against
+    a USD ramp."""
     vendor = (await db.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one_or_none()
     if not vendor:
         raise HTTPException(status_code=404, detail="Vendor not found")
@@ -106,6 +114,7 @@ async def recompute_vendor_risk(
         db,
         vendor=vendor,
         organization_id=org_id,
+        org_settings=org.settings,
     )
 
     await dispatch_audit(
