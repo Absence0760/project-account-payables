@@ -1273,9 +1273,20 @@ makes the invoice payable again; `escalated` still blocks, because it means a
 human is still working it. The run is refused as a whole, naming only the
 offending invoices, so the operator drops or clears them rather than guessing.
 
+**Every path that books money runs this gate**, via the shared
+`payment_runs.blocked_invoice_ids` so they can't drift:
+
+| Path | Why it has to re-check |
+|------|------------------------|
+| `POST /api/payments/runs` + the copilot draft-run | the batch entry point |
+| `POST /api/payments` (standalone) | books money exactly like executing a run, and has no `/execute` step to gate later. Until this was wired it was a complete bypass: an invoice the run path refused with a 409 could simply be posted here instead |
+| `POST /api/payments/runs/{id}/retry-failed` | a flag raised *between* run creation and a re-send days later (a BEC bank-detail swap, an altered cheque off a Positive Pay return) has to stop the re-send |
+
 Coverage: `tests/test_payment_run_blocking_exceptions.py` drives real exception
 rows against a real DB, so the membership of the tuple is pinned in **both**
-directions (a `po_mismatch`, which is advisory here, must not block).
+directions (a `po_mismatch`, which is advisory here, must not block) — and
+covers the standalone path with the same parametrised cases, including that
+clearing the flag releases it there too.
 
 ## Code Structure
 

@@ -190,3 +190,48 @@ async def test_a_non_blocking_exception_type_does_not_block(realdb):
             json={"items": [{"invoice_id": str(inv_id), "method": "ach"}]},
         )
     assert resp.status_code == 201, resp.text
+
+
+# ---------------------------------------------------------------------------
+# The standalone money path runs the SAME gate.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("exc_type", ["line_total_mismatch", "duplicate", "fraud_flag"])
+async def test_standalone_payment_refuses_a_blocked_invoice(realdb, exc_type):
+    """`POST /api/payments` books money exactly like executing a run, so it has
+    to re-check the same financial-integrity flags.
+
+    It didn't: `blocked_invoice_ids` had two call sites (run creation and
+    `/retry-failed`) and this one was not among them, so an invoice the run path
+    refuses with a 409 could be paid by posting it here instead — a complete
+    bypass of the gate for anyone holding `payment.execute`.
+    """
+    info = realdb.info("a")
+    mk = realdb.sessionmaker("a")
+    inv_id = await _seed_approved_invoice(mk, info.org_id, number=f"PRB-SOLO-{exc_type}")
+    await _add_exception(mk, info.org_id, inv_id, exc_type=exc_type)
+
+    payments_before = await _payment_count(mk)
+
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post("/api/payments", json={"invoice_id": str(inv_id), "method": "ach"})
+    assert resp.status_code == 409, resp.text
+    assert f"PRB-SOLO-{exc_type}" in resp.json()["detail"]
+    assert await _payment_count(mk) == payments_before
+
+
+@pytest.mark.parametrize("cleared_status", ["resolved", "dismissed"])
+async def test_standalone_payment_proceeds_once_the_flag_is_cleared(realdb, cleared_status):
+    """Same escape hatch as the run path — clearing the exception IS the human
+    sign-off, and must not strand the invoice on this route either."""
+    info = realdb.info("a")
+    mk = realdb.sessionmaker("a")
+    inv_id = await _seed_approved_invoice(
+        mk, info.org_id, number=f"PRB-SOLO-CLEARED-{cleared_status}"
+    )
+    await _add_exception(mk, info.org_id, inv_id, exc_type="fraud_flag", status=cleared_status)
+
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post("/api/payments", json={"invoice_id": str(inv_id), "method": "ach"})
+    assert resp.status_code == 201, resp.text

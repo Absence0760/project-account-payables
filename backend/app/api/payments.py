@@ -1135,6 +1135,25 @@ async def create_payment(
     if invoice.status not in PAYABLE_INVOICE_STATUSES:
         raise HTTPException(status_code=409, detail="Invoice is not approved for payment")
 
+    # Financial-integrity gate — the SAME one `POST /api/payments/runs` and
+    # `/retry-failed` run, via the same shared helper so the three can't drift.
+    # `PAYMENT_BLOCKING_EXCEPTION_TYPES` (duplicate / fraud_flag /
+    # line_total_mismatch) are `error`-severity flags that invoice APPROVAL does
+    # not gate on, so every path that books money has to re-check them —
+    # otherwise an invoice the run path refuses with a 409 can be paid by
+    # posting it here instead, which is exactly what this endpoint did. A
+    # settlement-amount mismatch, a Positive Pay altered cheque and a BEC
+    # bank-detail swap all land as `fraud_flag`; resolving or dismissing it is
+    # the human sign-off.
+    if await blocked_invoice_ids(db, [invoice.id]):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Invoice has an unresolved duplicate/fraud/line-total exception and "
+                f"can't be paid until it's cleared: {invoice.invoice_number}"
+            ),
+        )
+
     # The payment amount is the invoice amount NET OF APPLIED CREDIT MEMOS —
     # never a caller-supplied value. Trusting `body.amount` let an actor book a
     # $99,999 payment against a $500 approved invoice, so the figure is bound
