@@ -313,3 +313,109 @@ async def test_assigned_email_includes_action_links(
     assert decoded.invoice_id == inv_id
     assert decoded.actor_id == reviewer
     assert decoded.action == ACTION_APPROVE
+
+
+# ---------------------------------------------------------------------------
+# The gate is the granular permission, not a hardcoded role-name set
+#
+# The in-app decision route is `require_permission(PERM_INVOICE_APPROVE)`, so an
+# org can mint a custom role that carries `invoice.approve`. This surface used to
+# check `{"admin", "ap_manager", "cfo"}` by NAME instead — equivalent for the
+# four system roles, but it dead-ended every approval email, Slack button and
+# Teams card sent to such a reviewer on "not permitted" while they could approve
+# perfectly well in the app. Both directions are pinned here.
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def custom_role_reviewer(realdb):
+    """Factory: a fresh user whose ONLY role is a custom one with `permissions`.
+
+    Control-plane rows (users / roles / user_roles) persist across tests, so
+    everything created here is torn down on exit.
+    """
+    from app.models.user import Role, User, UserRole
+
+    mk = realdb.control_sessionmaker()
+    created: list[tuple[uuid.UUID, uuid.UUID]] = []
+
+    async def _make(permissions: list[str]) -> uuid.UUID:
+        org_id = realdb.info("a").org_id
+        role_id, user_id = uuid.uuid4(), uuid.uuid4()
+        async with mk() as s:
+            s.add(
+                Role(
+                    id=role_id,
+                    name=f"Email Approver {role_id.hex[:8]}",
+                    organization_id=org_id,
+                    permissions=permissions,
+                )
+            )
+            s.add(
+                User(
+                    id=user_id,
+                    email=f"custom-role-{user_id}@example.test",
+                    full_name="Custom Role Reviewer",
+                    hashed_password=None,
+                    organization_id=org_id,
+                    is_active=True,
+                    must_change_password=False,
+                )
+            )
+            await s.flush()
+            s.add(UserRole(user_id=user_id, role_id=role_id))
+            await s.commit()
+        created.append((user_id, role_id))
+        return user_id
+
+    yield _make
+
+    from sqlalchemy import delete
+
+    async with mk() as s:
+        for user_id, role_id in created:
+            await s.execute(delete(UserRole).where(UserRole.user_id == user_id))
+            await s.execute(delete(User).where(User.id == user_id))
+            await s.execute(delete(Role).where(Role.id == role_id))
+        await s.commit()
+
+
+def _token_for(realdb, invoice_id, actor_id, *, action=ACTION_APPROVE):
+    return build_action_token(
+        tenant_slug=realdb.info("a").slug,
+        invoice_id=invoice_id,
+        actor_id=actor_id,
+        action=action,
+        signing_key=_KEY,
+        ttl_hours=168,
+    )
+
+
+async def test_custom_role_with_invoice_approve_may_decide_from_email(
+    realdb, signing_key, custom_role_reviewer
+):
+    """A custom role granting `invoice.approve` works out-of-app, as in-app."""
+    reviewer_id = await custom_role_reviewer(["invoice.approve"])
+    inv_id = await _make_invoice(realdb, uploaded_by_id=realdb.info("a").users["admin"])
+    token = _token_for(realdb, inv_id, reviewer_id)
+
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.post(f"/api/invoices/email-action/{token}/confirm")
+    assert resp.status_code == 200, resp.text
+    assert "approved" in resp.text.lower(), resp.text
+    assert await _status(realdb, inv_id) == InvoiceStatus.approved
+
+
+async def test_custom_role_without_invoice_approve_is_still_refused(
+    realdb, signing_key, custom_role_reviewer
+):
+    """The gate is not simply removed — a custom role granting nothing is out."""
+    reviewer_id = await custom_role_reviewer([])
+    inv_id = await _make_invoice(realdb, uploaded_by_id=realdb.info("a").users["admin"])
+    token = _token_for(realdb, inv_id, reviewer_id)
+
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.post(f"/api/invoices/email-action/{token}/confirm")
+    assert resp.status_code == 200
+    assert "not permitted" in resp.text.lower()
+    assert await _status(realdb, inv_id) == InvoiceStatus.ready_for_review

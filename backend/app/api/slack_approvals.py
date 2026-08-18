@@ -43,12 +43,12 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.email_actions import (
-    _APPROVER_ROLES,
     _claim_jti,
     _load_reviewer,
     _release_jti,
     _resolve_org,
     _tenant_session,
+    may_approve,
 )
 from app.config import settings
 from app.database import get_control_db
@@ -197,7 +197,7 @@ async def slack_interactivity(
         logger.warning("slack interactivity: reviewer unavailable")
         return _ack()
     reviewer_roles = {r.name for r in (reviewer.roles or [])}
-    if not (reviewer_roles & _APPROVER_ROLES):
+    if not may_approve(reviewer):
         logger.warning("slack interactivity: reviewer not permitted")
         return _ack()
 

@@ -156,8 +156,10 @@ Two gates, layered, both fail closed:
 2. **Action token.** Parse the JSON Activity envelope, pull the token from the
    action payload (`value.token`, or — for configs that echo it — the Activity
    `text`), and `verify_action_token(..., expected_channel="teams")` (HMAC +
-   expiry + channel). Then load the named reviewer (active, right org, holds an
-   approver role `admin`/`ap_manager`/`cfo`), **claim the token `jti`** in Redis
+   expiry + channel). Then load the named reviewer (active, right org, holds the
+   `invoice.approve` granular permission — the shared `email_actions.may_approve`
+   gate, identical to the in-app `require_permission(PERM_INVOICE_APPROVE)`, so a
+   custom role granting it works here too), **claim the token `jti`** in Redis
    (single-use), and call `review.approve_invoice` / `review.reject_invoice` **as
    the reviewer**. Segregation of duties, the approval thresholds, the CFO gate,
    the `invoice.approved`/`invoice.rejected` immutable audit row, and the approval

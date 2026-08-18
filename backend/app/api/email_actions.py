@@ -36,6 +36,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import selectinload
 
+from app.api.permissions import PERM_INVOICE_APPROVE, effective_permissions
 from app.config import settings
 from app.database import _make_tenant_url, get_control_db
 from app.models.invoice import Invoice, InvoiceStatus
@@ -52,12 +53,28 @@ logger = logging.getLogger(__name__)
 
 public_router = APIRouter(prefix="/invoices", tags=["email-approval"])
 
-# Roles permitted to approve / reject — matches require_roles(...) on the
-# authenticated approve/reject endpoints in workflow.py. The email path must not
-# be a weaker door than the in-app one.
-_APPROVER_ROLES = frozenset({"admin", "ap_manager", "cfo"})
-
 _CONSUMED_PREFIX = "email_action:consumed:"
+
+
+def may_approve(reviewer: User) -> bool:
+    """Is this reviewer allowed to decide an invoice, out of the app?
+
+    Gates on the same granular permission the in-app route does
+    (``workflow.py`` → ``require_permission(PERM_INVOICE_APPROVE)``), not on a
+    hardcoded role-name set. The out-of-app surfaces must not be a *weaker* door
+    than the in-app one — and they must not be a needlessly *narrower* one
+    either: the whole point of the permission layer is that an org can mint a
+    custom role carrying ``invoice.approve``, and such a reviewer could approve
+    in the app while every approval email, Slack button and Teams card sent to
+    them dead-ended on "not permitted".
+
+    For the four system roles this is exactly equivalent to the role-name set it
+    replaces — ``ROLE_DEFAULT_PERMISSIONS`` grants ``invoice.approve`` to
+    admin / ap_manager / cfo and to no one else — so nothing about the built-in
+    matrix changes. Shared with the Slack and Teams interactivity endpoints so
+    the three surfaces can't drift.
+    """
+    return PERM_INVOICE_APPROVE in effective_permissions(reviewer.roles or ())
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +244,7 @@ async def email_action_perform(
             "the app to review this invoice.",
         )
     reviewer_roles = {r.name for r in (reviewer.roles or [])}
-    if not (reviewer_roles & _APPROVER_ROLES):
+    if not may_approve(reviewer):
         return _info_page(
             "Not permitted",
             "Your account is not permitted to approve or reject invoices. Please "
