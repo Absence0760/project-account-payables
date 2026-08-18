@@ -34,17 +34,12 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#251](https://github.com/Absence0760/project-account-payables/issues/251)
 for the tracker view. Keep the two reconciled when either moves.
 
-<<<<<<< HEAD
-**Last reconciled:** 2026-08-18 against round 11 — a five-agent bug hunt, whose
-additions are in § Surfaced by the round-11 hunt. Like round 10 the pass is
+**Last reconciled:** 2026-08-18 against round 11 — a five-agent bug hunt
+(multi-currency / e-invoicing, async & concurrency, analytics / reporting,
+AI surfaces, and the SvelteKit frontend). Each agent fixed its findings at the
+root with a reproducing test first and recorded the rest in its own
+§ Surfaced by the round-11 hunt … section below. Like round 10 the pass is
 **additive**: nothing pre-existing was closed or re-verified.
-=======
-**Last reconciled:** 2026-08-18 against round 11 — the SvelteKit-frontend
-agent, which fixed 8 findings at the root (each reproduced by a failing test
-first) and recorded the rest in § Surfaced by the round-11 hunt (SvelteKit
-frontend). That pass is **additive** too: nothing pre-existing was closed or
-re-verified.
->>>>>>> worktree-agent-a6c375ffdafb49cb5
 
 Before that: 2026-08-18 against round 10 — a five-agent bug hunt.
 Each agent fixed its findings at the root with a reproducing test first, and
@@ -1034,7 +1029,6 @@ shared temp-password generator). This is the one it confirmed but did not fix:
       the first integrator who opens the docs URL.
 
 
-<<<<<<< HEAD
 ### Surfaced by the round-11 hunt (multi-currency / e-invoicing), not fixed
 
 The multi-currency / multi-entity / e-invoicing agent of round 11 fixed 6
@@ -1252,7 +1246,6 @@ a mechanical one:
       **Trigger:** the next multi-entity slice, or the first pilot tenant that
       runs more than one entity with a shared supplier base.
 
-=======
 ### Surfaced by the round-11 hunt (SvelteKit frontend), not fixed
 
 Round 11's frontend agent fixed 8 findings at the root, each with a reproducing
@@ -1422,7 +1415,7 @@ confirmed by reading the exact code path but deliberately did not fix.
       **Durable fix:** decide which is intended, then make all three agree (open
       the page + nav to clerks, or narrow `_READ_ROLES`). Fix the comment either
       way. **Trigger:** the next RBAC review or discounts slice.
->>>>>>> worktree-agent-a6c375ffdafb49cb5
+
 
 
 ### AI Cash-Flow Copilot — Phase 3 deferred bucket
