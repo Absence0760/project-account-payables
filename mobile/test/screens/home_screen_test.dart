@@ -85,7 +85,17 @@ MockClient _homeClient(
       return _json(_dashboardBody());
     }
     if (req.method == 'GET' && path == '/api/invoices') {
-      return _json({'invoices': invoices ?? [_invoiceJson('1')]});
+      // Honour the `status` filter the way the real endpoint does. The
+      // Approvals tab now asks the server for `status=ready_for_review`
+      // instead of slicing the Invoices tab's already-fetched page, so a
+      // fake that ignores the filter would hand it rows the API would
+      // never have returned.
+      final wanted = req.url.queryParameters['status'];
+      final all = invoices ?? [_invoiceJson('1')];
+      final rows = wanted == null
+          ? all
+          : all.where((i) => i['status'] == wanted).toList();
+      return _json({'invoices': rows});
     }
     if (req.method == 'GET' && path == '/api/payments') {
       return _json({'payments': <Map<String, dynamic>>[]});

@@ -388,6 +388,10 @@ class AppLocalizationsPt extends AppLocalizations {
   String get approvalsNoneWaiting => 'Nenhuma fatura aguardando aprovação';
 
   @override
+  String get approvalsLoadError =>
+      'Não foi possível carregar as aprovações pendentes';
+
+  @override
   String approvalsPendingCount(int count) {
     String _temp0 = intl.Intl.pluralLogic(
       count,
@@ -2066,6 +2070,10 @@ class AppLocalizationsPtBr extends AppLocalizationsPt {
 
   @override
   String get approvalsNoneWaiting => 'Nenhuma fatura aguardando aprovação';
+
+  @override
+  String get approvalsLoadError =>
+      'Não foi possível carregar as aprovações pendentes';
 
   @override
   String approvalsPendingCount(int count) {

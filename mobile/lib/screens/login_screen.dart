@@ -1,13 +1,18 @@
 import 'package:flutter/material.dart';
 
 import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
-import 'package:feohledger_mobile/screens/home_screen.dart';
 import 'package:feohledger_mobile/screens/mfa_screen.dart';
 import 'package:feohledger_mobile/stores/auth_store.dart';
 import 'package:feohledger_mobile/utils/a11y.dart';
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key});
+  /// Called once the user is fully signed in (password-only or after the MFA
+  /// second factor). The screen does NOT navigate itself — the root [AuthGate]
+  /// renders the home screen off `AuthStore.loggedIn`; this callback only tells
+  /// the gate to release a biometric lock left over from a restored session.
+  final VoidCallback? onSignedIn;
+
+  const LoginScreen({super.key, this.onSignedIn});
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -40,17 +45,22 @@ class _LoginScreenState extends State<LoginScreen> {
     if (!mounted) return;
     switch (result.outcome) {
       case LoginOutcome.success:
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const HomeScreen()),
-        );
+        // No navigation here: the root AuthGate is listening to AuthStore and
+        // swaps this screen for HomeScreen. Replacing the root route instead
+        // would tear the gate out of the tree, and with it the only thing that
+        // returns the user to login when a 401 ends the session later.
+        widget.onSignedIn?.call();
       case LoginOutcome.mfaRequired:
         // Password accepted; route to the second-factor code-entry screen.
-        // No token is stored yet — the MFA verify mints it.
-        Navigator.of(context).push(
+        // No token is stored yet — the MFA verify mints it. MfaScreen pops
+        // itself on success, so resuming here means the factor is settled.
+        await Navigator.of(context).push(
           MaterialPageRoute(
             builder: (_) => MfaScreen(challenge: result.challenge!),
           ),
         );
+        if (!mounted) return;
+        if (AuthStore.instance.loggedIn) widget.onSignedIn?.call();
       case LoginOutcome.failure:
         // Live-region announce the failure so screen-reader users hear it
         // without re-scanning the form (WCAG 4.1.3).

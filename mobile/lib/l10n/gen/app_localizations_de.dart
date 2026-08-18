@@ -387,6 +387,10 @@ class AppLocalizationsDe extends AppLocalizations {
   String get approvalsNoneWaiting => 'Keine Rechnungen warten auf Freigabe';
 
   @override
+  String get approvalsLoadError =>
+      'Ausstehende Freigaben konnten nicht geladen werden';
+
+  @override
   String approvalsPendingCount(int count) {
     String _temp0 = intl.Intl.pluralLogic(
       count,

@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:feohledger_mobile/config.dart';
 import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
 import 'package:feohledger_mobile/screens/admin_users_screen.dart';
-import 'package:feohledger_mobile/screens/login_screen.dart';
 import 'package:feohledger_mobile/screens/org_settings_screen.dart';
 import 'package:feohledger_mobile/screens/workflows_screen.dart';
 import 'package:feohledger_mobile/services/biometric_service.dart';
@@ -170,6 +169,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   if (!ok) return;
                 }
                 await BiometricService.instance.setEnabled(enabled);
+                if (!mounted) return;
                 setState(() => _bioEnabled = enabled);
               },
             ),
@@ -185,17 +185,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
               // shade700 keeps the destructive label at AA contrast.
               style: TextStyle(color: Colors.red.shade700),
             ),
-            onTap: () async {
-              await AuthStore.instance.logout();
-              if (context.mounted) {
-                Navigator.of(context).pushAndRemoveUntil(
-                  MaterialPageRoute(
-                    builder: (_) => const LoginScreen(),
-                  ),
-                  (_) => false,
-                );
-              }
-            },
+            // No navigation here: `logout()` ends the session, which notifies
+            // AuthStore, and the root AuthGate swaps the tree for the login
+            // screen (and pops any route above it). Rebuilding the stack from
+            // here would remove the gate itself — the same defect that stranded
+            // a 401-forced logout on the home screen.
+            onTap: () => AuthStore.instance.logout(),
           ),
         ],
       ),

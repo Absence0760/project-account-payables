@@ -189,7 +189,24 @@ The mobile app talks to the same FastAPI backend as the web frontend:
   web-only (an org-enforced un-enrolled user can still verify by email, with a
   banner pointing them to the web app). Mirrors the web `/login/mfa` flow.
 - Tenant: entered on login screen → sent as `X-Tenant-Slug` header
-- 401 responses auto-clear session and return to login — on **every** verb
+- 401 responses auto-clear session and return to login — on **every** verb,
+  but **only when a credential was actually presented** (`_token != null`).
+  `/auth/login`, `/auth/mfa/verify` and `/auth/mfa/challenge/email` return 401
+  for a wrong password or mistyped code while no token exists yet; tearing the
+  session down there deleted the `tenant_slug` the half-finished login still
+  needs, so the user would retype the code correctly, authenticate against the
+  control-plane-only auth routes, reach the home screen, and have every
+  tenant-scoped request go out with no `X-Tenant-Slug` — unrecoverable without
+  a manual sign-out. `clearSession()` also deletes the token and tenant keys
+  **explicitly** rather than `deleteAll()`: locale and biometric-enabled are
+  device preferences, not session state, and a single mistyped password used to
+  reset both.
+- The **return to login** half is a reactive gate, not an imperative push:
+  `main.dart` wraps `home:` in a `ListenableBuilder` on `AuthStore`, so a
+  forced logout re-routes the tree. It previously only *cleared* the session,
+  stranding the user on `HomeScreen` with the nav collapsed to clerk-level
+  tabs and every tab erroring, with no explanation and no way out but guessing
+  to open Settings → Sign Out.
   (`get`/`getList`/`post`/`patch`/`delete`/`getBytes`/`postBytes`), and the
   teardown is **awaited before the error is thrown**, so an offline-fallback
   `catch` can't read the cache of the session being torn down
@@ -207,7 +224,7 @@ The mobile app talks to the same FastAPI backend as the web frontend:
 | Admin — Organization Settings | `GET /api/organization`, `PATCH /api/organization` (`{name, settings:{company, invoice_defaults}}` — shallow-merged; admin only) |
 | Admin — Workflows (read-only) | `GET /api/workflows` (list), `GET /api/workflows/{id}` (detail) — reads open to any authed role; the mobile entry point is admin-only (mirrors web nav `roles: ['admin']`). No create/edit on mobile |
 | Invoice Detail | `GET /api/invoices/{id}` (carries `warnings` + `po_match`), `POST /api/invoices/{id}/approve`, `POST /api/invoices/{id}/reject`, `PATCH /api/invoices/{id}` (edit fields — admin/ap_manager/cfo, hidden in immutable statuses), `GET /api/invoices/{id}/audit-log` (activity timeline + ERP-status derivation, any authenticated role) |
-| Approvals | `GET /api/invoices` (filtered to `ready_for_review`) |
+| Approvals | `GET /api/invoices?status=ready_for_review` — a **server-side** filter into `InvoiceStore._pending`, with its own `SequencedFetch` token. It used to slice the Invoices tab's already-fetched page client-side, so tapping the *Paid* chip on Invoices made Approvals read "All caught up" while invoices sat awaiting review — and because both live in one `IndexedStack`, `initState` never re-fired and pull-to-refresh re-applied the same filter, so it could not self-correct. |
 | Exceptions | `GET /api/exceptions` (status filter), `POST /api/exceptions/{id}/resolve` (action=resolve\|escalate\|dismiss), `POST /api/exceptions/bulk/resolve` (`{ids, action, resolution}` → `{updated, skipped:[{id,reason}]}`) |
 | Exception Detail | `GET /api/exceptions/{id}` (full row + invoice), `POST /api/exceptions/{id}/assign` (`{user_id}`, null = unassign), plus the resolve/bulk routes above. The assignee picker reuses `GET /api/admin/users` (admin-only) |
 | Notifications | `GET /api/notifications` (`unread_only` filter — envelope carries `items` + total `unread`), `GET /api/notifications/unread-count` (badge), `POST /api/notifications/{id}/read`, `POST /api/notifications/read-all` |

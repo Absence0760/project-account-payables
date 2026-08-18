@@ -80,17 +80,43 @@ void main() {
     });
   });
 
+  // These fixtures mirror `PaymentRunResponse` in
+  // `backend/app/schemas/payment.py` FIELD FOR FIELD — the shape
+  // `GET /api/payments/runs/` actually emits. The previous fixtures were
+  // hand-written and carried only the keys the model happened to read, which is
+  // how `requires_cfo_approval` stayed "covered" while the response schema
+  // declared no such field and FastAPI silently stripped it from every row.
+  Map<String, dynamic> runResponse({
+    String id = 'run1',
+    String status = 'draft',
+    double totalAmount = 5000.0,
+    int paymentCount = 3,
+    bool requiresCfoApproval = false,
+    String? cfoApprovedAt,
+    String? executedAt,
+  }) =>
+      {
+        'id': id,
+        'status': status,
+        // OptionalMoneyAmount serialises as a JSON number.
+        'total_amount': totalAmount,
+        'initiated_by': 'u1',
+        'executed_at': executedAt,
+        'created_at': '2026-01-10T12:00:00',
+        'payment_count': paymentCount,
+        'payments_completed': 0,
+        'payments_failed': 0,
+        'payments_in_flight': 0,
+        'payments_pending': paymentCount,
+        'requires_cfo_approval': requiresCfoApproval,
+        'cfo_approved_at': cfoApprovedAt,
+      };
+
   group('PaymentRun.fromJson', () {
     test('parses a draft run and derives isExecutable + cfoApproved', () {
-      final run = PaymentRun.fromJson({
-        'id': 'run1',
-        'status': 'draft',
-        'total_amount': 5000.0,
-        'payment_count': 3,
-        'requires_cfo_approval': true,
-        'cfo_approved_at': null,
-        'created_at': '2026-01-10T12:00:00',
-      });
+      final run = PaymentRun.fromJson(
+        runResponse(requiresCfoApproval: true),
+      );
       expect(run.status, 'draft');
       expect(run.totalAmountDisplay, '5000.0');
       expect(run.paymentCount, 3);
@@ -99,21 +125,39 @@ void main() {
       expect(run.isExecutable, isTrue);
     });
 
+    test('a run under the threshold needs no CFO sign-off', () {
+      final run = PaymentRun.fromJson(runResponse());
+      expect(run.requiresCfoApproval, isFalse);
+      expect(run.cfoApproved, isFalse);
+    });
+
     test('a completed run is not executable; cfoApproved reflects the stamp',
         () {
-      final run = PaymentRun.fromJson({
-        'id': 'run2',
-        'status': 'completed',
-        'total_amount': 100,
-        'payment_count': 1,
-        'requires_cfo_approval': true,
-        'cfo_approved_at': '2026-01-11T09:00:00',
-        'created_at': '2026-01-10T12:00:00',
-        'executed_at': '2026-01-11T10:00:00',
-      });
+      final run = PaymentRun.fromJson(runResponse(
+        id: 'run2',
+        status: 'completed',
+        totalAmount: 100,
+        paymentCount: 1,
+        requiresCfoApproval: true,
+        cfoApprovedAt: '2026-01-11T09:00:00',
+        executedAt: '2026-01-11T10:00:00',
+      ));
       expect(run.isExecutable, isFalse);
       expect(run.cfoApproved, isTrue);
       expect(run.executedAt, DateTime(2026, 1, 11, 10));
+    });
+
+    test('an older server that omits the CFO fields parses without throwing',
+        () {
+      // Fail-safe, not fail-secure: the gate is enforced server-side, so a
+      // missing field means the pre-flight hint is skipped and the 403 (now
+      // rendered as the server's own sentence) is what the user sees.
+      final json = runResponse()
+        ..remove('requires_cfo_approval')
+        ..remove('cfo_approved_at');
+      final run = PaymentRun.fromJson(json);
+      expect(run.requiresCfoApproval, isFalse);
+      expect(run.cfoApproved, isFalse);
     });
   });
 

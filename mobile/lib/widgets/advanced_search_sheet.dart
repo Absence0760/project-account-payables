@@ -105,7 +105,7 @@ class _AdvancedSearchSheetState extends State<AdvancedSearchSheet> {
       firstDate: DateTime(2000),
       lastDate: DateTime(2100),
     );
-    if (picked == null) return;
+    if (picked == null || !mounted) return;
     setState(() {
       if (from) {
         _dueDateFrom = picked;
