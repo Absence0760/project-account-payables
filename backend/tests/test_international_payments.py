@@ -477,7 +477,15 @@ def _mock_db(*, run, payment, invoice, vendor_bank, compliance_vendor=None, comp
     bank_res = MagicMock()
     bank_res.scalar_one_or_none = MagicMock(return_value=vendor_bank)
 
-    queue = [run_res, pay_res, inv_res, bank_res]
+    # `_execute_single_payment` re-derives the invoice's net payable (amount
+    # minus applied credit memos) immediately before the adapter call, so a
+    # credit recorded after the run was built can't pay the stale figure. That
+    # SUM fires right after the invoice lookup; model it as "no credits
+    # applied" so `payment.amount` still matches.
+    credit_res = MagicMock()
+    credit_res.scalar_one = MagicMock(return_value=Decimal("0"))
+
+    queue = [run_res, pay_res, inv_res, credit_res, bank_res]
 
     if compliance_vendor is not False:
         v = compliance_vendor or SimpleNamespace(

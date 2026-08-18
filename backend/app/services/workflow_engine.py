@@ -445,6 +445,18 @@ async def get_or_create_workflow_definition(
         if defn:
             return defn
 
+    # Stamp a real entity, never NULL. Migration 0029 backfilled every existing
+    # tenant's definitions onto its default entity, and `provision_tenant` seeds
+    # a fresh tenant the same way — so a NULL-scoped row is a bucket no tenant's
+    # real definitions occupy. Leaving this NULL put the three creation paths
+    # (this fallback, `POST /api/workflows`, and provisioning) in two different
+    # buckets, which the one-active-per-scope invariant then could not reconcile:
+    # activating a workflow in one bucket left the other bucket's definition
+    # active too. The stub-shadowing hazard the `else` branch above documents is
+    # the same defect seen from the read side.
+    from app.tenant import resolve_default_entity_id
+
+    resolved_entity_id = entity_id or await resolve_default_entity_id(db)
     defn = WorkflowDefinition(
         name="Invoice Processing",
         description="Upload → Review → ERP → Done",
@@ -452,7 +464,7 @@ async def get_or_create_workflow_definition(
         is_active=True,
         is_default=True,
         organization_id=organization_id,
-        entity_id=None,
+        entity_id=resolved_entity_id,
     )
     db.add(defn)
     await db.flush()

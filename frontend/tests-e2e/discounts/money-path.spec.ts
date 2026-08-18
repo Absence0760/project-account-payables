@@ -385,7 +385,7 @@ test.describe('discounting money path (API)', () => {
 		}
 	});
 
-	test('RBAC: clerk read-only; cfo may accept; manager may decline', async ({
+	test('RBAC: clerk read-only; cfo and manager may both accept and decline', async ({
 		page,
 		tenantClerk,
 		tenantCfo,
@@ -430,25 +430,33 @@ test.describe('discounting money path (API)', () => {
 		);
 		expect(cfoAccept.status()).toBe(200);
 
-		// CFO may NOT decline (decline roles = admin/ap_manager only).
+		// CFO MAY also decline. Accept and decline are two halves of one
+		// decision, so the role that can commit cash early must be able to
+		// refuse the offer too — the backend used to allow the accept and 403
+		// the decline, and the UI showed a Decline button that always failed.
 		const inv2 = await makeInvoice(page, vendor, 600, 30);
 		const offerForDecline = await makeOffer(page, inv2, [{ days: 5, percent: '2.00' }]);
 		const cfoDecline = await page.request.post(
 			`${API_BASE}/api/discounts/offers/${offerForDecline.id}/decline`,
 			{ headers: cfoH }
 		);
-		expect(cfoDecline.status()).toBe(403);
-		// Manager CAN decline.
+		expect(cfoDecline.status()).toBe(200);
+		// Manager CAN decline too — a separate offer, since the one above is
+		// already declined and is no longer in a declinable state.
+		const inv3 = await makeInvoice(page, vendor, 700, 30);
+		const offerForMgrDecline = await makeOffer(page, inv3, [{ days: 5, percent: '2.00' }]);
 		const mgrDecline = await page.request.post(
-			`${API_BASE}/api/discounts/offers/${offerForDecline.id}/decline`,
+			`${API_BASE}/api/discounts/offers/${offerForMgrDecline.id}/decline`,
 			{ headers: managerH }
 		);
 		expect(mgrDecline.status()).toBe(200);
 
 		cleanupOffer(offerForCfo.id);
 		cleanupOffer(offerForDecline.id);
+		cleanupOffer(offerForMgrDecline.id);
 		cleanupInvoice(inv1);
 		cleanupInvoice(inv2);
+		cleanupInvoice(inv3);
 	});
 
 	test('offers are tenant-isolated — another tenant cannot read or accept', async ({

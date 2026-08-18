@@ -461,9 +461,16 @@ async def test_provision_tenant_creates_org_user_and_tenant_tables(
                 # to the terminal `done`: no approval, no approval signature,
                 # no `invoice.approved` audit row, no segregation check and no
                 # CFO gate, for every self-service tenant.
+                # Scoped to the tenant's DEFAULT entity, matching what
+                # migration 0029 backfilled onto every existing tenant — a
+                # fresh tenant seeded into the shared (NULL) bucket would be
+                # the only shape whose definitions live there, and the
+                # one-active-per-scope invariant would behave differently for
+                # it than for every migrated tenant.
                 wf_count = await conn.exec_driver_sql(
-                    "SELECT count(*) FROM workflow_definitions "
-                    "WHERE is_default AND is_active AND entity_id IS NULL"
+                    "SELECT count(*) FROM workflow_definitions wd "
+                    "JOIN entities e ON e.id = wd.entity_id AND e.is_default "
+                    "WHERE wd.is_default AND wd.is_active"
                 )
                 assert wf_count.scalar() == 1
                 approval_enabled = await conn.exec_driver_sql(

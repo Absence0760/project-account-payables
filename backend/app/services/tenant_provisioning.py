@@ -223,16 +223,21 @@ async def _create_tenant_tables(db_name: str, organization_id: uuid.UUID | None 
             # what a fresh tenant actually runs, and the fallback stays a
             # backstop. Idempotent: `uq_workflow_definitions_one_default`
             # also guards a second shared default.
+            # `entity_id` is the tenant's DEFAULT entity, not NULL — matching
+            # what migration 0029 backfilled onto every existing tenant's
+            # definitions. A fresh tenant seeded into the shared (NULL) bucket
+            # would be the only tenant shape whose definitions live there, and
+            # the one-active-per-scope invariant would then behave differently
+            # for it than for every migrated tenant.
             await conn.execute(
                 text(
                     "INSERT INTO workflow_definitions "
                     "(id, organization_id, entity_id, name, description, "
                     " steps_config, is_active, is_default) "
-                    "SELECT :id, :org, NULL, 'Default Workflow', :descr, "
+                    "SELECT :id, :org, e.id, 'Default Workflow', :descr, "
                     "       CAST(:steps AS jsonb), true, true "
-                    "WHERE NOT EXISTS ("
-                    "  SELECT 1 FROM workflow_definitions WHERE is_default AND entity_id IS NULL"
-                    ")"
+                    "FROM entities e WHERE e.is_default "
+                    "AND NOT EXISTS (SELECT 1 FROM workflow_definitions WHERE is_default)"
                 ),
                 {
                     "id": uuid.uuid4(),

@@ -647,11 +647,28 @@ async def test_deactivating_entity_workflow_allowed_when_shared_fallback_remains
     mk = realdb.sessionmaker("a")
 
     async with realdb.client(key="a", role="admin") as c:
-        listing = await c.get("/api/workflows")  # seeds the shared active default
+        listing = await c.get("/api/workflows")
         assert listing.status_code == 200
         _default_id, us_id = await _entities(c)
 
     async with mk() as s:
+        # The SHARED (entity_id IS NULL) fallback, created explicitly. Every
+        # creation path now stamps a real entity — the list endpoint's seeder
+        # included — because a NULL-scoped row is a bucket no tenant's real
+        # definitions occupy (migration 0029 backfilled them all onto the
+        # default entity). A shared row is still legitimate and is still the
+        # documented fallback for an entity with no definition of its own, so
+        # this test builds one directly rather than relying on a seeder that
+        # no longer produces it.
+        shared = WorkflowDefinition(
+            name="Shared fallback",
+            steps_config={"steps": []},
+            is_active=True,
+            is_default=False,
+            organization_id=org_id,
+            entity_id=None,
+        )
+        s.add(shared)
         own = WorkflowDefinition(
             name="US only",
             steps_config={"steps": []},

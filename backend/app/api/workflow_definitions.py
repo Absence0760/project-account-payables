@@ -34,7 +34,13 @@ from app.schemas.workflow import (
 )
 from app.services.audit_dispatch import dispatch_audit
 from app.services.workflow_engine import DEFAULT_STEPS_CONFIG
-from app.tenant import apply_entity_scope, get_entity_id, get_tenant_db
+from app.tenant import (
+    apply_entity_scope,
+    get_entity_id,
+    get_tenant_db,
+    get_write_entity_id,
+    resolve_default_entity_id,
+)
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 
@@ -246,6 +252,14 @@ async def list_workflows(
     # `?page=2` can't trigger a second default. After creation the first page
     # holds exactly that row.
     if total == 0:
+        # Same entity stamp as every other creation path (create_workflow,
+        # workflow_engine's lazy fallback, tenant_provisioning). A NULL here put
+        # this row in the SHARED bucket while `POST /api/workflows` put its rows
+        # in the caller's entity bucket, so activating a new workflow could not
+        # deactivate this one and the tenant ended up with two active
+        # definitions. Migration 0029 backfilled every existing tenant's
+        # definitions onto the default entity; NULL is a bucket no tenant's real
+        # rows occupy.
         default = WorkflowDefinition(
             name="Default Workflow",
             description="Standard invoice processing: extract, review, and send to ERP.",
@@ -253,6 +267,7 @@ async def list_workflows(
             is_active=True,
             is_default=True,
             organization_id=org_id,
+            entity_id=entity_id or await resolve_default_entity_id(db),
         )
         db.add(default)
         await db.flush()
@@ -280,6 +295,7 @@ async def create_workflow(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN)),
     org_id: uuid.UUID = Depends(get_org_id),
+    write_entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
     # mode="json" — a step's config can carry Decimal money fields
     # (ApprovalStepConfig.auto_approve_below, ApprovalLevelConfig.max_amount,
@@ -289,6 +305,14 @@ async def create_workflow(
     # matching what `_to_decimal` (workflow_engine.py) already coerces back.
     steps_config = {"steps": [s.model_dump(mode="json") for s in body.steps]}
     # New workflows start inactive — user must explicitly activate
+    # Stamp the caller's entity, like every other entity-scoped create. This
+    # left `entity_id` NULL, which put every UI-created definition in the
+    # SHARED bucket — a bucket no migrated tenant's rows actually occupy,
+    # because migration 0029 backfilled `workflow_definitions.entity_id` to the
+    # default entity. Harmless while peer-deactivation was org-wide; once that
+    # was correctly scoped to the definition's own entity, a newly activated
+    # workflow stopped deactivating the seeded default and the tenant had two
+    # active definitions.
     defn = WorkflowDefinition(
         name=body.name,
         description=body.description,
@@ -296,6 +320,7 @@ async def create_workflow(
         is_active=False,
         is_default=False,
         organization_id=org_id,
+        entity_id=write_entity_id,
     )
     db.add(defn)
     await db.flush()

@@ -28,7 +28,7 @@ test.describe('/invoices upload recovery', () => {
 	let uploadedId: string | null = null;
 	test.afterEach(() => {
 		if (!uploadedId) return;
-		tenantPsql(`DELETE FROM workflow_steps WHERE workflow_instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${uploadedId}')`);
+		tenantPsql(`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${uploadedId}')`);
 		tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${uploadedId}'`);
 		tenantPsql(`DELETE FROM exceptions WHERE invoice_id='${uploadedId}'`);
 		tenantPsql(`DELETE FROM invoices WHERE id='${uploadedId}'`);
