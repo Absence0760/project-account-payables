@@ -75,8 +75,7 @@ from app.tenant import (
     get_tenant_db,
     get_write_entity_id,
 )
-from app.utils.passwords import generate_temp_password
-from app.utils.passwords import pwd_context as _pwd
+from app.utils.passwords import generate_temp_password, hash_password
 
 logger = logging.getLogger(__name__)
 
@@ -1167,7 +1166,7 @@ async def invite_vendor_portal_user(
         organization_id=vendor.organization_id,
         email=body.email,
         full_name=body.full_name,
-        hashed_password=_pwd.hash(temp_password),
+        hashed_password=await hash_password(temp_password),
         is_active=True,
         must_change_password=True,
     )

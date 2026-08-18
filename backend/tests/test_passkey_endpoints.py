@@ -319,7 +319,7 @@ async def test_passkey_register_start_allowed_with_a_correct_password_step_up():
 
     with (
         patch("app.api.auth.settings.mfa_enabled", True),
-        patch("app.api.auth.pwd_context.verify", return_value=True),
+        patch("app.utils.passwords.pwd_context.verify", return_value=True),
     ):
         start = await auth_mod.passkey_register_start(
             body=MFAStepUpRequest(password="correct"), user=user, db=db
@@ -425,7 +425,7 @@ async def test_passkey_delete_refused_with_a_wrong_password():
 
     with (
         patch("app.api.auth.settings.mfa_enabled", True),
-        patch("app.api.auth.pwd_context.verify", return_value=False),
+        patch("app.utils.passwords.pwd_context.verify", return_value=False),
         patch("app.api.auth.dispatch_auth_audit", new=AsyncMock()),
     ):
         with pytest.raises(HTTPException) as exc:
@@ -454,7 +454,7 @@ async def test_passkey_delete_allowed_with_a_correct_password():
 
     with (
         patch("app.api.auth.settings.mfa_enabled", True),
-        patch("app.api.auth.pwd_context.verify", return_value=True),
+        patch("app.utils.passwords.pwd_context.verify", return_value=True),
         patch("app.api.auth.dispatch_auth_audit", new=AsyncMock()),
     ):
         await auth_mod.passkey_delete(

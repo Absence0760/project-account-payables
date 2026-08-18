@@ -2,6 +2,19 @@
 
 JWT-based authentication using `python-jose` for token handling and `passlib` with bcrypt for password hashing. Tokens are server-side revocable via a Redis blocklist.
 
+**Hash and verify through the awaitable wrappers, never `pwd_context` directly.**
+`backend/app/utils/passwords.py` exposes `verify_password` / `hash_password` /
+`dummy_verify` as coroutines that run passlib in a worker thread via
+`asyncio.to_thread`. bcrypt is deliberately ~200 ms of pure CPU per call, so an
+inline `pwd_context.verify` in a login handler occupies the event loop for that
+whole window and every other in-flight request on the worker waits behind it —
+on the most concurrently-hit endpoint in the app, and on *every* attempt, since
+the not-found branch pays the same cost through `dummy_verify` for timing
+equalisation. The equalisation guarantee is unchanged: both paths take the same
+thread hop and the same bcrypt cost. `pwd_context` itself stays the single hash
+context (`bcrypt_sha256`); `backend/tests/test_password_hashing_offloaded.py`
+asserts the work leaves the loop thread and AST-scans `app/` for direct calls.
+
 ## Auth Flow
 
 1. User visits a tenant subdomain (e.g., `acme.localhost:7777`)
@@ -805,7 +818,7 @@ The QR code is returned inline as a `data:image/png;base64,...` URL so the front
 
 **Changing an existing factor is a step-up operation.** When the account already has a live factor, `/mfa/enroll` (and `/mfa/passkey/register` — see below) requires one of:
 
-- `password` — the account password, verified through the shared `pwd_context`, exactly like `/mfa/disable`; or
+- `password` — the account password, verified through the shared `verify_password` (the `pwd_context` wrapper), exactly like `/mfa/disable`; or
 - `code` — a code from the **currently enrolled** authenticator (for the user who has their phone but not their password manager); or
 - `assertion` — a **WebAuthn assertion from an already-registered passkey**, obtained from `POST /api/auth/mfa/step-up/passkey` for that same operation.
 

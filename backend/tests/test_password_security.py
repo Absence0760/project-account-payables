@@ -262,9 +262,14 @@ def test_update_profile_request_bounds_match_change_password():
     )
 
 
-def test_apply_new_password_enforces_complexity_and_clears_the_forced_flag():
+@pytest.mark.asyncio
+async def test_apply_new_password_enforces_complexity_and_clears_the_forced_flag():
     """The shared writer: a long-but-weak password (no upper, no digit) is a
-    422, and a successful set retires `must_change_password`."""
+    422, and a successful set retires `must_change_password`.
+
+    A coroutine because hashing runs off the event loop (`hash_password`) — the
+    complexity check still short-circuits before any bcrypt cost is paid.
+    """
     from types import SimpleNamespace
 
     from fastapi import HTTPException
@@ -273,12 +278,12 @@ def test_apply_new_password_enforces_complexity_and_clears_the_forced_flag():
 
     user = SimpleNamespace(hashed_password="old", must_change_password=True)
     with pytest.raises(HTTPException) as exc:
-        _apply_new_password(user, "allloweralpha")
+        await _apply_new_password(user, "allloweralpha")
     assert exc.value.status_code == 422
     assert user.hashed_password == "old"
     assert user.must_change_password is True
 
-    _apply_new_password(user, "StrongPass123X")
+    await _apply_new_password(user, "StrongPass123X")
     assert user.hashed_password != "old"
     assert user.must_change_password is False
 

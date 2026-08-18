@@ -119,7 +119,7 @@ async def test_login_unknown_email_runs_dummy_verify_to_equalize_timing():
 
     with (
         patch("app.api.auth.dispatch_auth_audit", AsyncMock()),
-        patch("app.api.auth.dummy_verify") as dv,
+        patch("app.api.auth.dummy_verify", AsyncMock()) as dv,
     ):
         with pytest.raises(HTTPException):
             await auth.login(
@@ -127,7 +127,7 @@ async def test_login_unknown_email_runs_dummy_verify_to_equalize_timing():
                 request=_fake_request(),
                 db=_db_returning_user(None),
             )
-    dv.assert_called_once()
+    dv.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -286,7 +286,7 @@ async def test_portal_login_unknown_email_runs_dummy_verify():
     from app.api import portal_auth
     from app.schemas.portal import PortalLoginRequest
 
-    with patch("app.api.portal_auth.dummy_verify") as dv:
+    with patch("app.api.portal_auth.dummy_verify", AsyncMock()) as dv:
         with pytest.raises(HTTPException):
             await portal_auth.portal_login(
                 body=PortalLoginRequest(email="noone@nowhere.test", password="x"),
@@ -294,7 +294,7 @@ async def test_portal_login_unknown_email_runs_dummy_verify():
                 slug="acme",
                 db=_db_returning_user(None),
             )
-    dv.assert_called_once()
+    dv.assert_awaited_once()
 
 
 @pytest.mark.asyncio
