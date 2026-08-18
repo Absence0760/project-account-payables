@@ -513,6 +513,29 @@ than a bug fix or a product call rather than a defect:
       `test_approval_org_settings.py` scan from `app/api/` to `app/`.
       **Trigger:** the next change to the exception-agent resolvers — kept out
       of the round-9 hunt only because that package was another agent's area.
+- [ ] **Email-intake and PEPPOL-inbound invoices are created with no
+      `WorkflowInstance`.** `email_intake._create_invoice_from_attachment` and
+      `peppol_receive.receive_peppol_message` insert the `Invoice` and hand
+      straight to `dispatch_extraction`; every other ingress
+      (`POST /api/invoices/upload`, manual `POST /api/invoices`, the portal,
+      `recurring_invoices`, `intercompany`) calls
+      `workflow_engine.create_workflow_instance`. The **money** consequence is
+      already closed — `review.resolve_approval_config` now falls back
+      fail-closed to the org's active definition, and `assign_reviewer` no
+      longer skips its audit row + notification (see
+      `backend/docs/workflow-snapshots.md` § When there is no snapshot to read).
+      What remains is structural: these invoices have no frozen snapshot at all
+      (so a later definition edit *does* retroactively govern them, breaking the
+      per-invoice invariant for exactly the unattended paths), no `WorkflowStep`
+      rows, and no A/B experiment assignment — so they are invisible to the
+      approval queue's step-based reads and to `GET /api/invoices/{id}/workflow`.
+      **Durable fix:** call `create_workflow_instance(tenant_db, invoice)` right
+      after the `flush()` in both ingest paths, exactly as `create_invoice`
+      does. Both already run inside a tenant transaction, so it is a one-line
+      addition each plus a test that the snapshot is frozen at ingest.
+      **Trigger:** the next change to either inbound-webhook service — kept out
+      of the round-9 hunt because the inbound-webhook services were outside the
+      invoice-lifecycle agent's area.
 
 ### AI Cash-Flow Copilot — Phase 3 deferred bucket
 
