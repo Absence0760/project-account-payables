@@ -97,7 +97,7 @@
 
 <section class="saved-panel" data-testid="saved-plans-panel">
 	<div class="saved-head">
-		<span class="saved-title">{m('cashFlow.saved.heading')}</span>
+		<h2 class="saved-title">{m('cashFlow.saved.heading')}</h2>
 		<button
 			type="button"
 			class="saved-refresh"
@@ -243,6 +243,10 @@
 		gap: 8px;
 	}
 	.saved-title {
+		/* A real heading, so the rail is navigable and the panel's title is
+		   addressable by role rather than by a substring that also matches the
+		   empty state. Reset the UA margin so the visual header is unchanged. */
+		margin: 0;
 		font-size: 0.7rem;
 		font-weight: 600;
 		text-transform: uppercase;

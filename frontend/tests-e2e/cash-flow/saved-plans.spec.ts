@@ -26,7 +26,10 @@ test.describe('/cash-flow saved plans', () => {
 	}) => {
 		const panel = page.getByTestId('saved-plans-panel');
 		await expect(panel).toBeVisible({ timeout: 10_000 });
-		await expect(panel.getByText('Saved plans')).toBeVisible();
+		// By ROLE, not by text: getByText does case-insensitive substring
+		// matching, so 'Saved plans' also matches the 'No saved plans yet…'
+		// empty state and trips Playwright's strict mode.
+		await expect(panel.getByRole('heading', { name: 'Saved plans' })).toBeVisible();
 
 		// Consolidated mode answers for the whole legal group instead of the
 		// entity selected in the sidebar; off by default.
