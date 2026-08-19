@@ -1,27 +1,10 @@
 name: Dependabot lockfile sync
 
-# Dependabot updates a manifest but never the lockfile compiled from it, so
-# every Dependabot PR lands half-applied and CI fails. Two ecosystems here:
-#
-#   - frontend: <workspace>/package.json is bumped but frontend/pnpm-lock.yaml
-#     isn't, which breaks ci.yml's `pnpm install --frozen-lockfile`.
-#
-#   - backend: backend/pyproject.toml (and the pip pin in requirements-dev.in)
-#     is bumped but backend/requirements{,-dev}.lock aren't. Dependabot's
-#     pip-compile support only recognises a lockfile named `<basename>.txt`
-#     paired with a `<basename>.in`; ours are compiled from pyproject.toml, so
-#     it cannot see them. The raised floor then contradicts the stale pin and
-#     backend/tests/test_dependency_lock_sync.py fails the PR — by design, so
-#     the drift is loud rather than shipping pins nobody declared.
-#
-# This workflow regenerates the relevant lockfile(s) on every Dependabot PR and
-# commits the result back, which retriggers CI and lets the PR go green without
-# manual intervention.
-#
-# Note the Python regeneration deliberately does NOT pass `--upgrade`. Plain
-# `uv pip compile` keeps every pin that still satisfies its constraints and
-# re-resolves only the ones the bump invalidated, so the commit stays scoped to
-# the dependency Dependabot actually bumped.
+# Dependabot updates <workspace>/package.json but never touches the root
+# pnpm-lock.yaml, which breaks ci.yml's `pnpm install --frozen-lockfile`. This
+# workflow regenerates the lockfile on every Dependabot PR and commits the
+# result back, which retriggers CI and lets the PR go green without manual
+# intervention.
 #
 # Setup (one-time):
 #   1. Create a fine-grained PAT scoped to this repo with "Contents: Write"
@@ -68,16 +51,10 @@ name: Dependabot lockfile sync
 # This pattern is the one referenced in the GitHub Security Lab "Keeping
 # your GitHub Actions and workflows secure" series.
 
-# Both regenerate jobs run for any of these paths — a job whose ecosystem the
-# PR didn't touch simply finds its lockfile unchanged and uploads nothing, so
-# the extra job is a no-op rather than something needing a per-job path filter
-# (which GitHub Actions has no native support for).
 on:
   pull_request:
     paths:
       - "**/package.json"
-      - "backend/pyproject.toml"
-      - "backend/requirements-dev.in"
 
 permissions:
   contents: read
@@ -92,8 +69,18 @@ jobs:
     # install somehow executed attacker code, there's nothing here to
     # exfiltrate.
     steps:
+      # codeql[actions/untrusted-checkout/medium]
+      # Checking out the PR head is the whole point of this job, and it is
+      # safe here for reasons CodeQL's heuristic cannot see: the job runs on
+      # `pull_request` (not `pull_request_target`), inherits the workflow's
+      # `contents: read`, is passed no secret at all, discards the token with
+      # `persist-credentials: false`, and the only thing it runs against the
+      # tree is `pnpm install --lockfile-only --ignore-scripts` — which
+      # executes no lifecycle scripts. The credential-bearing half of this
+      # workflow is the separate `push` job below, and that one never writes
+      # the PR-head tree to disk.
       - name: Checkout PR branch (no credentials)
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           # Belt-and-braces: even though no secrets are exposed to this
@@ -101,31 +88,24 @@ jobs:
           persist-credentials: false
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
         with:
           version: 10
 
       - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 22
           cache: pnpm
-          # The pnpm-lock.yaml lives in the frontend workspace, not at the
-          # repo root. Without this hint, ``setup-node`` errors out with
-          # ``Dependencies lock file is not found`` and the regenerate
-          # job dies before it can do anything useful.
-          cache-dependency-path: frontend/pnpm-lock.yaml
 
       - name: Regenerate lockfile
         # --lockfile-only updates pnpm-lock.yaml without populating
         # node_modules. pnpm does not run any lifecycle scripts in this
         # mode; --ignore-scripts is redundant but explicit.
-        working-directory: frontend
         run: pnpm install --lockfile-only --ignore-scripts
 
       - name: Bail if lockfile unchanged
         id: diff
-        working-directory: frontend
         run: |
           if git diff --quiet pnpm-lock.yaml; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -138,75 +118,16 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pnpm-lock
-          path: frontend/pnpm-lock.yaml
-          retention-days: 1
-
-  regenerate_python:
-    # Same no-secrets contract as `regenerate` above: this job runs a resolver
-    # against PR-head code, so it must never hold a credential. The worst a
-    # malicious bump could do is produce a bogus lock, which then fails
-    # test_dependency_lock_sync.py on the next CI run and a human notices.
-    if: github.actor == 'dependabot[bot]'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout PR branch (no credentials)
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          persist-credentials: false
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-
-      - name: Regenerate locks
-        # Must stay byte-for-byte in step with the commands documented in
-        # backend/CLAUDE.md -> Dependency lock. `uv pip compile` only resolves
-        # metadata; it never executes the project's own code.
-        working-directory: backend
-        run: |
-          uv pip compile pyproject.toml requirements-dev.in --extra dev \
-            --universal --python-version 3.14 --generate-hashes -o requirements-dev.lock
-          uv pip compile pyproject.toml \
-            --universal --python-version 3.14 --generate-hashes -o requirements.lock
-
-      - name: Bail if locks unchanged
-        id: diff
-        working-directory: backend
-        run: |
-          if git diff --quiet requirements.lock requirements-dev.lock; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Upload locks artifact
-        if: steps.diff.outputs.changed == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: python-locks
-          path: |
-            backend/requirements.lock
-            backend/requirements-dev.lock
+          path: pnpm-lock.yaml
           retention-days: 1
 
   push:
-    needs: [regenerate, regenerate_python]
-    # Fire when EITHER regenerate job succeeded — a PR usually touches only one
-    # ecosystem, so the other job legitimately produces nothing. Requiring both
-    # would mean a frontend bump never gets its lockfile synced. The
-    # artifact-download steps below are individually `continue-on-error`, so a
-    # missing artifact is the ordinary "nothing changed" path, not a failure.
-    #
-    # `!cancelled()` is load-bearing, not decoration: without a status function
-    # in the condition, GitHub silently ANDs an implicit "every needs job
-    # succeeded" onto it, which would make the `||` unreachable and strand a
-    # good Python lock whenever the pnpm job happened to fail. It still short-
-    # circuits when BOTH regenerate jobs fail, because then neither side of the
-    # `||` holds.
-    if: >-
-      !cancelled()
-      && github.actor == 'dependabot[bot]'
-      && (needs.regenerate.result == 'success' || needs.regenerate_python.result == 'success')
+    needs: regenerate
+    # Only fire when the regenerate job actually produced an artifact.
+    # The `needs.regenerate.result == 'success'` guard makes the chain
+    # explicit; the artifact-download step below would also fail if
+    # the artifact didn't exist.
+    if: github.actor == 'dependabot[bot]' && needs.regenerate.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       # This job touches the PAT and pushes — it needs contents: read
@@ -227,7 +148,7 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Download pnpm lockfile artifact
+      - name: Download lockfile artifact
         if: steps.gate.outputs.skip == 'false'
         # actions/download-artifact returns a non-fatal error when the
         # artifact doesn't exist — that's the "no change" path from
@@ -237,21 +158,9 @@ jobs:
         continue-on-error: true
         with:
           name: pnpm-lock
-          path: artifacts/pnpm
-
-      - name: Download Python locks artifact
-        if: steps.gate.outputs.skip == 'false'
-        id: download_python
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        continue-on-error: true
-        with:
-          name: python-locks
-          path: artifacts/python
 
       - name: Validate + push lockfile
-        if: >-
-          steps.gate.outputs.skip == 'false'
-          && (steps.download.outcome == 'success' || steps.download_python.outcome == 'success')
+        if: steps.gate.outputs.skip == 'false' && steps.download.outcome == 'success'
         env:
           DEPENDABOT_LOCKFILE_PAT: ${{ secrets.DEPENDABOT_LOCKFILE_PAT }}
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
@@ -269,45 +178,41 @@ jobs:
             exit 1
           fi
 
-          # Fresh clone (no PR-head code in the working tree). We
-          # clone the BASE branch (main), copy in the lockfile artifact,
-          # then push as a single commit onto the PR-head ref. No code
-          # from the PR-head ever executes in this step.
+          # The PR-head tree is NEVER written to the working directory in
+          # this job. It holds the PAT, so materialising attacker-controlled
+          # files beside the credential in .git/config is a window worth not
+          # having — even though nothing here executes them. The commit is
+          # assembled with plumbing instead: read the fetched tree into the
+          # index, swap one blob, write it back.
           mkdir push-workspace && cd push-workspace
           git init -q
-          git config user.name "dependabot[bot]"
-          git config user.email "49699333+dependabot[bot]@users.noreply.github.com"
           git remote add origin "https://x-access-token:${DEPENDABOT_LOCKFILE_PAT}@github.com/${REPO}.git"
           git fetch origin "$PR_HEAD_REF" --depth 1
-          git checkout "$PR_HEAD_SHA"
 
-          # Replace each lockfile with its regenerated copy, for whichever
-          # ecosystems actually produced an artifact. The pnpm lockfile lives
-          # at ``frontend/pnpm-lock.yaml`` in this repo, not at the root; the
-          # Python locks live under ``backend/``. Copying is the only thing
-          # done with artifact content — none of it is ever executed.
-          synced=""
-          if [ -f ../artifacts/pnpm/pnpm-lock.yaml ]; then
-            cp ../artifacts/pnpm/pnpm-lock.yaml ./frontend/pnpm-lock.yaml
-            synced="${synced} frontend/pnpm-lock.yaml"
-          fi
-          if [ -f ../artifacts/python/requirements.lock ]; then
-            cp ../artifacts/python/requirements.lock ./backend/requirements.lock
-            cp ../artifacts/python/requirements-dev.lock ./backend/requirements-dev.lock
-            synced="${synced} backend/requirements.lock backend/requirements-dev.lock"
+          # Refuse to push if the head moved while we were regenerating —
+          # otherwise this force-lands a lockfile derived from a manifest
+          # that is no longer what the branch says.
+          fetched=$(git rev-parse FETCH_HEAD)
+          if [ "$fetched" != "$PR_HEAD_SHA" ]; then
+            echo "::error::PR head moved during the run ($fetched != $PR_HEAD_SHA) — refusing to push a stale lockfile." >&2
+            exit 1
           fi
 
-          if [ -z "$synced" ]; then
-            echo "No lockfile artifacts present — nothing to commit."
+          existing=$(git rev-parse "${PR_HEAD_SHA}:pnpm-lock.yaml" 2>/dev/null || echo none)
+          blob=$(git hash-object -w ../pnpm-lock.yaml)
+          if [ "$existing" = "$blob" ]; then
+            echo "Lockfile already in sync after fetch — nothing to commit."
             exit 0
           fi
 
-          # shellcheck disable=SC2086 # $synced is a deliberate word-split list
-          if git diff --quiet -- $synced; then
-            echo "Lockfiles already in sync after fetch — nothing to commit."
-            exit 0
-          fi
-          # shellcheck disable=SC2086
-          git add $synced
-          git commit -m "chore: sync dependency lockfiles"
-          git push origin "HEAD:${PR_HEAD_REF}"
+          git read-tree "$PR_HEAD_SHA"
+          git update-index --add --cacheinfo "100644,${blob},pnpm-lock.yaml"
+          tree=$(git write-tree)
+          commit=$(
+            GIT_AUTHOR_NAME="dependabot[bot]" \
+            GIT_AUTHOR_EMAIL="49699333+dependabot[bot]@users.noreply.github.com" \
+            GIT_COMMITTER_NAME="dependabot[bot]" \
+            GIT_COMMITTER_EMAIL="49699333+dependabot[bot]@users.noreply.github.com" \
+            git commit-tree "$tree" -p "$PR_HEAD_SHA" -m "chore: sync pnpm-lock.yaml"
+          )
+          git push origin "${commit}:refs/heads/${PR_HEAD_REF}"
