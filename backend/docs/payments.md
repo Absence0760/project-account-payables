@@ -614,6 +614,45 @@ while the payment row itself looked correct. A release that lands
 does that once the rail confirms. `dismiss` never dispatches — nothing
 settled.
 
+**A raising adapter on release is recorded, not 500ed.** `/release` wraps
+`_execute_single_payment` the way `_dispatch_run_payments` does — a live FX /
+sanctions / processor adapter can raise anything, and unguarded the exception
+unwound the request: FastAPI 500ed, the session rolled back, and the payment
+reverted to `pending_compliance` with no `provider_payment_id` recorded even if
+the processor had already accepted the order (on the card leg, a rollback after
+`persist_card` discarded the `VirtualCard` row while a real spendable card
+existed at the provider). It is now marked `failed` with
+`unexpected_error:<ExceptionClass>` — the class only, never the adapter's
+message, which can embed a partial account number or PAN.
+
+### An invoice-less payment never reaches the processor
+
+Every gate in `_execute_single_payment` — the credit-memo net re-check, the FX
+rate lock and the **entire** sanctions/KYC compliance gate — is written
+`if invoice is not None`. A payment whose invoice could not be resolved
+therefore used to fall straight through to `adapter.create_payment` with an
+empty `invoice_number` and `vendor_name`: money to a payee nobody screened, at
+a rate nobody locked, for an amount nobody re-verified — the exact inverse of
+the two "no screenable vendor → hold, never pay unscreened" branches directly
+below it. It now fails closed with `invoice_missing` before the adapter is
+called. Unreachable in normal operation (deleting an invoice cascades its
+payments); the branch exists so the fall-through can't be re-introduced.
+
+### Voiding preserves the settlement timestamp
+
+`completed_at` is the regulated timestamp for **when the money moved**.
+`/void` used to stamp the void instant onto it, destroying the settlement time
+on a `completed` payment — and the audit row recorded `previous_status` but not
+the previous timestamp, so it was unrecoverable. `/retry-failed` refuses to
+overwrite the same field and says why. The void now leaves `completed_at`
+alone whenever it is already set, records the void instant as
+`details.voided_at` on the append-only `payment.voided` audit row (alongside
+`details.settled_at`), and still stamps a terminal timestamp for a payment that
+never settled (`pending` / `submitted` / `processing` / `pending_compliance`),
+which has no settlement time to protect.
+
+**Tests:** `tests/test_payment_terminal_timestamps.py`.
+
 ### Payment processor adapters
 
 The actual money movement is handled by an adapter pattern in `backend/app/services/payment_adapters/` — same shape as ERP, extraction, and card adapters. Each adapter implements:

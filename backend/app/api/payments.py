@@ -760,7 +760,17 @@ async def void_payment(
     now = datetime.now(UTC)
     payment.status = "voided"
     payment.failure_reason = f"Voided by {user.full_name}: {body.reason}"
-    payment.completed_at = now
+    # `completed_at` is the regulated SETTLEMENT timestamp. Voiding a
+    # `completed` payment used to overwrite it with the void instant,
+    # destroying the only record of when the money actually moved — and the
+    # audit row captured `previous_status` but not the previous timestamp, so
+    # it was unrecoverable. `/retry-failed` explicitly refuses to overwrite the
+    # same two timestamps and says why. A payment that never settled
+    # (`pending` / `submitted` / `processing` / `pending_compliance`) has no
+    # settlement time to protect, so it still gets a terminal timestamp here;
+    # the void instant itself rides the audit row below on every path.
+    if payment.completed_at is None:
+        payment.completed_at = now
 
     # Reopen the invoice for re-payment if it was scheduled by this row.
     if invoice and invoice.status in (
@@ -792,6 +802,12 @@ async def void_payment(
             "card_outcome": card_outcome,
             "amount": str(payment.amount),
             "previous_status": previous_status or "unknown",
+            # The void instant, recorded here rather than on `completed_at`
+            # (see above). This row is the append-only evidence of when the
+            # void happened; the settlement timestamp keeps saying when the
+            # money moved.
+            "voided_at": now.isoformat(),
+            "settled_at": payment.completed_at.isoformat() if payment.completed_at else None,
         },
     )
     await db.commit()
@@ -887,7 +903,34 @@ async def release_compliance_hold(
     # payment still `pending_compliance`, never a 500 mid-dispatch.
     adapter = _require_payment_adapter(org)
     now = datetime.now(UTC)
-    await _execute_single_payment(db, payment=payment, org=org, adapter=adapter, user=user, now=now)
+    try:
+        await _execute_single_payment(
+            db, payment=payment, org=org, adapter=adapter, user=user, now=now
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Same guard `_dispatch_run_payments` puts round this call, for the
+        # same reason: a live FX / sanctions / processor adapter can raise
+        # anything. Unguarded, the exception unwound the request — FastAPI
+        # 500ed, the session rolled back, and the payment reverted to
+        # `pending_compliance` with no `provider_payment_id` recorded even if
+        # the processor had already accepted the order (and, on the card leg,
+        # a rollback after `persist_card` discarded the `VirtualCard` row while
+        # a real spendable card existed at the provider). Recording the attempt
+        # as `failed` is what keeps that from being invisible; the reused
+        # `correlation_id` is the processor's idempotency key, not a substitute
+        # for the record.
+        #
+        # Log the exception TYPE only, never `str(exc)` / `exc_info` — an
+        # adapter can embed a partial account number, IBAN or PAN in its error
+        # string (PII/banking-data-out-of-logs invariant).
+        logger.warning(
+            "payment %s raised during compliance release; marking failed: %s",
+            payment.id,
+            exc.__class__.__name__,
+        )
+        payment.status = "failed"
+        payment.failure_reason = f"unexpected_error:{exc.__class__.__name__}"
+        payment.completed_at = now
 
     from app.services.audit_dispatch import dispatch_audit
 
@@ -1818,6 +1861,22 @@ async def _execute_single_payment(
     # Resolve invoice + vendor for the payload
     inv_result = await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
     invoice = inv_result.scalar_one_or_none()
+
+    if invoice is None:
+        # No invoice behind this payment. Every gate below — the credit-memo
+        # re-check, the FX rate lock, and the ENTIRE sanctions/KYC compliance
+        # gate — is written `if invoice is not None`, so an invoice-less
+        # payment used to fall straight through to `adapter.create_payment`
+        # with an empty `invoice_number` and `vendor_name`: money moving to a
+        # payee nobody screened, priced at a rate nobody locked, for an amount
+        # nobody re-verified. That is the exact inverse of the two
+        # carefully-argued "no screenable vendor → hold, never pay unscreened"
+        # branches below. Fail closed instead. Refused BEFORE the adapter is
+        # called, so no order exists at the processor.
+        payment.status = "failed"
+        payment.failure_reason = "invoice_missing: cannot verify payee, amount or compliance"
+        payment.completed_at = now
+        return
 
     # What the invoice is worth NOW, immediately before the adapter call.
     # `payment.amount` was netted against applied credit memos when the row was
