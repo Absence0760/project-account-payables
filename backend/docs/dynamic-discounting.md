@@ -65,8 +65,46 @@ Cost of capital: per-org `Organization.settings.discounting.cost_of_capital_pct`
 |--------|----------------|
 | `discount_roi.py` | annualized-return primitive (above) |
 | `discount_offers.py` | tier normalization/selection (`best_tier_for_date`, `select_tier` / `select_tier_for_date`), savings math, lifecycle mutators (`accept_offer` / `decline_offer` / `mark_captured` / `expire_if_past`), and `build_bulk_offer` (sum a vendor's open balances into a vendor-scoped offer). Pure — never commits |
-| `discount_optimizer.py` | `optimize(opportunities, cash_budget, cost_of_capital_pct, today)` — scores each opportunity, ranks by APR desc (tie-break savings, then id), and **greedily** selects the highest-yield `worthwhile` + still-capturable ones until the cash budget is exhausted (capture vs. cash preservation). `cash_budget=None` selects every worthwhile one. Pure |
+| `discount_optimizer.py` | `optimize(opportunities, cash_budget, cost_of_capital_pct, today, reporting_currency=None)` — scores each opportunity, ranks by APR desc (tie-break savings, then id), and **greedily** selects the highest-yield `worthwhile` + still-capturable ones until the cash budget is exhausted (capture vs. cash preservation). `cash_budget=None` selects every worthwhile one. Pure. See [Currency](#currency--the-totals-are-sums) for `reporting_currency` |
 | `discount_auto_trigger.py` | background sweep — auto-accepts open offers whose ROI clears `FEOH_DISCOUNT_AUTO_CAPTURE_ROI_THRESHOLD`. Mirrors `contract_renewal` (per-tenant fan-out, fresh engine, one failure never halts the sweep). Also the sole place `expire_if_past` runs — flips an `offered` row whose `valid_until` has passed to `expired` before it's ever considered for auto-accept. **Money-path boundary: only flags `offered → accepted`; never creates a `Payment`/`PaymentRun`** — actual funding still flows through the CFO-gated payment run. The status guard is the dedupe |
+
+### Currency — the totals are sums
+
+`DiscountOffer.base_amount` carries its own `currency`, and every money figure
+`optimize` returns (`total_savings_available` / `total_savings_selected` /
+`total_outlay_selected`) is a **sum across offers**. Every caller then labels
+that sum with a single currency: `/optimize` and `/dashboard` with
+`_org_currency(org)`, the copilot's `optimize_discount_capture` with
+`resolve_org_currency(...)`. A €1,000 offer beside a $1,000 offer was therefore
+reported as "$1,960 committed, $40 saved".
+
+`optimize` now takes `reporting_currency` — the currency those totals (and
+`cash_budget`) are in. An opportunity in any other currency is flagged
+`unconvertible` and:
+
+- contributes to **none** of the three money totals, and is counted on
+  `OptimizationResult.unconvertible_count` (surfaced as
+  `OptimizerResponse.unconvertible_count`,
+  `DiscountDashboard.unconvertible_offer_count`, and the copilot result's
+  `unconvertible_count`); and
+- is **never selected when a cash budget binds** — the budget is a
+  reporting-currency figure, so a foreign outlay cannot be measured against it
+  and must not consume it.
+
+It IS still selectable under `cash_budget=None`: that decision involves no
+cross-currency arithmetic at all (an APR is currency-free), and dropping a
+genuinely worthwhile foreign discount from an unconstrained recommendation
+would be a functional loss, not a safety gain. Nothing is converted here — a
+rate fetched at read time would make a ranking move under the reader
+(`../../docs/decisions.md` §18).
+
+`services/cash_flow_plan.assemble_plan` honours the same flag: an
+`unconvertible` offer is never re-timed onto the plan's cash curve (the curve
+is in the reporting currency; its outlay is not) and is listed in
+`unretimed_offer_ids` instead.
+
+`reporting_currency=None` disables the guard, which is why every production
+caller passes it and only the pure unit tests omit it.
 
 **Tier window is measured from `valid_from`, not from today.** Every call site that resolves a tier — `best_tier_for_date` (best-tier-today) and `select_tier_for_date` (a caller-named tier, e.g. the accept endpoints' `tier_days`) — takes an optional `reference_date` that should be the offer's `valid_from` (when it was actually extended). A tier `{"days": N}`'s real deadline is `valid_from + N days`; omitting `reference_date` (or passing `None`) silently measures every deadline from "today" instead, which makes every tier look perpetually achievable regardless of how long the offer has been open — the exact bug in issue #124. `select_tier` alone (no `_for_date` suffix) has **no date check at all**; only use it when the caller has already verified the tier's window separately.
 

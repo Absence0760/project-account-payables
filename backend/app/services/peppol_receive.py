@@ -141,7 +141,7 @@ async def receive_peppol_message(
     from app.database import _make_tenant_url
     from app.models.entity import Entity
     from app.services.extraction_dispatch import dispatch_extraction
-    from app.services.storage import _ensure_bucket, _get_client
+    from app.services.storage import _put_object
 
     tenant_engine = create_async_engine(_make_tenant_url(org.db_name), pool_size=1, max_overflow=0)
     tenant_factory = async_sessionmaker(tenant_engine, expire_on_commit=False)
@@ -249,16 +249,12 @@ async def receive_peppol_message(
             transmission_id = transmission.id
 
             # 6. Upload the raw payload now that the slot is ours. Direct
-            #    put_object (not upload_invoice_file, which needs an UploadFile).
-            s3 = _get_client()
-            _ensure_bucket(s3)
+            #    `_put_object` (not upload_invoice_file, which needs an
+            #    UploadFile) — boto3 is blocking, and `_put_object` runs it in a
+            #    worker thread so this public webhook path never parks the event
+            #    loop on an S3 round trip.
             file_key = f"{org.id}/{invoice_id}/peppol-inbound.xml"
-            s3.put_object(
-                Bucket=settings.s3_bucket,
-                Key=file_key,
-                Body=message.payload,
-                ContentType="application/xml",
-            )
+            await _put_object(file_key, message.payload, "application/xml")
             invoice.file_key = file_key
             invoice.file_url = (
                 f"{settings.s3_endpoint_url.rstrip('/')}/{settings.s3_bucket}/{file_key}"

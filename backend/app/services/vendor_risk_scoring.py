@@ -22,7 +22,12 @@ PII-free signals (no external calls; reads the persisted latest
   * payment history — trailing-12-month completed-payment volume +
     count, plus any failed / cancelled payments (a returned payment
     is a mild risk signal; high recent volume to an
-    unscreened/elevated vendor is more exposure).
+    unscreened/elevated vendor is more exposure). The volume is
+    expressed in the org's REPORTING currency via the shared
+    `currency_conversion.payment_reporting_amount_sql` — never a raw
+    `SUM(Payment.amount)`, which is denominated in each INVOICE's own
+    currency and so mixes currencies the moment a vendor bills in more
+    than one (see `_payment_history`).
 
 The three are blended into a weighted composite, clamped to 0–100, and
 bucketed into `low | medium | high | critical | unknown`. A sanctions
@@ -43,7 +48,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.exception import Exception as ExceptionModel
@@ -51,6 +56,10 @@ from app.models.invoice import Invoice
 from app.models.payment import Payment
 from app.models.sanctions_check import SanctionsCheck
 from app.models.vendor import Vendor
+from app.services.currency_conversion import (
+    payment_reporting_amount_sql,
+    resolve_reporting_currency,
+)
 from app.services.sanctions_categories import (
     categories_from_raw_response,
     has_adverse_media,
@@ -134,18 +143,52 @@ async def _open_fraud_flag_count(db: AsyncSession, vendor_id: uuid.UUID) -> int:
     return int(result.scalar() or 0)
 
 
-async def _payment_history(db: AsyncSession, vendor_id: uuid.UUID) -> tuple[Decimal, int, int]:
-    """Trailing-12m completed volume + count, and lifetime failed count.
+async def _payment_history(
+    db: AsyncSession, vendor_id: uuid.UUID, *, reporting_currency: str
+) -> tuple[Decimal, int, int, int]:
+    """Trailing-12m completed volume + count, lifetime failed count, and the
+    number of trailing-12m payments whose outflow can't be expressed in
+    ``reporting_currency``.
 
-    Returns `(trailing_12m_amount, completed_count, failed_payment_count)`.
-    Reads through the invoice→vendor join (Payment has no vendor_id).
+    Returns ``(trailing_12m_amount, completed_count, failed_payment_count,
+    unconverted_payment_count)``. Reads through the invoice→vendor join
+    (Payment has no vendor_id).
+
+    **The volume is a reporting-currency figure, not a raw SUM.**
+    ``Payment.amount`` is denominated in the INVOICE's currency (see
+    ``international_payments.prepare_international_payment``), so summing it
+    across a vendor billing in more than one currency added e.g. ¥10,000,000
+    to a USD total as though it were $10,000,000 — and that total is compared
+    against ``_VOLUME_FULL_EXPOSURE``, a bare number in the org's reporting
+    currency. A single foreign invoice pinned the exposure sub-score at 100 and
+    could tip a vendor's bucket a whole band, on a figure the factor breakdown
+    then displayed as money.
+
+    Resolution is the SAME ``currency_conversion.payment_reporting_amount_sql``
+    the 1099 report uses, so a risk score and a filed total can't disagree about
+    what a payment moved. A payment neither rung can establish is left OUT of
+    the volume and counted on ``unconverted_payment_count`` instead — never
+    folded in at face value, and never converted at read time (a rate fetched on
+    a read would make the score move under the reader).
     """
     cutoff = datetime.now(UTC) - timedelta(days=365)
+    reported = payment_reporting_amount_sql(
+        reporting_currency=reporting_currency,
+        payment_amount=Payment.amount,
+        payment_source_amount=Payment.source_amount,
+        payment_source_currency=Payment.source_currency,
+        invoice_currency=Invoice.currency,
+    )
+    countable = reported.is_expressible
 
     completed = await db.execute(
         select(
-            func.coalesce(func.sum(Payment.amount), 0),
+            # `Decimal("0")` (never int 0) so an empty window can't promote the
+            # aggregate off Numeric — same guard `tax_1099.build_1099_report`
+            # applies to the same helper's output.
+            func.coalesce(func.sum(case((countable, reported.amount))), Decimal("0")),
             func.count(),
+            func.count(case((~countable, Payment.id))),
         )
         .select_from(Payment)
         .join(Invoice, Invoice.id == Payment.invoice_id)
@@ -155,7 +198,7 @@ async def _payment_history(db: AsyncSession, vendor_id: uuid.UUID) -> tuple[Deci
             Payment.completed_at >= cutoff,
         )
     )
-    amount_sum, completed_count = completed.one()
+    amount_sum, completed_count, unconverted_count = completed.one()
 
     failed = await db.execute(
         select(func.count())
@@ -168,7 +211,12 @@ async def _payment_history(db: AsyncSession, vendor_id: uuid.UUID) -> tuple[Deci
     )
     failed_count = int(failed.scalar() or 0)
 
-    return Decimal(str(amount_sum or 0)), int(completed_count or 0), failed_count
+    return (
+        Decimal(str(amount_sum or 0)),
+        int(completed_count or 0),
+        failed_count,
+        int(unconverted_count or 0),
+    )
 
 
 def _sanctions_subscore(check: SanctionsCheck | None) -> tuple[Decimal, dict]:
@@ -224,7 +272,12 @@ def _fraud_subscore(open_flags: int) -> tuple[Decimal, dict]:
 
 
 def _payment_subscore(
-    trailing_amount: Decimal, completed_count: int, failed_count: int
+    trailing_amount: Decimal,
+    completed_count: int,
+    failed_count: int,
+    *,
+    currency: str,
+    unconverted_count: int = 0,
 ) -> tuple[Decimal, dict]:
     # Exposure from recent volume: linear ramp to 100 at the full-exposure
     # threshold. A returned/failed payment is a mild standalone signal.
@@ -234,8 +287,17 @@ def _payment_subscore(
     failed_component = _clamp(_FAILED_PAYMENT_PER * Decimal(failed_count))
     sub = _clamp(max(volume_component, failed_component))
     factor = {
+        # Both the figure AND the currency it is in — `_VOLUME_FULL_EXPOSURE` is
+        # a bare number in this same currency, so naming it is what makes the
+        # comparison legible instead of implicitly USD.
         "trailing_12m_amount": str(_q2(trailing_amount)),
+        "currency": currency,
         "payment_count": completed_count,
+        # Payments in the window whose outflow could not be expressed in the
+        # reporting currency, so they contributed NOTHING to the volume above.
+        # Surfaced rather than silently dropped: a vendor showing 0 exposure on
+        # 12 unconvertible payments is a data gap to chase, not a clean record.
+        "unconverted_payments": unconverted_count,
         "failed_payments": failed_count,
     }
     return sub, factor
@@ -262,13 +324,25 @@ async def compute_vendor_risk(
     sanctions check, open fraud-flag count, and payment history into a
     0–100 composite + bucket + PII-free factor breakdown.
     """
+    reporting_currency = resolve_reporting_currency(org_settings)
     check = await _latest_sanctions_check(db, vendor.id)
     open_flags = await _open_fraud_flag_count(db, vendor.id)
-    trailing_amount, completed_count, failed_count = await _payment_history(db, vendor.id)
+    (
+        trailing_amount,
+        completed_count,
+        failed_count,
+        unconverted_count,
+    ) = await _payment_history(db, vendor.id, reporting_currency=reporting_currency)
 
     sanctions_sub, sanctions_factor = _sanctions_subscore(check)
     fraud_sub, fraud_factor = _fraud_subscore(open_flags)
-    payment_sub, payment_factor = _payment_subscore(trailing_amount, completed_count, failed_count)
+    payment_sub, payment_factor = _payment_subscore(
+        trailing_amount,
+        completed_count,
+        failed_count,
+        currency=reporting_currency,
+        unconverted_count=unconverted_count,
+    )
 
     composite = _clamp(
         sanctions_sub * _WEIGHT_SANCTIONS

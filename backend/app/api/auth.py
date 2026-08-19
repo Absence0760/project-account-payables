@@ -75,8 +75,9 @@ from app.services.sso import is_sso_only
 from app.utils.passwords import (
     PasswordError,
     dummy_verify,
-    pwd_context,
+    hash_password,
     validate_password_complexity,
+    verify_password,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -246,7 +247,7 @@ async def login(
         #
         # Equalize timing with the wrong-password path below so the response
         # time doesn't reveal whether the email has an account (enumeration).
-        dummy_verify()
+        await dummy_verify()
         await record_auth_failure(
             "auth_login", identity, window_seconds=LOGIN_FAILURE_WINDOW_SECONDS
         )
@@ -265,7 +266,7 @@ async def login(
                 },
             )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    if not pwd_context.verify(body.password, user.hashed_password):
+    if not await verify_password(body.password, user.hashed_password):
         await record_auth_failure(
             "auth_login", identity, window_seconds=LOGIN_FAILURE_WINDOW_SECONDS
         )
@@ -1181,7 +1182,7 @@ async def get_me(
 # ---------------------------------------------------------------------------
 
 
-def _apply_new_password(user: User, new_password: str) -> None:
+async def _apply_new_password(user: User, new_password: str) -> None:
     """Validate + set the caller's own password on the in-session User row.
 
     Clears `must_change_password` for the same reason `/change-password`
@@ -1192,7 +1193,7 @@ def _apply_new_password(user: User, new_password: str) -> None:
         validate_password_complexity(new_password)
     except PasswordError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    user.hashed_password = pwd_context.hash(new_password)
+    user.hashed_password = await hash_password(new_password)
     user.must_change_password = False
 
 
@@ -1252,11 +1253,11 @@ async def update_me(
             raise HTTPException(
                 status_code=400, detail="Current password is required to set a new password"
             )
-        if not user.hashed_password or not pwd_context.verify(
+        if not user.hashed_password or not await verify_password(
             body.current_password, user.hashed_password
         ):
             raise HTTPException(status_code=400, detail="Current password is incorrect")
-        _apply_new_password(user, body.password)
+        await _apply_new_password(user, body.password)
 
     await db.commit()
     if body.password is not None:
@@ -1278,12 +1279,12 @@ async def change_password(
     happens regardless — successfully setting a password means the temp
     credential is no longer in play.
     """
-    if not user.hashed_password or not pwd_context.verify(
+    if not user.hashed_password or not await verify_password(
         body.current_password, user.hashed_password
     ):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
 
-    _apply_new_password(user, body.new_password)
+    await _apply_new_password(user, body.new_password)
     await db.commit()
     await _revoke_sessions_after_password_change(user)
     org = await _load_user_org(db, user.organization_id)

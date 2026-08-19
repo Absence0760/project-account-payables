@@ -6,8 +6,15 @@ invoices, and on what date. This module produces a single-page PDF
 suitable for attaching to an email or downloading from the History tab.
 
 Pure-function: takes the already-loaded model rows + the issuing org
-profile, returns the PDF bytes. No DB / network calls. The HTTP route
+profile, returns the PDF bytes. No DB queries. The HTTP route
 fetches the rows and wraps them in a `Response` with the right headers.
+
+**Blocking, and offloaded by the caller.** "No DB" is not "no I/O": the
+brand-logo embed (`branding.build_logo_flowable`) does a blocking DNS lookup and
+a blocking `httpx.Client` GET, and ReportLab lays the document out on the CPU.
+Every route therefore calls this through `await asyncio.to_thread(render_...,
+ctx)` rather than on the event loop; `tests/test_pdf_render_offloaded.py` is the
+drift guard.
 """
 
 from __future__ import annotations

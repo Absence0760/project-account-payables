@@ -145,6 +145,7 @@ export const messages = {
 	'invoices.col.status': 'ステータス',
 	'invoices.selectAllAria': 'すべての請求書を選択',
 	'invoices.empty': 'フィルターに一致する請求書はありません。',
+	'invoices.empty.errored': '請求書を読み込めませんでした。もう一度お試しください。',
 	'invoices.row.delete': '削除',
 	'invoices.row.confirm': '確認',
 	'invoices.loadMore': 'さらに読み込む（{total}件中{shown}件）',
@@ -196,6 +197,7 @@ export const messages = {
 	'payments.selectAllPayableAria': 'すべての支払い可能な請求書を選択',
 	'payments.overdue': '期限超過',
 	'payments.history.empty': 'フィルターに一致する支払いはありません。',
+	'payments.history.empty.errored': '支払いを読み込めませんでした。もう一度お試しください。',
 	'payments.history.remittance': '送金通知書',
 	'payments.history.void': '取消',
 	'payments.history.complianceRelease': '解除',
@@ -341,6 +343,7 @@ export const messages = {
 	'contracts.col.value': '金額',
 	'contracts.col.spend': '支出',
 	'contracts.empty': 'フィルターに一致する契約はありません。',
+	'contracts.empty.errored': '契約を読み込めませんでした。もう一度お試しください。',
 	'contracts.notFound': '契約が見つかりません',
 	'contracts.row.open': '契約{number}を開く',
 	'contracts.overSpendLimit': '支出上限超過',
@@ -926,6 +929,8 @@ export const messages = {
 		'連携中の銀行残高は使用されていません。その資金口座はレポート通貨（{currency}）とは異なる通貨で保有されており、そこから予測を開始すると下の各時点残高が2つの通貨の混在になってしまいます。数値は保存済みの期首残高から開始しています。レポート通貨を口座に合わせるか、上で期首残高を入力してください。',
 	'cfo.position.providerSkipped':
 		'連携中の銀行残高は使用されていないため、下の予測はそこから開始していません。数値は保存済みの期首残高から開始しています。',
+	'cfo.position.unconvertedOutflows':
+		'未換算: {n, plural, other {# 件の請求書}}に {currency} への為替レートがなく、額面のまま集計されています。そのため下の残高推移は複数通貨が混在しています。これらの数値をもとに判断する前に、不足しているレートを登録してください。',
 	'cfo.position.colPeriod': '期間',
 	'cfo.position.colOpening': '期初',
 	'cfo.position.colOutflow': '支出',
@@ -981,6 +986,7 @@ export const messages = {
 	'expenses.search.aria': '経費を検索',
 	'expenses.loading': '読み込み中…',
 	'expenses.empty': 'フィルターに一致する経費はありません。',
+	'expenses.empty.errored': '経費を読み込めませんでした。もう一度お試しください。',
 	'expenses.col.date': '日付',
 	'expenses.col.merchant': '加盟店',
 	'expenses.col.category': 'カテゴリ',
@@ -1032,6 +1038,7 @@ export const messages = {
 	'expenses.reports.col.amount': '金額',
 	'expenses.reports.openAria': 'レポート {number} を開く',
 	'expenses.reports.empty': '経費レポートはまだありません。',
+	'expenses.reports.loadMore': 'さらに読み込む（{total}件中{shown}件）',
 	'expenses.reports.showingAll': '{total, plural, other {全 # 件のレポートを表示中}}',
 	'expenses.reports.toast.created': 'レポートを作成しました',
 	'expenses.reports.toast.createFailed': '作成に失敗しました',
@@ -1086,6 +1093,7 @@ export const messages = {
 	'expenses.cards.unmatch': '照合を解除',
 	'expenses.cards.ignore': '無視',
 	'expenses.cards.empty': 'カード取引はありません。CSVをインポートするか、バーチャルカードを同期してください。',
+	'expenses.cards.loadMore': 'さらに読み込む（{total}件中{shown}件）',
 	'expenses.cards.showingAll': '{total, plural, other {全 # 件の取引を表示中}}',
 	'expenses.cards.toast.loadFailed': 'カード取引を読み込めませんでした',
 	'expenses.cards.toast.imported': '{n, plural, other {# 件の取引をインポートしました}}',
@@ -1224,6 +1232,7 @@ export const messages = {
 	'requisitions.toast.deleted': '購買依頼を削除しました',
 	'requisitions.toast.deleteFailed': '削除に失敗しました',
 	'requisitions.toast.loadFailed': '購買依頼の読み込みに失敗しました',
+	'requisitions.loadMore': 'さらに読み込む（{total}件中{shown}件）',
 	'requisitions.showingAll': '{total, plural, other {#件すべての購買依頼を表示中}}',
 
 	// Requisition create/edit modal (components/modals/RequisitionModal.svelte)
@@ -1307,6 +1316,7 @@ export const messages = {
 	'intake.toast.alreadyConverted': 'すでに変換済みです（{number}）',
 	'intake.toast.convertFailed': '変換に失敗しました',
 	'intake.toast.loadFailed': '受付リクエストの読み込みに失敗しました',
+	'intake.loadMore': 'さらに読み込む（{total}件中{shown}件）',
 	'intake.showingAll': '{total, plural, other {#件すべてのリクエストを表示中}}',
 
 	// Intake create/edit modal (components/modals/IntakeModal.svelte)
@@ -1376,6 +1386,7 @@ export const messages = {
 	'catalogs.guided.catalogLabel': 'カタログ：{name}',
 	'catalogs.guided.contractLabel': '契約：{number}',
 	'catalogs.guided.preferredTag': '優先',
+	'catalogs.loadMore': 'さらに読み込む（{total}件中{shown}件）',
 	'catalogs.showingAll': '{total, plural, other {#件すべてのカタログを表示中}}',
 
 	// Catalog create/edit modal (components/modals/CatalogModal.svelte)
@@ -1485,6 +1496,7 @@ export const messages = {
 	'budgets.toast.deleted': '予算を削除しました',
 	'budgets.toast.deleteFailed': '削除に失敗しました',
 	'budgets.toast.loadFailed': '予算の読み込みに失敗しました',
+	'budgets.loadMore': 'さらに読み込む（{total}件中{shown}件）',
 	'budgets.showingAll': '{total, plural, other {#件すべての予算を表示中}}',
 
 	// Budget create/edit modal (components/modals/BudgetModal.svelte)

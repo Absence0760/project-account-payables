@@ -15,10 +15,22 @@ unspecified), in both IPv4 and IPv6. It rejects if ANY resolved address is
 unsafe, which also defeats a DNS record that mixes a public and an internal IP.
 A hostname that doesn't resolve is left alone — the connection fails naturally
 at request time, and rejecting on a transient DNS miss would be its own bug.
+
+**Two entry points, one policy.** `socket.getaddrinfo` is a *blocking* call: on
+an event loop it stalls every other request for the duration of the lookup (a
+DNS timeout is seconds, not milliseconds), and this guard sits in front of the
+Slack/Teams approval post, the enrichment adapters and the D365 ERP adapter —
+all `async def`. `assert_public_url_async` / `is_public_url_async` are the
+awaitable twins for those call sites; they resolve through
+``loop.getaddrinfo`` (the same thing ``services/webhooks/url_guard`` does) and
+share every policy decision with the sync pair via `_evaluate` — the sync and
+async forms cannot drift into two different answers. Sync callers (the PDF
+logo embed, which already runs in a worker thread) keep using the sync pair.
 """
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import socket
 from urllib.parse import urlparse
@@ -43,9 +55,13 @@ def _is_unsafe_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return False
 
 
-def assert_public_url(url: str) -> None:
-    """Raise ``UnsafeUrlError`` unless ``url`` is an http(s) URL whose host
-    resolves only to publicly routable addresses."""
+def _parse_target(url: str) -> tuple[str, int] | None:
+    """Validate scheme/host and judge a literal-IP host without any DNS.
+
+    Returns ``(host, port)`` when a name lookup is still needed, or ``None``
+    when the URL is already settled (literal IP that passed). Raises
+    ``UnsafeUrlError`` on a bad scheme / missing host / unsafe literal IP.
+    """
     parsed = urlparse(url or "")
     if parsed.scheme not in ("http", "https"):
         raise UnsafeUrlError("URL scheme must be http or https")
@@ -61,15 +77,13 @@ def assert_public_url(url: str) -> None:
     if literal is not None:
         if _is_unsafe_ip(literal):
             raise UnsafeUrlError("URL points at a non-public address")
-        return
+        return None
 
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    try:
-        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
-    except socket.gaierror:
-        # Unresolvable — let the connection fail naturally rather than reject a
-        # legitimate host that's momentarily unresolvable.
-        return
+    return host, parsed.port or (443 if parsed.scheme == "https" else 80)
+
+
+def _assert_addresses_public(infos) -> None:
+    """Reject if ANY address in a ``getaddrinfo`` result is non-public."""
     for info in infos:
         addr = info[4][0]
         try:
@@ -80,14 +94,67 @@ def assert_public_url(url: str) -> None:
             raise UnsafeUrlError("URL resolves to a non-public address")
 
 
+def assert_public_url(url: str) -> None:
+    """Raise ``UnsafeUrlError`` unless ``url`` is an http(s) URL whose host
+    resolves only to publicly routable addresses.
+
+    Blocking — never call this from a coroutine; use
+    :func:`assert_public_url_async` there.
+    """
+    target = _parse_target(url)
+    if target is None:
+        return
+    host, port = target
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        # Unresolvable — let the connection fail naturally rather than reject a
+        # legitimate host that's momentarily unresolvable.
+        return
+    _assert_addresses_public(infos)
+
+
+async def assert_public_url_async(url: str) -> None:
+    """Awaitable :func:`assert_public_url` — identical policy, non-blocking DNS.
+
+    The name resolution goes through ``loop.getaddrinfo``, so a slow or timing-out
+    lookup suspends only this coroutine instead of stalling the whole worker.
+    """
+    target = _parse_target(url)
+    if target is None:
+        return
+    host, port = target
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await loop.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except (socket.gaierror, UnicodeError):
+        # Same fail-open-on-DNS-miss rule as the sync form (see above).
+        return
+    _assert_addresses_public(infos)
+
+
 def is_public_url(url: str | None) -> bool:
     """Boolean form of :func:`assert_public_url` — ``False`` for None / empty /
     non-http(s) / internal-resolving URLs. Use at best-effort fetch sites that
-    fail soft (return None / skip) rather than raising."""
+    fail soft (return None / skip) rather than raising.
+
+    Blocking — see :func:`is_public_url_async` for coroutine call sites.
+    """
     if not url:
         return False
     try:
         assert_public_url(url)
+        return True
+    except UnsafeUrlError:
+        return False
+
+
+async def is_public_url_async(url: str | None) -> bool:
+    """Awaitable :func:`is_public_url` — identical verdict, non-blocking DNS."""
+    if not url:
+        return False
+    try:
+        await assert_public_url_async(url)
         return True
     except UnsafeUrlError:
         return False

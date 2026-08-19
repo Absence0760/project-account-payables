@@ -13,6 +13,7 @@ endpoint does. No PUT/PATCH/DELETE is defined anywhere in this router, keeping
 the audit trail GET-only.
 """
 
+import asyncio
 import io
 import uuid
 from datetime import UTC, date, datetime, time, timedelta
@@ -214,7 +215,7 @@ async def export_audit_trail(
             entries=export,
             brand=get_brand_context(org.settings if org else None),
         )
-        pdf_bytes = render_audit_report_pdf(ctx)
+        pdf_bytes = await asyncio.to_thread(render_audit_report_pdf, ctx)
         filename = f"audit_report_{date.today().isoformat()}.pdf"
         return Response(
             content=pdf_bytes,

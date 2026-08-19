@@ -172,14 +172,24 @@ class OptimizerRecommendation(BaseModel):
     roi: DiscountROIResponse
     selected: bool  # True if it fits within the cash budget
     cumulative_outlay: MoneyAmount  # running cash committed through this rank
+    # This offer's money is in a currency the totals are NOT in, so it is
+    # excluded from every total (and, when a cash budget binds, from selection).
+    # Its ROI percentages remain meaningful — a rate is currency-free.
+    unconvertible: bool = False
 
 
 class OptimizerResponse(BaseModel):
     cash_budget: OptionalMoneyAmount = None
+    # The currency EVERY money total below is denominated in (the org's
+    # reporting currency) — stated rather than assumed, because the totals are
+    # sums across offers and offers carry their own currencies.
+    currency: str = "USD"
     cost_of_capital_pct: PercentNumber
     total_savings_available: MoneyAmount
     total_savings_selected: MoneyAmount
     total_outlay_selected: MoneyAmount
+    # Ranked offers left out of the totals because they are in another currency.
+    unconvertible_count: int = 0
     recommendations: list[OptimizerRecommendation]
 
 
@@ -203,3 +213,6 @@ class DiscountDashboard(BaseModel):
     open_offer_count: int
     projected_savings: MoneyAmount  # net benefit of accepting all worthwhile open offers
     currency: str
+    # Open offers excluded from `projected_savings` because they are denominated
+    # in a currency other than `currency` — never summed in at face value.
+    unconvertible_offer_count: int = 0

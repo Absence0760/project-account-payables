@@ -320,7 +320,7 @@ async def test_login_throttles_after_repeated_wrong_passwords(fake_redis, monkey
     from app.services.rate_limit import LOGIN_FAILURE_LIMIT
 
     monkeypatch.setattr(auth_api, "dispatch_auth_audit", AsyncMock())
-    monkeypatch.setattr(auth_api.pwd_context, "verify", lambda *_a, **_k: False)
+    monkeypatch.setattr("app.utils.passwords.pwd_context.verify", lambda *_a, **_k: False)
 
     user = _user()
     for i in range(LOGIN_FAILURE_LIMIT):
@@ -378,19 +378,19 @@ async def test_successful_login_clears_the_budget(fake_redis, monkeypatch):
 
     user = _user()
 
-    monkeypatch.setattr(auth_api.pwd_context, "verify", lambda *_a, **_k: False)
+    monkeypatch.setattr("app.utils.passwords.pwd_context.verify", lambda *_a, **_k: False)
     for i in range(LOGIN_FAILURE_LIMIT - 1):
         with pytest.raises(HTTPException):
             await auth_api.login(
                 _login_body(), _fake_request(ip=f"198.51.100.{i}"), db=_db_returning(user)
             )
 
-    monkeypatch.setattr(auth_api.pwd_context, "verify", lambda *_a, **_k: True)
+    monkeypatch.setattr("app.utils.passwords.pwd_context.verify", lambda *_a, **_k: True)
     token = await auth_api.login(_login_body(), _fake_request(), db=_db_returning(user))
     assert token.access_token
 
     # Budget wiped: a fresh run of wrong guesses gets the full allowance again.
-    monkeypatch.setattr(auth_api.pwd_context, "verify", lambda *_a, **_k: False)
+    monkeypatch.setattr("app.utils.passwords.pwd_context.verify", lambda *_a, **_k: False)
     for i in range(LOGIN_FAILURE_LIMIT):
         with pytest.raises(HTTPException) as exc:
             await auth_api.login(
@@ -523,7 +523,7 @@ async def test_portal_login_throttles_per_account(fake_redis, monkeypatch):
     from app.services.rate_limit import LOGIN_FAILURE_LIMIT
 
     monkeypatch.setattr(portal_auth, "dispatch_auth_audit", AsyncMock())
-    monkeypatch.setattr(portal_auth.pwd_context, "verify", lambda *_a, **_k: False)
+    monkeypatch.setattr("app.utils.passwords.pwd_context.verify", lambda *_a, **_k: False)
 
     vu = _vendor_user()
     body = PortalLoginRequest(email=vu.email, password="wrong-password")
@@ -557,7 +557,7 @@ async def test_portal_login_budget_is_tenant_scoped(fake_redis, monkeypatch):
     from app.services.rate_limit import LOGIN_FAILURE_LIMIT
 
     monkeypatch.setattr(portal_auth, "dispatch_auth_audit", AsyncMock())
-    monkeypatch.setattr(portal_auth.pwd_context, "verify", lambda *_a, **_k: False)
+    monkeypatch.setattr("app.utils.passwords.pwd_context.verify", lambda *_a, **_k: False)
 
     vu = _vendor_user()
     body = PortalLoginRequest(email=vu.email, password="wrong-password")
@@ -590,7 +590,7 @@ async def test_portal_login_records_a_failure_audit_row(fake_redis, monkeypatch)
 
     audit = AsyncMock()
     monkeypatch.setattr(portal_auth, "dispatch_auth_audit", audit)
-    monkeypatch.setattr(portal_auth.pwd_context, "verify", lambda *_a, **_k: False)
+    monkeypatch.setattr("app.utils.passwords.pwd_context.verify", lambda *_a, **_k: False)
 
     vu = _vendor_user()
     with pytest.raises(HTTPException):

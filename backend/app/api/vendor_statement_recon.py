@@ -733,7 +733,7 @@ async def download_source_statement(
     if not run.file_key:
         raise HTTPException(status_code=404, detail="No source statement stored for this run")
 
-    content, content_type = storage.get_file(run.file_key, expected_prefix=f"{org_id}/")
+    content, content_type = await storage.get_file(run.file_key, expected_prefix=f"{org_id}/")
     filename = run.file_key.rsplit("/", 1)[-1]
     return Response(
         content=content,
@@ -841,4 +841,4 @@ async def delete_reconciliation(
     # that justified keeping it is gone. `delete_file` is already best-effort
     # and idempotent, so a storage hiccup can't fail a completed delete.
     if file_key:
-        storage.delete_file(file_key)
+        await storage.delete_file(file_key)

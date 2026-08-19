@@ -23,6 +23,7 @@ re-sends byte-identical bytes (and thus the same signature).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -41,6 +42,18 @@ from app.models.webhook import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Strong references to the in-flight immediate-delivery tasks.
+#
+# `asyncio` keeps only a WEAK reference to a running task, so a task whose sole
+# reference is the local variable that created it can be garbage-collected
+# mid-await — the hazard the stdlib docs warn about. Here that would abandon a
+# delivery *after* its row was written and quite possibly mid-POST to the
+# customer's endpoint, leaving it `pending` until the retry sweep happened
+# along. `erp_dispatch` and `payment_erp_sync` hold their fire-and-forget tasks
+# in exactly this shape; the discard callback keeps the set bounded by the
+# number actually in flight.
+_delivery_tasks: set[asyncio.Task] = set()
 
 
 def _money_str(value) -> str | None:
@@ -163,10 +176,15 @@ async def _emit(
         _spawn_immediate_attempt(did)
 
 
+def _finish_delivery_task(task: asyncio.Task) -> None:
+    """Release the strong reference and retrieve any exception."""
+    _delivery_tasks.discard(task)
+    if not task.cancelled():
+        task.exception()
+
+
 def _spawn_immediate_attempt(delivery_id: uuid.UUID) -> None:
     """Best-effort immediate delivery on the running event loop, if any."""
-    import asyncio
-
     from app.database import in_dispatch_scope
     from app.services.webhooks.delivery import process_delivery_by_id
 
@@ -185,11 +203,17 @@ def _spawn_immediate_attempt(delivery_id: uuid.UUID) -> None:
         # the same durable fallback this function already takes when there is
         # no running loop at all. See `database.dispatch_engine_scope`.
         return
-    task = loop.create_task(process_delivery_by_id(delivery_id))
-    # Swallow any task exception so an unawaited failure never surfaces as an
-    # "exception was never retrieved" warning — delivery errors are persisted on
-    # the row, not raised.
-    task.add_done_callback(lambda t: t.exception())
+    task = loop.create_task(
+        process_delivery_by_id(delivery_id), name=f"webhook-delivery-{delivery_id}"
+    )
+    # Hold a strong reference until the task finishes — without it the only
+    # reference is this local, and the loop's own registry is weak, so the task
+    # can be collected mid-POST (see `_delivery_tasks`).
+    _delivery_tasks.add(task)
+    # Discard the reference AND swallow any task exception, so an unawaited
+    # failure never surfaces as an "exception was never retrieved" warning —
+    # delivery errors are persisted on the row, not raised.
+    task.add_done_callback(_finish_delivery_task)
 
 
 # ---------------------------------------------------------------------------

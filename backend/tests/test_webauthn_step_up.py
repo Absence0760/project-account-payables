@@ -514,7 +514,7 @@ async def test_password_step_up_still_works_alongside_the_assertion_path():
     with (
         patch("app.api.auth.settings.mfa_enabled", True),
         patch("app.api.auth.check_rate_limit", new=AsyncMock()),
-        patch("app.services.mfa.pwd_context.verify", return_value=True),
+        patch("app.utils.passwords.pwd_context.verify", return_value=True),
     ):
         start = await auth_mod.passkey_register_start(
             body=MFAStepUpRequest(password="correct horse"), user=user, db=db

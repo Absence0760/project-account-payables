@@ -141,6 +141,7 @@ export const messages = {
 	'invoices.col.status': 'Statut',
 	'invoices.selectAllAria': 'Sélectionner toutes les factures',
 	'invoices.empty': 'Aucune facture ne correspond à vos filtres.',
+	'invoices.empty.errored': 'Impossible de charger les factures. Réessayez.',
 	'invoices.row.delete': 'Supprimer',
 	'invoices.row.confirm': 'Confirmer',
 	'invoices.loadMore': 'Charger plus ({shown} sur {total})',
@@ -192,6 +193,7 @@ export const messages = {
 	'payments.selectAllPayableAria': 'Sélectionner toutes les factures payables',
 	'payments.overdue': 'En retard',
 	'payments.history.empty': 'Aucun paiement ne correspond à vos filtres.',
+	'payments.history.empty.errored': 'Impossible de charger les paiements. Réessayez.',
 	'payments.history.remittance': 'Avis de paiement',
 	'payments.history.void': 'Annuler',
 	'payments.history.complianceRelease': 'Libérer',
@@ -339,6 +341,7 @@ export const messages = {
 	'contracts.col.value': 'Valeur',
 	'contracts.col.spend': 'Dépenses',
 	'contracts.empty': 'Aucun contrat ne correspond à vos filtres.',
+	'contracts.empty.errored': 'Impossible de charger les contrats. Réessayez.',
 	'contracts.notFound': 'Contrat introuvable',
 	'contracts.row.open': 'Ouvrir le contrat {number}',
 	'contracts.overSpendLimit': 'Limite de dépenses dépassée',
@@ -931,6 +934,8 @@ export const messages = {
 		'Le solde de votre banque connectée n’a pas été utilisé : ce compte est tenu dans une devise différente de votre devise de reporting {currency}, et amorcer la projection à partir de lui ferait de chaque solde courant ci-dessous un mélange de deux devises. Les chiffres partent de votre solde d’ouverture enregistré. Alignez la devise de reporting sur le compte, ou saisissez un solde d’ouverture ci-dessus.',
 	'cfo.position.providerSkipped':
 		'Le solde de votre banque connectée n’a pas été utilisé : la projection ci-dessous n’en part donc pas. Les chiffres partent de votre solde d’ouverture enregistré.',
+	'cfo.position.unconvertedOutflows':
+		'Non converti : {n, plural, one {# facture} other {# factures}} sans taux de change vers {currency}, comptabilisées à leur valeur faciale — le solde courant ci-dessous mélange donc des devises. Enregistrez le taux manquant avant d’agir sur ces chiffres.',
 	'cfo.position.colPeriod': 'Période',
 	'cfo.position.colOpening': 'Ouverture',
 	'cfo.position.colOutflow': 'Sortie',
@@ -987,6 +992,7 @@ export const messages = {
 	'expenses.search.aria': 'Rechercher des dépenses',
 	'expenses.loading': 'Chargement…',
 	'expenses.empty': 'Aucune dépense ne correspond à vos filtres.',
+	'expenses.empty.errored': 'Impossible de charger les dépenses. Réessayez.',
 	'expenses.col.date': 'Date',
 	'expenses.col.merchant': 'Commerçant',
 	'expenses.col.category': 'Catégorie',
@@ -1038,6 +1044,7 @@ export const messages = {
 	'expenses.reports.col.amount': 'Montant',
 	'expenses.reports.openAria': 'Ouvrir le rapport {number}',
 	'expenses.reports.empty': 'Aucun rapport de dépenses pour le moment.',
+	'expenses.reports.loadMore': 'Charger plus ({shown} sur {total})',
 	'expenses.reports.showingAll': '{total, plural, one {Affichage du # rapport} other {Affichage des # rapports}}',
 	'expenses.reports.toast.created': 'Rapport créé',
 	'expenses.reports.toast.createFailed': 'Échec de la création',
@@ -1092,6 +1099,7 @@ export const messages = {
 	'expenses.cards.unmatch': 'Annuler le rapprochement',
 	'expenses.cards.ignore': 'Ignorer',
 	'expenses.cards.empty': 'Aucune transaction par carte. Importez un CSV ou synchronisez les cartes virtuelles.',
+	'expenses.cards.loadMore': 'Charger plus ({shown} sur {total})',
 	'expenses.cards.showingAll': '{total, plural, one {Affichage de la # transaction} other {Affichage des # transactions}}',
 	'expenses.cards.toast.loadFailed': 'Échec du chargement des transactions par carte',
 	'expenses.cards.toast.imported': '{n, plural, one {# transaction importée} other {# transactions importées}}',
@@ -1230,6 +1238,7 @@ export const messages = {
 	'requisitions.toast.deleted': 'Demande supprimée',
 	'requisitions.toast.deleteFailed': 'Échec de la suppression',
 	'requisitions.toast.loadFailed': 'Échec du chargement des demandes',
+	'requisitions.loadMore': 'Charger plus ({shown} sur {total})',
 	'requisitions.showingAll':
 		'{total, plural, one {Affichage de la # demande} other {Affichage des # demandes}}',
 
@@ -1314,6 +1323,7 @@ export const messages = {
 	'intake.toast.alreadyConverted': 'Déjà convertie ({number})',
 	'intake.toast.convertFailed': 'Échec de la conversion',
 	'intake.toast.loadFailed': 'Échec du chargement des requêtes de réception',
+	'intake.loadMore': 'Charger plus ({shown} sur {total})',
 	'intake.showingAll':
 		'{total, plural, one {Affichage de la # requête} other {Affichage des # requêtes}}',
 
@@ -1384,6 +1394,7 @@ export const messages = {
 	'catalogs.guided.catalogLabel': 'Catalogue : {name}',
 	'catalogs.guided.contractLabel': 'Contrat : {number}',
 	'catalogs.guided.preferredTag': 'Privilégié',
+	'catalogs.loadMore': 'Charger plus ({shown} sur {total})',
 	'catalogs.showingAll':
 		'{total, plural, one {Affichage du # catalogue} other {Affichage des # catalogues}}',
 
@@ -1494,6 +1505,7 @@ export const messages = {
 	'budgets.toast.deleted': 'Budget supprimé',
 	'budgets.toast.deleteFailed': 'Échec de la suppression',
 	'budgets.toast.loadFailed': 'Échec du chargement des budgets',
+	'budgets.loadMore': 'Charger plus ({shown} sur {total})',
 	'budgets.showingAll':
 		'{total, plural, one {Affichage du # budget} other {Affichage des # budgets}}',
 

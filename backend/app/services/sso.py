@@ -17,7 +17,6 @@ discovery document. Tenant-scoped config lives on Organization.settings.sso:
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import binascii
 import hashlib
@@ -36,7 +35,7 @@ from joserfc.jwk import KeySet
 
 from app.config import settings
 from app.redis import get_redis
-from app.utils.url_safety import UnsafeUrlError, assert_public_url
+from app.utils.url_safety import UnsafeUrlError, assert_public_url_async
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +135,8 @@ async def _assert_sso_url_public(url: str, *, what: str, error: type[ValueError]
     `assert_public_url` every other admin-supplied URL this app fetches goes
     through (branding logo, chat webhooks, ERP / enrichment base URLs).
 
-    Resolution is a blocking `getaddrinfo`, so it runs off the event loop.
+    Resolution goes through the awaitable form of the guard (`loop.getaddrinfo`),
+    so it never blocks the event loop.
 
     **Non-deployed environments log instead of refusing.** The documented
     local IdP is Keycloak on `http://localhost:8088` (`pnpm idp:up` +
@@ -147,7 +147,7 @@ async def _assert_sso_url_public(url: str, *, what: str, error: type[ValueError]
     above is unconditional either way, so a `file://` URL is refused in dev too.
     """
     try:
-        await asyncio.to_thread(assert_public_url, url)
+        await assert_public_url_async(url)
     except UnsafeUrlError as exc:
         if settings.is_deployed:
             # PII-free: names the field, never the URL (it can carry a tenant

@@ -278,7 +278,7 @@ async def generate_check_issue(
         # persisted, so its just-uploaded object is unreferenced — delete it so
         # a loser's account-number-bearing bytes don't orphan in the bucket.
         await db.rollback()
-        storage.delete_file(file_key)
+        await storage.delete_file(file_key)
         winner = (
             await db.execute(
                 select(PositivePayFile).where(
@@ -455,7 +455,7 @@ async def download_file(
     if row.file_key.split("/", 1)[0] != str(org_id):
         raise HTTPException(status_code=404, detail="File not found")
     try:
-        content, content_type = storage.get_file(row.file_key)
+        content, content_type = await storage.get_file(row.file_key)
     except Exception:
         raise HTTPException(status_code=404, detail="File not found") from None
     return Response(content=content, media_type=content_type)
@@ -635,4 +635,4 @@ async def delete_file(
     file_key = row.file_key
     await db.delete(row)
     await db.commit()
-    storage.delete_file(file_key)
+    await storage.delete_file(file_key)

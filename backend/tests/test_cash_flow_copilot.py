@@ -67,6 +67,7 @@ async def _seed_invoice(
     invoice_date=None,
     due_date=None,
     vendor_id=None,
+    currency="USD",
 ):
     from app.models.invoice import Invoice
 
@@ -78,7 +79,7 @@ async def _seed_invoice(
         vendor_name=vendor_name,
         vendor_id=vendor_id,
         amount=Decimal(str(amount)),
-        currency="USD",
+        currency=currency,
         status=status,
         invoice_date=invoice_date or date.today(),
         due_date=due_date,
@@ -886,6 +887,68 @@ async def test_propose_payment_plan_retimes_captured_discount_onto_pay_by(realdb
     # the full 1000 must NOT still be sitting on its original due-date period.
     total_outflow = sum((p.outflow for p in plan.periods), Decimal("0"))
     assert total_outflow == Decimal("950.00")
+
+
+async def test_propose_payment_plan_does_not_retime_a_foreign_currency_offer(realdb):
+    """A EUR offer's outlay is a EUR figure. The plan curve is denominated in
+    the org's reporting currency, so swapping the invoice's reporting-currency
+    commitment row for that outlay would silently re-price the whole running
+    balance. The offer is flagged `unconvertible` by the optimizer, excluded
+    from `total_savings_selected`, and routed to `unretimed_offer_ids` — the
+    existing "we could not re-time this" channel — instead."""
+    from app.services.assistant.tools.cashflow import propose_payment_plan
+    from app.services.assistant.tools.schemas import ProposePaymentPlanParams
+
+    a = realdb.info("a")
+    mk_a = realdb.sessionmaker("a")
+    due = date.today() + timedelta(days=40)
+    async with mk_a() as sa:
+        ent = await _default_entity_id(sa, a.org_id)
+        inv = await _seed_invoice(
+            sa,
+            a.org_id,
+            ent,
+            number="FX-RETIME-1",
+            vendor_name="EuroCo",
+            amount="1000.00",
+            status="approved",
+            due_date=due,
+            currency="EUR",
+        )
+        await sa.commit()
+        inv_id = str(inv.id)
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        r = await c.post(
+            "/api/discounts/offers",
+            json={
+                "scope": "invoice",
+                "invoice_id": inv_id,
+                "currency": "EUR",
+                "tiers": [{"days": 5, "percent": "5.00"}],
+            },
+        )
+        assert r.status_code == 201, r.text
+        offer_id = r.json()["id"]
+
+    ctrl_mk = realdb.control_sessionmaker()
+    async with mk_a() as sa, ctrl_mk() as ctrl:
+        plan = await propose_payment_plan(
+            sa,
+            org_id=a.org_id,
+            entity_id=None,
+            current_user_id=a.users["admin"],
+            control_db=ctrl,
+            params=ProposePaymentPlanParams(granularity="week", opening_balance=Decimal("5000.00")),
+        )
+
+    assert offer_id in plan.unretimed_offer_ids
+    # No EUR savings folded into a USD total.
+    assert plan.total_savings_selected == Decimal("0.00")
+    # The invoice stays on its own schedule at the commitment row's own figure —
+    # 1000, NOT the 950 EUR discounted outlay.
+    total_outflow = sum((p.outflow for p in plan.periods), Decimal("0"))
+    assert total_outflow == Decimal("1000.00")
 
 
 async def test_propose_payment_plan_never_double_counts_two_offers_on_one_invoice(realdb):

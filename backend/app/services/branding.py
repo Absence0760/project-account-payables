@@ -129,6 +129,15 @@ def fetch_logo_bytes(logo_url: str | None) -> bytes | None:
     renderers fall back to the product-name text when this returns ``None``, so
     logo embedding can never break PDF generation. Local-first: a tenant that
     sets no logo (or whose CDN is unreachable in a dev box) renders fine.
+
+    **Blocking — never call this from a coroutine.** It does a blocking DNS
+    lookup (the SSRF guard's sync form) and a blocking ``httpx.Client`` GET, up
+    to ``LOGO_FETCH_TIMEOUT_SECONDS``. Its only caller is
+    ``build_logo_flowable``, which the PDF renderers use, and every route reaches
+    those through ``await asyncio.to_thread(render_..., ctx)`` — see
+    ``tests/test_pdf_render_offloaded.py``. A coroutine that needs this itself
+    must offload it the same way, or use ``url_safety.is_public_url_async`` plus
+    an ``httpx.AsyncClient``.
     """
     url = _clean_url(logo_url)
     if not url:

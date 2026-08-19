@@ -142,6 +142,7 @@ export const messages = {
 	'invoices.col.status': 'Status',
 	'invoices.selectAllAria': 'Selecionar todas as faturas',
 	'invoices.empty': 'Nenhuma fatura corresponde aos seus filtros.',
+	'invoices.empty.errored': 'Não foi possível carregar as faturas. Tente novamente.',
 	'invoices.row.delete': 'Excluir',
 	'invoices.row.confirm': 'Confirmar',
 	'invoices.loadMore': 'Carregar mais ({shown} de {total})',
@@ -193,6 +194,7 @@ export const messages = {
 	'payments.selectAllPayableAria': 'Selecionar todas as faturas pagáveis',
 	'payments.overdue': 'Vencida',
 	'payments.history.empty': 'Nenhum pagamento corresponde aos seus filtros.',
+	'payments.history.empty.errored': 'Não foi possível carregar os pagamentos. Tente novamente.',
 	'payments.history.remittance': 'Comprovante de pagamento',
 	'payments.history.void': 'Anular',
 	'payments.history.complianceRelease': 'Liberar',
@@ -340,6 +342,7 @@ export const messages = {
 	'contracts.col.value': 'Valor',
 	'contracts.col.spend': 'Gasto',
 	'contracts.empty': 'Nenhum contrato corresponde aos seus filtros.',
+	'contracts.empty.errored': 'Não foi possível carregar os contratos. Tente novamente.',
 	'contracts.notFound': 'Contrato não encontrado',
 	'contracts.row.open': 'Abrir contrato {number}',
 	'contracts.overSpendLimit': 'Acima do limite de gastos',
@@ -932,6 +935,8 @@ export const messages = {
 		'O saldo do seu banco conectado não foi usado: essa conta é mantida em uma moeda diferente da sua moeda de relatório {currency}, e partir dela faria com que cada saldo corrente abaixo fosse uma mistura de duas moedas. Os números partem do seu saldo inicial salvo. Ajuste a moeda de relatório à da conta, ou informe um saldo inicial acima.',
 	'cfo.position.providerSkipped':
 		'O saldo do seu banco conectado não foi usado, então a projeção abaixo não parte dele. Os números partem do seu saldo inicial salvo.',
+	'cfo.position.unconvertedOutflows':
+		'Não convertido: {n, plural, one {# nota fiscal} other {# notas fiscais}} sem taxa de câmbio para {currency}, contabilizadas pelo valor de face — então o saldo corrente abaixo mistura moedas. Registre a taxa que falta antes de agir com base nestes números.',
 	'cfo.position.colPeriod': 'Período',
 	'cfo.position.colOpening': 'Abertura',
 	'cfo.position.colOutflow': 'Saída',
@@ -988,6 +993,7 @@ export const messages = {
 	'expenses.search.aria': 'Pesquisar despesas',
 	'expenses.loading': 'Carregando…',
 	'expenses.empty': 'Nenhuma despesa corresponde aos seus filtros.',
+	'expenses.empty.errored': 'Não foi possível carregar as despesas. Tente novamente.',
 	'expenses.col.date': 'Data',
 	'expenses.col.merchant': 'Estabelecimento',
 	'expenses.col.category': 'Categoria',
@@ -1039,6 +1045,7 @@ export const messages = {
 	'expenses.reports.col.amount': 'Valor',
 	'expenses.reports.openAria': 'Abrir relatório {number}',
 	'expenses.reports.empty': 'Ainda não há relatórios de despesas.',
+	'expenses.reports.loadMore': 'Carregar mais ({shown} de {total})',
 	'expenses.reports.showingAll': '{total, plural, one {Mostrando # relatório} other {Mostrando todos os # relatórios}}',
 	'expenses.reports.toast.created': 'Relatório criado',
 	'expenses.reports.toast.createFailed': 'Falha ao criar',
@@ -1093,6 +1100,7 @@ export const messages = {
 	'expenses.cards.unmatch': 'Desfazer conciliação',
 	'expenses.cards.ignore': 'Ignorar',
 	'expenses.cards.empty': 'Nenhuma transação de cartão. Importe um CSV ou sincronize cartões virtuais.',
+	'expenses.cards.loadMore': 'Carregar mais ({shown} de {total})',
 	'expenses.cards.showingAll': '{total, plural, one {Mostrando # transação} other {Mostrando todas as # transações}}',
 	'expenses.cards.toast.loadFailed': 'Falha ao carregar transações de cartão',
 	'expenses.cards.toast.imported': '{n, plural, one {# transação importada} other {# transações importadas}}',
@@ -1231,6 +1239,7 @@ export const messages = {
 	'requisitions.toast.deleted': 'Requisição excluída',
 	'requisitions.toast.deleteFailed': 'Falha ao excluir',
 	'requisitions.toast.loadFailed': 'Falha ao carregar as requisições',
+	'requisitions.loadMore': 'Carregar mais ({shown} de {total})',
 	'requisitions.showingAll':
 		'{total, plural, one {Exibindo # requisição} other {Exibindo todas as # requisições}}',
 
@@ -1315,6 +1324,7 @@ export const messages = {
 	'intake.toast.alreadyConverted': 'Já convertida ({number})',
 	'intake.toast.convertFailed': 'Falha ao converter',
 	'intake.toast.loadFailed': 'Falha ao carregar as solicitações de recebimento',
+	'intake.loadMore': 'Carregar mais ({shown} de {total})',
 	'intake.showingAll':
 		'{total, plural, one {Exibindo # solicitação} other {Exibindo todas as # solicitações}}',
 
@@ -1385,6 +1395,7 @@ export const messages = {
 	'catalogs.guided.catalogLabel': 'Catálogo: {name}',
 	'catalogs.guided.contractLabel': 'Contrato: {number}',
 	'catalogs.guided.preferredTag': 'Preferencial',
+	'catalogs.loadMore': 'Carregar mais ({shown} de {total})',
 	'catalogs.showingAll':
 		'{total, plural, one {Exibindo # catálogo} other {Exibindo todos os # catálogos}}',
 
@@ -1495,6 +1506,7 @@ export const messages = {
 	'budgets.toast.deleted': 'Orçamento excluído',
 	'budgets.toast.deleteFailed': 'Falha ao excluir',
 	'budgets.toast.loadFailed': 'Falha ao carregar os orçamentos',
+	'budgets.loadMore': 'Carregar mais ({shown} de {total})',
 	'budgets.showingAll':
 		'{total, plural, one {Exibindo # orçamento} other {Exibindo todos os # orçamentos}}',
 

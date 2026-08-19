@@ -381,6 +381,11 @@
 		return params;
 	}
 
+	// Three states, not two: a failed load must not read as "nothing matched".
+	let historyEmptyMessage = $derived(
+		paymentStore.errored ? m('payments.history.empty.errored') : m('payments.history.empty')
+	);
+
 	let searchTimer: ReturnType<typeof setTimeout>;
 	function debouncedFetch() {
 		clearTimeout(searchTimer);
@@ -412,6 +417,9 @@
 	$effect(() => {
 		search;
 		debouncedFetch();
+		// Cancel a pending debounce on teardown: without it the timer fires
+		// after the page is gone and lands a stale list into the shared store.
+		return () => clearTimeout(searchTimer);
 	});
 
 	async function loadSummary() {
@@ -769,7 +777,7 @@
 		<DataTable
 			columns={HISTORY_COLUMNS}
 			isEmpty={paymentStore.all.length === 0}
-			empty={m('payments.history.empty')}
+			empty={historyEmptyMessage}
 			colspan={8}
 		>
 			{#snippet body()}

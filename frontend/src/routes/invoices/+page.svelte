@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Invoice, InvoiceStatus, AdvancedSearchFilters } from '$lib/types/invoice';
-	import { INVOICE_STATUSES, STATUS_LABELS, EMPTY_ADVANCED_FILTERS, SYSTEM_MANAGED_STATUSES, commonTransitions } from '$lib/types/invoice';
+	import { INVOICE_STATUSES, STATUS_LABELS, EMPTY_ADVANCED_FILTERS, SYSTEM_MANAGED_STATUSES, IMMUTABLE_STATUSES, commonTransitions } from '$lib/types/invoice';
 	import { invoiceStore } from '$lib/stores/invoices.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { api } from '$lib/api';
@@ -159,6 +159,9 @@
 	$effect(() => {
 		search;
 		debouncedFetch();
+		// Cancel a pending debounce on teardown: without it the timer fires
+		// after the page is gone and lands a stale list into the shared store.
+		return () => clearTimeout(searchTimer);
 	});
 
 	// Deep-link: `/invoices?id=<uuid>` (e.g. the "Invoice" action on the
@@ -231,6 +234,11 @@
 		const quick = new Set(quickStatuses);
 		return INVOICE_STATUSES.filter((s) => quick.has(s) || activeStatuses.includes(s));
 	});
+
+	// Three states, not two: a failed load must not read as "nothing matched".
+	let emptyMessage = $derived(
+		invoiceStore.errored ? m('invoices.empty.errored') : m('invoices.empty')
+	);
 
 	function statusCount(status: InvoiceStatus): number {
 		return invoiceStore.statusCounts[status] ?? 0;
@@ -386,8 +394,6 @@
 	let confirmDeleteId = $state<string | null>(null);
 	let confirmBulkDelete = $state(false);
 
-	const IMMUTABLE_STATUSES = new Set(['done', 'sent_to_erp', 'sending_to_erp']);
-
 	async function deleteInvoice(id: string) {
 		deletingId = id;
 		try {
@@ -539,7 +545,7 @@
 		</div>
 	{/if}
 
-	<DataTable isEmpty={invoiceStore.all.length === 0} empty={m('invoices.empty')} colspan={9} fixed stickyHeader>
+	<DataTable isEmpty={invoiceStore.all.length === 0} empty={emptyMessage} colspan={9} fixed stickyHeader>
 		{#snippet header()}
 			<tr>
 				<th class="checkbox-col"><input type="checkbox" aria-label={m('invoices.selectAllAria')} checked={allSelected} onchange={toggleSelectAll} /></th>

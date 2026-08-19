@@ -65,16 +65,38 @@ chokepoint that already runs after every extraction and on every invoice
 mutation. Behaviour:
 
 - **Same currency** → rate `1`, no FX adapter call, `reporting_amount == amount`.
-- **Idempotent** → an already-materialized row in the current reporting currency
-  is left untouched; the locked rate is **never** re-fetched (historical
-  stability). It re-locks only when the org's reporting currency changes or the
-  row was never materialized.
+- **Idempotent** → a row whose lock still *describes it* is left untouched; the
+  locked rate is **never** re-fetched for such a row (historical stability).
+- **The lock must keep describing the row.** `amount` and `currency` are both
+  editable on `PATCH /api/invoices/{id}` right up to approval, and
+  `refresh_warnings` re-runs materialization afterwards — so the persisted
+  triple can stop matching the row it was derived from. Two checks
+  (`_lock_is_self_consistent`), both answerable from the row alone:
+  - *the rate matches the pair's shape* — a same-currency lock is exactly `1`,
+    a cross-currency lock is not. A currency edit that crosses the reporting
+    currency in either direction contradicts the stored rate → **re-fetch**.
+  - *the figure reconciles* — `amount × rate == reporting_amount`. If only the
+    amount moved, the row is **re-scaled at the already-locked rate, with no FX
+    call**: the liability was accrued at the booking rate, and correcting a
+    mis-extracted figure does not retroactively re-price it. (It also means an
+    amount correction fixes the reporting number even while the FX provider is
+    down.)
+
+  It re-locks (fresh rate) when the org's reporting currency changes, when the
+  row was never materialized, or on the currency-shape mismatch above.
+  **Known gap:** a currency edit between two *foreign* currencies (`EUR → GBP`
+  on a USD-reporting org) with the amount unchanged satisfies both checks — the
+  row does not record which currency the rate was for. Tracked in
+  `../../docs/followups.md`.
 - **Fail-soft** → an FX outage leaves the columns `NULL` and never blocks saving
   the invoice. Rollups treat a `NULL` reporting amount as "not yet converted"
   (see below).
 
 Money is always `Decimal` / `Numeric` and quantizes to 2 dp (`ROUND_HALF_UP`);
-the rate to 8 dp. Never `float`.
+the rate to 8 dp. Never `float`. The persisted triple is **self-consistent by
+construction** — `reporting_amount` is derived from the *stored* (8 dp) rate,
+not the provider's full-precision one — so an auditor can re-derive it and the
+staleness check above can rely on the identity.
 
 ## Roll-up into the aggregates
 

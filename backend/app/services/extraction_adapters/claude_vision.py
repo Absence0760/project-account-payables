@@ -17,6 +17,7 @@ from app.services.extraction_adapters.base import (
     ExtractionAdapter,
     ExtractionResult,
     StatementExtractionResult,
+    coerce_confidence,
 )
 from app.services.extraction_adapters.dispatcher import register_extraction_adapter
 from app.services.extraction_adapters.statement_extraction import (
@@ -129,7 +130,7 @@ def _parse_field(data: dict | None, field_name: str) -> ExtractedField:
         return ExtractedField(None, 0.0)
     field = data[field_name]
     if isinstance(field, dict):
-        return ExtractedField(field.get("value"), field.get("confidence", 0.0))
+        return ExtractedField(field.get("value"), coerce_confidence(field.get("confidence")))
     return ExtractedField(str(field), 0.5)
 
 

@@ -24,7 +24,7 @@ from app.models import Base
 from app.models.organization import Organization
 from app.models.user import Role, User, UserRole
 from app.services.billing.plan_catalog import ensure_plan_catalog, ensure_subscription
-from app.utils.passwords import pwd_context
+from app.utils.passwords import hash_password
 
 logger = logging.getLogger(__name__)
 
@@ -334,7 +334,7 @@ async def _provision_into(
             id=user_id,
             email=admin_email,
             full_name=admin_name,
-            hashed_password=pwd_context.hash(admin_password),
+            hashed_password=await hash_password(admin_password),
             is_active=True,
             organization_id=org_id,
             must_change_password=must_change_password,

@@ -759,13 +759,13 @@ async def test_delete_file(realdb):
         # The object holds full account / routing numbers — confirm it exists,
         # then that delete purges it from MinIO (not just the DB row), so no
         # PII-bearing bytes linger at rest.
-        assert storage.get_file(file_key)[0]
+        assert (await storage.get_file(file_key))[0]
         resp = await c.delete(f"/api/positive-pay/{file_id}")
         assert resp.status_code == 204
         gone = await c.get(f"/api/positive-pay/{file_id}")
         assert gone.status_code == 404
     with pytest.raises(Exception):
-        storage.get_file(file_key)
+        await storage.get_file(file_key)
 
 
 # ---------------------------------------------------------------------------

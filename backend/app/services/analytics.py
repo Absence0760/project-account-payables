@@ -687,7 +687,19 @@ def bucket_outflows(rows: list[dict], *, granularity: str = "week", today=None) 
 
         {period, period_start, period_end, scheduled_amount,
          committed_amount, pending_amount, discount_eligible_amount,
-         count}
+         count, unconverted_count}
+
+    ``unconverted_count`` is how many of the period's rows arrived with a
+    truthy ``unconverted`` flag — a foreign invoice whose reporting-currency
+    figure could not be established, which
+    ``api/analytics.py::_commitment_rows`` includes at FACE VALUE rather than
+    dropping (dropping would understate the outflow). That face value is a
+    different currency's number sitting in a reporting-currency total, so the
+    count is what stops it being silent: a single unconverted ¥10,000,000
+    invoice drags a $250,000 opening balance to a projected −$9.75M, and the
+    shortfall sweep emails the finance leaders about it. The flag was computed
+    on every row and read by nobody; carrying it here is what makes the
+    module-header promise ("visible rather than silent") true.
 
     ``today`` is accepted for symmetry / testability but does not filter —
     the API layer is responsible for the horizon window."""
@@ -709,6 +721,7 @@ def bucket_outflows(rows: list[dict], *, granularity: str = "week", today=None) 
                 "pending_amount": Decimal("0"),
                 "discount_eligible_amount": Decimal("0"),
                 "count": 0,
+                "unconverted_count": 0,
             },
         )
         b["scheduled_amount"] += amount
@@ -722,6 +735,8 @@ def bucket_outflows(rows: list[dict], *, granularity: str = "week", today=None) 
         ):
             b["discount_eligible_amount"] += amount
         b["count"] += 1
+        if r.get("unconverted"):
+            b["unconverted_count"] += 1
 
     out = []
     for key in sorted(buckets):
@@ -749,12 +764,28 @@ def apply_payment_timing_scenario(
     """What-if engine for payment timing. ``scenario``:
 
     - ``on_time`` → pay each row on its ``due_date``, full amount.
-    - ``early``   → pay on ``discount_date`` when present, taking the
-      ``discount_percent`` reduction; net outflow is reduced and the
-      captured discount reported separately. Rows without a discount fall
-      back to paying on ``due_date`` at full amount.
+    - ``early``   → pay on ``discount_date`` when the window is STILL OPEN
+      (``discount_date >= today``), taking the ``discount_percent``
+      reduction; net outflow is reduced and the captured discount reported
+      separately. Rows without a discount — and rows whose discount window
+      has already ELAPSED — fall back to paying on ``due_date`` at full
+      amount.
     - ``late``    → pay ``due_date + grace_days``, full amount, no
       discount (you forfeit any early-pay discount by paying late).
+
+    The elapsed-window guard is load-bearing, not defensive coding. The
+    commitment rows this consumes are bounded on their DUE date only (see
+    ``api/analytics.py::_commitment_rows``), so an in-horizon invoice on
+    ``2/10 net 60`` terms routinely arrives with a ``discount_date`` that
+    passed weeks ago. Without the guard the ``early`` card claimed a
+    discount nobody can still take, timed the outflow on a date in the
+    PAST — producing periods entirely before ``today`` and a negative
+    ``weighted_avg_pay_date_days`` — and told a CFO to fund a payment run
+    against savings that do not exist. Same rule the discount optimizer
+    already applies (``discount_optimizer.optimize``: "capturable only
+    while the discount deadline has not elapsed"), so the what-if card and
+    the optimizer can't disagree about which discounts are still on the
+    table.
 
     Returns::
 
@@ -784,13 +815,15 @@ def apply_payment_timing_scenario(
             continue
         amount = _row_amount(r)
         discount_date = r.get("discount_date")
-        if scenario == "early" and discount_date is not None:
+        # `discount_date >= today` — an elapsed window is no longer capturable,
+        # so the row is NOT an early-pay candidate at all (see the docstring).
+        if scenario == "early" and discount_date is not None and discount_date >= today:
             pay_date = discount_date
             net, captured = _discount_net(amount, r.get("discount_percent"))
         elif scenario == "late":
             pay_date = due + timedelta(days=grace_days)
             net, captured = amount, Decimal("0")
-        else:  # on_time, or early with no discount available
+        else:  # on_time, or early with no discount still available
             pay_date = due
             net, captured = amount, Decimal("0")
 
@@ -806,6 +839,9 @@ def apply_payment_timing_scenario(
                 "committed": r.get("committed", False),
                 "discount_date": None,
                 "discount_percent": None,
+                # Re-timing doesn't make a row convertible — carry the flag so
+                # the scenario's own periods report it too.
+                "unconverted": bool(r.get("unconverted")),
             }
         )
 
@@ -821,6 +857,10 @@ def apply_payment_timing_scenario(
         "total_discount_captured": _q(total_discount),
         "weighted_avg_pay_date_days": avg_days,
         "periods": periods,
+        # How much of `total_outflow` is a face-value figure in a currency we
+        # could not convert (see `bucket_outflows`). Comparing two scenarios'
+        # totals is only meaningful once this is 0.
+        "unconverted_count": sum(p["unconverted_count"] for p in periods),
     }
 
 
@@ -845,10 +885,17 @@ def compute_cash_position(
     Returns one row per period::
 
         {period, period_start, period_end, opening, outflow, inflow,
-         closing, below_threshold}
+         closing, below_threshold, unconverted_count}
 
     ``below_threshold`` is True iff a threshold is supplied and the
-    period's closing balance falls below it."""
+    period's closing balance falls below it.
+
+    ``unconverted_count`` rides through from ``bucket_outflows`` (0 when the
+    caller built the periods by hand). It is the caveat on the closing
+    balance: those rows entered the outflow at face value in another currency,
+    so a non-zero count means this period's `closing` — and every later
+    period's, since the balance carries forward — is not a figure to act on
+    until the conversion is resolved."""
     inflow_periods = inflow_periods or {}
     rows: list[dict] = []
     opening = Decimal(str(opening_balance or "0"))
@@ -867,6 +914,7 @@ def compute_cash_position(
                 "inflow": _q(inflow),
                 "closing": _q(closing),
                 "below_threshold": below,
+                "unconverted_count": int(p.get("unconverted_count", 0) or 0),
             }
         )
         opening = closing

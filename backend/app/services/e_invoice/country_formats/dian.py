@@ -63,6 +63,27 @@ _NSMAP = {None: _NS_INVOICE, "cac": _NS_CAC, "cbc": _NS_CBC, "ext": _NS_EXT}
 _DEFAULT_INVOICE_TYPE_CODE = "01"  # DIAN: 01 = factura de venta nacional.
 _DEFAULT_UNIT_CODE = "EA"  # UN/ECE "each".
 
+# DIAN reads `cbc:InvoiceTypeCode` from its OWN document-type list, not
+# UNCL1001 — 01 factura de venta nacional · 02 factura de exportación ·
+# 03 factura por contingencia facturador · 04 factura de contingencia DIAN.
+# `EInvoiceDocument.invoice_type_code` is documented as UNCL1001 and the mapper
+# always sets `380`, so passing it through emitted a value outside DIAN's list
+# on every export and left the default above unreachable. Translate, exactly as
+# `fatturapa._INVOICE_TYPE_TO_TIPO_DOCUMENTO` does. (UNCL1001's credit/debit
+# notes have no InvoiceTypeCode target — DIAN models those as separate
+# `NotaCredito` / `NotaDebito` documents, which this slice does not emit.)
+_DIAN_INVOICE_TYPE_CODES = frozenset({"01", "02", "03", "04"})
+_UNCL1001_TO_DIAN_INVOICE_TYPE = {"380": "01"}
+
+
+def _resolve_invoice_type_code(raw: str | None) -> str:
+    """UNCL1001 (or an already-DIAN code) → a DIAN document-type code."""
+    code = (raw or "").strip()
+    if code in _DIAN_INVOICE_TYPE_CODES:
+        return code
+    return _UNCL1001_TO_DIAN_INVOICE_TYPE.get(code, _DEFAULT_INVOICE_TYPE_CODE)
+
+
 # DIAN profiling constants (technical annex v2.1).
 _CUSTOMIZATION_ID = "10"  # 10 = instrumento estándar (standard instrument).
 _PROFILE_ID = "DIAN 2.1: Factura Electrónica de Venta"
@@ -142,7 +163,7 @@ class DIANFormat(CountryEInvoiceFormat):
             _cbc(root, "IssueDate", doc.issue_date.isoformat())
         if doc.due_date is not None:
             _cbc(root, "DueDate", doc.due_date.isoformat())
-        _cbc(root, "InvoiceTypeCode", doc.invoice_type_code or _DEFAULT_INVOICE_TYPE_CODE)
+        _cbc(root, "InvoiceTypeCode", _resolve_invoice_type_code(doc.invoice_type_code))
         if doc.currency:
             _cbc(root, "DocumentCurrencyCode", doc.currency)
 

@@ -9,6 +9,14 @@ function createContractStore() {
 	let total = $state(0);
 	let page = $state(1);
 	let lastParams = $state<ContractListParams>({});
+	// Did the most recent (non-append) load fail? The list empty-state reads
+	// this: without it a 500 / offline backend leaves `all` empty and the table
+	// renders "No … match your filters." — an outage indistinguishable from a
+	// filter that matched nothing. Set only when this is still the newest
+	// request (`isCurrentRequest`, the same rule the `loading` flag uses), and
+	// the error is re-thrown so callers that await a refresh keep their own
+	// error handling.
+	let errored = $state(false);
 
 	// Sequences `fetch`/`loadMore` (one shared counter — latest-issued wins) so a
 	// slow response for an earlier search/filter can't land after a faster later
@@ -28,6 +36,10 @@ function createContractStore() {
 			total = res.total;
 			page = res.page;
 			lastParams = params;
+			errored = false;
+		} catch (err) {
+			if (fetchSequence.isCurrentRequest(token)) errored = true;
+			throw err;
 		} finally {
 			if (fetchSequence.isCurrentRequest(token)) loading = false;
 		}
@@ -77,6 +89,7 @@ function createContractStore() {
 		get loading() { return loading; },
 		get total() { return total; },
 		get page() { return page; },
+		get errored() { return errored; },
 		get hasMore() { return contracts.length < total; },
 		fetch,
 		loadMore,

@@ -19,7 +19,14 @@ Scope + simplifications (documented in ``docs/tax-1099.md``):
     copy + the basis for the e-file payload.
 
 Pure functions: builders take loaded rows, the renderer takes a context and
-returns PDF bytes. No DB / network here — the route loads the data.
+returns PDF bytes. No DB queries here — the route loads the data.
+
+**Blocking, and offloaded by the caller.** "No DB" is not "no I/O": the
+brand-logo embed (``branding.build_logo_flowable``) does a blocking DNS lookup
+and a blocking ``httpx.Client`` GET, and ReportLab lays the document out on the
+CPU. Every route therefore calls the renderer through ``await
+asyncio.to_thread(render_1099_pdf, ctx)`` rather than on the event loop;
+``tests/test_pdf_render_offloaded.py`` is the drift guard.
 """
 
 from __future__ import annotations

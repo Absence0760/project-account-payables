@@ -370,7 +370,7 @@ async def test_patch_w9_cross_tenant_404(realdb):
 def _mock_s3(monkeypatch):
     from unittest.mock import MagicMock
 
-    from app.api import tax as tax_mod
+    from app.services import storage as storage_mod
 
     captured: dict = {}
 
@@ -383,8 +383,13 @@ def _mock_s3(monkeypatch):
         )
         return client
 
-    monkeypatch.setattr(tax_mod, "_get_client", fake_client_factory)
-    monkeypatch.setattr(tax_mod, "_ensure_bucket", lambda c: None)
+    # Patched on `services.storage`, not on `api.tax`: boto3 is now touched in
+    # exactly one place (`storage._put_object`, which offloads it with
+    # `asyncio.to_thread` so it never blocks the event loop), and the W-9 route
+    # reaches it through `storage.upload_vendor_w9`. Patching the route module
+    # would silently stop intercepting anything.
+    monkeypatch.setattr(storage_mod, "_get_client", fake_client_factory)
+    monkeypatch.setattr(storage_mod, "_ensure_bucket", lambda c: None)
     return captured
 
 
@@ -419,11 +424,12 @@ async def test_upload_w9_happy_path(realdb, monkeypatch):
 
 
 async def test_upload_w9_rejects_disallowed_content_type(realdb, monkeypatch):
-    # S3 must never be touched if the content type is rejected first.
-    from app.api import tax as tax_mod
+    # S3 must never be touched if the content type is rejected first. Guarded at
+    # the storage chokepoint (see `_mock_s3`) so this still fails loudly.
+    from app.services import storage as storage_mod
 
     monkeypatch.setattr(
-        tax_mod, "_get_client", lambda: (_ for _ in ()).throw(AssertionError("S3 called"))
+        storage_mod, "_get_client", lambda: (_ for _ in ()).throw(AssertionError("S3 called"))
     )
     vendor_id = await _make_vendor(realdb, "a")
 

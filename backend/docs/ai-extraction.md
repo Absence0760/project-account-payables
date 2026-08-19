@@ -160,6 +160,49 @@ Track Usage (ExtractionUsage record)
 Transition: pending → ready_for_review
 ```
 
+### Which separator is the decimal point
+
+A vision model transcribes what the page says, and an invoice printed in most of
+Europe says `1.234,56`. `_clean_decimal` used to strip every comma
+unconditionally, which produced silently wrong money with no error anywhere:
+
+| Model returned | Old reading | Correct |
+|---|---|---|
+| `850,00` | `85000` (100× over) | `850.00` |
+| `1.234,56` | `1.23456` (1000× under — it *parsed*) | `1234.56` |
+| `12.500,00` | `12.50000` | `12500.00` |
+| `1 234,56` | `123456` | `1234.56` |
+
+Nothing downstream caught it: the self-correction pass read the same tokens the
+same wrong way, so `subtotal + tax` still reconciled against the mangled total,
+and an in-band confidence could auto-approve it.
+
+**The unit that can answer is the document, not the token** — the call
+`decisions.md` §27 already made for supplier statements. The rules live in the
+pure `services/decimal_convention` (`convention_proved_by` / `detect_convention`
+/ `apply_convention`) and both readers use them, so an invoice field and a
+statement cell can't drift apart:
+
+- **Self-describing tokens are read on their own terms.** Both separators
+  present → the rightmost is the decimal point. A repeated separator → grouping
+  (and only when every run is a real three-digit group, so `1.2.3` stays
+  unparseable rather than becoming `123`). One separator with a one- or
+  two-digit tail → it is the decimal point.
+- **Only the genuinely ambiguous shape consults the document.** A single
+  separator with a three-digit tail (`1,234` / `1.234`) is a thousands group
+  under one convention and a three-decimal value under the other.
+  `extraction_amount_convention(result)` resolves it once from every money token
+  the model returned — header `amount`/`subtotal`/`tax_amount`/`discount`/
+  `shipping` plus each line's `unit_price`/`tax`/`total`. `tax_rate` and
+  `quantity` deliberately don't vote (a percentage and a count aren't written
+  under an amount's grouping habits). No document-level answer (nothing proved,
+  or the tokens contradict each other) keeps the historical US reading for that
+  one shape.
+- **One resolution per document.** `run_extraction` resolves the convention
+  before `_apply_extraction` and threads the same value into the line-item
+  cleaners and into `run_self_correction`, so the header, the lines and the
+  checker can't be read under different rules.
+
 ### Self-Correction Pass
 
 Runs after `_apply_extraction()`, before line items are saved. Implemented in `services/extraction_self_correction.py`.
@@ -192,6 +235,15 @@ Sets `approved_by="system (auto-approve)"`.
 ## Per-Field Confidence
 
 Every extracted field includes a confidence score (0.0 to 1.0). The extraction prompt asks the AI to self-rate certainty per field.
+
+**A model's answer is not a validated input.** `extraction_adapters.base.coerce_confidence` forces every model-supplied score into the contract before it reaches `ExtractedField`; it is shared by `claude_vision`, `openai_vision` and `ollama` (they all parse this prompt through `claude_vision._parse_field`) and by the statement reader. Two things it stops:
+
+- **`null` / a string / any non-number.** These landed on `ExtractedField.confidence` verbatim, so `sum(confidences)` raised `TypeError` *inside* `extract()`. An extraction whose values were all read correctly failed outright — invoice to `failed`, an `extraction_failed` exception in the queue, re-key by hand.
+- **A score outside 0–1.** A model answering on a 0–100 scale lifts the **mean** past `auto_approve_threshold`. It doesn't take a whole document: one field at `3` among four at `0.5` averages exactly 1.0, fits the `Numeric(5, 4)` column, persists cleanly, and auto-approves an invoice the model itself rated 0.5 — straight past human review.
+
+Out of contract becomes **0.0, not a clamp to 1.0**: a number we can't interpret must never authorise an unattended approval, and 0.0 routes the invoice to a human. `decide_auto_approve` applies the same range check to `overall_confidence` itself, so an adapter that computes its own aggregate some other way still can't trip the gate.
+
+**Textract reports two confidences, and only one of them is about the value.** `AnalyzeExpense` gives each field a `Type.Confidence` ("is this field the TOTAL?") and a `ValueDetection.Confidence` ("does it really say 1500.00?"). The adapter read only the first, so a crisply-classified but barely-legible figure — type 99.5, value 41.0 — arrived as `0.995`, cleared the 0.95 touchless threshold, and showed no review flag. Both have to hold for the mapped field to be worth trusting, so `aws_textract._field_confidence` takes the **lower** of the two (scaled from 0–100 and bounded by `coerce_confidence`; a missing or junk value is 0.0, because "we can't tell how good the read was" is not a good read).
 
 | Confidence | Treatment |
 |---|---|
@@ -387,12 +439,38 @@ provider also travels on the persisted result — `InvoiceExtractionResult.metho
 for an invoice, `meta.extraction.provider` for a statement run (surfaced in the
 run's provenance panel) — so `mock` output is never presented as a real read.
 
-**An unregistered `FEOH_EXTRACTION_PROVIDER` is refused at boot.** The
-dispatcher falls back to `mock` on an unknown provider name, so a typo would
-otherwise quietly turn a deployed pipeline into a fixture generator;
+**An unregistered `FEOH_EXTRACTION_PROVIDER` is refused at boot.**
 `config.py::_validate_extraction_provider` checks the value against
 `_EXTRACTION_PROVIDERS`, which `tests/test_extraction_provider_resolution.py`
 drift-guards against the live registry.
+
+**And an unregistered per-org provider is refused at the dispatcher.** The env
+override is only one of the two ways a provider gets named: a BYOK tenant sets
+`Organization.settings.extraction.provider`, which arrives from the tenant DB
+and which no boot ever sees. That name used to fall through to `mock` too — so
+a typo (`openai` for `openai_vision`) turned that tenant's pipeline into a
+fixture generator at 0.95 confidence, inside the band `decide_auto_approve`
+approves touchlessly, and `POST /api/organization/test-extraction` answered
+"Connected to `openai` successfully" because `mock.test_connection` returns
+`True`. `get_extraction_adapter` now raises `UnknownExtractionProviderError`
+instead (`decisions.md` §29, one layer down from §26). An org that has
+configured *no* provider at all still resolves to `mock` — that's the
+local-first default, not a misconfiguration.
+
+Each caller decides what the refusal means:
+
+| Caller | Behaviour |
+|---|---|
+| `extraction.extract_invoice` | Travels the normal failure path — invoice → `failed` with an `extraction_failed` exception. A config error strands the same way a provider outage does. |
+| `vendor_statement_extraction.resolve_statement_adapter` | `StatementExtractionError(provider_not_registered)` → the same 422 every other statement-read failure takes (it is called outside the caller's `try`, so an uncaught raise would 500 the upload). |
+| `POST /api/organization/test-extraction` | Returns `success: false` **naming the bad value** and listing the registered alternatives — the endpoint exists to catch this. |
+
+`str(UnknownExtractionProviderError)` deliberately does **not** echo the
+configured name: it lands on the `extraction_failed` exception description that
+every AP user reads, while only an admin owns the setting. The bounded raw value
+rides on `.provider` for the admin-only test endpoint. The dispatcher also
+imports the built-in adapter modules itself, so "no adapter registered" can
+never mean "that module wasn't imported by this call site".
 
 ## Code Structure
 

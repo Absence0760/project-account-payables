@@ -446,6 +446,19 @@ design-only — everything else on this page is shipped.
    an `unconverted` flag so a row we could not convert is visible rather than
    silently mixed in.
 
+   **That flag is now actually read.** For a while it was computed on every
+   row and consumed by nobody, so a foreign invoice with no usable lock still
+   entered the curve at face value with nothing on any surface to contradict
+   it — the same −$9.75M, just arrived at one rung later.
+   `analytics.bucket_outflows` counts it per period, `compute_cash_position`
+   carries it through the running balance, and it surfaces as
+   `unconverted_count` on `/api/analytics/{cashflow_forecast,cashflow_whatif,
+   cash_position}` and on the `get_cashflow_forecast` / `get_cash_position` /
+   `run_payment_whatif` tool results. It is the OUTFLOW-side twin of
+   `opening_balance_provider_skipped` above: non-zero means the totals mix
+   currencies, and — because the closing balance carries forward — one such row
+   poisons every later period.
+
    `GET /api/analytics/cash_position` now returns the same provenance
    (`opening_balance_source` / `_currency` / `_provider` /
    `_provider_skipped`). Its explicit-override source value changed from

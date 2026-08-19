@@ -192,6 +192,31 @@ def test_roundtrip_lines():
     assert l2.line_total == Decimal("400.00")
 
 
+def test_roundtrip_line_tax_amount():
+    """Regression: a LINE's tax figure was dropped on the way out.
+
+    `mapper.invoice_to_einvoice_document` fills `EInvoiceLine.tax_amount` from
+    `InvoiceLineItem.tax`, and `generate_ubl` emits it as
+    `cac:TaxTotal/cbc:TaxAmount` — but `generate_cii` emitted no
+    `ram:CalculatedAmount`, so the CII / Factur-X export of the very same
+    invoice silently lost per-line tax. It is emitted (and read back) now.
+    """
+    doc = _full_doc()
+    doc.lines[0].tax_amount = Decimal("114.00")
+    # A line with a tax AMOUNT but no rate must still get its settlement block.
+    doc.lines[1].tax_amount = Decimal("76.00")
+    doc.lines[1].tax_rate = None
+
+    xml = generate_cii(doc)
+    assert b"CalculatedAmount>114.00<" in xml
+    back = parse_cii(xml)
+    assert back.lines[0].tax_amount == Decimal("114.00")
+    assert back.lines[0].tax_rate == Decimal("19.00")
+    assert back.lines[1].tax_amount == Decimal("76.00")
+    assert back.lines[1].tax_rate is None
+    assert all(isinstance(line.tax_amount, Decimal) for line in back.lines)
+
+
 def test_namespaces_and_root_match_fixture():
     """The generated root + namespaces must equal the inbound CII fixture's."""
     from lxml import etree

@@ -246,6 +246,111 @@ async def test_execute_schedule_email_failure_sanitises_provider_message():
     assert "dest@x.com" not in (outcome["error"] or "")
 
 
+# ---------------------------------------------------------------------------
+# execute_schedule — per-recipient delivery (partial failure)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_one_bad_recipient_does_not_block_the_ones_after_it():
+    """Deliveries are independent. A failure at recipient 2 of 3 used to abort
+    the loop, so recipient 3 never received the report at all — and, after five
+    ticks, lost the schedule to the auto-disable without a single delivery."""
+    sched = _schedule(recipients=["a@x.com", "b@x.com", "c@x.com"])
+    db = AsyncMock()
+    db.execute = AsyncMock()
+    sent: list[str] = []
+
+    async def _send(msg):
+        if msg.to == "b@x.com":
+            raise RuntimeError("550 rejected from relay.foo.com to b@x.com")
+        sent.append(msg.to)
+
+    adapter = MagicMock()
+    adapter.send = AsyncMock(side_effect=_send)
+    now = datetime(2026, 5, 10, tzinfo=UTC)
+
+    with (
+        patch(
+            "app.services.scheduled_reports._generate_report_payload",
+            AsyncMock(return_value="csv"),
+        ),
+        patch("app.services.scheduled_reports.get_email_adapter", return_value=adapter),
+    ):
+        outcome = await execute_schedule(db, sched, now=now)
+
+    assert sent == ["a@x.com", "c@x.com"]
+    assert outcome["status"] == "partial"
+    # Counts only — never an address, never the relay banner.
+    assert outcome["error"] == "email failed for 1 of 3 recipients: RuntimeError"
+    assert "b@x.com" not in outcome["error"]
+    assert "relay.foo.com" not in outcome["error"]
+
+
+@pytest.mark.asyncio
+async def test_partial_delivery_still_advances_next_run_at():
+    """The recipients who DID get this period's report must not get it again on
+    every retry tick. Advancing `next_run_at` is what stops the replay."""
+    sched = _schedule(recipients=["a@x.com", "b@x.com"], cadence="weekly")
+    db = AsyncMock()
+    db.execute = AsyncMock()
+
+    async def _send(msg):
+        if msg.to == "b@x.com":
+            raise RuntimeError("boom")
+
+    adapter = MagicMock()
+    adapter.send = AsyncMock(side_effect=_send)
+    now = datetime(2026, 5, 10, tzinfo=UTC)
+
+    with (
+        patch(
+            "app.services.scheduled_reports._generate_report_payload",
+            AsyncMock(return_value="csv"),
+        ),
+        patch("app.services.scheduled_reports.get_email_adapter", return_value=adapter),
+    ):
+        outcome = await execute_schedule(db, sched, now=now)
+
+    assert outcome["next_run_at"] == now + timedelta(days=7)
+    params = db.execute.await_args.args[0].compile().params
+    assert params.get("next_run_at") == now + timedelta(days=7)
+    assert params.get("last_run_status") == "partial"
+    # A partial is not a strike — it must not carry the retry counter that
+    # drives the 5-failure auto-disable.
+    assert "[retry" not in (params.get("last_run_error") or "")
+    assert "enabled" not in params
+
+
+@pytest.mark.asyncio
+async def test_total_delivery_failure_leaves_next_run_at_alone():
+    """Nobody got it → a retry duplicates nothing, so keep retrying (and keep
+    accumulating toward the auto-disable)."""
+    sched = _schedule(recipients=["a@x.com", "b@x.com"])
+    db = AsyncMock()
+    db.execute = AsyncMock()
+    adapter = MagicMock()
+    adapter.send = AsyncMock(side_effect=RuntimeError("relay down"))
+    now = datetime(2026, 5, 10, tzinfo=UTC)
+
+    with (
+        patch(
+            "app.services.scheduled_reports._generate_report_payload",
+            AsyncMock(return_value="csv"),
+        ),
+        patch("app.services.scheduled_reports.get_email_adapter", return_value=adapter),
+    ):
+        outcome = await execute_schedule(db, sched, now=now)
+
+    assert outcome["status"] == "failure"
+    assert outcome["error"] == "email failed: RuntimeError"
+    assert outcome["next_run_at"] == sched.next_run_at
+    # Both addresses were still attempted — the loop doesn't stop at the first.
+    assert adapter.send.await_count == 2
+    params = db.execute.await_args.args[0].compile().params
+    assert "[retry 1]" in (params.get("last_run_error") or "")
+
+
 @pytest.mark.asyncio
 async def test_execute_schedule_disables_after_repeated_failures():
     """Five consecutive failures → flip enabled=false so the queue

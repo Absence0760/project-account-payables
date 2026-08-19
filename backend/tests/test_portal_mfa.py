@@ -230,7 +230,7 @@ async def test_enroll_over_a_live_factor_accepts_the_portal_password(mfa_on, mon
     surface and `/mfa/disable`."""
     secret = pyotp.random_base32()
     vu = _vendor_user(mfa_secret=secret, mfa_enabled=True, hashed_password="hash")
-    monkeypatch.setattr("app.services.mfa.pwd_context.verify", lambda *_a, **_k: True)
+    monkeypatch.setattr("app.utils.passwords.pwd_context.verify", lambda *_a, **_k: True)
 
     enroll = await portal_mfa_enroll(body=PortalMFAStepUpRequest(password="correct"), vu=vu)
 
@@ -243,7 +243,7 @@ async def test_enroll_over_a_live_factor_rejects_a_wrong_password(mfa_on, monkey
     """A wrong step-up credential is no better than none."""
     secret = pyotp.random_base32()
     vu = _vendor_user(mfa_secret=secret, mfa_enabled=True, hashed_password="hash")
-    monkeypatch.setattr("app.services.mfa.pwd_context.verify", lambda *_a, **_k: False)
+    monkeypatch.setattr("app.utils.passwords.pwd_context.verify", lambda *_a, **_k: False)
 
     with pytest.raises(HTTPException) as exc:
         await portal_mfa_enroll(body=PortalMFAStepUpRequest(password="guess"), vu=vu)
@@ -275,7 +275,7 @@ async def test_login_challenges_when_mfa_enrolled(mfa_on, monkeypatch):
     secret = pyotp.random_base32()
     vu = _vendor_user(hashed_password="x", mfa_secret=secret, mfa_enabled=True)
     db = _mock_db(vendor_user=vu)
-    monkeypatch.setattr("app.api.portal_auth.pwd_context.verify", lambda *_: True)
+    monkeypatch.setattr("app.utils.passwords.pwd_context.verify", lambda *_: True)
     monkeypatch.setattr("app.api.portal_auth.check_rate_limit", AsyncMock(return_value=None))
 
     res = await portal_login(
@@ -297,7 +297,7 @@ async def test_login_challenges_when_mfa_enrolled(mfa_on, monkeypatch):
 async def test_login_no_challenge_when_not_enrolled(mfa_on, monkeypatch):
     vu = _vendor_user(hashed_password="x", mfa_enabled=False)
     db = _mock_db(vendor_user=vu)
-    monkeypatch.setattr("app.api.portal_auth.pwd_context.verify", lambda *_: True)
+    monkeypatch.setattr("app.utils.passwords.pwd_context.verify", lambda *_: True)
     monkeypatch.setattr("app.api.portal_auth.check_rate_limit", AsyncMock(return_value=None))
 
     res = await portal_login(
@@ -316,7 +316,7 @@ async def test_login_skips_mfa_when_master_switch_off(monkeypatch):
     monkeypatch.setattr(settings, "mfa_enabled", False)
     vu = _vendor_user(hashed_password="x", mfa_secret=pyotp.random_base32(), mfa_enabled=True)
     db = _mock_db(vendor_user=vu)
-    monkeypatch.setattr("app.api.portal_auth.pwd_context.verify", lambda *_: True)
+    monkeypatch.setattr("app.utils.passwords.pwd_context.verify", lambda *_: True)
     monkeypatch.setattr("app.api.portal_auth.check_rate_limit", AsyncMock(return_value=None))
 
     res = await portal_login(
@@ -618,7 +618,7 @@ async def test_portal_step_up_failure_is_audited(mfa_on, monkeypatch):
     monkeypatch.setattr("app.api.portal_auth.dispatch_auth_audit", audit)
     secret = pyotp.random_base32()
     vu = _vendor_user(mfa_secret=secret, mfa_enabled=True, hashed_password="hash")
-    monkeypatch.setattr("app.services.mfa.pwd_context.verify", lambda *_a, **_k: False)
+    monkeypatch.setattr("app.utils.passwords.pwd_context.verify", lambda *_a, **_k: False)
 
     with pytest.raises(HTTPException):
         await portal_mfa_enroll(body=PortalMFAStepUpRequest(password="guess"), vu=vu)

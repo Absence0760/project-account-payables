@@ -119,6 +119,35 @@ def test_dian_profiling_header():
     assert root.find(f"{{{_NS_CBC}}}ID").text == "DIAN-2024-1"
 
 
+def test_invoice_type_code_is_translated_from_uncl1001():
+    """Regression: DIAN reads `InvoiceTypeCode` from its OWN document list.
+
+    `EInvoiceDocument.invoice_type_code` is documented as UNCL1001 and the
+    mapper always sets `380` (commercial invoice), so the raw pass-through
+    emitted `380` — outside DIAN's `01`/`02`/`03`/`04` list — on every real
+    export, and the module's own `01` default was unreachable.
+    """
+    doc = _full_doc()
+    doc.invoice_type_code = "380"  # what mapper.invoice_to_einvoice_document sets
+    root = etree.fromstring(DIANFormat().generate(doc))
+    assert root.find(f"{{{_NS_CBC}}}InvoiceTypeCode").text == "01"
+
+
+def test_invoice_type_code_passes_a_dian_code_through_and_defaults_otherwise():
+    doc = _full_doc()
+    doc.invoice_type_code = "02"  # factura de exportación
+    root = etree.fromstring(DIANFormat().generate(doc))
+    assert root.find(f"{{{_NS_CBC}}}InvoiceTypeCode").text == "02"
+
+    doc.invoice_type_code = None
+    root = etree.fromstring(DIANFormat().generate(doc))
+    assert root.find(f"{{{_NS_CBC}}}InvoiceTypeCode").text == "01"
+
+    doc.invoice_type_code = "999"  # unknown in either list
+    root = etree.fromstring(DIANFormat().generate(doc))
+    assert root.find(f"{{{_NS_CBC}}}InvoiceTypeCode").text == "01"
+
+
 def test_ublextensions_clearance_placeholder_present():
     root = etree.fromstring(DIANFormat().generate(_full_doc()))
     ext = root.find(

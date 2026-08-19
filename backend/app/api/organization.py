@@ -684,15 +684,29 @@ async def test_extraction_connection(
     if not config:
         raise HTTPException(status_code=400, detail="No extraction configuration provided")
 
-    import app.services.extraction_adapters.aws_textract  # noqa: F401
-    import app.services.extraction_adapters.claude_vision  # noqa: F401
-    import app.services.extraction_adapters.mock_adapter  # noqa: F401
-    import app.services.extraction_adapters.ollama  # noqa: F401
-    import app.services.extraction_adapters.openai_vision  # noqa: F401
-    from app.services.extraction_adapters import get_extraction_adapter
+    from app.services.extraction_adapters import (
+        UnknownExtractionProviderError,
+        get_extraction_adapter,
+        list_available_providers,
+    )
 
     try:
         adapter = get_extraction_adapter(config)
+    except UnknownExtractionProviderError as exc:
+        # This endpoint exists to catch exactly this misconfiguration. It used
+        # to CONFIRM it instead: an unknown provider fell back to `mock`, whose
+        # `test_connection` returns True, so the admin was told "Connected to
+        # <typo> successfully". Name the bad value; echo no credential.
+        return {
+            "success": False,
+            "message": (
+                f"'{exc.provider}' is not a supported extraction provider "
+                f"(one of: {', '.join(list_available_providers())}). "
+                "Pick one and re-test."
+            ),
+        }
+
+    try:
         success = await adapter.test_connection()
         provider = config.get("provider", "unknown")
         if success:

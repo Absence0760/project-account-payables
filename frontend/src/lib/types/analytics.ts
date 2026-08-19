@@ -21,6 +21,12 @@ export interface CashflowForecastPeriod {
 	pending_amount: MoneyString;
 	discount_eligible_amount: MoneyString;
 	count: number;
+	/**
+	 * A COUNT, not money: invoices included at face value because no exchange
+	 * rate into the reporting currency could be established. Non-zero means the
+	 * amounts beside it mix currencies.
+	 */
+	unconverted_count: number;
 }
 
 export interface CashflowForecast {
@@ -35,6 +41,7 @@ export interface CashflowForecast {
 		pending_amount: MoneyString;
 		discount_eligible_amount: MoneyString;
 		count: number;
+		unconverted_count: number;
 	};
 }
 
@@ -44,11 +51,14 @@ export interface WhatIfScenario {
 	total_discount_captured: MoneyString;
 	/** A day count, not money. */
 	weighted_avg_pay_date_days: number;
+	/** A count, not money — see `CashflowForecastPeriod.unconverted_count`. */
+	unconverted_count: number;
 	periods: Array<{
 		period: string;
 		period_start: string;
 		period_end: string;
 		scheduled_amount: MoneyString;
+		unconverted_count: number;
 	}>;
 }
 
@@ -72,6 +82,7 @@ export interface CashPositionPeriod {
 	inflow: MoneyString;
 	closing: MoneyString;
 	below_threshold: boolean;
+	unconverted_count: number;
 }
 
 export interface CashPositionBreach {
@@ -99,6 +110,14 @@ export interface CashPosition {
 	// because its account is in another currency than the org reports in — so a
 	// fallback to `settings`/`none` isn't mistaken for "no bank is connected".
 	opening_balance_provider_skipped: string | null;
+	/**
+	 * The OUTFLOW-side twin of `opening_balance_provider_skipped`: how many
+	 * commitments entered the curve at face value because no exchange rate into
+	 * the reporting currency could be established. A COUNT, not money.
+	 * Non-zero means every `closing` below mixes currencies — the balance
+	 * carries forward, so one such row poisons the tail.
+	 */
+	unconverted_count: number;
 	/** `null` means no threshold is set — deliberately not `"0"`. */
 	threshold: MoneyString | null;
 	periods: CashPositionPeriod[];

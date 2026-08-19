@@ -111,7 +111,18 @@ class CFDIFormat(CountryEInvoiceFormat):
         conceptos = _cfdi(root, "Conceptos")
         for line in doc.lines:
             concepto = _cfdi(conceptos, "Concepto")
-            concepto.set("ClaveProdServ", line.item_code or _DEFAULT_CLAVE_PROD_SERV)
+            # `ClaveProdServ` is a key from SAT's `c_ClaveProdServ` catalog, NOT
+            # a free identifier — and `EInvoiceLine.item_code` is the SELLER's
+            # own part number (`cac:SellersItemIdentification` in UBL,
+            # `ram:SellerAssignedID` in CII). Putting the SKU there produced a
+            # document the PAC refuses to stamp. The seller's part number has
+            # its own attribute, `NoIdentificacion`, so nothing is lost; the
+            # catalog key stays the documented "not in the catalog" placeholder
+            # until a real per-line SAT mapping exists (deferred with the rest
+            # of the clearance step — see the module docstring).
+            concepto.set("ClaveProdServ", _DEFAULT_CLAVE_PROD_SERV)
+            if line.item_code:
+                concepto.set("NoIdentificacion", line.item_code)
             if line.quantity is not None:
                 concepto.set("Cantidad", _amount_text(line.quantity))
             concepto.set("ClaveUnidad", line.unit_code or _DEFAULT_CLAVE_UNIDAD)

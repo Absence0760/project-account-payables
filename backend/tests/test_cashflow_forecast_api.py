@@ -56,8 +56,12 @@ async def _add_invoice(
     due_date,
     discount_date=None,
     discount_percent=None,
+    currency=None,
 ) -> uuid.UUID:
-    """Insert one Invoice (+ optional PaymentSchedule) into the tenant DB."""
+    """Insert one Invoice (+ optional PaymentSchedule) into the tenant DB.
+
+    `currency` other than the org's reporting currency, with no persisted
+    `reporting_amount` lock, is what makes a row *unconvertible*."""
     mk = realdb.sessionmaker(key)
     async with mk() as s:
         inv = Invoice(
@@ -68,6 +72,7 @@ async def _add_invoice(
             status=status,
             invoice_date=_TODAY - timedelta(days=5),
             due_date=due_date,
+            **({"currency": currency} if currency else {}),
         )
         s.add(inv)
         await s.flush()
@@ -114,6 +119,64 @@ async def test_forecast_buckets_committed_and_pending(realdb):
     assert _money(body["totals"]["committed_amount"]) == Decimal("1000")
     assert _money(body["totals"]["pending_amount"]) == Decimal("500")
     assert _money(body["totals"]["scheduled_amount"]) == Decimal("1500")
+
+
+async def test_forecast_reports_unconvertible_commitments(realdb):
+    """A foreign invoice with no rate lock is included at FACE VALUE (dropping
+    it would understate the outflow) — so the response has to say how many
+    rows that applies to. Without the count, ¥10,000,000 reads as 10,000,000
+    of the org's own currency and nothing on the page contradicts it."""
+    await _add_invoice(
+        realdb,
+        "a",
+        amount="10000000",
+        status=InvoiceStatus.approved.value,
+        due_date=_TODAY + timedelta(days=10),
+        currency="JPY",
+    )
+    await _add_invoice(
+        realdb,
+        "a",
+        amount="1000",
+        status=InvoiceStatus.approved.value,
+        due_date=_TODAY + timedelta(days=11),
+    )
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.get("/api/analytics/cashflow_forecast?granularity=month&horizon_days=90")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["totals"]["unconverted_count"] == 1
+    assert body["totals"]["count"] == 2
+    assert sum(p["unconverted_count"] for p in body["periods"]) == 1
+
+    # The same caveat rides the running-balance curve, whose closing balance
+    # carries forward — one unconvertible row poisons every later period.
+    async with realdb.client(key="a", role="cfo") as c:
+        pos = await c.get("/api/analytics/cash_position?opening_balance=250000&seed_balance=false")
+    assert pos.status_code == 200
+    pos_body = pos.json()
+    assert pos_body["unconverted_count"] == 1
+    assert sum(p["unconverted_count"] for p in pos_body["periods"]) == 1
+
+    # And the what-if, whose whole purpose is comparing two outflow totals.
+    async with realdb.client(key="a", role="cfo") as c:
+        wi = await c.get("/api/analytics/cashflow_whatif?horizon_days=90")
+    assert wi.status_code == 200
+    for scenario in wi.json()["scenarios"].values():
+        assert scenario["unconverted_count"] == 1
+
+
+async def test_forecast_unconverted_count_is_zero_for_a_single_currency_book(realdb):
+    await _add_invoice(
+        realdb,
+        "a",
+        amount="1000",
+        status=InvoiceStatus.approved.value,
+        due_date=_TODAY + timedelta(days=10),
+    )
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.get("/api/analytics/cashflow_forecast?horizon_days=90")
+    assert resp.json()["totals"]["unconverted_count"] == 0
 
 
 async def test_forecast_excludes_terminal_and_paid(realdb):

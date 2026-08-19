@@ -150,8 +150,8 @@ drops in by extending the four `locale.ts` tables + a catalogue + a loader.
 | Store | File | State | Key methods |
 |-------|------|-------|-------------|
 | `auth` | `auth.svelte.ts` | `user` (incl. `mfa_enabled`, `mfa_required_by_org`), `loggedIn`, role checks (`isAdmin`, `isManager`, `isCfo`, `isClerkOnly`) | `login()` (returns `{kind:'ok'} \| {kind:'mfa', challenge}` — MFA branch routes to `/login/mfa`), `completeMfa(token, code, method)`, `requestEmailMfa(token)`, `completePasskey(token)`, `listPasskeys()`, `passkeyStepUp(operation)` (mint + sign a factor-change step-up assertion), `registerPasskey(name, stepUp)`, `deletePasskey(id, stepUp)`, `listSessions()` / `revokeSession(id)` / `revokeOtherSessions()` (the caller's own live sessions — see the `/profile` row), `logout()`, `fetchUser()`, `hasRole()`, `hasAnyRole()` |
-| `invoiceStore` | `invoices.svelte.ts` | `all`, `loading`, `total`, `statusCounts` | `fetch(params)`, `fetchCounts()`, `update(id, changes)` |
-| `paymentStore` | `payments.svelte.ts` | `all`, `loading`, `total`, `hasMore` | `fetch(params)`, `loadMore()` (history-tab Load-More; remembers filter params) |
+| `invoiceStore` | `invoices.svelte.ts` | `all`, `loading`, `errored`, `total`, `statusCounts` | `fetch(params)`, `fetchCounts()`, `update(id, changes)` |
+| `paymentStore` | `payments.svelte.ts` | `all`, `loading`, `errored`, `total`, `hasMore` | `fetch(params)`, `loadMore()` (history-tab Load-More; remembers filter params) |
 | `workflowStore` | `workflows.svelte.ts` | `all`, `loading`, `total`, `hasMore`, `activeSteps` | `fetch()`, `loadMore()`, `fetchActiveSteps()`, `getById()`, `create()`, `update()` |
 | `adminStore` | `admin.svelte.ts` | `users`, `roles`, `loading` | `fetchUsers()`, `fetchRoles()`, `createUser()`, `updateUser()`, `deleteUser()` |
 | `sidebar` | `sidebar.svelte.ts` | `collapsed` | `toggle()` |
@@ -345,7 +345,16 @@ grid page instead of hand-rolling `<div class="grid-container"><table>`:
   `/exceptions` and the dashboard are the reference implementations; on
   `/exceptions` in particular the empty copy ("Everything looks good!") is a
   claim about open fraud flags and compliance holds, so getting this wrong is a
-  correctness bug, not a polish one.
+  correctness bug, not a polish one. **When the fetch lives in a store, the
+  store owns the flag** — `invoiceStore` / `paymentStore` / `contractStore` /
+  `expenseStore` each expose `errored`, set in the loader's `catch` under
+  `isCurrentRequest` (the same rule the `loading` flag uses) and cleared on the
+  next success. The loader still **re-throws**, so a caller that awaits a
+  refresh keeps its own handling (`/invoices`' post-upload "Uploaded, but the
+  list could not be refreshed" toast is exactly that, and
+  `tests-e2e/invoices/upload-refetch-failure.spec.ts` guards it).
+  `tests-e2e/reactivity/list-load-failure.spec.ts` stubs a 500 on all four
+  lists and asserts the error copy, not the "nothing matched" copy.
 - Opt-in `fixed` (`table-layout: fixed`, pair with `<th>` widths) and
   `stickyHeader`. These two MUST be props (they target DataTable-owned
   `<table>`/`<thead>`, which a page-scoped selector can't reach).
@@ -451,7 +460,16 @@ items, then a centred Load More button below the table:
   load-more site — the list stores and the inline route/component loaders —
   uses it.
 - "Showing all N" is the empty-string-of-pagination state — confirms
-  for the user that they've reached the end.
+  for the user that they've reached the end. It is **only ever rendered
+  behind `{:else if total > 0}`**, never on its own: `total` is the
+  server's count of the whole filtered set, so a list that asks for one
+  capped page and then states "Showing all {total}" is asserting that
+  rows it never fetched do not exist. Six lists (budgets, intake,
+  catalogs, requisitions, and the `/expenses` Reports + Cards sub-lists)
+  shipped that way — 50 rows under a footer reading "Showing all 87",
+  with no control to reach the other 37. `src/lib/utils/pagedListFooter.test.ts`
+  is the guard: any file referencing a `<list>.showingAll` message must
+  also reference the matching `<list>.loadMore`.
 - Stores expose `total`, `page`, `hasMore`, and any mutating actions
   (create / delete / bulk-delete) keep `total` in sync without a
   refetch.
@@ -547,6 +565,24 @@ keystroke fires an immediate un-debounced load *alongside* the debounced one.
 Read `search` via `untrack(() => search)` in the params-builder, and untrack
 `syncUrl()` wholesale — it is a writer of URL state, never a dependency
 source. `tests-e2e/reactivity/search-debounce-race.spec.ts` is the guard.
+
+**A debounce `$effect` must return its own teardown.** A `$effect` that arms a
+timer and returns nothing leaves it armed when the component is destroyed, so
+the callback runs against a page the user already left: `syncUrl()` rewrites
+the address bar (SvelteKit's `replaceState` doesn't care which route is
+mounted), and a list-store reload writes a pre-navigation snapshot into a
+module-level store the *next* page shares. Always close the effect with
+
+```ts
+return () => clearTimeout(searchTimer);
+```
+
+Svelte also runs that teardown before each re-run, so it subsumes the
+`clearTimeout` at the top of the body rather than fighting it. Enforced across
+the tree by `src/lib/utils/effectTimerCleanup.test.ts`, a source scan that
+fails any `$effect` body containing `setTimeout(` / `setInterval(` without a
+matching `return () => clear…` — a deliberate static guard, because the
+symptom only shows inside a sub-second window that no non-flaky e2e can pin.
 
 ### Status filter chips
 

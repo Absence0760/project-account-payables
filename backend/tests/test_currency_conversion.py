@@ -38,7 +38,7 @@ The mock FX adapter is fed pinned rates so all arithmetic is deterministic.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -210,6 +210,102 @@ async def test_materialize_same_currency_invoice_locks_rate_one():
     assert changed is True
     assert inv.reporting_amount == Decimal("1000.00")
     assert inv.reporting_fx_rate == Decimal("1").quantize(Decimal("0.00000001"))
+
+
+# --- the persisted lock must keep describing the row it was locked onto -----
+# `amount` and `currency` are both editable on PATCH /api/invoices/{id} right up
+# to approval, and `refresh_warnings` re-runs this function afterwards. Before
+# these, the lock survived any edit untouched and the rollup reported the stale
+# figure as CONVERTED (unconverted=False) — a corrected invoice never reached
+# the dashboard / CFO reporting totals.
+
+
+@pytest.mark.asyncio
+async def test_materialize_rescales_at_the_locked_rate_when_the_amount_is_corrected():
+    fx = MockFXAdapter({"mock_rates": {"EUR": "0.92"}})
+    inv = _invoice_row()
+    await materialize_reporting_amount(inv, reporting_currency="USD", fx_adapter=fx)
+    locked_rate = inv.reporting_fx_rate
+    locked_at = inv.reporting_fx_locked_at
+
+    # AP corrects a mis-extracted amount. No FX call is legitimate here — the
+    # liability was accrued at the booking rate — so an exploding adapter must
+    # not be reached.
+    inv.amount = Decimal("5000.00")
+    fx_dead = MockFXAdapter()
+    fx_dead.get_rate = _exploding_get_rate()
+    changed = await materialize_reporting_amount(inv, reporting_currency="USD", fx_adapter=fx_dead)
+
+    assert changed is True
+    # 5000 * 1.086957 = 5434.785 → ROUND_HALF_UP → 5434.79
+    assert inv.reporting_amount == Decimal("5434.79")
+    assert inv.reporting_fx_rate == locked_rate  # historical rate preserved
+    assert inv.reporting_fx_locked_at == locked_at
+
+
+@pytest.mark.asyncio
+async def test_materialize_rollup_sees_the_corrected_amount_as_converted():
+    fx = MockFXAdapter({"mock_rates": {"EUR": "0.92"}})
+    inv = _invoice_row()
+    await materialize_reporting_amount(inv, reporting_currency="USD", fx_adapter=fx)
+    inv.amount = Decimal("5000.00")
+    await materialize_reporting_amount(inv, reporting_currency="USD", fx_adapter=fx)
+
+    rollup = rollup_to_reporting_currency(
+        [
+            {
+                "amount": inv.amount,
+                "currency": inv.currency,
+                "reporting_amount": inv.reporting_amount,
+                "reporting_currency": inv.reporting_currency,
+            }
+        ],
+        reporting_currency="USD",
+    )
+    assert rollup.total_reporting_amount == Decimal("5434.79")
+    assert rollup.unconverted_count == 0
+
+
+@pytest.mark.asyncio
+async def test_materialize_refetches_when_the_invoice_currency_leaves_the_reporting_currency():
+    fx = MockFXAdapter({"mock_rates": {"EUR": "0.92"}})
+    inv = _invoice_row(currency="USD")
+    await materialize_reporting_amount(inv, reporting_currency="USD", fx_adapter=fx)
+    assert inv.reporting_fx_rate == Decimal("1").quantize(Decimal("0.00000001"))
+
+    # Currency corrected USD -> EUR: the persisted rate of 1 no longer
+    # describes the pair, so a fresh rate is required.
+    inv.currency = "EUR"
+    changed = await materialize_reporting_amount(inv, reporting_currency="USD", fx_adapter=fx)
+    assert changed is True
+    assert inv.reporting_amount == Decimal("1086.96")
+    assert inv.reporting_fx_rate != Decimal("1")
+
+
+@pytest.mark.asyncio
+async def test_materialize_refetches_when_the_invoice_currency_becomes_the_reporting_currency():
+    fx = MockFXAdapter({"mock_rates": {"EUR": "0.92"}})
+    inv = _invoice_row()  # EUR
+    await materialize_reporting_amount(inv, reporting_currency="USD", fx_adapter=fx)
+    assert inv.reporting_amount == Decimal("1086.96")
+
+    inv.currency = "USD"
+    changed = await materialize_reporting_amount(inv, reporting_currency="USD", fx_adapter=fx)
+    assert changed is True
+    assert inv.reporting_amount == Decimal("1000.00")
+    assert inv.reporting_fx_rate == Decimal("1").quantize(Decimal("0.00000001"))
+
+
+@pytest.mark.asyncio
+async def test_materialize_persists_a_self_consistent_triple():
+    """amount * reporting_fx_rate == reporting_amount, exactly."""
+    fx = MockFXAdapter({"mock_rates": {"EUR": "0.92"}})
+    inv = _invoice_row(amount=Decimal("1234.56"))
+    await materialize_reporting_amount(inv, reporting_currency="USD", fx_adapter=fx)
+    expected = (inv.amount * inv.reporting_fx_rate).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    assert inv.reporting_amount == expected
 
 
 # ---------------------------------------------------------------------------

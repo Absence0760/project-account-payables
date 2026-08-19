@@ -26,6 +26,12 @@ falls outside the forecast horizon) still counts toward
 there is no row to move, so it is left on its original schedule; its
 ``offer_id`` is listed in ``unretimed_offer_ids`` so the caller can be
 transparent about the gap instead of silently overclaiming precision.
+
+An offer the optimizer flagged ``unconvertible`` (its money is in a currency
+the curve is not in) takes the same route, for the same reason stated
+differently: there is no figure we could put on the curve that would be
+correct. It contributes nothing to ``total_savings_selected`` either — the
+optimizer already excluded it from that sum.
 """
 
 from __future__ import annotations
@@ -94,8 +100,16 @@ def assemble_plan(
         # twice would double-count its outflow on the curve. It still counts
         # toward the totals (unchanged, taken from `optimizer_result` as a
         # whole) — just not reflected twice in `periods`.
+        # An `unconvertible` recommendation is money in a currency the curve is
+        # NOT in (see `discount_optimizer.optimize`). `rows` are reporting-
+        # currency commitments, so swapping one for the offer's own-currency
+        # outlay would put e.g. €980 where $1,060 stood and quietly re-price the
+        # whole running balance. It is left on its original schedule and listed
+        # in `unretimed_offer_ids` — the existing "we could not re-time this"
+        # channel — rather than silently re-timed at the wrong figure.
         matched = (
             inv_id is not None
+            and not r.unconvertible
             and inv_id not in matched_invoice_ids
             and any(row.get("invoice_id") == inv_id for row in rows)
         )

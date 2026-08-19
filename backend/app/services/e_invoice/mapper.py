@@ -21,6 +21,7 @@ from app.services.e_invoice.model import (
     EInvoiceParty,
     EInvoiceTax,
 )
+from app.services.e_invoice.payment_means import method_to_payment_means
 
 _DEFAULT_INVOICE_TYPE_CODE = "380"  # UNCL1001 "Commercial invoice".
 
@@ -173,7 +174,12 @@ def invoice_to_einvoice_document(
         buyer_reference=invoice.reference_number,
         order_reference=invoice.po_number,
         payment_terms_note=invoice.payment_terms,
-        payment_means_code=invoice.payment_method,
+        # `payment_means_code` is a UNCL4461 CODE-LIST element, not free text —
+        # `Invoice.payment_method` holds our own `ach`/`wire`/… token, which is
+        # not a member of that list. Map it (and omit the element when nothing
+        # maps) so the emitted document is readable by any receiver, ours
+        # included. See `payment_means.py`.
+        payment_means_code=method_to_payment_means(invoice.payment_method),
         seller=seller,
         buyer=buyer,
         line_extension_amount=invoice.subtotal,

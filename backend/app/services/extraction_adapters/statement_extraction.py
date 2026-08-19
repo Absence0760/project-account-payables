@@ -30,6 +30,7 @@ from app.services.extraction_adapters.base import (
     STATEMENT_REASON_UNREADABLE,
     StatementExtractionResult,
     StatementLineExtraction,
+    coerce_confidence,
 )
 
 STATEMENT_EXTRACTION_PROMPT = """You are reading a SUPPLIER STATEMENT OF OPEN \
@@ -74,10 +75,10 @@ def _field(item: dict, name: str) -> tuple[str | None, float]:
     raw = item[name]
     if isinstance(raw, dict):
         value = raw.get("value")
-        try:
-            confidence = float(raw.get("confidence", 0.0))
-        except (TypeError, ValueError):
-            confidence = 0.0
+        # Same 0.0-1.0 contract the invoice path enforces: a model answering on
+        # a 0-100 scale would otherwise put "9500% confident" on the run's
+        # provenance panel, and a junk shape would raise.
+        confidence = coerce_confidence(raw.get("confidence"))
     else:
         value, confidence = raw, 0.5
     if value is None:

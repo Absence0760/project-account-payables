@@ -106,6 +106,14 @@ def _parse_line(line_el) -> EInvoiceLine:
         line.tax_rate = to_decimal(
             find_text(settlement, "ApplicableTradeTax", "RateApplicablePercent")
         )
+        # The line's own tax figure. UBL's parser has always read it
+        # (`cac:TaxTotal/cbc:TaxAmount`); CII's did not, so every Factur-X /
+        # ZUGFeRD line arrived with `tax_amount=None` and the extraction
+        # adapter — which maps `line.tax_amount` onto `ExtractedLineItem.tax` —
+        # silently dropped per-line tax the document actually carried.
+        line.tax_amount = to_decimal(
+            find_text(settlement, "ApplicableTradeTax", "CalculatedAmount")
+        )
         line.line_total = to_decimal(
             find_text(
                 settlement,

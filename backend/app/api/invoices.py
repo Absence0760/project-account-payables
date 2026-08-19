@@ -1055,7 +1055,7 @@ async def replace_invoice_file(
     # the old object in place, so old_file_key == file_key. Deleting it in
     # that case would delete the file we just wrote.
     if old_file_key != file_key:
-        delete_file(old_file_key)
+        await delete_file(old_file_key)
     result = await db.execute(
         select(Invoice)
         .options(selectinload(Invoice.extraction_results))
@@ -1098,7 +1098,7 @@ async def delete_invoice_file(
     # Commit before touching storage — see replace_invoice_file for why
     # (mirrors api/positive_pay.py's commit-then-delete order).
     await db.commit()
-    delete_file(file_key_to_delete)
+    await delete_file(file_key_to_delete)
     result = await db.execute(
         select(Invoice)
         .options(selectinload(Invoice.extraction_results))
@@ -1456,7 +1456,7 @@ async def get_chat_file(
     if prefix != str(user.organization_id):
         raise HTTPException(status_code=404, detail="File not found")
     try:
-        content, content_type = get_file(file_key)
+        content, content_type = await get_file(file_key)
     except Exception:
         raise HTTPException(status_code=404, detail="File not found")
     return Response(content=content, media_type=content_type)

@@ -97,7 +97,23 @@ async def _add_invoice_with_fraud_flag(mk, org_id, vendor_id, *, number, status=
         return inv.id
 
 
-async def _add_completed_payment(mk, org_id, vendor_id, *, number, amount, status="completed"):
+async def _add_completed_payment(
+    mk,
+    org_id,
+    vendor_id,
+    *,
+    number,
+    amount,
+    status="completed",
+    currency=None,
+    source_amount=None,
+    source_currency=None,
+):
+    """Seed an invoice + its payment.
+
+    `currency` is the INVOICE's currency — which is also what `Payment.amount`
+    is denominated in. `source_amount` / `source_currency` are the rate-locked
+    home-currency leg an international payment carries."""
     from app.models.invoice import Invoice, InvoiceStatus
     from app.models.payment import Payment
 
@@ -109,6 +125,7 @@ async def _add_completed_payment(mk, org_id, vendor_id, *, number, amount, statu
             vendor_id=vendor_id,
             amount=Decimal(str(amount)),
             status=InvoiceStatus.approved,
+            **({"currency": currency} if currency else {}),
         )
         s.add(inv)
         await s.commit()
@@ -118,6 +135,8 @@ async def _add_completed_payment(mk, org_id, vendor_id, *, number, amount, statu
             amount=Decimal(str(amount)),
             status=status,
             completed_at=datetime.now(UTC) if status == "completed" else None,
+            source_amount=Decimal(str(source_amount)) if source_amount is not None else None,
+            source_currency=source_currency,
         )
         s.add(pay)
         await s.commit()
@@ -220,8 +239,86 @@ async def test_payment_history_contributes_exposure(realdb):
     assert ph["payment_count"] == 2
     assert ph["failed_payments"] == 1
     assert Decimal(ph["trailing_12m_amount"]) == Decimal("100000.00")
+    # The figure is denominated, not a bare number.
+    assert ph["currency"] == "USD"
+    assert ph["unconverted_payments"] == 0
     # Some signal → not unknown.
     assert assessment.risk_level != "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Payment history is a REPORTING-currency figure, never a raw SUM
+# ---------------------------------------------------------------------------
+
+
+async def test_foreign_currency_payment_is_not_summed_at_face_value(realdb):
+    """`Payment.amount` is in the INVOICE's currency, so summing it raw mixes
+    currencies. ¥10,000,000 used to land in a USD-denominated exposure ramp
+    whose full-exposure point is 100,000 — pinning the sub-score at 100 off one
+    ordinary Japanese invoice. It must be excluded and COUNTED, not converted at
+    read time and not folded in at face value."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vid = await _add_vendor(mk, org_id, name="Tokyo Parts KK")
+    await _add_completed_payment(mk, org_id, vid, number="JPY-1", amount="10000000", currency="JPY")
+
+    async with mk() as s:
+        vendor = (await s.execute(select(Vendor).where(Vendor.id == vid))).scalar_one()
+        assessment = await compute_vendor_risk(s, vendor=vendor, organization_id=org_id)
+
+    ph = assessment.factors["payment_history"]
+    assert Decimal(ph["trailing_12m_amount"]) == Decimal("0.00")
+    assert ph["unconverted_payments"] == 1
+    # The payment still counts as a signal — the vendor isn't "untouched".
+    assert ph["payment_count"] == 1
+    assert assessment.risk_level != "unknown"
+
+
+async def test_foreign_payment_with_a_locked_home_leg_is_counted(realdb):
+    """An international payment carries the rate-locked home-currency debit on
+    `source_amount`/`source_currency`. That IS the cash that left the bank, so
+    it counts — at the locked figure, never re-fetched."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vid = await _add_vendor(mk, org_id, name="Tokyo Parts KK 2")
+    await _add_completed_payment(
+        mk,
+        org_id,
+        vid,
+        number="JPY-2",
+        amount="10000000",
+        currency="JPY",
+        source_amount="65000",
+        source_currency="USD",
+    )
+
+    async with mk() as s:
+        vendor = (await s.execute(select(Vendor).where(Vendor.id == vid))).scalar_one()
+        assessment = await compute_vendor_risk(s, vendor=vendor, organization_id=org_id)
+
+    ph = assessment.factors["payment_history"]
+    assert Decimal(ph["trailing_12m_amount"]) == Decimal("65000.00")
+    assert ph["unconverted_payments"] == 0
+
+
+async def test_unconvertible_volume_does_not_inflate_the_bucket(realdb):
+    """The user-visible consequence: with the raw sum, one JPY invoice on top of
+    a `review_required` screen scored 60*0.55 + 100*0.15 = 48 → `medium`. The
+    unconvertible volume must contribute nothing, leaving 33 → `low`."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vid = await _add_vendor(mk, org_id, name="Reviewed Tokyo Co")
+    await _add_sanctions_check(
+        mk, org_id, vid, result="review_required", matched_list=None, risk_score=None
+    )
+    await _add_completed_payment(mk, org_id, vid, number="JPY-3", amount="10000000", currency="JPY")
+
+    async with mk() as s:
+        vendor = (await s.execute(select(Vendor).where(Vendor.id == vid))).scalar_one()
+        assessment = await compute_vendor_risk(s, vendor=vendor, organization_id=org_id)
+
+    assert assessment.risk_score == Decimal("33.00")
+    assert assessment.risk_level == "low"
 
 
 async def test_recompute_and_persist_writes_columns(realdb):

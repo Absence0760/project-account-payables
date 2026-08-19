@@ -32,6 +32,7 @@ for the hybrid format.
 | `generate.py` | `generate_ubl(doc) -> bytes`. Outbound UBL 2.1 serializer — the exact inverse of `ubl.py`. lxml etree, money via `Decimal.quantize`, `currencyID` on amounts. |
 | `generate_cii.py` | `generate_cii(doc) -> bytes`. Outbound UN/CEFACT CII (D16B) serializer — the exact inverse of `cii.py`. Emits `rsm:CrossIndustryInvoice` with the `ram:`/`udt:` namespaces; same lxml-etree posture as `generate.py` (Decimal money, escaped text); dates as the CII basic-date form (`format="102"` → `YYYYMMDD`). |
 | `mapper.py` | `BuyerIdentity` dataclass + `invoice_to_einvoice_document(invoice, line_items, buyer_identity) -> EInvoiceDocument`. Pure ORM `Invoice` → normalized model. |
+| `payment_means.py` | The UNCL4461 code ⇄ `Invoice.payment_method` token table, **both directions in one place** so inbound (`einvoice_adapter`) and outbound (`mapper`) can't drift. `payment_means_to_method` / `method_to_payment_means`; an unmappable token yields `None` and the optional element is omitted rather than carrying an out-of-code-list value. |
 | `tax_rules.py` | Country tax validation: `validate_tax_id` / `validate_tax_rate` / `validate_tax_document(doc) -> list[FieldError]`. VAT/GST/IVA/CNPJ/NIT id formats + rate plausibility + zero-rate/reverse-charge. Shared by inbound (`validate.py`) and outbound (export route + national formats). |
 | `country_formats/` | National outbound dialects — `base.py` (`CountryEInvoiceFormat` interface), `dispatcher.py` (registry), and `fatturapa.py` (IT) / `cfdi.py` (MX) / `nfe.py` (BR) / `dian.py` (CO). Generation + national validation only; live clearance deferred. See § National e-invoice formats. |
 
@@ -95,7 +96,16 @@ org's configured vision/OCR adapter unchanged.
 | `line_items` | `lines[]` → `ExtractedLineItem` |
 
 UNCL4461 payment-means map: `30`/`58` → `ach`, `31`/`42` → `wire`, `20` →
-`check`, `48`/`54` → `credit_card`, else None.
+`check`, `48`/`54` → `credit_card`, else None. It lives in
+`e_invoice/payment_means.py` — **both** directions in one table, because the
+outbound mapper needs the inverse and the two must not drift. Outbound emits
+`ach` → `30`, `wire` → `42`, `check` → `20`, `credit_card` → `48`; `other` (and
+anything unrecognised) yields `None` and the optional element is **omitted** —
+a document with no payment means is valid, one carrying an out-of-code-list
+value is not. A value that is already a UNCL4461 code passes through unchanged
+(`Invoice.payment_method` is a free-form `String(50)` an API client can write
+directly). `tests/test_e_invoice_payment_means.py` pins
+`payment_means_to_method(method_to_payment_means(m)) == m` for every token.
 
 ## Validation (EN 16931 structural subset)
 
@@ -201,7 +211,12 @@ tax-rule validators then skip the seller side. Totals map as:
 `tax_inclusive_amount`/`payable_amount` ← `amount`, `tax_total` ← `tax_amount`,
 `allowance_total` ← `discount_amount`, `charge_total` ← `shipping_amount`. One
 `EInvoiceTax` is built from `(tax_rate, subtotal, tax_amount)` when tax is set.
-Decimal is preserved end to end.
+Each line carries its own `tax_amount` ← `InvoiceLineItem.tax`, emitted by BOTH
+generators (`cac:TaxTotal/cbc:TaxAmount` in UBL,
+`ram:ApplicableTradeTax/ram:CalculatedAmount` in CII) and read back by both
+parsers. `payment_means_code` is the mapped UNCL4461 **code**, never the
+internal `payment_method` token (see the field map above). Decimal is preserved
+end to end.
 
 ### Routes
 
@@ -252,10 +267,10 @@ a `format_code` and resolved by the export route's `?format=` parameter.
 
 | `format_code` | Country | Dialect emitted | Validation |
 |---------------|---------|-----------------|------------|
-| `fatturapa` | IT | `FatturaElettronica` v1.2 (`FPR12`) — `…Header` (DatiTrasmissione + CedentePrestatore/CessionarioCommittente) + `…Body` (DatiGeneraliDocumento, DatiBeniServizi, DatiRiepilogo) | seller **and** buyer Partita IVA required + IT-format; `payable_amount` |
-| `cfdi` | MX | `cfdi:Comprobante` v4.0 — Emisor / Receptor (RFC) + Conceptos + Impuestos | emisor **and** receptor RFC required + MX-format; `payable_amount`, `tax_exclusive_amount` |
+| `fatturapa` | IT | `FatturaElettronica` v1.2 (`FPR12`) — `…Header` (DatiTrasmissione + CedentePrestatore/CessionarioCommittente) + `…Body` (DatiGeneraliDocumento, DatiBeniServizi, DatiRiepilogo). `IdFiscaleIVA` / `IdTrasmittente` are **two-part** ids: `IdPaese` carries the ISO country and `IdCodice` the VAT number *without* it, so `_split_id_fiscale` strips the country prefix the normalized model stores (`IT12345678901` → `IT` + `12345678901`; Greece's `EL` maps to ISO `GR`). A non-prefixed id, or a prefix that doesn't identify the emitted country, passes through untouched. | seller **and** buyer Partita IVA required + IT-format; `payable_amount` |
+| `cfdi` | MX | `cfdi:Comprobante` v4.0 — Emisor / Receptor (RFC) + Conceptos + Impuestos. `Concepto/@ClaveProdServ` is a SAT `c_ClaveProdServ` **catalog key**, so it stays the documented `01010101` "not in the catalog" placeholder; the line's `item_code` (the *seller's* part number) goes to `@NoIdentificacion`, the attribute CFDI provides for exactly that. | emisor **and** receptor RFC required + MX-format; `payable_amount`, `tax_exclusive_amount` |
 | `nfe` | BR | `NFe/infNFe` v4.00 — ide / emit / dest / det·prod / total·ICMSTot | emit CNPJ required + BR-format; `payable_amount` |
-| `dian` | CO | DIAN-profiled UBL 2.1 (`CustomizationID=10`, `ProfileID="DIAN 2.1…"`, `UBLExtensions` placeholder) | supplier NIT required + CO-format; `payable_amount` |
+| `dian` | CO | DIAN-profiled UBL 2.1 (`CustomizationID=10`, `ProfileID="DIAN 2.1…"`, `UBLExtensions` placeholder). `cbc:InvoiceTypeCode` is read from DIAN's own document-type list (`01`–`04`), not UNCL1001, so `_resolve_invoice_type_code` translates the model's UNCL1001 value (`380` → `01`), passes an already-DIAN code through, and defaults to `01` otherwise — the same posture as FatturaPA's `TipoDocumento` map. | supplier NIT required + CO-format; `payable_amount` |
 
 **Architecture** — `country_formats/base.py` defines the `CountryEInvoiceFormat`
 interface (`format_code` / `country` / `display_name` / `file_extension` /

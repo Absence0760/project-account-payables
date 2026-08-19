@@ -216,7 +216,7 @@ def test_d365_api_url_uses_override_and_skips_ssrf_guard(monkeypatch):
     UnsafeUrlError, and config base_url must not be required at all."""
     monkeypatch.setattr(settings, "erp_d365_api_base", FAKE_D365)
     adapter = BusinessCentralAdapter({"environment": "sandbox", "company_id": "c-1"})
-    url = adapter._api_url("purchaseInvoices")
+    url = _run(adapter._api_url("purchaseInvoices"))
     assert url == f"{FAKE_D365}/sandbox/api/v2.0/companies(c-1)/purchaseInvoices"
 
 
@@ -228,7 +228,7 @@ def test_d365_api_url_admin_config_localhost_still_raises(monkeypatch):
         {"base_url": "http://127.0.0.1:12112/d365", "company_id": "c-1"}
     )
     with pytest.raises(UnsafeUrlError):
-        adapter._api_url("purchaseInvoices")
+        _run(adapter._api_url("purchaseInvoices"))
 
 
 def test_d365_api_url_override_takes_precedence_over_admin_config(monkeypatch):
@@ -237,5 +237,5 @@ def test_d365_api_url_override_takes_precedence_over_admin_config(monkeypatch):
     adapter = BusinessCentralAdapter(
         {"base_url": "https://api.businesscentral.dynamics.com/v2.0", "company_id": "c-1"}
     )
-    url = adapter._api_url("vendors")
+    url = _run(adapter._api_url("vendors"))
     assert url.startswith(f"{FAKE_D365}/production/")
