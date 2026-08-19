@@ -45,6 +45,18 @@ const SEEDED = 25;
 test.use({ storageState: { cookies: [], origins: [] } });
 
 async function portalSignIn(page: Page) {
+	// Record a cookie-consent choice before first paint. The GDPR banner is
+	// position:fixed bottom-centre at z-index 10000, so it sits directly over
+	// the Load-more footer and intercepts its clicks — the same reason the
+	// shared `signInAndWait` helper does this. The portal has its own sign-in
+	// path, which is why it needs its own copy.
+	await page.addInitScript(() => {
+		try {
+			localStorage.setItem('feoh_consent_choice', 'accepted');
+		} catch {
+			/* about:blank — ignore */
+		}
+	});
 	await page.goto('/portal/login');
 	await page.waitForLoadState('networkidle');
 	await page.locator('input[type="email"]').fill(PORTAL_EMAIL);
