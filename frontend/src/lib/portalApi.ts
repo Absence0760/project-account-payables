@@ -109,6 +109,106 @@ export const portalApi = {
 };
 
 // ---------------------------------------------------------------------------
+// Paged list reads
+//
+// Every portal list endpoint returns the canonical envelope
+// `{items, total, page, page_size}` (`backend/app/api/pagination.py` —
+// `page` is 1-based, `page_size` defaults to 20 and is capped at 100). The
+// portal pages read `total` and append the next page through the shared
+// Load-More control, exactly like the AP app: raising `page_size` alone would
+// only move the truncation cliff to `MAX_PAGE_SIZE`, leaving a supplier with
+// 101 invoices unable to reach the tail.
+// ---------------------------------------------------------------------------
+
+export interface PortalPage<T> {
+	items: T[];
+	total: number;
+	page: number;
+	page_size: number;
+}
+
+/** Rows a portal list requests per page. Matches the backend default so a
+ *  bare `GET /api/portal/<list>` and the UI's first page return the same rows. */
+export const PORTAL_PAGE_SIZE = 20;
+
+export interface PortalListParams {
+	page?: number;
+	page_size?: number;
+}
+
+/** GET a paged portal list, threading `?page=&page_size=` (plus any extra
+ *  per-list filter) onto the path. Empty / undefined params are dropped. */
+function portalList<T>(
+	path: string,
+	params: Record<string, string | number | undefined> = {},
+): Promise<PortalPage<T>> {
+	const qs = new URLSearchParams();
+	for (const [key, value] of Object.entries(params)) {
+		if (value === undefined || value === '') continue;
+		qs.set(key, String(value));
+	}
+	const query = qs.toString();
+	return portalApi.get<PortalPage<T>>(query ? `${path}?${query}` : path);
+}
+
+/** Shared page/page_size pair, defaulted, for a list request. */
+function pageParams(params: PortalListParams): { page: number; page_size: number } {
+	return { page: params.page ?? 1, page_size: params.page_size ?? PORTAL_PAGE_SIZE };
+}
+
+// Money arrives as a JSON number or an exact decimal string depending on the
+// field — never parse it, hand it to `formatMoney` / `<Money>`.
+export interface PortalInvoiceListItem {
+	id: string;
+	invoice_number: string;
+	amount: number | string;
+	currency: string;
+	status: string;
+	invoice_date: string | null;
+	due_date: string | null;
+	submitted_at: string;
+	file_url: string | null;
+}
+
+export interface PortalPaymentListItem {
+	id: string;
+	invoice_id: string;
+	invoice_number: string;
+	amount: number | string;
+	currency: string;
+	method: string | null;
+	status: string;
+	reference: string | null;
+	submitted_at: string | null;
+	completed_at: string | null;
+}
+
+export interface PortalPOListItem {
+	id: string;
+	po_number: string;
+	status: string;
+	total: number | string;
+	currency: string;
+	line_item_count: number;
+	created_at: string;
+}
+
+/** The signed-in vendor's own invoices (newest first). */
+export function listPortalInvoices(params: PortalListParams = {}) {
+	return portalList<PortalInvoiceListItem>('/api/portal/invoices', pageParams(params));
+}
+
+/** Payments on the signed-in vendor's invoices (newest first). */
+export function listPortalPayments(params: PortalListParams = {}) {
+	return portalList<PortalPaymentListItem>('/api/portal/payments', pageParams(params));
+}
+
+/** Purchase orders owned by the signed-in vendor (newest first). */
+export function listPortalPurchaseOrders(params: PortalListParams = {}) {
+	return portalList<PortalPOListItem>('/api/portal/purchase-orders', pageParams(params));
+}
+
+// ---------------------------------------------------------------------------
 // Early-payment discount offers (portal side)
 //
 // Mirrors the AP-side dynamic-discounting types, but vendor-scoped and without
@@ -145,17 +245,18 @@ export interface PortalDiscountOffer {
 	created_at: string;
 }
 
-export interface PortalDiscountOfferPage {
-	items: PortalDiscountOffer[];
-	total: number;
-	page: number;
-	page_size: number;
-}
+export type PortalDiscountOfferPage = PortalPage<PortalDiscountOffer>;
 
-/** List early-payment discount offers relevant to the signed-in vendor. */
-export function listPortalDiscountOffers(status?: string): Promise<PortalDiscountOfferPage> {
-	const qs = status ? `?status=${encodeURIComponent(status)}` : '';
-	return portalApi.get<PortalDiscountOfferPage>(`/api/portal/discount-offers${qs}`);
+/** List early-payment discount offers relevant to the signed-in vendor.
+ *  `status` is the backend's optional comma-separated `?status=` filter. */
+export function listPortalDiscountOffers(
+	status?: string,
+	params: PortalListParams = {},
+): Promise<PortalDiscountOfferPage> {
+	return portalList<PortalDiscountOffer>('/api/portal/discount-offers', {
+		...pageParams(params),
+		status,
+	});
 }
 
 /** Accept an offer (optionally at a specific tier). Flips status only. */

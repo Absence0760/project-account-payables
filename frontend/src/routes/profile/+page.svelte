@@ -8,9 +8,10 @@
 	import { notificationStore } from '$lib/stores/notifications.svelte';
 	import {
 		EVENT_ORDER,
-		EVENT_LABELS,
+		EVENT_LABEL_KEYS,
+		normalizePrefs,
+		type ChannelPrefs,
 		type NotificationEventType,
-		type NotificationPrefs,
 	} from '$lib/types/notification';
 
 	interface EnrollResponse {
@@ -40,10 +41,12 @@
 	}
 
 	async function togglePref(event: NotificationEventType, channel: 'email' | 'in_app') {
-		const prefs = notificationStore.prefs;
-		if (!prefs) return;
-		const current = prefs[event];
-		const next: NotificationPrefs[NotificationEventType] = {
+		if (!notificationStore.prefs) return;
+		// Read through the same normalisation the grid renders from, so an event
+		// the server omitted toggles off its shown (default-on) state rather than
+		// throwing on an undefined row.
+		const current = normalizePrefs(notificationStore.prefs)[event];
+		const next: ChannelPrefs = {
 			...current,
 			[channel]: !current[channel],
 		};
@@ -791,15 +794,16 @@
 		<section class="card">
 			<h2>Notifications</h2>
 			<p class="hint">
-				Choose how you're notified about invoices assigned to you and the
-				invoices you've uploaded. In-app notifications appear in the
-				notification center; email is sent to {auth.user?.email ?? 'your address'}.
+				Choose which events reach you, and how. Anything left on is
+				delivered — every event is on until you switch it off. In-app
+				notifications appear in the notification center; email is sent to
+				{auth.user?.email ?? 'your address'}.
 			</p>
 
 			{#if !prefsLoaded}
 				<p class="hint">Loading…</p>
 			{:else if notificationStore.prefs}
-				{@const prefs = notificationStore.prefs}
+				{@const prefs = normalizePrefs(notificationStore.prefs)}
 				<table class="prefs-table">
 					<thead>
 						<tr>
@@ -810,15 +814,16 @@
 					</thead>
 					<tbody>
 						{#each EVENT_ORDER as event (event)}
+							{@const label = m(EVENT_LABEL_KEYS[event])}
 							<tr>
-								<td>{EVENT_LABELS[event]}</td>
+								<td>{label}</td>
 								<td class="center">
 									<input
 										type="checkbox"
 										checked={prefs[event].in_app}
 										disabled={savingPrefs}
 										onchange={() => togglePref(event, 'in_app')}
-										aria-label={`In-app notifications for ${EVENT_LABELS[event]}`}
+										aria-label={m('profile.notifications.inAppFor', { event: label })}
 									/>
 								</td>
 								<td class="center">
@@ -827,7 +832,7 @@
 										checked={prefs[event].email}
 										disabled={savingPrefs}
 										onchange={() => togglePref(event, 'email')}
-										aria-label={`Email notifications for ${EVENT_LABELS[event]}`}
+										aria-label={m('profile.notifications.emailFor', { event: label })}
 									/>
 								</td>
 							</tr>

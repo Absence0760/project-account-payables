@@ -31,6 +31,7 @@ from sqlalchemy import select
 from app.api import vendors as vendors_module
 from app.models.sanctions_check import SanctionsCheck
 from app.models.vendor import Vendor
+from app.services import vendor_screening as vendor_screening_module
 from app.services.compliance import check_payment_compliance
 
 TENANT = "a"
@@ -264,17 +265,23 @@ async def test_manual_screen_adapter_failure_logs_exception_class_not_message(re
 
 @pytest.mark.asyncio
 async def test_best_effort_screen_failure_logs_exception_class_not_message(realdb, caplog):
-    """`_screen_best_effort` (the create/update path's swallowed screen) must
+    """`screen_best_effort` (the create/update path's swallowed screen) must
     log the exception CLASS only too — not `exc_info=True` — on a sanctions-
     adapter failure. The vendor write itself must still succeed (best-effort:
-    a provider outage never blocks vendor create/update). See issue #277."""
+    a provider outage never blocks vendor create/update). See issue #277.
+
+    Patched on `services.vendor_screening`, not `api.vendors`: the swallowing
+    helper lives in the service so the enrichment apply path can reuse it, and
+    it calls its own module-level `screen_vendor_record` and logs through its
+    own logger.
+    """
     with (
         patch.object(
-            vendors_module,
+            vendor_screening_module,
             "screen_vendor_record",
             AsyncMock(side_effect=RuntimeError(_PII_SENTINEL)),
         ),
-        caplog.at_level(logging.WARNING, logger=vendors_module.logger.name),
+        caplog.at_level(logging.WARNING, logger=vendor_screening_module.logger.name),
     ):
         async with realdb.client(key=TENANT, role="admin") as client:
             resp = await client.post(

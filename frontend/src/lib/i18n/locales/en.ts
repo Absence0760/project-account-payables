@@ -81,6 +81,19 @@ export const en = {
 		'Choose the language used across the app. Your choice is saved on this device.',
 	'profile.language.label': 'Display language',
 
+	// Profile → Notification preferences (profile/+page.svelte). The event
+	// roster mirrors backend/app/models/notification.py::NOTIFICATION_EVENT_TYPES
+	// — see src/lib/types/notification.ts and its roster guard.
+	'profile.notifications.event.invoiceAssigned': 'Invoice assigned to me',
+	'profile.notifications.event.invoiceApproved': 'Invoice approved',
+	'profile.notifications.event.invoiceRejected': 'Invoice rejected',
+	'profile.notifications.event.invoicePaid': 'Invoice paid',
+	'profile.notifications.event.contractRenewalDue': 'Contract renewal due',
+	'profile.notifications.event.chatMessage': 'New supplier chat message',
+	'profile.notifications.event.cashShortfallProjected': 'Projected cash shortfall',
+	'profile.notifications.inAppFor': 'In-app notifications for {event}',
+	'profile.notifications.emailFor': 'Email notifications for {event}',
+
 	// Common shared across list/detail surfaces
 	'common.all': 'All',
 	'common.search': 'Search',
@@ -167,6 +180,10 @@ export const en = {
 	// Payments (routes/payments/+page.svelte)
 	'payments.title': 'Payments',
 	'payments.summary.totalPaid': 'Total Paid',
+	'payments.summary.unconvertedPayments':
+		'Excluded: {n, plural, one {# payment} other {# payments}} with no exchange rate into {currency}, left out of the totals above — so the figures shown understate what actually moved. Book the missing rate to see the full picture.',
+	'payments.queue.unconvertedRows':
+		'{n, plural, one {# invoice has} other {# invoices have}} no exchange rate into the reporting currency, so the queue totals leave them out. The rows themselves are listed and payable, each in its own currency.',
 	'payments.summary.pending': 'Pending',
 	'payments.summary.readyToPay': 'Ready to Pay',
 	'payments.summary.payments': 'Payments',
@@ -186,6 +203,19 @@ export const en = {
 	'payments.queue.createDraftRun': '{n, plural, one {Create Draft Run · # Invoice} other {Create Draft Run · # Invoices}}',
 	'payments.queue.savingsBanner': '{amount} in early-pay discounts available — pay the highlighted invoices before their discount date to capture them.',
 	'payments.queue.empty': 'No invoices ready for payment.',
+	'payments.queue.empty.errored': 'Could not load the payment queue. Try again.',
+	'payments.queue.createFailed': 'Payment run failed',
+	'payments.queue.mixedCurrency':
+		'This selection spans {n} currencies, so the subtotals are shown separately and are NOT added together. A payment run must be a single currency — clear the selection down to one currency to continue.',
+	'payments.queue.mixedCurrencyBlocked': 'A payment run must be a single currency.',
+	'payments.queue.blockedCount':
+		'{n, plural, one {# invoice is blocked from payment and can’t be selected} other {# invoices are blocked from payment and can’t be selected}} — clear the exception first.',
+	'payments.queue.blockedCheckboxAria': 'Invoice {invoice} can’t be paid: {reason}',
+	'payments.queue.blocked.duplicate': 'Possible duplicate — unresolved',
+	'payments.queue.blocked.fraudFlag': 'Fraud flag — unresolved',
+	'payments.queue.blocked.lineTotalMismatch': 'Line totals don’t match — unresolved',
+	'payments.queue.blocked.paymentReconciliation': 'Earlier payment unreconciled — may still be in flight',
+	'payments.queue.blocked.generic': 'Unresolved exception blocks payment',
 	'payments.queue.discountSave': 'Save {amount}',
 	'payments.queue.discountBy': '{percent}% by {date}',
 	'payments.col.invoiceNumber': 'Invoice #',
@@ -286,6 +316,69 @@ export const en = {
 	'vendors.bank.bankName': 'Bank name',
 	'vendors.bank.accountLast4': 'Account last 4',
 	'vendors.bank.routingLast4': 'Routing last 4',
+	// Bank-detail dual control (the BEC / bank-redirect gate) — the /vendors
+	// bank editor stages a change; the queue below is where it gets signed off.
+	'vendors.bank.dualControlHint':
+		'Saving stages this change for approval — it does not apply until a second approver signs it off.',
+	'vendors.bank.reviewQueueLink': 'Open bank change approvals',
+	'vendors.bank.toast.submitted':
+		'Bank-detail change submitted — it’s waiting in Bank change approvals',
+	'vendors.bank.toast.submitFailed': 'Submit failed',
+	'vendors.action.changeApprovals': 'Bank change approvals',
+
+	// Vendor bank / tax change-approval queue (routes/vendors/change-requests)
+	'vendors.changeRequests.navLabel': 'Bank Changes',
+	'vendors.changeRequests.title': 'Bank & Tax Change Approvals',
+	'vendors.changeRequests.intro':
+		'A vendor’s bank or tax details change only once a second approver signs off. You cannot approve a change you requested.',
+	'vendors.changeRequests.refresh': 'Refresh',
+	'vendors.changeRequests.refreshing': 'Refreshing…',
+	'vendors.changeRequests.noPermissionNote':
+		'You can review this queue, but approving a change needs the “Approve vendor bank / tax changes” permission.',
+	'vendors.changeRequests.status.pending': 'Pending',
+	'vendors.changeRequests.status.approved': 'Approved',
+	'vendors.changeRequests.status.rejected': 'Rejected',
+	'vendors.changeRequests.type.bankDetails': 'Bank details',
+	'vendors.changeRequests.type.taxId': 'Tax ID',
+	'vendors.changeRequests.col.changeType': 'Change',
+	'vendors.changeRequests.col.proposed': 'Proposed (masked)',
+	'vendors.changeRequests.col.requestedBy': 'Requested by',
+	'vendors.changeRequests.col.requested': 'Requested',
+	'vendors.changeRequests.requester.supplier': 'Supplier portal',
+	'vendors.changeRequests.requester.apUser': 'AP user',
+	'vendors.changeRequests.requester.you': 'You',
+	'vendors.changeRequests.row.open': 'Review the {type} change for {vendor}',
+	'vendors.changeRequests.row.approve': 'Approve',
+	'vendors.changeRequests.row.confirmApprove': 'Confirm approve',
+	'vendors.changeRequests.row.reject': 'Reject',
+	'vendors.changeRequests.row.confirmReject': 'Confirm reject',
+	'vendors.changeRequests.row.youRequested': 'You requested this',
+	'vendors.changeRequests.row.needsPermission': 'Needs approval permission',
+	'vendors.changeRequests.empty.pending': 'Nothing is waiting for approval.',
+	'vendors.changeRequests.empty.filtered': 'No change requests with this status.',
+	'vendors.changeRequests.empty.errored': 'Could not load the change-request queue.',
+	'vendors.changeRequests.loadMore': 'Load more ({shown} of {total})',
+	'vendors.changeRequests.showingAll':
+		'{total, plural, one {Showing all # request} other {Showing all # requests}}',
+	'vendors.changeRequests.modal.aria': 'Vendor change request review',
+	'vendors.changeRequests.modal.verifyHint':
+		'Call the supplier on a number you already held on file and confirm these details before approving — a redirected account is the classic invoice-fraud payload.',
+	'vendors.changeRequests.modal.proposed': 'Proposed value',
+	'vendors.changeRequests.modal.revealFailed': 'Could not load the full proposed value',
+	'vendors.changeRequests.modal.reviewNote': 'Review note (optional)',
+	'vendors.changeRequests.modal.reviewNotePlaceholder': 'e.g. verified by phone callback',
+	'vendors.changeRequests.modal.requested': 'Requested',
+	'vendors.changeRequests.modal.reviewed': 'Reviewed',
+	'vendors.changeRequests.modal.note': 'Note',
+	'vendors.changeRequests.toast.approved': 'Change approved — the vendor’s details are updated',
+	'vendors.changeRequests.toast.rejected': 'Change rejected — the vendor is unchanged',
+	'vendors.changeRequests.toast.sod':
+		'You can’t approve a change you requested — a second approver must sign it off',
+	'vendors.changeRequests.toast.resolved':
+		'Someone already resolved that request — the queue has been refreshed',
+	'vendors.changeRequests.toast.approveFailed': 'Approve failed',
+	'vendors.changeRequests.toast.rejectFailed': 'Reject failed',
+	'vendors.changeRequests.toast.loadFailed': 'Failed to load the change-request queue',
 
 	// Exceptions (routes/exceptions/+page.svelte)
 	'exceptions.title': 'Exceptions',
@@ -1030,6 +1123,8 @@ export const en = {
 	'expenses.loading': 'Loading…',
 	'expenses.empty': 'No expenses match your filters.',
 	'expenses.empty.errored': 'Could not load expenses. Try again.',
+	'expenses.empty.searchPartial':
+		'No match in the {shown} of {total} expenses loaded so far. Search covers loaded rows only — use Load more below to search the rest.',
 	'expenses.col.date': 'Date',
 	'expenses.col.merchant': 'Merchant',
 	'expenses.col.category': 'Category',
@@ -1252,6 +1347,8 @@ export const en = {
 	'requisitions.col.total': 'Total',
 	'requisitions.col.status': 'Status',
 	'requisitions.empty': 'No requisitions match your filters.',
+	'requisitions.empty.searchPartial':
+		'No match in the {shown} of {total} requisitions loaded so far. Search covers loaded rows only — use Load more below to search the rest.',
 	'requisitions.notFound': 'Requisition not found',
 	'requisitions.row.open': 'Open requisition {number}',
 	'requisitions.row.submit': 'Submit',
@@ -1694,6 +1791,87 @@ export const en = {
 	'byEntity.loading': 'Loading…',
 	'byEntity.loadFailed': 'Failed to load per-entity breakdown',
 
+	// Scheduled reports (components/analytics/ScheduledReportsPanel.svelte) —
+	// the CRUD surface for the report runner, hosted on /cfo. The report-type
+	// and cadence VALUES come off the API; the labels below cover the ones the
+	// runner ships today and an unlabelled key still renders, humanised.
+	'scheduledReports.heading': 'Scheduled Reports',
+	'scheduledReports.hint':
+		'Reports the platform generates and emails on a schedule. A schedule covers the whole tenant — it is not scoped to the selected entity.',
+	'scheduledReports.new': '+ New Schedule',
+	'scheduledReports.retry': 'Retry',
+	'scheduledReports.loadFailed': 'Could not load scheduled reports',
+	'scheduledReports.empty.none': 'No scheduled reports yet.',
+	'scheduledReports.empty.errored': 'Scheduled reports could not be loaded.',
+	'scheduledReports.empty.unavailable': 'Scheduled reports are not available on this deployment.',
+	'scheduledReports.col.name': 'Name',
+	'scheduledReports.col.report': 'Report',
+	'scheduledReports.col.cadence': 'Cadence',
+	'scheduledReports.col.recipients': 'Recipients',
+	'scheduledReports.col.nextRun': 'Next run',
+	'scheduledReports.col.lastRun': 'Last run',
+	'scheduledReports.col.status': 'Status',
+	'scheduledReports.recipientCount': '{n, plural, one {# recipient} other {# recipients}}',
+	'scheduledReports.periodDays': '{n, plural, one {Last # day} other {Last # days}}',
+	'scheduledReports.never': 'Never',
+	'scheduledReports.autoDisabledNotice':
+		'Stopped sending after {n, plural, one {# consecutive failure} other {# consecutive failures}}. Re-enable it once the cause is fixed.',
+	'scheduledReports.health.autoDisabled': 'Auto-disabled',
+	'scheduledReports.health.disabled': 'Paused',
+	'scheduledReports.health.failure': 'Failed',
+	'scheduledReports.health.partial': 'Partial',
+	'scheduledReports.health.success': 'Sent',
+	'scheduledReports.health.neverRun': 'Scheduled',
+	'scheduledReports.type.agingSnapshot': 'AP aging snapshot',
+	'scheduledReports.type.cashflowForecast': 'Cash-flow forecast',
+	'scheduledReports.type.expenseRegister': 'Expense register',
+	'scheduledReports.type.invoiceRegister': 'Invoice register',
+	'scheduledReports.type.paymentRegister': 'Payment register',
+	'scheduledReports.type.vendorSpend': 'Vendor spend',
+	'scheduledReports.cadence.daily': 'Daily',
+	'scheduledReports.cadence.weekly': 'Weekly',
+	'scheduledReports.cadence.monthly': 'Monthly',
+	'scheduledReports.row.pause': 'Pause',
+	'scheduledReports.row.enable': 'Enable',
+	'scheduledReports.row.reEnable': 'Re-enable',
+	'scheduledReports.row.delete': 'Delete',
+	'scheduledReports.row.confirm': 'Confirm',
+	'scheduledReports.editAria': 'Edit schedule {name}',
+	'scheduledReports.pauseAria': 'Pause schedule {name}',
+	'scheduledReports.enableAria': 'Enable schedule {name}',
+	'scheduledReports.reEnableAria': 'Re-enable schedule {name}',
+	'scheduledReports.deleteAria': 'Delete schedule {name}',
+	'scheduledReports.modal.createAria': 'New scheduled report',
+	'scheduledReports.modal.editAria': 'Edit scheduled report',
+	'scheduledReports.modal.createTitle': 'New scheduled report',
+	'scheduledReports.modal.editTitle': 'Edit scheduled report',
+	'scheduledReports.modal.create': 'Create',
+	'scheduledReports.modal.creating': 'Creating…',
+	'scheduledReports.field.name': 'Name',
+	'scheduledReports.field.namePlaceholder': 'Weekly AP aging',
+	'scheduledReports.field.reportType': 'Report',
+	'scheduledReports.field.cadence': 'Cadence',
+	'scheduledReports.field.recipients': 'Recipients',
+	'scheduledReports.field.recipientsPlaceholder': 'finance@example.com',
+	'scheduledReports.field.recipientsHint':
+		'One email address per line (commas work too). Up to 20; duplicates are removed when saved.',
+	'scheduledReports.field.periodDays': 'Period (days)',
+	'scheduledReports.field.periodDaysHint': 'How far back each report looks. 1–366.',
+	'scheduledReports.field.nextRun': 'First run',
+	'scheduledReports.field.nextRunHint':
+		'Leave empty to run on the next tick. Set a time to pin the time of day.',
+	'scheduledReports.field.enabled': 'Enabled',
+	'scheduledReports.toast.created': 'Schedule created',
+	'scheduledReports.toast.createFailed': 'Could not create the schedule',
+	'scheduledReports.toast.updated': 'Schedule updated',
+	'scheduledReports.toast.updateFailed': 'Could not update the schedule',
+	'scheduledReports.toast.deleted': 'Schedule deleted',
+	'scheduledReports.toast.deleteFailed': 'Could not delete the schedule',
+	'scheduledReports.toast.enabled': 'Schedule enabled',
+	'scheduledReports.toast.paused': 'Schedule paused',
+	'scheduledReports.toast.deduped':
+		'{n, plural, one {# duplicate recipient was removed} other {# duplicate recipients were removed}}',
+
 	// ── Supplier portal ──────────────────────────────────────────────
 	// Shared portal strings (routes/portal/**)
 	'portal.common.loading': 'Loading...',
@@ -1762,6 +1940,9 @@ export const en = {
 	'portal.invoices.col.amount': 'Amount',
 	'portal.invoices.col.status': 'Status',
 	'portal.invoices.pendingExtraction': '(pending extraction)',
+	'portal.invoices.loadMore': 'Load more ({shown} of {total})',
+	'portal.invoices.showingAll':
+		'{total, plural, one {Showing all # invoice} other {Showing all # invoices}}',
 
 	// Portal payments (routes/portal/payments/+page.svelte)
 	'portal.payments.title': 'Payments',
@@ -1778,6 +1959,9 @@ export const en = {
 	'portal.payments.col.reference': 'Reference',
 	'portal.payments.downloadRemittance': 'Download remittance',
 	'portal.payments.preparing': 'Preparing…',
+	'portal.payments.loadMore': 'Load more ({shown} of {total})',
+	'portal.payments.showingAll':
+		'{total, plural, one {Showing all # payment} other {Showing all # payments}}',
 
 	// Portal purchase orders (routes/portal/purchase-orders/+page.svelte)
 	'portal.po.title': 'Purchase Orders',
@@ -1793,6 +1977,9 @@ export const en = {
 	'portal.po.col.status': 'Status',
 	'portal.po.createInvoice': 'Create invoice',
 	'portal.po.creating': 'Creating…',
+	'portal.po.loadMore': 'Load more ({shown} of {total})',
+	'portal.po.showingAll':
+		'{total, plural, one {Showing all # purchase order} other {Showing all # purchase orders}}',
 
 	// Portal discount offers (routes/portal/discount-offers/+page.svelte)
 	'portal.discounts.title': 'Early-Payment Discounts',
@@ -1807,6 +1994,9 @@ export const en = {
 	'portal.discounts.loadFailed': 'Load failed',
 	'portal.discounts.acceptFailed': 'Accept failed',
 	'portal.discounts.declineFailed': 'Decline failed',
+	'portal.discounts.loadMore': 'Load more ({shown} of {total})',
+	'portal.discounts.showingAll':
+		'{total, plural, one {Showing all # offer} other {Showing all # offers}}',
 	'portal.discounts.empty': 'No discount offers right now.',
 	'portal.discounts.emptyHint':
 		'When your customer offers an early-payment discount, it shows up here for you to accept.',
@@ -2868,6 +3058,10 @@ export const en = {
 	'creditMemos.col.vendor': 'Vendor',
 	'creditMemos.createModal.amount': 'Amount',
 	'creditMemos.createModal.aria': 'New credit memo',
+	'creditMemos.createModal.currency':
+		'Currency',
+	'creditMemos.createModal.currencyHint':
+		'A credit memo can only be applied to an invoice in the same currency, and there is no way to change it afterwards.',
 	'creditMemos.createModal.create': 'Create',
 	'creditMemos.createModal.memoNumber': 'Memo Number',
 	'creditMemos.createModal.reason': 'Reason',
@@ -2957,6 +3151,8 @@ export const en = {
 	'discounts.toast.declineFailed': 'Could not decline offer',
 	'discounts.toast.declined': 'Discount offer declined',
 	'discounts.toast.optimizeFailed': 'Optimization failed',
+	'discounts.unconvertibleOffers':
+		'Excluded: {n, plural, one {# offer} other {# offers}} with no exchange rate into {currency}, left out of the savings totals — so the figures shown understate what is on the table. Book the missing rate before acting on them.',
 	'experiments.chip.concluded': 'Concluded',
 	'experiments.chip.draft': 'Draft',
 	'experiments.chip.running': 'Running',
@@ -3203,7 +3399,9 @@ export const en = {
 	'invoices.modal.activity.glSuggested': 'GL suggested: {gl}',
 	'invoices.modal.activity.newVendor': 'New vendor created (unverified)',
 	'invoices.modal.activity.title': 'Activity',
+	'invoices.modal.approverNone': 'No one else can be assigned as reviewer. Submitting sends this invoice to the review queue unassigned — any approver can pick it up.',
 	'invoices.modal.approverPlaceholder': 'Approver...',
+	'invoices.modal.approverUnavailable': 'The reviewer list could not be loaded. Submitting sends this invoice to the review queue unassigned — any approver can pick it up.',
 	'invoices.modal.assignApprover': 'Assign approver',
 	'invoices.modal.close': 'Close',
 	'invoices.modal.confidence.high': 'High',
@@ -3403,6 +3601,9 @@ export const en = {
 	'paymentRuns.runDetail.draftNotePre': 'This run is still a ',
 	'paymentRuns.runDetail.draftWord': 'draft',
 	'paymentRuns.runDetail.executeAmount': 'Execute · {amount}',
+	'paymentRuns.runDetail.confirmExecuteAmount': 'Confirm execute · {amount}',
+	'paymentRuns.runDetail.executeArmedNote':
+		'Click Confirm execute to send {amount} to the payment processor now. This cannot be undone.',
 	'paymentRuns.runDetail.executeFailed': 'Execution failed',
 	'paymentRuns.runDetail.executed': 'Executed',
 	'paymentRuns.runDetail.executing': 'Executing…',

@@ -633,6 +633,13 @@ class AppLocalizationsEn extends AppLocalizations {
   String get invoiceEditClearDueDate => 'Clear due date';
 
   @override
+  String get invoiceEditLockedNotice =>
+      'Approved — the payee and amount are frozen. To change them, reject the invoice, correct it, then approve it again.';
+
+  @override
+  String get invoiceEditLockedHelper => 'Frozen after approval';
+
+  @override
   String invoiceEditDueDateHint(String value) {
     return 'Due date, currently $value. Double tap to change.';
   }

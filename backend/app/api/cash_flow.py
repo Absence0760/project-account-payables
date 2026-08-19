@@ -299,17 +299,54 @@ async def draft_run_from_plan(
         )
 
     payable_result = await tenant_db.execute(
-        select(Invoice.id).where(
+        select(Invoice.id, Invoice.currency).where(
             Invoice.id.in_(candidate_ids),
             Invoice.status.in_(PAYABLE_INVOICE_STATUSES),
         )
     )
-    payable_ids = [row[0] for row in payable_result.all()]
-    if not payable_ids:
+    payable_rows = payable_result.all()
+    if not payable_rows:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 "None of this plan's commitments are approved for payment yet — nothing to stage."
+            ),
+        )
+
+    # A payment run must be single-currency: `PaymentRun.total_amount` is a
+    # bare `Numeric` with no currency of its own and the CFO threshold is a
+    # bare number compared against it (see
+    # `payment_runs.create_payment_run_for_invoices`). Handing that builder
+    # every payable invoice in the horizon meant this endpoint could ONLY ever
+    # 422 for a multi-currency tenant — the plan card's button could never
+    # succeed, and the error was not actionable from a plan the user cannot
+    # edit.
+    #
+    # So narrow to ONE currency here, deterministically: the org's reporting
+    # currency — the currency the plan's own cash curve, budget and threshold
+    # are already expressed in, so the staged run is the slice of the plan the
+    # plan was actually reasoning about. Everything else is reported as
+    # `excluded_*` rather than dropped silently; those invoices stay payable
+    # from the normal queue. When the plan's horizon holds nothing in the
+    # reporting currency the 409 names the currencies that ARE there, which is
+    # the actionable version of the old 422.
+    run_currency = resolve_reporting_currency(org.settings)
+    payable_ids = [
+        iid for iid, cur in payable_rows if (cur or run_currency).upper() == run_currency
+    ]
+    excluded = [
+        (cur or run_currency).upper()
+        for _iid, cur in payable_rows
+        if (cur or run_currency).upper() != run_currency
+    ]
+    if not payable_ids:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"A payment run is single-currency and none of this plan's payable "
+                f"commitments are in {run_currency} "
+                f"(found: {', '.join(sorted(set(excluded)))}). Stage them from the "
+                f"payments queue instead."
             ),
         )
 
@@ -341,6 +378,8 @@ async def draft_run_from_plan(
         total_amount=result.total_amount,
         payment_count=result.payment_count,
         requires_cfo_approval=result.run.requires_cfo_approval,
+        run_currency=run_currency,
+        excluded_currency_count=len(excluded),
     )
 
 
@@ -398,7 +437,18 @@ async def capture_discounts_from_plan(
             continue
         selected_count += 1
         offer = offer_by_id.get(rec.opportunity.offer_id)
-        if offer is None or offer.status != OFFER_STATUS_OFFERED:
+        if offer is None:
+            continue
+        # Re-lock and re-read before mutating, mirroring the payment
+        # dispatcher's claim pattern (`api/payments._dispatch_run_payments`).
+        # `run_discount_optimization` loaded these rows with a plain SELECT, so
+        # two concurrent calls (a double-click, a retry racing the first
+        # request) both saw `offered` and both accepted — status-only, so the
+        # worst case is a duplicate audit row and a second `accepted_at`, but a
+        # money-adjacent mutator should not be the one place in this file that
+        # takes the state it read on trust.
+        await tenant_db.refresh(offer, with_for_update=True)
+        if offer.status != OFFER_STATUS_OFFERED:
             continue  # already handled (accepted/captured/declined/expired) — no-op
         tier = offers_svc.select_tier_for_date(
             offer.tiers or [],

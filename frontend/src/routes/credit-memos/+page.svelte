@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { appendUnique } from '$lib/utils/pagination';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
+	import { untrack } from 'svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
@@ -10,6 +12,8 @@
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { formatDate } from '$lib/utils/time';
+	import { currencyOptions } from '$lib/utils/money';
+	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 
 	const STATUS_CHIPS = $derived([
 		{ key: 'all', label: m('common.all') },
@@ -71,6 +75,11 @@
 	let loadingMore = $state(false);
 
 	let newMemoNumber = $state('');
+	// Seeded from the org's reporting currency once it loads, and only while
+	// the user hasn't chosen one — otherwise a late `ensureLoaded()` would
+	// overwrite a deliberate pick mid-form.
+	let newCurrency = $state('');
+	let currencyTouched = $state(false);
 	let newVendorId = $state('');
 	let newAmount = $state('');
 	let newReason = $state('');
@@ -79,46 +88,103 @@
 	let applyInvoiceId = $state('');
 	let applying = $state(false);
 
+	// Sequences every `loadMemos` call — mount, status chip, load-more; one
+	// counter, latest-issued wins — so a page-1 replace and a page-2 append
+	// can't land out of order. Load more, then switch the chip: the replace
+	// landed first and the append then pushed the OLD filter's page-2 rows onto
+	// the new list and overwrote `total`/`page` with them. Create / apply / void
+	// all re-fetch through this loader rather than editing a row in place, so no
+	// `supersedeInFlight()` call is needed. See `frontend/CLAUDE.md`
+	// § Sequencing list fetches.
+	const fetchSequence = createRequestSequencer();
+
+	// The shortlist always contains the org's own reporting currency, so the
+	// picker can never be unable to express the currency the tenant reports in.
+	const CURRENCY_OPTIONS = $derived(currencyOptions(orgCurrency.currency));
+
+	$effect(() => {
+		orgCurrency.ensureLoaded().catch(() => {
+			/* degrades to DEFAULT_CURRENCY by design — see orgSettings.svelte.ts */
+		});
+	});
+
+	// Seed the select once the org currency resolves, unless the user already
+	// picked. `untrack` on the write so this effect depends on the store, not
+	// on its own output.
+	$effect(() => {
+		const ccy = orgCurrency.currency;
+		if (untrack(() => currencyTouched)) return;
+		newCurrency = ccy;
+	});
+
+	// The mount effect loads all three lists ONCE. It must not depend on
+	// `statusFilter`: `loadMemos` reads it synchronously (before its first
+	// await), and Svelte tracks reads transitively through called functions, so
+	// a plain read there made this effect a second status-filter subscriber —
+	// every chip click fired it AND the effect below, two unsequenced page-1
+	// requests racing with whichever landed last winning (and the vendor /
+	// invoice selects needlessly refetched). `untrack` inside `loadMemos` still
+	// reads the CURRENT filter, it just stops the read registering as the
+	// caller's dependency.
 	$effect(() => {
 		loadAll();
 	});
 
+	// Status chip → refetch. Skips its own mount-time run: a Svelte `$effect`
+	// always fires once immediately whether or not its tracked value actually
+	// changed, so without the guard this queued a second page-1 request on top
+	// of the mount load above.
+	let statusEffectRan = false;
 	$effect(() => {
 		statusFilter;
+		if (!statusEffectRan) {
+			statusEffectRan = true;
+			return;
+		}
 		loadMemos();
 	});
 
 	async function loadAll() {
-		loading = true;
 		await Promise.all([loadMemos(), loadVendors(), loadInvoices()]);
-		loading = false;
 	}
 
 	async function loadMemos(opts: { append?: boolean; nextPage?: number } = {}) {
+		const token = fetchSequence.start();
+		// `loading` is what the table renders instead of "No credit memos" while
+		// a fetch is out. `loadMemos` never touched it, so a status-chip change
+		// sat on the previous filter's rows with no spinner until the response
+		// landed.
+		if (opts.append) loadingMore = true;
+		else loading = true;
 		try {
 			const nextPage = opts.nextPage ?? 1;
 			const params = new URLSearchParams();
-			if (statusFilter !== 'all') params.set('status', statusFilter);
+			const status = untrack(() => statusFilter);
+			if (status !== 'all') params.set('status', status);
 			params.set('page', String(nextPage));
 			params.set('page_size', String(PAGE_SIZE));
 			const data = await api.get<{ items: CreditMemo[]; total: number }>(
 				`/api/credit-memos?${params}`
 			);
+			// Superseded by a newer load — discard rather than clobber.
+			if (!fetchSequence.canCommit(token)) return;
 			memos = opts.append ? appendUnique(memos, data.items) : data.items;
 			total = data.total;
 			page = nextPage;
 		} catch {
+			// `isCurrentRequest`, not `canCommit`: only the newest request reports.
+			if (!fetchSequence.isCurrentRequest(token)) return;
 			toast(m('creditMemos.toast.loadFailed'), 'error');
+		} finally {
+			if (fetchSequence.isCurrentRequest(token)) {
+				loading = false;
+				loadingMore = false;
+			}
 		}
 	}
 
 	async function loadMoreMemos() {
-		loadingMore = true;
-		try {
-			await loadMemos({ append: true, nextPage: page + 1 });
-		} finally {
-			loadingMore = false;
-		}
+		await loadMemos({ append: true, nextPage: page + 1 });
 	}
 
 	let hasMore = $derived(memos.length < total);
@@ -149,6 +215,14 @@
 				memo_number: newMemoNumber.trim(),
 				vendor_id: newVendorId,
 				amount: parseFloat(newAmount),
+				// Sent explicitly. The backend resolves an omitted currency from the
+				// named invoice, then the org's reporting currency — but this form
+				// creates an UNLINKED memo (there is no invoice field; linking
+				// happens later in the Apply dialog), so there is nothing to inherit
+				// from and the org default would be the only answer. A mixed-currency
+				// tenant issuing a EUR credit against a USD-reporting org needs to
+				// say so here, and there is no PATCH on credit memos to fix it after.
+				currency: newCurrency || orgCurrency.currency,
 				reason: newReason.trim() || null
 			});
 			toast(m('creditMemos.toast.created'), 'success');
@@ -157,6 +231,10 @@
 			newVendorId = '';
 			newAmount = '';
 			newReason = '';
+			// Back to the org default for the next memo — a one-off foreign-currency
+			// credit shouldn't become sticky for every memo after it.
+			currencyTouched = false;
+			newCurrency = orgCurrency.currency;
 			await loadMemos();
 		} catch (err) {
 			toast(err instanceof Error ? err.message : m('creditMemos.toast.createFailed'), 'error');
@@ -304,6 +382,31 @@
 			<input type="number" min="0.01" step="0.01" bind:value={newAmount} required />
 		</label>
 		<label>
+			<span>{m('creditMemos.createModal.currency')} <em class="required">*</em></span>
+			<select
+				value={newCurrency}
+				onchange={(e) => {
+					currencyTouched = true;
+					newCurrency = (e.currentTarget as HTMLSelectElement).value;
+				}}
+				required
+				aria-describedby="cm-currency-hint"
+			>
+				{#each CURRENCY_OPTIONS as ccy (ccy)}
+					<option value={ccy}>{ccy}</option>
+				{/each}
+			</select>
+			<!-- `aria-describedby`, not a bare child of the `<label>`: a hint
+			     inside the label is folded into the control's accessible NAME, so
+			     a screen reader announces the whole sentence every time the field
+			     is focused. A hint is a description, not a name. `aria-hidden`
+			     removes it from the NAME computation; `aria-describedby` still
+			     resolves its text, so nothing is lost to a screen reader. -->
+			<small id="cm-currency-hint" class="field-hint" aria-hidden="true">
+				{m('creditMemos.createModal.currencyHint')}
+			</small>
+		</label>
+		<label>
 			<span>{m('creditMemos.createModal.reason')}</span>
 			<textarea bind:value={newReason} rows="2" placeholder={m('creditMemos.createModal.reasonPlaceholder')}></textarea>
 		</label>
@@ -350,6 +453,17 @@
 	}
 	/* Explains an empty apply-target list — the memo's vendor has no invoice
 	   whose vendor link is resolved and matching, so there is nothing to credit. */
+	/* Sub-label under the currency select. Muted on `--surface` clears 4.5:1;
+	   do NOT add `opacity` here — the token has already done that job and a
+	   fade only spends contrast (see frontend/CLAUDE.md § Colour tokens). */
+	.field-hint {
+		display: block;
+		margin-top: 4px;
+		font-size: 0.78rem;
+		color: var(--text-muted);
+		font-weight: 400;
+	}
+
 	.modal-hint.warn {
 		color: #d4940a;
 		margin: -6px 0 0;

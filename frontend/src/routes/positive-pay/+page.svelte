@@ -4,7 +4,8 @@
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import {
 		POSITIVE_PAY_FILE_TYPE_LABELS,
-		POSITIVE_PAY_STATUS_LABELS
+		POSITIVE_PAY_STATUS_LABELS,
+		POSITIVE_PAY_STATUS_TONES
 	} from '$lib/types/positivePay';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
@@ -13,6 +14,7 @@
 		getPositivePayFile,
 		deletePositivePayFile
 	} from '$lib/api/positivePay';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
@@ -318,7 +320,11 @@
 					<td class="right mono"><Money amount={file.total_amount} currency={file.currency ?? orgCurrency.currency} /></td>
 					<td class="mono muted">{file.account_last4 ? `••••${file.account_last4}` : '—'}</td>
 					<td class="muted">{formatDate(file.created_at)}</td>
-					<td><span class="badge {file.status}">{POSITIVE_PAY_STATUS_LABELS[file.status]}</span></td>
+					<td>
+						<Badge tone={POSITIVE_PAY_STATUS_TONES[file.status]} variant={file.status}>
+							{POSITIVE_PAY_STATUS_LABELS[file.status]}
+						</Badge>
+					</td>
 					<td class="actions">
 						{#if canCreate}
 							<RowAction
@@ -373,19 +379,6 @@
 		color: var(--text-muted);
 	}
 
-	.badge {
-		display: inline-block;
-		padding: 2px 10px;
-		border-radius: 10px;
-		font-size: 0.74rem;
-		font-weight: 600;
-	}
-	.badge.generated {
-		background: rgba(31, 168, 106, 0.12);
-		color: #1fa86a;
-	}
-	.badge.returned_processed {
-		background: rgba(212, 148, 10, 0.12);
-		color: #d4940a;
-	}
+	/* The status pill is `<Badge>` now — its recipe (and the five tones) lives
+	   in `ui/Badge.svelte`, and the tone per status in `types/positivePay`. */
 </style>

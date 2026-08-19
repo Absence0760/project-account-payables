@@ -7,8 +7,14 @@ import { expect, test } from '../fixtures/helpers';
  * `createRequestSequencer`, so a slow response for an earlier filter landed
  * after a faster later one and clobbered the table. Its status chip also shared
  * the text box's 250 ms timer (a discrete click waiting a quarter-second for
- * nothing), and the All chip rendered `total` — the count of whatever filter
- * was active — so picking "Closed" labelled the closed count "All".
+ * nothing).
+ *
+ * The chip COUNTS moved on: the All chip used to render `total` — the count of
+ * whatever filter was active — so picking "Closed" labelled the closed count
+ * "All". That was first patched by showing the count only while All is active,
+ * and is now answered properly by the whole-set `/api/purchase-orders/counts`
+ * route. Both the counts contract and its degradation live in
+ * `counts.spec.ts`; this file stays on request ordering.
  */
 
 function po(n: number, status: string) {
@@ -69,34 +75,5 @@ test.describe('/purchase-orders — list request sequencing', () => {
 		releaseSlow();
 		await expect(page.getByText('E2E-PO-2')).toBeVisible();
 		await expect(page.getByText('E2E-PO-1')).toHaveCount(0);
-	});
-
-	test('the All chip only carries a count while All is the active filter', async ({ page }) => {
-		await page.route('**/api/purchase-orders?*', async (route) => {
-			const url = new URL(route.request().url());
-			if (url.pathname !== '/api/purchase-orders') {
-				await route.continue();
-				return;
-			}
-			const status = url.searchParams.get('status');
-			await route.fulfill({
-				status: 200,
-				contentType: 'application/json',
-				body: JSON.stringify(
-					status === 'closed'
-						? { items: [po(2, 'closed')], total: 1 }
-						: { items: [po(3, 'open'), po(4, 'closed')], total: 2 }
-				)
-			});
-		});
-
-		await page.goto('/purchase-orders');
-		const allChip = page.getByRole('button', { name: /^All/ });
-		await expect(allChip).toContainText('2');
-
-		await page.getByRole('button', { name: /^Closed/ }).click();
-		await expect(page.getByText('E2E-PO-2')).toBeVisible();
-		// The filtered total (1) must not be rendered as the "All" count.
-		await expect(allChip).not.toContainText('1');
 	});
 });

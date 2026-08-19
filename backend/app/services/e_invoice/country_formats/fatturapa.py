@@ -55,7 +55,22 @@ _INVOICE_TYPE_TO_TIPO_DOCUMENTO = {
 
 
 def _el(parent: etree._Element, name: str, text: str | None = None) -> etree._Element:
-    el = etree.SubElement(parent, f"{{{_NS_FATTURAPA}}}{name}")
+    """Append an UNQUALIFIED child element.
+
+    The FatturaPA v1.2 XSD declares no ``elementFormDefault``, so it takes the
+    XML Schema default of ``unqualified``: only the *globally declared* root
+    element ``FatturaElettronica`` belongs to the target namespace, and every
+    locally declared descendant — ``FatturaElettronicaHeader``,
+    ``DatiTrasmissione``, … — is in **no** namespace. That is why real SdI
+    instances read ``<p:FatturaElettronica xmlns:p="…"><FatturaElettronicaHeader>``
+    and not ``<p:FatturaElettronicaHeader>``.
+
+    Building the children in the target namespace (what this used to do) makes
+    every child fail to match its local element declaration, so the whole
+    document is schema-invalid at the SdI. The root keeps its qualified name in
+    ``generate`` below; nothing else does.
+    """
+    el = etree.SubElement(parent, name)
     if text is not None:
         el.text = text
     return el
@@ -132,6 +147,9 @@ class FatturaPAFormat(CountryEInvoiceFormat):
             _el(sede, "Nazione", party.country_code)
 
     def generate(self, doc: EInvoiceDocument) -> bytes:
+        # The root — and ONLY the root — is namespace-qualified (see `_el`).
+        # `nsmap` binds the prefix without declaring a DEFAULT namespace, so the
+        # unqualified children below serialize with no `xmlns=""` reset.
         root = etree.Element(
             f"{{{_NS_FATTURAPA}}}FatturaElettronica",
             nsmap={"p": _NS_FATTURAPA},

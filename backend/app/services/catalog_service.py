@@ -310,14 +310,49 @@ def start_punchout_session(
     return session
 
 
+def normalize_cart_currency(raw: str | None) -> str:
+    """Coerce a supplier-supplied currency code to a storable ISO-4217 shape.
+
+    ``PunchoutSession.currency`` is ``String(3)`` and the cart's code is
+    unbounded supplier input, so a 4-character code raised a ``DataError`` at
+    commit and escaped the PUBLIC return handler as a 500 — breaking that
+    endpoint's documented "every rejection path returns 204 silently" contract
+    and telling a probing supplier its payload reached the database.
+
+    Raises :class:`PunchoutError` (PII-free code) on anything that isn't three
+    ASCII letters, so the caller drops the cart the same way it drops any other
+    unusable one.
+    """
+    code = (raw or "").strip().upper()
+    if len(code) != 3 or not code.isascii() or not code.isalpha():
+        raise PunchoutError("invalid_cart_currency")
+    return code
+
+
 def apply_returned_cart(session: PunchoutSession, cart: PunchoutCart) -> Decimal:
     """Store a returned supplier cart on a pending session.
 
     Normalizes cart lines into the JSONB blob (money as string-``Decimal``),
     sets the exact ``cart_total`` (recomputed from the lines, never trusted from
     the wire), and flips status ``pending → returned``. Returns the total.
+
+    **Refuses a mixed-currency cart** (:class:`PunchoutError`
+    ``mixed_cart_currency``). ``PunchoutCart.total`` sums every line's face
+    value regardless of per-item currency, and the cXML adapter took the cart's
+    label from the LAST parsed item — so a cart of €100 + $100 was stored as a
+    single "200" under one of the two labels, and `convert` turned that into a
+    requisition. Same class as the vendor-statement ledger: money in two
+    currencies is not summable. The check lives here, at the one chokepoint
+    every adapter's cart passes through, rather than in each parser.
     """
     from datetime import UTC, datetime
+
+    line_currencies = {normalize_cart_currency(it.currency) for it in cart.items}
+    if len(line_currencies) > 1:
+        raise PunchoutError("mixed_cart_currency")
+    # An empty cart keeps the cart-level label; otherwise the lines are the
+    # authority (the header is a supplier-set field the lines may contradict).
+    currency = next(iter(line_currencies), None) or normalize_cart_currency(cart.currency)
 
     items: list[dict] = []
     for it in cart.items:
@@ -329,13 +364,13 @@ def apply_returned_cart(session: PunchoutSession, cart: PunchoutCart) -> Decimal
                 "quantity": str(it.quantity),
                 "unit_price": str(it.unit_price),
                 "uom": it.uom,
-                "currency": it.currency,
+                "currency": currency,
             }
         )
     total = cart.total  # exact Decimal, recomputed from the lines
     session.cart_items = items
     session.cart_total = total
-    session.currency = cart.currency
+    session.currency = currency
     session.status = PunchoutSessionStatus.returned
     session.returned_at = datetime.now(UTC)
     return total

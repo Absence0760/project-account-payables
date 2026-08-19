@@ -802,7 +802,26 @@ async def resolve_transaction(
 
     variance_str: str | None = None
     if body.matched_payment_id is not None:
-        payment_id = uuid.UUID(body.matched_payment_id)
+        # A payment is money we sent, so only a bank DEBIT can clear one.
+        # Without this guard a credit whose magnitude happened to equal the
+        # payment's settlement amount classified cleanly, counted toward
+        # `matched_count`, and — worse — dropped the payment out of ALL THREE
+        # `/outstanding` buckets, contradicting that endpoint's own
+        # "exactly one of the three" contract (bucket 1 excludes it as claimed;
+        # buckets 2 and 3 require `direction == "debit"`). The uncleared
+        # payment silently left the month-end worksheet. The auto-matcher
+        # already skips non-debits; this is the manual path catching up.
+        # Pairing a refund/credit against a payment would need its own link
+        # type that the outstanding buckets account for — not this one.
+        if tx.direction != "debit":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Only a debit transaction can clear a payment; "
+                    f"this transaction is a {tx.direction}."
+                ),
+            )
+        payment_id = body.matched_payment_id
         # Row-lock the payment being claimed. The "already matched elsewhere"
         # check below is a read-then-write, so two concurrent resolves pointing
         # DIFFERENT transactions at the SAME payment both used to read "not
@@ -890,7 +909,9 @@ async def resolve_transaction(
         entity_id=stmt.id,
         details={
             "transaction_id": str(tx.id),
-            "matched_payment_id": body.matched_payment_id,
+            "matched_payment_id": (
+                str(body.matched_payment_id) if body.matched_payment_id is not None else None
+            ),
             # Exact string, never float — the audit row is the durable record
             # of a discrepancy a human accepted responsibility for.
             "match_method": tx.match_method,

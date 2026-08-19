@@ -41,13 +41,28 @@ only (mirrors `api/expenses.py::report_summary`).
 | **remaining** | `allocated - committed - actual` (negative = overspend). |
 | **utilization_pct** | `(committed + actual) / allocated * 100`, 2 dp. `0` when allocated is 0. |
 
-**Every leg is scoped by entity and currency.** All three (committed reqs,
-committed POs, actual invoices) are narrowed to the budget's own `entity_id`
-(`apply_entity_scope`) so a subsidiary's budget never picks up a sibling
-subsidiary's spend on a shared free-text dimension value, and to the budget's
-own `currency` — the legs never convert, so a EUR and a USD invoice on the same
-dimension are **not** summed as equal (POs carry no currency column, so the PO
-leg filters on the source requisition's currency).
+**Every leg is scoped by currency.** The legs never convert, so a EUR and a USD
+invoice on the same dimension are **not** summed as equal (POs carry no
+currency column, so the PO leg filters on the source requisition's currency).
+
+**Only the `actual` (invoice) leg is scoped by entity.** Attribution there is a
+fuzzy free-text `dimension_value` match, so narrowing to the budget's own
+`entity_id` is genuinely protective — a subsidiary's budget must not pick up a
+sibling's spend on a shared cost-center string. The two **committed** legs key
+off `PurchaseRequisition.budget_id`, an unambiguous human-declared link, where
+the same filter could only *remove* deliberately-linked demand: `committed` read
+`0` and `/budgets/check` answered `would_overspend: false` for headroom already
+spoken for. The FK is the scope.
+
+**The link is validated at write time.** `POST` / `PATCH /api/requisitions`
+404s an unknown `budget_id` (and `vendor_id` / `contract_id` — each used to
+reach an FK violation at flush and surface as a 500) and 422s a `budget_id`
+whose budget is denominated in another currency, including when only
+`currency` changes on a requisition that already names one. Without that, a
+requisition could name a budget the rollup then silently dropped. The currency
+predicate stays on the read legs as a safety net for links made before the
+guard — summing two currencies' face values would be worse than excluding the
+row.
 
 ### `department` / `project` actuals — resolved
 

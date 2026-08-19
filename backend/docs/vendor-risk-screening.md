@@ -238,6 +238,26 @@ surface through `ScreeningResult.categories` — see
 [Hit categories](#hit-categories-and-adverse-media) for how they reach the
 verdict, the trail and the risk score.
 
+### A named provider we have no adapter for fails closed
+
+`get_sanctions_adapter` resolves `mock` only when **nothing** is configured
+(the local-first default). A `provider` that names an adapter this deployment
+doesn't have raises `UnknownSanctionsProviderError` — it is never substituted
+with `mock`, which clears every name outside its own three-entry fixture list.
+One typo (`"worldcheck"` for the registry's `refinitiv`) used to screen a whole
+tenant's vendor book against nothing and record `clear` / risk 0, on the
+control that exists to keep money away from a sanctioned party. The dispatcher
+docstring claimed a compensating warning surfaced by the compliance service;
+no such code existed. Same call as `erp_adapters` / `payment_adapters` /
+`fx_adapters` / `financing_adapters`.
+
+Both consumers absorb the raise rather than 500:
+
+| Consumer | Behaviour on an unresolvable provider |
+|---|---|
+| `compliance.check_payment_compliance` | returns `hold` with the reason `sanctions screening could not run: no adapter for configured provider '<name>'`. The payment waits in `pending_compliance` and the caller opens the usual `payment_compliance_hold` exception. Never `allow`. |
+| `vendor_screening.screen_vendor_record` | writes a `sanctions_checks` row with `provider="unconfigured"`, `result="review_required"`, `matched_list="provider_not_configured"` (the requested name rides `raw_response`, PII-free), and denormalises `vendors.screening_status="review"`. The vendor lands on `GET /api/vendors/screening/review-queue` instead of reading `clear`. No payment block is set — a misconfiguration is not a match. |
+
 ## Env vars
 
 | Var | Default | Purpose |

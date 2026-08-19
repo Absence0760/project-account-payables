@@ -31,19 +31,28 @@ export function m(key: MessageKey, params?: Record<string, string | number>): st
 	return interpolate(value, params, locale);
 }
 
-function applyDocumentLocale(next: Locale): void {
-	// Keep the `Intl`-based formatters (money.ts, opt-in date helpers) in sync
-	// with the active locale. The FORMAT locale is the full browser locale when
-	// it is a regional variant of the active catalogue locale (e.g. catalogue
-	// 'en' + browser 'en-GB' → format with 'en-GB' so dates/numbers read in the
-	// regional style); otherwise the catalogue locale itself (an explicit
-	// picker choice like 'de' wins over an unrelated browser tag).
-	let formatLocale: string = next;
+/**
+ * The FORMAT locale for a catalogue locale: the full browser locale when it is
+ * a regional variant of that catalogue locale (e.g. catalogue 'en' + browser
+ * 'en-GB' → format with 'en-GB' so dates/numbers read in the regional style);
+ * otherwise the catalogue locale itself (an explicit picker choice like 'de'
+ * wins over an unrelated browser tag).
+ *
+ * Split out of `applyDocumentLocale` so `initLocale` can apply it
+ * *synchronously* — see the note there.
+ */
+function resolveFormatLocale(next: Locale): string {
 	if (browser && typeof navigator !== 'undefined' && navigator.language) {
 		const nav = navigator.language;
-		if (nav.toLowerCase().split('-')[0] === next) formatLocale = nav;
+		if (nav.toLowerCase().split('-')[0] === next) return nav;
 	}
-	setActiveFormatLocale(formatLocale);
+	return next;
+}
+
+function applyDocumentLocale(next: Locale): void {
+	// Keep the `Intl`-based formatters (money.ts, the time.ts date + relative
+	// helpers) in sync with the active locale.
+	setActiveFormatLocale(resolveFormatLocale(next));
 	if (!browser) return;
 	try {
 		localStorage.setItem(STORAGE_KEY, next);
@@ -93,6 +102,16 @@ export function initLocale(): void {
 			? (navigator.languages?.length ? [...navigator.languages] : (navigator.language ?? null))
 			: null;
 	const next = negotiateLocale(stored, navLangs);
+	// Apply the FORMAT locale synchronously, BEFORE `setLocale` awaits the lazy
+	// catalogue chunk. `setLocale` only reaches `applyDocumentLocale` after that
+	// dynamic `import()` resolves, so a visitor with a stored `de` used to get a
+	// paint where the labels were still English and the figures were in the
+	// browser locale, then a second flip once the chunk landed. The formatters
+	// need no catalogue — the locale tag is all they consume — so there is
+	// nothing to wait for. (`setLocale`'s own failure path keeps English
+	// messages; formatting the user's OWN explicit locale choice is still the
+	// right read for them, so it is deliberately not rolled back.)
+	setActiveFormatLocale(resolveFormatLocale(next));
 	void setLocale(next);
 }
 

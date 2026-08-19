@@ -7,6 +7,7 @@
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import SubscriptionBadge from '$lib/components/ui/SubscriptionBadge.svelte';
+	import Badge, { type BadgeTone } from '$lib/components/ui/Badge.svelte';
 	import {
 		changeBillingPlan,
 		getBillingInvoices,
@@ -266,6 +267,18 @@
 		void: m('billing.invoiceStatus.void')
 	});
 
+	/**
+	 * Badge tone per settlement state. Not `$derived` — a tone is not
+	 * translatable, and the map is the semantic call the pill's colour used to
+	 * hard-code three ways.
+	 */
+	const INVOICE_STATUS_TONES: Record<BillingInvoiceStatus, BadgeTone> = {
+		paid: 'success',
+		// Open is money still owed us, not a failure — amber, never red.
+		open: 'warning',
+		void: 'muted'
+	};
+
 	const INVOICE_COLUMNS = $derived([
 		{ label: m('billing.invoiceCol.invoice') },
 		{ label: m('billing.invoiceCol.period') },
@@ -509,9 +522,9 @@
 								<td>{inv.period ?? '—'}</td>
 								<td class="num"><Money amount={inv.amount} currency={inv.currency} /></td>
 								<td>
-									<span class="inv-badge {inv.status}">
+									<Badge tone={INVOICE_STATUS_TONES[inv.status] ?? 'muted'} variant={inv.status}>
 										{INVOICE_STATUS_LABELS[inv.status] ?? inv.status}
-									</span>
+									</Badge>
 								</td>
 								<td>{formatDate(inv.created_at)}</td>
 								<td class="actions">
@@ -751,9 +764,11 @@
 		margin: 0.5rem 0 0;
 	}
 
+	/* Not `<Badge>`: an entitlement TAG list, not a status — sentence-cased,
+	   regular weight, and read as a group. Colour comes from the palette pair. */
 	.entitlements li {
-		background: rgba(99, 140, 255, 0.15);
-		color: #7d9bff;
+		background: var(--accent-tint);
+		color: var(--accent-on-tint);
 		padding: 3px 10px;
 		border-radius: 12px;
 		font-size: 0.8rem;
@@ -810,9 +825,12 @@
 		font-weight: 600;
 	}
 
+	/* Not `<Badge>`: a "this is the one you already have" marker inside a
+	   radio label, deliberately smaller than a status pill (0.7rem) and metric-
+	   matched to `.default-pill` below. Colour comes from the palette pair. */
 	.current-pill {
-		background: rgba(148, 163, 184, 0.18);
-		color: #94a3b8;
+		background: var(--muted-tint);
+		color: var(--muted-on-tint);
 		padding: 2px 8px;
 		border-radius: 10px;
 		font-size: 0.7rem;
@@ -975,11 +993,14 @@
 		padding: 0;
 	}
 
+	/* Not `<Badge>`: the "default card" marker inside a table cell — same
+	   smaller register as `.current-pill` above, and it owns its own inline
+	   offset. Colour comes from the palette pair. */
 	.default-pill {
 		display: inline-block;
 		margin-left: 0.5rem;
-		background: rgba(99, 140, 255, 0.15);
-		color: #7d9bff;
+		background: var(--accent-tint);
+		color: var(--accent-on-tint);
 		padding: 2px 8px;
 		border-radius: 10px;
 		font-size: 0.7rem;
@@ -1005,31 +1026,7 @@
 		color: var(--text-muted);
 	}
 
-	/* Settlement-state pill — mirrors the StatusBadge .badge recipe, tones
-	   WCAG-1.4.3-calibrated against the dark surface (green/grey/red). */
-	.inv-badge {
-		display: inline-block;
-		padding: 3px 10px;
-		border-radius: 12px;
-		font-size: 0.75rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-		white-space: nowrap;
-	}
-
-	.inv-badge.paid {
-		background: rgba(31, 168, 106, 0.15);
-		color: #26b977;
-	}
-
-	.inv-badge.open {
-		background: rgba(255, 180, 50, 0.15);
-		color: #d4940a;
-	}
-
-	.inv-badge.void {
-		background: rgba(148, 163, 184, 0.18);
-		color: #94a3b8;
-	}
+	/* The settlement-state pill is `<Badge>` now. It already spelled out the
+	   shared recipe by hand ("mirrors the StatusBadge .badge recipe") in three
+	   private tones — exactly the duplication the primitive exists to end. */
 </style>

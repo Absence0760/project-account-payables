@@ -60,6 +60,11 @@ export interface DiscountDashboard {
 	open_offer_count: number;
 	projected_savings: number;
 	currency: string;
+	/** Open offers left OUT of `projected_savings` because they are denominated
+	 *  in something other than `currency` and no rate bridges them. The figure
+	 *  is honest only because they were excluded, so the page must say so —
+	 *  otherwise a multi-currency tenant reads a quietly-low number. */
+	unconvertible_offer_count: number;
 }
 
 /** Per-invoice ROI / cost-of-capital comparison for accepting early payment. */
@@ -90,15 +95,27 @@ export interface DiscountRecommendation {
 	selected: boolean;
 	/** Running cash outlay through this recommendation in the ranked list. */
 	cumulative_outlay: number;
+	/** This offer's money is in a currency the totals are NOT in, so it is
+	 *  excluded from every total (and from selection when a budget binds). Its
+	 *  ROI percentages stay meaningful — a rate is currency-free. */
+	unconvertible: boolean;
 }
 
 /** Budget-constrained optimization result. */
 export interface DiscountOptimization {
 	cash_budget: number | null;
+	/** The currency EVERY money total below is denominated in (the org's
+	 *  reporting currency) — stated by the API rather than assumed, because the
+	 *  totals sum across offers that carry their own currencies. */
+	currency: string;
 	cost_of_capital_pct: number;
 	total_savings_available: number;
 	total_savings_selected: number;
 	total_outlay_selected: number;
+	/** Ranked offers left out of the totals because they are in another
+	 *  currency. Spelled differently from the dashboard's
+	 *  `unconvertible_offer_count` — two responses, two field names. */
+	unconvertible_count: number;
 	recommendations: DiscountRecommendation[];
 }
 

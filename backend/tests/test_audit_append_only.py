@@ -159,6 +159,140 @@ def test_transition_invoice_helper_dispatches_audit():
 
 
 # ---------------------------------------------------------------------------
+# Every router that mutates TENANT state audits — drift guard
+# ---------------------------------------------------------------------------
+
+# Routers that mutate tenant state through a handler with no `dispatch_audit`
+# anywhere in the module. Each entry needs a reason; an entry with no reason
+# is a hole in the trail, not an exemption. The four per-handler tests above
+# stay as they are — they pin the specific money-path handlers by name, which
+# a module-level grep can't do.
+_TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT = {
+    # POST-shaped but read-only: the CFO posts a forecast, we return it beside
+    # the actuals. `post_forecast_variance` persists nothing (the docstring
+    # says so explicitly).
+    "app.api.analytics": "POST /forecast_variance is pure compute — nothing is persisted",
+    # The user's own conversation history, not tenant business state. The
+    # access itself is metered (`extraction_usage` / token budget), and the
+    # tools it can call are read-only.
+    "app.api.assistant": "persists only the caller's own chat transcript; tools are read-only",
+    # Audits through `services/exception_lifecycle.record_decision`, which is
+    # the single writer of an exception decision and dispatches there.
+    "app.api.exception_agents": "audits via exception_lifecycle.record_decision",
+    "app.api.exceptions": "audits via exception_lifecycle.record_decision",
+    # Audits through `services/qms_sync`, which writes `quality_inspection.synced`.
+    "app.api.inspections": "audits via services/qms_sync",
+    # Marking your own notification read is a per-user read receipt, not a
+    # change to any tenant record.
+    "app.api.notifications": "read receipts on the caller's own notifications",
+    # Supplier-portal auth writes go through `dispatch_auth_audit` (login
+    # failures, password change, step-up failures) — the auth trail, not the
+    # business trail.
+    "app.api.portal_auth": "audits via dispatch_auth_audit (auth trail)",
+}
+
+
+def _tenant_mutating_router_modules() -> dict[str, list[str]]:
+    """Map module → mutating route paths, for handlers that take a tenant DB.
+
+    `Depends(get_tenant_db)` is the precise marker for "this handler writes
+    tenant state", which is what the invariant governs — control-plane and
+    webhook-receiver routers are out of scope by construction.
+    """
+    from app.main import app
+    from app.tenant import get_tenant_db
+
+    try:
+        from fastapi.routing import iter_route_contexts
+
+        items = [(c.path, c.methods or set(), c.endpoint) for c in iter_route_contexts(app.routes)]
+    except ImportError:  # pragma: no cover - older FastAPI
+        from fastapi.routing import APIRoute
+
+        items = [
+            (r.path, r.methods or set(), r.endpoint) for r in app.routes if isinstance(r, APIRoute)
+        ]
+
+    out: dict[str, list[str]] = {}
+    for path, methods, endpoint in items:
+        module = getattr(endpoint, "__module__", "")
+        if not module.startswith("app.api."):
+            continue
+        if not (methods & {"POST", "PATCH", "PUT", "DELETE"}):
+            continue
+        try:
+            sig = inspect.signature(endpoint)
+        except (ValueError, TypeError):  # pragma: no cover - builtins
+            continue
+        takes_tenant_db = any(
+            getattr(param.default, "dependency", None) is get_tenant_db
+            for param in sig.parameters.values()
+        )
+        if takes_tenant_db:
+            out.setdefault(module, []).append(f"{sorted(methods)} {path}")
+    return out
+
+
+def test_every_tenant_mutating_router_writes_an_audit_row():
+    """Widened from the four hand-picked handlers above.
+
+    The invariant is "status changes / mutations write an audit row", but the
+    only enforcement was a static grep of the payment + invoice handlers — so
+    `api/entities.py` and `api/gl_accounts.py` shipped with no trail at all,
+    and `create_entity` in particular mints the scope key every entity-scoped
+    money query is filtered by. This sweeps every router with a mutating route
+    bound to `get_tenant_db` and requires `dispatch_audit` in the module, or a
+    written-down reason in `_TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT`.
+    """
+    modules = _tenant_mutating_router_modules()
+    assert modules, "expected to discover tenant-mutating routers"
+
+    unaudited = []
+    for module, routes in sorted(modules.items()):
+        src = inspect.getsource(__import__(module, fromlist=["__name__"]))
+        if "dispatch_audit" in src:
+            continue
+        if module in _TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT:
+            continue
+        unaudited.append(f"{module} — {routes}")
+
+    assert not unaudited, (
+        "these routers mutate tenant state without calling dispatch_audit "
+        "(invariant #3). Add the audit row, or add the module to "
+        "_TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT with a reason:\n  " + "\n  ".join(unaudited)
+    )
+
+
+def test_audit_exemption_list_has_no_stale_entries():
+    """An exemption that stops being true is worse than none — it silently
+    excuses a router that has since grown an audited mutation, or one that no
+    longer mutates at all."""
+    modules = _tenant_mutating_router_modules()
+    stale = []
+    for module, reason in sorted(_TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT.items()):
+        assert reason, f"{module} needs a reason, not a bare exemption"
+        if module not in modules:
+            stale.append(f"{module} (no longer has a tenant-mutating route)")
+            continue
+        src = inspect.getsource(__import__(module, fromlist=["__name__"]))
+        if "dispatch_audit" in src:
+            stale.append(f"{module} (now calls dispatch_audit — drop the exemption)")
+    assert not stale, f"stale audit exemptions: {stale}"
+
+
+def test_entity_and_gl_account_mutations_dispatch_audit():
+    """Named explicitly, not just covered by the sweep above: an `Entity` is
+    the scope key every entity-scoped money query filters by, and a GL account
+    is what invoice lines are coded to."""
+    from app.api import entities, gl_accounts
+
+    for handler in (entities.create_entity, entities.update_entity):
+        assert "dispatch_audit" in inspect.getsource(handler), handler.__name__
+    for handler in (gl_accounts.create_gl_account, gl_accounts.sync_gl_accounts_from_erp):
+        assert "dispatch_audit" in inspect.getsource(handler), handler.__name__
+
+
+# ---------------------------------------------------------------------------
 # Audit-shipper preserves rows on ship (stamp, don't delete)
 # ---------------------------------------------------------------------------
 

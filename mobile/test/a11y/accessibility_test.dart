@@ -403,6 +403,34 @@ void main() {
       expect(find.bySemanticsLabel('Close edit form'), findsOneWidget);
       handle.dispose();
     });
+
+    testWidgets('the financially-locked variant stays labelled and legible',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      await tester.pumpWidget(_host(InvoiceEditSheet(
+        invoice: Invoice(
+          id: '1',
+          invoiceNumber: 'INV-001',
+          vendorName: 'Acme Supplies',
+          amount: 1500,
+          currency: 'USD',
+          status: InvoiceStatus.approved,
+          createdAt: DateTime(2026, 1, 1),
+        ),
+      )));
+      await tester.pump();
+
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(iOSTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      // The lock notice + the per-field helper text must clear AA over the
+      // secondary-container tint they sit on.
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      // A read-only field keeps its label (and Flutter marks it read-only for
+      // assistive tech), so the reason is announced, not just colour-coded.
+      expect(find.text('Frozen after approval'), findsNWidgets(2));
+      handle.dispose();
+    });
   });
 
   group('InvoiceWarningsPanel', () {

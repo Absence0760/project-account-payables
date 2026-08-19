@@ -79,7 +79,23 @@ function deletePaymentRun(runId: string): void {
  * session for both operations disable SoD via `require_run_segregation:
  * false` — a legitimate per-org single-operator configuration — and reset
  * it afterward. Tests that explicitly cover SoD live in run-cfo-signoff.spec.ts.
+ *
+ * Arming note: Execute is a two-click armed commit (`docs/followups.md` item 7),
+ * matching the `Cancel run` sibling in the same footer. The first click ARMS —
+ * the button relabels from "Execute · <amount>" to "Confirm execute · <amount>"
+ * — and only the second click moves money. Every UI execute below clicks twice,
+ * and the label change is a real DOM signal to wait on, never a timer.
  */
+
+/** Click the footer's Execute, then its armed confirmation. */
+async function armAndExecute(modal: import('@playwright/test').Locator): Promise<void> {
+	await modal.getByRole('button', { name: /^Execute/ }).click();
+	// The armed control is a DISTINCT accessible name, so this wait is a real
+	// signal that the arm landed — no sleep, no retry.
+	const confirm = modal.getByRole('button', { name: /^Confirm execute/ });
+	await expect(confirm).toBeVisible();
+	await confirm.click();
+}
 
 test.describe('/payments execute', () => {
 	test.beforeEach(async ({ page }) => {
@@ -144,7 +160,7 @@ test.describe('/payments execute', () => {
 					r.request().method() === 'POST' &&
 					r.status() === 200
 			);
-			await modal.getByRole('button', { name: /^Execute/ }).click();
+			await armAndExecute(modal);
 			const execResp = await executed;
 			const execBody = (await execResp.json()) as {
 				status: string;
@@ -163,6 +179,104 @@ test.describe('/payments execute', () => {
 			expect(after).toBe('payment_scheduled');
 		} finally {
 			if (runId) deletePaymentRun(runId);
+			resetInvoiceStatus(target.id, sourceStatus);
+		}
+	});
+
+	test('a single Execute click ARMS and moves no money', async ({ page }) => {
+		// Regression guard for `docs/followups.md` item 7: Execute used to be a
+		// single unarmed click on the one irreversible money-moving control in
+		// the app. The first click must only arm.
+		const queue = await getQueue(page);
+		expect(queue.length).toBeGreaterThan(0);
+		const target = queue[0];
+		const sourceStatus = await getInvoiceStatus(page, target.id);
+		const headers = await authedTenantHeaders(page);
+
+		const createResp = await page.request.post(`${API_BASE}/api/payments/runs`, {
+			headers,
+			data: { items: [{ invoice_id: target.id, method: 'ach' }] }
+		});
+		const runId = ((await createResp.json()) as { id: string }).id;
+
+		// Count every execute POST the page fires. A request is initiated
+		// synchronously inside the click handler, so once the armed control has
+		// rendered we know whether the click called the API — no sleep needed.
+		let executeCalls = 0;
+		page.on('request', (req) => {
+			if (req.method() === 'POST' && req.url().includes(`/runs/${runId}/execute`)) {
+				executeCalls += 1;
+			}
+		});
+
+		try {
+			await page.reload();
+			await page.waitForLoadState('networkidle');
+			await page.locator('.tab', { hasText: 'Runs' }).click();
+			await page
+				.getByRole('button', { name: `View payment run ${runId.slice(0, 8)}` })
+				.click();
+
+			const modal = page.locator('div.modal[role="dialog"][aria-label="Payment run"]');
+			await expect(modal).toBeVisible();
+			await expect(modal.locator('.status-badge')).toHaveText('draft');
+
+			// ONE click: arms only.
+			await modal.getByRole('button', { name: /^Execute/ }).click();
+			await expect(modal.getByRole('button', { name: /^Confirm execute/ })).toBeVisible();
+			await expect(modal.getByTestId('execute-armed-note')).toBeVisible();
+			expect(executeCalls).toBe(0);
+
+			// Server-side proof: the run is untouched.
+			const stillDraft = await page.request.get(`${API_BASE}/api/payments/runs/${runId}`, {
+				headers
+			});
+			expect(((await stillDraft.json()) as { status: string }).status).toBe('draft');
+		} finally {
+			deletePaymentRun(runId);
+			resetInvoiceStatus(target.id, sourceStatus);
+		}
+	});
+
+	test('arming Cancel run disarms Execute (only one commit is ever armed)', async ({
+		page
+	}) => {
+		const queue = await getQueue(page);
+		expect(queue.length).toBeGreaterThan(0);
+		const target = queue[0];
+		const sourceStatus = await getInvoiceStatus(page, target.id);
+		const headers = await authedTenantHeaders(page);
+
+		const createResp = await page.request.post(`${API_BASE}/api/payments/runs`, {
+			headers,
+			data: { items: [{ invoice_id: target.id, method: 'ach' }] }
+		});
+		const runId = ((await createResp.json()) as { id: string }).id;
+
+		try {
+			await page.reload();
+			await page.waitForLoadState('networkidle');
+			await page.locator('.tab', { hasText: 'Runs' }).click();
+			await page
+				.getByRole('button', { name: `View payment run ${runId.slice(0, 8)}` })
+				.click();
+
+			const modal = page.locator('div.modal[role="dialog"][aria-label="Payment run"]');
+			await expect(modal).toBeVisible();
+
+			await modal.getByRole('button', { name: /^Execute/ }).click();
+			await expect(modal.getByRole('button', { name: /^Confirm execute/ })).toBeVisible();
+
+			// Arming the sibling retracts the money button — two armed red
+			// controls side by side is how a mis-click becomes the wrong
+			// irreversible action.
+			await modal.getByRole('button', { name: 'Cancel run' }).click();
+			await expect(modal.getByRole('button', { name: 'Confirm cancel' })).toBeVisible();
+			await expect(modal.getByRole('button', { name: /^Confirm execute/ })).toBeHidden();
+			await expect(modal.getByRole('button', { name: /^Execute/ })).toBeVisible();
+			await expect(modal.getByTestId('execute-armed-note')).toBeHidden();
+		} finally {
+			deletePaymentRun(runId);
 			resetInvoiceStatus(target.id, sourceStatus);
 		}
 	});

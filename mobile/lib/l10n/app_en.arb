@@ -265,6 +265,8 @@
   "invoiceEditNotSet": "Not set",
   "invoiceEditInvalidAmount": "Enter a valid amount (e.g. 1234.56)",
   "invoiceEditClearDueDate": "Clear due date",
+  "invoiceEditLockedNotice": "Approved — the payee and amount are frozen. To change them, reject the invoice, correct it, then approve it again.",
+  "invoiceEditLockedHelper": "Frozen after approval",
   "invoiceEditDueDateHint": "Due date, currently {value}. Double tap to change.",
   "@invoiceEditDueDateHint": {
     "placeholders": {

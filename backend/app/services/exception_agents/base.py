@@ -57,6 +57,7 @@ class ExceptionResolver(ABC):
         evaluation: AgentEvaluation,
         actor_id: uuid.UUID,
         actor_roles: set[str] | None = None,
+        org_settings: dict | None = None,
     ) -> None:
         """Mutate to enact the resolution. Override in resolvers that auto-fix.
         MUST write audit_log row(s) for any invoice mutation. Default no-op
@@ -64,5 +65,18 @@ class ExceptionResolver(ABC):
 
         ``actor_roles`` is the triggering user's real role set — threaded into
         ``approve_invoice`` so the CFO gate + audit trail reflect who actually
-        authorised the resolution, not a hardcoded role."""
+        authorised the resolution, not a hardcoded role.
+
+        ``org_settings`` is the tenant's own configuration — the SAME dict
+        ``evaluate`` already receives. It exists on this signature because every
+        HTTP approval door threads it into ``review.approve_invoice`` (the
+        single-invoice endpoint, the email link, the Slack button, the Teams
+        card, bulk-status), and ``tests/test_approval_org_settings.py`` scans
+        ``app/`` to keep it that way. Without it here the four auto-resolvers
+        that approve would run the invoice through the PLATFORM's default fraud
+        rules instead of the org's: a rule the tenant disabled still opens a
+        payment-BLOCKING ``fraud_flag``, and a stricter-than-default per-vendor
+        PO tolerance is erased from ``invoice.po_match`` by the resolver's own
+        ``refresh_warnings`` recompute. Unattended, so nobody watches it
+        happen."""
         return None

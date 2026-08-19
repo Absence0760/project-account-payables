@@ -237,6 +237,41 @@ The only caller today (`POST /api/exceptions/{id}/agent-resolve`) always passes
 the JWT user's real roles (`{r.name for r in user.roles}`); a hypothetical
 background trigger with no user therefore escalates rather than auto-approving.
 
+### The org's rules, not the platform's
+
+`ExceptionResolver.apply` takes `org_settings: dict | None = None` — the SAME
+dict `evaluate` receives, passed by `coordinator.run_agent` (which has held it
+all along) and forwarded by every resolver into `review.approve_invoice` and, in
+`missing_po`, `invoice_warnings.refresh_warnings`.
+
+It used to be missing from `apply`'s signature entirely, so the four resolvers
+that approve ran the invoice through the **platform** defaults:
+
+* a fraud rule the tenant had explicitly **disabled** still opened a
+  payment-BLOCKING `fraud_flag` (`duplicate` / `fraud_flag` /
+  `line_total_mismatch` are in `api/payments.PAYMENT_BLOCKING_EXCEPTION_TYPES`),
+  so the agent's own "resolution" refused the invoice's next payment run; and
+* a stricter-than-default per-vendor / per-commodity PO tolerance
+  (`settings.matching.vendor_rules`) was **erased** from `invoice.po_match` by
+  the resolver's own `refresh_warnings` recompute — the control silently
+  loosened by the thing meant to honour it.
+
+Every HTTP approval door already threaded it (the single-invoice endpoint, the
+email link, the Slack button, the Teams card, bulk-status). These are worse than
+those were, because they run **unattended** — nobody is watching the screen when
+it happens.
+
+`tests/test_approval_org_settings.py` scans the whole of `app/` (it was scoped
+to `app/api/`, which is why it never saw the resolvers) and drives
+`run_agent` with a stub resolver to assert the coordinator hands `apply` the
+same settings it hands `evaluate`.
+
+Note that `gl_coding` and `multi_po_split` still **reuse the thresholds/tolerance
+`evaluate` resolved** rather than re-resolving them in `apply`. That is
+deliberate and unchanged: pinning the value is what guarantees `apply` enacts
+exactly what `evaluate` decided, so the two halves of a resolver can never
+disagree about an override.
+
 ### Two audit rows
 
 A successful auto-resolve writes **two** rows:

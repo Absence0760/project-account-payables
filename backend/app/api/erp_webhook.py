@@ -3,7 +3,7 @@
 import logging
 import uuid
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -34,6 +34,27 @@ router = APIRouter(prefix="/erp", tags=["erp"])
 # ``→ failed`` is a legal transition). Free-form ``Exception.exception_type``
 # string — no migration. See the § Exception types list in backend/CLAUDE.md.
 ERP_RECONCILIATION_EXCEPTION_TYPE = "erp_reconciliation"
+
+
+def _retry_please() -> Response:
+    """Bodyless ``503`` — OUR failure, not a decision about the event.
+
+    Every *decision* this handler reaches (unknown tenant, bad signature,
+    duplicate, unknown status, no matching invoice, a transition the state
+    machine forbids) stays a silent ``204``: it is a final answer, and varying
+    the response would enumerate tenant slugs / invoice state.
+
+    A failure of OURS — the tenant DB unreachable, a statement timeout, a
+    concurrent transition racing the guard — is not an answer. The handler
+    already releases its Redis dedup claim on those paths so "the ERP's retry
+    can reprocess", but a ``204`` tells the ERP the event was delivered, so no
+    retry ever came and the status transition was dropped permanently.
+    ``api/billing_webhook.py`` already returns 5xx here; ``api/email_intake.py``
+    now does too.
+
+    Bodyless, so the response still carries no diagnostic detail.
+    """
+    return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
 # Map ERP status strings to our internal status transitions
@@ -271,13 +292,17 @@ async def erp_webhook(
             # Defensive backstop: the VALID_TRANSITIONS guard above already
             # screens out every edge the state machine forbids, so
             # transition_invoice's validate_transition should never 409 here.
-            # If a concurrent status change ever slipped one through, honour the
-            # webhook contract anyway — a 409 must NOT escape and break the
-            # silent-204 ack (which would also enumerate invoice state).
+            # Reaching it means a concurrent status change slipped between the
+            # guard and the transition — a race on OUR side, not a decision
+            # about the event. A 409 must never escape (it would enumerate
+            # invoice state), but the event is still unapplied, so ask for a
+            # redelivery: the retry either applies cleanly or lands on the
+            # forbidden-transition path and silently no-ops, which is correct
+            # either way. Bodyless, so nothing leaks.
             await db.rollback()
             if claimed_event is not None:
                 await release_event_claim(f"erp:{erp_type}", claimed_event)
-            return
+            return _retry_please()
         except Exception:
             await db.rollback()
             # The dedup claim guards a side effect that just rolled back —
@@ -285,7 +310,11 @@ async def erp_webhook(
             # status transition is dropped for the full TTL window).
             if claimed_event is not None:
                 await release_event_claim(f"erp:{erp_type}", claimed_event)
-            return  # avoid leaking diagnostic detail in 500 body
+            # Same split as email_intake: this is OUR failure, not a decision,
+            # so the release above is now paired with an actual request to
+            # redeliver. Bodyless — no diagnostic detail in the response.
+            logger.exception("ERP webhook: processing failed for erp_type=%s", erp_type)
+            return _retry_please()
 
 
 async def _raise_erp_reconciliation_exception(

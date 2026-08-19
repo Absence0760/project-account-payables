@@ -49,11 +49,17 @@ Spend definitions (the contract the ``/spend`` + ``/check`` endpoints expose):
   utilization — ``(committed + actual) / allocated`` as a percentage, rounded to
                2 dp. ``0`` when allocated is 0 (avoid div-by-zero).
 
-Every leg is scoped to the budget's own entity (``apply_entity_scope`` on
-``budget.entity_id``) so a subsidiary's budget never picks up a sibling
-subsidiary's spend on a shared free-text dimension value, and to the budget's
-own ``currency`` — the legs never convert, so mixing currencies would add unlike
-face values (a EUR and a USD invoice on the same cost center are NOT summed).
+The **actual** (invoice) leg is scoped to the budget's own entity
+(``apply_entity_scope`` on ``budget.entity_id``) so a subsidiary's budget never
+picks up a sibling subsidiary's spend on a shared free-text dimension value.
+The two **committed** legs are NOT: they key off
+``PurchaseRequisition.budget_id``, an unambiguous human-declared link, so an
+entity filter there could only drop deliberately-linked demand — see the note
+above ``_committed_requisition_total``.
+
+Every leg is scoped to the budget's own ``currency`` — the legs never convert,
+so mixing currencies would add unlike face values (a EUR and a USD invoice on
+the same cost center are NOT summed).
 """
 
 from dataclasses import dataclass
@@ -123,6 +129,24 @@ def _q(value) -> Decimal:
     return Decimal(value if value is not None else 0)
 
 
+# Why the two `budget_id`-keyed legs below are NOT entity-scoped, unlike the
+# invoice leg:
+#
+# `PurchaseRequisition.budget_id == budget.id` is an UNAMBIGUOUS link — a human
+# said "this demand spends this budget". Layering `apply_entity_scope(...,
+# budget.entity_id)` on top of it can only ever REMOVE deliberately-linked
+# demand, so `committed` read 0 and `/budgets/check` answered
+# `would_overspend: false` for headroom already spoken for. The invoice leg is
+# different and keeps its scoping: attribution there is a fuzzy free-text
+# `dimension_value` match, where narrowing is genuinely protective.
+#
+# The CURRENCY predicate stays. `POST`/`PATCH /api/requisitions` now refuses a
+# link whose currency doesn't match the budget's (422), so it can only bite a
+# row linked before that guard existed — and summing two currencies' face
+# values into one total would be worse than excluding the row ("money is
+# exact"; the legs never convert).
+
+
 async def _committed_requisition_total(db: AsyncSession, budget: Budget) -> Decimal:
     """Leg 1 — open, un-converted requisitions linked to this budget."""
     query = select(func.coalesce(func.sum(PurchaseRequisition.total), 0)).where(
@@ -130,7 +154,6 @@ async def _committed_requisition_total(db: AsyncSession, budget: Budget) -> Deci
         PurchaseRequisition.status.in_(OPEN_COMMITMENT_REQ_STATUSES),
         PurchaseRequisition.currency == budget.currency,
     )
-    query = apply_entity_scope(query, PurchaseRequisition, budget.entity_id)
     total = (await db.execute(query)).scalar_one()
     return _q(total)
 
@@ -150,7 +173,6 @@ async def _committed_po_total(db: AsyncSession, budget: Budget) -> Decimal:
             PurchaseRequisition.currency == budget.currency,
         )
     )
-    query = apply_entity_scope(query, PurchaseRequisition, budget.entity_id)
     total = (await db.execute(query)).scalar_one()
     return _q(total)
 

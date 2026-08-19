@@ -499,7 +499,10 @@ async def test_create_invoice_is_pending_zero_decimal_and_org_prefixed_key():
     entity_id = uuid.uuid4()
     # The upload goes through `storage._put_object` (which offloads boto3 to a
     # worker thread), so the client is patched at its owner, not passed in.
-    with patch("app.services.storage._get_client", MagicMock(return_value=s3)):
+    with (
+        patch("app.services.storage._get_client", MagicMock(return_value=s3)),
+        patch("app.services.workflow_engine.create_workflow_instance", AsyncMock()),
+    ):
         invoice_id = await _create_invoice_from_attachment(
             tenant_db=db,
             org_id=org_id,
@@ -524,3 +527,40 @@ async def test_create_invoice_is_pending_zero_decimal_and_org_prefixed_key():
     assert put["Key"] == expected_key
     assert put["ContentType"] == "application/pdf"
     assert put["Body"] == b"%PDF-1.4"
+
+
+async def test_create_invoice_freezes_a_workflow_instance_at_ingest():
+    """Email intake is a first-class ingress, so it owes the invoice the same
+    frozen workflow snapshot every other ingress creates.
+
+    Without it the invoice has no `WorkflowInstance` at all: a later edit to
+    the tenant's workflow definition retroactively governs it (breaking the
+    per-invoice frozen-snapshot invariant for exactly the unattended paths), it
+    has no `WorkflowStep` rows — so it is invisible to the step-based approval
+    queue and to `GET /api/invoices/{id}/workflow` — and it is never assigned
+    an A/B experiment variant.
+    """
+    db = _FakeTenantDB()
+    create_instance = AsyncMock()
+
+    with (
+        patch("app.services.storage._get_client", MagicMock(return_value=MagicMock())),
+        patch("app.services.workflow_engine.create_workflow_instance", create_instance),
+    ):
+        await _create_invoice_from_attachment(
+            tenant_db=db,
+            org_id=uuid.uuid4(),
+            entity_id=uuid.uuid4(),
+            sender="vendor@x.com",
+            subject="March invoice",
+            attachment=_pdf("bill.pdf"),
+        )
+
+    create_instance.assert_awaited_once()
+    args = create_instance.await_args.args
+    assert args[0] is db
+    assert args[1] is db.added[0]
+    # Created BEFORE the S3 upload returns an id-bearing row is not enough —
+    # the instance must be built from an invoice that already has its PK, so
+    # `WorkflowInstance.invoice_id` is real.
+    assert args[1].id is not None

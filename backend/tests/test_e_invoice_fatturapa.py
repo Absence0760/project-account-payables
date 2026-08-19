@@ -27,11 +27,6 @@ from app.services.e_invoice.model import (
 )
 
 
-def _q(parent, path):
-    """Namespaced findall helper for the single FatturaPA namespace."""
-    return parent.findall(path.format(ns=_NS_FATTURAPA))
-
-
 def _full_doc() -> EInvoiceDocument:
     return EInvoiceDocument(
         source_format=EInvoiceFormat.UBL,
@@ -107,12 +102,42 @@ def test_root_tag_namespace_and_version():
     assert root.get("versione") == _VERSIONE
 
 
+def test_only_the_root_is_namespace_qualified():
+    """FatturaPA v1.2 declares no `elementFormDefault`, so it takes the XML
+    Schema default of `unqualified`: only the globally declared root element
+    `FatturaElettronica` is in the target namespace, and every locally declared
+    descendant is in NO namespace.
+
+    The generator used to build every child in the target namespace, so no
+    child matched its local element declaration and the whole document was
+    schema-invalid at the SdI. Real instances read
+    `<p:FatturaElettronica xmlns:p="…"><FatturaElettronicaHeader>`.
+    """
+    xml = _fmt().generate(_full_doc())
+    root = etree.fromstring(xml)
+
+    assert etree.QName(root).namespace == _NS_FATTURAPA
+    for child in root.iter():
+        if child is root:
+            continue
+        assert etree.QName(child).namespace is None, (
+            f"{etree.QName(child).localname} must be unqualified"
+        )
+
+    # Serialization check too: the prefix is bound on the root without a
+    # DEFAULT namespace, so no child needs an `xmlns=""` reset (which would
+    # itself be a symptom of building children in the namespace and then
+    # undeclaring it).
+    assert b"<p:FatturaElettronica " in xml
+    assert b"<FatturaElettronicaHeader>" in xml
+    assert b'xmlns=""' not in xml
+
+
 def test_cedente_and_cessionario_present():
     root = etree.fromstring(_fmt().generate(_full_doc()))
-    ns = _NS_FATTURAPA
-    header = root.find(f"{{{ns}}}FatturaElettronicaHeader")
-    cedente = header.find(f"{{{ns}}}CedentePrestatore")
-    cessionario = header.find(f"{{{ns}}}CessionarioCommittente")
+    header = root.find("FatturaElettronicaHeader")
+    cedente = header.find("CedentePrestatore")
+    cessionario = header.find("CessionarioCommittente")
     assert cedente is not None
     assert cessionario is not None
 
@@ -120,27 +145,24 @@ def test_cedente_and_cessionario_present():
     # IdCodice the VAT number WITHOUT it. Emitting the model's full,
     # country-prefixed id here stated the country twice ("IT" + "IT123…") and
     # the SdI rejects that as a malformed Partita IVA.
-    sel_paese = cedente.find(f"{{{ns}}}DatiAnagrafici/{{{ns}}}IdFiscaleIVA/{{{ns}}}IdPaese")
-    sel_id = cedente.find(f"{{{ns}}}DatiAnagrafici/{{{ns}}}IdFiscaleIVA/{{{ns}}}IdCodice")
-    sel_name = cedente.find(f"{{{ns}}}DatiAnagrafici/{{{ns}}}Anagrafica/{{{ns}}}Denominazione")
+    sel_paese = cedente.find("DatiAnagrafici/IdFiscaleIVA/IdPaese")
+    sel_id = cedente.find("DatiAnagrafici/IdFiscaleIVA/IdCodice")
+    sel_name = cedente.find("DatiAnagrafici/Anagrafica/Denominazione")
     assert sel_paese.text == "IT"
     assert sel_id.text == "12345678901"
     assert sel_name.text == "Fornitore S.r.l."
 
-    buy_paese = cessionario.find(f"{{{ns}}}DatiAnagrafici/{{{ns}}}IdFiscaleIVA/{{{ns}}}IdPaese")
-    buy_id = cessionario.find(f"{{{ns}}}DatiAnagrafici/{{{ns}}}IdFiscaleIVA/{{{ns}}}IdCodice")
+    buy_paese = cessionario.find("DatiAnagrafici/IdFiscaleIVA/IdPaese")
+    buy_id = cessionario.find("DatiAnagrafici/IdFiscaleIVA/IdCodice")
     assert buy_paese.text == "IT"
     assert buy_id.text == "98765432109"
 
 
 def test_id_trasmittente_also_drops_the_country_prefix():
     root = etree.fromstring(_fmt().generate(_full_doc()))
-    ns = _NS_FATTURAPA
-    tx = root.find(
-        f"{{{ns}}}FatturaElettronicaHeader/{{{ns}}}DatiTrasmissione/{{{ns}}}IdTrasmittente"
-    )
-    assert tx.find(f"{{{ns}}}IdPaese").text == "IT"
-    assert tx.find(f"{{{ns}}}IdCodice").text == "12345678901"
+    tx = root.find("FatturaElettronicaHeader/DatiTrasmissione/IdTrasmittente")
+    assert tx.find("IdPaese").text == "IT"
+    assert tx.find("IdCodice").text == "12345678901"
 
 
 def test_split_id_fiscale_leaves_a_non_prefixed_id_alone():
@@ -158,10 +180,7 @@ def test_split_id_fiscale_leaves_a_non_prefixed_id_alone():
 
 def test_codice_destinatario_from_buyer_reference():
     root = etree.fromstring(_fmt().generate(_full_doc()))
-    ns = _NS_FATTURAPA
-    code = root.find(
-        f"{{{ns}}}FatturaElettronicaHeader/{{{ns}}}DatiTrasmissione/{{{ns}}}CodiceDestinatario"
-    )
+    code = root.find("FatturaElettronicaHeader/DatiTrasmissione/CodiceDestinatario")
     assert code.text == "ABCDEF1"
 
 
@@ -169,43 +188,34 @@ def test_codice_destinatario_default_when_absent():
     doc = _full_doc()
     doc.buyer_reference = None
     root = etree.fromstring(_fmt().generate(doc))
-    ns = _NS_FATTURAPA
-    code = root.find(
-        f"{{{ns}}}FatturaElettronicaHeader/{{{ns}}}DatiTrasmissione/{{{ns}}}CodiceDestinatario"
-    )
+    code = root.find("FatturaElettronicaHeader/DatiTrasmissione/CodiceDestinatario")
     assert code.text == "0000000"
 
 
 def test_body_document_fields_and_line():
     root = etree.fromstring(_fmt().generate(_full_doc()))
-    ns = _NS_FATTURAPA
-    body = root.find(f"{{{ns}}}FatturaElettronicaBody")
-    documento = body.find(f"{{{ns}}}DatiGenerali/{{{ns}}}DatiGeneraliDocumento")
-    assert documento.find(f"{{{ns}}}TipoDocumento").text == "TD01"
-    assert documento.find(f"{{{ns}}}Divisa").text == "EUR"
-    assert documento.find(f"{{{ns}}}Data").text == "2024-05-01"
-    assert documento.find(f"{{{ns}}}Numero").text == "IT-2024-77"
+    body = root.find("FatturaElettronicaBody")
+    documento = body.find("DatiGenerali/DatiGeneraliDocumento")
+    assert documento.find("TipoDocumento").text == "TD01"
+    assert documento.find("Divisa").text == "EUR"
+    assert documento.find("Data").text == "2024-05-01"
+    assert documento.find("Numero").text == "IT-2024-77"
 
-    lines = body.findall(f"{{{ns}}}DatiBeniServizi/{{{ns}}}DettaglioLinee")
+    lines = body.findall("DatiBeniServizi/DettaglioLinee")
     assert len(lines) == 1
-    assert lines[0].find(f"{{{ns}}}Descrizione").text == "Widget A"
-    assert lines[0].find(f"{{{ns}}}AliquotaIVA").text == "22.00"
+    assert lines[0].find("Descrizione").text == "Widget A"
+    assert lines[0].find("AliquotaIVA").text == "22.00"
 
 
 def test_money_serializes_as_2dp_decimal_not_float():
     root = etree.fromstring(_fmt().generate(_full_doc()))
-    ns = _NS_FATTURAPA
-    documento = root.find(
-        f"{{{ns}}}FatturaElettronicaBody/{{{ns}}}DatiGenerali/{{{ns}}}DatiGeneraliDocumento"
-    )
-    total = documento.find(f"{{{ns}}}ImportoTotaleDocumento")
+    documento = root.find("FatturaElettronicaBody/DatiGenerali/DatiGeneraliDocumento")
+    total = documento.find("ImportoTotaleDocumento")
     assert total.text == "1220.00"
 
-    riepilogo = root.find(
-        f"{{{ns}}}FatturaElettronicaBody/{{{ns}}}DatiBeniServizi/{{{ns}}}DatiRiepilogo"
-    )
-    assert riepilogo.find(f"{{{ns}}}ImponibileImporto").text == "1000.00"
-    assert riepilogo.find(f"{{{ns}}}Imposta").text == "220.00"
+    riepilogo = root.find("FatturaElettronicaBody/DatiBeniServizi/DatiRiepilogo")
+    assert riepilogo.find("ImponibileImporto").text == "1000.00"
+    assert riepilogo.find("Imposta").text == "220.00"
 
 
 def test_xml_escaping_of_party_name():
@@ -215,10 +225,8 @@ def test_xml_escaping_of_party_name():
     # Literal markup must never appear unescaped.
     assert b"<Manufacturing>" not in xml.replace(b"&lt;Manufacturing&gt;", b"")
     root = etree.fromstring(xml)
-    ns = _NS_FATTURAPA
     name = root.find(
-        f"{{{ns}}}FatturaElettronicaHeader/{{{ns}}}CedentePrestatore"
-        f"/{{{ns}}}DatiAnagrafici/{{{ns}}}Anagrafica/{{{ns}}}Denominazione"
+        "FatturaElettronicaHeader/CedentePrestatore/DatiAnagrafici/Anagrafica/Denominazione"
     )
     assert name.text == "Acme <Manufacturing> & Co."
 

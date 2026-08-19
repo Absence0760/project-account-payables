@@ -94,8 +94,8 @@ def _create_run_db(
     """Build an AsyncSession mock for `create_payment_run`.
 
     The handler issues: (1) `select(Invoice).where(Invoice.id.in_(...))`
-    → `.scalars().all()`, (2) the unresolved `duplicate`/`fraud_flag`
-    exception gate → `.scalars().all()` of the blocked invoice ids, then
+    → `.scalars().all()`, (2) the unresolved payment-blocking exception gate
+    → `.all()` of `(invoice_id, exception_type)` rows, then
     (3) one already-applied-credit-memo SUM query per item in `body.items`
     (in the same order — every test here builds `body.items` from this
     same `invoices` list) → `.scalar_one()`. It then `db.add(run)`,
@@ -114,10 +114,15 @@ def _create_run_db(
     scalars.all = MagicMock(return_value=invoices)
     sel.scalars = MagicMock(return_value=scalars)
 
+    # The gate query selects TWO columns — `(invoice_id, exception_type)` — and
+    # `payment_runs.blocking_exception_types` consumes them with `rows.all()`,
+    # NOT `.scalars().all()`. Seeding only the scalars shape leaves `rows.all()`
+    # answering with a bare MagicMock, which iterates empty, so the gate sees no
+    # blocked invoice and this test silently stops testing anything.
     block_sel = MagicMock()
-    block_scalars = MagicMock()
-    block_scalars.all = MagicMock(return_value=list(blocking_invoice_ids or []))
-    block_sel.scalars = MagicMock(return_value=block_scalars)
+    block_sel.all = MagicMock(
+        return_value=[(inv_id, "duplicate") for inv_id in (blocking_invoice_ids or [])]
+    )
 
     credit_totals = credit_totals or {}
     credit_results = []

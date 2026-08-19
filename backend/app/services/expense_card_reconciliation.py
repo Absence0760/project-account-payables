@@ -64,12 +64,22 @@ async def suggest_matches(
     """Return unmatched ``Expense`` candidates for ``txn``, ranked best-first.
 
     Candidate set: ``Expense.amount == txn.amount`` (exact Decimal) AND
-    ``Expense.card_transaction_id IS NULL`` AND ``expense_date`` within
-    ``±window_days`` of ``txn.txn_date``. Entity-scoped. Ranked by fuzzy
-    merchant similarity (descending); equal scores keep the closest date first.
+    ``Expense.currency == txn.currency`` AND ``Expense.card_transaction_id IS
+    NULL`` AND ``expense_date`` within ``±window_days`` of ``txn.txn_date``.
+    Entity-scoped. Ranked by fuzzy merchant similarity (descending); equal
+    scores keep the closest date first.
+
+    **The currency predicate is load-bearing.** Without it a €100.00 expense
+    was offered as an *exact-amount* suggestion for a $100.00 card line, and
+    one click linked them. Multi-currency card reconciliation is deferred —
+    but the safe form of not supporting it is filtering the candidate query,
+    not offering a false match. Every other comparison in this area is
+    currency-scoped (CFO gate → reporting currency, policy thresholds →
+    ``threshold_currency``, pre-approval cover → currency-matched SQL).
     """
     base = apply_entity_scope(select(Expense), Expense, entity_id).where(
         Expense.amount == txn.amount,
+        Expense.currency == txn.currency,
         Expense.card_transaction_id.is_(None),
     )
     rows = (await db.execute(base)).scalars().all()

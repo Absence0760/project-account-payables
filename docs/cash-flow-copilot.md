@@ -565,3 +565,75 @@ router row to the root `CLAUDE.md` + a roadmap entry.
 Frontend: `src/routes/cash-flow/+page.svelte`, `src/lib/components/cash-flow/`,
 `src/lib/api/cashFlow.ts`, nav entry in `src/lib/nav.ts`, e2e
 `tests-e2e/cash-flow/copilot.spec.ts`.
+
+## Currencies the curve could not convert
+
+`api/analytics._commitment_rows` includes a foreign invoice with no usable
+rate lock at **face value** — dropping it would understate the outflow — and
+flags it `unconverted`. `services/analytics.bucket_outflows` counts those into
+`unconverted_count`, and the count now rides every surface built on that curve:
+
+| Surface | Field |
+|---|---|
+| `get_cashflow_forecast` / `get_cash_position` / `run_payment_whatif` | `unconverted_count` |
+| `propose_payment_plan` (`PaymentPlanResult`, and per `PaymentPlanPeriod`) | `unconverted_count` |
+| the projected-shortfall alert email | a sentence naming the count |
+
+The plan and the alert were the two that still dropped it, and they are the two
+that matter most: the plan is the only artifact a user can **enact**
+(draft-run / capture-discounts), and the alert is an email telling finance
+leaders their cash runs out. A single unconverted ¥10,000,000 invoice drags a
+$250,000 opening balance to a projected −$9.75M, so the shortfall the email
+announces can be entirely manufactured by the conversion gap. Counts only —
+never a vendor, an invoice number or an amount breakdown, so the message stays
+PII-free.
+
+Nothing converts at read time. A rate fetched on a read makes a historical
+curve move under the reader (`docs/decisions.md` §18).
+
+## A malformed threshold does not silently un-subscribe an org
+
+`settings.cashflow.min_balance_threshold` **is** the per-org opt-in to shortfall
+alerting: `cash_flow_alerts._project_tenant` returns early when it resolves to
+`None`. So `cashflow._coerce_decimal` returning `None` for a corrupt stored
+value un-subscribed the org from the alert it configured, forever, with nothing
+logged. It now logs a warning naming the FIELD (never the value — a settings
+blob is operator data) on every rejection.
+
+`Decimal("NaN")` was the same failure wearing a valid-parse costume:
+`Decimal(str("nan"))` succeeds, and every `closing < threshold` comparison
+against it is False, so the org looked configured while being just as opted
+out. Non-finite values (NaN and both infinities) are refused for that reason —
+only a finite number is a threshold.
+
+## Draft-run stages one currency, and says what it left
+
+A `PaymentRun` is single-currency by construction: `PaymentRun.total_amount` is
+a bare `Numeric` with no currency of its own and the CFO threshold is compared
+against it as a bare number (`payment_runs.create_payment_run_for_invoices`
+refuses a mixed batch with a 422). `POST /plans/{plan_id}/draft-run` used to
+hand that builder **every** payable invoice in the plan's horizon, so for a
+multi-currency tenant it could only ever 422 — the plan card's button could
+never succeed, and the error was not actionable from a plan the user cannot
+edit.
+
+It now narrows to the org's **reporting currency** — the currency the plan's own
+cash curve, budget and threshold are already expressed in, so the staged run is
+the slice of the plan the plan was reasoning about — and reports
+`run_currency` + `excluded_currency_count` rather than dropping the rest
+silently. Those invoices remain payable from the normal queue. When the horizon
+holds nothing in the reporting currency the 409 names the currencies that ARE
+there: the actionable version of the old 422. `excluded_currency_count` is 0
+for every single-currency tenant, so nothing changes for them.
+
+## Capture-discounts row-locks each offer
+
+`POST /plans/{plan_id}/capture-discounts` re-reads each selected offer
+`FOR UPDATE` before mutating it, mirroring the payment dispatcher's claim
+pattern. `run_discount_optimization` loads the rows with a plain SELECT, so two
+concurrent calls both saw `offered` and both accepted. It is status-only — no
+money moves — so the worst case was a duplicate audit row and a second
+`accepted_at`; a money-adjacent mutator should still not be the one place in
+the file that takes the state it read on trust.
+
+**Tests:** `backend/tests/test_cashflow_currency_visibility.py`.

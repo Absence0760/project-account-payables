@@ -21,6 +21,7 @@ from app.models.organization import Organization
 from app.models.procurement import POLineItem, PurchaseOrder
 from app.models.user import User
 from app.models.vendor import Vendor
+from app.services.audit_dispatch import dispatch_audit
 from app.tenant import (
     apply_entity_scope,
     get_entity_id,
@@ -99,6 +100,56 @@ async def list_purchase_orders(
         total,
         pagination,
     )
+
+
+# Registered BEFORE the parametric `/{po_id}` route: FastAPI matches in
+# declaration order, so the literal `counts` segment would otherwise be parsed
+# as a UUID and 422 before ever reaching this handler. Same reason
+# `GET /api/vendors/counts` and `GET /api/invoices/counts` sit above their own
+# `/{id}` routes.
+@router.get("/counts")
+async def purchase_order_status_counts(
+    search: str | None = None,
+    vendor_id: str | None = None,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Status tallies for the purchase-order filter chips.
+
+    Computed over the WHOLE entity-scoped (and optionally searched) PO set, not
+    the loaded page — so the "All" chip and each status chip stay correct once
+    the list paginates. Without it the only number the page has is the list's
+    `total`, which counts the ACTIVE filter's result set: showing that on the
+    All chip while another chip was active labelled a filtered count "All".
+    Mirrors `GET /api/vendors/counts`.
+
+    Takes the list's population filters (`search`, `vendor_id`) so the tallies
+    describe exactly the rows the list would return — but deliberately NOT
+    `status`: status is the dimension being tallied, so applying it would zero
+    every other chip. (An unknown query param is dropped by FastAPI, so a
+    client that passes one is unaffected.)
+
+    RBAC matches the list itself (`get_current_user` — auth-gated, role-open):
+    a caller who may read the rows may read their counts, and one who may not
+    gets neither.
+    """
+    query = apply_entity_scope(
+        select(PurchaseOrder.status, func.count()).select_from(PurchaseOrder),
+        PurchaseOrder,
+        entity_id,
+    )
+    if search:
+        query = query.where(PurchaseOrder.po_number.ilike(f"%{search}%"))
+    if vendor_id:
+        try:
+            query = query.where(PurchaseOrder.vendor_id == uuid.UUID(vendor_id))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid vendor_id") from None
+    query = query.group_by(PurchaseOrder.status)
+    rows = (await db.execute(query)).all()
+    by_status = {str(po_status): int(n) for po_status, n in rows}
+    return {"total": sum(by_status.values()), "by_status": by_status}
 
 
 @router.get("/{po_id}")
@@ -267,6 +318,25 @@ async def sync_pos_from_erp(
 
         created += 1
 
+    # One PII-free summary row per sync (same shape as the GL chart sync): the
+    # trail records that POs — the 3-way-match reference the money path checks
+    # invoices against — were created/amended in bulk, by whom, from where.
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="purchase_order.synced_from_erp",
+        entity_type="purchase_order",
+        entity_id=org_id,
+        details={
+            "created": created,
+            "updated": updated,
+            "skipped": skipped,
+            "adapter": adapter.erp_type,
+            "entity_id": str(entity_id) if entity_id else None,
+        },
+    )
     await db.commit()
     return {
         "success": True,

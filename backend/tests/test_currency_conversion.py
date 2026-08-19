@@ -151,6 +151,7 @@ def _invoice_row(*, amount=Decimal("1000.00"), currency="EUR"):
         reporting_currency=None,
         reporting_amount=None,
         reporting_fx_rate=None,
+        reporting_source_currency=None,
         reporting_fx_locked_at=None,
     )
 
@@ -657,3 +658,102 @@ def _fixed_rate(rate: Decimal):
         )
 
     return _rate
+
+
+# ---------------------------------------------------------------------------
+# The lock records WHICH currency its rate was for (migration 0086)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_materialize_records_the_source_currency_of_the_locked_rate():
+    fx = MockFXAdapter({"mock_rates": {"EUR": "0.92"}})
+    inv = _invoice_row()  # EUR
+    await materialize_reporting_amount(inv, reporting_currency="USD", fx_adapter=fx)
+    assert inv.reporting_source_currency == "EUR"
+
+    same = _invoice_row(currency="USD")
+    await materialize_reporting_amount(same, reporting_currency="USD", fx_adapter=fx)
+    assert same.reporting_source_currency == "USD"
+
+
+@pytest.mark.asyncio
+async def test_materialize_refetches_on_a_foreign_to_foreign_currency_correction():
+    """EUR -> GBP on a USD-reporting org, amount unchanged.
+
+    Neither pre-0086 check could see this: the figure still reconciles
+    (`amount * rate == reporting_amount`) and the rate still has the *shape* of
+    a cross-currency rate (not exactly 1). The row recorded the rate but not
+    which currency it was for, so the stale EUR-derived figure kept being
+    reported as a converted, trustworthy number for a GBP invoice.
+    """
+    fx = MockFXAdapter({"mock_rates": {"EUR": "0.92", "GBP": "0.79"}})
+    inv = _invoice_row()  # EUR 1000.00
+    await materialize_reporting_amount(inv, reporting_currency="USD", fx_adapter=fx)
+    eur_figure = inv.reporting_amount
+    eur_rate = inv.reporting_fx_rate
+    assert eur_figure == Decimal("1086.96")
+
+    inv.currency = "GBP"  # correction only — the amount did not move
+    changed = await materialize_reporting_amount(inv, reporting_currency="USD", fx_adapter=fx)
+
+    assert changed is True
+    assert inv.reporting_source_currency == "GBP"
+    assert inv.reporting_fx_rate != eur_rate
+    assert inv.reporting_amount != eur_figure
+    assert inv.reporting_amount == (inv.amount * inv.reporting_fx_rate).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_foreign_row_is_still_an_idempotent_no_op():
+    """The exact pair check must not make every read re-fetch."""
+    fx = MockFXAdapter({"mock_rates": {"EUR": "0.92"}})
+    inv = _invoice_row()
+    await materialize_reporting_amount(inv, reporting_currency="USD", fx_adapter=fx)
+    changed = await materialize_reporting_amount(inv, reporting_currency="USD", fx_adapter=fx)
+    assert changed is False
+
+
+@pytest.mark.asyncio
+async def test_amount_correction_still_rescales_at_the_locked_rate():
+    """The pair still matches, so no FX call — the liability was accrued at the
+    rate in force when the invoice was booked."""
+    fx = MockFXAdapter({"mock_rates": {"EUR": "0.92"}})
+    inv = _invoice_row()
+    await materialize_reporting_amount(inv, reporting_currency="USD", fx_adapter=fx)
+    locked_rate = inv.reporting_fx_rate
+
+    inv.amount = Decimal("2000.00")
+    fx_dead = MockFXAdapter({"mock_rates": {"EUR": "0.92"}})
+    fx_dead.get_rate = _fixed_rate(Decimal("0"))  # any FX call would raise
+    changed = await materialize_reporting_amount(inv, reporting_currency="USD", fx_adapter=fx_dead)
+
+    assert changed is True
+    assert inv.reporting_fx_rate == locked_rate
+    assert inv.reporting_amount == (Decimal("2000.00") * locked_rate).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_row_without_the_column_falls_back_to_the_shape_heuristic():
+    """A row locked before migration 0086 has no `reporting_source_currency`.
+
+    It keeps the old inferential check — which still catches an amount edit and
+    a currency edit that crosses the reporting currency — rather than being
+    treated as unlocked and re-fetched on every read.
+    """
+    fx = MockFXAdapter({"mock_rates": {"EUR": "0.92"}})
+    inv = _invoice_row()
+    await materialize_reporting_amount(inv, reporting_currency="USD", fx_adapter=fx)
+    inv.reporting_source_currency = None  # simulate a pre-0086 lock
+
+    changed = await materialize_reporting_amount(inv, reporting_currency="USD", fx_adapter=fx)
+    assert changed is False  # unchanged row: still a no-op
+
+    inv.currency = "USD"  # crosses the reporting currency — the heuristic sees it
+    changed = await materialize_reporting_amount(inv, reporting_currency="USD", fx_adapter=fx)
+    assert changed is True
+    assert inv.reporting_source_currency == "USD"  # and the column is now filled

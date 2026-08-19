@@ -3,13 +3,14 @@
 import asyncio
 import logging
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import case, func, not_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,6 +43,11 @@ from app.schemas.payment import (
     PaymentRunResponse,
 )
 from app.services.audit_access import log_access
+from app.services.currency_conversion import (
+    payment_reporting_amount_sql,
+    reporting_amount_for_row,
+    resolve_reporting_currency,
+)
 from app.services.exception_lifecycle import record_decision
 from app.services.international_payments import (
     is_international_payment,
@@ -59,9 +65,12 @@ from app.services.payment_runs import (
     PaymentRunItemInput,
     active_run_payments,
     blocked_invoice_ids,
+    blocking_exception_types,
     create_payment_run_for_invoices,
+    derive_run_status,
     is_retry_safe,
     net_payable_amount,
+    recompute_run_status,
     rollup_payment_statuses,
     superseded_payment_ids,
 )
@@ -113,9 +122,23 @@ PAYABLE_INVOICE_STATUSES = (
 #                          silently recomputed from them — see
 #                          `docs/line-total-reconciliation.md`), so paying it
 #                          would pay a total the lines don't support
+#   payment_reconciliation — the backstop reconciler gave up waiting on a
+#                          `submitted` payment past its max age and marked it
+#                          `failed`. `failed` is in
+#                          `LIVE_PAYMENT_TERMINAL_STATUSES`, so that row stops
+#                          holding the invoice's live-payment slot even though
+#                          real money may still be in flight at the rail. The
+#                          exception is what stops a fresh run paying the same
+#                          invoice a second time until a human has reconciled
+#                          the rail (see `services/payment_reconciler.py`).
 #
 # Resolving/dismissing the exception is the human sign-off that clears it.
-PAYMENT_BLOCKING_EXCEPTION_TYPES = ("duplicate", "fraud_flag", "line_total_mismatch")
+PAYMENT_BLOCKING_EXCEPTION_TYPES = (
+    "duplicate",
+    "fraud_flag",
+    "line_total_mismatch",
+    "payment_reconciliation",
+)
 
 # Terminal payment states — a payment in one of these no longer represents a
 # LIVE claim on its invoice, so the "one live payment per invoice" idempotency
@@ -316,10 +339,15 @@ async def list_payments(
 @router.get("/queue")
 async def payment_queue(
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    """List approved invoices ready for payment (no completed payment yet)."""
+    """List approved invoices ready for payment (no completed payment yet).
+
+    Each row carries `blocked` / `blocked_reason` — whether an unresolved
+    payment-blocking exception means `POST /api/payments/runs` would refuse it.
+    """
     paid_ids = select(Payment.invoice_id).where(Payment.status == "completed").scalar_subquery()
 
     # Match the workflow state machine: only statuses that can directly
@@ -345,16 +373,49 @@ async def payment_queue(
     result = await db.execute(queue_q)
     rows = result.all()
 
-    today = date.today()
+    # `total_amount` / `total_savings` are SUMS, and a sum is only a number when
+    # its terms share a currency. Each row keeps its own `amount` + `currency`
+    # (the UI renders the row in the vendor's currency); the totals are
+    # accumulated in the ORG's reporting currency via the same rate-locked
+    # `reporting_amount_for_row` every sibling rollup uses — no FX call on a
+    # read. A row whose reporting figure can't be established is still counted
+    # at face value (dropping it would understate what's due) but reported on
+    # `unconverted_count`, so "these totals mix currencies" is visible rather
+    # than silent.
+    reporting_currency = resolve_reporting_currency(org.settings)
+    # UTC, not the host's local date. `is_overdue` and the discount-window
+    # cutoff below are the same calendar question `services/analytics`,
+    # `discount_optimizer` and `cash_flow_alerts` answer in UTC; on a non-UTC
+    # host `date.today()` shifts this queue's answers by a day relative to
+    # every other surface reading the same rows.
+    today = datetime.now(UTC).date()
+    # Which of these rows `POST /api/payments/runs` would refuse. The run
+    # builder rejects the WHOLE run with a 409 when any selected invoice carries
+    # an unresolved `PAYMENT_BLOCKING_EXCEPTION_TYPES` exception, so a queue that
+    # offers such a row hands the operator a selection that can only fail —
+    # with nothing on screen saying which row did it. Resolved through the same
+    # `payment_runs` helper the builder itself uses (one predicate, one query),
+    # so the two can never disagree about what is payable.
+    blocked_types = await blocking_exception_types(db, [inv.id for inv, _ in rows])
     items: list[dict] = []
     total_savings = Decimal("0")
     total_amount = Decimal("0")
+    unconverted_count = 0
     for inv, sched in rows:
         # Discount eligibility: schedule has a discount_date in the future
         # AND the percent is set. Backfilled-without-schedule rows just don't
         # surface a discount.
         discount_amount: Decimal | None = None
         discount_eligible = False
+        reporting_amount, unconverted = reporting_amount_for_row(
+            amount=inv.amount or Decimal("0"),
+            currency=inv.currency,
+            reporting_currency=reporting_currency,
+            persisted_reporting_currency=inv.reporting_currency,
+            persisted_reporting_amount=inv.reporting_amount,
+        )
+        if unconverted:
+            unconverted_count += 1
         if (
             sched is not None
             and sched.discount_date is not None
@@ -362,12 +423,17 @@ async def payment_queue(
             and sched.discount_date >= today
         ):
             discount_eligible = True
+            # Shown on the row in the INVOICE's currency…
             discount_amount = (inv.amount * sched.discount_percent / Decimal(100)).quantize(
                 Decimal("0.01")
             )
-            total_savings += discount_amount
+            # …but summed in the reporting currency, off the same rate-locked
+            # figure the outflow total uses.
+            total_savings += (reporting_amount * sched.discount_percent / Decimal(100)).quantize(
+                Decimal("0.01")
+            )
 
-        total_amount += inv.amount or Decimal("0")
+        total_amount += reporting_amount
         items.append(
             {
                 "id": str(inv.id),
@@ -393,6 +459,16 @@ async def payment_queue(
                 if sched and sched.discount_percent
                 else None,
                 "discount_amount": str(discount_amount) if discount_amount else None,
+                # --- Payment-blocking exceptions -------------------------
+                # `blocked` is what the UI disables the row's checkbox on;
+                # `blocked_reason` is the exception TYPE from the fixed
+                # `PAYMENT_BLOCKING_EXCEPTION_TYPES` vocabulary — a stable code
+                # the client localises, never prose and never the exception's
+                # description (which can carry vendor / bank / amount detail).
+                # Both are always present and default to not-blocked, so a
+                # client that ignores them behaves exactly as before.
+                "blocked": inv.id in blocked_types,
+                "blocked_reason": blocked_types.get(inv.id),
             }
         )
 
@@ -403,32 +479,76 @@ async def payment_queue(
         "total": len(items),
         "total_amount": str(total_amount),
         "total_savings": str(total_savings),
+        # What the two totals above are denominated in, and how many rows
+        # entered them at face value in another currency.
+        "currency": reporting_currency,
+        "unconverted_count": unconverted_count,
     }
+
+
+#: Payment statuses whose money is committed but not yet settled — what
+#: `/summary` reports as `total_pending`. `pending_compliance` belongs here:
+#: the payment is authorized and waiting on a human, so leaving it out made
+#: held money appear in NEITHER KPI (not paid, not pending) — invisible in the
+#: one place a treasurer looks for "what is still out there".
+PENDING_PAYMENT_STATUSES = ("pending", "processing", "submitted", "pending_compliance")
 
 
 @router.get("/summary")
 async def payment_summary(
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    """KPIs for the payments page summary bar. Scoped to the selected entity."""
-    paid_q = apply_entity_scope(
-        select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.status == "completed"),
-        Payment,
-        entity_id,
+    """KPIs for the payments page summary bar. Scoped to the selected entity.
+
+    **Every money total is in the org's reporting currency**, not a raw sum of
+    `Payment.amount`. `Payment.amount` is denominated in the INVOICE's currency
+    (`international_payments.prepare_international_payment` sets
+    `amount=invoice.amount` and puts the home-currency debit on
+    `source_amount`), so a book with one foreign invoice in it made these KPIs a
+    silent two-currency mixture. `currency_conversion.payment_reporting_amount_sql`
+    — the same resolver the 1099 report and the vendor risk score use — takes
+    the rate-locked `source_amount` when the payment carries a home-currency
+    leg, else `amount` when the invoice is already in that currency; a payment
+    neither rung can establish is EXCLUDED and counted on
+    `unconverted_payment_count` rather than added at face value. Nothing is
+    converted at read time (a rate fetched on a read makes a historical total
+    move under the reader — `docs/decisions.md` §18).
+    """
+    reporting_currency = resolve_reporting_currency(org.settings)
+    reported = payment_reporting_amount_sql(
+        reporting_currency=reporting_currency,
+        payment_amount=Payment.amount,
+        payment_source_amount=Payment.source_amount,
+        payment_source_currency=Payment.source_currency,
+        invoice_currency=Invoice.currency,
+    )
+    countable = reported.is_expressible
+
+    async def _money_and_excluded(status_clause) -> tuple[Decimal, int]:
+        q = apply_entity_scope(
+            select(
+                func.coalesce(func.sum(case((countable, reported.amount))), Decimal("0")),
+                func.count(case((not_(countable), Payment.id))),
+            )
+            .select_from(Payment)
+            .join(Invoice, Invoice.id == Payment.invoice_id)
+            .where(status_clause),
+            Payment,
+            entity_id,
+        )
+        total, excluded = (await db.execute(q)).one()
+        return Decimal(str(total or 0)), int(excluded or 0)
+
+    paid_amount, paid_excluded = await _money_and_excluded(Payment.status == "completed")
+    pending_amount, pending_excluded = await _money_and_excluded(
+        Payment.status.in_(PENDING_PAYMENT_STATUSES)
     )
     # Money serialises as an exact Decimal STRING, never float().
-    total_paid = str((await db.execute(paid_q)).scalar() or Decimal("0"))
-
-    pending_q = apply_entity_scope(
-        select(func.coalesce(func.sum(Payment.amount), 0)).where(
-            Payment.status.in_(["pending", "processing", "submitted"])
-        ),
-        Payment,
-        entity_id,
-    )
-    total_pending = str((await db.execute(pending_q)).scalar() or Decimal("0"))
+    total_paid = str(paid_amount)
+    total_pending = str(pending_amount)
 
     count_q = apply_entity_scope(select(func.count()).select_from(Payment), Payment, entity_id)
     payment_count = (await db.execute(count_q)).scalar() or 0
@@ -472,6 +592,129 @@ async def payment_summary(
         "payment_count": payment_count,
         "total_rebates": total_rebates,
         "queue_count": queue_count,
+        # What the money figures above are denominated in, and how many
+        # payments were left out of them because neither rung could establish
+        # a reporting-currency figure. Surfaced rather than folded in, exactly
+        # as the 1099 report surfaces `unconverted_payment_count`.
+        "currency": reporting_currency,
+        "unconverted_payment_count": paid_excluded + pending_excluded,
+    }
+
+
+class CorridorQuoteRequest(BaseModel):
+    """Which payment to price, and how to rank the routes."""
+
+    invoice_id: uuid.UUID
+    method: str | None = Field(default=None, max_length=40)
+    mode: Literal["cheapest", "fastest"] = "cheapest"
+
+
+@router.post("/corridor-quotes")
+async def compare_corridor_quotes(
+    body: CorridorQuoteRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Price one payable invoice across every processor the org has configured.
+
+    **Read-only, advisory, and it moves no money.** Nothing here books a
+    `Payment`, claims a run, or touches an invoice: it asks each configured
+    adapter's optional `quote_payment` capability what this payment would cost
+    and how fast it would settle, ranks them
+    (`services/corridor_quotes.compare_quotes`), and returns the ranking plus
+    what the winner saves against the next-best route.
+
+    Deliberately NOT an auto-router. Which bank actually moves the money is a
+    treasury decision — the rail on the `Payment` row still comes from
+    `payment_corridor.pick_corridor` and the org's configured provider, exactly
+    as before. This endpoint is what lets a human see the trade-off before
+    making that decision, and it is why the optimizer stops being a module
+    nothing reaches.
+
+    An adapter that has published no fee schedule reports `available=False`
+    (`PaymentAdapter.quote_payment` fails closed rather than fabricating a
+    free/instant quote — see its docstring), so it is listed and skipped rather
+    than winning on numbers nobody supplied. 409 when no configured provider
+    can quote this corridor at all.
+    """
+    from app.services.corridor_quotes import (
+        NoEligibleCorridorError,
+        compare_quotes,
+        savings_vs_runner_up,
+    )
+
+    invoice = (
+        await db.execute(
+            apply_entity_scope(
+                select(Invoice).where(Invoice.id == body.invoice_id), Invoice, entity_id
+            )
+        )
+    ).scalar_one_or_none()
+    if invoice is None:
+        # Same opaque 404 an out-of-scope id gets everywhere else in this file,
+        # so the response can't enumerate another entity's invoices.
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    vendor_bank: dict | None = None
+    if invoice.vendor_id:
+        vendor_bank = (
+            await db.execute(select(Vendor.bank_details).where(Vendor.id == invoice.vendor_id))
+        ).scalar_one_or_none()
+
+    payload = PaymentPayload(
+        # A quote is not an order, so this correlation id is never sent as an
+        # idempotency key to anything that moves money — the real payment mints
+        # its own when it is booked.
+        correlation_id=str(invoice.correlation_id or invoice.id),
+        invoice_id=str(invoice.id),
+        invoice_number=invoice.invoice_number or "",
+        vendor_name=invoice.vendor_name or "",
+        amount=invoice.amount or Decimal("0"),
+        currency=(invoice.currency or "USD").upper(),
+        method=(body.method or "ach").strip().lower(),
+        description=invoice.description,
+        vendor_bank=vendor_bank,
+        metadata={"organization_id": str(org.id)},
+    )
+
+    try:
+        ranking = await compare_quotes(payload, org.settings, mode=body.mode)
+    except NoEligibleCorridorError as exc:
+        # PII-free by construction: the message names the method, currency,
+        # target country and each provider's machine reason — never a bank
+        # field. See `corridor_quotes._quote_one`.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    def _quote(q) -> dict:
+        return {
+            "provider": q.provider,
+            "method": q.method,
+            "available": q.available,
+            "unavailable_reason": q.unavailable_reason,
+            # Money as an exact Decimal STRING, never float. An unavailable
+            # quote's cost is `Decimal("Infinity")` by design (so it can never
+            # win a min() comparison); that is not a figure to render, so it
+            # crosses the boundary as null.
+            "total_cost": str(q.total_cost(payload.amount)) if q.available else None,
+            "flat_fee": str(q.flat_fee),
+            "pct_fee": str(q.pct_fee),
+            "eta_business_days": q.eta_business_days,
+            "fx_rate": str(q.fx_rate) if q.fx_rate is not None else None,
+        }
+
+    return {
+        "invoice_id": str(invoice.id),
+        "mode": ranking.mode,
+        "currency": payload.currency,
+        "amount": str(payload.amount),
+        "winner": _quote(ranking.winner),
+        "runners_up": [_quote(q) for q in ranking.runners_up],
+        "savings_vs_runner_up": str(savings_vs_runner_up(ranking, payload.amount)),
+        # This endpoint is advisory only — say so in the payload, not just the
+        # docstring, so a client can't mistake it for a routing decision.
+        "advisory": True,
     }
 
 
@@ -746,7 +989,17 @@ async def void_payment(
     now = datetime.now(UTC)
     payment.status = "voided"
     payment.failure_reason = f"Voided by {user.full_name}: {body.reason}"
-    payment.completed_at = now
+    # `completed_at` is the regulated SETTLEMENT timestamp. Voiding a
+    # `completed` payment used to overwrite it with the void instant,
+    # destroying the only record of when the money actually moved — and the
+    # audit row captured `previous_status` but not the previous timestamp, so
+    # it was unrecoverable. `/retry-failed` explicitly refuses to overwrite the
+    # same two timestamps and says why. A payment that never settled
+    # (`pending` / `submitted` / `processing` / `pending_compliance`) has no
+    # settlement time to protect, so it still gets a terminal timestamp here;
+    # the void instant itself rides the audit row below on every path.
+    if payment.completed_at is None:
+        payment.completed_at = now
 
     # Reopen the invoice for re-payment if it was scheduled by this row.
     if invoice and invoice.status in (
@@ -778,11 +1031,44 @@ async def void_payment(
             "card_outcome": card_outcome,
             "amount": str(payment.amount),
             "previous_status": previous_status or "unknown",
+            # The void instant, recorded here rather than on `completed_at`
+            # (see above). This row is the append-only evidence of when the
+            # void happened; the settlement timestamp keeps saying when the
+            # money moved.
+            "voided_at": now.isoformat(),
+            "settled_at": payment.completed_at.isoformat() if payment.completed_at else None,
         },
     )
+
+    await _recompute_parent_run_status(db, payment)
+
     await db.commit()
     await db.refresh(payment)
     return PaymentResponse.from_db(payment, invoice)
+
+
+async def _recompute_parent_run_status(db: AsyncSession, payment: Payment) -> None:
+    """Re-derive the parent `PaymentRun.status` after a payment's status changed.
+
+    `_dispatch_run_payments`' final rollup is the only writer of the persisted
+    value, so every endpoint that moves a payment afterwards
+    (`/compliance/release`, `/compliance/dismiss`, `/void`) left the run
+    describing an outcome its own payments no longer supported. The reads
+    derive it anyway (`payment_runs.derive_run_status`), so this is what keeps
+    the stored column honest for anything that reads it directly — an operator
+    at `psql`, an export, a future consumer.
+
+    A standalone payment (no run) is a no-op. Never commits — the caller's
+    transaction owns that.
+    """
+    if payment.payment_run_id is None:
+        return
+    run = (
+        await db.execute(select(PaymentRun).where(PaymentRun.id == payment.payment_run_id))
+    ).scalar_one_or_none()
+    if run is None:
+        return
+    await recompute_run_status(db, run)
 
 
 async def _resolve_compliance_hold_exception(
@@ -873,7 +1159,34 @@ async def release_compliance_hold(
     # payment still `pending_compliance`, never a 500 mid-dispatch.
     adapter = _require_payment_adapter(org)
     now = datetime.now(UTC)
-    await _execute_single_payment(db, payment=payment, org=org, adapter=adapter, user=user, now=now)
+    try:
+        await _execute_single_payment(
+            db, payment=payment, org=org, adapter=adapter, user=user, now=now
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Same guard `_dispatch_run_payments` puts round this call, for the
+        # same reason: a live FX / sanctions / processor adapter can raise
+        # anything. Unguarded, the exception unwound the request — FastAPI
+        # 500ed, the session rolled back, and the payment reverted to
+        # `pending_compliance` with no `provider_payment_id` recorded even if
+        # the processor had already accepted the order (and, on the card leg,
+        # a rollback after `persist_card` discarded the `VirtualCard` row while
+        # a real spendable card existed at the provider). Recording the attempt
+        # as `failed` is what keeps that from being invisible; the reused
+        # `correlation_id` is the processor's idempotency key, not a substitute
+        # for the record.
+        #
+        # Log the exception TYPE only, never `str(exc)` / `exc_info` — an
+        # adapter can embed a partial account number, IBAN or PAN in its error
+        # string (PII/banking-data-out-of-logs invariant).
+        logger.warning(
+            "payment %s raised during compliance release; marking failed: %s",
+            payment.id,
+            exc.__class__.__name__,
+        )
+        payment.status = "failed"
+        payment.failure_reason = f"unexpected_error:{exc.__class__.__name__}"
+        payment.completed_at = now
 
     from app.services.audit_dispatch import dispatch_audit
 
@@ -902,6 +1215,8 @@ async def release_compliance_hold(
             actor_name=user.full_name,
             resolution="released",
         )
+
+    await _recompute_parent_run_status(db, payment)
 
     await db.commit()
     await db.refresh(payment)
@@ -983,6 +1298,8 @@ async def dismiss_compliance_hold(
             actor_name=user.full_name,
             resolution=f"dismissed: {body.reason}",
         )
+
+    await _recompute_parent_run_status(db, payment)
 
     await db.commit()
     await db.refresh(payment)
@@ -1167,12 +1484,17 @@ async def create_payment(
     # settlement-amount mismatch, a Positive Pay altered cheque and a BEC
     # bank-detail swap all land as `fraud_flag`; resolving or dismissing it is
     # the human sign-off.
-    if await blocked_invoice_ids(db, [invoice.id]):
+    # Same wording rule as the run builder: name the type that actually blocked
+    # this invoice, not a hardcoded list of causes that drifts the moment
+    # `PAYMENT_BLOCKING_EXCEPTION_TYPES` grows a member (it already had).
+    _blocking = await blocking_exception_types(db, [invoice.id])
+    if _blocking:
         raise HTTPException(
             status_code=409,
             detail=(
-                "Invoice has an unresolved duplicate/fraud/line-total exception and "
-                f"can't be paid until it's cleared: {invoice.invoice_number}"
+                "Invoice has an unresolved payment-blocking exception "
+                f"({_blocking[invoice.id]}) and can't be paid until it's cleared: "
+                f"{invoice.invoice_number}"
             ),
         )
 
@@ -1361,6 +1683,12 @@ async def list_payment_runs(
     items = []
     for run in runs:
         rollup = rollup_payment_statuses(per_run.get(run.id, ()))
+        # Report the status the run's own payments support, not the one the
+        # dispatcher happened to persist at the end of its last pass — nothing
+        # rewrites `PaymentRun.status` when a webhook, the reconciler or
+        # `/compliance/{release,dismiss}` moves a payment afterwards. See
+        # `payment_runs.derive_run_status`.
+        run.status = derive_run_status(run.status, rollup)
         items.append(
             PaymentRunResponse.from_db(
                 run,
@@ -1500,7 +1828,11 @@ async def get_payment_run(
 
     return {
         "id": str(run.id),
-        "status": run.status,
+        # Derived from the run's ACTIVE payments (see the list endpoint) so the
+        # status, the counts and `retryable_failures` below can't contradict
+        # each other — a run reporting `submitted` with `retryable_failures: 1`
+        # offered a retry button that `/retry-failed` then 409ed.
+        "status": derive_run_status(run.status, rollup),
         # Money serialises as an exact Decimal STRING, never float().
         "total_amount": str(run.total_amount) if run.total_amount else "0",
         "initiated_by": str(run.initiated_by) if run.initiated_by else None,
@@ -1804,6 +2136,22 @@ async def _execute_single_payment(
     # Resolve invoice + vendor for the payload
     inv_result = await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
     invoice = inv_result.scalar_one_or_none()
+
+    if invoice is None:
+        # No invoice behind this payment. Every gate below — the credit-memo
+        # re-check, the FX rate lock, and the ENTIRE sanctions/KYC compliance
+        # gate — is written `if invoice is not None`, so an invoice-less
+        # payment used to fall straight through to `adapter.create_payment`
+        # with an empty `invoice_number` and `vendor_name`: money moving to a
+        # payee nobody screened, priced at a rate nobody locked, for an amount
+        # nobody re-verified. That is the exact inverse of the two
+        # carefully-argued "no screenable vendor → hold, never pay unscreened"
+        # branches below. Fail closed instead. Refused BEFORE the adapter is
+        # called, so no order exists at the processor.
+        payment.status = "failed"
+        payment.failure_reason = "invoice_missing: cannot verify payee, amount or compliance"
+        payment.completed_at = now
+        return
 
     # What the invoice is worth NOW, immediately before the adapter call.
     # `payment.amount` was netted against applied credit memos when the row was
@@ -2713,12 +3061,33 @@ async def retry_failed_payments(
     any that is no longer `pending`.
     """
     run = await _get_scoped_run(db, run_id, entity_id, for_update=True)
-    if run.status not in RETRYABLE_RUN_STATUSES:
+    # Gate on what the run's payments actually say, not on the value the last
+    # dispatch pass persisted. Nothing rewrites `PaymentRun.status` when a
+    # webhook, the reconciler or `/compliance/{release,dismiss}` moves one of
+    # its payments afterwards — so a run that rolled up `submitted` (one
+    # payment held `pending_compliance`) and then had that payment dismissed
+    # reported a retryable failure that this endpoint refused to retry, with
+    # `/execute` and `/resume` 409ing too: a dead end, and exactly the "button
+    # that can't act" `retryable_failures` exists to prevent. The read
+    # endpoints derive the same way (`payment_runs.derive_run_status`), so the
+    # status an operator sees and the status this gates on cannot diverge.
+    effective_status = derive_run_status(
+        run.status,
+        rollup_payment_statuses(
+            p.status
+            for p in active_run_payments(
+                (await db.execute(select(Payment).where(Payment.payment_run_id == run_id)))
+                .scalars()
+                .all()
+            )
+        ),
+    )
+    if effective_status not in RETRYABLE_RUN_STATUSES:
         raise HTTPException(
             status_code=409,
             detail=(
                 "Can only retry a run that finished with failures "
-                f"({' or '.join(RETRYABLE_RUN_STATUSES)}), not '{run.status}'"
+                f"({' or '.join(RETRYABLE_RUN_STATUSES)}), not '{effective_status}'"
             ),
         )
     # Re-attempting moves money exactly like /execute — same maker-checker gate

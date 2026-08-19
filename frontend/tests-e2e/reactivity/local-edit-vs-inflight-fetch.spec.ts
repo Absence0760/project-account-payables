@@ -18,8 +18,15 @@ import { expect, test } from '../fixtures/helpers';
  * other list store and route (see `frontend/CLAUDE.md` § Sequencing list
  * fetches).
  *
- * The whole `/api/recurring` surface is mocked so the interleaving is exact
- * and the spec never depends on seeded tenant data.
+ * The second describe covers the OTHER half of the same sequencer — the plain
+ * read-vs-read ordering (`canCommit`) — on `/admin/webhooks`' delivery log,
+ * which had a status filter and no sequencer at all. The equivalent guards for
+ * the other newly-wired surfaces live beside their own areas
+ * (`credit-memos/load-sequencing`, `exceptions/load-sequencing`,
+ * `goods-receipts/load-sequencing`).
+ *
+ * Every API surface here is mocked so the interleaving is exact and the specs
+ * never depend on seeded tenant data.
  */
 
 const TEMPLATE_ID = '11111111-1111-4111-8111-111111111111';
@@ -148,5 +155,85 @@ test.describe('a local row edit survives a list fetch that was already in flight
 		await expect(
 			row.getByRole('button', { name: 'Resume template SEQ Guard Template' })
 		).toBeVisible();
+	});
+});
+
+function delivery(id: string, eventId: string, status: string) {
+	return {
+		id,
+		subscription_id: '22222222-2222-4222-8222-222222222222',
+		event_id: eventId,
+		event_type: 'invoice.approved',
+		status,
+		attempt_count: 1,
+		response_code: status === 'delivered' ? 200 : 500,
+		next_attempt_at: null,
+		last_attempt_at: '2026-01-01T00:00:00Z',
+		created_at: '2026-01-01T00:00:00Z'
+	};
+}
+
+test.describe('a stale list response cannot land after a newer one', () => {
+	test('/admin/webhooks: a held delivery filter cannot repaint the table under a newer chip', async ({
+		page
+	}) => {
+		await page.route('**/api/webhooks', async (route) => {
+			if (route.request().method() !== 'GET') {
+				await route.fallback();
+				return;
+			}
+			await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+		});
+
+		let releaseFailed: () => void = () => {};
+		const failedGate = new Promise<void>((resolve) => (releaseFailed = resolve));
+
+		// Registered after the subscriptions route so it is matched first for its
+		// own URL.
+		await page.route('**/api/webhooks/deliveries*', async (route) => {
+			const status = new URL(route.request().url()).searchParams.get('status');
+			if (status === 'failed') {
+				// The earlier request: held until the newer one has landed.
+				await failedGate;
+				await route.fulfill({
+					status: 200,
+					contentType: 'application/json',
+					body: JSON.stringify([delivery('d-1', 'evt-STALE-failed', 'failed')])
+				});
+				return;
+			}
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify(
+					status === 'dead' ? [delivery('d-2', 'evt-LIVE-dead', 'dead')] : []
+				)
+			});
+		});
+
+		await page.goto('/admin/webhooks');
+
+		// Failed (slow, held) then Dead (fast) — the second chip's answer is the
+		// one on screen.
+		await page.getByRole('button', { name: 'Failed', exact: true }).click();
+		await page.getByRole('button', { name: 'Dead', exact: true }).click();
+		await expect(page.getByText('evt-LIVE-dead')).toBeVisible();
+
+		// Release the stale response and wait for the page to actually receive it —
+		// a real signal, not a sleep.
+		const staleResponse = page.waitForResponse(
+			(r) =>
+				new URL(r.url()).pathname === '/api/webhooks/deliveries' &&
+				new URL(r.url()).searchParams.get('status') === 'failed'
+		);
+		releaseFailed();
+		await staleResponse;
+		// One animation frame past the response guarantees the fetch continuation
+		// (and any state write it would have made) has run.
+		await page.evaluate(() => new Promise<void>((r) => requestAnimationFrame(() => r())));
+
+		// The Failed rows must not appear under the Dead chip.
+		await expect(page.getByText('evt-STALE-failed')).toHaveCount(0);
+		await expect(page.getByText('evt-LIVE-dead')).toBeVisible();
 	});
 });

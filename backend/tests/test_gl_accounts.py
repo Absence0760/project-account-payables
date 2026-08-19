@@ -296,3 +296,55 @@ async def test_tenant_isolation_create_does_not_cross(realdb):
     async with realdb.client(key="b", role="ap_manager") as c:
         resp = await c.get("/api/gl-accounts")
     assert resp.json() == []
+
+
+# ---------------------------------------------------------------------------
+# audit trail (project invariant #3)
+# ---------------------------------------------------------------------------
+
+
+async def _gl_audits(realdb, key="a"):
+    from app.models.workflow import AuditLog
+
+    mk = realdb.sessionmaker(key)
+    async with mk() as s:
+        return (
+            (
+                await s.execute(
+                    select(AuditLog)
+                    .where(AuditLog.entity_type == "gl_account")
+                    .order_by(AuditLog.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+async def test_create_gl_account_writes_an_audit_row(realdb):
+    """A GL account is what invoice lines are coded to — adding one is a
+    chart-of-accounts change and belongs on the append-only trail."""
+    async with realdb.client(key="a", role="ap_manager") as c:
+        created = await c.post("/api/gl-accounts", json={"code": "4100", "name": "Consulting"})
+    assert created.status_code == 201
+
+    rows = await _gl_audits(realdb)
+    assert [r.action for r in rows] == ["gl_account.created"]
+    assert rows[0].details["code"] == "4100"
+    assert rows[0].details["name"] == "Consulting"
+    assert rows[0].actor_id is not None
+
+
+async def test_sync_erp_writes_one_summary_audit_row(realdb, _restore_settings):
+    """One summary row per sync, not one per account — the trail records that
+    a bulk chart change happened, who ran it and how much it moved."""
+    await _restore_settings("a", {"erp": {"type": "mock", "integration_method": "direct"}})
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post("/api/gl-accounts/sync-erp")
+    assert resp.status_code == 200
+
+    rows = await _gl_audits(realdb)
+    assert [r.action for r in rows] == ["gl_account.synced_from_erp"]
+    assert rows[0].details["adapter"] == "mock"
+    assert rows[0].details["created"] == resp.json()["created"]

@@ -79,10 +79,21 @@ async def _payment_count(mk) -> int:
         return (await s.execute(select(func.count(Payment.id)))).scalar_one()
 
 
-@pytest.mark.parametrize("exc_type", ["line_total_mismatch", "duplicate", "fraud_flag"])
+@pytest.mark.parametrize(
+    "exc_type",
+    # Every member of PAYMENT_BLOCKING_EXCEPTION_TYPES, `payment_reconciliation`
+    # included: it was added to the tuple without being added here, so the
+    # newest blocking type was the one member nothing proved actually blocks.
+    ["line_total_mismatch", "duplicate", "fraud_flag", "payment_reconciliation"],
+)
 async def test_unresolved_blocking_exception_refuses_the_run(realdb, exc_type):
     """An approved invoice carrying an unresolved financial-integrity exception
-    cannot enter a payment run — 409, and no run or payment row is created."""
+    cannot enter a payment run — 409, and no run or payment row is created.
+
+    The refusal must also name the type that ACTUALLY blocked it. The message
+    used to recite a fixed "duplicate/fraud/line-total" list, so a
+    `payment_reconciliation` hold was refused with three causes it doesn't
+    carry — sending the operator to clear an exception that isn't there."""
     info = realdb.info("a")
     mk = realdb.sessionmaker("a")
     inv_id = await _seed_approved_invoice(mk, info.org_id, number=f"PRB-{exc_type}-1")
@@ -96,7 +107,10 @@ async def test_unresolved_blocking_exception_refuses_the_run(realdb, exc_type):
             json={"items": [{"invoice_id": str(inv_id), "method": "ach"}]},
         )
     assert resp.status_code == 409, resp.text
-    assert f"PRB-{exc_type}-1" in resp.json()["detail"]
+    detail = resp.json()["detail"]
+    assert f"PRB-{exc_type}-1" in detail
+    # The real reason, not a hardcoded list of causes.
+    assert exc_type in detail, detail
     # Nothing was booked.
     assert await _run_count(mk) == runs_before
     assert await _payment_count(mk) == payments_before

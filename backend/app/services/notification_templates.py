@@ -129,6 +129,7 @@ def render_cash_shortfall(
     shortfall: Decimal,
     currency: str,
     breach_count: int,
+    unconverted_count: int = 0,
 ) -> RenderedNotification:
     """Render the projected-cash-shortfall notification (PII-free).
 
@@ -146,10 +147,23 @@ def render_cash_shortfall(
         if breach_count <= 1
         else f" {breach_count} periods in the forecast close below the minimum."
     )
+    # A projected shortfall built partly on figures we could not convert into
+    # the reporting currency is not a number to act on without knowing that.
+    # One unconverted ¥10,000,000 invoice on a USD curve manufactures a
+    # shortfall outright, and this email is what sends finance leaders after
+    # it. Count only — PII-free, like every other figure here.
+    caveat = (
+        ""
+        if unconverted_count <= 0
+        else (
+            f" Note: {unconverted_count} commitment(s) could not be converted to "
+            f"{currency} and were included at face value — confirm before acting."
+        )
+    )
     title = f"Projected cash shortfall in {period}"
     body = (
         f"Your projected cash balance closes at {currency} {closing:,.2f} in {period} — "
         f"{currency} {shortfall:,.2f} below your {currency} {threshold:,.2f} minimum."
-        f"{more} Review the cash-flow forecast before scheduling more payments."
+        f"{more}{caveat} Review the cash-flow forecast before scheduling more payments."
     )
     return RenderedNotification(title=title, body_text=body, body_html=f"<p>{body}</p>")

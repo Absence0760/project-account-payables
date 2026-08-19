@@ -594,8 +594,14 @@ async def run_extraction(
         )
         from app.services.exception_service import create_exception
 
+        # `entity_id` does NOT filter the search — a group double-bill across two
+        # subsidiaries is a real duplicate and the control exists to catch it. It
+        # classifies each match, so a hit under another entity is reported
+        # without its `invoice_number` / `vendor_name` / `amount` (which the
+        # detail modal would otherwise render to a viewer scoped away from that
+        # entity). See services/duplicate_detection.py's module docstring.
         duplicate_matches = await find_semantic_duplicates(
-            db, invoice_text, exclude_invoice_id=invoice_id
+            db, invoice_text, exclude_invoice_id=invoice_id, entity_id=invoice_entity_id
         )
         duplicate_warning = matches_to_warning(duplicate_matches)
         if duplicate_warning:

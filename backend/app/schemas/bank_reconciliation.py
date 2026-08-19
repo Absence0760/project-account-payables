@@ -8,6 +8,8 @@ IDs are strings on the wire, parsed to UUID in the router. See
 
 from __future__ import annotations
 
+import uuid
+
 from pydantic import BaseModel, Field
 
 from app.schemas.money import MoneyAmount, OptionalMoneyAmount
@@ -89,9 +91,14 @@ class BankStatementListResponse(BaseModel):
 
 class TransactionResolveRequest(BaseModel):
     """Manually set or clear a transaction's matched payment. ``None`` clears
-    an existing (correct or incorrect) match back to unmatched."""
+    an existing (correct or incorrect) match back to unmatched.
 
-    matched_payment_id: str | None = Field(default=None)
+    Typed ``uuid.UUID``, not ``str``: the router used to call ``uuid.UUID(...)``
+    on the raw value with no handler, so a malformed id was a 500 rather than
+    the 422 a validation failure owes the caller.
+    """
+
+    matched_payment_id: uuid.UUID | None = Field(default=None)
 
 
 # --------------------------------------------------------------------------- #

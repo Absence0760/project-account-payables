@@ -422,14 +422,32 @@ async def list_expenses(
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK, ROLE_CFO)),
     status_filter: str | None = Query(None, alias="status"),
     report_id: uuid.UUID | None = Query(None),
+    search: str | None = Query(None),
     pagination: PaginationParams = Depends(pagination_params),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
+    """Paginated, entity-scoped expense list.
+
+    `search` matches the three free-text columns the row actually shows —
+    merchant, description, category. It composes with `status` / `report_id`
+    and with the entity scope: without it the page could only filter the rows
+    it had already loaded, so a term matching an expense past the first page
+    read as "nothing matched".
+    """
     base = apply_entity_scope(select(Expense), Expense, entity_id)
     if status_filter:
         base = base.where(Expense.status == status_filter)
     if report_id:
         base = base.where(Expense.report_id == report_id)
+    if search and search.strip():
+        pattern = f"%{search.strip()}%"
+        base = base.where(
+            or_(
+                Expense.merchant.ilike(pattern),
+                Expense.description.ilike(pattern),
+                Expense.category.ilike(pattern),
+            )
+        )
 
     total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0)
     paged = (

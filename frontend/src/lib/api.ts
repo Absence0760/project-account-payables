@@ -94,25 +94,56 @@ async function fetchBlob(path: string): Promise<string> {
 	return URL.createObjectURL(blob);
 }
 
-async function downloadBlob(path: string): Promise<Blob> {
-	const token = getToken();
-	const headers: Record<string, string> = {};
-	if (token) headers['Authorization'] = `Bearer ${token}`;
-	const tenant = getTenantSlug();
-	if (tenant) headers['X-Tenant-Slug'] = tenant;
-	const entity = getSelectedEntityId();
-	if (entity) headers['X-Entity-ID'] = entity;
-
-	const res = await fetch(`${BASE}${path}`, { headers });
+/** Shared tail of every blob download: the 401 clear-and-bounce `request()`
+ *  performs, the backend's own `detail` when it sent one, then the body as a
+ *  Blob. One owner so the GET and POST helpers can't drift on either. */
+async function blobFromResponse(res: Response): Promise<Blob> {
 	if (res.status === 401) {
 		clearToken();
 		window.location.href = '/login';
-		throw new Error('Unauthorized');
+		throw new ApiError('Unauthorized', 401);
 	}
 	if (!res.ok) {
-		throw new Error(`Failed to load file: ${res.status}`);
+		const body = await res.json().catch(() => ({}));
+		throw new ApiError(
+			formatApiDetail(body.detail, `Failed to load file: ${res.status}`),
+			res.status
+		);
 	}
 	return res.blob();
+}
+
+async function downloadBlob(path: string): Promise<Blob> {
+	return blobFromResponse(await fetch(`${BASE}${path}`, { headers: authHeaders() }));
+}
+
+/**
+ * POST a JSON body and read the response back as a `Blob` — the file-returning
+ * counterpart of `api.post`, for endpoints that take a selection in the body
+ * and answer with a document (`POST /api/invoices/bulk/export`).
+ *
+ * Exists because `downloadBlob` is GET-only, which pushed such callers into
+ * hand-rolling `fetch` — and a hand-rolled request silently loses whatever the
+ * shared client does for everyone else. `/invoices`' bulk export lost two
+ * things that way: `X-Entity-ID` (so the export wasn't scoped to the
+ * subsidiary the selection was made under) and the 401 clear-and-bounce (an
+ * expired session produced a cryptic failure toast instead of a re-login).
+ * Composed from the same `authHeaders()` as `request` / `downloadBlob` / the
+ * SSE stream helper, so it cannot drift from them again.
+ *
+ * Always resolves a `Blob` — a JSON-returning export is a `Blob` of JSON.
+ * Callers that want the parsed value (e.g. to re-serialize it pretty-printed
+ * for the downloaded file) read `await blob.text()`; formatting a download is a
+ * presentation decision and stays with the caller, not in the transport layer.
+ */
+async function downloadBlobPost(path: string, body: unknown): Promise<Blob> {
+	return blobFromResponse(
+		await fetch(`${BASE}${path}`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', ...authHeaders() },
+			body: JSON.stringify(body)
+		})
+	);
 }
 
 /** Compose the auth + tenant + entity headers shared by `request`, the blob
@@ -321,4 +352,5 @@ export const api = {
 	},
 	fetchBlob,
 	downloadBlob,
+	downloadBlobPost,
 };

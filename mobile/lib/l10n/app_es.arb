@@ -208,6 +208,8 @@
   "invoiceEditNotSet": "Sin definir",
   "invoiceEditInvalidAmount": "Introduce un importe válido (p. ej. 1234,56)",
   "invoiceEditClearDueDate": "Borrar fecha de vencimiento",
+  "invoiceEditLockedNotice": "Aprobada: el beneficiario y el importe están bloqueados. Para cambiarlos, rechace la factura, corríjala y apruébela de nuevo.",
+  "invoiceEditLockedHelper": "Bloqueado tras la aprobación",
   "invoiceEditDueDateHint": "Fecha de vencimiento, actualmente {value}. Toca dos veces para cambiar.",
 
   "warningsSectionTitle": "Avisos y alertas de fraude",

@@ -53,7 +53,36 @@ _DEFAULT_CLAVE_PROD_SERV = "01010101"  # "No existe en el catálogo" placeholder
 _DEFAULT_CLAVE_UNIDAD = "H87"  # Pieza
 _TIPO_COMPROBANTE_INGRESO = "I"  # Ingreso (revenue invoice)
 _EXPORTACION_NO = "01"  # No aplica
-_OBJETO_IMP_SI = "02"  # Sí objeto de impuesto
+
+# SAT catalog `c_ObjetoImp` (CFDI 4.0, Anexo 20). Which value a Concepto carries
+# is a CLAIM about that line, and the schema's validation rules key off it:
+#   "01" - no objeto de impuesto: the Concepto must NOT carry a `cfdi:Impuestos`
+#          node. Saying this about a taxed line is a false claim.
+#   "02" - si objeto de impuesto: the Concepto MUST carry
+#          `cfdi:Impuestos/cfdi:Traslados/cfdi:Traslado`. Claiming "02" without
+#          it is exactly the document a PAC refuses to stamp.
+#   "03" - si objeto del impuesto y no obligado al desglose: subject to tax, and
+#          the Concepto must NOT carry the breakdown. This is the honest answer
+#          when the line is taxed but the normalized model cannot establish the
+#          rate the breakdown needs.
+_OBJETO_IMP_SI = "02"
+_OBJETO_IMP_NO = "01"
+_OBJETO_IMP_SI_SIN_DESGLOSE = "03"
+
+# `c_Impuesto` 002 = IVA. The normalized model carries UNCL5305 categories
+# ("S"/"Z"/"E"), not SAT tax codes, and IVA is the transferred tax on a Mexican
+# commercial invoice - a documented default in the same spirit as
+# `_DEFAULT_REGIMEN_FISCAL` / `_DEFAULT_USO_CFDI` above.
+_IMPUESTO_IVA = "002"
+# `c_TipoFactor` "Tasa" (a percentage rate) - never "Exento". A zero rate in the
+# model means "taxed at 0%" (tasa cero), for which SAT requires
+# TasaOCuota="0.000000" + Importe="0.00"; "Exento" is a DIFFERENT claim (exempt,
+# with both attributes absent) and nothing in the normalized model distinguishes
+# the two, so we never assert it.
+_TIPO_FACTOR_TASA = "Tasa"
+
+_RATE_QUANT = Decimal("0.000001")  # TasaOCuota is a 6-dp FRACTION, not a percent
+_HUNDRED = Decimal("100")
 
 
 def _cfdi(parent: etree._Element, name: str) -> etree._Element:
@@ -61,8 +90,52 @@ def _cfdi(parent: etree._Element, name: str) -> etree._Element:
 
 
 def _amount_text(d: Decimal) -> str:
-    """Quantize a monetary amount to 2dp and stringify — never float."""
+    """Quantize a monetary amount to 2dp and stringify - never float."""
     return str(d.quantize(Decimal("0.01")))
+
+
+def _rate_fraction_text(rate_percent: Decimal) -> str:
+    """Render a percent rate as CFDI's `TasaOCuota` - a 6-dp FRACTION.
+
+    The normalized model stores a percentage (`Decimal("16.00")`); SAT wants
+    `0.160000`. Exact Decimal arithmetic throughout - never float.
+    """
+    return str((rate_percent / _HUNDRED).quantize(_RATE_QUANT))
+
+
+def _document_tax_rate(doc: EInvoiceDocument) -> Decimal | None:
+    """The document's single distinct tax rate, or None.
+
+    Used as the per-line fallback: `mapper.invoice_to_e_invoice` fills
+    `EInvoiceLine.tax_amount` but NOT `tax_rate`, so without this fallback the
+    common single-rate invoice could never state a line's `TasaOCuota`. With
+    more than one distinct rate on the document no line can borrow one - that
+    would be a guess.
+    """
+    rates = {t.rate for t in doc.taxes if t.rate is not None}
+    return rates.pop() if len(rates) == 1 else None
+
+
+def _traslado_attrs(
+    *, base: Decimal | None, rate_percent: Decimal | None, importe: Decimal | None
+) -> dict[str, str] | None:
+    """Build one `cfdi:Traslado`'s attributes, or None when not establishable.
+
+    SAT requires a positive `Base` and, for `TipoFactor="Tasa"`, both
+    `TasaOCuota` and `Importe`. `Importe` is *defined* as Base x TasaOCuota, so
+    deriving it when the model carries no explicit figure is arithmetic, not a
+    guess; a figure the model DOES carry always wins.
+    """
+    if base is None or rate_percent is None or base <= 0:
+        return None
+    amount = importe if importe is not None else base * rate_percent / _HUNDRED
+    return {
+        "Base": _amount_text(base),
+        "Impuesto": _IMPUESTO_IVA,
+        "TipoFactor": _TIPO_FACTOR_TASA,
+        "TasaOCuota": _rate_fraction_text(rate_percent),
+        "Importe": _amount_text(amount),
+    }
 
 
 @register_country_format("cfdi")
@@ -108,6 +181,7 @@ class CFDIFormat(CountryEInvoiceFormat):
         receptor.set("UsoCFDI", _DEFAULT_USO_CFDI)
 
         # --- Conceptos (line items) ---
+        doc_rate = _document_tax_rate(doc)
         conceptos = _cfdi(root, "Conceptos")
         for line in doc.lines:
             concepto = _cfdi(conceptos, "Concepto")
@@ -132,12 +206,47 @@ class CFDIFormat(CountryEInvoiceFormat):
                 concepto.set("ValorUnitario", _amount_text(line.unit_price))
             if line.line_total is not None:
                 concepto.set("Importe", _amount_text(line.line_total))
-            concepto.set("ObjetoImp", _OBJETO_IMP_SI)
+
+            # `ObjetoImp` and the line's own tax breakdown are one decision, not
+            # two. Every Concepto used to be stamped "02" (subject to tax) while
+            # the `cfdi:Impuestos/cfdi:Traslados/cfdi:Traslado` that "02"
+            # REQUIRES was never emitted - a document a PAC refuses to stamp,
+            # and a claim the file itself contradicts.
+            traslado = _traslado_attrs(
+                base=line.line_total,
+                rate_percent=line.tax_rate if line.tax_rate is not None else doc_rate,
+                importe=line.tax_amount,
+            )
+            if traslado is not None:
+                concepto.set("ObjetoImp", _OBJETO_IMP_SI)
+                line_impuestos = _cfdi(concepto, "Impuestos")
+                traslados = _cfdi(line_impuestos, "Traslados")
+                _cfdi(traslados, "Traslado").attrib.update(traslado)
+            elif line.tax_amount:
+                # Taxed, but the rate the breakdown needs is not establishable
+                # (multi-rate document, or a tax amount with no rate anywhere).
+                # "03" says exactly that; "01" would claim the line is not
+                # subject to tax at all, which is false.
+                concepto.set("ObjetoImp", _OBJETO_IMP_SI_SIN_DESGLOSE)
+            else:
+                concepto.set("ObjetoImp", _OBJETO_IMP_NO)
 
         # --- Impuestos (document-level tax summary) ---
-        impuestos = _cfdi(root, "Impuestos")
-        if doc.tax_total is not None:
-            impuestos.set("TotalImpuestosTrasladados", _amount_text(doc.tax_total))
+        # Emitted only when there is something to report. `TotalImpuestosTrasladados`
+        # carries the total; SAT wants the `cfdi:Traslados` breakdown beside it,
+        # built from the same establishable inputs as the line-level one.
+        doc_traslado = _traslado_attrs(
+            base=doc.tax_exclusive_amount,
+            rate_percent=doc_rate,
+            importe=doc.tax_total,
+        )
+        if doc.tax_total is not None or doc_traslado is not None:
+            impuestos = _cfdi(root, "Impuestos")
+            if doc.tax_total is not None:
+                impuestos.set("TotalImpuestosTrasladados", _amount_text(doc.tax_total))
+            if doc_traslado is not None:
+                doc_traslados = _cfdi(impuestos, "Traslados")
+                _cfdi(doc_traslados, "Traslado").attrib.update(doc_traslado)
 
         return etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
 

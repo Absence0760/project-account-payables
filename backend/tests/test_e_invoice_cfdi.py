@@ -212,3 +212,129 @@ def test_validate_missing_subtotal():
     errors = _fmt().validate(doc)
     fields = {e.field for e in errors}
     assert "tax_exclusive_amount" in fields
+
+
+# ---------------------------------------------------------------------------
+# ObjetoImp and the per-line tax breakdown are ONE decision
+# ---------------------------------------------------------------------------
+
+
+def _conceptos(doc) -> list:
+    root = etree.fromstring(_fmt().generate(doc))
+    return root.findall(f"{{{_NS_CFDI}}}Conceptos/{{{_NS_CFDI}}}Concepto")
+
+
+def _traslados(concepto) -> list:
+    return concepto.findall(
+        f"{{{_NS_CFDI}}}Impuestos/{{{_NS_CFDI}}}Traslados/{{{_NS_CFDI}}}Traslado"
+    )
+
+
+def test_objeto_imp_02_line_carries_its_traslado():
+    """SAT requires the per-line `cfdi:Traslado` whenever a Concepto declares
+    `ObjetoImp="02"` (subject to tax). The generator used to stamp "02" on every
+    line and emit only the document-level total, so the file contradicted its
+    own claim and a PAC would refuse to stamp it.
+
+    `TasaOCuota` is a 6-dp FRACTION, not the model's percentage.
+    """
+    concepto = _conceptos(_full_doc())[0]
+    assert concepto.get("ObjetoImp") == "02"
+
+    traslados = _traslados(concepto)
+    assert len(traslados) == 1
+    t = traslados[0]
+    assert t.get("Base") == "1000.00"
+    assert t.get("Impuesto") == "002"  # IVA
+    assert t.get("TipoFactor") == "Tasa"
+    assert t.get("TasaOCuota") == "0.160000"  # 16.00% as a 6-dp fraction
+    # Importe is defined as Base x TasaOCuota; the line carries no explicit
+    # tax_amount here, so it is derived exactly.
+    assert t.get("Importe") == "160.00"
+
+
+def test_line_tax_amount_wins_over_the_derived_importe():
+    doc = _full_doc()
+    doc.lines[0].tax_amount = Decimal("159.99")
+    t = _traslados(_conceptos(doc)[0])[0]
+    assert t.get("Importe") == "159.99"
+
+
+def test_line_without_its_own_rate_borrows_the_documents_single_rate():
+    """`mapper.invoice_to_e_invoice` fills `EInvoiceLine.tax_amount` but never
+    `tax_rate`, so without this fallback the ordinary single-rate invoice could
+    never state a `TasaOCuota` and every line would drop to "03"."""
+    doc = _full_doc()
+    doc.lines[0].tax_rate = None
+    doc.lines[0].tax_amount = Decimal("160.00")
+    concepto = _conceptos(doc)[0]
+    assert concepto.get("ObjetoImp") == "02"
+    t = _traslados(concepto)[0]
+    assert t.get("TasaOCuota") == "0.160000"
+    assert t.get("Importe") == "160.00"
+
+
+def test_taxed_line_with_no_establishable_rate_declares_03_and_no_breakdown():
+    """Subject to tax, but the rate the breakdown needs cannot be established
+    (two distinct document rates, so no line may borrow one).
+
+    "03" says "subject to tax, not obliged to break it down" - exactly the
+    situation. "01" would claim the line is not subject to tax at all, which is
+    false, and "02" would require the breakdown we cannot build.
+    """
+    doc = _full_doc()
+    doc.lines[0].tax_rate = None
+    doc.lines[0].tax_amount = Decimal("160.00")
+    doc.taxes = [
+        EInvoiceTax(category="S", rate=Decimal("16.00"), tax_amount=Decimal("100.00")),
+        EInvoiceTax(category="S", rate=Decimal("8.00"), tax_amount=Decimal("60.00")),
+    ]
+    concepto = _conceptos(doc)[0]
+    assert concepto.get("ObjetoImp") == "03"
+    assert concepto.find(f"{{{_NS_CFDI}}}Impuestos") is None
+
+
+def test_untaxed_line_declares_01_and_no_breakdown():
+    doc = _full_doc()
+    doc.lines[0].tax_rate = None
+    doc.lines[0].tax_amount = None
+    doc.taxes = []
+    doc.tax_total = None
+    concepto = _conceptos(doc)[0]
+    assert concepto.get("ObjetoImp") == "01"
+    assert concepto.find(f"{{{_NS_CFDI}}}Impuestos") is None
+
+
+def test_zero_rate_is_tasa_cero_not_exento():
+    """A 0 rate in the normalized model means "taxed at 0%" (tasa cero), which
+    SAT expresses as TipoFactor="Tasa" with TasaOCuota="0.000000" and
+    Importe="0.00". "Exento" is a DIFFERENT claim (both attributes absent) and
+    nothing in the model distinguishes the two, so it is never asserted."""
+    doc = _full_doc()
+    doc.lines[0].tax_rate = Decimal("0.00")
+    doc.lines[0].tax_amount = Decimal("0.00")
+    t = _traslados(_conceptos(doc)[0])[0]
+    assert t.get("TipoFactor") == "Tasa"
+    assert t.get("TasaOCuota") == "0.000000"
+    assert t.get("Importe") == "0.00"
+
+
+def test_document_impuestos_carries_the_traslados_breakdown():
+    root = etree.fromstring(_fmt().generate(_full_doc()))
+    impuestos = root.find(f"{{{_NS_CFDI}}}Impuestos")
+    assert impuestos.get("TotalImpuestosTrasladados") == "160.00"
+    doc_traslados = impuestos.findall(f"{{{_NS_CFDI}}}Traslados/{{{_NS_CFDI}}}Traslado")
+    assert len(doc_traslados) == 1
+    assert doc_traslados[0].get("Base") == "1000.00"
+    assert doc_traslados[0].get("TasaOCuota") == "0.160000"
+    assert doc_traslados[0].get("Importe") == "160.00"
+
+
+def test_document_impuestos_omitted_entirely_when_there_is_no_tax():
+    doc = _full_doc()
+    doc.taxes = []
+    doc.tax_total = None
+    doc.lines[0].tax_rate = None
+    doc.lines[0].tax_amount = None
+    root = etree.fromstring(_fmt().generate(doc))
+    assert root.find(f"{{{_NS_CFDI}}}Impuestos") is None

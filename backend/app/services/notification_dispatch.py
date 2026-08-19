@@ -5,7 +5,22 @@ Two effects per recipient, each gated by that recipient's per-user preference:
 1. **in-app** — insert a `Notification` row into the *tenant* DB (the same
    session that owns the status transition, so it commits atomically with it).
 2. **email** — build an `EmailMessage` and hand it to the configured email
-   adapter (`console` by default — safe, no network, no secrets).
+   adapter (`console` by default — safe, no network, no secrets). This leg, and
+   the chat post below it, run **after the caller commits** (see below).
+
+**The outbound legs run POST-COMMIT.** Everything that talks to a third party —
+every email, and the single Slack/Teams post — is queued onto the caller's
+session via `services/post_commit.enqueue_post_commit` and fired from
+SQLAlchemy's `after_commit`. Before this, `transition_invoice` awaited the whole
+fan-out *inside* the caller's still-open transaction: `payment_erp_sync` holds
+`SELECT … FOR UPDATE` on the invoice and `review.approve_invoice` on the
+`WorkflowInstance` until after the transition returns, so a hung chat webhook
+held a row lock on a live invoice for its full 10-second timeout and N
+recipients multiplied the email leg linearly. Nothing else about the contract
+moved: the in-app `Notification` rows are still added to the caller's session
+and still ride its commit, because those are DB writes and *should*. A
+transaction that rolls back sends nothing, which is the correct semantics — we
+no longer email people about a status change that never happened.
 
 Both are **best-effort**. A failure here must never roll back or abort the
 caller's status transition / audit write, so the whole dispatch is wrapped in a
@@ -35,6 +50,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models.notification import NOTIFICATION_EVENT_TYPES, Notification
 from app.services.notification_templates import InvoiceContext, RenderedNotification, render
+from app.services.post_commit import enqueue_post_commit
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +200,10 @@ async def notify_event(
     Never raises — all failures are swallowed and logged (without PII) so the
     caller's transaction is unaffected. The in-app rows are *added* to `db`
     (the caller's tenant session) but not committed here; the caller's existing
-    commit flushes them alongside the status change + audit row.
+    commit flushes them alongside the status change + audit row. The email and
+    chat legs are queued to run AFTER that commit (see the module docstring), so
+    no third party's latency is charged to an open transaction holding row
+    locks.
     """
     if not settings.notifications_enabled:
         return
@@ -209,30 +228,13 @@ async def notify_event(
         logger.exception("notify_event: failed loading recipients for event_type=%s", event_type)
         return
 
-    # Resolve the tenant brand once for every email this dispatch sends (the
-    # From display name + HTML header + support footer). Best-effort — falls back
-    # to the platform brand on any miss.
-    brand = await _resolve_org_brand(organization_id)
-
-    # Email approval: when an invoice is assigned for review and the feature is
-    # configured, the reviewer's email gets per-recipient Approve/Reject links
-    # (the token binds to *that* reviewer). Resolve the tenant slug once here;
-    # the per-recipient token is built inside the loop. Best-effort — any miss
-    # just omits the links.
     from app.models.notification import EVENT_INVOICE_ASSIGNED
 
-    tenant_slug: str | None = None
-    if (
-        event_type == EVENT_INVOICE_ASSIGNED
-        and entity_type == "invoice"
-        and settings.email_action_signing_key
-        and entity_id is not None
-    ):
-        try:
-            tenant_slug = await _resolve_org_slug(organization_id)
-        except Exception:  # noqa: BLE001
-            logger.exception("notify_event: failed resolving tenant slug for action links")
-            tenant_slug = None
+    # Split point. Everything from here to the end of the recipient loop is
+    # IN-TRANSACTION work (the in-app `Notification` rows, which must ride the
+    # caller's commit); the outbound sends are collected and handed to
+    # `post_commit` instead of awaited here.
+    email_targets: list[tuple[uuid.UUID, str, str | None]] = []
 
     # De-dup recipients so a user who is both uploader and AP-manager gets one.
     for recipient_id in {uid for uid in recipient_user_ids if uid is not None}:
@@ -260,6 +262,40 @@ async def notify_event(
             )
 
         if channels["email"] and getattr(user, "email", None):
+            email_targets.append((recipient_id, user.email, getattr(user, "locale", None)))
+
+    wants_chat = entity_type == "invoice" and invoice_ctx is not None
+    if not email_targets and not wants_chat:
+        return
+
+    final_rendered = rendered
+
+    async def _outbound() -> None:
+        """The third-party legs — run after the caller's transaction commits."""
+        # Resolve the tenant brand once for every email this dispatch sends (the
+        # From display name + HTML header + support footer). Best-effort — falls
+        # back to the platform brand on any miss.
+        brand = await _resolve_org_brand(organization_id)
+
+        # Email approval: when an invoice is assigned for review and the feature
+        # is configured, the reviewer's email gets per-recipient Approve/Reject
+        # links (the token binds to *that* reviewer). Resolve the tenant slug
+        # once here; the per-recipient token is built inside the loop.
+        # Best-effort — any miss just omits the links.
+        tenant_slug: str | None = None
+        if (
+            event_type == EVENT_INVOICE_ASSIGNED
+            and entity_type == "invoice"
+            and settings.email_action_signing_key
+            and entity_id is not None
+        ):
+            try:
+                tenant_slug = await _resolve_org_slug(organization_id)
+            except Exception:  # noqa: BLE001
+                logger.exception("notify_event: failed resolving tenant slug for action links")
+                tenant_slug = None
+
+        for recipient_id, recipient_email, recipient_locale in email_targets:
             # Localize the email copy to the recipient's account-level locale
             # preference (DB `User.locale`). The in-app row above stays in the
             # default (English) `rendered` — the locale pref drives EMAIL only,
@@ -267,13 +303,12 @@ async def notify_event(
             # PII-free invoice context; a pre-`rendered` event (e.g. contract
             # renewal) keeps its English copy. Deep links / money / numbers are
             # placeholder-interpolated, so they're identical across locales.
-            recipient_locale = getattr(user, "locale", None)
-            email_rendered = rendered
+            email_rendered = final_rendered
             if invoice_ctx is not None and recipient_locale:
                 try:
                     email_rendered = render(event_type, invoice_ctx, locale=recipient_locale)
                 except Exception:  # noqa: BLE001 — never let a locale render break the send
-                    email_rendered = rendered
+                    email_rendered = final_rendered
             email_subject = email_rendered.title
             email_text = email_rendered.body_text
             email_html = email_rendered.body_html
@@ -293,7 +328,7 @@ async def notify_event(
                     email_text = f"{email_text}\n\n{text_block}"
                     email_html = f"{email_html or ''}{html_block}"
             await _send_email_best_effort(
-                user.email,
+                recipient_email,
                 email_subject,
                 email_text,
                 email_html,
@@ -301,20 +336,22 @@ async def notify_event(
                 brand=brand,
             )
 
-    # Chat fan-out (Slack / Teams) — a single channel post per event, not
-    # per-recipient. Approval-lifecycle events only; entirely best-effort and
-    # self-guarded so a chat-send failure never breaks the caller's transition.
-    if entity_type == "invoice" and invoice_ctx is not None:
-        # `entity_id` is generic on `notify_event` (it keys whatever
-        # `entity_type` names); inside this branch it is provably the invoice
-        # PK, so it crosses the boundary under that name.
-        await _send_chat_best_effort(
-            organization_id=organization_id,
-            event_type=event_type,
-            invoice_ctx=invoice_ctx,
-            invoice_id=entity_id,
-            recipient_user_ids=recipient_user_ids,
-        )
+        # Chat fan-out (Slack / Teams) — a single channel post per event, not
+        # per-recipient. Approval-lifecycle events only; entirely best-effort
+        # and self-guarded so a chat-send failure never breaks anything.
+        if wants_chat:
+            # `entity_id` is generic on `notify_event` (it keys whatever
+            # `entity_type` names); inside this branch it is provably the
+            # invoice PK, so it crosses the boundary under that name.
+            await _send_chat_best_effort(
+                organization_id=organization_id,
+                event_type=event_type,
+                invoice_ctx=invoice_ctx,
+                invoice_id=entity_id,
+                recipient_user_ids=recipient_user_ids,
+            )
+
+    enqueue_post_commit(db, _outbound, name=f"notify-{event_type}")
 
 
 async def _send_email_best_effort(

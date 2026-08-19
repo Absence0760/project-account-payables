@@ -132,7 +132,7 @@ async def test_approve_still_raises_an_enabled_fraud_rule(realdb):
 # Drift guard — no approval door may call approve_invoice without org_settings
 # ---------------------------------------------------------------------------
 
-_API_DIR = Path(__file__).resolve().parents[1] / "app" / "api"
+_APP_DIR = Path(__file__).resolve().parents[1] / "app"
 
 
 def _approve_calls_missing_org_settings(path: Path) -> list[int]:
@@ -158,11 +158,22 @@ def _approve_calls_missing_org_settings(path: Path) -> list[int]:
     return missing
 
 
-def test_every_api_approval_door_passes_org_settings():
+def test_every_approval_door_passes_org_settings():
+    """Scans the WHOLE of `app/`, not just `app/api/`.
+
+    An HTTP endpoint is not the only thing that approves an invoice. The four
+    exception-agent auto-resolvers
+    (`services/exception_agents/resolvers/{amount_mismatch,missing_po,multi_po_split,gl_coding}.py`)
+    call `approve_invoice` too, and they run UNATTENDED — so a fraud rule the
+    org disabled opening a payment-blocking exception, or a stricter-than-default
+    per-vendor PO tolerance being erased by the resolver's own
+    `refresh_warnings` recompute, is a defect nobody is watching happen. The
+    scan was scoped to `app/api/` and so never saw them.
+    """
     offenders: list[str] = []
-    for path in sorted(_API_DIR.rglob("*.py")):
+    for path in sorted(_APP_DIR.rglob("*.py")):
         for lineno in _approve_calls_missing_org_settings(path):
-            offenders.append(f"{path.relative_to(_API_DIR.parents[2])}:{lineno}")
+            offenders.append(f"{path.relative_to(_APP_DIR.parent)}:{lineno}")
     assert not offenders, (
         "these approve_invoice() call sites drop `org_settings`, so they silently "
         "evaluate the org's fraud rules, PO tolerances, exception routing and the "
@@ -179,3 +190,113 @@ def test_the_drift_guard_can_actually_fail(tmp_path):
         encoding="utf-8",
     )
     assert _approve_calls_missing_org_settings(sample) == [2]
+
+
+# ---------------------------------------------------------------------------
+# The unattended door: the exception-agent coordinator
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_coordinator_threads_org_settings_into_resolver_apply():
+    """`ExceptionResolver.apply` receives the org's OWN settings.
+
+    `coordinator.run_agent` already held `org_settings` and passed it to
+    `evaluate()`, but `apply()` had no such parameter — so the four resolvers
+    that approve ran `approve_invoice` (and, in `missing_po`, `refresh_warnings`)
+    against the PLATFORM defaults. Unattended, so nothing surfaced it: a fraud
+    rule the org disabled still opened a payment-BLOCKING `fraud_flag`, and a
+    stricter-than-default per-vendor PO tolerance was erased from
+    `invoice.po_match` by the agent's own recompute.
+
+    Driven through the real `run_agent` with a stub resolver, so the assertion
+    is on the coordinator's actual call rather than a hand-built invocation.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.services.exception_agents import coordinator as coord
+    from app.services.exception_agents.base import (
+        ACTION_AUTO_RESOLVED,
+        AgentEvaluation,
+        ExceptionResolver,
+    )
+
+    seen: dict = {}
+
+    class _Stub(ExceptionResolver):
+        agent_type = "stub_v1"
+        exception_type = "po_mismatch"
+
+        async def evaluate(self, db, *, exception, invoice, org_settings):
+            seen["evaluate"] = org_settings
+            return AgentEvaluation(
+                recommended_action=ACTION_AUTO_RESOLVED,
+                confidence=Decimal("0.99"),
+                rationale="stub",
+            )
+
+        async def apply(
+            self,
+            db,
+            *,
+            exception,
+            invoice,
+            evaluation,
+            actor_id,
+            actor_roles=None,
+            org_settings=None,
+        ):
+            seen["apply"] = org_settings
+
+    org_settings = {
+        "fraud_rules": {"round_amount_enabled": False},
+        "matching": {"tolerance_pct": 0.5},
+        "exception_agents": {"autonomy_level": "aggressive"},
+    }
+    invoice = SimpleNamespace(
+        id=uuid.uuid4(),
+        correlation_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        status=InvoiceStatus.ready_for_review,
+        amount=Decimal("100.00"),
+    )
+    exception = SimpleNamespace(
+        id=uuid.uuid4(),
+        invoice_id=invoice.id,
+        exception_type="po_mismatch",
+        status="open",
+        organization_id=invoice.organization_id,
+    )
+
+    locked_result = MagicMock()
+    locked_result.scalar_one = MagicMock(return_value=exception)
+    invoice_result = MagicMock()
+    invoice_result.scalar_one = MagicMock(return_value=invoice)
+
+    db = AsyncMock()
+    db.add = MagicMock()
+    db.execute = AsyncMock(side_effect=[locked_result, invoice_result])
+    db.flush = AsyncMock()
+    db.commit = AsyncMock()
+    db.begin_nested = MagicMock()
+    db.begin_nested.return_value.__aenter__ = AsyncMock(return_value=None)
+    db.begin_nested.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch.object(coord, "get_resolver", return_value=_Stub()),
+        patch.object(coord, "record_decision", AsyncMock(return_value=None)),
+    ):
+        await coord.run_agent(
+            db,
+            exception=exception,
+            actor_id=uuid.uuid4(),
+            org_settings=org_settings,
+            actor_roles={"ap_manager"},
+        )
+
+    assert seen.get("evaluate") == org_settings
+    assert seen.get("apply") == org_settings, (
+        "the coordinator must hand `apply` the same org settings it hands "
+        "`evaluate` — otherwise the unattended approval runs on platform defaults"
+    )

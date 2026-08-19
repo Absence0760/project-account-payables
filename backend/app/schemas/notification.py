@@ -43,23 +43,39 @@ class ChannelPrefs(BaseModel):
 class NotificationPrefs(BaseModel):
     """The full preference map: one ChannelPrefs per notifiable event type.
 
-    Missing keys fall back to defaults (all channels on) — see
-    services/notification_dispatch.resolve_prefs.
+    **Must cover every entry in `NOTIFICATION_EVENT_TYPES`.** A key missing here
+    isn't inert: `notification_dispatch.resolve_prefs` defaults an unknown event
+    to **on**, so an event the schema doesn't enumerate is one the user cannot
+    turn off. That is how `chat_message` came to email the AP team on every
+    supplier-portal message with no opt-out, while `contract_renewal_due` and
+    `cash_shortfall_projected` were equally unmutable.
+
+    Drift guard: `tests/test_notification_prefs_roster.py`.
     """
 
     invoice_assigned: ChannelPrefs = Field(default_factory=ChannelPrefs)
     invoice_approved: ChannelPrefs = Field(default_factory=ChannelPrefs)
     invoice_rejected: ChannelPrefs = Field(default_factory=ChannelPrefs)
     invoice_paid: ChannelPrefs = Field(default_factory=ChannelPrefs)
+    contract_renewal_due: ChannelPrefs = Field(default_factory=ChannelPrefs)
+    chat_message: ChannelPrefs = Field(default_factory=ChannelPrefs)
+    cash_shortfall_projected: ChannelPrefs = Field(default_factory=ChannelPrefs)
 
 
 class NotificationPrefsUpdate(BaseModel):
-    """Partial update — only the supplied event types are changed."""
+    """Partial update — only the supplied event types are changed.
+
+    Same roster obligation as `NotificationPrefs`: an event type absent here is
+    one a user can read but never change.
+    """
 
     invoice_assigned: ChannelPrefs | None = None
     invoice_approved: ChannelPrefs | None = None
     invoice_rejected: ChannelPrefs | None = None
     invoice_paid: ChannelPrefs | None = None
+    contract_renewal_due: ChannelPrefs | None = None
+    chat_message: ChannelPrefs | None = None
+    cash_shortfall_projected: ChannelPrefs | None = None
 
 
 class DeviceTokenRegister(BaseModel):

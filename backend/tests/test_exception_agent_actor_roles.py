@@ -94,7 +94,17 @@ async def test_actor_roles_threaded_into_resolver_apply():
                 changes={},
             )
 
-        async def apply(self, _db, *, exception, invoice, evaluation, actor_id, actor_roles=None):
+        async def apply(
+            self,
+            _db,
+            *,
+            exception,
+            invoice,
+            evaluation,
+            actor_id,
+            actor_roles=None,
+            org_settings=None,
+        ):
             captured["actor_roles"] = actor_roles
             captured["actor_id"] = actor_id
 

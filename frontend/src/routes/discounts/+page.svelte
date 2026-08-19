@@ -32,16 +32,26 @@
 		DiscountOptimization
 	} from '$lib/types/discounts';
 
-	// RBAC: the dashboard is admin / ap_manager / cfo (the backend 403s
-	// everyone else). `isManager` = admin|ap_manager, `isCfo` = admin|cfo, so
-	// the union covers exactly those three roles. Wait for `auth.user` to load
-	// before deciding — a redirect before /me resolves would race first paint
-	// (the audit page documents the same gotcha).
+	// RBAC mirrors `backend/app/api/discounts.py`, which is the layer that
+	// actually enforces:
+	//   READ   (`_READ_ROLES`)   = admin / ap_manager / ap_clerk / cfo — the
+	//          dashboard, the offer list, per-invoice ROI, AND `POST /optimize`
+	//          (a POST only because it takes a body; it computes and mutates
+	//          nothing, so it is read-gated).
+	//   DECIDE (`_ACCEPT_ROLES`) = admin / ap_manager / cfo — accept + decline.
+	//          `isManager` = admin|ap_manager, `isCfo` = admin|cfo, so their
+	//          union is exactly that trio.
+	// This page used to redirect a clerk on a comment claiming "the backend
+	// 403s everyone else" — it does not, and the clerk got a dead end on a
+	// surface they are entitled to read. Wait for `auth.user` to load before
+	// deciding — a redirect before /me resolves would race first paint (the
+	// audit page documents the same gotcha).
 	const userLoaded = $derived(auth.user !== null);
-	const allowed = $derived(auth.isManager || auth.isCfo);
+	const canRead = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk', 'cfo'));
+	const canDecide = $derived(auth.isManager || auth.isCfo);
 
 	$effect(() => {
-		if (userLoaded && !allowed) goto('/');
+		if (userLoaded && !canRead) goto('/');
 	});
 
 	const PAGE_SIZE = 20;
@@ -169,13 +179,13 @@
 	}
 
 	$effect(() => {
-		if (!allowed) return;
+		if (!canRead) return;
 		orgCurrency.ensureLoaded();
 		loadDashboard();
 	});
 
 	$effect(() => {
-		if (!allowed) return;
+		if (!canRead) return;
 		// Re-fetch the offers whenever the status filter changes.
 		statusFilter;
 		loadOffers();
@@ -270,7 +280,7 @@
 <PageHeader title={m('discounts.title')}>
 	{#if !userLoaded}
 		<p class="loading">{m('common.loading')}</p>
-	{:else if !allowed}
+	{:else if !canRead}
 		<p class="loading">{m('discounts.redirecting')}</p>
 	{:else}
 		<!-- KPI row -->
@@ -296,6 +306,20 @@
 			/>
 			<KpiCard value={dashboard?.open_offer_count ?? 0} label={m('discounts.kpi.openOffers')} />
 		</div>
+
+		<!-- The dashboard half of the currency guard. `projected_savings` sums
+		     ONLY offers denominated in the reporting currency, so a non-zero
+		     count means the headline figure is lower than the offers listed
+		     below imply — honest, but silently so. Mirrors the /cfo cash-position
+		     card's unconverted-outflows notice. -->
+		{#if dashboard && dashboard.unconvertible_offer_count > 0}
+			<p class="disc-skipped" role="alert" data-testid="unconvertible-offers">
+				{m('discounts.unconvertibleOffers', {
+					n: dashboard.unconvertible_offer_count,
+					currency: dashboard.currency
+				})}
+			</p>
+		{/if}
 
 		<!-- Optimize panel -->
 		<div class="opt-panel">
@@ -329,6 +353,18 @@
 					<span>{m('discounts.opt.selectedOutlay')} <strong>{aggMoney(optimization.total_outlay_selected)}</strong></span>
 					<span>{m('discounts.opt.costOfCapital')} <strong>{optimization.cost_of_capital_pct.toFixed(1)}%</strong></span>
 				</div>
+				<!-- The optimizer half of the same guard: an offer in another
+				     currency is excluded from all three totals above (and from
+				     selection once a cash budget binds), so it ranks below as a
+				     recommendation whose money is nowhere in the summary. -->
+				{#if optimization.unconvertible_count > 0}
+					<p class="disc-skipped" role="alert" data-testid="unconvertible-optimizer">
+						{m('discounts.unconvertibleOffers', {
+							n: optimization.unconvertible_count,
+							currency: optimization.currency
+						})}
+					</p>
+				{/if}
 				{#if optimization.recommendations.length > 0}
 					<div class="scenario-grid">
 						{#each optimization.recommendations as rec (rec.offer_id)}
@@ -406,7 +442,10 @@
 							{/if}
 						</td>
 						<td class="actions">
-							{#if offer.status === 'offered'}
+							<!-- Deciding an offer is `_ACCEPT_ROLES` (admin / ap_manager /
+							     cfo). A clerk reads this page; showing them buttons the
+							     API would 403 is the dead end in the other direction. -->
+							{#if offer.status === 'offered' && canDecide}
 								<RowAction variant="success" onclick={() => openAccept(offer)} ariaLabel={m('discounts.row.acceptAria', { vendor: offer.vendor_name ?? offer.id.slice(0, 8) })}>
 									{m('discounts.row.accept')}
 								</RowAction>
@@ -504,6 +543,15 @@
 	.dash-error {
 		color: var(--danger);
 		font-weight: 500;
+	}
+	/* Amber, not red: the totals are still usable — they just don't cover every
+	   offer on screen. Same tone + weight as the /cfo cash-position card's
+	   `.cf-skipped` notice, which reports the mirror-image currency gap. */
+	.disc-skipped {
+		font-size: 0.85rem;
+		margin: 0;
+		color: #d4940a;
+		font-weight: 600;
 	}
 
 	/* --- Optimize panel --- */

@@ -77,7 +77,10 @@
 
 	$effect(() => {
 		if (id) loadWorkflow(id);
-		adminStore.fetchUsers();
+		// Fire-and-forget: the store loaders re-throw so an awaiting caller keeps
+		// its own handling, but nothing awaits here — the store's `errored` flag is
+		// what the UI renders. Swallow so a failed load isn't an unhandled rejection.
+		adminStore.fetchUsers().catch(() => {});
 		loadErpMethod();
 	});
 
@@ -1021,14 +1024,17 @@
 		margin-bottom: 8px;
 	}
 
+	/* Not `<Badge>`: a selected-approver token that wraps its own remove button
+	   — a flex container with a child control, and it renders a person's name,
+	   not a status. Colour comes from the palette pair. */
 	.approver-chip {
 		display: inline-flex;
 		align-items: center;
 		gap: 4px;
 		padding: 3px 8px 3px 10px;
 		border-radius: 14px;
-		background: rgba(99, 140, 255, 0.12);
-		color: var(--accent);
+		background: var(--accent-tint);
+		color: var(--accent-on-tint);
 		font-size: 0.78rem;
 		font-weight: 500;
 	}
@@ -1049,6 +1055,11 @@
 		padding: 0;
 	}
 
+	/* Deliberately still a literal, and NOT `--accent-tint`: this is a hover
+	   step that has to read as stronger than the chip it sits inside, which is
+	   already on `--accent-tint`. A tone token would make the hover invisible.
+	   The pairing here is `--text` over the composite, not a tint/on-tint
+	   pair. */
 	.chip-remove:hover {
 		background: rgba(99, 140, 255, 0.2);
 		color: var(--text);

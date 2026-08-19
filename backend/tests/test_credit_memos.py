@@ -24,13 +24,14 @@ async def _add_vendor(mk, org_id, name="Acme Supplies") -> str:
         return str(v.id)
 
 
-async def _add_invoice(mk, org_id, *, vendor_id=None, number="INV-1") -> str:
+async def _add_invoice(mk, org_id, *, vendor_id=None, number="INV-1", currency="USD") -> str:
     async with mk() as s:
         inv = Invoice(
             organization_id=org_id,
             invoice_number=number,
             vendor_name="Acme Supplies",
             amount=Decimal("500.00"),
+            currency=currency,
             status=InvoiceStatus.new,
             vendor_id=vendor_id,
         )
@@ -894,3 +895,119 @@ async def test_credit_memo_mutations_are_entity_scoped(realdb):
             )
         ).scalar_one()
         assert total == Decimal("0")
+
+
+# ---------------------------------------------------------------------------
+# Currency resolution on create — a non-USD tenant must not be dead-ended
+# ---------------------------------------------------------------------------
+
+
+async def _set_org_reporting_currency(realdb, code: str | None):
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.models.organization import Organization
+
+    org_id = realdb.info("a").org_id
+    ctrl = realdb.control_sessionmaker()
+    async with ctrl() as s:
+        org = (await s.execute(select(Organization).where(Organization.id == org_id))).scalar_one()
+        cfg = dict(org.settings or {})
+        if code is None:
+            cfg.pop("reporting_currency", None)
+        else:
+            cfg["reporting_currency"] = code
+        org.settings = cfg
+        flag_modified(org, "settings")
+        await s.commit()
+
+
+async def test_create_without_currency_inherits_the_invoice_currency(realdb):
+    """A memo created against a named invoice takes THAT invoice's currency.
+
+    The schema used to default `currency` to "USD", so a EUR tenant's memo was
+    stamped USD and then 409'd by the very currency guard on the same request —
+    and with no PATCH on credit memos, the memo could never be applied or
+    corrected. The memo now inherits rather than asserting.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id, name="Euro Supplies")
+    invoice_id = await _add_invoice(
+        mk, org_id, vendor_id=vendor_id, number="INV-EUR-1", currency="EUR"
+    )
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/credit-memos",
+            json={
+                "memo_number": "CM-EUR-INHERIT",
+                "vendor_id": vendor_id,
+                "amount": "100.00",
+                "invoice_id": invoice_id,
+            },
+        )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["currency"] == "EUR"
+    # And it actually applied — the guard it used to trip is satisfied.
+    assert body["status"] == "applied"
+    assert body["invoice_id"] == invoice_id
+
+
+async def test_create_without_currency_falls_back_to_org_reporting_currency(realdb):
+    """An unlinked memo takes the ORG's reporting currency, not a hardcoded USD.
+
+    A single-currency EUR tenant should never have to name a currency, and must
+    never be handed a USD memo that its own invoices refuse.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id, name="Reporting Currency Co")
+
+    await _set_org_reporting_currency(realdb, "EUR")
+    try:
+        async with realdb.client(key="a", role="ap_manager") as c:
+            resp = await c.post(
+                "/api/credit-memos",
+                json={
+                    "memo_number": "CM-EUR-ORG",
+                    "vendor_id": vendor_id,
+                    "amount": "42.00",
+                },
+            )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["currency"] == "EUR"
+
+        async with mk() as s:
+            memo = (
+                await s.execute(select(CreditMemo).where(CreditMemo.memo_number == "CM-EUR-ORG"))
+            ).scalar_one()
+            assert memo.currency == "EUR"
+            assert memo.amount == Decimal("42.00")  # money stays exact
+    finally:
+        await _set_org_reporting_currency(realdb, None)
+
+
+async def test_explicit_currency_still_wins_and_still_guards(realdb):
+    """An explicitly asserted currency is still checked against the invoice —
+    inheriting must not become a way to silently reconcile a real mismatch."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id, name="Mismatch Co")
+    invoice_id = await _add_invoice(
+        mk, org_id, vendor_id=vendor_id, number="INV-GBP-1", currency="GBP"
+    )
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/credit-memos",
+            json={
+                "memo_number": "CM-MISMATCH",
+                "vendor_id": vendor_id,
+                "amount": "10.00",
+                "currency": "EUR",
+                "invoice_id": invoice_id,
+            },
+        )
+    assert resp.status_code == 409, resp.text
+    assert "currency" in resp.json()["detail"].lower()

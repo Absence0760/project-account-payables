@@ -69,7 +69,15 @@ async def _mk_budget_row(
 
 
 async def _mk_requisition(
-    realdb, key, *, budget_id, total, status: RequisitionStatus, converted_po_id=None
+    realdb,
+    key,
+    *,
+    budget_id,
+    total,
+    status: RequisitionStatus,
+    converted_po_id=None,
+    entity_id=None,
+    currency="USD",
 ) -> uuid.UUID:
     mk = realdb.sessionmaker(key)
     org_id = realdb.info(key).org_id
@@ -84,6 +92,8 @@ async def _mk_requisition(
                 total=Decimal(total),
                 status=status,
                 converted_po_id=converted_po_id,
+                entity_id=entity_id,
+                currency=currency,
                 organization_id=org_id,
             )
         )
@@ -408,6 +418,62 @@ async def test_spend_committed_open_requisitions(realdb):
     assert body["actual"] == 0.0
     assert body["remaining"] == 6500.0
     assert body["utilization_pct"] == 35.0
+
+
+async def test_spend_committed_keeps_a_cross_entity_linked_requisition(realdb):
+    """`budget_id` is an unambiguous human-declared link, so the committed legs
+    are NOT entity-scoped. Layering `apply_entity_scope` on top of the FK could
+    only drop deliberately-linked demand — `committed` read 0 and
+    `/budgets/check` answered `would_overspend: false` for headroom already
+    spoken for. (Contrast the invoice leg, whose attribution is a fuzzy
+    free-text dimension match and stays scoped.)"""
+    other_entity = await _mk_entity(realdb, "a")
+    bid = await _mk_budget_row(realdb, amount="10000.00", entity_id=other_entity)
+    # Open requisition explicitly linked to the budget, but stamped with a
+    # DIFFERENT entity (unstamped / default).
+    await _mk_requisition(
+        realdb,
+        "a",
+        budget_id=bid,
+        total="2500.00",
+        status=RequisitionStatus.approved,
+        entity_id=None,
+    )
+    # ...and its converted sibling, whose PO rides leg 2 through the same FK.
+    po_id = await _mk_po(realdb, "a", total="1500.00")
+    await _mk_requisition(
+        realdb,
+        "a",
+        budget_id=bid,
+        total="1500.00",
+        status=RequisitionStatus.converted,
+        converted_po_id=po_id,
+        entity_id=None,
+    )
+
+    async with realdb.client(key="a", role="cfo") as c:
+        body = (await c.get(f"/api/budgets/{bid}/spend")).json()
+    assert body["committed"] == 4000.0  # 2500 (leg 1) + 1500 (leg 2)
+
+
+async def test_spend_committed_still_excludes_a_foreign_currency_requisition(realdb):
+    """The currency predicate stays — the legs never convert, so summing two
+    currencies' face values would be worse than excluding the row. New links
+    can't be mismatched (POST/PATCH /requisitions 422s), so this only ever
+    bites a row linked before that guard."""
+    bid = await _mk_budget_row(realdb, amount="10000.00", currency="USD")
+    await _mk_requisition(
+        realdb,
+        "a",
+        budget_id=bid,
+        total="700.00",
+        status=RequisitionStatus.approved,
+        currency="EUR",
+    )
+
+    async with realdb.client(key="a", role="cfo") as c:
+        body = (await c.get(f"/api/budgets/{bid}/spend")).json()
+    assert body["committed"] == 0.0
 
 
 async def test_spend_converted_req_counts_po_not_req(realdb):

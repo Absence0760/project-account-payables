@@ -54,7 +54,60 @@ enum InvoiceStatus {
       false,
     _ => true,
   };
+
+  /// Whether the invoice's *financial* content — how much, and to whom — is
+  /// frozen. Mirrors the backend `_FINANCIALLY_LOCKED_STATUSES`
+  /// (`backend/app/api/invoices.py`), which is literally
+  /// `{approved} | IMMUTABLE_STATUSES` — written the same way here so the two
+  /// halves can't drift apart: `!isEditable` IS this file's mirror of
+  /// `IMMUTABLE_STATUSES`, and `approved` is the extra state it adds.
+  ///
+  /// The approval signature (`services/approval_signature.py`) is computed over
+  /// the exact amount and the payment run reads `Invoice.amount` /
+  /// `Invoice.vendor_id` straight off the row — so editing money after sign-off
+  /// would pay a figure nobody approved, and re-saving the vendor would
+  /// re-point the payee at another supplier's bank details (the BEC redirect
+  /// the dual-control `VendorChangeRequest` gate exists to stop). A PATCH
+  /// carrying any of [kFinancialInvoiceFields] in one of these states is
+  /// refused with 409; reject → correct → re-approve is the way through.
+  ///
+  /// Note this is *narrower* than [isEditable]: an `approved` invoice is still
+  /// editable (GL coding, notes, addresses) — only the money and the payee are
+  /// frozen.
+  bool get isFinanciallyLocked => this == InvoiceStatus.approved || !isEditable;
 }
+
+/// The invoice fields frozen once the invoice is financially locked — a mirror
+/// of `_FINANCIAL_FIELDS` in `backend/app/api/invoices.py`.
+///
+/// These are *wire* names (PATCH body keys), which is why both `vendor` and its
+/// DB spelling `vendor_name` appear: the backend runs its check before remapping
+/// one to the other, and this client sends `vendor`. The set is deliberately the
+/// full backend list rather than only the fields today's edit sheet renders, so
+/// adding, say, a currency field to the sheet later is covered for free.
+const Set<String> kFinancialInvoiceFields = {
+  'amount',
+  'currency',
+  'subtotal',
+  'tax_amount',
+  'discount_amount',
+  'shipping_amount',
+  'tax_rate',
+  'vendor',
+  'vendor_name',
+  'remit_to_address',
+};
+
+/// Drop every frozen financial field from a PATCH diff, preserving the rest.
+///
+/// The backend rejects the *whole* request with a 409 when a locked invoice's
+/// PATCH carries even one financial field — so a combined edit (description +
+/// amount) used to lose the description too. Omitting the frozen fields lets
+/// the legitimate half through instead of failing the write.
+Map<String, dynamic> stripFinancialFields(Map<String, dynamic> changes) => {
+      for (final entry in changes.entries)
+        if (!kFinancialInvoiceFields.contains(entry.key)) entry.key: entry.value,
+    };
 
 /// Severity of an invoice warning / fraud flag, mirroring the backend
 /// `invoice_warnings` severities (`error` | `warning` | `info`).

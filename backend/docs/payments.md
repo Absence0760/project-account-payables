@@ -614,6 +614,45 @@ while the payment row itself looked correct. A release that lands
 does that once the rail confirms. `dismiss` never dispatches — nothing
 settled.
 
+**A raising adapter on release is recorded, not 500ed.** `/release` wraps
+`_execute_single_payment` the way `_dispatch_run_payments` does — a live FX /
+sanctions / processor adapter can raise anything, and unguarded the exception
+unwound the request: FastAPI 500ed, the session rolled back, and the payment
+reverted to `pending_compliance` with no `provider_payment_id` recorded even if
+the processor had already accepted the order (on the card leg, a rollback after
+`persist_card` discarded the `VirtualCard` row while a real spendable card
+existed at the provider). It is now marked `failed` with
+`unexpected_error:<ExceptionClass>` — the class only, never the adapter's
+message, which can embed a partial account number or PAN.
+
+### An invoice-less payment never reaches the processor
+
+Every gate in `_execute_single_payment` — the credit-memo net re-check, the FX
+rate lock and the **entire** sanctions/KYC compliance gate — is written
+`if invoice is not None`. A payment whose invoice could not be resolved
+therefore used to fall straight through to `adapter.create_payment` with an
+empty `invoice_number` and `vendor_name`: money to a payee nobody screened, at
+a rate nobody locked, for an amount nobody re-verified — the exact inverse of
+the two "no screenable vendor → hold, never pay unscreened" branches directly
+below it. It now fails closed with `invoice_missing` before the adapter is
+called. Unreachable in normal operation (deleting an invoice cascades its
+payments); the branch exists so the fall-through can't be re-introduced.
+
+### Voiding preserves the settlement timestamp
+
+`completed_at` is the regulated timestamp for **when the money moved**.
+`/void` used to stamp the void instant onto it, destroying the settlement time
+on a `completed` payment — and the audit row recorded `previous_status` but not
+the previous timestamp, so it was unrecoverable. `/retry-failed` refuses to
+overwrite the same field and says why. The void now leaves `completed_at`
+alone whenever it is already set, records the void instant as
+`details.voided_at` on the append-only `payment.voided` audit row (alongside
+`details.settled_at`), and still stamps a terminal timestamp for a payment that
+never settled (`pending` / `submitted` / `processing` / `pending_compliance`),
+which has no settlement time to protect.
+
+**Tests:** `tests/test_payment_terminal_timestamps.py`.
+
 ### Payment processor adapters
 
 The actual money movement is handled by an adapter pattern in `backend/app/services/payment_adapters/` — same shape as ERP, extraction, and card adapters. Each adapter implements:
@@ -939,6 +978,129 @@ or real webhooks. The seam is locked by `backend/tests/test_stripe_api_base.py`
 (CI-safe, no container). For the other processors, the in-process `mock` adapter
 remains the local default.
 
+### The payments KPIs are denominated, not just summed
+
+`GET /payments/summary` and `GET /payments/queue` are reporting surfaces — no
+money moves on them — but both used to add figures in different currencies
+together and label the result with nothing at all.
+
+`Payment.amount` is denominated in the **invoice's** currency:
+`international_payments.prepare_international_payment` sets
+`amount=invoice.amount` and puts the home-currency debit on
+`source_amount`/`source_currency`. A book with one foreign invoice therefore
+made `total_paid` / `total_pending` a silent two-currency mixture. Both now
+route through `currency_conversion.payment_reporting_amount_sql` — the same
+resolver the 1099 report and the vendor risk score use:
+
+1. `source_amount` when `source_currency` IS the org's reporting currency (the
+   rate-locked figure that actually left the bank), else
+2. `amount` when the invoice's own currency IS the reporting currency (the
+   ordinary domestic case — a single-currency tenant's numbers are unchanged).
+
+A payment neither rung can establish is **excluded** and counted on
+`unconverted_payment_count`, never added at face value; a filed total is not a
+place to guess. `currency` on the response says what the figures are in.
+
+`/payments/queue` sums INVOICE amounts, so it uses the row-level
+`reporting_amount_for_row` (persisted rate-locked `reporting_amount` → same
+currency 1:1 → face value + `unconverted`). Here a row that can't be resolved
+is still counted — dropping an invoice would understate what is due, which on a
+work queue is worse than a flagged approximation — and the count rides out on
+`unconverted_count`. Each item keeps its own `amount` + `currency` for display;
+only the totals are converted. `total_savings` is computed off the same
+rate-locked figure as the outflow, so the two totals are in one currency.
+
+Nothing is converted at read time in either endpoint: a rate fetched on a read
+makes a historical total move under the reader (`docs/decisions.md` §18).
+
+**`total_pending` now includes `pending_compliance`.** A payment held by the
+sanctions/KYC gate is authorized money still out there; omitting it put that
+money in NEITHER KPI — not paid, not pending — invisible in the one place a
+treasurer looks for "what is still committed".
+
+**Tests:** `tests/test_payment_summary_currency.py` (DB-backed),
+`tests/test_payment_summary.py` (shape).
+
+### `PaymentRun.status` is derived from its payments on read
+
+`_dispatch_run_payments`' final rollup is the only writer of the persisted
+`PaymentRun.status`. Nothing else rewrites it — not the processor webhook, not
+the reconciler backstop, not `/compliance/{release,dismiss}` — so a run that
+rolled up `submitted` (one payment held `pending_compliance`) and then had that
+payment dismissed kept reporting `status: "submitted"` while its own payments
+said `failed`. `/retry-failed` gates on
+`RETRYABLE_RUN_STATUSES = ("partial", "failed")` and `/execute` / `/resume` gate
+on the claim states, so the run was a **dead end**: it showed
+`retryable_failures: 1` and every button on it 409ed — precisely the "button
+that can't act" the `retryable_failures` field exists to prevent.
+
+`services/payment_runs.derive_run_status(persisted, rollup)` is the one rule
+both the reads and the retry gate apply:
+
+| Persisted status | Meaning | Derived |
+|---|---|---|
+| `draft` / `executing` / `cancelled` (`CLAIM_RUN_STATUSES`) | a CLAIM on the run, not an outcome | passed through unchanged — re-deriving would let a rollup un-claim a run mid-dispatch, and `/execute` / `/resume` gate on exactly these |
+| `submitted` / `partial` / `failed` / `completed` | an outcome of its payments | recomputed from the run's ACTIVE payments (`active_run_payments` → `rollup_payment_statuses`) |
+
+The runs list, the run detail and `/retry-failed`'s gate all route through it,
+so the status an operator sees and the status the endpoint gates on cannot
+diverge. `recompute_run_status` additionally **persists** the derived value at
+each site that moves a payment outside the dispatch pass
+(`/compliance/release`, `/compliance/dismiss`, `/void`), so a direct
+`SELECT status FROM payment_runs` — an operator at `psql`, an export, a future
+consumer — reads the truth too.
+
+**The rollup itself no longer fails open.** `PaymentRunRollup.run_status`
+returned `completed` whenever nothing was completed, failed or in flight — so a
+run with every payment still `pending` (nothing attempted) and a run with no
+payments at all both reported success without a cent moving. All-pending is
+the resumable state, so it reports `executing`; no payments at all reports
+`draft`. Neither claims success.
+
+**Tests:** `tests/test_payment_run_status_derivation.py`.
+
+### The reconciler backstop — durability and the aged-out row
+
+`services/payment_reconciler.py` re-polls every non-terminal payment when a
+webhook never arrives. Two properties of that sweep are load-bearing.
+
+**It commits per payment, not per tenant.** Each terminal transition is locked
+(`db.refresh(payment, with_for_update=True)`), written, audited and committed
+before the next payment is polled — the same shape `_dispatch_run_payments`
+uses, for the same two reasons. Held across the whole tenant, payment #1's row
+lock spanned every subsequent `await adapter.get_payment_status(...)`, so a
+webhook for that payment blocked on `payment_webhook`'s own `FOR UPDATE` for
+the rest of the sweep (and a cancelled request there leaves its Redis dedup
+claim unreleased, deduping the provider's retry away for the full TTL). And any
+raise mid-loop discarded every terminal status, `completed_at` and audit row
+the sweep had already decided for that tenant.
+
+**Aging a payment out is a reconciliation event, not a settlement.** Past
+`FEOH_PAYMENT_RECONCILE_MAX_AGE_HOURS` a still-`submitted` payment is flipped
+to `failed` — real money may still be in flight at the rail; we have simply
+stopped waiting. Two consequences follow, and both are handled explicitly:
+
+- **`completed_at` is not stamped.** It is the regulated settlement timestamp,
+  and this payment did not settle. (`/retry-failed` refuses to overwrite the
+  same field for the same reason.)
+- **A de-duped `payment_reconciliation` exception is opened** against the
+  invoice. `failed` is in `LIVE_PAYMENT_TERMINAL_STATUSES`, so the aged-out row
+  stops holding the invoice's live-payment slot — while the invoice itself is
+  still `payment_scheduled`, a *payable* status. Without the exception it
+  simply reappeared in `GET /payments/queue` and the next run paid it a second
+  time, silently. `payment_reconciliation` is in
+  `PAYMENT_BLOCKING_EXCEPTION_TYPES`, so a fresh run refuses that invoice until
+  a human has confirmed with the processor and voided or re-paid — the same
+  fail-closed posture `_RETRY_SAFE_FAILURE_PREFIXES` already takes by excluding
+  `reconciler_max_age_exceeded` from `/retry-failed`.
+
+Flagging is best-effort (a failure there is logged by exception class and never
+costs the transition), de-duped on an already-`open`/`escalated` row for the
+invoice so a down rail doesn't accumulate one exception per sweep, and PII-free
+— payment id, run id, age in hours, invoice status.
+
+**Tests:** `tests/test_payment_reconciler_durability.py`.
+
 ### ERP Payment Sync
 
 After a payment run executes, the system syncs payment data to the connected ERP
@@ -1100,10 +1262,10 @@ Matching payments against bank statement entries:
 | `GET` | `/api/payments/runs/{id}` | Get payment run with its payments |
 | `POST` | `/api/payments/runs/{id}/execute` | Execute the payment run + trigger ERP sync. `draft`-only — a run stuck `executing` (worker crash mid-run) is resumed via the endpoint below, not this one. |
 | `POST` | `/api/payments/runs/{id}/resume` | Resume a run stuck in `executing` — re-dispatches only its still-`pending` payments; anything already `completed`/`failed`/`submitted`/`processing`/`pending_compliance` from before the crash is left untouched. Same `payment.execute` permission gate as `/execute`. |
-| `POST` | `/api/payments/runs/{id}/retry-failed` | Re-attempt the safely-retryable FAILED payments of a `partial`/`failed` run by booking a NEW attempt row (the failed row is never mutated). Never re-dispatches a payment that already succeeded, nor one whose fate at the processor is unknown (`needs_reconciliation`); also skips an invoice that is unpayable, carries an unresolved duplicate/fraud/line-total exception, has since been credited, or already has another live payment. Same `payment.execute` gate, segregation check and CFO threshold as `/execute`. See § Why a payment failed, and retrying it. |
+| `POST` | `/api/payments/runs/{id}/retry-failed` | Re-attempt the safely-retryable FAILED payments of a `partial`/`failed` run by booking a NEW attempt row (the failed row is never mutated). Never re-dispatches a payment that already succeeded, nor one whose fate at the processor is unknown (`needs_reconciliation`); also skips an invoice that is unpayable, carries an unresolved payment-blocking exception (any member of `PAYMENT_BLOCKING_EXCEPTION_TYPES`), has since been credited, or already has another live payment. Same `payment.execute` gate, segregation check and CFO threshold as `/execute`. See § Why a payment failed, and retrying it. |
 | `POST` | `/api/payments/runs/{id}/sync-erp` | Re-run the ERP sync-back for a run whose settled payments didn't land — the exit for an invoice stranded at `payment_scheduled` after a failed sync leg. Awaits the pass and returns its `synced`/`transitioned`/`skipped`/`held`/`failed` counts (read `transitioned` for "did this recover anything"); idempotent by construction; moves no money. `payment.execute`-gated, entity-scoped, audited `payment_run.erp_sync_retried`. 409 when the run has no settled payment. See § ERP Payment Sync → A failed leg is a strand, and it is visible. |
 | `POST` | `/api/payments/runs/{id}/cancel` | Cancel a draft run — deletes its child payment rows so the invoices return to the queue, and flips the run to `cancelled`. |
-| `GET` | `/api/payments/queue` | List invoices ready for payment |
+| `GET` | `/api/payments/queue` | List invoices ready for payment. Each row carries `blocked` / `blocked_reason` — see § Financial-integrity exception gate → The queue says which rows the gate would refuse. |
 | `GET` | `/api/payments/summary` | KPIs: total paid, pending, queue count, rebates. Requires a `control_db` dependency because `CardRebate` is a control-plane model; the rebate query includes a try/except fallback returning `0.0` if the `card_rebates` table doesn't exist yet. |
 | `POST` | `/api/payments/{id}/void` | Void a pending/completed payment. Reverses a `virtual_card` payment's card at the provider too — see § Voiding a card payment cancels the card. |
 | `POST` | `/api/payments/{id}/compliance/release` | Re-run compliance-then-adapter for a payment stuck `pending_compliance`. `payment.execute`-gated, 409 outside that status. See § Sanctions / compliance hold resolution. |
@@ -1312,6 +1474,7 @@ between the manual and copilot-driven paths:
 | `duplicate` | the same invoice approved and paid twice |
 | `fraud_flag` | a bank-detail swap, rush payment, statistical anomaly, an altered / never-issued cheque from a Positive Pay return, or a processor settlement that didn't reconcile against what AP authorized (§ Settlement-amount verification) |
 | `line_total_mismatch` | a header `amount` that openly disagrees with the invoice's own line items — the run pays the header, and the header is never silently recomputed from the lines (see `line-total-reconciliation.md`) |
+| `payment_reconciliation` | a second payment for money that may already be moving — the reconciler aged a still-`submitted` payment out to `failed`, which frees the invoice's live-payment slot while the rail has never confirmed either way (§ The reconciler backstop) |
 
 Each is raised as an `error`-severity advisory flag, and **approval does not gate
 on any of them** — nothing in `services/review.py` or `workflow_engine.py` reads
@@ -1320,11 +1483,20 @@ creation is the gate that stops the money.
 
 Resolving or dismissing the exception is the human sign-off that clears it and
 makes the invoice payable again; `escalated` still blocks, because it means a
-human is still working it. The run is refused as a whole, naming only the
-offending invoices, so the operator drops or clears them rather than guessing.
+human is still working it. The run is refused as a whole, and the 409 detail
+names each offending invoice **with the type that blocked it** (`INV-042
+(payment_reconciliation)`), so the operator drops or clears them rather than
+guessing. The type is read from `blocking_exception_types`, never spelled out
+in the message: the wording used to recite a fixed "duplicate/fraud/line-total"
+list, which silently went wrong the moment `payment_reconciliation` joined the
+tuple — an invoice held because money may still be in flight was refused with
+three causes it doesn't carry. Same rule on the standalone `POST /api/payments`.
+The exception `description` is still never included (it can carry vendor / bank
+/ amount detail); only the fixed PII-free type vocabulary is.
 
 **Every path that books money runs this gate**, via the shared
-`payment_runs.blocked_invoice_ids` so they can't drift:
+`payment_runs.blocking_exception_types` (and its ids-only wrapper
+`blocked_invoice_ids`) so they can't drift:
 
 | Path | Why it has to re-check |
 |------|------------------------|
@@ -1337,6 +1509,43 @@ rows against a real DB, so the membership of the tuple is pinned in **both**
 directions (a `po_mismatch`, which is advisory here, must not block) — and
 covers the standalone path with the same parametrised cases, including that
 clearing the flag releases it there too.
+
+#### The queue says which rows the gate would refuse
+
+A gate the operator can't see is a gate they walk into. `GET /api/payments/queue`
+used to offer blocked rows indistinguishably from payable ones, so selecting one
+took the **whole** draft down with a 409 and nothing on screen said which row did
+it. Every queue row now carries:
+
+| Field | Meaning |
+|-------|---------|
+| `blocked` | `true` when this invoice carries an unresolved payment-blocking exception — i.e. including it in a run would 409 the run |
+| `blocked_reason` | the blocking exception **type** (`duplicate` / `fraud_flag` / `line_total_mismatch` / `payment_reconciliation`), or `null` |
+
+Three properties are load-bearing:
+
+- **One predicate, not two.** The verdict is resolved through
+  `payment_runs.blocking_exception_types` — the function
+  `blocked_invoice_ids` (the run builder's own gate) is now defined in terms of.
+  The queue and the builder read the same tuple and the same SQL, so the queue
+  can never offer a row the builder refuses, and adding a type to
+  `PAYMENT_BLOCKING_EXCEPTION_TYPES` updates both surfaces at once.
+- **The reason is a code, never prose.** `blocked_reason` is the exception
+  `exception_type` and nothing else. An exception's `description` can name a
+  vendor, a bank account or an amount; this value is rendered to an operator and
+  travels through a JSON body, so it stays inside the fixed PII-free vocabulary
+  (which also lets the frontend localise it). An invoice carrying several
+  blocking exceptions reports the one earliest in the tuple — a fixed order, so
+  the answer doesn't depend on row order.
+- **Additive.** Both fields are always present and default to not-blocked, so a
+  client that ignores them behaves exactly as before.
+
+Coverage: `tests/test_payment_queue_blocked.py` — a blocking type marks the row,
+an advisory one (`po_mismatch`) does not, `escalated` still blocks,
+resolved/dismissed releases, every member of the tuple is reported, the reason is
+deterministic under multiple exceptions, the description never reaches the
+payload, and the queue's blocked set is asserted equal to
+`blocked_invoice_ids`' own verdict.
 
 ## Code Structure
 

@@ -315,9 +315,13 @@
 		white-space: nowrap;
 	}
 
+	/* Not `<Badge>`: these are dense yes/no compliance chips in a wide table,
+	   three to a row — they keep their own quieter metrics (0.72rem, sentence
+	   case) for the same reason `ui/ScreeningBadge` does. `.chip-off` was
+	   already on the palette pairs; its two siblings now match. */
 	.chip-on {
-		background: rgba(31, 168, 106, 0.15);
-		color: #1fa86a;
+		background: var(--success-tint);
+		color: var(--success-on-tint);
 	}
 
 	.chip-off {
@@ -326,8 +330,8 @@
 	}
 
 	.chip-warn {
-		background: rgba(240, 70, 70, 0.15);
-		color: var(--danger);
+		background: var(--danger-tint);
+		color: var(--danger-on-tint);
 	}
 
 	.row-flag {

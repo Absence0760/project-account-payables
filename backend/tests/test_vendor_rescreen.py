@@ -402,3 +402,45 @@ async def test_failing_vendor_logs_the_exception_class_not_the_message(realdb, c
     for record in caplog.records:
         assert _PII_SENTINEL not in record.getMessage()
     assert any("RuntimeError" in r.getMessage() for r in warnings)
+
+
+# ---------------------------------------------------------------------------
+# Misconfigured sanctions provider — fails closed, never `clear`.
+# ---------------------------------------------------------------------------
+
+
+async def test_unknown_configured_provider_records_review_not_clear(realdb):
+    """`settings.compliance.sanctions.provider` naming an adapter we don't have
+    used to resolve to `mock`, which clears every name outside its own fixture
+    list — so a one-character typo screened the whole vendor book against
+    nothing and stamped `clear`. It must land on the review queue instead."""
+    from app.services.vendor_screening import screen_vendor_record
+
+    org_id = realdb.info("a").org_id
+    vid = await _seed_vendor(realdb, "a", name="Typo Provider Co")
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        vendor = (await s.execute(select(Vendor).where(Vendor.id == vid))).scalar_one()
+        outcome = await screen_vendor_record(
+            s,
+            vendor=vendor,
+            organization_id=org_id,
+            org_settings={"compliance": {"sanctions": {"provider": "worldcheck"}}},
+            check_type="manual",
+        )
+        await s.commit()
+
+    assert outcome.result == "review_required"
+    assert outcome.screening_status == "review"
+    assert outcome.blocked is False
+
+    vendor = await _get_vendor(realdb, "a", vid)
+    assert vendor.screening_status == "review"
+
+    checks = await _checks_for(realdb, "a", vid)
+    assert len(checks) == 1
+    assert checks[0].result == "review_required"
+    assert checks[0].provider == "unconfigured"
+    assert checks[0].matched_list == "provider_not_configured"
+    assert checks[0].raw_response["provider"] == "worldcheck"

@@ -645,18 +645,35 @@ Built on top of the same `invoice_embeddings` table as RAG. Complements the rule
 
 ### How it runs
 
-In `services/extraction.run_extraction`, after the RAG priors + vendor-cache passes, the flow calls `services.duplicate_detection.find_semantic_duplicates(db, invoice_text, exclude_invoice_id=<self>)`. It:
+In `services/extraction.run_extraction`, after the RAG priors + vendor-cache passes, the flow calls `services.duplicate_detection.find_semantic_duplicates(db, invoice_text, exclude_invoice_id=<self>, entity_id=<invoice's entity>)`. It:
 
 1. Embeds the current invoice's text (same adapter as RAG — mock locally, OpenAI in prod).
-2. Queries `invoice_embeddings` ordered by cosine distance.
-3. Returns every match at or above `FEOH_DUPLICATE_SIMILARITY_THRESHOLD` (default `0.95`).
+2. Queries `invoice_embeddings` ordered by cosine distance, outer-joining `invoices` for each match's `entity_id`.
+3. Returns every match at or above `FEOH_DUPLICATE_SIMILARITY_THRESHOLD` (default `0.95`), each tagged `cross_entity`.
 
 If any matches come back, extraction:
 
-- Appends a `duplicate_similar` warning to `invoice.warnings` with the top match summary and a `related_invoices` array (`{invoice_id, invoice_number, vendor_name, amount, similarity}` per match). The existing yellow warning icon on the invoice-list row picks this up automatically.
+- Appends a `duplicate_similar` warning to `invoice.warnings` with the top match summary and a `related_invoices` array (`{invoice_id, invoice_number, vendor_name, amount, similarity, cross_entity}` per match). The existing yellow warning icon on the invoice-list row picks this up automatically.
 - Creates an `APException` of type `duplicate` (open, warning severity) so it lands in the exception queue.
 
 Extraction never blocks — the invoice still gets created and routed. Reviewer decides.
+
+### Multi-entity: the search is cross-entity, the warning is not
+
+Every sibling reader IS entity-scoped — `rag.retrieve_similar` takes an `entity_id`, the assistant's `find_invoices_by_text` threads it "so 'search' can't silently widen past the subsidiary the user has selected", and `vendor_matching._candidate_query` scopes for the same reason. This one deliberately does not, and `entity_id` here **classifies rather than filters**.
+
+The reason is that the same invoice billed to two subsidiaries of one group is a *real* duplicate, and catching it is exactly what a group AP team wants. Scoping the search would remove a genuine control in order to fix a disclosure problem.
+
+The disclosure problem was real too: `matches_to_warning` put the matched invoice's `invoice_number`, `vendor_name` and `amount` into `invoice.warnings`, which the detail modal renders and whose `message` is copied verbatim into the `duplicate` Exception's description — data from an entity the viewer is otherwise scoped away from. So:
+
+| Match | Reported as |
+|---|---|
+| Same entity (or either side unstamped) | Unchanged — names the invoice number, vendor and amount |
+| **Different entity** | *"Potential duplicate: 98% match to a near-identical invoice under another entity"* — `invoice_id`, `invoice_number`, `vendor_name` and `amount` all `null`, `cross_entity: true` |
+
+A NULL `entity_id` on either side means *unstamped* (a pre-multi-entity row, or a single-entity tenant), **not** "some other entity" — so single-entity tenants, the overwhelming majority, see no change at all. When both a same-entity and a cross-entity match exist, the headline is built from the same-entity one (the viewer can act on that and needs the identifiers) with a bare count of the cross-entity ones appended.
+
+The `duplicate` Exception is in `api/payments.PAYMENT_BLOCKING_EXCEPTION_TYPES`, so a cross-entity hit still blocks the payment run until a human clears it. That is intended: a suspected intra-group double-bill wants the human sign-off, and the clearing path is unchanged.
 
 ### Threshold rationale
 

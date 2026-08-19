@@ -12,7 +12,14 @@ class CreditMemoCreate(BaseModel):
     vendor_id: str
     # Digits match `credit_memos.amount` Numeric(15, 2).
     amount: Decimal = Field(..., gt=0, max_digits=15, decimal_places=2)
-    currency: str = Field(default="USD", max_length=3)
+    # Optional, and NOT defaulted to "USD" here. A hardcoded default dead-ends
+    # every non-USD tenant: `POST /api/credit-memos` then stamps USD onto the
+    # row, and both application paths 409 a currency mismatch against the
+    # invoice — with no PATCH on credit memos, the memo can never be applied or
+    # corrected. `api/credit_memos.create_credit_memo` resolves the currency
+    # instead: the named invoice's own currency when one is named, otherwise
+    # the org's reporting currency, and only then the platform default.
+    currency: str | None = Field(default=None, max_length=3)
     issued_date: date | None = None
     reason: str | None = None
     invoice_id: str | None = None  # optional: link at creation time

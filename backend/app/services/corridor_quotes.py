@@ -179,6 +179,32 @@ async def compare_quotes(
                     unavailable_reason="provider_not_supported",
                 )
             )
+        except Exception as exc:  # noqa: BLE001
+            # Construction can fail for reasons other than an unknown NAME — an
+            # adapter's `__init__` reading a required credential out of a
+            # half-filled config, a malformed entry that isn't even a dict.
+            # Only `UnknownPaymentProviderError` was caught, so one such entry
+            # took down the whole auction and every OTHER configured rail with
+            # it — the exact "one bad entry must not stop the others" property
+            # the branch above exists to provide, applied to only one of the
+            # two ways an entry can be bad. Log the exception CLASS only: a
+            # provider SDK can put a partial account number or key fragment in
+            # its message (PII-out-of-logs invariant), and the same string
+            # would otherwise ride `unavailable_reason` into the response.
+            logger.warning(
+                "[corridor_quotes] skipping unconstructable provider config: %s",
+                exc.__class__.__name__,
+            )
+            unsupported.append(
+                CorridorQuote(
+                    provider=str((cfg or {}).get("provider") or "unknown")[:64]
+                    if isinstance(cfg, dict)
+                    else "unknown",
+                    method=payload.method,
+                    available=False,
+                    unavailable_reason=f"provider_not_configured:{exc.__class__.__name__}",
+                )
+            )
 
     # De-duplicate by provider_name so a doubly-configured org doesn't
     # quote itself twice (and rank one against the other).

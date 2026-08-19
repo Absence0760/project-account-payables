@@ -74,6 +74,7 @@ from app.services.vendor_enrichment import (
     suggest_fields,
 )
 from app.services.vendor_merge import VendorMergeError, merge_vendors
+from app.services.vendor_screening import screen_best_effort
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
 
 router = APIRouter(prefix="/enrichment", tags=["enrichment"])
@@ -762,7 +763,7 @@ async def apply_vendor_enrichment(
     vendor_id: uuid.UUID,
     body: VendorEnrichmentApplyRequest,
     db: AsyncSession = Depends(get_tenant_db),
-    org: Organization = Depends(get_tenant),  # noqa: ARG001 — tenant chokepoint
+    org: Organization = Depends(get_tenant),
     entity_id: uuid.UUID | None = Depends(get_entity_id),  # noqa: ARG001 — tenant chokepoint
     user: User = Depends(require_roles(*_ENRICH_ROLES)),
     org_id: uuid.UUID = Depends(get_org_id),
@@ -834,6 +835,23 @@ async def apply_vendor_enrichment(
             entity_id=vendor.id,
             details={"changes": applied, "source": "enrichment_apply"},
         )
+        # `name` is a screened identity field — `PATCH /api/vendors/{id}`
+        # re-screens whenever it changes, and this path writes the same column,
+        # so it owes the same re-screen. Without it the vendor's denormalised
+        # `screening_status` kept describing the OLD legal name: the payment
+        # gate re-screens on the live name so money was never at risk, but the
+        # periodic re-screen sweep is off by default, so the dashboard and the
+        # review queue could show a stale `clear` indefinitely. Best-effort —
+        # a provider outage must not fail the apply.
+        if "name" in applied:
+            await screen_best_effort(
+                db,
+                vendor=vendor,
+                org_settings=org.settings,
+                org_id=org_id,
+                check_type="initial",
+                actor_id=user.id,
+            )
         await db.commit()
         await db.refresh(vendor)
 

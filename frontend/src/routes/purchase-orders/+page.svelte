@@ -76,6 +76,7 @@
 	$effect(() => {
 		orgCurrency.ensureLoaded();
 		void loadPos();
+		void fetchCounts();
 	});
 
 	// A status chip is a discrete action, so it fetches immediately — it used
@@ -108,6 +109,9 @@
 		if (searchTimer) clearTimeout(searchTimer);
 		searchTimer = setTimeout(() => {
 			void loadPos({ search: q, status: untrack(() => statusFilter) });
+			// The tallies are search-scoped too — a chip count that ignored the
+			// active search would contradict the list under it.
+			void fetchCounts({ search: q });
 		}, 250);
 		// Cancel a pending debounce on teardown: without it the timer fires
 		// after the page is gone and lands a stale list into the shared store.
@@ -172,15 +176,88 @@
 		}
 	}
 
+	// Whole-set status tallies from GET /api/purchase-orders/counts (search-aware,
+	// entity-scoped) — the same contract `/api/vendors/counts` and
+	// `/api/payments/counts` already serve. Without them the only number this
+	// page has is `total`, which counts the ACTIVE filter's result set: rendering
+	// it on the All chip while another chip was active labelled the filtered
+	// count "All", so it could only be shown while All was itself active, and the
+	// other chips could carry no count at all.
+	//
+	// It degrades to exactly that older behaviour when the endpoint isn't
+	// reachable: `countsUnavailable` latches the first failure so a search
+	// keystroke can't re-issue a request already known to fail, nothing is
+	// toasted, and the chips simply lose their badges rather than showing a wrong
+	// or blank number.
+	let statusCounts = $state<Record<string, number>>({});
+	let countsTotal = $state<number | null>(null);
+	let countsUnavailable = false;
+
+	// Its own sequencer: the counts are an independent request stream from the
+	// list (a shared counter would let a counts response retire the list's
+	// in-flight one), and two debounced searches can otherwise land out of order
+	// and leave the chips describing a search the table isn't showing.
+	const countsSequence = createRequestSequencer();
+
+	async function fetchCounts(opts: { search?: string } = {}) {
+		if (countsUnavailable) return;
+		const token = countsSequence.start();
+		try {
+			const params = new URLSearchParams();
+			const q = (opts.search ?? '').trim();
+			if (q) params.set('search', q);
+			const qs = params.toString();
+			const data = await api.get<{ total: number; by_status: Record<string, number> }>(
+				`/api/purchase-orders/counts${qs ? `?${qs}` : ''}`
+			);
+			if (!countsSequence.canCommit(token)) return;
+			statusCounts = data.by_status ?? {};
+			countsTotal = data.total ?? 0;
+		} catch {
+			if (!countsSequence.isCurrentRequest(token)) return;
+			countsUnavailable = true;
+			statusCounts = {};
+			countsTotal = null;
+		}
+	}
+
+	// Prefer the whole-set tallies; fall back to the filtered `total`, and only
+	// while All is the active filter — the one case where that number IS the
+	// whole-set count.
+	let allCount = $derived(
+		countsTotal !== null ? countsTotal : statusFilter === 'all' ? total : undefined
+	);
+
+	let statusChips = $derived([
+		{ key: 'all', label: m('common.all'), count: allCount },
+		{ key: 'open', label: m('purchaseOrders.filter.open'), count: statusCounts.open },
+		{ key: 'closed', label: m('purchaseOrders.filter.closed'), count: statusCounts.closed },
+		{
+			key: 'cancelled',
+			label: m('purchaseOrders.filter.cancelled'),
+			count: statusCounts.cancelled
+		}
+	]);
+
+	// The detail modal is a THIRD independent request stream, so it gets its own
+	// sequencer: open a PO, close it, open another, and the first response can
+	// land in the dialog now showing the second — the wrong line items under the
+	// right PO number. Same shape as `/goods-receipts`.
+	const detailSequence = createRequestSequencer();
+
 	async function loadDetail(id: string) {
+		const token = detailSequence.start();
 		detailLoading = true;
 		try {
-			detail = await api.get<PODetail>(`/api/purchase-orders/${id}`);
+			const data = await api.get<PODetail>(`/api/purchase-orders/${id}`);
+			if (!detailSequence.canCommit(token)) return;
+			detail = data;
 		} catch (err) {
+			if (!detailSequence.isCurrentRequest(token)) return;
 			toast(err instanceof Error ? err.message : m('purchaseOrders.toast.loadFailed'), 'error');
 			detailId = null;
 		} finally {
-			detailLoading = false;
+			if (detailSequence.isCurrentRequest(token)) detailLoading = false;
 		}
 	}
 
@@ -189,7 +266,8 @@
 		try {
 			const result = await api.post<{ message: string }>('/api/purchase-orders/sync-erp', {});
 			toast(result.message, 'success');
-			await loadPos({ search, status: statusFilter });
+			// A sync imports POs, so the tallies moved too.
+			await Promise.all([loadPos({ search, status: statusFilter }), fetchCounts({ search })]);
 		} catch (err) {
 			toast(err instanceof Error ? err.message : m('purchaseOrders.toast.syncFailed'), 'error');
 		} finally {
@@ -213,19 +291,7 @@
 
 	<div class="filter-row">
 		<SearchBox bind:value={search} placeholder={m('purchaseOrders.search.placeholder')} ariaLabel={m('purchaseOrders.search.aria')} />
-		<FilterChips
-			chips={[
-				// `total` counts the CURRENT filter's result set, not the whole one,
-				// so rendering it on the All chip while another chip is active
-				// labelled the filtered count "All". Show it only while All IS the
-				// active filter, where the number is true.
-				{ key: 'all', label: m('common.all'), ...(statusFilter === 'all' ? { count: total } : {}) },
-				{ key: 'open', label: m('purchaseOrders.filter.open') },
-				{ key: 'closed', label: m('purchaseOrders.filter.closed') },
-				{ key: 'cancelled', label: m('purchaseOrders.filter.cancelled') }
-			]}
-			bind:active={statusFilter}
-		/>
+		<FilterChips chips={statusChips} bind:active={statusFilter} />
 	</div>
 
 	<DataTable

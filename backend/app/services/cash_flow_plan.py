@@ -54,6 +54,11 @@ class PlanPeriod:
     outflow: Decimal
     closing: Decimal
     below_threshold: bool
+    # Commitments folded into this period's outflow at FACE VALUE in a currency
+    # we could not convert (see `services.analytics.bucket_outflows`). The
+    # balance carries forward, so one such row makes this period's `closing` —
+    # and every later period's — a figure to resolve, not to act on.
+    unconverted_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -68,6 +73,10 @@ class PlanArtifact:
     total_outlay_selected: Decimal
     selected_offer_ids: list[str]
     unretimed_offer_ids: list[str]
+    # Plan-wide total of the per-period counts above. Non-zero means the
+    # proposed pay schedule mixes currencies, so `first_shortfall_period` may
+    # be a shortfall that does not exist (or may hide one that does).
+    unconverted_count: int = 0
 
 
 def assemble_plan(
@@ -123,6 +132,11 @@ def assemble_plan(
                     "committed": True,
                     "discount_date": None,
                     "discount_percent": None,
+                    # A re-timed row is only ever built from an offer the
+                    # optimizer did NOT flag `unconvertible` (see above), so it
+                    # is convertible by construction. Stated rather than
+                    # implied so the flag survives the row swap.
+                    "unconverted": False,
                 }
             )
         else:
@@ -151,6 +165,7 @@ def assemble_plan(
                 outflow=Decimal(str(p["outflow"])),
                 closing=Decimal(str(p["closing"])),
                 below_threshold=below,
+                unconverted_count=int(p.get("unconverted_count", 0) or 0),
             )
         )
 
@@ -165,6 +180,7 @@ def assemble_plan(
         total_outlay_selected=optimizer_result.total_outlay_selected,
         selected_offer_ids=[r.opportunity.offer_id for r in selected],
         unretimed_offer_ids=unretimed_offer_ids,
+        unconverted_count=sum(p.unconverted_count for p in periods),
     )
 
 

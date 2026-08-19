@@ -199,6 +199,12 @@ async def run_agent(
                     evaluation=evaluation,
                     actor_id=actor_id,
                     actor_roles=actor_roles,
+                    # The tenant's OWN config, not the platform defaults. The
+                    # resolvers hand this to `approve_invoice` /
+                    # `refresh_warnings` exactly as every HTTP approval door
+                    # does — otherwise a fraud rule the org disabled still opens
+                    # a payment-blocking exception, unattended.
+                    org_settings=org_settings,
                 )
         except (NotApprovable, HTTPException) as exc:
             # Two families of refusal, one outcome — an escalation with a

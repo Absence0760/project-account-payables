@@ -194,6 +194,8 @@
   "invoiceEditNotSet": "Não definida",
   "invoiceEditInvalidAmount": "Insira um valor válido (ex.: 1234,56)",
   "invoiceEditClearDueDate": "Limpar data de vencimento",
+  "invoiceEditLockedNotice": "Aprovada — o beneficiário e o valor estão bloqueados. Para alterá-los, rejeite a fatura, corrija-a e aprove novamente.",
+  "invoiceEditLockedHelper": "Bloqueado após a aprovação",
   "invoiceEditDueDateHint": "Data de vencimento, atualmente {value}. Toque duas vezes para alterar.",
   "warningsSectionTitle": "Avisos e alertas de fraude",
   "warningsPoMatchTitle": "Conciliação de pedido",

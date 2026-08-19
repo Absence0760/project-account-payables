@@ -43,17 +43,49 @@ admin_router = APIRouter(prefix="/organization/email-intake", tags=["email-intak
 
 
 def _ack() -> JSONResponse:
-    """Opaque 200 ack — the SAME body on every outcome once the request has
-    passed signature verification: unknown/disabled intake token, no usable
-    attachment, an internal processing failure, or genuine success.
+    """Opaque 200 ack — the SAME body on every *decision* the handler reaches
+    once the request has passed signature verification: unknown/disabled intake
+    token, duplicate delivery, no usable attachment, or genuine success.
 
     Anyone holding the platform-wide ``FEOH_EMAIL_INTAKE_SIGNING_SECRET`` (shared
     across all tenants, since the provider doesn't know tenants) could
     otherwise grind per-tenant intake tokens by watching for ``tenant_slug`` to
     populate in the response body. Per-request detail is logged server-side
     only. Mirrors ``slack_approvals.py``'s ``_ack`` helper.
+
+    Deliberately NOT used for OUR OWN failures — see :func:`_retry_please`.
     """
     return JSONResponse({"status": "received"})
+
+
+def _retry_please() -> Response:
+    """Bodyless ``503`` — the ONE outcome that is not a decision.
+
+    A decision (unknown token, duplicate, no usable attachment, success) is a
+    final answer about *this* message and gets the uniform ack above. A failure
+    of OURS — S3 unreachable, the tenant DB down, Redis flapping — is not an
+    answer at all: the message is still the vendor's unprocessed invoice.
+
+    ``email_intake.process_inbound_email`` already releases its Redis dedup
+    claim and re-raises on exactly those failures, commenting that this "lets
+    the NEXT delivery of the same message_id actually retry the work". Acking
+    ``200`` told SES / Mailgun the message was delivered, so there *was* no next
+    delivery: the release-on-failure code was preparing for a retry that could
+    never come, and the invoice was gone with only a log line behind it.
+
+    The trade-off this reopens is bounded and deliberate. The uniform ack exists
+    because the intake signing secret is platform-wide, so a response that
+    varies by outcome is an oracle for a per-tenant intake token. A 5xx on OUR
+    failure narrows that oracle to "while the platform is already broken" — an
+    attacker learns only that something inside us threw, never whose token they
+    guessed, and only during an outage. Losing every invoice that arrives during
+    a blip is the larger harm. ``api/billing_webhook.py`` faced the identical
+    choice and went this way already; ``api/erp_webhook.py`` now matches.
+
+    Bodyless so the response itself still carries nothing — no detail, no stack
+    trace, no tenant.
+    """
+    return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
 # ---------------------------------------------------------------------------
@@ -76,11 +108,12 @@ async def inbound_webhook(
     # body) return 204 silently so the response can't be used to enumerate
     # which providers / signing secrets / payload shapes the tenant accepts.
     # Distinct 4xx codes leaked that information. Once the signature verifies,
-    # every remaining outcome — unknown/disabled intake token, duplicate
-    # delivery, no usable attachments, a processing exception, or genuine
-    # success — returns the SAME opaque 200 ack via `_ack()` below, so the
-    # per-tenant intake token can't be enumerated either (see `_ack`'s
-    # docstring).
+    # every *decision* — unknown/disabled intake token, duplicate delivery, no
+    # usable attachments, or genuine success — returns the SAME opaque 200 ack
+    # via `_ack()`, so the per-tenant intake token can't be enumerated either.
+    # The one exception is a failure of OURS, which returns a bodyless 503 so
+    # the provider redelivers instead of the invoice being lost (see
+    # `_retry_please`).
     parser = get_parser(provider)
     if parser is None:
         logger.warning("Email intake: unknown provider %s", provider)
@@ -125,9 +158,12 @@ async def inbound_webhook(
 
     try:
         result = await process_inbound_email(ctrl_db, payload)
-    except Exception:  # noqa: BLE001 — never surface a stack trace / 500 on a public route
+    except Exception:  # noqa: BLE001 — never surface a stack trace on a public route
+        # OUR failure, not a decision about the message. `process_inbound_email`
+        # has already released its dedup claim precisely so the next delivery
+        # can retry — ask for that delivery. Bodyless, so nothing leaks.
         logger.exception("Email intake: processing failed for provider=%s", provider)
-        return _ack()
+        return _retry_please()
 
     # Log the real outcome server-side only; the response is a uniform ack
     # regardless of tenant/token resolution so it can't be used as an oracle.

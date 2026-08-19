@@ -259,6 +259,67 @@ async def test_match_suggestions_amount_and_date_window(realdb):
     assert len(ids) == 1
 
 
+async def _make_txn_currency(realdb, *, currency, amount="100.00", txn_date="2026-06-01"):
+    csv_bytes = _csv(
+        _HEADER,
+        f"t-{uuid.uuid4().hex[:8]},{txn_date},,Hotel,{amount},{currency},1234,c",
+    )
+    async with realdb.client(key="a", role="ap_manager") as c:
+        await c.post(
+            "/api/corporate-card-transactions/import-csv",
+            files={"file": ("cards.csv", csv_bytes, "text/csv")},
+        )
+        rows = (await c.get("/api/corporate-card-transactions")).json()["items"]
+    return rows[0]["id"]
+
+
+async def _make_expense_currency(
+    realdb, *, currency, amount="100.00", expense_date="2026-06-01", merchant="Hotel"
+):
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        resp = await c.post(
+            "/api/expenses",
+            json={
+                "expense_date": expense_date,
+                "merchant": merchant,
+                "amount": amount,
+                "currency": currency,
+            },
+        )
+    return resp.json()["id"]
+
+
+async def test_match_suggestions_are_currency_scoped(realdb):
+    """A €100.00 expense is not the same money as a $100.00 card line. Without
+    a currency predicate the candidate query offered it as an *exact-amount*
+    suggestion and one click linked them."""
+    txn_id = await _make_txn_currency(realdb, currency="USD", amount="100.00")
+    eur_expense = await _make_expense_currency(realdb, currency="EUR", amount="100.00")
+    usd_expense = await _make_expense_currency(realdb, currency="USD", amount="100.00")
+
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        resp = await c.get(f"/api/corporate-card-transactions/{txn_id}/match-suggestions")
+    assert resp.status_code == 200, resp.text
+    ids = [s["expense"]["id"] for s in resp.json()]
+    assert usd_expense in ids
+    assert eur_expense not in ids
+
+
+async def test_match_refuses_a_cross_currency_pair(realdb):
+    """The suggestion query is a convenience; the client can send any
+    `expense_id`, so `/match` is the control and re-checks."""
+    txn_id = await _make_txn_currency(realdb, currency="USD", amount="100.00")
+    eur_expense = await _make_expense_currency(realdb, currency="EUR", amount="100.00")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            f"/api/corporate-card-transactions/{txn_id}/match",
+            json={"expense_id": eur_expense},
+        )
+    assert resp.status_code == 409, resp.text
+    assert "Currency mismatch" in resp.json()["detail"]
+
+
 # ---------------------------------------------------------------------------
 # Match / unmatch round-trip + both-sides linkage + payment_method
 # ---------------------------------------------------------------------------
@@ -423,6 +484,74 @@ async def test_ignore_card_transaction(realdb):
         resp = await c.post(f"/api/corporate-card-transactions/{txn_id}/ignore")
     assert resp.status_code == 200, resp.text
     assert resp.json()["reconciliation_status"] == "ignored"
+
+
+async def test_ignore_refuses_a_matched_transaction(realdb):
+    """`ignore` used to flip the status unconditionally while leaving both FK
+    legs set, stranding the pair: `/unmatch` 409s ("not matched") and `/match`
+    / `/create-expense` 409 ("already matched"). Every other mutation on this
+    router declares its legal source state."""
+    txn_id = await _make_txn(realdb)
+    expense_id = await _make_expense(realdb)
+    async with realdb.client(key="a", role="ap_manager") as c:
+        matched = await c.post(
+            f"/api/corporate-card-transactions/{txn_id}/match",
+            json={"expense_id": expense_id},
+        )
+        assert matched.status_code == 200, matched.text
+
+        ignored = await c.post(f"/api/corporate-card-transactions/{txn_id}/ignore")
+        assert ignored.status_code == 409, ignored.text
+        assert "unmatch" in ignored.json()["detail"].lower()
+
+        # Still matched, and still reversible.
+        unmatched = await c.post(f"/api/corporate-card-transactions/{txn_id}/unmatch")
+        assert unmatched.status_code == 200, unmatched.text
+        after = await c.post(f"/api/corporate-card-transactions/{txn_id}/ignore")
+        assert after.status_code == 200, after.text
+        assert after.json()["reconciliation_status"] == "ignored"
+
+
+async def test_import_csv_keeps_negative_refund_rows(realdb):
+    """`CorporateCardTransactionBase.amount` deliberately omits `ge=0` — a card
+    refund / merchant credit is a real negative line on the feed. `import-csv`
+    is the only route that creates feed rows, so rejecting `amount < 0` made
+    the documented allowance unreachable and dropped every refund line."""
+    mk = realdb.sessionmaker("a")
+    ext = f"refund-{uuid.uuid4().hex[:8]}"
+    csv_bytes = _csv(_HEADER, f"{ext},2026-06-05,,Delta,-125.00,USD,1234,corp-card-a")
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/corporate-card-transactions/import-csv",
+            files={"file": ("cards.csv", csv_bytes, "text/csv")},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["imported"] == 1
+    assert body["errors"] == []
+
+    async with mk() as s:
+        row = (
+            await s.execute(
+                select(CorporateCardTransaction).where(
+                    CorporateCardTransaction.external_txn_id == ext
+                )
+            )
+        ).scalar_one()
+        assert row.amount == Decimal("-125.00")  # exact Numeric, never float
+
+
+async def test_import_csv_still_rejects_an_unparseable_amount(realdb):
+    csv_bytes = _csv(_HEADER, "bad-amt,2026-06-05,,Delta,not-a-number,USD,1234,c")
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/corporate-card-transactions/import-csv",
+            files={"file": ("cards.csv", csv_bytes, "text/csv")},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["imported"] == 0
+    assert body["errors"]
 
 
 # ---------------------------------------------------------------------------

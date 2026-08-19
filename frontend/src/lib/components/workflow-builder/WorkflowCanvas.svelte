@@ -254,14 +254,17 @@
 		border-radius: 4px;
 	}
 
+	/* Not `<Badge>`: TRUE/FALSE edge labels on a condition node — 0.7rem square
+	   tags sized to sit on a canvas connector, where a status pill's metrics
+	   would swamp the node. Colour comes from the palette pairs. */
 	.branch-tag.true {
-		background: rgba(31, 168, 106, 0.15);
-		color: #1fa86a;
+		background: var(--success-tint);
+		color: var(--success-on-tint);
 	}
 
 	.branch-tag.false {
-		background: rgba(224, 64, 64, 0.12);
-		color: var(--danger);
+		background: var(--danger-tint);
+		color: var(--danger-on-tint);
 	}
 
 	.parallel-summary {
@@ -277,11 +280,13 @@
 		margin-top: 3px;
 	}
 
+	/* Not `<Badge>`: a branch NAME + approver count rendered inside a canvas
+	   node, several to a row at 0.72rem. Colour comes from the palette pair. */
 	.parallel-branch {
 		padding: 1px 7px;
 		border-radius: 10px;
-		background: rgba(99, 140, 255, 0.12);
-		color: var(--accent);
+		background: var(--accent-tint);
+		color: var(--accent-on-tint);
 		font-size: 0.72rem;
 	}
 </style>

@@ -75,9 +75,25 @@ service reuses the shipped package wholesale (no UBL duplication):
 
 ```
 invoice_to_einvoice_document(invoice, line_items, BuyerIdentity)
-  → assert_valid(doc)          # check_tax=True → hard reject (422)
+  → assert_valid(doc)              # check_tax=True → hard reject (422)
+  → stamp EndpointIDs from the participant ids
+  → assert_bis3_conformant(doc)    # profile claim → hard reject (422)
   → generate_ubl(doc) -> bytes
 ```
+
+**The parties' electronic addresses ARE the AS4 participant ids.** BT-34 /
+BT-49 (`cac:Party/cbc:EndpointID` + `@schemeID`) are mandatory in BIS Billing
+3.0 but live only on the transport arguments, so the send service stamps them
+onto the document before serializing: the receiver is the counterparty this
+invoice names as **seller**, the sender is us — the document's **buyer**.
+
+**The send path refuses a non-conformant document.** The transmission declares
+`PEPPOL_BIS_BILLING_DOCTYPE`, which *asserts* EN 16931 / BIS Billing 3.0
+conformance, so `assert_bis3_conformant` runs before `generate_ubl`: a document
+that provably does not meet the profile (no endpoint id, no VAT breakdown, a
+line with no VAT category, a seller with no country) never leaves the building.
+PII-free `field: code` body, mapped to 422 at the route. See
+`backend/docs/e-invoicing.md` § PEPPOL BIS Billing 3.0 conformance.
 
 The buyer identity is built by the existing
 `invoices._buyer_identity_from_org` helper. **SBDH** (Standard Business
@@ -204,7 +220,11 @@ log line or the body.
 6. In a short-lived tenant session: dedupe pre-check → parse/validate the
    payload with the **existing** `e_invoice.parse_e_invoice` (malformed →
    204, no invoice) → create `Invoice(status=new)` (vendor/amount/currency from
-   the UBL; **amount is `Decimal`**) → claim the dedupe slot
+   the UBL; **amount is `Decimal`**) → freeze the invoice's `WorkflowInstance`
+   snapshot (`create_workflow_instance`, same as every other ingress — without
+   it a later workflow-definition edit retroactively governs an already-ingested
+   invoice and the invoice is invisible to every step-based read; see
+   `backend/docs/workflow-snapshots.md`) → claim the dedupe slot
    (`PeppolTransmission(direction="inbound", status="delivered", message_id=…)`,
    flushed **before** the S3 upload) → upload the raw payload to S3 →
    `invoice.peppol_received` audit row (PII-free details) → commit.

@@ -58,6 +58,7 @@ from app.api import (
     reports,
     requisitions,
     retention,
+    scheduled_reports,
     scim,
     signup,
     slack_approvals,
@@ -388,6 +389,10 @@ app.include_router(credit_memos.router, prefix="/api")
 app.include_router(discounts.router, prefix="/api")
 app.include_router(recurring.router, prefix="/api")
 app.include_router(reports.router, prefix="/api")
+# Mounted at /api/analytics/scheduled-reports. Registered separately from
+# analytics.router (which has no top-level path-param route, so there is no
+# shadowing) to keep the CRUD surface out of that 1700-line module.
+app.include_router(scheduled_reports.router, prefix="/api")
 app.include_router(enrichment.router, prefix="/api")
 app.include_router(entities.router, prefix="/api")
 app.include_router(erp_webhook.router, prefix="/api")

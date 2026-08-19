@@ -252,6 +252,7 @@ async def create_offer(
     user: User = Depends(require_roles(*_WRITE_ROLES)),
     org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID = Depends(get_write_entity_id),
+    scope_entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     tiers = offers_svc.parse_tiers([t.model_dump() for t in body.tiers])
 
@@ -261,8 +262,24 @@ async def create_offer(
     if body.scope == OFFER_SCOPE_INVOICE:
         if not body.invoice_id:
             raise HTTPException(status_code=422, detail="invoice_id required for invoice scope")
+        # Scope the lookup to the caller's SELECTED entity, exactly as
+        # `payment_runs.create_payment_run_for_invoices` and the credit-memo
+        # path do. `entity_id` above is the write scope (what the new row is
+        # STAMPED with); without this filter an operator with subsidiary A
+        # selected could raise an offer stamped A against subsidiary B's
+        # invoice — the offer then shows in A's queue while pricing B's
+        # payable. Advisory data, never money, but the sibling money path was
+        # fixed for exactly this shape and the two must not diverge. An
+        # out-of-scope id is the same opaque 404 as a missing one, so the
+        # response can't enumerate another entity's invoices.
         invoice = (
-            await db.execute(select(Invoice).where(Invoice.id == uuid.UUID(body.invoice_id)))
+            await db.execute(
+                apply_entity_scope(
+                    select(Invoice).where(Invoice.id == uuid.UUID(body.invoice_id)),
+                    Invoice,
+                    scope_entity_id,
+                )
+            )
         ).scalar_one_or_none()
         if invoice is None:
             raise HTTPException(status_code=404, detail="Invoice not found")

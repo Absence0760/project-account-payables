@@ -55,12 +55,27 @@ const CASES: Case[] = [
 		before: async (page) => {
 			await page.getByRole('button', { name: /History/ }).click();
 		}
+	},
+	{
+		// The queue was the last payments list still conflating the three states.
+		// It matters most here: "No invoices ready for payment." is a claim about
+		// MONEY OWED, and it was rendered both while the fetch was in flight and
+		// permanently after a failed one. Queue is the default tab, so no `before`.
+		name: 'payments (queue tab)',
+		route: '/payments',
+		apiPathname: '/api/payments/queue',
+		notShown: /No invoices ready for payment/,
+		shown: /Could not load the payment queue/
 	}
 ];
 
 for (const c of CASES) {
 	test(`${c.name}: a failed load renders an error, not "nothing matched"`, async ({ page }) => {
-		await page.route(`**${c.apiPathname}?*`, async (route) => {
+		// `*` not `?*`: `/api/payments/queue` is fetched with no query string at
+		// all, so a glob requiring one never intercepts it. Widening is safe —
+		// the handler below continues anything whose pathname isn't an exact
+		// match, which is what already kept `/api/payments` off `/api/payments/queue`.
+		await page.route(`**${c.apiPathname}*`, async (route) => {
 			const url = new URL(route.request().url());
 			if (url.pathname !== c.apiPathname) {
 				await route.continue();

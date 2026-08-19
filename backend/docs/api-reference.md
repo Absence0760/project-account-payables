@@ -193,6 +193,7 @@ See [`docs/self-service-signup.md`](../../docs/self-service-signup.md) for the f
 |----------|-------------------------------------|-------|-------------|
 | `GET`    | `/api/invoices`                     | *     | List invoices (paginated, filterable). Returns `priors_summary` and `po_match` per row when applicable. |
 | `GET`    | `/api/invoices/counts`              | *     | Per-status tallies for the list-page filter chips — `{counts: {status: n}, total}` via a server-side GROUP BY over the whole tenant (accurate past the page window). |
+| `GET`    | `/api/invoices/assignable-reviewers` | admin/manager | Candidate approvers for `POST /api/invoices/{id}/assign` — a bare list of `{id, full_name, is_active}` for the org's ACTIVE users holding a role that confers `invoice.approve` (resolved via `effective_permissions`, so a custom role granting it is offered). Deliberately narrower than `GET /api/admin/users`: **no email, no roles, no audit metadata** — that projection is what makes the admin directory admin-only, and none of it is needed to pick an approver. RBAC mirrors `/assign` exactly (admin + ap_manager); the picker used to source the admin route and 403'd for every other role, so an invoice on a `approver_strategy: "manual"` workflow could not be submitted at all. |
 | `GET`    | `/api/invoices/{id}`                | *     | Get single invoice — includes the latest `po_match` JSONB result and any `warnings` |
 | `GET`    | `/api/invoices/{id}/priors`         | *     | Priors metadata from latest extraction (vendor cache + RAG neighbors). See [`ai-extraction.md`](ai-extraction.md). |
 | `GET`    | `/api/invoices/{id}/line-items`     | *     | Get invoice line items |
@@ -295,6 +296,7 @@ See [`access-reviews.md`](access-reviews.md).
 | `POST`   | `/api/vendors/{id}/verify`      | admin/manager | Promote `unverified` → `active` |
 | `POST`   | `/api/vendors/{id}/reject`      | admin/manager | Mark `rejected` |
 | `POST`   | `/api/vendors/sync-erp`         | admin/manager | Pull vendors from connected ERP |
+| `GET`    | `/api/vendors/change-requests/counts`  | admin/manager/cfo | Whole-set tallies for the dual-control queue (`{total, pending, by_status}`); counts only, PII-free — drives the nav badge |
 | `GET`    | `/api/vendors/change-requests`  | admin/manager | Pending supplier change-request queue (`?status=`); proposed value masked |
 | `GET`    | `/api/vendors/{id}/change-requests` | admin/manager/cfo | One vendor's change requests; value revealed |
 | `POST`   | `/api/vendors/change-requests/{id}/approve` | admin/manager | Apply staged bank/tax change to the vendor (exactly-once) |
@@ -305,6 +307,7 @@ See [`access-reviews.md`](access-reviews.md).
 | Method | Path                           | Roles | Description |
 |--------|--------------------------------|-------|-------------|
 | `GET`  | `/api/purchase-orders`         | * | List POs (filterable by `status`, `vendor_id`, `search`) |
+| `GET`  | `/api/purchase-orders/counts`  | * | Whole-set status tallies for the filter chips — `{total, by_status}`, entity-scoped, honours `search` + `vendor_id` (but not `status`, the dimension being tallied). Mirrors `GET /api/vendors/counts`; the list's `total` counts only the ACTIVE filter's result set, so it can't label the All chip. |
 | `POST` | `/api/purchase-orders/sync-erp` | admin/manager | Pull POs from connected ERP |
 
 ## GL Accounts
@@ -324,7 +327,7 @@ All payment endpoints require `admin/manager/cfo`.
 | `GET`  | `/api/payments`               | List payments (filterable by `status`, `method`, `invoice_id`, `search`, amount range) |
 | `GET`  | `/api/payments/{id}`          | Get one payment |
 | `POST` | `/api/payments`               | Create payment for an invoice |
-| `GET`  | `/api/payments/queue`         | Approved invoices sorted by due date |
+| `GET`  | `/api/payments/queue`         | Approved invoices sorted by due date. Each row carries `blocked` / `blocked_reason` — whether an unresolved `PAYMENT_BLOCKING_EXCEPTION_TYPES` exception means `POST /api/payments/runs` would refuse it, and which type. Reason is a fixed vocabulary code, never the exception's description. |
 | `GET`  | `/api/payments/summary`       | Totals: paid, pending, queue count, rebates earned |
 | `GET`  | `/api/payments/runs/`         | List payment runs |
 | `POST` | `/api/payments/runs`          | Create a payment run |
@@ -415,6 +418,24 @@ Used by 3-way matching. `admin` / `ap_manager` / `ap_clerk`.
 | `POST` | `/api/credit-memos/{id}/apply`     | admin, ap_manager | Apply an `open` credit memo against a payable |
 | `POST` | `/api/credit-memos/{id}/void`      | admin, ap_manager | Void an `open` memo (409 once `applied` — applied memos are immutable for audit) |
 
+### `currency` is resolved, never defaulted to USD
+
+`CreditMemoCreate.currency` is **optional**. The create endpoint resolves it in
+three rungs:
+
+1. what the caller asserted (normalised to upper case);
+2. the named invoice's own `currency`, when `invoice_id` is supplied — the memo
+   *inherits* rather than asserting;
+3. the org's reporting currency (`services/currency_conversion.resolve_reporting_currency`,
+   which itself falls back to `FEOH_REPORTING_CURRENCY_DEFAULT`).
+
+The schema used to default to a hardcoded `"USD"`, which dead-ended every
+non-USD tenant: the memo was stamped USD, guard 2 below then 409'd it against
+the EUR invoice on the very same request, and — because there is **no PATCH on
+credit memos** — the row could never be applied or corrected. An explicitly
+asserted currency is still checked against the invoice, so inheriting is not a
+way to launder a real mismatch.
+
 ### Applying a credit — the guards
 
 Both application paths (`POST /api/credit-memos` with an `invoice_id`, and
@@ -430,7 +451,8 @@ enforce, in order, three 409s:
    for any invoice created without extraction — see
    `_assert_vendor_matches` in `app/api/credit_memos.py`.)
 2. **Currency must match** — the remaining-balance math subtracts the amounts
-   directly, so a EUR memo on a USD invoice would corrupt it.
+   directly, so a EUR memo on a USD invoice would corrupt it. This fires only
+   on a currency the caller actually asserted (see below).
 3. **No over-application** — the sum of `applied` memos on an invoice may never
    exceed the invoice amount (a credit past the balance would mint a negative
    payable).

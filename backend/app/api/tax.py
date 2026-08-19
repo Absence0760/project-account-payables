@@ -41,6 +41,7 @@ from app.models.organization import Organization
 from app.models.tax_filing import Tax1099Filing
 from app.models.user import User
 from app.models.vendor import Vendor
+from app.services.audit_dispatch import dispatch_audit
 from app.services.branding import get_brand_context
 from app.services.currency_conversion import resolve_reporting_currency
 from app.services.storage import (
@@ -150,6 +151,7 @@ async def update_vendor_w9_fields(
     body: W9UpdateRequest,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    org_id: uuid.UUID = Depends(get_org_id),
 ):
     """Update W-9 / tax fields on a vendor without uploading a new file."""
     vendor = await _get_vendor_or_404(db, vendor_id)
@@ -157,6 +159,18 @@ async def update_vendor_w9_fields(
     data = body.model_dump(exclude_unset=True)
     for key, value in data.items():
         setattr(vendor, key, value)
+    # PII-free: the FIELD NAMES that changed, never their values — `tax_id` is
+    # one of them, and a TIN must never reach the audit trail (invariant #7).
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="vendor.tax_fields_updated",
+        entity_type="vendor",
+        entity_id=vendor.id,
+        details={"changed_fields": sorted(data.keys())},
+    )
     await db.commit()
     await db.refresh(vendor)
     return _vendor_tax_response(vendor)
@@ -192,6 +206,22 @@ async def upload_vendor_w9(
     vendor.is_1099_eligible = is_1099_eligible
     if tax_classification:
         vendor.tax_classification = tax_classification
+    # PII-free: no filename, no object key (the key embeds the uploader's
+    # filename), no TIN — just that a W-9 landed and what it set.
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="vendor.w9_uploaded",
+        entity_type="vendor",
+        entity_id=vendor.id,
+        details={
+            "received_date": vendor.w9_received_date.isoformat(),
+            "is_1099_eligible": vendor.is_1099_eligible,
+            "tax_classification": vendor.tax_classification,
+        },
+    )
     await db.commit()
     await db.refresh(vendor)
     return _vendor_tax_response(vendor)
@@ -209,6 +239,7 @@ async def verify_vendor_tin(
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    org_id: uuid.UUID = Depends(get_org_id),
 ):
     """Validate a vendor's TIN and, on success, stamp ``tin_verified_at``.
 
@@ -240,6 +271,22 @@ async def verify_vendor_tin(
         # A failed/indeterminate re-check clears any prior verification so the
         # dashboard never shows a stale green check against a bad TIN.
         vendor.tin_verified_at = None
+    # PII-free: verdict + provider only. NEVER the TIN, and not the redacted
+    # last-4 either — a durable trail is the wrong place for even a fragment.
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="vendor.tin_verified",
+        entity_type="vendor",
+        entity_id=vendor.id,
+        details={
+            "is_valid": result.is_valid,
+            "provider": adapter.provider_name,
+            "tax_id_replaced": body.tax_id is not None,
+        },
+    )
     await db.commit()
     await db.refresh(vendor)
 
@@ -432,6 +479,28 @@ async def file_1099_batch(
     filing.accepted_count = result.accepted_count
     filing.rejected_count = result.rejected_count
     filing.result = {"forms": result.to_dict()["forms"]}
+    # Filing with the IRS is a regulated, externally-visible act — the trail
+    # records who submitted what and the partner's verdict. PII-free: counts
+    # and the confirmation number, never a recipient name, TIN or box amount.
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="tax_1099.filed",
+        entity_type="tax_1099_filing",
+        entity_id=filing.id,
+        details={
+            "tax_year": filing.tax_year,
+            "form_type": body.form_type,
+            "provider": filing.provider,
+            "status": filing.status,
+            "confirmation_number": filing.confirmation_number,
+            "submitted_count": filing.submitted_count,
+            "accepted_count": filing.accepted_count,
+            "rejected_count": filing.rejected_count,
+        },
+    )
     await db.commit()
     await db.refresh(filing)
     return _filing_response(filing, already_filed=False)

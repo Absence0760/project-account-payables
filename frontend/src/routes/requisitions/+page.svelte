@@ -1,6 +1,9 @@
 <script lang="ts">
-	import type { Requisition } from '$lib/types/requisition';
-	import { REQUISITION_STATUSES, REQUISITION_STATUS_LABELS } from '$lib/types/requisition';
+	import type { Requisition, RequisitionStatus } from '$lib/types/requisition';
+	import {
+		REQUISITION_FILTER_STATUSES,
+		REQUISITION_STATUS_LABELS
+	} from '$lib/types/requisition';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import {
@@ -59,9 +62,24 @@
 	let busyId = $state<string | null>(null);
 	let glAccounts = $state<GlAccountOption[]>([]);
 
+	// Chip statuses = the reachable subset ∪ whatever is ACTIVE. The subset omits
+	// `submitted` because nothing in the backend ever assigns it (see
+	// REQUISITION_FILTER_STATUSES for the enumerated writers) — the chip was a
+	// filter that returned an empty list forever. The union with the active
+	// status is the same `quick subset ∪ active` rule /invoices uses
+	// (frontend/CLAUDE.md § Status filter chips): a bookmarked
+	// `?status=submitted` still renders its chip, so an active filter is never
+	// invisible and the user can always click back to All.
+	const chipStatuses = $derived.by(() => {
+		const active = statusFilter as RequisitionStatus;
+		if (REQUISITION_FILTER_STATUSES.includes(active) || !(active in REQUISITION_STATUS_LABELS))
+			return REQUISITION_FILTER_STATUSES;
+		return [...REQUISITION_FILTER_STATUSES, active];
+	});
+
 	const STATUS_CHIPS = $derived([
 		{ key: 'all', label: m('common.all') },
-		...REQUISITION_STATUSES.map((s) => ({ key: s, label: REQUISITION_STATUS_LABELS[s] }))
+		...chipStatuses.map((s) => ({ key: s, label: REQUISITION_STATUS_LABELS[s] }))
 	]);
 
 	const COLUMNS = $derived([
@@ -74,7 +92,18 @@
 		{ label: '', class: 'actions-col' }
 	]);
 
-	// Client-side text search over the loaded page (number / title / department).
+	// Client-side text search over the rows LOADED SO FAR (number / title /
+	// department). Deliberately not sent server-side: `GET /api/requisitions`
+	// only ILIKEs `requisition_number` + `title`, so switching to `?search=`
+	// would silently drop every department-only match this filter finds today —
+	// a straight regression. The honest interim is not to hide the limitation:
+	// when the term matches nothing among the loaded rows AND more rows exist
+	// server-side, the empty state says exactly that and points at Load more,
+	// instead of asserting "no requisitions match" about rows it never saw.
+	// (Same class of dishonest-UI bug as an unconditional "Showing all N" —
+	// frontend/CLAUDE.md § Pagination + Load more.) Remove this filter and pass
+	// `search` through to `listRequisitions` once the backend list endpoint
+	// grows a `department` leg — tracked in docs/followups.md.
 	const visible = $derived.by(() => {
 		const q = search.trim().toLowerCase();
 		if (!q) return requisitions;
@@ -85,6 +114,16 @@
 				(r.department ?? '').toLowerCase().includes(q)
 		);
 	});
+
+	// Three states, not two: a search that only ever saw the loaded page must
+	// not read as "nothing matched" while unfetched rows remain.
+	const emptyMessage = $derived(
+		loading
+			? m('common.loading')
+			: search.trim() && hasMore
+				? m('requisitions.empty.searchPartial', { shown: requisitions.length, total })
+				: m('requisitions.empty')
+	);
 
 	const pendingCount = $derived(
 		requisitions.filter((r) => r.status === 'pending_approval').length
@@ -315,7 +354,7 @@
 	<DataTable
 		columns={COLUMNS}
 		isEmpty={visible.length === 0}
-		empty={loading ? m('common.loading') : m('requisitions.empty')}
+		empty={emptyMessage}
 	>
 		{#snippet body()}
 			{#each visible as r (r.id)}

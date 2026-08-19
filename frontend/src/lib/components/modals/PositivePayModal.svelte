@@ -8,12 +8,14 @@
 	import {
 		POSITIVE_PAY_FILE_TYPE_LABELS,
 		POSITIVE_PAY_STATUS_LABELS,
+		POSITIVE_PAY_STATUS_TONES,
 		BANK_FORMATS,
 		BANK_FORMAT_LABELS
 	} from '$lib/types/positivePay';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { api } from '$lib/api';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
@@ -266,7 +268,9 @@
 	{:else if detail}
 		<!-- Detail view -->
 		<div class="status-row">
-			<span class="badge {detail.status}">{POSITIVE_PAY_STATUS_LABELS[detail.status]}</span>
+			<Badge tone={POSITIVE_PAY_STATUS_TONES[detail.status]} variant={detail.status}>
+				{POSITIVE_PAY_STATUS_LABELS[detail.status]}
+			</Badge>
 			<span class="meta-pill">{fileTypeLabel(detail.file_type)}</span>
 			<span class="meta-pill">{detail.bank_format}</span>
 			<span class="meta-pill">{formatDate(detail.created_at)}</span>
@@ -355,23 +359,9 @@
 		margin-bottom: 12px;
 		flex-wrap: wrap;
 	}
-	.badge {
-		display: inline-block;
-		padding: 3px 10px;
-		border-radius: 12px;
-		font-size: 0.75rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-	}
-	.badge.generated {
-		background: rgba(31, 168, 106, 0.15);
-		color: #1fa86a;
-	}
-	.badge.returned_processed {
-		background: rgba(212, 148, 10, 0.15);
-		color: #d4940a;
-	}
+	/* The status pill is `<Badge>` now; the tone per status lives beside the
+	   labels in `types/positivePay`, so this modal and the list page can't
+	   drift apart again. */
 	.meta-pill {
 		font-size: 0.72rem;
 		padding: 2px 8px;
@@ -434,17 +424,20 @@
 		background: var(--bg);
 		color: var(--text-muted);
 	}
+	/* Not `<Badge>`: these are counts in a summary row, not a status — they
+	   keep their own denser metrics (8px radius, sentence case) and read as a
+	   group. Only the colour literals are retired to the palette pairs. */
 	.stat-chip.ok {
-		background: rgba(31, 168, 106, 0.12);
-		color: #1fa86a;
+		background: var(--success-tint);
+		color: var(--success-on-tint);
 	}
 	.stat-chip.warn {
-		background: rgba(212, 148, 10, 0.12);
-		color: #d4940a;
+		background: var(--warning-tint);
+		color: var(--warning-on-tint);
 	}
 	.stat-chip.flag {
-		background: rgba(224, 64, 64, 0.12);
-		color: var(--danger);
+		background: var(--danger-tint);
+		color: var(--danger-on-tint);
 	}
 
 	.diff-table {

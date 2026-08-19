@@ -21,15 +21,17 @@ request failing closed.
 The routes are mounted additively in ``app/main.py`` at:
 
 - ``GET /api/v1/openapi.json`` — the machine-readable spec
-- ``GET /api/v1/docs``         — Swagger UI rendered against that spec
+- ``GET /api/v1/docs``         — a self-contained HTML reference rendered from
+  that spec (server-side, no script, no external asset — see
+  ``render_docs_html`` for why not Swagger UI)
 """
 
 from __future__ import annotations
 
+import html
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request, status
-from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import HTMLResponse, JSONResponse
 
@@ -179,10 +181,235 @@ async def public_openapi(request: Request) -> JSONResponse:
 
 
 @router.get("/docs", include_in_schema=False)
-async def public_docs() -> HTMLResponse:
-    """Human-readable Swagger UI for the public ``/api/v1`` surface."""
+async def public_docs(request: Request) -> HTMLResponse:
+    """Human-readable reference for the public ``/api/v1`` surface.
+
+    Rendered from the same document ``/v1/openapi.json`` serves, server-side,
+    with no script and no external asset — see :func:`render_docs_html`.
+    """
     _ensure_enabled()
-    return get_swagger_ui_html(
-        openapi_url=f"{_PUBLIC_PATH_PREFIX}/openapi.json",
-        title="FeohLedger — Public Developer API",
+    return HTMLResponse(
+        render_docs_html(build_public_openapi(request.app)),
+        headers={"Content-Security-Policy": DOCS_CSP},
     )
+
+
+# ---------------------------------------------------------------------------
+# The human-readable page
+# ---------------------------------------------------------------------------
+
+#: Route-scoped CSP for the docs page. Still strict — **no script from any
+#: origin**, nothing third-party, no framing, no base-uri. It differs from the
+#: global `default-src 'none'` only by allowing the page's own inline
+#: stylesheet, which cannot exfiltrate or execute anything.
+#:
+#: `main.SecurityHeadersMiddleware` sets its header with `setdefault`, so a
+#: header the route sets wins. The GLOBAL policy is deliberately left alone: it
+#: is what keeps the API origin unable to load third-party script at all, and
+#: relaxing it for one page would relax it for every JSON response too.
+DOCS_CSP = "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"
+
+_DOCS_STYLE = """
+:root { color-scheme: light dark; }
+body { font: 16px/1.6 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+       margin: 0 auto; max-width: 52rem; padding: 2rem 1.25rem 6rem; }
+h1 { font-size: 1.6rem; margin-bottom: .25rem; }
+h2 { font-size: 1.15rem; margin-top: 2.5rem; border-bottom: 1px solid; padding-bottom: .3rem; }
+h3 { font-size: 1rem; margin-top: 1.75rem; }
+code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
+pre { overflow-x: auto; padding: .75rem; border: 1px solid; border-radius: 6px; }
+table { border-collapse: collapse; width: 100%; margin: .5rem 0 1rem; }
+th, td { text-align: left; padding: .35rem .6rem; border: 1px solid; vertical-align: top; }
+th { font-weight: 600; }
+.op { font-weight: 700; letter-spacing: .04em; }
+.muted { opacity: .75; }
+.req::after { content: " *"; }
+"""
+
+
+def _esc(value: object) -> str:
+    """Escape anything for HTML text. Every value here is server-authored (our
+    own route metadata), but escaping is the invariant, not the audit."""
+    return html.escape("" if value is None else str(value), quote=True)
+
+
+def _schema_label(node: Any) -> str:
+    """A short, human type label for a schema node — no recursion into objects."""
+    if not isinstance(node, dict):
+        return ""
+    ref = node.get("$ref")
+    if isinstance(ref, str):
+        return ref.rsplit("/", 1)[-1]
+    for key in ("allOf", "anyOf", "oneOf"):
+        options = node.get(key)
+        if isinstance(options, list) and options:
+            labels = [_schema_label(o) for o in options]
+            return " | ".join(x for x in labels if x)
+    node_type = node.get("type")
+    if node_type == "array":
+        inner = _schema_label(node.get("items") or {})
+        return f"array[{inner}]" if inner else "array"
+    if isinstance(node_type, str):
+        fmt = node.get("format")
+        return f"{node_type} ({fmt})" if fmt else node_type
+    return ""
+
+
+def render_docs_html(spec: dict[str, Any]) -> str:
+    """Render the published spec as a self-contained HTML page.
+
+    **Why this exists instead of Swagger UI.** ``get_swagger_ui_html``'s only
+    stylesheet, script and favicon are third-party CDN URLs
+    (``cdn.jsdelivr.net``, ``fastapi.tiangolo.com``), while
+    ``main.SecurityHeadersMiddleware`` stamps
+    ``Content-Security-Policy: default-src 'none'`` on every response — so the
+    page loaded, fetched nothing, and rendered blank in any browser honouring
+    the header. Three ways out were on the table:
+
+    1. **Vendor ``swagger-ui-dist`` and serve it from our own origin.** Keeps
+       the CSP strict and works offline, but commits ~1 MB of third-party
+       JavaScript to a public repo and adds a version nobody will remember to
+       bump — a supply-chain artifact acquired for a reference page.
+    2. **Allowlist the CDN in a route-scoped CSP.** Three lines, but it hands a
+       page the platform serves a third-party runtime dependency, and it *still*
+       renders blank offline, which breaks guard rail 7 (local-first).
+    3. **Drop the route** and point integrators at the spec URL. Honest, but a
+       404 on a URL the docs advertise is its own defect.
+
+    This is (1) taken to its minimum: the viewer is served from our own origin
+    and works offline, without the vendored bundle. Server-rendered HTML, no
+    script at all, no external asset of any kind — so the page needs only the
+    one-token CSP relaxation in :data:`DOCS_CSP` (an inline stylesheet), and the
+    global policy is untouched.
+
+    The trade-off is deliberate and worth stating: this is a *reference*, not an
+    interactive console — there is no "Try it out". The machine-readable
+    contract at ``/api/v1/openapi.json`` is what integrators actually consume,
+    and it feeds any client generator or Swagger/Redoc instance they already
+    run. Pure function of the spec, so it can't drift from the routes.
+    """
+    info = spec.get("info") or {}
+    title = info.get("title") or "Public Developer API"
+    parts: list[str] = [
+        "<!doctype html>",
+        '<html lang="en"><head><meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        f"<title>{_esc(title)}</title>",
+        f"<style>{_DOCS_STYLE}</style>",
+        "</head><body>",
+        f"<h1>{_esc(title)}</h1>",
+        f'<p class="muted">Version <code>{_esc(info.get("version"))}</code></p>',
+    ]
+    if info.get("description"):
+        parts.append(f"<p>{_esc(info['description'])}</p>")
+
+    # The spec URL first — it is the actual contract; this page is a reading aid.
+    spec_url = f"{_PUBLIC_PATH_PREFIX}/openapi.json"
+    parts.append(
+        f"<p><strong>Machine-readable contract:</strong> <code>GET {_esc(spec_url)}</code>"
+        " — point any OpenAPI client generator at it.</p>"
+    )
+
+    servers = spec.get("servers") or []
+    if servers:
+        rows = "".join(
+            f"<tr><td><code>{_esc(s.get('url'))}</code></td>"
+            f"<td>{_esc(s.get('description'))}</td></tr>"
+            for s in servers
+        )
+        parts.append(f"<h2>Servers</h2><table><tbody>{rows}</tbody></table>")
+
+    schemes = ((spec.get("components") or {}).get("securitySchemes") or {}).items()
+    if schemes:
+        parts.append("<h2>Authentication</h2>")
+        for _name, scheme in schemes:
+            header = _esc(scheme.get("name"))
+            parts.append(
+                f"<p>Send the header <code>{header}</code>. {_esc(scheme.get('description'))}</p>"
+            )
+
+    parts.append("<h2>Endpoints</h2>")
+    paths = spec.get("paths") or {}
+    if not paths:
+        parts.append('<p class="muted">No endpoints are published.</p>')
+    for path in sorted(paths):
+        item = paths[path] or {}
+        for method in ("get", "post", "put", "patch", "delete"):
+            op = item.get(method)
+            if not isinstance(op, dict):
+                continue
+            parts.append(
+                f'<h3><span class="op">{method.upper()}</span> <code>{_esc(path)}</code></h3>'
+            )
+            if op.get("summary"):
+                parts.append(f"<p>{_esc(op['summary'])}</p>")
+            if op.get("description"):
+                parts.append(f'<p class="muted">{_esc(op["description"])}</p>')
+            parts.append(_render_parameters(op.get("parameters") or []))
+            parts.append(_render_responses(op.get("responses") or {}))
+
+    parts.append(_render_schemas((spec.get("components") or {}).get("schemas") or {}))
+    parts.append("</body></html>")
+    return "".join(p for p in parts if p)
+
+
+def _render_parameters(parameters: list[Any]) -> str:
+    if not parameters:
+        return ""
+    rows = []
+    for param in parameters:
+        if not isinstance(param, dict):
+            continue
+        required = ' class="req"' if param.get("required") else ""
+        rows.append(
+            f"<tr><td><code{required}>{_esc(param.get('name'))}</code></td>"
+            f"<td>{_esc(param.get('in'))}</td>"
+            f"<td>{_esc(_schema_label(param.get('schema') or {}))}</td>"
+            f"<td>{_esc(param.get('description'))}</td></tr>"
+        )
+    if not rows:
+        return ""
+    head = "<tr><th>Parameter</th><th>In</th><th>Type</th><th>Description</th></tr>"
+    return f"<table><thead>{head}</thead><tbody>{''.join(rows)}</tbody></table>"
+
+
+def _render_responses(responses: dict[str, Any]) -> str:
+    rows = []
+    for code in sorted(responses):
+        body = responses[code] if isinstance(responses[code], dict) else {}
+        content = body.get("content") or {}
+        json_schema = (content.get("application/json") or {}).get("schema") or {}
+        rows.append(
+            f"<tr><td><code>{_esc(code)}</code></td>"
+            f"<td>{_esc(body.get('description'))}</td>"
+            f"<td>{_esc(_schema_label(json_schema))}</td></tr>"
+        )
+    if not rows:
+        return ""
+    head = "<tr><th>Status</th><th>Description</th><th>Body</th></tr>"
+    return f"<table><thead>{head}</thead><tbody>{''.join(rows)}</tbody></table>"
+
+
+def _render_schemas(schemas: dict[str, Any]) -> str:
+    if not schemas:
+        return ""
+    parts = ["<h2>Schemas</h2>"]
+    for name in sorted(schemas):
+        schema = schemas[name] if isinstance(schemas[name], dict) else {}
+        parts.append(f"<h3><code>{_esc(name)}</code></h3>")
+        if schema.get("description"):
+            parts.append(f'<p class="muted">{_esc(schema["description"])}</p>')
+        required = set(schema.get("required") or [])
+        rows = []
+        for field, node in (schema.get("properties") or {}).items():
+            marker = ' class="req"' if field in required else ""
+            node = node if isinstance(node, dict) else {}
+            rows.append(
+                f"<tr><td><code{marker}>{_esc(field)}</code></td>"
+                f"<td>{_esc(_schema_label(node))}</td>"
+                f"<td>{_esc(node.get('description'))}</td></tr>"
+            )
+        if rows:
+            head = "<tr><th>Field</th><th>Type</th><th>Description</th></tr>"
+            parts.append(f"<table><thead>{head}</thead><tbody>{''.join(rows)}</tbody></table>")
+    return "".join(parts)

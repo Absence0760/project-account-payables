@@ -58,8 +58,75 @@ class InvoicePayload:
     line_items: list[LineItemPayload] = field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# Failure reason codes — PII-free, stable across providers
+# ---------------------------------------------------------------------------
+
+#: HTTP status → stable, provider-independent reason code for a failed ERP
+#: call. Deliberately coarse: the code is a *routing* signal for an operator
+#: ("we sent something the ERP rejected" vs "our credentials are stale"), not a
+#: diagnosis. The diagnosis lives in the ERP's own error console.
+_HTTP_REASON_CODES: dict[int, str] = {
+    400: "invalid_request",
+    401: "unauthorized",
+    403: "forbidden",
+    404: "not_found",
+    405: "method_not_allowed",
+    409: "conflict",
+    413: "payload_too_large",
+    415: "unsupported_media_type",
+    422: "validation_failed",
+    429: "rate_limited",
+}
+
+
+def erp_failure_reason(status_code: int) -> str:
+    """Map an HTTP status to a stable, PII-free failure reason code.
+
+    Never derived from the response *body*. An ERP's validation error routinely
+    echoes the submitted fields back, and :class:`InvoicePayload` carries
+    ``vendor_tax_id`` / ``vendor_address`` / ``remit_to_address`` /
+    ``bill_to_address``. ``services/erp.py`` raises
+    ``RuntimeError(result.message)`` and stores ``str(exc)`` on the
+    **append-only** ``invoice.erp_failed`` audit row (migration 0022's
+    BEFORE-DELETE trigger) and on ``WorkflowInstance.state_data["last_error"]``;
+    ``audit_log_shipper`` then ships that row to CloudWatch / S3 Object Lock,
+    where it cannot be redacted either. So the message a caller builds from this
+    carries the status code and this code, and nothing the provider wrote.
+    """
+    if status_code in _HTTP_REASON_CODES:
+        return _HTTP_REASON_CODES[status_code]
+    if 500 <= status_code < 600:
+        return "provider_error"
+    if 400 <= status_code < 500:
+        return "client_error"
+    return "unexpected_status"
+
+
+def erp_failure_message(provider: str, status_code: int) -> str:
+    """Build the PII-free ``ErpPostResult.message`` for a failed ERP call.
+
+    One helper so the three real adapters can't drift back into interpolating
+    ``resp.text``. ``provider`` is a fixed literal per adapter, never user input.
+    """
+    return f"{provider} post failed: HTTP {status_code} ({erp_failure_reason(status_code)})"
+
+
 @dataclass
 class ErpPostResult:
+    """Outcome of an ``ErpAdapter.post_invoice`` call.
+
+    ``message`` is **operator-facing and persisted** — ``services/erp.py`` turns
+    a failure into ``RuntimeError(result.message)`` and stores it on the
+    append-only audit row. Build it with :func:`erp_failure_message`; never
+    interpolate the provider's response body into it.
+
+    ``raw_response`` is in-memory only (no caller persists or logs it) and may
+    hold the provider's parsed body for debugging in a REPL. Keep it that way —
+    the moment something writes it to a log or a row, it needs the same
+    treatment ``message`` gets.
+    """
+
     success: bool
     erp_document_id: str | None = None
     erp_document_number: str | None = None

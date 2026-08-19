@@ -22,6 +22,54 @@ explicitly after its audit write.
 Both the in-transition hook and the assign hook are wrapped so any failure is
 logged (PII-free) and swallowed — the transition/assignment always completes.
 
+## The outbound legs run POST-COMMIT
+
+**Everything that talks to a third party — every email (employee and supplier
+alike) and the single Slack/Teams post — runs AFTER the caller's transaction
+commits**, not inside it. `notify_event` and
+`vendor_notifications.notify_vendor_of_invoice_event` do their DB work
+(recipient load, preference gating, the in-app `Notification` rows) inline and
+then hand a closure to `services/post_commit.enqueue_post_commit`, which fires
+it from SQLAlchemy's `after_commit` event.
+
+Why it had to move: `transition_invoice` awaited the whole fan-out — one email
+per recipient, serially, then a chat POST with a 10-second `httpx` timeout —
+while the caller's transaction was still open. Two call sites make that
+concrete: `payment_erp_sync._sync_one_payment` takes the invoice
+`SELECT … FOR UPDATE` and only commits *after* the transition returns, and
+`review.approve_invoice` holds `FOR UPDATE` on the `WorkflowInstance`. So a hung
+Slack webhook held a row lock on a live invoice for up to ten seconds, and N
+recipients multiplied the email leg linearly. Parallelising the email leg would
+have shrunk N×T to T but left the lock held, so it was not the fix.
+
+What did **not** change:
+
+- **In-app `Notification` rows still ride the caller's commit.** They are DB
+  writes and belong in the caller's transaction; only the outbound legs moved.
+- **No call site changed.** All ~35 `transition_invoice` callers keep committing
+  exactly as they did.
+- **Still best-effort.** A job that raises is logged by exception CLASS NAME
+  only (never `logger.exception` — the traceback of an `HTTPStatusError` carries
+  the webhook URL, which IS the credential, and `SMTPRecipientsRefused` carries
+  the addresses).
+
+What *did* change, deliberately: **a transaction that rolls back sends
+nothing.** We no longer email people about a status change that never happened.
+
+Execution mode depends on where the commit happens. On the app's event loop the
+jobs are spawned as tasks (strong-referenced until done, mirroring
+`services/webhooks/dispatch`) so the request returns immediately. Under a
+`database.dispatch_engine_scope` — a dispatcher worker's own short-lived loop,
+which closes the moment the job returns — a spawned task would be abandoned
+mid-send, so the jobs are awaited inline via SQLAlchemy's `await_only`; the
+COMMIT has already happened either way, so no lock is held.
+
+Tests asserting on an outbound send must `await drain_post_commit()` after the
+commit — it is the real signal, not a sleep. Guarded by
+`tests/test_post_commit_dispatch.py`, which also AST-scans both dispatch
+functions so neither can regain a direct transport `await` inside the
+transaction.
+
 ## Event → recipient matrix
 
 | Event type | Trigger (resulting status / action) | Recipients |
@@ -277,17 +325,34 @@ User-global, stored on the control-plane `users.notification_prefs` JSONB:
 
 ```json
 {
-  "invoice_assigned": { "email": true, "in_app": true },
-  "invoice_approved": { "email": true, "in_app": true },
-  "invoice_rejected": { "email": true, "in_app": true },
-  "invoice_paid":     { "email": true, "in_app": true },
-  "chat_message":     { "email": true, "in_app": true }
+  "invoice_assigned":         { "email": true, "in_app": true },
+  "invoice_approved":         { "email": true, "in_app": true },
+  "invoice_rejected":         { "email": true, "in_app": true },
+  "invoice_paid":             { "email": true, "in_app": true },
+  "contract_renewal_due":     { "email": true, "in_app": true },
+  "chat_message":             { "email": true, "in_app": true },
+  "cash_shortfall_projected": { "email": true, "in_app": true }
 }
 ```
 
 Opt-out, not opt-in: a missing event or missing channel key defaults to **on**
 (`resolve_prefs`). The `/api/notifications/preferences` endpoints read/patch
 this blob; the `/profile` page renders the per-event toggle grid.
+
+### The prefs schema must cover the WHOLE roster
+
+`schemas/notification.py` enumerated only the four `invoice_*` events while
+`models/notification.NOTIFICATION_EVENT_TYPES` declared seven. Because
+`resolve_prefs` defaults an unknown key to **on**, the three missing events
+weren't merely undocumented — they were **unmutable**: every supplier-chat
+message emailed the AP team with no opt-out, and the same held for
+`contract_renewal_due` and `cash_shortfall_projected`.
+
+Both `NotificationPrefs` and `NotificationPrefsUpdate` now enumerate all seven
+(a key present in the read schema but absent from the update schema would be
+readable and unchangeable). `tests/test_notification_prefs_roster.py` derives
+the expected population from the model's roster, so adding an event type fails
+that file until it joins both schemas — there is no second list to remember.
 
 ## Templates & PII
 

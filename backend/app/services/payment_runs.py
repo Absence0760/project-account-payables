@@ -69,9 +69,16 @@ class PaymentRunRollup:
     def run_status(self) -> str:
         """The `PaymentRun.status` these payment outcomes imply.
 
-        Preserves the exact precedence the dispatcher has always used: all-fail
-        → `failed`, any-fail-with-a-survivor → `partial`, anything still in
-        flight → `submitted`, otherwise `completed`.
+        Precedence: all-fail → `failed`, any-fail-with-a-survivor → `partial`,
+        anything still in flight → `submitted`, otherwise `completed`.
+
+        The two rungs BELOW `completed` exist because the default used to be
+        `completed` — a fail-OPEN answer on a money-run status. A run with
+        every payment still `pending` (nothing attempted) and a run with no
+        payments at all both reported "completed" without a cent having moved.
+        A run whose payments are all `pending` is precisely the resumable
+        state, so it reports `executing`; a run with no payments has never been
+        dispatched at all, so it reports `draft`. Neither claims success.
         """
         if self.failed and not (self.completed or self.in_flight):
             return "failed"
@@ -79,7 +86,64 @@ class PaymentRunRollup:
             return "partial"
         if self.in_flight:
             return "submitted"
+        if self.total == 0:
+            return "draft"
+        if self.pending:
+            return "executing"
         return "completed"
+
+
+#: Run statuses that describe a CLAIM on the run, not an outcome of its
+#: payments. `draft` = never dispatched, `executing` = a dispatch pass holds it,
+#: `cancelled` = abandoned (its payments were deleted). `derive_run_status`
+#: passes these straight through: re-deriving them from payment rows would let
+#: a rollup un-claim a run mid-dispatch, and `/execute` / `/resume` gate on
+#: exactly these values.
+CLAIM_RUN_STATUSES: tuple[str, ...] = ("draft", "executing", "cancelled")
+
+
+def derive_run_status(persisted_status: str | None, rollup: PaymentRunRollup) -> str:
+    """The run status to REPORT, given what's persisted and what its payments say.
+
+    ``PaymentRun.status`` is only ever written by the dispatcher's final rollup
+    (`api/payments._dispatch_run_payments`) and the claim/cancel transitions.
+    Nothing else re-derives it — not the webhook, not the reconciler, not
+    `/compliance/{release,dismiss}` — so a run that rolled up `submitted`
+    (one payment held `pending_compliance`) and then had that payment dismissed
+    kept reporting `submitted` while its own payments said `failed`.
+    `/retry-failed` gates on `RETRYABLE_RUN_STATUSES = ("partial", "failed")`,
+    and `/execute` / `/resume` gate on the claim states, so that run was a dead
+    end: it showed a retryable failure and every button 409ed.
+
+    Deriving on read closes it without a migration and without any writer being
+    able to drift from any reader. A claim state is returned untouched (see
+    ``CLAIM_RUN_STATUSES``); an outcome state is recomputed from the run's
+    ACTIVE payments.
+    """
+    status = persisted_status or "draft"
+    if status in CLAIM_RUN_STATUSES:
+        return status
+    return rollup.run_status
+
+
+async def recompute_run_status(db: AsyncSession, run: PaymentRun) -> str:
+    """Re-derive and PERSIST ``run.status`` from its payments. Returns the new value.
+
+    Called wherever a payment's status changes outside the dispatch pass — the
+    compliance release/dismiss endpoints, `/void`, the processor webhook — so
+    the stored value stops lying between reads. Reads go through
+    ``derive_run_status`` regardless, so this is belt-and-braces rather than
+    the correctness mechanism; it is what keeps a `SELECT status FROM
+    payment_runs` (an operator, an export, a future consumer) honest.
+
+    Never commits — the caller's transaction owns that.
+    """
+    rows = (
+        (await db.execute(select(Payment).where(Payment.payment_run_id == run.id))).scalars().all()
+    )
+    rollup = rollup_payment_statuses(p.status for p in active_run_payments(rows))
+    run.status = derive_run_status(run.status, rollup)
+    return run.status
 
 
 def superseded_payment_ids(payments: Iterable[Payment]) -> set[uuid.UUID]:
@@ -230,29 +294,62 @@ def is_retry_safe(payment: Payment) -> bool:
     )
 
 
-async def blocked_invoice_ids(db: AsyncSession, invoice_ids: list[uuid.UUID]) -> set[uuid.UUID]:
-    """Which of ``invoice_ids`` carry an UNRESOLVED payment-blocking exception.
+async def blocking_exception_types(
+    db: AsyncSession, invoice_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, str]:
+    """Map each blocked invoice id → the TYPE of exception blocking it.
 
-    `PAYMENT_BLOCKING_EXCEPTION_TYPES` (duplicate / fraud_flag /
-    line_total_mismatch) are `error`-severity financial-integrity flags that
-    invoice approval does NOT gate on, so a run must refuse them and so must
-    anything that re-dispatches money later — a `fraud_flag` raised between run
-    creation and a `/retry-failed` days afterwards (a BEC bank-detail swap, an
-    altered cheque off a Positive Pay return) has to stop the re-send. Shared by
-    both callers precisely so they can't drift.
+    The single definition of "is this invoice payable right now", shared by
+    `blocked_invoice_ids` (which only needs the ids) and by the payment queue
+    (which also needs to tell the operator *why* a row can't be selected). One
+    query, one predicate — so the queue can never offer a row the run builder
+    then refuses, and adding a type to `PAYMENT_BLOCKING_EXCEPTION_TYPES`
+    updates both surfaces at once.
+
+    An invoice carrying several blocking exceptions reports the one earliest in
+    `PAYMENT_BLOCKING_EXCEPTION_TYPES` — a fixed tuple, so the answer is stable
+    across calls rather than dependent on row order.
+
+    The returned value is the exception TYPE only, never its description: it is
+    rendered to an operator and travels through a JSON body, and a description
+    can carry vendor / bank / amount detail.
     """
     from app.api.payments import PAYMENT_BLOCKING_EXCEPTION_TYPES
 
     if not invoice_ids:
-        return set()
+        return {}
     rows = await db.execute(
-        select(InvoiceException.invoice_id).where(
+        select(InvoiceException.invoice_id, InvoiceException.exception_type).where(
             InvoiceException.invoice_id.in_(invoice_ids),
             InvoiceException.exception_type.in_(PAYMENT_BLOCKING_EXCEPTION_TYPES),
             InvoiceException.status.notin_(("resolved", "dismissed")),
         )
     )
-    return {iid for iid in rows.scalars().all() if iid is not None}
+    rank = {t: i for i, t in enumerate(PAYMENT_BLOCKING_EXCEPTION_TYPES)}
+    unranked = len(rank)
+    out: dict[uuid.UUID, str] = {}
+    for invoice_id, exception_type in rows.all():
+        if invoice_id is None:
+            continue
+        held = out.get(invoice_id)
+        if held is None or rank.get(exception_type, unranked) < rank.get(held, unranked):
+            out[invoice_id] = exception_type
+    return out
+
+
+async def blocked_invoice_ids(db: AsyncSession, invoice_ids: list[uuid.UUID]) -> set[uuid.UUID]:
+    """Which of ``invoice_ids`` carry an UNRESOLVED payment-blocking exception.
+
+    `PAYMENT_BLOCKING_EXCEPTION_TYPES` (duplicate / fraud_flag /
+    line_total_mismatch / payment_reconciliation) are `error`-severity
+    financial-integrity flags that invoice approval does NOT gate on, so a run
+    must refuse them and so must anything that re-dispatches money later — a
+    `fraud_flag` raised between run creation and a `/retry-failed` days
+    afterwards (a BEC bank-detail swap, an altered cheque off a Positive Pay
+    return) has to stop the re-send. Shared by both callers precisely so they
+    can't drift.
+    """
+    return set(await blocking_exception_types(db, invoice_ids))
 
 
 async def applied_credit_total(db: AsyncSession, invoice_id: uuid.UUID) -> Decimal:
@@ -377,8 +474,9 @@ async def create_payment_run_for_invoices(
     """Validate + create a draft ``PaymentRun`` for ``items``.
 
     Runs the identical gates ``POST /api/payments/runs`` runs: payable-status
-    (``PAYABLE_INVOICE_STATUSES``), the duplicate/fraud/line-total-mismatch
-    financial-integrity block (``PAYMENT_BLOCKING_EXCEPTION_TYPES``),
+    (``PAYABLE_INVOICE_STATUSES``), the financial-integrity block (every member
+    of ``PAYMENT_BLOCKING_EXCEPTION_TYPES`` — named by the tuple, not spelled
+    out, so this docstring can't fall behind it the way the 409 message did),
     credit-memo netting, and the CFO-approval-threshold computation. NEVER
     executes the run — it always lands ``status="draft"``.
 
@@ -463,16 +561,28 @@ async def create_payment_run_for_invoices(
             detail=f"Invoice(s) not approved for payment: {', '.join(not_payable)}",
         )
 
-    blocked_ids = await blocked_invoice_ids(db, invoice_ids)
-    if blocked_ids:
-        blocked_numbers = [
-            inv.invoice_number for iid, inv in invoices.items() if iid in blocked_ids
-        ]
+    # Name the type that ACTUALLY blocked each invoice rather than reciting a
+    # hardcoded list of causes. The list said "duplicate/fraud/line-total" while
+    # `PAYMENT_BLOCKING_EXCEPTION_TYPES` had since grown `payment_reconciliation`
+    # — so an invoice held back because a payment may still be in flight at the
+    # rail was refused with a message naming three exceptions it doesn't carry,
+    # sending the operator to clear something that isn't there. Deriving the
+    # reason from the same map the queue's `blocked_reason` uses retires the
+    # whole drift class, not just this instance. The exception TYPE is a fixed
+    # PII-free vocabulary; the description (which can carry vendor / bank /
+    # amount detail) is never included — see `blocking_exception_types`.
+    blocked = await blocking_exception_types(db, invoice_ids)
+    if blocked:
+        blocked_numbers = sorted(
+            f"{inv.invoice_number} ({blocked[iid]})"
+            for iid, inv in invoices.items()
+            if iid in blocked
+        )
         raise HTTPException(
             status_code=409,
             detail=(
-                "Invoice(s) have an unresolved duplicate/fraud/line-total exception and "
-                f"can't be paid until it's cleared: {', '.join(sorted(blocked_numbers))}"
+                "Invoice(s) have an unresolved payment-blocking exception and "
+                f"can't be paid until it's cleared: {', '.join(blocked_numbers)}"
             ),
         )
 

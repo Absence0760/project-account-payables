@@ -1,7 +1,8 @@
 <script lang="ts">
 	import type { Catalog, PunchoutSession } from '$lib/types/catalog';
-	import { PUNCHOUT_STATUS_LABELS } from '$lib/types/catalog';
+	import { PUNCHOUT_STATUS_LABELS, punchoutStatusTone } from '$lib/types/catalog';
 	import { auth } from '$lib/stores/auth.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
@@ -101,9 +102,9 @@
 		{:else}
 			<div class="status-row">
 				<span class="label">{m('catalogs.punchout.status')}</span>
-				<span class="status status-{session.status}">
+				<Badge tone={punchoutStatusTone(session.status)} variant={session.status}>
 					{PUNCHOUT_STATUS_LABELS[session.status] ?? session.status}
-				</span>
+				</Badge>
 			</div>
 
 			{#if session.start_url && !converted}
@@ -190,26 +191,10 @@
 		letter-spacing: 0.03em;
 		color: var(--text-muted);
 	}
-	.status {
-		display: inline-block;
-		padding: 2px 9px;
-		border-radius: 10px;
-		font-size: 0.78rem;
-		font-weight: 600;
-		/* Deliberately NOT --surface-2: this is a neutral badge tint that sits
-		   beside the tinted status variants below, not a raised panel. It read
-		   as `var(--surface-2, …)` only because the token was undefined and the
-		   fallback always won; now that it resolves, spell out what renders. */
-		background: rgba(127, 127, 127, 0.15);
-	}
-	.status-returned {
-		background: rgba(31, 168, 106, 0.15);
-		color: #1fa86a;
-	}
-	.status-converted {
-		background: rgba(63, 124, 240, 0.15);
-		color: var(--accent);
-	}
+	/* The session pill is `<Badge>` now — the grey base plus its two tinted
+	   variants were a third spelling of tones the palette already names. The
+	   tone per status lives beside the labels in `types/catalog`; `.status-row`
+	   above still owns the placement. */
 	.cart {
 		width: 100%;
 		border-collapse: collapse;

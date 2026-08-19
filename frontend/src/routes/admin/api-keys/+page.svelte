@@ -2,6 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { formatDate } from '$lib/utils/time';
 	import { auth } from '$lib/stores/auth.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
@@ -195,9 +196,9 @@
 						<td>{formatDate(key.last_used_at)}</td>
 						<td class="status-col">
 							{#if isRevoked(key)}
-								<span class="status-pill revoked">{m('admin.apiKeys.statusRevoked')}</span>
+								<Badge tone="muted" variant="revoked">{m('admin.apiKeys.statusRevoked')}</Badge>
 							{:else}
-								<span class="status-pill active">{m('admin.apiKeys.statusActive')}</span>
+								<Badge tone="success" variant="active">{m('admin.apiKeys.statusActive')}</Badge>
 							{/if}
 						</td>
 						<td class="actions">
@@ -363,30 +364,14 @@
 		font-size: 0.85rem;
 	}
 
-	.status-pill {
-		display: inline-block;
-		padding: 2px 10px;
-		border-radius: 10px;
-		font-size: 0.72rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-	}
-
-	.status-pill.active {
-		background: rgba(50, 200, 130, 0.15);
-		color: #26b977;
-	}
-
 	/*
-	 * 0.12, not 0.15: the tint lightens --surface toward the text, so at 0.15
-	 * --text-muted lands on #292c36 at 4.32:1 — under the bar before anything
-	 * else happens to it. See `frontend/CLAUDE.md` § Colour tokens and contrast.
+	 * The status pill is `<Badge>` now. The revoked variant used to need a
+	 * hand-tuned 0.12 tint because it paired the grey tint with --text-muted,
+	 * which lands at 4.32:1 over --surface at 0.15. `--muted-on-tint` is the
+	 * companion calibrated for exactly that background, so the standard 0.15
+	 * tone clears the bar without the local exception — which is what the pair
+	 * exists for. See `frontend/CLAUDE.md` § Colour tokens and contrast.
 	 */
-	.status-pill.revoked {
-		background: rgba(138, 143, 160, 0.12);
-		color: var(--text-muted);
-	}
 
 	/*
 	 * The fade de-emphasises a revoked key's DATA. It deliberately spares the

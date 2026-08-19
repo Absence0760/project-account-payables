@@ -65,7 +65,7 @@ via `X-Entity-ID`; tenant scope via `X-Tenant-Slug` (the per-tenant DB session).
 
 | Method + path | Purpose | Roles |
 |---|---|---|
-| `GET /requisitions` | List (paginated, entity-scoped, `?status=`, `?search=` on number/title) | admin, ap_manager, ap_clerk, cfo |
+| `GET /requisitions` | List (paginated, entity-scoped, `?status=`, `?search=` on requisition number / title / **department** — all three are columns the list renders, and covering fewer than the page's own search box did would be a regression) | admin, ap_manager, ap_clerk, cfo |
 | `POST /requisitions` | Create with line items (computes `total`) | admin, ap_manager, ap_clerk |
 | `GET /requisitions/{id}` | Detail + line items | admin, ap_manager, ap_clerk, cfo |
 | `PATCH /requisitions/{id}` | Edit (**draft only**; `line_items` fully replaces lines, recomputes total) | admin, ap_manager, ap_clerk |
@@ -80,6 +80,24 @@ Literal route segments (`submit`, `approve`, `reject`, `cancel`,
 `convert-to-po`) hang off `/{id}` and so are unambiguous; the bare `/{id}`
 collection routes are declared after the list/create pair (mirrors the expenses
 router ordering rule).
+
+### Optional links are validated at write time
+
+`vendor_id` / `contract_id` / `budget_id` are optional on create and edit.
+`_resolve_links` parses each and checks it exists in this tenant before the row
+is built — **404** on an unknown id (the pattern `api/catalogs.py::_resolve_vendor_id`
+already used). Previously a well-formed but non-existent id was stored verbatim
+and reached an FK violation at flush, surfacing as a 500 for input the caller
+got wrong.
+
+`budget_id` gets one more check: the budget must be denominated in the
+requisition's currency, else **422**. That link is what
+`services/budget_service` sums `committed` over, and the budget legs never
+convert — a EUR requisition pointing at a USD budget would be dropped from the
+rollup, so `GET /budgets/{id}/spend` reported `committed: 0` and
+`/budgets/check` answered `would_overspend: false` for headroom already spoken
+for. The pair is re-checked on `PATCH` when `currency` changes alone, so a
+currency edit can't orphan an existing link either.
 
 ## RBAC
 

@@ -56,6 +56,7 @@ from app.services.e_invoice import (
 )
 from app.services.peppol_adapters import get_peppol_adapter
 from app.services.webhook_security import verify_hmac_sha256
+from app.services.workflow_engine import create_workflow_instance
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +204,18 @@ async def receive_peppol_message(
             await tenant_db.flush()  # assign invoice.id
             invoice_id = invoice.id
             correlation_id = invoice.correlation_id
+
+            # Freeze the workflow snapshot at ingest, exactly as every other
+            # ingress does (`POST /api/invoices/upload`, manual create, the
+            # supplier portal, `recurring_invoices`, `intercompany`). Without it
+            # a PEPPOL-inbound invoice has no `WorkflowInstance` at all: a later
+            # edit to the tenant's workflow definition then retroactively
+            # governs it (breaking the per-invoice frozen-snapshot invariant for
+            # exactly the unattended paths), it has no `WorkflowStep` rows, so
+            # it is invisible to the step-based approval-queue reads and to
+            # `GET /api/invoices/{id}/workflow`, and it is never assigned an A/B
+            # experiment variant.
+            await create_workflow_instance(tenant_db, invoice)
 
             # 5. Persist the inbound transmission row keyed by message_id. Flush
             #    HERE — BEFORE the S3 upload — to claim the dedupe slot first

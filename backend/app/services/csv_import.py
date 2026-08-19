@@ -435,7 +435,16 @@ async def import_corporate_card_csv(
         amount = _parse_decimal(row.get("amount"))
         txn_date = _parse_date(row.get("date"))
 
-        if amount is None or amount < 0:
+        # Negatives are DELIBERATELY allowed here, unlike the invoice importer:
+        # a card refund / merchant credit / chargeback is a real negative line
+        # on the feed, and `CorporateCardTransactionBase.amount` documents the
+        # same call (no `ge=0`). `import-csv` is the only route that creates
+        # feed rows, so rejecting them made the documented allowance
+        # unreachable and every refund line in a bank export was refused — the
+        # feed then no longer reconciles to the statement. Only an unparseable
+        # amount is an error. A negative row never suggests a match (expenses
+        # are non-negative) and is closed out via `/ignore`.
+        if amount is None:
             result.errors.append(
                 ImportRowError(row=i, message=f"amount invalid: {row.get('amount')!r}")
             )

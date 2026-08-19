@@ -18,6 +18,7 @@ from app.api.deps import ROLE_ADMIN, get_current_user, get_org_id, require_roles
 from app.models.entity import Entity
 from app.models.user import User
 from app.schemas.entity import EntityCreate, EntityUpdate
+from app.services.audit_dispatch import dispatch_audit
 from app.tenant import get_tenant_db
 
 router = APIRouter(prefix="/entities", tags=["entities"])
@@ -86,6 +87,21 @@ async def create_entity(
     )
     db.add(entity)
     await db.flush()
+
+    # An entity is the scope key every entity-scoped money query is filtered
+    # by, so minting one is a config change that belongs on the append-only
+    # trail. PII-free: name / slug / currency are org config, never personal
+    # data.
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="entity.created",
+        entity_type="entity",
+        entity_id=entity.id,
+        details={"name": entity.name, "slug": entity.slug, "currency": entity.currency},
+    )
     return _serialize(entity)
 
 
@@ -95,6 +111,7 @@ async def update_entity(
     body: EntityUpdate,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN)),
+    org_id: uuid.UUID = Depends(get_org_id),
 ):
     entity = await _get_or_404(db, entity_id)
     data = body.model_dump(exclude_unset=True)
@@ -104,12 +121,34 @@ async def update_entity(
         # active so the tenant always has a valid home entity.
         raise HTTPException(status_code=400, detail="The default entity cannot be deactivated.")
 
+    changed: dict[str, object] = {}
     if "name" in data and data["name"] is not None:
-        entity.name = data["name"].strip()
+        new_name = data["name"].strip()
+        if new_name != entity.name:
+            changed["name"] = new_name
+        entity.name = new_name
     if "currency" in data:
-        entity.currency = data["currency"].upper() if data["currency"] else None
+        new_currency = data["currency"].upper() if data["currency"] else None
+        if new_currency != entity.currency:
+            changed["currency"] = new_currency
+        entity.currency = new_currency
     if "is_active" in data and data["is_active"] is not None:
+        if data["is_active"] != entity.is_active:
+            changed["is_active"] = data["is_active"]
         entity.is_active = data["is_active"]
 
     await db.flush()
+    if changed:
+        # Deactivating an entity changes what every scoped query can see —
+        # audited like any other config mutation. New values only, PII-free.
+        await dispatch_audit(
+            db,
+            correlation_id=uuid.uuid4(),
+            organization_id=org_id,
+            actor_id=user.id,
+            action="entity.updated",
+            entity_type="entity",
+            entity_id=entity.id,
+            details={"slug": entity.slug, "changed": changed},
+        )
     return _serialize(entity)
