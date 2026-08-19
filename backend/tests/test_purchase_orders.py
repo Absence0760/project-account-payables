@@ -190,6 +190,107 @@ async def test_list_purchase_orders_tenant_isolation(realdb):
 
 
 # ---------------------------------------------------------------------------
+# counts (status chips)
+# ---------------------------------------------------------------------------
+
+
+async def test_counts_tallies_whole_set_not_the_page(realdb):
+    """The reason the endpoint exists: the list's `total` is the ACTIVE
+    filter's result set, so a page of results can't tally the other chips."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    for i in range(3):
+        await _add_po(mk, org_id, po_number=f"PO-O{i}", total=Decimal("10"), status="open")
+    await _add_po(mk, org_id, po_number="PO-C", total=Decimal("20"), status="closed")
+    await _add_po(mk, org_id, po_number="PO-X", total=Decimal("30"), status="cancelled")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        # A page that can only see two rows must not change the tallies.
+        resp = await c.get("/api/purchase-orders/counts", params={"page": 1, "page_size": 2})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["by_status"] == {"open": 3, "closed": 1, "cancelled": 1}
+    assert body["total"] == 5
+
+
+async def test_counts_is_search_aware(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _add_po(mk, org_id, po_number="PO-ALPHA", total=Decimal("10"), status="open")
+    await _add_po(mk, org_id, po_number="PO-ALPHA-2", total=Decimal("10"), status="closed")
+    await _add_po(mk, org_id, po_number="PO-BETA", total=Decimal("10"), status="open")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.get("/api/purchase-orders/counts", params={"search": "alpha"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["by_status"] == {"open": 1, "closed": 1}
+    assert body["total"] == 2
+
+
+async def test_counts_honours_the_vendor_filter(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    async with mk() as s:
+        vendor = Vendor(name="Counted Co", organization_id=org_id)
+        s.add(vendor)
+        await s.flush()
+        vendor_id = vendor.id
+        await s.commit()
+
+    await _add_po(mk, org_id, po_number="PO-V1", total=Decimal("10"), vendor_id=vendor_id)
+    await _add_po(mk, org_id, po_number="PO-V2", total=Decimal("10"), vendor_id=vendor_id)
+    await _add_po(mk, org_id, po_number="PO-NOV", total=Decimal("10"))
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.get("/api/purchase-orders/counts", params={"vendor_id": str(vendor_id)})
+    assert resp.status_code == 200
+    assert resp.json() == {"total": 2, "by_status": {"open": 2}}
+
+
+async def test_counts_rejects_a_malformed_vendor_id(realdb):
+    """A garbage filter value is a 400, not the 500 an unguarded
+    `uuid.UUID(...)` would raise out of the handler."""
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.get("/api/purchase-orders/counts", params={"vendor_id": "not-a-uuid"})
+    assert resp.status_code == 400
+
+
+async def test_counts_empty_set_is_zero_not_an_error(realdb):
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        resp = await c.get("/api/purchase-orders/counts")
+    assert resp.status_code == 200
+    assert resp.json() == {"total": 0, "by_status": {}}
+
+
+async def test_counts_readable_by_every_role_that_reads_the_list(realdb):
+    mk = realdb.sessionmaker("a")
+    await _add_po(mk, realdb.info("a").org_id, po_number="PO-R", total=Decimal("10"))
+
+    for role in ("admin", "ap_manager", "ap_clerk", "cfo"):
+        async with realdb.client(key="a", role=role) as c:
+            resp = await c.get("/api/purchase-orders/counts")
+        assert resp.status_code == 200, role
+        assert resp.json()["total"] == 1, role
+
+
+async def test_counts_requires_auth(realdb):
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.get("/api/purchase-orders/counts")
+    assert resp.status_code == 401
+
+
+async def test_counts_tenant_isolation(realdb):
+    mk_a = realdb.sessionmaker("a")
+    await _add_po(mk_a, realdb.info("a").org_id, po_number="PO-SECRET-C", total=Decimal("999"))
+
+    async with realdb.client(key="b", role="ap_manager") as c:
+        resp = await c.get("/api/purchase-orders/counts")
+    assert resp.status_code == 200
+    assert resp.json() == {"total": 0, "by_status": {}}
+
+
+# ---------------------------------------------------------------------------
 # detail
 # ---------------------------------------------------------------------------
 
