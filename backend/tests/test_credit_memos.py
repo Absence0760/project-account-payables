@@ -980,9 +980,7 @@ async def test_create_without_currency_falls_back_to_org_reporting_currency(real
 
         async with mk() as s:
             memo = (
-                await s.execute(
-                    select(CreditMemo).where(CreditMemo.memo_number == "CM-EUR-ORG")
-                )
+                await s.execute(select(CreditMemo).where(CreditMemo.memo_number == "CM-EUR-ORG"))
             ).scalar_one()
             assert memo.currency == "EUR"
             assert memo.amount == Decimal("42.00")  # money stays exact

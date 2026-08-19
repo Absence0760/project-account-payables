@@ -617,11 +617,7 @@ async def test_inbound_invoice_gets_a_frozen_workflow_instance(realdb):
     async with mk() as s:
         inv = (await s.execute(select(Invoice))).scalars().one()
         instances = (
-            (
-                await s.execute(
-                    select(WorkflowInstance).where(WorkflowInstance.invoice_id == inv.id)
-                )
-            )
+            (await s.execute(select(WorkflowInstance).where(WorkflowInstance.invoice_id == inv.id)))
             .scalars()
             .all()
         )
