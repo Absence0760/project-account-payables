@@ -386,9 +386,7 @@ async def test_create_rejects_an_unknown_budget_id(realdb):
     """A well-formed but non-existent id used to be stored verbatim and reach
     an FK violation at flush — a 500 for input the caller got wrong."""
     async with realdb.client(key="a", role="ap_clerk") as c:
-        resp = await c.post(
-            "/api/requisitions", json=_payload(_num(), budget_id=str(uuid.uuid4()))
-        )
+        resp = await c.post("/api/requisitions", json=_payload(_num(), budget_id=str(uuid.uuid4())))
     assert resp.status_code == 404, resp.text
     assert "Budget" in resp.json()["detail"]
 

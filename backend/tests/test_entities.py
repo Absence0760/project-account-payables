@@ -171,9 +171,7 @@ async def test_create_and_update_entity_write_audit_rows(realdb):
     by, so minting or deactivating one is a config change that belongs on the
     append-only trail. Neither handler wrote one."""
     async with realdb.client(key="a", role="admin") as c:
-        created = await c.post(
-            "/api/entities", json={"name": "Audited Sub", "slug": "audited-sub"}
-        )
+        created = await c.post("/api/entities", json={"name": "Audited Sub", "slug": "audited-sub"})
         assert created.status_code == 201
         eid = created.json()["id"]
         patched = await c.patch(f"/api/entities/{eid}", json={"is_active": False})

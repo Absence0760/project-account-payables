@@ -210,9 +210,7 @@ def _tenant_mutating_router_modules() -> dict[str, list[str]]:
         from fastapi.routing import APIRoute
 
         items = [
-            (r.path, r.methods or set(), r.endpoint)
-            for r in app.routes
-            if isinstance(r, APIRoute)
+            (r.path, r.methods or set(), r.endpoint) for r in app.routes if isinstance(r, APIRoute)
         ]
 
     out: dict[str, list[str]] = {}
@@ -261,8 +259,7 @@ def test_every_tenant_mutating_router_writes_an_audit_row():
     assert not unaudited, (
         "these routers mutate tenant state without calling dispatch_audit "
         "(invariant #3). Add the audit row, or add the module to "
-        "_TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT with a reason:\n  "
-        + "\n  ".join(unaudited)
+        "_TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT with a reason:\n  " + "\n  ".join(unaudited)
     )
 
 

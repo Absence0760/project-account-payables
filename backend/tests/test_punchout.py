@@ -259,8 +259,8 @@ async def test_return_refuses_a_mixed_currency_cart(realdb):
     body = _cart_envelope(
         buyer_cookie=cookie,
         items=[
-            {"description": "EU widget", "quantity": "1", "unit_price": "100.00", "currency": "EUR"},
-            {"description": "US widget", "quantity": "1", "unit_price": "100.00", "currency": "USD"},
+            {"description": "EU item", "quantity": "1", "unit_price": "100.00", "currency": "EUR"},
+            {"description": "US item", "quantity": "1", "unit_price": "100.00", "currency": "USD"},
         ],
     )
     resp = await _post_cart(realdb, slug, cookie, body)
@@ -317,9 +317,7 @@ async def test_return_normalizes_a_lowercase_currency_code(realdb):
     body = _cart_envelope(
         buyer_cookie=cookie,
         currency="eur",
-        items=[
-            {"description": "Widget", "quantity": "2", "unit_price": "5.00", "currency": "eur"}
-        ],
+        items=[{"description": "Widget", "quantity": "2", "unit_price": "5.00", "currency": "eur"}],
     )
     resp = await _post_cart(realdb, slug, cookie, body)
     assert resp.status_code == 204

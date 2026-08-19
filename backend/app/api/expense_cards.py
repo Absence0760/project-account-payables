@@ -342,8 +342,7 @@ async def match_card_transaction(
         raise HTTPException(
             status_code=409,
             detail=(
-                f"Currency mismatch: transaction is {txn.currency}, "
-                f"expense is {expense.currency}."
+                f"Currency mismatch: transaction is {txn.currency}, expense is {expense.currency}."
             ),
         )
 

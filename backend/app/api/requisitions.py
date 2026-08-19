@@ -294,9 +294,7 @@ async def update_requisition(
     to_resolve = {f: payload[f] for f in _UPDATABLE_FK_FIELDS if f in payload}
     if "currency" in payload and "budget_id" not in to_resolve and req.budget_id is not None:
         to_resolve["budget_id"] = str(req.budget_id)
-    resolved = await _resolve_links(
-        db, to_resolve, org_id=org_id, currency=effective_currency
-    )
+    resolved = await _resolve_links(db, to_resolve, org_id=org_id, currency=effective_currency)
 
     changed: list[str] = []
     for field in _UPDATABLE_FIELDS:
@@ -595,8 +593,7 @@ async def _resolve_links(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=(
-                    f"Budget is denominated in {row.currency}; "
-                    f"this requisition is in {currency}."
+                    f"Budget is denominated in {row.currency}; this requisition is in {currency}."
                 ),
             )
     return resolved
