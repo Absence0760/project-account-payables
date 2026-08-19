@@ -31,14 +31,14 @@ matching entry here carries the category, durable fix, and trigger. Keep the
 pair consistent — if an item leaves this file, its roadmap section either loses
 its `**Open:**` line or moves to the archive.
 
-Mirrored as GitHub issue [#251](https://github.com/Absence0760/project-account-payables/issues/251)
+Mirrored as GitHub issue [#321](https://github.com/Absence0760/project-account-payables/issues/321)
 for the tracker view. Keep the two reconciled when either moves.
 
 **Last reconciled:** 2026-08-19 against round 12 — a five-agent sweep of the
 open follow-up backlog itself (money path, vendors/procurement/expenses,
 multi-currency/e-invoicing/async, ingest/reports/AI, and the frontend), plus a
 sixth pass landing the backend legs the frontend work was written against. The
-backlog went from 75 open items to 20; the calls each agent had to make are
+backlog went from 75 open items to 21; the calls each agent had to make are
 recorded in [decisions.md](decisions.md) §36-§49.
 
 Before that: 2026-08-18 against round 10 — a five-agent bug hunt.
