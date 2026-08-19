@@ -21,6 +21,7 @@ from app.models.notification import EVENT_INVOICE_PAID, EVENT_INVOICE_REJECTED
 from app.models.vendor import Vendor
 from app.models.vendor_user import VendorUser
 from app.models.workflow import AuditLog
+from app.services.post_commit import drain_post_commit
 from app.services.vendor_notifications import apply_pref_update, prefs_to_response
 
 TENANT = "a"
@@ -287,6 +288,9 @@ async def test_paid_emails_vendor_when_pref_on(realdb, monkeypatch):
         await transition_invoice(s, inv, InvoiceStatus.paid, action_name="invoice.paid")
         await s.commit()
 
+    # The outbound email leg runs AFTER the caller's commit (services/post_commit),
+    # so wait on it rather than racing it.
+    await drain_post_commit()
     await realdb.cleanup()
     # The vendor's portal user is emailed. (The control-plane `paid` fan-out to
     # AP managers may also emit through the same spy adapter — assert on the
@@ -317,6 +321,9 @@ async def test_rejected_suppressed_when_pref_off(realdb, monkeypatch):
         await transition_invoice(s, inv, InvoiceStatus.rejected, action_name="invoice.rejected")
         await s.commit()
 
+    # The outbound email leg runs AFTER the caller's commit (services/post_commit),
+    # so wait on it rather than racing it.
+    await drain_post_commit()
     await realdb.cleanup()
     assert sent == []  # vendor opted out of rejection emails
 
@@ -342,6 +349,9 @@ async def test_inactive_vendor_user_not_emailed(realdb, monkeypatch):
         await transition_invoice(s, inv, InvoiceStatus.paid, action_name="invoice.paid")
         await s.commit()
 
+    # The outbound email leg runs AFTER the caller's commit (services/post_commit),
+    # so wait on it rather than racing it.
+    await drain_post_commit()
     await realdb.cleanup()
     # The (now-inactive) portal user is never emailed. (A control-plane AP
     # manager may still receive the `paid` fan-out — assert on the portal one.)
@@ -409,6 +419,9 @@ async def test_other_vendors_users_not_emailed(realdb, monkeypatch):
         await transition_invoice(s, inv, InvoiceStatus.paid, action_name="invoice.paid")
         await s.commit()
 
+    # The outbound email leg runs AFTER the caller's commit (services/post_commit),
+    # so wait on it rather than racing it.
+    await drain_post_commit()
     await realdb.cleanup()
     # Vendor A's user is emailed; vendor B's user never is.
     recipients = {m.to for m in sent}

@@ -24,6 +24,10 @@ from app.services.e_invoice.model import (
 from app.services.e_invoice.payment_means import method_to_payment_means
 
 _DEFAULT_INVOICE_TYPE_CODE = "380"  # UNCL1001 "Commercial invoice".
+# UNCL5305 "S" - standard rate. The Invoice row carries a rate but no VAT
+# category, and a rate-bearing invoice is a standard-rated one; the zero-rate /
+# exempt / reverse-charge categories are distinctions the row cannot express.
+_DEFAULT_TAX_CATEGORY = "S"
 
 # VAT-id prefix → ISO-2 country, for the EU/UK schemes whose VAT number begins
 # with a country letter pair. Greece is the one EU member whose VAT prefix
@@ -144,12 +148,22 @@ def invoice_to_einvoice_document(
     if invoice.tax_amount is not None or invoice.tax_rate is not None:
         taxes.append(
             EInvoiceTax(
-                category="S",
+                category=_DEFAULT_TAX_CATEGORY,
                 rate=invoice.tax_rate,
                 taxable_amount=invoice.subtotal,
                 tax_amount=invoice.tax_amount,
             )
         )
+
+    # BT-151 / BT-152 - every invoice line owes a VAT category + rate
+    # (EN 16931 / BIS Billing 3.0 `cac:Item/cac:ClassifiedTaxCategory`), but
+    # `InvoiceLineItem` has no rate or category column: an `Invoice` carries ONE
+    # `tax_rate`, so by construction every one of its lines is at that rate, and
+    # the document-level breakdown above already categorises the whole invoice.
+    # Deriving them here keeps `generate_ubl` a pure serializer instead of
+    # giving it invoice-level context it should not need.
+    line_tax_rate = invoice.tax_rate
+    line_tax_category = _DEFAULT_TAX_CATEGORY if line_tax_rate is not None else None
 
     lines = [
         EInvoiceLine(
@@ -160,6 +174,8 @@ def invoice_to_einvoice_document(
             unit_price=li.unit_price,
             line_total=li.total,
             tax_amount=li.tax,
+            tax_rate=line_tax_rate,
+            tax_category=line_tax_category,
         )
         for li in line_items
     ]

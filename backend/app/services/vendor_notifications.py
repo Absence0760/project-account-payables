@@ -33,6 +33,7 @@ from app.models.notification import EVENT_INVOICE_PAID, EVENT_INVOICE_REJECTED
 from app.models.vendor_user import VendorUser
 from app.services.notification_dispatch import resolve_prefs
 from app.services.notification_templates import InvoiceContext, render
+from app.services.post_commit import enqueue_post_commit
 
 logger = logging.getLogger(__name__)
 
@@ -119,11 +120,7 @@ async def notify_vendor_of_invoice_event(
     if not recipients:
         return
 
-    # Resolve the tenant brand once for the vendor emails (best-effort).
-    from app.services.notification_dispatch import _resolve_org_brand
-
     org_id = getattr(invoice, "organization_id", None)
-    brand = await _resolve_org_brand(org_id) if org_id is not None else None
 
     ctx = InvoiceContext(
         invoice_number=getattr(invoice, "invoice_number", "") or "",
@@ -133,32 +130,48 @@ async def notify_vendor_of_invoice_event(
         reason=reason,
     )
 
-    for _vu_id, email, prefs, locale in recipients:
-        if not email:
-            continue
-        channels = resolve_prefs(prefs, event_type)
-        if not channels["email"]:
-            continue
-        # Localize each supplier-user's email to their own account-level locale
-        # preference (DB `VendorUser.locale`); NULL → English. Render per
-        # recipient so two portal users of the same vendor can each get their
-        # chosen language. A template bug must never break the transition.
-        try:
-            rendered = render(event_type, ctx, locale=locale)
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "notify_vendor_of_invoice_event: template render failed for event_type=%s",
-                event_type,
+    # Everything above reads the caller's tenant session and must stay inside
+    # the transaction. The SENDS must not: `transition_invoice` is called with
+    # the invoice row locked `FOR UPDATE` and the caller commits afterwards, so
+    # awaiting N supplier emails here charged an SMTP round trip per portal
+    # user to an open transaction holding a lock on a live invoice. Queued to
+    # run after the caller's commit (see `services/post_commit`); a transaction
+    # that rolls back sends nothing, which is correct — the supplier should not
+    # be told an invoice was paid when it was not.
+    async def _send_all() -> None:
+        # Resolve the tenant brand once for the vendor emails (best-effort).
+        from app.services.notification_dispatch import _resolve_org_brand
+
+        brand = await _resolve_org_brand(org_id) if org_id is not None else None
+
+        for _vu_id, email, prefs, locale in recipients:
+            if not email:
+                continue
+            channels = resolve_prefs(prefs, event_type)
+            if not channels["email"]:
+                continue
+            # Localize each supplier-user's email to their own account-level
+            # locale preference (DB `VendorUser.locale`); NULL → English. Render
+            # per recipient so two portal users of the same vendor can each get
+            # their chosen language. A template bug must never break the send.
+            try:
+                rendered = render(event_type, ctx, locale=locale)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "notify_vendor_of_invoice_event: template render failed for event_type=%s",
+                    event_type,
+                )
+                continue
+            await _send_vendor_email_best_effort(
+                email,
+                rendered.title,
+                rendered.body_text,
+                rendered.body_html,
+                event_type=event_type,
+                brand=brand,
             )
-            continue
-        await _send_vendor_email_best_effort(
-            email,
-            rendered.title,
-            rendered.body_text,
-            rendered.body_html,
-            event_type=event_type,
-            brand=brand,
-        )
+
+    enqueue_post_commit(db, _send_all, name=f"vendor-notify-{event_type}")
 
 
 async def _send_vendor_email_best_effort(

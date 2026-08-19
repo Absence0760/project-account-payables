@@ -57,6 +57,7 @@ later market move never silently rewrites historical reporting numbers
 | `invoices.reporting_currency` | `VARCHAR(3)` | Currency the row was converted into (snapshotted). |
 | `invoices.reporting_amount` | `NUMERIC(15, 2)` | `amount` expressed in `reporting_currency`. |
 | `invoices.reporting_fx_rate` | `NUMERIC(18, 8)` | Rate applied (invoice currency → reporting currency); `1` for same-currency. |
+| `invoices.reporting_source_currency` | `VARCHAR(3)` | **Which** currency the rate was fetched FOR (migration 0086). `NULL` on a row locked before it. |
 | `invoices.reporting_fx_locked_at` | `TIMESTAMPTZ` | When the rate was locked. |
 
 These are written by `currency_conversion.materialize_reporting_amount(...)`,
@@ -70,11 +71,17 @@ mutation. Behaviour:
 - **The lock must keep describing the row.** `amount` and `currency` are both
   editable on `PATCH /api/invoices/{id}` right up to approval, and
   `refresh_warnings` re-runs materialization afterwards — so the persisted
-  triple can stop matching the row it was derived from. Two checks
+  set can stop matching the row it was derived from. Two checks
   (`_lock_is_self_consistent`), both answerable from the row alone:
-  - *the rate matches the pair's shape* — a same-currency lock is exactly `1`,
-    a cross-currency lock is not. A currency edit that crosses the reporting
-    currency in either direction contradicts the stored rate → **re-fetch**.
+  - *the rate still describes this row's currency pair* (`_lock_pair_matches`).
+    Exact when `reporting_source_currency` is set: it records **which** currency
+    the rate was fetched for, so ANY currency edit — including one between two
+    foreign currencies — is caught. On a row locked before migration 0086 the
+    column is `NULL` and it falls back to the old inferential heuristic (a
+    same-currency lock is exactly `1`, a cross-currency lock is not), which sees
+    a currency edit that *crosses* the reporting currency but not one between
+    two foreign ones. That residual blind spot exists on legacy rows only and
+    closes the first time such a row re-materializes.
   - *the figure reconciles* — `amount × rate == reporting_amount`. If only the
     amount moved, the row is **re-scaled at the already-locked rate, with no FX
     call**: the liability was accrued at the booking rate, and correcting a
@@ -83,17 +90,22 @@ mutation. Behaviour:
     down.)
 
   It re-locks (fresh rate) when the org's reporting currency changes, when the
-  row was never materialized, or on the currency-shape mismatch above.
-  **Known gap:** a currency edit between two *foreign* currencies (`EUR → GBP`
-  on a USD-reporting org) with the amount unchanged satisfies both checks — the
-  row does not record which currency the rate was for. Tracked in
-  `../../docs/followups.md`.
+  row was never materialized, or on the currency-pair mismatch above.
+
+  **Why a column and not more inference.** `EUR → GBP` on a USD-reporting org
+  with the amount unchanged passes both inferential checks — the figure still
+  reconciles and the rate still *looks* like a cross-currency rate — so the
+  stale EUR-derived figure kept being reported as a converted, trustworthy
+  number. Migration 0086 is deliberately **not backfilled**: `currency` is the
+  invoice's currency *now*, so copying it in would assert the rate was fetched
+  for the current pair, which is precisely the unevidenced claim the column
+  exists to prevent.
 - **Fail-soft** → an FX outage leaves the columns `NULL` and never blocks saving
   the invoice. Rollups treat a `NULL` reporting amount as "not yet converted"
   (see below).
 
 Money is always `Decimal` / `Numeric` and quantizes to 2 dp (`ROUND_HALF_UP`);
-the rate to 8 dp. Never `float`. The persisted triple is **self-consistent by
+the rate to 8 dp. Never `float`. The persisted lock is **self-consistent by
 construction** — `reporting_amount` is derived from the *stored* (8 dp) rate,
 not the provider's full-precision one — so an auditor can re-derive it and the
 staleness check above can rely on the identity.

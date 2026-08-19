@@ -19,6 +19,7 @@ from app.api.deps import (
 from app.api.pagination import PaginationParams, pagination_params
 from app.models.credit_memo import CreditMemo
 from app.models.invoice import Invoice
+from app.models.organization import Organization
 from app.models.user import User
 from app.models.vendor import Vendor
 from app.schemas.credit_memo import (
@@ -28,7 +29,8 @@ from app.schemas.credit_memo import (
     CreditMemoResponse,
 )
 from app.services.audit_dispatch import dispatch_audit
-from app.tenant import apply_entity_scope, get_entity_id, get_tenant_db
+from app.services.currency_conversion import resolve_reporting_currency
+from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
 
 router = APIRouter(prefix="/credit-memos", tags=["credit-memos"])
 
@@ -154,6 +156,7 @@ async def create_credit_memo(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
     org_id: uuid.UUID = Depends(get_org_id),
+    org: Organization = Depends(get_tenant),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     vendor_uuid = uuid.UUID(body.vendor_id)
@@ -165,6 +168,15 @@ async def create_credit_memo(
     vendor = vendor_result.scalar_one_or_none()
     if not vendor:
         raise HTTPException(status_code=404, detail="Vendor not found")
+
+    # A credit memo's currency is NOT "USD unless told otherwise". A hardcoded
+    # default stamps USD onto a EUR tenant's memo, and because both application
+    # paths refuse a currency that differs from the invoice's — and there is no
+    # PATCH on credit memos — that memo can never be applied or corrected. So:
+    # what the caller asserted, else the invoice's own currency when one is
+    # named (resolved below, inside the invoice branch), else the org's
+    # reporting currency.
+    currency = (body.currency or "").strip().upper() or None
 
     invoice_uuid: uuid.UUID | None = None
     invoice_number: str | None = None
@@ -188,12 +200,15 @@ async def create_credit_memo(
         # Same currency guard as the /apply path — the remaining-balance math
         # below subtracts the memo amount from the invoice amount directly, so a
         # EUR memo created against a USD invoice would silently mix currencies
-        # and corrupt the balance.
-        if body.currency and invoice.currency and body.currency != invoice.currency:
+        # and corrupt the balance. When the caller named no currency the memo
+        # INHERITS the invoice's (see `_resolve_currency`), so this only fires
+        # on a currency the caller actually asserted.
+        if currency and invoice.currency and currency != invoice.currency:
             raise HTTPException(
                 status_code=409,
                 detail="Credit memo currency does not match invoice currency",
             )
+        currency = currency or (invoice.currency or "").strip().upper() or None
         already_applied = (
             await db.execute(
                 select(func.coalesce(func.sum(CreditMemo.amount), Decimal("0"))).where(
@@ -213,12 +228,17 @@ async def create_credit_memo(
             )
         invoice_number = invoice.invoice_number
 
+    # Last rung: the org's own reporting currency (which itself falls back to
+    # the platform default), so a single-currency EUR tenant never has to name
+    # a currency and never gets a USD memo it can't apply.
+    currency = currency or resolve_reporting_currency(org.settings)
+
     memo = CreditMemo(
         memo_number=body.memo_number,
         vendor_id=vendor_uuid,
         invoice_id=invoice_uuid,
         amount=body.amount,
-        currency=body.currency,
+        currency=currency,
         issued_date=body.issued_date,
         reason=body.reason,
         status="applied" if invoice_uuid else "open",

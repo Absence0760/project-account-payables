@@ -42,6 +42,13 @@ def _parse_party(party_el) -> EInvoiceParty:
     party.registration_id = find_text(party_el, "PartyLegalEntity", "CompanyID")
     party.email = find_text(party_el, "Contact", "ElectronicMail")
 
+    # BT-34 / BT-49 electronic address. The value alone identifies nothing -
+    # the EAS scheme on `@schemeID` is half the address, so both are read.
+    endpoint_el = find_path(party_el, "EndpointID")
+    if endpoint_el is not None:
+        party.endpoint_id = (endpoint_el.text or "").strip() or None
+        party.endpoint_scheme_id = endpoint_el.get("schemeID")
+
     addr = find_path(party_el, "PostalAddress")
     if addr is not None:
         lines: list[str] = []
@@ -94,6 +101,17 @@ def _parse_line(line_el) -> EInvoiceLine:
     if line_tax is not None:
         line.tax_amount = to_decimal(find_text(line_tax, "TaxAmount"))
         line.tax_rate = to_decimal(find_text(line_tax, "TaxSubtotal", "TaxCategory", "Percent"))
+
+    # BT-151 / BT-152 - `cac:Item/cac:ClassifiedTaxCategory` is where EN 16931
+    # puts the line's VAT category and rate. It is the authoritative source for
+    # the rate when present; the line-level `cac:TaxTotal` read above is a UBL
+    # extra that not every emitter fills.
+    classified = find_path(line_el, "Item", "ClassifiedTaxCategory")
+    if classified is not None:
+        line.tax_category = find_text(classified, "ID")
+        rate = to_decimal(find_text(classified, "Percent"))
+        if rate is not None:
+            line.tax_rate = rate
     return line
 
 

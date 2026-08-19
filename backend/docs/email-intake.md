@@ -28,10 +28,20 @@ POST /api/email-intake/inbound/{provider}
      ├── Open tenant session
      ├── For each PDF / image / XML attachment:
      │     ├── Create Invoice(status=pending, uploaded_by_id=NULL)
+     │     ├── Freeze the WorkflowInstance snapshot (create_workflow_instance)
      │     ├── Upload file to S3
      │     └── Commit
      └── Dispatch extraction (one job per invoice)
 ```
+
+**The invoice gets a frozen workflow snapshot at ingest**, exactly like every
+other ingress (`POST /api/invoices/upload`, manual create, the supplier portal,
+`recurring_invoices`, `intercompany`): `create_workflow_instance` runs right
+after the `flush()` that assigns the PK. Skipping it left email invoices with
+no `WorkflowInstance` at all — so a later edit to the tenant's workflow
+definition retroactively governed them, they carried no `WorkflowStep` rows,
+and they were invisible to the step-based approval-queue reads and to
+`GET /api/invoices/{id}/workflow`. See `backend/docs/workflow-snapshots.md`.
 
 **Accepted attachment types:** `application/pdf`, `image/png`, `image/jpeg`,
 `image/tiff`, and — for structured e-invoices — `application/xml` / `text/xml`.

@@ -28,8 +28,14 @@ WorkflowInstance (per invoice, frozen)
 ### When there is no snapshot to read — fail CLOSED
 
 Not every invoice has a `WorkflowInstance`. `email_intake` and `peppol_receive`
-insert the invoice row without one (both ingest paths hand straight to
-extraction), and so does any legacy or directly-inserted row.
+used to insert the invoice row without one (both ingest paths handed straight to
+extraction); **both now call `create_workflow_instance` right after the flush**,
+exactly as every other ingress does, so a freshly-ingested invoice is governed
+by the config frozen at ingest, carries `WorkflowStep` rows, and is visible to
+the step-based approval-queue reads and `GET /api/invoices/{id}/workflow`. Any
+legacy or directly-inserted row still has none, so the fail-closed resolver
+below stays load-bearing (it is what covers every invoice ingested before that
+change).
 
 The approval controls in `services/review` used to read their config *only* off
 `steps_config_snapshot` and return early when there was none. That was a hole,

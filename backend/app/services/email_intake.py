@@ -374,6 +374,19 @@ async def _create_invoice_from_attachment(
     tenant_db.add(invoice)
     await tenant_db.flush()
 
+    # Freeze the workflow snapshot at ingest, exactly as every other ingress
+    # does (`POST /api/invoices/upload`, manual create, the supplier portal,
+    # `recurring_invoices`, `intercompany`). Without it an email-intake invoice
+    # has no `WorkflowInstance` at all: a later edit to the tenant's workflow
+    # definition then retroactively governs it (breaking the per-invoice
+    # frozen-snapshot invariant for exactly the unattended paths), it has no
+    # `WorkflowStep` rows, so it is invisible to the step-based approval-queue
+    # reads and to `GET /api/invoices/{id}/workflow`, and it is never assigned
+    # an A/B experiment variant.
+    from app.services.workflow_engine import create_workflow_instance
+
+    await create_workflow_instance(tenant_db, invoice)
+
     from app.services.storage import _put_object, _safe_filename
 
     file_key = f"{org_id}/{invoice.id}/{_safe_filename(attachment.filename)}"

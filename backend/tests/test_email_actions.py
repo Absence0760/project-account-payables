@@ -300,6 +300,14 @@ async def test_assigned_email_includes_action_links(
                 currency="USD",
             ),
         )
+        # The email leg runs AFTER the caller's commit (services/post_commit),
+        # so the caller has to actually commit — a dispatch whose transaction
+        # never lands deliberately sends nothing.
+        await s.commit()
+
+    from app.services.post_commit import drain_post_commit
+
+    await drain_post_commit()
 
     assert len(captured) == 1
     msg = captured[0]
