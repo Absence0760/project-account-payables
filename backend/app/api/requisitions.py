@@ -33,12 +33,15 @@ from app.api.deps import (
     require_roles,
 )
 from app.api.pagination import PaginationParams, pagination_params
+from app.models.contract import Contract
 from app.models.procurement import (
+    Budget,
     PurchaseOrder,
     PurchaseRequisition,
     RequisitionStatus,
 )
 from app.models.user import User
+from app.models.vendor import Vendor
 from app.schemas.requisition import (
     ConvertToPoResponse,
     RequisitionCreate,
@@ -200,6 +203,16 @@ async def create_requisition(
     org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
+    links = await _resolve_links(
+        db,
+        {
+            "vendor_id": body.vendor_id,
+            "contract_id": body.contract_id,
+            "budget_id": body.budget_id,
+        },
+        org_id=org_id,
+        currency=body.currency,
+    )
     req = PurchaseRequisition(
         requisition_number=body.requisition_number,
         title=body.title,
@@ -208,9 +221,9 @@ async def create_requisition(
         status=RequisitionStatus.draft,
         needed_by=body.needed_by,
         justification=body.justification,
-        vendor_id=_opt_uuid(body.vendor_id, "vendor_id"),
-        contract_id=_opt_uuid(body.contract_id, "contract_id"),
-        budget_id=_opt_uuid(body.budget_id, "budget_id"),
+        vendor_id=links["vendor_id"],
+        contract_id=links["contract_id"],
+        budget_id=links["budget_id"],
         currency=body.currency,
         notes=body.notes,
         total=Decimal("0"),
@@ -272,6 +285,19 @@ async def update_requisition(
         )
 
     payload = body.model_dump(exclude_unset=True)
+
+    # Validate BEFORE mutating anything, against the currency this requisition
+    # will END UP in. Changing `currency` alone can invalidate an existing
+    # budget link, so re-check that pair too rather than leaving a mismatched
+    # link the rollup would silently drop.
+    effective_currency = payload.get("currency") or req.currency
+    to_resolve = {f: payload[f] for f in _UPDATABLE_FK_FIELDS if f in payload}
+    if "currency" in payload and "budget_id" not in to_resolve and req.budget_id is not None:
+        to_resolve["budget_id"] = str(req.budget_id)
+    resolved = await _resolve_links(
+        db, to_resolve, org_id=org_id, currency=effective_currency
+    )
+
     changed: list[str] = []
     for field in _UPDATABLE_FIELDS:
         if field in payload and getattr(req, field) != payload[field]:
@@ -279,7 +305,7 @@ async def update_requisition(
             changed.append(field)
     for field in _UPDATABLE_FK_FIELDS:
         if field in payload:
-            new_val = _opt_uuid(payload[field], field)
+            new_val = resolved[field]
             if getattr(req, field) != new_val:
                 setattr(req, field, new_val)
                 changed.append(field)
@@ -517,6 +543,63 @@ def _opt_uuid(raw: str | None, field: str) -> uuid.UUID | None:
         return uuid.UUID(raw)
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid {field}")
+
+
+# The three optional FKs a requisition can carry, and the model each points at.
+_FK_TARGETS = {
+    "vendor_id": (Vendor, "Vendor"),
+    "contract_id": (Contract, "Contract"),
+    "budget_id": (Budget, "Budget"),
+}
+
+
+async def _resolve_links(
+    db: AsyncSession,
+    payload: dict,
+    *,
+    org_id: uuid.UUID,
+    currency: str,
+) -> dict[str, uuid.UUID | None]:
+    """Parse + VALIDATE the optional ``vendor_id`` / ``contract_id`` /
+    ``budget_id`` links. Returns only the fields present in ``payload``.
+
+    Any well-formed but non-existent id used to be stored verbatim and reach an
+    FK violation at flush — a 500 for input the caller got wrong. Worse for
+    ``budget_id``: the link is what `services/budget_service` sums `committed`
+    over, and nothing validated it at either end, so a requisition could point
+    at a budget in another currency and be silently dropped from that budget's
+    rollup — `GET /budgets/{id}/spend` reporting `committed: 0` and
+    `/budgets/check` answering `would_overspend: false` for headroom already
+    spoken for.
+
+    404 on an unknown id (mirrors ``api/catalogs.py::_resolve_vendor_id``);
+    422 when the named budget is denominated in another currency, since the
+    budget legs never convert.
+    """
+    resolved: dict[str, uuid.UUID | None] = {}
+    for field, (model, label) in _FK_TARGETS.items():
+        if field not in payload:
+            continue
+        value = _opt_uuid(payload[field], field)
+        resolved[field] = value
+        if value is None:
+            continue
+        row = (
+            await db.execute(
+                select(model).where(model.id == value, model.organization_id == org_id)
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"{label} not found")
+        if field == "budget_id" and (row.currency or "").upper() != (currency or "").upper():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"Budget is denominated in {row.currency}; "
+                    f"this requisition is in {currency}."
+                ),
+            )
+    return resolved
 
 
 async def _audit_transition(
