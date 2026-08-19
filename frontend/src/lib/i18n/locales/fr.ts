@@ -984,6 +984,38 @@ export const messages = {
 	'cashFlow.plan.actions.stale':
 		'Ce plan a changé depuis sa proposition — demandez au copilote un plan à jour avant d’agir.',
 	'cashFlow.plan.actions.error': 'Impossible de terminer cette action : {detail}',
+	// Copilote de trésorerie — plans enregistrés + comparaison plan/réel
+	'cashFlow.plan.actions.savePlan': 'Enregistrer le plan',
+	'cashFlow.plan.actions.savingPlan': 'Enregistrement…',
+	'cashFlow.plan.actions.planSaved':
+		'Plan enregistré. Comparez-le aux paiements réels dans « Plans enregistrés ».',
+	'cashFlow.plan.actions.planAlreadySaved':
+		'Ce plan était déjà enregistré — l’instantané d’origine est conservé.',
+	'cashFlow.consolidated.label': 'Toutes les entités',
+	'cashFlow.consolidated.hint':
+		'Répondre pour l’ensemble du groupe plutôt que pour l’entité sélectionnée dans la barre latérale.',
+	'cashFlow.saved.heading': 'Plans enregistrés',
+	'cashFlow.saved.refresh': 'Actualiser',
+	'cashFlow.saved.loading': 'Chargement…',
+	'cashFlow.saved.empty': 'Aucun plan enregistré. Enregistrez un plan proposé pour le comparer aux paiements réels.',
+	'cashFlow.saved.loadError': 'Impossible de charger les plans enregistrés.',
+	'cashFlow.saved.deleteError': 'Impossible de supprimer ce plan.',
+	'cashFlow.saved.varianceError': 'Impossible de charger la comparaison.',
+	'cashFlow.saved.consolidatedTag': 'Toutes les entités',
+	'cashFlow.saved.totals':
+		'{n, plural, one {Sur # période clôturée :} other {Sur # périodes clôturées :}}',
+	'cashFlow.saved.noClosedPeriods': 'Aucune période n’est encore clôturée, il n’y a donc rien à évaluer.',
+	'cashFlow.saved.col.period': 'Période',
+	'cashFlow.saved.col.planned': 'Prévu',
+	'cashFlow.saved.col.actual': 'Réel',
+	'cashFlow.saved.status.elapsed': 'clôturée',
+	'cashFlow.saved.status.in_progress': 'en cours',
+	'cashFlow.saved.status.future': 'à venir',
+	'cashFlow.saved.unplaced':
+		'{n, plural, one {# paiement effectué n’a pas pu être évalué} other {# paiements effectués n’ont pas pu être évalués}} — pas de date de règlement, ou un montant que nous ne pouvons pas exprimer en {currency}.',
+	'cashFlow.saved.discounts': '{captured} offre(s) d’escompte capturée(s) sur {selected} recommandée(s).',
+	'cashFlow.saved.delete': 'Supprimer le plan',
+	'cashFlow.saved.deleteConfirm': 'Cliquez à nouveau pour supprimer',
 	// Cash Flow / CFO dashboard (routes/cfo/+page.svelte)
 	'cfo.title': 'Trésorerie',
 	'cfo.exportCsv': 'Exporter en CSV',

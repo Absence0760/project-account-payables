@@ -983,6 +983,38 @@ export const messages = {
 	'cashFlow.plan.actions.stale':
 		'Este plan ha cambiado desde que se propuso — pide al copiloto un plan nuevo antes de actuar.',
 	'cashFlow.plan.actions.error': 'No se pudo completar esta acción: {detail}',
+	// Copiloto de flujo de caja — planes guardados + plan frente a real
+	'cashFlow.plan.actions.savePlan': 'Guardar plan',
+	'cashFlow.plan.actions.savingPlan': 'Guardando…',
+	'cashFlow.plan.actions.planSaved':
+		'Plan guardado. Compáralo con lo que realmente pagues en «Planes guardados».',
+	'cashFlow.plan.actions.planAlreadySaved':
+		'Este plan ya estaba guardado: se conserva la instantánea original.',
+	'cashFlow.consolidated.label': 'Todas las entidades',
+	'cashFlow.consolidated.hint':
+		'Responder para todo el grupo en lugar de la entidad seleccionada en la barra lateral.',
+	'cashFlow.saved.heading': 'Planes guardados',
+	'cashFlow.saved.refresh': 'Actualizar',
+	'cashFlow.saved.loading': 'Cargando…',
+	'cashFlow.saved.empty': 'Aún no hay planes guardados. Guarda un plan propuesto para compararlo con lo que realmente pagues.',
+	'cashFlow.saved.loadError': 'No se pudieron cargar los planes guardados.',
+	'cashFlow.saved.deleteError': 'No se pudo eliminar ese plan.',
+	'cashFlow.saved.varianceError': 'No se pudo cargar la comparación.',
+	'cashFlow.saved.consolidatedTag': 'Todas las entidades',
+	'cashFlow.saved.totals':
+		'{n, plural, one {En # periodo cerrado:} other {En # periodos cerrados:}}',
+	'cashFlow.saved.noClosedPeriods': 'Todavía no se ha cerrado ningún periodo, así que no hay nada que evaluar.',
+	'cashFlow.saved.col.period': 'Periodo',
+	'cashFlow.saved.col.planned': 'Previsto',
+	'cashFlow.saved.col.actual': 'Real',
+	'cashFlow.saved.status.elapsed': 'cerrado',
+	'cashFlow.saved.status.in_progress': 'en curso',
+	'cashFlow.saved.status.future': 'próximo',
+	'cashFlow.saved.unplaced':
+		'{n, plural, one {No se pudo evaluar # pago completado} other {No se pudieron evaluar # pagos completados}}: sin fecha de liquidación, o con un importe que no podemos expresar en {currency}.',
+	'cashFlow.saved.discounts': 'Se capturaron {captured} de {selected} ofertas de descuento recomendadas.',
+	'cashFlow.saved.delete': 'Eliminar plan',
+	'cashFlow.saved.deleteConfirm': 'Haz clic de nuevo para eliminar',
 	// Cash Flow / CFO dashboard (routes/cfo/+page.svelte)
 	'cfo.title': 'Flujo de caja',
 	'cfo.exportCsv': 'Exportar CSV',

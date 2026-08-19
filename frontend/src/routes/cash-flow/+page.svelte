@@ -4,6 +4,7 @@
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import UsageMeter from '$lib/components/assistant/UsageMeter.svelte';
 	import CopilotChatMessage from '$lib/components/cash-flow/CopilotChatMessage.svelte';
+	import SavedPlansPanel from '$lib/components/cash-flow/SavedPlansPanel.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import type { ChatResponse, ToolInvocation, UiMessage, UsageResponse } from '$lib/types/assistant';
 
@@ -24,6 +25,15 @@
 	let usage = $state<UsageResponse | null>(null);
 	let budgetNotice = $state<string | null>(null);
 	let scrollEl = $state<HTMLDivElement | null>(null);
+
+	// Consolidated (whole-group) mode. A treasury question is usually a group
+	// question, so the copilot can answer across every entity without the user
+	// having to clear the sidebar's entity selector — the same posture the
+	// projected-shortfall alert sweep already takes. It rides the request as a
+	// query flag; a plan proposed in a consolidated turn carries the
+	// consolidated plan_id, which is what the save / enact routes resolve
+	// against.
+	let consolidated = $state(false);
 
 	let isEmpty = $derived(messages.length === 0);
 
@@ -97,7 +107,13 @@
 	/** Non-streaming fallback — used when the stream endpoint is unavailable
 	 *  (404 during local dev) or fails mid-flight before any content arrived. */
 	async function fallbackChat(message: string, assistantId: string) {
-		const payload = await api.post<ChatResponse>('/api/cash-flow/copilot', {
+		// Same consolidated scope as the streaming call — the two paths must
+		// answer the same question, or a stream failure would silently switch
+		// the user from a group view to one entity's.
+		const path = consolidated
+			? '/api/cash-flow/copilot?consolidated=true'
+			: '/api/cash-flow/copilot';
+		const payload = await api.post<ChatResponse>(path, {
 			message,
 			conversation_id: conversationId ?? undefined
 		});
@@ -160,7 +176,9 @@
 							msg.streaming = false;
 						}
 					}
-				}
+				},
+				undefined,
+				{ consolidated }
 			);
 		} catch (err) {
 			if (err instanceof AssistantBudgetError) {
@@ -224,6 +242,15 @@
 	<div class="copilot-layout">
 		<aside class="side-rail">
 			<UsageMeter {usage} />
+
+			<label class="rail-toggle">
+				<input type="checkbox" bind:checked={consolidated} disabled={busy} />
+				<span>{m('cashFlow.consolidated.label')}</span>
+			</label>
+			<p class="rail-hint">{m('cashFlow.consolidated.hint')}</p>
+
+			<SavedPlansPanel {consolidated} />
+
 			<div class="rail-head">{m('cashFlow.tips.heading')}</div>
 			<p class="rail-hint">{m('cashFlow.tips.body')}</p>
 		</aside>
@@ -312,6 +339,17 @@
 		color: var(--text-muted);
 		margin: 0;
 		line-height: 1.5;
+	}
+	.rail-toggle {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		font-size: 0.85rem;
+		color: var(--text);
+		cursor: pointer;
+	}
+	.rail-toggle input:disabled {
+		cursor: not-allowed;
 	}
 	.chat-pane {
 		display: flex;
