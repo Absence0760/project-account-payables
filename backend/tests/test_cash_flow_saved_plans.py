@@ -455,6 +455,7 @@ async def test_saving_never_moves_money(realdb):
 
 
 async def test_save_writes_a_pii_free_audit_row(realdb):
+    from app.models.cash_plan import CashPlan
     from app.models.workflow import AuditLog
 
     plan = await _propose_plan(realdb)
@@ -469,7 +470,15 @@ async def test_save_writes_a_pii_free_audit_row(realdb):
             .scalars()
             .all()
         )
+        saved = (
+            await sa.execute(select(CashPlan).where(CashPlan.plan_id == plan.plan_id))
+        ).scalar_one()
     assert len(rows) == 1
+    # The trail must point AT the snapshot. The row's primary key is assigned
+    # explicitly at construction precisely because the audit is written before
+    # the flush that a column default would fire on — a NULL here is not a trail.
+    assert rows[0].entity_id == saved.id
+    assert rows[0].entity_type == "cash_plan"
     details = rows[0].details or {}
     assert details["plan_id"] == plan.plan_id
     assert details["consolidated"] is True

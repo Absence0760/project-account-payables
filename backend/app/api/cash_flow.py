@@ -769,6 +769,10 @@ async def save_plan(
         )
 
     row = CashPlan(
+        # Assigned here, not left to the column default: the audit row below is
+        # written before the flush that would generate it, and an audit trail
+        # pointing at NULL is not a trail.
+        id=uuid.uuid4(),
         organization_id=org.id,
         entity_id=resolved.scope_entity_id,
         plan_id=plan_id,
