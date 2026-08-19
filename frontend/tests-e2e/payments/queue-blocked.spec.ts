@@ -25,8 +25,10 @@ import {
  *     via `page.route()` — a real response the page parses, not a stub of the
  *     page's own state — because that is the only way to drive a specific
  *     `blocked_reason` (including one this build doesn't recognise) without
- *     manufacturing every kind of exception in the tenant DB. The
- *     no-blocked-rows case is asserted against the live payload.
+ *     manufacturing every kind of exception in the tenant DB — and because
+ *     which rows a TENANT has blocked is not this file's to control. The
+ *     live-payload behaviour (select-all skipping blocked rows) is asserted in
+ *     `queue.spec.ts` instead, where it needs no fixed row set.
  *  2. **The failure message.** The 409 detail NAMES the offending invoice
  *     numbers and the type that blocked each one, and the page must keep that
  *     on screen rather than only flashing it through a 5-second toast. Note
@@ -111,12 +113,43 @@ async function injectBlockedFlag(
 	});
 }
 
+/**
+ * Rewrite `GET /api/payments/queue` so NO row carries the `blocked` pair at all
+ * — the payload a backend predating the field returns.
+ *
+ * The queue's blocked rows are a property of the TENANT, not of the test: any
+ * invoice that has picked up a duplicate / fraud / line-total / reconciliation
+ * exception puts a chip and a banner on screen. Asserting "no chip anywhere"
+ * against the live payload therefore only holds on a freshly-seeded tenant, and
+ * fails the moment the worker lands on one that has a blocked row (it does).
+ * Stripping the field makes the assertion mean what its name says, on any
+ * tenant — and it is the graceful-degradation contract in its own right: the
+ * page must not REQUIRE the field to work.
+ */
+async function stripBlockedFields(page: import('@playwright/test').Page): Promise<void> {
+	await page.route('**/api/payments/queue**', async (route) => {
+		if (route.request().method() !== 'GET') {
+			await route.continue();
+			return;
+		}
+		const response = await route.fetch();
+		const body = (await response.json()) as {
+			items?: { blocked?: boolean; blocked_reason?: string }[];
+		};
+		for (const item of body.items ?? []) {
+			delete item.blocked;
+			delete item.blocked_reason;
+		}
+		await route.fulfill({ response, json: body });
+	});
+}
+
 test.describe('/payments queue — payment-blocking exceptions', () => {
-	test('with no blocked rows the queue behaves exactly as before', async ({ page }) => {
-		// No interception: this is the live payload. The `blocked` key now ships,
-		// but every row here reports `blocked: false`, and that must stay
-		// indistinguishable from the pre-feature queue — every row selectable,
-		// no chip, no banner, no noise.
+	test('with no `blocked` field the queue behaves exactly as before', async ({ page }) => {
+		// Graceful degradation: against a backend that sends no `blocked` key
+		// (`stripBlockedFields` produces exactly that payload), every row must
+		// stay selectable with no chip, no banner, no noise. The page must not
+		// REQUIRE the field.
 		//
 		// "No noise" is asserted as: no uncaught page error, and no Svelte
 		// effect-loop error — the selection-pruning `$effect` now depends on a
@@ -132,6 +165,7 @@ test.describe('/payments queue — payment-blocking exceptions', () => {
 			if (msg.type() === 'error' && LOOP_RE.test(msg.text())) pageErrors.push(msg.text());
 		});
 
+		await stripBlockedFields(page);
 		await page.goto('/payments');
 		await page.locator('.tab', { hasText: 'Queue' }).click();
 
@@ -158,6 +192,7 @@ test.describe('/payments queue — payment-blocking exceptions', () => {
 		await expect(page.locator('.pay-bar .pay-bar-count')).toContainText(`${total} selected`);
 
 		expect(pageErrors, `page errors on /payments:\n${pageErrors.join('\n')}`).toEqual([]);
+		await page.unroute('**/api/payments/queue**');
 	});
 
 	test('a blocked row is labelled, unselectable, and excluded from select-all', async ({
