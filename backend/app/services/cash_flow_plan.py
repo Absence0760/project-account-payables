@@ -10,8 +10,13 @@ caller) — no DB, no network, no clock; every input (including ``today``) is
 passed in, so a call is byte-reproducible.
 
 **This never mutates anything.** It returns a proposal object; enacting it
-(draft payment run / discount accept) is Phase 3, unbuilt. See
-``docs/cash-flow-copilot.md`` §5.
+(draft payment run / discount accept) is Phase 3, and lives in
+``app/api/cash_flow.py``. See ``docs/cash-flow-copilot.md`` §5.
+
+The bottom half of this module is the saved-plan / plan-vs-actual layer:
+freezing a proposal's curve for JSONB storage on ``models.cash_plan.CashPlan``
+and scoring it against what actually got paid. Still pure — the API layer
+does the reading and writing.
 
 Re-timing precision
 --------------------
@@ -197,9 +202,12 @@ def compute_plan_id(
 ) -> str:
     """Deterministic correlation key for a proposed cash-flow plan (Phase 3).
 
-    Per §5/§12 there is no persisted ``CashPlan`` row to look up by primary
-    key — a plan is stateless and re-derivable from its own inputs. This
-    hashes exactly those inputs (the plan's RESOLVED defining parameters,
+    A plan is stateless and re-derivable from its own inputs — nothing on the
+    enact path looks a plan up by primary key, and the optional
+    ``models.cash_plan.CashPlan`` snapshot is keyed BY this id rather than
+    being its source (saving a plan is a separate, additive act; see that
+    model's docstring). This hashes the plan's own defining inputs (the
+    RESOLVED defining parameters,
     never a raw possibly-``None`` request field — resolution must happen
     before hashing so a ``None`` override on both the propose call and a
     later enact call, which independently resolve to the same org default,
@@ -231,3 +239,205 @@ def compute_plan_id(
         ]
     )
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"feoh:cashflow-plan:{parts}"))
+
+
+# ---------------------------------------------------------------------------
+# Saved plans + plan-vs-actual (§5 Persistence / §12.1)
+#
+# Everything below is pure: no DB, no network, no clock. The API layer
+# (`app/api/cash_flow.py`) supplies the persisted snapshot and the actuals it
+# read; these functions decide what the comparison SAYS.
+#
+# Persisting a plan does NOT change the stateless premise `compute_plan_id`
+# rests on: the id is still a pure function of the plan's own inputs, the
+# enact endpoints still re-derive everything and read no stored row, and
+# `payment_runs.plan_id` is still the draft-run idempotency key. What a saved
+# snapshot adds is the one thing re-derivation cannot give back — what the
+# projection SAID on the day it was made, which is the baseline a variance is
+# measured against.
+# ---------------------------------------------------------------------------
+
+
+def period_bounds_for_label(period: str, granularity: str) -> tuple[date, date]:
+    """The ``(start, end)`` calendar window a bucket label covers.
+
+    Deliberately NOT a reimplementation of the labelling rule: every label
+    ``bucket_outflows`` emits is itself a date INSIDE its own period (the date
+    for ``day``, its Monday for ``week``, its first-of-month for ``month`` —
+    see ``services.analytics._period_bounds``), so parsing the label and
+    feeding it straight back through that same canonical function is exact by
+    construction and cannot drift from it.
+    ``tests/test_cash_flow_saved_plans.py`` round-trips every granularity to
+    keep that true.
+
+    Raises ``ValueError`` on a label that doesn't belong to ``granularity`` —
+    a stored snapshot whose labels don't parse is corrupt, and guessing a
+    window for it would silently mis-date somebody's variance.
+    """
+    from app.services.analytics import _period_bounds
+
+    raw = f"{period}-01" if granularity == "month" else period
+    parsed = date.fromisoformat(raw)
+    key, start, end = _period_bounds(parsed, granularity)
+    if key != period:
+        raise ValueError(f"period {period!r} is not a {granularity!r} bucket label")
+    return start, end
+
+
+def freeze_periods(periods, granularity: str) -> list[dict]:
+    """Serialize a plan's cash curve for JSONB storage.
+
+    Money becomes an **exact decimal string**, never a JSON number: every
+    JSON encoder/decoder in the ``jsonb`` path round-trips a bare number
+    through ``float``, which is precisely the money invariant this stack
+    exists to hold. Dates become ISO strings.
+
+    Accepts anything carrying the period attributes — the :class:`PlanPeriod`
+    this module produces and the assistant tool's ``PaymentPlanPeriod`` alike
+    (the latter carries no bounds, so they are derived from the label).
+    """
+    frozen: list[dict] = []
+    for p in periods:
+        start = getattr(p, "period_start", None)
+        end = getattr(p, "period_end", None)
+        if start is None or end is None:
+            start, end = period_bounds_for_label(p.period, granularity)
+        frozen.append(
+            {
+                "period": p.period,
+                "period_start": start.isoformat(),
+                "period_end": end.isoformat(),
+                "opening": str(Decimal(str(p.opening))),
+                "outflow": str(Decimal(str(p.outflow))),
+                "closing": str(Decimal(str(p.closing))),
+                "below_threshold": bool(p.below_threshold),
+                "unconverted_count": int(getattr(p, "unconverted_count", 0) or 0),
+            }
+        )
+    return frozen
+
+
+def thaw_periods(frozen: list[dict] | None) -> list[PlanPeriod]:
+    """Inverse of :func:`freeze_periods` — the stored curve back as typed
+    :class:`PlanPeriod`\\ s (``Decimal`` money, real ``date`` bounds)."""
+    out: list[PlanPeriod] = []
+    for row in frozen or []:
+        out.append(
+            PlanPeriod(
+                period=row["period"],
+                period_start=date.fromisoformat(row["period_start"]),
+                period_end=date.fromisoformat(row["period_end"]),
+                opening=Decimal(str(row.get("opening", "0"))),
+                outflow=Decimal(str(row.get("outflow", "0"))),
+                closing=Decimal(str(row.get("closing", "0"))),
+                below_threshold=bool(row.get("below_threshold")),
+                unconverted_count=int(row.get("unconverted_count", 0) or 0),
+            )
+        )
+    return out
+
+
+#: A saved period's window, relative to the day the comparison is run.
+PERIOD_ELAPSED = "elapsed"
+PERIOD_IN_PROGRESS = "in_progress"
+PERIOD_FUTURE = "future"
+
+
+@dataclass(frozen=True)
+class PlanVsActualPeriod:
+    period: str
+    period_start: date
+    period_end: date
+    planned_outflow: Decimal
+    actual_outflow: Decimal
+    #: ``actual - planned``. Positive = more cash left than the plan projected.
+    variance: Decimal
+    status: str
+
+
+@dataclass(frozen=True)
+class PlanVsActual:
+    as_of: date
+    periods: list[PlanVsActualPeriod]
+    #: Totals cover **elapsed periods only** — see :func:`compare_plan_to_actual`.
+    planned_total: Decimal
+    actual_total: Decimal
+    variance_total: Decimal
+    elapsed_period_count: int
+    #: Periods the comparison cannot score yet (in-progress + future).
+    open_period_count: int
+    #: Bucket labels that carry real settled cash but which the plan's curve
+    #: never projected (an invoice created after the plan was saved, a payment
+    #: outside the plan's own periods). Their money is NOT in ``actual_total``
+    #: — it belongs to no planned period — so it is surfaced separately rather
+    #: than letting the total quietly omit cash that really left.
+    unmatched_actual_periods: list[str]
+    unmatched_actual_total: Decimal
+
+
+def compare_plan_to_actual(
+    planned: list[PlanPeriod],
+    actual_by_period: dict[str, Decimal],
+    *,
+    as_of: date,
+) -> PlanVsActual:
+    """Plan-vs-actual for one saved plan.
+
+    ``planned`` is the frozen curve (:func:`thaw_periods`);
+    ``actual_by_period`` maps the SAME bucket labels to the cash that actually
+    left in each — the caller must bucket its payments through the identical
+    ``analytics.bucket_outflows`` granularity, so the two sides join by
+    construction rather than by a second, drifting date rule.
+
+    **Only fully-elapsed periods are scored.** A period whose window has not
+    closed has no variance to report: its actual is a partial number, and
+    subtracting a whole projection from a partial actual manufactures a "we
+    underspent" reading that reverses by the end of the week. In-progress and
+    future periods are still returned (a reader wants the shape of what is
+    coming) but are excluded from every total and labelled as such, rather
+    than silently scored as a variance.
+    """
+    rows: list[PlanVsActualPeriod] = []
+    planned_total = Decimal("0")
+    actual_total = Decimal("0")
+    elapsed = 0
+
+    for p in planned:
+        if p.period_end < as_of:
+            status = PERIOD_ELAPSED
+        elif p.period_start <= as_of:
+            status = PERIOD_IN_PROGRESS
+        else:
+            status = PERIOD_FUTURE
+        actual = Decimal(str(actual_by_period.get(p.period, "0")))
+        rows.append(
+            PlanVsActualPeriod(
+                period=p.period,
+                period_start=p.period_start,
+                period_end=p.period_end,
+                planned_outflow=p.outflow,
+                actual_outflow=actual,
+                variance=actual - p.outflow,
+                status=status,
+            )
+        )
+        if status == PERIOD_ELAPSED:
+            planned_total += p.outflow
+            actual_total += actual
+            elapsed += 1
+
+    known = {p.period for p in planned}
+    unmatched = sorted(k for k in actual_by_period if k not in known)
+    return PlanVsActual(
+        as_of=as_of,
+        periods=rows,
+        planned_total=planned_total,
+        actual_total=actual_total,
+        variance_total=actual_total - planned_total,
+        elapsed_period_count=elapsed,
+        open_period_count=len(rows) - elapsed,
+        unmatched_actual_periods=unmatched,
+        unmatched_actual_total=sum(
+            (Decimal(str(actual_by_period[k])) for k in unmatched), Decimal("0")
+        ),
+    )

@@ -8,12 +8,21 @@
 	import {
 		captureDiscountsFromPlan,
 		createDraftRunFromPlan,
+		saveCashFlowPlan,
 		type CaptureDiscountsResult,
 		type DraftRunResult
 	} from '$lib/api/cashFlow';
-	import type { PaymentPlanResult } from '$lib/types/cashFlow';
+	import type { PaymentPlanResult, SaveCashPlanResult } from '$lib/types/cashFlow';
 
-	let { result }: { result: PaymentPlanResult } = $props();
+	let {
+		result,
+		onsaved
+	}: {
+		result: PaymentPlanResult;
+		/** Fired after a successful save so the page can refresh its saved-plan
+		 *  list. Optional — the card works standalone. */
+		onsaved?: () => void;
+	} = $props();
 
 	function fmt(v: string | null | undefined): string {
 		return formatMoney(v, { currency: result.currency, whole: true });
@@ -37,6 +46,10 @@
 	let captureArmed = $state(false);
 	let captureMessage = $state<string | null>(null);
 	let captureError = $state<string | null>(null);
+
+	let saveBusy = $state(false);
+	let saveMessage = $state<string | null>(null);
+	let saveError = $state<string | null>(null);
 
 	/** A 409 here means the plan's parameters no longer match what the URL's
 	 *  plan_id was computed from (edited underlying data, or "today" moved
@@ -93,6 +106,28 @@
 			captureError = describeFailure(err);
 		} finally {
 			captureBusy = false;
+		}
+	}
+
+	/** Freeze this proposal so it can be measured against what actually gets
+	 *  paid. Read-only over the money path, and no confirm step: saving a
+	 *  snapshot is not a decision that can be wrong, and re-saving an
+	 *  already-saved plan returns the original rather than overwriting it. */
+	async function handleSavePlan() {
+		if (saveBusy) return;
+		saveBusy = true;
+		saveError = null;
+		saveMessage = null;
+		try {
+			const res: SaveCashPlanResult = await saveCashFlowPlan(result);
+			saveMessage = m(
+				res.created ? 'cashFlow.plan.actions.planSaved' : 'cashFlow.plan.actions.planAlreadySaved'
+			);
+			onsaved?.();
+		} catch (err) {
+			saveError = describeFailure(err);
+		} finally {
+			saveBusy = false;
 		}
 	}
 
@@ -225,7 +260,16 @@
 							: m('cashFlow.plan.actions.captureDiscounts', { n: selected.length })}
 				</button>
 			{/if}
+			<button type="button" class="plan-action-btn" disabled={saveBusy} onclick={handleSavePlan}>
+				{saveBusy ? m('cashFlow.plan.actions.savingPlan') : m('cashFlow.plan.actions.savePlan')}
+			</button>
 		</div>
+		{#if saveMessage}
+			<p class="plan-action-result" role="status">{saveMessage}</p>
+		{/if}
+		{#if saveError}
+			<p class="plan-action-error" role="alert">{saveError}</p>
+		{/if}
 		{#if draftMessage}
 			<p class="plan-action-result" role="status">{draftMessage}</p>
 		{/if}

@@ -1023,6 +1023,38 @@ export const en = {
 	'cashFlow.plan.actions.stale':
 		'This plan has changed since it was proposed — ask the copilot for a fresh plan before acting on it.',
 	'cashFlow.plan.actions.error': "Couldn't complete this action: {detail}",
+	// Cash-Flow Copilot — saved plans + plan-vs-actual
+	'cashFlow.plan.actions.savePlan': 'Save plan',
+	'cashFlow.plan.actions.savingPlan': 'Saving…',
+	'cashFlow.plan.actions.planSaved':
+		'Plan saved. Track it against what you actually pay under Saved plans.',
+	'cashFlow.plan.actions.planAlreadySaved':
+		'This plan was already saved — the original snapshot is kept.',
+	'cashFlow.consolidated.label': 'All entities',
+	'cashFlow.consolidated.hint':
+		'Answer for the whole group rather than the entity selected in the sidebar.',
+	'cashFlow.saved.heading': 'Saved plans',
+	'cashFlow.saved.refresh': 'Refresh',
+	'cashFlow.saved.loading': 'Loading…',
+	'cashFlow.saved.empty': 'No saved plans yet. Save a proposed plan to compare it against what you actually pay.',
+	'cashFlow.saved.loadError': "Couldn't load saved plans.",
+	'cashFlow.saved.deleteError': "Couldn't delete that plan.",
+	'cashFlow.saved.varianceError': "Couldn't load the comparison.",
+	'cashFlow.saved.consolidatedTag': 'All entities',
+	'cashFlow.saved.totals':
+		'{n, plural, one {Across # closed period:} other {Across # closed periods:}}',
+	'cashFlow.saved.noClosedPeriods': 'No period has closed yet, so there is nothing to score.',
+	'cashFlow.saved.col.period': 'Period',
+	'cashFlow.saved.col.planned': 'Planned',
+	'cashFlow.saved.col.actual': 'Actual',
+	'cashFlow.saved.status.elapsed': 'closed',
+	'cashFlow.saved.status.in_progress': 'in progress',
+	'cashFlow.saved.status.future': 'upcoming',
+	'cashFlow.saved.unplaced':
+		'{n, plural, one {# completed payment could not be scored} other {# completed payments could not be scored}} — no settlement date, or an amount we could not express in {currency}.',
+	'cashFlow.saved.discounts': 'Captured {captured} of {selected} recommended discount offers.',
+	'cashFlow.saved.delete': 'Delete plan',
+	'cashFlow.saved.deleteConfirm': 'Click again to delete',
 	// Cash Flow / CFO dashboard (routes/cfo/+page.svelte)
 	'cfo.title': 'Cash Flow',
 	'cfo.exportCsv': 'Export CSV',

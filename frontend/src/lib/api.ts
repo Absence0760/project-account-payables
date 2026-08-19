@@ -217,9 +217,17 @@ export async function streamAssistantChat(
 export async function streamCashFlowCopilot(
 	body: { message: string; conversation_id?: string },
 	cb: StreamCallbacks,
-	signal?: AbortSignal
+	signal?: AbortSignal,
+	// `consolidated` runs the turn across every entity instead of the one
+	// selected in the sidebar — a treasury question is usually a group
+	// question. It rides the URL (not the body) because the backend reads it as
+	// a query flag on both copilot routes.
+	opts?: { consolidated?: boolean }
 ): Promise<void> {
-	return streamChatTurn('/api/cash-flow/copilot/stream', body, cb, signal);
+	const path = opts?.consolidated
+		? '/api/cash-flow/copilot/stream?consolidated=true'
+		: '/api/cash-flow/copilot/stream';
+	return streamChatTurn(path, body, cb, signal);
 }
 
 /** Shared SSE streaming client for the assistant + cash-flow copilot turns —
