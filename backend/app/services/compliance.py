@@ -67,6 +67,7 @@ from app.services.payment_methods import (
 from app.services.sanctions_adapters import (
     SanctionsAdapter,
     ScreeningResult,
+    UnknownSanctionsProviderError,
     get_sanctions_adapter,
 )
 from app.services.sanctions_categories import (
@@ -252,7 +253,28 @@ async def check_payment_compliance(
         )
 
     reasons: list[str] = []
-    adapter = sanctions_adapter or _sanctions_adapter_from_settings(org_settings)
+    if sanctions_adapter is not None:
+        adapter = sanctions_adapter
+    else:
+        try:
+            adapter = _sanctions_adapter_from_settings(org_settings)
+        except UnknownSanctionsProviderError as exc:
+            # The org named a screening provider this deployment has no adapter
+            # for. There is no verdict to be had, and the one thing we must not
+            # do is proceed: the dispatcher used to substitute `mock` here,
+            # which clears every name it has never heard of. Hold instead —
+            # the payment waits in `pending_compliance` and the caller opens
+            # the `payment_compliance_hold` exception, so the misconfiguration
+            # reaches the AP queue rather than the payment rail. The provider
+            # NAME is org config, not PII, and is already length-bounded by the
+            # error type.
+            return ComplianceDecision(
+                verdict="hold",
+                reasons=[
+                    f"sanctions screening could not run: no adapter for configured "
+                    f"provider '{exc.provider}'"
+                ],
+            )
 
     # ---------- 1. Sanctions / PEP screening ---------------------------------
     bo_blob = vendor.beneficial_owner_data or {}

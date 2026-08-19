@@ -530,7 +530,7 @@ async def test_sanctions_check_row_persisted_with_full_audit_trail():
 
 
 # ---------------------------------------------------------------------------
-# Dispatcher — fallback to mock on misconfig.
+# Dispatcher — mock only when NOTHING is configured; a named unknown fails closed.
 # ---------------------------------------------------------------------------
 
 
@@ -539,14 +539,50 @@ def test_sanctions_dispatcher_falls_back_to_mock_on_empty_config():
     assert adapter.provider_name == "mock"
 
 
-def test_sanctions_dispatcher_falls_back_to_mock_on_unknown_provider():
-    adapter = get_sanctions_adapter({"provider": "made_up"})
-    assert adapter.provider_name == "mock"
+def test_sanctions_dispatcher_raises_on_unknown_named_provider():
+    """A typo'd provider must NOT degrade to `mock` — the mock clears every
+    name outside its own fixture list, so the substitution screened a whole
+    tenant's vendor book against nothing and reported `clear`."""
+    from app.services.sanctions_adapters import UnknownSanctionsProviderError
+
+    with pytest.raises(UnknownSanctionsProviderError) as excinfo:
+        get_sanctions_adapter({"provider": "made_up"})
+    assert excinfo.value.provider == "made_up"
+
+
+def test_sanctions_dispatcher_bounds_an_absurd_provider_name():
+    from app.services.sanctions_adapters import UnknownSanctionsProviderError
+
+    with pytest.raises(UnknownSanctionsProviderError) as excinfo:
+        get_sanctions_adapter({"provider": "x" * 500})
+    assert len(excinfo.value.provider) == 50
 
 
 def test_sanctions_dispatcher_routes_to_complyadvantage_when_configured():
     adapter = get_sanctions_adapter({"provider": "complyadvantage", "api_key": "k"})
     assert adapter.provider_name == "complyadvantage"
+
+
+@pytest.mark.asyncio
+async def test_compliance_holds_when_configured_provider_has_no_adapter():
+    """Fail-closed at the consumer: an unresolvable provider holds the payment
+    in `pending_compliance` (with a reason AP can read) instead of 500ing or
+    — as before — screening against `mock` and allowing."""
+    db = _mock_db_with_zero_trailing_spend()
+    vendor = _vendor(kyc_status="verified")
+    decision = await check_payment_compliance(
+        db,
+        vendor=vendor,
+        payment_amount=Decimal("100.00"),
+        payment_currency="USD",
+        payment_method="ach",
+        org_settings={"compliance": {"sanctions": {"provider": "worldcheck"}}},
+        organization_id=uuid.uuid4(),
+    )
+    assert decision.verdict == "hold"
+    assert any("worldcheck" in r for r in decision.reasons)
+    # No screening row was written — nothing was screened.
+    assert decision.sanctions_check_row is None
 
 
 # ---------------------------------------------------------------------------

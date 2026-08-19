@@ -10,6 +10,7 @@ registered names (today: `mock`, `complyadvantage` skeleton).
 
 from app.services.sanctions_adapters.base import SanctionsAdapter, ScreeningResult
 from app.services.sanctions_adapters.dispatcher import (
+    UnknownSanctionsProviderError,
     get_sanctions_adapter,
     register_sanctions_adapter,
 )
@@ -17,6 +18,7 @@ from app.services.sanctions_adapters.dispatcher import (
 __all__ = [
     "SanctionsAdapter",
     "ScreeningResult",
+    "UnknownSanctionsProviderError",
     "get_sanctions_adapter",
     "register_sanctions_adapter",
 ]
