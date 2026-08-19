@@ -315,8 +315,8 @@ async def test_reconciler_aged_out_does_not_dispatch_payment_sync():
 
 @pytest.mark.asyncio
 async def test_reconciler_aged_out_writes_audit_row():
-    """The force-fail-on-max-age path stamps `completed_at` + flips to
-    `failed`, so it MUST write a `payment.failed` audit row too."""
+    """The force-fail-on-max-age path flips the row to `failed`, so it MUST
+    write a `payment.failed` audit row too."""
     from app.services.payment_reconciler import _reconcile_tenant
 
     org = SimpleNamespace(

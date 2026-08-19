@@ -301,6 +301,7 @@ class PaymentPlanPeriod(BaseModel):
     outflow: Decimal
     closing: Decimal
     below_threshold: bool
+    unconverted_count: int = 0
 
 
 class PaymentPlanResult(BaseModel):
@@ -331,6 +332,11 @@ class PaymentPlanResult(BaseModel):
     cost_of_capital_pct: Decimal
     total_savings_selected: Decimal
     total_outlay_selected: Decimal
+    # Commitments the plan's own curve carries at FACE VALUE in a currency we
+    # could not convert. Non-zero means the copilot must say so before
+    # narrating a shortfall off this curve — the same caveat
+    # `CashPositionResult` carries, on the artifact a user can ENACT.
+    unconverted_count: int = 0
     discount_recommendations: list[DiscountRecommendation]
     # offer_ids the optimizer selected but this plan could not re-time onto
     # the cash curve (a vendor-scoped offer with no single invoice, or an

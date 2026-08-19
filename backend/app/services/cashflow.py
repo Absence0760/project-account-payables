@@ -185,7 +185,7 @@ async def resolve_opening_balance(
             )
 
     stored = (settings_dict.get("cashflow") or {}).get("opening_balance")
-    stored_amount = _coerce_decimal(stored)
+    stored_amount = _coerce_decimal(stored, field="opening_balance")
     if stored_amount is not None:
         return OpeningBalance(
             amount=stored_amount,
@@ -219,16 +219,39 @@ class CashThresholds:
     min_balance_threshold: Decimal | None = None
 
 
-def _coerce_decimal(raw) -> Decimal | None:
+def _coerce_decimal(raw, *, field: str = "cashflow value") -> Decimal | None:
     """Parse a persisted/JSON money value into Decimal, tolerating a malformed
     stored value by returning ``None`` (a corrupt settings blob must never break
-    the read)."""
+    the read) — but never SILENTLY.
+
+    Returning ``None`` for ``min_balance_threshold`` is not a neutral fallback:
+    that threshold IS the per-org opt-in to shortfall alerting
+    (``cash_flow_alerts._project_tenant`` returns early on ``None``), so a
+    single malformed character in the settings JSON un-subscribes the org from
+    the alert it configured, forever, with nothing anywhere saying so. A log
+    line naming the FIELD (never the value — a settings blob is operator data)
+    is what makes that recoverable.
+
+    ``Decimal("NaN")`` is the same failure wearing a valid-parse costume:
+    ``Decimal(str("nan"))`` succeeds, and every subsequent comparison against
+    it (``closing < threshold``) is False, so the org is opted out of alerting
+    just as completely while looking configured. Infinities likewise — an
+    infinite threshold breaches on every period, or never. Only a finite
+    number is a threshold.
+    """
     if raw is None or raw == "":
         return None
     try:
-        return Decimal(str(raw))
+        value = Decimal(str(raw))
     except (InvalidOperation, ValueError, TypeError):
+        logger.warning("[cashflow] ignoring malformed persisted %s in organization settings", field)
         return None
+    if not value.is_finite():
+        logger.warning(
+            "[cashflow] ignoring non-finite persisted %s in organization settings", field
+        )
+        return None
+    return value
 
 
 def resolve_cash_thresholds(settings: dict | None) -> CashThresholds:
@@ -241,7 +264,9 @@ def resolve_cash_thresholds(settings: dict | None) -> CashThresholds:
     if not isinstance(cashflow, dict):
         return CashThresholds()
     return CashThresholds(
-        min_balance_threshold=_coerce_decimal(cashflow.get("min_balance_threshold")),
+        min_balance_threshold=_coerce_decimal(
+            cashflow.get("min_balance_threshold"), field="min_balance_threshold"
+        ),
     )
 
 

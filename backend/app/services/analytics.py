@@ -701,8 +701,16 @@ def bucket_outflows(rows: list[dict], *, granularity: str = "week", today=None) 
     on every row and read by nobody; carrying it here is what makes the
     module-header promise ("visible rather than silent") true.
 
-    ``today`` is accepted for symmetry / testability but does not filter —
-    the API layer is responsible for the horizon window."""
+    ``today`` does NOT filter which rows are bucketed — the API layer owns the
+    horizon window. It governs one thing: whether a row's early-pay discount is
+    still capturable (see ``discount_eligible_amount`` below). Defaults to the
+    system date, mirroring ``apply_payment_timing_scenario``; every production
+    caller passes it explicitly."""
+    # UTC, not the host's local date: every other consumer of these rows
+    # (`api/analytics`, `cash_flow_alerts`, the copilot tools) works in UTC,
+    # and on a non-UTC host `date.today()` shifts the discount-window cutoff
+    # by a day relative to them.
+    today = today or datetime.now(UTC).date()
     buckets: dict[str, dict] = {}
     for r in rows:
         due = r.get("due_date")
@@ -729,8 +737,22 @@ def bucket_outflows(rows: list[dict], *, granularity: str = "week", today=None) 
             b["committed_amount"] += amount
         else:
             b["pending_amount"] += amount
+        # `discount_eligible_amount` is "how much of this period's outflow can
+        # still be paid early for a discount". An ELAPSED window can't be, so
+        # counting it told a CFO to fund a run against savings that no longer
+        # exist. The commitment rows this consumes are bounded on their DUE
+        # date only (`api/analytics._commitment_rows`), so an in-horizon
+        # invoice on 2/10-net-60 terms routinely arrives with a `discount_date`
+        # that passed weeks ago. Same rule the discount optimizer
+        # (`discount_optimizer.optimize`: "capturable only while the deadline
+        # has not elapsed"), `discount_offers._tier_achievable` and the `early`
+        # what-if scenario directly below already apply — the four consumers of
+        # the same economics must not disagree about which discounts are on the
+        # table.
+        discount_date = r.get("discount_date")
         if (
-            r.get("discount_date") is not None
+            discount_date is not None
+            and discount_date >= today
             and Decimal(str(r.get("discount_percent") or "0")) > 0
         ):
             b["discount_eligible_amount"] += amount
@@ -796,11 +818,12 @@ def apply_payment_timing_scenario(
     ``weighted_avg_pay_date_days`` is the amount-weighted mean number of
     days from ``today`` to each row's pay date — a single "how soon does
     the cash leave" number for the scenario card."""
-    from datetime import date, timedelta
+    from datetime import timedelta
 
     if scenario not in ("early", "on_time", "late"):
         raise ValueError(f"unknown scenario {scenario!r}")
-    today = today or date.today()
+    # UTC — see `bucket_outflows`.
+    today = today or datetime.now(UTC).date()
 
     total_outflow = Decimal("0")
     total_discount = Decimal("0")

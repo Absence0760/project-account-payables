@@ -45,6 +45,13 @@ class DraftRunResponse(BaseModel):
     total_amount: Decimal
     payment_count: int
     requires_cfo_approval: bool
+    # A payment run is single-currency (`PaymentRun.total_amount` is a bare
+    # Numeric and the CFO threshold is compared against it as a bare number),
+    # so a plan spanning several currencies stages the ORG's reporting-currency
+    # slice and says what it left behind. `excluded_currency_count` is 0 for
+    # every single-currency tenant.
+    run_currency: str = "USD"
+    excluded_currency_count: int = 0
 
 
 class CaptureDiscountsResponse(BaseModel):

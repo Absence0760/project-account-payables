@@ -33,6 +33,7 @@ from app.schemas.virtual_card import (
     RebateListResponse,
     RebateResponse,
 )
+from app.services.payment_adapters.base import minor_units_to_decimal
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
 
 logger = logging.getLogger(__name__)
@@ -94,22 +95,39 @@ def _classify_card_event(event_type: str) -> tuple[bool, bool]:
     return is_auth, is_settled
 
 
-def _normalize_charge_amount(provider: str, amount, fallback: Decimal | None) -> Decimal | None:
+def _normalize_charge_amount(
+    provider: str, amount, fallback: Decimal | None, currency: str | None = None
+) -> Decimal | None:
     """Normalize a webhook charge `amount` to a major-unit Decimal.
 
     The unit differs by provider: Lithic webhook amounts are in MINOR units
     (cents — e.g. 150000 == $1,500.00), Nium in MAJOR units (e.g. 50.00 ==
     $50.00). Dividing both by 100 recorded 1/100th of every Nium charge (and a
-    rebate on it). A falsy / unparseable amount returns `fallback` (the card's
-    own limit).
+    rebate on it).
+
+    The minor-unit conversion goes through
+    `payment_adapters.base.minor_units_to_decimal`, which is ISO-4217-exponent
+    aware. A flat `/ 100` is right for the ~universal exponent of 2 and wrong
+    in both directions elsewhere: ¥150000 is ¥150,000 (exponent 0), not
+    ¥1,500, and 150000 fils is 150 KWD (exponent 3), not 1,500. Lithic is
+    USD-only in practice today, so nothing in play is currently mispriced —
+    which is exactly why this had to be routed through the one exponent table
+    before a card provider or a non-USD card currency arrives, rather than
+    after. `currency` is optional because a webhook body need not carry it;
+    absent, the helper falls back to the common exponent of 2, i.e. the old
+    behaviour.
+
+    A falsy / unparseable amount returns `fallback` (the card's own limit).
     """
     if not amount:
         return fallback
-    try:
-        raw = Decimal(str(amount))
-    except (InvalidOperation, ValueError, TypeError):
-        return fallback
-    return (raw / 100) if provider == "lithic" else raw
+    if provider != "lithic":
+        try:
+            return Decimal(str(amount))
+        except (InvalidOperation, ValueError, TypeError):
+            return fallback
+    converted = minor_units_to_decimal(amount, currency)
+    return fallback if converted is None else converted
 
 
 def _resolve_card_config(org: Organization) -> dict:
@@ -281,9 +299,14 @@ async def card_dashboard(
     )
     rebate_month = (await db.execute(rebate_month_q)).scalar() or 0
 
-    # Rebates YTD
+    # Rebates YTD. BOUNDED at both ends: `period` is a `YYYY-MM` string, so a
+    # bare `>= "{year}-01"` also matches every FUTURE year ("2027-03" sorts
+    # above "2026-01"), letting a forward-dated row leak into a
+    # year-to-date figure — and `projected_annual` divides that figure by
+    # months elapsed, so one such row inflates the projection too.
     rebate_ytd_q = select(func.coalesce(func.sum(CardRebate.amount), 0)).where(
-        CardRebate.period >= f"{now.year}-01"
+        CardRebate.period >= f"{now.year}-01",
+        CardRebate.period <= now.strftime("%Y-%m"),
     )
     rebate_ytd = (await db.execute(rebate_ytd_q)).scalar() or 0
 
@@ -723,7 +746,7 @@ async def card_webhook(provider: str, request: Request):
                     prior_status = card.status
                     card.status = "charged"
                     card.amount_charged = _normalize_charge_amount(
-                        provider, amount, card.amount_limit
+                        provider, amount, card.amount_limit, card.currency
                     )
                     card.charged_at = datetime.now(UTC)
                     card.merchant_name = merchant
