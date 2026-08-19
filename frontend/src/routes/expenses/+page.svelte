@@ -148,12 +148,27 @@
 		expenseStore.all.filter((e) => e.status === 'draft' || e.status === 'submitted').length
 	);
 
+	// The live search term, read WITHOUT registering a dependency.
+	//
+	// `buildParams()` / `loadExpenses()` are called synchronously from the
+	// statusFilter `$effect` below, and Svelte tracks reads transitively through
+	// called functions — so a plain `search` read would make that effect depend
+	// on `search` too, firing an immediate un-debounced load on every keystroke
+	// (issue #168, the very thing `syncUrl`'s comment says was fixed on
+	// /invoices, /payments and /vendors; `routes/vendors/+page.svelte` untracks
+	// the same read for the same reason). Worse here than there: `loadExpenses()`
+	// stamps `appliedSearch` first, so the debounce timer would then
+	// short-circuit and the keystroke fetch would be the ONLY one.
+	function currentSearchTerm(): string {
+		return untrack(() => search).trim();
+	}
+
 	// List params. `search` is a SERVER filter now — `GET /api/expenses` ILIKEs
 	// merchant / description / category, the columns this table renders — so the
 	// whole filtered set is searched instead of the page already loaded.
 	function buildParams(): ExpenseListParams {
 		const params: ExpenseListParams = { ...buildExportParams() };
-		const term = search.trim();
+		const term = currentSearchTerm();
 		if (term) params.search = term;
 		return params;
 	}
@@ -175,7 +190,7 @@
 	// debounce effect below can tell a term that is already on screen from one
 	// that still needs a fetch.
 	function loadExpenses() {
-		appliedSearch = search.trim();
+		appliedSearch = currentSearchTerm();
 		// Fire-and-forget: the store loaders re-throw so an awaiting caller keeps
 		// its own handling, but nothing awaits here — the store's `errored` flag is
 		// what the UI renders. Swallow so a failed load isn't an unhandled rejection.
@@ -302,7 +317,7 @@
 			// newest issued load, so a debounce still pending for the same term
 			// must not fire a second one behind it. Awaited (not fire-and-forget)
 			// so a failed refresh reaches the catch below.
-			appliedSearch = search.trim();
+			appliedSearch = currentSearchTerm();
 			await expenseStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
 		} catch (err) {
 			toast(err instanceof Error ? err.message : m('expenses.toast.bulkGlFailed'), 'error');

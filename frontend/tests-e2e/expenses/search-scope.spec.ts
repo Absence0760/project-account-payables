@@ -18,7 +18,13 @@ import { expect, test } from '../fixtures/helpers';
  * Plus the asymmetry that survives: `GET /api/expenses/export` declares no
  * `search` leg, so the CSV button deliberately sends only `status` — passing a
  * param FastAPI drops would read as a narrowed export while the file still
- * covered the whole status-filtered set.
+ * covered the whole status-filtered set. And a keystroke must not cost a
+ * request.
+ * The keystroke test asserts a NEGATIVE over a time window — "no request fired
+ * yet" is the one thing that cannot be awaited on a signal — so it uses the
+ * same waits (and the same 300ms debounce) as the canonical
+ * `tests-e2e/reactivity/search-debounce-race.spec.ts`. Those waits ARE the
+ * assertion, not a cushion around a flake.
  *
  * The list response is stubbed so the assertions don't depend on how much the
  * shard's tenant happens to hold.
@@ -171,5 +177,33 @@ test.describe('/expenses — server-side search', () => {
 
 		expect(exportUrls).toHaveLength(1);
 		expect(new URL(exportUrls[0]).searchParams.get('search')).toBeNull();
+	});
+
+	test('rapid typing fires one coalesced request, not one per keystroke', async ({ page }) => {
+		// The regression this guards: `loadExpenses()` is called synchronously
+		// from the statusFilter `$effect`, so an untracked-read slip there makes
+		// THAT effect depend on `search` and every keystroke fires its own
+		// immediate request — with `appliedSearch` then cancelling the debounce,
+		// so the un-debounced one is the only one. A `fill()`-based test cannot
+		// see it (one state write, one term); typing can.
+		const { listSearches } = await stubExpenseEndpoints(page);
+		await page.goto('/expenses');
+		await expect(page.locator(ROWS)).toHaveCount(PAGE_ONE.length);
+
+		// Let the mount load settle before measuring.
+		await page.waitForTimeout(400);
+		listSearches.length = 0;
+
+		// One keystroke at a time, well inside the 300ms debounce window.
+		await page.getByPlaceholder(SEARCH).pressSequentially('Skyl', { delay: 30 });
+
+		// Comfortably under 300ms since the last keystroke: nothing fired.
+		await page.waitForTimeout(150);
+		expect(listSearches, 'no un-debounced request per keystroke').toEqual([]);
+
+		// Past the debounce: exactly one request, for the FINAL term — not one
+		// each for "S", "Sk", "Sky", "Skyl".
+		await page.waitForTimeout(300);
+		expect(listSearches, 'one coalesced request for the final term').toEqual(['Skyl']);
 	});
 });

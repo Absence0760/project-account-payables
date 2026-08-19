@@ -16,9 +16,15 @@ import { expect, test } from '../fixtures/helpers';
  *   1. the term rides the query string, and
  *   2. a row that is NOT on the loaded page comes back.
  *
- * Plus the race the server round-trip introduces: a slow response for an
- * earlier term must never land on top of a faster later one
- * (`createRequestSequencer`, frontend/CLAUDE.md § Sequencing list fetches).
+ * Plus the two hazards the server round-trip introduces: a slow response for
+ * an earlier term must never land on top of a faster later one
+ * (`createRequestSequencer`, frontend/CLAUDE.md § Sequencing list fetches), and
+ * a keystroke must not cost a request.
+ * The keystroke test asserts a NEGATIVE over a time window — "no request fired
+ * yet" is the one thing that cannot be awaited on a signal — so it uses the
+ * same waits (and the same 300ms debounce) as the canonical
+ * `tests-e2e/reactivity/search-debounce-race.spec.ts`. Those waits ARE the
+ * assertion, not a cushion around a flake.
  *
  * The list response is stubbed so the assertions don't depend on how much the
  * shard's tenant happens to hold.
@@ -207,5 +213,33 @@ test.describe('/requisitions — server-side search', () => {
 		// Still the newer term's result — the 6 Engineering rows never appear.
 		await expect(page.locator(ROWS)).toHaveCount(1);
 		await expect(page.locator(ROWS, { hasText: 'RQ-STUB-6' })).toHaveCount(1);
+	});
+
+	test('rapid typing fires one coalesced request, not one per keystroke', async ({ page }) => {
+		// The regression this guards: `load()` is called synchronously from the
+		// statusFilter `$effect`, so an untracked-read slip there makes THAT
+		// effect depend on `search` and every keystroke fires its own immediate
+		// request — with `appliedSearch` then cancelling the debounce, so the
+		// un-debounced one is the only one. A `fill()`-based test cannot see it
+		// (one state write, one term); typing can.
+		const seenSearches = await stubRequisitionList(page);
+		await page.goto('/requisitions');
+		await expect(page.locator(ROWS)).toHaveCount(PAGE_ONE.length);
+
+		// Let the mount load settle before measuring.
+		await page.waitForTimeout(400);
+		seenSearches.length = 0;
+
+		// One keystroke at a time, well inside the 300ms debounce window.
+		await page.getByPlaceholder(SEARCH).pressSequentially('Facil', { delay: 30 });
+
+		// Comfortably under 300ms since the last keystroke: nothing fired.
+		await page.waitForTimeout(150);
+		expect(seenSearches, 'no un-debounced request per keystroke').toEqual([]);
+
+		// Past the debounce: exactly one request, for the FINAL term — not one
+		// each for "F", "Fa", "Fac", "Faci", "Facil".
+		await page.waitForTimeout(300);
+		expect(seenSearches, 'one coalesced request for the final term').toEqual(['Facil']);
 	});
 });

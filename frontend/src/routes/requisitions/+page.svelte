@@ -158,9 +158,22 @@
 				page_size: PAGE_SIZE
 			};
 			if (statusFilter !== 'all') params.status = statusFilter;
+			// `untrack`: `load()` is ALSO called synchronously from the
+			// statusFilter `$effect` above, and Svelte tracks reads transitively
+			// through called functions — so a plain `search` read here would make
+			// that effect depend on `search` too, firing an immediate
+			// un-debounced load on every keystroke (issue #168, the very thing
+			// `syncUrl`'s comment says was fixed on /invoices, /payments and
+			// /vendors; `frontend/src/routes/vendors/+page.svelte` untracks the
+			// same read for the same reason). Worse here than there: `load()`
+			// stamps `appliedSearch` first, so the debounce timer would then
+			// short-circuit and the keystroke fetch would be the ONLY one. The
+			// value read is still the live one — untrack only stops the read
+			// registering as a dependency.
+			//
 			// Read at issue time, and recorded, so the debounce below can tell a
 			// term that is already on screen from one that still needs a fetch.
-			const term = search.trim();
+			const term = untrack(() => search).trim();
 			if (term) params.search = term;
 			appliedSearch = term;
 			const res = await listRequisitions(params);
