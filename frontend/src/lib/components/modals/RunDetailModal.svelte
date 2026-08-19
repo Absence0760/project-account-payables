@@ -61,7 +61,24 @@
 	let executing = $state(false);
 	let cancelling = $state(false);
 	let confirmCancel = $state(false);
+	// Execute is the one irreversible money-moving control in the web app, so
+	// it arms before it commits — the same two-click shape its sibling
+	// `confirmCancel` already uses in this footer (and that void, credit-memo
+	// void, API-key revoke and the mobile app all use), rather than a bespoke
+	// dialog. First click arms, second click moves the money.
+	let confirmExecute = $state(false);
 	let error = $state('');
+
+	/** Arm one footer commit and disarm the other.
+	 *
+	 *  Two armed red buttons side by side is how a mis-click becomes the wrong
+	 *  irreversible action: arming Execute must retract a previously-armed
+	 *  Cancel and vice versa, so at most one control is ever one click from
+	 *  committing. */
+	function arm(which: 'execute' | 'cancel') {
+		confirmExecute = which === 'execute';
+		confirmCancel = which === 'cancel';
+	}
 
 	async function load() {
 		loading = true;
@@ -92,6 +109,12 @@
 			toast(err instanceof Error ? err.message : m('paymentRuns.runDetail.executeFailed'), 'error');
 		} finally {
 			executing = false;
+			// Disarm once the attempt is over, whichever way it went. On success
+			// the run is no longer a draft and the footer branch is gone anyway;
+			// on failure the run is still payable, and leaving a live money
+			// button one click from firing is exactly what arming exists to
+			// prevent.
+			confirmExecute = false;
 		}
 	}
 
@@ -238,6 +261,15 @@
 					</p>
 				{/if}
 
+				{#if confirmExecute}
+					<!-- Announced (role="alert") the moment Execute arms, so a
+					     screen-reader user learns the next click moves money
+					     without having to re-read the button. -->
+					<p class="footer-note armed-note" role="alert" data-testid="execute-armed-note">
+						{m('paymentRuns.runDetail.executeArmedNote', { amount: fmt(run.total_amount) })}
+					</p>
+				{/if}
+
 				<div class="actions">
 					<button class="btn-cancel" onclick={onclose}>{m('paymentRuns.runDetail.close')}</button>
 					{#if confirmCancel}
@@ -252,7 +284,7 @@
 						<button
 							class="btn-discard"
 							disabled={cancelling || executing || approving}
-							onclick={() => (confirmCancel = true)}
+							onclick={() => arm('cancel')}
 						>
 							{m('paymentRuns.runDetail.cancelRun')}
 						</button>
@@ -267,14 +299,33 @@
 						</button>
 					{/if}
 					{#if auth.can(PERM_PAYMENT_EXECUTE)}
-						<button
-							class="btn-execute"
-							disabled={executing || cancelling || pendingCfo}
-							title={pendingCfo ? m('paymentRuns.runDetail.awaitingCfo') : ''}
-							onclick={execute}
-						>
-							{executing ? m('paymentRuns.runDetail.executing') : m('paymentRuns.runDetail.executeAmount', { amount: fmt(run.total_amount) })}
-						</button>
+						{#if confirmExecute}
+							<!-- Armed. The label is deliberately DISTINCT from the
+							     unarmed one ("Confirm execute · …" vs "Execute · …")
+							     so the change is announced to a screen reader, and so
+							     a test can wait on the armed control by name instead
+							     of on a timer. -->
+							<button
+								class="btn-execute armed"
+								disabled={executing || cancelling || pendingCfo}
+								onclick={execute}
+							>
+								{executing
+									? m('paymentRuns.runDetail.executing')
+									: m('paymentRuns.runDetail.confirmExecuteAmount', {
+											amount: fmt(run.total_amount)
+										})}
+							</button>
+						{:else}
+							<button
+								class="btn-execute"
+								disabled={executing || cancelling || pendingCfo}
+								title={pendingCfo ? m('paymentRuns.runDetail.awaitingCfo') : ''}
+								onclick={() => arm('execute')}
+							>
+								{m('paymentRuns.runDetail.executeAmount', { amount: fmt(run.total_amount) })}
+							</button>
+						{/if}
 					{/if}
 				</div>
 			{:else}
@@ -536,6 +587,21 @@
 	.btn-execute:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
+	}
+
+	/* Armed: the next click moves money. Reads as a warning, not as the
+	   calm green "ready" state, and mirrors how `.btn-discard.armed`
+	   changes appearance one step before it commits. */
+	.btn-execute.armed {
+		/* --danger-strong, not --danger: this is a fill carrying white text
+		   (5.37:1), the same call `app.css` records for every red fill. */
+		background: var(--danger-strong);
+		box-shadow: 0 0 0 2px rgba(196, 53, 53, 0.3);
+	}
+
+	.footer-note.armed-note {
+		color: var(--danger);
+		font-weight: 600;
 	}
 
 	.btn-discard {
