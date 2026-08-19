@@ -1,6 +1,7 @@
 // Types for the Contracts surface. Mirrors the JSON returned by the
 // `/api/contracts` endpoints (backend `Contract.to_dict()`). Money fields
 // arrive as numbers (or null); date fields are ISO date strings (or null).
+import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
 
 export type ContractType =
 	| 'purchase'
@@ -56,6 +57,18 @@ export const STATUS_LABELS: Record<ContractStatus, string> = {
 	expired: 'Expired',
 	terminated: 'Terminated',
 	cancelled: 'Cancelled'
+};
+
+// Badge tone per status, so the list page and the modal can't tint the same
+// status two different shades — which is exactly what they did (the modal's
+// `.badge.active` and the list's differed by an alpha step).
+export const STATUS_TONES: Record<ContractStatus, BadgeTone> = {
+	draft: 'accent',
+	active: 'success',
+	expired: 'warning',
+	terminated: 'danger',
+	// Cancelled is the absence of a signal, not a weak one — flat, not tinted.
+	cancelled: 'neutral'
 };
 
 export interface ContractLineItem {

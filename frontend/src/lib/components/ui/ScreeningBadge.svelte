@@ -75,19 +75,23 @@
 	.screen-badge.risk {
 		font-size: 0.68rem;
 	}
+	/* Tones come from the palette pairs, not from private literals — the same
+	   values `ui/Badge.svelte` renders. This pill keeps its own *metrics*
+	   (smaller, sentence-case, weight 500) on purpose: it sits inline in a
+	   dense table cell beside a vendor name, where the uppercase status pill
+	   would shout. Metrics are the reason it isn't a `<Badge>`; colour never
+	   was, and three private spellings of green/amber/red are gone. */
 	.screen-badge.green {
-		background: rgba(31, 168, 106, 0.12);
-		color: #1fa86a;
+		background: var(--success-tint);
+		color: var(--success-on-tint);
 	}
 	.screen-badge.amber {
-		background: rgba(212, 148, 10, 0.12);
-		color: #d4940a;
+		background: var(--warning-tint);
+		color: var(--warning-on-tint);
 	}
-	/* WCAG 1.4.3 — #e04040 on the 12%-tint-over-bg was 4.05:1 (fail);
-	   #f06464 lifts it to 5.46:1. green (5.34) + amber (6.12) already pass. */
 	.screen-badge.red {
-		background: rgba(224, 64, 64, 0.12);
-		color: #f06464;
+		background: var(--danger-tint);
+		color: var(--danger-on-tint);
 	}
 	.screen-badge.grey {
 		background: var(--bg);
