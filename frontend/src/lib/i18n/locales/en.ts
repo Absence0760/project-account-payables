@@ -81,6 +81,19 @@ export const en = {
 		'Choose the language used across the app. Your choice is saved on this device.',
 	'profile.language.label': 'Display language',
 
+	// Profile → Notification preferences (profile/+page.svelte). The event
+	// roster mirrors backend/app/models/notification.py::NOTIFICATION_EVENT_TYPES
+	// — see src/lib/types/notification.ts and its roster guard.
+	'profile.notifications.event.invoiceAssigned': 'Invoice assigned to me',
+	'profile.notifications.event.invoiceApproved': 'Invoice approved',
+	'profile.notifications.event.invoiceRejected': 'Invoice rejected',
+	'profile.notifications.event.invoicePaid': 'Invoice paid',
+	'profile.notifications.event.contractRenewalDue': 'Contract renewal due',
+	'profile.notifications.event.chatMessage': 'New supplier chat message',
+	'profile.notifications.event.cashShortfallProjected': 'Projected cash shortfall',
+	'profile.notifications.inAppFor': 'In-app notifications for {event}',
+	'profile.notifications.emailFor': 'Email notifications for {event}',
+
 	// Common shared across list/detail surfaces
 	'common.all': 'All',
 	'common.search': 'Search',
@@ -167,6 +180,10 @@ export const en = {
 	// Payments (routes/payments/+page.svelte)
 	'payments.title': 'Payments',
 	'payments.summary.totalPaid': 'Total Paid',
+	'payments.summary.unconvertedPayments':
+		'Excluded: {n, plural, one {# payment} other {# payments}} with no exchange rate into {currency}, left out of the totals above — so the figures shown understate what actually moved. Book the missing rate to see the full picture.',
+	'payments.queue.unconvertedRows':
+		'{n, plural, one {# invoice has} other {# invoices have}} no exchange rate into the reporting currency, so the queue totals leave them out. The rows themselves are listed and payable, each in its own currency.',
 	'payments.summary.pending': 'Pending',
 	'payments.summary.readyToPay': 'Ready to Pay',
 	'payments.summary.payments': 'Payments',

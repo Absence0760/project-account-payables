@@ -72,6 +72,17 @@ export const messages = {
 		'Wählen Sie die in der App verwendete Sprache. Ihre Auswahl wird auf diesem Gerät gespeichert.',
 	'profile.language.label': 'Anzeigesprache',
 
+	// Profile → Notification preferences
+	'profile.notifications.event.invoiceAssigned': 'Mir zugewiesene Rechnung',
+	'profile.notifications.event.invoiceApproved': 'Rechnung genehmigt',
+	'profile.notifications.event.invoiceRejected': 'Rechnung abgelehnt',
+	'profile.notifications.event.invoicePaid': 'Rechnung bezahlt',
+	'profile.notifications.event.contractRenewalDue': 'Vertragsverlängerung fällig',
+	'profile.notifications.event.chatMessage': 'Neue Nachricht im Lieferantenchat',
+	'profile.notifications.event.cashShortfallProjected': 'Prognostizierte Liquiditätslücke',
+	'profile.notifications.inAppFor': 'In-App-Benachrichtigungen für „{event}“',
+	'profile.notifications.emailFor': 'E-Mail-Benachrichtigungen für „{event}“',
+
 	// Common shared across list/detail surfaces
 	'common.all': 'Alle',
 	'common.search': 'Suchen',
@@ -150,6 +161,10 @@ export const messages = {
 	// Payments
 	'payments.title': 'Zahlungen',
 	'payments.summary.totalPaid': 'Gesamt bezahlt',
+	'payments.summary.unconvertedPayments':
+		'Ausgeschlossen: {n, plural, one {# Zahlung} other {# Zahlungen}} ohne Wechselkurs in {currency}, nicht in den obigen Summen enthalten — die angezeigten Zahlen unterschätzen daher den tatsächlichen Zahlungsfluss. Erfassen Sie den fehlenden Kurs für ein vollständiges Bild.',
+	'payments.queue.unconvertedRows':
+		'{n, plural, one {# Rechnung hat} other {# Rechnungen haben}} keinen Wechselkurs in die Berichtswährung, daher bleiben sie in den Summen der Warteschlange unberücksichtigt. Die Zeilen selbst werden angezeigt und sind zahlbar — jeweils in ihrer eigenen Währung.',
 	'payments.summary.pending': 'Ausstehend',
 	'payments.summary.readyToPay': 'Zahlbereit',
 	'payments.summary.payments': 'Zahlungen',

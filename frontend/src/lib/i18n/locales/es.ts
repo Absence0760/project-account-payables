@@ -72,6 +72,17 @@ export const messages = {
 		'Elija el idioma utilizado en toda la aplicación. Su elección se guarda en este dispositivo.',
 	'profile.language.label': 'Idioma de visualización',
 
+	// Profile → Notification preferences
+	'profile.notifications.event.invoiceAssigned': 'Factura asignada a mí',
+	'profile.notifications.event.invoiceApproved': 'Factura aprobada',
+	'profile.notifications.event.invoiceRejected': 'Factura rechazada',
+	'profile.notifications.event.invoicePaid': 'Factura pagada',
+	'profile.notifications.event.contractRenewalDue': 'Renovación de contrato pendiente',
+	'profile.notifications.event.chatMessage': 'Nuevo mensaje del chat con el proveedor',
+	'profile.notifications.event.cashShortfallProjected': 'Déficit de tesorería previsto',
+	'profile.notifications.inAppFor': 'Notificaciones en la aplicación para «{event}»',
+	'profile.notifications.emailFor': 'Notificaciones por correo electrónico para «{event}»',
+
 	// Common shared across list/detail surfaces
 	'common.all': 'Todas',
 	'common.search': 'Buscar',
@@ -150,6 +161,10 @@ export const messages = {
 	// Payments
 	'payments.title': 'Pagos',
 	'payments.summary.totalPaid': 'Total pagado',
+	'payments.summary.unconvertedPayments':
+		'Excluidos: {n, plural, one {# pago} other {# pagos}} sin tipo de cambio a {currency}, fuera de los totales anteriores, por lo que las cifras mostradas subestiman lo que realmente se movió. Registre el tipo de cambio que falta para ver el panorama completo.',
+	'payments.queue.unconvertedRows':
+		'{n, plural, one {# factura no tiene} other {# facturas no tienen}} tipo de cambio a la moneda de reporte, por lo que los totales de la cola las omiten. Las filas siguen listadas y son pagaderas, cada una en su propia moneda.',
 	'payments.summary.pending': 'Pendiente',
 	'payments.summary.readyToPay': 'Listo para pagar',
 	'payments.summary.payments': 'Pagos',

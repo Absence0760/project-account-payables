@@ -73,6 +73,17 @@ export const messages = {
 		'Escolha o idioma usado em todo o aplicativo. Sua escolha é salva neste dispositivo.',
 	'profile.language.label': 'Idioma de exibição',
 
+	// Profile → Notification preferences
+	'profile.notifications.event.invoiceAssigned': 'Fatura atribuída a mim',
+	'profile.notifications.event.invoiceApproved': 'Fatura aprovada',
+	'profile.notifications.event.invoiceRejected': 'Fatura rejeitada',
+	'profile.notifications.event.invoicePaid': 'Fatura paga',
+	'profile.notifications.event.contractRenewalDue': 'Renovação de contrato pendente',
+	'profile.notifications.event.chatMessage': 'Nova mensagem no chat com o fornecedor',
+	'profile.notifications.event.cashShortfallProjected': 'Déficit de caixa previsto',
+	'profile.notifications.inAppFor': 'Notificações no aplicativo para “{event}”',
+	'profile.notifications.emailFor': 'Notificações por e-mail para “{event}”',
+
 	// Common shared across list/detail surfaces
 	'common.all': 'Todas',
 	'common.search': 'Pesquisar',
@@ -151,6 +162,10 @@ export const messages = {
 	// Payments
 	'payments.title': 'Pagamentos',
 	'payments.summary.totalPaid': 'Total pago',
+	'payments.summary.unconvertedPayments':
+		'Excluídos: {n, plural, one {# pagamento} other {# pagamentos}} sem taxa de câmbio para {currency}, fora dos totais acima — portanto os valores exibidos subestimam o que de fato foi movimentado. Registre a taxa faltante para ver o quadro completo.',
+	'payments.queue.unconvertedRows':
+		'{n, plural, one {# fatura não tem} other {# faturas não têm}} taxa de câmbio para a moeda de relatório, então os totais da fila as deixam de fora. As linhas continuam listadas e pagáveis, cada uma na sua própria moeda.',
 	'payments.summary.pending': 'Pendente',
 	'payments.summary.readyToPay': 'Pronto para pagar',
 	'payments.summary.payments': 'Pagamentos',

@@ -75,6 +75,14 @@
 		payment_count: number;
 		total_rebates: string;
 		queue_count: number;
+		// `Payment.amount` is INVOICE currency (the home-currency debit lives on
+		// `source_amount`), so these totals used to be face-value sums across
+		// currencies. The backend converts into the org's reporting currency now
+		// and says which currency that is — render it, or the figure is a bare
+		// number whose denomination the reader has to assume.
+		currency?: string;
+		// Payments it could not convert, excluded from the totals above.
+		unconverted_payment_count?: number;
 	}
 	let summary = $state<Summary | null>(null);
 
@@ -113,6 +121,9 @@
 		blocked_reason?: string | null;
 	}
 	let queue = $state<QueueItem[]>([]);
+	// Queue rows the backend could not express in the reporting currency, so
+	// its own roll-ups exclude them. Rows still render in their OWN currency.
+	let queueUnconvertedCount = $state(0);
 
 	// Queue selection and payment run creation
 	let selectedQueue = $state<Set<string>>(new Set());
@@ -583,9 +594,12 @@
 	async function loadQueue() {
 		const token = queueSequence.start();
 		try {
-			const data = await api.get<{ items: QueueItem[] }>('/api/payments/queue');
+			const data = await api.get<{ items: QueueItem[]; unconverted_count?: number }>(
+				'/api/payments/queue'
+			);
 			if (!queueSequence.canCommit(token)) return; // superseded by a newer load
 			queue = data.items;
+			queueUnconvertedCount = data.unconverted_count ?? 0;
 		} catch (err) {
 			if (queueSequence.isCurrentRequest(token)) {
 				toast(err instanceof Error ? err.message : 'Failed to load payment queue', 'error');
@@ -766,11 +780,15 @@
 	{#if summary}
 		<div class="summary-cards">
 			<div class="scard">
-				<span class="scard-value">{formatCurrency(summary.total_paid)}</span>
+				<span class="scard-value">
+					{formatCurrency(summary.total_paid, summary.currency)}
+				</span>
 				<span class="scard-label">{m('payments.summary.totalPaid')}</span>
 			</div>
 			<div class="scard">
-				<span class="scard-value">{formatCurrency(summary.total_pending)}</span>
+				<span class="scard-value">
+					{formatCurrency(summary.total_pending, summary.currency)}
+				</span>
 				<span class="scard-label">{m('payments.summary.pending')}</span>
 			</div>
 			<div class="scard">
@@ -788,6 +806,19 @@
 				</div>
 			{/if}
 		</div>
+		<!-- A payment with no rate into the reporting currency is left out of the
+		     totals above, so the headline understates what actually moved. Same
+		     notice pattern as /discounts' excluded foreign offers and the /cfo
+		     cash-position card's unconverted outflows — all three read alike on
+		     purpose. -->
+		{#if (summary.unconverted_payment_count ?? 0) > 0}
+			<p class="fx-skipped" role="alert" data-testid="unconverted-payments">
+				{m('payments.summary.unconvertedPayments', {
+					n: summary.unconverted_payment_count ?? 0,
+					currency: summary.currency ?? ''
+				})}
+			</p>
+		{/if}
 	{/if}
 
 	<nav class="tabs">
@@ -817,6 +848,15 @@
 	{/if}
 
 	{#if activeTab === 'queue'}
+		<!-- Rows the backend could not express in the reporting currency are
+		     excluded from its own queue roll-ups. The rows themselves are still
+		     listed and selectable — each renders in its own currency — so this
+		     says the TOTALS are short, not that anything is missing. -->
+		{#if queueUnconvertedCount > 0}
+			<p class="fx-skipped" role="alert" data-testid="unconverted-queue">
+				{m('payments.queue.unconvertedRows', { n: queueUnconvertedCount })}
+			</p>
+		{/if}
 		{#if selectedQueue.size > 0}
 			<div class="pay-bar">
 				{#if mixedCurrencySelection}
@@ -1553,6 +1593,15 @@
 
 	/* Amber, not red: nothing has failed — the selection simply can't be
 	   submitted as one run until it is narrowed to a single currency. */
+	/* Same look as /discounts' `.disc-skipped` and the /cfo unconverted-outflows
+	   caveat: an FX exclusion notice reads alike everywhere it appears. */
+	.fx-skipped {
+		font-size: 0.85rem;
+		margin: 0 0 12px;
+		color: #d4940a;
+		font-weight: 600;
+	}
+
 	.pay-bar-warn {
 		margin: 0;
 		max-width: 56ch;

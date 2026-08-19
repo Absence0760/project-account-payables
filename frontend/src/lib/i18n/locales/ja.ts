@@ -76,6 +76,17 @@ export const messages = {
 		'アプリ全体で使用する言語を選択してください。選択内容はこの端末に保存されます。',
 	'profile.language.label': '表示言語',
 
+	// Profile → Notification preferences
+	'profile.notifications.event.invoiceAssigned': '自分に割り当てられた請求書',
+	'profile.notifications.event.invoiceApproved': '請求書の承認',
+	'profile.notifications.event.invoiceRejected': '請求書の却下',
+	'profile.notifications.event.invoicePaid': '請求書の支払い',
+	'profile.notifications.event.contractRenewalDue': '契約更新期限',
+	'profile.notifications.event.chatMessage': 'サプライヤーチャットの新着メッセージ',
+	'profile.notifications.event.cashShortfallProjected': '資金不足の予測',
+	'profile.notifications.inAppFor': '「{event}」のアプリ内通知',
+	'profile.notifications.emailFor': '「{event}」のメール通知',
+
 	// Common shared across list/detail surfaces
 	'common.all': 'すべて',
 	'common.search': '検索',
@@ -154,6 +165,10 @@ export const messages = {
 	// Payments
 	'payments.title': '支払い',
 	'payments.summary.totalPaid': '支払済み合計',
+	'payments.summary.unconvertedPayments':
+		'除外: {currency} への為替レートがない{n, plural, other {# 件の支払い}}が上記の合計に含まれていません。表示されている金額は実際の支払額を下回ります。正確な全体像を得るには不足しているレートを登録してください。',
+	'payments.queue.unconvertedRows':
+		'報告通貨への為替レートがない{n, plural, other {# 件の請求書}}は、キューの合計から除外されています。行自体は表示され、それぞれの通貨で支払い可能です。',
 	'payments.summary.pending': '保留中',
 	'payments.summary.readyToPay': '支払準備完了',
 	'payments.summary.payments': '支払い',

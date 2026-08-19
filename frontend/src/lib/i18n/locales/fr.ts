@@ -72,6 +72,17 @@ export const messages = {
 		'Choisissez la langue utilisée dans toute l’application. Votre choix est enregistré sur cet appareil.',
 	'profile.language.label': 'Langue d’affichage',
 
+	// Profile → Notification preferences
+	'profile.notifications.event.invoiceAssigned': 'Facture qui m’est attribuée',
+	'profile.notifications.event.invoiceApproved': 'Facture approuvée',
+	'profile.notifications.event.invoiceRejected': 'Facture rejetée',
+	'profile.notifications.event.invoicePaid': 'Facture payée',
+	'profile.notifications.event.contractRenewalDue': 'Renouvellement de contrat à échéance',
+	'profile.notifications.event.chatMessage': 'Nouveau message dans la messagerie fournisseur',
+	'profile.notifications.event.cashShortfallProjected': 'Déficit de trésorerie prévu',
+	'profile.notifications.inAppFor': 'Notifications dans l’application pour « {event} »',
+	'profile.notifications.emailFor': 'Notifications par e-mail pour « {event} »',
+
 	// Common shared across list/detail surfaces
 	'common.all': 'Toutes',
 	'common.search': 'Rechercher',
@@ -150,6 +161,10 @@ export const messages = {
 	// Payments
 	'payments.title': 'Paiements',
 	'payments.summary.totalPaid': 'Total payé',
+	'payments.summary.unconvertedPayments':
+		'Exclu : {n, plural, one {# paiement} other {# paiements}} sans taux de change vers {currency}, non compté dans les totaux ci-dessus — les chiffres affichés sous-estiment donc les mouvements réels. Enregistrez le taux manquant pour avoir une vue complète.',
+	'payments.queue.unconvertedRows':
+		'{n, plural, one {# facture n\'a} other {# factures n\'ont}} pas de taux de change vers la devise de reporting ; les totaux de la file les excluent donc. Les lignes restent affichées et payables, chacune dans sa propre devise.',
 	'payments.summary.pending': 'En attente',
 	'payments.summary.readyToPay': 'Prêt à payer',
 	'payments.summary.payments': 'Paiements',
