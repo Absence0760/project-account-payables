@@ -208,6 +208,8 @@
   "invoiceEditNotSet": "Nicht festgelegt",
   "invoiceEditInvalidAmount": "Gültigen Betrag eingeben (z. B. 1234,56)",
   "invoiceEditClearDueDate": "Fälligkeitsdatum löschen",
+  "invoiceEditLockedNotice": "Genehmigt — Zahlungsempfänger und Betrag sind gesperrt. Zum Ändern die Rechnung ablehnen, korrigieren und erneut genehmigen.",
+  "invoiceEditLockedHelper": "Nach der Genehmigung gesperrt",
   "invoiceEditDueDateHint": "Fälligkeitsdatum, aktuell {value}. Zum Ändern doppeltippen.",
 
   "warningsSectionTitle": "Warnungen & Betrugshinweise",

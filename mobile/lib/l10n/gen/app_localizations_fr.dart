@@ -644,6 +644,13 @@ class AppLocalizationsFr extends AppLocalizations {
   String get invoiceEditClearDueDate => 'Effacer la date d\'échéance';
 
   @override
+  String get invoiceEditLockedNotice =>
+      'Approuvée — le bénéficiaire et le montant sont figés. Pour les modifier, rejetez la facture, corrigez-la puis approuvez-la de nouveau.';
+
+  @override
+  String get invoiceEditLockedHelper => 'Figé après approbation';
+
+  @override
   String invoiceEditDueDateHint(String value) {
     return 'Date d\'échéance, actuellement $value. Appuyez deux fois pour modifier.';
   }

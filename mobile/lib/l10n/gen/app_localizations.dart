@@ -1271,6 +1271,18 @@ abstract class AppLocalizations {
   /// **'Clear due date'**
   String get invoiceEditClearDueDate;
 
+  /// No description provided for @invoiceEditLockedNotice.
+  ///
+  /// In en, this message translates to:
+  /// **'Approved — the payee and amount are frozen. To change them, reject the invoice, correct it, then approve it again.'**
+  String get invoiceEditLockedNotice;
+
+  /// No description provided for @invoiceEditLockedHelper.
+  ///
+  /// In en, this message translates to:
+  /// **'Frozen after approval'**
+  String get invoiceEditLockedHelper;
+
   /// No description provided for @invoiceEditDueDateHint.
   ///
   /// In en, this message translates to:

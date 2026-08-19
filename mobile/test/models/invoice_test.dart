@@ -33,6 +33,105 @@ void main() {
     });
   });
 
+  group('financial freeze', () {
+    // The backend's `_FINANCIALLY_LOCKED_STATUSES` is `{approved} |
+    // IMMUTABLE_STATUSES` (backend/app/api/invoices.py). Spelled out here so a
+    // change to either side of the mirror has to be deliberate.
+    const lockedStatuses = {
+      InvoiceStatus.approved,
+      InvoiceStatus.sendingToErp,
+      InvoiceStatus.sentToErp,
+      InvoiceStatus.postedInErp,
+      InvoiceStatus.paymentScheduled,
+      InvoiceStatus.paid,
+      InvoiceStatus.done,
+    };
+
+    test('isFinanciallyLocked matches {approved} | IMMUTABLE_STATUSES', () {
+      for (final status in InvoiceStatus.values) {
+        expect(
+          status.isFinanciallyLocked,
+          lockedStatuses.contains(status),
+          reason: status.value,
+        );
+      }
+    });
+
+    test('approved is still editable, but financially locked', () {
+      // The narrower gate is the whole point: AP may keep fixing GL coding /
+      // notes on an approved invoice; only money + payee are frozen.
+      expect(InvoiceStatus.approved.isEditable, isTrue);
+      expect(InvoiceStatus.approved.isFinanciallyLocked, isTrue);
+    });
+
+    test('a pre-approval status is neither locked nor immutable', () {
+      for (final status in [
+        InvoiceStatus.newStatus,
+        InvoiceStatus.pending,
+        InvoiceStatus.readyForReview,
+        InvoiceStatus.rejected,
+        InvoiceStatus.failed,
+      ]) {
+        expect(status.isFinanciallyLocked, isFalse, reason: status.value);
+        expect(status.isEditable, isTrue, reason: status.value);
+      }
+    });
+
+    test('kFinancialInvoiceFields mirrors the backend _FINANCIAL_FIELDS', () {
+      expect(kFinancialInvoiceFields, {
+        'amount',
+        'currency',
+        'subtotal',
+        'tax_amount',
+        'discount_amount',
+        'shipping_amount',
+        'tax_rate',
+        'vendor',
+        'vendor_name',
+        'remit_to_address',
+      });
+    });
+
+    test('stripFinancialFields drops every frozen field, keeps the rest', () {
+      final stripped = stripFinancialFields({
+        'amount': '1500.00',
+        'currency': 'EUR',
+        'subtotal': '1400.00',
+        'tax_amount': '100.00',
+        'discount_amount': '0',
+        'shipping_amount': '0',
+        'tax_rate': '7',
+        'vendor': 'Other Supplier',
+        'vendor_name': 'Other Supplier',
+        'remit_to_address': '1 New Street',
+        'description': 'Q3 retainer',
+        'gl_account': '6000',
+        'po_number': 'PO-9',
+        'invoice_number': 'INV-001',
+        'due_date': '2026-02-01',
+      });
+      // The non-financial half of a mixed edit survives — that is the data-loss
+      // half of the bug: the backend 409s the whole PATCH otherwise.
+      expect(stripped, {
+        'description': 'Q3 retainer',
+        'gl_account': '6000',
+        'po_number': 'PO-9',
+        'invoice_number': 'INV-001',
+        'due_date': '2026-02-01',
+      });
+      for (final field in kFinancialInvoiceFields) {
+        expect(stripped.containsKey(field), isFalse, reason: field);
+      }
+    });
+
+    test('stripFinancialFields leaves a purely non-financial diff untouched',
+        () {
+      final diff = {'description': 'x', 'gl_account': '6000'};
+      expect(stripFinancialFields(diff), diff);
+      expect(stripFinancialFields(const {}), isEmpty);
+    });
+  });
+
   group('Invoice.fromJson', () {
     test('parses a fully-populated invoice', () {
       final invoice = Invoice.fromJson({

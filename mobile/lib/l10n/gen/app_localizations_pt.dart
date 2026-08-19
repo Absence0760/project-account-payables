@@ -642,6 +642,13 @@ class AppLocalizationsPt extends AppLocalizations {
   String get invoiceEditClearDueDate => 'Limpar data de vencimento';
 
   @override
+  String get invoiceEditLockedNotice =>
+      'Aprovada — o beneficiário e o valor estão bloqueados. Para alterá-los, rejeite a fatura, corrija-a e aprove novamente.';
+
+  @override
+  String get invoiceEditLockedHelper => 'Bloqueado após a aprovação';
+
+  @override
   String invoiceEditDueDateHint(String value) {
     return 'Data de vencimento, atualmente $value. Toque duas vezes para alterar.';
   }
@@ -2324,6 +2331,13 @@ class AppLocalizationsPtBr extends AppLocalizationsPt {
 
   @override
   String get invoiceEditClearDueDate => 'Limpar data de vencimento';
+
+  @override
+  String get invoiceEditLockedNotice =>
+      'Aprovada — o beneficiário e o valor estão bloqueados. Para alterá-los, rejeite a fatura, corrija-a e aprove novamente.';
+
+  @override
+  String get invoiceEditLockedHelper => 'Bloqueado após a aprovação';
 
   @override
   String invoiceEditDueDateHint(String value) {

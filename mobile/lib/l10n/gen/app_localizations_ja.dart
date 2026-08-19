@@ -623,6 +623,13 @@ class AppLocalizationsJa extends AppLocalizations {
   String get invoiceEditClearDueDate => '支払期日をクリア';
 
   @override
+  String get invoiceEditLockedNotice =>
+      '承認済み — 支払先と金額は固定されています。変更するには請求書を却下し、修正してから再承認してください。';
+
+  @override
+  String get invoiceEditLockedHelper => '承認後は変更不可';
+
+  @override
   String invoiceEditDueDateHint(String value) {
     return '支払期日、現在 $value。ダブルタップで変更します。';
   }

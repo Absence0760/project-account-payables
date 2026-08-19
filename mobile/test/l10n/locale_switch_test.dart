@@ -191,6 +191,7 @@ void main() {
               Text(l.invoiceDetailTitle),
               Text(l.invoiceDetailErrorPrefix('boom')),
               Text(l.invoiceEditTitle),
+              Text(l.invoiceEditLockedHelper),
               Text(l.warningsSectionTitle),
               Text(l.warningsVarianceLabel('+5.0')),
               Text(l.erpStatusTitle),
@@ -208,6 +209,10 @@ void main() {
     expect(find.text('Invoice Detail'), findsOneWidget); // invoiceDetailTitle
     expect(find.text('Error: boom'), findsOneWidget); // placeholder
     expect(find.text('Edit Invoice'), findsOneWidget); // invoiceEditTitle
+    expect(
+      find.text('Frozen after approval'),
+      findsOneWidget,
+    ); // invoiceEditLockedHelper
     expect(find.text('+5.0% variance'), findsOneWidget); // variance placeholder
 
     await LocaleStore.instance.setLocale(const Locale('de'));
@@ -215,6 +220,10 @@ void main() {
     expect(find.text('Rechnungsdetails'), findsOneWidget); // invoiceDetailTitle
     expect(find.text('Fehler: boom'), findsOneWidget); // placeholder
     expect(find.text('ERP-Status'), findsOneWidget); // erpStatusTitle
+    expect(
+      find.text('Nach der Genehmigung gesperrt'),
+      findsOneWidget,
+    ); // invoiceEditLockedHelper
     expect(find.text('Invoice Detail'), findsNothing);
 
     await LocaleStore.instance.setLocale(const Locale('ja'));

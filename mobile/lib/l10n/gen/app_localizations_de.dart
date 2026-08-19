@@ -642,6 +642,13 @@ class AppLocalizationsDe extends AppLocalizations {
   String get invoiceEditClearDueDate => 'Fälligkeitsdatum löschen';
 
   @override
+  String get invoiceEditLockedNotice =>
+      'Genehmigt — Zahlungsempfänger und Betrag sind gesperrt. Zum Ändern die Rechnung ablehnen, korrigieren und erneut genehmigen.';
+
+  @override
+  String get invoiceEditLockedHelper => 'Nach der Genehmigung gesperrt';
+
+  @override
   String invoiceEditDueDateHint(String value) {
     return 'Fälligkeitsdatum, aktuell $value. Zum Ändern doppeltippen.';
   }
