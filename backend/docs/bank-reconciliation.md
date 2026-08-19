@@ -31,7 +31,7 @@ mutation writes a PII-free audit row (`bank_reconciliation.imported` /
 | `GET` | `` | List statements, paginated, optional `?account_identifier=` filter. |
 | `GET` | `/{id}` | Statement detail including every transaction (list omits transactions to avoid an N+1 payload on the index). |
 | `GET` | `/outstanding` | Org-wide close view: uncleared payments, unmatched bank debits, and classified discrepancies. `?older_than_days=` (default 0) / `?limit=` (default 200). See below. |
-| `POST` | `/{id}/transactions/{tx_id}/resolve` | Manually set (`matched_payment_id: "<uuid>"`) or clear (`null`) a transaction's match — confidence 100 when set; `match_method` is `manual`, or the matching discrepancy class (`amount_mismatch` / `currency_mismatch` / `status_conflict`) when the payment doesn't reconcile — derived by the SAME `classify_discrepancy` the matcher uses (see § Identity is not reconciliation). Recomputes the statement's `matched_count`. |
+| `POST` | `/{id}/transactions/{tx_id}/resolve` | Manually set (`matched_payment_id: "<uuid>"`) or clear (`null`) a transaction's match — confidence 100 when set; `match_method` is `manual`, or the matching discrepancy class (`amount_mismatch` / `currency_mismatch` / `status_conflict`) when the payment doesn't reconcile — derived by the SAME `classify_discrepancy` the matcher uses (see § Identity is not reconciliation). Recomputes the statement's `matched_count`. 409 on a non-`debit` transaction (a credit is not a payment we made); 422 on a malformed `matched_payment_id` (schema-typed `uuid.UUID`). |
 | `DELETE` | `/{id}` | Delete a statement; cascades its transactions. |
 
 `/outstanding` is declared **before** `/{statement_id}` in the router —
@@ -272,6 +272,20 @@ reconciles. A clerk therefore cannot click a $10 line into place as the clean
 clearing of a $10,000 payment, nor resolve one onto a `voided` payment — it
 lands in the matching discrepancy class, and the audit row records the exact
 variance they accepted.
+
+**Only a debit can clear a payment.** A payment is money we sent, so
+`/resolve` refuses a `credit` transaction with a 409 naming the direction.
+Amounts are stored as absolute values with the direction on its own flag, so a
+credit whose magnitude happened to equal the payment's settlement amount passed
+`classify_discrepancy` cleanly, counted toward `matched_count`, and — the real
+damage — dropped the payment out of **all three** `/outstanding` buckets:
+bucket 1 excludes it as claimed, and buckets 2 and 3 both filter
+`direction == "debit"`. An uncleared payment silently left the month-end
+worksheet, contradicting that endpoint's own "exactly one of the three
+buckets" contract. The auto-matcher already skipped non-debits; this is the
+manual path catching up. Manually pairing a refund/credit against a payment
+would need its own link type that the outstanding buckets account for — not
+this one.
 
 ### One payment, one bank transaction
 
