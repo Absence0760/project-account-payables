@@ -432,14 +432,6 @@ shape.
 
 ## Scheduled report delivery
 
-> **No CRUD API exists yet.** Nothing under `app/api/` references
-> `ScheduledReport` — the only code that touches the table is
-> `services/scheduled_reports.py` (the runner) — so a row can currently only be
-> created by a seed or direct SQL, and there is no admin UI to re-enable a
-> schedule the 5-strike rule disabled. The runner below is complete and tested;
-> its input surface is not. Tracked in
-> [followups.md](../../docs/followups.md) § round-11.
-
 Migration 0020 adds `scheduled_reports`. Rows:
 
 - `name` — display label
@@ -479,15 +471,101 @@ persistently bad address is an operator correcting or removing it — the failur
 count on `last_run_error` is what tells them to.
 
 After five consecutive `failure`s the row is auto-disabled so the queue doesn't
-loop forever — an operator re-enables it after fixing the underlying issue
-(today that means flipping `enabled` directly, since no CRUD API or admin UI
-exists — see the note at the top of this section). The tenant sweep counts a `partial` as a failed run for
-`sweep_health` (`GET /api/health/sweeps`), so an undelivered recipient shows up
-there rather than rounding to "healthy".
+loop forever — an operator re-enables it after fixing the underlying issue, via
+`PATCH /api/analytics/scheduled-reports/{id}` (§ CRUD below). The tenant sweep
+counts a `partial` as a failed run for `sweep_health`
+(`GET /api/health/sweeps`), so an undelivered recipient shows up there rather
+than rounding to "healthy".
 
 Email-adapter exceptions never leak provider-side details into
 `last_run_error` (invariant #7); only the exception class name — and, for a
 partial, the failed/total **counts** — are stored.
+
+### `next_run_at` advances from the DUE slot, not the tick
+
+`execute_schedule` used to set `next_run_at = compute_next_run(cadence, now)` —
+from the moment the sweep happened to run it. The sweep ticks hourly
+(`FEOH_SCHEDULED_REPORTS_TICK_SECONDS`), so a "daily 09:00" report was typically
+picked up at 09:37 and rescheduled for 09:37 tomorrow, then 10:14, then 11:02:
+every run landed later than the last and the report walked all the way around
+the clock inside a month.
+
+`advance_next_run(cadence, scheduled_for=…, now=…)` anchors on the slot the run
+was **due** at, so 09:00 stays 09:00 no matter when the tick fires. A missed
+window (process down, tenant unreachable, the schedule disabled and re-enabled)
+is caught up in **whole cadence steps** to the first slot strictly after `now` —
+never one send per skipped period. That is deliberate: the report is a periodic
+snapshot of *current* state, so a backlog burst would deliver N identical
+copies. The schedule simply resumes on its own grid.
+
+`compute_next_run` remains, for seeding a brand-new schedule (one step, no
+catch-up). Both go through `known_cadences()` / `_cadence_delta`, which is also
+what the CRUD surface validates against, so there is no second list.
+
+### "Today" is UTC
+
+`_materialise_rows` slices each report's `period_days` window — and the
+`cashflow_forecast` / `aging_snapshot` branches their `today` — from
+`app.utils.dates.utc_today()`, not `date.today()`. `date.today()` resolves in
+the *server's* local timezone; the `/analytics` export endpoints and the
+cash-flow copilot resolve UTC. On a UTC container they agree, so the mixture was
+latent — but on any other host an emailed snapshot and the API export of the
+same report disagree at the day boundary, which is a reconciliation problem, not
+a cosmetic one. `tests/test_utc_today.py` AST-scans the converged modules and
+fails if a bare `date.today()` reappears in one.
+
+### CRUD — `/api/analytics/scheduled-reports`
+
+`app/api/scheduled_reports.py`. The runner's input surface; before it existed a
+row could only be created by direct SQL, `list_due_schedules` returned `[]` on
+every tick forever, and the 5-strike auto-disable was a one-way door.
+
+| Method | Path | Roles |
+|---|---|---|
+| `GET` | `/api/analytics/scheduled-reports` | admin, cfo |
+| `POST` | `/api/analytics/scheduled-reports` | **admin only** |
+| `GET` | `/api/analytics/scheduled-reports/{id}` | admin, cfo |
+| `PATCH` | `/api/analytics/scheduled-reports/{id}` | **admin only** |
+| `DELETE` | `/api/analytics/scheduled-reports/{id}` | **admin only** |
+
+Mutations are admin-only, above the `admin`/`cfo` gate the rest of `/analytics`
+uses: a schedule is a standing instruction to email a CSV of the tenant's AP
+spend to an arbitrary address on a recurring basis, with no review of any
+individual send. That is a data-egress control, not a reporting preference.
+
+- **Validation is against the runner's own registries** (`app/schemas/
+  scheduled_report.py`): `report_type` ∈ `report_export.EXPORTERS`, `cadence` ∈
+  `known_cadences()`. Neither is restated. An out-of-registry `report_type`
+  raises on every tick and burns the auto-disable without ever sending; an
+  unknown `cadence` silently falls back to daily, so a "yearly" row would have
+  emailed 365 times a year.
+- **Recipients** are shape-checked (the same permissive regex `api/signup.py`
+  uses — no `email-validator` dependency), case-insensitively de-duped (a
+  duplicate would double-send), and bounded at 20 with at least one required.
+- `next_run_at` is optional; omitted it defaults to *now*, so the schedule fires
+  on the next tick and the operator sees it work. Because `advance_next_run`
+  then holds that time-of-day, pass an explicit value to pin e.g. 09:00. A value
+  in the past is legitimate and is not rejected — the row is immediately due,
+  then catches up in whole steps.
+- `PATCH {enabled: true}` on a row the 5-strike rule disabled also **clears the
+  `[retry N]` marker**. `_mark_failure` reads that prefix to count consecutive
+  failures, so re-enabling without clearing it means the next failure lands at
+  retry 6 and disables the row again immediately — indistinguishable, to the
+  operator, from the re-enable not having worked.
+- **Tenant-scoped via `get_tenant_db`, deliberately NOT entity-scoped.**
+  `ScheduledReport` has no `entity_id`, and `_materialise_rows` applies no
+  entity filter to any of its six report types — the emailed CSV is whole-tenant
+  by construction. Stamping an entity on the schedule row would advertise a
+  scope the delivered file does not honour. Making it real means entity-filtering
+  the materializer *and* a migration; that is its own slice.
+- Every mutation writes a PII-free audit row (`scheduled_report.created` /
+  `.updated` / `.deleted`) carrying the recipient **count**, never the
+  addresses — the trail is append-only and WORM-shipped, so a corrected
+  distribution list could never be redacted out of it.
+
+Tests: `tests/test_scheduled_reports_api.py` (CRUD, RBAC, tenant isolation,
+validation, PII-free audit) and `tests/test_scheduled_reports.py` (the runner +
+the cadence anchoring).
 
 ## Known gaps
 
@@ -501,7 +579,9 @@ partial, the failed/total **counts** — are stored.
 |---|---|
 | `tests/test_analytics.py` | 27 cases — every compute_* function: DPO formula, CCC None-on-missing-legs, working-capital monotonicity, supplier concentration flag threshold, fraud-rate zero-invoice safety, rebate annualisation, forecast-variance sign convention, processing-time min-sample collapse, approval-bottleneck rollup + unassigned bucket, discount-capture empty safety |
 | `tests/test_report_export.py` | 11 cases — registry pins all four reports; per-report header column-order pinned; enum-status reads `.value`; missing fields emit empty (not "None"); orphan payment-with-null-invoice still emitted |
-| `tests/test_scheduled_reports.py` | 20 cases — cadence delta math; unknown-cadence fallback; happy-path generates → emails every recipient → updates next_run_at; generator-error / empty-recipients / email-adapter-error all persist a failure marker without raising; PII guardrail (no SMTP transport details in `last_run_error`); five-consecutive-failures disables the row, first failure leaves enabled alone; **per-recipient delivery** — one bad address doesn't block the ones after it, a partial advances `next_run_at` and isn't a strike, a total failure holds `next_run_at` and still attempts every address |
+| `tests/test_scheduled_reports.py` | 20 cases — cadence delta math; unknown-cadence fallback; happy-path generates → emails every recipient → updates next_run_at; generator-error / empty-recipients / email-adapter-error all persist a failure marker without raising; PII guardrail (no SMTP transport details in `last_run_error`); five-consecutive-failures disables the row, first failure leaves enabled alone; **per-recipient delivery** — one bad address doesn't block the ones after it, a partial advances `next_run_at` and isn't a strike, a total failure holds `next_run_at` and still attempts every address; **cadence anchoring** — 30 late ticks in a row leave the 09:00 slot at 09:00, a dormant fortnight catches up to ONE next slot rather than 14 sends, an exactly-due slot still moves forward (no busy-loop), a future slot takes exactly one step, a naive `scheduled_for` reads as UTC |
+| `tests/test_scheduled_reports_api.py` | 23 cases — CRUD round-trip; the created row is what `list_due_schedules` picks up; `report_type` / `cadence` validated against the runner's own registries (create AND patch); recipient list shape-checked / de-duped / bounded / non-empty; our validator message names no address; RBAC (mutations admin-only, reads admin+cfo, ap_manager/ap_clerk refused); tenant isolation (list, get, patch); PII-free audit rows carrying the recipient COUNT; re-enabling a 5-strike-disabled row clears the stale `[retry N]` marker |
+| `tests/test_utc_today.py` | Drift guard — `utc_today()` is the UTC calendar date, and an AST scan fails on any `date.today()` / `datetime.today()` reappearing in the nine modules that have converged on it (analytics, cash-flow, the copilot tools, the scheduled-report runner) |
 | `tests/test_dashboard_aggregations.py` | Existing — extended through the new branches via the try/except absorption pattern |
 | `tests/test_cashflow_balance.py` | Unit — `get_balance` capability (base-class default unsupported; mock deterministic + config override + simulated-unsupported); `fetch_provider_balance` best-effort (mock balance, None on unsupported, swallows adapter error); persisted-threshold resolve/store round-trip + garbage tolerance + key preservation/clear |
 | `tests/test_cashflow_forecast_api.py` (cash-position additions) | API — auto-seed opening balance from the mock provider (`source: provider`); `seed_balance=false` skips it; query param beats provider; provider-unsupported falls back to `settings`; persisted threshold applied without a query override; `cash-position-settings` GET/PUT round-trip; negative → 422; RBAC (ap_clerk 403, admin/cfo 200) |
