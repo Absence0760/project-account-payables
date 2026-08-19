@@ -28,7 +28,7 @@ current pair, which is exactly the claim this column exists to stop us making
 without evidence. A backfill would therefore launder the very rows the column is
 meant to catch.
 
-Revision ID: 0086_invoice_reporting_source_cur
+Revision ID: 0086_invoice_reporting_src_ccy
 Revises: 0085_settled_amount_unstorable
 
 (The id is truncated from the descriptive form: Alembic's
@@ -49,7 +49,7 @@ from sqlalchemy import text
 
 from alembic import op
 
-revision = "0086_invoice_reporting_source_cur"
+revision = "0086_invoice_reporting_src_ccy"
 down_revision = "0085_settled_amount_unstorable"
 branch_labels = None
 depends_on = None
