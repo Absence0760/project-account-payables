@@ -181,7 +181,7 @@ class AmountMismatchResolver(ExceptionResolver):
         )
 
     async def apply(
-        self, db, *, exception, invoice, evaluation, actor_id, actor_roles=None
+        self, db, *, exception, invoice, evaluation, actor_id, actor_roles=None, org_settings=None
     ) -> None:
         """Adjust amount → approve. Writes audit rows for BOTH the field change
         and the approval (the latter via review.approve_invoice → transition)."""
@@ -227,6 +227,9 @@ class AmountMismatchResolver(ExceptionResolver):
             # The coordinator fails closed (escalates) when they're unknown, so
             # this is always populated on the auto-resolve path that reaches here.
             actor_roles=actor_roles,
+            # The tenant's OWN fraud / matching config, not the platform
+            # defaults — same value every HTTP approval door threads in.
+            org_settings=org_settings,
             corrections={"amount": new_amount},
         )
         # Re-point the caller's invoice reference (coordinator commits).

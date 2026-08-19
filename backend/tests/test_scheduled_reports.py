@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.services.scheduled_reports import (
+    advance_next_run,
     compute_next_run,
     execute_schedule,
 )
@@ -82,6 +83,76 @@ def test_compute_next_run_unknown_cadence_falls_back_to_daily():
 
 
 # ---------------------------------------------------------------------------
+# advance_next_run — the slot holds, and a missed window never bursts
+# ---------------------------------------------------------------------------
+
+
+def test_advance_next_run_holds_the_slot_across_a_late_tick():
+    """The drift bug: the sweep ticks hourly, so a report due at 09:00 was
+    typically picked up at 09:37 and re-scheduled for 09:37 the next day — then
+    10:14, then 11:02, walking around the clock inside a month. Anchoring on the
+    due slot keeps 09:00 at 09:00 no matter when the tick fires."""
+    due = datetime(2026, 5, 1, 9, 0, tzinfo=UTC)
+    slot = due
+    for _ in range(30):
+        picked_up_late = slot + timedelta(minutes=37)
+        slot = advance_next_run("daily", scheduled_for=slot, now=picked_up_late)
+
+    assert slot.hour == 9
+    assert slot.minute == 0
+    assert slot == datetime(2026, 5, 31, 9, 0, tzinfo=UTC)
+
+
+def test_advance_next_run_catches_up_in_whole_steps_without_a_backlog_burst():
+    """A schedule dormant for two weeks (process down, tenant unreachable,
+    disabled then re-enabled) resumes on its own grid with ONE next slot — not
+    fourteen queued sends of the same current-state snapshot."""
+    due = datetime(2026, 5, 1, 9, 0, tzinfo=UTC)
+    now = datetime(2026, 5, 15, 9, 30, tzinfo=UTC)
+
+    nxt = advance_next_run("daily", scheduled_for=due, now=now)
+
+    assert nxt == datetime(2026, 5, 16, 9, 0, tzinfo=UTC)
+    assert nxt > now
+
+
+def test_advance_next_run_is_always_strictly_in_the_future():
+    """Guards the boundary that would busy-loop the sweep: a slot equal to
+    `now` must still move forward, or the schedule is due again immediately and
+    re-sends on every tick."""
+    due = datetime(2026, 5, 1, tzinfo=UTC)
+    exactly_due = due + timedelta(days=1)
+
+    assert advance_next_run("daily", scheduled_for=due, now=exactly_due) == due + timedelta(days=2)
+
+
+def test_advance_next_run_with_a_future_slot_takes_exactly_one_step():
+    """A hand-edited row (or a clock stepping backwards) must not be dragged
+    into the past."""
+    due = datetime(2026, 6, 1, tzinfo=UTC)
+    now = datetime(2026, 5, 10, tzinfo=UTC)
+
+    assert advance_next_run("weekly", scheduled_for=due, now=now) == due + timedelta(days=7)
+
+
+def test_advance_next_run_tolerates_a_naive_scheduled_for():
+    """Rows seeded through raw SQL — the only way to create one before the CRUD
+    router existed — can come back naive. A TypeError here would surface as a
+    swallowed sweep failure, not as the data bug it is."""
+    naive_due = datetime(2026, 5, 1, 9, 0)
+    now = datetime(2026, 5, 3, 9, 30, tzinfo=UTC)
+
+    assert advance_next_run("daily", scheduled_for=naive_due, now=now) == datetime(
+        2026, 5, 4, 9, 0, tzinfo=UTC
+    )
+
+
+def test_advance_next_run_unknown_cadence_falls_back_to_daily():
+    due = datetime(2026, 5, 1, tzinfo=UTC)
+    assert advance_next_run("yearly", scheduled_for=due, now=due) == due + timedelta(days=1)
+
+
+# ---------------------------------------------------------------------------
 # execute_schedule — happy path
 # ---------------------------------------------------------------------------
 
@@ -90,7 +161,10 @@ def test_compute_next_run_unknown_cadence_falls_back_to_daily():
 async def test_execute_schedule_emails_recipients_and_bumps_next_run():
     """Happy path: generator returns a CSV string, email adapter
     sends to every recipient, DB row is updated with status=success
-    and next_run_at advanced one cadence forward."""
+    and next_run_at advanced one cadence forward **from the slot it was due
+    at** — 2026-05-01 + 7d = 2026-05-08, then one more step to clear the
+    2026-05-10 tick = 2026-05-15. NOT `now + 7d`, which would push the slot
+    later by however late the sweep happened to fire."""
     sched = _schedule(
         cadence="weekly",
         next_run_at=datetime(2026, 5, 1, tzinfo=UTC),
@@ -115,7 +189,7 @@ async def test_execute_schedule_emails_recipients_and_bumps_next_run():
         outcome = await execute_schedule(db, sched, now=now)
 
     assert outcome["status"] == "success"
-    assert outcome["next_run_at"] == now + timedelta(days=7)
+    assert outcome["next_run_at"] == datetime(2026, 5, 15, tzinfo=UTC)
     # Both recipients got an email.
     assert mock_adapter.send.await_count == 2
     sent_to = {call.args[0].to for call in mock_adapter.send.call_args_list}
@@ -312,9 +386,10 @@ async def test_partial_delivery_still_advances_next_run_at():
     ):
         outcome = await execute_schedule(db, sched, now=now)
 
-    assert outcome["next_run_at"] == now + timedelta(days=7)
+    # Advanced from the DUE slot (2026-05-01), not from the tick (2026-05-10).
+    assert outcome["next_run_at"] == datetime(2026, 5, 15, tzinfo=UTC)
     params = db.execute.await_args.args[0].compile().params
-    assert params.get("next_run_at") == now + timedelta(days=7)
+    assert params.get("next_run_at") == datetime(2026, 5, 15, tzinfo=UTC)
     assert params.get("last_run_status") == "partial"
     # A partial is not a strike — it must not carry the retry counter that
     # drives the 5-failure auto-disable.

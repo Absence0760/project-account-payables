@@ -458,7 +458,13 @@ async def test_dedup_claim_released_when_transition_raises(fake_redis):
     """A failure after the dedup claim (e.g. transition_invoice raising) must
     release the claim so the ERP's retry with the SAME event_id can
     reprocess — otherwise the status update is silently dropped for the
-    full TTL window."""
+    full TTL window.
+
+    Releasing the claim is only half of it: the response must also ASK for that
+    retry. A silent 204 tells the ERP the event was delivered, so the retry the
+    release prepares for never arrives. Our own failure therefore returns a
+    bodyless 503 (see `tests/test_erp_webhook_retry_on_our_failure.py` for the
+    decision-vs-failure split this is one half of)."""
     from app.services.webhook_security import is_event_already_processed
 
     org = _org_with_erp_secret("erp-secret")
@@ -494,7 +500,10 @@ async def test_dedup_claim_released_when_transition_raises(fake_redis):
             request=_fake_request(body_bytes, {"X-Webhook-Signature": sig}),
         )
 
-    assert result is None  # silent 204, not a raised 500
+    # Bodyless 503, not a raised 500 and not the silent 204 a *decision* gets.
+    assert result is not None
+    assert result.status_code == 503
+    assert result.body == b""
     db.rollback.assert_awaited()
 
     # The claim must be gone — a retry with the SAME event_id must NOT be

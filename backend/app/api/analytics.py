@@ -69,6 +69,7 @@ from app.services.currency_conversion import (
 )
 from app.services.fx_adapters import get_fx_adapter
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
+from app.utils.dates import utc_today
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,38 @@ async def _commitment_rows(
         statuses += list(_PENDING_STATUSES)
     horizon_end = today + timedelta(days=horizon_days)
 
+    # ONE schedule row per invoice, newest first. A bare
+    # `outerjoin(PaymentSchedule)` fans an invoice out to one row per schedule,
+    # and the loop below appends a commitment row per result — so an invoice
+    # with two schedules was counted TWICE at its FULL amount: in the forecast,
+    # the cash-position curve, the what-if, every copilot planning tool and the
+    # `plan_id` hash, all at once, with nothing on any surface to show it.
+    # Unreachable today only because nothing but `scripts/seed.py` constructs a
+    # `PaymentSchedule` — an accident of the current feature set, not a
+    # guarantee, and this query is the single source every cash projection reads.
+    #
+    # `DISTINCT ON` mirrors `discount_auto_trigger._resolve_due_date`, which
+    # already takes the same precaution (`ORDER BY created_at DESC LIMIT 1`) on
+    # the same table — so the discount engine's idea of an invoice's due date
+    # and the cash forecast's cannot diverge. `id` is the tiebreak, so two rows
+    # written in one transaction (identical `created_at`) still resolve
+    # deterministically rather than letting the plan hash flap between reads.
+    latest_schedule = (
+        select(
+            PaymentSchedule.invoice_id.label("invoice_id"),
+            PaymentSchedule.due_date.label("sched_due"),
+            PaymentSchedule.discount_date.label("discount_date"),
+            PaymentSchedule.discount_percent.label("discount_percent"),
+        )
+        .distinct(PaymentSchedule.invoice_id)
+        .order_by(
+            PaymentSchedule.invoice_id,
+            PaymentSchedule.created_at.desc(),
+            PaymentSchedule.id.desc(),
+        )
+        .subquery()
+    )
+
     result = await db.execute(
         apply_entity_scope(
             select(
@@ -148,14 +181,14 @@ async def _commitment_rows(
                 Invoice.amount,
                 Invoice.status,
                 Invoice.due_date,
-                PaymentSchedule.due_date.label("sched_due"),
-                PaymentSchedule.discount_date,
-                PaymentSchedule.discount_percent,
+                latest_schedule.c.sched_due,
+                latest_schedule.c.discount_date,
+                latest_schedule.c.discount_percent,
                 Invoice.currency,
                 Invoice.reporting_amount,
                 Invoice.reporting_currency,
             )
-            .outerjoin(PaymentSchedule, PaymentSchedule.invoice_id == Invoice.id)
+            .outerjoin(latest_schedule, latest_schedule.c.invoice_id == Invoice.id)
             .where(Invoice.status.in_(statuses)),
             Invoice,
             entity_id,
@@ -264,7 +297,7 @@ async def get_cashflow_forecast(
     into firm `committed_amount` and lower-certainty `pending_amount`
     (the in-flight approval pipeline; drop it with `include_pending=false`)
     and reports the discount-eligible slice."""
-    today = date.today()
+    today = utc_today()
     rows = await _commitment_rows(
         db,
         today=today,
@@ -326,7 +359,7 @@ async def get_cashflow_whatif(
     forfeiting any discount). Each scenario reports its total outflow,
     discount captured, amount-weighted average days-to-pay, and the
     bucketed period breakdown."""
-    today = date.today()
+    today = utc_today()
     rows = await _commitment_rows(
         db,
         today=today,
@@ -422,7 +455,7 @@ async def get_cash_position(
     else the org's persisted `settings.cashflow.min_balance_threshold` (managed
     via `GET/PUT /api/analytics/cash-position-settings`). Inflows (receivables)
     aren't modelled — `closing = opening - outflow`."""
-    today = date.today()
+    today = utc_today()
     rows = await _commitment_rows(
         db,
         today=today,
@@ -664,7 +697,7 @@ async def get_cfo_analytics(
     tenant-scoped like everything else here (not control-plane) and is
     scoped the same way, via a join to `VirtualCard` (which carries
     `entity_id`, `CardRebate` itself does not)."""
-    today = date.today()
+    today = utc_today()
     period_start = today - timedelta(days=period_days)
 
     def _inv(q):
@@ -1234,7 +1267,7 @@ async def get_analytics_by_entity(
     """
     from app.models.entity import Entity
 
-    period_start = date.today() - timedelta(days=period_days)
+    period_start = utc_today() - timedelta(days=period_days)
 
     entities = (
         (
@@ -1289,7 +1322,7 @@ async def drill_spend_concentration(
     """Drill-through for the supplier-concentration tile. Returns
     the top-N vendors by spend with their share, invoice count,
     and a few representative invoice IDs the CFO can click into."""
-    period_start = date.today() - timedelta(days=period_days)
+    period_start = utc_today() - timedelta(days=period_days)
     reporting_currency = resolve_reporting_currency(org.settings)
     rows = await db.execute(
         apply_entity_scope(
@@ -1371,7 +1404,7 @@ async def drill_dpo(
     numeric `dpo` the chart already renders.
     """
     rows = compute_dpo_trend(
-        await _monthly_dpo_snapshots(db, months=months, entity_id=entity_id, today=date.today()),
+        await _monthly_dpo_snapshots(db, months=months, entity_id=entity_id, today=utc_today()),
         period_days=30,
     )
     return {
@@ -1441,11 +1474,11 @@ async def export_report(
             detail=f"unknown report '{report}'; supported: {sorted(EXPORTERS)}",
         )
 
-    period_start = date.today() - timedelta(days=period_days)
+    period_start = utc_today() - timedelta(days=period_days)
     payload: str
 
     if report == "cashflow_forecast":
-        today = date.today()
+        today = utc_today()
         rows = await _commitment_rows(
             db,
             today=today,
@@ -1534,7 +1567,7 @@ async def export_report(
         )
         payload = EXPORTERS[report](rows.all())
     elif report == "aging_snapshot":
-        today = date.today()
+        today = utc_today()
         # Aging covers the same open-payable population as the AP balance so the
         # buckets sum to it (F-4): approved → payment_scheduled, not the
         # pre-approval statuses that aren't a confirmed liability yet. The AP
@@ -1620,7 +1653,7 @@ async def export_report(
             brand=brand,
         )
         pdf_bytes = await asyncio.to_thread(render_analytics_report_pdf, ctx)
-        filename = f"{report}_{date.today().isoformat()}.pdf"
+        filename = f"{report}_{utc_today().isoformat()}.pdf"
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
@@ -1637,7 +1670,7 @@ async def export_report(
         )
         + payload
     )
-    filename = f"{report}_{date.today().isoformat()}.csv"
+    filename = f"{report}_{utc_today().isoformat()}.csv"
     return Response(
         content=branded_csv,
         media_type="text/csv",
