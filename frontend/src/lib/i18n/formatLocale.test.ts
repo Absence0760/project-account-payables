@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { getActiveFormatLocale, setActiveFormatLocale } from './formatLocale';
 
@@ -28,7 +26,16 @@ import { getActiveFormatLocale, setActiveFormatLocale } from './formatLocale';
 // the locale on a money-bearing page and asserts the figures move without a
 // reload.
 
-const SOURCE = readFileSync(fileURLToPath(new URL('./formatLocale.ts', import.meta.url)), 'utf8');
+// Read through Vite's `import.meta.glob`, not `node:fs` — the frontend
+// deliberately carries no `@types/node`, so a direct node import type-checks
+// as an error under `pnpm check` even though vitest runs it fine. Same
+// technique as `utils/effectTimerCleanup.test.ts` and `a11y/tokenPairing.test.ts`.
+const RAW = import.meta.glob('/src/lib/i18n/formatLocale.ts', {
+	query: '?raw',
+	import: 'default',
+	eager: true
+}) as Record<string, string>;
+const SOURCE = RAW['/src/lib/i18n/formatLocale.ts'];
 
 afterEach(() => {
 	setActiveFormatLocale(undefined);

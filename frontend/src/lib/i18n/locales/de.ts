@@ -169,6 +169,17 @@ export const messages = {
 	'payments.queue.createDraftRun': '{n, plural, one {Entwurfslauf erstellen · # Rechnung} other {Entwurfslauf erstellen · # Rechnungen}}',
 	'payments.queue.savingsBanner': '{amount} an Frühzahlungsrabatten verfügbar — bezahlen Sie die hervorgehobenen Rechnungen vor dem Rabattdatum, um sie zu sichern.',
 	'payments.queue.empty': 'Keine Rechnungen zur Zahlung bereit.',
+	'payments.queue.createFailed': 'Zahlungslauf fehlgeschlagen',
+	'payments.queue.mixedCurrency':
+		'Diese Auswahl umfasst {n} Währungen. Die Zwischensummen werden daher getrennt angezeigt und NICHT addiert. Ein Zahlungslauf muss eine einzige Währung haben — reduzieren Sie die Auswahl auf eine Währung, um fortzufahren.',
+	'payments.queue.mixedCurrencyBlocked': 'Ein Zahlungslauf muss eine einzige Währung haben.',
+	'payments.queue.blockedCount':
+		'{n, plural, one {# Rechnung ist für die Zahlung gesperrt und nicht auswählbar} other {# Rechnungen sind für die Zahlung gesperrt und nicht auswählbar}} — klären Sie zuerst die Ausnahme.',
+	'payments.queue.blockedCheckboxAria': 'Rechnung {invoice} kann nicht bezahlt werden: {reason}',
+	'payments.queue.blocked.duplicate': 'Möglicher Doppeleintrag — ungeklärt',
+	'payments.queue.blocked.fraudFlag': 'Betrugsverdacht — ungeklärt',
+	'payments.queue.blocked.lineTotalMismatch': 'Positionssummen stimmen nicht — ungeklärt',
+	'payments.queue.blocked.generic': 'Ungeklärte Ausnahme blockiert die Zahlung',
 	'payments.queue.discountSave': '{amount} sparen',
 	'payments.queue.discountBy': '{percent}% bis {date}',
 	'payments.col.invoiceNumber': 'Rechnungs-Nr.',
@@ -269,6 +280,69 @@ export const messages = {
 	'vendors.bank.bankName': 'Name der Bank',
 	'vendors.bank.accountLast4': 'Konto letzte 4',
 	'vendors.bank.routingLast4': 'Bankleitzahl letzte 4',
+	'vendors.bank.dualControlHint':
+		'Das Speichern reicht diese Änderung zur Freigabe ein — sie wird erst wirksam, wenn eine zweite Person sie freigibt.',
+	'vendors.bank.reviewQueueLink': 'Bankänderungs-Freigaben öffnen',
+	'vendors.bank.toast.submitted':
+		'Änderung der Bankdaten eingereicht — sie wartet unter „Bankänderungs-Freigaben“',
+	'vendors.bank.toast.submitFailed': 'Einreichen fehlgeschlagen',
+	'vendors.action.changeApprovals': 'Bankänderungs-Freigaben',
+
+	'vendors.changeRequests.navLabel': 'Bankänderungen',
+	'vendors.changeRequests.title': 'Freigaben für Bank- und Steuerdaten',
+	'vendors.changeRequests.intro':
+		'Bank- oder Steuerdaten eines Lieferanten ändern sich erst, wenn eine zweite Person sie freigibt. Eine selbst beantragte Änderung können Sie nicht freigeben.',
+	'vendors.changeRequests.refresh': 'Aktualisieren',
+	'vendors.changeRequests.refreshing': 'Wird aktualisiert…',
+	'vendors.changeRequests.noPermissionNote':
+		'Sie können diese Warteschlange einsehen, für die Freigabe einer Änderung benötigen Sie jedoch die Berechtigung „Bank-/Steueränderungen von Lieferanten freigeben“.',
+	'vendors.changeRequests.status.pending': 'Offen',
+	'vendors.changeRequests.status.approved': 'Freigegeben',
+	'vendors.changeRequests.status.rejected': 'Abgelehnt',
+	'vendors.changeRequests.type.bankDetails': 'Bankdaten',
+	'vendors.changeRequests.type.taxId': 'Steuernummer',
+	'vendors.changeRequests.col.changeType': 'Änderung',
+	'vendors.changeRequests.col.proposed': 'Vorschlag (maskiert)',
+	'vendors.changeRequests.col.requestedBy': 'Beantragt von',
+	'vendors.changeRequests.col.requested': 'Beantragt am',
+	'vendors.changeRequests.requester.supplier': 'Lieferantenportal',
+	'vendors.changeRequests.requester.apUser': 'Kreditorenbuchhaltung',
+	'vendors.changeRequests.requester.you': 'Sie',
+	'vendors.changeRequests.row.open': 'Änderung „{type}“ für {vendor} prüfen',
+	'vendors.changeRequests.row.approve': 'Freigeben',
+	'vendors.changeRequests.row.confirmApprove': 'Freigabe bestätigen',
+	'vendors.changeRequests.row.reject': 'Ablehnen',
+	'vendors.changeRequests.row.confirmReject': 'Ablehnung bestätigen',
+	'vendors.changeRequests.row.youRequested': 'Von Ihnen beantragt',
+	'vendors.changeRequests.row.needsPermission': 'Freigabeberechtigung erforderlich',
+	'vendors.changeRequests.empty.pending': 'Es wartet nichts auf eine Freigabe.',
+	'vendors.changeRequests.empty.filtered': 'Keine Änderungsanträge mit diesem Status.',
+	'vendors.changeRequests.empty.errored': 'Die Änderungsanträge konnten nicht geladen werden.',
+	'vendors.changeRequests.loadMore': 'Mehr laden ({shown} von {total})',
+	'vendors.changeRequests.showingAll':
+		'{total, plural, one {Alle # Anfrage wird angezeigt} other {Alle # Anfragen werden angezeigt}}',
+	'vendors.changeRequests.modal.aria': 'Prüfung des Lieferanten-Änderungsantrags',
+	'vendors.changeRequests.modal.verifyHint':
+		'Rufen Sie den Lieferanten unter einer bereits hinterlegten Nummer an und bestätigen Sie diese Angaben vor der Freigabe — ein umgeleitetes Konto ist der Klassiker beim Rechnungsbetrug.',
+	'vendors.changeRequests.modal.proposed': 'Vorgeschlagener Wert',
+	'vendors.changeRequests.modal.revealFailed':
+		'Der vollständige vorgeschlagene Wert konnte nicht geladen werden',
+	'vendors.changeRequests.modal.reviewNote': 'Prüfnotiz (optional)',
+	'vendors.changeRequests.modal.reviewNotePlaceholder': 'z. B. telefonisch rückbestätigt',
+	'vendors.changeRequests.modal.requested': 'Beantragt',
+	'vendors.changeRequests.modal.reviewed': 'Geprüft',
+	'vendors.changeRequests.modal.note': 'Notiz',
+	'vendors.changeRequests.toast.approved':
+		'Änderung freigegeben — die Lieferantendaten sind aktualisiert',
+	'vendors.changeRequests.toast.rejected':
+		'Änderung abgelehnt — der Lieferant bleibt unverändert',
+	'vendors.changeRequests.toast.sod':
+		'Sie können eine selbst beantragte Änderung nicht freigeben — das muss eine zweite Person tun',
+	'vendors.changeRequests.toast.resolved':
+		'Dieser Antrag wurde bereits von jemandem bearbeitet — die Liste wurde aktualisiert',
+	'vendors.changeRequests.toast.approveFailed': 'Freigabe fehlgeschlagen',
+	'vendors.changeRequests.toast.rejectFailed': 'Ablehnung fehlgeschlagen',
+	'vendors.changeRequests.toast.loadFailed': 'Änderungsanträge konnten nicht geladen werden',
 
 	// Exceptions
 	'exceptions.title': 'Ausnahmen',
@@ -994,6 +1068,8 @@ export const messages = {
 	'expenses.loading': 'Wird geladen…',
 	'expenses.empty': 'Keine Ausgaben entsprechen Ihren Filtern.',
 	'expenses.empty.errored': 'Ausgaben konnten nicht geladen werden. Bitte erneut versuchen.',
+	'expenses.empty.searchPartial':
+		'Keine Treffer unter den bisher geladenen {shown} von {total} Ausgaben. Die Suche erfasst nur geladene Zeilen — laden Sie unten weitere, um den Rest zu durchsuchen.',
 	'expenses.col.date': 'Datum',
 	'expenses.col.merchant': 'Händler',
 	'expenses.col.category': 'Kategorie',
@@ -1216,6 +1292,8 @@ export const messages = {
 	'requisitions.col.total': 'Summe',
 	'requisitions.col.status': 'Status',
 	'requisitions.empty': 'Keine Anforderungen entsprechen Ihren Filtern.',
+	'requisitions.empty.searchPartial':
+		'Keine Treffer unter den bisher geladenen {shown} von {total} Anforderungen. Die Suche erfasst nur geladene Zeilen — laden Sie unten weitere, um den Rest zu durchsuchen.',
 	'requisitions.notFound': 'Anforderung nicht gefunden',
 	'requisitions.row.open': 'Anforderung {number} öffnen',
 	'requisitions.row.submit': 'Einreichen',
@@ -1717,6 +1795,9 @@ export const messages = {
 	'portal.invoices.col.amount': 'Betrag',
 	'portal.invoices.col.status': 'Status',
 	'portal.invoices.pendingExtraction': '(Auslesung ausstehend)',
+	'portal.invoices.loadMore': 'Mehr laden ({shown} von {total})',
+	'portal.invoices.showingAll':
+		'{total, plural, one {Alle # Rechnung werden angezeigt} other {Alle # Rechnungen werden angezeigt}}',
 	'portal.payments.title': 'Zahlungen',
 	'portal.payments.loadFailed': 'Laden fehlgeschlagen',
 	'portal.payments.downloadFailed': 'Download fehlgeschlagen',
@@ -1731,6 +1812,9 @@ export const messages = {
 	'portal.payments.col.reference': 'Referenz',
 	'portal.payments.downloadRemittance': 'Zahlungsavis herunterladen',
 	'portal.payments.preparing': 'Wird vorbereitet…',
+	'portal.payments.loadMore': 'Mehr laden ({shown} von {total})',
+	'portal.payments.showingAll':
+		'{total, plural, one {Alle # Zahlung werden angezeigt} other {Alle # Zahlungen werden angezeigt}}',
 	'portal.po.title': 'Bestellungen',
 	'portal.po.loadFailed': 'Laden fehlgeschlagen',
 	'portal.po.created': 'Rechnung aus {po} erstellt.',
@@ -1744,6 +1828,9 @@ export const messages = {
 	'portal.po.col.status': 'Status',
 	'portal.po.createInvoice': 'Rechnung erstellen',
 	'portal.po.creating': 'Wird erstellt…',
+	'portal.po.loadMore': 'Mehr laden ({shown} von {total})',
+	'portal.po.showingAll':
+		'{total, plural, one {Alle # Bestellung werden angezeigt} other {Alle # Bestellungen werden angezeigt}}',
 	'portal.discounts.title': 'Skonti bei früher Zahlung',
 	'portal.discounts.subtitle': 'Akzeptieren Sie ein Skonto für frühe Zahlung, um gegen einen kleinen Abschlag früher bezahlt zu werden.',
 	'portal.discounts.filterAria': 'Angebote nach Status filtern',
@@ -1755,6 +1842,9 @@ export const messages = {
 	'portal.discounts.loadFailed': 'Laden fehlgeschlagen',
 	'portal.discounts.acceptFailed': 'Annehmen fehlgeschlagen',
 	'portal.discounts.declineFailed': 'Ablehnen fehlgeschlagen',
+	'portal.discounts.loadMore': 'Mehr laden ({shown} von {total})',
+	'portal.discounts.showingAll':
+		'{total, plural, one {Alle # Angebot werden angezeigt} other {Alle # Angebote werden angezeigt}}',
 	'portal.discounts.empty': 'Derzeit keine Skontoangebote.',
 	'portal.discounts.emptyHint': 'Wenn Ihr Kunde ein Skonto für frühe Zahlung anbietet, erscheint es hier zur Annahme.',
 	'portal.discounts.col.appliesTo': 'Gilt für',
@@ -2891,6 +2981,8 @@ export const messages = {
 	'discounts.toast.declineFailed': 'Angebot konnte nicht abgelehnt werden',
 	'discounts.toast.declined': 'Skonto-Angebot abgelehnt',
 	'discounts.toast.optimizeFailed': 'Optimierung fehlgeschlagen',
+	'discounts.unconvertibleOffers':
+		'Ausgeschlossen: {n, plural, one {# Angebot} other {# Angebote}} ohne Wechselkurs in {currency}, nicht in den Einsparungssummen enthalten — die angezeigten Zahlen unterschätzen daher das tatsächliche Potenzial. Erfassen Sie den fehlenden Kurs, bevor Sie auf Basis dieser Zahlen handeln.',
 	'experiments.chip.concluded': 'Abgeschlossen',
 	'experiments.chip.draft': 'Entwurf',
 	'experiments.chip.running': 'Laufend',
@@ -3139,7 +3231,9 @@ export const messages = {
 	'invoices.modal.activity.glSuggested': 'Sachkonto vorgeschlagen: {gl}',
 	'invoices.modal.activity.newVendor': 'Neuer Lieferant angelegt (nicht verifiziert)',
 	'invoices.modal.activity.title': 'Aktivität',
+	'invoices.modal.approverNone': 'Es kann niemand sonst als Prüfer zugewiesen werden. Beim Einreichen gelangt diese Rechnung ohne Zuweisung in die Prüfliste — jeder Genehmiger kann sie übernehmen.',
 	'invoices.modal.approverPlaceholder': 'Genehmiger...',
+	'invoices.modal.approverUnavailable': 'Die Prüferliste konnte nicht geladen werden. Beim Einreichen gelangt diese Rechnung ohne Zuweisung in die Prüfliste — jeder Genehmiger kann sie übernehmen.',
 	'invoices.modal.assignApprover': 'Genehmiger zuweisen',
 	'invoices.modal.close': 'Schließen',
 	'invoices.modal.confidence.high': 'Hoch',
@@ -3339,6 +3433,9 @@ export const messages = {
 	'paymentRuns.runDetail.draftNotePre': 'Dieser Lauf ist noch ein ',
 	'paymentRuns.runDetail.draftWord': 'Entwurf',
 	'paymentRuns.runDetail.executeAmount': 'Ausführen · {amount}',
+	'paymentRuns.runDetail.confirmExecuteAmount': 'Ausführung bestätigen · {amount}',
+	'paymentRuns.runDetail.executeArmedNote':
+		'Klicken Sie auf „Ausführung bestätigen“, um {amount} jetzt an den Zahlungsdienstleister zu senden. Dies kann nicht rückgängig gemacht werden.',
 	'paymentRuns.runDetail.executeFailed': 'Ausführung fehlgeschlagen',
 	'paymentRuns.runDetail.executed': 'Ausgeführt',
 	'paymentRuns.runDetail.executing': 'Wird ausgeführt…',

@@ -1,9 +1,16 @@
 <script lang="ts">
-	import { portalApi } from '$lib/portalApi';
+	import {
+		portalApi,
+		listPortalInvoices,
+		PORTAL_PAGE_SIZE,
+		type PortalInvoiceListItem,
+	} from '$lib/portalApi';
 	import { portalAuth } from '$lib/stores/portalAuth.svelte';
 	import { onMount } from 'svelte';
 	import { formatMoney } from '$lib/utils/money';
 	import { formatDate } from '$lib/utils/time';
+	import { appendUnique } from '$lib/utils/pagination';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { m } from '$lib/i18n/store.svelte';
 	import SupplierChatThread from '$lib/components/chat/SupplierChatThread.svelte';
 	import type { PortalChatThread } from '$lib/types/supplierChat';
@@ -13,40 +20,57 @@
 		uploadPortalChatAttachment,
 	} from '$lib/portalChat';
 
-	interface PortalInvoice {
-		id: string;
-		invoice_number: string;
-		amount: number | string;
-		currency: string;
-		status: string;
-		invoice_date: string | null;
-		due_date: string | null;
-		submitted_at: string;
-		file_url: string | null;
-	}
-
-	interface InvoiceListResponse {
-		items: PortalInvoice[];
-		total: number;
-	}
+	type PortalInvoice = PortalInvoiceListItem;
 
 	let items = $state<PortalInvoice[]>([]);
+	// `total` is the server's count of ALL the vendor's invoices, not just the
+	// loaded page — the list is paged, so the footer can only claim "showing
+	// all" once every row has actually been fetched.
+	let total = $state(0);
+	let pageNum = $state(1);
 	let loading = $state(false);
+	let loadingMore = $state(false);
 	let uploading = $state(false);
 	let error = $state('');
 	let message = $state('');
 
-	async function refresh() {
-		loading = true;
+	const hasMore = $derived(items.length < total);
+
+	// Sequences `load` so a slow first page can't land after a Load-more (or
+	// after the post-upload refresh) and drop rows. Nothing here edits the list
+	// in place — submitting an invoice re-reads through this same loader — so
+	// there is no `supersedeInFlight()` call. See `frontend/CLAUDE.md`
+	// § Sequencing list fetches.
+	const fetchSequence = createRequestSequencer();
+
+	async function load(opts: { append?: boolean } = {}) {
+		const nextPage = opts.append ? pageNum + 1 : 1;
+		const token = fetchSequence.start();
+		if (opts.append) loadingMore = true;
+		else loading = true;
 		error = '';
 		try {
-			const res = await portalApi.get<InvoiceListResponse>('/api/portal/invoices');
-			items = res.items;
+			const res = await listPortalInvoices({ page: nextPage, page_size: PORTAL_PAGE_SIZE });
+			if (!fetchSequence.canCommit(token)) return;
+			items = opts.append ? appendUnique(items, res.items) : res.items;
+			total = res.total;
+			pageNum = nextPage;
 		} catch (err) {
+			// `isCurrentRequest`, not `canCommit`: a superseded load still failed,
+			// and no newer load is coming to report it.
+			if (!fetchSequence.isCurrentRequest(token)) return;
 			error = err instanceof Error ? err.message : m('portal.invoices.loadFailed');
 		} finally {
-			loading = false;
+			if (fetchSequence.isCurrentRequest(token)) {
+				loading = false;
+				loadingMore = false;
+			}
 		}
+	}
+
+	/** Reload from page 1 (mount, and after a successful submit). */
+	function refresh() {
+		return load();
 	}
 
 	async function handleUpload(e: Event) {
@@ -162,7 +186,7 @@
 				</tr>
 			</thead>
 			<tbody>
-				{#each items as inv}
+				{#each items as inv (inv.id)}
 					<tr
 						class="clickable"
 						class:expanded={expandedId === inv.id}
@@ -213,6 +237,25 @@
 				{/each}
 			</tbody>
 		</table>
+
+		{#if hasMore}
+			<div class="load-more-row">
+				<button
+					type="button"
+					class="btn-load-more"
+					onclick={() => load({ append: true })}
+					disabled={loadingMore}
+				>
+					{loadingMore
+						? m('portal.common.loading')
+						: m('portal.invoices.loadMore', { shown: items.length, total })}
+				</button>
+			</div>
+		{:else if total > 0}
+			<div class="load-more-row">
+				<span class="load-more-end">{m('portal.invoices.showingAll', { total })}</span>
+			</div>
+		{/if}
 	{/if}
 </div>
 

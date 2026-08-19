@@ -4,10 +4,13 @@
 	import Money from '$lib/components/ui/Money.svelte';
 	import { formatDate } from '$lib/utils/time';
 	import { m } from '$lib/i18n/store.svelte';
+	import { appendUnique } from '$lib/utils/pagination';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import {
 		listPortalDiscountOffers,
 		acceptPortalDiscountOffer,
 		declinePortalDiscountOffer,
+		PORTAL_PAGE_SIZE,
 		type PortalDiscountOffer,
 	} from '$lib/portalApi';
 
@@ -20,7 +23,12 @@
 	] as const;
 
 	let items = $state<PortalDiscountOffer[]>([]);
+	// Server-side count of the whole FILTERED offer set, not the loaded page —
+	// an offer past the first page still expires, so it has to be reachable.
+	let total = $state(0);
+	let pageNum = $state(1);
 	let loading = $state(false);
+	let loadingMore = $state(false);
 	let error = $state('');
 	let activeFilter = $state('');
 	let busy = $state<string | null>(null);
@@ -39,17 +47,45 @@
 		};
 	});
 
-	async function refresh() {
-		loading = true;
+	const hasMore = $derived(items.length < total);
+
+	// Sequences `load` so a slow response for an earlier status filter can't
+	// land after a faster later one (or after a Load-more) and blank the list.
+	// Accept / decline re-read through this same loader rather than editing a
+	// row in place, so there is no `supersedeInFlight()` call. See
+	// `frontend/CLAUDE.md` § Sequencing list fetches.
+	const fetchSequence = createRequestSequencer();
+
+	async function load(opts: { append?: boolean } = {}) {
+		const nextPage = opts.append ? pageNum + 1 : 1;
+		const token = fetchSequence.start();
+		if (opts.append) loadingMore = true;
+		else loading = true;
 		error = '';
 		try {
-			const res = await listPortalDiscountOffers(activeFilter || undefined);
-			items = res.items;
+			const res = await listPortalDiscountOffers(activeFilter || undefined, {
+				page: nextPage,
+				page_size: PORTAL_PAGE_SIZE,
+			});
+			if (!fetchSequence.canCommit(token)) return;
+			items = opts.append ? appendUnique(items, res.items) : res.items;
+			total = res.total;
+			pageNum = nextPage;
 		} catch (err) {
+			// `isCurrentRequest`, not `canCommit` — a superseded load still failed.
+			if (!fetchSequence.isCurrentRequest(token)) return;
 			error = err instanceof Error ? err.message : m('portal.discounts.loadFailed');
 		} finally {
-			loading = false;
+			if (fetchSequence.isCurrentRequest(token)) {
+				loading = false;
+				loadingMore = false;
+			}
 		}
+	}
+
+	/** Reload from page 1 (mount, filter change, and after accept / decline). */
+	function refresh() {
+		return load();
 	}
 
 	function setFilter(key: string) {
@@ -207,6 +243,25 @@
 				{/each}
 			</tbody>
 		</table>
+
+		{#if hasMore}
+			<div class="load-more-row">
+				<button
+					type="button"
+					class="btn-load-more"
+					onclick={() => load({ append: true })}
+					disabled={loadingMore}
+				>
+					{loadingMore
+						? m('portal.common.loading')
+						: m('portal.discounts.loadMore', { shown: items.length, total })}
+				</button>
+			</div>
+		{:else if total > 0}
+			<div class="load-more-row">
+				<span class="load-more-end">{m('portal.discounts.showingAll', { total })}</span>
+			</div>
+		{/if}
 	{/if}
 </div>
 

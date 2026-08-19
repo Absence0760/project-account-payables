@@ -186,6 +186,17 @@ export const en = {
 	'payments.queue.createDraftRun': '{n, plural, one {Create Draft Run · # Invoice} other {Create Draft Run · # Invoices}}',
 	'payments.queue.savingsBanner': '{amount} in early-pay discounts available — pay the highlighted invoices before their discount date to capture them.',
 	'payments.queue.empty': 'No invoices ready for payment.',
+	'payments.queue.createFailed': 'Payment run failed',
+	'payments.queue.mixedCurrency':
+		'This selection spans {n} currencies, so the subtotals are shown separately and are NOT added together. A payment run must be a single currency — clear the selection down to one currency to continue.',
+	'payments.queue.mixedCurrencyBlocked': 'A payment run must be a single currency.',
+	'payments.queue.blockedCount':
+		'{n, plural, one {# invoice is blocked from payment and can’t be selected} other {# invoices are blocked from payment and can’t be selected}} — clear the exception first.',
+	'payments.queue.blockedCheckboxAria': 'Invoice {invoice} can’t be paid: {reason}',
+	'payments.queue.blocked.duplicate': 'Possible duplicate — unresolved',
+	'payments.queue.blocked.fraudFlag': 'Fraud flag — unresolved',
+	'payments.queue.blocked.lineTotalMismatch': 'Line totals don’t match — unresolved',
+	'payments.queue.blocked.generic': 'Unresolved exception blocks payment',
 	'payments.queue.discountSave': 'Save {amount}',
 	'payments.queue.discountBy': '{percent}% by {date}',
 	'payments.col.invoiceNumber': 'Invoice #',
@@ -286,6 +297,69 @@ export const en = {
 	'vendors.bank.bankName': 'Bank name',
 	'vendors.bank.accountLast4': 'Account last 4',
 	'vendors.bank.routingLast4': 'Routing last 4',
+	// Bank-detail dual control (the BEC / bank-redirect gate) — the /vendors
+	// bank editor stages a change; the queue below is where it gets signed off.
+	'vendors.bank.dualControlHint':
+		'Saving stages this change for approval — it does not apply until a second approver signs it off.',
+	'vendors.bank.reviewQueueLink': 'Open bank change approvals',
+	'vendors.bank.toast.submitted':
+		'Bank-detail change submitted — it’s waiting in Bank change approvals',
+	'vendors.bank.toast.submitFailed': 'Submit failed',
+	'vendors.action.changeApprovals': 'Bank change approvals',
+
+	// Vendor bank / tax change-approval queue (routes/vendors/change-requests)
+	'vendors.changeRequests.navLabel': 'Bank Changes',
+	'vendors.changeRequests.title': 'Bank & Tax Change Approvals',
+	'vendors.changeRequests.intro':
+		'A vendor’s bank or tax details change only once a second approver signs off. You cannot approve a change you requested.',
+	'vendors.changeRequests.refresh': 'Refresh',
+	'vendors.changeRequests.refreshing': 'Refreshing…',
+	'vendors.changeRequests.noPermissionNote':
+		'You can review this queue, but approving a change needs the “Approve vendor bank / tax changes” permission.',
+	'vendors.changeRequests.status.pending': 'Pending',
+	'vendors.changeRequests.status.approved': 'Approved',
+	'vendors.changeRequests.status.rejected': 'Rejected',
+	'vendors.changeRequests.type.bankDetails': 'Bank details',
+	'vendors.changeRequests.type.taxId': 'Tax ID',
+	'vendors.changeRequests.col.changeType': 'Change',
+	'vendors.changeRequests.col.proposed': 'Proposed (masked)',
+	'vendors.changeRequests.col.requestedBy': 'Requested by',
+	'vendors.changeRequests.col.requested': 'Requested',
+	'vendors.changeRequests.requester.supplier': 'Supplier portal',
+	'vendors.changeRequests.requester.apUser': 'AP user',
+	'vendors.changeRequests.requester.you': 'You',
+	'vendors.changeRequests.row.open': 'Review the {type} change for {vendor}',
+	'vendors.changeRequests.row.approve': 'Approve',
+	'vendors.changeRequests.row.confirmApprove': 'Confirm approve',
+	'vendors.changeRequests.row.reject': 'Reject',
+	'vendors.changeRequests.row.confirmReject': 'Confirm reject',
+	'vendors.changeRequests.row.youRequested': 'You requested this',
+	'vendors.changeRequests.row.needsPermission': 'Needs approval permission',
+	'vendors.changeRequests.empty.pending': 'Nothing is waiting for approval.',
+	'vendors.changeRequests.empty.filtered': 'No change requests with this status.',
+	'vendors.changeRequests.empty.errored': 'Could not load the change-request queue.',
+	'vendors.changeRequests.loadMore': 'Load more ({shown} of {total})',
+	'vendors.changeRequests.showingAll':
+		'{total, plural, one {Showing all # request} other {Showing all # requests}}',
+	'vendors.changeRequests.modal.aria': 'Vendor change request review',
+	'vendors.changeRequests.modal.verifyHint':
+		'Call the supplier on a number you already held on file and confirm these details before approving — a redirected account is the classic invoice-fraud payload.',
+	'vendors.changeRequests.modal.proposed': 'Proposed value',
+	'vendors.changeRequests.modal.revealFailed': 'Could not load the full proposed value',
+	'vendors.changeRequests.modal.reviewNote': 'Review note (optional)',
+	'vendors.changeRequests.modal.reviewNotePlaceholder': 'e.g. verified by phone callback',
+	'vendors.changeRequests.modal.requested': 'Requested',
+	'vendors.changeRequests.modal.reviewed': 'Reviewed',
+	'vendors.changeRequests.modal.note': 'Note',
+	'vendors.changeRequests.toast.approved': 'Change approved — the vendor’s details are updated',
+	'vendors.changeRequests.toast.rejected': 'Change rejected — the vendor is unchanged',
+	'vendors.changeRequests.toast.sod':
+		'You can’t approve a change you requested — a second approver must sign it off',
+	'vendors.changeRequests.toast.resolved':
+		'Someone already resolved that request — the queue has been refreshed',
+	'vendors.changeRequests.toast.approveFailed': 'Approve failed',
+	'vendors.changeRequests.toast.rejectFailed': 'Reject failed',
+	'vendors.changeRequests.toast.loadFailed': 'Failed to load the change-request queue',
 
 	// Exceptions (routes/exceptions/+page.svelte)
 	'exceptions.title': 'Exceptions',
@@ -1030,6 +1104,8 @@ export const en = {
 	'expenses.loading': 'Loading…',
 	'expenses.empty': 'No expenses match your filters.',
 	'expenses.empty.errored': 'Could not load expenses. Try again.',
+	'expenses.empty.searchPartial':
+		'No match in the {shown} of {total} expenses loaded so far. Search covers loaded rows only — use Load more below to search the rest.',
 	'expenses.col.date': 'Date',
 	'expenses.col.merchant': 'Merchant',
 	'expenses.col.category': 'Category',
@@ -1252,6 +1328,8 @@ export const en = {
 	'requisitions.col.total': 'Total',
 	'requisitions.col.status': 'Status',
 	'requisitions.empty': 'No requisitions match your filters.',
+	'requisitions.empty.searchPartial':
+		'No match in the {shown} of {total} requisitions loaded so far. Search covers loaded rows only — use Load more below to search the rest.',
 	'requisitions.notFound': 'Requisition not found',
 	'requisitions.row.open': 'Open requisition {number}',
 	'requisitions.row.submit': 'Submit',
@@ -1762,6 +1840,9 @@ export const en = {
 	'portal.invoices.col.amount': 'Amount',
 	'portal.invoices.col.status': 'Status',
 	'portal.invoices.pendingExtraction': '(pending extraction)',
+	'portal.invoices.loadMore': 'Load more ({shown} of {total})',
+	'portal.invoices.showingAll':
+		'{total, plural, one {Showing all # invoice} other {Showing all # invoices}}',
 
 	// Portal payments (routes/portal/payments/+page.svelte)
 	'portal.payments.title': 'Payments',
@@ -1778,6 +1859,9 @@ export const en = {
 	'portal.payments.col.reference': 'Reference',
 	'portal.payments.downloadRemittance': 'Download remittance',
 	'portal.payments.preparing': 'Preparing…',
+	'portal.payments.loadMore': 'Load more ({shown} of {total})',
+	'portal.payments.showingAll':
+		'{total, plural, one {Showing all # payment} other {Showing all # payments}}',
 
 	// Portal purchase orders (routes/portal/purchase-orders/+page.svelte)
 	'portal.po.title': 'Purchase Orders',
@@ -1793,6 +1877,9 @@ export const en = {
 	'portal.po.col.status': 'Status',
 	'portal.po.createInvoice': 'Create invoice',
 	'portal.po.creating': 'Creating…',
+	'portal.po.loadMore': 'Load more ({shown} of {total})',
+	'portal.po.showingAll':
+		'{total, plural, one {Showing all # purchase order} other {Showing all # purchase orders}}',
 
 	// Portal discount offers (routes/portal/discount-offers/+page.svelte)
 	'portal.discounts.title': 'Early-Payment Discounts',
@@ -1807,6 +1894,9 @@ export const en = {
 	'portal.discounts.loadFailed': 'Load failed',
 	'portal.discounts.acceptFailed': 'Accept failed',
 	'portal.discounts.declineFailed': 'Decline failed',
+	'portal.discounts.loadMore': 'Load more ({shown} of {total})',
+	'portal.discounts.showingAll':
+		'{total, plural, one {Showing all # offer} other {Showing all # offers}}',
 	'portal.discounts.empty': 'No discount offers right now.',
 	'portal.discounts.emptyHint':
 		'When your customer offers an early-payment discount, it shows up here for you to accept.',
@@ -2957,6 +3047,8 @@ export const en = {
 	'discounts.toast.declineFailed': 'Could not decline offer',
 	'discounts.toast.declined': 'Discount offer declined',
 	'discounts.toast.optimizeFailed': 'Optimization failed',
+	'discounts.unconvertibleOffers':
+		'Excluded: {n, plural, one {# offer} other {# offers}} with no exchange rate into {currency}, left out of the savings totals — so the figures shown understate what is on the table. Book the missing rate before acting on them.',
 	'experiments.chip.concluded': 'Concluded',
 	'experiments.chip.draft': 'Draft',
 	'experiments.chip.running': 'Running',
@@ -3203,7 +3295,9 @@ export const en = {
 	'invoices.modal.activity.glSuggested': 'GL suggested: {gl}',
 	'invoices.modal.activity.newVendor': 'New vendor created (unverified)',
 	'invoices.modal.activity.title': 'Activity',
+	'invoices.modal.approverNone': 'No one else can be assigned as reviewer. Submitting sends this invoice to the review queue unassigned — any approver can pick it up.',
 	'invoices.modal.approverPlaceholder': 'Approver...',
+	'invoices.modal.approverUnavailable': 'The reviewer list could not be loaded. Submitting sends this invoice to the review queue unassigned — any approver can pick it up.',
 	'invoices.modal.assignApprover': 'Assign approver',
 	'invoices.modal.close': 'Close',
 	'invoices.modal.confidence.high': 'High',
@@ -3403,6 +3497,9 @@ export const en = {
 	'paymentRuns.runDetail.draftNotePre': 'This run is still a ',
 	'paymentRuns.runDetail.draftWord': 'draft',
 	'paymentRuns.runDetail.executeAmount': 'Execute · {amount}',
+	'paymentRuns.runDetail.confirmExecuteAmount': 'Confirm execute · {amount}',
+	'paymentRuns.runDetail.executeArmedNote':
+		'Click Confirm execute to send {amount} to the payment processor now. This cannot be undone.',
 	'paymentRuns.runDetail.executeFailed': 'Execution failed',
 	'paymentRuns.runDetail.executed': 'Executed',
 	'paymentRuns.runDetail.executing': 'Executing…',

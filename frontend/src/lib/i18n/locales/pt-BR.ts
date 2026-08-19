@@ -170,6 +170,17 @@ export const messages = {
 	'payments.queue.createDraftRun': '{n, plural, one {Criar lote rascunho · # fatura} other {Criar lote rascunho · # faturas}}',
 	'payments.queue.savingsBanner': '{amount} em descontos por pagamento antecipado disponíveis — pague as faturas destacadas antes da data do desconto para aproveitá-los.',
 	'payments.queue.empty': 'Nenhuma fatura pronta para pagamento.',
+	'payments.queue.createFailed': 'Falha ao criar a remessa de pagamentos',
+	'payments.queue.mixedCurrency':
+		'Esta seleção abrange {n} moedas, portanto os subtotais são exibidos separadamente e NÃO são somados. Uma remessa de pagamentos precisa ter uma única moeda — reduza a seleção a uma moeda para continuar.',
+	'payments.queue.mixedCurrencyBlocked': 'Uma remessa de pagamentos precisa ter uma única moeda.',
+	'payments.queue.blockedCount':
+		'{n, plural, one {# fatura está bloqueada para pagamento e não pode ser selecionada} other {# faturas estão bloqueadas para pagamento e não podem ser selecionadas}} — resolva a exceção primeiro.',
+	'payments.queue.blockedCheckboxAria': 'A fatura {invoice} não pode ser paga: {reason}',
+	'payments.queue.blocked.duplicate': 'Possível duplicidade — não resolvida',
+	'payments.queue.blocked.fraudFlag': 'Alerta de fraude — não resolvido',
+	'payments.queue.blocked.lineTotalMismatch': 'Totais das linhas não conferem — não resolvido',
+	'payments.queue.blocked.generic': 'Uma exceção não resolvida bloqueia o pagamento',
 	'payments.queue.discountSave': 'Economize {amount}',
 	'payments.queue.discountBy': '{percent}% até {date}',
 	'payments.col.invoiceNumber': 'N.º da fatura',
@@ -270,6 +281,69 @@ export const messages = {
 	'vendors.bank.bankName': 'Nome do banco',
 	'vendors.bank.accountLast4': 'Últimos 4 da conta',
 	'vendors.bank.routingLast4': 'Últimos 4 do roteamento',
+	'vendors.bank.dualControlHint':
+		'Salvar envia esta alteração para aprovação — ela só passa a valer depois que um segundo aprovador assinar.',
+	'vendors.bank.reviewQueueLink': 'Abrir aprovações de alterações bancárias',
+	'vendors.bank.toast.submitted':
+		'Alteração de dados bancários enviada — está aguardando em Aprovações de alterações bancárias',
+	'vendors.bank.toast.submitFailed': 'Falha ao enviar',
+	'vendors.action.changeApprovals': 'Aprovações de alterações bancárias',
+
+	'vendors.changeRequests.navLabel': 'Alterações bancárias',
+	'vendors.changeRequests.title': 'Aprovações de alterações bancárias e fiscais',
+	'vendors.changeRequests.intro':
+		'Os dados bancários ou fiscais de um fornecedor só mudam quando um segundo aprovador assina. Você não pode aprovar uma alteração que você mesmo solicitou.',
+	'vendors.changeRequests.refresh': 'Atualizar',
+	'vendors.changeRequests.refreshing': 'Atualizando…',
+	'vendors.changeRequests.noPermissionNote':
+		'Você pode revisar esta fila, mas aprovar uma alteração exige a permissão “Aprovar alterações bancárias / fiscais de fornecedores”.',
+	'vendors.changeRequests.status.pending': 'Pendente',
+	'vendors.changeRequests.status.approved': 'Aprovada',
+	'vendors.changeRequests.status.rejected': 'Rejeitada',
+	'vendors.changeRequests.type.bankDetails': 'Dados bancários',
+	'vendors.changeRequests.type.taxId': 'Identificação fiscal',
+	'vendors.changeRequests.col.changeType': 'Alteração',
+	'vendors.changeRequests.col.proposed': 'Proposto (mascarado)',
+	'vendors.changeRequests.col.requestedBy': 'Solicitado por',
+	'vendors.changeRequests.col.requested': 'Solicitado em',
+	'vendors.changeRequests.requester.supplier': 'Portal do fornecedor',
+	'vendors.changeRequests.requester.apUser': 'Usuário de contas a pagar',
+	'vendors.changeRequests.requester.you': 'Você',
+	'vendors.changeRequests.row.open': 'Revisar a alteração de {type} para {vendor}',
+	'vendors.changeRequests.row.approve': 'Aprovar',
+	'vendors.changeRequests.row.confirmApprove': 'Confirmar aprovação',
+	'vendors.changeRequests.row.reject': 'Rejeitar',
+	'vendors.changeRequests.row.confirmReject': 'Confirmar rejeição',
+	'vendors.changeRequests.row.youRequested': 'Solicitada por você',
+	'vendors.changeRequests.row.needsPermission': 'Requer permissão de aprovação',
+	'vendors.changeRequests.empty.pending': 'Nada aguardando aprovação.',
+	'vendors.changeRequests.empty.filtered': 'Nenhuma solicitação de alteração com este status.',
+	'vendors.changeRequests.empty.errored': 'Não foi possível carregar a fila de solicitações.',
+	'vendors.changeRequests.loadMore': 'Carregar mais ({shown} de {total})',
+	'vendors.changeRequests.showingAll':
+		'{total, plural, one {Exibindo # solicitação} other {Exibindo todas as # solicitações}}',
+	'vendors.changeRequests.modal.aria': 'Revisão da solicitação de alteração do fornecedor',
+	'vendors.changeRequests.modal.verifyHint':
+		'Ligue para o fornecedor em um número que você já tinha cadastrado e confirme estes dados antes de aprovar — uma conta desviada é a fraude clássica de faturas.',
+	'vendors.changeRequests.modal.proposed': 'Valor proposto',
+	'vendors.changeRequests.modal.revealFailed':
+		'Não foi possível carregar o valor proposto completo',
+	'vendors.changeRequests.modal.reviewNote': 'Nota de revisão (opcional)',
+	'vendors.changeRequests.modal.reviewNotePlaceholder': 'ex.: verificado por telefone',
+	'vendors.changeRequests.modal.requested': 'Solicitada',
+	'vendors.changeRequests.modal.reviewed': 'Revisada',
+	'vendors.changeRequests.modal.note': 'Nota',
+	'vendors.changeRequests.toast.approved':
+		'Alteração aprovada — os dados do fornecedor foram atualizados',
+	'vendors.changeRequests.toast.rejected': 'Alteração rejeitada — o fornecedor não foi alterado',
+	'vendors.changeRequests.toast.sod':
+		'Você não pode aprovar uma alteração que solicitou — um segundo aprovador precisa assinar',
+	'vendors.changeRequests.toast.resolved':
+		'Alguém já resolveu essa solicitação — a fila foi atualizada',
+	'vendors.changeRequests.toast.approveFailed': 'Falha ao aprovar',
+	'vendors.changeRequests.toast.rejectFailed': 'Falha ao rejeitar',
+	'vendors.changeRequests.toast.loadFailed':
+		'Não foi possível carregar a fila de solicitações de alteração',
 
 	// Exceptions
 	'exceptions.title': 'Exceções',
@@ -994,6 +1068,8 @@ export const messages = {
 	'expenses.loading': 'Carregando…',
 	'expenses.empty': 'Nenhuma despesa corresponde aos seus filtros.',
 	'expenses.empty.errored': 'Não foi possível carregar as despesas. Tente novamente.',
+	'expenses.empty.searchPartial':
+		'Nenhuma correspondência entre as {shown} de {total} despesas carregadas até agora. A busca cobre apenas as linhas carregadas — carregue mais abaixo para pesquisar o restante.',
 	'expenses.col.date': 'Data',
 	'expenses.col.merchant': 'Estabelecimento',
 	'expenses.col.category': 'Categoria',
@@ -1216,6 +1292,8 @@ export const messages = {
 	'requisitions.col.total': 'Total',
 	'requisitions.col.status': 'Status',
 	'requisitions.empty': 'Nenhuma requisição corresponde aos seus filtros.',
+	'requisitions.empty.searchPartial':
+		'Nenhuma correspondência entre as {shown} de {total} requisições carregadas até agora. A busca cobre apenas as linhas carregadas — carregue mais abaixo para pesquisar o restante.',
 	'requisitions.notFound': 'Requisição não encontrada',
 	'requisitions.row.open': 'Abrir requisição {number}',
 	'requisitions.row.submit': 'Enviar',
@@ -1726,6 +1804,9 @@ export const messages = {
 	'portal.invoices.col.amount': 'Valor',
 	'portal.invoices.col.status': 'Status',
 	'portal.invoices.pendingExtraction': '(extração pendente)',
+	'portal.invoices.loadMore': 'Carregar mais ({shown} de {total})',
+	'portal.invoices.showingAll':
+		'{total, plural, one {Exibindo # fatura} other {Exibindo todas as # faturas}}',
 
 	// Pagamentos do portal (routes/portal/payments/+page.svelte)
 	'portal.payments.title': 'Pagamentos',
@@ -1742,6 +1823,9 @@ export const messages = {
 	'portal.payments.col.reference': 'Referência',
 	'portal.payments.downloadRemittance': 'Baixar comprovante de remessa',
 	'portal.payments.preparing': 'Preparando…',
+	'portal.payments.loadMore': 'Carregar mais ({shown} de {total})',
+	'portal.payments.showingAll':
+		'{total, plural, one {Exibindo # pagamento} other {Exibindo todos os # pagamentos}}',
 
 	// Pedidos de compra do portal (routes/portal/purchase-orders/+page.svelte)
 	'portal.po.title': 'Pedidos de compra',
@@ -1757,6 +1841,9 @@ export const messages = {
 	'portal.po.col.status': 'Status',
 	'portal.po.createInvoice': 'Criar fatura',
 	'portal.po.creating': 'Criando…',
+	'portal.po.loadMore': 'Carregar mais ({shown} de {total})',
+	'portal.po.showingAll':
+		'{total, plural, one {Exibindo # pedido de compra} other {Exibindo todos os # pedidos de compra}}',
 
 	// Ofertas de desconto do portal (routes/portal/discount-offers/+page.svelte)
 	'portal.discounts.title': 'Descontos por pagamento antecipado',
@@ -1771,6 +1858,9 @@ export const messages = {
 	'portal.discounts.loadFailed': 'Falha ao carregar',
 	'portal.discounts.acceptFailed': 'Falha ao aceitar',
 	'portal.discounts.declineFailed': 'Falha ao recusar',
+	'portal.discounts.loadMore': 'Carregar mais ({shown} de {total})',
+	'portal.discounts.showingAll':
+		'{total, plural, one {Exibindo # oferta} other {Exibindo todas as # ofertas}}',
 	'portal.discounts.empty': 'Nenhuma oferta de desconto no momento.',
 	'portal.discounts.emptyHint':
 		'Quando seu cliente oferecer um desconto por pagamento antecipado, ele aparecerá aqui para você aceitar.',
@@ -2921,6 +3011,8 @@ export const messages = {
 	'discounts.toast.declineFailed': 'Não foi possível recusar a oferta',
 	'discounts.toast.declined': 'Oferta de desconto recusada',
 	'discounts.toast.optimizeFailed': 'Falha na otimização',
+	'discounts.unconvertibleOffers':
+		'Não convertido: {n, plural, one {# oferta} other {# ofertas}} sem taxa de câmbio para {currency}, fora dos totais de economia — então os números exibidos subestimam o ganho possível. Registre a taxa que falta antes de agir com base neles.',
 	'experiments.chip.concluded': 'Concluído',
 	'experiments.chip.draft': 'Rascunho',
 	'experiments.chip.running': 'Em execução',
@@ -3167,7 +3259,9 @@ export const messages = {
 	'invoices.modal.activity.glSuggested': 'Conta contábil sugerida: {gl}',
 	'invoices.modal.activity.newVendor': 'Novo fornecedor criado (não verificado)',
 	'invoices.modal.activity.title': 'Atividade',
+	'invoices.modal.approverNone': 'Não há mais ninguém para atribuir como revisor. Ao enviar, esta fatura entra na fila de revisão sem atribuição — qualquer aprovador pode assumi-la.',
 	'invoices.modal.approverPlaceholder': 'Aprovador...',
+	'invoices.modal.approverUnavailable': 'Não foi possível carregar a lista de revisores. Ao enviar, esta fatura entra na fila de revisão sem atribuição — qualquer aprovador pode assumi-la.',
 	'invoices.modal.assignApprover': 'Atribuir aprovador',
 	'invoices.modal.close': 'Fechar',
 	'invoices.modal.confidence.high': 'Alta',
@@ -3367,6 +3461,9 @@ export const messages = {
 	'paymentRuns.runDetail.draftNotePre': 'Este lote ainda é um ',
 	'paymentRuns.runDetail.draftWord': 'rascunho',
 	'paymentRuns.runDetail.executeAmount': 'Executar · {amount}',
+	'paymentRuns.runDetail.confirmExecuteAmount': 'Confirmar execução · {amount}',
+	'paymentRuns.runDetail.executeArmedNote':
+		'Clique em “Confirmar execução” para enviar {amount} ao processador de pagamentos agora. Isso não pode ser desfeito.',
 	'paymentRuns.runDetail.executeFailed': 'Falha na execução',
 	'paymentRuns.runDetail.executed': 'Executado',
 	'paymentRuns.runDetail.executing': 'Executando…',
