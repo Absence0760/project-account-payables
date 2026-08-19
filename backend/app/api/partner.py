@@ -21,7 +21,6 @@ audit (booleans only, never raw values). Admin-only on every mutation.
 """
 
 import logging
-import re
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -42,16 +41,11 @@ from app.services.audit_dispatch import dispatch_auth_audit
 from app.services.partner_link_token import build_link_code, verify_link_code
 from app.services.tenant_provisioning import provision_tenant
 from app.tenant import get_tenant
+from app.utils.emails import looks_like_email
 from app.utils.passwords import generate_temp_password
 from app.utils.slug import SlugError, ensure_slug_available, validate_slug_format
 
 logger = logging.getLogger(__name__)
-
-# Same conservative email-shape check the signup endpoint uses — we don't pull
-# in the `email-validator` dependency just for this (the address is the new
-# admin's login, validated for shape only; the real check is the admin clicking
-# their first-login link).
-_EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$")
 
 router = APIRouter(prefix="/partner", tags=["partner"])
 
@@ -383,8 +377,10 @@ async def provision_child(
     409 (the only enumeration surface here is the partner's OWN choice of slug,
     which signup already exposes publicly — not a cross-tenant leak).
     """
-    # Validate the admin email shape (same conservative check as signup).
-    if not _EMAIL_PATTERN.match(body.admin_email):
+    # Shape only, from the one owner in `app/utils/emails.py` — the address is
+    # the new admin's login; the real check is that admin clicking their
+    # first-login link.
+    if not looks_like_email(body.admin_email):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Enter a valid admin email address.",

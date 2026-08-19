@@ -156,41 +156,6 @@ Use AP data to forecast cash outflows and optimize payment timing.
 - [x] Persisted alert thresholds — `Organization.settings.cashflow.min_balance_threshold` via `GET/PUT /api/analytics/cash-position-settings` (no migration), read by `cash_position` when the request passes no override.
 - [x] Export forecasts for CFO reporting (CSV via `/api/analytics/export/cashflow_forecast`)
 
----
-
-### AI Cash-Flow Copilot
-**Status:** Phases 1–3 shipped (read-only cash Q&A + `/cash-flow` copilot; proposed payment plans via `propose_payment_plan` + the plan card; draft-only enactment — stage a draft payment run / accept the plan's discounts) — see [cash-flow-copilot.md](cash-flow-copilot.md).
-**Open:** The deferred bucket only — saved plans / plan-vs-actual, consolidated cross-entity mode. (Opening-balance provenance and the proactive shortfall-alert sweep have both shipped.) Tracked in [followups.md](followups.md).
-
-A **beyond-parity** differentiator, not a competitive gap: a natural-language,
-forward-looking copilot that answers "when do I run low on cash?" and "what
-should I pay early / on time / defer, and what does it cost me?", and can
-*propose* a cash-constrained payment plan. It builds directly on the shipped
-primitives above — pairing the conversational assistant (tenant isolation,
-audit, budgeting, local-first mock/ollama/claude adapters) with the cash-flow
-forecast, the payment-timing what-if, and the ROI-ranked discount optimizer.
-No mid-market competitor pairs a conversational interface with a cash-constrained
-early-pay optimizer.
-
-**Hard boundary: the copilot never moves money.** The LLM only turns NL into a
-typed tool call and narrates the result — every dollar figure comes from an
-existing deterministic pure function (`bucket_outflows`, `compute_cash_position`,
-`apply_payment_timing_scenario`, `discount_optimizer.optimize`), so answers are
-exact and reproducible under the `mock` adapter. Its most privileged write is
-staging a **draft** payment run (existing idempotent, CFO-gated path); funding
-stays behind the unchanged human review + CFO gate + segregation.
-
-- [x] Phase 1 — read-only cash Q&A: four new entity-scoped, finance-leader-gated (`admin`/`ap_manager`/`cfo`, not `ap_clerk`) planning tools (`get_cashflow_forecast`, `get_cash_position`, `run_payment_whatif`, `optimize_discount_capture`) registered alongside the existing assistant tools; `/api/cash-flow/copilot(+/stream)` façade; `/cash-flow` chat + cash-position chart. Money as exact strings (must NOT inherit the analytics endpoints' `float()` coercion). Gated by `FEOH_CASHFLOW_COPILOT_ENABLED` (default on); `FEOH_CASHFLOW_COPILOT_DEFAULT_HORIZON_DAYS` (default 90).
-- [x] Phase 2 — proposed plans: `propose_payment_plan` tool assembles a plan artifact (period-by-period schedule + discounts to capture + resulting cash curve) from the pure functions (`bucket_outflows`/`compute_cash_position`/the discount optimizer's own selection, reused not re-derived — same source of truth as `optimize_discount_capture`); a selected discount re-times onto its `pay_by` period at its discounted outlay when it matches a single commitment row, otherwise it's flagged `unretimed_offer_ids` rather than misrepresenting the curve. Plan-card UI (`PlanCard.svelte`). See `services/cash_flow_plan.py`.
-- [x] Phase 3 — draft-only enactment: `POST /api/cash-flow/plans/{plan_id}/draft-run` (stages a **draft** `PaymentRun` over the plan's currently-payable commitments via the shared `services/payment_runs.py`, idempotent on the deterministic `plan_id` — `payment_runs.plan_id` partial-unique index, migration 0079 — execute stays CFO-gated and unchanged) + `.../capture-discounts` (status-only accept of the SAME optimizer selection, never moves money). Both re-verify `plan_id` against the client's replayed plan parameters and refuse (409) on a mismatch. Plan-card "Create draft run" / "Capture N discounts" buttons, human-confirmed + audited.
-- [ ] Deferred: saved plans / plan-vs-actual (`CashPlan` model + migration), opening-balance provenance surfacing, consolidated cross-entity mode, proactive shortfall-alert sweep.
-
-**Competitors:** none pair NL + cash-constrained early-pay optimization; Coupa/Basware have cash analytics without a conversational copilot.
-
----
-
-## Priority 10: Compliance & E-Invoicing
-
 ### Sanctions & Vendor Risk Screening
 **Status:** Shipped — screening on vendor create/update, periodic re-screen sweep, payment-block gate, adverse-media support, composite risk scoring, Dow Jones/Refinitiv/ComplyAdvantage adapter skeletons, the append-only screening trail, and the dedicated review-queue page (`/vendors/screening`) all landed. Real-provider wiring (live keys) is the remaining deployment work.
 **Open:** Live-provider wiring. The ComplyAdvantage / Dow Jones / Refinitiv adapters are fail-closed skeletons; `mock` is the local-first default and the screening path itself ships and is tested. *(a) blocked on provider keys.* Tracked in [followups.md](followups.md).

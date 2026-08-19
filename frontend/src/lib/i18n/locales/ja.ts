@@ -973,6 +973,35 @@ export const messages = {
 	'cashFlow.plan.actions.stale':
 		'このプランは提案後に変更されました — 実行する前にコパイロットに最新のプランを依頼してください。',
 	'cashFlow.plan.actions.error': 'この操作を完了できませんでした: {detail}',
+	// キャッシュフロー・コパイロット — 保存済みプランと計画対実績
+	'cashFlow.plan.actions.savePlan': 'プランを保存',
+	'cashFlow.plan.actions.savingPlan': '保存中…',
+	'cashFlow.plan.actions.planSaved':
+		'プランを保存しました。「保存済みプラン」で実際の支払いと比較できます。',
+	'cashFlow.plan.actions.planAlreadySaved': 'このプランは保存済みです — 元のスナップショットを保持します。',
+	'cashFlow.consolidated.label': '全エンティティ',
+	'cashFlow.consolidated.hint': 'サイドバーで選択したエンティティではなく、グループ全体について回答します。',
+	'cashFlow.saved.heading': '保存済みプラン',
+	'cashFlow.saved.refresh': '再読み込み',
+	'cashFlow.saved.loading': '読み込み中…',
+	'cashFlow.saved.empty': '保存済みプランはまだありません。提案されたプランを保存すると、実際の支払いと比較できます。',
+	'cashFlow.saved.loadError': '保存済みプランを読み込めませんでした。',
+	'cashFlow.saved.deleteError': 'そのプランを削除できませんでした。',
+	'cashFlow.saved.varianceError': '比較を読み込めませんでした。',
+	'cashFlow.saved.consolidatedTag': '全エンティティ',
+	'cashFlow.saved.totals': '{n, plural, other {終了した # 期間の合計:}}',
+	'cashFlow.saved.noClosedPeriods': '終了した期間がまだないため、評価できるものはありません。',
+	'cashFlow.saved.col.period': '期間',
+	'cashFlow.saved.col.planned': '計画',
+	'cashFlow.saved.col.actual': '実績',
+	'cashFlow.saved.status.elapsed': '終了',
+	'cashFlow.saved.status.in_progress': '進行中',
+	'cashFlow.saved.status.future': '今後',
+	'cashFlow.saved.unplaced':
+		'{n, plural, other {完了済みの支払い # 件を評価できませんでした}} — 決済日がないか、{currency} で表現できない金額です。',
+	'cashFlow.saved.discounts': '推奨された割引オファー {selected} 件のうち {captured} 件を確保しました。',
+	'cashFlow.saved.delete': 'プランを削除',
+	'cashFlow.saved.deleteConfirm': 'もう一度クリックで削除',
 	// Cash Flow / CFO dashboard (routes/cfo/+page.svelte)
 	'cfo.title': 'キャッシュフロー',
 	'cfo.exportCsv': 'CSVをエクスポート',
@@ -1072,8 +1101,6 @@ export const messages = {
 	'expenses.loading': '読み込み中…',
 	'expenses.empty': 'フィルターに一致する経費はありません。',
 	'expenses.empty.errored': '経費を読み込めませんでした。もう一度お試しください。',
-	'expenses.empty.searchPartial':
-		'これまでに読み込んだ {total} 件中 {shown} 件の経費に一致するものはありません。検索対象は読み込み済みの行のみです。残りを検索するには下の「さらに読み込む」をご利用ください。',
 	'expenses.col.date': '日付',
 	'expenses.col.merchant': '加盟店',
 	'expenses.col.category': 'カテゴリ',
@@ -1296,8 +1323,6 @@ export const messages = {
 	'requisitions.col.total': '合計',
 	'requisitions.col.status': 'ステータス',
 	'requisitions.empty': 'フィルターに一致する購買依頼がありません。',
-	'requisitions.empty.searchPartial':
-		'これまでに読み込んだ {total} 件中 {shown} 件の購買依頼に一致するものはありません。検索対象は読み込み済みの行のみです。残りを検索するには下の「さらに読み込む」をご利用ください。',
 	'requisitions.notFound': '購買依頼が見つかりません',
 	'requisitions.row.open': '購買依頼 {number} を開く',
 	'requisitions.row.submit': '送信',

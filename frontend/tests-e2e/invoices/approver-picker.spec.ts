@@ -26,8 +26,13 @@ import {
  * The durable fix is a non-admin-readable reviewer list
  * (`GET /api/invoices/assignable-reviewers`); the fix that makes the dead end
  * impossible *by construction* is that Submit only waits on the picker when the
- * picker actually has someone to pick. That second half is what these specs
- * lock, and it holds both before and after the endpoint lands.
+ * picker actually has someone to pick.
+ *
+ * That endpoint is now the ONLY source — the transitional admin-only fallback
+ * onto `GET /api/admin/users` is deleted, so these specs also assert the modal
+ * never calls it. The endpoint gates on what `POST /invoices/{id}/assign` gates
+ * on, which means a CFO gets a 403 from it too; the submit-unassigned path is
+ * therefore load-bearing for a whole role, not just a failure cushion.
  *
  * What "submit unassigned" means is checked against the backend, not assumed:
  * `complete_invoice` transitions to `ready_for_review` with no assignee, and an
@@ -85,6 +90,22 @@ async function expectedApproverWorld(page: Page): Promise<'picker' | 'note' | 'n
 		'/api/invoices/assignable-reviewers'
 	);
 	return reviewers.some((r) => r.is_active && r.id !== me.id) ? 'picker' : 'note';
+}
+
+/**
+ * Record every `GET /api/admin/users` the page makes.
+ *
+ * The picker's admin-only fallback is deleted, and "deleted" is only provable
+ * negatively: the modal must reach the admin directory on NO path, including
+ * the one where its own reviewer endpoint just failed. Attach before
+ * navigating.
+ */
+function watchAdminUsersCalls(page: Page): string[] {
+	const calls: string[] = [];
+	page.on('request', (req) => {
+		if (new URL(req.url()).pathname === '/api/admin/users') calls.push(req.url());
+	});
+	return calls;
 }
 
 /** Search the list down to one invoice number and open its detail modal. */
@@ -188,19 +209,17 @@ test.describe('/invoices approver picker — non-admin', () => {
 		const number = `E2E-APPROVER-FAIL-${Date.now()}`;
 		invoiceId = await createNewInvoice(page, number);
 
-		// Force the failure deterministically on BOTH sources, so this spec means
-		// the same thing before and after the reviewer endpoint ships.
-		for (const path of ['/api/invoices/assignable-reviewers', '/api/admin/users']) {
-			await page.route(
-				(url) => url.pathname === path,
-				(route) =>
-					route.fulfill({
-						status: 403,
-						contentType: 'application/json',
-						body: JSON.stringify({ detail: 'Insufficient permissions' })
-					})
-			);
-		}
+		// Force the failure deterministically on the one source there is.
+		const adminUsersCalls = watchAdminUsersCalls(page);
+		await page.route(
+			(url) => url.pathname === '/api/invoices/assignable-reviewers',
+			(route) =>
+				route.fulfill({
+					status: 403,
+					contentType: 'application/json',
+					body: JSON.stringify({ detail: 'Insufficient permissions' })
+				})
+		);
 
 		await page.goto('/invoices');
 		await openInvoice(page, number);
@@ -209,6 +228,9 @@ test.describe('/invoices approver picker — non-admin', () => {
 		await expect(page.getByLabel('Assign approver')).toHaveCount(0);
 		await expect(page.locator('.approver-note')).toBeVisible();
 		await expect(page.getByRole('button', { name: SUBMIT })).toBeEnabled();
+		// …and it got there without the admin-only endpoint, which would have
+		// 403'd for this manager anyway.
+		expect(adminUsersCalls).toEqual([]);
 	});
 
 	test('submitting without an approver lands the invoice in the review queue', async ({
@@ -219,17 +241,15 @@ test.describe('/invoices approver picker — non-admin', () => {
 		const number = `E2E-APPROVER-SUBMIT-${Date.now()}`;
 		invoiceId = await createNewInvoice(page, number);
 
-		for (const path of ['/api/invoices/assignable-reviewers', '/api/admin/users']) {
-			await page.route(
-				(url) => url.pathname === path,
-				(route) =>
-					route.fulfill({
-						status: 403,
-						contentType: 'application/json',
-						body: JSON.stringify({ detail: 'Insufficient permissions' })
-					})
-			);
-		}
+		await page.route(
+			(url) => url.pathname === '/api/invoices/assignable-reviewers',
+			(route) =>
+				route.fulfill({
+					status: 403,
+					contentType: 'application/json',
+					body: JSON.stringify({ detail: 'Insufficient permissions' })
+				})
+		);
 
 		await page.goto('/invoices');
 		await openInvoice(page, number);
@@ -269,15 +289,18 @@ test.describe('/invoices approver picker — admin', () => {
 		invoiceId = null;
 	});
 
-	test('an admin still gets a populated picker when only the new endpoint is missing', async ({
+	test('an admin degrades to submit-unassigned too — no admin-users fallback', async ({
 		page
 	}) => {
 		const number = `E2E-APPROVER-ADMIN-${Date.now()}`;
 		invoiceId = await createNewInvoice(page, number);
 
-		// Simulate a backend that predates the reviewer endpoint. The admin
-		// fallback onto `GET /api/admin/users` must keep the picker working —
-		// the fix must not regress the role that already had it.
+		// An admin is the one role that CAN read `GET /api/admin/users`, so it is
+		// the only role for which a surviving fallback would still be invisible.
+		// With the reviewer endpoint down the admin must land where a manager
+		// does: no picker, the note, a usable Submit — and no call to the admin
+		// directory.
+		const adminUsersCalls = watchAdminUsersCalls(page);
 		await page.route(
 			(url) => url.pathname === '/api/invoices/assignable-reviewers',
 			(route) =>
@@ -291,9 +314,9 @@ test.describe('/invoices approver picker — admin', () => {
 		await page.goto('/invoices');
 		await openInvoice(page, number);
 
-		const picker = page.getByLabel('Assign approver');
-		await expect(picker).toBeVisible();
-		expect(await picker.locator('option').count()).toBeGreaterThan(1);
-		await expect(page.getByRole('button', { name: SUBMIT })).toBeDisabled();
+		await expect(page.locator('.approver-note')).toBeVisible();
+		await expect(page.getByLabel('Assign approver')).toHaveCount(0);
+		await expect(page.getByRole('button', { name: SUBMIT })).toBeEnabled();
+		expect(adminUsersCalls).toEqual([]);
 	});
 });

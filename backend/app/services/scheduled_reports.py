@@ -366,7 +366,9 @@ async def _materialise_rows(
                 buckets["days_90"] += amount
             else:
                 buckets["days_90_plus"] += amount
-        return exporter(buckets)
+        # Label the CSV with the SAME `today` the buckets were computed against
+        # (see api/analytics.py) rather than letting the exporter re-read the clock.
+        return exporter(buckets, snapshot_date=today)
 
     # Unreachable in practice — every key registered in EXPORTERS (checked by
     # `_generate_report_payload` above) has a branch here. A hard guard

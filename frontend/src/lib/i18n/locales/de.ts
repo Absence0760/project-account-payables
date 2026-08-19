@@ -985,6 +985,38 @@ export const messages = {
 	'cashFlow.plan.actions.stale':
 		'Dieser Plan hat sich seit dem Vorschlag geändert — bitten Sie den Copiloten um einen aktuellen Plan, bevor Sie handeln.',
 	'cashFlow.plan.actions.error': 'Aktion konnte nicht abgeschlossen werden: {detail}',
+	// Cash-Flow Copilot — gespeicherte Pläne + Plan-Ist-Vergleich
+	'cashFlow.plan.actions.savePlan': 'Plan speichern',
+	'cashFlow.plan.actions.savingPlan': 'Wird gespeichert…',
+	'cashFlow.plan.actions.planSaved':
+		'Plan gespeichert. Vergleichen Sie ihn unter „Gespeicherte Pläne“ mit den tatsächlichen Zahlungen.',
+	'cashFlow.plan.actions.planAlreadySaved':
+		'Dieser Plan wurde bereits gespeichert — die ursprüngliche Momentaufnahme bleibt erhalten.',
+	'cashFlow.consolidated.label': 'Alle Einheiten',
+	'cashFlow.consolidated.hint':
+		'Für die gesamte Gruppe antworten statt nur für die in der Seitenleiste gewählte Einheit.',
+	'cashFlow.saved.heading': 'Gespeicherte Pläne',
+	'cashFlow.saved.refresh': 'Aktualisieren',
+	'cashFlow.saved.loading': 'Wird geladen…',
+	'cashFlow.saved.empty': 'Noch keine gespeicherten Pläne. Speichern Sie einen Planvorschlag, um ihn mit den tatsächlichen Zahlungen zu vergleichen.',
+	'cashFlow.saved.loadError': 'Gespeicherte Pläne konnten nicht geladen werden.',
+	'cashFlow.saved.deleteError': 'Der Plan konnte nicht gelöscht werden.',
+	'cashFlow.saved.varianceError': 'Der Vergleich konnte nicht geladen werden.',
+	'cashFlow.saved.consolidatedTag': 'Alle Einheiten',
+	'cashFlow.saved.totals':
+		'{n, plural, one {Über # abgeschlossene Periode:} other {Über # abgeschlossene Perioden:}}',
+	'cashFlow.saved.noClosedPeriods': 'Es ist noch keine Periode abgeschlossen, es gibt also nichts zu bewerten.',
+	'cashFlow.saved.col.period': 'Periode',
+	'cashFlow.saved.col.planned': 'Geplant',
+	'cashFlow.saved.col.actual': 'Tatsächlich',
+	'cashFlow.saved.status.elapsed': 'abgeschlossen',
+	'cashFlow.saved.status.in_progress': 'laufend',
+	'cashFlow.saved.status.future': 'bevorstehend',
+	'cashFlow.saved.unplaced':
+		'{n, plural, one {# abgeschlossene Zahlung konnte nicht bewertet werden} other {# abgeschlossene Zahlungen konnten nicht bewertet werden}} — kein Abwicklungsdatum oder ein Betrag, der sich nicht in {currency} ausdrücken lässt.',
+	'cashFlow.saved.discounts': '{captured} von {selected} empfohlenen Skontoangeboten gesichert.',
+	'cashFlow.saved.delete': 'Plan löschen',
+	'cashFlow.saved.deleteConfirm': 'Zum Löschen erneut klicken',
 	// Cash Flow / CFO dashboard (routes/cfo/+page.svelte)
 	'cfo.title': 'Liquidität',
 	'cfo.exportCsv': 'CSV exportieren',
@@ -1085,8 +1117,6 @@ export const messages = {
 	'expenses.loading': 'Wird geladen…',
 	'expenses.empty': 'Keine Ausgaben entsprechen Ihren Filtern.',
 	'expenses.empty.errored': 'Ausgaben konnten nicht geladen werden. Bitte erneut versuchen.',
-	'expenses.empty.searchPartial':
-		'Keine Treffer unter den bisher geladenen {shown} von {total} Ausgaben. Die Suche erfasst nur geladene Zeilen — laden Sie unten weitere, um den Rest zu durchsuchen.',
 	'expenses.col.date': 'Datum',
 	'expenses.col.merchant': 'Händler',
 	'expenses.col.category': 'Kategorie',
@@ -1309,8 +1339,6 @@ export const messages = {
 	'requisitions.col.total': 'Summe',
 	'requisitions.col.status': 'Status',
 	'requisitions.empty': 'Keine Anforderungen entsprechen Ihren Filtern.',
-	'requisitions.empty.searchPartial':
-		'Keine Treffer unter den bisher geladenen {shown} von {total} Anforderungen. Die Suche erfasst nur geladene Zeilen — laden Sie unten weitere, um den Rest zu durchsuchen.',
 	'requisitions.notFound': 'Anforderung nicht gefunden',
 	'requisitions.row.open': 'Anforderung {number} öffnen',
 	'requisitions.row.submit': 'Einreichen',

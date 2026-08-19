@@ -11,7 +11,10 @@ the two enact routes (`POST /api/cash-flow/plans/{plan_id}/draft-run` +
 `.../capture-discounts`), the `services/payment_runs.py` shared creation
 service, the `payment_runs.plan_id` idempotency anchor (migration 0079), and
 the plan card's "Create draft run" / "Capture N discounts" buttons — is now
-built and live too. See §5/§6/§11 below.
+built and live too. The Phase 3 **deferred bucket is now closed as well**:
+**saved plans + plan-vs-actual** (the tenant-scoped `CashPlan` model, migration
+`0087_cash_plans`, and the five routes over it) and **consolidated cross-entity
+mode**. See §5/§6/§11/§15/§16 below.
 
 **Author:** platform · **Target:** beyond-parity differentiator · **Est. size:** M (3 phases)
 
@@ -228,11 +231,27 @@ deterministic, human-initiated, already-audited action.
 ### Persistence
 
 Reuse the tenant-scoped `assistant_conversations` / `assistant_messages` for the
-chat. The **plan artifact** does not have its own table — it is a computed,
-stateless object returned in the tool result and re-derivable from inputs (see
-§6 for how `plan_id` substitutes for a stored primary key). If we later want
-"saved plans" or "plan vs. actual" tracking, add a tenant-scoped `CashPlan`
-model + migration then (deferred, §12).
+chat. The **plan artifact is still stateless on the path that acts on it** — it
+is a computed object returned in the tool result and re-derivable from its own
+inputs, and every enact endpoint re-derives its commitment rows rather than
+reading a stored row. `plan_id` remains the idempotency / replay key (§6), and
+`payment_runs.plan_id` remains the draft-run anchor.
+
+**Saving a plan is a separate, additive act (SHIPPED — §15).** The tenant-scoped
+`CashPlan` model (`app/models/cash_plan.py`, migration `0087_cash_plans`) is
+*keyed by* that same deterministic id, never a replacement for it, and nothing
+in the enact path reads the table. What it adds is the one thing re-derivation
+cannot give back: **what the projection said at the time**. Yesterday's plan is
+not recomputable today — its horizon started from a different day and the
+invoices inside it have moved on — so without a stored row "did our forecast
+hold?" is unanswerable.
+
+A snapshot is therefore **frozen**: re-saving the same `plan_id` returns the
+existing row untouched rather than restating it against newer data, which would
+rewrite the very baseline a variance is measured against. `entity_id` NULL on
+this table means **consolidated** (a whole-group plan), not the "unstamped
+legacy row" NULL migration 0029 backfilled elsewhere — the table is new, so
+nothing needs backfilling and no row can be unstamped.
 
 ---
 
@@ -248,12 +267,21 @@ RBAC, a system-prompt hint, streaming on by default).
 | POST | `/api/cash-flow/copilot/stream` | Phase 1 · shipped | SSE variant (reuses `run_turn_streaming`, identical event contract) |
 | POST | `/api/cash-flow/plans/{plan_id}/draft-run` | Phase 3 · shipped | Enact: create a **draft** payment run from a proposal (idempotent on `plan_id`, audited, CFO gate at execute-time unchanged) |
 | POST | `/api/cash-flow/plans/{plan_id}/capture-discounts` | Phase 3 · shipped | Enact: accept the plan's discount offers (status-only, reuses discount accept) |
+| POST | `/api/cash-flow/plans/{plan_id}/save` | shipped | Freeze the proposal as a `CashPlan` snapshot. **201** on first save, **200** returning the ORIGINAL snapshot on a repeat. Read-only over the money path |
+| GET | `/api/cash-flow/plans` | shipped | Saved snapshots, newest first (`?limit=`, `?consolidated=`). Entity-scoped by default |
+| GET | `/api/cash-flow/plans/{plan_id}` | shipped | One snapshot + its frozen curve + `has_draft_run` |
+| GET | `/api/cash-flow/plans/{plan_id}/variance` | shipped | Plan vs. actual (§15) — compute-on-read, nothing stored |
+| DELETE | `/api/cash-flow/plans/{plan_id}` | shipped | Discard the baseline only; the draft run, payments and offers are untouched |
 
-### The `plan_id` scheme (no `CashPlan` table)
+Both `/copilot` routes also take `?consolidated=true` (§16). Every route above
+is on the same finance-leader gate (`admin`/`ap_manager`/`cfo`, never
+`ap_clerk`) and the same `FEOH_CASHFLOW_COPILOT_ENABLED` kill switch; every
+mutation is audited PII-free (`cash_plan.saved` / `cash_plan.deleted`).
 
-Per §5's persistence note, a plan is stateless — there is nothing to look up
-`plan_id` against. Instead it is a **deterministic idempotency correlation
-key**: `services/cash_flow_plan.py::compute_plan_id` hashes (UUID5, not a
+### The `plan_id` scheme
+
+`plan_id` is a **deterministic idempotency correlation key**, not a stored
+primary key: `services/cash_flow_plan.py::compute_plan_id` hashes (UUID5, not a
 random `uuid4`) the plan's own RESOLVED defining inputs — `org_id`,
 `entity_id`, `granularity`, `horizon_days`, `min_balance_threshold`,
 `cash_budget`, `cost_of_capital_pct` — plus the calendar **date** (not a
@@ -274,7 +302,23 @@ refused with a clean `409` rather than silently acting on a different plan
 than the one the human is looking at. **The client is never trusted for WHAT
 to act on** — only its replayed parameters decide which plan_id the server
 expects, and the server re-derives its own commitment rows / discount-offer
-selection from scratch either way.
+selection from scratch either way. `/save` runs the identical guard, then
+re-runs `propose_payment_plan` itself and stores ITS result — the client's
+replay body never becomes the snapshot.
+
+**The entity scope is discovered from the id, not asserted by the client.**
+`plan_id` already hashes the `entity_id` a plan was built under, so exactly two
+ids can be legitimate for a given caller: the entity they have selected, and
+the consolidated whole-group scope. `_resolve_and_verify_plan` computes both
+(most specific first) and accepts whichever matches. That is what lets a
+consolidated plan be enacted or saved without the client telling us which mode
+produced it — the plan card is rendered from a tool result that carries no
+entity, and a self-declared `consolidated` flag in the body would be a claim we
+would have to trust. It widens nothing: entity scoping is a *view* scope
+(`tenant.get_entity_id` validates the header against the tenant's own
+`entities` table and grants nothing), so the consolidated id is equally
+reachable by simply not sending `X-Entity-ID` — and a tampered parameter still
+matches neither candidate.
 
 The plain `/api/assistant/chat` also gains the five read-only cash tools, so a
 clerk-free finance user can ask cash questions in the general assistant too
@@ -308,12 +352,30 @@ fetches via `$lib/api.ts`:
   stale-plan guard (§6) — surfaces a friendly "ask the copilot for a fresh
   plan" notice instead of a raw error (`ApiError`, `$lib/api.ts`, carries the
   HTTP status so the frontend can branch on it without parsing message text).
+- **Save plan** — a third `PlanCard` action, over `saveCashFlowPlan`.
+  Deliberately **no** confirm step: saving a snapshot moves no money, cannot be
+  wrong, and a repeat save returns the original rather than overwriting it — so
+  arming it would teach the wrong reflex about the two buttons beside it, which
+  DO act.
+- **Saved plans panel** (`SavedPlansPanel.svelte`, side rail) — the saved
+  snapshots, each expanding into its plan-vs-actual comparison (§15). A period
+  that has not closed yet is shown but visibly *not* scored, and a plan saved
+  today reads "no period has closed yet, so there is nothing to score" rather
+  than a fabricated zero variance. Payments the backend could not place or
+  express are stated, not hidden. Armed two-click delete.
+- **Consolidated toggle** (§16) — answers for the whole group without making
+  the user clear the sidebar's entity selector. It rides the URL on BOTH the
+  streaming and the non-streaming fallback path, so a stream failure cannot
+  silently switch a group view to one subsidiary's.
 - Money via the shared `<Money>` component (exact-string aware). Loading / empty
-  / error states throughout. Build from the shared component library.
+  / error states throughout. Build from the shared component library. No
+  client-side money arithmetic anywhere.
 
-No dedicated Playwright e2e spec for the enact buttons yet (backend coverage
-is in `backend/tests/test_cash_flow_copilot.py` §10 below) — a natural
-follow-up once the surface has real usage to script against.
+E2E: `frontend/tests-e2e/cash-flow/copilot.spec.ts` (chat, charts, the plan card
+and its enact buttons) + `saved-plans.spec.ts` (the rail, the save round-trip,
+opening a comparison). Both assert structure, not amounts — money correctness is
+proven to the cent in `backend/tests/test_cash_flow_saved_plans.py`, where it
+can be.
 
 ---
 
@@ -363,9 +425,21 @@ Reuses the assistant's config; a couple of additive knobs:
 - **Draft-only boundary (critical)** — **Phase 2, shipped:** `propose_payment_plan`
   mutates nothing at all — assert no `Payment`/`PaymentRun` is created and no
   invoice status changes (`test_propose_payment_plan_never_mutates_anything`).
-  **Phase 3, planned:** once the enact routes exist, assert they create a
-  `draft` run and **execute nothing** — no `Payment` leaves `draft`, no invoice
-  transitions to `paid`, and the CFO gate still guards execute.
+  **Phase 3, shipped:** the enact routes create a `draft` run and **execute
+  nothing** — no `Payment` leaves `draft`, no invoice transitions to `paid`, and
+  the CFO gate still guards execute. **Saving, shipped:** `/save` creates no
+  `Payment`/`PaymentRun` and leaves every invoice status untouched
+  (`test_saving_never_moves_money`).
+- **A saved plan is a frozen baseline** — seeding a new commitment after a save
+  and re-saving must return the ORIGINAL snapshot byte-for-byte
+  (`test_save_does_not_restate_a_snapshot_when_the_data_moves`); a restatement
+  would rewrite what the variance is measured against.
+- **Only elapsed periods are scored** — the pure `compare_plan_to_actual` must
+  exclude in-progress and future periods from every total, and surface real cash
+  in a period the plan never projected rather than absorbing it.
+- **Scope discovery is not a wildcard** — a plan id built under entity A must be
+  accepted for A and for the consolidated scope, and refused (409) under entity
+  B.
 - **Per-tool RBAC** — an `ap_clerk` asking a cash question gets a clean refusal
   tool result (not data, not a 500); `test_rbac.py` coverage gate stays green for
   the new routes.
@@ -385,21 +459,23 @@ Reuses the assistant's config; a couple of additive knobs:
 2. **Phase 2 — Proposed plans. ✅ SHIPPED.** `propose_payment_plan` tool + the
    plan card UI (display only, no enact). The optimizer + cash-position math
    drive a concrete, re-timed pay schedule; nothing moves money.
-3. **Phase 3 — Draft-only enactment. (planned)** The two enact endpoints (draft
+3. **Phase 3 — Draft-only enactment. ✅ SHIPPED.** The two enact endpoints (draft
    run + discount capture), idempotent + audited, human-confirmed, CFO gate
-   unchanged.
+   unchanged — plus the originally-deferred sub-bucket: **saved plans +
+   plan-vs-actual** (§15) and **consolidated cross-entity mode** (§16).
 
-Each phase is independently shippable and independently valuable. As of Phase 2,
-the enact routes in §6 (`.../draft-run`, `.../capture-discounts`) are still
-design-only — everything else on this page is shipped.
+Each phase is independently shippable and independently valuable. Everything on
+this page is now shipped.
 
 ---
 
 ## 12. Deferred / open questions
 
-1. **Saved plans + plan-vs-actual.** A tenant-scoped `CashPlan` model + migration
-   to persist a proposal and later compare it to what actually got paid. Deferred
-   until there's demand; v1 plans are stateless/re-derivable.
+1. ~~**Saved plans + plan-vs-actual.**~~ **SHIPPED** — see §15. The tenant-scoped
+   `CashPlan` model + migration `0087_cash_plans` persist a proposal as a frozen
+   snapshot keyed by the deterministic `plan_id`, and `GET .../variance` scores
+   it against what actually got paid. **Consolidated cross-entity mode**, the
+   other half of this bucket, is §16.
 2. ~~**Opening-balance source.**~~ **SHIPPED.** The resolution chain lives in
    `services/cashflow.py::resolve_opening_balance` — **one owner, and all three
    consumers go through it**: the copilot tools, the §14 alert sweep, and
@@ -637,3 +713,115 @@ money moves — so the worst case was a duplicate audit row and a second
 the file that takes the state it read on trust.
 
 **Tests:** `backend/tests/test_cashflow_currency_visibility.py`.
+
+---
+
+## 15. Saved plans + plan-vs-actual (shipped)
+
+**What it answers:** *did our cash forecast hold?* Every other surface in this
+document is forward-looking; this is the only one that looks back.
+
+### Why a stored snapshot at all
+
+`compute_plan_id` deliberately makes a plan re-derivable, so the obvious
+question is why anything needs storing. The answer is that a plan is only
+re-derivable **today**: its id hashes the calendar date because "today"
+determines which commitments are in-horizon, and the invoices inside it have
+since been approved, paid, voided or re-dated. Yesterday's projection is
+therefore not recomputable — and a variance with no baseline is just a
+restatement of the present.
+
+So the snapshot is **frozen at save time and never restated**. A second `POST
+.../save` for the same `plan_id` returns the existing row untouched (`created:
+false`, HTTP 200) rather than re-running the proposal against newer data;
+restating would silently rewrite the very number the comparison is measured
+against. The unique index `uq_cash_plans_org_plan_id` makes that hold under a
+concurrent retry — the loser rolls back and returns the winner's row.
+
+The saved curve is JSONB with **money as exact decimal strings**: `jsonb` would
+store a bare number as `numeric`, but every JSON codec in the path round-trips
+one through `float`, which is the money invariant this stack exists to hold.
+`services/cash_flow_plan.py::freeze_periods` / `thaw_periods` own that shape.
+
+### What is compared
+
+`GET /plans/{plan_id}/variance` is compute-on-read — nothing is stored, so
+re-running it later simply scores more elapsed periods.
+
+- **Only fully-elapsed periods are scored.** A period whose window has not
+  closed has no variance to report: its actual is a partial number, and
+  subtracting a whole projection from a partial actual manufactures a "we
+  underspent" reading that reverses by the end of the week. In-progress and
+  future periods are still returned (a reader wants the shape of what is coming)
+  but are labelled `in_progress` / `future` and excluded from every total.
+- **Actual = `completed` payments, dated by `completed_at`.** A payment still in
+  flight is not cash that left. A `completed` payment with no `completed_at`
+  cannot be placed in any period, so it is counted on `undated_payment_count`
+  rather than dropped silently or forced into a bucket it may not belong to
+  (its `created_at` bounds that count to the plan's own window — it is never
+  used AS a settlement date, which is precisely why the row cannot be scored).
+- **Amounts resolve through `currency_conversion.payment_reporting_amount_sql`**,
+  the same resolver `/api/payments/summary` and the 1099 report use.
+  `Payment.amount` is denominated in the INVOICE's currency, so summing it raw
+  across a multi-currency book is a two-currency mixture; a row neither rung can
+  express is excluded and counted on `unconvertible_payment_count`, never added
+  at face value.
+- **Both sides are bucketed by the same function.** Actual payments go through
+  `analytics.bucket_outflows` at the plan's own granularity, so the labels join
+  by construction rather than by a second, drifting date rule. Cash landing in a
+  period the plan never projected is reported on `unmatched_actual_periods`
+  instead of being absorbed into a total.
+- **The comparison runs under the SAVED plan's entity scope**, not the caller's
+  `X-Entity-ID` — scoring one scope's projection against another's actuals is
+  not a variance, it is two unrelated numbers subtracted.
+- **Discount follow-through** rides along: how many of the plan's own selected
+  offers are now `accepted`/`captured`.
+
+`period_bounds_for_label` does **not** reimplement the bucketing rule — every
+label `bucket_outflows` emits is itself a date inside its own period, so it
+parses the label and feeds it back through `analytics._period_bounds`. A label
+that does not belong to the stated granularity raises rather than guessing a
+window.
+
+**Files:** `app/models/cash_plan.py`, `alembic/versions/0087_cash_plans.py`,
+the bottom half of `app/services/cash_flow_plan.py`, the saved-plan routes in
+`app/api/cash_flow.py`, `app/schemas/cash_flow.py`,
+`frontend/src/lib/components/cash-flow/SavedPlansPanel.svelte`.
+**Tests:** `backend/tests/test_cash_flow_saved_plans.py`,
+`frontend/tests-e2e/cash-flow/saved-plans.spec.ts`.
+
+---
+
+## 16. Consolidated cross-entity mode (shipped)
+
+A treasury shortfall is a question about the whole legal group's cash, not one
+subsidiary's slice. The §14 alert sweep already took that posture (it builds its
+commitment rows with `entity_id=None`) and `GET /api/analytics/by-entity` takes
+it by ignoring `X-Entity-ID` outright. The interactive surface now matches.
+
+- **On the chat routes** it is an explicit flag: `POST /api/cash-flow/copilot`
+  and `/copilot/stream` accept `?consolidated=true`, which runs the turn with
+  `entity_id=None` regardless of the header. A plan proposed in that turn
+  therefore carries the consolidated `plan_id`.
+- **On the plan routes** it is *discovered*, not asserted — see §6. The client
+  is never asked which mode produced a plan, because it would have to be
+  trusted about it.
+- **Nothing widens.** Entity scoping in this codebase is a view scope, not a
+  privilege boundary: `tenant.get_entity_id` validates the header against the
+  tenant's own `entities` table and grants nothing, and the consolidated answer
+  is equally reachable by not sending the header at all. The tenant boundary —
+  the thing that IS a privilege boundary — is untouched.
+- **A consolidated draft run** stages across every entity and the run row lands
+  on the tenant's **default** entity, the documented home for un-scoped rows,
+  exactly as an entity-less `POST /api/payments/runs` already behaves. The scope
+  comes from the plan, not from `X-Entity-ID`, so the staged set is always the
+  set the plan reasoned about.
+- **Saved plans**: `entity_id IS NULL` marks a consolidated snapshot. `GET
+  /plans` is entity-scoped by default (a consolidated plan is nobody's single
+  entity's plan); `?consolidated=true` lists the whole tenant. Detail, variance
+  and delete look a plan up by id alone within the tenant, so a consolidated
+  snapshot stays readable from the view that created it.
+
+**Frontend:** a rail toggle on `/cash-flow` that rides the URL on both the
+streaming and the non-streaming fallback path — a stream failure must not
+silently switch a group view to one subsidiary's.

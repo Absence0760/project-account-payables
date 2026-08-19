@@ -2,7 +2,6 @@
 
 import logging
 import uuid
-from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -20,6 +19,7 @@ from app.services.workflow_engine import (
     get_workflow_instance,
     transition_invoice,
 )
+from app.utils.dates import utc_today
 
 _log = logging.getLogger(__name__)
 
@@ -366,7 +366,7 @@ async def approve_invoice(
             return invoice
 
     # All approvals satisfied (or single-level) — finalize
-    invoice.approval_date = date.today()
+    invoice.approval_date = utc_today()
     invoice.approved_by = actor_name
 
     # Digital signature on the approval (SOX non-repudiation): an HMAC-SHA256

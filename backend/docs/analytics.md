@@ -408,7 +408,7 @@ returning "no threshold" rather than raising.
 | `invoice_register` | invoice_id, invoice_number, vendor_name, amount, currency, status, invoice_date, due_date, created_at, po_number |
 | `vendor_spend` | vendor_name, invoice_count, total_amount, currencies |
 | `payment_register` | payment_id, invoice_id, invoice_number, vendor_name, amount, currency, method, status, provider, reference, submitted_at, completed_at |
-| `aging_snapshot` | as_of_date, current, days_30, days_60, days_90, days_90_plus, total |
+| `aging_snapshot` | as_of_date, current, days_30, days_60, days_90, days_90_plus, total. `as_of_date` defaults to `utc_today()` — neither caller passes `snapshot_date`, and both bucket against a UTC `today`, so a local-time default labelled the file with one date while the buckets were computed as of another |
 | `cashflow_forecast` | period, period_start, period_end, scheduled_amount, committed_amount, pending_amount, discount_eligible_amount, count |
 | `expense_register` | date, merchant, category, amount, currency, gl_code, payment_method, status, report_number |
 
@@ -536,8 +536,19 @@ the *server's* local timezone; the `/analytics` export endpoints and the
 cash-flow copilot resolve UTC. On a UTC container they agree, so the mixture was
 latent — but on any other host an emailed snapshot and the API export of the
 same report disagree at the day boundary, which is a reconciliation problem, not
-a cosmetic one. `tests/test_utc_today.py` AST-scans the converged modules and
-fails if a bare `date.today()` reappears in one.
+a cosmetic one.
+
+The rule is no longer local to this stack. `utc_today()` is the one definition
+for the backend, and the AP surfaces converged on it too — the early-pay
+discount cutoff, the past-due and future-invoice-date fraud flags, the
+recurring-template period key (which IS that sweep's idempotency key), and the
+regulated `Invoice.approval_date` on all three approval paths.
+`tests/test_utc_today.py` holds the allowlist of converged modules and
+AST-scans each one, failing on `date.today()`, `datetime.today()`,
+`datetime.date.today()` **and** `datetime.now().date()` — the last is naive-now,
+so a local date under a name that reads deliberate, and a purely `today`-shaped
+scan would never see it. Adding a module to the allowlist is how a conversion
+lands; the guard is what stops one sliding back.
 
 ### CRUD — `/api/analytics/scheduled-reports`
 
@@ -606,7 +617,7 @@ the cadence anchoring).
 | `tests/test_report_export.py` | 11 cases — registry pins all four reports; per-report header column-order pinned; enum-status reads `.value`; missing fields emit empty (not "None"); orphan payment-with-null-invoice still emitted |
 | `tests/test_scheduled_reports.py` | 20 cases — cadence delta math; unknown-cadence fallback; happy-path generates → emails every recipient → updates next_run_at; generator-error / empty-recipients / email-adapter-error all persist a failure marker without raising; PII guardrail (no SMTP transport details in `last_run_error`); five-consecutive-failures disables the row, first failure leaves enabled alone; **per-recipient delivery** — one bad address doesn't block the ones after it, a partial advances `next_run_at` and isn't a strike, a total failure holds `next_run_at` and still attempts every address; **cadence anchoring** — 30 late ticks in a row leave the 09:00 slot at 09:00, a dormant fortnight catches up to ONE next slot rather than 14 sends, an exactly-due slot still moves forward (no busy-loop), a future slot takes exactly one step, a naive `scheduled_for` reads as UTC |
 | `tests/test_scheduled_reports_api.py` | 23 cases — CRUD round-trip; the created row is what `list_due_schedules` picks up; `report_type` / `cadence` validated against the runner's own registries (create AND patch); recipient list shape-checked / de-duped / bounded / non-empty; our validator message names no address; RBAC (mutations admin-only, reads admin+cfo, ap_manager/ap_clerk refused); tenant isolation (list, get, patch); PII-free audit rows carrying the recipient COUNT; re-enabling a 5-strike-disabled row clears the stale `[retry N]` marker |
-| `tests/test_utc_today.py` | Drift guard — `utc_today()` is the UTC calendar date, and an AST scan fails on any `date.today()` / `datetime.today()` reappearing in the nine modules that have converged on it (analytics, cash-flow, the copilot tools, the scheduled-report runner) |
+| `tests/test_utc_today.py` | Drift guard — `utc_today()` is the UTC calendar date; an AST scan fails on any `date.today()` / `datetime.today()` / `datetime.date.today()` reappearing in the modules that have converged on it (the cash-flow stack, plus the AP surfaces: discounts, portal, dashboard, payments queue, recurring, workflow, review, extraction, invoice warnings, 1099, Positive Pay, the exporters). The scanner itself is a tested helper — the module-attribute spelling `datetime.date.today()` slipped past the first version, which is how two Positive Pay modules could have been listed as converged while still reading local time, and naive `datetime.now().date()` isn't spelled `today` at all |
 | `tests/test_dashboard_aggregations.py` | Existing — extended through the new branches via the try/except absorption pattern |
 | `tests/test_cashflow_balance.py` | Unit — `get_balance` capability (base-class default unsupported; mock deterministic + config override + simulated-unsupported); `fetch_provider_balance` best-effort (mock balance, None on unsupported, swallows adapter error); persisted-threshold resolve/store round-trip + garbage tolerance + key preservation/clear |
 | `tests/test_cashflow_forecast_api.py` (cash-position additions) | API — auto-seed opening balance from the mock provider (`source: provider`); `seed_balance=false` skips it; query param beats provider; provider-unsupported falls back to `settings`; persisted threshold applied without a query override; `cash-position-settings` GET/PUT round-trip; negative → 422; RBAC (ap_clerk 403, admin/cfo 200) |

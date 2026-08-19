@@ -34,7 +34,22 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#321](https://github.com/Absence0760/project-account-payables/issues/321)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-08-19 against round 12 — a five-agent sweep of the
+**Last reconciled:** 2026-08-19 against round 13 — a four-agent sweep of the
+**codeable** half of this file (the `(a)` credential-blocked and `(b)` operator
+items have no code to write, and four `(c)` items are gated on a product call or
+a third-party artifact). It closed both consistency-debt items, both transitional
+frontend surfaces, the whole Cash-Flow Copilot Phase 3 bucket, and took the badge
+sweep 62 → 30 rules. 21 open items → 20 — the count barely moved because three
+agents surfaced four *new* findings while closing seven old ones, which is the
+file working as intended. Calls recorded in [decisions.md](decisions.md) §50-§55.
+
+Three of those closures found a live defect the entry had not predicted: the
+email regex admitted a trailing newline into SMTP headers, the `utc_today` drift
+guard was blind to the very spelling two modules used, and converting a badge to
+the standard `.15` tint pushes any `--text-muted` sub-label *inside* it below
+4.5:1.
+
+Before that: 2026-08-19 against round 12 — a five-agent sweep of the
 open follow-up backlog itself (money path, vendors/procurement/expenses,
 multi-currency/e-invoicing/async, ingest/reports/AI, and the frontend), plus a
 sixth pass landing the backend legs the frontend work was written against. The
@@ -370,76 +385,32 @@ Rationale for the non-obvious calls made while closing them:
 
 ### Consistency debt the round-12 sweep surfaced rather than introduced
 
-Neither is a live defect on the deployed shape; both are the kind of drift that
-only becomes a bug once something else changes around it.
+The email-regex entry that stood here is **closed** — hoisted to
+`app/utils/emails.py::looks_like_email` with a drift-guard test. Closing it found
+a live hole: all three copies ended in `$`, which in Python matches end-of-string
+*or just before a trailing newline*, so `"user@example.com\n"` passed every check
+and was stored as a login, a child-tenant admin address and a scheduled-report
+recipient — a newline reaching an SMTP header is the header-injection primitive.
+The shared pattern anchors with `\Z` ([decisions.md](decisions.md) §50).
 
-- [ ] **~45 `date.today()` sites remain outside the cash-flow stack.**
-      `api/analytics.py` (12 sites) and `services/scheduled_reports.py` (3) were
-      converted to the new `app/utils/dates.py::utc_today()` this round, and
-      `tests/test_utc_today.py` is an AST source-scan drift guard over an
-      explicit allowlist of the 9 converged modules. The rest of the app still
-      resolves "today" in the SERVER's local timezone: the 1099 forms, Positive
-      Pay, the recurring-invoice sweep, the supplier portal, and
-      `services/analytics.py:803`'s `today = today or date.today()` fallback
-      (unreachable from the converged callers, which now always pass one).
-      Latent on a UTC container — the deployed shape — and live on any host that
-      is not.
-      **Durable fix:** convert each site to `utc_today()` and widen
-      `UTC_TODAY_MODULES` in `tests/test_utc_today.py`; the guard is what makes
-      this incremental rather than all-or-nothing.
-      **Trigger:** the next change to any of those modules, or a decision to run
-      the backend on a non-UTC host.
+The `date.today()` sweep is likewise done: **no `.today()` call remains anywhere
+under `backend/app/`**, and `tests/test_utc_today.py` now guards 31 modules with a
+scanner that catches `date.today()`, `datetime.today()`, `datetime.date.today()`
+and naive `datetime.now().date()`. Widening it exposed a hole in the guard itself
+— it matched only `ast.Name`, so the attribute-shaped `datetime.date.today()` was
+invisible, which is exactly what both Positive Pay modules used; either could have
+sat on the "converged" allowlist while still reading local time
+([decisions.md](decisions.md) §51). What is left is cosmetic:
 
-- [ ] **The permissive email regex now has three copies.**
-      `^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$` appears in `api/signup.py`,
-      `api/partner.py` and (as of this round) `app/schemas/scheduled_report.py`.
-      Three copies of a validation rule drift; this one gates who receives a
-      tenant's AP data by email.
-      **Durable fix:** hoist to `app/utils/` and import in all three.
-      **Trigger:** the next change touching signup, partner link codes, or
-      scheduled-report recipients.
-
-### Four frontend surfaces still run a transitional path
-
-Round 12 landed the backend legs these were waiting on
-(`GET /api/purchase-orders/counts`, `blocked`/`blocked_reason` on
-`GET /api/payments/queue`, `GET /api/invoices/assignable-reviewers`, a
-`department` leg on requisitions search and a `search` param on expenses). The
-frontend was written against them and degrades safely without them, so nothing
-is broken — but four surfaces still run the fallback rather than the real path.
-
-- [ ] **`/requisitions` and `/expenses` still filter client-side.** Both API
-      clients (`src/lib/api/{requisitions,expenses}.ts`) already send `search`;
-      only the page components still filter over the loaded rows, so a term
-      matching a row on a later page finds nothing until the user pages to it.
-      The regression that blocked this is gone — requisitions search now covers
-      `department`, and expenses has a `search` param at all.
-      **Durable fix:** pass the term through and delete the client-side filter
-      and its honest-but-transitional empty state on both pages.
-      **Trigger:** the next slice touching either page.
-
-- [ ] **`InvoiceModal.svelte` still carries its admin-only approver fallback.**
-      The picker now has `GET /api/invoices/assignable-reviewers`, so the
-      `GET /api/admin/users` fallback is dead weight on a path that 403s for
-      every non-admin. Note a CFO gets 403 from the new endpoint too — matching
-      `POST /invoices/{id}/assign`, which a CFO also cannot call — so the
-      submit-unassigned path stays.
-      **Durable fix:** delete the fallback.
-      **Trigger:** the next slice touching the invoice modal.
-
-### AI Cash-Flow Copilot — Phase 3 deferred bucket
-
-Phases 1–3 core shipped (read-only cash Q&A, `propose_payment_plan` +
-`PlanCard`, and draft-run/capture-discounts enactment — see
-[roadmap.md](roadmap.md) § AI Cash-Flow Copilot). Only the
-originally-deferred sub-bucket from that same feature remains:
-
-- [ ] Saved plans / plan-vs-actual (`CashPlan` model + migration)
-- [ ] Consolidated cross-entity mode
-
-**Trigger:** next feature slice. Nothing blocks it.
-Refs: [roadmap.md](roadmap.md) § AI Cash-Flow Copilot,
-[cash-flow-copilot.md](cash-flow-copilot.md).
+- [ ] **Six `datetime.now(UTC).date()` sites are correct but unguarded.**
+      `api/api_keys.py`, `api/bank_reconciliation.py`,
+      `services/discount_auto_trigger.py`, `services/contract_renewal.py`,
+      `services/recurring_invoices.py` and
+      `services/financing_adapters/mock_adapter.py` still inline the expression
+      instead of importing `utc_today`, so they cannot join `UTC_TODAY_MODULES`
+      and sit one careless edit from regressing silently.
+      **Durable fix:** swap the expression, add each to the allowlist.
+      **Trigger:** the next change to any of them.
 
 ### Tinted badges — the shared primitive exists, half the call sites still hand-roll
 
@@ -452,20 +423,83 @@ hook only** (the e2e suite reads `.badge.approved`), never as colour. Rationale,
 including why sizing is fixed rather than a prop and why `neutral` / `erp` stay
 non-tinted: [decisions.md](decisions.md) §47.
 
-- [ ] **62 badge-shaped CSS rules still hand-roll the recipe.** The sweep moved
-      63 call sites and took the total from **205 rules to 130** (badge-shaped:
-      **125 → 62**). The remainder lives in `/expenses`, `/requisitions`,
-      `/payments`, `InvoiceModal`, `RequisitionModal`, `ExpenseModal` and
-      `/admin/webhooks`.
-      **Why deliberately staged rather than finished:** the tokens standardise on
-      alpha `.15`, so converting a `.1` or `.12` rule *visibly* strengthens that
-      badge. Landing all 125 in one commit would make any visual complaint
-      unattributable — which is the same reasoning the original entry used, and
-      the reason the first tranche is the size it is.
-      **Durable fix:** convert the rest in attributable tranches, checking the
-      collapsed distinctions as you go (two were verified in the first tranche —
-      recurring's `paused` / `ended` greys, and three punch-out ambers).
-      **Trigger:** the next slice touching any of those seven surfaces.
+- [ ] **30 badge-shaped CSS rules still hand-roll the recipe.** Down from 62.
+      This tranche converted `/payments` (14 → 2), `/admin/webhooks` (5 → 0),
+      `RequisitionModal` (8 → 0) and `ExpenseModal` (6 → 0) in four attributable
+      commits; the remainder is `/expenses` (13), `/requisitions` (8) and
+      `InvoiceModal` (7).
+      **No distinction was lost.** `pending_compliance`'s ring — the thing that
+      says "a human must clear this", where the tone alone says only "waiting" —
+      was preserved as a caller-owned wrapper rather than flattened or turned into
+      a one-caller prop ([decisions.md](decisions.md) §52). Every other
+      consolidation (`cancelled`/`voided`, runs `submitted`/`executing`, six of
+      eight card statuses) merged partners that had **no rule at all** and rendered
+      untinted — the conversion's real payoff on `/payments` was the exhaustiveness
+      check, not fewer lines. Two chips stay off the primitive by design
+      (`.discount-chip` is two stacked lines; `.blocked-chip` wraps a localised
+      sentence where `nowrap` would break 320px reflow); both took the tokens.
+      **The count is scoped to the seven files this entry names, and that
+      undercounts:** `RunDetailModal.svelte` hand-rolls 7 more, and
+      `routes/+page.svelte` carries a second spelling of the `.overdue-badge` this
+      tranche retired — so that flag now renders at two sizes on two pages until it
+      converts. Both should join the next tranche.
+      **Durable fix:** convert the rest in attributable tranches, checking
+      collapsed distinctions as you go, and hoist the two tone maps out of the
+      modals into `types/{requisition,expense}.ts` in the same change.
+      **Trigger:** the next slice touching `/expenses`, `/requisitions` or
+      `InvoiceModal`.
+
+### Surfaced by the round-13 sweep
+
+Four items the round-13 agents confirmed but correctly did not fold into their
+own tranches.
+
+- [ ] **`opacity` used to de-emphasise text drops it below 4.5:1.**
+      `tr.inactive td:not(.actions) { opacity: 0.6 }` on `/admin/webhooks` renders
+      every cell of a paused subscription's row — status pill included — at
+      **2.95:1** (measured). Neither guard sees it: the `cssAudit` composited check
+      resolves a rule's *own* opacity, not an ancestor's, and the axe route scan
+      only catches it when an inactive row happens to be rendered. It is an
+      app-wide convention at ~20 sites; the disabled-control ones are exempt under
+      WCAG 1.4.3, the text rows are not.
+      **Durable fix:** de-emphasise with a muted *colour* token instead of opacity,
+      and extend `cssAudit` to carry an ancestor's opacity into the composited
+      check so the guard finds the rest.
+      **Why not folded into the badge tranche:** a whole-table visual change would
+      make the badge conversion unattributable, which is the entire reason that
+      work is tranched.
+      **Trigger:** the next a11y sweep, or any change to that row treatment.
+
+- [ ] **`GET /api/expenses/export` has no `search` leg.** The list searches
+      merchant / description / category; the export does not, so a CSV taken
+      during a search covers the whole status-filtered set. Nothing is misleading
+      today — the frontend refuses to pretend, keeping a separate
+      `buildExportParams()` pinned by an e2e — but the two surfaces disagree about
+      what "filtered" means.
+      **Durable fix:** add `search` to `export_expenses`, reusing `list_expenses`'
+      own `or_(...)` predicate rather than restating it, then point the button back
+      at `buildParams()`.
+      **Trigger:** the next slice touching the expense export.
+
+- [ ] **`InvoiceModal`'s supplier-chat @mention autocomplete has no member source
+      on `/invoices`.** It reads `adminStore.users`, which only `/admin` or
+      `/workflows/[id]` populate. Pre-existing, and now visible: the deleted
+      admin-only approver fallback used to populate that store as a side effect,
+      for admins, in the failure case only.
+      **Durable fix:** a non-admin-readable member list shaped like
+      `assignable-reviewers` but *not* gated on `invoice.approve` — mentions are
+      broader than approvers — and explicitly not `GET /api/admin/users`.
+      **Trigger:** the next slice touching supplier chat.
+
+- [ ] **Two keystroke-debounce guards duplicate a technique instead of joining its
+      table.** The `/requisitions` and `/expenses` specs each carry their own
+      "typing N characters fires one request" test rather than joining the
+      parameterized `CASES` array in
+      `tests-e2e/reactivity/search-debounce-race.spec.ts`. They were written
+      locally to avoid a merge conflict on that shared file during the parallel
+      round.
+      **Durable fix:** fold both cases into that array and drop the local copies.
+      **Trigger:** the next change to either spec.
 
 ## (a) Blocked on external credentials, accounts, or hardware
 

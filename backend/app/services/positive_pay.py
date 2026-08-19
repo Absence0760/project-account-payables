@@ -23,7 +23,6 @@ Money is :class:`~decimal.Decimal` (never float). See
 
 from __future__ import annotations
 
-import datetime
 import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -36,6 +35,7 @@ from app.models.payment import Payment, PaymentRun
 from app.models.vendor import Vendor
 from app.services.positive_pay_adapters import AchAuthorizationItem, CheckIssueItem
 from app.tenant import apply_entity_scope
+from app.utils.dates import utc_today
 
 # Default amount tolerance for the matched/altered decision (one cent).
 DEFAULT_AMOUNT_TOLERANCE = Decimal("0.01")
@@ -236,7 +236,7 @@ async def build_check_issue_items(
 
     rows = (await db.execute(query)).all()
 
-    issue_date = run.executed_at.date() if run.executed_at else datetime.date.today()
+    issue_date = run.executed_at.date() if run.executed_at else utc_today()
 
     items: list[CheckIssueItem] = []
     total = Decimal("0")

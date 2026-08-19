@@ -172,8 +172,14 @@ number.
   selects the run's cheque payments (`method == "check"`, excluding `failed` /
   `cancelled` / `voided` **at the time it's called**), joins `Invoice` for the
   payee name, and projects each into a `CheckIssueItem`. `check_number` is the
-  Payment's `reference`; `issue_date` is the run's `executed_at` date (or
-  today). Returns `(items, total_amount, mapping)` where `mapping` is
+  Payment's `reference`; `issue_date` is the run's `executed_at` date, or —
+  when the run hasn't executed — **today in UTC** (`app.utils.dates.utc_today`,
+  not the server's local date). `executed_at` is a tz-aware UTC column, so
+  `.date()` on it is already a UTC date; a local-time fallback would put the
+  two branches a day apart on a non-UTC host, inside one file the bank matches
+  cheques against. The `FormatterContext.file_date` both generators stamp
+  resolves the same way. Returns `(items, total_amount, mapping)` where
+  `mapping` is
   `[(normalized_check#, invoice_id, amount)]`. Called **only at file
   generation**; the result is persisted onto `meta["issued_map"]` so return
   processing never calls this again (see § Return handling — a second live call

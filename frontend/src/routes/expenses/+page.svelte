@@ -49,6 +49,7 @@
 		unmatchCardTxn,
 		ignoreCardTxn,
 		createExpenseFromCard,
+		type ExpenseListParams,
 		type GlAccountOption
 	} from '$lib/api/expenses';
 	import Modal from '$lib/components/ui/Modal.svelte';
@@ -90,6 +91,9 @@
 
 	// --- Expenses tab filter state (URL-backed) ---
 	let search = $state($page.url.searchParams.get('search') ?? '');
+	// The search term the newest issued list request carried. Written by
+	// `loadExpenses()`, read by the debounce effect — see the comment there.
+	let appliedSearch = $state(($page.url.searchParams.get('search') ?? '').trim());
 	let statusFilter = $state<string>($page.url.searchParams.get('status') ?? 'all');
 
 	// --- Modal + selection state ---
@@ -135,29 +139,6 @@
 		{ label: '', class: 'actions-col' }
 	]);
 
-	// Client-side search over the rows LOADED SO FAR (merchant / category). The
-	// list endpoint filters by status server-side but has NO `search` param at
-	// all (`backend/app/api/expenses.py::list_expenses` takes only
-	// `status` + `report_id` + pagination — `?search=` is accepted and silently
-	// dropped by FastAPI), so there is nothing to send the term to yet. The
-	// honest interim is not to hide the limitation: when the term matches
-	// nothing among the loaded rows AND more rows exist server-side, the empty
-	// state says exactly that and points at Load more, instead of asserting "no
-	// expenses match" about rows it never saw. (Same class of dishonest-UI bug
-	// as an unconditional "Showing all N" — frontend/CLAUDE.md § Pagination +
-	// Load more.) Delete this filter and pass `search` through to
-	// `listExpenses` once the backend list endpoint grows the param — tracked in
-	// docs/followups.md.
-	const visibleExpenses = $derived.by(() => {
-		const q = search.trim().toLowerCase();
-		if (!q) return expenseStore.all;
-		return expenseStore.all.filter(
-			(e) =>
-				(e.merchant ?? '').toLowerCase().includes(q) ||
-				(e.category ?? '').toLowerCase().includes(q)
-		);
-	});
-
 	// KPIs (period rollup uses the org default currency — mixed per-row
 	// currencies have no single code, so a deterministic base is used).
 	const periodTotal = $derived(
@@ -167,10 +148,53 @@
 		expenseStore.all.filter((e) => e.status === 'draft' || e.status === 'submitted').length
 	);
 
-	function buildParams() {
-		const params: { status?: string } = {};
+	// The live search term, read WITHOUT registering a dependency.
+	//
+	// `buildParams()` / `loadExpenses()` are called synchronously from the
+	// statusFilter `$effect` below, and Svelte tracks reads transitively through
+	// called functions — so a plain `search` read would make that effect depend
+	// on `search` too, firing an immediate un-debounced load on every keystroke
+	// (issue #168, the very thing `syncUrl`'s comment says was fixed on
+	// /invoices, /payments and /vendors; `routes/vendors/+page.svelte` untracks
+	// the same read for the same reason). Worse here than there: `loadExpenses()`
+	// stamps `appliedSearch` first, so the debounce timer would then
+	// short-circuit and the keystroke fetch would be the ONLY one.
+	function currentSearchTerm(): string {
+		return untrack(() => search).trim();
+	}
+
+	// List params. `search` is a SERVER filter now — `GET /api/expenses` ILIKEs
+	// merchant / description / category, the columns this table renders — so the
+	// whole filtered set is searched instead of the page already loaded.
+	function buildParams(): ExpenseListParams {
+		const params: ExpenseListParams = { ...buildExportParams() };
+		const term = currentSearchTerm();
+		if (term) params.search = term;
+		return params;
+	}
+
+	// Export params, deliberately NOT `buildParams()`. `GET /api/expenses/export`
+	// declares no `search` leg and FastAPI drops an undeclared query param
+	// silently, so sending the term would make the code read as though the CSV
+	// were narrowed by it while the file still covered the whole status-filtered
+	// set. Until the export grows the leg, the CSV is status-scoped and only
+	// status is sent — the same set it exported before search reached the
+	// server. (tracked in docs/followups.md)
+	function buildExportParams(): ExpenseListParams {
+		const params: ExpenseListParams = {};
 		if (statusFilter !== 'all') params.status = statusFilter;
 		return params;
+	}
+
+	// Issues a fresh page-1 list load and records the term it carried, so the
+	// debounce effect below can tell a term that is already on screen from one
+	// that still needs a fetch.
+	function loadExpenses() {
+		appliedSearch = currentSearchTerm();
+		// Fire-and-forget: the store loaders re-throw so an awaiting caller keeps
+		// its own handling, but nothing awaits here — the store's `errored` flag is
+		// what the UI renders. Swallow so a failed load isn't an unhandled rejection.
+		expenseStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
 	}
 
 	// Reflect the live filter state into the URL. EVERY read in here is
@@ -204,26 +228,34 @@
 		});
 	}
 
-	// Status filter → server refetch (debounced search only re-syncs the URL,
-	// search is client-side so no refetch needed).
+	// A keystroke now costs a request, so the term is debounced 300ms (the
+	// /invoices, /payments, /vendors convention) and the store's own sequencer
+	// discards a slow response for an earlier term. `appliedSearch` is the term
+	// the newest ISSUED load used: re-running with a term that already matches
+	// it schedules nothing, which is what keeps the effect's first run (mount,
+	// including a bookmarked `?search=`) from firing a duplicate load 300ms
+	// behind the status effect's — and cancels a pending debounce when a chip
+	// click has already loaded with the typed term.
 	let searchTimer: ReturnType<typeof setTimeout>;
 	$effect(() => {
-		search;
+		const next = search.trim();
 		clearTimeout(searchTimer);
-		searchTimer = setTimeout(() => syncUrl(), 300);
+		if (next === appliedSearch) return;
+		searchTimer = setTimeout(() => {
+			syncUrl();
+			loadExpenses();
+		}, 300);
 		// Cancel a pending debounce on teardown: without it the timer fires
 		// after the page is gone, running syncUrl()/a list fetch against a route
 		// the user already left.
 		return () => clearTimeout(searchTimer);
 	});
 
+	// A chip click is a discrete action — it loads immediately, no debounce.
 	$effect(() => {
 		statusFilter;
 		syncUrl();
-		// Fire-and-forget: the store loaders re-throw so an awaiting caller keeps
-		// its own handling, but nothing awaits here — the store's `errored` flag is
-		// what the UI renders. Swallow so a failed load isn't an unhandled rejection.
-		expenseStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
+		loadExpenses();
 	});
 
 	$effect(() => {
@@ -246,14 +278,14 @@
 	}
 
 	// --- Selection ---
-	// Keep the selection ⊆ the rows actually visible (status refetch OR the
-	// client-side merchant/category search). Otherwise stale ids inflate the
-	// bulk-bar count, break the select-all `size === length` comparison, and
-	// feed invisible ids into the bulk GL re-code.
+	// Keep the selection ⊆ the rows actually loaded (a status or search refetch
+	// replaces them). Otherwise stale ids inflate the bulk-bar count, break the
+	// select-all `size === length` comparison, and feed invisible ids into the
+	// bulk GL re-code.
 	$effect(() => {
 		const pruned = pruneSelection(
 			selected,
-			visibleExpenses.map((e) => e.id)
+			expenseStore.all.map((e) => e.id)
 		);
 		if (pruned !== selected) selected = pruned;
 	});
@@ -266,10 +298,10 @@
 	}
 
 	function toggleSelectAll() {
-		if (selected.size === visibleExpenses.length) {
+		if (selected.size === expenseStore.all.length) {
 			selected = new Set();
 		} else {
-			selected = new Set(visibleExpenses.map((e) => e.id));
+			selected = new Set(expenseStore.all.map((e) => e.id));
 		}
 	}
 
@@ -281,6 +313,11 @@
 			toast(m('expenses.toast.glCoded', { n: res.updated }), 'success');
 			selected = new Set();
 			bulkGl = '';
+			// Records the term like `loadExpenses()` does — this refetch IS the
+			// newest issued load, so a debounce still pending for the same term
+			// must not fire a second one behind it. Awaited (not fire-and-forget)
+			// so a failed refresh reaches the catch below.
+			appliedSearch = currentSearchTerm();
 			await expenseStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
 		} catch (err) {
 			toast(err instanceof Error ? err.message : m('expenses.toast.bulkGlFailed'), 'error');
@@ -347,20 +384,15 @@
 	// Reports has no local-mutation helper — every submit/approve/reject/attach
 	// re-fetches through `loadReports()` — so it needs no `supersedeInFlight()`;
 	// the sequencer here only stops two of those refreshes landing out of order.
-	// Four states, not two: a failed load must not read as "nothing matched",
-	// and neither must a client-side search that only ever saw the loaded page
-	// while unfetched rows remain.
+	// Three states, not one: a failed load must not read as "nothing matched".
+	// The search term reaches the server, so once the fetch settles the plain
+	// empty message is a true statement about the whole filtered set.
 	let expensesEmptyMessage = $derived(
 		expenseStore.loading
 			? m('expenses.loading')
 			: expenseStore.errored
 				? m('expenses.empty.errored')
-				: search.trim() && expenseStore.hasMore
-					? m('expenses.empty.searchPartial', {
-							shown: expenseStore.all.length,
-							total: expenseStore.total
-						})
-					: m('expenses.empty')
+				: m('expenses.empty')
 	);
 
 	const reportsSequence = createRequestSequencer();
@@ -938,7 +970,7 @@
 <PageHeader title={m('expenses.title')}>
 	{#snippet actions()}
 		{#if tab === 'expenses'}
-			<button class="btn-secondary" onclick={() => exportExpensesCsv(buildParams())}>{m('expenses.action.exportCsv')}</button>
+			<button class="btn-secondary" onclick={() => exportExpensesCsv(buildExportParams())}>{m('expenses.action.exportCsv')}</button>
 			{#if canCreate}
 				<button class="btn-primary" onclick={() => (showCreate = true)}>{m('expenses.action.newExpense')}</button>
 			{/if}
@@ -987,7 +1019,7 @@
 
 		<DataTable
 			columns={COLUMNS}
-			isEmpty={visibleExpenses.length === 0}
+			isEmpty={expenseStore.all.length === 0}
 			empty={expensesEmptyMessage}
 		>
 			{#snippet header()}
@@ -996,7 +1028,7 @@
 						<input
 							type="checkbox"
 							aria-label={m('expenses.selectAllAria')}
-							checked={visibleExpenses.length > 0 && selected.size === visibleExpenses.length}
+							checked={expenseStore.all.length > 0 && selected.size === expenseStore.all.length}
 							onchange={toggleSelectAll}
 						/>
 					</th>
@@ -1010,7 +1042,7 @@
 				</tr>
 			{/snippet}
 			{#snippet body()}
-				{#each visibleExpenses as exp (exp.id)}
+				{#each expenseStore.all as exp (exp.id)}
 					<tr
 						class="clickable"
 						class:row-selected={selected.has(exp.id)}

@@ -2,7 +2,7 @@
 
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends
@@ -24,6 +24,7 @@ from app.services.currency_conversion import (
     vendor_rollup_to_reporting_currency,
 )
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
+from app.utils.dates import utc_today
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -60,7 +61,7 @@ async def get_dashboard(
     user: User = Depends(get_current_user),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    today = date.today()
+    today = utc_today()
 
     # Every Invoice/Payment/Exception query below is entity-scoped via
     # `_inv` / `_pay` / `_exc` helpers (None = consolidated). Metrics keyed by

@@ -231,48 +231,37 @@
 		activeSteps.approval_config?.approver_strategy === 'manual'
 	);
 
-	$effect(() => {
-		if (needsApproverSelect) loadReviewers();
-	});
-
 	/**
 	 * Load the people this invoice can be assigned to for review.
 	 *
-	 * The picker used to read `GET /api/admin/users`, which is admin-only. For
-	 * every other role the call 403'd, the list stayed empty with nothing
+	 * `GET /api/invoices/assignable-reviewers` is the ONLY source. The picker
+	 * used to fall back to `GET /api/admin/users`, which is admin-only: for
+	 * every other role that call 403'd, the list stayed empty with nothing
 	 * catching the rejection, and Submit was disabled forever — so an
 	 * ap_manager or cfo (both of whom the backend lets submit, and the manager
 	 * assign) could not advance a single invoice on a workflow whose approval
 	 * step is `approver_strategy: "manual"`. That is the seeded default.
 	 *
-	 * The reviewer list is now its own non-admin-readable endpoint. The
-	 * admin-users call survives only as a TRANSITIONAL fallback for admins —
-	 * the one role that always could read it — so the picker keeps working
-	 * against a backend that predates the new endpoint. Delete the fallback
-	 * once `GET /api/invoices/assignable-reviewers` has shipped everywhere; it
-	 * must never be reached by a non-admin, which is exactly what the role
-	 * check below guarantees.
+	 * The reviewer endpoint gates on exactly what `POST /invoices/{id}/assign`
+	 * gates on, so a CFO gets a 403 from it too — deliberately, since a CFO
+	 * cannot call assign either. That is why the fallback's removal costs
+	 * nothing and why the submit-UNASSIGNED path below is load-bearing rather
+	 * than a nicety: an empty picker is a normal outcome, not a failure.
+	 *
+	 * `fetchAssignableReviewers` resolves `false` rather than throwing — a
+	 * failure is state the picker renders (see `approverNote`). The `.catch` is
+	 * there for the fire-and-forget rule (`utils/storeLoadRejection.test.ts`),
+	 * which is textual and blunt on purpose, not because this can reject.
 	 */
-	async function loadReviewers() {
-		const ok = await adminStore.fetchAssignableReviewers();
-		if (ok || !auth.isAdmin) return;
-		try {
-			await adminStore.fetchUsers();
-		} catch {
-			// Both sources are gone. `reviewerOptions` stays empty and the
-			// footer explains that the invoice will go to the queue unassigned
-			// — never a permanently-disabled Submit.
-		}
-	}
-
-	/** Who the picker offers: active users other than the submitter. Falls back
-	 *  to the admin directory only when the reviewer endpoint failed AND the
-	 *  admin fallback above populated it. */
-	let reviewerOptions = $derived.by(() => {
-		const source: { id: string; full_name: string; is_active: boolean }[] =
-			adminStore.reviewersErrored ? adminStore.users : adminStore.assignableReviewers;
-		return source.filter((u) => u.is_active && u.id !== auth.user?.id);
+	$effect(() => {
+		if (needsApproverSelect) adminStore.fetchAssignableReviewers().catch(() => {});
 	});
+
+	/** Who the picker offers: active assignable reviewers other than the
+	 *  submitter. */
+	let reviewerOptions = $derived(
+		adminStore.assignableReviewers.filter((u) => u.is_active && u.id !== auth.user?.id)
+	);
 
 	/** Only block Submit while there is genuinely someone to pick. An empty
 	 *  list — because the lookup failed, or because this tenant has no other
@@ -287,7 +276,7 @@
 		if (!needsApproverSelect || !adminStore.reviewersLoaded || reviewerOptions.length > 0) {
 			return '';
 		}
-		return adminStore.reviewersErrored && adminStore.users.length === 0
+		return adminStore.reviewersErrored
 			? m('invoices.modal.approverUnavailable')
 			: m('invoices.modal.approverNone');
 	});

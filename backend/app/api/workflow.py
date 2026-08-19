@@ -47,6 +47,7 @@ from app.services.workflow_engine import (
     transition_invoice,
 )
 from app.tenant import get_tenant, get_tenant_db, get_write_entity_id
+from app.utils.dates import utc_today
 
 router = APIRouter(prefix="/invoices", tags=["workflow"])
 
@@ -469,9 +470,7 @@ async def complete_invoice(
             amount=invoice.amount,
             aggregate_amount=gate_aggregate,
         ) and not violates_segregation(invoice, user.id, approval_config):
-            from datetime import date
-
-            invoice.approval_date = date.today()
+            invoice.approval_date = utc_today()
             invoice.approved_by = "system (below threshold)"
             await transition_invoice(
                 db,

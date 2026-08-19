@@ -28,6 +28,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from app.services.branding import BrandContext
+from app.utils.dates import utc_today
 
 
 def brand_provenance_header(
@@ -293,7 +294,7 @@ def export_aging_snapshot(aging_buckets: dict, *, snapshot_date: date | None = N
     total = current + d30 + d60 + d90 + d90plus
     w.writerow(
         [
-            _fmt_date(snapshot_date or date.today()),
+            _fmt_date(snapshot_date or utc_today()),
             _fmt_money(current),
             _fmt_money(d30),
             _fmt_money(d60),

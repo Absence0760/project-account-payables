@@ -93,6 +93,7 @@ from app.services.workflow_engine import (
     transition_invoice,
 )
 from app.tenant import get_tenant, get_tenant_db
+from app.utils.dates import utc_today
 from app.utils.http import content_disposition_attachment
 
 logger = logging.getLogger(__name__)
@@ -1160,7 +1161,7 @@ async def upload_my_tax_form(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     vendor.w9_file_key = file_key
-    vendor.w9_received_date = date.today()
+    vendor.w9_received_date = utc_today()
 
     await dispatch_audit(
         db,
@@ -1342,7 +1343,7 @@ async def list_my_discount_offers(
     )
     rows = list((await db.execute(query)).scalars().all())
     inv_nums = await _invoice_numbers(db, rows)
-    today = date.today()
+    today = utc_today()
 
     return PortalDiscountOfferListResponse(
         items=[
@@ -1373,7 +1374,7 @@ async def accept_my_discount_offer(
     non-`offered` offer raises `409` (the status guard is the dedupe), so a
     double-click can't double-count savings."""
     offer = await _portal_offer_or_404(db, offer_id, vu)
-    today = date.today()
+    today = utc_today()
 
     tier_days = body.tier_days if body else None
     if tier_days is not None:
@@ -1454,7 +1455,7 @@ async def decline_my_discount_offer(
     await db.commit()
     await db.refresh(offer)
 
-    today = date.today()
+    today = utc_today()
     invoice_number = None
     if offer.invoice_id:
         invoice_number = (await _invoice_numbers(db, [offer])).get(offer.invoice_id)

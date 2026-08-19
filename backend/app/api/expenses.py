@@ -84,6 +84,7 @@ from app.tenant import (
     get_tenant_db,
     get_write_entity_id,
 )
+from app.utils.dates import utc_today
 
 logger = logging.getLogger(__name__)
 
@@ -647,7 +648,7 @@ async def export_expenses(
 
     rows = (await db.execute(base)).all()
     payload = EXPORTERS["expense_register"](rows)
-    filename = f"expenses_{date.today().isoformat()}.csv"
+    filename = f"expenses_{utc_today().isoformat()}.csv"
     return Response(
         content=payload,
         media_type="text/csv",

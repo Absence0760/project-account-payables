@@ -1608,7 +1608,10 @@ async def export_report(
                 buckets["days_90"] += amount
             else:
                 buckets["days_90_plus"] += amount
-        payload = EXPORTERS[report](buckets)
+        # Label the CSV with the SAME `today` the buckets were computed against.
+        # Without it the exporter re-reads the clock, so the as-of label is a
+        # second, independent read that can disagree with the numbers under it.
+        payload = EXPORTERS[report](buckets, snapshot_date=today)
     else:
         # Unreachable in practice — every key in EXPORTERS has a branch above,
         # and `report not in EXPORTERS` already 404'd earlier in this

@@ -510,8 +510,9 @@ async def test_aging_snapshot_separates_61_90_from_90_plus():
 
     captured: dict = {}
 
-    def _exporter(buckets):
+    def _exporter(buckets, *, snapshot_date=None):
         captured.update(buckets)
+        captured["_snapshot_date"] = snapshot_date
         return "csv"
 
     sched = _schedule(report_type="aging_snapshot")
@@ -521,6 +522,9 @@ async def test_aging_snapshot_separates_61_90_from_90_plus():
     assert captured["days_60"] == Decimal("30.00")
     assert captured["days_90"] == Decimal("40.00")  # the previously-missing bucket
     assert captured["days_90_plus"] == Decimal("50.00")  # NOT 90.00 (40+50 lumped)
+    # The as-of label must be the SAME today the buckets were computed against,
+    # not a second clock read inside the exporter.
+    assert captured["_snapshot_date"] is not None
 
 
 # ---------------------------------------------------------------------------

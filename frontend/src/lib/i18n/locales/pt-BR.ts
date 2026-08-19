@@ -985,6 +985,38 @@ export const messages = {
 	'cashFlow.plan.actions.stale':
 		'Este plano mudou desde que foi proposto — peça ao copiloto um novo plano antes de agir.',
 	'cashFlow.plan.actions.error': 'Não foi possível concluir esta ação: {detail}',
+	// Copiloto de fluxo de caixa — planos salvos + plano vs. real
+	'cashFlow.plan.actions.savePlan': 'Salvar plano',
+	'cashFlow.plan.actions.savingPlan': 'Salvando…',
+	'cashFlow.plan.actions.planSaved':
+		'Plano salvo. Compare-o com o que você realmente pagar em «Planos salvos».',
+	'cashFlow.plan.actions.planAlreadySaved':
+		'Este plano já havia sido salvo — o instantâneo original foi mantido.',
+	'cashFlow.consolidated.label': 'Todas as entidades',
+	'cashFlow.consolidated.hint':
+		'Responder para todo o grupo em vez da entidade selecionada na barra lateral.',
+	'cashFlow.saved.heading': 'Planos salvos',
+	'cashFlow.saved.refresh': 'Atualizar',
+	'cashFlow.saved.loading': 'Carregando…',
+	'cashFlow.saved.empty': 'Ainda não há planos salvos. Salve um plano proposto para compará-lo com o que você realmente pagar.',
+	'cashFlow.saved.loadError': 'Não foi possível carregar os planos salvos.',
+	'cashFlow.saved.deleteError': 'Não foi possível excluir esse plano.',
+	'cashFlow.saved.varianceError': 'Não foi possível carregar a comparação.',
+	'cashFlow.saved.consolidatedTag': 'Todas as entidades',
+	'cashFlow.saved.totals':
+		'{n, plural, one {Em # período encerrado:} other {Em # períodos encerrados:}}',
+	'cashFlow.saved.noClosedPeriods': 'Nenhum período foi encerrado ainda, portanto não há nada a avaliar.',
+	'cashFlow.saved.col.period': 'Período',
+	'cashFlow.saved.col.planned': 'Previsto',
+	'cashFlow.saved.col.actual': 'Real',
+	'cashFlow.saved.status.elapsed': 'encerrado',
+	'cashFlow.saved.status.in_progress': 'em andamento',
+	'cashFlow.saved.status.future': 'a seguir',
+	'cashFlow.saved.unplaced':
+		'{n, plural, one {# pagamento concluído não pôde ser avaliado} other {# pagamentos concluídos não puderam ser avaliados}} — sem data de liquidação, ou com um valor que não conseguimos expressar em {currency}.',
+	'cashFlow.saved.discounts': 'Capturadas {captured} de {selected} ofertas de desconto recomendadas.',
+	'cashFlow.saved.delete': 'Excluir plano',
+	'cashFlow.saved.deleteConfirm': 'Clique novamente para excluir',
 	// Cash Flow / CFO dashboard (routes/cfo/+page.svelte)
 	'cfo.title': 'Fluxo de caixa',
 	'cfo.exportCsv': 'Exportar CSV',
@@ -1085,8 +1117,6 @@ export const messages = {
 	'expenses.loading': 'Carregando…',
 	'expenses.empty': 'Nenhuma despesa corresponde aos seus filtros.',
 	'expenses.empty.errored': 'Não foi possível carregar as despesas. Tente novamente.',
-	'expenses.empty.searchPartial':
-		'Nenhuma correspondência entre as {shown} de {total} despesas carregadas até agora. A busca cobre apenas as linhas carregadas — carregue mais abaixo para pesquisar o restante.',
 	'expenses.col.date': 'Data',
 	'expenses.col.merchant': 'Estabelecimento',
 	'expenses.col.category': 'Categoria',
@@ -1309,8 +1339,6 @@ export const messages = {
 	'requisitions.col.total': 'Total',
 	'requisitions.col.status': 'Status',
 	'requisitions.empty': 'Nenhuma requisição corresponde aos seus filtros.',
-	'requisitions.empty.searchPartial':
-		'Nenhuma correspondência entre as {shown} de {total} requisições carregadas até agora. A busca cobre apenas as linhas carregadas — carregue mais abaixo para pesquisar o restante.',
 	'requisitions.notFound': 'Requisição não encontrada',
 	'requisitions.row.open': 'Abrir requisição {number}',
 	'requisitions.row.submit': 'Enviar',
