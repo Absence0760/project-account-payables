@@ -5,6 +5,13 @@
 
 export type ExpenseStatus = 'draft' | 'submitted' | 'approved' | 'rejected' | 'reimbursed';
 
+// Every value the `expenses.status` column can hold — the full mirror of the
+// backend `ExpenseStatus` enum (`backend/app/models/expense.py`). Kept COMPLETE
+// on purpose: a row can still arrive carrying any of them (the demo seed
+// `backend/scripts/seed_extras.py` writes `rejected` + `reimbursed`, and a
+// long-lived tenant may hold rows written before a transition changed), so
+// every value must still render a badge. This is NOT the filter-chip list —
+// see `EXPENSE_FILTER_STATUSES`.
 export const EXPENSE_STATUSES: ExpenseStatus[] = [
 	'draft',
 	'submitted',
@@ -12,6 +19,36 @@ export const EXPENSE_STATUSES: ExpenseStatus[] = [
 	'rejected',
 	'reimbursed'
 ];
+
+// Statuses no backend transition ever stamps, so a filter chip for them is a
+// control that can never return a row. Every writer of `Expense.status` in the
+// backend:
+//   - `draft`     — the column default on insert (`models/expense.py:229`), and
+//                   `reject_report` (`api/expenses.py:1386`) which puts a
+//                   rejected report's children BACK to draft.
+//   - `submitted` — `submit_report` (`api/expenses.py:1230`).
+//   - `approved`  — `approve_report` (`api/expenses.py:1341`).
+// That is the complete list under `backend/app/`. Nothing writes `rejected`
+// (report rejection returns children to `draft`) and nothing writes
+// `reimbursed` (there is no reimbursement transition anywhere — no route even
+// sets `ExpenseReportStatus.reimbursed`). Only the demo seed
+// `backend/scripts/seed_extras.py` writes them.
+//
+// Delete an entry here the moment its writer lands — `reject_report` stamping
+// `ExpenseStatus.rejected` on its children, or a new reimbursement endpoint
+// stamping `ExpenseStatus.reimbursed`.
+const UNREACHABLE_EXPENSE_STATUSES: ExpenseStatus[] = ['rejected', 'reimbursed'];
+
+// The subset offered as *filter chips* — derived by EXCLUSION from the full
+// mirror, so a genuinely new status added above joins the chips by default and
+// only a deliberate, justified entry in UNREACHABLE_EXPENSE_STATUSES keeps one
+// out. The excluded values still live in the union and in
+// EXPENSE_STATUS_LABELS (a legacy / seeded row must still render its badge),
+// and the page appends whatever status is *actively* filtered to the chip row,
+// so an explicit `?status=reimbursed` is never an invisible filter.
+export const EXPENSE_FILTER_STATUSES: ExpenseStatus[] = EXPENSE_STATUSES.filter(
+	(s) => !UNREACHABLE_EXPENSE_STATUSES.includes(s)
+);
 
 export const EXPENSE_STATUS_LABELS: Record<ExpenseStatus, string> = {
 	draft: 'Draft',

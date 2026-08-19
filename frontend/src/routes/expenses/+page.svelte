@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type {
 		Expense,
+		ExpenseStatus,
 		ExpenseReport,
 		ExpenseReportSummary,
 		ExpensePolicy,
@@ -10,7 +11,7 @@
 		CardMatchSuggestion
 	} from '$lib/types/expense';
 	import {
-		EXPENSE_STATUSES,
+		EXPENSE_FILTER_STATUSES,
 		EXPENSE_STATUS_LABELS,
 		EXPENSE_REPORT_STATUS_LABELS,
 		EXPENSE_PREAPPROVAL_STATUSES,
@@ -101,9 +102,26 @@
 	let bulkGl = $state('');
 	let bulkBusy = $state(false);
 
+	// Chip statuses = the reachable subset ∪ whatever is ACTIVE. The subset omits
+	// `rejected` and `reimbursed` because nothing in the backend ever assigns
+	// them (see EXPENSE_FILTER_STATUSES for the enumerated writers — report
+	// rejection returns children to `draft`, and there is no reimbursement
+	// transition at all), so those chips were filters that returned an empty
+	// list forever. The union with the active status is the same
+	// `quick subset ∪ active` rule /invoices uses (frontend/CLAUDE.md § Status
+	// filter chips): a bookmarked `?status=reimbursed` — or a demo tenant seeded
+	// with such rows — still renders its chip, so an active filter is never
+	// invisible and the user can always click back to All.
+	const chipStatuses = $derived.by(() => {
+		const active = statusFilter as ExpenseStatus;
+		if (EXPENSE_FILTER_STATUSES.includes(active) || !(active in EXPENSE_STATUS_LABELS))
+			return EXPENSE_FILTER_STATUSES;
+		return [...EXPENSE_FILTER_STATUSES, active];
+	});
+
 	const STATUS_CHIPS = $derived([
 		{ key: 'all', label: m('common.all') },
-		...EXPENSE_STATUSES.map((s) => ({ key: s, label: EXPENSE_STATUS_LABELS[s] }))
+		...chipStatuses.map((s) => ({ key: s, label: EXPENSE_STATUS_LABELS[s] }))
 	]);
 
 	const COLUMNS = $derived([
@@ -117,8 +135,19 @@
 		{ label: '', class: 'actions-col' }
 	]);
 
-	// Client-side search: the list endpoint filters by status server-side; the
-	// merchant/category text search is applied to the loaded page here.
+	// Client-side search over the rows LOADED SO FAR (merchant / category). The
+	// list endpoint filters by status server-side but has NO `search` param at
+	// all (`backend/app/api/expenses.py::list_expenses` takes only
+	// `status` + `report_id` + pagination — `?search=` is accepted and silently
+	// dropped by FastAPI), so there is nothing to send the term to yet. The
+	// honest interim is not to hide the limitation: when the term matches
+	// nothing among the loaded rows AND more rows exist server-side, the empty
+	// state says exactly that and points at Load more, instead of asserting "no
+	// expenses match" about rows it never saw. (Same class of dishonest-UI bug
+	// as an unconditional "Showing all N" — frontend/CLAUDE.md § Pagination +
+	// Load more.) Delete this filter and pass `search` through to
+	// `listExpenses` once the backend list endpoint grows the param — tracked in
+	// docs/followups.md.
 	const visibleExpenses = $derived.by(() => {
 		const q = search.trim().toLowerCase();
 		if (!q) return expenseStore.all;
@@ -315,13 +344,20 @@
 	// Reports has no local-mutation helper — every submit/approve/reject/attach
 	// re-fetches through `loadReports()` — so it needs no `supersedeInFlight()`;
 	// the sequencer here only stops two of those refreshes landing out of order.
-	// Three states, not two: a failed load must not read as "nothing matched".
+	// Four states, not two: a failed load must not read as "nothing matched",
+	// and neither must a client-side search that only ever saw the loaded page
+	// while unfetched rows remain.
 	let expensesEmptyMessage = $derived(
 		expenseStore.loading
 			? m('expenses.loading')
 			: expenseStore.errored
 				? m('expenses.empty.errored')
-				: m('expenses.empty')
+				: search.trim() && expenseStore.hasMore
+					? m('expenses.empty.searchPartial', {
+							shown: expenseStore.all.length,
+							total: expenseStore.total
+						})
+					: m('expenses.empty')
 	);
 
 	const reportsSequence = createRequestSequencer();

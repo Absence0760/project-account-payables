@@ -12,6 +12,15 @@ export type RequisitionStatus =
 	| 'converted'
 	| 'cancelled';
 
+// Every value the `purchase_requisitions.status` column can hold — the full
+// mirror of the backend `RequisitionStatus` enum
+// (`backend/app/models/procurement.py`). Kept COMPLETE on purpose: `submitted`
+// is still a legal *source* state for legacy rows
+// (`services/requisition_service.VALID_TRANSITIONS[submitted]` allows
+// pending_approval + cancelled, and `services/budget_service.
+// OPEN_COMMITMENT_REQ_STATUSES` counts it as committed spend), so such a row
+// must still render a badge and still offer Cancel. This is NOT the filter-chip
+// list — see `REQUISITION_FILTER_STATUSES`.
 export const REQUISITION_STATUSES: RequisitionStatus[] = [
 	'draft',
 	'submitted',
@@ -21,6 +30,41 @@ export const REQUISITION_STATUSES: RequisitionStatus[] = [
 	'converted',
 	'cancelled'
 ];
+
+// Statuses no backend transition ever stamps, so a filter chip for them is a
+// control that can never return a row. Every writer of
+// `PurchaseRequisition.status` in the backend:
+//   - `draft`            — the column default on insert
+//                          (`models/procurement.py:262`), `create_requisition`
+//                          (`api/requisitions.py:208`), intake conversion
+//                          (`services/intake_service.py:117`) and punch-out
+//                          cart conversion (`api/catalogs.py:518`).
+//   - `pending_approval` — `submit_requisition` (`api/requisitions.py:352`).
+//                          Submit jumps STRAIGHT here; it never passes through
+//                          `submitted` (the module docstring at
+//                          `api/requisitions.py:335` still advertises the old
+//                          draft → submitted → pending_approval graph).
+//   - `approved`         — `approve_requisition` (`api/requisitions.py:379`).
+//   - `rejected`         — `reject_requisition` (`api/requisitions.py:398`).
+//   - `cancelled`        — `cancel_requisition` (`api/requisitions.py:424`).
+//   - `converted`        — `convert_to_po` (`api/requisitions.py:485`).
+//
+// That is the complete list — `submitted` appears nowhere as a destination.
+// Delete the entry below the moment `submit_requisition` starts stamping it
+// (i.e. if the two-step draft → submitted → pending_approval graph the docstring
+// describes is actually implemented).
+const UNREACHABLE_REQUISITION_STATUSES: RequisitionStatus[] = ['submitted'];
+
+// The subset offered as *filter chips* — derived by EXCLUSION from the full
+// mirror, so a genuinely new status added above joins the chips by default and
+// only a deliberate, justified entry in UNREACHABLE_REQUISITION_STATUSES keeps
+// one out. The excluded value still lives in the union and in
+// REQUISITION_STATUS_LABELS (a legacy row must still render its badge and still
+// offer Cancel), and the page appends whatever status is *actively* filtered to
+// the chip row, so an explicit `?status=submitted` is never an invisible filter.
+export const REQUISITION_FILTER_STATUSES: RequisitionStatus[] = REQUISITION_STATUSES.filter(
+	(s) => !UNREACHABLE_REQUISITION_STATUSES.includes(s)
+);
 
 export const REQUISITION_STATUS_LABELS: Record<RequisitionStatus, string> = {
 	draft: 'Draft',
