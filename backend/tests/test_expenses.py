@@ -148,6 +148,98 @@ async def test_list_filter_and_get(realdb):
         assert one.json()["amount"] == 20.0
 
 
+async def test_list_search_matches_merchant_description_and_category(realdb):
+    """The list had NO `search` param, so the page could only filter the rows it
+    had already loaded — a term matching an expense past the first page read as
+    "nothing matched". The three free-text columns the row renders are the ones
+    a user expects to search."""
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        await c.post(
+            "/api/expenses",
+            json={
+                "expense_date": "2026-06-01",
+                "merchant": "Hilton Garden Inn",
+                "category": "lodging",
+                "description": "Two nights, client visit",
+                "amount": "310.00",
+            },
+        )
+        await c.post(
+            "/api/expenses",
+            json={
+                "expense_date": "2026-06-02",
+                "merchant": "Uber",
+                "category": "travel",
+                "description": "Airport transfer",
+                "amount": "42.50",
+            },
+        )
+
+        # merchant
+        by_merchant = await c.get("/api/expenses", params={"search": "hilton"})
+        assert by_merchant.status_code == 200
+        assert by_merchant.json()["total"] == 1
+        assert by_merchant.json()["items"][0]["merchant"] == "Hilton Garden Inn"
+
+        # category
+        by_category = await c.get("/api/expenses", params={"search": "TRAVEL"})
+        assert by_category.json()["total"] == 1
+        assert by_category.json()["items"][0]["merchant"] == "Uber"
+
+        # description
+        by_description = await c.get("/api/expenses", params={"search": "client visit"})
+        assert by_description.json()["total"] == 1
+        assert by_description.json()["items"][0]["merchant"] == "Hilton Garden Inn"
+
+        # no match is an empty page, not an error
+        none_found = await c.get("/api/expenses", params={"search": "zzz-no-such-thing"})
+        assert none_found.status_code == 200
+        assert none_found.json()["total"] == 0
+
+
+async def test_list_search_composes_with_the_status_filter(realdb):
+    mk = realdb.sessionmaker("a")
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        keep = (
+            await c.post(
+                "/api/expenses",
+                json={"expense_date": "2026-06-01", "merchant": "Delta Air", "amount": "500.00"},
+            )
+        ).json()["id"]
+        await c.post(
+            "/api/expenses",
+            json={"expense_date": "2026-06-02", "merchant": "Delta Air", "amount": "600.00"},
+        )
+
+        # Flip one row's status directly — the point is the two predicates AND
+        # together, not how the status got there.
+        async with mk() as s:
+            row = (
+                await s.execute(select(Expense).where(Expense.id == uuid.UUID(keep)))
+            ).scalar_one()
+            row.status = "submitted"
+            await s.commit()
+
+        resp = await c.get("/api/expenses", params={"search": "delta", "status": "submitted"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 1
+        assert body["items"][0]["id"] == keep
+
+
+async def test_list_search_is_tenant_scoped(realdb):
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        await c.post(
+            "/api/expenses",
+            json={"expense_date": "2026-06-01", "merchant": "Secret Merchant", "amount": "10.00"},
+        )
+
+    async with realdb.client(key="b", role="ap_clerk") as c:
+        resp = await c.get("/api/expenses", params={"search": "secret"})
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 0
+
+
 async def test_update_expense(realdb):
     mk = realdb.sessionmaker("a")
     async with realdb.client(key="a", role="ap_clerk") as c:

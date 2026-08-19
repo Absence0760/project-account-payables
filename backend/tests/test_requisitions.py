@@ -116,6 +116,50 @@ async def test_list_filter_search_and_get(realdb):
         assert one.status_code == 200
 
 
+async def test_search_matches_department_not_just_number_and_title(realdb):
+    """`department` is a column the list renders and the page's own search box
+    matched client-side. Server-side search covering fewer columns than the UI
+    already did is a straight regression — a buyer searching "Facilities" got
+    nothing back."""
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        wanted = _num("DEPT")
+        await c.post(
+            "/api/requisitions",
+            json=_payload(wanted, title="Chairs", department="Facilities Management"),
+        )
+        await c.post(
+            "/api/requisitions",
+            json=_payload(_num(), title="Laptops", department="Engineering"),
+        )
+
+        found = await c.get("/api/requisitions", params={"search": "facilities"})
+        assert found.status_code == 200
+        body = found.json()
+        numbers = {i["requisition_number"] for i in body["items"]}
+        assert wanted in numbers
+        assert body["total"] == 1
+        assert all(i["department"] == "Facilities Management" for i in body["items"])
+
+
+async def test_search_department_composes_with_the_status_filter(realdb):
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        draft = _num("DEPTDRAFT")
+        submitted = _num("DEPTSUB")
+        await c.post("/api/requisitions", json=_payload(draft, department="Facilities"))
+        created = await c.post(
+            "/api/requisitions", json=_payload(submitted, department="Facilities")
+        )
+        await c.post(f"/api/requisitions/{created.json()['id']}/submit")
+
+        resp = await c.get(
+            "/api/requisitions", params={"search": "facilities", "status": "pending_approval"}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 1
+        assert body["items"][0]["requisition_number"] == submitted
+
+
 async def test_update_draft_recomputes_total(realdb):
     mk = realdb.sessionmaker("a")
     async with realdb.client(key="a", role="ap_clerk") as c:

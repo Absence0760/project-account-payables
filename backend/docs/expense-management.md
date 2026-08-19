@@ -97,7 +97,7 @@ string-Decimal amounts — never PII.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/expenses` | List, paginated, entity-scoped (`X-Entity-ID`); `?status=` + `?report_id=` filters. |
+| GET | `/api/expenses` | List, paginated, entity-scoped (`X-Entity-ID`); `?status=` + `?report_id=` + `?search=` filters, all composable. `search` ILIKEs the three free-text columns the row renders — `merchant`, `description`, `category`. Before it existed the page could only filter the rows it had already loaded, so a term matching an expense past the first page read as "nothing matched". |
 | POST | `/api/expenses` | Create an expense. `amount` must be **strictly positive** (`gt=0` → 422 otherwise; a negative line could net a report under the CFO threshold while hiding a large expense). Lands under the selected entity (or the tenant default). If `report_id` is supplied this **is** an attach and gates like one: the target report must still be a `draft` (**409** otherwise, same rule as `POST /api/expense-reports/{id}/expenses`), and its `total_amount` is then recomputed. Creating straight onto a locked report used to be the one attach path with no gate — it moved an approved report's total past the CFO threshold it was approved under, and nulled the locked `reporting_*` figure that decision was derived from. |
 | GET | `/api/expenses/receipt/{file_key:path}` | Download proxy for a stored receipt. Cross-tenant-checked (first key segment must equal the caller's org); same 404 for wrong-org and missing-file. Declared before `/{expense_id}` so `receipt` isn't captured as an id. |
 | POST | `/api/expenses/{id}/receipt` | Upload a receipt to S3 (`upload_expense_receipt`) and stamp `receipt_file_key`. |

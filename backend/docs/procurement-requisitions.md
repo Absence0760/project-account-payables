@@ -65,7 +65,7 @@ via `X-Entity-ID`; tenant scope via `X-Tenant-Slug` (the per-tenant DB session).
 
 | Method + path | Purpose | Roles |
 |---|---|---|
-| `GET /requisitions` | List (paginated, entity-scoped, `?status=`, `?search=` on number/title) | admin, ap_manager, ap_clerk, cfo |
+| `GET /requisitions` | List (paginated, entity-scoped, `?status=`, `?search=` on requisition number / title / **department** — all three are columns the list renders, and covering fewer than the page's own search box did would be a regression) | admin, ap_manager, ap_clerk, cfo |
 | `POST /requisitions` | Create with line items (computes `total`) | admin, ap_manager, ap_clerk |
 | `GET /requisitions/{id}` | Detail + line items | admin, ap_manager, ap_clerk, cfo |
 | `PATCH /requisitions/{id}` | Edit (**draft only**; `line_items` fully replaces lines, recomputes total) | admin, ap_manager, ap_clerk |

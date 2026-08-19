@@ -172,10 +172,16 @@ async def list_requisitions(
         base = base.where(PurchaseRequisition.status == status_filter)
     if search:
         pattern = f"%{search.strip()}%"
+        # `department` belongs here for the same reason number + title do: it is
+        # a column the list RENDERS, and the requisitions page's own search box
+        # matched it client-side. Server-side search that covers fewer columns
+        # than the page used to is a straight regression — a buyer searching
+        # "Facilities" would get nothing back.
         base = base.where(
             or_(
                 PurchaseRequisition.requisition_number.ilike(pattern),
                 PurchaseRequisition.title.ilike(pattern),
+                PurchaseRequisition.department.ilike(pattern),
             )
         )
 
