@@ -581,3 +581,54 @@ def test_mock_adapter_parse_inbound():
     # Missing message id → None (can't dedupe → refuse).
     assert adapter.parse_inbound({}, b"<Invoice/>") is None
     assert adapter.parse_inbound({}, b"") is None
+
+
+# ---------------------------------------------------------------------------
+# Workflow instance — the frozen per-invoice snapshot every ingress owes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_inbound_invoice_gets_a_frozen_workflow_instance(realdb):
+    """A PEPPOL-inbound invoice is a first-class invoice, so it carries the
+    same frozen workflow snapshot every other ingress creates.
+
+    Without it the invoice is governed by whatever the *live* definition says
+    at read time — so an edit to the tenant's workflow retroactively changes an
+    already-ingested invoice, which is exactly what the per-invoice snapshot
+    invariant exists to prevent — and it is invisible to every step-based read
+    (the approval queue, `GET /api/invoices/{id}/workflow`).
+    """
+    from app.models.workflow import WorkflowInstance
+
+    mk = realdb.sessionmaker("a")
+    slug = realdb.info("a").slug
+    message_id = f"as4-{uuid.uuid4().hex}"
+    body = _envelope(message_id=message_id, payload=_ubl_bytes())
+
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.post(
+            f"/api/peppol/inbound/{slug}",
+            content=body,
+            headers={"X-Peppol-Signature": _sign(body)},
+        )
+    assert resp.status_code == 204
+
+    async with mk() as s:
+        inv = (await s.execute(select(Invoice))).scalars().one()
+        instances = (
+            (
+                await s.execute(
+                    select(WorkflowInstance).where(WorkflowInstance.invoice_id == inv.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(instances) == 1
+        instance = instances[0]
+        assert instance.state == "active"
+        assert instance.correlation_id == inv.correlation_id
+        # The snapshot is FROZEN at ingest — a non-empty config copied off the
+        # definition, not a null placeholder resolved later.
+        assert instance.steps_config_snapshot
