@@ -239,3 +239,106 @@ export function formatScreeningCategories(categories: string[] | null | undefine
 	if (!categories?.length) return '—';
 	return categories.map((c) => SCREENING_CATEGORY_LABELS[c] ?? c.replace(/_/g, ' ')).join(', ');
 }
+
+// ---------------------------------------------------------------------------
+// Vendor change requests — the dual-control (BEC / bank-redirect) gate.
+//
+// A bank-detail or tax-ID change NEVER applies inline: `POST /api/vendors`,
+// `PATCH /api/vendors/{id}`, `POST /api/vendors/{id}/bank-change` and the
+// supplier portal all STAGE a `VendorChangeRequest`, and a SECOND user holding
+// `vendor.bank_change.approve` applies it. Mirrors the backend
+// `VendorChangeRequestResponse`.
+//
+// `proposed_value` is MASKED on the queue list (last-4 only) and revealed on
+// the per-vendor detail endpoint — so the field is deliberately loose here:
+// the same key carries `{account_last4, bank_name}` in one view and the full
+// `{bank_details: {...}}` in the other.
+// ---------------------------------------------------------------------------
+
+export type VendorChangeRequestStatus = 'pending' | 'approved' | 'rejected';
+
+/** The two staged change kinds the backend knows how to apply. */
+export type VendorChangeType = 'bank_details' | 'tax_id';
+
+export interface VendorChangeRequest {
+	id: string;
+	vendor_id: string;
+	vendor_name: string | null;
+	change_type: string;
+	status: string;
+	/** Masked on the queue list; full value on `GET /api/vendors/{id}/change-requests`. */
+	proposed_value: Record<string, unknown> | null;
+	// Exactly one requester is set: the portal VendorUser, or the AP User.
+	requested_by_vendor_user_id: string | null;
+	requested_by_user_id: string | null;
+	reviewed_by_user_id: string | null;
+	reviewed_at: string | null;
+	review_note: string | null;
+	created_at: string;
+}
+
+/** `GET /api/vendors/change-requests` — the paginated queue envelope. */
+export interface VendorChangeRequestPage {
+	items: VendorChangeRequest[];
+	total: number;
+	page: number;
+	page_size: number;
+}
+
+/**
+ * One-line summary of a MASKED proposed value, for the queue list.
+ *
+ * Renders nothing but the backend's own mask: the list payload carries
+ * `account_last4` / `tax_id_last4` and never a full account or tax number, so
+ * this helper must not invent one. Returns `null` when the change type is
+ * unknown or the payload is empty, so the caller renders its own em-dash
+ * rather than a blank cell.
+ */
+export function maskedProposalSummary(
+	changeType: string,
+	proposed: Record<string, unknown> | null | undefined
+): string | null {
+	if (!proposed) return null;
+	if (changeType === 'bank_details') {
+		const bankName = typeof proposed.bank_name === 'string' ? proposed.bank_name : null;
+		const last4 = typeof proposed.account_last4 === 'string' ? proposed.account_last4 : null;
+		return [bankName, last4 ? `••••${last4}` : null].filter(Boolean).join(' · ') || null;
+	}
+	if (changeType === 'tax_id') {
+		const last4 = typeof proposed.tax_id_last4 === 'string' ? proposed.tax_id_last4 : null;
+		return last4 ? `••••${last4}` : null;
+	}
+	return null;
+}
+
+/**
+ * The REVEALED proposed value flattened to `{field, value}` rows for the
+ * review dialog — what an approver reads back to the supplier on a callback
+ * before signing off.
+ *
+ * Returns `null` whenever it cannot represent the payload **without losing
+ * anything** (an unknown change type, a nested object, a non-primitive). The
+ * caller then falls back to rendering the raw JSON: on a control whose whole
+ * job is "look at the new account number", a prettier view that silently drops
+ * a field would be worse than an ugly one that shows all of them.
+ */
+export function revealedProposalFields(
+	changeType: string,
+	proposed: Record<string, unknown> | null | undefined
+): { field: string; value: string }[] | null {
+	if (!proposed) return null;
+	const inner =
+		changeType === 'bank_details'
+			? proposed.bank_details
+			: changeType === 'tax_id'
+				? proposed
+				: null;
+	if (!inner || typeof inner !== 'object' || Array.isArray(inner)) return null;
+	const rows: { field: string; value: string }[] = [];
+	for (const [key, value] of Object.entries(inner as Record<string, unknown>)) {
+		if (value === null || value === undefined) continue;
+		if (typeof value === 'object') return null; // nested — fall back to JSON
+		rows.push({ field: key.replace(/_/g, ' '), value: String(value) });
+	}
+	return rows.length ? rows : null;
+}

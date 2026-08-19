@@ -71,11 +71,14 @@
 			await api.post(`/api/vendors/${bankEditing.id}/bank-change`, {
 				bank_details: bankForm
 			});
-			toast('Bank-detail change submitted for approval', 'success');
+			// Name the queue the request landed in — "submitted for approval" left
+			// the reviewer with nowhere to go, which is how the whole dual-control
+			// gate ended up unreachable from the app.
+			toast(m('vendors.bank.toast.submitted'), 'success');
 			bankEditing = null;
 		} catch (err) {
 			const e = err as { detail?: string; message?: string } | null;
-			toast(e?.detail ?? e?.message ?? 'Submit failed', 'error');
+			toast(e?.detail ?? e?.message ?? m('vendors.bank.toast.submitFailed'), 'error');
 		} finally {
 			savingBank = false;
 		}
@@ -275,6 +278,13 @@
 
 <PageHeader title={m('vendors.title')}>
 	{#snippet actions()}
+		{#if auth.isManager}
+			<!-- The dual-control queue a staged bank/tax change waits in. Role-gated
+			     to match `GET /api/vendors/change-requests` (admin | ap_manager). -->
+			<a class="btn-outline" href="/vendors/change-requests">
+				{m('vendors.action.changeApprovals')}
+			</a>
+		{/if}
 		{#if canManageVendors}
 			<button class="btn-outline" onclick={() => (showConsolidation = true)}>
 				Merge duplicates
@@ -390,6 +400,12 @@
 			<code>counterparty_id</code> is the processor's identifier; the last4s are stored
 			here for display only — full account / routing numbers belong with the processor.
 		</p>
+		<p class="dual-control-hint">
+			{m('vendors.bank.dualControlHint')}
+			{#if auth.isManager}
+				<a href="/vendors/change-requests">{m('vendors.bank.reviewQueueLink')}</a>
+			{/if}
+		</p>
 		<form onsubmit={(e) => { e.preventDefault(); saveBankDetails(); }}>
 			<label>
 				<span>{m('vendors.bank.counterpartyId')}</span>
@@ -423,7 +439,11 @@
 
 <style>
 	/* Page-specific styling; shared design-system CSS lives in app.css. */
+	/* Shared by the Merge-duplicates <button> and the change-approvals <a>, so
+	   the two toolbar controls read as one row. */
 	.btn-outline {
+		display: inline-flex;
+		align-items: center;
 		padding: 8px 18px;
 		border-radius: 6px;
 		border: 1px solid var(--border);
@@ -434,6 +454,18 @@
 		cursor: pointer;
 		font-family: inherit;
 		white-space: nowrap;
+		text-decoration: none;
+	}
+
+	/* The dual-control explainer in the bank-details dialog: saving here stages
+	   a request, it does not change where money goes. */
+	.dual-control-hint {
+		margin: -4px 0 14px;
+		font-size: 0.8rem;
+		color: var(--text-muted);
+	}
+	.dual-control-hint a {
+		color: var(--accent);
 	}
 	.btn-outline:hover:not(:disabled) {
 		border-color: var(--accent);
