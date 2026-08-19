@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { Expense } from '$lib/types/expense';
+	import type { Expense, ExpenseStatus } from '$lib/types/expense';
 	import {
 		EXPENSE_PAYMENT_METHODS,
 		EXPENSE_PAYMENT_METHOD_LABELS,
@@ -8,6 +8,7 @@
 	import { auth } from '$lib/stores/auth.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
+	import Badge, { type BadgeTone } from '$lib/components/ui/Badge.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import {
 		createExpense,
@@ -69,6 +70,33 @@
 	let uploading = $state(false);
 
 	const status = $derived(expense?.status ?? 'draft');
+	// `Expense.status` is a bare string on the wire, so both lookups below are
+	// `?? fallback` — a status this build doesn't know renders its raw value in
+	// a flat chip rather than blank.
+	const statusKey = $derived(status as ExpenseStatus);
+
+	/**
+	 * Badge tone per expense status, at the colours these five rules already
+	 * had. Total record: a status added to `ExpenseStatus` is a compile error
+	 * here rather than an untinted pill.
+	 *
+	 * `reimbursed` takes the `erp` tone — the measured purple this rule
+	 * spelled by hand, doing the job that tone does elsewhere: handed off
+	 * downstream. Green would have collapsed it into `approved`, and
+	 * "someone approved this" and "the money went back" are different answers
+	 * to the only question an employee asks of this pill.
+	 *
+	 * Belongs beside `EXPENSE_STATUS_LABELS` in `types/expense.ts` (the shape
+	 * `types/recurring.ts` uses) once the list page converts too — that file
+	 * is outside this tranche.
+	 */
+	const STATUS_TONES: Record<ExpenseStatus, BadgeTone> = {
+		draft: 'accent',
+		submitted: 'warning',
+		approved: 'success',
+		rejected: 'danger',
+		reimbursed: 'erp'
+	};
 
 	function numOrNull(v: unknown): number | null {
 		if (v === '' || v === null || v === undefined) return null;
@@ -173,7 +201,9 @@
 	<form onsubmit={(e) => { e.preventDefault(); handleSave(); }}>
 		{#if !isCreate}
 			<div class="status-row">
-				<span class="badge {status}">{EXPENSE_STATUS_LABELS[status as keyof typeof EXPENSE_STATUS_LABELS] ?? status}</span>
+				<Badge tone={STATUS_TONES[statusKey] ?? 'neutral'} variant={status}>
+					{EXPENSE_STATUS_LABELS[statusKey] ?? status}
+				</Badge>
 			</div>
 		{/if}
 
@@ -308,21 +338,6 @@
 		gap: 8px;
 		margin-bottom: 12px;
 	}
-
-	.badge {
-		display: inline-block;
-		padding: 3px 10px;
-		border-radius: 12px;
-		font-size: 0.75rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-	}
-	.badge.draft { background: var(--accent-tint); color: var(--accent-on-tint); }
-	.badge.submitted { background: rgba(212, 148, 10, 0.15); color: #d4940a; }
-	.badge.approved { background: rgba(31, 168, 106, 0.15); color: #1fa86a; }
-	.badge.rejected { background: rgba(224, 64, 64, 0.15); color: var(--danger); }
-	.badge.reimbursed { background: rgba(140, 100, 240, 0.15); color: #a585f5; }
 
 	.form-grid {
 		display: grid;

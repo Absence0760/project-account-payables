@@ -41,17 +41,27 @@ test.describe('/payments (acme admin)', () => {
 	test('Runs tab shows the seeded payment run', async ({ page }) => {
 		await page.locator('.tab', { hasText: 'Runs' }).click();
 
-		// Seed creates 1 run per tenant, status "completed". Click into
-		// the row → the RunDetailModal opens.
+		// Seed creates 1 run per tenant. Its status is DERIVED from its
+		// payments (decisions.md §41), and the seed's run holds one
+		// `completed` and one `pending` payment — so it reports `executing`,
+		// not the `completed` its column says.
 		const firstRow = page.locator('table tbody tr.clickable').first();
 		await expect(firstRow).toBeVisible({ timeout: 5_000 });
+
+		// …which is exactly why this asserts a TONE rather than a colour or a
+		// specific status: the row pill is `<Badge>`, and every status the
+		// backend can derive must map to one of its tones. `executing` and
+		// `partial` had no page-local CSS rule and rendered untinted, so the
+		// seeded run's own badge was one of the invisible ones.
+		const runPill = firstRow.locator('.badge');
+		await expect(runPill).toHaveClass(/\b(accent|success|warning|danger|muted|neutral|erp)\b/);
 
 		await firstRow.click();
 		const modal = page.locator('div.modal[role="dialog"][aria-label="Payment run"]');
 		await expect(modal).toBeVisible();
 		await expect(modal.locator('h2')).toHaveText('Payment Run');
-		// status badge is rendered with a class equal to the status —
-		// completed for the seeded run.
+		// The modal's own pill still hand-rolls its status classes
+		// (RunDetailModal is not on the shared primitive yet).
 		await expect(modal.locator('.status-badge')).toBeVisible();
 
 		// Close it. The modal has two "Close" controls — an X icon

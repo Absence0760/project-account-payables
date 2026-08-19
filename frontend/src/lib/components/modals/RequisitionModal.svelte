@@ -1,9 +1,14 @@
 <script lang="ts">
-	import type { Requisition, RequisitionLineItemInput } from '$lib/types/requisition';
+	import type {
+		Requisition,
+		RequisitionLineItemInput,
+		RequisitionStatus
+	} from '$lib/types/requisition';
 	import { REQUISITION_STATUS_LABELS } from '$lib/types/requisition';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
+	import Badge, { type BadgeTone } from '$lib/components/ui/Badge.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import { formatMoney } from '$lib/utils/money';
 	import { toast } from '$lib/components/ui/Toast.svelte';
@@ -24,9 +29,37 @@
 		onsaved: (r: Requisition) => void;
 	} = $props();
 
+	/**
+	 * Badge tone per requisition status — the same seven the list page paints,
+	 * at the colours they already had.
+	 *
+	 * `converted` takes the `erp` tone: it is the measured purple literal this
+	 * rule already spelled by hand, and it is doing the same job it does
+	 * mid-invoice-pipeline — "handed off downstream", here to a PO. Keeping it
+	 * distinct from `approved` (green) matters: approved is a decision,
+	 * converted is a decision someone has already acted on.
+	 *
+	 * Belongs beside `REQUISITION_STATUS_LABELS` in `types/requisition.ts`
+	 * (the shape `types/recurring.ts` uses) once the list page converts too —
+	 * that file is outside this tranche.
+	 */
+	const STATUS_TONES: Record<RequisitionStatus, BadgeTone> = {
+		draft: 'accent',
+		submitted: 'warning',
+		pending_approval: 'warning',
+		approved: 'success',
+		rejected: 'danger',
+		converted: 'erp',
+		cancelled: 'neutral'
+	};
+
 	const isCreate = $derived(requisition === null);
 	const canEdit = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk'));
 	const status = $derived(requisition?.status ?? 'draft');
+	// `Requisition.status` is a bare string on the wire, so both lookups below
+	// are `?? fallback` — a status this build doesn't know renders its raw
+	// value in a flat chip rather than blank.
+	const statusKey = $derived(status as RequisitionStatus);
 	// Header fields + line items are only editable while the requisition is a
 	// draft (or being created) — a submitted/approved requisition is locked.
 	const editable = $derived(canEdit && (isCreate || status === 'draft'));
@@ -161,7 +194,9 @@
 	<form onsubmit={(e) => { e.preventDefault(); handleSave(); }}>
 		{#if !isCreate}
 			<div class="status-row">
-				<span class="badge {status}">{REQUISITION_STATUS_LABELS[status as keyof typeof REQUISITION_STATUS_LABELS] ?? status}</span>
+				<Badge tone={STATUS_TONES[statusKey] ?? 'neutral'} variant={status}>
+					{REQUISITION_STATUS_LABELS[statusKey] ?? status}
+				</Badge>
 				{#if requisition?.converted_po_id}
 					<span class="muted">{m('requisitions.modal.poCreatedNote')}</span>
 				{/if}
@@ -338,23 +373,6 @@
 		font-size: 0.82rem;
 		color: var(--text-muted);
 	}
-
-	.badge {
-		display: inline-block;
-		padding: 3px 10px;
-		border-radius: 12px;
-		font-size: 0.75rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-	}
-	.badge.draft { background: var(--accent-tint); color: var(--accent-on-tint); }
-	.badge.submitted { background: rgba(212, 148, 10, 0.15); color: #d4940a; }
-	.badge.pending_approval { background: rgba(212, 148, 10, 0.15); color: #d4940a; }
-	.badge.approved { background: rgba(31, 168, 106, 0.15); color: #1fa86a; }
-	.badge.rejected { background: rgba(224, 64, 64, 0.15); color: var(--danger); }
-	.badge.converted { background: rgba(140, 100, 240, 0.15); color: #a585f5; }
-	.badge.cancelled { background: var(--bg); color: var(--text-muted); }
 
 	.form-grid {
 		display: grid;

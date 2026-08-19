@@ -377,6 +377,14 @@ test.describe('/admin/webhooks (admin)', () => {
 		const pill = row.locator('.status-pill');
 		await expect(pill).toHaveText('Failed');
 
+		// The pill is the shared `<Badge>`: `.status-pill` survives only as a
+		// selector hook (this test's), and the colour comes from the tone.
+		// Asserting the tone is what stops a future edit re-introducing a
+		// page-local `.status-pill.failed { color: … }` — the drift the
+		// primitive exists to prevent.
+		await expect(pill).toHaveClass(/\bbadge\b/);
+		await expect(pill).toHaveClass(/\bdanger\b/);
+
 		await deleteSub(page, subId);
 	});
 
