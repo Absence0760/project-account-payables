@@ -1518,3 +1518,389 @@ The general rule, beyond currency: **when a value cannot be established, say so
 in the result and leave it out of the arithmetic.** Do not substitute a
 plausible stand-in and record the doubt somewhere the consumer does not look.
 Same instinct as §34 — the reassuring default is the one nobody investigates.
+
+---
+
+## 36. An unresolvable sanctions provider holds the payment; it does not screen against `mock`
+
+**Decided:** 2026-08-19 · `backend/app/services/sanctions_adapters/dispatcher.py`
+
+`get_sanctions_adapter` resolved `_REGISTRY.get(provider) or _REGISTRY["mock"]`,
+so a typo'd `Organization.settings.compliance.sanctions.provider` —
+`"worldcheck"` for the registry's `refinitiv`, say — screened an entire tenant's
+vendor book against the mock's three-entry fixture list and returned `clear`
+with risk 0. The dispatcher's own docstring asserted that "the compliance
+service surfaces a warning in its result so this misconfiguration is visible to
+the AP team". No such code existed: `services/compliance` never inspected
+`adapter.provider_name`, and `services/vendor_screening` recorded the mock's
+verdict unexamined. The stated mitigation was never built, on the control that
+exists to keep money away from a sanctioned party.
+
+A **named** unknown provider now raises `UnknownSanctionsProviderError`. An
+absent or empty provider still resolves to `mock` — that is the local-first
+default, and a fresh clone must screen vendors with no cloud account. This is
+the same call already made for `erp_adapters`, `payment_adapters`, `fx_adapters`
+and `financing_adapters` (§29): the mock is never an inert stub, so substituting
+it converts a configuration error into a silent, confident wrong answer.
+
+Rejected: raising all the way out to the caller. A 500 on the vendor-create path
+would break vendor management over a compliance misconfiguration, and a 500 on
+the payment path tells an operator nothing about which control failed. Both
+consumers absorb the raise instead, each in the direction that fails closed.
+`compliance.check_payment_compliance` returns `hold` with the reason `sanctions
+screening could not run: no adapter for configured provider '<name>'`, so the
+payment waits in `pending_compliance` and the caller opens the usual
+`payment_compliance_hold` exception — the misconfiguration reaches the AP queue
+rather than the payment rail. `vendor_screening.screen_vendor_record` writes a
+`sanctions_checks` row with `provider="unconfigured"`, `result="review_required"`
+(the requested name rides `raw_response`, PII-free) and denormalises
+`vendors.screening_status="review"`, so the vendor lands on the review queue
+instead of reading `clear`. No payment block is set — a misconfiguration is not
+a match.
+
+## 37. A webhook's uniform ack covers decisions, not our own failures
+
+**Decided:** 2026-08-19 · `backend/app/api/email_intake.py`, `backend/app/api/erp_webhook.py`
+
+Every inbound webhook returns the same opaque response on every rejection path,
+so the response cannot enumerate tenant slugs or bearer tokens. For
+`email_intake` that posture is unusually load-bearing: the HMAC signing secret is
+platform-wide (the email provider has no notion of tenants), so anyone who can
+sign a request could otherwise grind candidate per-tenant intake tokens and watch
+for the response to change. The uniform `200 {"status": "received"}` is what
+closes that.
+
+It was applied too widely. `services/email_intake.process_inbound_email` releases
+its Redis dedup claim and re-raises on any downstream failure — S3 unreachable,
+tenant DB down, Redis flapping — commenting that this "lets the NEXT delivery of
+the same message_id actually retry the work". The route then caught that re-raise
+and acked `200`, which tells SES / Mailgun the message *was* delivered. There was
+no next delivery. The release-on-failure code was preparing for a retry that
+could never arrive, and the vendor's invoice was gone behind a log line.
+`api/erp_webhook.py` had the identical shape for ERP status transitions;
+`api/billing_webhook.py` faced the same choice and had already gone the other way.
+
+The distinction drawn is **decision vs. our own failure**. A decision is a final
+answer about this message — unknown or disabled intake token, duplicate delivery,
+no usable attachment, unknown tenant / status / invoice, a transition the state
+machine forbids, genuine success. Those keep the uniform ack, because varying
+them is exactly the oracle. A failure of ours is not an answer at all: the
+message is still unprocessed work, and the only correct response is to ask for it
+again. Those now return a **bodyless 5xx** (`_retry_please()` → `503`) in both
+modules.
+
+The residual exposure is accepted deliberately. A 5xx on our own failure narrows
+the token-enumeration oracle to "while the platform is already broken" — an
+attacker learns only that something inside us threw, never whose token they
+guessed, and only during an outage. Losing every invoice that arrives during a
+blip is the larger harm by a wide margin. The response is bodyless, so it still
+carries no detail, no stack trace and no tenant.
+
+Rejected: making every path a 5xx (an ERP would then retry forever on an event we
+have correctly and permanently refused — the mirror-image failure); and leaving
+it alone with a louder log (the log was already there, and it had not made anyone
+whole).
+
+## 38. Scheduled reports ship, with a CRUD surface, tenant- but not entity-scoped
+
+**Decided:** 2026-08-19 · `backend/app/api/scheduled_reports.py`
+
+`services/scheduled_reports.py` had a complete, tested runner and no input
+surface: nothing under `app/api/` referenced the `ScheduledReport` model, so a
+row could only be created by hand-written SQL, `list_due_schedules` returned `[]`
+on every tick forever, and the documented 5-strike auto-disable was a one-way
+door. The choice was ship the surface or delete the feature. We shipped it —
+recurring emailed CFO reports are a table-stakes AP capability and the machinery
+was already sound.
+
+Three calls inside that:
+
+*Admin-only to mutate, admin + CFO to read.* A schedule is a standing instruction
+to email a CSV of the tenant's AP spend to an arbitrary address on a recurring
+basis, with no review of any individual send. That is a data-egress control, not
+a reporting preference, so it sits above the gate the rest of `/analytics` uses.
+Reads stay open to the CFO, who owns the reports and needs to audit what is going
+out.
+
+*Validation against the runner's own registries, never restated copies.*
+`report_type` is checked against `report_export.EXPORTERS` and `cadence` against
+`scheduled_reports.known_cadences()`. Both matter operationally: a `report_type`
+outside the exporter registry raises on every tick and burns through the
+auto-disable without ever sending, and an unknown cadence silently falls back to
+daily — so a "yearly" row would have emailed 365 times a year. Importing the
+registries means adding a report type or a cadence updates the API for free.
+
+*Tenant-scoped, deliberately not entity-scoped.* `ScheduledReport` carries no
+`entity_id`, and the runner's `_materialise_rows` applies no entity filter to any
+of its six report types — the emailed CSV is whole-tenant by construction.
+Stamping an entity on the schedule row would advertise a scope the delivered file
+does not honour, which is worse than not offering it at all. Making it real means
+entity-filtering the materializer *and* a migration; that is its own slice.
+Tenant isolation itself is enforced normally, through `get_tenant_db`.
+
+Audit rows carry the recipient **count**, never the addresses: the trail is
+append-only and WORM-shipped, so a corrected distribution list could never be
+redacted out of it. And `PATCH {enabled: true}` clears the stale `[retry N]`
+marker — `_mark_failure` reads that prefix to count consecutive failures, so
+re-enabling without clearing it means the next failure lands at retry 6 and
+disables the row again immediately, which an operator cannot distinguish from the
+re-enable not having worked.
+
+## 39. `/api/v1/docs` is a self-hosted reference, not Swagger UI
+
+**Decided:** 2026-08-19 · `backend/app/api/v1_openapi.py`
+
+`public_docs` returned FastAPI's `get_swagger_ui_html`, whose only stylesheet,
+script and favicon are third-party CDN URLs. `main.SecurityHeadersMiddleware`
+stamps `Content-Security-Policy: default-src 'none'` on every response, so the
+route returned `200`, fetched nothing, and rendered blank in any browser honouring
+the header.
+
+Three exits were available. **Allowlisting the CDN** in a route-scoped CSP is
+three lines, but it gives a page the platform itself serves a third-party runtime
+dependency, and it still renders blank offline — breaking guard rail 7's
+local-first rule. **Dropping the route** and pointing at the spec URL is honest,
+but leaves a 404 on a URL our own docs advertise. **Vendoring `swagger-ui-dist`**
+keeps the CSP strict and works offline, but commits roughly a megabyte of
+third-party JavaScript to a public repo along with a version nobody will remember
+to bump — a supply-chain artifact acquired for a reference page.
+
+We took the third exit at its minimum. `render_docs_html` renders the same
+published document server-side as self-contained HTML: no script at all, inline
+or sourced, and no external asset of any kind. The route sets its own CSP —
+`default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri
+'none'` — which differs from the global policy by exactly one token, the page's
+own inline stylesheet, which can neither execute nor exfiltrate. The **global**
+policy is untouched: it is what keeps the API origin unable to load third-party
+script at all, and relaxing it for one page relaxes it for every JSON response.
+`SecurityHeadersMiddleware` uses `setdefault`, so a route-set header wins with no
+middleware change.
+
+The trade-off, stated plainly: this is a reference, not an interactive console —
+there is no "Try it out". The machine-readable contract at
+`/api/v1/openapi.json` is what integrators actually consume, and it feeds any
+client generator or Swagger / Redoc instance they already run. `render_docs_html`
+is a pure function of the spec, so the page cannot drift from the routes.
+
+## 40. Semantic duplicate detection stays cross-entity; the warning it writes does not
+
+**Decided:** 2026-08-19 · `backend/app/services/duplicate_detection.py`
+
+`find_semantic_duplicates` queried `invoice_embeddings` with no entity filter
+while every sibling reader is scoped — `rag.retrieve_similar` takes an
+`entity_id`, the assistant's `find_invoices_by_text` threads it "so 'search'
+can't silently widen past the subsidiary the user has selected", and
+`vendor_matching._candidate_query` scopes for the same reason. Two consequences
+followed: the resulting `duplicate` Exception is payment-blocking, so a
+cross-entity false positive holds subsidiary A's payment run; and
+`matches_to_warning` wrote the matched invoice's `invoice_number`, `vendor_name`
+and `amount` into `invoice.warnings`, which the detail modal renders and whose
+`message` is copied verbatim into the Exception description — data from an entity
+the viewer is otherwise scoped away from.
+
+Scoping the search would have been the mechanical fix and it is the wrong one.
+The same invoice billed to two subsidiaries of one group is a *real* duplicate
+and precisely what a group AP team wants caught; silently scoping removes a
+genuine control in order to fix a disclosure problem. So the search stays
+tenant-wide and `entity_id` **classifies rather than filters**: an outer join to
+`invoices` tags each match `cross_entity`, and a cross-entity match is reported as
+existence only — "a near-identical invoice exists under another entity", with
+`invoice_id`, `invoice_number`, `vendor_name` and `amount` all nulled. The id goes
+too: an entity-scoped `GET` would 404 on it anyway, so surfacing it buys nothing
+and is one more identifier crossing the boundary.
+
+A NULL `entity_id` on either side means *unstamped* — a pre-multi-entity row, or a
+tenant that never used entities — not "some other entity". Treating unknown as
+cross-entity would redact the useful detail for every single-entity tenant, the
+overwhelming majority, to protect a boundary that does not exist for them. When
+both a same-entity and a cross-entity match exist, the headline is built from the
+same-entity one (the viewer can act on it and needs the identifiers) with a bare
+count of the others appended.
+
+The Exception stays payment-blocking on a cross-entity hit. That is intended: a
+suspected intra-group double-bill is exactly the case that wants human sign-off.
+
+## 41. A run's status is derived from its payments, not read from the column
+
+**Decided:** 2026-08-19 · `backend/app/services/payment_runs.py`
+
+`PaymentRun.status` had exactly one writer after execution: the final rollup in
+`_dispatch_run_payments`. Neither the processor webhook, the reconciler backstop,
+nor `/compliance/{release,dismiss}` touched it. A run that rolled up `submitted`
+because one payment was held `pending_compliance`, and then had that payment
+dismissed, kept reporting `submitted` while its own payments said `failed` —
+`/retry-failed` 409'd on `RETRYABLE_RUN_STATUSES`, and `/execute` and `/resume`
+409'd on the claim states. A dead end, and precisely the "button that can't act"
+the `retryable_failures` field exists to prevent.
+
+Two mechanisms were on the table. Recompute-and-persist at every site that
+changes a payment's status is the obvious one, and it is what a schema-first
+instinct reaches for; it was rejected as the *primary* mechanism because it is a
+completeness obligation on a set that grows — every future path that moves a
+payment must remember to call it, and the failure mode of forgetting is silent
+and identical to the bug being fixed. Deriving on read cannot be forgotten:
+`derive_run_status(persisted, rollup)` is the single rule, and the runs list, the
+run detail and the retry gate all route through it, so what an operator sees and
+what an endpoint gates on cannot diverge by construction.
+
+The split is between *claim* states and *outcome* states. `draft`, `executing`
+and `cancelled` say something about who holds the run, not about how its payments
+turned out, and `/execute` / `/resume` gate on exactly those — re-deriving them
+would let a rollup un-claim a run mid-dispatch. They pass through untouched.
+`submitted`, `partial`, `failed` and `completed` are claims about outcomes, and
+outcomes are what the payment rows already record, so those are recomputed.
+
+`recompute_run_status` was kept as a secondary, belt-and-braces write at the three
+endpoints that move a payment outside the dispatch pass. Not because the reads
+need it — they don't — but because a stored column that lies is a trap for
+anything reading the database directly: an operator at `psql`, a CSV export, a
+future consumer written by someone who reasonably assumes the column means what
+it says.
+
+The rollup's own default was fixed in the same pass. It returned `completed`
+whenever nothing was completed, failed or in flight — a fail-open answer on a
+money-run status, which made a run with every payment still `pending` (nothing
+attempted) and a run with no payments at all both report success without a cent
+moving. All-pending is the resumable state and now reports `executing`; no
+payments at all reports `draft`.
+
+## 42. The corridor-quote optimizer got a caller, but not the one that routes money
+
+**Decided:** 2026-08-19 · `backend/app/services/corridor_quotes.py`, `backend/app/api/payments.py`
+
+`compare_quotes` shipped fully built, documented and unit-tested with nothing
+calling it. Unreachable code on the money path is worse than absent code: it
+passes review, accrues no test pressure from real callers, and hands whoever
+wires it up every untested assumption at once. Two very different things were
+being called "wiring it up", and conflating them is why it sat unwired for so
+long.
+
+The first is letting the auction *decide* which rail moves the money — pick the
+cheapest bid at dispatch time and send the payment there. That is a treasury
+policy decision, not a defect fix. Which bank moves a customer's money is a
+question about banking relationships, settlement risk, reporting and existing
+contracts; the fact that one adapter reports a lower fee is an input to it, not
+an answer. A bug-hunting pass does not get to make that call, and making it
+silently — inside `_execute_single_payment`, where the change would be small —
+would be the worst version of making it.
+
+The second is letting a *human* see the comparison. That needs no policy call at
+all, and it is what shipped: `POST /api/payments/corridor-quotes`, read-only,
+advisory, booking nothing. The response carries `advisory: true` so a client
+cannot mistake it for a routing decision, and `payment_corridor.pick_corridor`
+remains the sole authority over the rail on a `Payment` row.
+
+This is the general shape for "built but unreachable" capabilities: find the
+largest slice that is safe to reach without deciding anything nobody has decided,
+wire that, and leave the policy question explicitly open rather than answering it
+by omission. The alternative — deleting the module as dead code — would have
+thrown away the correct part along with the undecided part.
+
+The same test was applied to `services/financing_adapters` and it failed:
+supply-chain financing has **no safe read-only half**, because a financing quote
+is only meaningful if it can be accepted, and accepting it moves money to a
+supplier from a third-party financier. That one stays unwired, deliberately.
+
+## 43. The commitment set takes one schedule per invoice, and `id` is only a determinism tiebreak
+
+**Decided:** 2026-08-19 · `backend/app/api/analytics.py`
+
+`_commitment_rows`' `outerjoin(PaymentSchedule)` fanned an invoice out to one row
+per schedule, double-counting it at full amount across the forecast, the
+cash-position curve, the what-if, every copilot tool and the `plan_id` hash
+simultaneously. Dedup takes the **latest** schedule via `DISTINCT ON (invoice_id)
+… ORDER BY invoice_id, created_at DESC, id DESC`, matching
+`discount_auto_trigger._resolve_due_date`'s existing `ORDER BY created_at DESC
+LIMIT 1` on the same table so the discount engine and the cash forecast cannot
+disagree about an invoice's due date.
+
+`created_at` defaults to `transaction_timestamp()`, which is constant within a
+transaction, so two schedules written in one commit carry the *same* timestamp and
+"latest" is genuinely undefined between them. The `id` tiebreak exists solely to
+make that case **deterministic** — a copilot `plan_id` is a hash of its resolved
+inputs and must not flap between reads — not to assert an order the data does not
+carry.
+
+Rejected: summing every schedule's terms (a schedule is a restatement, not a
+tranche) and adding a real sequence column (a migration for a column no writer
+populates today).
+
+## 44. A conformance claim is emitted only when the conformance check passes
+
+**Decided:** 2026-08-19 · `backend/app/services/e_invoice/bis3.py`
+
+`cbc:CustomizationID` / `cbc:ProfileID` are not decoration: together they assert
+that a UBL invoice conforms to EN 16931 as profiled by PEPPOL BIS Billing 3.0. An
+Access Point routes on them and validates the payload against that profile.
+Emitting them on a document that does not meet the profile is worse than emitting
+nothing — it converts a document the receiver could have read as plain UBL into
+one it is obliged to reject, and it makes our own logs claim a compliance posture
+we do not have.
+
+The send path was already declaring BIS 3.0 on the AS4 envelope for documents
+with no `cbc:EndpointID` on either party, tax subtotals with no amounts, and lines
+with no VAT category. So the document was brought up to the profile *and* the
+claim made conditional on it: `generate_ubl` declares the identifiers only when
+`bis3_conformance_errors(doc)` is empty, and `peppol_send` refuses to transmit a
+document it can itself disprove.
+
+Rejected: adding the two strings unconditionally — the cheap change, and the one
+that makes the lie load-bearing; and gating on nothing while leaving the AS4
+envelope claiming the profile — the status quo, which only fails at a real Access
+Point, in production, on a customer's invoice.
+
+The check is honest about its own limits. It is a mandatory-element pass over the
+rules the normalized model can answer, not the official Schematron; a document
+that passes may still fail the real validator, but one that **fails** provably
+does not conform, and that asymmetry is exactly what makes a conditional
+declaration sound.
+
+## 45. CFDI states `ObjetoImp="03"`, not `"01"`, when a taxed line's rate is not establishable
+
+**Decided:** 2026-08-19 · `backend/app/services/e_invoice/country_formats/cfdi.py`
+
+SAT's `c_ObjetoImp` values are claims about the line, and its validation rules key
+off them: `"02"` (subject to tax) *requires* the per-line `cfdi:Traslado`; `"01"`
+(not subject to tax) and `"03"` (subject, not obliged to break it down) forbid it.
+The generator stamped `"02"` on every line and emitted no Traslado at all.
+
+The obvious repair — fall back to `"01"` when the breakdown cannot be built —
+trades one false claim for another: a line carrying a tax amount is not *no objeto
+de impuesto*. So the mapping is three-way: `"02"` + a complete Traslado when
+`Base` and a rate are establishable, `"03"` when the line is taxed but the rate is
+not (a multi-rate document, or a tax amount with no rate anywhere), `"01"` only
+for a genuinely untaxed line.
+
+Related: a zero rate is emitted as *tasa cero* (`TipoFactor="Tasa"`,
+`TasaOCuota="0.000000"`, `Importe="0.00"`) and never as `"Exento"` — the two are
+different claims and the normalized model cannot distinguish them.
+
+## 46. Outbound notification legs run after the caller's commit, not inside it
+
+**Decided:** 2026-08-19 · `backend/app/services/post_commit.py`
+
+`transition_invoice` awaited the whole notification fan-out — one email per
+recipient, serially, then a Slack / Teams POST with a 10-second `httpx` timeout —
+while the caller's transaction was still open. `payment_erp_sync._sync_one_payment`
+takes the invoice `SELECT … FOR UPDATE` and only commits after the transition
+returns; `review.approve_invoice` holds `FOR UPDATE` on the `WorkflowInstance`. A
+hung chat webhook therefore held a row lock on a live invoice for its full
+timeout, and N recipients multiplied the email leg linearly.
+
+`services/post_commit` queues the transports on the caller's *session* and fires
+them from SQLAlchemy's `after_commit`, which runs after the DB has committed — so
+every lock is already released, and no call site had to change. The in-app
+`Notification` rows deliberately stay in the caller's transaction: they are DB
+writes and should commit atomically with the status change.
+
+Rejected: parallelising the email leg with a bounded `gather` (shrinks N×T to T
+but leaves the lock held for T, so it treats the symptom); and threading an
+explicit post-commit step through all ~35 `transition_invoice` call sites
+(invasive, and one missed call site silently reverts to the old behaviour).
+
+Accepted consequence, and the right one: **a transaction that rolls back now sends
+nothing** — we no longer email people about a status change that never happened.
+Under a `dispatch_engine_scope` the jobs are awaited inline via `await_only`
+rather than spawned, because that worker's loop closes the moment the job returns
+and would abandon a task mid-send; inline still costs no lock, only latency on a
+background worker.
