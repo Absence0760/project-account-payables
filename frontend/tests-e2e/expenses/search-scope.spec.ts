@@ -1,24 +1,31 @@
 import { expect, test } from '../fixtures/helpers';
 
 /**
- * /expenses search honesty — the empty state must not claim more than it knows.
+ * /expenses search reaches the SERVER.
  *
- * `GET /api/expenses` has no `search` parameter at all (it takes `status`,
- * `report_id` and pagination), so the merchant/category term is applied
- * client-side over the rows loaded so far. That is a real limitation: a term
- * matching an expense on page 3 finds nothing until the user pages to it.
+ * `GET /api/expenses` had no `search` parameter at all, so the merchant term
+ * was applied client-side over the rows loaded so far and an expense on page 3
+ * read as "nothing matched" until the user paged to it — which the empty state
+ * had to admit rather than claim something about rows it never fetched. The
+ * endpoint now ILIKEs merchant / description / category, so the whole filtered
+ * set is searched and the plain empty message is true again.
  *
- * Rendering a flat "No expenses match your filters." over a partially loaded
- * list is the same dishonest-UI bug as an unconditional "Showing all N" — it
- * asserts something about rows that were never fetched. The empty state now
- * says what was and was not searched, and Load more is still offered; once
- * every row is loaded the claim becomes true and the plain message returns.
+ * Two things are asserted, because either alone would pass while the feature
+ * was broken:
+ *   1. the term rides the query string, and
+ *   2. a row that is NOT on the loaded page comes back.
  *
- * The list response is stubbed so the assertion doesn't depend on how much the
+ * Plus the asymmetry that survives: `GET /api/expenses/export` declares no
+ * `search` leg, so the CSV button deliberately sends only `status` — passing a
+ * param FastAPI drops would read as a narrowed export while the file still
+ * covered the whole status-filtered set.
+ *
+ * The list response is stubbed so the assertions don't depend on how much the
  * shard's tenant happens to hold.
  */
 
 const ROWS = 'table tbody tr.clickable';
+const SEARCH = 'Search expenses...';
 
 function expense(n: number, merchant: string) {
 	return {
@@ -48,70 +55,121 @@ function expense(n: number, merchant: string) {
 	};
 }
 
+// The Skyline row sits on page two, so it is unreachable to anything that
+// filters the rows already on screen.
 const PAGE_ONE = [1, 2, 3, 4].map((n) => expense(n, `Stub Merchant ${n}`));
-const PAGE_TWO = [5, 6, 7].map((n) => expense(n, `Stub Merchant ${n}`));
-const TOTAL = PAGE_ONE.length + PAGE_TWO.length;
+const PAGE_TWO = [5, 6, 7].map((n) => expense(n, n === 6 ? 'Skyline Hotels' : `Stub Merchant ${n}`));
+const ALL = [...PAGE_ONE, ...PAGE_TWO];
+const TOTAL = ALL.length;
 
-async function stubExpenseList(page: import('@playwright/test').Page) {
+/** The server's own filter, reproduced: merchant + description + category. */
+function matching(term: string) {
+	const q = term.trim().toLowerCase();
+	if (!q) return null;
+	return ALL.filter((e) =>
+		[e.merchant, e.description ?? '', e.category ?? ''].some((v) => v.toLowerCase().includes(q))
+	);
+}
+
+async function stubExpenseEndpoints(page: import('@playwright/test').Page): Promise<{
+	listSearches: string[];
+	exportUrls: string[];
+}> {
+	const listSearches: string[] = [];
+	const exportUrls: string[] = [];
+
+	// Two routes, not one with a pathname branch: `?` is NOT a glob wildcard in
+	// Playwright, so `**/api/expenses?*` matches the LIST only — the export
+	// sailed past it to the real backend and the assertion below saw nothing.
+	await page.route('**/api/expenses/export*', async (route) => {
+		exportUrls.push(route.request().url());
+		await route.fulfill({ status: 200, contentType: 'text/csv', body: 'id,merchant\n' });
+	});
+
 	await page.route('**/api/expenses?*', async (route) => {
 		const url = new URL(route.request().url());
-		// The glob also catches /api/expenses/export and /receipt/<key>; only the
-		// list itself is stubbed.
-		if (url.pathname !== '/api/expenses') {
-			await route.continue();
-			return;
-		}
+		const term = url.searchParams.get('search') ?? '';
+		listSearches.push(term);
 		const pageNum = Number(url.searchParams.get('page') ?? '1');
-		const items = pageNum === 1 ? PAGE_ONE : PAGE_TWO;
+		const hits = matching(term);
+		const items = hits !== null ? hits : pageNum === 1 ? PAGE_ONE : PAGE_TWO;
+		const total = hits !== null ? hits.length : TOTAL;
 		await route.fulfill({
 			status: 200,
 			contentType: 'application/json',
-			body: JSON.stringify({ items, total: TOTAL, page: pageNum, page_size: PAGE_ONE.length })
+			body: JSON.stringify({ items, total, page: pageNum, page_size: PAGE_ONE.length })
 		});
 	});
+	return { listSearches, exportUrls };
 }
 
-test.describe('/expenses — client-side search scope', () => {
-	test('a no-match search over a partial list says so instead of claiming nothing matched', async ({
-		page
-	}) => {
-		await stubExpenseList(page);
+test.describe('/expenses — server-side search', () => {
+	test('a term matching a row on a later page is found without paging', async ({ page }) => {
+		const { listSearches } = await stubExpenseEndpoints(page);
+		await page.goto('/expenses');
+		await expect(page.locator(ROWS)).toHaveCount(PAGE_ONE.length);
+		// The Skyline row is genuinely not among the loaded rows.
+		await expect(page.locator(ROWS, { hasText: 'Skyline Hotels' })).toHaveCount(0);
+
+		const searched = page.waitForResponse(
+			(r) =>
+				new URL(r.url()).pathname === '/api/expenses' &&
+				new URL(r.url()).searchParams.get('search') === 'Skyline'
+		);
+		await page.getByPlaceholder(SEARCH).fill('Skyline');
+		await searched;
+
+		await expect(page.locator(ROWS)).toHaveCount(1);
+		await expect(page.locator(ROWS, { hasText: 'Skyline Hotels' })).toHaveCount(1);
+		// `total` now counts the MATCHES, so nothing is left to load.
+		await expect(page.getByRole('button', { name: /Load more/ })).toHaveCount(0);
+		await expect(page.getByText('Showing all 1 expense')).toBeVisible();
+		expect(listSearches).toContain('Skyline');
+	});
+
+	test('a term that matches nothing gets the plain empty state', async ({ page }) => {
+		// The transitional "searched only the rows loaded so far" copy is gone —
+		// the server searched everything, so the flat claim is now honest.
+		await stubExpenseEndpoints(page);
 		await page.goto('/expenses');
 		await expect(page.locator(ROWS)).toHaveCount(PAGE_ONE.length);
 
-		await page.getByPlaceholder('Search expenses...').fill('zzz-no-such-merchant');
-
-		// Empty — but honestly empty: it names how much was searched and points
-		// at the control that widens the search.
-		await expect(page.locator(ROWS)).toHaveCount(0);
-		const emptyCell = page.getByTestId('table-empty');
-		await expect(emptyCell).toContainText(
-			`No match in the ${PAGE_ONE.length} of ${TOTAL} expenses loaded so far`
+		const searched = page.waitForResponse(
+			(r) =>
+				new URL(r.url()).pathname === '/api/expenses' &&
+				new URL(r.url()).searchParams.get('search') === 'zzz-no-such-merchant'
 		);
-		await expect(emptyCell).toContainText('Search covers loaded rows only');
+		await page.getByPlaceholder(SEARCH).fill('zzz-no-such-merchant');
+		await searched;
 
-		// Load more is still offered while the term is active — it is the only
-		// way to widen a client-side search.
-		const loadMore = page.getByRole('button', {
-			name: `Load more (${PAGE_ONE.length} of ${TOTAL})`
-		});
-		await expect(loadMore).toBeVisible();
-
-		// Once every row is loaded the flat claim is true again.
-		await loadMore.click();
-		await expect(page.getByRole('button', { name: /Load more/ })).toHaveCount(0);
+		await expect(page.locator(ROWS)).toHaveCount(0);
 		await expect(page.getByTestId('table-empty')).toHaveText('No expenses match your filters.');
 	});
 
-	test('a matching term still filters the loaded rows', async ({ page }) => {
-		// The client-side filter is the only search this surface has; narrowing
-		// the honest-empty-state must not have cost it.
-		await stubExpenseList(page);
+	test('the CSV export does not pretend the search term narrowed it', async ({ page }) => {
+		// `GET /api/expenses/export` has no `search` leg and FastAPI drops an
+		// undeclared param silently, so sending the term would make the code read
+		// as a filtered CSV that isn't one. Until the backend grows the leg the
+		// export stays status-scoped — and says so by not sending it.
+		const { exportUrls } = await stubExpenseEndpoints(page);
 		await page.goto('/expenses');
 		await expect(page.locator(ROWS)).toHaveCount(PAGE_ONE.length);
 
-		await page.getByPlaceholder('Search expenses...').fill('Merchant 2');
-		await expect(page.locator(ROWS)).toHaveCount(1);
-		await expect(page.locator(ROWS)).toContainText('Stub Merchant 2');
+		const searched = page.waitForResponse(
+			(r) =>
+				new URL(r.url()).pathname === '/api/expenses' &&
+				new URL(r.url()).searchParams.get('search') === 'Skyline'
+		);
+		await page.getByPlaceholder(SEARCH).fill('Skyline');
+		await searched;
+
+		const exported = page.waitForResponse(
+			(r) => new URL(r.url()).pathname === '/api/expenses/export'
+		);
+		await page.getByRole('button', { name: 'Export CSV' }).click();
+		await exported;
+
+		expect(exportUrls).toHaveLength(1);
+		expect(new URL(exportUrls[0]).searchParams.get('search')).toBeNull();
 	});
 });

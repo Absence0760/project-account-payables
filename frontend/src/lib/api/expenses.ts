@@ -30,21 +30,24 @@ import type {
  * endpoints do NOT accept the same params, and FastAPI silently drops the ones
  * it doesn't declare:
  *
- *   - `GET /api/expenses`        — `status`, `report_id`, `page`, `page_size`.
+ *   - `GET /api/expenses`        — `status`, `report_id`, `search`, `page`,
+ *                                  `page_size`.
  *   - `GET /api/expenses/export` — `status`, `report_id`, `category`,
  *                                  `date_from`, `date_to` (no pagination).
  *
- * So `category` / `date_from` / `date_to` are **export-only**, and `search`
- * reaches NEITHER: the list endpoint has no `search` parameter at all, which is
- * why `/expenses` filters the term client-side over the loaded rows and says so
- * in its empty state. Sending one of these to `listExpenses` is a silent no-op,
- * not a filter — wire the backend param first (tracked in docs/followups.md).
+ * So `category` / `date_from` / `date_to` are **list-ignored**, and `search` is
+ * **export-ignored**: the export has no `search` leg, so passing the term there
+ * would read as a narrowed CSV while the file still covered the whole
+ * status-filtered set. `/expenses` therefore builds two param objects (see
+ * `buildParams` / `buildExportParams` on the page). Sending a param to the
+ * endpoint that doesn't declare it is a silent no-op, not a filter — wire the
+ * backend leg first (tracked in docs/followups.md).
  */
 export interface ExpenseListParams {
 	status?: string;
 	/** Export only — ignored by `GET /api/expenses`. */
 	category?: string;
-	/** Accepted by neither endpoint today; see the note above. */
+	/** List only — ignored by `GET /api/expenses/export`. */
 	search?: string;
 	/** Export only — ignored by `GET /api/expenses`. */
 	date_from?: string;
