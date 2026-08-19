@@ -28,8 +28,11 @@
 	let saving = $state(false);
 
 	$effect(() => {
-		adminStore.fetchRoles();
-		adminStore.fetchPermissionCatalog();
+		// Fire-and-forget: the store loaders re-throw so an awaiting caller keeps
+		// its own handling, but nothing awaits here — the store's `errored` flag is
+		// what the UI renders. Swallow so a failed load isn't an unhandled rejection.
+		adminStore.fetchRoles().catch(() => {});
+		adminStore.fetchPermissionCatalog().catch(() => {});
 	});
 
 	function togglePermission(set: Set<string>, key: string): Set<string> {

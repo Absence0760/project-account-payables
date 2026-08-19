@@ -138,20 +138,25 @@
 	let searchTimer: ReturnType<typeof setTimeout>;
 	function debouncedFetch() {
 		clearTimeout(searchTimer);
-		searchTimer = setTimeout(() => invoiceStore.fetch(buildParams()), 300);
+		// `.catch` because nothing awaits this: the store re-throws so an
+		// awaiting caller keeps its own handling (the post-upload toast relies
+		// on it), and `invoiceStore.errored` is what the table renders.
+		searchTimer = setTimeout(() => invoiceStore.fetch(buildParams()).catch(() => {}), 300);
 	}
 
 	// Fetch status counts and active workflow on mount
 	$effect(() => {
-		invoiceStore.fetchCounts();
-		workflowStore.fetchActiveSteps();
+		// Fire-and-forget: see the note in debouncedFetch — the stores' own
+		// `errored` flags are what the UI reads.
+		invoiceStore.fetchCounts().catch(() => {});
+		workflowStore.fetchActiveSteps().catch(() => {});
 	});
 
 	// Re-fetch when status filters or advanced filters change
 	$effect(() => {
 		activeStatuses;
 		advancedFilters;
-		invoiceStore.fetch(buildParams());
+		invoiceStore.fetch(buildParams()).catch(() => {});
 	});
 
 	// Re-fetch on search input (debounced)
@@ -681,8 +686,8 @@
 	<BulkRecodeGLModal
 		onclose={() => (showBulkRecode = false)}
 		onapplied={() => {
-			invoiceStore.fetch(buildParams());
-			invoiceStore.fetchCounts();
+			invoiceStore.fetch(buildParams()).catch(() => {});
+			invoiceStore.fetchCounts().catch(() => {});
 		}}
 	/>
 {/if}

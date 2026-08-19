@@ -123,7 +123,11 @@
 		clearTimeout(searchTimer);
 		searchTimer = setTimeout(() => {
 			syncUrl();
-			contractStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
+			// Fire-and-forget: the store re-throws so an awaiting caller keeps its
+			// own handling, but nothing awaits here — `contractStore.errored` is what
+			// the table's empty state reads. Swallow so a failed load isn't an
+			// unhandled rejection in the console.
+			contractStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
 		}, 300);
 		// Cancel a pending debounce on teardown: without it the timer fires
 		// after the page is gone, running syncUrl()/a list fetch against a route
@@ -134,7 +138,9 @@
 	$effect(() => {
 		statusFilter;
 		syncUrl();
-		contractStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
+		// See the debounce effect above: swallow the rejection, the store's
+		// `errored` flag is what the UI reads.
+		contractStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
 	});
 
 	$effect(() => {

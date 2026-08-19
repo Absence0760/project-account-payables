@@ -45,8 +45,11 @@
 	let searchEffectRan = false;
 
 	$effect(() => {
-		adminStore.fetchUsers();
-		adminStore.fetchRoles();
+		// Fire-and-forget: the store loaders re-throw so an awaiting caller keeps
+		// its own handling, but nothing awaits here — the store's `errored` flag is
+		// what the UI renders. Swallow so a failed load isn't an unhandled rejection.
+		adminStore.fetchUsers().catch(() => {});
+		adminStore.fetchRoles().catch(() => {});
 	});
 
 	$effect(() => {
@@ -71,7 +74,8 @@
 		}
 		if (searchTimer) clearTimeout(searchTimer);
 		searchTimer = setTimeout(() => {
-			adminStore.fetchUsers({ search: q });
+			// See the mount effect: `adminStore.errored` is what the table reads.
+			adminStore.fetchUsers({ search: q }).catch(() => {});
 		}, 250);
 		// Cancel a pending debounce on teardown: without it the timer fires
 		// after the page is gone and lands a stale list into the shared store.

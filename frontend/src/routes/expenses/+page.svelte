@@ -220,7 +220,10 @@
 	$effect(() => {
 		statusFilter;
 		syncUrl();
-		expenseStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
+		// Fire-and-forget: the store loaders re-throw so an awaiting caller keeps
+		// its own handling, but nothing awaits here — the store's `errored` flag is
+		// what the UI renders. Swallow so a failed load isn't an unhandled rejection.
+		expenseStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
 	});
 
 	$effect(() => {
