@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -377,7 +377,12 @@ async def payment_queue(
     # `unconverted_count`, so "these totals mix currencies" is visible rather
     # than silent.
     reporting_currency = resolve_reporting_currency(org.settings)
-    today = date.today()
+    # UTC, not the host's local date. `is_overdue` and the discount-window
+    # cutoff below are the same calendar question `services/analytics`,
+    # `discount_optimizer` and `cash_flow_alerts` answer in UTC; on a non-UTC
+    # host `date.today()` shifts this queue's answers by a day relative to
+    # every other surface reading the same rows.
+    today = datetime.now(UTC).date()
     items: list[dict] = []
     total_savings = Decimal("0")
     total_amount = Decimal("0")

@@ -363,10 +363,12 @@ async def propose_payment_plan(
                 outflow=p.outflow,
                 closing=p.closing,
                 below_threshold=p.below_threshold,
+                unconverted_count=p.unconverted_count,
             )
             for p in plan.periods
         ],
         first_shortfall_period=plan.first_shortfall_period,
+        unconverted_count=plan.unconverted_count,
         cost_of_capital_pct=optimizer_result.cost_of_capital_pct,
         total_savings_selected=plan.total_savings_selected,
         total_outlay_selected=plan.total_outlay_selected,

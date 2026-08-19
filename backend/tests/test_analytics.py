@@ -506,16 +506,32 @@ def test_bucket_outflows_splits_committed_and_pending():
 
 
 def test_bucket_outflows_discount_eligible_amount():
-    """Only rows with both a discount_date and a positive discount_percent
-    count toward discount_eligible_amount."""
+    """Only rows with a positive discount_percent AND a discount window that is
+    STILL OPEN count toward discount_eligible_amount."""
     rows = [
         _commit(
             date(2026, 6, 1), "100", discount_date=date(2026, 5, 25), discount_percent=Decimal("2")
         ),
         _commit(date(2026, 6, 2), "50", discount_date=None, discount_percent=None),
     ]
-    out = bucket_outflows(rows, granularity="week")
+    out = bucket_outflows(rows, granularity="week", today=date(2026, 5, 20))
     assert out[0]["discount_eligible_amount"] == Decimal("100.00")
+
+
+def test_bucket_outflows_excludes_an_elapsed_discount_window():
+    """An in-horizon invoice on 2/10-net-60 terms routinely arrives with a
+    `discount_date` that passed weeks ago — `_commitment_rows` bounds only the
+    DUE date. Counting it reported a saving nobody can still take, and told a
+    CFO to fund a payment run against it. Same rule the discount optimizer and
+    the `early` what-if scenario already apply."""
+    rows = [
+        _commit(
+            date(2026, 6, 1), "100", discount_date=date(2026, 5, 25), discount_percent=Decimal("2")
+        ),
+    ]
+    out = bucket_outflows(rows, granularity="week", today=date(2026, 5, 26))
+    assert out[0]["scheduled_amount"] == Decimal("100.00")
+    assert out[0]["discount_eligible_amount"] == Decimal("0")
 
 
 def test_bucket_outflows_drops_rows_without_due_date():

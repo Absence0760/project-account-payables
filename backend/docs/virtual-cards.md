@@ -702,3 +702,28 @@ backend/app/api/cards.py              # API endpoints (generate, list, cancel, d
 | Rebate dashboard UI | Planned |
 | Supplier portal integration | Planned |
 | BIN sponsor graduation | Future (>$10M/month)
+
+## Charge amounts respect the ISO-4217 exponent
+
+`api/cards._normalize_charge_amount` converts a webhook charge amount to major
+units. The unit differs by provider — Lithic reports MINOR units, Nium MAJOR —
+and the minor-unit leg now goes through
+`payment_adapters.base.minor_units_to_decimal`, the one exponent table in this
+codebase, instead of a flat `/ 100`.
+
+A flat divide is right for the near-universal exponent of 2 and wrong in both
+directions elsewhere: ¥150000 is ¥150,000 (exponent 0), not ¥1,500, and 150000
+fils is 150 KWD (exponent 3), not 1,500. Lithic is USD-only in practice today,
+so nothing currently in play was mispriced — which is exactly why this was
+routed through the shared table *before* a card provider or a non-USD card
+currency arrives rather than after. The card's own `currency` is passed at the
+call site; the parameter stays optional (a webhook body need not carry one) and
+falls back to exponent 2, i.e. the previous behaviour.
+
+`card_dashboard`'s `rebate_ytd` is also bounded at both ends now. `period` is a
+`YYYY-MM` string, so a bare `>= "{year}-01"` matched every FUTURE year too
+("2027-03" sorts above "2026-01") — a forward-dated rebate row leaked into
+year-to-date, and `projected_annual` divides that figure by months elapsed, so
+it inflated the projection as well.
+
+**Tests:** `backend/tests/test_card_charge_normalization.py`.

@@ -329,3 +329,34 @@ portal nav.
   optimizer's APR ranking + cash-budget binding (entity-scoped for
   determinism), accept/decline RBAC (both also cfo), and cross-tenant
   isolation of offers.
+
+## Elapsed discount windows are not "eligible"
+
+Four places price the same economics, and they must not disagree about which
+discounts are still on the table:
+
+| Owner | Rule |
+|---|---|
+| `discount_offers._tier_achievable` | a tier is achievable only while its window is open |
+| `discount_optimizer.optimize` | `capturable = today <= opp.pay_by` |
+| `analytics.apply_payment_timing_scenario` (`early`) | re-times onto `discount_date` only while `discount_date >= today` |
+| `analytics.bucket_outflows` (`discount_eligible_amount`) | same rule — **this was the outlier** |
+
+The commitment rows the forecast consumes are bounded on their DUE date only
+(`api/analytics._commitment_rows`), so an in-horizon invoice on 2/10-net-60
+terms routinely arrives carrying a `discount_date` that passed weeks ago.
+Counting it made `/analytics/cashflow_forecast` report a saving nobody can
+still take — and the copilot narrates off that figure. `bucket_outflows` now
+takes `today` (defaulting to the UTC date, mirroring
+`apply_payment_timing_scenario`) and gates on it. The row's outflow is
+unchanged; only its *eligibility* is.
+
+## `create_offer` resolves the invoice inside the caller's entity scope
+
+An invoice-scoped offer looks its invoice up through `apply_entity_scope`, the
+same way `payment_runs.create_payment_run_for_invoices` and the credit-memo
+path do. The offer is STAMPED with the caller's write entity, so without the
+scope filter an operator with subsidiary A selected could raise an offer under
+A against subsidiary B's invoice — visible in A's queue while pricing B's
+payable. Advisory data, never money, but the sibling money path was fixed for
+exactly this shape. An out-of-scope id is the same opaque 404 as a missing one.

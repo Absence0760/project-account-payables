@@ -127,10 +127,21 @@ class ShortfallProjection:
     threshold: Decimal = Decimal("0")
     breach_count: int = 0
     currency: str = "USD"
+    # Commitments folded into the projected curve at FACE VALUE in a currency
+    # we could not convert (`services.analytics.bucket_outflows`). The email
+    # tells finance leaders their cash runs out; a single unconverted
+    # ¥10,000,000 invoice can manufacture that shortfall on a USD curve, so the
+    # count travels with the projection and is stated in the message rather
+    # than being a caveat only the code knows about.
+    unconverted_count: int = 0
 
 
 def project_shortfall(
-    breaches: list[dict], *, threshold: Decimal, currency: str
+    breaches: list[dict],
+    *,
+    threshold: Decimal,
+    currency: str,
+    unconverted_count: int = 0,
 ) -> ShortfallProjection:
     """Pure: reduce ``detect_threshold_breaches`` output to the one period worth
     alerting on — the EARLIEST breach, because that is the deadline the finance
@@ -141,7 +152,12 @@ def project_shortfall(
     periods forward), so the first element is the earliest.
     """
     if not breaches:
-        return ShortfallProjection(period=None, threshold=threshold, currency=currency)
+        return ShortfallProjection(
+            period=None,
+            threshold=threshold,
+            currency=currency,
+            unconverted_count=unconverted_count,
+        )
     first = breaches[0]
     return ShortfallProjection(
         period=first["period"],
@@ -150,6 +166,7 @@ def project_shortfall(
         threshold=threshold,
         breach_count=len(breaches),
         currency=currency,
+        unconverted_count=unconverted_count,
     )
 
 
@@ -194,7 +211,16 @@ async def _project_tenant(
     periods = bucket_outflows(rows, granularity=_GRANULARITY, today=ref_today)
     position = compute_cash_position(balance.amount, periods, min_balance_threshold=threshold)
     breaches = detect_threshold_breaches(position, min_balance_threshold=threshold)
-    return project_shortfall(breaches, threshold=threshold, currency=currency)
+    return project_shortfall(
+        breaches,
+        threshold=threshold,
+        currency=currency,
+        # Rows the curve carries at face value in another currency. Read off
+        # the buckets rather than the running position: the position's own
+        # count is cumulative-by-carry-forward, and what the reader needs is
+        # "how many commitments could we not convert", once.
+        unconverted_count=sum(int(b.get("unconverted_count", 0) or 0) for b in periods),
+    )
 
 
 async def _notify_tenant(
@@ -220,6 +246,7 @@ async def _notify_tenant(
         shortfall=projection.shortfall,
         currency=projection.currency,
         breach_count=projection.breach_count,
+        unconverted_count=projection.unconverted_count,
     )
 
     engine = create_async_engine(_make_tenant_url(db_name))
