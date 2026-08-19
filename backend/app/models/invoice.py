@@ -58,6 +58,14 @@ class Invoice(Base, EntityMixin, TimestampMixin):
     reporting_currency: Mapped[str | None] = mapped_column(String(3))
     reporting_amount: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
     reporting_fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    # WHICH currency `reporting_fx_rate` was fetched FOR. Without it the row
+    # records a rate but not its pair, so a currency correction between two
+    # FOREIGN currencies (EUR -> GBP on a USD-reporting org) leaves a stale
+    # product that every rollup still labels 'converted'. Written by
+    # `currency_conversion.materialize_reporting_amount` alongside the rate;
+    # NULL on a row locked before migration 0086, where the check falls back
+    # to the rate-shape heuristic. See backend/docs/multi-currency.md.
+    reporting_source_currency: Mapped[str | None] = mapped_column(String(3))
     reporting_fx_locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     invoice_date: Mapped[date | None] = mapped_column(Date)
     received_date: Mapped[date | None] = mapped_column(Date)
