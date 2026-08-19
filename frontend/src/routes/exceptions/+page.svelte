@@ -14,6 +14,7 @@
 	import Tabs from '$lib/components/ui/Tabs.svelte';
 	import AgentDashboard from '$lib/components/exceptions/AgentDashboard.svelte';
 	import { formatMoney } from '$lib/utils/money';
+	import { timeAgo } from '$lib/utils/time';
 	import { pruneSelection } from '$lib/utils/selection';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { m } from '$lib/i18n/store.svelte';
@@ -307,16 +308,6 @@
 
 	function formatCurrency(n: number | null): string {
 		return formatMoney(n, { currency: orgCurrency.currency });
-	}
-
-	function timeAgo(iso: string): string {
-		const diff = Date.now() - new Date(iso).getTime();
-		const hours = Math.floor(diff / 3600000);
-		if (hours < 1) return 'Just now';
-		if (hours < 24) return `${hours}h ago`;
-		const days = Math.floor(hours / 24);
-		if (days === 1) return '1d ago';
-		return `${days}d ago`;
 	}
 
 	function dueLabel(exc: ExceptionItem): string {
