@@ -29,7 +29,12 @@ import {
  */
 
 /** Fulfil the export POST ourselves so the assertion is about the REQUEST, and
- *  no real export runs. Returns a promise for the captured headers. */
+ *  no real export runs.
+ *
+ *  Returns the pending promise WRAPPED in an object. Returning it bare from an
+ *  `async` function is a deadlock: `await captureExportRequest(page)` unwraps
+ *  the inner promise too, so the caller blocks on a request that only happens
+ *  after the click it has not made yet. */
 async function captureExportRequest(page: import('@playwright/test').Page) {
 	let resolveHeaders: (h: Record<string, string>) => void;
 	const captured = new Promise<Record<string, string>>((r) => (resolveHeaders = r));
@@ -46,7 +51,7 @@ async function captureExportRequest(page: import('@playwright/test').Page) {
 		}
 	);
 
-	return captured;
+	return { headers: captured };
 }
 
 async function selectFirstSelectableRow(page: import('@playwright/test').Page) {
@@ -62,11 +67,11 @@ test.describe('/invoices bulk export request headers', () => {
 		await page.goto('/invoices');
 		await expect(page.locator('table tbody tr').first()).toBeVisible();
 
-		const captured = await captureExportRequest(page);
+		const capture = await captureExportRequest(page);
 		await selectFirstSelectableRow(page);
 		await page.locator('.bulk-bar').getByRole('button', { name: 'CSV' }).click();
 
-		const headers = await captured;
+		const headers = await capture.headers;
 		expect(headers['authorization']).toMatch(/^Bearer .+/);
 		expect(headers['x-tenant-slug']).toBe(currentTenantSlug());
 		expect(headers['content-type']).toContain('application/json');
@@ -92,11 +97,11 @@ test.describe('/invoices bulk export request headers', () => {
 		await page.goto('/invoices');
 		await expect(page.locator('table tbody tr').first()).toBeVisible();
 
-		const captured = await captureExportRequest(page);
+		const capture = await captureExportRequest(page);
 		await selectFirstSelectableRow(page);
 		await page.locator('.bulk-bar').getByRole('button', { name: 'CSV' }).click();
 
-		const headers = await captured;
+		const headers = await capture.headers;
 		// The header the hand-rolled fetch omitted. Without it the export is
 		// consolidated while the list it came from is scoped.
 		expect(headers['x-entity-id']).toBe(entity!.id);
