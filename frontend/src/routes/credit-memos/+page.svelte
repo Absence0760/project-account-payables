@@ -390,12 +390,21 @@
 					newCurrency = (e.currentTarget as HTMLSelectElement).value;
 				}}
 				required
+				aria-describedby="cm-currency-hint"
 			>
 				{#each CURRENCY_OPTIONS as ccy (ccy)}
 					<option value={ccy}>{ccy}</option>
 				{/each}
 			</select>
-			<span class="field-hint">{m('creditMemos.createModal.currencyHint')}</span>
+			<!-- `aria-describedby`, not a bare child of the `<label>`: a hint
+			     inside the label is folded into the control's accessible NAME, so
+			     a screen reader announces the whole sentence every time the field
+			     is focused. A hint is a description, not a name. `aria-hidden`
+			     removes it from the NAME computation; `aria-describedby` still
+			     resolves its text, so nothing is lost to a screen reader. -->
+			<small id="cm-currency-hint" class="field-hint" aria-hidden="true">
+				{m('creditMemos.createModal.currencyHint')}
+			</small>
 		</label>
 		<label>
 			<span>{m('creditMemos.createModal.reason')}</span>

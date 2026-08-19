@@ -584,21 +584,51 @@
 				rows="4"
 				bind:value={fRecipients}
 				placeholder={m('scheduledReports.field.recipientsPlaceholder')}
+				aria-describedby="sr-hint-recipients"
 			></textarea>
 			<!-- `<small>`, not `<span>`: the global `.modal label > span` rule is
 			     the uppercase field CAPTION, and it out-specifies a scoped
-			     override — a hint written as a span would render shouting. -->
-			<small class="sr-field-hint">{m('scheduledReports.field.recipientsHint')}</small>
+			     override — a hint written as a span would render shouting.
+
+			     `aria-describedby`, not a bare child: a `<small>` inside the
+			     `<label>` is folded into the control's accessible NAME, so a
+			     screen reader announced the whole sentence as the field's name
+			     and two fields stopped being distinguishable by it (the Period
+			     hint contains the word "report", which collided with the Report
+			     select). A hint is a DESCRIPTION — announced after the name, and
+			     skippable. aria-hidden with aria-describedby, not one or the other: a node inside
+			     the `<label>` is part of the control's accessible NAME, and
+			     `aria-describedby` only ADDS a description — it does not remove the
+			     hint from the name. `aria-hidden` drops it from the name computation
+			     while `aria-describedby` still resolves its text, so the field is
+			     announced as "Period (days)" and the hint follows as a description. -->
+			<small id="sr-hint-recipients" class="sr-field-hint" aria-hidden="true">
+				{m('scheduledReports.field.recipientsHint')}
+			</small>
 		</label>
 		<label>
 			<span>{m('scheduledReports.field.periodDays')}</span>
-			<input type="number" min="1" max="366" bind:value={fPeriodDays} />
-			<small class="sr-field-hint">{m('scheduledReports.field.periodDaysHint')}</small>
+			<input
+				type="number"
+				min="1"
+				max="366"
+				bind:value={fPeriodDays}
+				aria-describedby="sr-hint-period"
+			/>
+			<small id="sr-hint-period" class="sr-field-hint" aria-hidden="true">
+				{m('scheduledReports.field.periodDaysHint')}
+			</small>
 		</label>
 		<label>
 			<span>{m('scheduledReports.field.nextRun')}</span>
-			<input type="datetime-local" bind:value={fNextRun} />
-			<small class="sr-field-hint">{m('scheduledReports.field.nextRunHint')}</small>
+			<input
+				type="datetime-local"
+				bind:value={fNextRun}
+				aria-describedby="sr-hint-next-run"
+			/>
+			<small id="sr-hint-next-run" class="sr-field-hint" aria-hidden="true">
+				{m('scheduledReports.field.nextRunHint')}
+			</small>
 		</label>
 		<label class="sr-checkbox">
 			<input type="checkbox" bind:checked={fEnabled} />

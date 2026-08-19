@@ -116,12 +116,12 @@ test.describe('/cfo scheduled reports', () => {
 		await panel(page).getByTestId('new-schedule').click();
 		const modal = page.getByRole('dialog', { name: 'New scheduled report' });
 		await expect(modal).toBeVisible();
-		await expect(modal.getByLabel('Report').locator('option')).toHaveCount(2);
-		await expect(modal.getByLabel('Report').locator('option')).toHaveText([
+		await expect(modal.getByRole('combobox', { name: /^Report/ }).locator('option')).toHaveCount(2);
+		await expect(modal.getByRole('combobox', { name: /^Report/ }).locator('option')).toHaveText([
 			'AP aging snapshot',
 			'Carbon footprint'
 		]);
-		await expect(modal.getByLabel('Cadence').locator('option')).toHaveCount(1);
+		await expect(modal.getByRole('combobox', { name: /^Cadence/ }).locator('option')).toHaveCount(1);
 	});
 
 	test('auto-disabled reads differently from paused, and one call recovers it', async ({
@@ -251,8 +251,8 @@ test.describe('/cfo scheduled reports', () => {
 
 		const modal = page.getByRole('dialog', { name: 'New scheduled report' });
 		await modal.getByLabel('Name').fill('Daily payments');
-		await modal.getByLabel('Report').selectOption('payment_register');
-		await modal.getByLabel('Cadence').selectOption('daily');
+		await modal.getByRole('combobox', { name: /^Report/ }).selectOption('payment_register');
+		await modal.getByRole('combobox', { name: /^Cadence/ }).selectOption('daily');
 		await modal.getByLabel('Recipients').fill('ap@acme.test\nAP@ACME.test\ncfo@acme.test');
 		await modal.getByRole('button', { name: 'Create' }).click();
 
