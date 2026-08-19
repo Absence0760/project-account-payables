@@ -49,6 +49,7 @@ from app.services.audit_report_pdf import AuditReportContext, render_audit_repor
 from app.services.branding import get_brand_context
 from app.services.report_export import safe_csv_writer
 from app.tenant import get_tenant_db
+from app.utils.dates import utc_today
 
 router = APIRouter(prefix="/audit", tags=["audit"])
 
@@ -196,7 +197,7 @@ async def export_audit_trail(
     await db.commit()
 
     if export_format == "csv":
-        filename = f"audit_export_{date.today().isoformat()}.csv"
+        filename = f"audit_export_{utc_today().isoformat()}.csv"
         return Response(
             content=_entries_to_csv(export),
             media_type="text/csv",
@@ -216,7 +217,7 @@ async def export_audit_trail(
             brand=get_brand_context(org.settings if org else None),
         )
         pdf_bytes = await asyncio.to_thread(render_audit_report_pdf, ctx)
-        filename = f"audit_report_{date.today().isoformat()}.pdf"
+        filename = f"audit_report_{utc_today().isoformat()}.pdf"
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",

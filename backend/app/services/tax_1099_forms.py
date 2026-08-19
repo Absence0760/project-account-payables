@@ -49,6 +49,7 @@ from app.services.branding import (
     get_brand_context,
 )
 from app.services.tax_1099 import VendorReportRow
+from app.utils.dates import utc_today
 
 FORM_NEC = "1099-NEC"
 FORM_MISC = "1099-MISC"
@@ -151,7 +152,7 @@ def build_form_context(
         recipient_address=recipient_address,
         box_label=box_label,
         box_amount=row.ytd_paid,
-        generated_at=date.today(),
+        generated_at=utc_today(),
         brand=brand if brand is not None else get_brand_context(None),
     )
 

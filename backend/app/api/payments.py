@@ -90,6 +90,7 @@ from app.tenant import (
     get_tenant_db,
     get_write_entity_id,
 )
+from app.utils.dates import utc_today
 
 logger = logging.getLogger(__name__)
 
@@ -386,9 +387,9 @@ async def payment_queue(
     # UTC, not the host's local date. `is_overdue` and the discount-window
     # cutoff below are the same calendar question `services/analytics`,
     # `discount_optimizer` and `cash_flow_alerts` answer in UTC; on a non-UTC
-    # host `date.today()` shifts this queue's answers by a day relative to
+    # host the local date shifts this queue's answers by a day relative to
     # every other surface reading the same rows.
-    today = datetime.now(UTC).date()
+    today = utc_today()
     # Which of these rows `POST /api/payments/runs` would refuse. The run
     # builder rejects the WHOLE run with a 409 when any selected invoice carries
     # an unresolved `PAYMENT_BLOCKING_EXCEPTION_TYPES` exception, so a queue that

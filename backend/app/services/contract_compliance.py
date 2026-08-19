@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.contract import Contract, ContractStatus
 from app.models.invoice import Invoice, InvoiceStatus
+from app.utils.dates import utc_today
 
 COMPLIANCE_EXCEPTION_TYPE = "contract_noncompliant"
 
@@ -54,7 +55,7 @@ async def evaluate_contract_compliance(
         return []
 
     findings: list[dict] = []
-    ref_date = invoice.invoice_date or today or date.today()
+    ref_date = invoice.invoice_date or today or utc_today()
 
     # --- term window -------------------------------------------------------
     if contract.end_date and ref_date > contract.end_date:

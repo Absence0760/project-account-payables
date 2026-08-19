@@ -1,4 +1,4 @@
-"""The cash-flow stack resolves "today" in UTC, and stays that way.
+"""The backend resolves "today" in UTC, and stays that way.
 
 `date.today()` uses the SERVER's local timezone. On a UTC container — the
 deployed shape — that agrees with `datetime.now(UTC).date()`, so a mixture is
@@ -17,10 +17,19 @@ host, because these modules derive more than a display value from "today":
 
 `app/utils/dates.utc_today()` is the one definition. The scan below is scoped to
 the modules that have **converged** on it — a deliberate allowlist, not the
-whole tree: ~45 other `date.today()` call sites exist across the app (1099
-forms, positive pay, recurring templates, the portal), and each is its own
-conversion with its own reasoning. Widening this set is how they get converted;
-what the guard prevents is a converted module quietly sliding back.
+whole tree. Widening this set is how a module gets converted; what the guard
+prevents is a converted module quietly sliding back.
+
+The list is no longer only the cash-flow stack. The second wave took the AP
+surfaces whose "today" is a comparison rather than a display value — the
+discount deadline (`api/discounts`, `api/portal`, `services/analytics`), the
+past-due and future-invoice-date fraud flags (`services/invoice_warnings`), the
+recurring-template period key that IS the generation idempotency key
+(`api/recurring`), and the regulated `Invoice.approval_date` written on all
+three approval paths (`services/review`, `services/extraction`, `api/workflow`)
+— plus the provenance stamps and export filenames that sit beside a
+`datetime.now(UTC)` in the same response and disagreed with it for part of each
+day on a non-UTC host.
 
 Shape borrowed from `tests/test_payment_methods.py`'s source scan.
 """
@@ -40,6 +49,7 @@ APP_DIR = pathlib.Path(__file__).resolve().parents[1] / "app"
 #: Modules that resolve "today" in UTC and must keep doing so. Add to this list
 #: when you convert a module; never remove from it.
 UTC_TODAY_MODULES = (
+    # Wave 1 — the cash-flow stack.
     "api/analytics.py",
     "api/cash_flow.py",
     "services/scheduled_reports.py",
@@ -49,7 +59,83 @@ UTC_TODAY_MODULES = (
     "services/assistant/tools/forecast.py",
     "services/assistant/tools/optimizer.py",
     "services/assistant/tools/vendor_spend.py",
+    # Wave 2 — the AP surfaces. Comparisons first: a date compared against a
+    # discount deadline, a due date, a contract end date or a period key.
+    "api/dashboard.py",
+    "api/discounts.py",
+    "api/payments.py",
+    "api/portal.py",
+    "api/recurring.py",
+    "api/workflow.py",
+    "services/analytics.py",
+    "services/contract_compliance.py",
+    "services/extraction.py",
+    "services/invoice_warnings.py",
+    "services/review.py",
+    # …then the stamps and filenames. Lower stakes individually, but each sits
+    # beside a `datetime.now(UTC)` in the same response, so a local-time answer
+    # made one document disagree with itself.
+    "api/audit.py",
+    "api/expenses.py",
+    "api/positive_pay.py",
+    "api/reports.py",
+    "api/tax.py",
+    "services/expense_card_reconciliation.py",
+    "services/extraction_adapters/mock_adapter.py",
+    "services/positive_pay.py",
+    "services/report_export.py",
+    "services/tax_1099.py",
+    "services/tax_1099_forms.py",
 )
+
+
+def local_today_call_lines(source: str, *, filename: str = "<test>") -> list[int]:
+    """Line numbers of every local-timezone "today" call in ``source``.
+
+    Matches every spelling that was live in this codebase:
+
+    * ``date.today()`` / ``datetime.today()`` — and aliases like ``_dt.today()``,
+      which is how the local import in ``scheduled_reports._materialise_rows``
+      spells it (``func.value`` is a ``Name``);
+    * ``datetime.date.today()`` — the module-style call ``api/positive_pay`` and
+      ``services/positive_pay`` used (``func.value`` is an ``Attribute``). The
+      original Name-only check missed this form entirely, so either module could
+      have been added to the allowlist above while still reading local time.
+
+    …plus a third spelling nothing in ``app/`` uses yet, and the one a purely
+    ``.today()``-shaped guard could never see: ``datetime.now().date()``. A bare
+    ``now()`` returns a NAIVE local-time datetime, so ``.date()`` on it is the
+    server's local date wearing a name that reads as deliberate.
+    ``datetime.now(UTC).date()`` is correct and passes — the tz argument is the
+    entire difference, so the check is on the empty call, not the attribute.
+
+    A comment or docstring mentioning ``date.today()`` is never flagged — the
+    scan is over the AST, not the text, which is what lets a converted module
+    keep explaining why it converted.
+    """
+
+    def _is_local_today(node: ast.AST) -> bool:
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            return False
+        if node.func.attr == "today":
+            # `date.today()` / `datetime.today()` / `_dt.today()` /
+            # `datetime.date.today()`.
+            return isinstance(node.func.value, ast.Name | ast.Attribute)
+        if node.func.attr == "date":
+            # `datetime.now().date()` — naive, so local. `now(UTC)` is fine, and
+            # so is `.date()` on a tz-aware column (`run.executed_at.date()`).
+            inner = node.func.value
+            return (
+                isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Attribute)
+                and inner.func.attr == "now"
+                and not inner.args
+                and not inner.keywords
+            )
+        return False
+
+    tree = ast.parse(source, filename=filename)
+    return [node.lineno for node in ast.walk(tree) if _is_local_today(node)]
 
 
 def test_utc_today_is_the_utc_calendar_date():
@@ -57,9 +143,54 @@ def test_utc_today_is_the_utc_calendar_date():
     assert isinstance(utc_today(), date)
 
 
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "date.today()",
+        "datetime.today()",
+        "_dt.today()",
+        "datetime.date.today()",
+        "x = foo or datetime.date.today()",
+        # Naive `now()` → a local date, under a name that reads deliberate.
+        "datetime.now().date()",
+        "datetime.datetime.now().date()",
+    ],
+)
+def test_scanner_catches_every_local_today_spelling(snippet):
+    """The scanner's own regression test.
+
+    `datetime.date.today()` slipped past the first version of this guard, which
+    is how two Positive Pay modules stayed on local time while the guard read
+    green. `datetime.now().date()` is the same trap one step further out — it
+    isn't spelled `today` at all. Pin every spelling, whether or not `app/`
+    currently contains it: the ones it doesn't are exactly the ones a future
+    edit reaches for after the obvious spelling starts failing.
+    """
+    assert local_today_call_lines(snippet) == [1]
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "utc_today()",
+        "datetime.now(UTC).date()",
+        "datetime.now(tz=UTC).date()",
+        "datetime.now(UTC)",
+        # `.date()` on a tz-aware COLUMN is the right way to read a stored
+        # instant's calendar day — `services/positive_pay` does exactly this
+        # for `run.executed_at`, with utc_today() as the fallback.
+        "run.executed_at.date()",
+        "# date.today() is wrong here, see the module docstring",
+        '"""Never call date.today() in this module."""',
+    ],
+)
+def test_scanner_ignores_the_correct_forms_and_prose(snippet):
+    assert local_today_call_lines(snippet) == []
+
+
 @pytest.mark.parametrize("relative", UTC_TODAY_MODULES)
 def test_module_never_reads_the_servers_local_today(relative):
-    """Fails on any `date.today()` / `datetime.today()` in a converted module.
+    """Fails on any local-timezone "today" read in a converted module.
 
     If this fires, import `utc_today` from `app/utils/dates.py` (or inline
     `datetime.now(UTC).date()`) rather than reaching for the local-timezone
@@ -68,23 +199,13 @@ def test_module_never_reads_the_servers_local_today(relative):
     path = APP_DIR / relative
     assert path.exists(), f"{relative} moved — update UTC_TODAY_MODULES"
 
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    offenders: list[int] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        if not isinstance(func, ast.Attribute) or func.attr != "today":
-            continue
-        # `date.today()` / `datetime.today()` — including aliases like
-        # `_dt.today()`, which is how the local import in
-        # `scheduled_reports._materialise_rows` spells it.
-        if isinstance(func.value, ast.Name):
-            offenders.append(node.lineno)
+    offenders = local_today_call_lines(path.read_text(encoding="utf-8"), filename=str(path))
 
     assert not offenders, (
         f"{relative} reads the server's local 'today' at line(s) {offenders}. "
         "Use app.utils.dates.utc_today() — these modules feed the cash-flow "
-        "horizon, the plan_id hash and the scheduled-report window, all of "
-        "which must agree with each other on a non-UTC host."
+        "horizon, the plan_id hash, the scheduled-report window, the early-pay "
+        "discount cutoff, the recurring-template period key and the regulated "
+        "approval_date, all of which must agree with each other on a non-UTC "
+        "host."
     )

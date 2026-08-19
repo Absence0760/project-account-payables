@@ -47,6 +47,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
+from app.utils.dates import utc_today
+
 # Canonical "open accounts-payable" invoice-status set — an approved liability
 # that is still outstanding (not yet paid, not voided/rejected). This is the ONE
 # population every payable aggregate must share so they reconcile: the CFO
@@ -708,9 +710,9 @@ def bucket_outflows(rows: list[dict], *, granularity: str = "week", today=None) 
     caller passes it explicitly."""
     # UTC, not the host's local date: every other consumer of these rows
     # (`api/analytics`, `cash_flow_alerts`, the copilot tools) works in UTC,
-    # and on a non-UTC host `date.today()` shifts the discount-window cutoff
+    # and on a non-UTC host the local date shifts the discount-window cutoff
     # by a day relative to them.
-    today = today or datetime.now(UTC).date()
+    today = today or utc_today()
     buckets: dict[str, dict] = {}
     for r in rows:
         due = r.get("due_date")
@@ -823,7 +825,7 @@ def apply_payment_timing_scenario(
     if scenario not in ("early", "on_time", "late"):
         raise ValueError(f"unknown scenario {scenario!r}")
     # UTC — see `bucket_outflows`.
-    today = today or datetime.now(UTC).date()
+    today = today or utc_today()
 
     total_outflow = Decimal("0")
     total_discount = Decimal("0")

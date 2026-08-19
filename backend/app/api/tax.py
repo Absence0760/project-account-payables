@@ -59,6 +59,7 @@ from app.services.tax_1099_forms import (
 from app.services.tax_filing_adapters import FilingFormPayload, get_tax_filing_adapter
 from app.services.tin_validation_adapters import get_tin_validation_adapter
 from app.tenant import get_tenant, get_tenant_db
+from app.utils.dates import utc_today
 
 router = APIRouter(prefix="/tax", tags=["tax"])
 
@@ -202,7 +203,7 @@ async def upload_vendor_w9(
     await _put_object(file_key, content, content_type)
 
     vendor.w9_file_key = file_key
-    vendor.w9_received_date = date.today()
+    vendor.w9_received_date = utc_today()
     vendor.is_1099_eligible = is_1099_eligible
     if tax_classification:
         vendor.tax_classification = tax_classification
