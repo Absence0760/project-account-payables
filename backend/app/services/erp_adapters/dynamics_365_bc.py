@@ -9,6 +9,7 @@ from app.services.erp_adapters.base import (
     ErpPostResult,
     InvoicePayload,
     VendorPayload,
+    erp_failure_message,
 )
 from app.services.erp_adapters.dispatcher import register_adapter
 
@@ -175,7 +176,7 @@ class BusinessCentralAdapter(ErpAdapter):
         else:
             return ErpPostResult(
                 success=False,
-                message=f"BC error {resp.status_code}: {resp.text}",
+                message=erp_failure_message("Business Central", resp.status_code),
                 raw_response=resp.json()
                 if resp.headers.get("content-type", "").startswith("application/json")
                 else None,

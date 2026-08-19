@@ -685,14 +685,51 @@ Each ERP has different field names for the same concepts. The adapter handles ma
 | Scenario | Handling |
 |---|---|
 | Auth failure (401/403) | Log error, mark as `failed`, surface in UI for admin to fix credentials |
-| Validation error (400/422) | Store ERP error message in audit log details, mark as `failed` |
+| Validation error (400/422) | Store the status code + reason code in the audit-log details, mark as `failed` |
 | Timeout | Retry with exponential backoff (max 3 attempts), then mark as `failed` |
 | Duplicate (409 / DUP_ENTITY) | Already handled BEFORE the create call — see § Idempotency below |
 | Rate limit (429) | Retry after `Retry-After` header delay |
 | Server error (500) | Retry with backoff, then mark as `failed` |
 | Network error | Retry with backoff, then mark as `failed` |
 
-All failures are logged in the audit trail with the raw error response for debugging.
+### The failure message never carries the provider's response body
+
+`ErpPostResult.message` is **operator-facing and persisted**: `services/erp.py`
+raises `RuntimeError(result.message)` on a failed post and writes `str(exc)`
+into `details={"error": …}` on the `invoice.erp_failed` audit row and onto
+`WorkflowInstance.state_data["last_error"]`. That audit row is **append-only**
+(migration `0022_sox_audit_immutable` installs BEFORE-UPDATE/DELETE triggers)
+and `audit_log_shipper` ships it to CloudWatch Logs / S3 Object Lock. Nothing
+downstream can redact any of the three.
+
+An ERP's validation error routinely echoes the submitted fields back, and
+`InvoicePayload` carries `vendor_tax_id`, `vendor_address`, `remit_to_address`
+and `bill_to_address` — so the old `message=f"… {resp.status_code}: {resp.text}"`
+put vendor PII into an immutable, WORM-shipped row, violating the
+PII-out-of-logs-and-error-responses invariant.
+
+Every adapter therefore builds its failure message through the shared
+`erp_adapters/base.py::erp_failure_message(provider, status_code)`, which pairs
+the status with a stable, provider-independent reason code from
+`erp_failure_reason` (`invalid_request` / `unauthorized` / `forbidden` /
+`not_found` / `conflict` / `validation_failed` / `rate_limited` /
+`client_error` / `provider_error` / `unexpected_status`):
+
+```
+NetSuite post failed: HTTP 422 (validation_failed)
+```
+
+That is enough to route the operator — *we sent something the ERP rejected* vs
+*our credentials are stale* vs *the ERP is down* — while the diagnosis stays in
+the ERP's own error console, which is where the submitted values legitimately
+live. Same shape `billing_adapters/stripe_billing.py::_json_or_raise` already
+uses. `ErpPostResult.raw_response` may still hold the parsed body, but it is
+in-memory only — no caller persists or logs it, and none should start.
+
+Guard: `tests/test_erp_adapter_error_pii.py` drives each real adapter against a
+response body echoing tax id / addresses / IBAN and asserts none of it reaches
+`message`, plus an AST scan of `erp_adapters/` that fails if any adapter
+interpolates `.text` / `.content` / `.json()` into a `message=` f-string again.
 
 ## Idempotency (retry-safe pushes)
 

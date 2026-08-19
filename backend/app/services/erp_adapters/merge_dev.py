@@ -15,6 +15,7 @@ from app.services.erp_adapters.base import (
     PoLinePayload,
     PoPayload,
     VendorPayload,
+    erp_failure_message,
 )
 from app.services.erp_adapters.dispatcher import register_adapter
 
@@ -171,7 +172,7 @@ class MergeDevAdapter(ErpAdapter):
         else:
             return ErpPostResult(
                 success=False,
-                message=f"Merge.dev error {resp.status_code}: {resp.text}",
+                message=erp_failure_message("Merge.dev", resp.status_code),
                 raw_response=resp.json()
                 if resp.headers.get("content-type", "").startswith("application/json")
                 else None,
