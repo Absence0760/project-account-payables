@@ -1115,8 +1115,6 @@ export const messages = {
 	'expenses.loading': 'Cargando…',
 	'expenses.empty': 'Ningún gasto coincide con sus filtros.',
 	'expenses.empty.errored': 'No se pudieron cargar los gastos. Inténtalo de nuevo.',
-	'expenses.empty.searchPartial':
-		'Sin coincidencias entre los {shown} de {total} gastos cargados hasta ahora. La búsqueda solo cubre las filas cargadas: cargue más abajo para buscar en el resto.',
 	'expenses.col.date': 'Fecha',
 	'expenses.col.merchant': 'Comercio',
 	'expenses.col.category': 'Categoría',
@@ -1339,8 +1337,6 @@ export const messages = {
 	'requisitions.col.total': 'Total',
 	'requisitions.col.status': 'Estado',
 	'requisitions.empty': 'Ninguna solicitud coincide con sus filtros.',
-	'requisitions.empty.searchPartial':
-		'Sin coincidencias entre las {shown} de {total} solicitudes cargadas hasta ahora. La búsqueda solo cubre las filas cargadas: cargue más abajo para buscar en el resto.',
 	'requisitions.notFound': 'Solicitud no encontrada',
 	'requisitions.row.open': 'Abrir solicitud {number}',
 	'requisitions.row.submit': 'Enviar',

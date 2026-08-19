@@ -1117,8 +1117,6 @@ export const messages = {
 	'expenses.loading': 'Carregando…',
 	'expenses.empty': 'Nenhuma despesa corresponde aos seus filtros.',
 	'expenses.empty.errored': 'Não foi possível carregar as despesas. Tente novamente.',
-	'expenses.empty.searchPartial':
-		'Nenhuma correspondência entre as {shown} de {total} despesas carregadas até agora. A busca cobre apenas as linhas carregadas — carregue mais abaixo para pesquisar o restante.',
 	'expenses.col.date': 'Data',
 	'expenses.col.merchant': 'Estabelecimento',
 	'expenses.col.category': 'Categoria',
@@ -1341,8 +1339,6 @@ export const messages = {
 	'requisitions.col.total': 'Total',
 	'requisitions.col.status': 'Status',
 	'requisitions.empty': 'Nenhuma requisição corresponde aos seus filtros.',
-	'requisitions.empty.searchPartial':
-		'Nenhuma correspondência entre as {shown} de {total} requisições carregadas até agora. A busca cobre apenas as linhas carregadas — carregue mais abaixo para pesquisar o restante.',
 	'requisitions.notFound': 'Requisição não encontrada',
 	'requisitions.row.open': 'Abrir requisição {number}',
 	'requisitions.row.submit': 'Enviar',

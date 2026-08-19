@@ -1117,8 +1117,6 @@ export const messages = {
 	'expenses.loading': 'Wird geladen…',
 	'expenses.empty': 'Keine Ausgaben entsprechen Ihren Filtern.',
 	'expenses.empty.errored': 'Ausgaben konnten nicht geladen werden. Bitte erneut versuchen.',
-	'expenses.empty.searchPartial':
-		'Keine Treffer unter den bisher geladenen {shown} von {total} Ausgaben. Die Suche erfasst nur geladene Zeilen — laden Sie unten weitere, um den Rest zu durchsuchen.',
 	'expenses.col.date': 'Datum',
 	'expenses.col.merchant': 'Händler',
 	'expenses.col.category': 'Kategorie',
@@ -1341,8 +1339,6 @@ export const messages = {
 	'requisitions.col.total': 'Summe',
 	'requisitions.col.status': 'Status',
 	'requisitions.empty': 'Keine Anforderungen entsprechen Ihren Filtern.',
-	'requisitions.empty.searchPartial':
-		'Keine Treffer unter den bisher geladenen {shown} von {total} Anforderungen. Die Suche erfasst nur geladene Zeilen — laden Sie unten weitere, um den Rest zu durchsuchen.',
 	'requisitions.notFound': 'Anforderung nicht gefunden',
 	'requisitions.row.open': 'Anforderung {number} öffnen',
 	'requisitions.row.submit': 'Einreichen',

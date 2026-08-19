@@ -1155,8 +1155,6 @@ export const en = {
 	'expenses.loading': 'Loading…',
 	'expenses.empty': 'No expenses match your filters.',
 	'expenses.empty.errored': 'Could not load expenses. Try again.',
-	'expenses.empty.searchPartial':
-		'No match in the {shown} of {total} expenses loaded so far. Search covers loaded rows only — use Load more below to search the rest.',
 	'expenses.col.date': 'Date',
 	'expenses.col.merchant': 'Merchant',
 	'expenses.col.category': 'Category',
@@ -1379,8 +1377,6 @@ export const en = {
 	'requisitions.col.total': 'Total',
 	'requisitions.col.status': 'Status',
 	'requisitions.empty': 'No requisitions match your filters.',
-	'requisitions.empty.searchPartial':
-		'No match in the {shown} of {total} requisitions loaded so far. Search covers loaded rows only — use Load more below to search the rest.',
 	'requisitions.notFound': 'Requisition not found',
 	'requisitions.row.open': 'Open requisition {number}',
 	'requisitions.row.submit': 'Submit',

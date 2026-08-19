@@ -1101,8 +1101,6 @@ export const messages = {
 	'expenses.loading': '読み込み中…',
 	'expenses.empty': 'フィルターに一致する経費はありません。',
 	'expenses.empty.errored': '経費を読み込めませんでした。もう一度お試しください。',
-	'expenses.empty.searchPartial':
-		'これまでに読み込んだ {total} 件中 {shown} 件の経費に一致するものはありません。検索対象は読み込み済みの行のみです。残りを検索するには下の「さらに読み込む」をご利用ください。',
 	'expenses.col.date': '日付',
 	'expenses.col.merchant': '加盟店',
 	'expenses.col.category': 'カテゴリ',
@@ -1325,8 +1323,6 @@ export const messages = {
 	'requisitions.col.total': '合計',
 	'requisitions.col.status': 'ステータス',
 	'requisitions.empty': 'フィルターに一致する購買依頼がありません。',
-	'requisitions.empty.searchPartial':
-		'これまでに読み込んだ {total} 件中 {shown} 件の購買依頼に一致するものはありません。検索対象は読み込み済みの行のみです。残りを検索するには下の「さらに読み込む」をご利用ください。',
 	'requisitions.notFound': '購買依頼が見つかりません',
 	'requisitions.row.open': '購買依頼 {number} を開く',
 	'requisitions.row.submit': '送信',

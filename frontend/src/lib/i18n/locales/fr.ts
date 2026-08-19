@@ -1116,8 +1116,6 @@ export const messages = {
 	'expenses.loading': 'Chargement…',
 	'expenses.empty': 'Aucune dépense ne correspond à vos filtres.',
 	'expenses.empty.errored': 'Impossible de charger les dépenses. Réessayez.',
-	'expenses.empty.searchPartial':
-		'Aucune correspondance parmi les {shown} dépenses sur {total} déjà chargées. La recherche ne couvre que les lignes chargées — chargez-en davantage ci-dessous pour chercher dans le reste.',
 	'expenses.col.date': 'Date',
 	'expenses.col.merchant': 'Commerçant',
 	'expenses.col.category': 'Catégorie',
@@ -1340,8 +1338,6 @@ export const messages = {
 	'requisitions.col.total': 'Total',
 	'requisitions.col.status': 'Statut',
 	'requisitions.empty': 'Aucune demande ne correspond à vos filtres.',
-	'requisitions.empty.searchPartial':
-		'Aucune correspondance parmi les {shown} demandes sur {total} déjà chargées. La recherche ne couvre que les lignes chargées — chargez-en davantage ci-dessous pour chercher dans le reste.',
 	'requisitions.notFound': 'Demande introuvable',
 	'requisitions.row.open': 'Ouvrir la demande {number}',
 	'requisitions.row.submit': 'Soumettre',
