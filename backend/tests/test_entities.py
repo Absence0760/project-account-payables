@@ -141,3 +141,56 @@ async def test_entities_are_tenant_isolated(realdb):
         resp = await c.get("/api/entities")
     slugs = {e["slug"] for e in resp.json()}
     assert "a-only" not in slugs  # tenant b never sees tenant a's entity
+
+
+# ---------------------------------------------------------------------------
+# Audit trail (project invariant #3)
+# ---------------------------------------------------------------------------
+
+
+async def _entity_audits(realdb, key="a"):
+    from app.models.workflow import AuditLog
+
+    mk = realdb.sessionmaker(key)
+    async with mk() as s:
+        return (
+            (
+                await s.execute(
+                    select(AuditLog)
+                    .where(AuditLog.entity_type == "entity")
+                    .order_by(AuditLog.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+async def test_create_and_update_entity_write_audit_rows(realdb):
+    """An Entity is the scope key every entity-scoped money query is filtered
+    by, so minting or deactivating one is a config change that belongs on the
+    append-only trail. Neither handler wrote one."""
+    async with realdb.client(key="a", role="admin") as c:
+        created = await c.post("/api/entities", json={"name": "Audited Sub", "slug": "audited-sub"})
+        assert created.status_code == 201
+        eid = created.json()["id"]
+        patched = await c.patch(f"/api/entities/{eid}", json={"is_active": False})
+        assert patched.status_code == 200
+
+    rows = await _entity_audits(realdb)
+    actions = [r.action for r in rows]
+    assert actions == ["entity.created", "entity.updated"]
+    assert rows[0].details["slug"] == "audited-sub"
+    assert rows[0].actor_id is not None
+    assert rows[1].details["changed"] == {"is_active": False}
+
+
+async def test_no_op_patch_writes_no_audit_row(realdb):
+    """A PATCH that changes nothing is not a mutation — don't pad the trail."""
+    async with realdb.client(key="a", role="admin") as c:
+        created = await c.post("/api/entities", json={"name": "Same", "slug": "same"})
+        eid = created.json()["id"]
+        await c.patch(f"/api/entities/{eid}", json={"name": "Same"})
+
+    actions = [r.action for r in await _entity_audits(realdb)]
+    assert actions == ["entity.created"]

@@ -17,6 +17,7 @@ from app.models.gl_account import GLAccount
 from app.models.organization import Organization
 from app.models.user import User
 from app.schemas.gl_account import GLAccountCreate
+from app.services.audit_dispatch import dispatch_audit
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
 
 router = APIRouter(prefix="/gl-accounts", tags=["gl-accounts"])
@@ -83,6 +84,26 @@ async def create_gl_account(
     )
     db.add(account)
     await db.flush()
+
+    # A GL account is what invoice lines are coded to, so adding one is a
+    # chart-of-accounts change that belongs on the append-only trail. PII-free:
+    # code / name / type are org config. `entity_id` records whether the
+    # account landed shared (NULL) or entity-specific.
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="gl_account.created",
+        entity_type="gl_account",
+        entity_id=account.id,
+        details={
+            "code": account.code,
+            "name": account.name,
+            "account_type": account.account_type,
+            "entity_id": str(entity_id) if entity_id else None,
+        },
+    )
     return {
         "id": str(account.id),
         "code": account.code,
@@ -175,6 +196,23 @@ async def sync_gl_accounts_from_erp(
             )
             created += 1
 
+    # One PII-free summary row per sync, not one per account — the trail records
+    # that a bulk chart change happened, who ran it and how much it moved.
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="gl_account.synced_from_erp",
+        entity_type="gl_account",
+        entity_id=org_id,
+        details={
+            "created": created,
+            "updated": updated,
+            "adapter": adapter.erp_type,
+            "entity_id": str(entity_id) if entity_id else None,
+        },
+    )
     await db.commit()
     return {
         "success": True,

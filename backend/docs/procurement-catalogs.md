@@ -232,6 +232,31 @@ It mirrors the PEPPOL inbound webhook posture exactly:
 - **every rejection path returns 204 silently** (a 4xx would enumerate tenants /
   cookies / probe the secret); no supplier secret or cart value is ever logged.
 
+### The cart's own currency is a rejection path
+
+`catalog_service.apply_returned_cart` is the one chokepoint every adapter's
+cart passes through, so both currency checks live there rather than in each
+parser:
+
+- **A cart carrying more than one distinct line currency is refused**
+  (`PunchoutError("mixed_cart_currency")` → silent 204, session stays
+  `pending`). `PunchoutCart.total` sums every line's face value regardless of
+  per-item currency, and the cXML parser took the cart's label from the *last*
+  parsed `ItemIn` — so €100 + $100 was stored as a single "200" under one of
+  the two labels and `convert` turned that into a requisition. Same class as
+  the vendor-statement ledger: money in two currencies is not summable.
+- **The code is normalised + length-checked** before it reaches
+  `PunchoutSession.currency`, a `String(3)`. The code is unbounded supplier
+  input, so a 4-character value raised a `DataError` at commit and escaped the
+  public handler as a 500 — breaking the "every rejection path returns 204"
+  contract above and telling a probing supplier its payload reached the
+  database. Anything that isn't three ASCII letters is refused
+  (`invalid_cart_currency`); a lowercase code is upper-cased, not rejected.
+
+When the lines carry a currency it is the authority; the cart-level label is
+only used for an empty cart (the header is a supplier-set field the lines may
+contradict).
+
 ### Env vars
 
 | Variable | Default | Purpose |

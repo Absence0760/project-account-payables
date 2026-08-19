@@ -81,6 +81,24 @@ Literal route segments (`submit`, `approve`, `reject`, `cancel`,
 collection routes are declared after the list/create pair (mirrors the expenses
 router ordering rule).
 
+### Optional links are validated at write time
+
+`vendor_id` / `contract_id` / `budget_id` are optional on create and edit.
+`_resolve_links` parses each and checks it exists in this tenant before the row
+is built — **404** on an unknown id (the pattern `api/catalogs.py::_resolve_vendor_id`
+already used). Previously a well-formed but non-existent id was stored verbatim
+and reached an FK violation at flush, surfacing as a 500 for input the caller
+got wrong.
+
+`budget_id` gets one more check: the budget must be denominated in the
+requisition's currency, else **422**. That link is what
+`services/budget_service` sums `committed` over, and the budget legs never
+convert — a EUR requisition pointing at a USD budget would be dropped from the
+rollup, so `GET /budgets/{id}/spend` reported `committed: 0` and
+`/budgets/check` answered `would_overspend: false` for headroom already spoken
+for. The pair is re-checked on `PATCH` when `currency` changes alone, so a
+currency edit can't orphan an existing link either.
+
 ## RBAC
 
 Read: `admin` / `ap_manager` / `ap_clerk` / `cfo`. Mutate (create / edit /

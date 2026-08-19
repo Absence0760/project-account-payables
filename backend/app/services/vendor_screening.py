@@ -49,6 +49,7 @@ from app.services.audit_dispatch import dispatch_audit
 from app.services.sanctions_adapters import (
     SanctionsAdapter,
     ScreeningResult,
+    UnknownSanctionsProviderError,
     get_sanctions_adapter,
 )
 from app.services.sanctions_categories import (
@@ -112,16 +113,44 @@ async def screen_vendor_record(
     dispatcher; production callers leave it None and it is resolved from
     `org_settings.compliance.sanctions`.
     """
-    adapter = sanctions_adapter or _adapter_for(org_settings)
     corr = correlation_id or uuid.uuid4()
 
-    country = (vendor.bank_details or {}).get("country") if vendor.bank_details else None
-    screening: ScreeningResult = await adapter.screen_vendor(
-        vendor_name=vendor.name,
-        vendor_country=country,
-        vendor_tax_id=vendor.tax_id,
-        beneficial_owners=_beneficial_owners(vendor),
-    )
+    adapter: SanctionsAdapter | None = sanctions_adapter
+    unknown_provider: str | None = None
+    if adapter is None:
+        try:
+            adapter = _adapter_for(org_settings)
+        except UnknownSanctionsProviderError as exc:
+            # The org named a provider this deployment has no adapter for. The
+            # dispatcher used to substitute `mock`, which clears every name
+            # outside its fixture list — so a typo'd provider recorded a
+            # `clear` screen for the whole vendor book. Record the screen as
+            # `review_required` instead: the vendor lands on the screening
+            # review queue (`GET /api/vendors/screening/review-queue`) and its
+            # denormalised `screening_status` reads `review`, never `clear`.
+            adapter = None
+            unknown_provider = exc.provider
+
+    if adapter is None:
+        screening = ScreeningResult(
+            # PII-free: the configured provider name is org config, and the
+            # error type already length-bounds it. `SanctionsCheck.provider` is
+            # String(50), so the sentinel carries the name in `raw_response`
+            # rather than in the column.
+            provider="unconfigured",
+            result="review_required",
+            matched_list="provider_not_configured",
+            risk_score=None,
+            raw_response={"error": "unknown_sanctions_provider", "provider": unknown_provider},
+        )
+    else:
+        country = (vendor.bank_details or {}).get("country") if vendor.bank_details else None
+        screening = await adapter.screen_vendor(
+            vendor_name=vendor.name,
+            vendor_country=country,
+            vendor_tax_id=vendor.tax_id,
+            beneficial_owners=_beneficial_owners(vendor),
+        )
 
     row = SanctionsCheck(
         vendor_id=vendor.id,
@@ -201,3 +230,54 @@ async def screen_vendor_record(
         sanctions_check=row,
         categories=screening.categories,
     )
+
+
+async def screen_best_effort(
+    db: AsyncSession,
+    *,
+    vendor: Vendor,
+    org_settings: dict | None,
+    org_id: uuid.UUID,
+    check_type: str,
+    actor_id: uuid.UUID | None,
+) -> None:
+    """Run a sanctions screen for ``vendor`` without ever jeopardising the
+    surrounding vendor write.
+
+    Screening is a best-effort side effect: if the configured provider is down
+    or raises, the vendor create/update must still succeed. The screen runs
+    inside a SAVEPOINT (``begin_nested``) so a mid-screen failure rolls back
+    only the screen's partial mutations, leaving the vendor row intact, and the
+    exception is logged + swallowed.
+
+    Lives here rather than in ``api/vendors.py`` because it has two callers:
+    the vendor router's create/update/bank-change paths, and the enrichment
+    apply path (``POST /api/enrichment/vendors/{id}/apply``), which writes
+    ``Vendor.name`` — an identity field — and so owes the same re-screen. A
+    private copy in one router is how the enrichment path came to skip it.
+    """
+    from app.config import settings
+
+    if not settings.vendor_screening_enabled:
+        return
+    try:
+        async with db.begin_nested():
+            await screen_vendor_record(
+                db,
+                vendor=vendor,
+                organization_id=org_id,
+                org_settings=org_settings,
+                check_type=check_type,
+                actor_id=actor_id,
+            )
+    except Exception as exc:  # noqa: BLE001
+        # Log the exception type, never the message/traceback. A sanctions
+        # adapter's error string could embed a vendor identifier; interpolating
+        # `exc` (or exc_info=True) would push that into the log sink
+        # (invariant #7).
+        logger.warning(
+            "Sanctions screen failed for vendor=%s (check_type=%s) — vendor write preserved: %s",
+            vendor.id,
+            check_type,
+            exc.__class__.__name__,
+        )

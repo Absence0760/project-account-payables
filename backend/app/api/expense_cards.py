@@ -318,7 +318,7 @@ async def match_card_transaction(
 ):
     """Reconcile a card transaction against an expense. Links both sides and
     stamps the expense's ``payment_method``. Rejects (409) if either side is
-    already matched."""
+    already matched, or if the two are denominated in different currencies."""
     txn = await _get_txn_or_404(db, txn_id, entity_id)
     try:
         expense_uuid = uuid.UUID(body.expense_id)
@@ -333,6 +333,18 @@ async def match_card_transaction(
         raise HTTPException(status_code=409, detail="Transaction is already matched")
     if expense.card_transaction_id is not None:
         raise HTTPException(status_code=409, detail="Expense is already matched")
+    # Re-checked here, not just filtered out of `suggest_matches`: the client
+    # sends an arbitrary `expense_id`, so the suggestion query is a convenience
+    # and this is the control. Multi-currency card reconciliation is deferred —
+    # a €100.00 expense is not the same money as a $100.00 card line, and
+    # linking them stamps a payment_method onto an expense the card never paid.
+    if (expense.currency or "").upper() != (txn.currency or "").upper():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Currency mismatch: transaction is {txn.currency}, expense is {expense.currency}."
+            ),
+        )
 
     await _link_both_sides(db, txn=txn, expense=expense, org_id=org_id, actor_id=user.id)
     await db.commit()
@@ -393,8 +405,25 @@ async def ignore_card_transaction(
     org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    """Mark a transaction as deliberately not reconciled (e.g. a refund / fee)."""
+    """Mark a transaction as deliberately not reconciled (e.g. a refund / fee).
+
+    Refuses (409) a MATCHED transaction. Flipping one to ``ignored`` used to
+    leave both FK legs (``txn.matched_expense_id`` /
+    ``expense.card_transaction_id``) set while the status no longer said
+    "matched", which stranded the pair: ``/unmatch`` 409s ("not matched"),
+    ``/match`` and ``/create-expense`` 409 ("already matched"). Every sibling
+    mutation on this router declares its legal source state; this one was the
+    exception. Unmatch first, then ignore.
+    """
     txn = await _get_txn_or_404(db, txn_id, entity_id)
+    if (
+        txn.reconciliation_status == ReconciliationStatus.matched
+        or txn.matched_expense_id is not None
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Transaction is matched — unmatch it before ignoring.",
+        )
     txn.reconciliation_status = ReconciliationStatus.ignored
     await dispatch_audit(
         db,

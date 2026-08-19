@@ -21,6 +21,7 @@ from app.models.organization import Organization
 from app.models.procurement import POLineItem, PurchaseOrder
 from app.models.user import User
 from app.models.vendor import Vendor
+from app.services.audit_dispatch import dispatch_audit
 from app.tenant import (
     apply_entity_scope,
     get_entity_id,
@@ -267,6 +268,25 @@ async def sync_pos_from_erp(
 
         created += 1
 
+    # One PII-free summary row per sync (same shape as the GL chart sync): the
+    # trail records that POs — the 3-way-match reference the money path checks
+    # invoices against — were created/amended in bulk, by whom, from where.
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="purchase_order.synced_from_erp",
+        entity_type="purchase_order",
+        entity_id=org_id,
+        details={
+            "created": created,
+            "updated": updated,
+            "skipped": skipped,
+            "adapter": adapter.erp_type,
+            "entity_id": str(entity_id) if entity_id else None,
+        },
+    )
     await db.commit()
     return {
         "success": True,

@@ -500,6 +500,76 @@ async def test_resolve_transaction_sets_and_clears_manual_match(realdb):
         assert len(audits) == 2  # set + clear
 
 
+async def test_resolve_refuses_a_credit_transaction(realdb):
+    """A payment is money we SENT, so only a bank debit can clear one. A credit
+    of equal magnitude used to classify cleanly, count toward `matched_count`,
+    and drop the payment out of all three `/outstanding` buckets — buckets 2
+    and 3 both require `direction == "debit"`, so an uncleared payment silently
+    left the month-end worksheet."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    payment_id = await _add_payment(
+        mk,
+        org_id,
+        amount="777.00",
+        submitted_at=datetime.now(UTC) - timedelta(days=60),
+    )
+
+    # A POSITIVE amount is a credit (money in) on the importer's convention.
+    csv_body = _csv("Date,Amount,Description", f"{_TODAY.isoformat()},777.00,Vendor refund")
+    async with realdb.client(key="a", role="ap_manager") as c:
+        up = await c.post(
+            "/api/bank-reconciliation/upload",
+            data={
+                "account_identifier": "Operating ****7777",
+                "period_start": (_TODAY - timedelta(days=30)).isoformat(),
+                "period_end": _TODAY.isoformat(),
+            },
+            files={"file": ("statement.csv", csv_body, "text/csv")},
+        )
+        assert up.status_code == 201, up.text
+        stmt_id = up.json()["id"]
+        tx = up.json()["transactions"][0]
+        assert tx["direction"] == "credit"
+
+        resp = await c.post(
+            f"/api/bank-reconciliation/{stmt_id}/transactions/{tx['id']}/resolve",
+            json={"matched_payment_id": payment_id},
+        )
+        assert resp.status_code == 409, resp.text
+        assert "credit" in resp.json()["detail"]
+
+        # And the payment is still on the worksheet.
+        outstanding = await c.get("/api/bank-reconciliation/outstanding")
+        assert outstanding.status_code == 200
+        assert any(p["payment_id"] == payment_id for p in outstanding.json()["uncleared_payments"])
+
+
+async def test_resolve_malformed_payment_id_is_422_not_500(realdb):
+    """`matched_payment_id` is schema-typed `uuid.UUID`; the router used to call
+    `uuid.UUID(...)` on a plain `str` with no handler, so a malformed id was a
+    500."""
+    csv_body = _csv("Date,Amount,Description", f"{_TODAY.isoformat()},-12.00,X")
+    async with realdb.client(key="a", role="ap_manager") as c:
+        up = await c.post(
+            "/api/bank-reconciliation/upload",
+            data={
+                "account_identifier": "Operating ****0042",
+                "period_start": (_TODAY - timedelta(days=30)).isoformat(),
+                "period_end": _TODAY.isoformat(),
+            },
+            files={"file": ("statement.csv", csv_body, "text/csv")},
+        )
+        stmt_id = up.json()["id"]
+        tx_id = up.json()["transactions"][0]["id"]
+
+        resp = await c.post(
+            f"/api/bank-reconciliation/{stmt_id}/transactions/{tx_id}/resolve",
+            json={"matched_payment_id": "not-a-uuid"},
+        )
+    assert resp.status_code == 422, resp.text
+
+
 async def test_resolve_unknown_payment_is_404(realdb):
     csv_body = _csv("Date,Amount,Description", f"{_TODAY.isoformat()},-50.00,X")
     async with realdb.client(key="a", role="ap_manager") as c:

@@ -352,3 +352,91 @@ async def test_tenant_isolation(realdb):
         rid = (await c.post("/api/requisitions", json=_payload(_num()))).json()["id"]
     async with realdb.client(key="b", role="ap_manager") as c:
         assert (await c.get(f"/api/requisitions/{rid}")).status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Optional FK links are validated at write time
+# ---------------------------------------------------------------------------
+
+
+async def _mk_budget(realdb, key="a", *, currency="USD") -> str:
+    from app.models.procurement import Budget
+
+    mk = realdb.sessionmaker(key)
+    org_id = realdb.info(key).org_id
+    bid = uuid.uuid4()
+    async with mk() as s:
+        s.add(
+            Budget(
+                id=bid,
+                name=f"Budget {uuid.uuid4().hex[:8]}",
+                dimension="department",
+                dimension_value="Engineering",
+                period="2026",
+                amount=Decimal("10000.00"),
+                currency=currency,
+                organization_id=org_id,
+            )
+        )
+        await s.commit()
+    return str(bid)
+
+
+async def test_create_rejects_an_unknown_budget_id(realdb):
+    """A well-formed but non-existent id used to be stored verbatim and reach
+    an FK violation at flush — a 500 for input the caller got wrong."""
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        resp = await c.post("/api/requisitions", json=_payload(_num(), budget_id=str(uuid.uuid4())))
+    assert resp.status_code == 404, resp.text
+    assert "Budget" in resp.json()["detail"]
+
+
+async def test_create_rejects_an_unknown_vendor_or_contract(realdb):
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        v = await c.post("/api/requisitions", json=_payload(_num(), vendor_id=str(uuid.uuid4())))
+        k = await c.post("/api/requisitions", json=_payload(_num(), contract_id=str(uuid.uuid4())))
+    assert v.status_code == 404, v.text
+    assert k.status_code == 404, k.text
+
+
+async def test_create_rejects_a_cross_currency_budget_link(realdb):
+    """`budget_id` is what `services/budget_service` sums `committed` over, and
+    the legs never convert — a EUR requisition linked to a USD budget would be
+    silently dropped from the rollup, so `/budgets/check` answers
+    `would_overspend: false` for headroom already spoken for."""
+    bid = await _mk_budget(realdb, currency="USD")
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        resp = await c.post(
+            "/api/requisitions", json=_payload(_num(), budget_id=bid, currency="EUR")
+        )
+    assert resp.status_code == 422, resp.text
+    assert "USD" in resp.json()["detail"]
+
+
+async def test_create_accepts_a_matching_budget_link(realdb):
+    bid = await _mk_budget(realdb, currency="USD")
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        resp = await c.post(
+            "/api/requisitions", json=_payload(_num(), budget_id=bid, currency="USD")
+        )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["budget_id"] == bid
+
+
+async def test_patch_currency_alone_cannot_orphan_an_existing_budget_link(realdb):
+    """Changing `currency` on a requisition that already names a budget would
+    leave a link the rollup drops — re-check the pair rather than accept it."""
+    bid = await _mk_budget(realdb, currency="USD")
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        rid = (
+            await c.post("/api/requisitions", json=_payload(_num(), budget_id=bid, currency="USD"))
+        ).json()["id"]
+        resp = await c.patch(f"/api/requisitions/{rid}", json={"currency": "EUR"})
+    assert resp.status_code == 422, resp.text
+
+
+async def test_patch_rejects_an_unknown_budget_id(realdb):
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        rid = (await c.post("/api/requisitions", json=_payload(_num()))).json()["id"]
+        resp = await c.patch(f"/api/requisitions/{rid}", json={"budget_id": str(uuid.uuid4())})
+    assert resp.status_code == 404, resp.text
