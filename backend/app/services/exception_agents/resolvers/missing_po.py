@@ -253,7 +253,7 @@ class MissingPOResolver(ExceptionResolver):
         )
 
     async def apply(
-        self, db, *, exception, invoice, evaluation, actor_id, actor_roles=None
+        self, db, *, exception, invoice, evaluation, actor_id, actor_roles=None, org_settings=None
     ) -> None:
         """Re-point the invoice's po_number to the matched PO, refresh the match,
         and approve via the audited path. Idempotent + race-safe: re-locks the
@@ -279,8 +279,8 @@ class MissingPOResolver(ExceptionResolver):
         if recheck.status != "no_po":
             raise _NotApprovable(locked.status)
 
-        # Re-fetch the exact PO chosen in evaluate (source of truth — avoids a
-        # tolerance/window re-derivation that lacks org_settings here). Bail if
+        # Re-fetch the exact PO chosen in evaluate (source of truth — pinning the
+        # choice is what keeps `apply` from re-deriving a different one). Bail if
         # it vanished or is no longer open (a human / concurrent write moved it),
         # so the coordinator escalates rather than linking a stale PO.
         chosen_id = getattr(self, "_candidate_po_id", None)
@@ -325,7 +325,15 @@ class MissingPOResolver(ExceptionResolver):
 
         # Refresh the PO-match snapshot/warnings now that the link exists. This
         # re-runs match_invoice_to_po and persists invoice.po_match.
-        await refresh_warnings(db, locked)
+        #
+        # `org_settings` is load-bearing here, not decoration: `refresh_warnings`
+        # resolves the per-vendor / per-commodity match rule (tolerance_pct,
+        # require_inspection) from it, and the configurable fraud rules too.
+        # Omitting it recomputed `invoice.po_match` under the PLATFORM defaults,
+        # so a stricter-than-default per-vendor tolerance the org had configured
+        # was silently erased by the agent's own recompute — and a fraud rule the
+        # org had DISABLED still opened a payment-blocking exception.
+        await refresh_warnings(db, locked, org_settings=org_settings)
 
         # The link must produce a clean `matched`; anything else (a stale-amount
         # mismatch, partial receipt) means a human should look — escalate.
@@ -342,6 +350,9 @@ class MissingPOResolver(ExceptionResolver):
             # The coordinator fails closed (escalates) when they're unknown, so
             # this is always populated on the auto-resolve path that reaches here.
             actor_roles=actor_roles,
+            # The tenant's OWN fraud / matching config, not the platform
+            # defaults — same value every HTTP approval door threads in.
+            org_settings=org_settings,
         )
         # Re-point the caller's reference (coordinator commits).
         invoice.po_number = locked.po_number

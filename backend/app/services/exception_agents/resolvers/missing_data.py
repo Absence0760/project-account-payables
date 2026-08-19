@@ -61,7 +61,7 @@ class MissingDataDispatcher(ExceptionResolver):
         return last_eval  # always set: there is at least one delegate
 
     async def apply(
-        self, db, *, exception, invoice, evaluation, actor_id, actor_roles=None
+        self, db, *, exception, invoice, evaluation, actor_id, actor_roles=None, org_settings=None
     ) -> None:
         if self._selected is None:
             return None
@@ -72,4 +72,5 @@ class MissingDataDispatcher(ExceptionResolver):
             evaluation=evaluation,
             actor_id=actor_id,
             actor_roles=actor_roles,
+            org_settings=org_settings,
         )

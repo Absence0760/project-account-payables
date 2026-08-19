@@ -380,8 +380,10 @@ class MultiPOSplitResolver(ExceptionResolver):
         )
         # Stash the chosen PO-set ids so `apply` re-fetches the exact same set
         # rather than re-deriving (and possibly picking differently if a PO moved),
-        # plus the resolved tolerance (org_settings isn't passed to `apply`, so
-        # re-resolving there would silently drop a per-vendor/commodity override).
+        # plus the resolved tolerance. `apply` now receives `org_settings` too, but
+        # it deliberately reuses this stash rather than re-resolving: pinning the
+        # value is what guarantees `apply` enacts EXACTLY what `evaluate` decided,
+        # so the two can never disagree about a per-vendor/commodity override.
         self._subset_po_ids = list(subset.po_ids)
         self._tolerance_pct = tol_pct
         return AgentEvaluation(
@@ -392,7 +394,7 @@ class MultiPOSplitResolver(ExceptionResolver):
         )
 
     async def apply(
-        self, db, *, exception, invoice, evaluation, actor_id, actor_roles=None
+        self, db, *, exception, invoice, evaluation, actor_id, actor_roles=None, org_settings=None
     ) -> None:
         """Link the invoice to the matched PO set, persist a multi-PO match
         snapshot, and approve via the audited path. Idempotent + race-safe:
@@ -438,8 +440,9 @@ class MultiPOSplitResolver(ExceptionResolver):
         # to re-confirm the sum still clears tolerance (a PO total could have moved
         # between evaluate and apply). Bail if the set no longer uniquely matches.
         target = Decimal(str(locked.amount)).quantize(_CENTS)
-        # Reuse the tolerance resolved in `evaluate` (org_settings isn't passed to
-        # `apply`); fall back to the org-default 5% if the stash is somehow absent.
+        # Reuse the tolerance resolved in `evaluate` — pinned there so the two
+        # halves can't disagree (see that stash); fall back to the org-default 5%
+        # if it is somehow absent.
         tol_pct = getattr(self, "_tolerance_pct", Decimal("5.0"))
         triples = [(po.id, po.po_number, Decimal(str(po.total)).quantize(_CENTS)) for po in rows]
         combined = sum((t[2] for t in triples), _ZERO).quantize(_CENTS)
@@ -490,6 +493,9 @@ class MultiPOSplitResolver(ExceptionResolver):
             # The coordinator fails closed (escalates) when they're unknown, so
             # this is always populated on the auto-resolve path that reaches here.
             actor_roles=actor_roles,
+            # The tenant's OWN fraud / matching config, not the platform
+            # defaults — same value every HTTP approval door threads in.
+            org_settings=org_settings,
         )
         # Re-point the caller's reference (coordinator commits).
         invoice.po_number = locked.po_number

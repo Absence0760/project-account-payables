@@ -235,7 +235,17 @@ class _MutatingThenRefused:
             changes={"amount": {"old": "100.00", "new": "999.00"}},
         )
 
-    async def apply(self, db, *, exception, invoice, evaluation, actor_id, actor_roles=None):
+    async def apply(
+        self,
+        db,
+        *,
+        exception,
+        invoice,
+        evaluation,
+        actor_id,
+        actor_roles=None,
+        org_settings=None,
+    ):
         invoice.amount = Decimal("999.00")
         await db.flush()
         raise HTTPException(

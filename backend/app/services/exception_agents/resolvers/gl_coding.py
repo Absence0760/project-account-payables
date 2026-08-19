@@ -278,10 +278,10 @@ class GLCodingResolver(ExceptionResolver):
 
         # Stash the derived values so apply enacts EXACTLY what evaluate decided
         # (and re-derives under the lock for idempotency / race-safety). This
-        # includes the resolved thresholds themselves — org_settings isn't passed
-        # to `apply` (mirrors `multi_po_split`'s `_tolerance_pct` stash), so
-        # re-resolving there with the platform defaults would silently drop a
-        # looser/stricter org override and could disagree with this decision.
+        # includes the resolved thresholds themselves (mirrors `multi_po_split`'s
+        # `_tolerance_pct` stash). `apply` now receives `org_settings` too, but
+        # re-resolving there could disagree with this decision — pinning is what
+        # makes the two halves of the resolver enact one and the same verdict.
         self._gl_value = gl.value
         self._cc_value = cc_suggestion.value if cc_suggestion is not None else None
         self._min_conf = min_conf
@@ -294,7 +294,7 @@ class GLCodingResolver(ExceptionResolver):
         )
 
     async def apply(
-        self, db, *, exception, invoice, evaluation, actor_id, actor_roles=None
+        self, db, *, exception, invoice, evaluation, actor_id, actor_roles=None, org_settings=None
     ) -> None:
         """Re-lock the invoice, re-derive the dominant GL under the lock, and apply
         the correction through the audited ``approve_invoice`` path. Money-safe:
@@ -367,6 +367,9 @@ class GLCodingResolver(ExceptionResolver):
             # The coordinator fails closed (escalates) when they're unknown, so
             # this is always populated on the auto-resolve path that reaches here.
             actor_roles=actor_roles,
+            # The tenant's OWN fraud / matching config, not the platform
+            # defaults — same value every HTTP approval door threads in.
+            org_settings=org_settings,
             corrections=corrections,
         )
         # Re-point the caller's reference (coordinator commits).
