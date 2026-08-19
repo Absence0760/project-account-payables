@@ -27,6 +27,7 @@ from app.api.deps import (
     require_roles,
 )
 from app.api.pagination import PaginationParams, pagination_params
+from app.api.permissions import PERM_INVOICE_APPROVE, effective_permissions
 from app.database import get_control_db
 from app.models.agent_decision import AgentDecision
 from app.models.contract import Contract
@@ -254,6 +255,70 @@ async def invoice_counts(
         key = db_status.value if hasattr(db_status, "value") else str(db_status)
         counts[key] = count
     return InvoiceCountsResponse(counts=counts, total=sum(counts.values()))
+
+
+class AssignableReviewerResponse(BaseModel):
+    """The minimal projection of a user the approver picker needs.
+
+    Deliberately NOT `AdminUserResponse`: this list is readable by everyone who
+    may assign a reviewer, so it carries only the display name that already
+    appears on the invoice's `assigned_to` — no email, no roles, no last-login.
+    """
+
+    id: str
+    full_name: str
+    is_active: bool
+
+
+# Registered BEFORE the parametric `/{invoice_id}` route — FastAPI matches in
+# declaration order and the literal segment would otherwise be parsed as a UUID
+# and 422. Same reason `/counts` sits above it.
+@router.get("/assignable-reviewers", response_model=list[AssignableReviewerResponse])
+async def list_assignable_reviewers(
+    control_db: AsyncSession = Depends(get_control_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Who `POST /api/invoices/{id}/assign` could actually be given.
+
+    The approver picker used to source `GET /api/admin/users`, which is
+    `require_roles(ROLE_ADMIN)`. For an ap_manager — a role the assign endpoint
+    itself accepts — that call 403'd, so the picker stayed empty and an invoice
+    on a workflow whose approval step is `approver_strategy: "manual"` (the
+    seeded default) could not be submitted at all.
+
+    The fix is a narrower endpoint, not a wider `/admin/users`: this response
+    carries ONLY the id, display name and active flag. The email, roles and
+    audit metadata on the admin directory are exactly what makes that route
+    admin-only, and none of it is needed to pick an approver.
+
+    RBAC mirrors `POST /api/invoices/{invoice_id}/assign`
+    (`require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)`) — reading the candidate list
+    and acting on it are the same privilege, so the two must not diverge.
+
+    Candidates are the org's ACTIVE users holding a role that confers
+    `invoice.approve` — resolved through `effective_permissions`, so a CUSTOM
+    role granted that permission is offered and a role without it (an ap_clerk)
+    is not. Offering someone who cannot approve would route the invoice into a
+    dead end. The caller is NOT filtered out here: segregation of duties is
+    enforced where the decision is made (`services/approval_chain`), and the
+    frontend already drops the current user from its own picker.
+    """
+    rows = await control_db.execute(
+        select(User)
+        .options(selectinload(User.roles))
+        .where(User.organization_id == org_id, User.is_active.is_(True))
+        .order_by(User.full_name)
+    )
+    return [
+        AssignableReviewerResponse(
+            id=str(candidate.id),
+            full_name=candidate.full_name,
+            is_active=candidate.is_active,
+        )
+        for candidate in rows.scalars().all()
+        if PERM_INVOICE_APPROVE in effective_permissions(candidate.roles)
+    ]
 
 
 @router.get("/{invoice_id}", response_model=InvoiceResponse)
