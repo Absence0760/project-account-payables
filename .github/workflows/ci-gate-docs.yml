@@ -17,8 +17,14 @@
 name: CI gate (docs)
 
 on:
+  # Deliberately NOT filtered to `branches: [main]`. A stacked PR — one based
+  # on another feature branch — matches no base-branch filter and so runs
+  # nothing, leaving the required "CI gate" context unreported while the PR
+  # still shows green from whatever workflows have no filter. project-running
+  # keeps a security guard that fails the build on exactly this
+  # (`no PR-triggered workflow is scoped to a base branch`); this file used to
+  # trip it the moment it was synced in.
   pull_request:
-    branches: [main]
     paths:
       - 'docs/**'
       - '**/*.md'
