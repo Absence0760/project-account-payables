@@ -294,29 +294,62 @@ def is_retry_safe(payment: Payment) -> bool:
     )
 
 
-async def blocked_invoice_ids(db: AsyncSession, invoice_ids: list[uuid.UUID]) -> set[uuid.UUID]:
-    """Which of ``invoice_ids`` carry an UNRESOLVED payment-blocking exception.
+async def blocking_exception_types(
+    db: AsyncSession, invoice_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, str]:
+    """Map each blocked invoice id → the TYPE of exception blocking it.
 
-    `PAYMENT_BLOCKING_EXCEPTION_TYPES` (duplicate / fraud_flag /
-    line_total_mismatch) are `error`-severity financial-integrity flags that
-    invoice approval does NOT gate on, so a run must refuse them and so must
-    anything that re-dispatches money later — a `fraud_flag` raised between run
-    creation and a `/retry-failed` days afterwards (a BEC bank-detail swap, an
-    altered cheque off a Positive Pay return) has to stop the re-send. Shared by
-    both callers precisely so they can't drift.
+    The single definition of "is this invoice payable right now", shared by
+    `blocked_invoice_ids` (which only needs the ids) and by the payment queue
+    (which also needs to tell the operator *why* a row can't be selected). One
+    query, one predicate — so the queue can never offer a row the run builder
+    then refuses, and adding a type to `PAYMENT_BLOCKING_EXCEPTION_TYPES`
+    updates both surfaces at once.
+
+    An invoice carrying several blocking exceptions reports the one earliest in
+    `PAYMENT_BLOCKING_EXCEPTION_TYPES` — a fixed tuple, so the answer is stable
+    across calls rather than dependent on row order.
+
+    The returned value is the exception TYPE only, never its description: it is
+    rendered to an operator and travels through a JSON body, and a description
+    can carry vendor / bank / amount detail.
     """
     from app.api.payments import PAYMENT_BLOCKING_EXCEPTION_TYPES
 
     if not invoice_ids:
-        return set()
+        return {}
     rows = await db.execute(
-        select(InvoiceException.invoice_id).where(
+        select(InvoiceException.invoice_id, InvoiceException.exception_type).where(
             InvoiceException.invoice_id.in_(invoice_ids),
             InvoiceException.exception_type.in_(PAYMENT_BLOCKING_EXCEPTION_TYPES),
             InvoiceException.status.notin_(("resolved", "dismissed")),
         )
     )
-    return {iid for iid in rows.scalars().all() if iid is not None}
+    rank = {t: i for i, t in enumerate(PAYMENT_BLOCKING_EXCEPTION_TYPES)}
+    unranked = len(rank)
+    out: dict[uuid.UUID, str] = {}
+    for invoice_id, exception_type in rows.all():
+        if invoice_id is None:
+            continue
+        held = out.get(invoice_id)
+        if held is None or rank.get(exception_type, unranked) < rank.get(held, unranked):
+            out[invoice_id] = exception_type
+    return out
+
+
+async def blocked_invoice_ids(db: AsyncSession, invoice_ids: list[uuid.UUID]) -> set[uuid.UUID]:
+    """Which of ``invoice_ids`` carry an UNRESOLVED payment-blocking exception.
+
+    `PAYMENT_BLOCKING_EXCEPTION_TYPES` (duplicate / fraud_flag /
+    line_total_mismatch / payment_reconciliation) are `error`-severity
+    financial-integrity flags that invoice approval does NOT gate on, so a run
+    must refuse them and so must anything that re-dispatches money later — a
+    `fraud_flag` raised between run creation and a `/retry-failed` days
+    afterwards (a BEC bank-detail swap, an altered cheque off a Positive Pay
+    return) has to stop the re-send. Shared by both callers precisely so they
+    can't drift.
+    """
+    return set(await blocking_exception_types(db, invoice_ids))
 
 
 async def applied_credit_total(db: AsyncSession, invoice_id: uuid.UUID) -> Decimal:

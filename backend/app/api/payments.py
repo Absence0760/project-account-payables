@@ -65,6 +65,7 @@ from app.services.payment_runs import (
     PaymentRunItemInput,
     active_run_payments,
     blocked_invoice_ids,
+    blocking_exception_types,
     create_payment_run_for_invoices,
     derive_run_status,
     is_retry_safe,
@@ -342,7 +343,11 @@ async def payment_queue(
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    """List approved invoices ready for payment (no completed payment yet)."""
+    """List approved invoices ready for payment (no completed payment yet).
+
+    Each row carries `blocked` / `blocked_reason` — whether an unresolved
+    payment-blocking exception means `POST /api/payments/runs` would refuse it.
+    """
     paid_ids = select(Payment.invoice_id).where(Payment.status == "completed").scalar_subquery()
 
     # Match the workflow state machine: only statuses that can directly
@@ -384,6 +389,14 @@ async def payment_queue(
     # host `date.today()` shifts this queue's answers by a day relative to
     # every other surface reading the same rows.
     today = datetime.now(UTC).date()
+    # Which of these rows `POST /api/payments/runs` would refuse. The run
+    # builder rejects the WHOLE run with a 409 when any selected invoice carries
+    # an unresolved `PAYMENT_BLOCKING_EXCEPTION_TYPES` exception, so a queue that
+    # offers such a row hands the operator a selection that can only fail —
+    # with nothing on screen saying which row did it. Resolved through the same
+    # `payment_runs` helper the builder itself uses (one predicate, one query),
+    # so the two can never disagree about what is payable.
+    blocked_types = await blocking_exception_types(db, [inv.id for inv, _ in rows])
     items: list[dict] = []
     total_savings = Decimal("0")
     total_amount = Decimal("0")
@@ -446,6 +459,16 @@ async def payment_queue(
                 if sched and sched.discount_percent
                 else None,
                 "discount_amount": str(discount_amount) if discount_amount else None,
+                # --- Payment-blocking exceptions -------------------------
+                # `blocked` is what the UI disables the row's checkbox on;
+                # `blocked_reason` is the exception TYPE from the fixed
+                # `PAYMENT_BLOCKING_EXCEPTION_TYPES` vocabulary — a stable code
+                # the client localises, never prose and never the exception's
+                # description (which can carry vendor / bank / amount detail).
+                # Both are always present and default to not-blocked, so a
+                # client that ignores them behaves exactly as before.
+                "blocked": inv.id in blocked_types,
+                "blocked_reason": blocked_types.get(inv.id),
             }
         )
 

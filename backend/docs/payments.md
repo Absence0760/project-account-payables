@@ -1265,7 +1265,7 @@ Matching payments against bank statement entries:
 | `POST` | `/api/payments/runs/{id}/retry-failed` | Re-attempt the safely-retryable FAILED payments of a `partial`/`failed` run by booking a NEW attempt row (the failed row is never mutated). Never re-dispatches a payment that already succeeded, nor one whose fate at the processor is unknown (`needs_reconciliation`); also skips an invoice that is unpayable, carries an unresolved duplicate/fraud/line-total exception, has since been credited, or already has another live payment. Same `payment.execute` gate, segregation check and CFO threshold as `/execute`. See § Why a payment failed, and retrying it. |
 | `POST` | `/api/payments/runs/{id}/sync-erp` | Re-run the ERP sync-back for a run whose settled payments didn't land — the exit for an invoice stranded at `payment_scheduled` after a failed sync leg. Awaits the pass and returns its `synced`/`transitioned`/`skipped`/`held`/`failed` counts (read `transitioned` for "did this recover anything"); idempotent by construction; moves no money. `payment.execute`-gated, entity-scoped, audited `payment_run.erp_sync_retried`. 409 when the run has no settled payment. See § ERP Payment Sync → A failed leg is a strand, and it is visible. |
 | `POST` | `/api/payments/runs/{id}/cancel` | Cancel a draft run — deletes its child payment rows so the invoices return to the queue, and flips the run to `cancelled`. |
-| `GET` | `/api/payments/queue` | List invoices ready for payment |
+| `GET` | `/api/payments/queue` | List invoices ready for payment. Each row carries `blocked` / `blocked_reason` — see § Financial-integrity exception gate → The queue says which rows the gate would refuse. |
 | `GET` | `/api/payments/summary` | KPIs: total paid, pending, queue count, rebates. Requires a `control_db` dependency because `CardRebate` is a control-plane model; the rebate query includes a try/except fallback returning `0.0` if the `card_rebates` table doesn't exist yet. |
 | `POST` | `/api/payments/{id}/void` | Void a pending/completed payment. Reverses a `virtual_card` payment's card at the provider too — see § Voiding a card payment cancels the card. |
 | `POST` | `/api/payments/{id}/compliance/release` | Re-run compliance-then-adapter for a payment stuck `pending_compliance`. `payment.execute`-gated, 409 outside that status. See § Sanctions / compliance hold resolution. |
@@ -1500,6 +1500,43 @@ rows against a real DB, so the membership of the tuple is pinned in **both**
 directions (a `po_mismatch`, which is advisory here, must not block) — and
 covers the standalone path with the same parametrised cases, including that
 clearing the flag releases it there too.
+
+#### The queue says which rows the gate would refuse
+
+A gate the operator can't see is a gate they walk into. `GET /api/payments/queue`
+used to offer blocked rows indistinguishably from payable ones, so selecting one
+took the **whole** draft down with a 409 and nothing on screen said which row did
+it. Every queue row now carries:
+
+| Field | Meaning |
+|-------|---------|
+| `blocked` | `true` when this invoice carries an unresolved payment-blocking exception — i.e. including it in a run would 409 the run |
+| `blocked_reason` | the blocking exception **type** (`duplicate` / `fraud_flag` / `line_total_mismatch` / `payment_reconciliation`), or `null` |
+
+Three properties are load-bearing:
+
+- **One predicate, not two.** The verdict is resolved through
+  `payment_runs.blocking_exception_types` — the function
+  `blocked_invoice_ids` (the run builder's own gate) is now defined in terms of.
+  The queue and the builder read the same tuple and the same SQL, so the queue
+  can never offer a row the builder refuses, and adding a type to
+  `PAYMENT_BLOCKING_EXCEPTION_TYPES` updates both surfaces at once.
+- **The reason is a code, never prose.** `blocked_reason` is the exception
+  `exception_type` and nothing else. An exception's `description` can name a
+  vendor, a bank account or an amount; this value is rendered to an operator and
+  travels through a JSON body, so it stays inside the fixed PII-free vocabulary
+  (which also lets the frontend localise it). An invoice carrying several
+  blocking exceptions reports the one earliest in the tuple — a fixed order, so
+  the answer doesn't depend on row order.
+- **Additive.** Both fields are always present and default to not-blocked, so a
+  client that ignores them behaves exactly as before.
+
+Coverage: `tests/test_payment_queue_blocked.py` — a blocking type marks the row,
+an advisory one (`po_mismatch`) does not, `escalated` still blocks,
+resolved/dismissed releases, every member of the tuple is reported, the reason is
+deterministic under multiple exceptions, the description never reaches the
+payload, and the queue's blocked set is asserted equal to
+`blocked_invoice_ids`' own verdict.
 
 ## Code Structure
 
