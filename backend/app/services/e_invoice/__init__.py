@@ -14,6 +14,13 @@ UBL from the same model.
 
 from __future__ import annotations
 
+from app.services.e_invoice.bis3 import (
+    BIS3_CUSTOMIZATION_ID,
+    BIS3_PROFILE_ID,
+    assert_bis3_conformant,
+    bis3_conformance_errors,
+    is_bis3_conformant,
+)
 from app.services.e_invoice.cii import parse_cii
 from app.services.e_invoice.country_formats import (
     CountryEInvoiceFormat,
@@ -63,6 +70,11 @@ __all__ = [
     "FieldError",
     "parse_e_invoice",
     "generate_ubl",
+    "BIS3_CUSTOMIZATION_ID",
+    "BIS3_PROFILE_ID",
+    "bis3_conformance_errors",
+    "is_bis3_conformant",
+    "assert_bis3_conformant",
     "generate_cii",
     "invoice_to_einvoice_document",
     "BuyerIdentity",

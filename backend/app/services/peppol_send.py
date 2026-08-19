@@ -35,6 +35,7 @@ from app.models.peppol_transmission import PeppolTransmission
 from app.services.audit_dispatch import dispatch_audit
 from app.services.e_invoice import (
     BuyerIdentity,
+    assert_bis3_conformant,
     assert_valid,
     generate_ubl,
     invoice_to_einvoice_document,
@@ -99,6 +100,23 @@ async def send_invoice_over_peppol(
     # persist anything, so a tax-invalid invoice leaves no row behind.
     doc = invoice_to_einvoice_document(invoice, line_items, buyer)
     assert_valid(doc)  # check_tax=True by default → EInvoiceValidationError on fail
+    # The parties' electronic addresses (BT-34 / BT-49) ARE the AS4 participant
+    # ids: the receiver is the counterparty this invoice names as seller, the
+    # sender is us — the document's buyer. They live only on the transport
+    # arguments, so stamp them onto the document before it is serialized;
+    # otherwise the UBL we transmit carries no `cbc:EndpointID` on either party
+    # and cannot claim the profile the AS4 doc-type id below asserts.
+    doc.seller.endpoint_id = receiver_id.value
+    doc.seller.endpoint_scheme_id = receiver_id.scheme
+    doc.buyer.endpoint_id = sender_id.value
+    doc.buyer.endpoint_scheme_id = sender_id.scheme
+    # We are about to put this document on the network under
+    # PEPPOL_BIS_BILLING_DOCTYPE, which ASSERTS EN 16931 / BIS Billing 3.0
+    # conformance. Refuse here rather than transmit a document that provably
+    # does not meet it — the Access Point would reject it anyway, and a claim we
+    # can disprove ourselves must never leave the building. PII-free
+    # `field: code` body, mapped to 422 at the route.
+    assert_bis3_conformant(doc)
     payload = generate_ubl(doc)
 
     # 5-6. Resolve the receiver via SMP/SML (mockable, no DNS). Unknown → refuse

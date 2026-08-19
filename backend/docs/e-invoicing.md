@@ -29,7 +29,8 @@ for the hybrid format.
 | `facturx.py` | `extract_embedded_cii_xml(pdf_bytes) -> bytes \| None` via PyMuPDF embedded-file API. Never raises. |
 | `validate.py` | `validate_document(doc, *, check_tax=True)` / `assert_valid` + `FieldError` + `EInvoiceValidationError`. EN 16931-subset structural checks; appends `tax_rules.validate_tax_document(doc)` when `check_tax`. |
 | `parse.py` | `parse_e_invoice(file_bytes, mime_type, filename)` orchestrator: detect → embedded-extract → parse → assert_valid. |
-| `generate.py` | `generate_ubl(doc) -> bytes`. Outbound UBL 2.1 serializer — the exact inverse of `ubl.py`. lxml etree, money via `Decimal.quantize`, `currencyID` on amounts. |
+| `generate.py` | `generate_ubl(doc, *, declare_profile=None) -> bytes`. Outbound UBL 2.1 serializer — the exact inverse of `ubl.py`. lxml etree, money via `Decimal.quantize`, `currencyID` on amounts. Declares the PEPPOL BIS Billing 3.0 `cbc:CustomizationID` / `cbc:ProfileID` **only when the document passes `bis3.bis3_conformance_errors`** — see § PEPPOL BIS Billing 3.0 conformance. |
+| `bis3.py` | The two BIS Billing 3.0 profile identifiers + `bis3_conformance_errors(doc)` / `is_bis3_conformant(doc)` / `assert_bis3_conformant(doc)` — the mandatory-element check that decides whether we are entitled to declare them. Pure, PII-free `FieldError`s. |
 | `generate_cii.py` | `generate_cii(doc) -> bytes`. Outbound UN/CEFACT CII (D16B) serializer — the exact inverse of `cii.py`. Emits `rsm:CrossIndustryInvoice` with the `ram:`/`udt:` namespaces; same lxml-etree posture as `generate.py` (Decimal money, escaped text); dates as the CII basic-date form (`format="102"` → `YYYYMMDD`). |
 | `mapper.py` | `BuyerIdentity` dataclass + `invoice_to_einvoice_document(invoice, line_items, buyer_identity) -> EInvoiceDocument`. Pure ORM `Invoice` → normalized model. |
 | `payment_means.py` | The UNCL4461 code ⇄ `Invoice.payment_method` token table, **both directions in one place** so inbound (`einvoice_adapter`) and outbound (`mapper`) can't drift. `payment_means_to_method` / `method_to_payment_means`; an unmappable token yields `None` and the optional element is omitted rather than carrying an out-of-code-list value. |
@@ -175,6 +176,40 @@ Optional fields are omitted when `None`, so the round-trip property holds:
 ```
 parse_ubl(generate_ubl(doc)) == doc   # on every core field
 ```
+
+### PEPPOL BIS Billing 3.0 conformance
+
+`cbc:CustomizationID` and `cbc:ProfileID` are not decoration — together they are
+the document's **assertion** that it conforms to EN 16931 as profiled by PEPPOL
+BIS Billing 3.0. An Access Point routes on them and validates the payload
+against that profile's Schematron, so declaring them on a document that does not
+meet the profile is *worse* than declaring nothing: it turns a document the
+receiver could have read as plain UBL into one it is obliged to reject.
+
+So the two elements are emitted **conditionally**. `generate_ubl`'s default
+(`declare_profile=None`) declares them only when `bis3.bis3_conformance_errors(doc)`
+comes back empty; `True` / `False` force the decision. What the generator emits
+so a real document *can* pass:
+
+- **`cbc:EndpointID` + `@schemeID` on both parties** (BT-34 / BT-49, mandatory
+  per PEPPOL-EN16931-R020 / R010). New model fields
+  `EInvoiceParty.endpoint_id` / `.endpoint_scheme_id`; a value with no scheme is
+  omitted rather than emitted, because half an electronic address identifies
+  nothing. `peppol_send` fills them from the AS4 participant ids — the receiver
+  is the document's seller, the sender (us) its buyer.
+- **Complete `cac:TaxSubtotal`s** — `cbc:TaxableAmount` + `cbc:TaxAmount` +
+  `cac:TaxCategory/cbc:ID` + `cac:TaxScheme/cbc:ID`.
+- **`cac:Item/cac:ClassifiedTaxCategory`** on every line (BT-151 / BT-152) —
+  where EN 16931 actually puts a line's VAT treatment. New model field
+  `EInvoiceLine.tax_category`; the mapper derives both it and the line rate from
+  the invoice's single `tax_rate` (an `InvoiceLineItem` has neither column, and
+  an `Invoice` carries exactly one rate, so by construction every line is at it).
+
+`bis3_conformance_errors` is a **mandatory-element** check, not the official
+Schematron: it covers the rules whose inputs the normalized model carries. A
+document that passes can still fail the official validator; a document that
+FAILS provably does not conform, which is what makes the conditional declaration
+sound. Vendoring the official Schematron into CI is the next rung.
 
 ### `generate_cii(doc) -> bytes`
 

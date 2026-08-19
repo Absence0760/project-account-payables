@@ -13,6 +13,7 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import func, select
 
 from app.models.invoice import Invoice, InvoiceLineItem, InvoiceStatus
@@ -20,8 +21,9 @@ from app.models.peppol_transmission import PeppolTransmission
 
 
 async def _seed_invoice(
-    mk, org_id, *, vendor_tax_id=None, status=InvoiceStatus.approved
+    mk, org_id, *, vendor_tax_id="DE123456789", status=InvoiceStatus.approved
 ) -> uuid.UUID:
+    """A BIS Billing 3.0-conformant invoice — see `test_peppol_send._seed_invoice`."""
     inv_id = uuid.uuid4()
     async with mk() as s:
         s.add(
@@ -32,10 +34,12 @@ async def _seed_invoice(
                 invoice_number=f"INV-{uuid.uuid4().hex[:8]}",
                 vendor_name="Acme GmbH",
                 vendor_tax_id=vendor_tax_id,
-                amount=Decimal("100.00"),
-                currency="USD",
+                amount=Decimal("119.00"),
+                currency="EUR",
                 invoice_date=date(2026, 1, 1),
                 subtotal=Decimal("100.00"),
+                tax_amount=Decimal("19.00"),
+                tax_rate=Decimal("19.00"),
                 status=status,
             )
         )
@@ -47,10 +51,42 @@ async def _seed_invoice(
                 quantity=Decimal("1"),
                 unit_price=Decimal("100.00"),
                 total=Decimal("100.00"),
+                tax=Decimal("19.00"),
             )
         )
         await s.commit()
     return inv_id
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _company_identity(realdb):
+    """Give the tenant a company profile with a country code.
+
+    The buyer party is built from `org.settings["company"]`, and BIS Billing
+    3.0 requires the buyer's country (BR-11) — without it the send path refuses
+    to transmit a document under a doc-type id that claims the profile.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.models.organization import Organization
+
+    org_id = realdb.info("a").org_id
+    ctrl = realdb.control_sessionmaker()
+    async with ctrl() as s:
+        org = (await s.execute(select(Organization).where(Organization.id == org_id))).scalar_one()
+        cfg = dict(org.settings or {})
+        cfg["company"] = {"name": "Buyer Co", "country_code": "DE"}
+        org.settings = cfg
+        flag_modified(org, "settings")
+        await s.commit()
+    yield
+    async with ctrl() as s:
+        org = (await s.execute(select(Organization).where(Organization.id == org_id))).scalar_one()
+        cfg = dict(org.settings or {})
+        cfg.pop("company", None)
+        org.settings = cfg
+        flag_modified(org, "settings")
+        await s.commit()
 
 
 _BODY = {

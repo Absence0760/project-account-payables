@@ -25,12 +25,21 @@ from app.services.e_invoice import BuyerIdentity, EInvoiceValidationError
 from app.services.peppol_adapters import ParticipantId, PeppolSendError
 from app.services.peppol_send import send_invoice_over_peppol
 
-_BUYER = BuyerIdentity(name="Buyer Co")
+# The buyer is US. PEPPOL BIS Billing 3.0 requires the buyer's country code
+# (BR-11) and name; the buyer's electronic address comes from `sender_id`.
+_BUYER = BuyerIdentity(name="Buyer Co", country_code="DE")
 _SENDER = ParticipantId("9930", "DE000000000")
 _RECEIVER = ParticipantId("9930", "SUPPLIER123")
 
 
-async def _seed_invoice(mk, org_id, *, vendor_tax_id=None) -> uuid.UUID:
+async def _seed_invoice(mk, org_id, *, vendor_tax_id="DE123456789") -> uuid.UUID:
+    """A BIS Billing 3.0-conformant invoice.
+
+    `send_invoice_over_peppol` transmits under a doc-type id that ASSERTS BIS
+    3.0, so it refuses a document that provably does not meet the profile. The
+    seller's country is derived from its VAT-id prefix, hence the DE id; the tax
+    figures give the VAT breakdown BR-CO-14 requires.
+    """
     inv_id = uuid.uuid4()
     async with mk() as s:
         s.add(
@@ -41,10 +50,12 @@ async def _seed_invoice(mk, org_id, *, vendor_tax_id=None) -> uuid.UUID:
                 invoice_number=f"INV-{uuid.uuid4().hex[:8]}",
                 vendor_name="Acme GmbH",
                 vendor_tax_id=vendor_tax_id,
-                amount=Decimal("100.00"),
-                currency="USD",
+                amount=Decimal("119.00"),
+                currency="EUR",
                 invoice_date=date(2026, 1, 1),
                 subtotal=Decimal("100.00"),
+                tax_amount=Decimal("19.00"),
+                tax_rate=Decimal("19.00"),
                 status=InvoiceStatus.approved,
             )
         )
@@ -56,6 +67,7 @@ async def _seed_invoice(mk, org_id, *, vendor_tax_id=None) -> uuid.UUID:
                 quantity=Decimal("1"),
                 unit_price=Decimal("100.00"),
                 total=Decimal("100.00"),
+                tax=Decimal("19.00"),
             )
         )
         await s.commit()
@@ -99,8 +111,8 @@ async def test_send_happy_path_persists_row_and_one_audit(realdb):
     assert transmission.status == "sent"
     assert transmission.direction == "outbound"
     assert transmission.message_id
-    assert transmission.amount == Decimal("100.00")  # Decimal, never float
-    assert transmission.currency == "USD"
+    assert transmission.amount == Decimal("119.00")  # Decimal, never float
+    assert transmission.currency == "EUR"
     assert transmission.business_message_id == inv.correlation_id.hex
 
     async with mk() as s:
@@ -497,6 +509,55 @@ async def test_receiver_doctype_unsupported_refuses_before_persisting(realdb):
     finally:
         mod.MockPeppolAdapter.resolve_participant = orig
 
+    async with mk() as s:
+        rows = (
+            await s.execute(
+                select(func.count())
+                .select_from(PeppolTransmission)
+                .where(PeppolTransmission.invoice_id == inv_id)
+            )
+        ).scalar_one()
+        assert rows == 0
+
+
+@pytest.mark.asyncio
+async def test_send_refuses_a_non_bis3_conformant_document(realdb):
+    """The transmission declares PEPPOL_BIS_BILLING_DOCTYPE, which ASSERTS
+    EN 16931 / BIS Billing 3.0 conformance. A document that provably does not
+    meet the profile must never leave the building under that claim.
+
+    Here the seller's country cannot be established (a US EIN has no VAT-id
+    country prefix), so BR-09 fails. The refusal is PII-free and, crucially,
+    happens BEFORE any row is persisted or anything is transmitted.
+    """
+    from app.services.e_invoice import EInvoiceValidationError
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    inv_id = await _seed_invoice(mk, org_id, vendor_tax_id=None)
+    inv, items = await _load(mk, inv_id)
+
+    async with mk() as s:
+        inv = (await s.execute(select(Invoice).where(Invoice.id == inv_id))).scalar_one()
+        with pytest.raises(EInvoiceValidationError) as excinfo:
+            await send_invoice_over_peppol(
+                s,
+                invoice=inv,
+                line_items=items,
+                buyer=_BUYER,
+                sender_id=_SENDER,
+                receiver_id=_RECEIVER,
+                organization_id=org_id,
+                entity_id=inv.entity_id,
+                actor_id=uuid.uuid4(),
+                peppol_config=None,
+            )
+
+    assert "seller.country_code: missing" in str(excinfo.value)
+    # PII-free: no party name, no id, no money in the message.
+    assert "Acme GmbH" not in str(excinfo.value)
+
+    # Nothing persisted — the refusal precedes the idempotency claim.
     async with mk() as s:
         rows = (
             await s.execute(

@@ -26,6 +26,11 @@ from decimal import Decimal
 
 from lxml import etree
 
+from app.services.e_invoice.bis3 import (
+    BIS3_CUSTOMIZATION_ID,
+    BIS3_PROFILE_ID,
+    is_bis3_conformant,
+)
 from app.services.e_invoice.model import (
     EInvoiceDocument,
     EInvoiceLine,
@@ -79,6 +84,14 @@ def _amount_el(
 def _build_party(parent_aggregate: etree._Element, party: EInvoiceParty) -> None:
     """Serialize an :class:`EInvoiceParty` as the inverse of ``ubl._parse_party``."""
     party_el = _cac(parent_aggregate, "Party")
+
+    # `cbc:EndpointID` is the FIRST child of `cac:Party` in the UBL 2.1 content
+    # model, and BT-34 / BT-49 (the party's electronic address) is mandatory in
+    # BIS Billing 3.0. Emitted only when both halves are known - a value with no
+    # `@schemeID` identifies nothing, so a half-address is worse than none.
+    if party.endpoint_id and party.endpoint_scheme_id:
+        endpoint = _cbc(party_el, "EndpointID", party.endpoint_id)
+        endpoint.set("schemeID", party.endpoint_scheme_id)
 
     if party.name:
         party_name = _cac(party_el, "PartyName")
@@ -177,26 +190,55 @@ def _build_line(root: etree._Element, line: EInvoiceLine, currency: str | None) 
             category = _cac(sub, "TaxCategory")
             _cbc(category, "Percent", _amount_text(line.tax_rate))
 
-    if line.description or line.item_code:
+    if line.description or line.item_code or line.tax_category or line.tax_rate is not None:
         item = _cac(line_el, "Item")
         if line.description:
             _cbc(item, "Name", line.description)
         if line.item_code:
             ident = _cac(item, "SellersItemIdentification")
             _cbc(ident, "ID", line.item_code)
+        # BT-151 / BT-152 - the invoiced item's VAT category + rate. This is
+        # where EN 16931 puts a line's VAT treatment; the `cac:TaxTotal` above
+        # is a UBL extra. The category is required for the element to say
+        # anything, so a rate with no category is not emitted.
+        if line.tax_category:
+            classified = _cac(item, "ClassifiedTaxCategory")
+            _cbc(classified, "ID", line.tax_category)
+            if line.tax_rate is not None:
+                _cbc(classified, "Percent", _amount_text(line.tax_rate))
+            scheme = _cac(classified, "TaxScheme")
+            _cbc(scheme, "ID", "VAT")
 
     if line.unit_price is not None:
         price = _cac(line_el, "Price")
         _amount_el(price, "PriceAmount", line.unit_price, currency)
 
 
-def generate_ubl(doc: EInvoiceDocument) -> bytes:
+def generate_ubl(doc: EInvoiceDocument, *, declare_profile: bool | None = None) -> bytes:
     """Serialize an :class:`EInvoiceDocument` to UBL 2.1 Invoice XML bytes.
 
     Returns UTF-8 bytes with an XML declaration (mirrors ``parse_ubl``'s
     ``bytes`` input and feeds ``Response(content=...)`` directly).
+
+    ``declare_profile`` controls the two PEPPOL BIS Billing 3.0 identifiers,
+    ``cbc:CustomizationID`` and ``cbc:ProfileID``. They are a **conformance
+    claim**, not decoration — an Access Point routes on them and validates the
+    document against that profile — so the default (``None``) declares them
+    only when :func:`bis3.bis3_conformance_errors` finds nothing to object to.
+    A document missing an endpoint id, a complete VAT breakdown or a line VAT
+    category is therefore emitted as plain UBL 2.1, which a receiver can still
+    read, rather than as a BIS document it is obliged to reject. Pass ``True``
+    / ``False`` to force the decision.
     """
     root = etree.Element(f"{{{_NS_INVOICE}}}Invoice", nsmap=_NSMAP)
+
+    # CustomizationID / ProfileID lead the UBL 2.1 Invoice content model, ahead
+    # of cbc:ID.
+    if declare_profile is None:
+        declare_profile = is_bis3_conformant(doc)
+    if declare_profile:
+        _cbc(root, "CustomizationID", BIS3_CUSTOMIZATION_ID)
+        _cbc(root, "ProfileID", BIS3_PROFILE_ID)
 
     # Header — element order matches the parser's expectations / the fixture.
     if doc.invoice_number:

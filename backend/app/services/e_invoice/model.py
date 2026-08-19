@@ -36,6 +36,12 @@ class EInvoiceParty:
     postal_code: str | None = None
     country_code: str | None = None  # ISO 3166-1 alpha-2
     email: str | None = None
+    # BT-34 (seller) / BT-49 (buyer) "electronic address" - the party's PEPPOL
+    # participant id. UBL carries it as `cac:Party/cbc:EndpointID` with the EAS
+    # code on `@schemeID`; PEPPOL BIS Billing 3.0 makes BOTH parties' addresses
+    # mandatory, so a document without them cannot claim the profile.
+    endpoint_id: str | None = None  # the registered id (often the VAT/org id)
+    endpoint_scheme_id: str | None = None  # EAS code, e.g. "9930"
 
 
 @dataclass
@@ -55,8 +61,13 @@ class EInvoiceLine:
     unit_code: str | None = None  # UN/ECE unit (e.g. "C62", "HUR")
     unit_price: Decimal | None = None
     line_total: Decimal | None = None  # line extension amount
-    tax_rate: Decimal | None = None
+    tax_rate: Decimal | None = None  # BT-152, percent
     tax_amount: Decimal | None = None
+    # BT-151 - the invoiced item's VAT category code (UNCL5305: "S", "Z", "E",
+    # ...). UBL carries it on `cac:Item/cac:ClassifiedTaxCategory/cbc:ID`, which
+    # EN 16931 requires on every line; without it a line states no VAT
+    # treatment at all.
+    tax_category: str | None = None
 
 
 @dataclass
