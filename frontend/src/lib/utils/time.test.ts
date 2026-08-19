@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { formatDate, formatPeriod } from './time';
+import { formatDate, formatPeriod, timeAgo } from './time';
 import { setActiveFormatLocale } from '$lib/i18n/formatLocale';
 
 // The date helpers drive their locale off the active in-app i18n locale
@@ -103,5 +103,98 @@ describe('formatPeriod', () => {
 		expect(en).not.toBe(de);
 		expect(en).toContain('Mar');
 		expect(de).toContain('März');
+	});
+});
+
+// `timeAgo` was the one helper in this file the locale picker did not move —
+// it returned hardcoded English ("Just now", "5m ago", "2d ago") while its
+// `formatDate` / `formatPeriod` siblings localized, so a German user read
+// English relative times inside a German page. It is now
+// `Intl.RelativeTimeFormat` keyed on the SAME active-locale holder. These
+// tests pin the coarse buckets (they are the behaviour, not an artefact) and
+// lock the localized output for more than one locale.
+
+/** An ISO timestamp `ms` in the past, offset a little to clear a bucket edge. */
+function agoIso(ms: number): string {
+	return new Date(Date.now() - ms).toISOString();
+}
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+
+describe('timeAgo', () => {
+	it('renders the sub-minute bucket as the locale-aware "now"', () => {
+		setActiveFormatLocale('en-US');
+		expect(timeAgo(agoIso(30_000))).toBe('now');
+		setActiveFormatLocale('de-DE');
+		expect(timeAgo(agoIso(30_000))).toBe('jetzt');
+	});
+
+	it('treats a future timestamp as the sub-minute bucket (unchanged behaviour)', () => {
+		setActiveFormatLocale('en-US');
+		expect(timeAgo(new Date(Date.now() + 5 * MINUTE).toISOString())).toBe('now');
+	});
+
+	it('renders the minute bucket under en-US', () => {
+		setActiveFormatLocale('en-US');
+		expect(timeAgo(agoIso(5 * MINUTE + 1_000))).toBe('5 min. ago');
+		expect(timeAgo(agoIso(MINUTE + 1_000))).toBe('1 min. ago');
+	});
+
+	it('renders the hour bucket under en-US', () => {
+		setActiveFormatLocale('en-US');
+		expect(timeAgo(agoIso(2 * HOUR + MINUTE))).toBe('2 hr. ago');
+	});
+
+	it('renders the day bucket under en-US, and never as "yesterday"', () => {
+		setActiveFormatLocale('en-US');
+		// `numeric: 'always'` — a one-day-old row must stay numeric so the
+		// bucket reads as an age, not a calendar word.
+		expect(timeAgo(agoIso(DAY + HOUR))).toBe('1 day ago');
+		expect(timeAgo(agoIso(3 * DAY + HOUR))).toBe('3 days ago');
+	});
+
+	it('localizes every bucket under German', () => {
+		setActiveFormatLocale('de-DE');
+		expect(timeAgo(agoIso(5 * MINUTE + 1_000))).toBe('vor 5 Min.');
+		expect(timeAgo(agoIso(2 * HOUR + MINUTE))).toBe('vor 2 Std.');
+		expect(timeAgo(agoIso(3 * DAY + HOUR))).toBe('vor 3 Tagen');
+	});
+
+	it('localizes every bucket under Japanese (no grammatical plural)', () => {
+		// Japanese is the locale an ICU-plural implementation would have had to
+		// special-case (`Intl.PluralRules('ja')` never selects `one`);
+		// `Intl.RelativeTimeFormat` gets it right with no per-locale authoring.
+		setActiveFormatLocale('ja');
+		expect(timeAgo(agoIso(5 * MINUTE + 1_000))).toBe('5 分前');
+		expect(timeAgo(agoIso(3 * DAY + HOUR))).toBe('3 日前');
+	});
+
+	it('changes output when the active locale changes, with no remount', () => {
+		// The whole point: the SAME module-level function, called twice, must
+		// follow the picker. (This is the value half of the reactivity fix; the
+		// re-render half needs a browser — see formatLocale.test.ts.)
+		const iso = agoIso(2 * HOUR + MINUTE);
+		setActiveFormatLocale('en-US');
+		const en = timeAgo(iso);
+		setActiveFormatLocale('fr');
+		const fr = timeAgo(iso);
+		expect(en).toBe('2 hr. ago');
+		// ICU separates the French number from its unit with a narrow no-break
+		// space (U+202F), so match the prefix rather than pinning an invisible
+		// character an editor will silently normalise.
+		expect(fr).toMatch(/^il y a 2\s+h$/u);
+		expect(fr).not.toBe(en);
+	});
+
+	it('returns the placeholder for an unparseable timestamp', () => {
+		// The old implementation rendered "NaNd ago" here, and
+		// `Intl.RelativeTimeFormat#format` throws a RangeError on a non-finite
+		// value — which would have taken a whole table render down.
+		setActiveFormatLocale('en-US');
+		expect(timeAgo('not-a-date')).toBe('—');
+		expect(timeAgo('')).toBe('—');
+		expect(timeAgo('not-a-date', 'n/a')).toBe('n/a');
 	});
 });

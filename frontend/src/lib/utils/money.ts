@@ -21,6 +21,49 @@ import { getActiveFormatLocale } from '$lib/i18n/formatLocale';
 export const DEFAULT_CURRENCY = 'USD';
 
 /**
+ * Currencies offered in a picker, in the order they are shown.
+ *
+ * Deliberately a SHORTLIST, not all of ISO 4217: a 180-entry select is worse
+ * to use than a short one, and the backend validates the code itself rather
+ * than checking it against a frontend list — so this constrains the UI, never
+ * the data. Always render it through {@link currencyOptions}, which folds in
+ * the tenant's own reporting currency: a shortlist that can't express the
+ * currency the org actually reports in would be a dead end, which is exactly
+ * the failure mode the hardcoded `"USD"` on the credit-memo create had.
+ */
+export const COMMON_CURRENCIES = [
+	'USD',
+	'EUR',
+	'GBP',
+	'CAD',
+	'AUD',
+	'JPY',
+	'CHF',
+	'ZAR',
+	'INR',
+	'BRL',
+	'MXN',
+	'SGD',
+	'NZD',
+	'SEK',
+	'NOK',
+	'DKK'
+] as const;
+
+/**
+ * {@link COMMON_CURRENCIES} with `preferred` guaranteed present and first.
+ *
+ * Pure and order-stable so a picker's option list is deterministic. An empty
+ * or malformed `preferred` is ignored rather than inserted, so a store that
+ * hasn't loaded yet can't put a blank option at the top of the list.
+ */
+export function currencyOptions(preferred?: string | null): string[] {
+	const head = (preferred ?? '').trim().toUpperCase();
+	const rest = COMMON_CURRENCIES.filter((c) => c !== head);
+	return head.length === 3 ? [head, ...rest] : [...COMMON_CURRENCIES];
+}
+
+/**
  * An exact decimal money amount as the API serialises it — `"1234.50"`.
  *
  * The backend holds money as `Decimal` and writes it to JSON as a string so

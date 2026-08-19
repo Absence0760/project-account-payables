@@ -414,6 +414,13 @@
 		margin-left: auto;
 	}
 
+	/* Not `<Badge>`: the pill carries `data-testid="chat-status"`, which the
+	   supplier-chat e2e reads the thread state off — `<Badge>` takes a tone, a
+	   variant class and a title, deliberately not arbitrary attributes, so
+	   converting would mean either wrapping it in a second element or widening
+	   the primitive's API for one caller. It keeps its own smaller metrics
+	   (0.7rem, sitting inline in the thread header) and takes its colour from
+	   the palette pairs. */
 	.chat-status-pill {
 		display: inline-block;
 		padding: 2px 9px;
@@ -430,8 +437,8 @@
 	}
 
 	.chat-status-pill.resolved {
-		background: rgba(31, 168, 106, 0.15);
-		color: #1fa86a;
+		background: var(--success-tint);
+		color: var(--success-on-tint);
 	}
 
 	.chat-list {
@@ -587,14 +594,17 @@
 		gap: 6px;
 	}
 
+	/* Not `<Badge>`: a composer @mention token that wraps its own remove
+	   button — a flex container with a child control, not a text pill. Colour
+	   comes from the palette pair. */
 	.chat-mention-tag {
 		display: inline-flex;
 		align-items: center;
 		gap: 4px;
 		padding: 2px 8px;
 		border-radius: 12px;
-		background: rgba(99, 140, 255, 0.12);
-		color: #638cff;
+		background: var(--accent-tint);
+		color: var(--accent-on-tint);
 		font-size: 0.76rem;
 	}
 

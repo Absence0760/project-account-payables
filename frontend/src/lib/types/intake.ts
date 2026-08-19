@@ -2,6 +2,8 @@
 // `/api/intake` endpoints (backend `IntakeRequestResponse`). Money fields arrive
 // as numbers (backend `float(...)`); date/datetime fields are ISO strings.
 
+import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+
 export type IntakeStatus =
 	| 'open'
 	| 'in_review'
@@ -27,6 +29,32 @@ export const INTAKE_STATUS_LABELS: Record<IntakeStatus, string> = {
 	converted: 'Converted',
 	cancelled: 'Cancelled'
 };
+
+// Badge tone per status, so the list page and the modal can't tint the same
+// status two different shades — which is exactly what they did (.12 alpha on
+// the list, .15 in the modal, and `open` already token-based in only one).
+export const INTAKE_STATUS_TONES: Record<IntakeStatus, BadgeTone> = {
+	open: 'accent',
+	in_review: 'warning',
+	approved: 'success',
+	rejected: 'danger',
+	// Converted means the ask left intake and became a requisition — a
+	// mid-pipeline handoff, which is exactly what the `erp` purple marks.
+	converted: 'erp',
+	// Cancelled is the absence of a signal, not a weak one — flat, not tinted.
+	cancelled: 'neutral'
+};
+
+/**
+ * `IntakeRequest.status` is typed `string` (the API is the source of truth, and
+ * the backend may add a status before this union does), so both call sites read
+ * the tone through a tolerant accessor — mirroring how they read the label.
+ * An unrecognised status renders flat rather than borrowing another tone's
+ * meaning.
+ */
+export function intakeStatusTone(status: string): BadgeTone {
+	return INTAKE_STATUS_TONES[status as IntakeStatus] ?? 'neutral';
+}
 
 export type IntakeType = 'software' | 'services' | 'hardware' | 'other';
 

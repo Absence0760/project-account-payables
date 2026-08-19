@@ -319,9 +319,14 @@
 		font-size: 0.72rem;
 		font-weight: 500;
 	}
+	/* Not `<Badge>`: this marks a member's ROLE inside a cluster, not a
+	   lifecycle status, and it sits in a dense member table beside the vendor
+	   name — the same reason `ui/ScreeningBadge` keeps its own quieter metrics
+	   (0.72rem, weight 500, sentence case) rather than shouting in uppercase.
+	   Only the colour literals are retired to the palette pair. */
 	.role-badge.canonical {
-		background: rgba(31, 168, 106, 0.12);
-		color: #1fa86a;
+		background: var(--success-tint);
+		color: var(--success-on-tint);
 	}
 	.role-badge.duplicate {
 		background: var(--bg);

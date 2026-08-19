@@ -17,11 +17,12 @@ import {
  *   - per-invoice ROI / APR is the textbook cost-of-forgoing-discount value;
  *   - the optimizer ranks by APR and respects a cash budget;
  *   - accept never moves money (no Payment / PaymentRun row appears);
- *   - mutate RBAC: accept = admin/ap_manager/cfo, decline = admin/ap_manager,
- *     clerk is read-only;
+ *   - mutate RBAC: accept AND decline = admin/ap_manager/cfo (two halves of one
+ *     decision), create = admin/ap_manager, clerk is read-only;
  *   - offers are tenant-isolated.
  *
- * Setup builds its own invoices + offers via the API; teardown is psql.
+ * Setup builds its own invoices + offers via the API; teardown is psql. Every
+ * date a test needs comes from ONE reference — see `referenceDate`.
  */
 
 interface Vendor {
@@ -36,13 +37,47 @@ async function firstVendor(page: import('@playwright/test').Page): Promise<Vendo
 	return ((await resp.json()) as { items: Vendor[] }).items[0];
 }
 
-/** Approved invoice with `amount` and a due date `dueInDays` out, bound to the
- *  vendor. Returns the invoice id. */
+interface Offer {
+	id: string;
+	status: string;
+	/** Echoed back by the API — the single reference date every other date in
+	 *  the test is measured from. See `referenceDate` below. */
+	valid_from: string;
+}
+
+/**
+ * The ONE clock read a test makes. Everything else is arithmetic on it.
+ *
+ * The two-clock hazard this closes: `due_date` used to be written as Postgres
+ * `CURRENT_DATE + N` (the DB container's clock — effectively UTC) while a
+ * tier's capture deadline is measured from the offer's own `valid_from`,
+ * which — left unset — falls back to the API server's Python `date.today()`
+ * (the host's local timezone; `services/discount_auto_trigger._tier_deadline`).
+ * Off UTC those two straddle midnight, `days_accelerated` lands one day out,
+ * and `expect(...).toBe(20)` sees 21. CI runs in UTC and never sees it; it
+ * reproduces on a UTC-4 workstation after 20:00 local.
+ *
+ * The fix is not a wider assertion — it is one reference: stamp this date on
+ * the offer as `valid_from`, then derive the invoice's `due_date` from the
+ * value the API echoes back, so
+ * `days_accelerated = due_date − (valid_from + tier.days)` is exact on any
+ * clock. WHICH clock supplies the reference doesn't matter: it only has to
+ * land inside a tier window of the API server's today for the tier to still be
+ * achievable, and the two clocks differ by at most a day against tiers of 5–10.
+ */
+function referenceDate(): string {
+	const iso = tenantPsql('SELECT CURRENT_DATE').match(/\d{4}-\d{2}-\d{2}/);
+	expect(iso, 'could not read a reference date from Postgres').not.toBeNull();
+	return iso![0];
+}
+
+/** Approved invoice for `amount`, bound to the vendor. Carries NO due date —
+ *  `setDueDate` sets one off the offer's `valid_from` when a test needs the
+ *  early-pay math (see `referenceDate`). Returns the invoice id. */
 async function makeInvoice(
 	page: import('@playwright/test').Page,
 	vendor: Vendor,
-	amount: number,
-	dueInDays: number
+	amount: number
 ): Promise<string> {
 	const resp = await page.request.post(`${API_BASE}/api/invoices`, {
 		headers: await authedTenantHeaders(page),
@@ -54,25 +89,39 @@ async function makeInvoice(
 	});
 	const inv = (await resp.json()) as { id: string };
 	// POST /api/invoices intentionally ignores a client-supplied status (the
-	// status-injection fix). Force `approved`, bind vendor_id, and set due_date
-	// all in one SQL call so discount ROI math sees the right inputs.
+	// status-injection fix). Force `approved` and bind vendor_id via SQL so the
+	// discount math sees the right inputs.
 	tenantPsql(
-		`UPDATE invoices SET status='approved', vendor_id='${vendor.id}', due_date = CURRENT_DATE + ${dueInDays} WHERE id='${inv.id}'`
+		`UPDATE invoices SET status='approved', vendor_id='${vendor.id}' WHERE id='${inv.id}'`
 	);
 	return inv.id;
+}
+
+/** Net due date = the offer's own `valid_from` + `dueInDays`. Reading the date
+ *  back off the offer (rather than re-deriving it) is what keeps both ends of
+ *  `days_accelerated` on one clock. */
+function setDueDate(invoiceId: string, offer: Offer, dueInDays: number): void {
+	tenantPsql(
+		`UPDATE invoices SET due_date = DATE '${offer.valid_from}' + ${dueInDays} WHERE id='${invoiceId}'`
+	);
 }
 
 async function makeOffer(
 	page: import('@playwright/test').Page,
 	invoiceId: string,
 	tiers: Array<{ days: number; percent: string }>
-): Promise<{ id: string; status: string }> {
+): Promise<Offer> {
 	const resp = await page.request.post(`${API_BASE}/api/discounts/offers`, {
 		headers: await authedTenantHeaders(page),
-		data: { scope: 'invoice', invoice_id: invoiceId, tiers }
+		// `valid_from` is always sent: it is the reference every tier deadline is
+		// measured from, and leaving it NULL hands that job to the API server's
+		// own clock (see `referenceDate`).
+		data: { scope: 'invoice', invoice_id: invoiceId, tiers, valid_from: referenceDate() }
 	});
 	expect(resp.status(), await resp.text()).toBe(201);
-	return (await resp.json()) as { id: string; status: string };
+	const offer = (await resp.json()) as Offer;
+	expect(offer.valid_from, 'offer did not echo back a valid_from').toMatch(/^\d{4}-\d{2}-\d{2}$/);
+	return offer;
 }
 
 // NOTE: audit_log is append-only at the DB level (immutability trigger), so
@@ -109,7 +158,7 @@ test.describe('discounting money path (API)', () => {
 	}) => {
 		const headers = await authedTenantHeaders(page);
 		const vendor = await firstVendor(page);
-		const invoiceId = await makeInvoice(page, vendor, 1000, 30);
+		const invoiceId = await makeInvoice(page, vendor, 1000);
 		// Two tiers — best-for-today must pick the 3% rung (highest percent).
 		const offer = await makeOffer(page, invoiceId, [
 			{ days: 5, percent: '3.00' },
@@ -166,7 +215,7 @@ test.describe('discounting money path (API)', () => {
 	}) => {
 		const headers = await authedTenantHeaders(page);
 		const vendor = await firstVendor(page);
-		const invoiceId = await makeInvoice(page, vendor, 1000, 30);
+		const invoiceId = await makeInvoice(page, vendor, 1000);
 		const offer = await makeOffer(page, invoiceId, [
 			{ days: 5, percent: '3.00' },
 			{ days: 10, percent: '2.00' }
@@ -200,7 +249,7 @@ test.describe('discounting money path (API)', () => {
 	}) => {
 		const headers = await authedTenantHeaders(page);
 		const vendor = await firstVendor(page);
-		const invoiceId = await makeInvoice(page, vendor, 500, 30);
+		const invoiceId = await makeInvoice(page, vendor, 500);
 		const offer = await makeOffer(page, invoiceId, [{ days: 5, percent: '2.00' }]);
 		try {
 			const dec = await page.request.post(
@@ -228,10 +277,14 @@ test.describe('discounting money path (API)', () => {
 	test('per-invoice ROI is the exact cost-of-forgoing-discount value', async ({ page }) => {
 		const headers = await authedTenantHeaders(page);
 		const vendor = await firstVendor(page);
-		// 1000 invoice, due in 30 days; a single 2% tier whose deadline is 10
-		// days out → cash accelerated by 20 days. APR = 2/(100-2)*365/20 = 37.24%.
-		const invoiceId = await makeInvoice(page, vendor, 1000, 30);
+		// 1000 invoice; a single 2% tier whose deadline is 10 days after the
+		// offer opens, and a net due date 30 days after the SAME reference →
+		// cash accelerated by exactly 20 days. APR = 2/(100-2)*365/20 = 37.24%.
+		// Both dates hang off `offer.valid_from`; deriving the due date from a
+		// second clock is what made this assertion timezone-dependent.
+		const invoiceId = await makeInvoice(page, vendor, 1000);
 		const offer = await makeOffer(page, invoiceId, [{ days: 10, percent: '2.00' }]);
+		setDueDate(invoiceId, offer, 30);
 		try {
 			const resp = await page.request.get(
 				`${API_BASE}/api/discounts/invoices/${invoiceId}/roi`,
@@ -297,25 +350,27 @@ test.describe('discounting money path (API)', () => {
 				}
 			});
 			const inv = (await r.json()) as { id: string };
-			tenantPsql(
-				`UPDATE invoices SET vendor_id='${vendor.id}', due_date = CURRENT_DATE + 30 WHERE id='${inv.id}'`
-			);
+			// No due date yet — it is set off the offer's own `valid_from` below,
+			// so both ends of `days_accelerated` come from one clock (see
+			// `referenceDate`).
+			tenantPsql(`UPDATE invoices SET vendor_id='${vendor.id}' WHERE id='${inv.id}'`);
 			return inv.id;
 		}
-		async function entityOffer(
-			invoiceId: string,
-			percent: string
-		): Promise<{ id: string }> {
+		/** Offer + a matching 30-day net due date, both anchored on one reference. */
+		async function entityOffer(invoiceId: string, percent: string): Promise<Offer> {
 			const r = await page.request.post(`${API_BASE}/api/discounts/offers`, {
 				headers,
 				data: {
 					scope: 'invoice',
 					invoice_id: invoiceId,
-					tiers: [{ days: 10, percent }]
+					tiers: [{ days: 10, percent }],
+					valid_from: referenceDate()
 				}
 			});
 			expect(r.status(), await r.text()).toBe(201);
-			return (await r.json()) as { id: string };
+			const offer = (await r.json()) as Offer;
+			setDueDate(invoiceId, offer, 30);
+			return offer;
 		}
 
 		const invA = await entityInvoice(1000);
@@ -415,7 +470,7 @@ test.describe('discounting money path (API)', () => {
 		expect(clerkList.status()).toBe(200);
 
 		// Clerk cannot create an offer (mutate = admin/ap_manager).
-		const inv1 = await makeInvoice(page, vendor, 600, 30);
+		const inv1 = await makeInvoice(page, vendor, 600);
 		const clerkCreate = await page.request.post(`${API_BASE}/api/discounts/offers`, {
 			headers: clerkH,
 			data: { scope: 'invoice', invoice_id: inv1, tiers: [{ days: 5, percent: '2.00' }] }
@@ -434,7 +489,7 @@ test.describe('discounting money path (API)', () => {
 		// decision, so the role that can commit cash early must be able to
 		// refuse the offer too — the backend used to allow the accept and 403
 		// the decline, and the UI showed a Decline button that always failed.
-		const inv2 = await makeInvoice(page, vendor, 600, 30);
+		const inv2 = await makeInvoice(page, vendor, 600);
 		const offerForDecline = await makeOffer(page, inv2, [{ days: 5, percent: '2.00' }]);
 		const cfoDecline = await page.request.post(
 			`${API_BASE}/api/discounts/offers/${offerForDecline.id}/decline`,
@@ -443,7 +498,7 @@ test.describe('discounting money path (API)', () => {
 		expect(cfoDecline.status()).toBe(200);
 		// Manager CAN decline too — a separate offer, since the one above is
 		// already declined and is no longer in a declinable state.
-		const inv3 = await makeInvoice(page, vendor, 700, 30);
+		const inv3 = await makeInvoice(page, vendor, 700);
 		const offerForMgrDecline = await makeOffer(page, inv3, [{ days: 5, percent: '2.00' }]);
 		const mgrDecline = await page.request.post(
 			`${API_BASE}/api/discounts/offers/${offerForMgrDecline.id}/decline`,
@@ -465,7 +520,7 @@ test.describe('discounting money path (API)', () => {
 		const headers = await authedTenantHeaders(page);
 		const slug = headers['X-Tenant-Slug'];
 		const vendor = await firstVendor(page);
-		const invoiceId = await makeInvoice(page, vendor, 700, 30);
+		const invoiceId = await makeInvoice(page, vendor, 700);
 		const offer = await makeOffer(page, invoiceId, [{ days: 5, percent: '2.00' }]);
 		try {
 			// A different tenant's admin must not see this offer. Use the seeded

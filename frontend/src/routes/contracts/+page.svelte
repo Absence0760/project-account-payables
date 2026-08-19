@@ -1,6 +1,12 @@
 <script lang="ts">
 	import type { Contract, ContractStatus, ContractType } from '$lib/types/contract';
-	import { CONTRACT_STATUSES, STATUS_LABELS, CONTRACT_TYPE_LABELS } from '$lib/types/contract';
+	import {
+		CONTRACT_STATUSES,
+		STATUS_LABELS,
+		STATUS_TONES,
+		CONTRACT_TYPE_LABELS
+	} from '$lib/types/contract';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import { contractStore } from '$lib/stores/contracts.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { api } from '$lib/api';
@@ -117,7 +123,11 @@
 		clearTimeout(searchTimer);
 		searchTimer = setTimeout(() => {
 			syncUrl();
-			contractStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
+			// Fire-and-forget: the store re-throws so an awaiting caller keeps its
+			// own handling, but nothing awaits here — `contractStore.errored` is what
+			// the table's empty state reads. Swallow so a failed load isn't an
+			// unhandled rejection in the console.
+			contractStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
 		}, 300);
 		// Cancel a pending debounce on teardown: without it the timer fires
 		// after the page is gone, running syncUrl()/a list fetch against a route
@@ -128,7 +138,9 @@
 	$effect(() => {
 		statusFilter;
 		syncUrl();
-		contractStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
+		// See the debounce effect above: swallow the rejection, the store's
+		// `errored` flag is what the UI reads.
+		contractStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
 	});
 
 	$effect(() => {
@@ -222,7 +234,11 @@
 					</td>
 					<td>{contract.vendor_name ?? '—'}</td>
 					<td>{typeLabel(contract.contract_type)}</td>
-					<td><span class="badge {contract.status}">{STATUS_LABELS[contract.status]}</span></td>
+					<td>
+						<Badge tone={STATUS_TONES[contract.status]} variant={contract.status}>
+							{STATUS_LABELS[contract.status]}
+						</Badge>
+					</td>
 					<td class="muted">{formatDate(contract.end_date)}</td>
 					<td class="right mono"><Money amount={contract.total_value} currency={contract.currency} /></td>
 					<td class="right mono">
@@ -274,18 +290,9 @@
 		flex-wrap: wrap;
 	}
 
-	.badge {
-		display: inline-block;
-		padding: 2px 10px;
-		border-radius: 10px;
-		font-size: 0.74rem;
-		font-weight: 600;
-	}
-	.badge.draft { background: rgba(99, 140, 255, 0.12); color: #638cff; }
-	.badge.active { background: rgba(31, 168, 106, 0.12); color: #1fa86a; }
-	.badge.expired { background: rgba(212, 148, 10, 0.12); color: #d4940a; }
-	.badge.terminated { background: rgba(224, 64, 64, 0.12); color: var(--danger); }
-	.badge.cancelled { background: var(--bg); color: var(--text-muted); }
+	/* The status pill is `<Badge>` now. This file and `ContractModal` used to
+	   tint the same five statuses at two different alphas (.12 here, .15
+	   there) — one owner, one answer. */
 
 	.over-limit {
 		color: var(--danger);

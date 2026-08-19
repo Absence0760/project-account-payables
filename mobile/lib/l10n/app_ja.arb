@@ -194,6 +194,8 @@
   "invoiceEditNotSet": "未設定",
   "invoiceEditInvalidAmount": "有効な金額を入力してください（例: 1234.56）",
   "invoiceEditClearDueDate": "支払期日をクリア",
+  "invoiceEditLockedNotice": "承認済み — 支払先と金額は固定されています。変更するには請求書を却下し、修正してから再承認してください。",
+  "invoiceEditLockedHelper": "承認後は変更不可",
   "invoiceEditDueDateHint": "支払期日、現在 {value}。ダブルタップで変更します。",
   "warningsSectionTitle": "警告と不正フラグ",
   "warningsPoMatchTitle": "発注照合",

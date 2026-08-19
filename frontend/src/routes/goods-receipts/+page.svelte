@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { appendUnique } from '$lib/utils/pagination';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
@@ -52,6 +53,14 @@
 	let detail = $state<GRDetail | null>(null);
 	let detailLoading = $state(false);
 
+	// Two INDEPENDENT request streams, so two sequencers — a shared counter
+	// would let a detail open mark the list's in-flight response un-committable
+	// and blank the table. Neither loader edits a row in place (there is no
+	// mutation on this page at all), so neither needs `supersedeInFlight()`.
+	// See `frontend/CLAUDE.md` § Sequencing list fetches.
+	const listSequence = createRequestSequencer();
+	const detailSequence = createRequestSequencer();
+
 	$effect(() => {
 		void loadGRs();
 	});
@@ -65,7 +74,9 @@
 	});
 
 	async function loadGRs(opts: { append?: boolean; nextPage?: number } = {}) {
-		loading = !opts.append;
+		const token = listSequence.start();
+		if (opts.append) loadingMore = true;
+		else loading = true;
 		try {
 			const nextPage = opts.nextPage ?? 1;
 			const params = new URLSearchParams({
@@ -75,34 +86,47 @@
 			const data = await api.get<{ items: GRListItem[]; total: number }>(
 				`/api/goods-receipts?${params}`
 			);
+			// Superseded by a newer load — discard rather than clobber. A page-2
+			// append landing after a page-1 reload used to push the second page
+			// onto the fresh list and overwrite `total`/`page` with it.
+			if (!listSequence.canCommit(token)) return;
 			grs = opts.append ? appendUnique(grs, data.items) : data.items;
 			total = data.total;
 			page = nextPage;
 		} catch (err) {
+			// `isCurrentRequest`, not `canCommit`: only the newest request reports.
+			if (!listSequence.isCurrentRequest(token)) return;
 			toast(err instanceof Error ? err.message : m('goodsReceipts.toast.loadListFailed'), 'error');
 		} finally {
-			loading = false;
+			// Both flags belong to the newest request: an append used to clear
+			// `loading` for a page-1 reload that was still out, dropping the
+			// spinner while the table still held the previous page.
+			if (listSequence.isCurrentRequest(token)) {
+				loading = false;
+				loadingMore = false;
+			}
 		}
 	}
 
 	async function loadMore() {
-		loadingMore = true;
-		try {
-			await loadGRs({ append: true, nextPage: page + 1 });
-		} finally {
-			loadingMore = false;
-		}
+		await loadGRs({ append: true, nextPage: page + 1 });
 	}
 
 	async function loadDetail(id: string) {
+		const token = detailSequence.start();
 		detailLoading = true;
 		try {
-			detail = await api.get<GRDetail>(`/api/goods-receipts/${id}`);
+			const data = await api.get<GRDetail>(`/api/goods-receipts/${id}`);
+			// Open one receipt, close it, open another: the first response must
+			// not land in the modal now showing the second.
+			if (!detailSequence.canCommit(token)) return;
+			detail = data;
 		} catch (err) {
+			if (!detailSequence.isCurrentRequest(token)) return;
 			toast(err instanceof Error ? err.message : m('goodsReceipts.toast.loadFailed'), 'error');
 			detailId = null;
 		} finally {
-			detailLoading = false;
+			if (detailSequence.isCurrentRequest(token)) detailLoading = false;
 		}
 	}
 

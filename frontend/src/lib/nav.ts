@@ -62,6 +62,15 @@ export const NAV: NavEntry[] = [
 	// existing `vendors.col.screening` message ("Screening") as its label — a
 	// dedicated `nav.screening` key is a later i18n slice (Lane A owns locales).
 	{ kind: 'link', label: 'Screening', labelKey: 'vendors.col.screening', href: '/vendors/screening', icon: 'exceptions', roles: ['admin', 'ap_manager', 'cfo'] },
+	// Vendor bank / tax change-approval queue (a second sub-route of /vendors).
+	// The dual-control BEC gate's only UI: a staged change never applies until
+	// a SECOND user signs it off, so without a nav row the queue — and with it
+	// the ability to change vendor banking at all — is unreachable.
+	// admin | ap_manager mirrors the backend list gate
+	// (`require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)`); note CFO is deliberately
+	// absent, matching the API. The *approve* action inside the page is gated
+	// further, on the granular `vendor.bank_change.approve` permission.
+	{ kind: 'link', label: 'Bank Changes', labelKey: 'vendors.changeRequests.navLabel', href: '/vendors/change-requests', icon: 'exceptions', roles: ['admin', 'ap_manager'] },
 	{ kind: 'link', label: 'Exceptions', labelKey: 'nav.exceptions', href: '/exceptions', icon: 'exceptions', roles: ['admin', 'ap_manager'] },
 	{
 		kind: 'group',
@@ -86,7 +95,11 @@ export const NAV: NavEntry[] = [
 			{ label: 'Contracts', labelKey: 'nav.contracts', href: '/contracts', roles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 			{ label: 'Expenses', labelKey: 'nav.expenses', href: '/expenses', roles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 			{ label: 'Credit Memos', labelKey: 'nav.creditMemos', href: '/credit-memos', roles: ['admin', 'ap_manager', 'cfo'] },
-			{ label: 'Discounts', labelKey: 'nav.discounts', href: '/discounts', roles: ['admin', 'ap_manager', 'cfo'] },
+			// ap_clerk included deliberately: `api/discounts.py::_READ_ROLES`
+			// grants a clerk the dashboard, the offer list and the per-invoice ROI.
+			// The page renders read-only for them (accept/decline stay gated on
+			// admin/ap_manager/cfo), so hiding the link was a dead end, not a gate.
+			{ label: 'Discounts', labelKey: 'nav.discounts', href: '/discounts', roles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 			{ label: 'Recurring', labelKey: 'nav.recurring', href: '/recurring', roles: ['admin', 'ap_manager', 'cfo'] },
 			{ label: 'Statements', labelKey: 'nav.statements', href: '/vendor-statements', roles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 			{ label: 'Positive Pay', labelKey: 'nav.positivePay', href: '/positive-pay', roles: ['admin', 'ap_manager', 'cfo'] },

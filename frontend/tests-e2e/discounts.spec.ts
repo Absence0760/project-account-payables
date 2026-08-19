@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/helpers';
+import { API_BASE, expect, tenantPsql, test } from './fixtures/helpers';
 
 /**
  * /discounts — Dynamic Discounting & Early-Payment Optimization dashboard.
@@ -94,23 +94,107 @@ test.describe('/discounts (admin)', () => {
 	});
 });
 
-test.describe('/discounts (clerk — not authorized)', () => {
+test.describe('/discounts (clerk — read-only)', () => {
 	// Opt out of the default admin storage state so we can sign in as the clerk.
 	test.use({ storageState: { cookies: [], origins: [] } });
 
-	test('ap_clerk is redirected away from the dashboard', async ({ page, tenantClerk }) => {
-		// ap_clerk is not in the allowed set (admin / ap_manager / cfo). Sign in
-		// fresh as the clerk, then confirm the gated page bounces to the dashboard.
-		await page.goto('/login');
-		await page.waitForLoadState('networkidle');
-		await page.locator('input[type="email"]').fill(tenantClerk.email);
-		await page.locator('input[type="password"]').fill(tenantClerk.password);
-		await page.locator('form button[type="submit"]').click();
-		await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
+	/**
+	 * `backend/app/api/discounts.py::_READ_ROLES` includes `ROLE_AP_CLERK`, so a
+	 * clerk may read the dashboard, the offer list, per-invoice ROI and the
+	 * optimizer (`POST /optimize` is read-gated — it computes and mutates
+	 * nothing). This page used to redirect them anyway, on a comment claiming
+	 * "the backend 403s everyone else": a dead end on a surface they are
+	 * entitled to. What a clerk must NOT get is the accept / decline controls —
+	 * those are `_ACCEPT_ROLES` (admin / ap_manager / cfo).
+	 */
+	test('ap_clerk reads the dashboard; no accept/decline controls, no 403s', async ({
+		page,
+		tenantAdmin,
+		tenantClerk,
+		tenantSlug
+	}) => {
+		// Seed one OFFERED offer as the admin so the "no Accept button" assertion
+		// is not vacuous — for a manager every offered row renders one.
+		const login = await page.request.post(`${API_BASE}/api/auth/login`, {
+			headers: { 'X-Tenant-Slug': tenantSlug },
+			data: { email: tenantAdmin.email, password: tenantAdmin.password }
+		});
+		expect(login.status()).toBe(200);
+		const adminHeaders = {
+			Authorization: `Bearer ${((await login.json()) as { access_token: string }).access_token}`,
+			'X-Tenant-Slug': tenantSlug
+		};
+		const vendors = await page.request.get(`${API_BASE}/api/vendors`, { headers: adminHeaders });
+		const vendor = ((await vendors.json()) as { items: { id: string; name: string }[] }).items[0];
+		const invResp = await page.request.post(`${API_BASE}/api/invoices`, {
+			headers: adminHeaders,
+			data: {
+				vendor: vendor.name,
+				invoice_number: `DISC-RBAC-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+				amount: 1000
+			}
+		});
+		const invoiceId = ((await invResp.json()) as { id: string }).id;
+		tenantPsql(
+			`UPDATE invoices SET status='approved', vendor_id='${vendor.id}' WHERE id='${invoiceId}'`
+		);
+		const offerResp = await page.request.post(`${API_BASE}/api/discounts/offers`, {
+			headers: adminHeaders,
+			data: {
+				scope: 'invoice',
+				invoice_id: invoiceId,
+				tiers: [{ days: 10, percent: '2.00' }]
+			}
+		});
+		expect(offerResp.status(), await offerResp.text()).toBe(201);
+		const offerId = ((await offerResp.json()) as { id: string }).id;
 
-		await page.goto('/discounts');
-		// The page waits for /me then redirects clerks to the tenant root.
-		await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
-		await expect(page.getByRole('heading', { name: 'Discounts' })).toHaveCount(0);
+		// Any 403 on a read the page issues is the bug in the other direction.
+		const forbidden: string[] = [];
+		page.on('response', (r) => {
+			if (r.url().includes('/api/discounts/') && r.status() === 403) {
+				forbidden.push(`${r.request().method()} ${r.url()}`);
+			}
+		});
+
+		try {
+			await page.goto('/login');
+			await page.waitForLoadState('networkidle');
+			await page.locator('input[type="email"]').fill(tenantClerk.email);
+			await page.locator('input[type="password"]').fill(tenantClerk.password);
+			await page.locator('form button[type="submit"]').click();
+			await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
+
+			await page.goto('/discounts');
+			// The page stays put — the clerk is not bounced to the tenant root.
+			await expect(page.getByRole('heading', { name: 'Discounts' })).toBeVisible();
+			await expect(page).toHaveURL(/\/discounts$/);
+			await expect(page.locator('.kpi')).toHaveCount(5);
+			await expect(page.locator('.grid-container table')).toBeVisible();
+
+			// The offered offer we seeded renders (newest first, `created_at desc`).
+			await page.locator('.filter-chip', { hasText: 'Offered' }).click();
+			const rows = page.locator('.grid-container tbody tr:not(:has(td.empty))');
+			await expect(rows.first()).toBeVisible();
+
+			// …but with no decide controls on any row.
+			await expect(page.getByRole('button', { name: /^Accept discount for / })).toHaveCount(0);
+			await expect(page.getByRole('button', { name: /^Decline discount for / })).toHaveCount(0);
+
+			// The optimizer is a read for RBAC purposes, so a clerk may run it.
+			const optimize = page.waitForResponse((r) => r.url().includes('/api/discounts/optimize'));
+			await page.getByRole('button', { name: 'Optimize' }).click();
+			expect((await optimize).status()).toBe(200);
+
+			expect(forbidden, 'a read the clerk page issues was refused').toEqual([]);
+		} finally {
+			tenantPsql(`DELETE FROM discount_offers WHERE id='${offerId}'`);
+			tenantPsql(
+				`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${invoiceId}')`
+			);
+			tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${invoiceId}'`);
+			tenantPsql(`DELETE FROM exceptions WHERE invoice_id='${invoiceId}'`);
+			tenantPsql(`DELETE FROM invoices WHERE id='${invoiceId}'`);
+		}
 	});
 });

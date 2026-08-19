@@ -6,6 +6,7 @@
 	} from '$lib/types/experiments';
 	import {
 		STATUS_LABELS,
+		STATUS_TONES,
 		PRIMARY_METRIC_LABELS
 	} from '$lib/types/experiments';
 	import type { WorkflowDefinition } from '$lib/types/workflow';
@@ -20,6 +21,7 @@
 		deleteExperiment,
 		getExperimentResults
 	} from '$lib/api/experiments';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
@@ -262,11 +264,6 @@
 		}
 	}
 
-	function statusTone(status: string): 'green' | 'amber' | 'grey' {
-		if (status === 'running') return 'green';
-		if (status === 'draft') return 'amber';
-		return 'grey';
-	}
 </script>
 
 <svelte:window onclick={(e) => {
@@ -305,7 +302,11 @@
 					<td>{PRIMARY_METRIC_LABELS[exp.primary_metric]}</td>
 					<td class="mono">{exp.split_a_pct}% / {100 - exp.split_a_pct}%</td>
 					<td class="right mono">{exp.assigned_count}</td>
-					<td><span class="exp-badge {statusTone(exp.status)}">{STATUS_LABELS[exp.status]}</span></td>
+					<td>
+						<Badge tone={STATUS_TONES[exp.status]} variant={exp.status}>
+							{STATUS_LABELS[exp.status]}
+						</Badge>
+					</td>
 					<td class="actions">
 						{#if canMutate && exp.status === 'draft'}
 							<RowAction variant="success" onclick={() => doStart(exp)}>{m('experiments.row.start')}</RowAction>
@@ -468,28 +469,9 @@
 		max-width: 70ch;
 		margin: 0;
 	}
-	.exp-badge {
-		display: inline-block;
-		padding: 3px 10px;
-		border-radius: 12px;
-		font-size: 0.75rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-		white-space: nowrap;
-	}
-	.exp-badge.green {
-		background: rgba(50, 200, 130, 0.15);
-		color: #26b977;
-	}
-	.exp-badge.amber {
-		background: rgba(255, 180, 50, 0.15);
-		color: #d4940a;
-	}
-	.exp-badge.grey {
-		background: rgba(160, 160, 160, 0.15);
-		color: #9ca3af;
-	}
+	/* The status pill is `<Badge>` now — it had re-typed the shared recipe by
+	   hand, under classes that named the paint (green/amber/grey) rather than
+	   the status. The tone per status lives in `types/experiments`. */
 	.error-banner {
 		color: var(--danger);
 		margin: 8px 0;

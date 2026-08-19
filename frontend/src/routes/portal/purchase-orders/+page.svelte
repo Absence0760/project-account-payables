@@ -1,43 +1,69 @@
 <script lang="ts">
-	import { portalApi } from '$lib/portalApi';
+	import {
+		portalApi,
+		listPortalPurchaseOrders,
+		PORTAL_PAGE_SIZE,
+		type PortalPOListItem,
+	} from '$lib/portalApi';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import { formatDate } from '$lib/utils/time';
+	import { appendUnique } from '$lib/utils/pagination';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { m } from '$lib/i18n/store.svelte';
 
-	interface PortalPO {
-		id: string;
-		po_number: string;
-		status: string;
-		total: number | string;
-		currency: string;
-		line_item_count: number;
-		created_at: string;
-	}
-
-	interface POListResponse {
-		items: PortalPO[];
-		total: number;
-	}
+	type PortalPO = PortalPOListItem;
 
 	let items = $state<PortalPO[]>([]);
+	// Server-side count of every PO the vendor owns, not the loaded page —
+	// an older PO waiting to be flipped is behind the Load-more control.
+	let total = $state(0);
+	let pageNum = $state(1);
 	let loading = $state(false);
+	let loadingMore = $state(false);
 	let error = $state('');
 	let message = $state('');
 	let flipping = $state<string | null>(null);
 
-	async function refresh() {
-		loading = true;
+	const hasMore = $derived(items.length < total);
+
+	// Sequences `load` so a slow first page can't land after a Load-more and
+	// drop the appended rows. A successful flip navigates away rather than
+	// editing the list in place, so there is no `supersedeInFlight()` call.
+	// See `frontend/CLAUDE.md` § Sequencing list fetches.
+	const fetchSequence = createRequestSequencer();
+
+	async function load(opts: { append?: boolean } = {}) {
+		const nextPage = opts.append ? pageNum + 1 : 1;
+		const token = fetchSequence.start();
+		if (opts.append) loadingMore = true;
+		else loading = true;
 		error = '';
 		try {
-			const res = await portalApi.get<POListResponse>('/api/portal/purchase-orders');
-			items = res.items;
+			const res = await listPortalPurchaseOrders({
+				page: nextPage,
+				page_size: PORTAL_PAGE_SIZE,
+			});
+			if (!fetchSequence.canCommit(token)) return;
+			items = opts.append ? appendUnique(items, res.items) : res.items;
+			total = res.total;
+			pageNum = nextPage;
 		} catch (err) {
+			// `isCurrentRequest`, not `canCommit` — a superseded load still failed.
+			if (!fetchSequence.isCurrentRequest(token)) return;
 			error = err instanceof Error ? err.message : m('portal.po.loadFailed');
 		} finally {
-			loading = false;
+			if (fetchSequence.isCurrentRequest(token)) {
+				loading = false;
+				loadingMore = false;
+			}
 		}
+	}
+
+	/** Reload from page 1. */
+	function refresh() {
+		return load();
 	}
 
 	async function flip(po: PortalPO) {
@@ -111,6 +137,25 @@
 				{/each}
 			</tbody>
 		</table>
+
+		{#if hasMore}
+			<div class="load-more-row">
+				<button
+					type="button"
+					class="btn-load-more"
+					onclick={() => load({ append: true })}
+					disabled={loadingMore}
+				>
+					{loadingMore
+						? m('portal.common.loading')
+						: m('portal.po.loadMore', { shown: items.length, total })}
+				</button>
+			</div>
+		{:else if total > 0}
+			<div class="load-more-row">
+				<span class="load-more-end">{m('portal.po.showingAll', { total })}</span>
+			</div>
+		{/if}
 	{/if}
 </div>
 

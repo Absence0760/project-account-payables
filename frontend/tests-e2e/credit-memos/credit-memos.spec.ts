@@ -105,7 +105,9 @@ test.describe('/credit-memos', () => {
 			await expect(modal).toBeVisible();
 
 			await modal.locator('input[type="text"]').fill(memoNumber);
-			await modal.locator('select').selectOption(vendor.id);
+			// By label, not by tag: the form carries a Currency select too, so a
+			// bare `select` is a strict-mode violation.
+			await modal.getByLabel('Vendor').selectOption(vendor.id);
 			await modal.locator('input[type="number"]').fill('250.50');
 			await modal.locator('textarea').fill('e2e: returned defective monitors');
 

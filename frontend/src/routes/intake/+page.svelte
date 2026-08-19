@@ -3,6 +3,7 @@
 	import {
 		INTAKE_STATUSES,
 		INTAKE_STATUS_LABELS,
+		intakeStatusTone,
 		INTAKE_TYPES,
 		INTAKE_TYPE_LABELS
 	} from '$lib/types/intake';
@@ -17,6 +18,7 @@
 		cancelIntake,
 		convertIntakeToRequisition
 	} from '$lib/api/intake';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
@@ -346,7 +348,9 @@
 						{:else}—{/if}
 					</td>
 					<td>
-						<span class="badge {i.status}">{INTAKE_STATUS_LABELS[i.status as keyof typeof INTAKE_STATUS_LABELS] ?? i.status}</span>
+						<Badge tone={intakeStatusTone(i.status)} variant={i.status}>
+							{INTAKE_STATUS_LABELS[i.status as keyof typeof INTAKE_STATUS_LABELS] ?? i.status}
+						</Badge>
 					</td>
 					<td class="actions">
 						{#if canCreate && i.status === 'open'}
@@ -430,19 +434,9 @@
 		flex-wrap: wrap;
 	}
 
-	.badge {
-		display: inline-block;
-		padding: 2px 10px;
-		border-radius: 10px;
-		font-size: 0.74rem;
-		font-weight: 600;
-	}
-	.badge.open { background: rgba(99, 140, 255, 0.12); color: #638cff; }
-	.badge.in_review { background: rgba(212, 148, 10, 0.12); color: #d4940a; }
-	.badge.approved { background: rgba(31, 168, 106, 0.12); color: #1fa86a; }
-	.badge.rejected { background: rgba(224, 64, 64, 0.12); color: var(--danger); }
-	.badge.converted { background: rgba(140, 100, 240, 0.12); color: #a585f5; }
-	.badge.cancelled { background: var(--bg); color: var(--text-muted); }
+	/* The status pill is `<Badge>` now — this file and `IntakeModal` used to
+	   tint the same six statuses at two different alphas. One owner, and the
+	   tone per status lives beside the labels in `types/intake`. */
 
 	.req-link {
 		font-size: 0.8rem;

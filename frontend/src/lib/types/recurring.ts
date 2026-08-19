@@ -2,6 +2,8 @@
 // returned by the `/api/recurring` endpoints. Money fields arrive as numbers
 // (or null); date fields are ISO date strings (or null).
 
+import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+
 export type RecurringCadence = 'monthly' | 'quarterly' | 'annual';
 
 export const RECURRING_CADENCES: RecurringCadence[] = ['monthly', 'quarterly', 'annual'];
@@ -21,6 +23,18 @@ export const STATUS_LABELS: Record<RecurringStatus, string> = {
 	active: 'Active',
 	paused: 'Paused',
 	ended: 'Ended'
+};
+
+// Badge tone per status, so the list page and the modal can't tint the same
+// status two different shades — which is exactly what they did (.12 alpha on
+// the list, .15 in the modal).
+export const STATUS_TONES: Record<RecurringStatus, BadgeTone> = {
+	active: 'success',
+	// Paused is a schedule someone stopped on purpose — amber, because nothing
+	// will be raised until they resume it.
+	paused: 'warning',
+	// Ended is the absence of a signal, not a weak one — flat, not tinted.
+	ended: 'neutral'
 };
 
 // A due period the background sweep could NOT generate an invoice for. The

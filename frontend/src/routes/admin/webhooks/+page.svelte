@@ -13,6 +13,7 @@
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import {
 		listWebhookSubscriptions,
 		createWebhookSubscription,
@@ -146,15 +147,33 @@
 		return formatDate(iso, '', OVERLAP_TIME_OPTS);
 	}
 
+	// Two INDEPENDENT lists on this page — subscriptions and their delivery log
+	// — so each gets its OWN sequencer (a shared counter would let a delivery
+	// refresh mark the subscription reload un-committable and blank that table).
+	// Every mutation re-fetches through these loaders rather than editing a row
+	// in place, so neither needs `supersedeInFlight()`. See
+	// `frontend/CLAUDE.md` § Sequencing list fetches.
+	const subsSequence = createRequestSequencer();
+	const deliveriesSequence = createRequestSequencer();
+
 	async function loadSubs() {
+		const token = subsSequence.start();
 		subsLoading = true;
 		subsError = null;
 		try {
-			subs = await listWebhookSubscriptions();
+			const rows = await listWebhookSubscriptions();
+			// Superseded by a newer load — discard rather than clobber. Create,
+			// rotate and delete each re-fetch, so two can be in flight at once.
+			if (!subsSequence.canCommit(token)) return;
+			subs = rows;
 		} catch (e) {
+			// `isCurrentRequest`, not `canCommit`: only the newest request owns
+			// the error banner — a stale failure would replace a good table with
+			// one.
+			if (!subsSequence.isCurrentRequest(token)) return;
 			subsError = e instanceof Error ? e.message : m('admin.webhooks.subsLoadFailed');
 		} finally {
-			subsLoading = false;
+			if (subsSequence.isCurrentRequest(token)) subsLoading = false;
 		}
 	}
 
@@ -344,17 +363,25 @@
 	}
 
 	async function loadDeliveries() {
+		const token = deliveriesSequence.start();
 		deliveriesLoading = true;
 		deliveriesError = null;
 		try {
-			deliveries = await listWebhookDeliveries({
+			const rows = await listWebhookDeliveries({
 				status: statusFilter === 'all' ? undefined : statusFilter,
 				pageSize: 50
 			});
+			// Superseded by a newer load — discard rather than clobber. Two fast
+			// status-chip clicks otherwise let the first filter's response land
+			// last and fill the table with rows the active chip excludes.
+			if (!deliveriesSequence.canCommit(token)) return;
+			deliveries = rows;
 		} catch (e) {
+			// `isCurrentRequest`, not `canCommit`: only the newest request reports.
+			if (!deliveriesSequence.isCurrentRequest(token)) return;
 			deliveriesError = e instanceof Error ? e.message : m('admin.webhooks.deliveriesLoadFailed');
 		} finally {
-			deliveriesLoading = false;
+			if (deliveriesSequence.isCurrentRequest(token)) deliveriesLoading = false;
 		}
 	}
 

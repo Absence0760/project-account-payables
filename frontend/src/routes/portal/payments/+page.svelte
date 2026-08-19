@@ -1,44 +1,64 @@
 <script lang="ts">
-	import { portalApi } from '$lib/portalApi';
+	import {
+		portalApi,
+		listPortalPayments,
+		PORTAL_PAGE_SIZE,
+		type PortalPaymentListItem,
+	} from '$lib/portalApi';
 	import { onMount } from 'svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import { formatDate } from '$lib/utils/time';
+	import { appendUnique } from '$lib/utils/pagination';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { m } from '$lib/i18n/store.svelte';
 
-	interface PortalPayment {
-		id: string;
-		invoice_id: string;
-		invoice_number: string;
-		amount: number | string;
-		currency: string;
-		method: string | null;
-		status: string;
-		reference: string | null;
-		submitted_at: string | null;
-		completed_at: string | null;
-	}
-
-	interface PaymentListResponse {
-		items: PortalPayment[];
-		total: number;
-	}
+	type PortalPayment = PortalPaymentListItem;
 
 	let items = $state<PortalPayment[]>([]);
+	// Server-side count of the vendor's whole payment history, not the loaded
+	// page — older remittances live behind the Load-more control below.
+	let total = $state(0);
+	let pageNum = $state(1);
 	let loading = $state(false);
+	let loadingMore = $state(false);
 	let error = $state('');
 	let downloading = $state<string | null>(null);
 
-	async function refresh() {
-		loading = true;
+	const hasMore = $derived(items.length < total);
+
+	// Sequences `load` so a slow first page can't land after a Load-more and
+	// drop the appended rows. Nothing edits the list in place (the remittance
+	// download is read-only), so there is no `supersedeInFlight()` call.
+	// See `frontend/CLAUDE.md` § Sequencing list fetches.
+	const fetchSequence = createRequestSequencer();
+
+	async function load(opts: { append?: boolean } = {}) {
+		const nextPage = opts.append ? pageNum + 1 : 1;
+		const token = fetchSequence.start();
+		if (opts.append) loadingMore = true;
+		else loading = true;
 		error = '';
 		try {
-			const res = await portalApi.get<PaymentListResponse>('/api/portal/payments');
-			items = res.items;
+			const res = await listPortalPayments({ page: nextPage, page_size: PORTAL_PAGE_SIZE });
+			if (!fetchSequence.canCommit(token)) return;
+			items = opts.append ? appendUnique(items, res.items) : res.items;
+			total = res.total;
+			pageNum = nextPage;
 		} catch (err) {
+			// `isCurrentRequest`, not `canCommit` — a superseded load still failed.
+			if (!fetchSequence.isCurrentRequest(token)) return;
 			error = err instanceof Error ? err.message : m('portal.payments.loadFailed');
 		} finally {
-			loading = false;
+			if (fetchSequence.isCurrentRequest(token)) {
+				loading = false;
+				loadingMore = false;
+			}
 		}
+	}
+
+	/** Reload from page 1. */
+	function refresh() {
+		return load();
 	}
 
 	async function downloadRemittance(p: PortalPayment) {
@@ -93,7 +113,7 @@
 				</tr>
 			</thead>
 			<tbody>
-				{#each items as p}
+				{#each items as p (p.id)}
 					<tr>
 						<td>{p.invoice_number}</td>
 						<td>{formatDate(p.submitted_at, m('portal.common.dash'))}</td>
@@ -118,6 +138,25 @@
 				{/each}
 			</tbody>
 		</table>
+
+		{#if hasMore}
+			<div class="load-more-row">
+				<button
+					type="button"
+					class="btn-load-more"
+					onclick={() => load({ append: true })}
+					disabled={loadingMore}
+				>
+					{loadingMore
+						? m('portal.common.loading')
+						: m('portal.payments.loadMore', { shown: items.length, total })}
+				</button>
+			</div>
+		{:else if total > 0}
+			<div class="load-more-row">
+				<span class="load-more-end">{m('portal.payments.showingAll', { total })}</span>
+			</div>
+		{/if}
 	{/if}
 </div>
 

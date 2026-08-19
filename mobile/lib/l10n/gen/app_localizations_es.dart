@@ -641,6 +641,13 @@ class AppLocalizationsEs extends AppLocalizations {
   String get invoiceEditClearDueDate => 'Borrar fecha de vencimiento';
 
   @override
+  String get invoiceEditLockedNotice =>
+      'Aprobada: el beneficiario y el importe están bloqueados. Para cambiarlos, rechace la factura, corríjala y apruébela de nuevo.';
+
+  @override
+  String get invoiceEditLockedHelper => 'Bloqueado tras la aprobación';
+
+  @override
   String invoiceEditDueDateHint(String value) {
     return 'Fecha de vencimiento, actualmente $value. Toca dos veces para cambiar.';
   }

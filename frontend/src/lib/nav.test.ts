@@ -29,6 +29,37 @@ test('isEntryActive: the most specific nested link wins (Vendors vs Screening)',
 	expect(isEntryActive(vendors, '/vendors')).toBe(true);
 });
 
+test('isEntryActive: the bank change-approval queue is its own most-specific link', () => {
+	const vendors = link('/vendors');
+	const changes = link('/vendors/change-requests');
+	// The dual-control queue is a sibling sub-route of /vendors/screening; on
+	// it, only it lights up — the parent Vendors row must not stay active.
+	expect(isEntryActive(vendors, '/vendors/change-requests')).toBe(false);
+	expect(isEntryActive(changes, '/vendors/change-requests')).toBe(true);
+	expect(isEntryActive(changes, '/vendors')).toBe(false);
+	// And it doesn't collide with the other /vendors sub-route.
+	expect(isEntryActive(changes, '/vendors/screening')).toBe(false);
+	expect(isEntryActive(link('/vendors/screening'), '/vendors/change-requests')).toBe(false);
+});
+
+test('the bank change-approval queue is gated to the roles the API allows', () => {
+	// `GET /api/vendors/change-requests` is require_roles(ADMIN, AP_MANAGER) —
+	// a CFO 403s, so the nav row must not offer it to them.
+	expect(link('/vendors/change-requests').roles).toEqual(['admin', 'ap_manager']);
+});
+
+test('the discounts link matches the roles the API grants read to', () => {
+	// `api/discounts.py::_READ_ROLES` includes ROLE_AP_CLERK — the dashboard,
+	// the offer list and the per-invoice ROI are all readable by a clerk. The
+	// nav used to hide the link from them and the page used to redirect them,
+	// so all three layers disagreed with the one that actually enforces.
+	// Pinned here because the drift was invisible: hiding a link that would
+	// have worked reads exactly like a deliberate gate.
+	const allLinks = NAV.flatMap((e) => (e.kind === 'group' ? e.children : [e]));
+	const discounts = allLinks.find((l) => l.href === '/discounts')!;
+	expect(discounts.roles).toEqual(['admin', 'ap_manager', 'ap_clerk', 'cfo']);
+});
+
 test('sectionTabActive: bare /admin defaults to the first same-path tab (Users)', () => {
 	expect(sectionTabActive(kid('/admin?tab=users'), kids, url('/admin'))).toBe(true);
 	expect(sectionTabActive(kid('/admin?tab=roles'), kids, url('/admin'))).toBe(false);

@@ -72,6 +72,17 @@ export const messages = {
 		'Elija el idioma utilizado en toda la aplicación. Su elección se guarda en este dispositivo.',
 	'profile.language.label': 'Idioma de visualización',
 
+	// Profile → Notification preferences
+	'profile.notifications.event.invoiceAssigned': 'Factura asignada a mí',
+	'profile.notifications.event.invoiceApproved': 'Factura aprobada',
+	'profile.notifications.event.invoiceRejected': 'Factura rechazada',
+	'profile.notifications.event.invoicePaid': 'Factura pagada',
+	'profile.notifications.event.contractRenewalDue': 'Renovación de contrato pendiente',
+	'profile.notifications.event.chatMessage': 'Nuevo mensaje del chat con el proveedor',
+	'profile.notifications.event.cashShortfallProjected': 'Déficit de tesorería previsto',
+	'profile.notifications.inAppFor': 'Notificaciones en la aplicación para «{event}»',
+	'profile.notifications.emailFor': 'Notificaciones por correo electrónico para «{event}»',
+
 	// Common shared across list/detail surfaces
 	'common.all': 'Todas',
 	'common.search': 'Buscar',
@@ -150,6 +161,10 @@ export const messages = {
 	// Payments
 	'payments.title': 'Pagos',
 	'payments.summary.totalPaid': 'Total pagado',
+	'payments.summary.unconvertedPayments':
+		'Excluidos: {n, plural, one {# pago} other {# pagos}} sin tipo de cambio a {currency}, fuera de los totales anteriores, por lo que las cifras mostradas subestiman lo que realmente se movió. Registre el tipo de cambio que falta para ver el panorama completo.',
+	'payments.queue.unconvertedRows':
+		'{n, plural, one {# factura no tiene} other {# facturas no tienen}} tipo de cambio a la moneda de reporte, por lo que los totales de la cola las omiten. Las filas siguen listadas y son pagaderas, cada una en su propia moneda.',
 	'payments.summary.pending': 'Pendiente',
 	'payments.summary.readyToPay': 'Listo para pagar',
 	'payments.summary.payments': 'Pagos',
@@ -169,6 +184,17 @@ export const messages = {
 	'payments.queue.createDraftRun': '{n, plural, one {Crear lote borrador · # factura} other {Crear lote borrador · # facturas}}',
 	'payments.queue.savingsBanner': '{amount} en descuentos por pago anticipado disponibles — pague las facturas resaltadas antes de su fecha de descuento para aprovecharlos.',
 	'payments.queue.empty': 'No hay facturas listas para pagar.',
+	'payments.queue.createFailed': 'Error al crear la remesa de pagos',
+	'payments.queue.mixedCurrency':
+		'Esta selección abarca {n} monedas, por lo que los subtotales se muestran por separado y NO se suman. Una remesa de pagos debe tener una sola moneda: reduzca la selección a una moneda para continuar.',
+	'payments.queue.mixedCurrencyBlocked': 'Una remesa de pagos debe tener una sola moneda.',
+	'payments.queue.blockedCount':
+		'{n, plural, one {# factura está bloqueada para el pago y no se puede seleccionar} other {# facturas están bloqueadas para el pago y no se pueden seleccionar}}: resuelva antes la excepción.',
+	'payments.queue.blockedCheckboxAria': 'La factura {invoice} no se puede pagar: {reason}',
+	'payments.queue.blocked.duplicate': 'Posible duplicado, sin resolver',
+	'payments.queue.blocked.fraudFlag': 'Alerta de fraude, sin resolver',
+	'payments.queue.blocked.lineTotalMismatch': 'Los totales de línea no cuadran, sin resolver',
+	'payments.queue.blocked.generic': 'Una excepción sin resolver bloquea el pago',
 	'payments.queue.discountSave': 'Ahorra {amount}',
 	'payments.queue.discountBy': '{percent}% hasta el {date}',
 	'payments.col.invoiceNumber': 'N.º de factura',
@@ -269,6 +295,67 @@ export const messages = {
 	'vendors.bank.bankName': 'Nombre del banco',
 	'vendors.bank.accountLast4': 'Últimos 4 de la cuenta',
 	'vendors.bank.routingLast4': 'Últimos 4 del enrutamiento',
+	'vendors.bank.dualControlHint':
+		'Al guardar, el cambio queda pendiente de aprobación: no se aplica hasta que una segunda persona lo firme.',
+	'vendors.bank.reviewQueueLink': 'Abrir aprobaciones de cambios bancarios',
+	'vendors.bank.toast.submitted':
+		'Cambio de datos bancarios enviado: está esperando en Aprobaciones de cambios bancarios',
+	'vendors.bank.toast.submitFailed': 'Error al enviar',
+	'vendors.action.changeApprovals': 'Aprobaciones de cambios bancarios',
+
+	'vendors.changeRequests.navLabel': 'Cambios bancarios',
+	'vendors.changeRequests.title': 'Aprobaciones de cambios bancarios y fiscales',
+	'vendors.changeRequests.intro':
+		'Los datos bancarios o fiscales de un proveedor solo cambian cuando una segunda persona los aprueba. No puedes aprobar un cambio que tú mismo solicitaste.',
+	'vendors.changeRequests.refresh': 'Actualizar',
+	'vendors.changeRequests.refreshing': 'Actualizando…',
+	'vendors.changeRequests.noPermissionNote':
+		'Puedes revisar esta cola, pero aprobar un cambio requiere el permiso «Aprobar cambios bancarios / fiscales de proveedores».',
+	'vendors.changeRequests.status.pending': 'Pendiente',
+	'vendors.changeRequests.status.approved': 'Aprobado',
+	'vendors.changeRequests.status.rejected': 'Rechazado',
+	'vendors.changeRequests.type.bankDetails': 'Datos bancarios',
+	'vendors.changeRequests.type.taxId': 'Identificación fiscal',
+	'vendors.changeRequests.col.changeType': 'Cambio',
+	'vendors.changeRequests.col.proposed': 'Propuesto (enmascarado)',
+	'vendors.changeRequests.col.requestedBy': 'Solicitado por',
+	'vendors.changeRequests.col.requested': 'Solicitado el',
+	'vendors.changeRequests.requester.supplier': 'Portal de proveedores',
+	'vendors.changeRequests.requester.apUser': 'Usuario de cuentas por pagar',
+	'vendors.changeRequests.requester.you': 'Tú',
+	'vendors.changeRequests.row.open': 'Revisar el cambio de {type} para {vendor}',
+	'vendors.changeRequests.row.approve': 'Aprobar',
+	'vendors.changeRequests.row.confirmApprove': 'Confirmar aprobación',
+	'vendors.changeRequests.row.reject': 'Rechazar',
+	'vendors.changeRequests.row.confirmReject': 'Confirmar rechazo',
+	'vendors.changeRequests.row.youRequested': 'Lo solicitaste tú',
+	'vendors.changeRequests.row.needsPermission': 'Requiere permiso de aprobación',
+	'vendors.changeRequests.empty.pending': 'No hay nada esperando aprobación.',
+	'vendors.changeRequests.empty.filtered': 'No hay solicitudes de cambio con este estado.',
+	'vendors.changeRequests.empty.errored': 'No se pudo cargar la cola de solicitudes de cambio.',
+	'vendors.changeRequests.loadMore': 'Cargar más ({shown} de {total})',
+	'vendors.changeRequests.showingAll':
+		'{total, plural, one {Mostrando # solicitud} other {Mostrando todas las # solicitudes}}',
+	'vendors.changeRequests.modal.aria': 'Revisión de la solicitud de cambio del proveedor',
+	'vendors.changeRequests.modal.verifyHint':
+		'Llama al proveedor a un número que ya tuvieras registrado y confirma estos datos antes de aprobar: una cuenta desviada es el fraude de facturas clásico.',
+	'vendors.changeRequests.modal.proposed': 'Valor propuesto',
+	'vendors.changeRequests.modal.revealFailed': 'No se pudo cargar el valor propuesto completo',
+	'vendors.changeRequests.modal.reviewNote': 'Nota de revisión (opcional)',
+	'vendors.changeRequests.modal.reviewNotePlaceholder': 'p. ej. verificado por llamada telefónica',
+	'vendors.changeRequests.modal.requested': 'Solicitado',
+	'vendors.changeRequests.modal.reviewed': 'Revisado',
+	'vendors.changeRequests.modal.note': 'Nota',
+	'vendors.changeRequests.toast.approved':
+		'Cambio aprobado: los datos del proveedor están actualizados',
+	'vendors.changeRequests.toast.rejected': 'Cambio rechazado: el proveedor no se ha modificado',
+	'vendors.changeRequests.toast.sod':
+		'No puedes aprobar un cambio que solicitaste tú: debe firmarlo una segunda persona',
+	'vendors.changeRequests.toast.resolved':
+		'Alguien ya resolvió esa solicitud: la cola se ha actualizado',
+	'vendors.changeRequests.toast.approveFailed': 'Error al aprobar',
+	'vendors.changeRequests.toast.rejectFailed': 'Error al rechazar',
+	'vendors.changeRequests.toast.loadFailed': 'No se pudo cargar la cola de solicitudes de cambio',
 
 	// Exceptions
 	'exceptions.title': 'Excepciones',
@@ -994,6 +1081,8 @@ export const messages = {
 	'expenses.loading': 'Cargando…',
 	'expenses.empty': 'Ningún gasto coincide con sus filtros.',
 	'expenses.empty.errored': 'No se pudieron cargar los gastos. Inténtalo de nuevo.',
+	'expenses.empty.searchPartial':
+		'Sin coincidencias entre los {shown} de {total} gastos cargados hasta ahora. La búsqueda solo cubre las filas cargadas: cargue más abajo para buscar en el resto.',
 	'expenses.col.date': 'Fecha',
 	'expenses.col.merchant': 'Comercio',
 	'expenses.col.category': 'Categoría',
@@ -1216,6 +1305,8 @@ export const messages = {
 	'requisitions.col.total': 'Total',
 	'requisitions.col.status': 'Estado',
 	'requisitions.empty': 'Ninguna solicitud coincide con sus filtros.',
+	'requisitions.empty.searchPartial':
+		'Sin coincidencias entre las {shown} de {total} solicitudes cargadas hasta ahora. La búsqueda solo cubre las filas cargadas: cargue más abajo para buscar en el resto.',
 	'requisitions.notFound': 'Solicitud no encontrada',
 	'requisitions.row.open': 'Abrir solicitud {number}',
 	'requisitions.row.submit': 'Enviar',
@@ -1658,6 +1749,85 @@ export const messages = {
 	'byEntity.loading': 'Cargando…',
 	'byEntity.loadFailed': 'Error al cargar el desglose por entidad',
 
+	// Informes programados (components/analytics/ScheduledReportsPanel.svelte)
+	'scheduledReports.heading': 'Informes programados',
+	'scheduledReports.hint':
+		'Informes que la plataforma genera y envía por correo según una programación. Una programación abarca todo el inquilino: no se limita a la entidad seleccionada.',
+	'scheduledReports.new': '+ Nueva programación',
+	'scheduledReports.retry': 'Reintentar',
+	'scheduledReports.loadFailed': 'No se pudieron cargar los informes programados',
+	'scheduledReports.empty.none': 'Todavía no hay informes programados.',
+	'scheduledReports.empty.errored': 'No se pudieron cargar los informes programados.',
+	'scheduledReports.empty.unavailable':
+		'Los informes programados no están disponibles en esta instalación.',
+	'scheduledReports.col.name': 'Nombre',
+	'scheduledReports.col.report': 'Informe',
+	'scheduledReports.col.cadence': 'Frecuencia',
+	'scheduledReports.col.recipients': 'Destinatarios',
+	'scheduledReports.col.nextRun': 'Próxima ejecución',
+	'scheduledReports.col.lastRun': 'Última ejecución',
+	'scheduledReports.col.status': 'Estado',
+	'scheduledReports.recipientCount': '{n, plural, one {# destinatario} other {# destinatarios}}',
+	'scheduledReports.periodDays': '{n, plural, one {Último # día} other {Últimos # días}}',
+	'scheduledReports.never': 'Nunca',
+	'scheduledReports.autoDisabledNotice':
+		'Dejó de enviarse tras {n, plural, one {# fallo consecutivo} other {# fallos consecutivos}}. Vuelve a activarlo cuando se corrija la causa.',
+	'scheduledReports.health.autoDisabled': 'Desactivado automáticamente',
+	'scheduledReports.health.disabled': 'En pausa',
+	'scheduledReports.health.failure': 'Con error',
+	'scheduledReports.health.partial': 'Parcial',
+	'scheduledReports.health.success': 'Enviado',
+	'scheduledReports.health.neverRun': 'Programado',
+	'scheduledReports.type.agingSnapshot': 'Antigüedad de saldos a pagar',
+	'scheduledReports.type.cashflowForecast': 'Previsión de flujo de caja',
+	'scheduledReports.type.expenseRegister': 'Registro de gastos',
+	'scheduledReports.type.invoiceRegister': 'Registro de facturas',
+	'scheduledReports.type.paymentRegister': 'Registro de pagos',
+	'scheduledReports.type.vendorSpend': 'Gasto por proveedor',
+	'scheduledReports.cadence.daily': 'Diaria',
+	'scheduledReports.cadence.weekly': 'Semanal',
+	'scheduledReports.cadence.monthly': 'Mensual',
+	'scheduledReports.row.pause': 'Pausar',
+	'scheduledReports.row.enable': 'Activar',
+	'scheduledReports.row.reEnable': 'Reactivar',
+	'scheduledReports.row.delete': 'Eliminar',
+	'scheduledReports.row.confirm': 'Confirmar',
+	'scheduledReports.editAria': 'Editar la programación {name}',
+	'scheduledReports.pauseAria': 'Pausar la programación {name}',
+	'scheduledReports.enableAria': 'Activar la programación {name}',
+	'scheduledReports.reEnableAria': 'Reactivar la programación {name}',
+	'scheduledReports.deleteAria': 'Eliminar la programación {name}',
+	'scheduledReports.modal.createAria': 'Nuevo informe programado',
+	'scheduledReports.modal.editAria': 'Editar informe programado',
+	'scheduledReports.modal.createTitle': 'Nuevo informe programado',
+	'scheduledReports.modal.editTitle': 'Editar informe programado',
+	'scheduledReports.modal.create': 'Crear',
+	'scheduledReports.modal.creating': 'Creando…',
+	'scheduledReports.field.name': 'Nombre',
+	'scheduledReports.field.namePlaceholder': 'Antigüedad de saldos semanal',
+	'scheduledReports.field.reportType': 'Informe',
+	'scheduledReports.field.cadence': 'Frecuencia',
+	'scheduledReports.field.recipients': 'Destinatarios',
+	'scheduledReports.field.recipientsPlaceholder': 'finanzas@example.com',
+	'scheduledReports.field.recipientsHint':
+		'Una dirección de correo por línea (también valen las comas). Hasta 20; los duplicados se eliminan al guardar.',
+	'scheduledReports.field.periodDays': 'Periodo (días)',
+	'scheduledReports.field.periodDaysHint': 'Cuánto histórico abarca cada informe. 1–366.',
+	'scheduledReports.field.nextRun': 'Primera ejecución',
+	'scheduledReports.field.nextRunHint':
+		'Déjalo vacío para ejecutarse en el próximo ciclo. Indica una hora para fijar la hora de envío.',
+	'scheduledReports.field.enabled': 'Activo',
+	'scheduledReports.toast.created': 'Programación creada',
+	'scheduledReports.toast.createFailed': 'No se pudo crear la programación',
+	'scheduledReports.toast.updated': 'Programación actualizada',
+	'scheduledReports.toast.updateFailed': 'No se pudo actualizar la programación',
+	'scheduledReports.toast.deleted': 'Programación eliminada',
+	'scheduledReports.toast.deleteFailed': 'No se pudo eliminar la programación',
+	'scheduledReports.toast.enabled': 'Programación activada',
+	'scheduledReports.toast.paused': 'Programación en pausa',
+	'scheduledReports.toast.deduped':
+		'{n, plural, one {Se eliminó # destinatario duplicado} other {Se eliminaron # destinatarios duplicados}}',
+
 	// ── Portal de proveedores ────────────────────────────────────────
 	// Cadenas compartidas del portal (routes/portal/**)
 	'portal.common.loading': 'Cargando...',
@@ -1726,6 +1896,9 @@ export const messages = {
 	'portal.invoices.col.amount': 'Importe',
 	'portal.invoices.col.status': 'Estado',
 	'portal.invoices.pendingExtraction': '(extracción pendiente)',
+	'portal.invoices.loadMore': 'Cargar más ({shown} de {total})',
+	'portal.invoices.showingAll':
+		'{total, plural, one {Mostrando # factura} other {Mostrando todas las # facturas}}',
 
 	// Pagos del portal (routes/portal/payments/+page.svelte)
 	'portal.payments.title': 'Pagos',
@@ -1742,6 +1915,9 @@ export const messages = {
 	'portal.payments.col.reference': 'Referencia',
 	'portal.payments.downloadRemittance': 'Descargar remesa',
 	'portal.payments.preparing': 'Preparando…',
+	'portal.payments.loadMore': 'Cargar más ({shown} de {total})',
+	'portal.payments.showingAll':
+		'{total, plural, one {Mostrando # pago} other {Mostrando todos los # pagos}}',
 
 	// Órdenes de compra del portal (routes/portal/purchase-orders/+page.svelte)
 	'portal.po.title': 'Órdenes de compra',
@@ -1757,6 +1933,9 @@ export const messages = {
 	'portal.po.col.status': 'Estado',
 	'portal.po.createInvoice': 'Crear factura',
 	'portal.po.creating': 'Creando…',
+	'portal.po.loadMore': 'Cargar más ({shown} de {total})',
+	'portal.po.showingAll':
+		'{total, plural, one {Mostrando la # orden de compra} other {Mostrando las # órdenes de compra}}',
 
 	// Ofertas de descuento del portal (routes/portal/discount-offers/+page.svelte)
 	'portal.discounts.title': 'Descuentos por pronto pago',
@@ -1771,6 +1950,9 @@ export const messages = {
 	'portal.discounts.loadFailed': 'Error al cargar',
 	'portal.discounts.acceptFailed': 'Error al aceptar',
 	'portal.discounts.declineFailed': 'Error al rechazar',
+	'portal.discounts.loadMore': 'Cargar más ({shown} de {total})',
+	'portal.discounts.showingAll':
+		'{total, plural, one {Mostrando # oferta} other {Mostrando todas las # ofertas}}',
 	'portal.discounts.empty': 'No hay ofertas de descuento en este momento.',
 	'portal.discounts.emptyHint':
 		'Cuando tu cliente ofrezca un descuento por pronto pago, aparecerá aquí para que lo aceptes.',
@@ -2832,6 +3014,10 @@ export const messages = {
 	'creditMemos.col.vendor': 'Proveedor',
 	'creditMemos.createModal.amount': 'Importe',
 	'creditMemos.createModal.aria': 'Nueva nota de crédito',
+	'creditMemos.createModal.currency':
+		'Moneda',
+	'creditMemos.createModal.currencyHint':
+		'Una nota de crédito solo puede aplicarse a una factura en la misma moneda, y después no hay forma de cambiarla.',
 	'creditMemos.createModal.create': 'Crear',
 	'creditMemos.createModal.memoNumber': 'Número de nota',
 	'creditMemos.createModal.reason': 'Motivo',
@@ -2921,6 +3107,8 @@ export const messages = {
 	'discounts.toast.declineFailed': 'No se pudo rechazar la oferta',
 	'discounts.toast.declined': 'Oferta de descuento rechazada',
 	'discounts.toast.optimizeFailed': 'Error en la optimización',
+	'discounts.unconvertibleOffers':
+		'Sin convertir: {n, plural, one {# oferta} other {# ofertas}} sin tipo de cambio a {currency}, fuera de los totales de ahorro: las cifras mostradas subestiman el ahorro disponible. Registre el tipo de cambio que falta antes de actuar sobre ellas.',
 	'experiments.chip.concluded': 'Concluido',
 	'experiments.chip.draft': 'Borrador',
 	'experiments.chip.running': 'En curso',
@@ -3169,7 +3357,9 @@ export const messages = {
 	'invoices.modal.activity.glSuggested': 'Cuenta contable sugerida: {gl}',
 	'invoices.modal.activity.newVendor': 'Nuevo proveedor creado (sin verificar)',
 	'invoices.modal.activity.title': 'Actividad',
+	'invoices.modal.approverNone': 'No hay nadie más a quien asignar como revisor. Al enviarla, esta factura pasa a la cola de revisión sin asignar: cualquier aprobador puede tomarla.',
 	'invoices.modal.approverPlaceholder': 'Aprobador...',
+	'invoices.modal.approverUnavailable': 'No se pudo cargar la lista de revisores. Al enviarla, esta factura pasa a la cola de revisión sin asignar: cualquier aprobador puede tomarla.',
 	'invoices.modal.assignApprover': 'Asignar aprobador',
 	'invoices.modal.close': 'Cerrar',
 	'invoices.modal.confidence.high': 'Alta',
@@ -3369,6 +3559,9 @@ export const messages = {
 	'paymentRuns.runDetail.draftNotePre': 'Este lote sigue siendo un ',
 	'paymentRuns.runDetail.draftWord': 'borrador',
 	'paymentRuns.runDetail.executeAmount': 'Ejecutar · {amount}',
+	'paymentRuns.runDetail.confirmExecuteAmount': 'Confirmar ejecución · {amount}',
+	'paymentRuns.runDetail.executeArmedNote':
+		'Haga clic en «Confirmar ejecución» para enviar {amount} al procesador de pagos ahora. Esta acción no se puede deshacer.',
 	'paymentRuns.runDetail.executeFailed': 'Error de ejecución',
 	'paymentRuns.runDetail.executed': 'Ejecutado',
 	'paymentRuns.runDetail.executing': 'Ejecutando…',

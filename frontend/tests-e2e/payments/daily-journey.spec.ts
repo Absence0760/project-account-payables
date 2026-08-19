@@ -163,7 +163,10 @@ test.describe('/payments pay-run daily journey (Runs tab)', () => {
 			await expect(modal).toBeVisible();
 			await expect(modal.locator('.status-badge')).toHaveText('draft');
 
-			// 4. Execute. Wait on the POST /execute success response.
+			// 4. Execute. Two clicks: the first ARMS (the label changes to
+			//    "Confirm execute · <amount>" — a real DOM signal, never a
+			//    timer), the second moves the money. See `docs/followups.md`
+			//    item 7 and `execute.spec.ts` for the dedicated arming guards.
 			const executed = page.waitForResponse(
 				(r) =>
 					r.url().includes(`/api/payments/runs/${runId}/execute`) &&
@@ -171,6 +174,9 @@ test.describe('/payments pay-run daily journey (Runs tab)', () => {
 					r.status() === 200
 			);
 			await modal.getByRole('button', { name: /^Execute/ }).click();
+			const confirmExecute = modal.getByRole('button', { name: /^Confirm execute/ });
+			await expect(confirmExecute).toBeVisible();
+			await confirmExecute.click();
 			const execResp = await executed;
 			const execBody = (await execResp.json()) as {
 				status: string;

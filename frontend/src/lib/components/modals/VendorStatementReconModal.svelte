@@ -8,6 +8,7 @@
 	} from '$lib/types/vendorStatementRecon';
 	import {
 		RECON_STATUS_LABELS,
+		RECON_STATUS_TONES,
 		RECON_CLASSIFICATION_LABELS,
 		RECON_RESOLUTION_LABELS,
 		RECON_SOURCE_FORMAT_LABELS,
@@ -18,6 +19,7 @@
 	} from '$lib/types/vendorStatementRecon';
 	import type { ReconSourceFormat } from '$lib/types/vendorStatementRecon';
 	import { auth } from '$lib/stores/auth.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
@@ -441,7 +443,7 @@
 	{:else if detail}
 		<!-- Detail / diff view -->
 		<div class="status-row">
-			<span class="badge {status}">{RECON_STATUS_LABELS[status]}</span>
+			<Badge tone={RECON_STATUS_TONES[status]} variant={status}>{RECON_STATUS_LABELS[status]}</Badge>
 			<span class="meta-pill">{formatDate(detail.statement_date)}</span>
 			{#if detail.statement_reference}
 				<span class="meta-pill"
@@ -622,23 +624,9 @@
 		flex-wrap: wrap;
 	}
 
-	.badge {
-		display: inline-block;
-		padding: 3px 10px;
-		border-radius: 12px;
-		font-size: 0.75rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-	}
-	.badge.open {
-		background: rgba(255, 180, 50, 0.15);
-		color: #d4940a;
-	}
-	.badge.resolved {
-		background: rgba(31, 168, 106, 0.15);
-		color: #1fa86a;
-	}
+	/* The status pill is `<Badge>` now; the tone per status lives beside the
+	   labels in `types/vendorStatementRecon`, so this modal and the list page
+	   can't drift apart again. */
 
 	.meta-pill {
 		font-size: 0.72rem;
@@ -718,17 +706,20 @@
 		background: var(--bg);
 		color: var(--text-muted);
 	}
+	/* Not `<Badge>`: these are counts in a summary row, not a status — they
+	   keep their own denser metrics (8px radius, sentence case) and read as a
+	   group. Only the colour literals are retired to the palette pairs. */
 	.stat-chip.ok {
-		background: rgba(31, 168, 106, 0.12);
-		color: #1fa86a;
+		background: var(--success-tint);
+		color: var(--success-on-tint);
 	}
 	.stat-chip.warn {
-		background: rgba(212, 148, 10, 0.12);
-		color: #d4940a;
+		background: var(--warning-tint);
+		color: var(--warning-on-tint);
 	}
 	.stat-chip.flag {
-		background: rgba(224, 64, 64, 0.12);
-		color: var(--danger);
+		background: var(--danger-tint);
+		color: var(--danger-on-tint);
 	}
 
 	/* --- Totals --- */
@@ -805,17 +796,21 @@
 		font-size: 0.7rem;
 		font-weight: 600;
 	}
+	/* Not `<Badge>`: a per-line classification chip inside a dense diff table,
+	   deliberately smaller than the run's status pill (0.7rem, 8px radius, no
+	   uppercase) so a table of them stays scannable. Colour comes from the
+	   palette pairs. */
 	.cls.ok {
-		background: rgba(31, 168, 106, 0.12);
-		color: #1fa86a;
+		background: var(--success-tint);
+		color: var(--success-on-tint);
 	}
 	.cls.warn {
-		background: rgba(212, 148, 10, 0.12);
-		color: #d4940a;
+		background: var(--warning-tint);
+		color: var(--warning-on-tint);
 	}
 	.cls.flag {
-		background: rgba(224, 64, 64, 0.12);
-		color: var(--danger);
+		background: var(--danger-tint);
+		color: var(--danger-on-tint);
 	}
 
 	.resolution-cell {

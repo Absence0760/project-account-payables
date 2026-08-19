@@ -27,6 +27,10 @@ class InvoiceEditSheet extends StatefulWidget {
 
 class _InvoiceEditSheetState extends State<InvoiceEditSheet> {
   final _formKey = GlobalKey<FormState>();
+
+  /// Mirrors the backend `_FINANCIALLY_LOCKED_STATUSES` gate — see
+  /// [InvoiceStatus.isFinanciallyLocked].
+  late final bool _locked = widget.invoice.status.isFinanciallyLocked;
   late final TextEditingController _vendor;
   late final TextEditingController _invoiceNumber;
   late final TextEditingController _amount;
@@ -120,7 +124,14 @@ class _InvoiceEditSheetState extends State<InvoiceEditSheet> {
           _dueDate == null ? null : DateFormat('yyyy-MM-dd').format(_dueDate!);
     }
 
-    return changes;
+    // An approved (or later) invoice is financially frozen server-side: the
+    // backend 409s the WHOLE PATCH if it carries any of `kFinancialInvoiceFields`
+    // (`_FINANCIAL_FIELDS` in `backend/app/api/invoices.py`). Dropping them here
+    // is what lets a mixed edit through — a combined description + amount save
+    // used to lose the description too, because the rejected request took the
+    // legitimate half down with it. The fields are also rendered read-only, so
+    // this is a belt-and-braces guard rather than the only stop.
+    return _locked ? stripFinancialFields(changes) : changes;
   }
 
   void _save() {
@@ -178,8 +189,10 @@ class _InvoiceEditSheetState extends State<InvoiceEditSheet> {
                   ],
                 ),
                 const SizedBox(height: 8),
+                if (_locked) _lockedNotice(),
                 _field(_vendor, l.invoiceEditVendor,
-                    textInputAction: TextInputAction.next),
+                    textInputAction: TextInputAction.next,
+                    locked: _locked),
                 _field(_invoiceNumber, l.invoiceEditInvoiceNumber),
                 _field(
                   _amount,
@@ -190,6 +203,7 @@ class _InvoiceEditSheetState extends State<InvoiceEditSheet> {
                     FilteringTextInputFormatter.allow(RegExp(r'[\d.]')),
                   ],
                   validator: _validateAmount,
+                  locked: _locked,
                 ),
                 _field(_poNumber, l.invoiceEditPoNumber),
                 _field(_glAccount, l.invoiceEditGlAccount),
@@ -228,6 +242,43 @@ class _InvoiceEditSheetState extends State<InvoiceEditSheet> {
     );
   }
 
+  /// Why the money + payee fields below can't be edited. Rendered only on a
+  /// financially locked invoice, and worded as the way *out* (reject → correct
+  /// → re-approve) rather than a bare refusal.
+  Widget _lockedNotice() {
+    final l = AppLocalizations.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: scheme.secondaryContainer,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ExcludeSemantics(
+              child: Icon(
+                Icons.lock_outline,
+                size: 20,
+                color: scheme.onSecondaryContainer,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                l.invoiceEditLockedNotice,
+                style: TextStyle(color: scheme.onSecondaryContainer),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _field(
     TextEditingController controller,
     String label, {
@@ -236,11 +287,18 @@ class _InvoiceEditSheetState extends State<InvoiceEditSheet> {
     String? Function(String?)? validator,
     int maxLines = 1,
     TextInputAction? textInputAction,
+    bool locked = false,
   }) {
+    final l = AppLocalizations.of(context);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: TextFormField(
         controller: controller,
+        // `readOnly` rather than `enabled: false`: the value stays selectable
+        // and the field keeps its label + focus semantics (Flutter also marks
+        // it read-only for assistive tech), so the reviewer can still SEE the
+        // approved amount they're being told they can't change.
+        readOnly: locked,
         keyboardType: keyboardType,
         inputFormatters: inputFormatters,
         validator: validator,
@@ -249,6 +307,10 @@ class _InvoiceEditSheetState extends State<InvoiceEditSheet> {
         decoration: InputDecoration(
           labelText: label,
           border: const OutlineInputBorder(),
+          helperText: locked ? l.invoiceEditLockedHelper : null,
+          suffixIcon: locked
+              ? const ExcludeSemantics(child: Icon(Icons.lock_outline, size: 18))
+              : null,
         ),
       ),
     );

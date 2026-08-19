@@ -208,6 +208,8 @@
   "invoiceEditNotSet": "Non défini",
   "invoiceEditInvalidAmount": "Saisissez un montant valide (par ex. 1234,56)",
   "invoiceEditClearDueDate": "Effacer la date d'échéance",
+  "invoiceEditLockedNotice": "Approuvée — le bénéficiaire et le montant sont figés. Pour les modifier, rejetez la facture, corrigez-la puis approuvez-la de nouveau.",
+  "invoiceEditLockedHelper": "Figé après approbation",
   "invoiceEditDueDateHint": "Date d'échéance, actuellement {value}. Appuyez deux fois pour modifier.",
 
   "warningsSectionTitle": "Avertissements et alertes de fraude",

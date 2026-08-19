@@ -17,7 +17,13 @@
 	let initialLoaded = $state(false);
 
 	let items = $derived(notificationStore.items);
-	let total = $derived(notificationStore.total);
+	// Two different numbers from two different fields: the chips tally the WHOLE
+	// inbox (they have to — an "All" chip that changed when you filtered would
+	// be meaningless), while the footer counts only the set the active filter
+	// selects. Reading one field for both made the All chip echo the unread
+	// count whenever the Unread filter was on.
+	let inboxTotal = $derived(notificationStore.inboxTotal);
+	let filteredTotal = $derived(notificationStore.filteredTotal);
 	let unread = $derived(notificationStore.unread);
 	let loading = $derived(notificationStore.loading);
 	let hasMore = $derived(notificationStore.hasMore);
@@ -61,7 +67,7 @@
 
 	async function markAll() {
 		try {
-			const updated = await notificationStore.markAllRead();
+			const updated = await notificationStore.markAllRead({ unreadOnly: filter === 'unread' });
 			toast(
 				updated > 0
 					? m('notifications.markedRead', { n: updated })
@@ -74,7 +80,7 @@
 	}
 
 	let chips = $derived([
-		{ key: 'all', label: m('notifications.filter.all'), count: total },
+		{ key: 'all', label: m('notifications.filter.all'), count: inboxTotal },
 		{ key: 'unread', label: m('notifications.filter.unread'), count: unread },
 	]);
 
@@ -135,12 +141,12 @@
 				<button class="btn-load-more" onclick={loadMore} disabled={loading}>
 					{loading
 						? m('common.loading')
-						: m('notifications.loadMore', { shown: items.length, total })}
+						: m('notifications.loadMore', { shown: items.length, total: filteredTotal })}
 				</button>
 			</div>
-		{:else if total > 0}
+		{:else if filteredTotal > 0}
 			<div class="load-more-row">
-				<span class="load-more-end">{m('notifications.showingAll', { total })}</span>
+				<span class="load-more-end">{m('notifications.showingAll', { total: filteredTotal })}</span>
 			</div>
 		{/if}
 	{/if}

@@ -1,19 +1,63 @@
 import { getActiveFormatLocale } from '$lib/i18n/formatLocale';
 
 /**
- * Friendly relative-time formatting (e.g. "Just now", "5m ago", "2d ago").
+ * `Intl.RelativeTimeFormat` is not free to construct and `timeAgo` runs once
+ * per row of a notifications table, so memoize per (locale, numeric) pair.
+ * The active locale is part of the key, so a locale switch never serves a
+ * stale formatter.
+ */
+const relativeFormatters = new Map<string, Intl.RelativeTimeFormat>();
+
+function relativeFormatter(numeric: 'auto' | 'always'): Intl.RelativeTimeFormat {
+	const locale = getActiveFormatLocale();
+	const key = `${locale ?? ''}|${numeric}`;
+	let fmt = relativeFormatters.get(key);
+	if (!fmt) {
+		// `short` over `narrow`: narrow reproduces the old English exactly
+		// ("5m ago") but degrades badly elsewhere — French renders a bare
+		// "-5 min" and German "vor 5 m". `short` stays compact in every shipped
+		// locale ("5 min. ago" / "vor 5 Min." / "il y a 5 min" / "5 分前").
+		fmt = new Intl.RelativeTimeFormat(locale, { numeric, style: 'short' });
+		relativeFormatters.set(key, fmt);
+	}
+	return fmt;
+}
+
+/**
+ * Friendly relative-time formatting (e.g. "now", "5 min. ago", "2 days ago").
  * Shared by the notifications page + the sidebar notification popover so the
  * two can't drift. Coarse buckets only — exact timestamps go in `title`.
+ *
+ * Localized via `Intl.RelativeTimeFormat` keyed on the active in-app locale,
+ * the same holder {@link formatDate} reads — so the picker moves relative
+ * times alongside dates and money instead of leaving hardcoded English labels
+ * inside an otherwise-German page. `Intl` was chosen over ICU plural message
+ * keys because this module must stay importable under vitest's node
+ * environment: `m()` lives in `i18n/store.svelte.ts`, a rune module that
+ * imports `$app/environment`, and pulling it in here would break both the
+ * pure-module contract and the unit tests. `Intl` also gets every locale's
+ * plural rules for free and needs no catalogue keys at all.
+ *
+ * The buckets are unchanged: under a minute, minutes, hours, then days. Only
+ * the sub-minute bucket uses `numeric: 'auto'` (so it reads "now" / "jetzt"
+ * rather than "in 0 seconds"); every other bucket stays explicitly numeric so
+ * a day-old row can't render as "yesterday".
+ *
+ * A future timestamp still falls into the sub-minute bucket ("now"), matching
+ * the previous behaviour. An unparseable value returns `placeholder` — the
+ * old code fed `NaN` into a template literal and rendered "NaNd ago", and
+ * `Intl.RelativeTimeFormat#format` throws a `RangeError` on a non-finite
+ * value, which would take the whole table render down.
  */
-export function timeAgo(iso: string): string {
-	const diff = Date.now() - new Date(iso).getTime();
-	const mins = Math.floor(diff / 60000);
-	if (mins < 1) return 'Just now';
-	if (mins < 60) return `${mins}m ago`;
+export function timeAgo(iso: string, placeholder = '—'): string {
+	const then = new Date(iso).getTime();
+	if (Number.isNaN(then)) return placeholder;
+	const mins = Math.floor((Date.now() - then) / 60000);
+	if (mins < 1) return relativeFormatter('auto').format(0, 'second');
+	if (mins < 60) return relativeFormatter('always').format(-mins, 'minute');
 	const hours = Math.floor(mins / 60);
-	if (hours < 24) return `${hours}h ago`;
-	const days = Math.floor(hours / 24);
-	return days === 1 ? '1d ago' : `${days}d ago`;
+	if (hours < 24) return relativeFormatter('always').format(-hours, 'hour');
+	return relativeFormatter('always').format(-Math.floor(hours / 24), 'day');
 }
 
 /**

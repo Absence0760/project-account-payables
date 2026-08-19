@@ -4,6 +4,7 @@
 	import KpiCard from '$lib/components/ui/KpiCard.svelte';
 	import ByEntityBreakdown from '$lib/components/analytics/ByEntityBreakdown.svelte';
 	import CfoMetrics from '$lib/components/analytics/CfoMetrics.svelte';
+	import ScheduledReportsPanel from '$lib/components/analytics/ScheduledReportsPanel.svelte';
 	import { formatMoney, isPositiveAmount, parseMoneyForLayout } from '$lib/utils/money';
 	import type { MoneyAmount } from '$lib/utils/money';
 	import { formatPeriod } from '$lib/utils/time';
@@ -297,6 +298,15 @@
 		<!-- Consolidated reporting across entities (self-hides for single-entity tenants) -->
 		<ByEntityBreakdown />
 	{/if}
+
+	<!-- Scheduled reports — the CRUD surface for the report runner that emails
+	     these same analytics. Deliberately OUTSIDE the forecast `{#if}` above: it
+	     is an independent fetch, and a failed cash-flow load must not take the
+	     only way to see (or re-enable) a broken schedule down with it. Read is
+	     admin + cfo — exactly this route's own gate; mutation is admin-only and
+	     gated inside the panel. No entity selector: `X-Entity-ID` is not honoured
+	     by the scheduled-report routes, a schedule being whole-tenant. -->
+	<ScheduledReportsPanel />
 </PageHeader>
 
 <style>

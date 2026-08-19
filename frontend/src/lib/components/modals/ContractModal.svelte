@@ -7,9 +7,11 @@
 	import {
 		CONTRACT_TYPES,
 		CONTRACT_TYPE_LABELS,
-		STATUS_LABELS
+		STATUS_LABELS,
+		STATUS_TONES
 	} from '$lib/types/contract';
 	import { auth } from '$lib/stores/auth.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
@@ -283,7 +285,7 @@
 	<form onsubmit={(e) => { e.preventDefault(); handleSave(); }}>
 		{#if !isCreate}
 			<div class="status-row">
-				<span class="badge {status}">{STATUS_LABELS[status]}</span>
+				<Badge tone={STATUS_TONES[status]} variant={status}>{STATUS_LABELS[status]}</Badge>
 				{#if contract!.auto_renew}<span class="meta-pill">{m('contracts.modal.autoRenewPill')}</span>{/if}
 			</div>
 		{/if}
@@ -566,20 +568,8 @@
 		margin-bottom: 12px;
 	}
 
-	.badge {
-		display: inline-block;
-		padding: 3px 10px;
-		border-radius: 12px;
-		font-size: 0.75rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-	}
-	.badge.draft { background: var(--accent-tint); color: var(--accent-on-tint); }
-	.badge.active { background: rgba(31, 168, 106, 0.15); color: #1fa86a; }
-	.badge.expired { background: rgba(212, 148, 10, 0.15); color: #d4940a; }
-	.badge.terminated { background: rgba(224, 64, 64, 0.15); color: var(--danger); }
-	.badge.cancelled { background: var(--bg); color: var(--text-muted); }
+	/* The status pill is `<Badge>` now — its recipe (and the five tones) lives
+	   in `ui/Badge.svelte`, so this file no longer carries a private copy. */
 
 	.meta-pill {
 		font-size: 0.72rem;

@@ -19,6 +19,20 @@ interface FetchUsersOptions {
 	append?: boolean;
 }
 
+/**
+ * The minimal projection of a user that the invoice approver picker needs.
+ *
+ * Deliberately NOT `AdminUser`: this list is readable by every role that may
+ * submit an invoice or assign a reviewer, so it carries only the display name
+ * that already appears on the invoice's `assigned_to` — no email, no roles, no
+ * last-login. Served by `GET /api/invoices/assignable-reviewers`.
+ */
+export interface AssignableReviewer {
+	id: string;
+	full_name: string;
+	is_active: boolean;
+}
+
 function createAdminStore() {
 	let users = $state<AdminUser[]>([]);
 	let roles = $state<Role[]>([]);
@@ -60,6 +74,49 @@ function createAdminStore() {
 
 	async function loadMoreUsers(opts: { search?: string } = {}) {
 		await fetchUsers({ ...opts, page: page + 1, append: true });
+	}
+
+	// --- Assignable reviewers (non-admin-readable) ---
+	//
+	// `GET /api/admin/users` is admin-only, so every non-admin that opened the
+	// invoice approver picker got a 403, an empty `<select>`, and a Submit
+	// button disabled forever — including the ap_manager and cfo the backend
+	// explicitly allows to submit and assign. This is the narrow list they can
+	// read. It lives beside the user directory (same subject, one owner) rather
+	// than in a second store, and it never widens the admin endpoint.
+	let assignableReviewers = $state<AssignableReviewer[]>([]);
+	// Settled-with-nothing vs not-settled-yet: the picker must not flash a
+	// "no reviewers" note while the request is still in flight, and the caller
+	// falls back only on a real failure.
+	let reviewersLoaded = $state(false);
+	let reviewersErrored = $state(false);
+	const reviewersSequence = createRequestSequencer();
+
+	/** Load the assignable-reviewer list. Never throws — the picker degrades to
+	 *  "submit unassigned" rather than dead-ending, so a failure is a state the
+	 *  UI renders, not an exception the caller has to remember to catch.
+	 *  Resolves `true` when the list is usable. */
+	async function fetchAssignableReviewers(): Promise<boolean> {
+		const token = reviewersSequence.start();
+		try {
+			// A bare array (the `/api/gl-accounts` shape) is the contract; the
+			// `{items}` unwrap is one line of tolerance so a paginated backend
+			// answer can't silently render an empty picker.
+			const res = await api.get<AssignableReviewer[] | { items: AssignableReviewer[] }>(
+				'/api/invoices/assignable-reviewers'
+			);
+			if (!reviewersSequence.canCommit(token)) return true;
+			assignableReviewers = Array.isArray(res) ? res : (res?.items ?? []);
+			reviewersErrored = false;
+			return true;
+		} catch {
+			if (!reviewersSequence.isCurrentRequest(token)) return false;
+			assignableReviewers = [];
+			reviewersErrored = true;
+			return false;
+		} finally {
+			if (reviewersSequence.isCurrentRequest(token)) reviewersLoaded = true;
+		}
 	}
 
 	async function fetchRoles() {
@@ -182,8 +239,12 @@ function createAdminStore() {
 		get page() { return page; },
 		get pageSize() { return pageSize; },
 		get hasMore() { return users.length < total; },
+		get assignableReviewers() { return assignableReviewers; },
+		get reviewersLoaded() { return reviewersLoaded; },
+		get reviewersErrored() { return reviewersErrored; },
 		fetchUsers,
 		loadMoreUsers,
+		fetchAssignableReviewers,
 		fetchRoles,
 		fetchPermissionCatalog,
 		createUser,

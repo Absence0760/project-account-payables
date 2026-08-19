@@ -16,7 +16,13 @@
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
-	import { formatMoney, sumMoney } from '$lib/utils/money';
+	import { formatMoney } from '$lib/utils/money';
+	import {
+		groupAmountsByCurrency,
+		spansMultipleCurrencies,
+		type CurrencyGroup
+	} from '$lib/utils/currencyGroups';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { formatDate } from '$lib/utils/time';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
@@ -69,6 +75,14 @@
 		payment_count: number;
 		total_rebates: string;
 		queue_count: number;
+		// `Payment.amount` is INVOICE currency (the home-currency debit lives on
+		// `source_amount`), so these totals used to be face-value sums across
+		// currencies. The backend converts into the org's reporting currency now
+		// and says which currency that is — render it, or the figure is a bare
+		// number whose denomination the reader has to assume.
+		currency?: string;
+		// Payments it could not convert, excluded from the totals above.
+		unconverted_payment_count?: number;
 	}
 	let summary = $state<Summary | null>(null);
 
@@ -89,9 +103,27 @@
 		// discount_percent is a rate, not money — stays a JSON number.
 		discount_percent: number | null;
 		discount_amount: string | null;
+		// --- Payment-blocking exceptions -------------------------------------
+		// OPTIONAL, and deliberately so: `GET /api/payments/queue` does not send
+		// these yet (see `docs/followups.md` item 12 for the contract this is
+		// written against). `services/payment_runs.create_payment_run_for_invoices`
+		// refuses the WHOLE run with a 409 when any selected invoice carries an
+		// unresolved `duplicate` / `fraud_flag` / `line_total_mismatch`
+		// exception, so those rows must not be selectable — but until the field
+		// ships, an absent `blocked` must leave this page behaving exactly as it
+		// does today. Every read goes through `isBlocked()` below, which treats
+		// "absent" as "not blocked".
+		//
+		// `blocked_reason` is a CODE from the backend's fixed, PII-free
+		// `PAYMENT_BLOCKING_EXCEPTION_TYPES` vocabulary — never prose — so it
+		// can be rendered in all six shipped locales.
+		blocked?: boolean;
+		blocked_reason?: string | null;
 	}
 	let queue = $state<QueueItem[]>([]);
-	let queueTotalSavings = $state(0);
+	// Queue rows the backend could not express in the reporting currency, so
+	// its own roll-ups exclude them. Rows still render in their OWN currency.
+	let queueUnconvertedCount = $state(0);
 
 	// Queue selection and payment run creation
 	let selectedQueue = $state<Set<string>>(new Set());
@@ -103,61 +135,162 @@
 	// and when clicking a row in the Runs tab.
 	let activeRunId = $state<string | null>(null);
 
-	// Prune the queue selection to ids still in the queue whenever it reloads
-	// (after an execute/void via onRunChanged/commitVoid drops the just-handled
-	// invoice). Otherwise the pay-bar count (`selectedQueue.size`) outruns the
-	// rows the money totals actually sum over. No-op (same Set) when clean.
+	/** Does this row carry an unresolved payment-blocking exception?
+	 *
+	 *  The single read of `blocked`, so "the backend doesn't send the field
+	 *  yet" is answered in exactly one place: an absent / non-`true` value is
+	 *  NOT blocked, which is byte-for-byte today's behaviour. */
+	function isBlocked(item: QueueItem): boolean {
+		return item.blocked === true;
+	}
+
+	/** Localised sentence for why a row can't be paid.
+	 *
+	 *  Maps the backend's fixed `PAYMENT_BLOCKING_EXCEPTION_TYPES` codes; an
+	 *  unrecognised or missing code falls back to the generic reason rather
+	 *  than rendering a raw identifier at the operator. */
+	function blockedReason(item: QueueItem): string {
+		switch (item.blocked_reason) {
+			case 'duplicate':
+				return m('payments.queue.blocked.duplicate');
+			case 'fraud_flag':
+				return m('payments.queue.blocked.fraudFlag');
+			case 'line_total_mismatch':
+				return m('payments.queue.blocked.lineTotalMismatch');
+			default:
+				return m('payments.queue.blocked.generic');
+		}
+	}
+
+	// The rows a payment run could actually be built from. Everything that
+	// counts, sums, selects-all or prunes reads THIS, never `queue` — a blocked
+	// row that slipped into the selection would take the whole draft down with
+	// a 409.
+	let selectableQueue = $derived(queue.filter((q) => !isBlocked(q)));
+	let blockedQueueCount = $derived(queue.length - selectableQueue.length);
+
+	// Prune the queue selection to ids still SELECTABLE whenever the queue
+	// reloads (after an execute/void via onRunChanged/commitVoid drops the
+	// just-handled invoice — or after a refresh reveals that a selected row has
+	// since picked up a blocking exception). Otherwise the pay-bar count
+	// (`selectedQueue.size`) outruns the rows the money totals actually sum
+	// over. No-op (same Set) when clean.
 	$effect(() => {
 		const pruned = pruneSelection(
 			selectedQueue,
-			queue.map((q) => q.id)
+			selectableQueue.map((q) => q.id)
 		);
 		if (pruned !== selectedQueue) selectedQueue = pruned;
 	});
 
 	let allQueueSelected = $derived(
-		queue.length > 0 && queue.every(q => selectedQueue.has(q.id))
+		selectableQueue.length > 0 && selectableQueue.every(q => selectedQueue.has(q.id))
 	);
 
-	// Money arrives as string-Decimal. Summing via `Number(a) + Number(b)`
-	// coerces each amount to a binary float before adding, which can drift
-	// off the exact cent value (the classic 0.1 + 0.2 rounding bug) even
-	// though every individual amount is exact — so this uses the
-	// decimal-safe `sumMoney` (exact BigInt-scaled integer summation,
-	// converted back to a float once at the end) instead of a float reduce.
-	let selectedTotal = $derived(
-		sumMoney(queue.filter(q => selectedQueue.has(q.id)).map(q => q.amount))
+	let selectedRows = $derived(queue.filter((q) => selectedQueue.has(q.id)));
+
+	// Money arrives as string-Decimal, and each row carries its OWN currency.
+	// Reducing them into one figure was doubly wrong: it coerced exact decimals
+	// through binary floats, and — worse — it added EUR to USD and rendered the
+	// result in the org default, so a EUR 100 + USD 100 selection read as one
+	// meaningless "200". `groupAmountsByCurrency` sums exactly *within* each
+	// currency (BigInt-scaled, never a float reduce) and never across them; the
+	// UI shows each currency's subtotal side by side. No FX conversion happens
+	// on a read — see `backend/docs/multi-currency.md`.
+	let selectedGroups = $derived(
+		groupAmountsByCurrency(selectedRows, orgCurrency.currency)
 	);
 
-	let selectedSavings = $derived(
-		sumMoney(
-			queue
-				.filter(q => selectedQueue.has(q.id) && q.discount_eligible && q.discount_amount)
-				.map(q => q.discount_amount)
-		)
+	// `.filter(total > 0)` preserves the old `selectedSavings > 0` guard: a
+	// currency whose discounts sum to nothing must not add a "· save $0.00".
+	// A comparison against zero is a predicate, not money arithmetic.
+	let selectedSavingsGroups = $derived(
+		groupAmountsByCurrency(
+			selectedRows.filter((q) => q.discount_eligible && q.discount_amount)
+				.map((q) => ({ amount: q.discount_amount, currency: q.currency })),
+			orgCurrency.currency
+		).filter((g) => g.total > 0)
 	);
 
-	function toggleQueueSelect(id: string) {
+	// The whole queue's early-pay savings, grouped the same way. Derived from
+	// the rows rather than read off the response's `total_savings`, which is a
+	// naive cross-currency `SUM` on the backend (same defect, one level up).
+	// `/api/payments/queue` is unpaginated, so the rows we hold ARE the queue.
+	let queueSavingsGroups = $derived(
+		groupAmountsByCurrency(
+			queue.filter((q) => q.discount_eligible && q.discount_amount)
+				.map((q) => ({ amount: q.discount_amount, currency: q.currency })),
+			orgCurrency.currency
+		).filter((g) => g.total > 0)
+	);
+
+	// `create_payment_run_for_invoices` 422s a run spanning more than one
+	// currency ("All invoices in a payment run must share the same currency"),
+	// because `PaymentRun.total_amount` is one bare Numeric with no currency of
+	// its own. So a mixed selection isn't just unreadable — it can't be
+	// submitted. Say so up front instead of letting the draft fail.
+	let mixedCurrencySelection = $derived(spansMultipleCurrencies(selectedGroups));
+
+	/** Render a set of per-currency subtotals as one honest label.
+	 *
+	 *  Single currency → exactly what the pay-bar always showed, but in the
+	 *  row's OWN currency rather than the org default. Several → each subtotal
+	 *  side by side, separated (never added). Empty → a zero in the org
+	 *  currency, which is what "nothing selected" costs. */
+	function formatGroups(groups: CurrencyGroup[]): string {
+		if (groups.length === 0) return formatCurrency(0);
+		return groups.map((g) => formatCurrency(g.total, g.currency)).join(' · ');
+	}
+
+	// The server's refusal, kept on screen. A 409 from
+	// `create_payment_run_for_invoices` NAMES the offending invoice numbers
+	// ("Invoice(s) have an unresolved duplicate/fraud/line-total exception and
+	// can't be paid until it's cleared: INV-1001, INV-1002"), and `ApiError`
+	// already carries that text — but a 5-second toast is the wrong home for
+	// the one thing that says which of twenty selected rows is at fault. This
+	// renders it in the review panel until the operator changes the selection.
+	let createRunError = $state('');
+
+	function toggleQueueSelect(item: QueueItem) {
+		// Belt-and-braces: the checkbox is disabled for a blocked row, but the
+		// guard lives with the state change so no future caller can bypass it.
+		if (isBlocked(item)) return;
+		createRunError = '';
 		const next = new Set(selectedQueue);
-		if (next.has(id)) next.delete(id);
-		else next.add(id);
+		if (next.has(item.id)) next.delete(item.id);
+		else next.add(item.id);
 		selectedQueue = next;
-		if (!paymentMethods[id]) paymentMethods[id] = 'ach';
+		if (!paymentMethods[item.id]) paymentMethods[item.id] = 'ach';
 	}
 
 	function toggleQueueSelectAll() {
+		createRunError = '';
 		if (allQueueSelected) {
 			selectedQueue = new Set();
 		} else {
-			selectedQueue = new Set(queue.map(q => q.id));
-			for (const q of queue) {
+			selectedQueue = new Set(selectableQueue.map(q => q.id));
+			for (const q of selectableQueue) {
 				if (!paymentMethods[q.id]) paymentMethods[q.id] = 'ach';
 			}
 		}
 	}
 
+	function clearQueueSelection() {
+		selectedQueue = new Set();
+		showReview = false;
+		createRunError = '';
+	}
+
 	async function createDraftRun() {
 		if (selectedQueue.size === 0) return;
+		if (mixedCurrencySelection) {
+			// Advance signal for the backend's own 422 — never send a request we
+			// already know is refused.
+			createRunError = m('payments.queue.mixedCurrencyBlocked');
+			toast(createRunError, 'error');
+			return;
+		}
+		createRunError = '';
 		creatingRun = true;
 		try {
 			const items = [...selectedQueue].map((id) => ({
@@ -181,7 +314,13 @@
 			// Refresh runs list so the new draft shows up immediately.
 			await loadRuns();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Payment run failed', 'error');
+			// `ApiError.message` is `formatApiDetail(body.detail, …)`, so the
+			// backend's 409 detail — which names the offending invoice numbers —
+			// arrives intact. Surface it in BOTH places: the toast announces it
+			// (assertive live region), the panel keeps it readable.
+			const detail = err instanceof Error ? err.message : m('payments.queue.createFailed');
+			createRunError = detail;
+			toast(detail, 'error');
 		} finally {
 			creatingRun = false;
 		}
@@ -390,7 +529,11 @@
 	function debouncedFetch() {
 		clearTimeout(searchTimer);
 		searchTimer = setTimeout(() => {
-			if (activeTab === 'history') paymentStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method; routes through api.get
+			// `.catch`: the store re-throws so an awaiting caller keeps its own
+			// handling, but this call is fire-and-forget — `paymentStore.errored`
+			// is what renders the failure state, so swallow the rejection rather
+			// than log an unhandled one.
+			if (activeTab === 'history') paymentStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method; routes through api.get
 		}, 300);
 	}
 
@@ -403,7 +546,9 @@
 	$effect(() => {
 		if (activeTab === 'history') {
 			activeStatus;
-			paymentStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method; routes through api.get
+			// `.catch`: fire-and-forget from an $effect — `paymentStore.errored`
+			// renders the failure, so the re-thrown rejection has no other home.
+			paymentStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method; routes through api.get
 			fetchPaymentCounts();
 		} else if (activeTab === 'queue') {
 			loadQueue();
@@ -422,24 +567,43 @@
 		return () => clearTimeout(searchTimer);
 	});
 
+	// One sequencer PER independent list, never one shared counter — this page
+	// holds four surfaces that reload on different triggers (a tab switch, an
+	// execute, a void, a compliance release), and `onRunChanged` fires three of
+	// them at once. A single counter would let the runs response retire the
+	// queue's in-flight request and blank the list it was about to fill.
+	// See `frontend/CLAUDE.md` § Sequencing list fetches.
+	const summarySequence = createRequestSequencer();
+	const queueSequence = createRequestSequencer();
+	const runsSequence = createRequestSequencer();
+	const cardsSequence = createRequestSequencer();
+
 	async function loadSummary() {
+		const token = summarySequence.start();
 		try {
-			summary = await api.get<Summary>('/api/payments/summary');
+			const data = await api.get<Summary>('/api/payments/summary');
+			if (!summarySequence.canCommit(token)) return; // superseded by a newer load
+			summary = data;
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to load summary', 'error');
+			if (summarySequence.isCurrentRequest(token)) {
+				toast(err instanceof Error ? err.message : 'Failed to load summary', 'error');
+			}
 		}
 	}
 
 	async function loadQueue() {
+		const token = queueSequence.start();
 		try {
-			const data = await api.get<{ items: QueueItem[]; total_savings: string }>(
+			const data = await api.get<{ items: QueueItem[]; unconverted_count?: number }>(
 				'/api/payments/queue'
 			);
+			if (!queueSequence.canCommit(token)) return; // superseded by a newer load
 			queue = data.items;
-			// total_savings is string-Decimal money — coerce for the numeric banner.
-			queueTotalSavings = Number(data.total_savings ?? 0);
+			queueUnconvertedCount = data.unconverted_count ?? 0;
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to load payment queue', 'error');
+			if (queueSequence.isCurrentRequest(token)) {
+				toast(err instanceof Error ? err.message : 'Failed to load payment queue', 'error');
+			}
 		}
 	}
 
@@ -478,6 +642,10 @@
 
 	async function loadCards(opts: { append?: boolean; nextPage?: number } = {}) {
 		const nextPage = opts.nextPage ?? 1;
+		// Fetch and Load-More share one counter (latest-issued wins), exactly as
+		// the payments store documents: a Load-More that resolves after a fresh
+		// reload must not append a stale page onto the new list.
+		const token = cardsSequence.start();
 		if (opts.append) loadingMoreCards = true;
 		else loadingCards = true;
 		try {
@@ -489,15 +657,22 @@
 				? Promise.resolve(cardDashboard)
 				: api.get<CardDashboard>('/api/cards/dashboard').catch(() => null);
 			const [list, dash] = await Promise.all([listReq, dashReq]);
+			if (!cardsSequence.canCommit(token)) return; // superseded by a newer load
 			cards = opts.append ? appendUnique(cards, list.items) : list.items;
 			cardsTotal = list.total;
 			cardsPage = nextPage;
 			cardDashboard = dash;
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to load cards', 'error');
+			if (cardsSequence.isCurrentRequest(token)) {
+				toast(err instanceof Error ? err.message : 'Failed to load cards', 'error');
+			}
 		} finally {
-			loadingCards = false;
-			loadingMoreCards = false;
+			// NOT canCommit — reading it here would leave the spinner stuck on
+			// forever once a newer request superseded this one.
+			if (cardsSequence.isCurrentRequest(token)) {
+				loadingCards = false;
+				loadingMoreCards = false;
+			}
 		}
 	}
 
@@ -540,11 +715,15 @@
 	}
 
 	async function loadRuns() {
+		const token = runsSequence.start();
 		try {
 			const data = await api.get<{ items: RunItem[] }>('/api/payments/runs/?page_size=100');
+			if (!runsSequence.canCommit(token)) return; // superseded by a newer load
 			runs = data.items;
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to load payment runs', 'error');
+			if (runsSequence.isCurrentRequest(token)) {
+				toast(err instanceof Error ? err.message : 'Failed to load payment runs', 'error');
+			}
 		}
 	}
 
@@ -601,11 +780,15 @@
 	{#if summary}
 		<div class="summary-cards">
 			<div class="scard">
-				<span class="scard-value">{formatCurrency(summary.total_paid)}</span>
+				<span class="scard-value">
+					{formatCurrency(summary.total_paid, summary.currency)}
+				</span>
 				<span class="scard-label">{m('payments.summary.totalPaid')}</span>
 			</div>
 			<div class="scard">
-				<span class="scard-value">{formatCurrency(summary.total_pending)}</span>
+				<span class="scard-value">
+					{formatCurrency(summary.total_pending, summary.currency)}
+				</span>
 				<span class="scard-label">{m('payments.summary.pending')}</span>
 			</div>
 			<div class="scard">
@@ -623,6 +806,19 @@
 				</div>
 			{/if}
 		</div>
+		<!-- A payment with no rate into the reporting currency is left out of the
+		     totals above, so the headline understates what actually moved. Same
+		     notice pattern as /discounts' excluded foreign offers and the /cfo
+		     cash-position card's unconverted outflows — all three read alike on
+		     purpose. -->
+		{#if (summary.unconverted_payment_count ?? 0) > 0}
+			<p class="fx-skipped" role="alert" data-testid="unconverted-payments">
+				{m('payments.summary.unconvertedPayments', {
+					n: summary.unconverted_payment_count ?? 0,
+					currency: summary.currency ?? ''
+				})}
+			</p>
+		{/if}
 	{/if}
 
 	<nav class="tabs">
@@ -652,20 +848,45 @@
 	{/if}
 
 	{#if activeTab === 'queue'}
+		<!-- Rows the backend could not express in the reporting currency are
+		     excluded from its own queue roll-ups. The rows themselves are still
+		     listed and selectable — each renders in its own currency — so this
+		     says the TOTALS are short, not that anything is missing. -->
+		{#if queueUnconvertedCount > 0}
+			<p class="fx-skipped" role="alert" data-testid="unconverted-queue">
+				{m('payments.queue.unconvertedRows', { n: queueUnconvertedCount })}
+			</p>
+		{/if}
 		{#if selectedQueue.size > 0}
 			<div class="pay-bar">
-				<span class="pay-bar-count">
-				{m('payments.queue.selected', { n: selectedQueue.size, total: formatCurrency(selectedTotal) })}
-				{#if selectedSavings > 0}
-					<span class="pay-bar-savings">{m('payments.queue.save', { amount: formatCurrency(selectedSavings) })}</span>
+				{#if mixedCurrencySelection}
+					<!-- Inside the fixed bar, above the controls: the bar floats, so
+					     a sibling in normal flow would render nowhere near it. -->
+					<p class="pay-bar-warn" role="alert" data-testid="mixed-currency-warning">
+						{m('payments.queue.mixedCurrency', { n: selectedGroups.length })}
+					</p>
 				{/if}
-			</span>
-				{#if !showReview}
-					<button class="btn-pay" onclick={() => (showReview = true)}>
-						{m('payments.queue.reviewAndPay')}
-					</button>
-				{/if}
-				<button class="btn-clear" onclick={() => { selectedQueue = new Set(); showReview = false; }}>{m('common.clear')}</button>
+				<div class="pay-bar-row">
+					<span class="pay-bar-count" data-testid="pay-bar-count">
+						<!-- `formatGroups` renders ONE subtotal per currency, side by
+						     side — it never adds EUR to USD into a single figure. -->
+						{m('payments.queue.selected', { n: selectedQueue.size, total: formatGroups(selectedGroups) })}
+						{#if selectedSavingsGroups.length > 0}
+							<span class="pay-bar-savings">{m('payments.queue.save', { amount: formatGroups(selectedSavingsGroups) })}</span>
+						{/if}
+					</span>
+					{#if !showReview}
+						<button
+							class="btn-pay"
+							disabled={mixedCurrencySelection}
+							title={mixedCurrencySelection ? m('payments.queue.mixedCurrencyBlocked') : ''}
+							onclick={() => (showReview = true)}
+						>
+							{m('payments.queue.reviewAndPay')}
+						</button>
+					{/if}
+					<button class="btn-clear" onclick={clearQueueSelection}>{m('common.clear')}</button>
+				</div>
 			</div>
 		{/if}
 
@@ -699,9 +920,23 @@
 						{/each}
 					</tbody>
 				</table>
+				{#if createRunError}
+					<!-- The server's own refusal, kept on screen. On the
+					     financial-integrity 409 this NAMES the invoice numbers
+					     that blocked the run, which is the only thing that makes
+					     a 20-row selection actionable. -->
+					<p class="review-error" role="alert" data-testid="create-run-error">
+						{createRunError}
+					</p>
+				{/if}
 				<div class="review-footer">
-					<span class="review-total">{m('payments.queue.total', { amount: formatCurrency(selectedTotal) })}</span>
-					<button class="btn-execute" disabled={creatingRun} onclick={createDraftRun}>
+					<span class="review-total">{m('payments.queue.total', { amount: formatGroups(selectedGroups) })}</span>
+					<button
+						class="btn-execute"
+						disabled={creatingRun || mixedCurrencySelection}
+						title={mixedCurrencySelection ? m('payments.queue.mixedCurrencyBlocked') : ''}
+						onclick={createDraftRun}
+					>
 						{creatingRun
 							? m('payments.queue.creatingDraft')
 							: m('payments.queue.createDraftRun', { n: selectedQueue.size })}
@@ -710,11 +945,17 @@
 			</div>
 		{/if}
 
-		{#if queueTotalSavings > 0}
+		{#if blockedQueueCount > 0}
+			<p class="blocked-banner" role="status" data-testid="queue-blocked-banner">
+				{m('payments.queue.blockedCount', { n: blockedQueueCount })}
+			</p>
+		{/if}
+
+		{#if queueSavingsGroups.length > 0}
 			<div class="savings-banner">
 				<span class="savings-icon">💸</span>
 				<span>
-					{m('payments.queue.savingsBanner', { amount: formatCurrency(queueTotalSavings) })}
+					{m('payments.queue.savingsBanner', { amount: formatGroups(queueSavingsGroups) })}
 				</span>
 			</div>
 		{/if}
@@ -726,7 +967,7 @@
 		>
 			{#snippet header()}
 				<tr>
-					<th class="checkbox-col"><input type="checkbox" aria-label={m('payments.selectAllPayableAria')} checked={allQueueSelected} onchange={toggleQueueSelectAll} /></th>
+					<th class="checkbox-col"><input type="checkbox" aria-label={m('payments.selectAllPayableAria')} checked={allQueueSelected} disabled={selectableQueue.length === 0} onchange={toggleQueueSelectAll} /></th>
 					<th>{m('payments.col.invoiceNumber')}</th>
 					<th>{m('payments.col.vendor')}</th>
 					<th class="right">{m('payments.col.amount')}</th>
@@ -742,8 +983,27 @@
 						class:overdue={item.is_overdue}
 						class:row-selected={selectedQueue.has(item.id)}
 						class:discount-eligible={item.discount_eligible}
+						class:row-blocked={isBlocked(item)}
 					>
-						<td class="checkbox-col"><input type="checkbox" aria-label={`Select invoice ${item.invoice_number}`} checked={selectedQueue.has(item.id)} onchange={() => toggleQueueSelect(item.id)} /></td>
+						<td class="checkbox-col">
+							{#if isBlocked(item)}
+								<!-- Disabled, not omitted: the column keeps its shape, and
+								     the accessible name carries the REASON so a screen
+								     reader learns why this row can't be paid. -->
+								<input
+									type="checkbox"
+									disabled
+									checked={false}
+									data-testid="queue-blocked-checkbox"
+									aria-label={m('payments.queue.blockedCheckboxAria', {
+										invoice: item.invoice_number,
+										reason: blockedReason(item)
+									})}
+								/>
+							{:else}
+								<input type="checkbox" aria-label={`Select invoice ${item.invoice_number}`} checked={selectedQueue.has(item.id)} onchange={() => toggleQueueSelect(item)} />
+							{/if}
+						</td>
 						<td class="mono">{item.invoice_number}</td>
 						<td>{item.vendor_name}</td>
 						<td class="right mono">{formatCurrency(item.amount, item.currency)}</td>
@@ -767,7 +1027,14 @@
 							{/if}
 						</td>
 						<td class="muted">{item.payment_terms ?? '—'}</td>
-						<td><StatusBadge status={item.status as import('$lib/types/invoice').InvoiceStatus} /></td>
+						<td>
+							<StatusBadge status={item.status as import('$lib/types/invoice').InvoiceStatus} />
+							{#if isBlocked(item)}
+								<span class="blocked-chip" data-testid="queue-blocked-chip">
+									{blockedReason(item)}
+								</span>
+							{/if}
+						</td>
 					</tr>
 				{/each}
 			{/snippet}
@@ -1307,8 +1574,8 @@
 		bottom: 24px;
 		transform: translateX(-50%);
 		display: flex;
-		align-items: center;
-		gap: 12px;
+		flex-direction: column;
+		gap: 8px;
 		padding: 10px 16px;
 		background: var(--surface);
 		border: 1px solid var(--accent);
@@ -1316,6 +1583,31 @@
 		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 		z-index: 50;
 		max-width: calc(100vw - 48px);
+	}
+
+	.pay-bar-row {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+	}
+
+	/* Amber, not red: nothing has failed — the selection simply can't be
+	   submitted as one run until it is narrowed to a single currency. */
+	/* Same look as /discounts' `.disc-skipped` and the /cfo unconverted-outflows
+	   caveat: an FX exclusion notice reads alike everywhere it appears. */
+	.fx-skipped {
+		font-size: 0.85rem;
+		margin: 0 0 12px;
+		color: #d4940a;
+		font-weight: 600;
+	}
+
+	.pay-bar-warn {
+		margin: 0;
+		max-width: 56ch;
+		font-size: 0.8rem;
+		line-height: 1.35;
+		color: #d4940a;
 	}
 
 	.pay-bar-count {
@@ -1385,8 +1677,56 @@
 		font-family: inherit;
 	}
 
-	.btn-pay:hover {
+	.btn-pay:hover:not(:disabled) {
 		opacity: 0.9;
+	}
+
+	.btn-pay:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	/* A queue row the backend would refuse: readable, visibly inert, never
+	   hidden — an operator has to be able to see WHAT is blocked to go clear it.
+	   No `tbody` prefix: these rows render inside a `{#snippet}` handed to
+	   `DataTable`, so a descendant selector is pruned as unused at compile time
+	   (which is why the sibling `tbody tr.discount-eligible` rules never
+	   applied). */
+	.row-blocked {
+		opacity: 0.72;
+	}
+
+	.blocked-chip {
+		display: inline-block;
+		margin-left: 6px;
+		padding: 2px 8px;
+		border-radius: 10px;
+		background: var(--danger-tint);
+		color: var(--danger-on-tint);
+		font-size: 0.72rem;
+		font-weight: 600;
+		white-space: normal;
+	}
+
+	.blocked-banner {
+		margin: 0;
+		padding: 10px 14px;
+		border: 1px solid var(--danger);
+		border-radius: 6px;
+		background: var(--danger-tint);
+		color: var(--text);
+		font-size: 0.85rem;
+	}
+
+	.review-error {
+		margin: 0 0 10px;
+		padding: 10px 12px;
+		border: 1px solid var(--danger);
+		border-radius: 6px;
+		background: var(--danger-tint);
+		color: var(--text);
+		font-size: 0.85rem;
+		line-height: 1.4;
 	}
 
 	.btn-clear {

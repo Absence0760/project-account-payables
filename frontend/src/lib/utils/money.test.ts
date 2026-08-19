@@ -1,5 +1,19 @@
-import { describe, expect, it } from 'vitest';
-import { isNegativeAmount, isPositiveAmount, parseMoneyForLayout, sumMoney } from './money';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+	COMMON_CURRENCIES,
+	currencyOptions,
+	formatMoney,
+	isNegativeAmount,
+	isPositiveAmount,
+	parseMoneyForLayout,
+	sumMoney
+} from './money';
+import { getActiveFormatLocale, setActiveFormatLocale } from '$lib/i18n/formatLocale';
+
+afterEach(() => {
+	// Reset the shared holder so locale state never leaks across tests.
+	setActiveFormatLocale(undefined);
+});
 
 // sumMoney sums exact Decimal-string money amounts without going through
 // JS floats. The bug it fixes: `sum + Number(amount)` reduces coerce each
@@ -164,5 +178,104 @@ describe('isNegativeAmount', () => {
 		expect(isNegativeAmount('not-a-number')).toBe(false);
 		expect(isNegativeAmount(Number.NaN)).toBe(false);
 		expect(isNegativeAmount(Number.NEGATIVE_INFINITY)).toBe(false);
+	});
+});
+
+// `formatMoney` resolves its locale from `i18n/formatLocale.ts` on EVERY call
+// (never captured at import), which is what makes a locale switch observable
+// to a formatter call site at all. These lock the value half of that contract
+// — the re-render half needs a browser, see `i18n/formatLocale.test.ts`.
+
+/**
+ * ICU separates an amount from a trailing currency symbol with a no-break
+ * space (U+00A0 in de-DE, U+202F in fr) — invisible characters an editor will
+ * silently normalise in a source literal — hence the escapes rather than the
+ * characters themselves. Fold them to a plain space so the expectations below
+ * stay readable and stable.
+ */
+const norm = (s: string) => s.replace(/[\u00a0\u202f]/g, ' ');
+
+describe('formatMoney locale resolution', () => {
+	it('defers to the runtime/browser locale until one is selected', () => {
+		expect(getActiveFormatLocale()).toBeUndefined();
+		// Whatever the runtime default is, the currency code still drives the
+		// symbol + minor units — this must not throw or lose the amount.
+		expect(formatMoney('1234.50', { currency: 'USD' })).toContain('1');
+	});
+
+	it('follows the active in-app locale', () => {
+		setActiveFormatLocale('en-US');
+		expect(norm(formatMoney('1234.50', { currency: 'USD' }))).toBe('$1,234.50');
+		setActiveFormatLocale('de-DE');
+		// Same amount, same ISO code — the locale moves the grouping/decimal
+		// separators and the symbol placement.
+		expect(norm(formatMoney('1234.50', { currency: 'USD' }))).toBe('1.234,50 $');
+	});
+
+	it('re-reads the locale on every call, so a switch needs no remount', () => {
+		// The bug this guards: a module-level capture of the locale (or a
+		// memoized Intl.NumberFormat keyed on nothing) would freeze the first
+		// locale a page ever rendered with.
+		setActiveFormatLocale('en-US');
+		const first = formatMoney('1234.50', { currency: 'EUR' });
+		setActiveFormatLocale('de-DE');
+		const second = formatMoney('1234.50', { currency: 'EUR' });
+		expect(norm(first)).toBe('€1,234.50');
+		expect(norm(second)).toBe('1.234,50 €');
+	});
+
+	it('lets an explicit locale option win over the active locale', () => {
+		setActiveFormatLocale('de-DE');
+		expect(norm(formatMoney('1234.50', { currency: 'USD', locale: 'en-US' }))).toBe('$1,234.50');
+	});
+
+	it('resets to the runtime default when the locale is cleared', () => {
+		setActiveFormatLocale('de-DE');
+		expect(norm(formatMoney('1234.50', { currency: 'USD' }))).toBe('1.234,50 $');
+		setActiveFormatLocale('');
+		expect(getActiveFormatLocale()).toBeUndefined();
+	});
+
+	it('still localizes the invalid-currency fallback path', () => {
+		setActiveFormatLocale('de-DE');
+		// Wrong length → normalised to USD before Intl is touched.
+		expect(norm(formatMoney('1234.50', { currency: 'NOPE' }))).toBe('1.234,50 $');
+		// Right length, not alphabetic → Intl throws RangeError and the catch
+		// re-formats as USD. That retry must reuse the ACTIVE locale, not
+		// silently drop back to the browser's.
+		expect(norm(formatMoney('1234.50', { currency: 'ZZ9' }))).toBe('1.234,50 $');
+	});
+});
+
+describe('currencyOptions', () => {
+	it('puts the preferred currency first without duplicating it', () => {
+		const opts = currencyOptions('EUR');
+		expect(opts[0]).toBe('EUR');
+		expect(opts.filter((c) => c === 'EUR')).toHaveLength(1);
+		expect(opts).toHaveLength(COMMON_CURRENCIES.length);
+	});
+
+	it('includes a preferred currency the shortlist does not carry', () => {
+		// The whole point: a shortlist that cannot express the currency the org
+		// reports in is a dead end, which is the failure the hardcoded "USD" on
+		// the credit-memo create had.
+		const opts = currencyOptions('KES');
+		expect(opts[0]).toBe('KES');
+		expect(opts).toHaveLength(COMMON_CURRENCIES.length + 1);
+	});
+
+	it('normalises case and whitespace', () => {
+		expect(currencyOptions('  eur ')[0]).toBe('EUR');
+	});
+
+	it('ignores an absent or malformed preference rather than adding a blank', () => {
+		// A store that has not loaded yet must not put an empty option at the top.
+		for (const bad of [undefined, null, '', '   ', 'US', 'USDD']) {
+			expect(currencyOptions(bad)).toEqual([...COMMON_CURRENCIES]);
+		}
+	});
+
+	it('is order-stable, so a picker does not reshuffle between renders', () => {
+		expect(currencyOptions('GBP')).toEqual(currencyOptions('GBP'));
 	});
 });
