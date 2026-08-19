@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+	COMMON_CURRENCIES,
+	currencyOptions,
 	formatMoney,
 	isNegativeAmount,
 	isPositiveAmount,
@@ -242,5 +244,38 @@ describe('formatMoney locale resolution', () => {
 		// re-formats as USD. That retry must reuse the ACTIVE locale, not
 		// silently drop back to the browser's.
 		expect(norm(formatMoney('1234.50', { currency: 'ZZ9' }))).toBe('1.234,50 $');
+	});
+});
+
+describe('currencyOptions', () => {
+	it('puts the preferred currency first without duplicating it', () => {
+		const opts = currencyOptions('EUR');
+		expect(opts[0]).toBe('EUR');
+		expect(opts.filter((c) => c === 'EUR')).toHaveLength(1);
+		expect(opts).toHaveLength(COMMON_CURRENCIES.length);
+	});
+
+	it('includes a preferred currency the shortlist does not carry', () => {
+		// The whole point: a shortlist that cannot express the currency the org
+		// reports in is a dead end, which is the failure the hardcoded "USD" on
+		// the credit-memo create had.
+		const opts = currencyOptions('KES');
+		expect(opts[0]).toBe('KES');
+		expect(opts).toHaveLength(COMMON_CURRENCIES.length + 1);
+	});
+
+	it('normalises case and whitespace', () => {
+		expect(currencyOptions('  eur ')[0]).toBe('EUR');
+	});
+
+	it('ignores an absent or malformed preference rather than adding a blank', () => {
+		// A store that has not loaded yet must not put an empty option at the top.
+		for (const bad of [undefined, null, '', '   ', 'US', 'USDD']) {
+			expect(currencyOptions(bad)).toEqual([...COMMON_CURRENCIES]);
+		}
+	});
+
+	it('is order-stable, so a picker does not reshuffle between renders', () => {
+		expect(currencyOptions('GBP')).toEqual(currencyOptions('GBP'));
 	});
 });

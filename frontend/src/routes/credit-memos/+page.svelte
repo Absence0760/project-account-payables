@@ -12,6 +12,8 @@
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { formatDate } from '$lib/utils/time';
+	import { currencyOptions } from '$lib/utils/money';
+	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 
 	const STATUS_CHIPS = $derived([
 		{ key: 'all', label: m('common.all') },
@@ -73,6 +75,11 @@
 	let loadingMore = $state(false);
 
 	let newMemoNumber = $state('');
+	// Seeded from the org's reporting currency once it loads, and only while
+	// the user hasn't chosen one — otherwise a late `ensureLoaded()` would
+	// overwrite a deliberate pick mid-form.
+	let newCurrency = $state('');
+	let currencyTouched = $state(false);
 	let newVendorId = $state('');
 	let newAmount = $state('');
 	let newReason = $state('');
@@ -90,6 +97,25 @@
 	// `supersedeInFlight()` call is needed. See `frontend/CLAUDE.md`
 	// § Sequencing list fetches.
 	const fetchSequence = createRequestSequencer();
+
+	// The shortlist always contains the org's own reporting currency, so the
+	// picker can never be unable to express the currency the tenant reports in.
+	const CURRENCY_OPTIONS = $derived(currencyOptions(orgCurrency.currency));
+
+	$effect(() => {
+		orgCurrency.ensureLoaded().catch(() => {
+			/* degrades to DEFAULT_CURRENCY by design — see orgSettings.svelte.ts */
+		});
+	});
+
+	// Seed the select once the org currency resolves, unless the user already
+	// picked. `untrack` on the write so this effect depends on the store, not
+	// on its own output.
+	$effect(() => {
+		const ccy = orgCurrency.currency;
+		if (untrack(() => currencyTouched)) return;
+		newCurrency = ccy;
+	});
 
 	// The mount effect loads all three lists ONCE. It must not depend on
 	// `statusFilter`: `loadMemos` reads it synchronously (before its first
@@ -189,6 +215,14 @@
 				memo_number: newMemoNumber.trim(),
 				vendor_id: newVendorId,
 				amount: parseFloat(newAmount),
+				// Sent explicitly. The backend resolves an omitted currency from the
+				// named invoice, then the org's reporting currency — but this form
+				// creates an UNLINKED memo (there is no invoice field; linking
+				// happens later in the Apply dialog), so there is nothing to inherit
+				// from and the org default would be the only answer. A mixed-currency
+				// tenant issuing a EUR credit against a USD-reporting org needs to
+				// say so here, and there is no PATCH on credit memos to fix it after.
+				currency: newCurrency || orgCurrency.currency,
 				reason: newReason.trim() || null
 			});
 			toast(m('creditMemos.toast.created'), 'success');
@@ -197,6 +231,10 @@
 			newVendorId = '';
 			newAmount = '';
 			newReason = '';
+			// Back to the org default for the next memo — a one-off foreign-currency
+			// credit shouldn't become sticky for every memo after it.
+			currencyTouched = false;
+			newCurrency = orgCurrency.currency;
 			await loadMemos();
 		} catch (err) {
 			toast(err instanceof Error ? err.message : m('creditMemos.toast.createFailed'), 'error');
@@ -344,6 +382,22 @@
 			<input type="number" min="0.01" step="0.01" bind:value={newAmount} required />
 		</label>
 		<label>
+			<span>{m('creditMemos.createModal.currency')} <em class="required">*</em></span>
+			<select
+				value={newCurrency}
+				onchange={(e) => {
+					currencyTouched = true;
+					newCurrency = (e.currentTarget as HTMLSelectElement).value;
+				}}
+				required
+			>
+				{#each CURRENCY_OPTIONS as ccy (ccy)}
+					<option value={ccy}>{ccy}</option>
+				{/each}
+			</select>
+			<span class="field-hint">{m('creditMemos.createModal.currencyHint')}</span>
+		</label>
+		<label>
 			<span>{m('creditMemos.createModal.reason')}</span>
 			<textarea bind:value={newReason} rows="2" placeholder={m('creditMemos.createModal.reasonPlaceholder')}></textarea>
 		</label>
@@ -390,6 +444,17 @@
 	}
 	/* Explains an empty apply-target list — the memo's vendor has no invoice
 	   whose vendor link is resolved and matching, so there is nothing to credit. */
+	/* Sub-label under the currency select. Muted on `--surface` clears 4.5:1;
+	   do NOT add `opacity` here — the token has already done that job and a
+	   fade only spends contrast (see frontend/CLAUDE.md § Colour tokens). */
+	.field-hint {
+		display: block;
+		margin-top: 4px;
+		font-size: 0.78rem;
+		color: var(--text-muted);
+		font-weight: 400;
+	}
+
 	.modal-hint.warn {
 		color: #d4940a;
 		margin: -6px 0 0;
