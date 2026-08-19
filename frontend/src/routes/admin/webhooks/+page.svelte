@@ -10,6 +10,7 @@
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import RowLink from '$lib/components/ui/RowLink.svelte';
+	import Badge, { type BadgeTone } from '$lib/components/ui/Badge.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
@@ -325,6 +326,29 @@
 	]);
 
 	const DELIVERY_STATUSES = ['pending', 'delivered', 'failed', 'dead'] as const;
+
+	/**
+	 * Badge tone per delivery status. Keyed off the same four values
+	 * `DELIVERY_STATUSES` filters on; `WebhookDelivery.status` is a bare
+	 * string, so an unknown value falls back to the flat `neutral` chip — the
+	 * pill equivalent of what `deliveryStatusLabel` already does with the
+	 * label.
+	 *
+	 * `dead` shares `danger` with `failed` and `pending` shares `warning` with
+	 * a paused subscription; both pairs were already one CSS rule each, so no
+	 * distinction is lost here.
+	 */
+	const DELIVERY_STATUS_TONES: Record<string, BadgeTone> = {
+		pending: 'warning',
+		delivered: 'success',
+		failed: 'danger',
+		dead: 'danger'
+	};
+
+	function deliveryTone(status: string): BadgeTone {
+		return DELIVERY_STATUS_TONES[status] ?? 'neutral';
+	}
+
 	function deliveryStatusLabel(s: string): string {
 		switch (s) {
 			case 'pending':
@@ -474,21 +498,30 @@
 							<td class="mono">
 								{sub.secret_prefix}…
 								{#if overlapEnds}
-									<span
-										class="overlap-pill"
-										data-testid="overlap-pill"
-										title={m('admin.webhooks.overlapTitle')}
-									>
-										{m('admin.webhooks.overlapPill', { time: formatOverlapEnd(overlapEnds) })}
+									<!-- The wrapper carries what the pill itself cannot: the
+									     test id, the 6px of placement, and the escape from
+									     the surrounding `.mono` cell's font. -->
+									<span class="overlap-pill-wrap" data-testid="overlap-pill">
+										<Badge
+											tone="warning"
+											variant="overlap-pill"
+											title={m('admin.webhooks.overlapTitle')}
+										>
+											{m('admin.webhooks.overlapPill', { time: formatOverlapEnd(overlapEnds) })}
+										</Badge>
 									</span>
 								{/if}
 							</td>
 							<td>{formatDate(sub.created_at)}</td>
 							<td>
 								{#if sub.active}
-									<span class="status-pill active">{m('admin.webhooks.statusActive')}</span>
+									<Badge tone="success" variant="status-pill active">
+										{m('admin.webhooks.statusActive')}
+									</Badge>
 								{:else}
-									<span class="status-pill paused">{m('admin.webhooks.statusInactive')}</span>
+									<Badge tone="warning" variant="status-pill paused">
+										{m('admin.webhooks.statusInactive')}
+									</Badge>
 								{/if}
 							</td>
 							<td class="actions">
@@ -554,7 +587,9 @@
 							<td>{d.response_code ?? '—'}</td>
 							<td>{formatDate(d.last_attempt_at)}</td>
 							<td>
-								<span class="status-pill {d.status}">{deliveryStatusLabel(d.status)}</span>
+								<Badge tone={deliveryTone(d.status)} variant="status-pill {d.status}">
+									{deliveryStatusLabel(d.status)}
+								</Badge>
 							</td>
 							<td class="actions">
 								{#if canRedeliver(d)}
@@ -850,56 +885,25 @@
 		white-space: nowrap;
 	}
 
-	.status-pill {
-		display: inline-block;
-		padding: 2px 10px;
-		border-radius: 10px;
-		font-size: 0.72rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-	}
-
-	.status-pill.active,
-	.status-pill.delivered {
-		background: rgba(50, 200, 130, 0.15);
-		color: #26b977;
-	}
-
-	.status-pill.paused,
-	.status-pill.pending {
-		background: rgba(255, 180, 50, 0.15);
-		color: #d4940a;
-	}
-
-	.status-pill.failed,
-	.status-pill.dead {
-		background: rgba(240, 70, 70, 0.15);
-		color: #f06464;
-	}
-
 	tr.inactive td:not(.actions) {
 		opacity: 0.6;
 	}
 
-	/* "A rotation is mid-flight" signal on the secret cell. Amber, matching the
-	   `pending` status pill — it's a transient state, not an error. */
-	.overlap-pill {
-		display: inline-block;
+	/* "A rotation is mid-flight" signal on the secret cell. The pill itself is
+	   `<Badge tone="warning">` — amber, matching a `pending` delivery, because
+	   it's a transient state and not an error. Left here is only what the
+	   caller owns: the placement, and the escape from the surrounding `.mono`
+	   cell (a monospace secret prefix is the point of that cell; the pill's
+	   prose is not). Font-family inherits into the badge. */
+	.overlap-pill-wrap {
+		display: inline-flex;
 		margin-left: 6px;
-		padding: 2px 8px;
-		border-radius: 10px;
-		background: rgba(255, 180, 50, 0.15);
-		color: #d4940a;
 		font-family:
 			-apple-system,
 			BlinkMacSystemFont,
 			'Segoe UI',
 			Roboto,
 			sans-serif;
-		font-size: 0.7rem;
-		font-weight: 600;
-		white-space: nowrap;
 	}
 
 	.field-hint {
