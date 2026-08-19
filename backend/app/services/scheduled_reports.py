@@ -6,8 +6,7 @@ one long-lived task per app process, started in `main.lifespan`,
 ticks every `FEOH_SCHEDULED_REPORTS_TICK_SECONDS`, sweeps every
 tenant DB for `scheduled_reports` rows whose `next_run_at <= now`
 and `enabled = true`, generates the CSV via `report_export`,
-emails it to the listed recipients, then bumps `next_run_at` by
-the cadence.
+emails it to the listed recipients, then advances `next_run_at`.
 
 Cadences:
   - daily: next_run += 1 day
@@ -16,13 +15,20 @@ Cadences:
     but a separate piece — operators typically pick "the 1st of
     the month" + daily cadence)
 
+`next_run_at` advances from the slot the run was DUE at, never from
+the moment the tick fired — see `advance_next_run`. Anchoring on the
+wall clock made every run land later than the last (the sweep ticks
+hourly), so a "daily 09:00" report walked around the clock inside a
+month.
+
 Failures don't block: `last_run_status='failure'` + truncated
 error message is saved, next_run_at stays at the original time so
 the next tick retries. Repeated failures cap at 5 retries by
 flipping `enabled=false` (so the queue doesn't loop forever on a
-broken provider). An operator re-enables it after fixing — today by
-flipping the column directly: nothing under `app/api/` references
-`ScheduledReport`, so this table has no CRUD surface yet (see
+broken provider). An operator re-enables it through
+`PATCH /api/analytics/scheduled-reports/{id}` (`api/scheduled_reports.py`),
+which also clears the stale `[retry N]` marker so the next failure
+doesn't immediately re-disable the row (see
 `docs/analytics.md` § Scheduled report delivery).
 
 Delivery is per-recipient, so `last_run_status` has three values:
@@ -60,15 +66,73 @@ _CADENCE_DELTA = {
 }
 
 
-def compute_next_run(cadence: str, from_dt: datetime) -> datetime:
-    """Add the cadence's delta to `from_dt`. Unknown cadences fall
-    back to daily so a stale legacy row doesn't poison the
-    scheduler — a WARN log surfaces the misconfig."""
+def known_cadences() -> tuple[str, ...]:
+    """The cadences a schedule may declare.
+
+    Derived from ``_CADENCE_DELTA`` so the CRUD surface validates against the
+    runner's OWN registry rather than a restated copy: an unknown cadence
+    silently falls back to daily below, which would quietly reschedule a
+    "monthly" report as daily. Adding a cadence updates the API for free.
+    """
+    return tuple(_CADENCE_DELTA)
+
+
+def _cadence_delta(cadence: str) -> timedelta:
+    """The cadence's step. Unknown cadences fall back to daily so a stale legacy
+    row doesn't poison the scheduler — a WARN log surfaces the misconfig."""
     delta = _CADENCE_DELTA.get(cadence)
     if delta is None:
         logger.warning("[scheduled_reports] unknown cadence %r; falling back to daily", cadence)
         delta = _CADENCE_DELTA["daily"]
-    return from_dt + delta
+    return delta
+
+
+def compute_next_run(cadence: str, from_dt: datetime) -> datetime:
+    """Add the cadence's delta to `from_dt`. One step, no catch-up.
+
+    Used when seeding a brand-new schedule. To ADVANCE a schedule that just
+    ran, use :func:`advance_next_run` — anchoring on the wall clock is what
+    made every run drift later than the last.
+    """
+    return from_dt + _cadence_delta(cadence)
+
+
+def advance_next_run(cadence: str, *, scheduled_for: datetime, now: datetime) -> datetime:
+    """The next slot strictly after ``now``, measured from the slot the run was
+    DUE at — not from the moment the sweep happened to pick it up.
+
+    ``execute_schedule`` used to bump ``next_run_at = compute_next_run(cadence,
+    now)``. The sweep ticks hourly (``FEOH_SCHEDULED_REPORTS_TICK_SECONDS``), so
+    a "daily 09:00" report landed up to an hour later every day and walked all
+    the way around the clock inside a month. Anchoring on ``scheduled_for``
+    holds the slot: 09:00 stays 09:00 no matter when the tick fires.
+
+    A missed window (process down, tenant unreachable, the schedule disabled and
+    re-enabled) is caught up in **whole cadence steps** rather than emitting one
+    report per skipped period — the report is a periodic snapshot of *current*
+    state, so a backlog burst would send N copies of the same figures. The
+    schedule simply resumes on its own grid.
+
+    ``scheduled_for`` in the future (a hand-edited row, a clock stepping
+    backwards) yields exactly one step past it, never a slot in the past.
+    """
+    delta = _cadence_delta(cadence)
+    # `next_run_at` is `DateTime(timezone=True)`, but a row seeded through raw
+    # SQL (the only way to create one before the CRUD router existed) can come
+    # back naive. Comparing a naive to an aware datetime is a TypeError, which
+    # would surface as a swallowed sweep failure rather than as the data bug it
+    # is — so read a naive value as UTC, which is what the column means.
+    if scheduled_for.tzinfo is None:
+        scheduled_for = scheduled_for.replace(tzinfo=UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    next_run = scheduled_for + delta
+    if next_run <= now:
+        # Whole steps to clear `now`, in one arithmetic hop rather than a loop
+        # (a schedule dormant for a year would otherwise spin 365 times).
+        missed = (now - next_run) // delta
+        next_run += delta * (missed + 1)
+    return next_run
 
 
 async def list_due_schedules(
@@ -145,13 +209,17 @@ async def _materialise_rows(
     session cannot intercept. Absent, the branches fall back to the documented
     platform default — a pure resolution with no database hit.
     """
-    from datetime import date
     from datetime import datetime as _dt
 
     from app.models.invoice import Invoice, InvoiceStatus
     from app.models.payment import Payment
+    from app.utils.dates import utc_today
 
-    period_start = date.today() - timedelta(days=schedule.period_days)
+    # UTC, never the server's local timezone — this is the same "today" the
+    # `/analytics` export endpoints and the copilot resolve, and an emailed
+    # snapshot that disagrees with the API export of the same report at the
+    # day boundary is a reconciliation problem, not a cosmetic one.
+    period_start = utc_today() - timedelta(days=schedule.period_days)
 
     if schedule.report_type == "invoice_register":
         rows = await db.execute(select(Invoice).where(Invoice.invoice_date >= period_start))
@@ -237,7 +305,7 @@ async def _materialise_rows(
         # ScheduledReport has no per-schedule granularity/horizon — mirror the
         # API export endpoint's own defaults (`granularity="week"`,
         # `horizon_days` from the same platform default the copilot uses).
-        today = date.today()
+        today = utc_today()
         # Outflows are expressed in the org's reporting currency, never summed
         # raw across whatever currencies its suppliers happen to bill in. The
         # currency comes from the caller (see this function's docstring) so
@@ -257,7 +325,7 @@ async def _materialise_rows(
 
         from app.services.analytics import OPEN_AP_STATUSES
 
-        today = date.today()
+        today = utc_today()
         # Same open-payable population as the AP balance + the API aging export
         # so the emailed snapshot reconciles with them (F-4): approved →
         # payment_scheduled, not the pre-approval statuses. The AP balance has
@@ -397,7 +465,10 @@ async def execute_schedule(
     # bad address is an operator fix (remove/correct it), which is why a
     # partial does NOT accumulate toward the 5-strike auto-disable — disabling
     # the schedule would punish the recipients it is still reaching.
-    next_run = compute_next_run(schedule.cadence, now)
+    # Advance from the slot this run was DUE at, not from the moment the tick
+    # fired — otherwise every run lands a little later than the last and a
+    # "daily 09:00" report walks around the clock. See `advance_next_run`.
+    next_run = advance_next_run(schedule.cadence, scheduled_for=schedule.next_run_at, now=now)
     if failed:
         status = "partial"
         total = delivered + failed
