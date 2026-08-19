@@ -286,6 +286,24 @@ export interface VendorChangeRequestPage {
 }
 
 /**
+ * `GET /api/vendors/change-requests/counts` — whole-set, search-independent
+ * tallies for the status chips. PII-free (counts only).
+ *
+ * Separate from the queue's own `total`, which counts only the ACTIVE filter's
+ * result set: the Pending badge has to be the whole set or a queue with 25
+ * unreviewed bank changes reads as 20 the moment the first page caps. Same
+ * reason `GET /api/vendors/counts` exists for the vendor status chips.
+ *
+ * `pending` is a convenience duplicate of `by_status.pending`; read whichever,
+ * they are the same number.
+ */
+export interface VendorChangeRequestCounts {
+	total: number;
+	pending: number;
+	by_status: Partial<Record<VendorChangeRequestStatus, number>>;
+}
+
+/**
  * One-line summary of a MASKED proposed value, for the queue list.
  *
  * Renders nothing but the backend's own mask: the list payload carries

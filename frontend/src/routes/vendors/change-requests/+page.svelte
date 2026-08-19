@@ -22,7 +22,11 @@
 	import { api, ApiError } from '$lib/api';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { PERM_VENDOR_BANK_CHANGE_APPROVE } from '$lib/types/admin';
-	import type { VendorChangeRequest, VendorChangeRequestPage } from '$lib/types/vendor';
+	import type {
+		VendorChangeRequest,
+		VendorChangeRequestCounts,
+		VendorChangeRequestPage
+	} from '$lib/types/vendor';
 	import { maskedProposalSummary, revealedProposalFields } from '$lib/types/vendor';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
@@ -57,6 +61,17 @@
 	let errored = $state(false);
 	let statusFilter = $state('pending');
 
+	// Whole-set tallies for the chips. `total` on the list response counts the
+	// ACTIVE filter's result set, so rendering it on a chip would label the
+	// filtered count with another status's name — and the Pending badge in
+	// particular has to be the whole set, or a queue with 25 pending rows
+	// reads as 20 once the page caps. Same reason `/api/vendors/counts` exists
+	// for the vendor status chips.
+	let counts = $state<VendorChangeRequestCounts | null>(null);
+	// Latches on the first failure: one doomed request per visit, no toast, and
+	// the chips fall back to label-only — exactly the pre-counts behaviour.
+	let countsUnavailable = $state(false);
+
 	let hasMore = $derived(items.length < total);
 
 	// Armed two-click confirms, one id slot each (a row can't be mid-approve and
@@ -85,10 +100,25 @@
 	// default because that is the backend's default and the only state an
 	// approver has to act on.
 	const STATUS_CHIPS = $derived([
-		{ key: 'all', label: m('common.all') },
-		{ key: 'pending', label: m('vendors.changeRequests.status.pending') },
-		{ key: 'approved', label: m('vendors.changeRequests.status.approved') },
-		{ key: 'rejected', label: m('vendors.changeRequests.status.rejected') }
+		{ key: 'all', label: m('common.all'), count: counts?.total },
+		{
+			key: 'pending',
+			label: m('vendors.changeRequests.status.pending'),
+			count: counts?.pending,
+			// The red attention badge: an unreviewed bank change is work that
+			// blocks a payee update, not a neutral tally.
+			alert: (counts?.pending ?? 0) > 0
+		},
+		{
+			key: 'approved',
+			label: m('vendors.changeRequests.status.approved'),
+			count: counts?.by_status?.approved
+		},
+		{
+			key: 'rejected',
+			label: m('vendors.changeRequests.status.rejected'),
+			count: counts?.by_status?.rejected
+		}
 	]);
 
 	const COLUMNS = $derived([
@@ -135,6 +165,30 @@
 	// list fetches.
 	const fetchSequence = createRequestSequencer();
 
+	// Own sequencer: the tallies are an independent stream from the list, and a
+	// shared counter would let a list load mark an in-flight counts response
+	// un-committable and blank the chips.
+	const countsSequence = createRequestSequencer();
+
+	async function loadCounts() {
+		if (countsUnavailable) return;
+		const token = countsSequence.start();
+		try {
+			const res = await api.get<VendorChangeRequestCounts>(
+				'/api/vendors/change-requests/counts'
+			);
+			if (!countsSequence.canCommit(token)) return;
+			counts = res;
+		} catch {
+			// Deliberately silent. The tallies are an enhancement over a queue that
+			// works without them, so a missing endpoint must not produce a toast on
+			// every visit — it latches instead, and the chips render label-only.
+			if (!countsSequence.isCurrentRequest(token)) return;
+			countsUnavailable = true;
+			counts = null;
+		}
+	}
+
 	async function load(opts: { append?: boolean } = {}) {
 		const nextPage = opts.append ? pageNum + 1 : 1;
 		const token = fetchSequence.start();
@@ -177,7 +231,10 @@
 	$effect(() => {
 		statusFilter;
 		if (!allowed) return;
-		load();
+		// `.catch` on both: neither is awaited here, and each already renders its
+		// own failure (`errored` for the list, label-only chips for the tallies).
+		load().catch(() => {});
+		loadCounts().catch(() => {});
 	});
 
 	/** Write a decided request back into the list + the open modal. */
@@ -195,6 +252,10 @@
 			selected = updated;
 			revealed = updated;
 		}
+		// A decision moves a row between statuses, so every chip's tally is now
+		// wrong. Re-read rather than adjusting locally: the queue is shared, and
+		// guessing the new numbers would drift the moment a second approver acts.
+		loadCounts().catch(() => {});
 	}
 
 	/** Map the backend's real refusals onto messages an approver can act on. */
@@ -237,7 +298,10 @@
 			toast(decisionErrorMessage(err, decision), 'error');
 			// A 409 means the row we are showing is stale — re-read so the queue
 			// stops offering a decision that can no longer be made.
-			if (err instanceof ApiError && err.status === 409) load();
+			if (err instanceof ApiError && err.status === 409) {
+				load().catch(() => {});
+				loadCounts().catch(() => {});
+			}
 		} finally {
 			busyId = null;
 			approveArmedId = null;
@@ -293,7 +357,14 @@
 
 <PageHeader title={m('vendors.changeRequests.title')}>
 	{#snippet actions()}
-		<button class="btn-outline" onclick={() => load()} disabled={loading}>
+		<button
+			class="btn-outline"
+			onclick={() => {
+				load().catch(() => {});
+				loadCounts().catch(() => {});
+			}}
+			disabled={loading}
+		>
 			{loading ? m('vendors.changeRequests.refreshing') : m('vendors.changeRequests.refresh')}
 		</button>
 	{/snippet}
