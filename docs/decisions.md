@@ -1904,3 +1904,37 @@ Under a `dispatch_engine_scope` the jobs are awaited inline via `await_only`
 rather than spawned, because that worker's loop closes the moment the job returns
 and would abandon a task mid-send; inline still costs no lock, only latency on a
 background worker.
+
+## 47. One component owns the tinted badge; a caller names a tone, not a colour
+
+**Decided:** 2026-08-19 · `frontend/src/lib/components/ui/Badge.svelte`
+
+202 CSS rules hand-rolled the tinted-badge recipe as an `rgba()` tint plus a
+literal hex — 44 distinct spellings of five tones. Every one passed the contrast
+guard, so this was design-system debt rather than a defect; but the same tone
+written four ways is precisely how the 29 sub-4.5:1 badges accumulated unnoticed
+(§30). A shared primitive is the structural fix that stops the next 29.
+
+`Badge.svelte` is now the single owner: a caller names a **tone** and cannot
+spell it wrong. `variant` passes the caller's semantic class through as a
+**selector hook only** — the e2e suite reads `.badge.approved` — and never as
+colour, so styling and test-targeting stop being the same mechanism.
+
+Sizing is fixed rather than exposed as a prop. Call sites varied padding by a
+pixel with no discernible intent, and one size is most of the point of a shared
+primitive; a pill that genuinely needs different metrics is a different
+component, not a prop. `ScreeningBadge` keeps its dense inline metrics but takes
+the palette tokens, which is the shape that concession should have.
+
+Two tones stay deliberately non-tinted. `neutral` is a flat `--bg` chip standing
+for the *absence* of a signal, and tinting it would give "nothing to report" the
+visual weight of a status. `erp` is a measured purple literal that shares no
+semantics with the other five.
+
+**Rejected: converting all 125 badge-shaped rules in one pass.** The tokens
+standardise on alpha `.15`, so normalising a `.1` or `.12` rule visibly
+*strengthens* that badge — a real visual change, not a refactor. Landing it
+wholesale would make any subsequent visual complaint unattributable to a
+specific tranche. Half moved in the first tranche; the rest follows in
+attributable batches, with collapsed distinctions checked each time (two were
+verified here: recurring's `paused` / `ended` greys, and three punch-out ambers).

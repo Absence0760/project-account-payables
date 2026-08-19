@@ -368,176 +368,10 @@ probes) were wiring gaps as described, and are now wired, tested and documented.
 Rationale for the non-obvious calls made while closing them:
 [decisions.md](decisions.md) §31–§34.
 
-### Surfaced by the five-agent bug hunt, deliberately not fixed
+### Consistency debt the round-12 sweep surfaced rather than introduced
 
-The hunt (branch `fix/bug-hunt-round-9`) confirmed ~50 findings and fixed 31
-at the root. These are the remainder — each real and reproduced, each larger
-than a bug fix or a product call rather than a defect:
-
-- [ ] **Every supplier-portal list truncates at 20 rows with no pager.**
-      `frontend/src/routes/portal/{invoices,payments,purchase-orders,discount-offers}/+page.svelte`
-      each fetch the bare URL, read only `res.items`, declare `total` and never
-      read it, and render no pagination control — while all four routers
-      (`backend/app/api/portal.py`) return `{items, total, page, page_size}`
-      with `DEFAULT_PAGE_SIZE = 20`. A supplier with 25 invoices sees 20 and no
-      count; invoices 21+ and their chat threads are unreachable, older
-      remittances and PO flips likewise, and discount offers past the first 20
-      expire un-actionable. Raising `page_size` only moves the cliff to
-      `MAX_PAGE_SIZE`.
-      **Durable fix:** thread `?page=&page_size=` through `portalApi`, keep
-      `total` in page state, and reuse the AP app's Load-More control — four
-      routes, one shared pattern.
-      **Trigger:** the next slice touching the supplier portal's UI.
-- [ ] **Non-admins cannot submit an invoice when the approval step uses
-      `approver_strategy: "manual"`.** `InvoiceModal.svelte` sources the
-      approver picker from `GET /api/admin/users`, which is
-      `require_roles(ROLE_ADMIN)`. For every non-admin the call 403s,
-      `adminStore.users` stays `[]` with no catch, the `<select>` renders only
-      its placeholder, and Submit stays permanently disabled. On the seeded demo
-      tenant the workflow's approval step IS `manual`, so `demo+apclerk@acme.com`
-      — the role whose job is keying invoices in — cannot advance one. The
-      backend already intends managers to assign (`POST /{id}/assign` allows
-      admin **and** ap_manager); only the user-list endpoint blocks them.
-      **Durable fix:** a minimal assignable-reviewers endpoint (id +
-      full_name + is_active, no email or other PII) gated to the roles that may
-      assign, and point the picker at it. Do **not** widen
-      `GET /api/admin/users`.
-      **Trigger:** the next slice touching invoice submission or reviewer
-      assignment. Sized: one endpoint, one schema, one store call.
-- [ ] **Notification preferences cover 4 of the 7 event types, so
-      supplier-chat email cannot be muted.** `frontend/src/lib/types/notification.ts`
-      and `backend/app/schemas/notification.py` both enumerate only the four
-      `invoice_*` events, while `backend/app/models/notification.py` declares
-      seven. `chat_message`, `contract_renewal_due` and
-      `cash_shortfall_projected` go through the same `notify_event` writer, and
-      `resolve_prefs` defaults a missing key to **on** — so every supplier-chat
-      message emails the AP team with no opt-out.
-      **Durable fix:** extend both prefs schemas and the frontend union / labels
-      / order, with a roster drift guard mirroring
-      `tests/test_exception_type_labels`.
-      **Trigger:** the next change to notification preferences or the chat
-      notification path.
-- [ ] **Credit memos are created with no currency, dead-ending non-USD
-      tenants.** `frontend/src/routes/credit-memos/+page.svelte` omits
-      `currency` and its modal has no such input;
-      `backend/app/schemas/credit_memo.py` defaults `"USD"`, and
-      `api/credit_memos.py` then 409s any non-USD invoice on apply. There is no
-      PATCH on credit memos, so a EUR tenant's memo can never be applied or
-      corrected — and it displays as "$500".
-      **Durable fix:** a currency select defaulted from the org's reporting
-      currency, and default the schema from the invoice when one is named
-      rather than from a hardcoded `"USD"`.
-      **Trigger:** the next slice touching credit memos or multi-currency.
-- [ ] **Vendor bank-change approvals have no UI, so the dual-control gate is
-      unreachable from the app.** `/vendors` stages the change and toasts
-      "submitted for approval", but `grep -rn "change-requests" frontend/src/`
-      finds only the supplier portal's own read, and
-      `PERM_VENDOR_BANK_CHANGE_APPROVE` is exported and never referenced. The
-      backend queue (`api/vendors.py` `GET /change-requests`) and approve
-      endpoint both exist. Vendor banking therefore cannot be updated through
-      the app at all.
-      **Durable fix:** a `/vendors/change-requests` sub-route beside the
-      existing `/vendors/screening`, gated on the permission.
-      **Trigger:** the next slice touching vendor management. This is the
-      highest-value item in this list — a shipped control with no way to
-      exercise it.
-- [ ] **Four list surfaces are missing the app-wide request sequencer.**
-      `frontend/src/routes/{exceptions,purchase-orders,credit-memos,goods-receipts}/+page.svelte`.
-      `frontend/CLAUDE.md` § Sequencing list fetches enumerates the covered
-      surfaces and states "a new list surface wires it too"; these four don't.
-      Repro: click Load more, then change the filter chip — the page-1 replace
-      lands first, then the append pushes page-2 rows of the OLD filter onto the
-      new list and overwrites `total`/`page`.
-      **Durable fix:** wire `createRequestSequencer()` per the documented
-      three-call protocol; extend
-      `frontend/tests-e2e/reactivity/local-edit-vs-inflight-fetch.spec.ts`.
-      **Trigger:** the next change to any of those four routes.
-- [ ] **Filter chips that can never match.** `/expenses` offers `rejected` and
-      `reimbursed` (`frontend/src/lib/types/expense.ts`), but the only
-      `ExpenseStatus` writers in `api/expenses.py` are `submitted`/`approved`/
-      `draft`, and report rejection returns children to `draft`. `/requisitions`
-      offers `submitted`, but `RequisitionStatus.submitted` is never assigned —
-      submit jumps straight to `pending_approval` (the docstring at
-      `api/requisitions.py:335` still advertises the old graph). Both return an
-      empty list forever.
-      **Durable fix:** either drop the chips, or make the transitions stamp the
-      states their names promise — a product call on which of the two each case
-      wants.
-      **Trigger:** the next slice touching expenses or requisitions.
-- [ ] **Mobile offers Amount on an approved invoice, which the backend
-      refuses.** `mobile/lib/models/invoice.dart` mirrors `IMMUTABLE_STATUSES`
-      but not the narrower `_FINANCIALLY_LOCKED_STATUSES = {approved} |
-      IMMUTABLE_STATUSES` (`backend/app/api/invoices.py`). Editing an approved
-      invoice's amount 409s with a generic toast, and a combined
-      description+amount edit loses the description too. The web client already
-      implements exactly this guard (`InvoiceModal.svelte` →
-      `invoiceFieldPayload()`), so this is a parity gap.
-      **Durable fix:** add `isFinanciallyLocked`, render Amount read-only, and
-      omit it from the PATCH diff.
-      **Trigger:** the next slice touching the mobile invoice edit sheet.
-- [ ] **An orphaned extraction poll un-filters the invoice list.**
-      `frontend/src/lib/components/modals/InvoiceModal.svelte` — nothing
-      disables Close while `extracting`, and `pollForCompletion` runs up to 60s
-      after the modal unmounts, then calls the UNFILTERED `invoiceStore.fetch()`.
-      `closeInvoiceModal` has already re-applied the filters, so seconds later
-      the list silently becomes unfiltered while the status chips still show the
-      filter, and `lastParams` resets so Load-more paginates the wrong set. The
-      same hazard is explicitly avoided a few lines above for the approve path.
-      **Durable fix:** an `$effect` cleanup setting `cancelled = true`, checked
-      after each `await` in the poll, with the refresh going through a
-      host-supplied callback.
-      **Trigger:** the next change to `InvoiceModal`.
-- [ ] **Payment-run Execute is a single unarmed click.**
-      `RunDetailModal.svelte` — the one irreversible money-moving control in the
-      web app has no arm/confirm, while strictly less consequential actions do
-      (cancel-draft two-click in the same footer, void/compliance confirms,
-      credit-memo void, API-key revoke). Mobile *does* confirm. Stated fairly:
-      `payments/+page.svelte` documents the modal itself as the review surface
-      and the button label carries the amount, so this is a judgment call rather
-      than a defect of logic.
-      **Durable fix:** arm the commit (two-click or a confirm dialog), updating
-      `frontend/tests-e2e/payments/execute.spec.ts`.
-      **Trigger:** a product call on whether the modal counts as the
-      confirmation step.
-- [ ] **`tests-e2e/discounts/money-path.spec.ts:228` is date-boundary flaky off
-      UTC.** "per-invoice ROI is the exact cost-of-forgoing-discount value"
-      asserts `days_accelerated === 20` from an invoice due in 30 days and an
-      offer deadline 10 days out. `makeInvoice` and `makeOffer` derive their
-      dates separately, so on a machine whose local date differs from UTC the
-      two straddle midnight and the assertion sees 21. CI runs in UTC and never
-      sees it; it reproduces reliably on a UTC-4 workstation after 20:00 local.
-      Diagnosed while triaging PR #315 — the spec is untouched by that PR and
-      the ROI primitive itself is correct.
-      **Durable fix:** derive both dates from one clock read passed into both
-      helpers (or assert the relationship `netDue - discountDeadline` rather
-      than a hardcoded 20).
-      **Trigger:** the next change to the discounts e2e specs, or the first
-      time it costs someone a local triage session.
-### Surfaced by the round-11 hunt (analytics / reporting / cash-flow), not fixed
-
-The analytics agent of round 11 fixed 5 findings at the root (the what-if
-claiming an elapsed discount, the unconvertible-outflow count nobody read,
-vendor-risk payment volume summed across currencies, scheduled reports
-re-emailing already-notified recipients, and the discount optimizer summing
-offers across currencies). These are the ones it confirmed but did not fix:
-
-- [ ] **`/discounts` gives no reason when foreign offers are excluded from
-      "projected savings".** The optimizer now excludes an offer denominated in
-      anything other than the org's reporting currency from
-      `total_savings_*` / `total_outlay_selected` and reports the count
-      (`OptimizerResponse.unconvertible_count`,
-      `DiscountDashboard.unconvertible_offer_count`) — so the numbers are
-      honest, but a multi-currency tenant sees a projected-savings figure that
-      is quietly lower than the offers on screen imply, with nothing on the page
-      explaining why. **Durable fix:** render a notice on
-      `frontend/src/routes/discounts/+page.svelte` from those counts, modelled
-      exactly on the `/cfo` cash-position card's
-      `cfo.position.unconvertedOutflows` notice this same round added (one
-      message key across the six locales, guarded by
-      `src/lib/i18n/plural_messages.test.ts`). Not done here only because
-      `/discounts` is a different surface from this agent's area and a
-      concurrent agent may hold it. **Trigger:** the next slice touching the
-      discounts page, or the first multi-currency pilot tenant.
+Neither is a live defect on the deployed shape; both are the kind of drift that
+only becomes a bug once something else changes around it.
 
 - [ ] **~45 `date.today()` sites remain outside the cash-flow stack.**
       `api/analytics.py` (12 sites) and `services/scheduled_reports.py` (3) were
@@ -565,18 +399,11 @@ offers across currencies). These are the ones it confirmed but did not fix:
       **Trigger:** the next change touching signup, partner link codes, or
       scheduled-report recipients.
 
-### Surfaced by the round-11 hunt (SvelteKit frontend), not fixed
+### Frontend search is client-side on two surfaces
 
-Round 11's frontend agent fixed 8 findings at the root, each with a reproducing
-test written first (the row-Delete gate on `/invoices`, the `/profile`
-full-name field, the search-debounce teardown across 13 surfaces, the six lists
-that claimed "Showing all N" over a capped page, the four list stores that
-rendered a failed load as an empty result set, the `/profile` passkey
-fail-closed, the `/exceptions` stale bulk selection, and the
-`/purchase-orders` sequencer + chip + All-count trio). These are the ones it
-confirmed by reading the exact code path but deliberately did not fix.
-
-**(c) — needs a backend leg first**
+Round 12 closed every other open frontend finding from rounds 9 and 11. This is
+the one that survived, because moving it server-side needs the backend leg
+below and doing it without that leg would be a regression.
 
 - [ ] **`/requisitions` and `/expenses` search only ever matches rows already
       loaded.** `routes/requisitions/+page.svelte` filters client-side over
@@ -594,149 +421,6 @@ confirmed by reading the exact code path but deliberately did not fix.
       list endpoint), then move both pages onto it and delete the client filter.
       **Trigger:** the next backend slice touching either list endpoint.
 
-- [ ] **`/purchase-orders` has no whole-set count endpoint.** Round 11 stopped
-      the All chip rendering the *filtered* total as if it were the whole one,
-      by showing the count only while All is the active filter. The other
-      lists solve this properly with a search-aware `/counts` route
-      (`/api/vendors/counts`, `/api/payments/counts`, `/api/invoices/counts`).
-      **Durable fix:** add `GET /api/purchase-orders/counts` in the same shape
-      and give every chip a live count. **Trigger:** the next slice on the
-      purchase-orders API.
-
-- [ ] **The `/payments` queue offers rows the backend hard-409s.**
-      `GET /api/payments/queue` selects on payable status + not-already-paid and
-      returns nothing about exceptions, so every queue row is selectable — but
-      `services/payment_runs.create_payment_run_for_invoices` refuses the
-      **whole run** when any selected invoice carries an unresolved
-      `duplicate` / `fraud_flag` / `line_total_mismatch`. Select twenty rows
-      where one is blocked and the draft fails with no advance signal and no
-      indication which row is at fault. **Durable fix:** surface the blocking
-      exception on the queue payload (a `blocked` flag + reason), disable that
-      row's checkbox and label why. Frontend-only guesswork can't do it — the
-      queue endpoint has to say so. **Trigger:** the next payments slice.
-
-- [ ] **The payments pay-bar sums across currencies.** `selectedTotal` /
-      `selectedSavings` (`routes/payments/+page.svelte`) run `sumMoney` over the
-      selected queue rows and render the result in the org default currency,
-      while each row carries its own `currency`. A EUR 100 + USD 100 selection
-      reads as one number. This is **not** a frontend-only defect: the backend's
-      own `/queue` response computes `total_amount` / `total_savings` the same
-      way (`api/payments.py`), so a fix that starts in the UI would just
-      disagree with the API. **Durable fix:** decide the multi-currency rollup
-      rule once in `backend/docs/multi-currency.md` terms (group by currency, or
-      convert at a locked rate) and apply it on both sides. **Trigger:** the
-      first multi-currency tenant, or the next multi-currency slice.
-
-**(c) — frontend-only, sized and unstarted**
-
-- [ ] **`/notifications`' All chip shows the unread count while the Unread
-      filter is active.** `routes/notifications/+page.svelte` renders
-      `{key:'all', count: total}` and `{key:'unread', count: unread}`, but
-      `stores/notifications.svelte.ts::load` sets `total` from whichever
-      response it just took — including the `unread_only=true` one — so both
-      chips display the same number and one of them is mislabelled. Related:
-      `markAllRead` zeroes `unread` without refreshing `total`, so the footer's
-      "Showing all N" then describes a filter no row matches. **Durable fix:**
-      keep the unfiltered total separate from the filtered one in the store
-      (the shape `/vendors` uses), and refresh it after a mark-all.
-      **Trigger:** the next notifications slice.
-
-- [ ] **`/credit-memos` fires two unsequenced loads on mount and has no loading
-      state.** Both `$effect(() => { loadAll(); })` (which awaits `loadMemos`)
-      and `$effect(() => { statusFilter; loadMemos(); })` run on mount, so two
-      page-1 requests race and whichever lands last wins. `loadMemos` never
-      touches `loading`, so a status-chip change shows stale rows with no
-      spinner, and `hasMore` flickers off the losing response. **Durable fix:**
-      one `createRequestSequencer`, a `searchEffectRan`-style mount guard on the
-      filter effect, and `loading` set/cleared in `loadMemos` under
-      `isCurrentRequest` — the pattern `/budgets` and `/recurring` already
-      carry. **Trigger:** the next credit-memo slice.
-
-- [ ] **Several list loaders still have no request sequencer.** Round 11 closed
-      the last one with a *debounced search* (`/purchase-orders`). These have a
-      filter or a load-more but no debounce, so the race needs two fast clicks
-      rather than typing: `routes/exceptions/+page.svelte::loadExceptions`,
-      `routes/payments/+page.svelte::loadQueue`/`loadRuns`/`loadCards`,
-      `components/exceptions/AgentDashboard.svelte::loadDecisions`,
-      `routes/portal/discount-offers/+page.svelte::refresh`,
-      `routes/admin/webhooks/+page.svelte::loadDeliveries`,
-      `routes/goods-receipts/+page.svelte` and
-      `routes/credit-memos/+page.svelte` (load-more only). **Durable fix:** the
-      documented `createRequestSequencer` wiring, one sequencer per independent
-      list. **Trigger:** the next slice touching any of them; do them
-      opportunistically rather than as one sweep.
-
-- [ ] **`/workflows` holds a `Set<string>` selection it never prunes.**
-      `routes/workflows/+page.svelte` has no `pruneSelection` import, so a
-      `workflowStore.fetch()` / `loadMore()` (or the store's in-place mutators)
-      can drop a selected row while its id stays in `selectedIds` and gets fed
-      to `bulkRemove`. Lower risk than the queues because the page has no
-      filter or search — which is exactly why it was skipped. **Durable fix:**
-      the same `$effect` + `pruneSelection` guard `/invoices`, `/exceptions`,
-      `/expenses` and `/payments` carry. **Trigger:** the first filter or
-      search added to the workflows list.
-
-- [ ] **`timeAgo` is the one date helper the locale picker doesn't move.**
-      `utils/time.ts::timeAgo` returns hardcoded English ("Just now", "5m ago",
-      "2d ago") while its `formatDate` / `formatPeriod` siblings in the same
-      file localize off the active picker locale. It renders on
-      `/notifications` and the sidebar bell popover, so a German user sees
-      German labels around English relative times. **Durable fix:**
-      `Intl.RelativeTimeFormat` keyed on `getActiveFormatLocale()`, or ICU
-      plural message keys. **Trigger:** the next i18n slice.
-
-- [ ] **Money and dates don't re-render when the locale changes.**
-      `i18n/formatLocale.ts` is a deliberately framework-free holder (so pure
-      `money.ts` needn't import the Svelte runtime), which means `formatMoney` /
-      `formatDate` have no reactive dependency on it. `initLocale()` applies a
-      stored non-English locale asynchronously — the catalogue is a lazy
-      `import()` — so on a page load with `feoh_locale=de` the labels switch to
-      German (the `dict` rune re-renders every `m()` call site) while every
-      money cell and date stays in the browser locale until that component
-      remounts. **Durable fix:** give the holder a subscription the formatters'
-      call sites can read reactively (Svelte 5's `createSubscriber` keeps
-      `money.ts` importable under vitest's node environment), or set the format
-      locale synchronously in `initLocale` *before* awaiting the catalogue and
-      accept that a mid-session switch still needs a remount. Note the second is
-      a partial fix — say which one is being taken. **Trigger:** the next i18n
-      slice, or the first report of mixed-locale figures.
-
-- [ ] **`/invoices` bulk export hand-rolls `fetch`.**
-      `routes/invoices/+page.svelte::bulkExport` builds its own request because
-      it needs a POST that returns a blob and `api.downloadBlob` is GET-only. It
-      therefore omits `X-Entity-ID` (so the export isn't entity-scoped the way
-      the list it was selected from is) and skips the 401 clear-and-bounce.
-      **Durable fix:** add a `downloadBlobPost(path, body)` to `lib/api.ts`
-      composed from the same `authHeaders()` the streaming helper uses, and move
-      the call onto it. **Trigger:** the next slice touching invoice export, or
-      any new POST-returning-a-file endpoint.
-
-- [ ] **Fire-and-forget store loads leave unhandled promise rejections.** The
-      list-store loaders re-throw on purpose (so an awaiting caller keeps its own
-      handling — `/invoices`' post-upload toast depends on it), but the mount /
-      filter `$effect`s call them without `await` or `.catch`, so a failed load
-      logs `[Unhandled rejection] ApiError` in the console. Harmless today (the
-      new `errored` flag is what the UI reads) but noisy, and it hides real
-      rejections. **Durable fix:** `.catch(() => {})` at the fire-and-forget
-      call sites with a comment pointing at the store's `errored` flag.
-      **Trigger:** the next slice touching those effects.
-
-**(c) — a product call, not a defect**
-
-- [ ] **`/discounts` locks out `ap_clerk` although the API grants it read.**
-      `routes/discounts/+page.svelte` redirects anyone who isn't
-      admin / ap_manager / cfo, and its comment claims "the backend 403s
-      everyone else" — but `api/discounts.py::_READ_ROLES` includes
-      `ROLE_AP_CLERK`, so the dashboard, the offer list and the per-invoice ROI
-      are all readable by a clerk. `nav.ts` hides the link from clerks too, so
-      this is a closed, consistent product decision rather than a dead end —
-      but the code comment is wrong and the two layers disagree with the API.
-      **Durable fix:** decide which is intended, then make all three agree (open
-      the page + nav to clerks, or narrow `_READ_ROLES`). Fix the comment either
-      way. **Trigger:** the next RBAC review or discounts slice.
-
-
-
 ### AI Cash-Flow Copilot — Phase 3 deferred bucket
 
 Phases 1–3 core shipped (read-only cash Q&A, `propose_payment_plan` +
@@ -751,64 +435,31 @@ originally-deferred sub-bucket from that same feature remains:
 Refs: [roadmap.md](roadmap.md) § AI Cash-Flow Copilot,
 [cash-flow-copilot.md](cash-flow-copilot.md).
 
-### Tinted badges are spelled ~40 ways for five tones
+### Tinted badges — the shared primitive exists, half the call sites still hand-roll
 
-The 29 badges that sat **below** 4.5:1 on a translucent tint are fixed — option
-1 of the three shapes this entry used to weigh (tint-paired text tokens), with
-values promoted out of `StatusBadge`, which had already solved it for its own
-tones by lifting the text rather than darkening the tint. The scanner's
-compositing half is armed, the palette contract asserts each pair over both
-backdrops, and `frontend/src/lib/a11y/tokenPairing.test.ts` fails on a
-recurrence. Rationale, and why the other two shapes were rejected:
-[decisions.md](decisions.md) §30.
+The contrast half of this entry is long closed (the 29 badges below 4.5:1, fixed
+via tint-paired text tokens — [decisions.md](decisions.md) §30). Round 12 closed
+the **ownership** half: `frontend/src/lib/components/ui/Badge.svelte` is now the
+single owner of the tinted-badge recipe. A caller names a *tone* and cannot spell
+it wrong; `variant` passes the caller's semantic class through as a **selector
+hook only** (the e2e suite reads `.badge.approved`), never as colour. Rationale,
+including why sizing is fixed rather than a prop and why `neutral` / `erp` stay
+non-tinted: [decisions.md](decisions.md) §47.
 
-What remains is the **consistency** half, which is not a contrast problem:
-**202 rules** still write a tinted badge as a hand-rolled `rgba()` plus a
-literal hex — **44 distinct spellings** of the five tones the tokens now name.
-(`StatusBadge`, the shared primitive the values were derived from, is already
-migrated — it was where the numbers the other badges copied lived.) A sample of
-how thin the distinctions are:
-
-| Spelling | Count |
-|---|---|
-| `var(--danger)` on `rgba(224,64,64,.1)` | 20 |
-| `#d4940a` on `rgba(212,148,10,.12)` | 19 |
-| `#1fa86a` on `rgba(31,168,106,.15)` | 18 |
-| `#1fa86a` on `rgba(31,168,106,.12)` | 18 |
-| `#d4940a` on `rgba(255,180,50,.15)` | 11 |
-| …plus ~35 more, mostly single-digit | |
-
-**Every one of these passes**, so this is design-system debt, not a defect —
-which is exactly why it is here and not in
-[known-issues.md](known-issues.md). It still matters: the same tone written
-four ways is how the 29 failures accumulated unnoticed, and a file where one
-rule is tokenised while its three siblings are literals reads worse than either
-extreme (`ContractModal`'s `.badge.draft` next to `.active` / `.expired` /
-`.terminated` is the canonical example).
-
-**Why deferred rather than swept now:** it is ~7× the size of the failing set,
-and it is not value-preserving. The tokens standardise on alpha `.15`, so
-normalising a `.1` or `.12` rule visibly strengthens that badge's tint. That
-is a design review across most of the app's surfaces, not a mechanical
-substitution — and landing it in the same change as the contrast fix would make
-any visual complaint impossible to attribute to one or the other.
-
-**Durable fix:** sweep by tone, one commit per tone, checking the rendered
-result rather than only the guard — the guard is already green on all of them
-and will stay green either way, so it cannot be the reviewer here. Retire each
-literal as it moves. Expect a few genuine one-offs like `StatusBadge`'s purple
-(`#a585f5`, `sent_to_erp`): it shares no semantics with the five tones, so it
-stays a measured literal with a comment saying so rather than becoming a token
-with one caller. And check what a collapsed distinction was carrying before
-collapsing it — see the `pending_compliance` note in §30.
-
-**Trigger:** the next `/audit:accessibility` pass, or opportunistically —
-reach for the tokens in new code and whenever you are already editing one of
-these rules. Refs: [accessibility.md](accessibility.md),
-[decisions.md](decisions.md) §28 + §30, `frontend/CLAUDE.md` § Colour tokens
-and contrast.
-
----
+- [ ] **62 badge-shaped CSS rules still hand-roll the recipe.** The sweep moved
+      63 call sites and took the total from **205 rules to 130** (badge-shaped:
+      **125 → 62**). The remainder lives in `/expenses`, `/requisitions`,
+      `/payments`, `InvoiceModal`, `RequisitionModal`, `ExpenseModal` and
+      `/admin/webhooks`.
+      **Why deliberately staged rather than finished:** the tokens standardise on
+      alpha `.15`, so converting a `.1` or `.12` rule *visibly* strengthens that
+      badge. Landing all 125 in one commit would make any visual complaint
+      unattributable — which is the same reasoning the original entry used, and
+      the reason the first tranche is the size it is.
+      **Durable fix:** convert the rest in attributable tranches, checking the
+      collapsed distinctions as you go (two were verified in the first tranche —
+      recurring's `paused` / `ended` greys, and three punch-out ambers).
+      **Trigger:** the next slice touching any of those seven surfaces.
 
 ## (a) Blocked on external credentials, accounts, or hardware
 
