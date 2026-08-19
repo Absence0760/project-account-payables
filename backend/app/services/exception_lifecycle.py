@@ -82,6 +82,7 @@ EXCEPTION_TYPES: tuple[str, ...] = (
     "erp_reconciliation",
     "line_total_mismatch",
     "payment_compliance_hold",
+    "payment_reconciliation",
 )
 
 #: Types on the roster that NOTHING in ``app/`` raises any more. They stay on the

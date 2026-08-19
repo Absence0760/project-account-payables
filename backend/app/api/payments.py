@@ -113,9 +113,23 @@ PAYABLE_INVOICE_STATUSES = (
 #                          silently recomputed from them — see
 #                          `docs/line-total-reconciliation.md`), so paying it
 #                          would pay a total the lines don't support
+#   payment_reconciliation — the backstop reconciler gave up waiting on a
+#                          `submitted` payment past its max age and marked it
+#                          `failed`. `failed` is in
+#                          `LIVE_PAYMENT_TERMINAL_STATUSES`, so that row stops
+#                          holding the invoice's live-payment slot even though
+#                          real money may still be in flight at the rail. The
+#                          exception is what stops a fresh run paying the same
+#                          invoice a second time until a human has reconciled
+#                          the rail (see `services/payment_reconciler.py`).
 #
 # Resolving/dismissing the exception is the human sign-off that clears it.
-PAYMENT_BLOCKING_EXCEPTION_TYPES = ("duplicate", "fraud_flag", "line_total_mismatch")
+PAYMENT_BLOCKING_EXCEPTION_TYPES = (
+    "duplicate",
+    "fraud_flag",
+    "line_total_mismatch",
+    "payment_reconciliation",
+)
 
 # Terminal payment states — a payment in one of these no longer represents a
 # LIVE claim on its invoice, so the "one live payment per invoice" idempotency

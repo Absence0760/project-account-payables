@@ -22,7 +22,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import settings
@@ -152,6 +152,80 @@ async def _audit_reconcile_transition(
     )
 
 
+#: Exception type opened when the backstop gives up on a still-in-flight
+#: payment. Payment-BLOCKING (``api/payments.PAYMENT_BLOCKING_EXCEPTION_TYPES``)
+#: — that is the whole point: aging a payment out to ``failed`` frees the
+#: invoice's live-payment slot, and nothing else stops the next run paying it
+#: again while the original may still be moving at the rail.
+AGED_OUT_EXCEPTION_TYPE = "payment_reconciliation"
+
+
+async def _flag_aged_out_payment(
+    db,
+    *,
+    org: Organization,
+    payment: Payment,
+    age: timedelta,
+) -> None:
+    """Open a de-duped ``payment_reconciliation`` exception for an aged-out payment.
+
+    **De-duped** on an already-open/escalated ``payment_reconciliation`` for the
+    invoice, so a tenant whose rail is down doesn't accumulate a row per sweep.
+
+    **PII-free**: the payment id, the run id, the age in hours and the invoice's
+    current status — never the vendor, the amount's payee, or any bank field.
+
+    Best-effort in the same sense as ``payment_erp_sync._flag_sync_failure``: a
+    flagging failure must not lose the transition the sweep just decided. It is
+    NOT swallowed silently, though — the caller commits right after, so a raise
+    here would roll the transition back too; hence the try/except, and hence the
+    warning that names the class only.
+    """
+    from app.models.exception import Exception as APException
+    from app.services.exception_service import create_exception
+
+    if payment.invoice_id is None:
+        return
+    try:
+        existing = (
+            await db.execute(
+                select(func.count()).where(
+                    APException.invoice_id == payment.invoice_id,
+                    APException.exception_type == AGED_OUT_EXCEPTION_TYPE,
+                    APException.status.in_(("open", "escalated")),
+                )
+            )
+        ).scalar() or 0
+        if existing:
+            return
+
+        invoice = await db.get(Invoice, payment.invoice_id)
+        current_status = invoice.status.value if invoice else "?"
+        hours = age.total_seconds() / 3600
+        await create_exception(
+            db,
+            exception_type=AGED_OUT_EXCEPTION_TYPE,
+            severity="error",
+            description=(
+                f"Payment {payment.id} was still in flight after {hours:.1f}h and the "
+                f"reconciler marked it failed; the rail never confirmed, so the money "
+                f"may or may not have moved. The invoice is '{current_status}'. Confirm "
+                f"with the processor and void or re-pay — this invoice is blocked from "
+                f"a new payment run until this is resolved."
+            ),
+            status="open",
+            organization_id=org.id,
+            invoice=invoice,
+            invoice_id=payment.invoice_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[payment-reconciler] could not flag aged-out payment %s: %s",
+            payment.id,
+            exc.__class__.__name__,
+        )
+
+
 async def reconcile_once(*, now: datetime | None = None) -> ReconcileResult:
     """One sweep across every tenant. Safe for direct CLI invocation."""
     now = now or datetime.now(UTC)
@@ -266,7 +340,12 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
                     payment.failure_reason = (
                         f"reconciler_max_age_exceeded after {age.total_seconds() / 3600:.1f}h"
                     )
-                    payment.completed_at = now
+                    # `completed_at` is the regulated SETTLEMENT timestamp. This
+                    # payment never settled — we gave up waiting on a rail that
+                    # never answered — so stamping it here would put a
+                    # settlement time on a payment nobody can show settled.
+                    # `/retry-failed` refuses to overwrite the same two
+                    # timestamps for the same reason.
                     aged_out += 1
                     await _audit_reconcile_transition(
                         db,
@@ -275,6 +354,19 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
                         previous_status=previous_status,
                         source="reconciler_aged_out",
                     )
+                    # `failed` is in `LIVE_PAYMENT_TERMINAL_STATUSES`, so the
+                    # row we just aged out stops holding the invoice's
+                    # live-payment slot — while real money may still be in
+                    # flight at the rail. The invoice stays `payment_scheduled`
+                    # (a payable status), so without this it silently
+                    # reappears in `/payments/queue` and the next run pays it
+                    # again. `payment_reconciliation` is payment-blocking, so
+                    # a fresh run refuses the invoice until a human has
+                    # reconciled the rail — the same fail-closed posture
+                    # `_RETRY_SAFE_FAILURE_PREFIXES` already takes by excluding
+                    # `reconciler_max_age_exceeded` from `/retry-failed`.
+                    await _flag_aged_out_payment(db, org=org, payment=payment, age=age)
+                    await db.commit()
                     continue
 
                 if not payment.provider_payment_id:
@@ -331,9 +423,18 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
                         source="reconciler_poll",
                         settlement=settlement,
                     )
-
-            if polled or aged_out:
-                await db.commit()
+                    # Durable per-payment commit, mirroring
+                    # `api/payments._dispatch_run_payments`. Two things depend
+                    # on it. (1) The `FOR UPDATE` lock taken above is released
+                    # here rather than being held across every remaining
+                    # `await adapter.get_payment_status(...)` in this tenant —
+                    # a webhook for a locked payment used to block on
+                    # `payment_webhook`'s own `FOR UPDATE` for the rest of the
+                    # sweep. (2) A raise later in the loop can only lose ITS
+                    # OWN payment's transition, not every terminal status,
+                    # `completed_at` and audit row the sweep already decided
+                    # for this tenant.
+                    await db.commit()
     finally:
         await engine.dispose()
 

@@ -45,6 +45,7 @@ EXCEPTION_TYPE_LABELS = {
     "erp_reconciliation": "ERP Reconciliation",
     "line_total_mismatch": "Line Total Mismatch",
     "payment_compliance_hold": "Compliance Hold",
+    "payment_reconciliation": "Payment Reconciliation",
 }
 
 

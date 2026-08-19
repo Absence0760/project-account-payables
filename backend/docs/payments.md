@@ -939,6 +939,48 @@ or real webhooks. The seam is locked by `backend/tests/test_stripe_api_base.py`
 (CI-safe, no container). For the other processors, the in-process `mock` adapter
 remains the local default.
 
+### The reconciler backstop — durability and the aged-out row
+
+`services/payment_reconciler.py` re-polls every non-terminal payment when a
+webhook never arrives. Two properties of that sweep are load-bearing.
+
+**It commits per payment, not per tenant.** Each terminal transition is locked
+(`db.refresh(payment, with_for_update=True)`), written, audited and committed
+before the next payment is polled — the same shape `_dispatch_run_payments`
+uses, for the same two reasons. Held across the whole tenant, payment #1's row
+lock spanned every subsequent `await adapter.get_payment_status(...)`, so a
+webhook for that payment blocked on `payment_webhook`'s own `FOR UPDATE` for
+the rest of the sweep (and a cancelled request there leaves its Redis dedup
+claim unreleased, deduping the provider's retry away for the full TTL). And any
+raise mid-loop discarded every terminal status, `completed_at` and audit row
+the sweep had already decided for that tenant.
+
+**Aging a payment out is a reconciliation event, not a settlement.** Past
+`FEOH_PAYMENT_RECONCILE_MAX_AGE_HOURS` a still-`submitted` payment is flipped
+to `failed` — real money may still be in flight at the rail; we have simply
+stopped waiting. Two consequences follow, and both are handled explicitly:
+
+- **`completed_at` is not stamped.** It is the regulated settlement timestamp,
+  and this payment did not settle. (`/retry-failed` refuses to overwrite the
+  same field for the same reason.)
+- **A de-duped `payment_reconciliation` exception is opened** against the
+  invoice. `failed` is in `LIVE_PAYMENT_TERMINAL_STATUSES`, so the aged-out row
+  stops holding the invoice's live-payment slot — while the invoice itself is
+  still `payment_scheduled`, a *payable* status. Without the exception it
+  simply reappeared in `GET /payments/queue` and the next run paid it a second
+  time, silently. `payment_reconciliation` is in
+  `PAYMENT_BLOCKING_EXCEPTION_TYPES`, so a fresh run refuses that invoice until
+  a human has confirmed with the processor and voided or re-paid — the same
+  fail-closed posture `_RETRY_SAFE_FAILURE_PREFIXES` already takes by excluding
+  `reconciler_max_age_exceeded` from `/retry-failed`.
+
+Flagging is best-effort (a failure there is logged by exception class and never
+costs the transition), de-duped on an already-`open`/`escalated` row for the
+invoice so a down rail doesn't accumulate one exception per sweep, and PII-free
+— payment id, run id, age in hours, invoice status.
+
+**Tests:** `tests/test_payment_reconciler_durability.py`.
+
 ### ERP Payment Sync
 
 After a payment run executes, the system syncs payment data to the connected ERP
@@ -1312,6 +1354,7 @@ between the manual and copilot-driven paths:
 | `duplicate` | the same invoice approved and paid twice |
 | `fraud_flag` | a bank-detail swap, rush payment, statistical anomaly, an altered / never-issued cheque from a Positive Pay return, or a processor settlement that didn't reconcile against what AP authorized (§ Settlement-amount verification) |
 | `line_total_mismatch` | a header `amount` that openly disagrees with the invoice's own line items — the run pays the header, and the header is never silently recomputed from the lines (see `line-total-reconciliation.md`) |
+| `payment_reconciliation` | a second payment for money that may already be moving — the reconciler aged a still-`submitted` payment out to `failed`, which frees the invoice's live-payment slot while the rail has never confirmed either way (§ The reconciler backstop) |
 
 Each is raised as an `error`-severity advisory flag, and **approval does not gate
 on any of them** — nothing in `services/review.py` or `workflow_engine.py` reads
