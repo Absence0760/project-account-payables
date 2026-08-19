@@ -193,6 +193,7 @@ See [`docs/self-service-signup.md`](../../docs/self-service-signup.md) for the f
 |----------|-------------------------------------|-------|-------------|
 | `GET`    | `/api/invoices`                     | *     | List invoices (paginated, filterable). Returns `priors_summary` and `po_match` per row when applicable. |
 | `GET`    | `/api/invoices/counts`              | *     | Per-status tallies for the list-page filter chips — `{counts: {status: n}, total}` via a server-side GROUP BY over the whole tenant (accurate past the page window). |
+| `GET`    | `/api/invoices/assignable-reviewers` | admin/manager | Candidate approvers for `POST /api/invoices/{id}/assign` — a bare list of `{id, full_name, is_active}` for the org's ACTIVE users holding a role that confers `invoice.approve` (resolved via `effective_permissions`, so a custom role granting it is offered). Deliberately narrower than `GET /api/admin/users`: **no email, no roles, no audit metadata** — that projection is what makes the admin directory admin-only, and none of it is needed to pick an approver. RBAC mirrors `/assign` exactly (admin + ap_manager); the picker used to source the admin route and 403'd for every other role, so an invoice on a `approver_strategy: "manual"` workflow could not be submitted at all. |
 | `GET`    | `/api/invoices/{id}`                | *     | Get single invoice — includes the latest `po_match` JSONB result and any `warnings` |
 | `GET`    | `/api/invoices/{id}/priors`         | *     | Priors metadata from latest extraction (vendor cache + RAG neighbors). See [`ai-extraction.md`](ai-extraction.md). |
 | `GET`    | `/api/invoices/{id}/line-items`     | *     | Get invoice line items |
@@ -306,6 +307,7 @@ See [`access-reviews.md`](access-reviews.md).
 | Method | Path                           | Roles | Description |
 |--------|--------------------------------|-------|-------------|
 | `GET`  | `/api/purchase-orders`         | * | List POs (filterable by `status`, `vendor_id`, `search`) |
+| `GET`  | `/api/purchase-orders/counts`  | * | Whole-set status tallies for the filter chips — `{total, by_status}`, entity-scoped, honours `search` + `vendor_id` (but not `status`, the dimension being tallied). Mirrors `GET /api/vendors/counts`; the list's `total` counts only the ACTIVE filter's result set, so it can't label the All chip. |
 | `POST` | `/api/purchase-orders/sync-erp` | admin/manager | Pull POs from connected ERP |
 
 ## GL Accounts
@@ -325,7 +327,7 @@ All payment endpoints require `admin/manager/cfo`.
 | `GET`  | `/api/payments`               | List payments (filterable by `status`, `method`, `invoice_id`, `search`, amount range) |
 | `GET`  | `/api/payments/{id}`          | Get one payment |
 | `POST` | `/api/payments`               | Create payment for an invoice |
-| `GET`  | `/api/payments/queue`         | Approved invoices sorted by due date |
+| `GET`  | `/api/payments/queue`         | Approved invoices sorted by due date. Each row carries `blocked` / `blocked_reason` — whether an unresolved `PAYMENT_BLOCKING_EXCEPTION_TYPES` exception means `POST /api/payments/runs` would refuse it, and which type. Reason is a fixed vocabulary code, never the exception's description. |
 | `GET`  | `/api/payments/summary`       | Totals: paid, pending, queue count, rebates earned |
 | `GET`  | `/api/payments/runs/`         | List payment runs |
 | `POST` | `/api/payments/runs`          | Create a payment run |
