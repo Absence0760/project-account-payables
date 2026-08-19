@@ -65,10 +65,11 @@ test.describe('RBAC — non-admin roles (one fresh sign-in each)', () => {
 		expect(await sectionTabHrefs(page, '/requisitions')).toEqual(
 			['/requisitions', '/intake', '/catalogs'].sort()
 		);
-		// Billing tabs: no Credit Memos / Discounts for a clerk; Vendor Statements
-		// is all-roles read, so a clerk does see it.
+		// Billing tabs: no Credit Memos for a clerk. Vendor Statements and
+		// Discounts are both all-roles READ on the API (`/discounts` grants every
+		// role read and only gates the mutations), so a clerk sees both.
 		expect(await sectionTabHrefs(page, '/contracts')).toEqual(
-			['/contracts', '/expenses', '/vendor-statements'].sort()
+			['/contracts', '/expenses', '/vendor-statements', '/discounts'].sort()
 		);
 	});
 
@@ -80,7 +81,7 @@ test.describe('RBAC — non-admin roles (one fresh sign-in each)', () => {
 		// Experiments is manager-readable and lives in Settings, so a manager now
 		// gets the Settings group landing (→ /experiments, its only Settings child).
 		expect(await sidebarHrefs(page)).toEqual(
-			['/', '/invoices', '/payments', '/vendors', '/vendors/screening', '/exceptions', '/purchase-orders', '/contracts', '/assistant', '/experiments'].sort()
+			['/', '/invoices', '/payments', '/vendors', '/vendors/screening', '/vendors/change-requests', '/exceptions', '/purchase-orders', '/contracts', '/assistant', '/experiments'].sort()
 		);
 		expect(await sectionTabHrefs(page, '/purchase-orders')).toEqual(
 			['/purchase-orders', '/goods-receipts', '/requisitions', '/intake', '/catalogs', '/budgets'].sort()
@@ -110,7 +111,7 @@ test.describe('RBAC — admin (cached session, no extra login)', () => {
 		await page.goto('/');
 		await expect(page.locator('aside.sidebar')).toBeVisible();
 		expect(await sidebarHrefs(page)).toEqual(
-			['/', '/invoices', '/payments', '/vendors', '/vendors/screening', '/exceptions', '/purchase-orders', '/contracts', '/assistant', '/organization'].sort()
+			['/', '/invoices', '/payments', '/vendors', '/vendors/screening', '/vendors/change-requests', '/exceptions', '/purchase-orders', '/contracts', '/assistant', '/organization'].sort()
 		);
 		expect(await sectionTabHrefs(page, '/organization')).toEqual(
 			['/organization', '/admin?tab=users', '/admin?tab=roles', '/audit', '/workflows', '/experiments', '/admin/api-keys', '/admin/webhooks', '/admin/partner'].sort()

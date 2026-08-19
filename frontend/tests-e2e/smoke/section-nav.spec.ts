@@ -21,6 +21,9 @@ test.describe('grouped sidebar navigation', () => {
 			'Payments',
 			'Vendors',
 			'Screening',
+			// Vendor bank/tax change-approval queue — the dual-control BEC gate's
+			// only UI. admin | ap_manager, mirroring the backend list gate.
+			'Bank Changes',
 			'Exceptions',
 			'Procurement',
 			'Billing',
