@@ -1093,3 +1093,137 @@ async def test_save_then_variance_end_to_end(realdb):
     assert data["elapsed_period_count"] == 0
     assert data["planned_total"] == "0"
     assert data["actual_total"] == "0"
+
+
+# ===========================================================================
+# 6. Scope discovery on the ENACT routes
+#
+# `_resolve_and_verify_plan` is shared by save AND draft-run/capture-discounts,
+# and its widened `[entity_id, None]` candidate list only does anything when an
+# entity is actually selected. Every pre-existing enact test proposes with
+# `entity_id=None` and sends no `X-Entity-ID`, so the second candidate is never
+# reached there — and draft-run is the money-adjacent route (it stages a real
+# PaymentRun and now derives the run's own entity from the plan's scope rather
+# than from the header).
+# ===========================================================================
+
+
+async def test_consolidated_plan_stages_across_entities_from_a_scoped_view(realdb):
+    """A CONSOLIDATED plan enacted while a NON-default entity is selected must
+    stage every entity's payable commitments — the scope comes from the plan,
+    not the header — and the run row itself must land on the tenant's DEFAULT
+    entity, the documented home for un-scoped rows, rather than on whichever
+    subsidiary happened to be picked."""
+    from app.models.payment import PaymentRun
+
+    a = realdb.info("a")
+    mk_a = realdb.sessionmaker("a")
+    async with mk_a() as sa:
+        default_ent = await _default_entity_id(sa, a.org_id)
+        other = await _seed_second_entity(sa, a.org_id, slug="sub-enact")
+        await sa.flush()
+        await _seed_invoice(
+            sa,
+            a.org_id,
+            default_ent,
+            number="ENACT-DEFAULT",
+            vendor_name="DefaultCo",
+            amount="300.00",
+            due_date=date.today() + timedelta(days=5),
+        )
+        await _seed_invoice(
+            sa,
+            a.org_id,
+            other.id,
+            number="ENACT-OTHER",
+            vendor_name="OtherCo",
+            amount="700.00",
+            due_date=date.today() + timedelta(days=6),
+        )
+        await sa.commit()
+        other_id = other.id
+
+    plan = await _propose_plan(realdb, entity_id=None)  # consolidated
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post(
+            f"/api/cash-flow/plans/{plan.plan_id}/draft-run",
+            json=_replay_body(plan),
+            headers={"X-Entity-ID": str(other_id)},
+        )
+    assert resp.status_code == 201, resp.text
+    data = resp.json()
+    assert data["status"] == "draft", "enacting a plan never executes anything"
+    assert data["payment_count"] == 2, "a consolidated plan stages EVERY entity's commitments"
+    assert data["total_amount"] == "1000.00"
+
+    async with mk_a() as sa:
+        run = (
+            await sa.execute(select(PaymentRun).where(PaymentRun.plan_id == plan.plan_id))
+        ).scalar_one()
+        assert run.entity_id == default_ent, (
+            "a consolidated plan's run belongs to the default entity, not the selected one"
+        )
+
+
+async def test_consolidated_plan_captures_discounts_from_a_scoped_view(realdb):
+    """The same discovery on the other enact route — it must resolve rather than
+    409, and stay status-only."""
+    from app.models.payment import Payment, PaymentRun
+
+    a = realdb.info("a")
+    mk_a = realdb.sessionmaker("a")
+    async with mk_a() as sa:
+        other = await _seed_second_entity(sa, a.org_id, slug="sub-capture")
+        await sa.commit()
+        other_id = other.id
+
+    plan = await _propose_plan(realdb, entity_id=None)  # consolidated
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post(
+            f"/api/cash-flow/plans/{plan.plan_id}/capture-discounts",
+            json=_replay_body(plan),
+            headers={"X-Entity-ID": str(other_id)},
+        )
+    assert resp.status_code == 200, resp.text
+    _assert_money_str(resp.json()["total_savings_selected"], "total_savings_selected")
+
+    async with mk_a() as sa:
+        assert (await sa.execute(select(Payment))).scalars().all() == []
+        assert (await sa.execute(select(PaymentRun))).scalars().all() == []
+
+
+async def test_draft_run_refuses_an_entity_plan_id_from_another_entity(realdb):
+    """Scope discovery must not become a wildcard on the enact routes either: a
+    plan id built under entity A is neither entity B's nor the consolidated one,
+    so the stale-plan guard still fires and nothing is staged."""
+    from app.models.payment import PaymentRun
+
+    a = realdb.info("a")
+    mk_a = realdb.sessionmaker("a")
+    async with mk_a() as sa:
+        ent = await _default_entity_id(sa, a.org_id)
+        other = await _seed_second_entity(sa, a.org_id, slug="sub-refuse")
+        await sa.flush()
+        await _seed_invoice(
+            sa,
+            a.org_id,
+            ent,
+            number="REFUSE-1",
+            vendor_name="RefuseCo",
+            amount="250.00",
+            due_date=date.today() + timedelta(days=4),
+        )
+        await sa.commit()
+        other_id = other.id
+
+    plan = await _propose_plan(realdb, entity_id=ent)
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post(
+            f"/api/cash-flow/plans/{plan.plan_id}/draft-run",
+            json=_replay_body(plan),
+            headers={"X-Entity-ID": str(other_id)},
+        )
+    assert resp.status_code == 409, resp.text
+
+    async with mk_a() as sa:
+        assert (await sa.execute(select(PaymentRun))).scalars().all() == []
