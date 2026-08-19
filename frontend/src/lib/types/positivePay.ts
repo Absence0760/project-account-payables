@@ -7,6 +7,8 @@
 // crosses this boundary. `account_last4` is the only account detail on a
 // response; a `PresentedItem` carries only a check number + amount.
 
+import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+
 // --- File type ------------------------------------------------------------
 
 export type PositivePayFileType = 'check_issue' | 'ach_authorization';
@@ -30,6 +32,16 @@ export const POSITIVE_PAY_STATUSES: PositivePayStatus[] = ['generated', 'returne
 export const POSITIVE_PAY_STATUS_LABELS: Record<PositivePayStatus, string> = {
 	generated: 'Generated',
 	returned_processed: 'Return processed'
+};
+
+// Badge tone per status, so the list page and the modal can't tint the same
+// status two different shades — which is exactly what they did (the list's
+// `.badge.generated` and the modal's differed by an alpha step).
+export const POSITIVE_PAY_STATUS_TONES: Record<PositivePayStatus, BadgeTone> = {
+	generated: 'success',
+	// A processed return is the bank reporting an item that didn't match — an
+	// outcome to read, not a failure, so amber rather than red.
+	returned_processed: 'warning'
 };
 
 // Bank formatter keys the backend ships (`get_positive_pay_formatter` default

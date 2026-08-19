@@ -506,13 +506,17 @@
 		gap: 8px;
 	}
 
+	/* Not `<Badge>`: a tiny "this row is you" marker tucked beside the name in
+	   a tight cell — a status pill's metrics would push the name around. (Also
+	   the class itself is an e2e hook: three specs locate the current user's
+	   row by it.) Only the colour literals are retired to the palette pair. */
 	.you-badge {
 		font-size: 0.68rem;
 		font-weight: 600;
 		padding: 1px 6px;
 		border-radius: 8px;
-		background: rgba(99, 140, 255, 0.12);
-		color: var(--accent);
+		background: var(--accent-tint);
+		color: var(--accent-on-tint);
 	}
 
 	.email-cell {
@@ -533,12 +537,15 @@
 		gap: 4px;
 	}
 
+	/* Not `<Badge>`: a role NAME, not a status — sentence-cased at whatever
+	   capitalisation the role carries, several to a cell. Same call as the
+	   matching chip in `RolesPanel`; only the colour literals are retired. */
 	.role-badge {
 		display: inline-block;
 		padding: 2px 8px;
 		border-radius: 10px;
-		background: rgba(99, 140, 255, 0.1);
-		color: var(--accent);
+		background: var(--accent-tint);
+		color: var(--accent-on-tint);
 		font-size: 0.75rem;
 		font-weight: 500;
 		white-space: nowrap;

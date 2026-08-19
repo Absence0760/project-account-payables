@@ -1,9 +1,10 @@
 <script lang="ts">
-	import type { RecurringTemplate, RecurringStatus } from '$lib/types/recurring';
+	import type { RecurringTemplate } from '$lib/types/recurring';
 	import type { MessageKey } from '$lib/i18n/messages';
 	import {
 		RECURRING_STATUSES,
 		STATUS_LABELS,
+		STATUS_TONES,
 		CADENCE_LABELS,
 		skipReasonKey
 	} from '$lib/types/recurring';
@@ -21,6 +22,7 @@
 		endRecurring,
 		generateRecurringNow
 	} from '$lib/api/recurring';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
@@ -304,10 +306,6 @@
 		);
 	}
 
-	function statusBadgeClass(s: RecurringStatus): string {
-		return s;
-	}
-
 	/** Why the last due period produced no invoice, in words. An unrecognised
 	 * backend code renders verbatim rather than blank. */
 	function skipReason(code: string): string {
@@ -429,19 +427,27 @@
 					</td>
 					<td class="right mono">{template.generated_count}</td>
 					<td>
-						<span class="badge {statusBadgeClass(template.status)}">{STATUS_LABELS[template.status]}</span>
-						{#if template.last_skip}
-							<span
-								class="badge skipped"
-								title={m('recurring.skip.title', {
-									n: template.last_skip.consecutive,
-									period: template.last_skip.period_key ?? '—',
-									reason: skipReason(template.last_skip.reason)
-								})}
-							>
-								{m('recurring.skip.pill')}
-							</span>
-						{/if}
+						<!-- The 6px that used to live on `.badge.skipped`'s own margin now
+						     lives on this row: `<Badge>` owns colour and pill metrics, the
+						     caller owns placement. -->
+						<span class="badge-row">
+							<Badge tone={STATUS_TONES[template.status]} variant={template.status}>
+								{STATUS_LABELS[template.status]}
+							</Badge>
+							{#if template.last_skip}
+								<Badge
+									tone="warning"
+									variant="skipped"
+									title={m('recurring.skip.title', {
+										n: template.last_skip.consecutive,
+										period: template.last_skip.period_key ?? '—',
+										reason: skipReason(template.last_skip.reason)
+									})}
+								>
+									{m('recurring.skip.pill')}
+								</Badge>
+							{/if}
+						</span>
 					</td>
 					<td class="actions">
 						{#if canCreate}
@@ -539,20 +545,14 @@
 		color: var(--text-muted);
 	}
 
-	.badge {
-		display: inline-block;
-		padding: 2px 10px;
-		border-radius: 10px;
-		font-size: 0.74rem;
-		font-weight: 600;
-	}
-	.badge.active { background: rgba(31, 168, 106, 0.12); color: #1fa86a; }
-	.badge.paused { background: rgba(212, 148, 10, 0.12); color: #d4940a; }
-	.badge.ended { background: var(--bg); color: var(--text-muted); }
-	/* Calibrated token pair — see frontend/CLAUDE.md § Colour tokens. */
-	.badge.skipped {
-		margin-left: 6px;
-		background: var(--warning-tint);
-		color: var(--warning-on-tint);
+	/* Both pills are `<Badge>` now — this file and `RecurringModal` used to
+	   tint the same three statuses at two different alphas. The tone per status
+	   lives beside the labels in `types/recurring`; only the placement of the
+	   two-pill row stays here. */
+	.badge-row {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		flex-wrap: wrap;
 	}
 </style>

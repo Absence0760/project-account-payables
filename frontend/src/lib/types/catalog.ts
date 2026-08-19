@@ -3,6 +3,8 @@
 // / `GuidedBuyingSuggestion`). Money fields arrive as numbers (backend
 // `float(...)`); date/datetime fields are ISO strings.
 
+import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+
 export type CatalogType = 'internal' | 'punchout';
 
 export const CATALOG_TYPES: CatalogType[] = ['internal', 'punchout'];
@@ -128,6 +130,26 @@ export const PUNCHOUT_STATUS_LABELS: Record<string, string> = {
 	expired: 'Expired',
 	cancelled: 'Cancelled'
 };
+
+// Badge tone per session status. Only `returned` and `converted` ever carried a
+// colour of their own; everything else shared one grey tint, and still does.
+export const PUNCHOUT_STATUS_TONES: Record<string, BadgeTone> = {
+	pending: 'muted',
+	returned: 'success',
+	converted: 'accent',
+	expired: 'muted',
+	cancelled: 'muted'
+};
+
+/**
+ * `PunchoutSession.status` is a string off the wire (the adapter may report a
+ * provider status this union doesn't name), so the tone is read through a
+ * tolerant accessor — mirroring how the label is read. An unrecognised status
+ * gets the same grey the pill's base rule always gave it.
+ */
+export function punchoutStatusTone(status: string): BadgeTone {
+	return PUNCHOUT_STATUS_TONES[status] ?? 'muted';
+}
 
 export interface PunchoutStartResponse {
 	session_id: string;

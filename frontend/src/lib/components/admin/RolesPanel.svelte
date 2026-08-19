@@ -308,20 +308,25 @@
 		color: var(--text-muted);
 	}
 
+	/* Not `<Badge>`: this is a role NAME, not a status — sentence-cased at the
+	   user's own capitalisation, and uppercasing it would misrender the name.
+	   Only the colour literals are retired to the palette pairs; a system role
+	   stays grey and a custom one accent, so the two tables stay tellable
+	   apart. */
 	.role-badge {
 		display: inline-block;
 		padding: 2px 10px;
 		border-radius: 10px;
-		background: rgba(99, 140, 255, 0.1);
-		color: var(--accent);
+		background: var(--accent-tint);
+		color: var(--accent-on-tint);
 		font-size: 0.78rem;
 		font-weight: 500;
 		white-space: nowrap;
 	}
 
 	.role-badge.system {
-		background: rgba(138, 143, 160, 0.1);
-		color: var(--text-muted);
+		background: var(--muted-tint);
+		color: var(--muted-on-tint);
 	}
 
 	.perm-chips {
@@ -330,12 +335,16 @@
 		gap: 4px;
 	}
 
+	/* Not `<Badge>`: a permission TAG nested under a role, several to a cell.
+	   It stays smaller and lighter-weight than `.role-badge` above so the
+	   hierarchy reads; that difference now lives in the metrics rather than in
+	   a two-hundredths-of-an-alpha step nobody could see. */
 	.perm-chip {
 		display: inline-block;
 		padding: 1px 8px;
 		border-radius: 8px;
-		background: rgba(99, 140, 255, 0.08);
-		color: var(--accent);
+		background: var(--accent-tint);
+		color: var(--accent-on-tint);
 		font-size: 0.72rem;
 		white-space: nowrap;
 	}

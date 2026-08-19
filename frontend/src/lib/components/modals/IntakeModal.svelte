@@ -4,10 +4,12 @@
 		INTAKE_TYPES,
 		INTAKE_TYPE_LABELS,
 		INTAKE_STATUS_LABELS,
+		intakeStatusTone,
 		INTAKE_FORM_FIELDS
 	} from '$lib/types/intake';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
@@ -126,7 +128,9 @@
 		{#if !isCreate}
 			<div class="status-row">
 				<span class="number">{intake!.request_number}</span>
-				<span class="badge {status}">{INTAKE_STATUS_LABELS[status as keyof typeof INTAKE_STATUS_LABELS] ?? status}</span>
+				<Badge tone={intakeStatusTone(status)} variant={status}>
+					{INTAKE_STATUS_LABELS[status as keyof typeof INTAKE_STATUS_LABELS] ?? status}
+				</Badge>
 				{#if intake!.converted_requisition_id}
 					<span class="converted-note">{m('intake.modal.requisitionCreatedNote')}</span>
 				{/if}
@@ -220,21 +224,9 @@
 		color: var(--text-muted);
 	}
 
-	.badge {
-		display: inline-block;
-		padding: 3px 10px;
-		border-radius: 12px;
-		font-size: 0.75rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-	}
-	.badge.open { background: var(--accent-tint); color: var(--accent-on-tint); }
-	.badge.in_review { background: rgba(212, 148, 10, 0.15); color: #d4940a; }
-	.badge.approved { background: rgba(31, 168, 106, 0.15); color: #1fa86a; }
-	.badge.rejected { background: rgba(224, 64, 64, 0.15); color: var(--danger); }
-	.badge.converted { background: rgba(140, 100, 240, 0.15); color: #a585f5; }
-	.badge.cancelled { background: var(--bg); color: var(--text-muted); }
+	/* The status pill is `<Badge>` now; the tone per status lives beside the
+	   labels in `types/intake`, so this modal and the list page can't drift
+	   apart again. */
 
 	.form-grid {
 		display: grid;

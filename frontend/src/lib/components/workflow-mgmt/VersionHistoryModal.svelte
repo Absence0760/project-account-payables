@@ -288,19 +288,23 @@
 		white-space: nowrap;
 	}
 
+	/* Not `<Badge>`: a diff-KIND tag inside a change list, 0.68rem with a 4px
+	   corner so a column of them reads as a legend rather than a row of status
+	   pills. `.kind-added` was already on the palette pairs; its two siblings
+	   now match. */
 	.kind-added .vh-kind {
 		background: var(--success-tint);
 		color: var(--success-on-tint);
 	}
 
 	.kind-removed .vh-kind {
-		background: rgba(240, 70, 70, 0.15);
-		color: var(--danger);
+		background: var(--danger-tint);
+		color: var(--danger-on-tint);
 	}
 
 	.kind-changed .vh-kind {
-		background: rgba(255, 180, 50, 0.15);
-		color: #d4940a;
+		background: var(--warning-tint);
+		color: var(--warning-on-tint);
 	}
 
 	.vh-list-title {
@@ -373,10 +377,14 @@
 		color: var(--accent);
 	}
 
+	/* Not a badge at all — the restore button's armed/confirm state. It keeps
+	   its button metrics; only the three amber literals are retired to the
+	   palette pair (the border tracks the text so the outline and the label
+	   stay one colour). */
 	.vh-restore.armed {
-		border-color: #d4940a;
-		background: rgba(255, 180, 50, 0.12);
-		color: #d4940a;
+		border-color: var(--warning-on-tint);
+		background: var(--warning-tint);
+		color: var(--warning-on-tint);
 	}
 
 	.vh-restore:disabled {

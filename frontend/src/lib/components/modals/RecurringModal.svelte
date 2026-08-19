@@ -5,8 +5,14 @@
 		UpcomingSchedule,
 		RecurringHistory
 	} from '$lib/types/recurring';
-	import { RECURRING_CADENCES, CADENCE_LABELS, STATUS_LABELS } from '$lib/types/recurring';
+	import {
+		RECURRING_CADENCES,
+		CADENCE_LABELS,
+		STATUS_LABELS,
+		STATUS_TONES
+	} from '$lib/types/recurring';
 	import { auth } from '$lib/stores/auth.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import StatusBadge from '$lib/components/ui/StatusBadge.svelte';
@@ -198,7 +204,7 @@
 	<form onsubmit={(e) => { e.preventDefault(); handleSave(); }}>
 		{#if !isCreate}
 			<div class="status-row">
-				<span class="badge {status}">{STATUS_LABELS[status]}</span>
+				<Badge tone={STATUS_TONES[status]} variant={status}>{STATUS_LABELS[status]}</Badge>
 				<span class="meta-pill">{m('recurring.modal.generatedCount', { count: template!.generated_count })}</span>
 				{#if template!.next_run_on && status === 'active'}
 					<span class="meta-pill">{m('recurring.modal.nextRun', { date: formatDate(template!.next_run_on) })}</span>
@@ -432,18 +438,9 @@
 		flex-wrap: wrap;
 	}
 
-	.badge {
-		display: inline-block;
-		padding: 3px 10px;
-		border-radius: 12px;
-		font-size: 0.75rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-	}
-	.badge.active { background: rgba(31, 168, 106, 0.15); color: #1fa86a; }
-	.badge.paused { background: rgba(212, 148, 10, 0.15); color: #d4940a; }
-	.badge.ended { background: var(--bg); color: var(--text-muted); }
+	/* The status pill is `<Badge>` now; the tone per status lives beside the
+	   labels in `types/recurring`, so this modal and the list page can't drift
+	   apart again. */
 
 	.meta-pill {
 		font-size: 0.72rem;

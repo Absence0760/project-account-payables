@@ -2,6 +2,8 @@
 // Money / statistic Decimals arrive as string-Decimal from the backend —
 // display via `formatMoney` / render directly, never `parseFloat`.
 
+import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+
 export type ExperimentStatus = 'draft' | 'running' | 'concluded';
 
 export type PrimaryMetric =
@@ -21,6 +23,17 @@ export const STATUS_LABELS: Record<ExperimentStatus, string> = {
 	draft: 'Draft',
 	running: 'Running',
 	concluded: 'Concluded'
+};
+
+// Badge tone per status. It replaces a page-local helper that mapped these to
+// the colour names `green` / `amber` / `grey` — naming the paint rather than
+// the meaning is how a tone ends up spelled four ways.
+export const STATUS_TONES: Record<ExperimentStatus, BadgeTone> = {
+	// A draft experiment is measuring nothing yet — amber, the same "waiting on
+	// a human" register the rest of the app uses.
+	draft: 'warning',
+	running: 'success',
+	concluded: 'muted'
 };
 
 export interface Experiment {

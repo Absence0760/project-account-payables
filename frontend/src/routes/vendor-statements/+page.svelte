@@ -1,6 +1,10 @@
 <script lang="ts">
 	import type { Reconciliation, ReconStatus } from '$lib/types/vendorStatementRecon';
-	import { RECON_STATUSES, RECON_STATUS_LABELS } from '$lib/types/vendorStatementRecon';
+	import {
+		RECON_STATUSES,
+		RECON_STATUS_LABELS,
+		RECON_STATUS_TONES
+	} from '$lib/types/vendorStatementRecon';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { appendUnique } from '$lib/utils/pagination';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
@@ -11,6 +15,7 @@
 		getCloseReadiness,
 		deleteReconciliation
 	} from '$lib/api/vendorStatementRecon';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
@@ -343,7 +348,11 @@
 					</td>
 					<td class="right mono"><Money amount={recon.summary.statement_total} currency={recon.currency} /></td>
 					<td class="right mono"><Money amount={recon.summary.ledger_total} currency={recon.currency} /></td>
-					<td><span class="badge {recon.status}">{RECON_STATUS_LABELS[recon.status]}</span></td>
+					<td>
+						<Badge tone={RECON_STATUS_TONES[recon.status]} variant={recon.status}>
+							{RECON_STATUS_LABELS[recon.status]}
+						</Badge>
+					</td>
 					<td class="actions">
 						{#if canCreate}
 							<RowAction
@@ -399,32 +408,24 @@
 		color: var(--text-muted);
 	}
 
+	/* Not `<Badge>`: this is a discrepancy COUNT, not a status — it keeps its
+	   own tighter numeric metrics (bolder, narrower, no uppercase) so it reads
+	   as a figure beside the vendor name. Only the colour literals are retired
+	   to the palette pair. */
 	.disc-badge {
 		display: inline-block;
 		padding: 2px 8px;
 		border-radius: 10px;
 		font-size: 0.74rem;
 		font-weight: 700;
-		background: rgba(224, 64, 64, 0.12);
-		color: var(--danger);
+		background: var(--danger-tint);
+		color: var(--danger-on-tint);
 	}
 	.disc-clean {
 		color: var(--text-muted);
 	}
 
-	.badge {
-		display: inline-block;
-		padding: 2px 10px;
-		border-radius: 10px;
-		font-size: 0.74rem;
-		font-weight: 600;
-	}
-	.badge.open {
-		background: rgba(212, 148, 10, 0.12);
-		color: #d4940a;
-	}
-	.badge.resolved {
-		background: rgba(31, 168, 106, 0.12);
-		color: #1fa86a;
-	}
+	/* The status pill is `<Badge>` now — this file and `VendorStatementReconModal`
+	   used to tint the same two statuses at two different alphas. The tone per
+	   status lives beside the labels in `types/vendorStatementRecon`. */
 </style>

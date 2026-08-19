@@ -3,6 +3,8 @@
 // `backend/app/schemas/vendor_statement_recon.py`). Money fields arrive as
 // numbers (or null); date/time fields are ISO strings (or null).
 
+import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+
 // --- Run status -----------------------------------------------------------
 
 export type ReconStatus = 'open' | 'resolved';
@@ -13,6 +15,15 @@ export const RECON_STATUSES: ReconStatus[] = ['open', 'resolved'];
 export const RECON_STATUS_LABELS: Record<ReconStatus, string> = {
 	open: 'Open',
 	resolved: 'Resolved'
+};
+
+// Badge tone per status, so the list page and the modal can't tint the same
+// status two different shades — which is exactly what they did (.12 alpha on
+// the list, .15 in the modal, off two different ambers).
+export const RECON_STATUS_TONES: Record<ReconStatus, BadgeTone> = {
+	// An open run is work still owed to the ledger, not an error — amber.
+	open: 'warning',
+	resolved: 'success'
 };
 
 // --- Intake source --------------------------------------------------------
