@@ -1,0 +1,36 @@
+# Companion to the `CI gate` job in this repo's ci.yml. That gate is the
+# single required status check on `main`, but the main CI workflow is
+# skipped wholesale on docs-only / *.md / .claude-only PRs (its
+# `paths-ignore`), which would leave the required "CI gate" context
+# pending forever and block those PRs from merging. This workflow
+# triggers on exactly the inverse path set and reports an identically
+# named "CI gate" context as passing, so the required check is always
+# satisfied.
+#
+# A PR that touches both code and docs triggers both workflows; both emit
+# a "CI gate" check and GitHub requires all of them green — the real gate
+# in ci.yml still does the gating, this one passes trivially.
+#
+# This file is base-owned (propagated by sync-base.sh). Keep the job name
+# "CI gate" in lock-step with the ci-gate job in ci.yml, and keep the
+# paths here as the exact inverse of ci.yml's `paths-ignore`.
+name: CI gate (docs)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '**/*.md'
+      - '.claude/**'
+
+permissions:
+  contents: read
+
+jobs:
+  ci-gate:
+    name: CI gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Docs-only change — heavy CI skipped, gate passes
+        run: echo "Docs-only PR; ci.yml skipped by paths-ignore. CI gate passes trivially."
