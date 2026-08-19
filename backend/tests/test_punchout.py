@@ -229,6 +229,111 @@ async def test_return_stores_cart_on_buyer_cookie_match(realdb):
         assert len(actions) == 1
 
 
+async def _start_pending(realdb) -> tuple[str, str, str]:
+    """Start a punch-out and return (slug, buyer_cookie, session_id)."""
+    slug = realdb.info("a").slug
+    cid = await _make_punchout_catalog(realdb)
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        start = (await c.post(f"/api/catalogs/{cid}/punchout/start")).json()
+    return slug, start["buyer_cookie"], start["session_id"]
+
+
+async def _post_cart(realdb, slug: str, cookie: str, body: bytes):
+    async with realdb.client(key="a", role=None) as c:
+        return await c.post(
+            f"/api/catalogs/punchout/return/{slug}?buyer_cookie={cookie}",
+            content=body,
+            headers={"X-Punchout-Signature": _sign(body)},
+        )
+
+
+async def test_return_refuses_a_mixed_currency_cart(realdb):
+    """`PunchoutCart.total` sums every line's face value regardless of
+    per-item currency, and the cXML adapter labelled the cart from the LAST
+    parsed item — so €100 + $100 was stored as a single "200" under one label
+    and `convert` turned that into a requisition. Money in two currencies is
+    not summable."""
+    mk = realdb.sessionmaker("a")
+    slug, cookie, sid = await _start_pending(realdb)
+
+    body = _cart_envelope(
+        buyer_cookie=cookie,
+        items=[
+            {"description": "EU widget", "quantity": "1", "unit_price": "100.00", "currency": "EUR"},
+            {"description": "US widget", "quantity": "1", "unit_price": "100.00", "currency": "USD"},
+        ],
+    )
+    resp = await _post_cart(realdb, slug, cookie, body)
+    assert resp.status_code == 204  # every rejection is a silent 204
+
+    async with mk() as s:
+        session = (
+            await s.execute(select(PunchoutSession).where(PunchoutSession.id == uuid.UUID(sid)))
+        ).scalar_one()
+        # Still pending — nothing stored, so `convert` can't mint a requisition
+        # off an unsummable total.
+        assert session.status == PunchoutSessionStatus.pending
+        assert session.cart_total is None
+        actions = (
+            (
+                await s.execute(
+                    select(AuditLog.action).where(AuditLog.action == "punchout.cart_returned")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert actions == []
+
+
+async def test_return_refuses_an_unstorable_currency_code(realdb):
+    """`PunchoutSession.currency` is `String(3)` and the cart's code is
+    unbounded supplier input — a 4-character code used to raise a DataError at
+    commit and escape the PUBLIC handler as a 500, breaking its "every
+    rejection path returns 204 silently" contract."""
+    mk = realdb.sessionmaker("a")
+    slug, cookie, sid = await _start_pending(realdb)
+
+    body = _cart_envelope(
+        buyer_cookie=cookie,
+        items=[
+            {"description": "Widget", "quantity": "1", "unit_price": "5.00", "currency": "USDX"}
+        ],
+    )
+    resp = await _post_cart(realdb, slug, cookie, body)
+    assert resp.status_code == 204
+
+    async with mk() as s:
+        session = (
+            await s.execute(select(PunchoutSession).where(PunchoutSession.id == uuid.UUID(sid)))
+        ).scalar_one()
+        assert session.status == PunchoutSessionStatus.pending
+
+
+async def test_return_normalizes_a_lowercase_currency_code(realdb):
+    mk = realdb.sessionmaker("a")
+    slug, cookie, sid = await _start_pending(realdb)
+
+    body = _cart_envelope(
+        buyer_cookie=cookie,
+        currency="eur",
+        items=[
+            {"description": "Widget", "quantity": "2", "unit_price": "5.00", "currency": "eur"}
+        ],
+    )
+    resp = await _post_cart(realdb, slug, cookie, body)
+    assert resp.status_code == 204
+
+    async with mk() as s:
+        session = (
+            await s.execute(select(PunchoutSession).where(PunchoutSession.id == uuid.UUID(sid)))
+        ).scalar_one()
+        assert session.status == PunchoutSessionStatus.returned
+        assert session.currency == "EUR"
+        assert session.cart_items[0]["currency"] == "EUR"
+        assert session.cart_total == Decimal("10.00")
+
+
 async def test_return_bad_signature_rejected_no_state_change(realdb):
     mk = realdb.sessionmaker("a")
     slug = realdb.info("a").slug

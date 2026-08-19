@@ -887,7 +887,13 @@ async def punchout_cart_return(
                 logger.warning("Punch-out return: session not pending (redelivery)")
                 return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-            apply_returned_cart(session, cart)
+            try:
+                apply_returned_cart(session, cart)
+            except PunchoutError as exc:
+                # A mixed-currency cart (unsummable) or an unstorable currency
+                # code. PII-free reason code only — never the supplier payload.
+                logger.warning("Punch-out return: cart refused (%s)", exc.code)
+                return Response(status_code=status.HTTP_204_NO_CONTENT)
             await dispatch_audit(
                 tenant_db,
                 correlation_id=uuid.uuid4(),
