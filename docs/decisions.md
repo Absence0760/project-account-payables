@@ -1989,3 +1989,143 @@ user who needs the detail opens the exception where the normal scoping applies.
 Where an invoice carries several blocking exceptions the earliest tuple member is
 reported, so the reason is deterministic rather than dependent on row order —
 a flapping reason string on a payment surface reads as a bug in the gate.
+
+## 50. The email-shape check has one owner, and it ends in `\Z`
+
+Three copies of `^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$` lived in `api/signup.py`,
+`api/partner.py` and `app/schemas/scheduled_report.py`. Three copies of a
+validation rule drift, and this one gates **who receives a tenant's AP data by
+email**. It is now `app/utils/emails.py::looks_like_email`, with a test that
+pins the admitted cases so a later tightening has to edit a failing test rather
+than silently narrow who can be mailed.
+
+Hoisting it found a live hole. All three ended in `$`, which in Python matches
+end-of-string **or just before a trailing newline** — so `"user@example.com\n"`
+passed every check and was stored as a login, a child-tenant admin address and a
+scheduled-report recipient. A newline reaching an SMTP header is the
+header-injection primitive. The shared pattern anchors with `\Z`.
+
+Rejected: pulling in `email-validator`. RFC-strict syntax buys rigour nobody
+wants here (quoted local parts, address literals) and still answers nothing about
+deliverability, which the confirmation round trip already answers. The
+permissiveness is deliberate; the trailing newline was not.
+
+## 51. "Today" is UTC across the backend, and the guard scans four spellings
+
+`date.today()` resolves in the **server's** local zone. Latent on a UTC container
+— the deployed shape — and live on any host that is not. Every site under
+`backend/app/` now goes through `app/utils/dates.py::utc_today()`.
+
+The sites that mattered were not the stamps. `select_tier_for_date(as_of=…)`
+decides whether an early-pay discount is still claimable, and the buyer's view,
+the supplier's portal view and the auto-capture sweep read it from two different
+clocks — so for part of each day the three could disagree about the same offer.
+The recurring-template `generate-now` path derives the period key that **is**
+`uq_invoice_recurring_period`, so a manual generate near midnight resolved a
+different period and produced a second payable. `Invoice.approval_date` is a
+regulated SOX field on all three approval paths.
+
+Rejected: converting only the money-comparison sites and leaving stamps and
+filenames local. Each stamp sits beside a `datetime.now(UTC)` in the same
+artifact, so a split makes one document disagree with itself —
+`export_aging_snapshot` was already labelling a CSV with one date while its
+buckets meant another.
+
+Rejected: a `TZ=`-manipulating behavioural test. `date.today()` reads the real
+clock, so such an assertion is only true for part of the day. The AST guard is
+the right layer — but it had to be fixed first: it matched only `ast.Name`, so
+the attribute-shaped `datetime.date.today()` was invisible, and that is exactly
+what both Positive Pay modules used. Either could have been certified "converged"
+while still reading local time. The scanner now also catches naive
+`datetime.now().date()`, which is local and is not spelled `today` at all.
+
+## 52. A caller-specific emphasis is a wrapper, not a sixth badge tone
+
+`pending_compliance` shares the `warning` tone with `pending` on purpose — both
+are waiting — and the **ring** is what says "a human must clear this". Converting
+those pills to the shared primitive (§47) threatened to flatten a distinction the
+code explicitly documents. It survives as a non-inset `box-shadow` on a
+caller-owned wrapper, which also takes no layout space and so removes the
+misalignment the old `inset` shadow was itself working around.
+
+Rejected: a `ring` / `emphasis` prop on `Badge` — a one-caller prop is exactly
+what §47's fixed-sizing argument refuses. Rejected: a `:global(.badge.…)` rule —
+this repo has zero `:global` in routes or components.
+
+The same conversion exposed the inverse of §47's warning. The tokens standardise
+on alpha `.15`, and that "visibly strengthens" a badge converted from `.1` — but
+it also **weakens anything nested inside it**. `--text-muted` sub-labels within a
+tinted chip (`.card-meta`, `.discount-pct`) fall to 4.34:1 and 4.11:1 purely
+because their parent got the standard tint. Neither guard would catch it:
+`cssAudit` deliberately resolves no cascade, and axe only sees whichever tab
+renders. They now take `color: inherit`.
+
+## 53. A list search never filters the rows already loaded
+
+`/requisitions` and `/expenses` filtered client-side over the loaded page, with
+an honest empty state explaining that a match further in was not visible. The
+copy was good; the limitation it described was the bug. The term now goes to the
+server, and the filter and its empty state are gone — the table, the footer count,
+Load-more and the KPIs finally describe the same set.
+
+Rejected: keeping a client filter alongside the server one, which would leave two
+divergent notions of "matching" on one page.
+
+The fix reintroduced issue #168 and had to be caught: `load()` is called
+**synchronously** from the status-filter `$effect`, and Svelte tracks reads
+transitively through called functions — so reading `search` there made the effect
+depend on the term. Every keystroke fired an immediate request, and because the
+loader stamps the applied term before the debounce timer fires, the debounce then
+short-circuited and the un-debounced request was the only survivor. Typing five
+characters cost six requests. That is the second time this has landed on these
+pages through a different function (`syncUrl` first, now the loader), so the rule
+is recorded as a property of the **call site**, not of one function: anything an
+effect calls synchronously is inside its tracking scope. A `fill()`-based e2e is
+structurally blind to it — one state write, one term — so the guard has to type.
+
+## 54. Persisting a cash plan does not weaken the stateless `plan_id`; it is keyed by it
+
+§5/§6 gave plans no table deliberately: `plan_id` is a pure hash of resolved
+inputs plus the calendar date, and enactment re-derives everything. That still
+holds — nothing on the enact path reads `cash_plans`, and `payment_runs.plan_id`
+is still the draft-run anchor. What a stored row adds is the one thing
+re-derivation cannot supply: **what the projection said on the day it was made**.
+Yesterday's plan is not recomputable — the horizon starts elsewhere and the
+invoices have moved — so a variance with no baseline is just a restatement of the
+present.
+
+Rejected: upsert-on-save. Restating a snapshot against newer data rewrites the
+very number the comparison measures against, so a repeat save returns the
+existing row untouched (`created: false`, 200), with `uq_cash_plans_org_plan_id`
+holding that under a concurrent retry.
+
+Two rules keep the variance honest. Only **fully-elapsed** periods are scored: a
+period whose window has not closed has a partial actual, and subtracting a whole
+projection from it manufactures an underspend that reverses by week's end. Open
+periods are still returned and labelled, never silently zeroed — and pro-rating
+was rejected, since it invents a within-period spend distribution the plan never
+asserted. And a `completed` payment with no `completed_at` is **counted on
+`undated_payment_count`, not dated by a proxy**; its `created_at` bounds whether
+it is in scope, never which period it lands in.
+
+## 55. Consolidated scope is discovered from the plan id, not declared by the client
+
+`plan_id` already hashes the `entity_id` it was built under, so exactly two ids
+can be legitimate for a caller: their selected entity's, and the consolidated
+one. `_resolve_and_verify_plan` tries both, most specific first.
+
+Rejected: a `consolidated: bool` on the replay body. The plan card is rendered
+from a tool result that carries no entity, so the flag would be a claim we would
+have to trust, and it would need threading through `CopilotChatMessage`.
+
+Discovery widens nothing. Entity scoping is a **view** scope — `get_entity_id`
+validates the header against the tenant's own `entities` table and grants no
+access by itself — so the consolidated id is equally reachable by omitting
+`X-Entity-ID`, and a tampered parameter still matches neither candidate.
+
+One consequence had to be followed through: a consolidated draft run previously
+took its entity from `get_write_entity_id`, which would stamp a cross-entity run
+with whichever subsidiary happened to be selected. The run entity now derives
+from the plan's own scope — the selected entity for a scoped plan, the tenant's
+default for a consolidated one — matching what an entity-less
+`POST /api/payments/runs` already does.
