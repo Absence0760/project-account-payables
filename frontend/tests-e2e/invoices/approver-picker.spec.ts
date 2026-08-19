@@ -51,6 +51,42 @@ async function createNewInvoice(page: Page, invoiceNumber: string): Promise<stri
 	return ((await res.json()) as { id: string }).id;
 }
 
+/**
+ * Which approver affordance the modal is going to render for THIS tenant.
+ *
+ * `InvoiceModal.svelte` decides with two deriveds:
+ *   needsApproverSelect = status 'new' && activeSteps.approval &&
+ *                         approval_config.approver_strategy === 'manual'
+ *   reviewerOptions     = assignable reviewers, minus the signed-in user
+ *
+ * so there are three outcomes, not two — and the third ("this workflow picks
+ * its own approver") renders neither a picker nor a note. Re-derive them here
+ * from the same endpoints, BEFORE the modal opens, so the assertions below are
+ * a statement about what must happen rather than a guess about what did.
+ */
+async function expectedApproverWorld(page: Page): Promise<'picker' | 'note' | 'not-required'> {
+	const headers = await authedTenantHeaders(page);
+	const get = async <T>(path: string): Promise<T> => {
+		const res = await page.request.get(`${API_BASE}${path}`, { headers });
+		expect(res.ok(), `${path} must be readable by an ap_manager`).toBeTruthy();
+		return (await res.json()) as T;
+	};
+
+	const steps = await get<{
+		approval?: boolean;
+		approval_config?: { approver_strategy?: string } | null;
+	}>('/api/workflows/active/steps');
+	if (!steps.approval || steps.approval_config?.approver_strategy !== 'manual') {
+		return 'not-required';
+	}
+
+	const me = await get<{ id: string }>('/api/auth/me');
+	const reviewers = await get<{ id: string; is_active: boolean }[]>(
+		'/api/invoices/assignable-reviewers'
+	);
+	return reviewers.some((r) => r.is_active && r.id !== me.id) ? 'picker' : 'note';
+}
+
 /** Search the list down to one invoice number and open its detail modal. */
 async function openInvoice(page: Page, invoiceNumber: string) {
 	const listed = page.waitForResponse(
@@ -90,25 +126,57 @@ test.describe('/invoices approver picker — non-admin', () => {
 		const number = `E2E-APPROVER-${Date.now()}`;
 		invoiceId = await createNewInvoice(page, number);
 
+		// Decide WHICH world this tenant is in before opening the modal, from the
+		// same two endpoints the modal reads. Probing the rendered picker instead
+		// (`picker.isVisible()`) can't work: that check does not retry, the picker
+		// only exists once `GET /assignable-reviewers` has resolved, and the modal
+		// paints its Submit button long before that — so a tenant that HAS
+		// reviewers reads as "no picker" and the spec then waits forever for a
+		// note the app is right not to render.
+		const world = await expectedApproverWorld(page);
+
 		await page.goto('/invoices');
 		await openInvoice(page, number);
 
 		const submit = page.getByRole('button', { name: SUBMIT });
 		const picker = page.getByLabel('Assign approver');
+		const note = page.locator('.approver-note');
 
-		// Two legitimate worlds, one invariant: the manager is never stuck.
-		// Either the reviewer list loaded and they pick someone, or there is no
-		// list and Submit stands on its own with the consequence spelled out.
-		if (await picker.isVisible().catch(() => false)) {
+		// Three legitimate worlds, one invariant: the manager is never stuck.
+		if (world === 'picker') {
+			// Reviewers exist: pick one. Assert the picker FIRST — Submit is only
+			// disabled once the list has landed, and `approverRequired` is derived
+			// from the very same state that renders the `<select>`.
+			await expect(picker).toBeVisible();
 			await expect(submit).toBeDisabled();
-			const options = picker.locator('option');
 			// The placeholder plus at least one real reviewer.
-			expect(await options.count()).toBeGreaterThan(1);
+			expect(await picker.locator('option').count()).toBeGreaterThan(1);
 			await picker.selectOption({ index: 1 });
 			await expect(submit).toBeEnabled();
-		} else {
+		} else if (world === 'note') {
+			// The approval step wants an approver but nobody can be offered.
+			// Submit must stand on its own with the consequence spelled out.
+			await expect(note).toBeVisible();
+			await expect(picker).toHaveCount(0);
 			await expect(submit).toBeEnabled();
-			await expect(page.locator('.approver-note')).toBeVisible();
+		} else {
+			// This tenant's approval step assigns its own approver (`specific` /
+			// `auto`), so there is nothing to pick and nothing to explain. The
+			// modal renders neither control — which means the ONLY way to show the
+			// manager isn't stuck is to actually submit and watch it move.
+			await expect(picker).toHaveCount(0);
+			await expect(note).toHaveCount(0);
+			await expect(submit).toBeEnabled();
+			await submit.click();
+			await expect
+				.poll(async () => {
+					const res = await page.request.get(`${API_BASE}/api/invoices/${invoiceId}`, {
+						headers: await authedTenantHeaders(page)
+					});
+					if (!res.ok()) return null;
+					return ((await res.json()) as { status: string }).status;
+				})
+				.not.toBe('new');
 		}
 	});
 
