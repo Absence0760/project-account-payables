@@ -71,10 +71,10 @@ test.describe('/purchase-orders — status-chip counts', () => {
 		await page.goto('/purchase-orders');
 		await expect(page.getByText('E2E-PO-3')).toBeVisible();
 
-		const allChip = page.getByRole('button', { name: /^All/ });
-		const openChip = page.getByRole('button', { name: /^Open/ });
-		const closedChip = page.getByRole('button', { name: /^Closed/ });
-		const cancelledChip = page.getByRole('button', { name: /^Cancelled/ });
+		const allChip = page.locator('.filter-chip', { hasText: /^All/ });
+		const openChip = page.locator('.filter-chip', { hasText: /^Open/ });
+		const closedChip = page.locator('.filter-chip', { hasText: /^Closed/ });
+		const cancelledChip = page.locator('.filter-chip', { hasText: /^Cancelled/ });
 
 		// Whole set, not the loaded page and not the filtered total.
 		await expect(allChip).toContainText('9');
@@ -114,15 +114,15 @@ test.describe('/purchase-orders — status-chip counts', () => {
 		await page.goto('/purchase-orders');
 		await expect(page.getByText('E2E-PO-3')).toBeVisible();
 
-		const allChip = page.getByRole('button', { name: /^All/ });
-		const openChip = page.getByRole('button', { name: /^Open/ });
+		const allChip = page.locator('.filter-chip', { hasText: /^All/ });
+		const openChip = page.locator('.filter-chip', { hasText: /^Open/ });
 
 		// Fallback: the All chip carries the filtered total only while All is
 		// active, and the per-status chips carry no count at all.
 		await expect(allChip).toContainText('2');
 		await expect(openChip).toHaveText('Open');
 
-		await page.getByRole('button', { name: /^Closed/ }).click();
+		await page.locator('.filter-chip', { hasText: /^Closed/ }).click();
 		await expect(page.getByText('E2E-PO-2')).toBeVisible();
 		// The filtered total (1) must not be rendered as the "All" count.
 		await expect(allChip).toHaveText('All');

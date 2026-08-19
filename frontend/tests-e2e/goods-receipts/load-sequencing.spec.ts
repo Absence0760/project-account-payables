@@ -48,7 +48,12 @@ test.describe('/goods-receipts — detail request sequencing', () => {
 		let releaseFirst: () => void = () => {};
 		const firstGate = new Promise<void>((resolve) => (releaseFirst = resolve));
 
-		await page.route('**/api/goods-receipts*', async (route) => {
+		// A regex, not a glob: Playwright's `*` does not cross a `/`, so
+		// `**/api/goods-receipts*` matches the LIST but never
+		// `/api/goods-receipts/{id}` — the detail request would fall through to
+		// the real backend, 404 on these synthetic ids, and close the modal on
+		// its own, so the sequencing this test exists for was never exercised.
+		await page.route(/\/api\/goods-receipts(\?|\/|$)/, async (route) => {
 			const url = new URL(route.request().url());
 			if (url.pathname === '/api/goods-receipts') {
 				await route.fulfill({
