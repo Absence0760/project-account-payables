@@ -199,3 +199,71 @@ async def test_apply_tenant_isolation(realdb):
     async with realdb.client(key="b", role="ap_manager") as client_b:
         r = await client_b.post(f"/api/enrichment/vendors/{vid}/apply", json=body)
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# A name change re-screens, like PATCH /api/vendors/{id} does
+# ---------------------------------------------------------------------------
+
+
+async def _sanctions_checks(mk, vendor_id):
+    from sqlalchemy import select
+
+    from app.models.sanctions_check import SanctionsCheck
+
+    async with mk() as s:
+        return (
+            (
+                await s.execute(
+                    select(SanctionsCheck)
+                    .where(SanctionsCheck.vendor_id == vendor_id)
+                    .order_by(SanctionsCheck.checked_at.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+async def test_apply_name_change_rescreens_the_vendor(realdb):
+    """`name` is a screened identity field, and `PATCH /api/vendors/{id}`
+    re-screens when it changes. This path writes the same column, so it owes
+    the same re-screen — otherwise the denormalised `screening_status` keeps
+    describing the OLD legal name (the payment gate re-screens on the live
+    name, but the periodic sweep is off by default, so the review queue could
+    show a stale `clear` indefinitely)."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vid = await _seed_vendor(mk, org_id, name="Acme Supplies")
+    assert await _sanctions_checks(mk, vid) == []
+
+    body = {"fields": [{"field": "name", "value": "Acme Supplies Holdings LLC"}]}
+    async with realdb.client(key="a", role="ap_manager") as client:
+        r = await client.post(f"/api/enrichment/vendors/{vid}/apply", json=body)
+    assert r.status_code == 200, r.text
+    assert r.json()["applied"]["name"]["new"] == "Acme Supplies Holdings LLC"
+
+    checks = await _sanctions_checks(mk, vid)
+    assert len(checks) == 1
+    assert checks[0].check_type == "initial"
+
+    async with mk() as s:
+        v = await s.get(Vendor, vid)
+        assert v.name == "Acme Supplies Holdings LLC"
+        assert v.last_screened_at is not None
+        assert v.screening_status != "unscreened"
+
+
+async def test_apply_without_a_name_change_does_not_rescreen(realdb):
+    """Screening is not free (a real provider is a metered API call) — only an
+    identity change triggers one."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vid = await _seed_vendor(mk, org_id, name="Acme Supplies")
+
+    body = {"fields": [{"field": "website", "value": "https://acme.example"}]}
+    async with realdb.client(key="a", role="ap_manager") as client:
+        r = await client.post(f"/api/enrichment/vendors/{vid}/apply", json=body)
+    assert r.status_code == 200, r.text
+
+    assert await _sanctions_checks(mk, vid) == []

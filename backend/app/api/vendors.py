@@ -25,7 +25,6 @@ from app.api.permissions import (
     PERM_VENDOR_BLOCK,
     PERM_VENDOR_MANAGE,
 )
-from app.config import settings
 from app.models.contract import Contract
 from app.models.credit_memo import CreditMemo
 from app.models.discount import DiscountOffer
@@ -66,7 +65,7 @@ from app.services.sanctions_categories import (
     categories_from_raw_response,
     has_adverse_media,
 )
-from app.services.vendor_screening import screen_vendor_record
+from app.services.vendor_screening import screen_best_effort, screen_vendor_record
 from app.services.vendor_sync import sync_vendors_from_erp
 from app.tenant import (
     apply_entity_scope,
@@ -240,37 +239,21 @@ async def _screen_best_effort(
     check_type: str,
     actor_id: uuid.UUID | None,
 ) -> None:
-    """Run a sanctions screen for `vendor` without ever jeopardising the
-    surrounding vendor write.
+    """Thin `org`-taking wrapper over `vendor_screening.screen_best_effort`.
 
-    Screening is a best-effort side effect: if the configured provider is
-    down or raises, the vendor create/update must still succeed. The screen
-    therefore runs inside a SAVEPOINT (`begin_nested`) so a mid-screen
-    failure rolls back only the screen's partial mutations, leaving the
-    vendor row intact, and the exception is logged + swallowed.
+    The body moved to the service so the enrichment apply path — which also
+    writes `Vendor.name` — can reuse it instead of skipping the re-screen (a
+    private copy in this router is how that gap arose). This wrapper stays
+    because every call site here already holds the `Organization`.
     """
-    if not settings.vendor_screening_enabled:
-        return
-    try:
-        async with db.begin_nested():
-            await screen_vendor_record(
-                db,
-                vendor=vendor,
-                organization_id=org_id,
-                org_settings=org.settings,
-                check_type=check_type,
-                actor_id=actor_id,
-            )
-    except Exception as exc:  # noqa: BLE001
-        # Log the exception type, never the message/traceback. A sanctions
-        # adapter's error string could embed a vendor identifier; interpolating
-        # `exc` (or exc_info=True) would push that into the log sink (invariant #7).
-        logger.warning(
-            "Sanctions screen failed for vendor=%s (check_type=%s) — vendor write preserved: %s",
-            vendor.id,
-            check_type,
-            exc.__class__.__name__,
-        )
+    await screen_best_effort(
+        db,
+        vendor=vendor,
+        org_settings=org.settings,
+        org_id=org_id,
+        check_type=check_type,
+        actor_id=actor_id,
+    )
 
 
 # Invoices already cleared for payment (mirrors payments.PAYABLE_INVOICE_STATUSES).
@@ -401,7 +384,39 @@ async def _vendor_name(db: AsyncSession, vendor_id: uuid.UUID) -> str | None:
 
 # Registered BEFORE the parametric `/{vendor_id}` route so the literal
 # `/change-requests` path isn't swallowed by `vendor_id` (which would 422 on
-# the non-UUID segment). FastAPI matches routes in declaration order.
+# the non-UUID segment). FastAPI matches routes in declaration order. The
+# `/counts` sub-path is declared before the bare list for the same reason.
+@router.get("/change-requests/counts")
+async def change_request_counts(
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+):
+    """Status tallies for the vendor change-request (dual-control) queue.
+
+    Computed over the WHOLE set, not the loaded page — the same reason
+    `GET /api/vendors/counts` exists: a nav badge driven off a page of results
+    silently undercounts once the queue paginates. `pending` is the number a
+    reviewer holding `vendor.bank_change.approve` is being asked to act on;
+    a staged bank redirect that nobody notices is the failure mode the whole
+    dual-control gate exists to prevent.
+
+    PII-free — counts only, never a proposed value.
+    """
+    rows = (
+        await db.execute(
+            select(VendorChangeRequest.status, func.count())
+            .select_from(VendorChangeRequest)
+            .group_by(VendorChangeRequest.status)
+        )
+    ).all()
+    by_status = {str(status): int(n) for status, n in rows}
+    return {
+        "total": sum(by_status.values()),
+        "pending": by_status.get("pending", 0),
+        "by_status": by_status,
+    }
+
+
 @router.get("/change-requests")
 async def list_change_requests(
     pagination: PaginationParams = Depends(pagination_params),

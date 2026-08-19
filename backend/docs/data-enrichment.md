@@ -525,6 +525,18 @@ named fields change, never a silent overwrite of everything.
 - **Idempotent.** Re-applying the same value produces no diff → no spurious
   audit row (200 with an empty `applied` map). Driven by `build_field_diff`
   emitting only genuinely-changed fields.
+- **A `name` change re-screens the vendor**, exactly as `PATCH /api/vendors/{id}`
+  does for the same column — both call the shared
+  `services/vendor_screening.screen_best_effort` (moved there from a private
+  copy in `api/vendors.py`, which is how this path came to skip it). Without it
+  the denormalised `screening_status` / `last_screened_at` kept describing the
+  vendor's OLD legal name. Money was never at risk —
+  `compliance.check_payment_compliance` re-screens on the live name before any
+  payment — but `FEOH_VENDOR_RESCREEN_ENABLED` is off by default, so the
+  vendor dashboard and the screening review queue could show a stale `clear`
+  indefinitely. Best-effort inside a SAVEPOINT: a provider outage never fails
+  the apply. `address` / `website` are not identity fields and do not
+  re-screen (a real provider is a metered call).
 
 ## Config (org settings, all safe defaults — no key required)
 

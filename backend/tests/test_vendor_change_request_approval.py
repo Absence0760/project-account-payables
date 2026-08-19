@@ -197,6 +197,61 @@ async def test_change_requests_literal_route_not_shadowed(realdb):
     assert "items" in resp.json()
 
 
+@pytest.mark.asyncio
+async def test_change_request_counts_are_whole_set_and_pii_free(realdb):
+    """The nav badge for the dual-control queue needs a whole-set tally, not a
+    page of results — same reason `GET /api/vendors/counts` exists. A staged
+    bank redirect nobody notices is the failure mode the gate exists to
+    prevent."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id = await _seed_vendor(mk, org_id)
+    await _stage(
+        mk,
+        org_id,
+        vendor_id,
+        "bank_details",
+        {"bank_details": {"account_number": "12349876", "bank_name": "Bank"}},
+    )
+    await _stage(mk, org_id, vendor_id, "tax_id", {"tax_id": "99-1234567"})
+
+    async with realdb.client(key=TENANT, role="ap_manager") as client:
+        resp = await client.get("/api/vendors/change-requests/counts")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["pending"] == 2
+    assert body["total"] == 2
+    assert body["by_status"]["pending"] == 2
+    # Counts only — never a proposed value.
+    assert "12349876" not in resp.text
+    assert "99-1234567" not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_change_request_counts_drop_once_resolved(realdb):
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id = await _seed_vendor(mk, org_id)
+    req_id = await _stage(
+        mk, org_id, vendor_id, "bank_details", {"bank_details": {"account_number": "11112222"}}
+    )
+
+    async with realdb.client(key=TENANT, role="ap_manager") as client:
+        assert (await client.get("/api/vendors/change-requests/counts")).json()["pending"] == 1
+        approved = await client.post(f"/api/vendors/change-requests/{req_id}/approve")
+        assert approved.status_code == 200, approved.text
+        after = (await client.get("/api/vendors/change-requests/counts")).json()
+    assert after["pending"] == 0
+    assert after["by_status"]["approved"] == 1
+
+
+@pytest.mark.asyncio
+async def test_change_request_counts_forbidden_for_clerk(realdb):
+    async with realdb.client(key=TENANT, role="ap_clerk") as client:
+        resp = await client.get("/api/vendors/change-requests/counts")
+    assert resp.status_code == 403
+
+
 # ===========================================================================
 # AP-initiated bank-detail changes are dual-control (BEC / bank-redirect gate).
 # An AP user can PROPOSE a bank change but it stages a pending request instead

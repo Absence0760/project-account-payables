@@ -230,3 +230,54 @@ async def screen_vendor_record(
         sanctions_check=row,
         categories=screening.categories,
     )
+
+
+async def screen_best_effort(
+    db: AsyncSession,
+    *,
+    vendor: Vendor,
+    org_settings: dict | None,
+    org_id: uuid.UUID,
+    check_type: str,
+    actor_id: uuid.UUID | None,
+) -> None:
+    """Run a sanctions screen for ``vendor`` without ever jeopardising the
+    surrounding vendor write.
+
+    Screening is a best-effort side effect: if the configured provider is down
+    or raises, the vendor create/update must still succeed. The screen runs
+    inside a SAVEPOINT (``begin_nested``) so a mid-screen failure rolls back
+    only the screen's partial mutations, leaving the vendor row intact, and the
+    exception is logged + swallowed.
+
+    Lives here rather than in ``api/vendors.py`` because it has two callers:
+    the vendor router's create/update/bank-change paths, and the enrichment
+    apply path (``POST /api/enrichment/vendors/{id}/apply``), which writes
+    ``Vendor.name`` — an identity field — and so owes the same re-screen. A
+    private copy in one router is how the enrichment path came to skip it.
+    """
+    from app.config import settings
+
+    if not settings.vendor_screening_enabled:
+        return
+    try:
+        async with db.begin_nested():
+            await screen_vendor_record(
+                db,
+                vendor=vendor,
+                organization_id=org_id,
+                org_settings=org_settings,
+                check_type=check_type,
+                actor_id=actor_id,
+            )
+    except Exception as exc:  # noqa: BLE001
+        # Log the exception type, never the message/traceback. A sanctions
+        # adapter's error string could embed a vendor identifier; interpolating
+        # `exc` (or exc_info=True) would push that into the log sink
+        # (invariant #7).
+        logger.warning(
+            "Sanctions screen failed for vendor=%s (check_type=%s) — vendor write preserved: %s",
+            vendor.id,
+            check_type,
+            exc.__class__.__name__,
+        )

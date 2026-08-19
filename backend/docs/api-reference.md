@@ -295,6 +295,7 @@ See [`access-reviews.md`](access-reviews.md).
 | `POST`   | `/api/vendors/{id}/verify`      | admin/manager | Promote `unverified` → `active` |
 | `POST`   | `/api/vendors/{id}/reject`      | admin/manager | Mark `rejected` |
 | `POST`   | `/api/vendors/sync-erp`         | admin/manager | Pull vendors from connected ERP |
+| `GET`    | `/api/vendors/change-requests/counts`  | admin/manager/cfo | Whole-set tallies for the dual-control queue (`{total, pending, by_status}`); counts only, PII-free — drives the nav badge |
 | `GET`    | `/api/vendors/change-requests`  | admin/manager | Pending supplier change-request queue (`?status=`); proposed value masked |
 | `GET`    | `/api/vendors/{id}/change-requests` | admin/manager/cfo | One vendor's change requests; value revealed |
 | `POST`   | `/api/vendors/change-requests/{id}/approve` | admin/manager | Apply staged bank/tax change to the vendor (exactly-once) |
