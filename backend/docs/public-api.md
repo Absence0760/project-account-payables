@@ -152,13 +152,56 @@ machine-readable contract integrators code (and generate clients) against.
 | Method | Path | Returns |
 |--------|------|---------|
 | `GET` | `/api/v1/openapi.json` | The OpenAPI 3.1 document for the public surface (JSON). |
-| `GET` | `/api/v1/docs` | Swagger UI rendered against that spec (human-readable). |
+| `GET` | `/api/v1/docs` | A human-readable HTML reference rendered from that spec. |
 
 Both are **public** (no `X-API-Key` needed to *read the contract*) but both
 respect the `FEOH_PUBLIC_API_ENABLED` kill switch: when the public API is off they
 `404` — the surface, and therefore its contract, is simply not there. The 404
 (rather than a distinct "disabled") matches the opaque-failure posture of the
 data routes.
+
+### Why `/v1/docs` is not Swagger UI
+
+It used to be. `get_swagger_ui_html`'s only stylesheet, script and favicon are
+third-party CDN URLs (`cdn.jsdelivr.net`, `fastapi.tiangolo.com`), while
+`main.SecurityHeadersMiddleware` stamps `Content-Security-Policy: default-src
+'none'` on every response — so the route returned `200`, fetched nothing, and
+**rendered blank** in any browser honouring the header.
+
+Three exits were considered:
+
+1. **Vendor `swagger-ui-dist`** and serve it from our own origin. Keeps the CSP
+   strict and works offline, but commits ~1 MB of third-party JavaScript to a
+   public repo plus a version nobody will remember to bump — a supply-chain
+   artifact acquired for a reference page.
+2. **Allowlist the CDN** in a route-scoped CSP. Three lines, but it gives a page
+   the platform serves a third-party runtime dependency, and it *still* renders
+   blank offline — breaking guard rail 7 (local-first).
+3. **Drop the route** and point integrators at the spec URL. Honest, but a 404
+   on a URL these docs advertise is its own defect.
+
+What shipped is (1) taken to its minimum: `v1_openapi.render_docs_html` renders
+the same document server-side as self-contained HTML — **no script at all** and
+no external asset of any kind. The route sets its own CSP,
+`default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri
+'none'`, which differs from the global policy by exactly one token (the page's
+own inline stylesheet, which can neither execute nor exfiltrate).
+
+The **global** CSP is deliberately untouched — it is what keeps the API origin
+unable to load third-party script at all, and relaxing it for one page would
+relax it for every JSON response too. `SecurityHeadersMiddleware` uses
+`setdefault`, so a route-set header wins without any middleware change.
+
+Trade-off, stated plainly: this is a **reference, not an interactive console** —
+there is no "Try it out". The machine-readable contract at
+`/api/v1/openapi.json` is what integrators actually consume, and it feeds any
+client generator or Swagger/Redoc instance they already run. `render_docs_html`
+is a pure function of the spec, so the page can't drift from the routes.
+
+Guards: `tests/test_public_api_openapi.py` asserts the page references no
+third-party host, contains no `<script>` or `<link>`, sets the strict
+route-scoped CSP, leaves the global policy on `/openapi.json` unchanged, escapes
+spec text, and renders an empty spec without raising.
 
 **Scoped, not the whole app.** The spec is generated from the *live* FastAPI
 route table (so it can never drift from the routes) but then filtered to the
