@@ -142,6 +142,38 @@ async def _commitment_rows(
         statuses += list(_PENDING_STATUSES)
     horizon_end = today + timedelta(days=horizon_days)
 
+    # ONE schedule row per invoice, newest first. A bare
+    # `outerjoin(PaymentSchedule)` fans an invoice out to one row per schedule,
+    # and the loop below appends a commitment row per result — so an invoice
+    # with two schedules was counted TWICE at its FULL amount: in the forecast,
+    # the cash-position curve, the what-if, every copilot planning tool and the
+    # `plan_id` hash, all at once, with nothing on any surface to show it.
+    # Unreachable today only because nothing but `scripts/seed.py` constructs a
+    # `PaymentSchedule` — an accident of the current feature set, not a
+    # guarantee, and this query is the single source every cash projection reads.
+    #
+    # `DISTINCT ON` mirrors `discount_auto_trigger._resolve_due_date`, which
+    # already takes the same precaution (`ORDER BY created_at DESC LIMIT 1`) on
+    # the same table — so the discount engine's idea of an invoice's due date
+    # and the cash forecast's cannot diverge. `id` is the tiebreak, so two rows
+    # written in one transaction (identical `created_at`) still resolve
+    # deterministically rather than letting the plan hash flap between reads.
+    latest_schedule = (
+        select(
+            PaymentSchedule.invoice_id.label("invoice_id"),
+            PaymentSchedule.due_date.label("sched_due"),
+            PaymentSchedule.discount_date.label("discount_date"),
+            PaymentSchedule.discount_percent.label("discount_percent"),
+        )
+        .distinct(PaymentSchedule.invoice_id)
+        .order_by(
+            PaymentSchedule.invoice_id,
+            PaymentSchedule.created_at.desc(),
+            PaymentSchedule.id.desc(),
+        )
+        .subquery()
+    )
+
     result = await db.execute(
         apply_entity_scope(
             select(
@@ -149,14 +181,14 @@ async def _commitment_rows(
                 Invoice.amount,
                 Invoice.status,
                 Invoice.due_date,
-                PaymentSchedule.due_date.label("sched_due"),
-                PaymentSchedule.discount_date,
-                PaymentSchedule.discount_percent,
+                latest_schedule.c.sched_due,
+                latest_schedule.c.discount_date,
+                latest_schedule.c.discount_percent,
                 Invoice.currency,
                 Invoice.reporting_amount,
                 Invoice.reporting_currency,
             )
-            .outerjoin(PaymentSchedule, PaymentSchedule.invoice_id == Invoice.id)
+            .outerjoin(latest_schedule, latest_schedule.c.invoice_id == Invoice.id)
             .where(Invoice.status.in_(statuses)),
             Invoice,
             entity_id,

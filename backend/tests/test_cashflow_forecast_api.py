@@ -754,3 +754,100 @@ async def test_forecast_outflows_are_in_the_reporting_currency(realdb):
     # 1,000 USD + 65,000 USD — NOT 1,000 + 10,000,000.
     assert _money(totals["scheduled_amount"]) == Decimal("66000.00"), totals
     assert _money(totals["committed_amount"]) == Decimal("66000.00"), totals
+
+
+# ---------------------------------------------------------------------------
+# One commitment row per invoice, whatever its schedule count
+# ---------------------------------------------------------------------------
+
+
+async def test_two_payment_schedules_do_not_double_count_the_invoice(realdb):
+    """`_commitment_rows` fanned an invoice out to one row per `PaymentSchedule`.
+
+    The bare `outerjoin(PaymentSchedule)` returned a row per schedule and the
+    loop appended a commitment row for each, so a two-schedule invoice was
+    counted TWICE at its FULL amount — in the forecast, the cash-position curve,
+    the what-if, every copilot planning tool and the `plan_id` hash at once,
+    with nothing on any surface to show it. Nothing but `scripts/seed.py`
+    constructs a `PaymentSchedule` today, which is an accident of the current
+    feature set, not a guarantee.
+
+    Dedup takes the LATEST schedule, matching
+    `discount_auto_trigger._resolve_due_date`'s existing precaution on the same
+    table — so the discount engine and the cash forecast can't disagree about an
+    invoice's due date. The two schedules are written in SEPARATE transactions,
+    because `created_at` is `transaction_timestamp()`: rows sharing a commit
+    share a timestamp, and "latest" is then genuinely undefined between them.
+    """
+    key = "a"
+    mk = realdb.sessionmaker(key)
+    superseded_due = _TODAY + timedelta(days=5)
+    current_due = _TODAY + timedelta(days=20)
+
+    async with mk() as s:
+        invoice = Invoice(
+            organization_id=realdb.info(key).org_id,
+            invoice_number=f"CFDUP-{uuid.uuid4().hex[:6]}",
+            vendor_name="Rescheduled Supplies",
+            amount=Decimal("1200.00"),
+            currency="USD",
+            status=InvoiceStatus.approved,
+            invoice_date=_TODAY - timedelta(days=5),
+            # Deliberately different from BOTH schedules, so the assertions
+            # below can tell a schedule date from the invoice fallback.
+            due_date=_TODAY + timedelta(days=60),
+        )
+        s.add(invoice)
+        await s.flush()
+        s.add(
+            PaymentSchedule(
+                invoice_id=invoice.id,
+                due_date=superseded_due,
+                discount_date=_TODAY + timedelta(days=1),
+                discount_percent=Decimal("2.00"),
+            )
+        )
+        await s.commit()
+        invoice_id = invoice.id
+
+    # The reschedule is its OWN transaction, exactly as a real reschedule is.
+    # `created_at` defaults to `func.now()`, which Postgres resolves to
+    # `transaction_timestamp()` — constant within a transaction — so two rows
+    # written in one commit carry the SAME timestamp and "latest" is genuinely
+    # undefined between them. `_resolve_due_date` has the same property; the
+    # `id` tiebreak in the query only makes that case deterministic (so the
+    # copilot's `plan_id` can't flap between reads), it does not invent an order.
+    async with mk() as s:
+        s.add(
+            PaymentSchedule(
+                invoice_id=invoice_id,
+                due_date=current_due,
+                discount_date=_TODAY + timedelta(days=8),
+                discount_percent=Decimal("1.00"),
+            )
+        )
+        await s.commit()
+
+    async with realdb.client(key=key, role="cfo") as c:
+        resp = await c.get("/api/analytics/cashflow_forecast?granularity=week&horizon_days=90")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # Counted ONCE, at face value — 1,200.00, not 2,400.00.
+    assert _money(body["totals"]["scheduled_amount"]) == Decimal("1200.00"), body["totals"]
+    assert _money(body["totals"]["committed_amount"]) == Decimal("1200.00"), body["totals"]
+
+    # `count` is the sharpest signal — two rows for one invoice IS the bug.
+    assert body["totals"]["count"] == 1, body["totals"]
+
+    # …and it lands on the LATEST schedule's date, not the superseded one and
+    # not the invoice's own due date.
+    non_empty = [p for p in body["periods"] if _money(p["scheduled_amount"]) != Decimal("0")]
+    assert len(non_empty) == 1, non_empty
+    period = non_empty[0]
+    assert _money(period["scheduled_amount"]) == Decimal("1200.00")
+    assert period["count"] == 1
+    assert period["period_start"] <= current_due.isoformat() <= period["period_end"], period
+    assert not (period["period_start"] <= superseded_due.isoformat() <= period["period_end"]), (
+        "the superseded schedule's date must not drive the bucket"
+    )

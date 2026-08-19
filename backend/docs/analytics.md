@@ -272,6 +272,31 @@ migration — pure aggregate math, like `forecast_variance`.
 discount_eligible_amount, count, unconverted_count}` plus a `totals` rollup.
 Weeks are Monday-anchored. Default `granularity=week`, `horizon_days=90`.
 
+### One commitment row per invoice, whatever its schedule count
+
+`_commitment_rows` outer-joins `payment_schedules` for the authoritative due
+date + early-pay discount terms. That join was **un-deduped**: it returns one
+row per schedule, and the loop appends a commitment row for each — so an invoice
+carrying two `PaymentSchedule` rows was counted **twice, at its full amount**.
+Because this one query feeds the forecast, the cash-position curve, the what-if,
+every copilot planning tool and the `plan_id` hash, a single double-count
+overstates projected outflow on all of them at once, with nothing on any surface
+to show it.
+
+It is unreachable today only because nothing but `scripts/seed.py` constructs a
+`PaymentSchedule` — an accident of the current feature set, not a guarantee.
+
+The query now takes `DISTINCT ON (invoice_id) … ORDER BY invoice_id,
+created_at DESC, id DESC` — the LATEST schedule, mirroring
+`discount_auto_trigger._resolve_due_date`'s existing `ORDER BY created_at DESC
+LIMIT 1` on the same table, so the discount engine and the cash forecast cannot
+disagree about an invoice's due date. `created_at` defaults to
+`transaction_timestamp()`, so rows written in one commit share a timestamp and
+"latest" is genuinely undefined between them; the `id` tiebreak only makes that
+case **deterministic** (a copilot `plan_id` must not flap between reads), it
+does not invent an ordering. Guard:
+`tests/test_cashflow_forecast_api.py::test_two_payment_schedules_do_not_double_count_the_invoice`.
+
 ### `unconverted_count` — the outflow-side currency caveat
 
 Every commitment row is expressed in the org's **reporting** currency via the
