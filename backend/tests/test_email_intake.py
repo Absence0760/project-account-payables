@@ -228,11 +228,21 @@ async def test_inbound_webhook_returns_uniform_ack_regardless_of_tenant_resoluti
     assert json_mod.loads(resp_hit.body) == json_mod.loads(resp_miss.body)
 
 
-async def test_inbound_webhook_returns_ack_not_500_on_processing_exception():
-    """An unexpected exception while processing (e.g. S3/tenant-DB
-    unreachable) must still return the documented webhook ack, not a raw
-    500 — matching the try/except-and-silently-ack pattern every other
-    webhook handler in this codebase uses."""
+async def test_inbound_webhook_asks_for_redelivery_on_our_own_failure():
+    """OUR failure is not a decision — ask the provider to redeliver.
+
+    `process_inbound_email` releases its Redis dedup claim and re-raises on any
+    downstream failure (S3 / tenant DB / Redis) precisely so "the NEXT delivery
+    of the same message_id actually retries the work". Acking 200 told
+    SES / Mailgun the message WAS delivered, so there was no next delivery: the
+    vendor's invoice was lost with only a log line behind it, and the
+    release-on-failure code was preparing for a retry that could never come.
+
+    A 5xx here narrows the token-enumeration oracle the uniform ack exists to
+    prevent down to "while the platform is already broken" — far smaller than
+    losing invoices on every blip. The response is BODYLESS so it still carries
+    no detail, no stack trace, no tenant.
+    """
     from unittest.mock import AsyncMock
 
     from app.api.email_intake import inbound_webhook
@@ -252,8 +262,51 @@ async def test_inbound_webhook_returns_ack_not_500_on_processing_exception():
     ):
         response = await inbound_webhook(provider="ses", request=request, ctrl_db=None)
 
-    assert response.status_code == 200
-    assert json.loads(response.body) == {"status": "received"}
+    assert response.status_code == 503
+    assert response.body == b""
+
+
+async def test_inbound_webhook_decisions_all_share_the_same_200_ack():
+    """The oracle guard: every DECISION after the signature verifies is one
+    identical 200, so the 503 above can only ever mean "we broke", never "that
+    token was real". Duplicate delivery and no-usable-attachment are the two
+    decisions the uniform-ack test above doesn't already cover."""
+    import json as json_mod
+    from unittest.mock import AsyncMock
+
+    from app.api.email_intake import inbound_webhook
+    from app.services.email_intake import IntakeResult
+
+    def _request():
+        return SimpleNamespace(
+            headers={"X-Signature": "sig"},
+            body=AsyncMock(return_value=b"{}"),
+        )
+
+    outcomes = [
+        IntakeResult(tenant_slug="acme", error="Duplicate delivery"),
+        IntakeResult(
+            tenant_slug="acme",
+            error="No usable PDF / image / XML attachments",
+            skipped_attachments=["notes.docx"],
+        ),
+        IntakeResult(tenant_slug="acme", invoices_created=[uuid.uuid4()]),
+    ]
+
+    responses = []
+    for outcome in outcomes:
+        with (
+            patch("app.api.email_intake.get_parser", return_value=lambda b, h: {"x": 1}),
+            patch("app.api.email_intake.verify_signature", return_value=True),
+            patch("app.api.email_intake.process_inbound_email", AsyncMock(return_value=outcome)),
+        ):
+            responses.append(
+                await inbound_webhook(provider="ses", request=_request(), ctrl_db=None)
+            )
+
+    assert {r.status_code for r in responses} == {200}
+    bodies = {json_mod.dumps(json_mod.loads(r.body), sort_keys=True) for r in responses}
+    assert len(bodies) == 1, f"a decision leaked into the ack body: {bodies}"
 
 
 # ---------------------------------------------------------------------------

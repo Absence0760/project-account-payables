@@ -203,22 +203,55 @@ invoice queue in the tenant UI.
 
 The webhook response is intentionally uninformative. Pre-signature rejections
 (unknown `{provider}`, bad/missing HMAC signature, a payload the adapter can't
-parse) return a bare `204`. Once the signature verifies, **every** remaining
-outcome — an unresolved or disabled intake token, a duplicate delivery of a
-message already processed, no usable attachments, an internal error while
-creating the invoice, or a genuine success — returns the identical `200
-{"status": "received"}` ack. This is deliberate: the HMAC signing secret is
-shared across every tenant on the platform (the email provider has no notion
-of tenants), so if the response body or status code varied by outcome,
-anyone who can produce a validly-signed request could grind through
-candidate tokens and watch for the response to change — an oracle for a
-per-tenant intake token, which is a bearer secret. See "Redelivery /
-duplicate handling" below for how retries are still handled correctly despite
-the opaque ack.
+parse) return a bare `204`. Once the signature verifies, **every *decision***
+— an unresolved or disabled intake token, a duplicate delivery of a message
+already processed, no usable attachments, or a genuine success — returns the
+identical `200 {"status": "received"}` ack. This is deliberate: the HMAC signing
+secret is shared across every tenant on the platform (the email provider has no
+notion of tenants), so if the response body or status code varied by outcome,
+anyone who can produce a validly-signed request could grind through candidate
+tokens and watch for the response to change — an oracle for a per-tenant intake
+token, which is a bearer secret. See "Redelivery / duplicate handling" below for
+how retries are still handled correctly despite the opaque ack.
 
 Distinguish outcomes from the **backend log** (`Email intake processed:
 provider=... tenant=... invoices_created=N error=...`) or by watching the
 tenant's invoice queue, never from the HTTP response.
+
+### The one thing it does tell you: that WE broke
+
+A **decision** is a final answer about the message. A failure of **ours** — S3
+unreachable, the tenant DB down, Redis flapping — is not an answer at all; the
+message is still the vendor's unprocessed invoice. Those two get different
+responses:
+
+| Outcome | Response |
+|---|---|
+| Unknown provider / bad signature / unparseable body | `204`, bodyless |
+| Unknown or disabled intake token | `200 {"status": "received"}` |
+| Duplicate delivery (same `message_id`) | `200 {"status": "received"}` |
+| No usable PDF / image / XML attachment | `200 {"status": "received"}` |
+| Invoice(s) created | `200 {"status": "received"}` |
+| **An exception inside our own processing** | **`503`, bodyless** |
+
+`services/email_intake.process_inbound_email` releases its Redis dedup claim and
+re-raises on exactly those failures, so "the NEXT delivery of the same
+message_id actually retries the work". Acking `200` there told SES / Mailgun the
+message *was* delivered, so there was no next delivery: the release-on-failure
+code was preparing for a retry that could never come, and the invoice was gone
+with only a log line behind it.
+
+The trade-off is bounded and deliberate. A `5xx` on our own failure narrows the
+token-enumeration oracle down to "while the platform is already broken" — an
+attacker learns only that something inside us threw, never whose token they
+guessed, and only during an outage. Losing every invoice that arrives during a
+blip is the larger harm. `api/billing_webhook.py` faced the identical choice and
+already went this way; `api/erp_webhook.py` matches. The 503 is **bodyless**, so
+the response still carries no detail, no stack trace and no tenant.
+
+Operationally: a provider dashboard showing 5xx deliveries for the intake
+endpoint means *the platform is failing*, not that anyone sent a bad message —
+the two used to be indistinguishable from the outside.
 
 ### …and neither does the log carry the address
 
