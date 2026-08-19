@@ -184,6 +184,7 @@ export const messages = {
 	'payments.queue.createDraftRun': '{n, plural, one {Crear lote borrador · # factura} other {Crear lote borrador · # facturas}}',
 	'payments.queue.savingsBanner': '{amount} en descuentos por pago anticipado disponibles — pague las facturas resaltadas antes de su fecha de descuento para aprovecharlos.',
 	'payments.queue.empty': 'No hay facturas listas para pagar.',
+	'payments.queue.empty.errored': 'No se pudo cargar la cola de pagos. Inténtelo de nuevo.',
 	'payments.queue.createFailed': 'Error al crear la remesa de pagos',
 	'payments.queue.mixedCurrency':
 		'Esta selección abarca {n} monedas, por lo que los subtotales se muestran por separado y NO se suman. Una remesa de pagos debe tener una sola moneda: reduzca la selección a una moneda para continuar.',

@@ -184,6 +184,7 @@ export const messages = {
 	'payments.queue.createDraftRun': '{n, plural, one {Entwurfslauf erstellen · # Rechnung} other {Entwurfslauf erstellen · # Rechnungen}}',
 	'payments.queue.savingsBanner': '{amount} an Frühzahlungsrabatten verfügbar — bezahlen Sie die hervorgehobenen Rechnungen vor dem Rabattdatum, um sie zu sichern.',
 	'payments.queue.empty': 'Keine Rechnungen zur Zahlung bereit.',
+	'payments.queue.empty.errored': 'Zahlungswarteschlange konnte nicht geladen werden. Bitte erneut versuchen.',
 	'payments.queue.createFailed': 'Zahlungslauf fehlgeschlagen',
 	'payments.queue.mixedCurrency':
 		'Diese Auswahl umfasst {n} Währungen. Die Zwischensummen werden daher getrennt angezeigt und NICHT addiert. Ein Zahlungslauf muss eine einzige Währung haben — reduzieren Sie die Auswahl auf eine Währung, um fortzufahren.',

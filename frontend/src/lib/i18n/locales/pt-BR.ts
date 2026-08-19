@@ -185,6 +185,7 @@ export const messages = {
 	'payments.queue.createDraftRun': '{n, plural, one {Criar lote rascunho · # fatura} other {Criar lote rascunho · # faturas}}',
 	'payments.queue.savingsBanner': '{amount} em descontos por pagamento antecipado disponíveis — pague as faturas destacadas antes da data do desconto para aproveitá-los.',
 	'payments.queue.empty': 'Nenhuma fatura pronta para pagamento.',
+	'payments.queue.empty.errored': 'Não foi possível carregar a fila de pagamentos. Tente novamente.',
 	'payments.queue.createFailed': 'Falha ao criar a remessa de pagamentos',
 	'payments.queue.mixedCurrency':
 		'Esta seleção abrange {n} moedas, portanto os subtotais são exibidos separadamente e NÃO são somados. Uma remessa de pagamentos precisa ter uma única moeda — reduza a seleção a uma moeda para continuar.',

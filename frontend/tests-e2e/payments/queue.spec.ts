@@ -88,18 +88,49 @@ test.describe('/payments queue selection', () => {
 		await expect(payBar.locator('.pay-bar-count')).toContainText('$');
 	});
 
-	test('selecting all via header checkbox selects every queue row', async ({ page }) => {
-		const total = await page.locator('table tbody tr').count();
-		await page.locator('thead th.checkbox-col input[type="checkbox"]').check();
+	test('selecting all via header checkbox selects every selectable queue row', async ({
+		page
+	}) => {
+		const selectAll = page.locator('thead th.checkbox-col input[type="checkbox"]');
+
+		// Readiness before counting, and a real signal rather than a sleep: while
+		// `GET /api/payments/queue` is in flight the DataTable renders its single
+		// `table-empty` row, so a bare `tbody tr` count reads 1. That is exactly
+		// how this snapshotted `total = 1` on CI and then compared it against the
+		// 7 rows that had landed by the time the header checkbox was clicked.
+		// The queue commits in ONE assignment (`queue = data.items`), so "no
+		// empty row" means the whole set is on screen — there is no partial fill
+		// to race. A genuinely empty (or failed) queue leaves that row up and
+		// fails here, which is the honest outcome: there is nothing to select.
+		await expect(page.getByTestId('table-empty')).toHaveCount(0);
+		// Select-all is `disabled` when nothing is selectable, so asserting it is
+		// enabled states this test's precondition instead of assuming it.
+		await expect(selectAll).toBeEnabled();
+
+		// The denominator is the SELECTABLE rows, not every row. A row carrying a
+		// payment-blocking exception renders a disabled checkbox and is left out
+		// of the selection on purpose (`selectableQueue` in the page) — pulling it
+		// in would build a draft run `POST /api/payments/runs` refuses with a 409.
+		const selectable = page.locator('table tbody tr input[type="checkbox"]:not([disabled])');
+		const blocked = page.locator('table tbody tr input[type="checkbox"][disabled]');
+		const selectableCount = await selectable.count();
+		expect(selectableCount).toBeGreaterThan(0);
+
+		await selectAll.check();
 
 		const payBar = page.locator('.pay-bar');
 		await expect(payBar).toBeVisible();
-		await expect(payBar.locator('.pay-bar-count')).toContainText(`${total} selected`);
-		// Every body checkbox is now checked.
-		const bodyChecks = page.locator('table tbody tr input[type="checkbox"]');
-		const checkCount = await bodyChecks.count();
-		for (let i = 0; i < checkCount; i++) {
-			await expect(bodyChecks.nth(i)).toBeChecked();
+		await expect(payBar.locator('.pay-bar-count')).toContainText(`${selectableCount} selected`);
+
+		// Every selectable checkbox is now checked...
+		for (let i = 0; i < selectableCount; i++) {
+			await expect(selectable.nth(i)).toBeChecked();
+		}
+		// ...and every blocked one is still not, which is the half that matters:
+		// select-all must never sweep a blocked invoice into a payment run.
+		const blockedCount = await blocked.count();
+		for (let i = 0; i < blockedCount; i++) {
+			await expect(blocked.nth(i)).not.toBeChecked();
 		}
 	});
 

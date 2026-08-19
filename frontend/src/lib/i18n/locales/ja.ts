@@ -188,6 +188,7 @@ export const messages = {
 	'payments.queue.createDraftRun': '{n, plural, other {ドラフトバッチを作成 · #件の請求書}}',
 	'payments.queue.savingsBanner': '早期支払い割引が {amount} 分利用可能です。割引期限までにハイライトされた請求書を支払うと適用されます。',
 	'payments.queue.empty': '支払い可能な請求書はありません。',
+	'payments.queue.empty.errored': '支払いキューを読み込めませんでした。もう一度お試しください。',
 	'payments.queue.createFailed': '支払ランの作成に失敗しました',
 	'payments.queue.mixedCurrency':
 		'この選択には {n} 種類の通貨が含まれるため、小計は個別に表示され、合算されません。支払ランは単一通貨である必要があります。続行するには選択を 1 つの通貨に絞ってください。',

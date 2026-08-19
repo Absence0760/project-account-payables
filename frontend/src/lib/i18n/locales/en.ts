@@ -203,6 +203,7 @@ export const en = {
 	'payments.queue.createDraftRun': '{n, plural, one {Create Draft Run · # Invoice} other {Create Draft Run · # Invoices}}',
 	'payments.queue.savingsBanner': '{amount} in early-pay discounts available — pay the highlighted invoices before their discount date to capture them.',
 	'payments.queue.empty': 'No invoices ready for payment.',
+	'payments.queue.empty.errored': 'Could not load the payment queue. Try again.',
 	'payments.queue.createFailed': 'Payment run failed',
 	'payments.queue.mixedCurrency':
 		'This selection spans {n} currencies, so the subtotals are shown separately and are NOT added together. A payment run must be a single currency — clear the selection down to one currency to continue.',

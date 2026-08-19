@@ -184,6 +184,7 @@ export const messages = {
 	'payments.queue.createDraftRun': '{n, plural, one {Créer un lot brouillon · # facture} other {Créer un lot brouillon · # factures}}',
 	'payments.queue.savingsBanner': '{amount} de remises pour paiement anticipé disponibles — payez les factures en surbrillance avant leur date de remise pour en profiter.',
 	'payments.queue.empty': 'Aucune facture prête au paiement.',
+	'payments.queue.empty.errored': "Impossible de charger la file d'attente de paiement. Réessayez.",
 	'payments.queue.createFailed': 'Échec de la campagne de paiement',
 	'payments.queue.mixedCurrency':
 		'Cette sélection couvre {n} devises : les sous-totaux sont donc affichés séparément et NE sont PAS additionnés. Une campagne de paiement doit être dans une seule devise — réduisez la sélection à une devise pour continuer.',

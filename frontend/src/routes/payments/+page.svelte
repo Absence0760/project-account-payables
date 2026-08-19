@@ -121,6 +121,14 @@
 		blocked_reason?: string | null;
 	}
 	let queue = $state<QueueItem[]>([]);
+	// Loading / errored are tracked separately from `queue.length === 0` because
+	// the empty copy here is a claim about MONEY — "no invoices are ready for
+	// payment". Rendered while the fetch is in flight, or left standing forever
+	// after a failed one, that reads as "nothing is owed" when the truth is "we
+	// have not looked". Same three-state rule the /exceptions and /notifications
+	// lists follow; see `frontend/CLAUDE.md` § Data tables.
+	let queueLoading = $state(true);
+	let queueErrored = $state(false);
 	// Queue rows the backend could not express in the reporting currency, so
 	// its own roll-ups exclude them. Rows still render in their OWN currency.
 	let queueUnconvertedCount = $state(0);
@@ -593,6 +601,7 @@
 
 	async function loadQueue() {
 		const token = queueSequence.start();
+		queueLoading = true;
 		try {
 			const data = await api.get<{ items: QueueItem[]; unconverted_count?: number }>(
 				'/api/payments/queue'
@@ -600,10 +609,17 @@
 			if (!queueSequence.canCommit(token)) return; // superseded by a newer load
 			queue = data.items;
 			queueUnconvertedCount = data.unconverted_count ?? 0;
+			queueErrored = false;
 		} catch (err) {
 			if (queueSequence.isCurrentRequest(token)) {
+				queueErrored = true;
 				toast(err instanceof Error ? err.message : 'Failed to load payment queue', 'error');
 			}
+		} finally {
+			// `isCurrentRequest`, not `canCommit`: a local edit that supersedes
+			// this request must still clear the spinner, or the table sits on
+			// "Loading…" forever with no request left to clear it.
+			if (queueSequence.isCurrentRequest(token)) queueLoading = false;
 		}
 	}
 
@@ -962,7 +978,11 @@
 
 		<DataTable
 			isEmpty={queue.length === 0}
-			empty={m('payments.queue.empty')}
+			empty={queueLoading
+				? m('common.loading')
+				: queueErrored
+					? m('payments.queue.empty.errored')
+					: m('payments.queue.empty')}
 			colspan={8}
 		>
 			{#snippet header()}
