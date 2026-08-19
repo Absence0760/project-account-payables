@@ -1484,12 +1484,17 @@ async def create_payment(
     # settlement-amount mismatch, a Positive Pay altered cheque and a BEC
     # bank-detail swap all land as `fraud_flag`; resolving or dismissing it is
     # the human sign-off.
-    if await blocked_invoice_ids(db, [invoice.id]):
+    # Same wording rule as the run builder: name the type that actually blocked
+    # this invoice, not a hardcoded list of causes that drifts the moment
+    # `PAYMENT_BLOCKING_EXCEPTION_TYPES` grows a member (it already had).
+    _blocking = await blocking_exception_types(db, [invoice.id])
+    if _blocking:
         raise HTTPException(
             status_code=409,
             detail=(
-                "Invoice has an unresolved duplicate/fraud/line-total exception and "
-                f"can't be paid until it's cleared: {invoice.invoice_number}"
+                "Invoice has an unresolved payment-blocking exception "
+                f"({_blocking[invoice.id]}) and can't be paid until it's cleared: "
+                f"{invoice.invoice_number}"
             ),
         )
 

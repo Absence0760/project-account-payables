@@ -196,6 +196,7 @@ export const messages = {
 	'payments.queue.blocked.duplicate': 'Possível duplicidade — não resolvida',
 	'payments.queue.blocked.fraudFlag': 'Alerta de fraude — não resolvido',
 	'payments.queue.blocked.lineTotalMismatch': 'Totais das linhas não conferem — não resolvido',
+	'payments.queue.blocked.paymentReconciliation': 'Pagamento anterior não conciliado — pode ainda estar em trânsito',
 	'payments.queue.blocked.generic': 'Uma exceção não resolvida bloqueia o pagamento',
 	'payments.queue.discountSave': 'Economize {amount}',
 	'payments.queue.discountBy': '{percent}% até {date}',

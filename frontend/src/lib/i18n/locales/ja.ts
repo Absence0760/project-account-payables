@@ -199,6 +199,7 @@ export const messages = {
 	'payments.queue.blocked.duplicate': '重複の可能性 — 未解決',
 	'payments.queue.blocked.fraudFlag': '不正フラグ — 未解決',
 	'payments.queue.blocked.lineTotalMismatch': '明細合計の不一致 — 未解決',
+	'payments.queue.blocked.paymentReconciliation': '過去の支払いが未消込 — 処理中の可能性があります',
 	'payments.queue.blocked.generic': '未解決の例外により支払いがブロックされています',
 	'payments.queue.discountSave': '{amount} 節約',
 	'payments.queue.discountBy': '{date}までに{percent}%',

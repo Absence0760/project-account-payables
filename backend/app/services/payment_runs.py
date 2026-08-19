@@ -474,8 +474,9 @@ async def create_payment_run_for_invoices(
     """Validate + create a draft ``PaymentRun`` for ``items``.
 
     Runs the identical gates ``POST /api/payments/runs`` runs: payable-status
-    (``PAYABLE_INVOICE_STATUSES``), the duplicate/fraud/line-total-mismatch
-    financial-integrity block (``PAYMENT_BLOCKING_EXCEPTION_TYPES``),
+    (``PAYABLE_INVOICE_STATUSES``), the financial-integrity block (every member
+    of ``PAYMENT_BLOCKING_EXCEPTION_TYPES`` — named by the tuple, not spelled
+    out, so this docstring can't fall behind it the way the 409 message did),
     credit-memo netting, and the CFO-approval-threshold computation. NEVER
     executes the run — it always lands ``status="draft"``.
 
@@ -560,16 +561,28 @@ async def create_payment_run_for_invoices(
             detail=f"Invoice(s) not approved for payment: {', '.join(not_payable)}",
         )
 
-    blocked_ids = await blocked_invoice_ids(db, invoice_ids)
-    if blocked_ids:
-        blocked_numbers = [
-            inv.invoice_number for iid, inv in invoices.items() if iid in blocked_ids
-        ]
+    # Name the type that ACTUALLY blocked each invoice rather than reciting a
+    # hardcoded list of causes. The list said "duplicate/fraud/line-total" while
+    # `PAYMENT_BLOCKING_EXCEPTION_TYPES` had since grown `payment_reconciliation`
+    # — so an invoice held back because a payment may still be in flight at the
+    # rail was refused with a message naming three exceptions it doesn't carry,
+    # sending the operator to clear something that isn't there. Deriving the
+    # reason from the same map the queue's `blocked_reason` uses retires the
+    # whole drift class, not just this instance. The exception TYPE is a fixed
+    # PII-free vocabulary; the description (which can carry vendor / bank /
+    # amount detail) is never included — see `blocking_exception_types`.
+    blocked = await blocking_exception_types(db, invoice_ids)
+    if blocked:
+        blocked_numbers = sorted(
+            f"{inv.invoice_number} ({blocked[iid]})"
+            for iid, inv in invoices.items()
+            if iid in blocked
+        )
         raise HTTPException(
             status_code=409,
             detail=(
-                "Invoice(s) have an unresolved duplicate/fraud/line-total exception and "
-                f"can't be paid until it's cleared: {', '.join(sorted(blocked_numbers))}"
+                "Invoice(s) have an unresolved payment-blocking exception and "
+                f"can't be paid until it's cleared: {', '.join(blocked_numbers)}"
             ),
         )
 

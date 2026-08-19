@@ -165,6 +165,13 @@
 				return m('payments.queue.blocked.fraudFlag');
 			case 'line_total_mismatch':
 				return m('payments.queue.blocked.lineTotalMismatch');
+			case 'payment_reconciliation':
+				// The fourth member of PAYMENT_BLOCKING_EXCEPTION_TYPES, and the
+				// one this switch was missing — so a row held because an earlier
+				// payment's fate at the rail is unknown fell through to the
+				// generic string and told the operator nothing actionable. The
+				// default arm stays for codes this build genuinely doesn't know.
+				return m('payments.queue.blocked.paymentReconciliation');
 			default:
 				return m('payments.queue.blocked.generic');
 		}

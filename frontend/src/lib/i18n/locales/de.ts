@@ -195,6 +195,7 @@ export const messages = {
 	'payments.queue.blocked.duplicate': 'Möglicher Doppeleintrag — ungeklärt',
 	'payments.queue.blocked.fraudFlag': 'Betrugsverdacht — ungeklärt',
 	'payments.queue.blocked.lineTotalMismatch': 'Positionssummen stimmen nicht — ungeklärt',
+	'payments.queue.blocked.paymentReconciliation': 'Frühere Zahlung nicht abgestimmt — möglicherweise noch unterwegs',
 	'payments.queue.blocked.generic': 'Ungeklärte Ausnahme blockiert die Zahlung',
 	'payments.queue.discountSave': '{amount} sparen',
 	'payments.queue.discountBy': '{percent}% bis {date}',

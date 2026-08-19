@@ -195,6 +195,7 @@ export const messages = {
 	'payments.queue.blocked.duplicate': 'Doublon possible — non résolu',
 	'payments.queue.blocked.fraudFlag': 'Alerte de fraude — non résolue',
 	'payments.queue.blocked.lineTotalMismatch': 'Totaux des lignes incohérents — non résolus',
+	'payments.queue.blocked.paymentReconciliation': 'Paiement antérieur non rapproché — peut-être encore en cours',
 	'payments.queue.blocked.generic': 'Une exception non résolue bloque le paiement',
 	'payments.queue.discountSave': 'Économiser {amount}',
 	'payments.queue.discountBy': '{percent}% avant le {date}',

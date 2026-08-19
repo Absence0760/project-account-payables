@@ -20,15 +20,19 @@ import {
  *
  * Two halves are covered here:
  *
- *  1. **The advance signal.** The frontend is built against a per-row
- *     `blocked` / `blocked_reason` pair the queue payload does not carry yet.
- *     Those tests inject the field via `page.route()` — a real response the
- *     page parses, not a stub of the page's own state — and also assert the
- *     graceful-degradation case: with the field ABSENT (the live backend
- *     today) the queue behaves exactly as it always has.
- *  2. **The failure message.** Independent of (1) and shippable today: the
- *     409 detail NAMES the offending invoice numbers, and the page must keep
- *     that on screen rather than only flashing it through a 5-second toast.
+ *  1. **The advance signal.** `GET /api/payments/queue` carries a per-row
+ *     `blocked` / `blocked_reason` pair. Most of these tests still inject it
+ *     via `page.route()` — a real response the page parses, not a stub of the
+ *     page's own state — because that is the only way to drive a specific
+ *     `blocked_reason` (including one this build doesn't recognise) without
+ *     manufacturing every kind of exception in the tenant DB. The
+ *     no-blocked-rows case is asserted against the live payload.
+ *  2. **The failure message.** The 409 detail NAMES the offending invoice
+ *     numbers and the type that blocked each one, and the page must keep that
+ *     on screen rather than only flashing it through a 5-second toast. Note
+ *     this is now only reachable via the STALE-VIEW race — see that test —
+ *     precisely because half (1) ships: a row known to be blocked when the
+ *     queue loaded can no longer be selected at all.
  */
 
 /** Mint an `approved` invoice that lands in the payment queue. */
@@ -108,9 +112,11 @@ async function injectBlockedFlag(
 }
 
 test.describe('/payments queue — payment-blocking exceptions', () => {
-	test('with no `blocked` field the queue behaves exactly as before', async ({ page }) => {
-		// Graceful degradation: the live backend sends no `blocked` key today,
-		// and every row must stay selectable with no chip, no banner, no noise.
+	test('with no blocked rows the queue behaves exactly as before', async ({ page }) => {
+		// No interception: this is the live payload. The `blocked` key now ships,
+		// but every row here reports `blocked: false`, and that must stay
+		// indistinguishable from the pre-feature queue — every row selectable,
+		// no chip, no banner, no noise.
 		//
 		// "No noise" is asserted as: no uncaught page error, and no Svelte
 		// effect-loop error — the selection-pruning `$effect` now depends on a
@@ -129,16 +135,26 @@ test.describe('/payments queue — payment-blocking exceptions', () => {
 		await page.goto('/payments');
 		await page.locator('.tab', { hasText: 'Queue' }).click();
 
-		const rows = page.locator('table tbody tr');
-		await expect(rows.first()).toBeVisible();
+		// Readiness before counting. `rows.first()` is NOT it: the DataTable's
+		// loading placeholder is itself a `tbody tr`, so "the first row is
+		// visible" is satisfied while the fetch is still out and the count below
+		// reads 1 — the same race that made queue.spec.ts assert "1 selected"
+		// against 7 real rows on CI. No empty row means the whole set is on
+		// screen; the queue commits in one assignment, so there is no partial fill.
+		await expect(page.getByTestId('table-empty')).toHaveCount(0);
 
 		await expect(page.getByTestId('queue-blocked-banner')).toHaveCount(0);
 		await expect(page.getByTestId('queue-blocked-chip')).toHaveCount(0);
 		await expect(page.getByTestId('queue-blocked-checkbox')).toHaveCount(0);
 
-		// Select-all still selects every row.
-		const total = await rows.count();
-		await page.locator('thead th.checkbox-col input[type="checkbox"]').check();
+		// Nothing is blocked here (asserted just above), so every row is
+		// selectable and select-all must take all of them.
+		const selectable = page.locator('table tbody tr input[type="checkbox"]:not([disabled])');
+		const total = await selectable.count();
+		expect(total).toBeGreaterThan(0);
+		const selectAll = page.locator('thead th.checkbox-col input[type="checkbox"]');
+		await expect(selectAll).toBeEnabled();
+		await selectAll.check();
 		await expect(page.locator('.pay-bar .pay-bar-count')).toContainText(`${total} selected`);
 
 		expect(pageErrors, `page errors on /payments:\n${pageErrors.join('\n')}`).toEqual([]);
@@ -223,26 +239,77 @@ test.describe('/payments queue — payment-blocking exceptions', () => {
 		}
 	});
 
+	test('a payment_reconciliation block names its own reason, not the generic one', async ({
+		page
+	}) => {
+		// The fourth member of `PAYMENT_BLOCKING_EXCEPTION_TYPES`. It was added to
+		// the backend tuple without a case in the page's reason map, so a row held
+		// because an earlier payment's fate at the rail is unknown rendered the
+		// catch-all "Unresolved exception blocks payment" — true, but it tells the
+		// operator nothing they can act on, and the action here (reconcile the
+		// rail) is nothing like the action for a duplicate.
+		const stamp = Date.now();
+		const number = `E2E-BLOCK-${stamp}-R`;
+		let id: string | null = null;
+		try {
+			id = await createApprovedInvoice(page, number);
+			await injectBlockedFlag(page, number, 'payment_reconciliation');
+			await page.goto('/payments');
+			await page.locator('.tab', { hasText: 'Queue' }).click();
+
+			const row = page.locator('table tbody tr', { hasText: number });
+			await expect(row).toBeVisible();
+			const chip = row.getByTestId('queue-blocked-chip');
+			await expect(chip).toContainText('Earlier payment unreconciled');
+			await expect(chip).not.toContainText('Unresolved exception blocks payment');
+			await expect(row.locator('input[type="checkbox"]')).toBeDisabled();
+		} finally {
+			await page.unroute('**/api/payments/queue**');
+			if (id) hardDeleteInvoice(id);
+		}
+	});
+
 	test('the create-draft 409 names the offending invoice and stays on screen', async ({
 		page
 	}) => {
-		// No route interception here — this is the REAL backend refusal, and it
-		// is what ships today regardless of whether the queue ever grows a
-		// `blocked` field.
+		// No route interception here — this is the REAL backend refusal.
+		//
+		// The exception is seeded AFTER the row has been selected, and that
+		// ordering is the whole point. `GET /api/payments/queue` now carries the
+		// `blocked` pair, so an invoice blocked before the queue loads renders
+		// with a DISABLED checkbox and can never be selected through the UI —
+		// this test used to seed the exception up front and then sit for 30s
+		// waiting to click a control the app is right to have disabled. Forcing
+		// that click would have been testing the guard by defeating it.
+		//
+		// What is left, and what the panel error actually exists for, is the
+		// STALE-VIEW race: the `blocked` flag is a snapshot taken when the queue
+		// was fetched, so an exception raised afterwards (a concurrent
+		// `refresh_warnings` recompute, another operator, the reconciler) leaves
+		// a selection the client still believes is payable. The server refusal is
+		// the real control; the advance signal is only an advance signal. Seeding
+		// mid-flight reproduces exactly that, with no interception.
 		const stamp = Date.now();
 		const number = `E2E-409-${stamp}`;
 		let id: string | null = null;
 		try {
 			id = await createApprovedInvoice(page, number);
-			seedBlockingException(id, 'duplicate');
 
 			await page.goto('/payments');
 			await page.locator('.tab', { hasText: 'Queue' }).click();
 
 			const row = page.locator('table tbody tr', { hasText: number });
 			await expect(row).toBeVisible();
-			await row.locator('input[type="checkbox"]').check();
+			const box = row.locator('input[type="checkbox"]');
+			// It must be selectable right now — that IS the stale view.
+			await expect(box).toBeEnabled();
+			await box.check();
 			await page.locator('.pay-bar').getByRole('button', { name: 'Review & Pay' }).click();
+
+			// The client's view of this row goes stale here. Nothing on the page
+			// reloads the queue between opening the review panel and executing, so
+			// the selection survives — which is the condition under test.
+			seedBlockingException(id, 'duplicate');
 
 			const refused = page.waitForResponse(
 				(r) =>

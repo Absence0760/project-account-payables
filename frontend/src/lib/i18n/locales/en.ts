@@ -214,6 +214,7 @@ export const en = {
 	'payments.queue.blocked.duplicate': 'Possible duplicate — unresolved',
 	'payments.queue.blocked.fraudFlag': 'Fraud flag — unresolved',
 	'payments.queue.blocked.lineTotalMismatch': 'Line totals don’t match — unresolved',
+	'payments.queue.blocked.paymentReconciliation': 'Earlier payment unreconciled — may still be in flight',
 	'payments.queue.blocked.generic': 'Unresolved exception blocks payment',
 	'payments.queue.discountSave': 'Save {amount}',
 	'payments.queue.discountBy': '{percent}% by {date}',
