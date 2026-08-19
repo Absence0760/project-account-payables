@@ -270,6 +270,13 @@ def _card_row(provider_card_id: str):
         # call raises and rolls back instead of committing.
         correlation_id=uuid.uuid4(),
         last_four="4242",
+        # `VirtualCard.currency` is a non-nullable column with a "USD" default,
+        # so a real row ALWAYS has one. The webhook reads it to pick the
+        # ISO-4217 minor-unit exponent; without it the handler raises
+        # AttributeError, which the broad `except` turns into a silent 204 —
+        # the mutation is applied in memory but never committed, so the test
+        # sees a "charged" card and no commit.
+        currency="USD",
     )
 
 
