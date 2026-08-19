@@ -277,17 +277,34 @@ User-global, stored on the control-plane `users.notification_prefs` JSONB:
 
 ```json
 {
-  "invoice_assigned": { "email": true, "in_app": true },
-  "invoice_approved": { "email": true, "in_app": true },
-  "invoice_rejected": { "email": true, "in_app": true },
-  "invoice_paid":     { "email": true, "in_app": true },
-  "chat_message":     { "email": true, "in_app": true }
+  "invoice_assigned":         { "email": true, "in_app": true },
+  "invoice_approved":         { "email": true, "in_app": true },
+  "invoice_rejected":         { "email": true, "in_app": true },
+  "invoice_paid":             { "email": true, "in_app": true },
+  "contract_renewal_due":     { "email": true, "in_app": true },
+  "chat_message":             { "email": true, "in_app": true },
+  "cash_shortfall_projected": { "email": true, "in_app": true }
 }
 ```
 
 Opt-out, not opt-in: a missing event or missing channel key defaults to **on**
 (`resolve_prefs`). The `/api/notifications/preferences` endpoints read/patch
 this blob; the `/profile` page renders the per-event toggle grid.
+
+### The prefs schema must cover the WHOLE roster
+
+`schemas/notification.py` enumerated only the four `invoice_*` events while
+`models/notification.NOTIFICATION_EVENT_TYPES` declared seven. Because
+`resolve_prefs` defaults an unknown key to **on**, the three missing events
+weren't merely undocumented — they were **unmutable**: every supplier-chat
+message emailed the AP team with no opt-out, and the same held for
+`contract_renewal_due` and `cash_shortfall_projected`.
+
+Both `NotificationPrefs` and `NotificationPrefsUpdate` now enumerate all seven
+(a key present in the read schema but absent from the update schema would be
+readable and unchangeable). `tests/test_notification_prefs_roster.py` derives
+the expected population from the model's roster, so adding an event type fails
+that file until it joins both schemas — there is no second list to remember.
 
 ## Templates & PII
 
