@@ -3,6 +3,7 @@
 	import { replaceState } from '$app/navigation';
 	import { api } from '$lib/api';
 	import { appendUnique } from '$lib/utils/pagination';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import BulkBar from '$lib/components/ui/BulkBar.svelte';
@@ -120,6 +121,16 @@
 		info: '#638cff',
 	};
 
+	// Two INDEPENDENT request streams — the queue itself and the chip-count
+	// summary — so each gets its own sequencer. One shared counter would let a
+	// summary refresh mark the queue's in-flight response un-committable and
+	// leave the table on the previous filter's rows. Every mutation here
+	// (resolve, bulk resolve) re-fetches through these loaders instead of
+	// editing a row in place, so neither needs `supersedeInFlight()`. See
+	// `frontend/CLAUDE.md` § Sequencing list fetches.
+	const fetchSequence = createRequestSequencer();
+	const summarySequence = createRequestSequencer();
+
 	$effect(() => {
 		statusFilter;
 		typeFilter;
@@ -133,6 +144,7 @@
 
 	async function loadExceptions(opts: { append?: boolean; nextPage?: number } = {}) {
 		const nextPage = opts.nextPage ?? 1;
+		const token = fetchSequence.start();
 		if (opts.append) loadingMore = true;
 		else loading = true;
 		errored = false;
@@ -145,22 +157,38 @@
 			const data = await api.get<{ items: ExceptionItem[]; total: number }>(
 				`/api/exceptions?${params}`
 			);
+			// Superseded by a newer load — discard rather than clobber. Load
+			// more, then switch the status chip: the page-1 replace landed
+			// first, then this append pushed the OLD filter's page-2 rows onto
+			// the new list and overwrote `total`/`page` with them.
+			if (!fetchSequence.canCommit(token)) return;
 			exceptions = opts.append ? appendUnique(exceptions, data.items) : data.items;
 			total = data.total;
 			page = nextPage;
 		} catch {
+			// `isCurrentRequest`, not `canCommit`: a superseded request's failure
+			// is not this table's news — the newer one owns the error state, and
+			// blanking the rows here would discard what it is about to publish.
+			if (!fetchSequence.isCurrentRequest(token)) return;
 			errored = true;
 			if (!opts.append) exceptions = [];
 			toast('Failed to load exceptions', 'error');
 		} finally {
-			loadingMore = false;
-			loading = false;
+			// Flags and selection belong to the newest request only: a stale
+			// response used to clear the spinner while the live fetch was still
+			// out.
+			if (fetchSequence.isCurrentRequest(token)) {
+				loadingMore = false;
+				loading = false;
+			}
 			// Prune on BOTH paths, against the rows the bulk action can actually
 			// act on. The catch empties the table, and it used to leave the
 			// selection behind it — the bulk bar counted ids over zero visible
 			// rows and Resolve would still POST them. Scoping to `selectableIds`
 			// (open / escalated) rather than every loaded row also drops a
 			// selection whose exception someone else resolved between loads.
+			// Unconditional: it reads the rows currently on screen, so it is
+			// correct for a discarded response too.
 			selectedIds = pruneSelection(selectedIds, selectableIds);
 		}
 	}
@@ -170,8 +198,13 @@
 	}
 
 	async function loadSummary() {
+		const token = summarySequence.start();
 		try {
-			summary = await api.get<Summary>('/api/exceptions/summary');
+			const data = await api.get<Summary>('/api/exceptions/summary');
+			// The chip counts drive the filter UI — an older summary landing
+			// last would relabel the chips with pre-resolve tallies.
+			if (!summarySequence.canCommit(token)) return;
+			summary = data;
 		} catch {
 			/* non-critical */
 		}

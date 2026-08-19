@@ -19,6 +19,7 @@
 	import { m } from '$lib/i18n/store.svelte';
 	import { formatDate } from '$lib/utils/time';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
+	import { pruneSelection } from '$lib/utils/selection';
 	import { goto } from '$app/navigation';
 	import TemplateLibraryModal from '$lib/components/workflow-mgmt/TemplateLibraryModal.svelte';
 	import VersionHistoryModal from '$lib/components/workflow-mgmt/VersionHistoryModal.svelte';
@@ -48,6 +49,21 @@
 	let selectableIds = $derived(
 		workflowStore.all.filter((w) => !w.is_default).map((w) => w.id)
 	);
+
+	// Keep the selection ⊆ the rows Bulk delete can actually act on. The store
+	// replaces the list on `fetch()` (mount, entity switch) and edits it in
+	// place on create / update / restore / delete, so a selected definition can
+	// disappear — or be promoted to default — while its id stays in
+	// `selectedIds`: the bulk bar then counts rows that are no longer on screen
+	// and `bulkRemove` POSTs them, coming back with a `not_found` / `default`
+	// failure the user can't see the cause of. `pruneSelection` returns the SAME
+	// Set when nothing went stale, so this guarded reassignment can't loop.
+	// Same guard as /invoices, /exceptions, /expenses and /payments.
+	$effect(() => {
+		const pruned = pruneSelection(selectedIds, selectableIds);
+		if (pruned !== selectedIds) selectedIds = pruned;
+	});
+
 	let allSelected = $derived(
 		selectableIds.length > 0 && selectableIds.every((id) => selectedIds.has(id))
 	);

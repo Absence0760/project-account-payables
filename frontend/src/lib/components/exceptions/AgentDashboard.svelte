@@ -9,6 +9,7 @@
 	import { getAgentStats, getAgentDecisions } from '$lib/api/exceptionAgents';
 	import { ACTION_LABELS, type AgentStats, type AgentDecision } from '$lib/types/exceptionAgents';
 	import { appendUnique } from '$lib/utils/pagination';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { formatDate } from '$lib/utils/time';
 
 	const PAGE_SIZE = 20;
@@ -34,6 +35,15 @@
 		return `${(rate * 100).toFixed(1)}%`;
 	}
 
+	// Sequences every `loadDecisions` call — mount, action chip, load-more; one
+	// counter, latest-issued wins. Without it two fast chip clicks (or a chip
+	// click while a load-more is out) let the earlier response land last and
+	// publish the previous filter's rows, `total` and `page`. The KPI stats are
+	// a one-shot mount read of DIFFERENT state, so they stay unsequenced. This
+	// surface never edits a row in place, so no `supersedeInFlight()` call is
+	// needed. See `frontend/CLAUDE.md` § Sequencing list fetches.
+	const decisionsSequence = createRequestSequencer();
+
 	onMount(load);
 
 	async function load() {
@@ -50,6 +60,7 @@
 
 	async function loadDecisions(opts: { append?: boolean; nextPage?: number } = {}) {
 		const nextPage = opts.nextPage ?? 1;
+		const token = decisionsSequence.start();
 		if (opts.append) loadingMore = true;
 		try {
 			const data = await getAgentDecisions({
@@ -57,13 +68,17 @@
 				page: nextPage,
 				pageSize: PAGE_SIZE
 			});
+			// Superseded by a newer load — discard rather than clobber.
+			if (!decisionsSequence.canCommit(token)) return;
 			decisions = opts.append ? appendUnique(decisions, data.items) : data.items;
 			total = data.total;
 			page = nextPage;
 		} catch {
+			// `isCurrentRequest`, not `canCommit`: only the newest request reports.
+			if (!decisionsSequence.isCurrentRequest(token)) return;
 			if (!opts.append) toast('Failed to load decision log', 'error');
 		} finally {
-			loadingMore = false;
+			if (decisionsSequence.isCurrentRequest(token)) loadingMore = false;
 		}
 	}
 

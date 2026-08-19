@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { appendUnique } from '$lib/utils/pagination';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
+	import { untrack } from 'svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
@@ -79,46 +81,84 @@
 	let applyInvoiceId = $state('');
 	let applying = $state(false);
 
+	// Sequences every `loadMemos` call — mount, status chip, load-more; one
+	// counter, latest-issued wins — so a page-1 replace and a page-2 append
+	// can't land out of order. Load more, then switch the chip: the replace
+	// landed first and the append then pushed the OLD filter's page-2 rows onto
+	// the new list and overwrote `total`/`page` with them. Create / apply / void
+	// all re-fetch through this loader rather than editing a row in place, so no
+	// `supersedeInFlight()` call is needed. See `frontend/CLAUDE.md`
+	// § Sequencing list fetches.
+	const fetchSequence = createRequestSequencer();
+
+	// The mount effect loads all three lists ONCE. It must not depend on
+	// `statusFilter`: `loadMemos` reads it synchronously (before its first
+	// await), and Svelte tracks reads transitively through called functions, so
+	// a plain read there made this effect a second status-filter subscriber —
+	// every chip click fired it AND the effect below, two unsequenced page-1
+	// requests racing with whichever landed last winning (and the vendor /
+	// invoice selects needlessly refetched). `untrack` inside `loadMemos` still
+	// reads the CURRENT filter, it just stops the read registering as the
+	// caller's dependency.
 	$effect(() => {
 		loadAll();
 	});
 
+	// Status chip → refetch. Skips its own mount-time run: a Svelte `$effect`
+	// always fires once immediately whether or not its tracked value actually
+	// changed, so without the guard this queued a second page-1 request on top
+	// of the mount load above.
+	let statusEffectRan = false;
 	$effect(() => {
 		statusFilter;
+		if (!statusEffectRan) {
+			statusEffectRan = true;
+			return;
+		}
 		loadMemos();
 	});
 
 	async function loadAll() {
-		loading = true;
 		await Promise.all([loadMemos(), loadVendors(), loadInvoices()]);
-		loading = false;
 	}
 
 	async function loadMemos(opts: { append?: boolean; nextPage?: number } = {}) {
+		const token = fetchSequence.start();
+		// `loading` is what the table renders instead of "No credit memos" while
+		// a fetch is out. `loadMemos` never touched it, so a status-chip change
+		// sat on the previous filter's rows with no spinner until the response
+		// landed.
+		if (opts.append) loadingMore = true;
+		else loading = true;
 		try {
 			const nextPage = opts.nextPage ?? 1;
 			const params = new URLSearchParams();
-			if (statusFilter !== 'all') params.set('status', statusFilter);
+			const status = untrack(() => statusFilter);
+			if (status !== 'all') params.set('status', status);
 			params.set('page', String(nextPage));
 			params.set('page_size', String(PAGE_SIZE));
 			const data = await api.get<{ items: CreditMemo[]; total: number }>(
 				`/api/credit-memos?${params}`
 			);
+			// Superseded by a newer load — discard rather than clobber.
+			if (!fetchSequence.canCommit(token)) return;
 			memos = opts.append ? appendUnique(memos, data.items) : data.items;
 			total = data.total;
 			page = nextPage;
 		} catch {
+			// `isCurrentRequest`, not `canCommit`: only the newest request reports.
+			if (!fetchSequence.isCurrentRequest(token)) return;
 			toast(m('creditMemos.toast.loadFailed'), 'error');
+		} finally {
+			if (fetchSequence.isCurrentRequest(token)) {
+				loading = false;
+				loadingMore = false;
+			}
 		}
 	}
 
 	async function loadMoreMemos() {
-		loadingMore = true;
-		try {
-			await loadMemos({ append: true, nextPage: page + 1 });
-		} finally {
-			loadingMore = false;
-		}
+		await loadMemos({ append: true, nextPage: page + 1 });
 	}
 
 	let hasMore = $derived(memos.length < total);
