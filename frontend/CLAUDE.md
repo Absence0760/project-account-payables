@@ -189,7 +189,7 @@ Grouped into subfolders by role. Import with the full path, e.g.
 The visual styling for all of the above lives **globally in `src/app.css`** (class-scoped: `.workspace`, `.grid-container td`, `.filter-chip`, `.modal`, `.kpi`, …) so route pages carry no duplicated `<style>`. Feature components below keep their own scoped CSS (Svelte's `.svelte-<hash>` outranks the bare-class globals).
 
 **`modals/` — feature dialogs:**
-- `InvoiceModal.svelte` — invoice detail/edit modal. **Line-total reconciliation:** `saveLineItems` reads `PUT /api/invoices/{id}/line-items`'s `{saved, line_items_total, header_amount, reconciles_with_header}` and, on a divergence, renders a persistent `role="alert"` panel (`[data-testid="line-total-mismatch"]`) naming both figures via `<Money>` plus the money consequence ("cannot enter a payment run" — `line_total_mismatch` is payment-blocking). Response-driven **by necessity**: the `invoice` prop is a snapshot the store's refetch doesn't refresh, so the warning the save just raised isn't on it. Never computes a delta client-side (that would be float money math). See `backend/docs/line-total-reconciliation.md` § What the editor sees.
+- `InvoiceModal.svelte` — invoice detail/edit modal. **Line-total reconciliation:** `saveLineItems` reads `PUT /api/invoices/{id}/line-items`'s `{saved, line_items_total, header_amount, reconciles_with_header}` and, on a divergence, renders a persistent `role="alert"` panel (`[data-testid="line-total-mismatch"]`) naming both figures via `<Money>` plus the money consequence ("cannot enter a payment run" — `line_total_mismatch` is payment-blocking). Response-driven **by necessity**: the `invoice` prop is a snapshot the store's refetch doesn't refresh, so the warning the save just raised isn't on it. Never computes a delta client-side (that would be float money math). See `backend/docs/line-total-reconciliation.md` § What the editor sees. **Approver picker:** `GET /api/invoices/assignable-reviewers` is its ONLY source — the admin-only `GET /api/admin/users` fallback is gone. That endpoint gates on exactly what `POST /invoices/{id}/assign` gates on, so a CFO gets a 403 from it too (deliberately — a CFO cannot assign either), which makes the submit-UNASSIGNED path load-bearing for a whole role rather than a failure cushion: `approverRequired` is false whenever the list is empty, and the note explains that the invoice goes to the queue unassigned. Don't "fix" the CFO 403 by widening the endpoint. `tests-e2e/invoices/approver-picker.spec.ts` asserts the admin directory is never called, from either role.
 - `AdvancedSearchModal.svelte` — invoice search filters
 - `BulkRecodeGLModal.svelte` — admin bulk GL re-code preview/apply
 - `ApprovalMatrixEditor.svelte` — approval-chain matrix builder
@@ -385,6 +385,37 @@ Pill-shaped search input with a magnifier-glass SVG. Single component:
   invoice_number + vendor_name).
 - Clearing the input must re-fire the request without `?search=`,
   not just visually clear.
+- **Never filter the loaded rows instead.** A client-side `.filter()` over
+  what the page has already fetched silently hides every match living on a
+  later page — the user searches and is told nothing matched. `/expenses` and
+  `/requisitions` both shipped that way and needed an honest "searched only
+  the N rows loaded so far" empty state to avoid lying; the fix was the
+  backend `search` leg, not better copy. If the endpoint has no `search`
+  parameter yet, add it — don't approximate it in the browser.
+- **A term that hits the network needs the same discipline as a chip**:
+  debounce, the page/store `createRequestSequencer` (see below), and a record
+  of the term the newest issued request carried. The two pages above keep an
+  `appliedSearch` `$state`, written where the request is issued and read by
+  the debounce effect, which schedules nothing when the term already matches
+  it. That is what stops the effect's FIRST run (mount, including a
+  bookmarked `?search=`) firing a duplicate load 300ms behind the status
+  effect's — and it cancels a pending debounce when a chip click has already
+  loaded with the typed term.
+- **Read `search` via `untrack(() => search)` inside the loader / params
+  builder.** Any function the status-filter `$effect` calls *synchronously* is
+  still inside that effect's tracking scope — Svelte registers reads
+  transitively — so a plain read there makes the status effect depend on the
+  term and every keystroke fires its own immediate request. `untrack` still
+  reads the live value; it only stops the read becoming a dependency. This is
+  issue #168, and it has now been reintroduced twice through a *different*
+  function than the one previously fixed (`syncUrl` first, then the loader),
+  so treat it as a property of the call site, not of one function:
+  `routes/vendors/+page.svelte` is the reference. A `fill()`-based e2e cannot
+  catch it — one state write, one term, and it passes either way. Guard it by
+  typing: `pressSequentially` inside the debounce window, assert nothing
+  fired, then exactly one request for the final term
+  (`tests-e2e/{requisitions,expenses}/search-scope.spec.ts`, and the
+  parameterized `tests-e2e/reactivity/search-debounce-race.spec.ts`).
 - Do NOT re-implement the search-box markup inline. If you find
   yourself writing `<svg ...><circle .../><path .../></svg>` next to
   an `<input>`, you are diverging from the pattern.

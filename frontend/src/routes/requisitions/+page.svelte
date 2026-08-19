@@ -14,7 +14,8 @@
 		approveRequisition,
 		rejectRequisition,
 		cancelRequisition,
-		convertRequisitionToPo
+		convertRequisitionToPo,
+		type RequisitionListParams
 	} from '$lib/api/requisitions';
 	import { listGlAccounts, type GlAccountOption } from '$lib/api/expenses';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
@@ -54,6 +55,9 @@
 	let hasMore = $derived(requisitions.length < total);
 
 	let search = $state($page.url.searchParams.get('search') ?? '');
+	// The search term the newest issued list request carried. Written by
+	// `load()`, read by the debounce effect — see the comment there.
+	let appliedSearch = $state(($page.url.searchParams.get('search') ?? '').trim());
 	let statusFilter = $state<string>($page.url.searchParams.get('status') ?? 'all');
 
 	let showCreate = $state(false);
@@ -92,38 +96,15 @@
 		{ label: '', class: 'actions-col' }
 	]);
 
-	// Client-side text search over the rows LOADED SO FAR (number / title /
-	// department). Deliberately not sent server-side: `GET /api/requisitions`
-	// only ILIKEs `requisition_number` + `title`, so switching to `?search=`
-	// would silently drop every department-only match this filter finds today —
-	// a straight regression. The honest interim is not to hide the limitation:
-	// when the term matches nothing among the loaded rows AND more rows exist
-	// server-side, the empty state says exactly that and points at Load more,
-	// instead of asserting "no requisitions match" about rows it never saw.
-	// (Same class of dishonest-UI bug as an unconditional "Showing all N" —
-	// frontend/CLAUDE.md § Pagination + Load more.) Remove this filter and pass
-	// `search` through to `listRequisitions` once the backend list endpoint
-	// grows a `department` leg — tracked in docs/followups.md.
-	const visible = $derived.by(() => {
-		const q = search.trim().toLowerCase();
-		if (!q) return requisitions;
-		return requisitions.filter(
-			(r) =>
-				r.requisition_number.toLowerCase().includes(q) ||
-				(r.title ?? '').toLowerCase().includes(q) ||
-				(r.department ?? '').toLowerCase().includes(q)
-		);
-	});
-
-	// Three states, not two: a search that only ever saw the loaded page must
-	// not read as "nothing matched" while unfetched rows remain.
-	const emptyMessage = $derived(
-		loading
-			? m('common.loading')
-			: search.trim() && hasMore
-				? m('requisitions.empty.searchPartial', { shown: requisitions.length, total })
-				: m('requisitions.empty')
-	);
+	// Search is a SERVER filter: the term rides `?search=` on
+	// `GET /api/requisitions`, which ILIKEs `requisition_number` + `title` +
+	// `department` — the three columns this table renders. It used to run
+	// client-side over the loaded rows only, which meant a term matching a
+	// requisition on page 2 read as "nothing matched" until the user paged to
+	// it; the empty state had to say so. Now the server searches the whole
+	// filtered set, so the plain empty message is true again and `total` /
+	// Load more describe the MATCHES rather than the unfiltered list.
+	const emptyMessage = $derived(loading ? m('common.loading') : m('requisitions.empty'));
 
 	const pendingCount = $derived(
 		requisitions.filter((r) => r.status === 'pending_approval').length
@@ -157,7 +138,9 @@
 	}
 
 	// Sequences `load` (latest-issued wins) so a slow response for an earlier
-	// status filter can't land after a faster later one. `onSaved` / `replaceRow`
+	// search term or status filter can't land after a faster later one — the
+	// classic "acm resolves after acme" race, now reachable on this page
+	// because the term is a server filter. `onSaved` / `replaceRow`
 	// / `doDelete` edit the list in place with no fetch of their own, so they
 	// retire whatever is in flight first — a new requisition needs no
 	// pre-existing row, so it races even the first load. See
@@ -170,11 +153,29 @@
 		if (opts.append) loadingMore = true;
 		else loading = true;
 		try {
-			const params: { status?: string; page?: number; page_size: number } = {
+			const params: RequisitionListParams = {
 				page: nextPage,
 				page_size: PAGE_SIZE
 			};
 			if (statusFilter !== 'all') params.status = statusFilter;
+			// `untrack`: `load()` is ALSO called synchronously from the
+			// statusFilter `$effect` above, and Svelte tracks reads transitively
+			// through called functions — so a plain `search` read here would make
+			// that effect depend on `search` too, firing an immediate
+			// un-debounced load on every keystroke (issue #168, the very thing
+			// `syncUrl`'s comment says was fixed on /invoices, /payments and
+			// /vendors; `frontend/src/routes/vendors/+page.svelte` untracks the
+			// same read for the same reason). Worse here than there: `load()`
+			// stamps `appliedSearch` first, so the debounce timer would then
+			// short-circuit and the keystroke fetch would be the ONLY one. The
+			// value read is still the live one — untrack only stops the read
+			// registering as a dependency.
+			//
+			// Read at issue time, and recorded, so the debounce below can tell a
+			// term that is already on screen from one that still needs a fetch.
+			const term = untrack(() => search).trim();
+			if (term) params.search = term;
+			appliedSearch = term;
 			const res = await listRequisitions(params);
 			// Superseded by a newer load, or by a local create/lifecycle edit.
 			if (!fetchSequence.canCommit(token)) return;
@@ -200,11 +201,23 @@
 		load();
 	});
 
+	// A keystroke now costs a request, so the term is debounced 300ms (the
+	// /invoices, /payments, /vendors convention) and the fetch sequencer above
+	// discards a slow response for an earlier term. `appliedSearch` is the term
+	// the newest ISSUED load used: re-running with a term that already matches
+	// it schedules nothing, which is what keeps the effect's first run (mount,
+	// including a bookmarked `?search=`) from firing a duplicate load 300ms
+	// behind the status effect's — and cancels a pending debounce when a chip
+	// click has already loaded with the typed term.
 	let searchTimer: ReturnType<typeof setTimeout>;
 	$effect(() => {
-		search;
+		const next = search.trim();
 		clearTimeout(searchTimer);
-		searchTimer = setTimeout(() => syncUrl(), 300);
+		if (next === appliedSearch) return;
+		searchTimer = setTimeout(() => {
+			syncUrl();
+			load();
+		}, 300);
 		// Cancel a pending debounce on teardown: without it the timer fires
 		// after the page is gone, running syncUrl()/a list fetch against a route
 		// the user already left.
@@ -353,11 +366,11 @@
 
 	<DataTable
 		columns={COLUMNS}
-		isEmpty={visible.length === 0}
+		isEmpty={requisitions.length === 0}
 		empty={emptyMessage}
 	>
 		{#snippet body()}
-			{#each visible as r (r.id)}
+			{#each requisitions as r (r.id)}
 				<tr class="clickable" onclick={(e) => { if (isRowOpenClick(e)) editing = r; }}>
 					<td class="mono">
 						<RowLink onclick={() => (editing = r)} ariaLabel={m('requisitions.row.open', { number: r.requisition_number })}>
