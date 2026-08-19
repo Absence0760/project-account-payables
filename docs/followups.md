@@ -34,12 +34,12 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#251](https://github.com/Absence0760/project-account-payables/issues/251)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-08-18 against round 11 — a five-agent bug hunt
-(multi-currency / e-invoicing, async & concurrency, analytics / reporting,
-AI surfaces, and the SvelteKit frontend). Each agent fixed its findings at the
-root with a reproducing test first and recorded the rest in its own
-§ Surfaced by the round-11 hunt … section below. Like round 10 the pass is
-**additive**: nothing pre-existing was closed or re-verified.
+**Last reconciled:** 2026-08-19 against round 12 — a five-agent sweep of the
+open follow-up backlog itself (money path, vendors/procurement/expenses,
+multi-currency/e-invoicing/async, ingest/reports/AI, and the frontend), plus a
+sixth pass landing the backend legs the frontend work was written against. The
+backlog went from 75 open items to 20; the calls each agent had to make are
+recorded in [decisions.md](decisions.md) §36-§49.
 
 Before that: 2026-08-18 against round 10 — a five-agent bug hunt.
 Each agent fixed its findings at the root with a reproducing test first, and
@@ -399,27 +399,33 @@ only becomes a bug once something else changes around it.
       **Trigger:** the next change touching signup, partner link codes, or
       scheduled-report recipients.
 
-### Frontend search is client-side on two surfaces
+### Four frontend surfaces still run a transitional path
 
-Round 12 closed every other open frontend finding from rounds 9 and 11. This is
-the one that survived, because moving it server-side needs the backend leg
-below and doing it without that leg would be a regression.
+Round 12 landed the backend legs these were waiting on
+(`GET /api/purchase-orders/counts`, `blocked`/`blocked_reason` on
+`GET /api/payments/queue`, `GET /api/invoices/assignable-reviewers`, a
+`department` leg on requisitions search and a `search` param on expenses). The
+frontend was written against them and degrades safely without them, so nothing
+is broken — but four surfaces still run the fallback rather than the real path.
 
-- [ ] **`/requisitions` and `/expenses` search only ever matches rows already
-      loaded.** `routes/requisitions/+page.svelte` filters client-side over
-      `requisitions` (number / title / department) and never passes `search` to
-      `listRequisitions`; `routes/expenses/+page.svelte` does the same over
-      `expenseStore.all` and says so in a comment. Round 11 added Load-more to
-      both, so every row is now *reachable*, but a term matching a row on a
-      later page still finds nothing until the user pages to it. **Durable
-      fix:** send the term server-side. It is deferred because doing so today
-      would *regress* requisitions —
-      `backend/app/api/requisitions.py::list_requisitions` searches
-      `requisition_number` + `title` only, so a department-only match that the
-      client filter finds within the loaded page would start returning nothing.
-      Add the `department` leg (and an equivalent `search` param to the expense
-      list endpoint), then move both pages onto it and delete the client filter.
-      **Trigger:** the next backend slice touching either list endpoint.
+- [ ] **`/requisitions` and `/expenses` still filter client-side.** Both API
+      clients (`src/lib/api/{requisitions,expenses}.ts`) already send `search`;
+      only the page components still filter over the loaded rows, so a term
+      matching a row on a later page finds nothing until the user pages to it.
+      The regression that blocked this is gone — requisitions search now covers
+      `department`, and expenses has a `search` param at all.
+      **Durable fix:** pass the term through and delete the client-side filter
+      and its honest-but-transitional empty state on both pages.
+      **Trigger:** the next slice touching either page.
+
+- [ ] **`InvoiceModal.svelte` still carries its admin-only approver fallback.**
+      The picker now has `GET /api/invoices/assignable-reviewers`, so the
+      `GET /api/admin/users` fallback is dead weight on a path that 403s for
+      every non-admin. Note a CFO gets 403 from the new endpoint too — matching
+      `POST /invoices/{id}/assign`, which a CFO also cannot call — so the
+      submit-unassigned path stays.
+      **Durable fix:** delete the fallback.
+      **Trigger:** the next slice touching the invoice modal.
 
 ### AI Cash-Flow Copilot — Phase 3 deferred bucket
 

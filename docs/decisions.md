@@ -1938,3 +1938,54 @@ wholesale would make any subsequent visual complaint unattributable to a
 specific tranche. Half moved in the first tranche; the rest follows in
 attributable batches, with collapsed distinctions checked each time (two were
 verified here: recurring's `paused` / `ended` greys, and three punch-out ambers).
+
+## 48. A counts endpoint takes every list filter except the one it is tallying
+
+**Decided:** 2026-08-19 · `backend/app/api/purchase_orders.py`, `backend/app/api/vendors.py`
+
+`GET /api/vendors/counts` exists because a status chip that counts only the
+current page undercounts the moment a tenant has more rows than fit — the
+Unverified attention badge was the original case. `GET /api/purchase-orders/counts`
+is the same fix for the same reason, and copies it deliberately rather than
+inventing a variant.
+
+The non-obvious part is which filters a counts endpoint accepts. It takes
+`search` and every *narrowing* filter the list takes — the tallies have to
+describe the same population the list would render, or the chips disagree with
+the table under them. It deliberately does **not** take `status`, because status
+is the dimension being tallied: applying it would return the selected status'
+count and zero for every other chip, which is exactly the "chip that lies"
+failure the endpoint exists to prevent.
+
+RBAC matches the list endpoint exactly rather than being tightened. A counts call
+that 403s where the list 200s produces a page that renders rows above chips that
+cannot explain them, which is a worse failure than the count simply being
+unavailable — and the frontend already latches an unavailable count back to
+pre-counts behaviour.
+
+## 49. A blocked row names the exception type, never the exception's description
+
+**Decided:** 2026-08-19 · `backend/app/api/payments.py`, `backend/app/services/payment_runs.py`
+
+`GET /api/payments/queue` offered rows that `POST /api/payments/runs` then hard
+409'd, because run creation refuses any invoice carrying an unresolved exception
+in `PAYMENT_BLOCKING_EXCEPTION_TYPES`. The queue now marks each row `blocked` with
+a `blocked_reason`.
+
+Two calls in that. First, the predicate is **not restated**: a new
+`blocking_exception_types()` is the single source, and `blocked_invoice_ids` was
+redefined in terms of it, so the queue and the gate cannot drift and a new
+blocking type reaches both for free. That mattered immediately —
+`payment_reconciliation` was added to the tuple earlier in this same branch (§41's
+aged-out-payment fix) and required no second edit.
+
+Second, `blocked_reason` is the exception **type** from a fixed vocabulary, never
+the exception's `description`. A description is free text assembled from invoice
+and vendor data; this field crosses a JSON boundary to an operator's browser, so
+shipping it would put vendor names and amounts into a payload whose whole purpose
+is "this row is not actionable". The type is enough to explain the block, and a
+user who needs the detail opens the exception where the normal scoping applies.
+
+Where an invoice carries several blocking exceptions the earliest tuple member is
+reported, so the reason is deterministic rather than dependent on row order —
+a flapping reason string on a payment surface reads as a bug in the gate.
