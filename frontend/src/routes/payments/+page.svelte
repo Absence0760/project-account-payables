@@ -12,6 +12,7 @@
 	import { pruneSelection } from '$lib/utils/selection';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import StatusBadge from '$lib/components/ui/StatusBadge.svelte';
+	import Badge, { type BadgeTone } from '$lib/components/ui/Badge.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
@@ -65,6 +66,32 @@
 	let activeTab = $state<Tab>('queue');
 	let search = $state('');
 	let activeStatus = $state<PaymentStatus | 'all'>('all');
+
+	/**
+	 * Badge tone per payment status.
+	 *
+	 * `Record<PaymentStatus, …>` on purpose: the old per-status CSS rules were
+	 * a list you had to remember to extend, and `voided` — a real member of
+	 * `PAYMENT_STATUSES` — never got one, so a voided payment rendered an
+	 * untinted pill. A total record makes the compiler ask the question.
+	 *
+	 * `cancelled` and `voided` share `muted` (a grey tint) while a run's
+	 * `draft` is `neutral` (flat): "abandoned" and "reversed" are both inert
+	 * money states, whereas draft is money that has not been attempted yet.
+	 */
+	const PAYMENT_STATUS_TONES: Record<PaymentStatus, BadgeTone> = {
+		pending: 'warning',
+		// Same tone as `pending` — both are waiting. What separates "a human
+		// must clear this" from "waiting its turn" is the ring the History
+		// cell draws around it; see `.compliance-ring`.
+		pending_compliance: 'warning',
+		submitted: 'accent',
+		processing: 'accent',
+		completed: 'success',
+		failed: 'danger',
+		cancelled: 'muted',
+		voided: 'muted'
+	};
 
 	// Summary
 	// Money fields arrive as exact Decimal STRINGS from the backend (money
@@ -517,6 +544,30 @@
 	}
 	let runs = $state<RunItem[]>([]);
 
+	/**
+	 * Badge tone per run status — `services/payment_runs`' three claim states
+	 * (`draft` / `executing` / `cancelled`) plus the four its rollup derives.
+	 *
+	 * `RunItem.status` is a bare string (the backend derives it on read), so
+	 * this can't be a total record and an unknown value falls back to the flat
+	 * `neutral` chip rather than to nothing. `partial` and `executing` had no
+	 * rule at all before and rendered untinted — `partial` especially, which
+	 * is the one run status meaning "some of this money failed".
+	 */
+	const RUN_STATUS_TONES: Record<string, BadgeTone> = {
+		draft: 'neutral',
+		executing: 'accent',
+		submitted: 'accent',
+		completed: 'success',
+		partial: 'warning',
+		failed: 'danger',
+		cancelled: 'muted'
+	};
+
+	function runTone(status: string): BadgeTone {
+		return RUN_STATUS_TONES[status] ?? 'neutral';
+	}
+
 	function buildParams(): Record<string, string> {
 		// Paging (page / page_size) is owned by the store's Load-More; only
 		// the filter params belong here.
@@ -645,6 +696,33 @@
 		vendor_name: string | null;
 		invoice_number: string | null;
 	}
+
+	/**
+	 * Badge tone per virtual-card status (`card_adapters/base.CardStatus`).
+	 *
+	 * Six of the eight had no CSS rule and rendered untinted — only
+	 * `completed` and `cancelled` happened to collide with a payment-status
+	 * class name. Same bare-string caveat as the runs map above.
+	 *
+	 * `sent` / `active` share `accent` and `charged` / `completed` share
+	 * `success`: neither pair was visually distinguished before, so this
+	 * collapses nothing that existed.
+	 */
+	const CARD_STATUS_TONES: Record<string, BadgeTone> = {
+		created: 'neutral',
+		sent: 'accent',
+		active: 'accent',
+		charged: 'success',
+		completed: 'success',
+		expired: 'muted',
+		cancelled: 'muted',
+		declined: 'danger'
+	};
+
+	function cardTone(status: string): BadgeTone {
+		return CARD_STATUS_TONES[status] ?? 'neutral';
+	}
+
 	const CARDS_PAGE_SIZE = 20;
 	let cards = $state<CardItem[]>([]);
 	let cardsTotal = $state(0);
@@ -1035,10 +1113,15 @@
 						<td>{item.vendor_name}</td>
 						<td class="right mono">{formatCurrency(item.amount, item.currency)}</td>
 						<td class:overdue-text={item.is_overdue}>
-							{formatDate(item.due_date)}
-							{#if item.is_overdue}
-								<span class="overdue-badge">{m('payments.overdue')}</span>
-							{/if}
+							<!-- The 6px that used to be the pill's own margin lives on this
+							     row: `<Badge>` owns colour and metrics, the caller owns
+							     placement. -->
+							<span class="due-cell">
+								{formatDate(item.due_date)}
+								{#if item.is_overdue}
+									<Badge tone="danger" variant="overdue-badge">{m('payments.overdue')}</Badge>
+								{/if}
+							</span>
 						</td>
 						<td>
 							{#if item.discount_eligible && item.discount_amount && item.discount_percent}
@@ -1080,15 +1163,27 @@
 						<td class="mono">{p.invoice_number ?? '—'}</td>
 						<td>{p.vendor_name ?? '—'}</td>
 						<td>
-							<span class="method-badge" class:card-method={p.method === 'virtual_card'}>
+							<Badge
+								tone={p.method === 'virtual_card' ? 'accent' : 'neutral'}
+								variant="method-badge"
+							>
 								{methodLabel(p.method)}
 								{#if p.method === 'virtual_card' && p.card_last_four}
 									<span class="card-meta">•••• {p.card_last_four}</span>
 								{/if}
-							</span>
+							</Badge>
 						</td>
 						<td class="right mono">{formatCurrency(p.amount)}</td>
-						<td><span class="badge {p.status}">{PAYMENT_STATUS_LABELS[p.status]}</span></td>
+						<td>
+							<span
+								class="status-pill-wrap"
+								class:compliance-ring={p.status === 'pending_compliance'}
+							>
+								<Badge tone={PAYMENT_STATUS_TONES[p.status]} variant={p.status}>
+									{PAYMENT_STATUS_LABELS[p.status]}
+								</Badge>
+							</span>
+						</td>
 						<td class="mono muted">{p.reference ?? '—'}</td>
 						<td class="muted">{formatDate(p.created_at)}</td>
 						<td class="actions">
@@ -1153,7 +1248,7 @@
 								{run.id.slice(0, 8)}
 							</RowLink>
 						</td>
-						<td><span class="badge {run.status}">{run.status}</span></td>
+						<td><Badge tone={runTone(run.status)} variant={run.status}>{run.status}</Badge></td>
 						<td class="right mono">{run.total_amount ? formatCurrency(run.total_amount) : '—'}</td>
 						<td>{run.payment_count}</td>
 						<td class="muted">{formatDate(run.executed_at)}</td>
@@ -1198,12 +1293,12 @@
 				{#each cards as card (card.id)}
 					<tr>
 						<td>
-							<span class="card-badge">
+							<Badge tone="accent" variant="card-badge">
 								{card.card_provider}
 								{#if card.last_four}
 									<span class="card-meta">•••• {card.last_four}</span>
 								{/if}
-							</span>
+							</Badge>
 						</td>
 						<td>{card.vendor_name ?? '—'}</td>
 						<td class="mono">{card.invoice_number ?? '—'}</td>
@@ -1213,7 +1308,7 @@
 								? formatCurrency(card.amount_charged, card.currency)
 								: '—'}
 						</td>
-						<td><span class="badge {card.status}">{card.status}</span></td>
+						<td><Badge tone={cardTone(card.status)} variant={card.status}>{card.status}</Badge></td>
 						<td class="muted">{formatDate(card.expires_at)}</td>
 						<td class="actions">
 							{#if card.status === 'created' || card.status === 'sent' || card.status === 'active'}
@@ -1484,99 +1579,47 @@
 		color: #f06464;
 	}
 
-	.overdue-badge {
-		display: inline-block;
-		font-size: 0.68rem;
-		font-weight: 600;
-		padding: 1px 6px;
-		border-radius: 8px;
-		background: rgba(224, 64, 64, 0.12);
-		color: #f06464;
-		margin-left: 6px;
-	}
-
-	/* --- Method badge --- */
-
-	.method-badge {
-		display: inline-block;
-		padding: 2px 8px;
-		border-radius: 10px;
-		background: var(--bg);
-		font-size: 0.78rem;
-		font-weight: 500;
-		color: var(--text-muted);
-	}
-
-	.method-badge.card-method {
-		background: rgba(99, 140, 255, 0.1);
-		color: var(--accent);
+	/* Date + its overdue pill. The gap used to be the pill's own
+	   `margin-left`; `<Badge>` owns colour and metrics, the caller owns
+	   placement. */
+	.due-cell {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		/* The date and the pill were separate inline runs before and could
+		   break between them; a flex row must be told to keep doing that or a
+		   narrow viewport gets a horizontal scrollbar (SC 1.4.10). */
+		flex-wrap: wrap;
 	}
 
 	/* --- Status badges --- */
 
-	.badge {
-		display: inline-block;
-		padding: 3px 10px;
+	/* Every pill on this page is `<Badge>`; the tone per status lives in the
+	   three `*_STATUS_TONES` maps in the script. What stays here is placement
+	   and the one emphasis the palette has no tone for.
+
+	   Held by the sanctions/KYC gate is an attention state, not a failure —
+	   amber, so it reads as "needs a human" and not as `failed`. It shares the
+	   warning tone with `pending`, which is correct (both are waiting), so the
+	   RING, not the fill, is what separates a payment a human must clear from
+	   one merely waiting its turn. Before the tokens the two were told apart by
+	   two hand-picked oranges; that read as a distinction but was never a
+	   stated one, and is exactly what a later palette nudge collapses silently.
+	   `Compliance Hold` vs `Pending` already carries it in text (SC 1.4.1) —
+	   this is scannability, which is why the status is first-class at all.
+
+	   The ring is drawn by this wrapper rather than by the badge: a
+	   caller-specific emphasis is not a sixth tone, and `Badge` deliberately
+	   exposes no styling props. A non-inset shadow takes no layout space at
+	   all, so the pill stays aligned with every sibling badge — which is what
+	   the previous `inset` shadow was working around. */
+	.status-pill-wrap {
+		display: inline-flex;
 		border-radius: 12px;
-		font-size: 0.75rem;
-		font-weight: 600;
-		text-transform: capitalize;
-		white-space: nowrap;
 	}
 
-	.badge.pending {
-		background: var(--warning-tint);
-		color: var(--warning-on-tint);
-	}
-
-	/* Held by the sanctions/KYC gate — an attention state, not a failure.
-	   Amber so it reads as "needs a human", distinct from `failed`.
-
-	   It shares the warning tone with `pending` above, which is correct — both
-	   are waiting — so the RING, not the fill, is what separates a payment a
-	   human must clear from one merely waiting its turn. Before the tokens the
-	   two were told apart by two different hand-picked oranges; that read as a
-	   distinction but was never a stated one, and it is the kind of thing a
-	   later palette nudge silently collapses. `Compliance Hold` vs `Pending`
-	   already carries it in text (SC 1.4.1) — this is scannability, which is
-	   the whole reason the status is first-class rather than invisible.
-
-	   An inset shadow, not a border: `.badge` declares none, so a real border
-	   would grow this pill 2px and misalign it against every sibling badge. */
-	.badge.pending_compliance {
-		background: var(--warning-tint);
-		color: var(--warning-on-tint);
-		box-shadow: inset 0 0 0 1px var(--warning-on-tint);
-	}
-
-	.badge.processing {
-		background: var(--accent-tint);
-		color: var(--accent-on-tint);
-	}
-
-	.badge.completed {
-		background: var(--success-tint);
-		color: var(--success-on-tint);
-	}
-
-	.badge.failed {
-		background: rgba(240, 70, 70, 0.15);
-		color: #f06464;
-	}
-
-	.badge.cancelled {
-		background: rgba(150, 150, 150, 0.15);
-		color: #999;
-	}
-
-	.badge.draft {
-		background: var(--bg);
-		color: var(--text-muted);
-	}
-
-	.badge.submitted {
-		background: var(--accent-tint);
-		color: var(--accent-on-tint);
+	.compliance-ring {
+		box-shadow: 0 0 0 1px var(--warning-on-tint);
 	}
 
 	/* --- Queue selection & payment --- */
@@ -1673,23 +1716,33 @@
 		background: rgba(31, 168, 106, 0.08);
 	}
 
+	/* NOT a `<Badge>`: two stacked lines, so it needs the metrics a shared
+	   one-size pill deliberately doesn't have (decisions.md §47 — a pill with
+	   genuinely different metrics is a different component, not a prop). It
+	   takes the palette tokens instead, which is the same concession
+	   `ScreeningBadge` got. */
 	.discount-chip {
 		display: inline-flex;
 		flex-direction: column;
 		gap: 2px;
 		padding: 4px 8px;
 		border-radius: 6px;
-		background: rgba(31, 168, 106, 0.1);
-		color: #1fa86a;
+		background: var(--success-tint);
+		color: var(--success-on-tint);
 		font-size: 0.78rem;
 		font-weight: 600;
 		line-height: 1.2;
 	}
 
+	/* `inherit`, not `--text-muted`: the sub-line sits ON the tint, and muted
+	   grey over a 15% tint is 4.11:1 on `--surface` — a WCAG 1.4.3 failure the
+	   static audit can't see (it resolves no cascade) and axe only catches on a
+	   rendered tab. A tint pairs with its own `-on-tint` text, sub-labels
+	   included; size and weight already carry the hierarchy. */
 	.discount-pct {
 		font-size: 0.7rem;
 		font-weight: 400;
-		color: var(--text-muted);
+		color: inherit;
 	}
 
 	.btn-pay {
@@ -1723,6 +1776,10 @@
 		opacity: 0.72;
 	}
 
+	/* Also not a `<Badge>`: it carries a whole localised sentence ("Possible
+	   duplicate — unresolved"), so `white-space: normal` is load-bearing and
+	   the primitive's `nowrap` would push the status column past a 320px
+	   viewport (SC 1.4.10). It already spells the recipe with the tokens. */
 	.blocked-chip {
 		display: inline-block;
 		margin-left: 6px;
@@ -1936,24 +1993,16 @@
 		color: var(--text-muted);
 	}
 
-	.card-badge {
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-		padding: 3px 10px;
-		border-radius: 10px;
-		background: rgba(99, 140, 255, 0.1);
-		color: var(--accent);
-		font-size: 0.78rem;
-		font-weight: 600;
-		text-transform: capitalize;
-	}
-
+	/* Same reasoning as `.discount-pct`: this sub-label renders INSIDE a
+	   `<Badge>` (the method pill and the card pill both), and `--text-muted`
+	   over the 15% accent tint is 4.34:1 on `--surface`. `inherit` takes the
+	   badge's own `-on-tint` colour — and is a no-op on the flat `neutral`
+	   method pill, whose colour already is `--text-muted`. */
 	.card-meta {
 		font-family: 'SF Mono', 'Cascadia Code', monospace;
 		font-size: 0.72rem;
 		font-weight: 400;
-		color: var(--text-muted);
+		color: inherit;
 	}
 
 	.card-details {
