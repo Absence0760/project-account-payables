@@ -401,6 +401,21 @@ Pill-shaped search input with a magnifier-glass SVG. Single component:
   bookmarked `?search=`) firing a duplicate load 300ms behind the status
   effect's — and it cancels a pending debounce when a chip click has already
   loaded with the typed term.
+- **Read `search` via `untrack(() => search)` inside the loader / params
+  builder.** Any function the status-filter `$effect` calls *synchronously* is
+  still inside that effect's tracking scope — Svelte registers reads
+  transitively — so a plain read there makes the status effect depend on the
+  term and every keystroke fires its own immediate request. `untrack` still
+  reads the live value; it only stops the read becoming a dependency. This is
+  issue #168, and it has now been reintroduced twice through a *different*
+  function than the one previously fixed (`syncUrl` first, then the loader),
+  so treat it as a property of the call site, not of one function:
+  `routes/vendors/+page.svelte` is the reference. A `fill()`-based e2e cannot
+  catch it — one state write, one term, and it passes either way. Guard it by
+  typing: `pressSequentially` inside the debounce window, assert nothing
+  fired, then exactly one request for the final term
+  (`tests-e2e/{requisitions,expenses}/search-scope.spec.ts`, and the
+  parameterized `tests-e2e/reactivity/search-debounce-race.spec.ts`).
 - Do NOT re-implement the search-box markup inline. If you find
   yourself writing `<svg ...><circle .../><path .../></svg>` next to
   an `<input>`, you are diverging from the pattern.
