@@ -60,8 +60,10 @@ from app.services.payment_runs import (
     active_run_payments,
     blocked_invoice_ids,
     create_payment_run_for_invoices,
+    derive_run_status,
     is_retry_safe,
     net_payable_amount,
+    recompute_run_status,
     rollup_payment_statuses,
     superseded_payment_ids,
 )
@@ -810,9 +812,36 @@ async def void_payment(
             "settled_at": payment.completed_at.isoformat() if payment.completed_at else None,
         },
     )
+
+    await _recompute_parent_run_status(db, payment)
+
     await db.commit()
     await db.refresh(payment)
     return PaymentResponse.from_db(payment, invoice)
+
+
+async def _recompute_parent_run_status(db: AsyncSession, payment: Payment) -> None:
+    """Re-derive the parent `PaymentRun.status` after a payment's status changed.
+
+    `_dispatch_run_payments`' final rollup is the only writer of the persisted
+    value, so every endpoint that moves a payment afterwards
+    (`/compliance/release`, `/compliance/dismiss`, `/void`) left the run
+    describing an outcome its own payments no longer supported. The reads
+    derive it anyway (`payment_runs.derive_run_status`), so this is what keeps
+    the stored column honest for anything that reads it directly — an operator
+    at `psql`, an export, a future consumer.
+
+    A standalone payment (no run) is a no-op. Never commits — the caller's
+    transaction owns that.
+    """
+    if payment.payment_run_id is None:
+        return
+    run = (
+        await db.execute(select(PaymentRun).where(PaymentRun.id == payment.payment_run_id))
+    ).scalar_one_or_none()
+    if run is None:
+        return
+    await recompute_run_status(db, run)
 
 
 async def _resolve_compliance_hold_exception(
@@ -960,6 +989,8 @@ async def release_compliance_hold(
             resolution="released",
         )
 
+    await _recompute_parent_run_status(db, payment)
+
     await db.commit()
     await db.refresh(payment)
 
@@ -1040,6 +1071,8 @@ async def dismiss_compliance_hold(
             actor_name=user.full_name,
             resolution=f"dismissed: {body.reason}",
         )
+
+    await _recompute_parent_run_status(db, payment)
 
     await db.commit()
     await db.refresh(payment)
@@ -1418,6 +1451,12 @@ async def list_payment_runs(
     items = []
     for run in runs:
         rollup = rollup_payment_statuses(per_run.get(run.id, ()))
+        # Report the status the run's own payments support, not the one the
+        # dispatcher happened to persist at the end of its last pass — nothing
+        # rewrites `PaymentRun.status` when a webhook, the reconciler or
+        # `/compliance/{release,dismiss}` moves a payment afterwards. See
+        # `payment_runs.derive_run_status`.
+        run.status = derive_run_status(run.status, rollup)
         items.append(
             PaymentRunResponse.from_db(
                 run,
@@ -1557,7 +1596,11 @@ async def get_payment_run(
 
     return {
         "id": str(run.id),
-        "status": run.status,
+        # Derived from the run's ACTIVE payments (see the list endpoint) so the
+        # status, the counts and `retryable_failures` below can't contradict
+        # each other — a run reporting `submitted` with `retryable_failures: 1`
+        # offered a retry button that `/retry-failed` then 409ed.
+        "status": derive_run_status(run.status, rollup),
         # Money serialises as an exact Decimal STRING, never float().
         "total_amount": str(run.total_amount) if run.total_amount else "0",
         "initiated_by": str(run.initiated_by) if run.initiated_by else None,
@@ -2786,12 +2829,33 @@ async def retry_failed_payments(
     any that is no longer `pending`.
     """
     run = await _get_scoped_run(db, run_id, entity_id, for_update=True)
-    if run.status not in RETRYABLE_RUN_STATUSES:
+    # Gate on what the run's payments actually say, not on the value the last
+    # dispatch pass persisted. Nothing rewrites `PaymentRun.status` when a
+    # webhook, the reconciler or `/compliance/{release,dismiss}` moves one of
+    # its payments afterwards — so a run that rolled up `submitted` (one
+    # payment held `pending_compliance`) and then had that payment dismissed
+    # reported a retryable failure that this endpoint refused to retry, with
+    # `/execute` and `/resume` 409ing too: a dead end, and exactly the "button
+    # that can't act" `retryable_failures` exists to prevent. The read
+    # endpoints derive the same way (`payment_runs.derive_run_status`), so the
+    # status an operator sees and the status this gates on cannot diverge.
+    effective_status = derive_run_status(
+        run.status,
+        rollup_payment_statuses(
+            p.status
+            for p in active_run_payments(
+                (await db.execute(select(Payment).where(Payment.payment_run_id == run_id)))
+                .scalars()
+                .all()
+            )
+        ),
+    )
+    if effective_status not in RETRYABLE_RUN_STATUSES:
         raise HTTPException(
             status_code=409,
             detail=(
                 "Can only retry a run that finished with failures "
-                f"({' or '.join(RETRYABLE_RUN_STATUSES)}), not '{run.status}'"
+                f"({' or '.join(RETRYABLE_RUN_STATUSES)}), not '{effective_status}'"
             ),
         )
     # Re-attempting moves money exactly like /execute — same maker-checker gate

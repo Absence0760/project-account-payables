@@ -69,9 +69,16 @@ class PaymentRunRollup:
     def run_status(self) -> str:
         """The `PaymentRun.status` these payment outcomes imply.
 
-        Preserves the exact precedence the dispatcher has always used: all-fail
-        → `failed`, any-fail-with-a-survivor → `partial`, anything still in
-        flight → `submitted`, otherwise `completed`.
+        Precedence: all-fail → `failed`, any-fail-with-a-survivor → `partial`,
+        anything still in flight → `submitted`, otherwise `completed`.
+
+        The two rungs BELOW `completed` exist because the default used to be
+        `completed` — a fail-OPEN answer on a money-run status. A run with
+        every payment still `pending` (nothing attempted) and a run with no
+        payments at all both reported "completed" without a cent having moved.
+        A run whose payments are all `pending` is precisely the resumable
+        state, so it reports `executing`; a run with no payments has never been
+        dispatched at all, so it reports `draft`. Neither claims success.
         """
         if self.failed and not (self.completed or self.in_flight):
             return "failed"
@@ -79,7 +86,64 @@ class PaymentRunRollup:
             return "partial"
         if self.in_flight:
             return "submitted"
+        if self.total == 0:
+            return "draft"
+        if self.pending:
+            return "executing"
         return "completed"
+
+
+#: Run statuses that describe a CLAIM on the run, not an outcome of its
+#: payments. `draft` = never dispatched, `executing` = a dispatch pass holds it,
+#: `cancelled` = abandoned (its payments were deleted). `derive_run_status`
+#: passes these straight through: re-deriving them from payment rows would let
+#: a rollup un-claim a run mid-dispatch, and `/execute` / `/resume` gate on
+#: exactly these values.
+CLAIM_RUN_STATUSES: tuple[str, ...] = ("draft", "executing", "cancelled")
+
+
+def derive_run_status(persisted_status: str | None, rollup: PaymentRunRollup) -> str:
+    """The run status to REPORT, given what's persisted and what its payments say.
+
+    ``PaymentRun.status`` is only ever written by the dispatcher's final rollup
+    (`api/payments._dispatch_run_payments`) and the claim/cancel transitions.
+    Nothing else re-derives it — not the webhook, not the reconciler, not
+    `/compliance/{release,dismiss}` — so a run that rolled up `submitted`
+    (one payment held `pending_compliance`) and then had that payment dismissed
+    kept reporting `submitted` while its own payments said `failed`.
+    `/retry-failed` gates on `RETRYABLE_RUN_STATUSES = ("partial", "failed")`,
+    and `/execute` / `/resume` gate on the claim states, so that run was a dead
+    end: it showed a retryable failure and every button 409ed.
+
+    Deriving on read closes it without a migration and without any writer being
+    able to drift from any reader. A claim state is returned untouched (see
+    ``CLAIM_RUN_STATUSES``); an outcome state is recomputed from the run's
+    ACTIVE payments.
+    """
+    status = persisted_status or "draft"
+    if status in CLAIM_RUN_STATUSES:
+        return status
+    return rollup.run_status
+
+
+async def recompute_run_status(db: AsyncSession, run: PaymentRun) -> str:
+    """Re-derive and PERSIST ``run.status`` from its payments. Returns the new value.
+
+    Called wherever a payment's status changes outside the dispatch pass — the
+    compliance release/dismiss endpoints, `/void`, the processor webhook — so
+    the stored value stops lying between reads. Reads go through
+    ``derive_run_status`` regardless, so this is belt-and-braces rather than
+    the correctness mechanism; it is what keeps a `SELECT status FROM
+    payment_runs` (an operator, an export, a future consumer) honest.
+
+    Never commits — the caller's transaction owns that.
+    """
+    rows = (
+        (await db.execute(select(Payment).where(Payment.payment_run_id == run.id))).scalars().all()
+    )
+    rollup = rollup_payment_statuses(p.status for p in active_run_payments(rows))
+    run.status = derive_run_status(run.status, rollup)
+    return run.status
 
 
 def superseded_payment_ids(payments: Iterable[Payment]) -> set[uuid.UUID]:

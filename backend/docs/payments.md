@@ -978,6 +978,44 @@ or real webhooks. The seam is locked by `backend/tests/test_stripe_api_base.py`
 (CI-safe, no container). For the other processors, the in-process `mock` adapter
 remains the local default.
 
+### `PaymentRun.status` is derived from its payments on read
+
+`_dispatch_run_payments`' final rollup is the only writer of the persisted
+`PaymentRun.status`. Nothing else rewrites it — not the processor webhook, not
+the reconciler backstop, not `/compliance/{release,dismiss}` — so a run that
+rolled up `submitted` (one payment held `pending_compliance`) and then had that
+payment dismissed kept reporting `status: "submitted"` while its own payments
+said `failed`. `/retry-failed` gates on
+`RETRYABLE_RUN_STATUSES = ("partial", "failed")` and `/execute` / `/resume` gate
+on the claim states, so the run was a **dead end**: it showed
+`retryable_failures: 1` and every button on it 409ed — precisely the "button
+that can't act" the `retryable_failures` field exists to prevent.
+
+`services/payment_runs.derive_run_status(persisted, rollup)` is the one rule
+both the reads and the retry gate apply:
+
+| Persisted status | Meaning | Derived |
+|---|---|---|
+| `draft` / `executing` / `cancelled` (`CLAIM_RUN_STATUSES`) | a CLAIM on the run, not an outcome | passed through unchanged — re-deriving would let a rollup un-claim a run mid-dispatch, and `/execute` / `/resume` gate on exactly these |
+| `submitted` / `partial` / `failed` / `completed` | an outcome of its payments | recomputed from the run's ACTIVE payments (`active_run_payments` → `rollup_payment_statuses`) |
+
+The runs list, the run detail and `/retry-failed`'s gate all route through it,
+so the status an operator sees and the status the endpoint gates on cannot
+diverge. `recompute_run_status` additionally **persists** the derived value at
+each site that moves a payment outside the dispatch pass
+(`/compliance/release`, `/compliance/dismiss`, `/void`), so a direct
+`SELECT status FROM payment_runs` — an operator at `psql`, an export, a future
+consumer — reads the truth too.
+
+**The rollup itself no longer fails open.** `PaymentRunRollup.run_status`
+returned `completed` whenever nothing was completed, failed or in flight — so a
+run with every payment still `pending` (nothing attempted) and a run with no
+payments at all both reported success without a cent moving. All-pending is
+the resumable state, so it reports `executing`; no payments at all reports
+`draft`. Neither claims success.
+
+**Tests:** `tests/test_payment_run_status_derivation.py`.
+
 ### The reconciler backstop — durability and the aged-out row
 
 `services/payment_reconciler.py` re-polls every non-terminal payment when a
