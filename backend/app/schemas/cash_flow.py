@@ -93,8 +93,20 @@ class CashFlowPlanSaveRequest(CashFlowPlanReplay):
       lookup, so two plans may share one.
     """
 
-    opening_balance: Decimal | None = None
+    opening_balance: Decimal | None = Field(default=None, max_digits=15, decimal_places=2)
     label: str | None = Field(default=None, max_length=200)
+
+    # The parent's three plan-defining params are unbounded there because a
+    # replay only hashes them into `plan_id` and compares them — no column can
+    # overflow. Saving PERSISTS them onto `cash_plans`, so on this subclass they
+    # are bounded to those columns: without it an out-of-range value reaches
+    # Postgres and raises NumericValueOutOfRangeError — a 500 for what is really
+    # a 422.
+    min_balance_threshold: Decimal | None = Field(default=None, max_digits=15, decimal_places=2)
+    cash_budget: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    cost_of_capital_pct: Decimal | None = Field(
+        default=None, ge=0, le=100, max_digits=5, decimal_places=2
+    )
 
 
 class SavedPlanPeriod(BaseModel):

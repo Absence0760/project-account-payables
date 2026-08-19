@@ -71,6 +71,25 @@ from app.models.base import Base
 #:
 #: A field listed here is checked for an EXACT digit match against the column.
 COLUMN_FOR: dict[tuple[str, str, str], tuple[str, str]] = {
+    # --- cash-flow saved plans -------------------------------------------
+    # Bounded (not exempt like the CashFlowPlanReplay parent) because saving
+    # persists these onto `cash_plans` rather than only hashing them.
+    ("cash_flow", "CashFlowPlanSaveRequest", "opening_balance"): (
+        "cash_plans",
+        "opening_balance",
+    ),
+    ("cash_flow", "CashFlowPlanSaveRequest", "min_balance_threshold"): (
+        "cash_plans",
+        "min_balance_threshold",
+    ),
+    ("cash_flow", "CashFlowPlanSaveRequest", "cash_budget"): (
+        "cash_plans",
+        "cash_budget",
+    ),
+    ("cash_flow", "CashFlowPlanSaveRequest", "cost_of_capital_pct"): (
+        "cash_plans",
+        "cost_of_capital_pct",
+    ),
     # --- budgets ---------------------------------------------------------
     ("budget", "BudgetCreate", "amount"): ("budgets", "amount"),
     ("budget", "BudgetUpdate", "amount"): ("budgets", "amount"),
