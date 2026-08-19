@@ -27,7 +27,6 @@ The split protects against:
 from __future__ import annotations
 
 import logging
-import re
 import secrets
 from datetime import UTC, datetime, timedelta
 
@@ -53,6 +52,7 @@ from app.services.email_adapters import (
 )
 from app.services.rate_limit import check_rate_limit, resolve_client_ip
 from app.services.tenant_provisioning import provision_tenant
+from app.utils.emails import looks_like_email
 from app.utils.hcaptcha import CaptchaError, verify_captcha
 from app.utils.passwords import generate_temp_password
 from app.utils.slug import SlugError, ensure_slug_available, validate_slug_format
@@ -60,13 +60,6 @@ from app.utils.slug import SlugError, ensure_slug_available, validate_slug_forma
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/signup", tags=["signup"])
-
-# Very permissive shape check — the real validation is the verification email
-# round-trip. Rejects obvious garbage (no @, trailing dots) and keeps us from
-# adding the email-validator dep. Domain side uses non-dot character classes
-# delimited by literal dots so the engine doesn't backtrack catastrophically
-# on adversarial inputs (avoids the polynomial-redos pattern).
-_EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$")
 
 VERIFICATION_TTL = timedelta(hours=24)
 
@@ -82,7 +75,10 @@ def _public_url(path: str) -> str:
 
 
 def _validate_email_shape(email: str) -> None:
-    if not _EMAIL_PATTERN.match(email):
+    # Shape only — the real validation is the verification-email round trip.
+    # `app/utils/emails.py` owns the rule; partner provisioning and the
+    # scheduled-report recipient list read the same one.
+    if not looks_like_email(email):
         raise HTTPException(status_code=422, detail="Enter a valid email address.")
 
 

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -35,6 +35,7 @@ from app.models.expense import CorporateCardTransaction, Expense
 from app.models.virtual_card import VirtualCard
 from app.services.vendor_matching import _normalize, _similarity
 from app.tenant import apply_entity_scope
+from app.utils.dates import utc_today
 
 # ±N-day window for the amount+date match (mirrors bank_reconciliation's
 # _DEFAULT_MATCH_WINDOW_DAYS, kept local + documented so the two surfaces can
@@ -168,7 +169,7 @@ async def sync_virtual_cards(
             entity_id=card.entity_id,
             virtual_card_id=card.id,
             external_txn_id=ext,
-            txn_date=card.charged_at.date() if card.charged_at else date.today(),
+            txn_date=card.charged_at.date() if card.charged_at else utc_today(),
             merchant=card.merchant_name,
             amount=amount,
             currency=card.currency,

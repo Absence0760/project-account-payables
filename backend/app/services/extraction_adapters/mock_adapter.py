@@ -1,7 +1,7 @@
 """Mock extraction adapter for development and testing."""
 
 import uuid
-from datetime import date, timedelta
+from datetime import timedelta
 
 from app.services.extraction_adapters.base import (
     STATEMENT_REASON_EMPTY_FILE,
@@ -16,6 +16,7 @@ from app.services.extraction_adapters.base import (
 )
 from app.services.extraction_adapters.dispatcher import register_extraction_adapter
 from app.services.extraction_adapters.statement_extraction import scan_statement_text
+from app.utils.dates import utc_today
 
 
 @register_extraction_adapter("mock")
@@ -29,7 +30,7 @@ class MockExtractionAdapter(ExtractionAdapter):
         mime_type: str = "application/pdf",
         file_url: str = "",
     ) -> ExtractionResult:
-        today = date.today()
+        today = utc_today()
         return ExtractionResult(
             success=True,
             overall_confidence=0.95,

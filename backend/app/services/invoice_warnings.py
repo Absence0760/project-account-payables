@@ -4,7 +4,7 @@ Also creates exception records for issues that need human resolution.
 """
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import func, or_, select
@@ -14,6 +14,7 @@ from app.models.exception import Exception as APException
 from app.models.invoice import Invoice, InvoiceStatus
 from app.services.matching_rules import resolve_match_rule
 from app.services.po_matching import match_invoice_to_po
+from app.utils.dates import utc_today
 
 logger = logging.getLogger(__name__)
 
@@ -219,7 +220,7 @@ async def refresh_warnings(
             )
 
     # Fraud: future invoice date
-    if cfg["future_date_enabled"] and invoice.invoice_date and invoice.invoice_date > date.today():
+    if cfg["future_date_enabled"] and invoice.invoice_date and invoice.invoice_date > utc_today():
         warnings.append(
             {
                 "type": "fraud_future_date",
@@ -256,7 +257,7 @@ async def refresh_warnings(
     # Past-due flag (informational, not fraud — but lives in the same block).
     if (
         invoice.due_date
-        and invoice.due_date < date.today()
+        and invoice.due_date < utc_today()
         and _status_str(invoice.status) in ("new", "pending", "ready_for_review")
     ):
         warnings.append(

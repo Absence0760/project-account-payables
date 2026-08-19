@@ -17,7 +17,6 @@ surface for free; there is no second list to remember.
 
 from __future__ import annotations
 
-import re
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -26,16 +25,11 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.services.report_export import EXPORTERS
 from app.services.scheduled_reports import known_cadences
+from app.utils.emails import looks_like_email
 
 #: Valid values, derived from the runner's registries (see the module docstring).
 REPORT_TYPES: tuple[str, ...] = tuple(sorted(EXPORTERS))
 CADENCES: tuple[str, ...] = tuple(sorted(known_cadences()))
-
-#: Same conservative shape check `api/signup.py` and `api/partner.py` use — we
-#: don't pull in the `email-validator` dependency for this. Non-dot character
-#: classes delimited by literal dots so the engine can't backtrack
-#: catastrophically on an adversarial input.
-_EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$")
 
 #: A schedule is a recurring outbound email carrying a CSV of the tenant's AP
 #: spend, so the recipient list is a distribution surface, not a preference.
@@ -60,7 +54,7 @@ def _clean_recipients(value: Any) -> list[str]:
         if not isinstance(raw, str):
             raise ValueError("recipients must be a list of email addresses")
         address = raw.strip()
-        if not _EMAIL_PATTERN.match(address):
+        if not looks_like_email(address):
             # Never echo the offending value — a recipient list is third-party
             # PII and this message reaches an HTTP error body.
             raise ValueError("recipients must all be valid email addresses")

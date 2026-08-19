@@ -66,6 +66,7 @@ from app.tenant import (
     get_tenant_db,
     get_write_entity_id,
 )
+from app.utils.dates import utc_today
 
 router = APIRouter(prefix="/discounts", tags=["discounts"])
 
@@ -351,7 +352,7 @@ async def accept_offer(
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     offer = await _get_offer_scoped(db, offer_id, entity_id)
-    today = date.today()
+    today = utc_today()
     if body.tier_days is not None:
         tier = offers_svc.select_tier_for_date(
             offer.tiers or [],
@@ -461,7 +462,7 @@ async def invoice_roi(
             status_code=422, detail="Invoice has no due date — cannot compute early-pay ROI"
         )
 
-    today = date.today()
+    today = utc_today()
     cost_of_capital = _cost_of_capital(org)
 
     # Prefer an open dynamic offer; fall back to the static payment-schedule term.
@@ -528,7 +529,7 @@ async def optimize_discounts(
     if body and body.get("cash_budget") is not None:
         cash_budget = Decimal(str(body["cash_budget"]))
 
-    today = date.today()
+    today = utc_today()
     cost_of_capital = _cost_of_capital(org)
 
     rows = list(
@@ -695,7 +696,7 @@ async def dashboard(
     user: User = Depends(require_roles(*_READ_ROLES)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    today = date.today()
+    today = utc_today()
 
     def _scope(q):
         return apply_entity_scope(q, DiscountOffer, entity_id)

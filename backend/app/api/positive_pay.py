@@ -21,7 +21,6 @@ returns the existing row. See ``backend/docs/positive-pay.md``.
 
 from __future__ import annotations
 
-import datetime
 import hashlib
 import uuid
 from decimal import Decimal
@@ -80,6 +79,7 @@ from app.tenant import (
     get_tenant_db,
     get_write_entity_id,
 )
+from app.utils.dates import utc_today
 
 router = APIRouter(prefix="/positive-pay", tags=["positive-pay"])
 
@@ -229,7 +229,7 @@ async def generate_check_issue(
     ctx = FormatterContext(
         company_name=company_name,
         account_number=account_number,
-        file_date=datetime.date.today(),
+        file_date=utc_today(),
         currency=(org.settings or {}).get("invoice_defaults", {}).get("currency", "USD"),
     )
     content = formatter.format_check_issue(items, ctx).encode("utf-8")
@@ -337,7 +337,7 @@ async def generate_ach_authorization(
     ctx = FormatterContext(
         company_name=company_name,
         account_number=account_number,
-        file_date=datetime.date.today(),
+        file_date=utc_today(),
         currency=(org.settings or {}).get("invoice_defaults", {}).get("currency", "USD"),
     )
     content = formatter.format_ach_authorization(items, ctx).encode("utf-8")

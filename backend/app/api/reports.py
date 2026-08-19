@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import io
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
@@ -61,6 +61,7 @@ from app.tenant import (
     get_tenant_db,
     get_write_entity_id,
 )
+from app.utils.dates import utc_today
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -383,7 +384,7 @@ async def export_report(
             note=truncation_note,
         )
         pdf_bytes = await asyncio.to_thread(render_analytics_report_pdf, ctx)
-        filename = f"{safe_name}_{date.today().isoformat()}.pdf"
+        filename = f"{safe_name}_{utc_today().isoformat()}.pdf"
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
@@ -409,7 +410,7 @@ async def export_report(
         )
         + buf.getvalue()
     )
-    filename = f"{safe_name}_{date.today().isoformat()}.csv"
+    filename = f"{safe_name}_{utc_today().isoformat()}.csv"
     return Response(
         content=branded_csv,
         media_type="text/csv",

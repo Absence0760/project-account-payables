@@ -56,6 +56,7 @@ from app.tenant import (
     get_tenant_db,
     get_write_entity_id,
 )
+from app.utils.dates import utc_today
 
 router = APIRouter(prefix="/recurring", tags=["recurring"])
 
@@ -247,7 +248,7 @@ async def update_template(
     # Recompute next_run_on if a schedule-shaping field changed AND the template
     # is still active (paused/ended templates don't carry a live cursor).
     if template.status == STATUS_ACTIVE and (_SCHEDULE_FIELDS & set(changed)):
-        _seed_next_run_on(template, after=max(date.today(), template.start_date))
+        _seed_next_run_on(template, after=max(utc_today(), template.start_date))
 
     # This edit is how an operator fixes a template the sweep couldn't generate
     # from; once the reason no longer holds, the skip marker is stale and its
@@ -358,7 +359,7 @@ async def resume_template(
     template.status = STATUS_ACTIVE
     # Re-anchor from today so resuming never back-fires every historic period
     # the template slept through.
-    _seed_next_run_on(template, after=max(date.today(), template.start_date))
+    _seed_next_run_on(template, after=max(utc_today(), template.start_date))
     # Resuming a template the SWEEP auto-paused is the operator saying it's
     # fixed — but only clear the marker if it actually is. A template resumed
     # still missing its vendor keeps it (and will re-trip the pause), because
@@ -420,7 +421,7 @@ async def generate_now(
     run_on = svc.current_due_run_on(
         template.cadence,
         template.day_of_period,
-        today=date.today(),
+        today=utc_today(),
         start_date=template.start_date,
     )
     period_key = svc.period_key_for(template.cadence, run_on)

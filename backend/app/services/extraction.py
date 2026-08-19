@@ -28,6 +28,7 @@ from app.services.workflow_engine import (
     get_workflow_instance,
     transition_invoice,
 )
+from app.utils.dates import utc_today
 
 logger = logging.getLogger(__name__)
 
@@ -693,7 +694,7 @@ async def run_extraction(
                 target_status = InvoiceStatus.approved
 
         if auto_approved:
-            invoice.approval_date = date.today()
+            invoice.approval_date = utc_today()
             invoice.approved_by = "system (auto-approve)"
 
         await transition_invoice(

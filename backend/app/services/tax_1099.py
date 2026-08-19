@@ -32,6 +32,7 @@ from app.models.payment import Payment
 from app.models.vendor import Vendor
 from app.services.currency_conversion import payment_reporting_amount_sql
 from app.services.payment_methods import card_payment_method_clause
+from app.utils.dates import utc_today
 
 # IRS 1099-NEC / 1099-MISC reporting threshold for the 2024+ tax years.
 # Lowered from $600 to $5000 for 1099-K specifically, but 1099-NEC
@@ -272,7 +273,7 @@ async def build_1099_report(
 
     return Report1099(
         year=year,
-        generated_at=date.today(),
+        generated_at=utc_today(),
         rows=rows,
         currency=(reporting_currency or "USD").upper(),
     )
