@@ -978,6 +978,49 @@ or real webhooks. The seam is locked by `backend/tests/test_stripe_api_base.py`
 (CI-safe, no container). For the other processors, the in-process `mock` adapter
 remains the local default.
 
+### The payments KPIs are denominated, not just summed
+
+`GET /payments/summary` and `GET /payments/queue` are reporting surfaces — no
+money moves on them — but both used to add figures in different currencies
+together and label the result with nothing at all.
+
+`Payment.amount` is denominated in the **invoice's** currency:
+`international_payments.prepare_international_payment` sets
+`amount=invoice.amount` and puts the home-currency debit on
+`source_amount`/`source_currency`. A book with one foreign invoice therefore
+made `total_paid` / `total_pending` a silent two-currency mixture. Both now
+route through `currency_conversion.payment_reporting_amount_sql` — the same
+resolver the 1099 report and the vendor risk score use:
+
+1. `source_amount` when `source_currency` IS the org's reporting currency (the
+   rate-locked figure that actually left the bank), else
+2. `amount` when the invoice's own currency IS the reporting currency (the
+   ordinary domestic case — a single-currency tenant's numbers are unchanged).
+
+A payment neither rung can establish is **excluded** and counted on
+`unconverted_payment_count`, never added at face value; a filed total is not a
+place to guess. `currency` on the response says what the figures are in.
+
+`/payments/queue` sums INVOICE amounts, so it uses the row-level
+`reporting_amount_for_row` (persisted rate-locked `reporting_amount` → same
+currency 1:1 → face value + `unconverted`). Here a row that can't be resolved
+is still counted — dropping an invoice would understate what is due, which on a
+work queue is worse than a flagged approximation — and the count rides out on
+`unconverted_count`. Each item keeps its own `amount` + `currency` for display;
+only the totals are converted. `total_savings` is computed off the same
+rate-locked figure as the outflow, so the two totals are in one currency.
+
+Nothing is converted at read time in either endpoint: a rate fetched on a read
+makes a historical total move under the reader (`docs/decisions.md` §18).
+
+**`total_pending` now includes `pending_compliance`.** A payment held by the
+sanctions/KYC gate is authorized money still out there; omitting it put that
+money in NEITHER KPI — not paid, not pending — invisible in the one place a
+treasurer looks for "what is still committed".
+
+**Tests:** `tests/test_payment_summary_currency.py` (DB-backed),
+`tests/test_payment_summary.py` (shape).
+
 ### `PaymentRun.status` is derived from its payments on read
 
 `_dispatch_run_payments`' final rollup is the only writer of the persisted

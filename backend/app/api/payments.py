@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import case, func, not_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,6 +42,11 @@ from app.schemas.payment import (
     PaymentRunResponse,
 )
 from app.services.audit_access import log_access
+from app.services.currency_conversion import (
+    payment_reporting_amount_sql,
+    reporting_amount_for_row,
+    resolve_reporting_currency,
+)
 from app.services.exception_lifecycle import record_decision
 from app.services.international_payments import (
     is_international_payment,
@@ -332,6 +337,7 @@ async def list_payments(
 @router.get("/queue")
 async def payment_queue(
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
@@ -361,16 +367,36 @@ async def payment_queue(
     result = await db.execute(queue_q)
     rows = result.all()
 
+    # `total_amount` / `total_savings` are SUMS, and a sum is only a number when
+    # its terms share a currency. Each row keeps its own `amount` + `currency`
+    # (the UI renders the row in the vendor's currency); the totals are
+    # accumulated in the ORG's reporting currency via the same rate-locked
+    # `reporting_amount_for_row` every sibling rollup uses — no FX call on a
+    # read. A row whose reporting figure can't be established is still counted
+    # at face value (dropping it would understate what's due) but reported on
+    # `unconverted_count`, so "these totals mix currencies" is visible rather
+    # than silent.
+    reporting_currency = resolve_reporting_currency(org.settings)
     today = date.today()
     items: list[dict] = []
     total_savings = Decimal("0")
     total_amount = Decimal("0")
+    unconverted_count = 0
     for inv, sched in rows:
         # Discount eligibility: schedule has a discount_date in the future
         # AND the percent is set. Backfilled-without-schedule rows just don't
         # surface a discount.
         discount_amount: Decimal | None = None
         discount_eligible = False
+        reporting_amount, unconverted = reporting_amount_for_row(
+            amount=inv.amount or Decimal("0"),
+            currency=inv.currency,
+            reporting_currency=reporting_currency,
+            persisted_reporting_currency=inv.reporting_currency,
+            persisted_reporting_amount=inv.reporting_amount,
+        )
+        if unconverted:
+            unconverted_count += 1
         if (
             sched is not None
             and sched.discount_date is not None
@@ -378,12 +404,17 @@ async def payment_queue(
             and sched.discount_date >= today
         ):
             discount_eligible = True
+            # Shown on the row in the INVOICE's currency…
             discount_amount = (inv.amount * sched.discount_percent / Decimal(100)).quantize(
                 Decimal("0.01")
             )
-            total_savings += discount_amount
+            # …but summed in the reporting currency, off the same rate-locked
+            # figure the outflow total uses.
+            total_savings += (reporting_amount * sched.discount_percent / Decimal(100)).quantize(
+                Decimal("0.01")
+            )
 
-        total_amount += inv.amount or Decimal("0")
+        total_amount += reporting_amount
         items.append(
             {
                 "id": str(inv.id),
@@ -419,32 +450,76 @@ async def payment_queue(
         "total": len(items),
         "total_amount": str(total_amount),
         "total_savings": str(total_savings),
+        # What the two totals above are denominated in, and how many rows
+        # entered them at face value in another currency.
+        "currency": reporting_currency,
+        "unconverted_count": unconverted_count,
     }
+
+
+#: Payment statuses whose money is committed but not yet settled — what
+#: `/summary` reports as `total_pending`. `pending_compliance` belongs here:
+#: the payment is authorized and waiting on a human, so leaving it out made
+#: held money appear in NEITHER KPI (not paid, not pending) — invisible in the
+#: one place a treasurer looks for "what is still out there".
+PENDING_PAYMENT_STATUSES = ("pending", "processing", "submitted", "pending_compliance")
 
 
 @router.get("/summary")
 async def payment_summary(
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    """KPIs for the payments page summary bar. Scoped to the selected entity."""
-    paid_q = apply_entity_scope(
-        select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.status == "completed"),
-        Payment,
-        entity_id,
+    """KPIs for the payments page summary bar. Scoped to the selected entity.
+
+    **Every money total is in the org's reporting currency**, not a raw sum of
+    `Payment.amount`. `Payment.amount` is denominated in the INVOICE's currency
+    (`international_payments.prepare_international_payment` sets
+    `amount=invoice.amount` and puts the home-currency debit on
+    `source_amount`), so a book with one foreign invoice in it made these KPIs a
+    silent two-currency mixture. `currency_conversion.payment_reporting_amount_sql`
+    — the same resolver the 1099 report and the vendor risk score use — takes
+    the rate-locked `source_amount` when the payment carries a home-currency
+    leg, else `amount` when the invoice is already in that currency; a payment
+    neither rung can establish is EXCLUDED and counted on
+    `unconverted_payment_count` rather than added at face value. Nothing is
+    converted at read time (a rate fetched on a read makes a historical total
+    move under the reader — `docs/decisions.md` §18).
+    """
+    reporting_currency = resolve_reporting_currency(org.settings)
+    reported = payment_reporting_amount_sql(
+        reporting_currency=reporting_currency,
+        payment_amount=Payment.amount,
+        payment_source_amount=Payment.source_amount,
+        payment_source_currency=Payment.source_currency,
+        invoice_currency=Invoice.currency,
+    )
+    countable = reported.is_expressible
+
+    async def _money_and_excluded(status_clause) -> tuple[Decimal, int]:
+        q = apply_entity_scope(
+            select(
+                func.coalesce(func.sum(case((countable, reported.amount))), Decimal("0")),
+                func.count(case((not_(countable), Payment.id))),
+            )
+            .select_from(Payment)
+            .join(Invoice, Invoice.id == Payment.invoice_id)
+            .where(status_clause),
+            Payment,
+            entity_id,
+        )
+        total, excluded = (await db.execute(q)).one()
+        return Decimal(str(total or 0)), int(excluded or 0)
+
+    paid_amount, paid_excluded = await _money_and_excluded(Payment.status == "completed")
+    pending_amount, pending_excluded = await _money_and_excluded(
+        Payment.status.in_(PENDING_PAYMENT_STATUSES)
     )
     # Money serialises as an exact Decimal STRING, never float().
-    total_paid = str((await db.execute(paid_q)).scalar() or Decimal("0"))
-
-    pending_q = apply_entity_scope(
-        select(func.coalesce(func.sum(Payment.amount), 0)).where(
-            Payment.status.in_(["pending", "processing", "submitted"])
-        ),
-        Payment,
-        entity_id,
-    )
-    total_pending = str((await db.execute(pending_q)).scalar() or Decimal("0"))
+    total_paid = str(paid_amount)
+    total_pending = str(pending_amount)
 
     count_q = apply_entity_scope(select(func.count()).select_from(Payment), Payment, entity_id)
     payment_count = (await db.execute(count_q)).scalar() or 0
@@ -488,6 +563,12 @@ async def payment_summary(
         "payment_count": payment_count,
         "total_rebates": total_rebates,
         "queue_count": queue_count,
+        # What the money figures above are denominated in, and how many
+        # payments were left out of them because neither rung could establish
+        # a reporting-currency figure. Surfaced rather than folded in, exactly
+        # as the 1099 report surfaces `unconverted_payment_count`.
+        "currency": reporting_currency,
+        "unconverted_payment_count": paid_excluded + pending_excluded,
     }
 
 

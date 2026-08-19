@@ -9,9 +9,13 @@ Key contracts tested:
   back to "0" and db.rollback() is called.
 - Money fields serialise as exact Decimal STRINGS (never float) — the
   "Money is exact" invariant; the frontend summary bar parses the string.
+- The two money aggregates are resolved into the ORG's reporting currency and
+  report what they had to exclude (see `test_payment_summary_currency.py`).
 
 The endpoint issues exactly five tenant-db queries, in order:
-paid, pending, payment_count, rebates, queue_count.
+paid, pending, payment_count, rebates, queue_count. The first two select a
+(sum, excluded_count) PAIR and read it with `.one()`; the last three are
+scalars.
 """
 
 from __future__ import annotations
@@ -28,7 +32,12 @@ import pytest
 
 def _make_db_session(*scalar_sequence):
     """Build an AsyncSession mock whose sequential execute() calls each
-    return successive values from scalar_sequence via .scalar()."""
+    return successive values from scalar_sequence.
+
+    The first two calls (paid, pending) select a `(sum, excluded_count)` pair
+    and read it with `.one()`; the rest are `.scalar()`. A bare value in the
+    sequence is treated as the sum with zero excluded.
+    """
     session = AsyncMock()
     results = []
     for val in scalar_sequence:
@@ -37,6 +46,7 @@ def _make_db_session(*scalar_sequence):
         else:
             r = MagicMock()
             r.scalar.return_value = val
+            r.one.return_value = (val, 0)
             results.append(r)
 
     async def execute_side_effect(query):
@@ -55,6 +65,13 @@ def _make_user():
     return SimpleNamespace(id="user-1", roles=["admin"])
 
 
+def _make_org(settings: dict | None = None):
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    return SimpleNamespace(id=uuid4(), name="PyTest", slug="pytesta", settings=settings or {})
+
+
 # ---------------------------------------------------------------------------
 # Happy path
 # ---------------------------------------------------------------------------
@@ -68,7 +85,7 @@ async def test_payment_summary_returns_expected_shape():
     # tenant db, in order: paid=500, pending=200, count=10, rebates=50, queue=3
     db = _make_db_session(Decimal("500.00"), Decimal("200.00"), 10, Decimal("50.00"), 3)
 
-    result = await payment_summary(db=db, user=_make_user())
+    result = await payment_summary(db=db, org=_make_org(), user=_make_user())
 
     assert set(result.keys()) == {
         "total_paid",
@@ -76,6 +93,8 @@ async def test_payment_summary_returns_expected_shape():
         "payment_count",
         "total_rebates",
         "queue_count",
+        "currency",
+        "unconverted_payment_count",
     }
     # Money serialises as an exact Decimal STRING (never float) — invariant.
     assert result["total_paid"] == "500.00"
@@ -92,7 +111,7 @@ async def test_payment_summary_all_zeros_when_no_data():
 
     db = _make_db_session(None, None, 0, None, 0)
 
-    result = await payment_summary(db=db, user=_make_user())
+    result = await payment_summary(db=db, org=_make_org(), user=_make_user())
 
     assert result["total_paid"] == "0"
     assert result["total_pending"] == "0"
@@ -117,7 +136,7 @@ async def test_payment_summary_rebate_query_targets_tenant_db():
 
     db = _make_db_session(Decimal("100.00"), Decimal("50.00"), 5, Decimal("12.34"), 2)
 
-    result = await payment_summary(db=db, user=_make_user())
+    result = await payment_summary(db=db, org=_make_org(), user=_make_user())
 
     # All five queries went to the tenant db, and the rebate value is real.
     assert db.execute.call_count == 5
@@ -144,7 +163,7 @@ async def test_payment_summary_rebates_fallback_when_table_missing():
         1,
     )
 
-    result = await payment_summary(db=db, user=_make_user())
+    result = await payment_summary(db=db, org=_make_org(), user=_make_user())
 
     assert result["total_rebates"] == "0"
     assert result["total_paid"] == "300.00"
@@ -167,7 +186,7 @@ async def test_payment_summary_returns_decimal_string_not_float():
 
     db = _make_db_session(Decimal("1.50"), Decimal("2.50"), 3, Decimal("0.75"), 1)
 
-    result = await payment_summary(db=db, user=_make_user())
+    result = await payment_summary(db=db, org=_make_org(), user=_make_user())
 
     assert isinstance(result["total_paid"], str)
     assert isinstance(result["total_pending"], str)
