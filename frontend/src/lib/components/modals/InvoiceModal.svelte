@@ -95,12 +95,32 @@
 	let {
 		invoice,
 		onclose,
+		onrefresh,
 		activeSteps,
 	}: {
 		invoice: Invoice;
 		onclose: () => void;
+		/** Refresh the host's invoice list. Required, not optional: the host
+		 *  owns the active filters, and the store's own list loader takes no
+		 *  params — calling it from here replaces the host's filtered page with
+		 *  an unfiltered one and resets `lastParams`, so Load-more then
+		 *  paginates a different set. See `refreshList` below. */
+		onrefresh: () => void | Promise<void>;
 		activeSteps: ActiveSteps;
 	} = $props();
+
+	/**
+	 * Ask the host to refresh its list — with ITS filters.
+	 *
+	 * Nothing in this modal may reload the list through `invoiceStore` directly.
+	 * The store's loader takes no params, so it silently widens the host's
+	 * filtered list to every status while the status chips still claim a filter
+	 * (the hazard `handleApprove` already documents), and it resets the store's
+	 * `lastParams` so the next Load-more pages through the wrong result set.
+	 */
+	async function refreshList() {
+		await onrefresh();
+	}
 
 	/* eslint-disable svelte/state-referenced-locally -- modal receives a snapshot, intentional */
 	let vendor = $state(invoice.vendor);
@@ -212,7 +232,64 @@
 	);
 
 	$effect(() => {
-		if (needsApproverSelect) adminStore.fetchUsers();
+		if (needsApproverSelect) loadReviewers();
+	});
+
+	/**
+	 * Load the people this invoice can be assigned to for review.
+	 *
+	 * The picker used to read `GET /api/admin/users`, which is admin-only. For
+	 * every other role the call 403'd, the list stayed empty with nothing
+	 * catching the rejection, and Submit was disabled forever — so an
+	 * ap_manager or cfo (both of whom the backend lets submit, and the manager
+	 * assign) could not advance a single invoice on a workflow whose approval
+	 * step is `approver_strategy: "manual"`. That is the seeded default.
+	 *
+	 * The reviewer list is now its own non-admin-readable endpoint. The
+	 * admin-users call survives only as a TRANSITIONAL fallback for admins —
+	 * the one role that always could read it — so the picker keeps working
+	 * against a backend that predates the new endpoint. Delete the fallback
+	 * once `GET /api/invoices/assignable-reviewers` has shipped everywhere; it
+	 * must never be reached by a non-admin, which is exactly what the role
+	 * check below guarantees.
+	 */
+	async function loadReviewers() {
+		const ok = await adminStore.fetchAssignableReviewers();
+		if (ok || !auth.isAdmin) return;
+		try {
+			await adminStore.fetchUsers();
+		} catch {
+			// Both sources are gone. `reviewerOptions` stays empty and the
+			// footer explains that the invoice will go to the queue unassigned
+			// — never a permanently-disabled Submit.
+		}
+	}
+
+	/** Who the picker offers: active users other than the submitter. Falls back
+	 *  to the admin directory only when the reviewer endpoint failed AND the
+	 *  admin fallback above populated it. */
+	let reviewerOptions = $derived.by(() => {
+		const source: { id: string; full_name: string; is_active: boolean }[] =
+			adminStore.reviewersErrored ? adminStore.users : adminStore.assignableReviewers;
+		return source.filter((u) => u.is_active && u.id !== auth.user?.id);
+	});
+
+	/** Only block Submit while there is genuinely someone to pick. An empty
+	 *  list — because the lookup failed, or because this tenant has no other
+	 *  active user — must not be a dead end: `POST /invoices/{id}/complete`
+	 *  moves the invoice to `ready_for_review` with no assignee, and an
+	 *  unassigned invoice is reviewable by any approver. */
+	let approverRequired = $derived(needsApproverSelect && reviewerOptions.length > 0);
+
+	/** Explain the missing picker — but only once the lookup has settled, so a
+	 *  slow response doesn't flash a "no reviewers" note that is then wrong. */
+	let approverNote = $derived.by(() => {
+		if (!needsApproverSelect || !adminStore.reviewersLoaded || reviewerOptions.length > 0) {
+			return '';
+		}
+		return adminStore.reviewersErrored && adminStore.users.length === 0
+			? m('invoices.modal.approverUnavailable')
+			: m('invoices.modal.approverNone');
 	});
 
 	let isClerkOnly = $derived(auth.isClerkOnly);
@@ -224,7 +301,7 @@
 		resettingExtraction = true;
 		try {
 			await api.post(`/api/invoices/${invoice.id}/reset-extraction`, {});
-			await invoiceStore.fetch();
+			await refreshList();
 			status = 'failed' as typeof status;
 			extracting = false;
 			extractionStatus = '';
@@ -346,8 +423,10 @@
 			if (selectedApproverId && result.status === 'ready_for_review') {
 				await api.post(`/api/invoices/${invoice.id}/assign`, { user_id: selectedApproverId });
 			}
-			await invoiceStore.fetch();
 			toast(m('invoices.modal.toast.submitted'), 'success');
+			// No refresh here: `onclose()` hands the list back to the host,
+			// which refetches it with its own filters (same reason
+			// `handleApprove` doesn't refresh either).
 			onclose();
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : m('invoices.modal.toast.submitFailed');
@@ -366,9 +445,10 @@
 			await api.post(`/api/invoices/${invoice.id}/approve`, {});
 			toast(m('invoices.modal.toast.approved'), 'success');
 			// The host (/invoices) refetches the list with ITS active filters
-			// in closeInvoiceModal. Firing an unfiltered invoiceStore.fetch()
-			// here races that filtered refetch and can leave the just-approved
-			// row visible under an active status chip — so let the host own it.
+			// in closeInvoiceModal, so refreshing here would only race that
+			// refetch — and any refresh that skipped the host's filters would
+			// leave the just-approved row visible under an active status chip.
+			// Every close-then-refresh handler below follows this shape.
 			onclose();
 		} catch (err) {
 			toast(err instanceof Error ? err.message : m('invoices.modal.toast.approveFailed'), 'error');
@@ -396,8 +476,8 @@
 		retryingErp = true;
 		try {
 			await api.post(`/api/invoices/${invoice.id}/retry-erp`, {});
-			await invoiceStore.fetch();
 			toast(m('invoices.modal.toast.erpRetryInitiated'), 'success');
+			// The host refetches with its filters on close — see `submitDone`.
 			onclose();
 		} catch (err) {
 			toast(err instanceof Error ? err.message : m('invoices.modal.toast.retryFailed'), 'error');
@@ -422,15 +502,36 @@
 		}
 	}
 
+	/**
+	 * Set when this modal is destroyed, so `pollForCompletion` can stop.
+	 *
+	 * The poll runs for up to 60 s and nothing blocks Close while it does, so it
+	 * routinely outlives its component. When it did, it kept polling a closed
+	 * modal and then refreshed the invoice list — unfiltered. The host has
+	 * already re-applied its filters by then, so seconds after closing, the list
+	 * silently widened to every status while the chips still showed a filter,
+	 * and the store's `lastParams` reset so Load-more paged the wrong set.
+	 * Every `await` in the poll re-checks this before touching the network or
+	 * any shared state. Not `$state` — nothing renders it.
+	 */
+	let pollCancelled = false;
+	$effect(() => {
+		return () => {
+			pollCancelled = true;
+		};
+	});
+
 	async function pollForCompletion() {
 		const maxPolls = 30;
 		const interval = 2000;
 
 		for (let i = 0; i < maxPolls; i++) {
 			await new Promise(r => setTimeout(r, interval));
+			if (pollCancelled) return;
 
 			try {
 				const updated = await api.get<import('$lib/types/invoice').Invoice>(`/api/invoices/${invoice.id}`);
+				if (pollCancelled) return;
 
 				if (updated.status !== 'pending') {
 					// Extraction finished — update the modal fields with extracted data
@@ -452,8 +553,12 @@
 					department = updated.department ?? department;
 					project = updated.project ?? project;
 
-					// Refresh the invoice list, audit log, and line items
-					await invoiceStore.fetch();
+					// Refresh the invoice list, audit log, and line items. Re-check
+					// first: the field writes above are component-local, but this
+					// touches the host's shared list, so a close during the last
+					// await must not reach it.
+					if (pollCancelled) return;
+					await refreshList();
 					await loadLineItems();
 					await loadExtractionConfidence();
 					await loadAuditLog();
@@ -476,18 +581,19 @@
 		}
 
 		// Timeout
+		if (pollCancelled) return;
 		extracting = false;
 		extractionStatus = '';
 		toast(m('invoices.modal.toast.extractionTimeout'), 'warning');
-		await invoiceStore.fetch();
+		await refreshList();
 	}
 
 	async function deleteInvoice() {
 		deleting = true;
 		try {
 			await api.delete(`/api/invoices/${invoice.id}`);
-			await invoiceStore.fetch();
 			toast(m('invoices.modal.toast.deleted'), 'success');
+			// The host refetches with its filters on close — see `submitDone`.
 			onclose();
 		} catch (err) {
 			toast(err instanceof Error ? err.message : m('invoices.modal.toast.deleteFailed'), 'error');
@@ -664,7 +770,7 @@
 			await api.post(`/api/invoices/${invoice.id}/link-contract`, { contract_id: pickContractId });
 			contractId = pickContractId;
 			pickContractId = '';
-			await invoiceStore.fetch();
+			await refreshList();
 			toast(m('invoices.modal.toast.contractLinked'), 'success');
 		} catch (err) {
 			toast(err instanceof Error ? err.message : m('invoices.modal.toast.linkFailed'), 'error');
@@ -678,7 +784,7 @@
 		try {
 			await api.post(`/api/invoices/${invoice.id}/unlink-contract`, {});
 			contractId = null;
-			await invoiceStore.fetch();
+			await refreshList();
 			toast(m('invoices.modal.toast.contractUnlinked'), 'success');
 		} catch (err) {
 			toast(err instanceof Error ? err.message : m('invoices.modal.toast.unlinkFailed'), 'error');
@@ -1726,15 +1832,19 @@
 								</button>
 							{/if}
 							{#if canSubmit}
-								{#if needsApproverSelect}
+								{#if needsApproverSelect && reviewerOptions.length > 0}
 									<select class="approver-select" aria-label={m('invoices.modal.assignApprover')} bind:value={selectedApproverId}>
 										<option value="">{m('invoices.modal.approverPlaceholder')}</option>
-										{#each adminStore.users.filter(u => u.is_active && u.id !== auth.user?.id) as user}
+										{#each reviewerOptions as user}
 											<option value={user.id}>{user.full_name}</option>
 										{/each}
 									</select>
+								{:else if approverNote}
+									<!-- No picker to offer. Say what Submit will do instead of
+									     leaving a disabled button with no explanation. -->
+									<p class="approver-note">{approverNote}</p>
 								{/if}
-								<button type="button" class="btn-submit" disabled={submitting || (needsApproverSelect && !selectedApproverId)} onclick={submitDone}>
+								<button type="button" class="btn-submit" disabled={submitting || (approverRequired && !selectedApproverId)} onclick={submitDone}>
 									{submitting ? m('invoices.modal.submitting') : submitLabel}
 								</button>
 							{/if}
@@ -2552,6 +2662,16 @@
 	.approver-select:focus {
 		outline: none;
 		border-color: var(--accent);
+	}
+
+	/* Shown in place of the picker when there is no reviewer to offer —
+	   explains what Submit will do rather than leaving a bare disabled button. */
+	.approver-note {
+		margin: 0;
+		max-width: 320px;
+		font-size: 0.78rem;
+		line-height: 1.35;
+		color: var(--text-muted);
 	}
 
 	/* Export dropdown */

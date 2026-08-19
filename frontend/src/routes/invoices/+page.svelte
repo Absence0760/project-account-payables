@@ -19,7 +19,6 @@
 	import Money from '$lib/components/ui/Money.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { workflowStore } from '$lib/stores/workflows.svelte';
-	import { getTenantSlug } from '$lib/tenant';
 	import { m } from '$lib/i18n/store.svelte';
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
@@ -179,6 +178,20 @@
 			.catch(() => toast('Invoice not found', 'error'));
 	});
 
+	/**
+	 * Refresh the list + chip counts with THIS page's active filters.
+	 *
+	 * Handed to `InvoiceModal` as `onrefresh` so a refresh triggered from
+	 * inside the modal (an extraction poll finishing, a contract link) goes
+	 * through the filters rather than the store's param-less `fetch()`, which
+	 * would widen the list to every status and reset `lastParams` so Load-more
+	 * paged a different set.
+	 */
+	async function refreshInvoiceList() {
+		await invoiceStore.fetch(buildParams());
+		await invoiceStore.fetchCounts();
+	}
+
 	function closeInvoiceModal() {
 		editing = null;
 		const url = new URL($page.url);
@@ -189,13 +202,13 @@
 			deepLinkLoaded = null;
 		}
 		// Re-apply this page's active filters. The modal's mutation handlers
-		// (approve / reject / save / …) call the store's UNFILTERED
-		// `invoiceStore.fetch()`, which would otherwise leave the list
-		// showing every status — so a just-approved invoice reappears under
-		// an active "Ready for Review" chip. Refetching with buildParams()
-		// on close restores the filtered view and keeps the chip counts honest.
-		invoiceStore.fetch(buildParams());
-		invoiceStore.fetchCounts();
+		// (approve / reject / save / …) deliberately don't refresh the list
+		// themselves — an unfiltered refetch would leave every status showing,
+		// so a just-approved invoice reappears under an active "Ready for
+		// Review" chip. Refetching with buildParams() on close restores the
+		// filtered view and keeps the chip counts honest. Fire-and-forget: the
+		// modal is already gone, and `invoiceStore.errored` renders a failure.
+		void refreshInvoiceList().catch(() => {});
 	}
 
 	let hasAdvancedFilters = $derived(
@@ -352,25 +365,26 @@
 	async function bulkExport(format: string) {
 		bulkBusy = true;
 		try {
-			const { PUBLIC_API_URL } = await import('$env/static/public');
-			const base = PUBLIC_API_URL.replace(/\/+$/, '');
-			const token = localStorage.getItem('auth_token');
-			const res = await fetch(`${base}/api/invoices/bulk/export`, {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					...(token ? { Authorization: `Bearer ${token}` } : {}),
-					'X-Tenant-Slug': getTenantSlug() ?? '',
-				},
-				body: JSON.stringify({ ids: [...selected], format }),
+			// Through the shared client (`api.downloadBlobPost`), not a hand-rolled
+			// fetch: this used to build its own request because `api.downloadBlob`
+			// is GET-only, and in doing so it dropped `X-Entity-ID` — exporting
+			// unscoped rows out of a list the user had scoped to one subsidiary —
+			// and the 401 clear-and-bounce, so an expired session produced a
+			// failure toast instead of a re-login.
+			const blob = await api.downloadBlobPost('/api/invoices/bulk/export', {
+				ids: [...selected],
+				format,
 			});
-			if (!res.ok) throw new Error(`Export failed: ${res.status}`);
 			if (format === 'json') {
-				const data = await res.json();
-				const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-				triggerDownload(blob, `invoices-export.json`);
+				// Pretty-print the downloaded file. The transport helper stays
+				// format-agnostic (a JSON export is still a Blob); how the saved
+				// file reads is this page's call, so the re-serialize lives here.
+				const data = JSON.parse(await blob.text());
+				triggerDownload(
+					new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }),
+					`invoices-export.json`
+				);
 			} else {
-				const blob = await res.blob();
 				triggerDownload(blob, `invoices-export.${format}`);
 			}
 			toast(`Exported ${selected.size} invoice(s)`, 'success');
@@ -647,7 +661,12 @@
 </PageHeader>
 
 {#if editing}
-	<InvoiceModal invoice={editing} onclose={closeInvoiceModal} activeSteps={workflowStore.activeSteps} />
+	<InvoiceModal
+		invoice={editing}
+		onclose={closeInvoiceModal}
+		onrefresh={refreshInvoiceList}
+		activeSteps={workflowStore.activeSteps}
+	/>
 {/if}
 
 {#if showAdvancedSearch}
