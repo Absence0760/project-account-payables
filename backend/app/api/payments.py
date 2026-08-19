@@ -6,6 +6,7 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
@@ -574,6 +575,123 @@ async def payment_summary(
         # as the 1099 report surfaces `unconverted_payment_count`.
         "currency": reporting_currency,
         "unconverted_payment_count": paid_excluded + pending_excluded,
+    }
+
+
+class CorridorQuoteRequest(BaseModel):
+    """Which payment to price, and how to rank the routes."""
+
+    invoice_id: uuid.UUID
+    method: str | None = Field(default=None, max_length=40)
+    mode: Literal["cheapest", "fastest"] = "cheapest"
+
+
+@router.post("/corridor-quotes")
+async def compare_corridor_quotes(
+    body: CorridorQuoteRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Price one payable invoice across every processor the org has configured.
+
+    **Read-only, advisory, and it moves no money.** Nothing here books a
+    `Payment`, claims a run, or touches an invoice: it asks each configured
+    adapter's optional `quote_payment` capability what this payment would cost
+    and how fast it would settle, ranks them
+    (`services/corridor_quotes.compare_quotes`), and returns the ranking plus
+    what the winner saves against the next-best route.
+
+    Deliberately NOT an auto-router. Which bank actually moves the money is a
+    treasury decision — the rail on the `Payment` row still comes from
+    `payment_corridor.pick_corridor` and the org's configured provider, exactly
+    as before. This endpoint is what lets a human see the trade-off before
+    making that decision, and it is why the optimizer stops being a module
+    nothing reaches.
+
+    An adapter that has published no fee schedule reports `available=False`
+    (`PaymentAdapter.quote_payment` fails closed rather than fabricating a
+    free/instant quote — see its docstring), so it is listed and skipped rather
+    than winning on numbers nobody supplied. 409 when no configured provider
+    can quote this corridor at all.
+    """
+    from app.services.corridor_quotes import (
+        NoEligibleCorridorError,
+        compare_quotes,
+        savings_vs_runner_up,
+    )
+
+    invoice = (
+        await db.execute(
+            apply_entity_scope(
+                select(Invoice).where(Invoice.id == body.invoice_id), Invoice, entity_id
+            )
+        )
+    ).scalar_one_or_none()
+    if invoice is None:
+        # Same opaque 404 an out-of-scope id gets everywhere else in this file,
+        # so the response can't enumerate another entity's invoices.
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    vendor_bank: dict | None = None
+    if invoice.vendor_id:
+        vendor_bank = (
+            await db.execute(select(Vendor.bank_details).where(Vendor.id == invoice.vendor_id))
+        ).scalar_one_or_none()
+
+    payload = PaymentPayload(
+        # A quote is not an order, so this correlation id is never sent as an
+        # idempotency key to anything that moves money — the real payment mints
+        # its own when it is booked.
+        correlation_id=str(invoice.correlation_id or invoice.id),
+        invoice_id=str(invoice.id),
+        invoice_number=invoice.invoice_number or "",
+        vendor_name=invoice.vendor_name or "",
+        amount=invoice.amount or Decimal("0"),
+        currency=(invoice.currency or "USD").upper(),
+        method=(body.method or "ach").strip().lower(),
+        description=invoice.description,
+        vendor_bank=vendor_bank,
+        metadata={"organization_id": str(org.id)},
+    )
+
+    try:
+        ranking = await compare_quotes(payload, org.settings, mode=body.mode)
+    except NoEligibleCorridorError as exc:
+        # PII-free by construction: the message names the method, currency,
+        # target country and each provider's machine reason — never a bank
+        # field. See `corridor_quotes._quote_one`.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    def _quote(q) -> dict:
+        return {
+            "provider": q.provider,
+            "method": q.method,
+            "available": q.available,
+            "unavailable_reason": q.unavailable_reason,
+            # Money as an exact Decimal STRING, never float. An unavailable
+            # quote's cost is `Decimal("Infinity")` by design (so it can never
+            # win a min() comparison); that is not a figure to render, so it
+            # crosses the boundary as null.
+            "total_cost": str(q.total_cost(payload.amount)) if q.available else None,
+            "flat_fee": str(q.flat_fee),
+            "pct_fee": str(q.pct_fee),
+            "eta_business_days": q.eta_business_days,
+            "fx_rate": str(q.fx_rate) if q.fx_rate is not None else None,
+        }
+
+    return {
+        "invoice_id": str(invoice.id),
+        "mode": ranking.mode,
+        "currency": payload.currency,
+        "amount": str(payload.amount),
+        "winner": _quote(ranking.winner),
+        "runners_up": [_quote(q) for q in ranking.runners_up],
+        "savings_vs_runner_up": str(savings_vs_runner_up(ranking, payload.amount)),
+        # This endpoint is advisory only — say so in the payload, not just the
+        # docstring, so a client can't mistake it for a routing decision.
+        "advisory": True,
     }
 
 

@@ -333,3 +333,54 @@ nullable / defaulted KYC columns and creates the append-only
 | `tests/test_compliance.py` | Mock sanctions adapter (clear / match / review_required / beneficial-owner hit), `check_payment_compliance` verdict resolution (refuse on match + KYC gap; hold on review + AML), audit-row persistence, dispatcher fallback, **end-to-end** sanctions refusal through `execute_payment_run` (adapter NEVER called) |
 | `tests/test_international_payments.py` | `prepare_international_payment` happy paths + refusals; `compute_fx_gain_loss` directionality; `is_international_payment` predicate (incl. a method-only row and a non-positive locked rate); **end-to-end** through `execute_payment_run` with a EUR invoice on a USD-home org → locked rate + corridor + invoice flip |
 | `tests/test_payment_methods.py` | The rail registry's **two** drift guards: every producible rail is card-or-reportable AND international-or-domestic; a source scan fails if any module under `app/` re-enumerates the international rail set as its own literal |
+
+## The quote optimizer has a caller: `POST /api/payments/corridor-quotes`
+
+`services/corridor_quotes.compare_quotes` was fully built, documented and
+tested but nothing outside its own module called it. Unreachable code on the
+money path is a trap rather than a defect: it fails no test, and the first
+person to wire it up inherits every untested assumption at once.
+
+The caller is now an explicitly **advisory, read-only** endpoint (admin /
+ap_manager / cfo, entity-scoped):
+
+```
+POST /api/payments/corridor-quotes
+{ "invoice_id": "...", "method": "ach", "mode": "cheapest" | "fastest" }
+```
+
+It builds a `PaymentPayload` from the invoice + the vendor's bank details, asks
+each configured processor's optional `quote_payment` capability what the payment
+would cost and how fast it would settle, ranks them, and returns the winner, the
+runners-up and `savings_vs_runner_up`. Every money figure is an exact decimal
+string; an unavailable route's cost is `Decimal("Infinity")` internally and
+crosses the boundary as `null` rather than as a number.
+
+**It is deliberately not an auto-router**, and the response says so
+(`advisory: true`). Which bank actually moves the money stays with
+`payment_corridor.pick_corridor` and the org's configured provider — routing a
+payment to whichever rail bid lowest is a treasury policy decision, not
+something a bug-fix pass gets to make. This endpoint is what lets a human see
+the trade-off before making it, which is the part that needed no policy call.
+
+Nothing here books a `Payment`, claims a run, or touches an invoice. An adapter
+that has published no fee schedule reports `available=False`
+(`PaymentAdapter.quote_payment` fails closed rather than fabricating a
+free/instant quote) so it is listed and skipped rather than winning on numbers
+nobody supplied; when no configured provider can quote the corridor at all, the
+endpoint 409s with the per-provider machine reasons. `modern_treasury` is
+currently in that state — its real fee table is still the missing piece.
+
+**One bad provider config no longer takes down the auction.** `compare_quotes`
+caught only `UnknownPaymentProviderError` from adapter construction, so an entry
+that failed to construct for any other reason — an `__init__` reading a required
+credential out of a half-filled config, a malformed non-dict entry — propagated
+and killed the whole auction, including every other configured rail. That is the
+exact property the unknown-name branch exists to provide, applied to only one of
+the two ways an entry can be bad. Both now become an unavailable quote
+(`provider_not_configured:<ExceptionClass>`) that can never win, and the reason
+carries the exception CLASS only — a provider SDK can put a partial account
+number or key fragment in its message, and `unavailable_reason` reaches a
+response body.
+
+**Tests:** `backend/tests/test_corridor_quote_endpoint.py`.
