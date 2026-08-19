@@ -78,6 +78,11 @@
 	 * `cancelled` and `voided` share `muted` (a grey tint) while a run's
 	 * `draft` is `neutral` (flat): "abandoned" and "reversed" are both inert
 	 * money states, whereas draft is money that has not been attempted yet.
+	 *
+	 * No `?? 'neutral'` at the call site, unlike the two bare-string maps
+	 * below: this record is total over the union, and a status off the union
+	 * lands on `Badge`'s own `tone` default — which is `neutral` — rather than
+	 * on a fallback restating it.
 	 */
 	const PAYMENT_STATUS_TONES: Record<PaymentStatus, BadgeTone> = {
 		pending: 'warning',
