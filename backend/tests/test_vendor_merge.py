@@ -501,3 +501,85 @@ async def test_merge_prior_collapse_is_idempotent(realdb):
     assert r2.json()["reassigned"] == {}
     assert r2.json()["total_reassigned"] == 0
     assert await _priors_of(mk, canonical) == {"tax_rate": "0.20"}
+
+
+# ---------------------------------------------------------------------------
+# VENDOR_FK_CHILDREN drift guard
+# ---------------------------------------------------------------------------
+#
+# `VENDOR_FK_CHILDREN` is the single source of truth for "what points at a
+# vendor", and its own docstring says a new table with a `vendor_id` FK MUST be
+# added there or its rows are left dangling on a merge. Nothing enforced that —
+# the list happened to be complete, so these guard the future. Shaped like
+# `tests/test_payment_methods.py`'s drift guards: walk the live metadata rather
+# than restate the list, so the guard can't itself go stale.
+
+# Tenant tables carrying a `vendor_id` column that a merge deliberately does
+# NOT plain-reassign. Each needs a reason; a bare entry is a hole, not an
+# exemption.
+_VENDOR_FK_NOT_PLAIN_REASSIGNED = {
+    # Unique on (vendor_id, field_name) — a blind UPDATE collides when both the
+    # duplicate and the canonical vendor hold a prior for the same field.
+    # `merge_vendors` handles it specially (keep canonical, drop the dup's).
+    "vendor_extraction_priors": (
+        "unique (vendor_id, field_name) — merged specially, not plain-reassigned"
+    ),
+}
+
+
+def _tenant_tables_with_vendor_fk() -> set[str]:
+    """Every tenant-DB table declaring a `vendor_id` column, from live metadata.
+
+    Importing `vendor_merge` pulls in every child model, which is what puts
+    them on `Base.metadata`.
+    """
+    import app.services.vendor_merge  # noqa: F401
+    from app.models.base import Base
+    from app.services.tenant_provisioning import CONTROL_TABLES
+
+    return {
+        name
+        for name, table in Base.metadata.tables.items()
+        if name not in CONTROL_TABLES and table.columns.get("vendor_id") is not None
+    }
+
+
+def test_every_tenant_table_with_a_vendor_fk_is_in_vendor_fk_children():
+    """A new table with a `vendor_id` FK that nobody adds to
+    `VENDOR_FK_CHILDREN` leaves its rows dangling on a merge — pointing at a
+    vendor that has just been soft-retired, with no path to the canonical one.
+    """
+    from app.services.vendor_merge import VENDOR_FK_CHILDREN
+
+    discovered = _tenant_tables_with_vendor_fk()
+    assert discovered, "expected to discover tenant tables carrying a vendor_id FK"
+
+    covered = {model.__tablename__ for model in VENDOR_FK_CHILDREN}
+    missing = discovered - covered - set(_VENDOR_FK_NOT_PLAIN_REASSIGNED)
+    assert not missing, (
+        "these tenant tables carry a vendor_id FK but are not in "
+        f"VENDOR_FK_CHILDREN, so a vendor merge would orphan their rows: {sorted(missing)}. "
+        "Add the model to VENDOR_FK_CHILDREN, or add the table to "
+        "_VENDOR_FK_NOT_PLAIN_REASSIGNED with a reason."
+    )
+
+
+def test_vendor_fk_children_has_no_stale_entries():
+    """The reverse direction: a model in the list that no longer declares a
+    `vendor_id` column would make the merge issue a doomed UPDATE."""
+    from app.services.vendor_merge import VENDOR_FK_CHILDREN
+
+    discovered = _tenant_tables_with_vendor_fk()
+    stale = [m.__tablename__ for m in VENDOR_FK_CHILDREN if m.__tablename__ not in discovered]
+    assert not stale, f"VENDOR_FK_CHILDREN names tables with no vendor_id column: {stale}"
+
+
+def test_vendor_fk_exemptions_are_current_and_justified():
+    """An exemption that stops being true silently excuses a table the merge
+    should by then be reassigning."""
+    discovered = _tenant_tables_with_vendor_fk()
+    for table, reason in _VENDOR_FK_NOT_PLAIN_REASSIGNED.items():
+        assert reason, f"{table} needs a reason, not a bare exemption"
+        assert table in discovered, (
+            f"exempted table {table!r} no longer carries a vendor_id column — drop the exemption"
+        )
