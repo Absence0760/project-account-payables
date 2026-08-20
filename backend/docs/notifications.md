@@ -110,7 +110,16 @@ recipients are `VendorUser`s (tenant DB), not control-plane `User`s, and
   Vendors have no in-app center, so only the `email` channel is consulted.
 - Emails reuse the shared **PII-free** templates (`notification_templates.render`)
   — invoice number, vendor name, amount, currency, optional rejection reason.
-  Failures log the event type only, never the recipient address.
+  Failures log the event type + the exception **class name** only, never the
+  recipient address — and specifically **never `logger.exception`**, for the same
+  reason the control-plane leg documents above: the traceback carries the
+  exception's own text whatever the format string names, and
+  `smtplib.SMTPRecipientsRefused` stringifies as
+  `{'supplier@customer.com': (550, b'…')}`. The vendor send guard used
+  `logger.exception` and so wrote a supplier's address into the log sink on the
+  first refusal; `tests/test_vendor_notification_prefs.py::test_vendor_email_failure_never_logs_the_recipient_address`
+  pins it, mirroring the control-plane guard in
+  `tests/test_chat_notification_adapters.py`.
 
 The vendor-friendly API shape (`email_on_payment` / `email_on_rejection`) and
 the GET/PATCH portal endpoints are documented in
