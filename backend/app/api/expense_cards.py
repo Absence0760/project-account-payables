@@ -93,17 +93,30 @@ def _to_response(t: CorporateCardTransaction) -> CorporateCardTransactionRespons
 
 
 async def _get_txn_or_404(
-    db: AsyncSession, txn_id: uuid.UUID, entity_id: uuid.UUID | None
+    db: AsyncSession,
+    txn_id: uuid.UUID,
+    entity_id: uuid.UUID | None,
+    *,
+    for_update: bool = False,
 ) -> CorporateCardTransaction:
     """Resolve an entity-scoped transaction; a cross-tenant / out-of-scope id is
-    a 404 (mirrors ``expenses._get_expense_or_404``)."""
-    txn = (
-        await db.execute(
-            apply_entity_scope(
-                select(CorporateCardTransaction), CorporateCardTransaction, entity_id
-            ).where(CorporateCardTransaction.id == txn_id)
-        )
-    ).scalar_one_or_none()
+    a 404 (mirrors ``expenses._get_expense_or_404``).
+
+    ``for_update`` takes a row lock, and every path that reads the
+    reconciliation state and then WRITES it must pass it. The
+    already-matched 409 is a read-then-write check, not a constraint: two
+    overlapping requests both read ``matched_expense_id IS NULL`` and both
+    proceed, so a double-clicked "Create expense" minted TWO expenses (and two
+    ``expense.created`` audit rows) for one card charge — a duplicate that then
+    flows into an expense-report total. Serialising on the txn row makes the
+    second request see the first's write and 409 as intended.
+    """
+    query = apply_entity_scope(
+        select(CorporateCardTransaction), CorporateCardTransaction, entity_id
+    ).where(CorporateCardTransaction.id == txn_id)
+    if for_update:
+        query = query.with_for_update()
+    txn = (await db.execute(query)).scalar_one_or_none()
     if not txn:
         raise HTTPException(status_code=404, detail="Card transaction not found")
     return txn
@@ -319,7 +332,7 @@ async def match_card_transaction(
     """Reconcile a card transaction against an expense. Links both sides and
     stamps the expense's ``payment_method``. Rejects (409) if either side is
     already matched, or if the two are denominated in different currencies."""
-    txn = await _get_txn_or_404(db, txn_id, entity_id)
+    txn = await _get_txn_or_404(db, txn_id, entity_id, for_update=True)
     try:
         expense_uuid = uuid.UUID(body.expense_id)
     except ValueError:
@@ -361,7 +374,7 @@ async def unmatch_card_transaction(
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Clear a reconciliation — both sides back to unlinked, txn → unmatched."""
-    txn = await _get_txn_or_404(db, txn_id, entity_id)
+    txn = await _get_txn_or_404(db, txn_id, entity_id, for_update=True)
     if txn.reconciliation_status != ReconciliationStatus.matched:
         raise HTTPException(status_code=409, detail="Transaction is not matched")
     linked_expense_id = txn.matched_expense_id
@@ -415,7 +428,7 @@ async def ignore_card_transaction(
     mutation on this router declares its legal source state; this one was the
     exception. Unmatch first, then ignore.
     """
-    txn = await _get_txn_or_404(db, txn_id, entity_id)
+    txn = await _get_txn_or_404(db, txn_id, entity_id, for_update=True)
     if (
         txn.reconciliation_status == ReconciliationStatus.matched
         or txn.matched_expense_id is not None
@@ -453,7 +466,7 @@ async def create_expense_from_card(
     The expense inherits ``expense_date`` = ``txn_date``, merchant, amount,
     currency, and entity from the txn; ``payment_method`` follows the
     virtual/corporate split. Rejects (409) if the txn is already matched."""
-    txn = await _get_txn_or_404(db, txn_id, entity_id)
+    txn = await _get_txn_or_404(db, txn_id, entity_id, for_update=True)
     if (
         txn.matched_expense_id is not None
         or txn.reconciliation_status == ReconciliationStatus.matched

@@ -1458,18 +1458,31 @@
 								] ?? txn.reconciliation_status}
 							</span>
 						</td>
+						<!-- All four bind `cardBusy`. The three mutating handlers already
+						     set it, but nothing read it here, and the row's own `{#if}`
+						     only changes once the refetch lands — so a second click inside
+						     the round trip fired a second request. On Create expense that
+						     minted a SECOND Expense (and a second `expense.created` audit
+						     row) for one card charge, which then flowed into a report
+						     total: the backend's already-matched 409 is a read-then-write
+						     check, so two overlapping requests both read `unmatched`.
+						     (The txn row is locked FOR UPDATE server-side now too — this
+						     half is what stops the second request being issued at all.)
+						     Match opens a picker rather than mutating, but is disabled on
+						     the same flag: choosing a target while another mutation is
+						     retiring the row is the same stale-row problem. -->
 						<td class="actions">
 							{#if canManagePolicies && txn.reconciliation_status === 'unmatched'}
-								<RowAction variant="default" onclick={() => openMatchPicker(txn)}>{m('expenses.cards.match')}</RowAction>
+								<RowAction variant="default" disabled={cardBusy} onclick={() => openMatchPicker(txn)}>{m('expenses.cards.match')}</RowAction>
 							{/if}
 							{#if canCreate && txn.reconciliation_status === 'unmatched'}
-								<RowAction variant="default" onclick={() => createExpenseForCard(txn)}>{m('expenses.cards.createExpense')}</RowAction>
+								<RowAction variant="default" disabled={cardBusy} onclick={() => createExpenseForCard(txn)}>{m('expenses.cards.createExpense')}</RowAction>
 							{/if}
 							{#if canManagePolicies && txn.reconciliation_status === 'matched'}
-								<RowAction variant="default" onclick={() => unmatchCard(txn)}>{m('expenses.cards.unmatch')}</RowAction>
+								<RowAction variant="default" disabled={cardBusy} onclick={() => unmatchCard(txn)}>{m('expenses.cards.unmatch')}</RowAction>
 							{/if}
 							{#if canManagePolicies && txn.reconciliation_status === 'unmatched'}
-								<RowAction variant="default" onclick={() => ignoreCard(txn)}>{m('expenses.cards.ignore')}</RowAction>
+								<RowAction variant="default" disabled={cardBusy} onclick={() => ignoreCard(txn)}>{m('expenses.cards.ignore')}</RowAction>
 							{/if}
 						</td>
 					</tr>

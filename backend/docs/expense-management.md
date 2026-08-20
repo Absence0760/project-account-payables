@@ -121,6 +121,17 @@ string-Decimal amounts — never PII.
 
 Router `app/api/expense_cards.py`, prefix `/api/corporate-card-transactions`. Read = all roles; mutate = `admin`/`ap_manager` (create-expense also allows `ap_clerk`). Every mutation is audited and entity-scoped; PII is `card_last_four` only.
 
+**Every reconciliation write locks the transaction row.** `match` / `unmatch` /
+`ignore` / `create-expense` all read the reconciliation state and then write it,
+and their "already matched" **409** is a read-then-write check, not a
+constraint: two overlapping requests both read `matched_expense_id IS NULL` and
+both proceeded. On `create-expense` that minted **two** `Expense` rows (and two
+`expense.created` audit rows) for one card charge — a duplicate that then flows
+into an expense-report total. `_get_txn_or_404(..., for_update=True)` serialises
+them so the loser sees the winner's write. `tests/test_expense_cards.py` covers
+it concurrently, sequentially, and with a source-scan drift guard so a new
+mutating handler can't reopen the hole.
+
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/corporate-card-transactions` | List, paginated, entity-scoped; `?reconciliation_status=&virtual_card_id=&date_from=&date_to=` filters. Ordered by `txn_date` desc. |
