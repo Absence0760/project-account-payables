@@ -127,3 +127,74 @@ describe('fire-and-forget store loads are caught', () => {
 		]);
 	});
 });
+
+/**
+ * The other half of the same convention.
+ *
+ * The `.catch(() => {})` above is only safe because — in the words of the
+ * comment every one of those call sites carries — "the store's `errored` flag
+ * is what the UI renders". Two stores carried that exact comment at their call
+ * sites while exposing no such flag: `adminStore` and `workflowStore`. A failed
+ * load was swallowed with no toast, no banner and no retry, and the table
+ * asserted "No users found." / "No workflows configured." An outage read as an
+ * empty tenant, on the two pages you open when access or routing is already
+ * misbehaving.
+ *
+ * So: any store a swallowing call site CITES must actually expose the flag.
+ * Derived from the comments rather than a hardcoded list, so a new surface
+ * making the same claim is covered for free — and a store whose consumer owns
+ * its own error state instead (the `/notifications` route does) is correctly
+ * out of scope, because it never makes the claim.
+ */
+const STORE_SOURCES = import.meta.glob('/src/lib/stores/*.svelte.ts', {
+	query: '?raw',
+	import: 'default',
+	eager: true
+}) as Record<string, string>;
+
+/** Store object names cited by a swallowing call site that names the flag. */
+function citedStores(): Set<string> {
+	const cited = new Set<string>();
+	for (const source of Object.values(RAW)) {
+		for (const body of effectBodies(source)) {
+			if (!body.includes('`errored` flag')) continue;
+			for (const [, name] of body.matchAll(/(\w+Store)\.\w+\([^;]*\)\.catch/g)) {
+				cited.add(name);
+			}
+		}
+	}
+	return cited;
+}
+
+/** `adminStore` → `/src/lib/stores/admin.svelte.ts`. */
+function moduleFor(storeName: string): string | undefined {
+	const stem = storeName.replace(/Store$/, '').toLowerCase();
+	return Object.keys(STORE_SOURCES).find((p) => {
+		const file = p.split('/').pop()!.replace('.svelte.ts', '').toLowerCase();
+		return file === stem || file === `${stem}s`;
+	});
+}
+
+describe('a store cited as owning the failure state actually owns it', () => {
+	it('finds the citing call sites at all (the scan is not vacuous)', () => {
+		expect(citedStores().size).toBeGreaterThan(0);
+	});
+
+	it('every cited store exposes a real `errored` flag', () => {
+		const missing: string[] = [];
+		for (const storeName of citedStores()) {
+			const path = moduleFor(storeName);
+			if (!path) {
+				missing.push(`${storeName}: no store module found`);
+				continue;
+			}
+			const source = STORE_SOURCES[path];
+			if (!/get errored\(\)/.test(source)) missing.push(`${storeName}: no \`errored\` getter`);
+			// …and it is real state, not a hardcoded false.
+			else if (!/let errored = \$state\(false\)/.test(source)) {
+				missing.push(`${storeName}: \`errored\` is not $state`);
+			}
+		}
+		expect(missing, missing.join('\n')).toEqual([]);
+	});
+});
