@@ -464,6 +464,38 @@ async def cancel_requisition(
     return _to_response(await _get_or_404(db, req.id))
 
 
+@router.post("/{req_id}/reopen", response_model=RequisitionResponse)
+async def reopen_requisition(
+    req_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Reopen a rejected requisition for rework: ``rejected -> draft``.
+
+    ``VALID_TRANSITIONS`` has always declared this edge and the lifecycle
+    diagram has always documented it ("``rejected`` can be re-opened back to
+    ``draft``"), but no route performed it — which left a rejected requisition
+    permanently stranded. From ``rejected`` nothing else moves: ``submit`` only
+    leaves ``draft``/``submitted``, ``cancel`` is not reachable from
+    ``rejected``, and ``PATCH`` is draft-only. The buyer's only recourse was to
+    DELETE the row and re-key every line, losing the requisition number and the
+    audit link between the two attempts.
+
+    ``rejection_reason`` is deliberately left on the row — it is the brief for
+    the rework, and a later rejection overwrites it.
+    """
+    req = await _get_or_404(db, req_id)
+    guard_transition(req.status, RequisitionStatus.draft)
+    req.status = RequisitionStatus.draft
+    # The prior submission's clock no longer describes this row: it is a draft
+    # again, and `submit` re-stamps `submitted_at` when it next leaves draft.
+    req.submitted_at = None
+    await _audit_transition(db, req, org_id, user.id, "requisition.reopened")
+    await db.commit()
+    return _to_response(await _get_or_404(db, req.id))
+
+
 # ---------------------------------------------------------------------------
 # Convert to PO — idempotent
 # ---------------------------------------------------------------------------

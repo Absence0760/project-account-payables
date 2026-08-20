@@ -37,6 +37,10 @@ re-opened back to `draft`.
 - **reject** (`pending_approval → rejected`) — records `rejection_reason`.
 - **cancel** (`draft` / `submitted` / `pending_approval` / `approved →
   cancelled`).
+- **reopen** (`rejected → draft`) — clears `submitted_at`, keeps
+  `rejection_reason` as the brief for the rework. Without it a rejected
+  requisition was stranded: `submit`, `cancel` and `PATCH` all 422 from
+  `rejected`, so the only exit was `DELETE` + re-keying every line.
 
 Header `total` is **always recomputed server-side** from the line items
 (`sum(quantity × unit_price)`, exact `Decimal`) on create and on every draft
@@ -74,9 +78,10 @@ via `X-Entity-ID`; tenant scope via `X-Tenant-Slug` (the per-tenant DB session).
 | `POST /requisitions/{id}/approve` | `pending_approval → approved` (SoD enforced) | admin, ap_manager, cfo |
 | `POST /requisitions/{id}/reject` | `pending_approval → rejected` (reason) | admin, ap_manager, cfo |
 | `POST /requisitions/{id}/cancel` | `→ cancelled` | admin, ap_manager, ap_clerk |
+| `POST /requisitions/{id}/reopen` | `rejected → draft` (rework loop) | admin, ap_manager, ap_clerk |
 | `POST /requisitions/{id}/convert-to-po` | `approved → converted` + creates PO (idempotent) | admin, ap_manager |
 
-Literal route segments (`submit`, `approve`, `reject`, `cancel`,
+Literal route segments (`submit`, `approve`, `reject`, `cancel`, `reopen`,
 `convert-to-po`) hang off `/{id}` and so are unambiguous; the bare `/{id}`
 collection routes are declared after the list/create pair (mirrors the expenses
 router ordering rule).
@@ -107,7 +112,7 @@ delete / submit / cancel): `admin` / `ap_manager` / `ap_clerk`. Approve / reject
 `ap_manager`. Every route carries an auth dependency (gated by
 `tests/test_rbac.py`); every mutation writes a `dispatch_audit` row
 (`requisition.created` / `.updated` / `.deleted` / `.submitted` / `.approved` /
-`.rejected` / `.cancelled` / `.converted_to_po`).
+`.rejected` / `.cancelled` / `.reopened` / `.converted_to_po`).
 
 ## Frontend
 

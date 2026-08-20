@@ -251,6 +251,65 @@ async def test_invalid_transition_is_422(realdb):
     assert resp.status_code == 422
 
 
+async def test_reopen_rejected_intake_returns_it_to_open(realdb):
+    """A rejected intake must be re-openable for rework.
+
+    ``intake_service.VALID_TRANSITIONS`` declares ``rejected -> open`` and the
+    lifecycle diagram documents it, but for a long time NO route performed the
+    move: submit/cancel both 422 from ``rejected`` and PATCH is open-only, so a
+    rejected intake was permanently stranded and the requester's only recourse
+    was deleting the row and re-keying it (losing the request number, the
+    reviewer's reason, and the audit link between the two attempts).
+    """
+    mk = realdb.sessionmaker("a")
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        iid = (await c.post("/api/intake", json=_payload(form_data={"seats": 5}))).json()["id"]
+        await c.post(f"/api/intake/{iid}/submit")
+    async with realdb.client(key="a", role="ap_manager") as c:
+        rejected = await c.post(f"/api/intake/{iid}/reject", json={"reason": "use existing tool"})
+    assert rejected.json()["status"] == "rejected"
+
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        # Before the fix every exit from `rejected` was a dead end.
+        assert (await c.post(f"/api/intake/{iid}/submit")).status_code == 422
+        assert (await c.post(f"/api/intake/{iid}/cancel")).status_code == 422
+        assert (await c.patch(f"/api/intake/{iid}", json={"title": "Reworked"})).status_code == 422
+
+        reopened = await c.post(f"/api/intake/{iid}/reopen")
+        assert reopened.status_code == 200, reopened.text
+        assert reopened.json()["status"] == "open"
+        # The reviewer's brief survives the reopen, alongside the original answers.
+        assert reopened.json()["form_data"]["review_reason"] == "use existing tool"
+        assert reopened.json()["form_data"]["seats"] == 5
+
+        # ...and the form is editable + re-submittable again.
+        patched = await c.patch(f"/api/intake/{iid}", json={"title": "Reworked"})
+        assert patched.status_code == 200
+        assert patched.json()["title"] == "Reworked"
+        assert (await c.post(f"/api/intake/{iid}/submit")).json()["status"] == "in_review"
+
+    async with mk() as s:
+        actions = (
+            (
+                await s.execute(
+                    select(AuditLog.action).where(AuditLog.entity_type == "intake_request")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert "intake.reopened" in actions
+
+
+async def test_reopen_is_422_from_any_non_rejected_state(realdb):
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        iid = (await c.post("/api/intake", json=_payload())).json()["id"]
+        # open -> open is not a declared transition.
+        assert (await c.post(f"/api/intake/{iid}/reopen")).status_code == 422
+        await c.post(f"/api/intake/{iid}/submit")
+        assert (await c.post(f"/api/intake/{iid}/reopen")).status_code == 422
+
+
 # ---------------------------------------------------------------------------
 # Convert to requisition (+ idempotency)
 # ---------------------------------------------------------------------------
