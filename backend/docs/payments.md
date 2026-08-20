@@ -473,6 +473,13 @@ re-sent.
   set.
 - `invoice_has_live_payment` — the invoice has since acquired another live
   payment.
+- `invoice_has_live_card` — a virtual card was minted against the invoice
+  (`POST /api/cards/generate`) while this payment sat `failed`, so the card is
+  already paying it on a rail this retry isn't using. Shared with the run
+  builder and the standalone endpoint via
+  `services/payment_runs.card_claimed_invoice_ids`; a `virtual_card` retry is
+  exempt because that rail converges on the existing card. See § A live card is
+  a claim on its invoice.
 
 `retryable_failures` on the run detail counts only failures the endpoint will
 actually re-attempt, so the retry button can never offer an action that could
@@ -541,6 +548,36 @@ exact amount as a string — never a PAN): `card.generated` on a fresh mint
 on both mint paths) and `card.reused` when the payment settled against a card
 it did not mint. A converged payment does **not** re-email the vendor — the
 reveal link was already sent when the card was minted.
+
+#### A live card is a claim on its invoice — no other rail may also pay it
+
+Convergence covers the case where the *second* payment is itself a card. It
+cannot cover an ACH or wire, because those rails never consult the card at all.
+
+`POST /api/cards/generate` mints a spendable card for the full invoice amount
+and — unlike the leg above — books **no** `Payment` row and leaves the invoice
+`approved`. Every "is this invoice already being paid" gate keys on `Payment`:
+`uq_payments_one_live_per_invoice` and its `_live_payment_invoice_numbers`
+pre-check count payment rows, and `/payments/queue` excludes an invoice only
+once it has a `completed` payment. So a directly-minted card left the invoice
+fully payable by ACH — the vendor held a card for the face amount **and**
+received a wire, with nothing in either audit trail contradicting the other.
+
+`payment_runs.card_claimed_invoice_ids` (over
+`card_issuance.live_card_invoice_ids`, which reuses the index's own
+`status <> 'cancelled'` predicate) is the gate, run by all three paths that
+book money — the run builder, the standalone `POST /api/payments`, and
+`/retry-failed` (skip reason `invoice_has_live_card`), so the refusal can't be
+walked around by using a different one.
+
+It is **method-aware**: `virtual_card` is exempt, because that rail converges on
+the existing card rather than opening a second outflow. Every other rail is
+refused, including a payment with no `method` recorded (it will not take the
+card leg either — fail closed). A `charged` card is the case that matters most:
+the money already moved on that rail, and an ACH run would move it again.
+
+The exit is cancelling the card, which vacates the slot the index and this gate
+share.
 
 ### Voiding a card payment cancels the card
 
@@ -1456,6 +1493,43 @@ one total would misfire (or fail to fire) this gate on a face-value
 coincidence across currencies. Each `Payment` still settles independently in
 its own invoice's currency at execution time; this only constrains what one
 run can report a single total for.
+
+#### The threshold is denominated in the org's REPORTING currency
+
+`cfo_approval_above` is a bare number, exactly like
+`settings.expense_approval.cfo_threshold`, and what it is denominated in is the
+org's **reporting currency** (`currency_conversion.resolve_reporting_currency`).
+So the amount has to be expressed in that currency *before* it can be compared.
+
+Refusing a mixed-currency batch (above) closes only the batch half of that
+problem. A run entirely in ONE foreign currency was still compared at face
+value, which made the gate fail **OPEN** for every foreign payable priced below
+the threshold in its own units: a **GBP 9,000** run — **USD 11,400** at the rate
+already locked on its invoice — slipped under a USD 10,000 threshold and
+executed with no CFO sign-off. The standalone `POST /api/payments` gate had the
+identical hole.
+
+Both now compare the **reporting-currency** figure, via
+`services/payment_controls.cfo_approval_decision` (one owner, so the two paths
+can't drift) fed by `currency_conversion.reporting_amount_at_locked_rate`:
+
+- **No FX call.** The rate was locked onto the invoice row when it was last
+  saved (`materialize_reporting_amount` → `invoices.reporting_fx_rate` +
+  `reporting_source_currency`). A rate fetched on a read would make a control's
+  verdict move with the market.
+- **Fail-closed, both ways.** An unparseable threshold requires sign-off
+  (unchanged), and an amount that *cannot* be expressed in the reporting
+  currency — no locked rate, or a lock that no longer describes the row's
+  currency pair — is treated as **over** the threshold, never under. This is
+  stricter than the display rollups' `reporting_amount_for_row`, deliberately:
+  a rollup prefers a slightly stale figure to a missing one, a control does not.
+- `PaymentRun.total_amount` is unchanged — it is still what the run *pays*, in
+  the currency its invoices share. The `payment_run.created` audit row carries
+  `cfo_threshold_currency` / `cfo_evaluated_amount` / `cfo_reason` so the
+  decision is reconstructable when the two figures differ.
+
+Guards: `tests/test_payment_run_critical_path.py` (the reporting-currency
+section) and `tests/test_payment_create_cfo_gate.py`.
 
 ### Financial-integrity exception gate
 

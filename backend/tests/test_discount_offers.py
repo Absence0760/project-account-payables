@@ -8,7 +8,7 @@ build the router / migration concurrently.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -331,3 +331,146 @@ def test_build_bulk_offer_rejects_nonpositive_base():
             open_amounts=[Decimal("0.00")],
             tiers=[{"days": 5, "percent": "3"}],
         )
+
+
+# --------------------------------------------------------------------------- #
+# offer_reference_date — a tier window is measured from the OFFER, not "today"
+# --------------------------------------------------------------------------- #
+
+
+def test_reference_date_prefers_valid_from():
+    offer = _offer(valid_from=date(2026, 1, 1), created_at=datetime(2026, 3, 4, tzinfo=UTC))
+    assert do.offer_reference_date(offer) == date(2026, 1, 1)
+
+
+def test_reference_date_falls_back_to_the_creation_date_not_today():
+    """`build_bulk_offer.as_offer_kwargs` has no `valid_from` key at all, so
+    EVERY bulk negotiation is persisted with a NULL one — and
+    `DiscountOfferCreate.valid_from` defaults to `None` too. Falling through to
+    `best_tier_for_date`'s own `as_of` default made each rung's deadline roll
+    forward one day per day: the offer never aged and its tightest,
+    highest-percent tier read as open forever."""
+    offer = _offer(valid_from=None, created_at=datetime(2026, 1, 1, 9, 0, tzinfo=UTC))
+    assert do.offer_reference_date(offer) == date(2026, 1, 1)
+
+
+def test_reference_date_reads_created_at_in_utc():
+    """`created_at` is `DateTime(timezone=True)`; the comparison has to happen
+    in UTC, matching `utils/dates.utc_today` — the one definition of "today"
+    every discount surface (AP, portal, analytics) already reads."""
+    offer = _offer(
+        valid_from=None,
+        created_at=datetime(2026, 1, 2, 1, 30, tzinfo=timezone(timedelta(hours=13))),
+    )
+    assert do.offer_reference_date(offer) == date(2026, 1, 1)
+
+
+def test_reference_date_is_none_when_the_offer_carries_neither():
+    """An unpersisted offer being previewed has no creation date yet; "measure
+    from today" is the correct reading there and matches prior behaviour."""
+    assert do.offer_reference_date(_offer(valid_from=None, created_at=None)) is None
+    assert do.offer_reference_date(_offer(valid_from=None)) is None
+
+
+def test_aged_bulk_offer_cannot_still_claim_its_tightest_tier():
+    """The end-to-end money consequence: an offer opened on Jan 1 with
+    `[{days: 5, percent: 3}, {days: 30, percent: 1}]` and no `valid_from`.
+
+    Before the fix the 3% rung read as open indefinitely — on a 500,000 bulk
+    offer that is a 15,000 deduction the supplier never agreed to (they offered
+    3% for payment by Jan 6, and 1% only through Jan 31).
+    """
+    offer = _offer(
+        tiers=do.parse_tiers([{"days": 5, "percent": "3"}, {"days": 30, "percent": "1"}]),
+        valid_from=None,
+        valid_until=date(2026, 12, 31),
+        created_at=datetime(2026, 1, 1, 9, 0, tzinfo=UTC),
+        base_amount=Decimal("500000.00"),
+    )
+
+    def best(as_of):
+        return do.best_tier_for_date(
+            offer.tiers,
+            as_of,
+            offer.valid_until,
+            reference_date=do.offer_reference_date(offer),
+        )
+
+    # Day 3 — the 5-day rung is genuinely still open.
+    assert best(date(2026, 1, 4)) == {"days": 5, "percent": "3.00"}
+    # Day 19 — the 5-day rung closed on Jan 6; only the 30-day 1% rung remains.
+    assert best(date(2026, 1, 20)) == {"days": 30, "percent": "1.00"}
+    assert do.discount_savings(offer.base_amount, best(date(2026, 1, 20))) == Decimal("5000.00")
+    # Day 232 — both rungs closed long ago; nothing is capturable.
+    assert best(date(2026, 8, 20)) is None
+
+
+def test_tier_deadline_uses_the_offer_reference_not_today():
+    """`discount_auto_trigger._tier_deadline` is the shared deadline the router
+    and the sweep both render as `pay_by`; it has to age with the offer too."""
+    from app.services.discount_auto_trigger import _tier_deadline
+
+    offer = _offer(
+        valid_from=None,
+        valid_until=date(2026, 12, 31),
+        created_at=datetime(2026, 1, 1, 9, 0, tzinfo=UTC),
+    )
+    tier = {"days": 30, "percent": "1.00"}
+    assert _tier_deadline(offer, tier, date(2026, 6, 1)) == date(2026, 1, 31)
+
+
+def test_every_tier_window_call_site_resolves_the_reference_from_the_offer():
+    """Drift guard. `best_tier_for_date` / `select_tier_for_date` default
+    `reference_date` to `as_of`, so a call site that omits it — or passes
+    `offer.valid_from` directly, which is what all nine of them used to do —
+    silently reinstates the rolling-deadline bug on every offer with a NULL
+    `valid_from`. Every call under `app/` must go through
+    `offer_reference_date`."""
+    import ast
+    import pathlib
+
+    watched = {"best_tier_for_date", "select_tier_for_date"}
+    app_dir = pathlib.Path(do.__file__).resolve().parent.parent
+    offenders: list[str] = []
+    seen = 0
+
+    for path in sorted(app_dir.rglob("*.py")):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = (
+                func.attr
+                if isinstance(func, ast.Attribute)
+                else (func.id if isinstance(func, ast.Name) else None)
+            )
+            if name not in watched:
+                continue
+            # The definitions themselves live in this module; only CALLS count.
+            if path.name == "discount_offers.py":
+                continue
+            seen += 1
+            ref = next((kw for kw in node.keywords if kw.arg == "reference_date"), None)
+            where = f"{path.relative_to(app_dir.parent)}:{node.lineno}"
+            if ref is None:
+                offenders.append(f"{where} — no reference_date")
+                continue
+            value = ref.value
+            called = (
+                isinstance(value, ast.Call)
+                and (
+                    (isinstance(value.func, ast.Attribute) and value.func.attr)
+                    or (isinstance(value.func, ast.Name) and value.func.id)
+                )
+                == "offer_reference_date"
+            )
+            if not called:
+                offenders.append(f"{where} — reference_date is not offer_reference_date(...)")
+
+    assert not offenders, "tier-window call sites bypassing offer_reference_date:\n" + "\n".join(
+        offenders
+    )
+    # A scan that finds nothing proves nothing — pin that the call sites are
+    # still where this guard thinks they are.
+    assert seen >= 9, f"expected the tier-window call sites to still exist, found {seen}"

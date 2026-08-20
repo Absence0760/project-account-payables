@@ -33,6 +33,15 @@ from app.models.invoice import Invoice
 from app.models.organization import Organization
 from app.models.payment import Payment, PaymentRun
 from app.models.user import User
+from app.services.currency_conversion import (
+    reporting_amount_at_locked_rate,
+    resolve_reporting_currency,
+)
+from app.services.payment_controls import (
+    CFO_REASON_AMOUNT_NOT_EXPRESSIBLE,
+    CFO_REASON_THRESHOLD_UNPARSEABLE,
+    cfo_approval_decision,
+)
 from app.tenant import apply_entity_scope
 
 logger = logging.getLogger(__name__)
@@ -352,6 +361,43 @@ async def blocked_invoice_ids(db: AsyncSession, invoice_ids: list[uuid.UUID]) ->
     return set(await blocking_exception_types(db, invoice_ids))
 
 
+#: The only rail that can legitimately pay an invoice already holding a live
+#: virtual card. `api/payments._execute_single_payment`'s card leg CONVERGES on
+#: that card — `find_live_card_for_invoice` → `card_settlement_block` → link +
+#: settle — so refusing it would break the documented pre-mint-then-run flow.
+#: Every other rail would be a second, independent outflow.
+CARD_CONVERGING_METHODS: frozenset[str] = frozenset({"virtual_card"})
+
+
+async def card_claimed_invoice_ids(
+    db: AsyncSession, items: Iterable[tuple[uuid.UUID, str | None]]
+) -> set[uuid.UUID]:
+    """Which of ``items`` are already claimed by a live virtual card on a rail
+    that cannot converge on it.
+
+    ``items`` is ``(invoice_id, requested_method)``. A method of ``None`` counts
+    as non-converging: a payment with no rail recorded will not take the card
+    leg, so it must not be booked against a card-claimed invoice either
+    (fail-closed).
+
+    Companion to `blocked_invoice_ids`. That one asks "does an unresolved
+    exception forbid paying this invoice"; this asks "is something already
+    paying it". The `uq_payments_one_live_per_invoice` index answers that for
+    `Payment` rows, but `POST /api/cards/generate` mints a spendable card
+    without booking one — see `card_issuance.live_card_invoice_ids`.
+    """
+    from app.services.card_issuance import live_card_invoice_ids
+
+    candidates = [
+        invoice_id
+        for invoice_id, method in items
+        if (method or "").strip().lower() not in CARD_CONVERGING_METHODS
+    ]
+    if not candidates:
+        return set()
+    return await live_card_invoice_ids(db, candidates)
+
+
 async def applied_credit_total(db: AsyncSession, invoice_id: uuid.UUID) -> Decimal:
     """Sum of the credit memos already APPLIED against an invoice."""
     return (
@@ -586,14 +632,58 @@ async def create_payment_run_for_invoices(
             ),
         )
 
+    # A live virtual card is already paying this invoice. Refused for every
+    # rail EXCEPT `virtual_card`, which converges on the existing card rather
+    # than opening a second outflow (see `CARD_CONVERGING_METHODS`).
+    card_claimed = await card_claimed_invoice_ids(
+        db, ((item.invoice_id, item.method) for item in items)
+    )
+    if card_claimed:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Invoice(s) already have a live virtual card issued against them — "
+                "pay them by card, or cancel the card first: "
+                + ", ".join(
+                    sorted(
+                        inv.invoice_number for iid, inv in invoices.items() if iid in card_claimed
+                    )
+                )
+            ),
+        )
+
     # Net any applied credit memos off what actually gets paid.
+    #
+    # Two totals, deliberately: `total` is what the run PAYS, in the one
+    # currency its invoices share (`PaymentRun.total_amount`), and
+    # `reporting_total` is the same money expressed in the org's REPORTING
+    # currency, which is the only currency the CFO threshold is denominated in.
+    # They are equal for a domestic run and differ for a foreign one — which is
+    # exactly the case the gate used to get wrong.
+    reporting_currency = resolve_reporting_currency(org.settings)
     net_amounts: dict[uuid.UUID, Decimal] = {}
     total = Decimal("0")
+    reporting_total = Decimal("0")
+    reporting_unconverted = False
     for item in items:
         inv = invoices[item.invoice_id]
         net_amount = await net_payable_amount(db, inv)
         net_amounts[item.invoice_id] = net_amount
         total += net_amount
+        # No FX call: the rate was locked onto the invoice row when it was last
+        # saved (`currency_conversion.materialize_reporting_amount`). A row we
+        # can't price in the reporting currency flags `unconverted`, which the
+        # gate below reads as fail-closed.
+        reported, unconverted = reporting_amount_at_locked_rate(
+            amount=net_amount,
+            currency=inv.currency,
+            reporting_currency=reporting_currency,
+            persisted_reporting_currency=inv.reporting_currency,
+            persisted_reporting_source_currency=inv.reporting_source_currency,
+            persisted_fx_rate=inv.reporting_fx_rate,
+        )
+        reporting_total += reported
+        reporting_unconverted = reporting_unconverted or unconverted
 
     # An invoice fully covered by applied credit memos has nothing to pay. The
     # standalone `POST /api/payments` already refuses this; staging it into a
@@ -615,25 +705,34 @@ async def create_payment_run_for_invoices(
             ),
         )
 
-    # CFO sign-off threshold — identical fail-closed handling of a corrupted /
-    # unparseable setting as the original inline implementation.
+    # CFO sign-off threshold. Compared against the REPORTING-currency figure,
+    # not the run's own-currency total — the threshold is a bare number in the
+    # org's reporting currency, so a GBP 9,000 run used to slip under a USD
+    # 10,000 gate. Fail-closed on an unparseable threshold and on an amount we
+    # can't express in that currency; `services/payment_controls` owns both
+    # rules so this path and the standalone `POST /api/payments` can't drift.
     pmt_cfg = (org.settings or {}).get("payments") or {}
-    cfo_threshold_raw = pmt_cfg.get("cfo_approval_above")
-    requires_cfo = False
-    if cfo_threshold_raw is not None:
-        try:
-            cfo_threshold = Decimal(str(cfo_threshold_raw))
-        except (ValueError, ArithmeticError):
-            logger.error(
-                "payments.cfo_approval_above is unparseable (%r) for org %s; "
-                "requiring CFO approval on this run (fail-closed)",
-                cfo_threshold_raw,
-                org.id,
-            )
-            requires_cfo = True
-        else:
-            if cfo_threshold > 0 and total > cfo_threshold:
-                requires_cfo = True
+    cfo = cfo_approval_decision(
+        payment_config=pmt_cfg,
+        reporting_amount=reporting_total,
+        reporting_currency=reporting_currency,
+        unconverted=reporting_unconverted,
+    )
+    requires_cfo = cfo.required
+    if cfo.reason == CFO_REASON_THRESHOLD_UNPARSEABLE:
+        logger.error(
+            "payments.cfo_approval_above is unparseable (%r) for org %s; "
+            "requiring CFO approval on this run (fail-closed)",
+            pmt_cfg.get("cfo_approval_above"),
+            org.id,
+        )
+    elif cfo.reason == CFO_REASON_AMOUNT_NOT_EXPRESSIBLE:
+        logger.warning(
+            "payment run for org %s could not be expressed in %s (no locked rate on "
+            "one or more invoices); requiring CFO approval (fail-closed)",
+            org.id,
+            reporting_currency,
+        )
 
     run = PaymentRun(
         organization_id=org_id,
@@ -711,6 +810,15 @@ async def create_payment_run_for_invoices(
             "payment_count": len(items),
             "requires_cfo_approval": run.requires_cfo_approval,
             "plan_id": plan_id,
+            # WHAT the CFO gate compared. For a foreign-currency run this is
+            # not `total_amount`, so without it the audit row cannot explain
+            # why a GBP 9,000 run required sign-off against a 10,000 threshold.
+            # PII-free — amounts, a currency code and a fixed reason vocabulary.
+            "cfo_threshold_currency": cfo.currency,
+            "cfo_evaluated_amount": (
+                None if cfo.evaluated_amount is None else str(cfo.evaluated_amount)
+            ),
+            "cfo_reason": cfo.reason,
         },
     )
 

@@ -60,7 +60,11 @@ from app.models.invoice import Invoice
 from app.models.organization import Organization
 from app.models.payment import PaymentSchedule
 from app.services.audit_dispatch import dispatch_audit
-from app.services.discount_offers import best_tier_for_date, expire_if_past
+from app.services.discount_offers import (
+    best_tier_for_date,
+    expire_if_past,
+    offer_reference_date,
+)
 from app.services.discount_roi import compute_roi, days_between
 from app.services.sweep_health import SWEEP_DISCOUNT_AUTO_TRIGGER, run_sweep_loop
 
@@ -82,15 +86,20 @@ class AutoTriggerResult:
 def _tier_deadline(offer: DiscountOffer, tier: dict, ref_today: date) -> date:
     """Latest date we can pay and still earn ``tier`` — the discount deadline.
 
-    Measured from the offer's ``valid_from`` (when the offer was actually
-    extended) — falling back to ``ref_today`` only when ``valid_from`` is
-    unset — plus ``tier.days``, capped at the offer's ``valid_until`` when set
-    (you can never capture after the offer expires). Using ``ref_today``
-    (today) as the reference regardless of when the offer opened used to make
-    every tier's deadline a ROLLING "N days from now" — a tier that should
-    have expired 15 days ago instead looked achievable forever.
+    Measured from the offer's own reference date
+    (``discount_offers.offer_reference_date`` — ``valid_from``, else the date
+    the offer was created) plus ``tier.days``, capped at the offer's
+    ``valid_until`` when set (you can never capture after the offer expires).
+    Using ``ref_today`` (today) as the reference regardless of when the offer
+    opened makes every tier's deadline a ROLLING "N days from now" — a tier
+    that should have expired 15 days ago instead looks achievable forever.
+
+    The earlier fix only reached ``valid_from``, and ``build_bulk_offer``
+    doesn't set one, so every bulk negotiation kept the rolling deadline. The
+    ``ref_today`` fallback now applies only to an offer carrying neither date —
+    an unpersisted one being previewed, where "from today" is correct.
     """
-    reference = offer.valid_from or ref_today
+    reference = offer_reference_date(offer) or ref_today
     deadline = reference + timedelta(days=int(tier["days"]))
     if offer.valid_until is not None and deadline > offer.valid_until:
         return offer.valid_until
@@ -220,12 +229,16 @@ async def _sweep_tenant(
 
                 # Date-window-enforced pick — the SAME rule the acceptance
                 # endpoints use, measured from when the offer was actually
-                # extended (offer.valid_from), not from today. Without this,
-                # every tier's deadline looked like "N days from now" and the
-                # sweep always auto-accepted the highest-percent tier
-                # regardless of how long the offer had been open.
+                # extended (`offer_reference_date`: `valid_from`, else the
+                # offer's creation date), not from today. Without this, every
+                # tier's deadline looked like "N days from now" and the sweep
+                # always auto-accepted the highest-percent tier regardless of
+                # how long the offer had been open.
                 tier = best_tier_for_date(
-                    offer.tiers or [], ref_today, offer.valid_until, reference_date=offer.valid_from
+                    offer.tiers or [],
+                    ref_today,
+                    offer.valid_until,
+                    reference_date=offer_reference_date(offer),
                 )
                 if tier is None:
                     continue

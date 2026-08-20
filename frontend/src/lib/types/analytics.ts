@@ -173,12 +173,20 @@ export interface CfoUnrealizedFxByCurrency {
 	booked_reporting_amount: MoneyString;
 	current_reporting_amount: MoneyString;
 	unrealized_gain_loss: MoneyString;
+	/**
+	 * Open invoices in this currency with no locked exchange rate. A count, not
+	 * money — they are EXCLUDED from every figure on this row rather than booked
+	 * at face value, which would report the conversion itself as a gain/loss.
+	 */
+	unconverted_count: number;
 }
 
 export interface CfoUnrealizedFx {
 	reporting_currency: string;
 	total_unrealized_gain_loss: MoneyString;
 	by_currency: CfoUnrealizedFxByCurrency[];
+	/** A count, not money — see `CfoUnrealizedFxByCurrency.unconverted_count`. */
+	unconverted_count: number;
 	available: boolean;
 }
 

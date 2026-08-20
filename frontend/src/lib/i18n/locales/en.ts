@@ -1132,6 +1132,8 @@ export const en = {
 	'cfoMetrics.fx.colBooked': 'Booked',
 	'cfoMetrics.fx.colCurrent': 'Current',
 	'cfoMetrics.fx.colGainLoss': 'Gain / loss',
+	'cfoMetrics.fx.unconverted':
+		'Excluded: {n, plural, one {# open invoice} other {# open invoices}} with no exchange rate into {currency}, so they are left out of the exposure below. Book the missing rate to include them.',
 
 	// Expense Management (routes/expenses/+page.svelte)
 	'expenses.title': 'Expenses',

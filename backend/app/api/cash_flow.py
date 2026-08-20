@@ -583,7 +583,7 @@ async def capture_discounts_from_plan(
             rec.opportunity.tier_days,
             today,
             offer.valid_until,
-            reference_date=offer.valid_from,
+            reference_date=offers_svc.offer_reference_date(offer),
         )
         if tier is None:
             continue  # this rung's window closed between optimize() and now

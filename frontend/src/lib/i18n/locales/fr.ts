@@ -1093,6 +1093,8 @@ export const messages = {
 	'cfoMetrics.fx.colBooked': 'Comptabilisé',
 	'cfoMetrics.fx.colCurrent': 'Actuel',
 	'cfoMetrics.fx.colGainLoss': 'Gain / perte',
+	'cfoMetrics.fx.unconverted':
+		'Exclues : {n, plural, one {# facture ouverte} other {# factures ouvertes}} sans taux de change vers {currency}, donc absentes de l’exposition ci-dessous. Enregistrez le taux manquant pour les inclure.',
 
 	// Expense Management (routes/expenses/+page.svelte)
 	'expenses.title': 'Dépenses',

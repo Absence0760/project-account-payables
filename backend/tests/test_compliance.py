@@ -65,10 +65,25 @@ def _vendor(
     )
 
 
+def _trailing_row(total: Decimal, excluded: int = 0):
+    """One `_trailing_12m_spend` result row.
+
+    The query returns TWO columns and is consumed with `.one()`: the
+    home-currency sum, and a count of the payments it could not express there
+    (excluded rather than added at face value — the sum used to be a raw
+    `COALESCE(source_amount, amount)`, which mixed the invoice's currency into
+    a home-currency threshold).
+    """
+    res = MagicMock()
+    res.one = MagicMock(return_value=(total, excluded))
+    # Kept for any fake that still reads a single scalar off the same object.
+    res.scalar = MagicMock(return_value=total)
+    return res
+
+
 def _mock_db_with_zero_trailing_spend():
     """Mock DB that returns 0 on the trailing-12m sum + accepts adds."""
-    res = MagicMock()
-    res.scalar = MagicMock(return_value=Decimal("0"))
+    res = _trailing_row(Decimal("0"))
     # `_execute_single_payment` re-derives the invoice's net payable (amount −
     # applied credit memos) immediately before the adapter/card call, so a
     # credit recorded after the run was built can never pay the stale figure.
@@ -424,8 +439,7 @@ async def test_aml_trailing_spend_threshold_triggers_hold():
     review. Not a refuse — too many false positives."""
     vendor = _vendor()
     # Mock the trailing-spend lookup to return $95k.
-    res = MagicMock()
-    res.scalar = MagicMock(return_value=Decimal("95000"))
+    res = _trailing_row(Decimal("95000"))
     # `_execute_single_payment` re-derives the invoice's net payable (amount −
     # applied credit memos) immediately before the adapter/card call, so a
     # credit recorded after the run was built can never pay the stale figure.
@@ -467,8 +481,7 @@ async def test_aml_threshold_zero_disables_check():
     """`aml_spend_alert_threshold=0` turns off the AML signal —
     a tenant that doesn't want this surface should be able to."""
     vendor = _vendor(kyc_status="verified")
-    res = MagicMock()
-    res.scalar = MagicMock(return_value=Decimal("999999"))  # well above default
+    res = _trailing_row(Decimal("999999"))  # well above default
     # `_execute_single_payment` re-derives the invoice's net payable (amount −
     # applied credit memos) immediately before the adapter/card call, so a
     # credit recorded after the run was built can never pay the stale figure.
@@ -679,8 +692,7 @@ async def test_execute_payment_run_refuses_sanctions_matched_vendor_without_call
     bank_res.scalar_one_or_none = MagicMock(return_value=full_vendor.bank_details)
     vendor_lookup_res = MagicMock()
     vendor_lookup_res.scalar_one_or_none = MagicMock(return_value=full_vendor)
-    trailing_spend_res = MagicMock()
-    trailing_spend_res.scalar = MagicMock(return_value=Decimal("0"))
+    trailing_spend_res = _trailing_row(Decimal("0"))
 
     # `_execute_single_payment` re-derives the invoice's net payable (amount −
     # applied credit memos) immediately before the adapter/card call, so a

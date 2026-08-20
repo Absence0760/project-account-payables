@@ -12,6 +12,7 @@ This sits **on top of** the payment-level FX machinery — it does not replace i
 | **Reporting FX** (this doc) | `services/currency_conversion.py` | Converts each invoice's `amount` into the org reporting currency, materializes the rate on the invoice row, rolls multi-currency volume into one total, computes **unrealized** gain/loss on open invoices. | When the invoice is created / mutated |
 | **Expense FX** | `services/expense_currency.py` | Converts each expense line into its **report's** currency (`expenses.converted_*`) so a report total isn't a cross-currency sum, and the report total into the **org reporting** currency (`expense_reports.reporting_*`) so the CFO threshold compares like with like. | Line: on attach / amount-or-currency edit / report-currency change. Report: at submit |
 | **Expense-policy thresholds** | `services/expense_policy.py` | Compares an expense against a policy's money thresholds **in the policy's `threshold_currency`**, so a €200 expense isn't judged against a USD 100 limit as bare numbers. | Never — it locks nothing. It **reuses** the line's existing lock (row above) and fails closed when none bridges the two currencies. |
+| **Payment CFO threshold** | `services/payment_controls.py` (`cfo_approval_decision`) | Expresses a payment run's / standalone payment's credit-netted total in the **org reporting** currency before comparing it against `settings.payments.cfo_approval_above`, so a GBP 9,000 run (USD 11,400) can't slip under a USD 10,000 gate. | Never — it locks nothing. It **reuses** the invoice's existing reporting lock via `reporting_amount_at_locked_rate` and fails closed when none proves the row's currency pair. See `payments.md` § The threshold is denominated in the org's REPORTING currency. |
 
 Same three rules across every layer that locks a rate — **`Decimal` only**,
 **rate locked and persisted on the row**, **never re-fetched at read time**. See
@@ -174,14 +175,37 @@ reports the difference vs the booked (rate-locked) reporting amount.
   `international_payments.realized_fx_gain_loss_for_settlement` measures — this is the
   open-position companion.
 
+### A row with no locked rate is excluded and counted, never booked at face value
+
+The booked leg is what the invoice was **recorded at** in the reporting
+currency. `reporting_amount_for_row`'s face-value fallback returns the amount in
+the row's *own* currency — right for a spend rollup (an approximate total with a
+caveat beats a blank panel) and **wrong here**, because the mark-to-market leg
+then converts the same original amount at today's rate and the arithmetic
+reports the *conversion itself* as a gain or loss.
+
+Dropping that helper's `unconverted` flag made a single EUR 1 000 open invoice
+whose materialization had failed once produce an **$87 unrealized loss on an
+exposure that never moved**. `invoice_warnings._refresh_reporting_amount` is
+best-effort and documents leaving the fields NULL on an FX blip, and the `/cfo`
+query applies no `IS NOT NULL` filter, so this is a live path.
+
+Such a row is now left out of **both** legs and counted (`unconverted_count`, on
+the result and per currency) — `decisions §35`, the sixth instance of the same
+shape. A currency where *every* open row is unconverted still appears, carrying
+its count with zeroed money, and no rate is fetched for it: an FX outage must
+not be what decides whether the omission is reported. The count renders on the
+`/cfo` FX card, so the number and its caveat are never in different places.
+
 Open statuses considered: `approved`, `sending_to_erp`, `sent_to_erp`,
 `posted_in_erp`, `payment_scheduled`.
 
 Surfaced on `GET /api/analytics/cfo` → `unrealized_fx`:
 `reporting_currency`, `total_unrealized_gain_loss`, `by_currency[]`
 (`open_original_amount`, `booked_reporting_amount`, `current_reporting_amount`,
-`unrealized_gain_loss`), and `available` (false when the FX lookup failed — the
-CFO dashboard degrades rather than 500-ing).
+`unrealized_gain_loss`, `unconverted_count`), `unconverted_count`, and
+`available` (false when the FX lookup failed — the CFO dashboard degrades rather
+than 500-ing).
 
 ## FX provider
 

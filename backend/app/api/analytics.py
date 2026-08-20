@@ -951,6 +951,10 @@ async def get_cfo_analytics(
         # (flipped False in the except branch below) — never this figure.
         "total_unrealized_gain_loss": _money(Decimal("0")),
         "by_currency": [],
+        # Open foreign invoices with no locked rate, left OUT of the exposure
+        # rather than booked at face value (`docs/decisions.md` §35). A count,
+        # not money.
+        "unconverted_count": 0,
         "available": True,
     }
     try:
@@ -990,9 +994,11 @@ async def get_cfo_analytics(
                     "booked_reporting_amount": _money(e.booked_reporting_amount),
                     "current_reporting_amount": _money(e.current_reporting_amount),
                     "unrealized_gain_loss": _money(e.unrealized_gain_loss),
+                    "unconverted_count": e.unconverted_count,
                 }
                 for e in unrealized.by_currency
             ],
+            "unconverted_count": unrealized.unconverted_count,
             "available": True,
         }
     except Exception:  # noqa: BLE001 — FX outage shouldn't break the dashboard
