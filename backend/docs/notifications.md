@@ -316,6 +316,31 @@ amount.
 
 ## Two effects per recipient, each preference-gated
 
+### `notify_event` returns what it actioned
+
+`notify_event` returns the **number of recipients something was actioned for** —
+an in-app row added, or an email queued. Most callers ignore it: for a status
+transition, "nobody had this event turned on" is a normal outcome, and the
+dispatcher must never raise into a transition either way.
+
+It exists for the two callers that write a **suppress-forever marker** right
+afterwards — `cash_flow_alerts`'s alerted-period marker and
+`contract_renewal`'s `renewal_alert_sent_at` (only
+`POST /api/contracts/{id}/renew` ever clears it). Both already skipped their
+marker when they resolved zero recipients, which covers one of the ways this
+reaches nobody. Every other silent exit — the master
+`FEOH_NOTIFICATIONS_ENABLED` switch off, an unknown event type, a template
+render that raised, the recipient load failing, every resolved recipient
+inactive or opted out — returned `None` indistinguishably from success, so the
+marker went down and the finance leaders were never warned about that projected
+shortfall period, or that contract's renewal, for the rest of its life. Nothing
+counted as a failure, so `GET /api/health/sweeps` stayed green too.
+
+A caller that suppresses future attempts must test the count. Guards:
+`tests/test_notify_event_outcome.py`,
+`tests/test_cash_flow_alerts.py::test_sweep_leaves_the_marker_unwritten_when_notifications_are_disabled`,
+`tests/test_contracts.py::test_renewal_alert_not_stamped_when_dispatch_reached_nobody`.
+
 For each recipient, `notify_event`:
 
 1. **in-app** — inserts a `Notification` row into the **tenant** DB on the
