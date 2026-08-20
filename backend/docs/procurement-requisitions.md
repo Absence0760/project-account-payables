@@ -45,7 +45,22 @@ re-opened back to `draft`.
 Header `total` is **always recomputed server-side** from the line items
 (`sum(quantity × unit_price)`, exact `Decimal`) on create and on every draft
 edit — a client-sent total is ignored, so the header can never drift from its
-lines. Editing is allowed on **draft only**; a submitted/approved requisition is
+lines.
+
+That last clause needs the quantize to be true. `quantity` is `Numeric(12, 4)`
+and `unit_price` `Numeric(15, 2)`, so the product can carry 6 dp while both
+`requisition_line_items.total` and `purchase_requisitions.total` are
+`Numeric(15, 2)`. Returning the raw product meant Postgres rounded **each line**
+on the way in while `recompute_total` summed the **unrounded** values: the
+header was the rounding of a sum and the lines a sum of roundings. Twelve lines
+of `1.5 × 10.01` stored a header of `180.18` against lines summing to `180.24` —
+six cents apart in one response, growing linearly with the line count, and
+carried onto the `PurchaseOrder` that `po_matching` runs its tolerance gate
+against. `requisition_service.line_total` now quantizes to 2 dp
+(`ROUND_HALF_UP`), so the figure summed is the figure stored, at every
+constructor (`POST`/`PATCH`, punch-out cart conversion, intake conversion).
+`PunchoutCartItem.line_total` uses the same convention so a cart's stored
+`cart_total` agrees with the requisition it converts into. Editing is allowed on **draft only**; a submitted/approved requisition is
 locked (so the approver can't have the spend changed under them).
 
 ## Convert-to-PO contract + idempotency
