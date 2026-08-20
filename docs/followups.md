@@ -501,6 +501,52 @@ own tranches.
       **Durable fix:** fold both cases into that array and drop the local copies.
       **Trigger:** the next change to either spec.
 
+### Surfaced by the round-14 auth / tenant-isolation sweep
+
+- [ ] **`RealDB.client()` overrides `get_tenant_db` wholesale, so no realdb test
+      ever runs the `get_tenant` JWT-org cross-check.** That cross-check is the
+      control tenant isolation actually rests on ([decisions §1](decisions.md)),
+      and most tenant-data routes reach it only as `get_tenant_db`'s own
+      dependency — so an override that replaces the provider replaces the guard
+      too. Measured: with the harness client, tenant A's token plus tenant B's
+      `X-Tenant-Slug` returns **200**; on the production chain the same request
+      is a **403**. Nothing is broken today — this is a blind spot, not a
+      defect — but it is exactly the shape of the late-commit override recorded
+      in [decisions §20](decisions.md), where an override that quietly changed
+      semantics is *why the suite never caught* the real bug underneath it.
+      **Closed for now at the narrow end:** `tests/test_tenant_isolation.py`
+      gained three end-to-end cases that override only `get_control_db` and let
+      the real `get_tenant_db` run (a mutation of the guard turns them red).
+      **Durable fix:** give the harness override the same dependency the real
+      one has — `async def _tenant_db(request: Request, tenant: Organization =
+      Depends(get_tenant))` — so every realdb test exercises the cross-check
+      for free, the way the overrides already mirror `commit_before_response`.
+      **Why not now:** it changes the dependency chain under every realdb test
+      in the suite (a slug-swapping isolation test that currently gets a
+      harness session would start getting a 403/404), and validating that needs
+      the full ~1-2h suite rather than a scoped run.
+      **Trigger:** the next change to `tests/conftest.py`'s `RealDB.client()`,
+      or the next full-suite run someone is already paying for.
+
+- [ ] **`/api/auth/login` leaks account existence through the audit write, not
+      the password check.** The handler is careful about timing — it calls
+      `dummy_verify()` on the unknown-address path specifically so the bcrypt
+      cost matches. But a *known* address (wrong password, no password, or
+      deactivated) additionally awaits `dispatch_auth_audit`, which resolves the
+      tenant DB and commits an `auth.login.failure` row inline; a genuinely
+      unknown address has no org, so the write is skipped entirely. The two
+      paths therefore differ by a whole DB round trip. In practice it is weak —
+      single-digit milliseconds against a ~250 ms bcrypt baseline, and the
+      per-account failure budget caps sampling at 10 attempts / 15 min per
+      address — which is why it is recorded rather than patched: the obvious
+      "fixes" are either dropping the audit (worse) or padding the fast path
+      (masking, forbidden by guard rail 4).
+      **Durable fix:** move the login-failure audit off the response path (queue
+      it the way `services/post_commit` queues notification legs) so *neither*
+      branch pays for it, then keep the two branches structurally identical.
+      **Trigger:** the next change to the login handler or to
+      `dispatch_auth_audit`'s call discipline.
+
 ## (a) Blocked on external credentials, accounts, or hardware
 
 None of these are startable from the editor. They are listed so they don't read
