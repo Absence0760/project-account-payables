@@ -34,7 +34,14 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#321](https://github.com/Absence0760/project-account-payables/issues/321)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-08-19 against round 13 — a four-agent sweep of the
+**Last reconciled:** 2026-08-20 against the round-14 frontend hunt — eight
+root-cause fixes across money display, currency labelling, RBAC gating, request
+sequencing and failure states. Six confirmed findings it correctly did not fold
+in are recorded below under *Surfaced by the round-14 frontend hunt*; the whole
+class of "page-scoped KPI presented as a whole-set figure" is now fixed on
+`/expenses` and pinned as the pattern for the six pages that still have it.
+
+Before that: 2026-08-19 against round 13 — a four-agent sweep of the
 **codeable** half of this file (the `(a)` credential-blocked and `(b)` operator
 items have no code to write, and four `(c)` items are gated on a product call or
 a third-party artifact). It closed both consistency-debt items, both transitional
@@ -500,6 +507,114 @@ own tranches.
       round.
       **Durable fix:** fold both cases into that array and drop the local copies.
       **Trigger:** the next change to either spec.
+
+### Surfaced by the round-14 frontend hunt
+
+Six items the round-14 frontend agent traced to a file and line but did not fold
+into its own tranche. Each is confirmed against the backend it disagrees with —
+none is a hypothesis.
+
+- [ ] **The same page-scoped-KPI bug this round fixed on `/expenses` is still
+      live on six sibling pages.** A KPI reduces or filters over the LOADED page
+      and is labelled as a whole-set figure, usually sitting beside a card that
+      *is* whole-set: `/requisitions` (`periodTotal` `:112`, `pendingCount`
+      `:110`, next to the server's `total`), `/budgets` (`totalAllocated` `:82`),
+      `/recurring` (the monthly-run-rate reduce `:347-355` — which also divides
+      floats), `/intake` (`openCount`/`reviewCount` `:87-88`), `/vendor-statements`
+      (`openCount`/`totalDiscrepancies` `:283-284`) and `/positive-pay`
+      (`itemsExported`/`returnsFlagged` `:252-259`). The money ones add across
+      currencies too, then render the sum in `orgCurrency`.
+      **Durable fix:** the shape `/expenses` now uses — a `GET …/summary` beside
+      each list that shares the list's own filter builder, returns `by_status`
+      counts plus per-currency exact-decimal totals, and renders through
+      `utils/currencyGroups.formatCurrencyTotals`. Six small endpoints, one
+      pattern; `backend/app/api/expenses.py::expense_summary` is the reference.
+      **Trigger:** the next slice touching any of those pages — or one pass doing
+      all six, since the sixth is the same edit as the first.
+
+- [ ] **`GET /api/invoices/counts` ignores the list's filters, so the chips
+      contradict the table.** The counts endpoint (`backend/app/api/invoices.py`
+      `:236-257`) takes only `db`/`user`/`entity_id`, and
+      `stores/invoices.svelte.ts:79-90` calls it with no params and never re-fires
+      it on a filter change — while the list carries `search` plus eight advanced
+      filters. Search "acme", get 3 rows under chips reading `All 1284 · New 402`.
+      The house rule is already stated verbatim on the sibling endpoint
+      (`purchase_orders.py:127-129`: "Takes the list's population filters … so the
+      tallies describe exactly the rows the list would return") and `/vendors/counts`
+      follows it; `/invoices/counts` is the outlier.
+      **Durable fix:** give `invoice_status_counts` the same population filters as
+      `list_invoices`, factored into one shared predicate builder so they cannot
+      drift, and re-fire `fetchCounts` from the store's filter path.
+      **Trigger:** the next slice touching the invoice list or its chips.
+
+- [ ] **Three surfaces still label money with `orgCurrency` while the response
+      states its own currency two lines away.** Now that `orgCurrency` resolves
+      the *reporting* currency (this round), these read correctly far more often
+      — but they are still reading the wrong source, and one is wrong outright:
+      `/cfo`'s cash-position table (`:281-283`) renders `opening`/`outflow`/
+      `closing` through `fmt()` while `position.opening_balance_currency` — typed
+      as "the reporting currency the whole curve is denominated in" — is used only
+      in the two warning banners, so the page can print "3 outflows could not be
+      converted to GBP" directly above a table of `$`; `/discounts`' `aggMoney()`
+      (`:93`) ignores `dashboard.currency` / `optimization.currency`, both of which
+      it already renders in its guard text; and `/discounts`' per-recommendation
+      card (`:379`) stamps `orgCurrency` on `rec.roi.savings`, which is computed in
+      the OFFER's currency and flagged `rec.unconvertible` precisely when they
+      differ (`services/discount_optimizer.py:170-172`) — the card never reads
+      that flag, so "Save $412.00" can be €412.
+      **Durable fix:** pass the response's own currency at each site, and render
+      `rec.unconvertible` on the card rather than only in the page banner.
+      **Trigger:** the next slice touching `/cfo` or `/discounts`.
+
+- [ ] **Two backend rollups are bare cross-currency `SUM`s presented as one
+      figure.** `GET /api/payments/summary`'s `total_rebates`
+      (`app/api/payments.py:562-564`) is `func.sum(CardRebate.amount)` with no
+      currency grouping, yet ships under the response's `"currency":
+      reporting_currency` which documents itself as "what the money figures above
+      are denominated in". The billing usage rollup does the same for
+      `card_rebate_total` (`services/billing/usage_rollup.py:93-100`), and
+      `/billing` renders it with no currency at all — `DEFAULT_CURRENCY`, so a
+      GBP tenant reads `$` on that one card and `£` on every other. Distinct from
+      the frontend labelling above: the *number* is wrong, not just its label.
+      **Durable fix:** group by currency and convert through
+      `currency_conversion` like `total_paid`/`total_pending` already do, or
+      return per-currency buckets and render them side by side the way
+      `formatCurrencyTotals` does elsewhere.
+      **Trigger:** the next slice touching the payments summary or billing usage.
+
+- [ ] **`/vendors/screening`'s "Payments blocked" KPI structurally cannot see a
+      manually blocked vendor.** `blockedCount` (`:90`) filters `items`, which is
+      the review queue — `where(Vendor.screening_status.in_(("match","review")))`
+      (`app/api/vendors.py:471`). `POST /api/vendors/{id}/block` sets
+      `payments_blocked = True` and never touches `screening_status`
+      (`:898-900`), so a vendor AP blocked while screening-clear is invisible to a
+      tally that claims to count blocked payments. (`matchCount`/`reviewCount` are
+      fine — the queue is unpaginated and is exactly those two statuses.)
+      **Durable fix:** count blocked vendors from a query that asks for blocked
+      vendors — a `payments_blocked` tally on the counts endpoint — rather than
+      from a queue selected on a different column.
+      **Trigger:** the next slice touching vendor screening.
+
+- [ ] **Four surfaces collapse loading / failed / empty into one message, and two
+      error states are dead ends.** `/payments`' Runs tab (`:1234-1239`) has no
+      `runsLoading` state at all, so it asserts "No payment runs yet." during the
+      first fetch and forever after a failed one — while the Queue and History
+      tabs in the same file do it correctly. `/catalogs` (`:285`) gates `isEmpty`
+      on `!loading`, so the table renders a header with nothing under it during
+      the load — no rows, no spinner, no message — and `/reports` (`:437-438`)
+      has the same inversion. `/reports`' catalog failure (`:350-352`) replaces
+      the entire builder with one paragraph, from a single-shot dep-free
+      `$effect`, so nothing left on screen can retry it; `/experiments`
+      (`:284-286`) is the same shape and renders its banner *and* "No experiments
+      yet." simultaneously.
+      **Durable fix:** the shape the rest of the app uses —
+      `isEmpty={arr.length === 0}` with the three states composed in `empty=`
+      (`routes/exceptions/+page.svelte:418` is the reference), and the
+      error-with-Retry block from `routes/admin/api-keys/+page.svelte:169-172`.
+      The store-side half of this landed this round for `adminStore` /
+      `workflowStore`, with a guard that any store a swallowing call site cites
+      must expose the flag.
+      **Trigger:** the next slice touching any of those four routes.
 
 ## (a) Blocked on external credentials, accounts, or hardware
 
