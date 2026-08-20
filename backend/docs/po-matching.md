@@ -209,6 +209,19 @@ DB / I/O) and never raises — malformed config (non-dict rules, missing keys,
 returned `source` ("vendor" | "commodity" | "org" | "default") records where
 `require_inspection` resolved from, for logging.
 
+**`tolerance_pct` accepts an exact decimal string as well as a number.** These
+rules live in a hand-edited JSONB blob where a decimal string is this project's
+own money representation (`auto_approve_below` is stored that way in
+`steps_config`), and `match_invoice_to_po` already types the parameter
+`Decimal | float | int | str`. This matters because falling through does **not**
+fail closed here: the walk ends at `DEFAULT_TOLERANCE_PCT` (5.0), looser than
+any tolerance an org would bother configuring. A supplier tightened to
+`"tolerance_pct": "1.0"` silently got 5%, so an invoice 4.5% over its PO read
+`within_tolerance: true` → `matched` → no `po_mismatch` exception → into the
+approval queue as clean, with no log line to notice. Bools are still rejected
+(`true` would resolve to a 1% tolerance nobody asked for) and so are non-finite
+values; both fall through rather than becoming a rule.
+
 ### QMS integration (inspection sync)
 
 Quality-inspection rows can be pulled from an external QMS / LIMS rather than
