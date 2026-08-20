@@ -516,10 +516,20 @@ pages: the list stores (`invoices`, `payments`, `contracts`, `expenses`,
 `notifications`, `admin`, `workflows`), the list routes (`vendors`,
 `vendors/screening`, `discounts`, `positive-pay`, `recurring`, `budgets`,
 `intake`, `requisitions`, `catalogs`, `vendor-statements`, the four sub-lists
-on `expenses`, the `workflows/[id]` builder canvas) and `InvoiceModal`'s
-line-item editor. **A new list surface wires it too** — don't hand-roll a
-second mechanism, and don't leave it out because the page "only" edits a row
-after the first load has landed (see the create/prepend note below).
+on `expenses`, the `workflows/[id]` builder canvas), `InvoiceModal`'s
+line-item editor, and the three **analytics** surfaces whose loads are keyed
+off a control rather than a filter — `/cfo` (its `$effect` fired three
+unsequenced requests per keystroke on the two free-text money inputs, so the
+cash-position curve and the "below minimum balance" breach banner could settle
+on the figures for a *prefix* of what the field showed), `CfoMetrics` (the
+30/90/180/365 horizon buttons) and `/tax` (the 1099 year selector). **A new
+list surface wires it too** — don't hand-roll a second mechanism, and don't
+leave it out because the page "only" edits a row after the first load has
+landed (see the create/prepend note below). "Not a list" is not an exemption
+either: any state written from a response that a control can re-issue needs
+it, and a free-text control needs the debounce beside it (issue #168 /
+`docs/decisions.md` §53 — anything an effect calls synchronously is inside its
+tracking scope, so `load()` must `untrack` the free-text reads).
 
 It answers two separate questions about a response — and takes one call that
 retires in-flight requests. Conflating the two questions is a bug both ways:

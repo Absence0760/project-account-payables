@@ -10,6 +10,8 @@
 	import { formatPeriod } from '$lib/utils/time';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { m } from '$lib/i18n/store.svelte';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
+	import { untrack } from 'svelte';
 	import { openingBalanceSkipKey } from './openingBalanceNotice';
 	import type {
 		CashflowForecast,
@@ -41,38 +43,91 @@
 		openingBalanceSkipKey(position?.opening_balance_provider_skipped)
 	);
 
+	// Sequences `load` (latest-issued wins) so a response for an earlier control
+	// setting can't land after a faster later one. This is the money-decision
+	// surface: without it, typing `50000` into Opening balance issued five
+	// overlapping rounds of three requests each, and whichever resolved LAST won
+	// — so the curve, the running balance and the "below minimum balance" breach
+	// banner could settle on the figures for `500` while the input read `50000`,
+	// with nothing on screen saying which number produced them.
+	// See `frontend/CLAUDE.md` § Sequencing list fetches.
+	const loadSequence = createRequestSequencer();
+
+	// The two free-text values the newest issued request carried. Written by
+	// `load()`, read by the debounce effect below — the same `appliedSearch`
+	// discipline `/expenses` and `/vendors` use for their search boxes.
+	let appliedOpening = $state('');
+	let appliedThreshold = $state('');
+
+	// Read WITHOUT registering a dependency. `load()` is called synchronously
+	// from the discrete-control `$effect` below and Svelte tracks reads
+	// transitively through called functions, so a plain read here would make
+	// that effect depend on these two inputs and fire an immediate,
+	// un-debounced request on every keystroke — racing the 300ms timer that
+	// exists to prevent exactly that (issue #168 / `docs/decisions.md` §53).
+	function currentOpening(): string {
+		return untrack(() => openingBalance).trim();
+	}
+	function currentThreshold(): string {
+		return untrack(() => threshold).trim();
+	}
+
 	async function load() {
+		const token = loadSequence.start();
 		loading = true;
 		error = null;
+		const opening = currentOpening();
+		const minBalance = currentThreshold();
+		appliedOpening = opening;
+		appliedThreshold = minBalance;
 		try {
 			const base = `granularity=${granularity}&horizon_days=${horizonDays}`;
 			const posQs =
 				`${base}` +
-				(openingBalance.trim() ? `&opening_balance=${encodeURIComponent(openingBalance.trim())}` : '') +
-				(threshold.trim() ? `&min_balance_threshold=${encodeURIComponent(threshold.trim())}` : '');
+				(opening ? `&opening_balance=${encodeURIComponent(opening)}` : '') +
+				(minBalance ? `&min_balance_threshold=${encodeURIComponent(minBalance)}` : '');
 			const [f, w, p] = await Promise.all([
 				api.get<CashflowForecast>(`/api/analytics/cashflow_forecast?${base}`),
 				api.get<WhatIfScenarios>(`/api/analytics/cashflow_whatif?${base}`),
 				api.get<CashPosition>(`/api/analytics/cash_position?${posQs}`)
 			]);
+			// Superseded by a newer request — discard rather than publish figures
+			// the controls no longer describe.
+			if (!loadSequence.canCommit(token)) return;
 			forecast = f;
 			whatif = w;
 			position = p;
 		} catch (e) {
-			error = e instanceof Error ? e.message : m('cfo.error.loadFailed');
+			if (loadSequence.isCurrentRequest(token)) {
+				error = e instanceof Error ? e.message : m('cfo.error.loadFailed');
+			}
 		} finally {
-			loading = false;
+			// `isCurrentRequest`, never `canCommit` — a superseded response must
+			// not clear the spinner the newest request owns.
+			if (loadSequence.isCurrentRequest(token)) loading = false;
 		}
 	}
 
+	// The two segmented controls are discrete actions: load immediately.
 	$effect(() => {
 		orgCurrency.ensureLoaded();
-		// Re-run whenever a control changes. Reading the deps registers them.
 		void granularity;
 		void horizonDays;
-		void openingBalance;
-		void threshold;
 		load();
+	});
+
+	// The two free-text money inputs are debounced — one request per pause, not
+	// per keystroke. Declares its own dependencies by reading them directly.
+	let inputTimer: ReturnType<typeof setTimeout>;
+	$effect(() => {
+		const nextOpening = openingBalance.trim();
+		const nextThreshold = threshold.trim();
+		clearTimeout(inputTimer);
+		if (nextOpening === appliedOpening && nextThreshold === appliedThreshold) return;
+		inputTimer = setTimeout(load, 300);
+		// Cancel a pending debounce on teardown: without it the timer fires
+		// after the page is gone, running a fetch against a route the user left.
+		return () => clearTimeout(inputTimer);
 	});
 
 	// Chart geometry only. `parseMoneyForLayout` is the one sanctioned

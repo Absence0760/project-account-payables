@@ -7,6 +7,7 @@
 	import { formatPeriod } from '$lib/utils/time';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { m } from '$lib/i18n/store.svelte';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import type { CfoAnalytics } from '$lib/types/analytics';
 
 	// DPO, cash conversion cycle, accruals, supplier concentration, fraud-rate
@@ -41,6 +42,14 @@
 	let maxDpo = $derived(Math.max(1, ...(data?.dpo_trend ?? []).map((r) => r.dpo)));
 	let maxFraudRate = $derived(Math.max(1, ...(data?.fraud_rate_trend ?? []).map((r) => r.rate_pct)));
 
+	// Sequences `load` (latest-issued wins). `periodDays` comes from the 30/90/
+	// 180/365 button group on `/cfo`, so two clicks in quick succession left two
+	// requests in flight with nothing deciding which one may write: the DPO,
+	// cash-conversion-cycle and fraud-rate tables could settle on the 30-day
+	// figures under an active "365 days" button.
+	// See `frontend/CLAUDE.md` § Sequencing list fetches.
+	const loadSequence = createRequestSequencer();
+
 	$effect(() => {
 		void periodDays;
 		orgCurrency.ensureLoaded();
@@ -48,14 +57,21 @@
 	});
 
 	async function load() {
+		const token = loadSequence.start();
 		loading = true;
 		error = null;
 		try {
-			data = await api.get<CfoAnalytics>(`/api/analytics/cfo?period_days=${periodDays}`);
+			const res = await api.get<CfoAnalytics>(`/api/analytics/cfo?period_days=${periodDays}`);
+			if (!loadSequence.canCommit(token)) return;
+			data = res;
 		} catch (e) {
-			error = e instanceof Error ? e.message : m('cfoMetrics.loadFailed');
+			if (loadSequence.isCurrentRequest(token)) {
+				error = e instanceof Error ? e.message : m('cfoMetrics.loadFailed');
+			}
 		} finally {
-			loading = false;
+			// `isCurrentRequest`, never `canCommit` — a superseded response must
+			// not clear the spinner the newest request owns.
+			if (loadSequence.isCurrentRequest(token)) loading = false;
 		}
 	}
 </script>
