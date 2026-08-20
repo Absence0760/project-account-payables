@@ -454,3 +454,116 @@ async def test_tenant_isolation(realdb):
         ).json()["id"]
     async with realdb.client(key="b", role="ap_manager") as c:
         assert (await c.get(f"/api/expenses/{eid}")).status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# whole-set summary (KPI rollup)
+# ---------------------------------------------------------------------------
+
+
+async def test_summary_covers_the_whole_set_not_one_page(realdb):
+    """The KPI row summed the LOADED page.
+
+    `/expenses` fetches 20 rows at a time, so "Period total" and "Pending" were
+    tallies of the first page rendered beside a whole-set "Expenses" count that
+    contradicted them. The summary is computed in SQL over every matching row.
+    """
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        for i in range(25):
+            resp = await c.post(
+                "/api/expenses",
+                json={
+                    "expense_date": "2026-06-01",
+                    "merchant": f"Vendor {i}",
+                    "amount": "10.00",
+                    "currency": "USD",
+                },
+            )
+            assert resp.status_code == 201, resp.text
+
+        page = await c.get("/api/expenses", params={"page_size": 20})
+        assert len(page.json()["items"]) == 20  # the page the KPI used to sum
+
+        summary = await c.get("/api/expenses/summary")
+        assert summary.status_code == 200, summary.text
+        body = summary.json()
+        assert body["total"] == 25
+        assert body["by_status"]["draft"] == 25
+        assert body["by_currency"] == [{"currency": "USD", "total": "250.00", "count": 25}]
+
+
+async def test_summary_never_adds_across_currencies(realdb):
+    """EUR + USD is not a total; it is a figure denominated in nothing.
+
+    Each currency keeps its own exact subtotal, and the totals are exact decimal
+    strings — 10.10 + 20.20 is "30.30", not a float 30.299999999999997.
+    """
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        for amount, currency in (("10.10", "USD"), ("20.20", "USD"), ("5.05", "EUR")):
+            await c.post(
+                "/api/expenses",
+                json={
+                    "expense_date": "2026-06-01",
+                    "merchant": "Mixed",
+                    "amount": amount,
+                    "currency": currency,
+                },
+            )
+
+        body = (await c.get("/api/expenses/summary")).json()
+
+    assert body["by_currency"] == [
+        {"currency": "EUR", "total": "5.05", "count": 1},
+        {"currency": "USD", "total": "30.30", "count": 2},
+    ]
+
+
+async def test_summary_applies_the_same_filters_as_the_list(realdb):
+    """The rollup and the table must describe ONE set — they share
+    `_expense_list_filters`, and this pins that they can't drift apart."""
+    mk = realdb.sessionmaker("a")
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        keep = (
+            await c.post(
+                "/api/expenses",
+                json={"expense_date": "2026-06-01", "merchant": "Delta Air", "amount": "500.00"},
+            )
+        ).json()["id"]
+        await c.post(
+            "/api/expenses",
+            json={"expense_date": "2026-06-02", "merchant": "Delta Air", "amount": "600.00"},
+        )
+        await c.post(
+            "/api/expenses",
+            json={"expense_date": "2026-06-03", "merchant": "Hilton", "amount": "700.00"},
+        )
+
+        async with mk() as s:
+            row = (
+                await s.execute(select(Expense).where(Expense.id == uuid.UUID(keep)))
+            ).scalar_one()
+            row.status = "submitted"
+            await s.commit()
+
+        for params in (
+            {},
+            {"search": "delta"},
+            {"status": "submitted"},
+            {"search": "delta", "status": "submitted"},
+        ):
+            listed = (await c.get("/api/expenses", params=params)).json()
+            rolled = (await c.get("/api/expenses/summary", params=params)).json()
+            assert rolled["total"] == listed["total"], params
+
+
+async def test_summary_is_tenant_scoped(realdb):
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        await c.post(
+            "/api/expenses",
+            json={"expense_date": "2026-06-01", "merchant": "Only Tenant A", "amount": "99.00"},
+        )
+
+    async with realdb.client(key="b", role="ap_clerk") as c:
+        body = (await c.get("/api/expenses/summary")).json()
+    assert body["total"] == 0
+    assert body["by_currency"] == []

@@ -8,7 +8,8 @@
 		ExpensePreapproval,
 		PolicyViolation,
 		CorporateCardTransaction,
-		CardMatchSuggestion
+		CardMatchSuggestion,
+		ExpenseSummary
 	} from '$lib/types/expense';
 	import {
 		EXPENSE_FILTER_STATUSES,
@@ -49,6 +50,7 @@
 		unmatchCardTxn,
 		ignoreCardTxn,
 		createExpenseFromCard,
+		getExpenseSummary,
 		type ExpenseListParams,
 		type GlAccountOption
 	} from '$lib/api/expenses';
@@ -64,6 +66,7 @@
 	import BulkBar from '$lib/components/ui/BulkBar.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import { formatMoney } from '$lib/utils/money';
+	import { formatCurrencyTotals } from '$lib/utils/currencyGroups';
 	import { formatDate } from '$lib/utils/time';
 	import ExpenseModal from '$lib/components/modals/ExpenseModal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
@@ -139,13 +142,56 @@
 		{ label: '', class: 'actions-col' }
 	]);
 
-	// KPIs (period rollup uses the org default currency — mixed per-row
-	// currencies have no single code, so a deterministic base is used).
+	// KPIs, from `GET /api/expenses/summary` — the WHOLE filtered set, not the
+	// loaded page.
+	//
+	// They used to reduce over `expenseStore.all`, which holds 20 rows (plus
+	// whatever Load-more appended). So "Period total" summed a page while the
+	// "Expenses" card beside it showed the server's whole-set `total`, and the
+	// two contradicted each other the moment a tenant had 21 expenses. The
+	// rollup runs the SAME status/search filters server-side, so all three cards
+	// and the table describe one set.
+	//
+	// The old sum was wrong a second way: it added every row's bare `amount`
+	// across currencies and rendered the result in the org default, so EUR 100 +
+	// USD 100 read as one meaningless "200". The rollup groups by currency and
+	// never adds across them — the rule `/payments` already applies via
+	// `groupAmountsByCurrency` (`$lib/utils/currencyGroups`).
+	let expenseSummary = $state<ExpenseSummary | null>(null);
+
+	// Its own sequencer, not the store's: this is an independent request that
+	// can be in flight while the list's is, and one shared counter would let
+	// either blank the other (frontend/CLAUDE.md § Sequencing list fetches).
+	const summarySequence = createRequestSequencer();
+
+	async function loadExpenseSummary() {
+		const token = summarySequence.start();
+		try {
+			const res = await getExpenseSummary(buildParams());
+			if (!summarySequence.canCommit(token)) return;
+			expenseSummary = res;
+		} catch {
+			// Non-fatal: the KPI cards fall back to a placeholder rather than
+			// taking the page down. The table has its own error state.
+			if (summarySequence.isCurrentRequest(token)) expenseSummary = null;
+		}
+	}
+
+	// One subtotal per currency, side by side — never added together. Mirrors
+	// `formatGroups` on /payments.
+	const periodTotalGroups = $derived(
+		formatCurrencyTotals(expenseSummary?.by_currency ?? [], orgCurrency.currency)
+	);
 	const periodTotal = $derived(
-		expenseStore.all.reduce((sum, e) => sum + (Number.isFinite(e.amount) ? e.amount : 0), 0)
+		periodTotalGroups[0] ?? formatMoney(0, { currency: orgCurrency.currency })
+	);
+	// Currencies past the first ride the card's muted sub-line, so the headline
+	// stays one readable figure while nothing is silently dropped.
+	const periodTotalRest = $derived(
+		periodTotalGroups.length > 1 ? periodTotalGroups.slice(1).join(' · ') : null
 	);
 	const pendingCount = $derived(
-		expenseStore.all.filter((e) => e.status === 'draft' || e.status === 'submitted').length
+		(expenseSummary?.by_status.draft ?? 0) + (expenseSummary?.by_status.submitted ?? 0)
 	);
 
 	// The live search term, read WITHOUT registering a dependency.
@@ -195,6 +241,9 @@
 		// its own handling, but nothing awaits here — the store's `errored` flag is
 		// what the UI renders. Swallow so a failed load isn't an unhandled rejection.
 		expenseStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
+		// The KPI rollup answers a different query, so it is issued alongside
+		// rather than derived from the page that just came back.
+		void loadExpenseSummary();
 	}
 
 	// Reflect the live filter state into the URL. EVERY read in here is
@@ -319,6 +368,7 @@
 			// so a failed refresh reaches the catch below.
 			appliedSearch = currentSearchTerm();
 			await expenseStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
+			void loadExpenseSummary();
 		} catch (err) {
 			toast(err instanceof Error ? err.message : m('expenses.toast.bulkGlFailed'), 'error');
 		} finally {
@@ -331,6 +381,9 @@
 		try {
 			await apiDeleteExpense(id);
 			expenseStore.remove(id);
+			// The row left the set the KPI row describes — re-ask rather than
+			// leave a stale total on screen.
+			void loadExpenseSummary();
 			toast(m('expenses.toast.deleted'), 'success');
 		} catch (err) {
 			toast(err instanceof Error ? err.message : m('expenses.toast.deleteFailed'), 'error');
@@ -341,6 +394,9 @@
 
 	function onSaved(e: Expense) {
 		expenseStore.upsert(e);
+		// A create adds to the set and an edit can change its amount, currency or
+		// status — all three move the KPI rollup, which is server-side.
+		void loadExpenseSummary();
 		if (editing && editing.id === e.id) editing = e;
 	}
 
@@ -1007,7 +1063,7 @@
 
 	{#if tab === 'expenses'}
 		<div class="kpi-row">
-			<KpiCard value={formatMoney(periodTotal, { currency: orgCurrency.currency })} label={m('expenses.kpi.periodTotal')} />
+			<KpiCard value={periodTotal} sub={periodTotalRest} label={m('expenses.kpi.periodTotal')} />
 			<KpiCard value={expenseStore.total} label={m('expenses.kpi.expenses')} />
 			<KpiCard value={pendingCount} label={m('expenses.kpi.pending')} highlight={pendingCount ? 'red' : null} />
 		</div>

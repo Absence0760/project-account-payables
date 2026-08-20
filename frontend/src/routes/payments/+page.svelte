@@ -19,6 +19,7 @@
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { formatMoney } from '$lib/utils/money';
 	import {
+		formatCurrencyTotals,
 		groupAmountsByCurrency,
 		spansMultipleCurrencies,
 		type CurrencyGroup
@@ -286,7 +287,10 @@
 	 *  currency, which is what "nothing selected" costs. */
 	function formatGroups(groups: CurrencyGroup[]): string {
 		if (groups.length === 0) return formatCurrency(0);
-		return groups.map((g) => formatCurrency(g.total, g.currency)).join(' · ');
+		// The per-currency rendering itself lives in `currencyGroups` now, so
+		// /expenses' KPI rollup and this pay bar can't drift on it; only the
+		// "nothing selected" reading stays a per-caller display choice.
+		return formatCurrencyTotals(groups, orgCurrency.currency).join(' · ');
 	}
 
 	// The server's refusal, kept on screen. A 409 from

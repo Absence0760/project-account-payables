@@ -120,6 +120,40 @@ class ExpenseListResponse(PageMeta):
     total: int
 
 
+class ExpenseCurrencyTotal(BaseModel):
+    """One currency's slice of the whole-set expense rollup.
+
+    ``total`` is an EXACT decimal string, never a float: it is a money figure a
+    user reads, and the frontend's ``groupAmountsByCurrency`` / ``sumMoney``
+    display primitives are built around exact decimal strings for the same
+    reason (see ``frontend/src/lib/utils/currencyGroups.ts``).
+    """
+
+    currency: str
+    total: str
+    count: int
+
+
+class ExpenseSummaryResponse(BaseModel):
+    """Whole-set tallies for the expenses KPI row.
+
+    Computed over the ENTIRE entity-scoped, status/search/report-filtered set —
+    not the loaded page. Mirrors ``GET /api/vendors/counts`` and
+    ``GET /api/invoices/counts``: a KPI derived from one page of rows silently
+    under-reports the moment the list paginates, and sat next to a whole-set
+    ``total`` that contradicted it.
+
+    ``by_currency`` never adds across currencies. Summing EUR and USD into one
+    number and labelling it with the org's reporting currency is not a total; it
+    is a figure denominated in nothing (``backend/docs/multi-currency.md``). No
+    FX conversion happens on a read.
+    """
+
+    total: int
+    by_status: dict[str, int]
+    by_currency: list[ExpenseCurrencyTotal]
+
+
 # ---------------------------------------------------------------------------
 # Expense reports
 # ---------------------------------------------------------------------------
