@@ -5,7 +5,7 @@ names the root cause, the evidence, blast radius, and a recommended fix
 approach — this is a staging area for real problems, not a place to let them
 go stale. See root `CLAUDE.md` guard rail 6 (no dangling deferred findings).
 
-**Nothing is currently open.** Every entry below is a `~~struck-through~~`
+Two entries are open (below). Everything after them is a `~~struck-through~~`
 resolved stub, kept because the *diagnosis* is the expensive part and is worth
 not re-deriving. Add a new entry above them when a defect is diagnosed but
 can't be fixed in the same session.
@@ -14,6 +14,83 @@ can't be fixed in the same session.
 a credential, an operator step on merged code, or sized-but-unstarted work —
 goes to [followups.md](followups.md). Reasoning behind a deliberate design call
 goes to [decisions.md](decisions.md).
+
+---
+
+## A named-but-unregistered CARD provider still falls back to `mock`
+
+[decisions.md §29](decisions.md) removed exactly this fallback from
+`payment_adapters`, `erp_adapters` and `fx_adapters` — a NAMED provider we have
+no adapter for must raise, because `mock` is not an inert stub. **Cards were not
+included**, and `card_adapters/dispatcher.get_card_adapter` still does:
+
+```python
+adapter_cls = _ADAPTER_REGISTRY.get(provider)
+if not adapter_cls:
+    adapter_cls = _ADAPTER_REGISTRY.get("mock")
+```
+
+*Blast radius.* `MockCardAdapter.create_card` returns `success=True` with a
+synthetic `mock_card_…` id and `last_four="4242"`, and `get_card_details`
+returns the PAN `4242424242424242`. So one typo in an admin-entered
+`settings.cards.provider` (a BYOK tenant writing `"marqeta"`) makes every
+issuance "succeed": `VirtualCard` rows land with `card_provider="mock"`, the
+payment-run card leg marks each payment `completed` and each invoice
+`payment_scheduled`, `POST /api/cards/generate` reports cards minted, and
+vendors are emailed single-use reveal links resolving to a fixture PAN. No money
+moves and nothing fails — the same shape §29 called out for the other three
+dispatchers. An *unset* provider resolving to `mock` stays correct; that is the
+local-first default.
+
+*Verified, not inferred:* read `card_adapters/dispatcher.py:88-96` and
+`card_adapters/mock_adapter.py:25-54` directly.
+
+**Recommended fix.** `UnknownCardProviderError`, mirroring
+`UnknownPaymentProviderError` — plus the §29 table work, because each of the
+five call sites has to decide what the refusal *means*: the payment-run card leg
+should fail that payment (retry-safe, no card minted), `POST /api/cards/generate`
+should refuse the batch, `_cancel_card_for_void` should record
+`provider_not_supported` (it already has that shape for payments), the PAN
+reveal should 409, and the webhook route should 204 like its
+`provider == "mock"` sibling. That per-caller decision is why this wasn't folded
+into the round's card commit. Guard alongside
+`tests/test_payment_provider_resolution.py`.
+
+---
+
+## An invoice pushed to the ERP mid-run records a settled payment as `failed`
+
+`api/payments._execute_single_payment` transitions the invoice to
+`payment_scheduled` when its status is in `("approved", "sent_to_erp",
+"posted_in_erp")` — but `sent_to_erp → payment_scheduled` is **not** in
+`workflow_engine.VALID_TRANSITIONS` (`sent_to_erp` may only go to
+`posted_in_erp` or `done`). `validate_transition` raises `HTTPException(409)`.
+
+*The window.* A run is built while the invoice is `approved`
+(`PAYABLE_INVOICE_STATUSES`), then `POST /api/invoices/{id}/send-to-erp` walks
+it `approved → sending_to_erp → sent_to_erp` before `/execute` runs. Nothing
+refuses an ERP push for an invoice that already holds a `pending` run payment.
+
+*Blast radius, and why it is worse than a 409.* The transition is attempted
+**after** `adapter.create_payment` returned and `provider_payment_id` was
+assigned. `_dispatch_run_payments`' `except` then writes
+`status="failed", failure_reason="unexpected_error:HTTPException"`. So the
+processor has accepted the order and the row says the payment failed. Because
+`provider_payment_id` is populated, `classify_payment_failure` correctly returns
+`IN_DOUBT`, so `/retry-failed` won't double-send — but the webhook handler
+refuses to advance an already-terminal payment, and the reconciler only polls
+`submitted`/`processing`, so nothing ever corrects it. The money moved and no
+surface says so.
+
+**Recommended fix.** Re-check payability *before* the adapter call — the same
+place the credit-memo `net_amount_changed` guard sits, which is retry-safe by
+construction because no order exists yet — and fail the payment with a named
+reason rather than letting an invalid transition surface as
+`unexpected_error:*`. Drop `sent_to_erp` from the branch's status tuple in the
+same change: it is already excluded from `PAYABLE_INVOICE_STATUSES`, so naming
+it there only ever produced this raise. Consider also refusing an ERP push for
+an invoice holding a live payment, which closes the window rather than handling
+it.
 
 ---
 
