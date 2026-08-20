@@ -15,10 +15,15 @@ is **not** duplicated here — that lives in ``services/discount_roi.py``.
 Tier semantics (the rule chosen here, applied consistently)
 -----------------------------------------------------------
 A tier ``{"days": N, "percent": P}`` means: *"pay within ``N`` days of the
-offer's reference date (``valid_from``, falling back to the offer's
-``created`` date supplied by the caller) to earn ``P`` % off."* The capture
-**deadline** for that rung is ``reference_date + N days``. As of some
-``as_of`` date a tier is still *achievable* when ``as_of <= reference + N``.
+offer's reference date to earn ``P`` % off."* The capture **deadline** for that
+rung is ``reference_date + N days``. As of some ``as_of`` date a tier is still
+*achievable* when ``as_of <= reference + N``.
+
+:func:`offer_reference_date` is the one resolver for that reference —
+``valid_from`` when set, else the offer's ``created_at`` date — and **every**
+caller must go through it. Passing ``offer.valid_from`` directly leaves a NULL
+falling through to ``as_of`` (today), which makes each rung's deadline roll
+forward one day per day and the offer never age.
 
 When several tiers are still achievable, :func:`best_tier_for_date` returns the
 one with the **highest percent** (best for the buyer) — which, because percent
@@ -34,7 +39,7 @@ float) to match the JSONB storage on the model. See
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
 from app.models.discount import (
@@ -132,6 +137,48 @@ def select_tier(tiers: list[dict], tier_days: int) -> dict | None:
     for t in tiers:
         if int(t["days"]) == int(tier_days):
             return t
+    return None
+
+
+def offer_reference_date(offer) -> date | None:
+    """The date an offer's tier windows are measured FROM.
+
+    ``valid_from`` when the offer carries one, otherwise the date it was
+    created. This is the fallback the module docstring has always described —
+    "``valid_from``, falling back to the offer's ``created`` date" — but no
+    caller ever supplied the second rung, so every call site passed
+    ``reference_date=offer.valid_from`` and a NULL landed on
+    ``best_tier_for_date``'s own default of ``as_of``, i.e. **today**. That
+    makes every rung's deadline roll forward one day per day: the offer never
+    ages and its tightest, highest-percent tier reads as open forever.
+
+    Not hypothetical — ``build_bulk_offer.as_offer_kwargs`` has no
+    ``valid_from`` key at all, so EVERY bulk negotiation is created with a NULL
+    one, and ``DiscountOfferCreate.valid_from`` defaults to ``None`` too. An
+    offer opened on Jan 1 with ``[{days: 5, percent: 3}, {days: 30, percent: 1}]``
+    still selected the 3% rung in August; on a 500,000 bulk offer that is a
+    15,000 deduction the supplier never agreed to (they offered 3% for payment
+    by Jan 6, and 1% thereafter).
+
+    Returns ``None`` only for an object carrying neither — an unpersisted
+    offer being previewed before it has a ``created_at`` — where "measure from
+    today" is the correct reading and matches the previous behaviour.
+    """
+    valid_from = getattr(offer, "valid_from", None)
+    if valid_from is not None:
+        return valid_from
+    created = getattr(offer, "created_at", None)
+    if created is None:
+        return None
+    if isinstance(created, datetime):
+        # `created_at` is `DateTime(timezone=True)`. Compare in UTC, matching
+        # `utils/dates.utc_today` — the one definition of "today" every
+        # discount surface (AP, portal, analytics) already reads.
+        if created.tzinfo is not None:
+            created = created.astimezone(UTC)
+        return created.date()
+    if isinstance(created, date):
+        return created
     return None
 
 

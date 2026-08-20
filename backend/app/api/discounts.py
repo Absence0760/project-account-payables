@@ -151,7 +151,10 @@ async def _build_opportunity(
     deadline / due-date economics so router and background sweep agree.
     """
     tier = offers_svc.best_tier_for_date(
-        offer.tiers or [], today, offer.valid_until, reference_date=offer.valid_from
+        offer.tiers or [],
+        today,
+        offer.valid_until,
+        reference_date=offers_svc.offer_reference_date(offer),
     )
     if tier is None:
         return None
@@ -359,7 +362,7 @@ async def accept_offer(
             body.tier_days,
             today,
             offer.valid_until,
-            reference_date=offer.valid_from,
+            reference_date=offers_svc.offer_reference_date(offer),
         )
         if tier is None:
             raise HTTPException(
@@ -368,7 +371,10 @@ async def accept_offer(
             )
     else:
         tier = offers_svc.best_tier_for_date(
-            offer.tiers or [], today, offer.valid_until, reference_date=offer.valid_from
+            offer.tiers or [],
+            today,
+            offer.valid_until,
+            reference_date=offers_svc.offer_reference_date(offer),
         )
         if tier is None:
             raise HTTPException(status_code=409, detail="Offer has no capturable tier today")
@@ -480,7 +486,10 @@ async def invoice_roi(
 
     if offer is not None:
         tier = offers_svc.best_tier_for_date(
-            offer.tiers or [], today, offer.valid_until, reference_date=offer.valid_from
+            offer.tiers or [],
+            today,
+            offer.valid_until,
+            reference_date=offers_svc.offer_reference_date(offer),
         )
         if tier is not None:
             pay_by = _tier_deadline(offer, tier, today)

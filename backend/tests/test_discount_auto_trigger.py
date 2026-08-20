@@ -18,7 +18,7 @@ right reference date through it.
 from __future__ import annotations
 
 import uuid
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -92,16 +92,31 @@ async def test_run_once_continues_after_one_tenant_fails():
 # ---------------------------------------------------------------------------
 
 
+_UNSET = object()
+
+
 def _make_offer(
     org_id,
     *,
     tiers,
     base="10000.00",
     valid_until=None,
-    valid_from=None,
+    valid_from=_UNSET,
+    created_at=None,
     status=OFFER_STATUS_OFFERED,
 ):
-    return DiscountOffer(
+    """Build one offer row.
+
+    ``valid_from`` defaults to ``_TODAY`` — the synthetic "today" every sweep
+    here is driven with — so the offer describes one extended on that date.
+    It has to be stated rather than left NULL: a tier's window is measured from
+    ``discount_offers.offer_reference_date`` (``valid_from``, else the row's
+    ``created_at``), and ``created_at`` comes from the *database* clock, i.e.
+    the real wall-clock date, which has nothing to do with ``_TODAY``. Pass
+    ``valid_from=None`` plus an explicit ``created_at`` to exercise the
+    creation-date fallback.
+    """
+    offer = DiscountOffer(
         id=uuid.uuid4(),
         organization_id=org_id,
         scope="invoice",
@@ -113,8 +128,11 @@ def _make_offer(
         base_amount=Decimal(base),
         currency="USD",
         valid_until=valid_until,
-        valid_from=valid_from,
+        valid_from=(_TODAY if valid_from is _UNSET else valid_from),
     )
+    if created_at is not None:
+        offer.created_at = created_at
+    return offer
 
 
 async def _resolver_const(_org_id, value=Decimal("8.00")):
@@ -276,6 +294,47 @@ async def test_sweep_does_not_auto_accept_a_tier_whose_window_has_closed(realdb)
             await db.execute(select(DiscountOffer).where(DiscountOffer.id == offer_id))
         ).scalar_one()
         assert row.status == OFFER_STATUS_OFFERED  # not auto-accepted; not expired either
+        assert row.accepted_tier is None
+
+
+@pytest.mark.asyncio
+async def test_sweep_ages_an_offer_with_no_valid_from_by_its_creation_date(realdb):
+    """The same closed-window case, but with `valid_from` NULL — which is what
+    `build_bulk_offer` produces for EVERY bulk negotiation (its
+    `as_offer_kwargs` has no `valid_from` key) and what
+    `DiscountOfferCreate.valid_from` defaults to.
+
+    The earlier window fix only reached `valid_from`, so a NULL fell through to
+    "measure from today" and the tightest, highest-percent rung stayed
+    auto-acceptable for as long as the offer's own `valid_until` allowed. Here
+    the offer was created 60 days before the sweep's reference date, so both
+    rungs closed long ago and nothing may be captured."""
+    mk = realdb.sessionmaker("a")
+    info = realdb.info("a")
+    db_name = info.db_name
+
+    offer = _make_offer(
+        info.org_id,
+        tiers=[{"days": 5, "percent": "3.00"}, {"days": 10, "percent": "2.00"}],
+        valid_from=None,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC) - timedelta(days=60),
+        valid_until=_TODAY + timedelta(days=10),
+    )
+    async with mk() as db:
+        db.add(offer)
+        await db.commit()
+        offer_id = offer.id
+
+    captured = await discount_auto_trigger._sweep_tenant(db_name, _TODAY, _resolver_const)
+    assert captured == 0
+
+    from sqlalchemy import select
+
+    async with mk() as db:
+        row = (
+            await db.execute(select(DiscountOffer).where(DiscountOffer.id == offer_id))
+        ).scalar_one()
+        assert row.status == OFFER_STATUS_OFFERED
         assert row.accepted_tier is None
 
 
