@@ -7,9 +7,10 @@ registries rather than a restated copy:
   ``_generate_report_payload`` looks the exporter up in. A row naming a key that
   isn't there raises ``ValueError`` on every tick and burns through the 5-strike
   auto-disable without ever sending anything.
-* ``cadence`` against ``services/scheduled_reports._CADENCE_DELTA`` — the runner
-  falls back to daily on an unknown cadence, so an unvalidated value silently
-  reschedules a "monthly" report as daily.
+* ``cadence`` against ``services/scheduled_reports.known_cadences()`` (the union
+  of the runner's fixed-duration and calendar-month step registries) — the
+  runner falls back to daily on an unknown cadence, so an unvalidated value
+  silently reschedules a "monthly" report as daily.
 
 Importing the registries means adding a report type or a cadence updates this
 surface for free; there is no second list to remember.

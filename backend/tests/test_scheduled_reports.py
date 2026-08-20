@@ -21,6 +21,7 @@ from app.services.scheduled_reports import (
     advance_next_run,
     compute_next_run,
     execute_schedule,
+    known_cadences,
 )
 
 
@@ -65,13 +66,23 @@ def test_compute_next_run_weekly_adds_seven_days():
     assert compute_next_run("weekly", base) == base + timedelta(days=7)
 
 
-def test_compute_next_run_monthly_adds_30_days():
-    """Calendar-aware monthly would land on the 1st of next month;
-    we approximate with 30 days. Operators pick "the 1st" via the
-    `next_run_at` they set on creation, then this loop rolls it
-    forward."""
-    base = datetime(2026, 5, 10, tzinfo=UTC)
-    assert compute_next_run("monthly", base) == base + timedelta(days=30)
+def test_compute_next_run_monthly_adds_a_calendar_month():
+    """ "Monthly" is counted in months, not in 30-day blocks.
+
+    The 30-day approximation this replaces did not merely round: anchored on a
+    late-month day it walked the grid off the calendar — 31 Jan → 2 Mar → 1 Apr
+    → 1 May → 31 May — so February received no report at all and the day of
+    month slid five days inside half a year.
+    """
+    base = datetime(2026, 5, 10, 9, 0, tzinfo=UTC)
+    assert compute_next_run("monthly", base) == datetime(2026, 6, 10, 9, 0, tzinfo=UTC)
+    # The day clamps to the target month's length rather than spilling over.
+    assert compute_next_run("monthly", datetime(2026, 1, 31, 9, 0, tzinfo=UTC)) == datetime(
+        2026, 2, 28, 9, 0, tzinfo=UTC
+    )
+    assert compute_next_run("monthly", datetime(2028, 1, 31, 9, 0, tzinfo=UTC)) == datetime(
+        2028, 2, 29, 9, 0, tzinfo=UTC
+    )
 
 
 def test_compute_next_run_unknown_cadence_falls_back_to_daily():
@@ -150,6 +161,53 @@ def test_advance_next_run_tolerates_a_naive_scheduled_for():
 def test_advance_next_run_unknown_cadence_falls_back_to_daily():
     due = datetime(2026, 5, 1, tzinfo=UTC)
     assert advance_next_run("yearly", scheduled_for=due, now=due) == due + timedelta(days=1)
+
+
+def test_advance_next_run_monthly_visits_every_calendar_month_exactly_once():
+    """A monthly schedule must land once in each month, holding its time of day.
+
+    With the old `timedelta(days=30)` step, a report anchored on 31 Jan ran
+    2 Mar → 1 Apr → 1 May → 31 May → 30 Jun: **February never received a
+    report** and the anchor slid five days inside half a year. A month is not
+    30 days.
+    """
+    slot = datetime(2026, 1, 31, 9, 0, tzinfo=UTC)
+    visited = []
+    for _ in range(12):
+        # Picked up 37 minutes late, as the hourly sweep really does.
+        slot = advance_next_run("monthly", scheduled_for=slot, now=slot + timedelta(minutes=37))
+        visited.append((slot.year, slot.month))
+        assert (slot.hour, slot.minute) == (9, 0)
+
+    # Twelve consecutive months, no gap and no repeat — February included.
+    assert visited == [(2026, m) for m in range(2, 13)] + [(2027, 1)]
+
+
+def test_advance_next_run_monthly_catches_up_without_a_backlog_burst():
+    """A schedule dormant for three years resumes with ONE next slot on its own
+    monthly grid — not 43 queued sends of the same current-state snapshot."""
+    due = datetime(2023, 1, 15, 9, 0, tzinfo=UTC)
+    now = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
+
+    nxt = advance_next_run("monthly", scheduled_for=due, now=now)
+
+    assert nxt == datetime(2026, 9, 15, 9, 0, tzinfo=UTC)
+    assert nxt > now
+
+
+def test_advance_next_run_monthly_with_a_future_slot_takes_exactly_one_step():
+    due = datetime(2027, 1, 15, 9, 0, tzinfo=UTC)
+    now = datetime(2026, 6, 1, tzinfo=UTC)
+
+    assert advance_next_run("monthly", scheduled_for=due, now=now) == datetime(
+        2027, 2, 15, 9, 0, tzinfo=UTC
+    )
+
+
+def test_monthly_is_a_known_cadence_the_crud_surface_accepts():
+    """`known_cadences()` is what `schemas/scheduled_report.CADENCES` validates
+    against, so moving `monthly` into its own registry must not drop it."""
+    assert set(known_cadences()) == {"daily", "weekly", "monthly"}
 
 
 # ---------------------------------------------------------------------------

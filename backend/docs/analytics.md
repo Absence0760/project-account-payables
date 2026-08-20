@@ -524,8 +524,26 @@ snapshot of *current* state, so a backlog burst would deliver N identical
 copies. The schedule simply resumes on its own grid.
 
 `compute_next_run` remains, for seeding a brand-new schedule (one step, no
-catch-up). Both go through `known_cadences()` / `_cadence_delta`, which is also
-what the CRUD surface validates against, so there is no second list.
+catch-up). Both go through `known_cadences()` / `_step`, which is also what the
+CRUD surface validates against, so there is no second list.
+
+**A month is counted in months, not in 30 days.** `monthly` used to step by
+`timedelta(days=30)`, and anchored on a late-month day that walks the grid off
+the calendar: 31 Jan → 2 Mar → 1 Apr → 1 May → 31 May → 30 Jun. February
+received **no report at all**, and the day of month slid five days inside half a
+year — on a schedule whose entire contract is "once a month". `monthly` now
+lives in its own `_CADENCE_MONTHS` registry and steps through the shared
+`billing.period.add_months` (the tested owner of clamped month arithmetic on a
+`datetime` — reused rather than re-implemented a fourth time), so every calendar
+month gets exactly one run and the time of day still holds.
+
+The day of month clamps to the target month's length (31 Jan → 28/29 Feb), and
+because the next anchor is the stored slot, a 31st schedule settles on the 28th
+after its first February and stays there. Holding the 31st would need an anchor
+column `scheduled_reports` does not carry; a stable day is a much better answer
+than the drift it replaces. Catch-up for `monthly` counts whole months from the
+anchor — a schedule dormant for three years still resolves to a single next
+slot, not one send per skipped month.
 
 ### "Today" is UTC
 
