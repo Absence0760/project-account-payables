@@ -911,7 +911,11 @@
 			</div>
 			{#if Number(summary.total_rebates) > 0}
 				<div class="scard rebate">
-					<span class="scard-value">{formatCurrency(summary.total_rebates)}</span>
+					<!-- `summary.currency` is what the API says EVERY money figure in
+					     this block is denominated in, `total_rebates` included — the
+					     three cards above pass it and this one didn't, falling through
+					     to the store instead of the response's own declaration. -->
+					<span class="scard-value">{formatCurrency(summary.total_rebates, summary.currency)}</span>
 					<span class="scard-label">{m('payments.summary.rebatesEarned')}</span>
 				</div>
 			{/if}

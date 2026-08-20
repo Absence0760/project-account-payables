@@ -26,8 +26,16 @@
 	let loading = $state(false);
 	let error = $state<string | null>(null);
 
+	/** Format a figure the API has already expressed in the REPORTING currency. */
 	function fmt(amount: MoneyAmount): string {
 		return formatMoney(amount, { currency: orgCurrency.currency, whole: true });
+	}
+
+	/** Format a figure denominated in its OWN currency — the unrealized-FX
+	 *  table's open-exposure column is the one such figure on this component,
+	 *  and `fmt` would mislabel it with the reporting code. */
+	function fmtIn(amount: MoneyAmount, currency: string): string {
+		return formatMoney(amount, { currency, whole: true });
 	}
 
 	let maxDpo = $derived(Math.max(1, ...(data?.dpo_trend ?? []).map((r) => r.dpo)));
@@ -173,7 +181,13 @@
 						{#each data?.unrealized_fx.by_currency ?? [] as e (e.currency)}
 							<tr>
 								<td>{e.currency}</td>
-								<td class="num">{fmt(e.open_original_amount)}</td>
+								<!-- The open exposure is in the row's OWN currency; only the
+								     three columns after it are in the reporting currency
+								     (see CfoUnrealizedFxByCurrency). `fmt` stamps the
+								     reporting code, so this one column can't use it — a
+								     EUR 10,000 exposure read "$10,000" with its real code
+								     sitting in the cell immediately to the left. -->
+								<td class="num">{fmtIn(e.open_original_amount, e.currency)}</td>
 								<td class="num">{fmt(e.booked_reporting_amount)}</td>
 								<td class="num">{fmt(e.current_reporting_amount)}</td>
 								<td class="num" class:cfm-alert={isNegativeAmount(e.unrealized_gain_loss)}>
