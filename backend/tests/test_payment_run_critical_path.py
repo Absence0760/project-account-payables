@@ -110,23 +110,32 @@ def _create_run_db(
     invoices: list,
     blocking_invoice_ids: list | None = None,
     credit_totals: dict | None = None,
+    card_claimed_invoice_ids: list | None = None,
 ):
     """Build an AsyncSession mock for `create_payment_run`.
 
-    The handler issues: (1) `select(Invoice).where(Invoice.id.in_(...))`
-    → `.scalars().all()`, (2) the unresolved payment-blocking exception gate
-    → `.all()` of `(invoice_id, exception_type)` rows, then
-    (3) one already-applied-credit-memo SUM query per item in `body.items`
+    The handler issues, IN THIS ORDER: (1) `select(Invoice).where(Invoice.id
+    .in_(...))` → `.scalars().all()`, (2) the unresolved payment-blocking
+    exception gate → `.all()` of `(invoice_id, exception_type)` rows, (3) the
+    live-virtual-card claim gate → `.scalars().all()` of invoice ids, then
+    (4) one already-applied-credit-memo SUM query per item in `body.items`
     (in the same order — every test here builds `body.items` from this
     same `invoices` list) → `.scalar_one()`. It then `db.add(run)`,
     `db.flush()`, `db.add(payment)` per item, and `db.commit()`. We
     capture every added object so a test can inspect the created run +
     payment rows.
 
+    The sequence is positional (`side_effect` is a list), so a NEW query in
+    the handler shifts every later result and fails these tests loudly —
+    which is the point. Mirror the real order here rather than making the
+    handler defensive.
+
     `blocking_invoice_ids` seeds the second SELECT so a test can simulate
     an invoice sitting under an open duplicate/fraud exception.
-    `credit_totals` (keyed by invoice id) seeds the per-invoice credit
-    SUM; an invoice not present defaults to no applied credit (0), which
+    `card_claimed_invoice_ids` seeds the third, for an invoice already holding
+    a live virtual card (`POST /api/cards/generate` mints one with no Payment
+    row behind it). `credit_totals` (keyed by invoice id) seeds the per-invoice
+    credit SUM; an invoice not present defaults to no applied credit (0), which
     preserves every existing test's un-netted totals.
     """
     sel = MagicMock()
@@ -144,6 +153,13 @@ def _create_run_db(
         return_value=[(inv_id, "duplicate") for inv_id in (blocking_invoice_ids or [])]
     )
 
+    # The live-card claim gate: `.scalars().all()` of the invoice ids already
+    # occupied by a non-cancelled VirtualCard.
+    card_sel = MagicMock()
+    card_scalars = MagicMock()
+    card_scalars.all = MagicMock(return_value=list(card_claimed_invoice_ids or []))
+    card_sel.scalars = MagicMock(return_value=card_scalars)
+
     credit_totals = credit_totals or {}
     credit_results = []
     for inv in invoices:
@@ -152,7 +168,7 @@ def _create_run_db(
         credit_results.append(credit_sel)
 
     db = AsyncMock()
-    db.execute = AsyncMock(side_effect=[sel, block_sel, *credit_results])
+    db.execute = AsyncMock(side_effect=[sel, block_sel, card_sel, *credit_results])
     db.commit = AsyncMock()
     db.flush = AsyncMock()
     db.added = []
@@ -232,6 +248,39 @@ async def test_create_run_rejects_invoice_with_unresolved_duplicate_exception():
         )
     assert exc.value.status_code == 409
     assert "duplicate" in exc.value.detail.lower()
+    db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_run_rejects_invoice_already_holding_a_live_virtual_card():
+    """`POST /api/cards/generate` mints a spendable card and books NO `Payment`,
+    so nothing that keys on payment rows can see the claim and the invoice stays
+    payable by ACH — the vendor gets a card AND a wire. Refused on every rail
+    except `virtual_card`, which converges on the existing card. Realdb coverage
+    (including the converge and cancelled-card exits) is in
+    `test_payment_run_live_card_claim.py`; this pins the run builder's own
+    branch."""
+    from fastapi import HTTPException
+
+    from app.api.payments import (
+        CreatePaymentRunItem,
+        CreatePaymentRunRequest,
+        create_payment_run,
+    )
+
+    inv = _invoice(amount=Decimal("1000.00"))
+    body = CreatePaymentRunRequest(
+        items=[CreatePaymentRunItem(invoice_id=str(inv.id), method="ach")]
+    )
+    db = _create_run_db([inv], card_claimed_invoice_ids=[inv.id])
+
+    with pytest.raises(HTTPException) as exc:
+        await create_payment_run(
+            body=body, db=db, org=_org(), user=_user(), org_id=uuid.uuid4(), entity_id=uuid.uuid4()
+        )
+    assert exc.value.status_code == 409
+    assert "virtual card" in exc.value.detail.lower()
+    assert inv.invoice_number in exc.value.detail
     db.commit.assert_not_awaited()
 
 

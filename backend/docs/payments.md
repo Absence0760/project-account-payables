@@ -473,6 +473,13 @@ re-sent.
   set.
 - `invoice_has_live_payment` — the invoice has since acquired another live
   payment.
+- `invoice_has_live_card` — a virtual card was minted against the invoice
+  (`POST /api/cards/generate`) while this payment sat `failed`, so the card is
+  already paying it on a rail this retry isn't using. Shared with the run
+  builder and the standalone endpoint via
+  `services/payment_runs.card_claimed_invoice_ids`; a `virtual_card` retry is
+  exempt because that rail converges on the existing card. See § A live card is
+  a claim on its invoice.
 
 `retryable_failures` on the run detail counts only failures the endpoint will
 actually re-attempt, so the retry button can never offer an action that could
@@ -541,6 +548,36 @@ exact amount as a string — never a PAN): `card.generated` on a fresh mint
 on both mint paths) and `card.reused` when the payment settled against a card
 it did not mint. A converged payment does **not** re-email the vendor — the
 reveal link was already sent when the card was minted.
+
+#### A live card is a claim on its invoice — no other rail may also pay it
+
+Convergence covers the case where the *second* payment is itself a card. It
+cannot cover an ACH or wire, because those rails never consult the card at all.
+
+`POST /api/cards/generate` mints a spendable card for the full invoice amount
+and — unlike the leg above — books **no** `Payment` row and leaves the invoice
+`approved`. Every "is this invoice already being paid" gate keys on `Payment`:
+`uq_payments_one_live_per_invoice` and its `_live_payment_invoice_numbers`
+pre-check count payment rows, and `/payments/queue` excludes an invoice only
+once it has a `completed` payment. So a directly-minted card left the invoice
+fully payable by ACH — the vendor held a card for the face amount **and**
+received a wire, with nothing in either audit trail contradicting the other.
+
+`payment_runs.card_claimed_invoice_ids` (over
+`card_issuance.live_card_invoice_ids`, which reuses the index's own
+`status <> 'cancelled'` predicate) is the gate, run by all three paths that
+book money — the run builder, the standalone `POST /api/payments`, and
+`/retry-failed` (skip reason `invoice_has_live_card`), so the refusal can't be
+walked around by using a different one.
+
+It is **method-aware**: `virtual_card` is exempt, because that rail converges on
+the existing card rather than opening a second outflow. Every other rail is
+refused, including a payment with no `method` recorded (it will not take the
+card leg either — fail closed). A `charged` card is the case that matters most:
+the money already moved on that rail, and an ACH run would move it again.
+
+The exit is cancelling the card, which vacates the slot the index and this gate
+share.
 
 ### Voiding a card payment cancels the card
 

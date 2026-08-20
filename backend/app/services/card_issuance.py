@@ -116,6 +116,35 @@ async def find_live_card_for_invoice(db: AsyncSession, invoice_id) -> VirtualCar
     return result.scalar_one_or_none()
 
 
+async def live_card_invoice_ids(db: AsyncSession, invoice_ids) -> set:
+    """Which of ``invoice_ids`` currently hold a live card — the batch form of
+    :func:`find_live_card_for_invoice`, and the same predicate
+    (``status <> 'cancelled'``, i.e. ``uq_virtual_cards_one_live_per_invoice``).
+
+    A live card is a **claim on its invoice**: it is bearer-spendable for the
+    full amount. ``POST /api/cards/generate`` mints one without booking any
+    ``Payment``, so nothing that keys on payment rows —
+    ``uq_payments_one_live_per_invoice``, ``_live_payment_invoice_numbers``, the
+    payment queue's `completed`-payment filter — could see that claim, and the
+    invoice stayed fully payable by ACH. The vendor held a card for the face
+    amount *and* received a wire.
+
+    Lives here, beside the slot predicate it shares, so the money paths in
+    ``services/payment_runs`` and ``api/payments`` cannot drift from the
+    issuance path's idea of what occupies the slot.
+    """
+    ids = list(invoice_ids)
+    if not ids:
+        return set()
+    rows = await db.execute(
+        select(VirtualCard.invoice_id).where(
+            VirtualCard.invoice_id.in_(ids),
+            VirtualCard.status != "cancelled",
+        )
+    )
+    return {i for i in rows.scalars().all() if i is not None}
+
+
 def card_settlement_block(card: VirtualCard, amount) -> str | None:
     """Why ``card`` cannot settle a payment of ``amount`` — ``None`` if it can.
 

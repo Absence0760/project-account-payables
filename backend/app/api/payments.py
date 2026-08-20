@@ -72,6 +72,7 @@ from app.services.payment_runs import (
     active_run_payments,
     blocked_invoice_ids,
     blocking_exception_types,
+    card_claimed_invoice_ids,
     create_payment_run_for_invoices,
     derive_run_status,
     is_retry_safe,
@@ -1502,6 +1503,22 @@ async def create_payment(
                 "Invoice has an unresolved payment-blocking exception "
                 f"({_blocking[invoice.id]}) and can't be paid until it's cleared: "
                 f"{invoice.invoice_number}"
+            ),
+        )
+
+    # A live virtual card is already paying this invoice. Same gate the run
+    # builder runs, through the same shared helper, so the run's refusal can't
+    # be walked around by posting here instead — the reasoning the
+    # financial-integrity exception gate above already documents. `virtual_card`
+    # is exempt: that rail converges on the existing card.
+    if await card_claimed_invoice_ids(
+        db, [(invoice.id, body.method.value if body.method else None)]
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Invoice already has a live virtual card issued against it — pay it by "
+                f"card, or cancel the card first: {invoice.invoice_number}"
             ),
         )
 
@@ -3156,6 +3173,7 @@ async def retry_failed_payments(
     invoices: dict[uuid.UUID, Invoice] = {}
     payable_ids: set[uuid.UUID] = set()
     blocked_ids: set[uuid.UUID] = set()
+    card_claimed_ids: set[uuid.UUID] = set()
     occupied_ids: set[uuid.UUID] = set()
     if invoice_ids:
         invoices = {
@@ -3168,6 +3186,13 @@ async def retry_failed_payments(
             iid for iid, inv in invoices.items() if inv.status.value in PAYABLE_INVOICE_STATUSES
         }
         blocked_ids = await blocked_invoice_ids(db, invoice_ids)
+        # A live virtual card minted since the run was built claims the invoice
+        # on a rail this retry isn't using. Same shared gate the run builder and
+        # the standalone endpoint run — a retry dispatches real money days or
+        # weeks later, so it re-checks everything they check.
+        card_claimed_ids = await card_claimed_invoice_ids(
+            db, ((p.invoice_id, p.method) for p in failed_payments)
+        )
         occupied_ids = set(
             (
                 await db.execute(
@@ -3189,6 +3214,9 @@ async def retry_failed_payments(
             continue
         if payment.invoice_id in blocked_ids:
             skipped.append("invoice_has_blocking_exception")
+            continue
+        if payment.invoice_id in card_claimed_ids:
+            skipped.append("invoice_has_live_card")
             continue
         if not is_retry_safe(payment):
             # We can't prove the processor never took the original order. A

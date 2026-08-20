@@ -441,6 +441,14 @@ yet — API-only, mirroring `/bank-reconciliation`.
     (sanctions/KYC/AML) runs per invoice before the adapter call, exactly
     like the ACH/wire path; a `hold`/`refuse` verdict — including a vendor
     with `payments_blocked=True` — skips that invoice without minting.
+  - **Claim gate (the other direction)** — the direct endpoint books no
+    `Payment` row and leaves the invoice `approved`, so a card minted there is
+    a money claim nothing keyed on `Payment` could see, and the invoice stayed
+    payable by ACH: the vendor held a card for the face amount *and* received a
+    wire. Every path that books a payment now refuses an invoice holding a live
+    card unless the rail is `virtual_card` (which converges on it) — see
+    `payments.md` § A live card is a claim on its invoice. Cancelling the card
+    releases the claim.
   - **Audit trail** — a successful mint writes a `card.generated` audit row
     (invoice id, last_four, string-Decimal `amount_limit`) via
     `dispatch_audit`, matching every other card-lifecycle event

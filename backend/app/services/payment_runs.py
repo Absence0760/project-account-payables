@@ -361,6 +361,43 @@ async def blocked_invoice_ids(db: AsyncSession, invoice_ids: list[uuid.UUID]) ->
     return set(await blocking_exception_types(db, invoice_ids))
 
 
+#: The only rail that can legitimately pay an invoice already holding a live
+#: virtual card. `api/payments._execute_single_payment`'s card leg CONVERGES on
+#: that card — `find_live_card_for_invoice` → `card_settlement_block` → link +
+#: settle — so refusing it would break the documented pre-mint-then-run flow.
+#: Every other rail would be a second, independent outflow.
+CARD_CONVERGING_METHODS: frozenset[str] = frozenset({"virtual_card"})
+
+
+async def card_claimed_invoice_ids(
+    db: AsyncSession, items: Iterable[tuple[uuid.UUID, str | None]]
+) -> set[uuid.UUID]:
+    """Which of ``items`` are already claimed by a live virtual card on a rail
+    that cannot converge on it.
+
+    ``items`` is ``(invoice_id, requested_method)``. A method of ``None`` counts
+    as non-converging: a payment with no rail recorded will not take the card
+    leg, so it must not be booked against a card-claimed invoice either
+    (fail-closed).
+
+    Companion to `blocked_invoice_ids`. That one asks "does an unresolved
+    exception forbid paying this invoice"; this asks "is something already
+    paying it". The `uq_payments_one_live_per_invoice` index answers that for
+    `Payment` rows, but `POST /api/cards/generate` mints a spendable card
+    without booking one — see `card_issuance.live_card_invoice_ids`.
+    """
+    from app.services.card_issuance import live_card_invoice_ids
+
+    candidates = [
+        invoice_id
+        for invoice_id, method in items
+        if (method or "").strip().lower() not in CARD_CONVERGING_METHODS
+    ]
+    if not candidates:
+        return set()
+    return await live_card_invoice_ids(db, candidates)
+
+
 async def applied_credit_total(db: AsyncSession, invoice_id: uuid.UUID) -> Decimal:
     """Sum of the credit memos already APPLIED against an invoice."""
     return (
@@ -592,6 +629,26 @@ async def create_payment_run_for_invoices(
             detail=(
                 "Invoice(s) have an unresolved payment-blocking exception and "
                 f"can't be paid until it's cleared: {', '.join(blocked_numbers)}"
+            ),
+        )
+
+    # A live virtual card is already paying this invoice. Refused for every
+    # rail EXCEPT `virtual_card`, which converges on the existing card rather
+    # than opening a second outflow (see `CARD_CONVERGING_METHODS`).
+    card_claimed = await card_claimed_invoice_ids(
+        db, ((item.invoice_id, item.method) for item in items)
+    )
+    if card_claimed:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Invoice(s) already have a live virtual card issued against them — "
+                "pay them by card, or cancel the card first: "
+                + ", ".join(
+                    sorted(
+                        inv.invoice_number for iid, inv in invoices.items() if iid in card_claimed
+                    )
+                )
             ),
         )
 
