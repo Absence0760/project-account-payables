@@ -1457,6 +1457,43 @@ coincidence across currencies. Each `Payment` still settles independently in
 its own invoice's currency at execution time; this only constrains what one
 run can report a single total for.
 
+#### The threshold is denominated in the org's REPORTING currency
+
+`cfo_approval_above` is a bare number, exactly like
+`settings.expense_approval.cfo_threshold`, and what it is denominated in is the
+org's **reporting currency** (`currency_conversion.resolve_reporting_currency`).
+So the amount has to be expressed in that currency *before* it can be compared.
+
+Refusing a mixed-currency batch (above) closes only the batch half of that
+problem. A run entirely in ONE foreign currency was still compared at face
+value, which made the gate fail **OPEN** for every foreign payable priced below
+the threshold in its own units: a **GBP 9,000** run — **USD 11,400** at the rate
+already locked on its invoice — slipped under a USD 10,000 threshold and
+executed with no CFO sign-off. The standalone `POST /api/payments` gate had the
+identical hole.
+
+Both now compare the **reporting-currency** figure, via
+`services/payment_controls.cfo_approval_decision` (one owner, so the two paths
+can't drift) fed by `currency_conversion.reporting_amount_at_locked_rate`:
+
+- **No FX call.** The rate was locked onto the invoice row when it was last
+  saved (`materialize_reporting_amount` → `invoices.reporting_fx_rate` +
+  `reporting_source_currency`). A rate fetched on a read would make a control's
+  verdict move with the market.
+- **Fail-closed, both ways.** An unparseable threshold requires sign-off
+  (unchanged), and an amount that *cannot* be expressed in the reporting
+  currency — no locked rate, or a lock that no longer describes the row's
+  currency pair — is treated as **over** the threshold, never under. This is
+  stricter than the display rollups' `reporting_amount_for_row`, deliberately:
+  a rollup prefers a slightly stale figure to a missing one, a control does not.
+- `PaymentRun.total_amount` is unchanged — it is still what the run *pays*, in
+  the currency its invoices share. The `payment_run.created` audit row carries
+  `cfo_threshold_currency` / `cfo_evaluated_amount` / `cfo_reason` so the
+  decision is reconstructable when the two figures differ.
+
+Guards: `tests/test_payment_run_critical_path.py` (the reporting-currency
+section) and `tests/test_payment_create_cfo_gate.py`.
+
 ### Financial-integrity exception gate
 
 Independently of the CFO threshold, `create_payment_run` refuses any invoice

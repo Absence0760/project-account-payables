@@ -70,7 +70,24 @@ def _org(*, cfo_above=None, provider: str = "mock"):
     )
 
 
-def _invoice(*, amount: Decimal, status=InvoiceStatus.approved):
+def _invoice(
+    *,
+    amount: Decimal,
+    status=InvoiceStatus.approved,
+    currency: str = "USD",
+    reporting_currency: str | None = "USD",
+    reporting_fx_rate: Decimal | None = Decimal("1"),
+):
+    """A stand-in for one `Invoice` row.
+
+    The reporting-currency lock (`reporting_currency` / `reporting_source_currency`
+    / `reporting_fx_rate`, materialized by
+    `currency_conversion.materialize_reporting_amount` on every save) is part of
+    the row the CFO-threshold gate reads: the threshold is denominated in the
+    org's REPORTING currency, so a foreign-currency payable has to be expressed
+    there before it can be compared. Defaults describe a plain USD invoice on a
+    USD-reporting org — rate 1, so the gate sees exactly the face amount.
+    """
     return SimpleNamespace(
         id=uuid.uuid4(),
         correlation_id=uuid.uuid4(),
@@ -80,9 +97,12 @@ def _invoice(*, amount: Decimal, status=InvoiceStatus.approved):
         invoice_number="INV-1",
         vendor_name="Acme Corp",
         vendor_id=None,
-        currency="USD",
+        currency=currency,
         description=None,
         amount=amount,
+        reporting_currency=reporting_currency,
+        reporting_source_currency=currency,
+        reporting_fx_rate=reporting_fx_rate,
     )
 
 
@@ -638,6 +658,166 @@ async def test_create_run_ignores_zero_or_negative_threshold():
 
     run = next(o for o in db.added if isinstance(o, PaymentRun))
     assert run.requires_cfo_approval is False
+
+
+# ---------------------------------------------------------------------------
+# The CFO threshold is denominated in the org's REPORTING currency
+#
+# `payments.cfo_approval_above` is a bare number, exactly like
+# `expense_approval.cfo_threshold`, and the org's reporting currency is what it
+# is denominated in. Comparing it against the run's own-currency total made the
+# gate fail OPEN on every foreign-currency payable priced below the threshold in
+# its own units — a GBP 9,000 run (USD 11,400) executed with no CFO sign-off.
+# Refusing a *mixed*-currency run, which the builder already did, closes the
+# batch half of that hole and none of this one.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_run_gates_cfo_on_the_reporting_currency_figure():
+    """A foreign-currency run worth MORE than the threshold once expressed in
+    the org's reporting currency requires CFO sign-off, even though its
+    face-value total is below the threshold."""
+    from app.api.payments import (
+        CreatePaymentRunItem,
+        CreatePaymentRunRequest,
+        PaymentRun,
+        create_payment_run,
+    )
+
+    # GBP 9,000 at the rate locked on the invoice row = USD 11,400.
+    inv = _invoice(
+        amount=Decimal("9000.00"),
+        currency="GBP",
+        reporting_currency="USD",
+        reporting_fx_rate=Decimal("1.26666667"),
+    )
+    body = CreatePaymentRunRequest(items=[CreatePaymentRunItem(invoice_id=str(inv.id))])
+    db = _create_run_db([inv])
+
+    result = await create_payment_run(
+        body=body,
+        db=db,
+        org=_org(cfo_above="10000"),
+        user=_user(),
+        org_id=uuid.uuid4(),
+        entity_id=uuid.uuid4(),
+    )
+
+    run = next(o for o in db.added if isinstance(o, PaymentRun))
+    assert run.requires_cfo_approval is True
+    assert result["requires_cfo_approval"] is True
+    # The run still PAYS 9,000 GBP — only the gate's comparison changed.
+    assert result["total_amount"] == "9000.00"
+
+
+@pytest.mark.asyncio
+async def test_create_run_does_not_over_fire_on_a_small_foreign_total():
+    """The fix is a conversion, not a blanket "foreign currency ⇒ CFO". A
+    JPY 1,000,000 run is USD 6,700 at its locked rate, comfortably under a USD
+    10,000 threshold, and must NOT require sign-off — otherwise every non-USD
+    tenant would need a CFO for every payment."""
+    from app.api.payments import (
+        CreatePaymentRunItem,
+        CreatePaymentRunRequest,
+        PaymentRun,
+        create_payment_run,
+    )
+
+    inv = _invoice(
+        amount=Decimal("1000000.00"),
+        currency="JPY",
+        reporting_currency="USD",
+        reporting_fx_rate=Decimal("0.00670000"),
+    )
+    body = CreatePaymentRunRequest(items=[CreatePaymentRunItem(invoice_id=str(inv.id))])
+    db = _create_run_db([inv])
+
+    await create_payment_run(
+        body=body,
+        db=db,
+        org=_org(cfo_above="10000"),
+        user=_user(),
+        org_id=uuid.uuid4(),
+        entity_id=uuid.uuid4(),
+    )
+
+    run = next(o for o in db.added if isinstance(o, PaymentRun))
+    assert run.requires_cfo_approval is False
+
+
+@pytest.mark.asyncio
+async def test_create_run_fails_closed_when_the_reporting_figure_is_unknowable():
+    """A foreign invoice carrying no rate we can prove describes its currency
+    pair can't be compared against the threshold at all. Treat it as OVER —
+    the same posture `services/expense_currency` takes for a report whose
+    reporting figure is unavailable — never as under."""
+    from app.api.payments import (
+        CreatePaymentRunItem,
+        CreatePaymentRunRequest,
+        PaymentRun,
+        create_payment_run,
+    )
+
+    inv = _invoice(
+        amount=Decimal("100.00"),
+        currency="EUR",
+        reporting_currency=None,
+        reporting_fx_rate=None,
+    )
+    body = CreatePaymentRunRequest(items=[CreatePaymentRunItem(invoice_id=str(inv.id))])
+    db = _create_run_db([inv])
+
+    await create_payment_run(
+        body=body,
+        db=db,
+        org=_org(cfo_above="10000"),
+        user=_user(),
+        org_id=uuid.uuid4(),
+        entity_id=uuid.uuid4(),
+    )
+
+    run = next(o for o in db.added if isinstance(o, PaymentRun))
+    assert run.requires_cfo_approval is True
+
+
+@pytest.mark.asyncio
+async def test_create_run_audit_records_what_the_cfo_gate_compared():
+    """For a foreign run the gated figure is NOT `total_amount`, so the audit
+    row has to carry it — otherwise nothing explains why a GBP 9,000 run needed
+    sign-off against a 10,000 threshold. PII-free: amounts, a currency code and
+    a fixed reason vocabulary."""
+    from app.api.payments import (
+        CreatePaymentRunItem,
+        CreatePaymentRunRequest,
+        create_payment_run,
+    )
+
+    inv = _invoice(
+        amount=Decimal("9000.00"),
+        currency="GBP",
+        reporting_currency="USD",
+        reporting_fx_rate=Decimal("1.26666667"),
+    )
+    body = CreatePaymentRunRequest(items=[CreatePaymentRunItem(invoice_id=str(inv.id))])
+    db = _create_run_db([inv])
+
+    with patch("app.services.audit_dispatch.dispatch_audit", new_callable=AsyncMock) as da:
+        await create_payment_run(
+            body=body,
+            db=db,
+            org=_org(cfo_above="10000"),
+            user=_user(),
+            org_id=uuid.uuid4(),
+            entity_id=uuid.uuid4(),
+        )
+
+    details = da.await_args.kwargs["details"]
+    assert details["cfo_threshold_currency"] == "USD"
+    assert details["cfo_evaluated_amount"] == "11400.00"
+    assert details["cfo_reason"] == "above_threshold"
+    # Exact decimal strings, never floats.
+    assert isinstance(details["cfo_evaluated_amount"], str)
 
 
 # ---------------------------------------------------------------------------

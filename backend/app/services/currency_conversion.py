@@ -291,6 +291,56 @@ def reporting_amount_for_row(
     return _quantize_money(Decimal(str(amount))), True
 
 
+def reporting_amount_at_locked_rate(
+    *,
+    amount: Decimal,
+    currency: str | None,
+    reporting_currency: str,
+    persisted_reporting_currency: str | None,
+    persisted_reporting_source_currency: str | None,
+    persisted_fx_rate: Decimal | None,
+) -> tuple[Decimal, bool]:
+    """Express an ARBITRARY amount in the reporting currency at the row's LOCKED rate.
+
+    The sibling of `reporting_amount_for_row`, for the case where the figure
+    being converted is **not** the row's whole `amount` — a payable netted
+    against applied credit memos, for instance. The persisted
+    `reporting_amount` prices `amount`, so it can't just be read back; the
+    persisted *rate* is what generalises. Still no FX call and no read-time
+    rate: a market move must not retroactively change what a control decided.
+
+    Deliberately **stricter about the lock** than `reporting_amount_for_row`.
+    That helper feeds display rollups, which prefer a slightly stale figure to
+    a missing one; this one feeds a money CONTROL (the payment CFO-approval
+    threshold), so the rate is trusted only when `reporting_source_currency`
+    (migration 0086) proves it was fetched for the row's *current* currency. A
+    row locked before that column existed, or one whose currency has since been
+    corrected, reports `unconverted=True` — which the gate reads as fail-closed,
+    never as a licence to compare bare numbers across currencies.
+
+    Returns `(reporting_amount, unconverted)`.
+    """
+    tgt = (reporting_currency or "USD").strip().upper()
+    cur = (currency or tgt).strip().upper()
+
+    if cur == tgt:
+        return _quantize_money(Decimal(str(amount))), False
+
+    rate = None if persisted_fx_rate is None else Decimal(str(persisted_fx_rate))
+    if (
+        rate is not None
+        and rate > 0
+        and isinstance(persisted_reporting_currency, str)
+        and persisted_reporting_currency.strip().upper() == tgt
+        and isinstance(persisted_reporting_source_currency, str)
+        and persisted_reporting_source_currency.strip().upper() == cur
+    ):
+        return _quantize_money(Decimal(str(amount)) * rate), False
+
+    # No lock we can prove describes this currency pair.
+    return _quantize_money(Decimal(str(amount))), True
+
+
 @dataclass(frozen=True)
 class PaymentReportingAmountSql:
     """SQL expressions for "what did this payment move, in the reporting
