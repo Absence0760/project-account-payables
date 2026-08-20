@@ -150,9 +150,18 @@ Response:
   in `analytics.value_received_goods`; SQL fan-out in
   `api/analytics._received_amount`.)
 - `working_capital_impact_5_days` — `avg_daily_outflow × 5`
-- `supplier_concentration.{top_10_share_pct, top_50_share_pct, largest_vendor, largest_vendor_share_pct, flagged}` — `flagged=true` iff the largest vendor exceeds 25% (configurable). Excludes `rejected` invoices (never real spend) — the SAME population its drill-through and the `vendor_spend` export/scheduled report use, so clicking from the tile into either agrees with the number the CFO started from. Also the SAME reporting-currency rollup as the dashboard's `vendor_spend` (see above) — a vendor's multi-currency invoices are converted before summing, never naively added across currencies
+- `supplier_concentration.{top_10_share_pct, top_50_share_pct, largest_vendor, largest_vendor_share_pct, flagged}` — `flagged=true` iff the largest vendor **reaches or** exceeds 25% (configurable; the boundary is inclusive on purpose — a risk flag that stays dark at exactly the configured limit is the wrong direction to be wrong in). **Every share is computed against the whole period's spend**, never a top-N subtotal: `compute_supplier_concentration` derives its denominator from the list it is handed and takes its own `[:10]`/`[:50]` cuts, so the caller must pass the full vendor set and slice only for display. Passing a pre-sliced top-50 made `total_spend` the top-50 subtotal, inflated `top_10_share_pct` / `largest_vendor_share_pct` (and with them `flagged`), and pinned `top_50_share_pct` at exactly `100.0` on any tenant with 50+ vendors. The same rule governs `/drill/spend_concentration`, whose `total_spend` and `share_pct` are computed before `?limit=` is applied — otherwise `limit` silently rebased both and the drill disagreed with the tile it was opened from. Excludes `rejected` invoices (never real spend) — the SAME population its drill-through and the `vendor_spend` export/scheduled report use, so clicking from the tile into either agrees with the number the CFO started from. Also the SAME reporting-currency rollup as the dashboard's `vendor_spend` (see above) — a vendor's multi-currency invoices are converted before summing, never naively added across currencies
 - `fraud_rate_trend` — exceptions / invoices × 100 per month
-- `rebate_yield.{yield_pct, annualised_rebates, ...}`
+- `rebate_yield.{yield_pct, annualised_rebates, ...}` — **windowed to the same
+  trailing `period_days` as `total_spend`**, which is the denominator it divides
+  by and the span `months_in_period` describes. The rebate sum carried no date
+  predicate at all, so the numerator was every rebate the tenant had ever
+  booked: `yield_pct` was lifetime-over-this-window and `annualised_rebates`
+  multiplied a multi-year total by 12. A three-year-old tenant with $36k of
+  rebates and $100k of spend in the last 30 days reported a 36% yield and a
+  $432k annual run-rate against a truth of ~1% and ~$12k. Filtered on
+  `CardRebate.created_at` (when the rebate was booked); the `period` column is a
+  display label, not a filter key.
 
 ### DPO trend + drill-through — one population, one calculation
 
@@ -524,8 +533,26 @@ snapshot of *current* state, so a backlog burst would deliver N identical
 copies. The schedule simply resumes on its own grid.
 
 `compute_next_run` remains, for seeding a brand-new schedule (one step, no
-catch-up). Both go through `known_cadences()` / `_cadence_delta`, which is also
-what the CRUD surface validates against, so there is no second list.
+catch-up). Both go through `known_cadences()` / `_step`, which is also what the
+CRUD surface validates against, so there is no second list.
+
+**A month is counted in months, not in 30 days.** `monthly` used to step by
+`timedelta(days=30)`, and anchored on a late-month day that walks the grid off
+the calendar: 31 Jan → 2 Mar → 1 Apr → 1 May → 31 May → 30 Jun. February
+received **no report at all**, and the day of month slid five days inside half a
+year — on a schedule whose entire contract is "once a month". `monthly` now
+lives in its own `_CADENCE_MONTHS` registry and steps through the shared
+`billing.period.add_months` (the tested owner of clamped month arithmetic on a
+`datetime` — reused rather than re-implemented a fourth time), so every calendar
+month gets exactly one run and the time of day still holds.
+
+The day of month clamps to the target month's length (31 Jan → 28/29 Feb), and
+because the next anchor is the stored slot, a 31st schedule settles on the 28th
+after its first February and stays there. Holding the 31st would need an anchor
+column `scheduled_reports` does not carry; a stable day is a much better answer
+than the drift it replaces. Catch-up for `monthly` counts whole months from the
+anchor — a schedule dormant for three years still resolves to a single next
+slot, not one send per skipped month.
 
 ### "Today" is UTC
 

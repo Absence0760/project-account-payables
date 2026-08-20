@@ -37,11 +37,30 @@ re-opened back to `draft`.
 - **reject** (`pending_approval → rejected`) — records `rejection_reason`.
 - **cancel** (`draft` / `submitted` / `pending_approval` / `approved →
   cancelled`).
+- **reopen** (`rejected → draft`) — clears `submitted_at`, keeps
+  `rejection_reason` as the brief for the rework. Without it a rejected
+  requisition was stranded: `submit`, `cancel` and `PATCH` all 422 from
+  `rejected`, so the only exit was `DELETE` + re-keying every line.
 
 Header `total` is **always recomputed server-side** from the line items
 (`sum(quantity × unit_price)`, exact `Decimal`) on create and on every draft
 edit — a client-sent total is ignored, so the header can never drift from its
-lines. Editing is allowed on **draft only**; a submitted/approved requisition is
+lines.
+
+That last clause needs the quantize to be true. `quantity` is `Numeric(12, 4)`
+and `unit_price` `Numeric(15, 2)`, so the product can carry 6 dp while both
+`requisition_line_items.total` and `purchase_requisitions.total` are
+`Numeric(15, 2)`. Returning the raw product meant Postgres rounded **each line**
+on the way in while `recompute_total` summed the **unrounded** values: the
+header was the rounding of a sum and the lines a sum of roundings. Twelve lines
+of `1.5 × 10.01` stored a header of `180.18` against lines summing to `180.24` —
+six cents apart in one response, growing linearly with the line count, and
+carried onto the `PurchaseOrder` that `po_matching` runs its tolerance gate
+against. `requisition_service.line_total` now quantizes to 2 dp
+(`ROUND_HALF_UP`), so the figure summed is the figure stored, at every
+constructor (`POST`/`PATCH`, punch-out cart conversion, intake conversion).
+`PunchoutCartItem.line_total` uses the same convention so a cart's stored
+`cart_total` agrees with the requisition it converts into. Editing is allowed on **draft only**; a submitted/approved requisition is
 locked (so the approver can't have the spend changed under them).
 
 ## Convert-to-PO contract + idempotency
@@ -74,9 +93,10 @@ via `X-Entity-ID`; tenant scope via `X-Tenant-Slug` (the per-tenant DB session).
 | `POST /requisitions/{id}/approve` | `pending_approval → approved` (SoD enforced) | admin, ap_manager, cfo |
 | `POST /requisitions/{id}/reject` | `pending_approval → rejected` (reason) | admin, ap_manager, cfo |
 | `POST /requisitions/{id}/cancel` | `→ cancelled` | admin, ap_manager, ap_clerk |
+| `POST /requisitions/{id}/reopen` | `rejected → draft` (rework loop) | admin, ap_manager, ap_clerk |
 | `POST /requisitions/{id}/convert-to-po` | `approved → converted` + creates PO (idempotent) | admin, ap_manager |
 
-Literal route segments (`submit`, `approve`, `reject`, `cancel`,
+Literal route segments (`submit`, `approve`, `reject`, `cancel`, `reopen`,
 `convert-to-po`) hang off `/{id}` and so are unambiguous; the bare `/{id}`
 collection routes are declared after the list/create pair (mirrors the expenses
 router ordering rule).
@@ -107,7 +127,7 @@ delete / submit / cancel): `admin` / `ap_manager` / `ap_clerk`. Approve / reject
 `ap_manager`. Every route carries an auth dependency (gated by
 `tests/test_rbac.py`); every mutation writes a `dispatch_audit` row
 (`requisition.created` / `.updated` / `.deleted` / `.submitted` / `.approved` /
-`.rejected` / `.cancelled` / `.converted_to_po`).
+`.rejected` / `.cancelled` / `.reopened` / `.converted_to_po`).
 
 ## Frontend
 

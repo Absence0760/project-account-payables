@@ -866,7 +866,15 @@ async def get_cfo_analytics(
         ],
         reporting_currency=reporting_currency,
     )
-    vendor_spend = [{"vendor": e.vendor, "amount": e.amount} for e in vendor_entries[:50]]
+    # The FULL vendor list, not a pre-sliced top-50. `compute_supplier_concentration`
+    # derives its denominator from what it is handed and takes its own [:10]/[:50]
+    # cuts, so slicing here made `total_spend` the top-50 subtotal instead of the
+    # tenant's spend, inflated `top_10_share_pct` / `largest_vendor_share_pct`
+    # (and with them the `flagged` risk warning), and made `top_50_share_pct`
+    # exactly 100.0 by construction on any tenant with 50+ vendors — a metric
+    # that could not carry information. `assistant/tools/vendor_spend` already
+    # passes the full list and slices only for display; this now matches.
+    vendor_spend = [{"vendor": e.vendor, "amount": e.amount} for e in vendor_entries]
     concentration = compute_supplier_concentration(vendor_spend)
 
     # ----- Fraud-rate trend (last 6 months) — proxy: exception -----
@@ -915,11 +923,22 @@ async def get_cfo_analytics(
     fraud_trend = compute_fraud_rate_trend(fraud_rows)
 
     # ----- Rebate yield -----
+    # Windowed to the SAME trailing `period_days` as `total_spend`, which is the
+    # denominator it is divided by and the span `months_in_period` describes.
+    # Without the predicate the numerator was LIFETIME rebates: `yield_pct`
+    # became lifetime-over-30-days and `annualised_rebates` multiplied a
+    # three-year total by 12 — a tenant with $36k of rebates booked over 36
+    # months reported a 36% yield and a $432k annual run-rate off a 30-day
+    # window, against a truth of ~1% and ~$12k. `created_at` is when the rebate
+    # was booked; the `period` column is a display label, not a filter key.
     try:
         rebate_q = await db.execute(
             apply_entity_scope(
-                select(func.coalesce(func.sum(CardRebate.amount), 0)).join(
-                    VirtualCard, CardRebate.virtual_card_id == VirtualCard.id
+                select(func.coalesce(func.sum(CardRebate.amount), 0))
+                .join(VirtualCard, CardRebate.virtual_card_id == VirtualCard.id)
+                .where(
+                    CardRebate.created_at
+                    >= datetime.combine(period_start, datetime.min.time()).replace(tzinfo=UTC)
                 ),
                 VirtualCard,
                 entity_id,
@@ -1367,8 +1386,14 @@ async def drill_spend_concentration(
             for vendor, amount, currency, rep_amt, rep_cur in rows.all()
         ],
         reporting_currency=reporting_currency,
-    )[:limit]
+    )
+    # The denominator is the WHOLE period's spend, taken before `limit` is
+    # applied. Summing the sliced list made `total_spend` a per-page tally
+    # labelled as the whole-set total and rebased every `share_pct` onto the
+    # top-N subtotal — so the drill-through and the tile it drills into reported
+    # different shares for the same vendor, and `?limit=` silently changed both.
     total = sum((e.amount for e in vendor_entries), Decimal("0"))
+    vendor_entries = vendor_entries[:limit]
     return {
         "period_days": period_days,
         "rows": [

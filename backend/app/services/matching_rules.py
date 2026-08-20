@@ -35,6 +35,14 @@ So a vendor rule that only sets ``require_inspection`` still lets
 The resolver is pure (no DB, no I/O) and never raises: malformed config —
 non-dict rules, missing keys, ``vendor_id``/``gl_account`` ``None``, non-numeric
 tolerance — is silently ignored in favour of the next layer down.
+
+``tolerance_pct`` accepts a number **or its exact decimal string** ("1.0"), the
+representation this project already uses for money in JSONB and the one
+``po_matching.match_invoice_to_po`` already declares in its signature. That
+matters because falling through here does not fail closed: the walk ends at
+``DEFAULT_TOLERANCE_PCT`` (5.0), which is looser than any tolerance an org
+would configure, so an unparsed value silently WIDENS the gate it was meant to
+tighten.
 """
 
 from __future__ import annotations
@@ -81,17 +89,40 @@ def _coerce_inspection(rule: dict) -> bool | None:
 def _coerce_tolerance(rule: dict) -> Decimal | None:
     """Extract a numeric ``tolerance_pct`` as exact Decimal, or ``None`` if
     absent/non-numeric. Floats bridge through ``str`` so ``2.5`` lands as
-    ``Decimal('2.5')``, never the binary-float artefact ``Decimal(2.5)`` gives."""
+    ``Decimal('2.5')``, never the binary-float artefact ``Decimal(2.5)`` gives.
+
+    **A numeric STRING is accepted**, and that matters more here than anywhere
+    else in this module. These rules live in a hand-edited JSONB blob, where an
+    exact decimal string is the project's own preferred representation for a
+    money-ish number (`auto_approve_below` is stored that way in
+    `steps_config`), and `po_matching.match_invoice_to_po` already types its
+    `tolerance_pct` parameter `Decimal | float | int | str`. Rejecting `"1.0"`
+    made the resolver disagree with its only consumer — and, because `None`
+    means "fall through", the walk terminated at `DEFAULT_TOLERANCE_PCT` (5.0),
+    which is LOOSER than any tolerance an org would bother configuring. A
+    high-risk supplier tightened to 1% silently got 5%, so an invoice 4.5% over
+    its PO read `within_tolerance: True` → `matched` → no `po_mismatch`
+    exception → straight into the approval queue as clean. The resolver never
+    raises and never logs, so nothing surfaced it.
+
+    Bools are still rejected (a bool is an int subclass, and `true` would
+    resolve to a 1% tolerance nobody asked for), as are non-finite values —
+    both fall through to the next layer rather than becoming a rule.
+    """
     if "tolerance_pct" not in rule:
         return None
     value = rule["tolerance_pct"]
-    # Reject bools (a bool is an int subclass) and anything non-numeric.
-    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+    # Reject bools (a bool is an int subclass) and anything that isn't a number
+    # or a string spelling of one.
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal, str)):
         return None
     try:
-        return Decimal(str(value))
+        parsed = Decimal(str(value).strip())
     except (InvalidOperation, ValueError, TypeError):
         return None
+    # `Decimal("NaN")` / `Decimal("Infinity")` parse but can't be compared
+    # meaningfully against a variance — treat them as absent config.
+    return parsed if parsed.is_finite() else None
 
 
 def resolve_match_rule(

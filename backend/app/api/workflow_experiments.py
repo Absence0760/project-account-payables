@@ -63,6 +63,13 @@ router = APIRouter(prefix="/experiments", tags=["workflow-experiments"])
 _READ_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)
 _WRITE_ROLES = (ROLE_ADMIN,)
 
+#: Fields that DEFINE what a recorded assignment means. Once any invoice has
+#: been assigned, changing one of these re-labels measurements that were taken
+#: under the old value. `name` / `description` / `primary_metric` /
+#: `min_sample_per_variant` are readout knobs and stay editable — they change
+#: how the same data is presented, not what the data is.
+_MEASUREMENT_FIELDS = frozenset({"config_a", "config_b", "split_a_pct"})
+
 
 def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt is not None else None
@@ -231,6 +238,23 @@ async def update_experiment(
             detail="Only draft experiments can be edited.",
         )
     data = body.model_dump(exclude_unset=True)
+    # `draft` is not the same thing as "never ran": `stop` returns a running
+    # experiment to `draft` while KEEPING its recorded `assignments`, and those
+    # invoices are already carrying a variant config frozen onto their workflow
+    # snapshot. Rewriting the arms now would pool invoices that ran under the
+    # old config with invoices that ran under the new one and label the result
+    # "variant B" — a winner called on a config half the sample never saw. The
+    # per-invoice frozen snapshot (decisions §13) is exactly the invariant this
+    # protects, one level up.
+    if exp.assignments and (frozen := sorted(_MEASUREMENT_FIELDS & set(data))):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot change {', '.join(frozen)} — this experiment has already "
+                f"assigned {len(exp.assignments)} invoice(s), which are running under "
+                "the current arms. Conclude it and start a new experiment instead."
+            ),
+        )
     if "primary_metric" in data and data["primary_metric"] not in PRIMARY_METRICS:
         raise HTTPException(
             status_code=422,
@@ -375,6 +399,23 @@ async def delete_experiment(
             status_code=409,
             detail="Only a draft experiment can be deleted (stop/conclude a "
             "running one to preserve its measurement history).",
+        )
+    # ...and `stop` is the documented way to leave `running`, which puts the row
+    # back in `draft` WITH its assignments intact. So the status check above was
+    # bypassed by the very action whose message it cites: stop-then-delete
+    # destroyed the measurement history it exists to preserve. `assignments` is
+    # the only record of which invoice ran which arm — `GET /results` derives
+    # everything from it, the invoices' frozen snapshots outlive the row, and the
+    # `invoice.experiment_assigned` audit rows would be left naming an
+    # experiment id that no longer resolves.
+    if exp.assignments:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot delete an experiment that has assigned {len(exp.assignments)} "
+                "invoice(s) — its assignment record is the only evidence of which "
+                "invoice ran which arm. Conclude it instead."
+            ),
         )
     await dispatch_audit(
         db,

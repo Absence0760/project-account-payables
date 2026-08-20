@@ -449,9 +449,11 @@ def compute_working_capital_impact(
 class SupplierConcentration:
     """How much spend is concentrated in the top N vendors.
 
-    `flagged` is True iff any single vendor's share exceeds the
-    threshold (default 25%) — the canonical concentration-risk
-    warning sign."""
+    `flagged` is True iff the largest vendor's share REACHES OR
+    exceeds the threshold (default 25%) — the canonical
+    concentration-risk warning sign. The boundary is inclusive on
+    purpose: a risk flag that stays dark at exactly the limit an
+    org set is the wrong direction to be wrong in."""
 
     total_spend: Decimal
     top_10_share_pct: Decimal
@@ -468,6 +470,12 @@ def compute_supplier_concentration(
 ) -> SupplierConcentration:
     """`vendor_spend` is a list of `{"vendor": str, "amount":
     Decimal}` sorted descending by amount.
+
+    Pass the **whole** vendor set, never a pre-sliced top-N. `total` is derived
+    from the list handed in and the top-10 / top-50 cuts are taken here, so a
+    caller that slices first turns `total_spend` into that slice's subtotal,
+    inflates every share against it, and makes `top_50_share_pct` exactly
+    `100.0` by construction. Slice for display *after* this returns.
 
     Empty input returns a zeroed-out snapshot rather than raising
     — the dashboard renders "no data" rather than 500ing."""
