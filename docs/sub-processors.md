@@ -224,7 +224,65 @@ to the relevant processor at the moment of use. See root `CLAUDE.md` §
 
 ---
 
-## 16. Infrastructure — Amazon Web Services (AWS)
+## 16. Platform billing (`services/billing_adapters/`)
+
+Distinct from every other row here: this is **our own** billing of the customer,
+not the customer's AP money path. The data subject is the customer's billing
+admin, and we are the controller for it rather than a processor.
+
+| Adapter | Processor | Service | Data categories | Processing location | Active when configured | DPA / sub-processing status |
+|---------|-----------|---------|-----------------|---------------------|------------------------|------------------------------|
+| `mock` | — (in-process) | Deterministic test billing | none leaves process | Local | **Default — always** | n/a |
+| `stripe_billing` | **Stripe** | Subscriptions, plan changes, usage reporting, invoices/receipts, saved payment methods (SetupIntent) | USER (org name + admin contact email), billing amounts. **No** bank/tax/PAN data — card details are collected by Stripe directly via SetupIntent and we store only brand/last4/expiry metadata | US (Stripe global) | Configured only (`FEOH_BILLING_STRIPE_API_KEY`) | Covered by the Stripe DPA; confirm the sub-processing schedule |
+
+---
+
+## 17. Chat notifications — outbound (`services/chat_notification_adapters/`)
+
+Approval-event posts into the customer's own Slack or Teams workspace. The
+receiving workspace is the **customer's**, so this is closer to a
+customer-directed transfer than to a sub-processor of ours — but the message
+transits the vendor's servers, so it belongs in the register.
+
+| Adapter | Processor | Service | Data categories | Processing location | Active when configured | DPA / sub-processing status |
+|---------|-----------|---------|-----------------|---------------------|------------------------|------------------------------|
+| `mock` | — (in-process) | Test chat post | none leaves process | Local | **Default — always** | n/a |
+| `slack` | **Slack (Salesforce)** | Incoming-webhook post + interactive approval buttons | INV (invoice number), VEND (vendor name), amount + currency, status, deep link. PII-free by design — never bank, tax or contact data | US (customer's workspace region) | Configured only (per-org webhook URL) | Customer's own Slack agreement; our flow-down to be confirmed |
+| `teams` | **Microsoft (Teams)** | Incoming-webhook MessageCard + approval actions | same as Slack | Customer's tenant region | Configured only (per-org webhook URL) | Customer's own Microsoft agreement; our flow-down to be confirmed |
+
+> The payload shape is enforced in `chat_notification_adapters/base.py` and is
+> the same PII-free set the email/in-app templates use. A change that adds a
+> line-item description or a contact field moves this row from PII-free to
+> COMMS — update it in the same commit.
+
+---
+
+## 18. Vendor enrichment — firmographics (`services/enrichment_adapters/`)
+
+Advisory only: results are suggestions and never overwrite the `Vendor` row.
+
+| Adapter | Processor | Service | Data categories | Processing location | Active when configured | DPA / sub-processing status |
+|---------|-----------|---------|-----------------|---------------------|------------------------|------------------------------|
+| `mock` | — (in-process) | Deterministic synthetic firmographics | none leaves process | Local | **Default — always** | n/a |
+| `dun_bradstreet` | **Dun & Bradstreet** | D&B Direct+ match + firmographics (`plus.dnb.com`) | VEND (vendor legal name, country) sent as the match query; DUNS, address, industry, employee count returned | US / global | Configured only (per-org key; fails closed) | DPA — to be confirmed |
+| `clearbit` | **Clearbit (HubSpot)** | Company enrichment by domain (`company.clearbit.com`) | VEND (vendor domain) sent; firmographics returned | US | Configured only (per-org key; fails closed) | DPA — to be confirmed |
+
+> Raw `tax_id` is **not** transmitted — it is masked to `***<last4>` via
+> `vendor_consolidation.mask_tax_id` before it appears in the enrichment
+> result. Only the vendor's name/country (D&B) or domain (Clearbit) leaves.
+
+---
+
+## 19. Quality inspections — QMS (`services/qms_adapters/`)
+
+| Adapter | Processor | Service | Data categories | Processing location | Active when configured | DPA / sub-processing status |
+|---------|-----------|---------|-----------------|---------------------|------------------------|------------------------------|
+| `mock` | — (in-process) | Deterministic pass/fail/partial fixtures | none leaves process | Local | **Default — always** | n/a |
+| `generic` | **(customer's QMS)** | Pull inspection records into `quality_inspections` (4-way match) | Inspection numbers, PO references, pass/fail outcomes. Pull-only — nothing personal is sent outbound beyond the query window | Customer-hosted / vendor-dependent | Configured only (per-org `base_url` + `api_key`; fails closed) | Customer relationship; our flow-down to be confirmed |
+
+---
+
+## 20. Infrastructure — Amazon Web Services (AWS)
 
 AWS is the **infrastructure sub-processor** for any deployed environment. Unlike
 the adapter rows above, AWS is active in every real deployment by design (local
@@ -263,6 +321,13 @@ See `docs/production-deployment.md` for the full architecture and
   as DPAs are countersigned — they are not "no DPA", just "not yet recorded
   here". Drive each to a real status (`docs/founder-runbooks/soc2-vendor.md`
   § Step 6 vendor risk reviews is the natural place to do it).
+- **Not every outbound hop is a sub-processor.** Two customer-directed egress
+  paths deliberately have no row above, because the customer chooses the
+  destination and we are merely delivering: outbound Developer-API webhooks
+  (`/api/webhooks` — the tenant nominates the target URL) and scheduled report
+  delivery (`/api/analytics/scheduled-reports` — the tenant nominates the
+  recipient addresses). Both are worth naming in the DPA as controller-directed
+  transfers rather than omitting silently.
 - **Customer notice**: GDPR Art. 28(2) requires giving controllers advance
   notice and a chance to object before adding a new sub-processor. When a new
   active sub-processor is introduced to a shared/multi-tenant deployment, notify

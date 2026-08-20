@@ -177,6 +177,7 @@ Beyond the committed defaults, the deployed env sets at minimum:
 | `FEOH_PUBLIC_URL` / `FEOH_API_PUBLIC_URL` | `https://app.feohledger.com` / `https://api.feohledger.com` |
 | `FEOH_TENANT_URL_TEMPLATE` | `https://{slug}.app.feohledger.com` |
 | `FEOH_CORS_PRODUCTION_DOMAIN` | `app.feohledger.com` |
+| `FEOH_DEPLOYED_REGION` | the region this VM runs in (`us`/`eu`/`uk`/`ca`/`au`) — advisory only, but empty makes every tenant's data-residency `alignment` report `unknown` / `aligned: null` ("cannot attest") |
 | `FEOH_EMAIL_PROVIDER` / `FEOH_EMAIL_FROM` | `ses` / verified sender |
 | `FEOH_APPROVAL_SIGNING_KEY` + the other HMAC signing keys | real values (each key's presence is its feature's on-switch; leave unset = feature off) |
 

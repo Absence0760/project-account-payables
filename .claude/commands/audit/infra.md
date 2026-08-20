@@ -1,133 +1,61 @@
 ---
-description: Audit the Terraform stacks under infra/ — IAM least-privilege, encryption, drift hygiene, cost + DR guardrails
+description: Audit the Terraform under infra/ and the deploy pipeline — KMS, S3 Object Lock/WORM, OIDC least-privilege, state backend, and drift between the code and the deployment docs
 ---
 
-Audit the Terraform stacks at `infra/` against the architecture documented in `docs/architecture.md` and `docs/deployment.md`.
+Audit `infra/` and the AWS-facing CI against `infra/README.md`, `docs/production-deployment.md`, `docs/minimal-deployment.md` and `docs/soc2-readiness.md`.
 
 ## Goal
 
-The web app's blast radius runs through these stacks: a permissive OIDC trust policy makes the entire AWS account writable from a fork's PR; a public S3 bucket undoes the privacy story for the order data; a missing `lifecycle.ignore_changes` makes Terraform fight CI on every deploy. Catch the high-cost mistakes before `terraform apply` reaches a real account.
+Two distinct risks, and it matters which one a finding belongs to:
 
-## Files in scope (the whole `infra/` directory)
+1. **What is actually built.** `infra/` is deliberately scoped to the *security substrate* — a customer-managed KMS key and the S3 buckets (invoice files, the Object-Lock audit-log WORM sink, an access-log sink, backups). Compute (ECS/Fargate, ALB, RDS, CloudFront) is **not defined here yet**; `docs/production-deployment.md` describes the target, not the current state. Do not report an absent ECS module as a misconfiguration — report it as scope, and only flag it if a doc or workflow claims it exists.
+2. **What the pipeline can reach.** `.github/workflows/aws-deploy.yml` is a scaffold gated off by the `AWS_DEPLOY_ENABLED` repository variable, assuming a GitHub OIDC role. A permissive trust policy on that role is the one finding that makes everything else moot: it turns a fork's PR into account write access.
 
-All ten `.tf` files plus the encrypted tfvars + template:
+The audit's job is to keep those two honest against each other — code, docs, and workflow all describing the same reality.
 
-- `main.tf` — root module, providers
-- `variables.tf` — input variables, validation
-- `outputs.tf` — exported values (the source of the GitHub Actions repo vars)
-- `s3_cloudfront.tf` — static site hosting + distribution + ACM cert + Route 53 records
-- `api_gateway.tf` — backend API surface
-- `lambda.tf` — backend function + IAM role + log group (HTTP-only handler post-Phase-1; the EventBridge-dispatch branch that handled the old monthly PII sweep was removed at the Day 8 cutover)
-- `dynamodb.tf` — orders table with per-item TTL (the `ttl` attribute drives PII retention now; there is no longer a `pii_cleanup.tf` — the file was deleted at Phase 1)
-- `security_headers.tf` — CloudFront response-headers policy (CSP, HSTS, frame-options, etc.)
-- `github_oidc.tf` — GitHub OIDC federation + deploy role
-- `budget.tf` — AWS Budgets monthly cap + notifications
-- `terraform.tfvars.sops` — encrypted variable values
-- `terraform.tfvars.example` — committed template
+## Files in scope
+
+- `infra/main.tf` — provider, backend, `default_tags`
+- `infra/variables.tf` — inputs + validation
+- `infra/kms.tf` — the customer-managed key (rotation)
+- `infra/s3.tf` — invoice-files + audit-logs (versioning + Object Lock) + access-logs + backups
+- `infra/outputs.tf` — exports consumed downstream
+- `infra/terraform.tfvars.example` (committed template) and the **absence** of a committed `terraform.tfvars.sops` — see §7
+- `infra/.terraform.lock.hcl` — provider pinning
+- `.github/workflows/{aws-deploy,terraform}.yml`
+- `docs/production-deployment.md`, `docs/minimal-deployment.md`, `docs/backup-disaster-recovery.md`, `docs/soc2-readiness.md`
 
 ## What to check
 
-1. **State backend.** `infra/main.tf` declares `backend "s3"` with:
-   - `bucket = "my-project-tfstate"`, `key = "prod/terraform.tfstate"`, `region = "<aws-region>"`
-   - `encrypt = true`
-   - Locking via `dynamodb_table = "my-project-tfstate-lock"` (the legacy DynamoDB pattern — `bin/setup.sh` bootstraps both bucket and lock table together).
+1. **State backend.** `main.tf` declares an S3 backend with `encrypt = true` and locking (a DynamoDB lock table, or S3-native `use_lockfile = true` on Terraform ≥ 1.10 — recommend the latter as a Low/Note, not a finding). Confirm the state bucket has versioning + a Public Access Block; those pre-exist Terraform so verify via the bootstrap path, not the plan.
 
-   **Audit calls:**
-   - Bucket exists + has versioning + has Public Access Block — confirm via the bootstrap script (not via TF since the bucket pre-exists the state). Flag if `bin/setup.sh` is missing any of these.
-   - DynamoDB lock table exists and has `LockID` as its hash key.
-   - Consider recommending migration to **S3-native locking** (`use_lockfile = true`, Terraform ≥ 1.10) as a future cleanup — drops the DynamoDB resource entirely, saves a few cents/month, simpler bootstrap. Not a current finding; surface as a Low / Note unless the user asks for the upgrade.
+2. **KMS (`kms.tf`).** `enable_key_rotation = true` on the customer-managed key. The key policy grants only the principals that need it — no `Principal: "*"`, no account-root-plus-wildcard-action shape. Confirm the alias matches what `bin/sops-init.sh` and the estate secrets pattern expect (see the root `CLAUDE.md` § secrets — this repo's production secrets belong in the private `Absence0760/infra-secrets` repo, **not** in this public repo's history).
 
-2. **OIDC trust policy (`github_oidc.tf`).**
-   - `aws_iam_role.github_actions` has a trust policy (built by `data "aws_iam_policy_document" "github_actions_trust"`) with TWO `StringEquals` conditions:
-     - `token.actions.githubusercontent.com:aud = "sts.amazonaws.com"`
-     - `token.actions.githubusercontent.com:sub = "repo:${var.github_repo}:environment:production"`
-   - **This is environment-scoped, not branch-scoped.** Release-gated deploys run with `github.ref = refs/tags/<tag>`, so a `ref:refs/heads/main` or `ref:refs/tags/*` subject pattern would reject the actual deploy events. Workflows must declare `environment: production` to assume the role; the environment is created by `bin/setup.sh` and carries the deploy-related repo vars.
-   - If the `:sub` condition gets weakened to a wildcard (`StringLike` with `*`) or removed entirely, that's the canonical "fork PR can assume your role" footgun — Critical.
-   - `aws_iam_openid_connect_provider.github` has `client_id_list = ["sts.amazonaws.com"]` and a non-empty `thumbprint_list`. The provider is a one-per-account resource; if another project in the same AWS account already created it, this file imports it rather than duplicating (see the header comment in `github_oidc.tf`).
-   - The role's attached policies (`aws_iam_role_policy` / `aws_iam_role_policy_attachment`) are scoped per-resource: S3 actions limited to the project's bucket ARN (no `*`), Lambda actions limited to the project's function ARN, CloudFront limited to `CreateInvalidation` on the project distribution. **No `iam:*` / `sts:AssumeRole` / `secretsmanager:*` on the deploy role.**
+3. **S3 (`s3.tf`).** For every bucket: `aws_s3_bucket_public_access_block` with all four flags `true`; versioning enabled; SSE configured against the KMS key (not `AES256`, if the SOC 2 claim is a customer-managed key); no legacy `aws_s3_bucket_acl`; a bucket policy with a concrete `Principal` and a `SourceArn`/`SourceAccount` condition, never `"*"`; a lifecycle rule expiring non-current versions so version sprawl is not an unbounded bill.
 
-3. **S3 buckets (`s3_cloudfront.tf`).** Every bucket:
-   - `aws_s3_bucket_public_access_block` with all four flags `true`
-   - `aws_s3_bucket_versioning` enabled
-   - `aws_s3_bucket_server_side_encryption_configuration` set
-   - `aws_s3_bucket_policy` grants `Principal: { Service = "cloudfront.amazonaws.com" }` ONLY (not `Principal: "*"`) and conditions on `AWS:SourceArn`
-   - No legacy `aws_s3_bucket_acl` (modern API forbids ACLs)
-   - A lifecycle rule expiring non-current versions (cost guardrail)
+4. **Object Lock is the SOC 2 claim — verify it end to end.** The audit-log bucket carries Object Lock so shipped `audit_log` rows are immutable. Confirm: Object Lock is enabled **at bucket creation** (it cannot be added later), the retention mode and period match what `backend/docs/audit-log-shipping.md` and `docs/soc2-readiness.md` claim, and the retention window is at least as long as the retention policy in `backend/docs/retention.md` promises. Also confirm the *governance* vs *compliance* mode choice is deliberate and documented — governance can be bypassed with a privileged permission, which is a meaningful caveat in an auditor's eyes. A mismatch between the doc's claim and the resource is **High**: it is a control we assert to customers.
 
-4. **CloudFront distribution (`s3_cloudfront.tf` + `security_headers.tf`).** Every behavior:
-   - `viewer_protocol_policy = "redirect-to-https"` (default) or `"https-only"` (origin behaviors)
-   - `minimum_protocol_version = "TLSv1.2_2021"` or stricter
-   - `origin_access_control_id` on the S3 origin (not the legacy `origin_access_identity`)
-   - `response_headers_policy_id` attached to BOTH default and ordered behaviors
-   - The response-headers policy in `security_headers.tf` has `strict_transport_security` (max_age ≥ 1 year, `include_subdomains`, `preload`), `content_type_options` (nosniff), `referrer_policy` (`strict-origin-when-cross-origin`), and `frame_options = "DENY"`.
-   - **CSP is intentionally absent** — the file's header comment documents this as a deliberate choice ("the static site loads first-party JS plus Google Fonts and <CMS> images; defining a watertight CSP for that without breaking things is more work than it's worth at this scale"). **Don't flag CSP-absent as a finding** unless the project has started accepting user-generated content (e.g. comments on products) — at that point CSP becomes worth the work. If you find the rationale comment is gone but CSP is still missing, that's a Low.
-   - `price_class = "PriceClass_100"` or `PriceClass_200` (not `PriceClass_All` unless documented).
-   - SPA fallback `custom_error_response` rewrites 404/403 → 200 + `/404.html` (per `frontend/CLAUDE.md` § SPA fallback). Don't break this — `/shop/[slug]` depends on it.
+5. **OIDC least-privilege.** Wherever the deploy role is defined (in this repo or in the estate bootstrap it inherits), the trust policy must pin **both** `:aud = sts.amazonaws.com` and a specific `:sub` — repo **and** `environment:production`. A `StringLike` wildcard on `:sub`, or the condition removed, is **Critical**. The attached policies must be per-resource ARNs — no `iam:*`, no `sts:AssumeRole`, no `secretsmanager:*`, no `kms:*` on the whole account. Cross-check against `docs/production-deployment.md` § CI/CD.
 
-5. **Lambda function (`lambda.tf`).**
-   - `runtime = "nodejs22.x"` (matches the root `package.json` engines).
-   - `architectures = ["arm64"]` (Graviton is cheaper for the same code).
-   - `memory_size` + `timeout` reasonable.
-   - The execution role has only `AWSLambdaBasicExecutionRole` attached unless extra perms are documented.
-   - `aws_cloudwatch_log_group` for the Lambda has `retention_in_days` set (default infinite is a cost trap; recommend 30 or 90).
-   - If a `lifecycle.ignore_changes` exists, the list is **minimal** — anything beyond `filename`/`source_code_hash` is suspicious.
+6. **The deploy workflow's gates.** `aws-deploy.yml` must keep all three: the `AWS_DEPLOY_ENABLED` kill switch in a job-level `if` (repository variable, not environment-scoped — an environment var does not resolve in `if`), `environment: production` on **every** job that touches AWS, and a `concurrency` group with `cancel-in-progress: false`. An environment with no required reviewer defeats gate three, so say so if you cannot confirm the reviewer is configured. Every action pinned by SHA.
 
-6. **PII retention on the DynamoDB orders table (`dynamodb.tf`).**
-   - The table has a `ttl` block: `attribute_name = "ttl"`, `enabled = true`. Matches `docs/security.md § PII retention`.
-   - The `ttl` attribute on each row is set to `createdAt + 365 days` (Unix seconds) by `backend/src/orders-store.ts:buildPiiItem`. Verify the math hasn't drifted.
-   - The pre-Phase-1 `pii_cleanup.tf` (EventBridge schedule + Lambda permission) was deleted at the Day 8 cutover. If you see that file, the Phase 1 migration is incomplete — flag.
-   - Same for the Lambda's old scheduled-event dispatcher branch in `backend/src/lambda.ts` — the Phase 1 handler is HTTP-only.
+7. **Secrets discipline.** This repo is **public**. Confirm no decrypted `terraform.tfvars`, no `*.tfstate`, and no real credential is tracked; that `infra/.gitignore` covers `.terraform/`, `*.tfstate*`, `*.tfplan`; and that the tracked `terraform.tfvars.example` holds only placeholders. Per the root `CLAUDE.md`, committing an encrypted `*.sops` payload here is itself the mistake to avoid — flag a newly-tracked `*.sops` in this repo as **High** with the pointer to the private estate secrets repo.
 
-7. **API Gateway (`api_gateway.tf`).**
-   - HTTP API (not REST API — cheaper, no edge cases we need).
-   - CORS: `allow_origins` matches `frontend/.env.development`'s `PUBLIC_API_URL` host (the production frontend domain). No `*` wildcard. No localhost in prod.
-   - No `route_settings` with unbounded throttling — at least set `throttling_burst_limit` and `throttling_rate_limit` on `$default` to a sane value (per-second 100ish; per-IP rate limits already exist in `backend/src/rate-limit.ts`, but API Gateway is the global cap).
+8. **Cost + DR guardrails.** Budgets and alarms are deliberately **not** in the estate baseline — each project's own infra owns them. So: is there a budget/alarm resource here at all, and if not does a doc own that gap? Cross-check `docs/backup-disaster-recovery.md`'s stated RTO/RPO against what the buckets actually provide (versioning + lifecycle ≠ a tested restore), and flag any restore procedure the code cannot support.
 
-8. **KMS keys.** The SOPS key (`alias/my-project-sops` in `<aws-region>`) is provisioned out-of-band by `bin/sops-init.sh`, not by this Terraform module. Confirm no `.tf` file tries to manage it (would conflict). DynamoDB SSE-KMS, if added, uses the AWS-managed `aws/dynamodb` key, not the SOPS CMK (per `docs/orders-pii-split-plan.md`).
-
-9. **Secrets handling.**
-   - `infra/terraform.tfvars.sops`: encrypted (verify `sops:` block at the end + ENC[...] values). Plaintext sibling `infra/terraform.tfvars` is gitignored.
-   - Variables holding secrets marked `sensitive = true`.
-   - No `output` exposes a sensitive value without `sensitive = true`.
-
-10. **Provider + Terraform pinning.** Every stack has a `versions.tf` (or equivalent) with `required_version = ">= 1.13"` (or current) and pinned `required_providers`. Provider versions use `~> X.Y` or exact pins. `.terraform.lock.hcl` should be committed.
-
-11. **Budget guardrails (`budget.tf`).**
-   - `aws_budgets_budget` resource exists with a sane `monthly_budget_limit_usd` (the documented baseline is single-digit dollars/month given the traffic level).
-   - Three notifications minimum: `ACTUAL > 50 %`, `ACTUAL > 100 %`, `FORECASTED > 100 %`.
-   - `budget_alert_emails` non-empty (a budget with zero subscribers is a no-op).
-
-12. **Drift hygiene.** Read every `lifecycle { ignore_changes = [...] }` block — list each one and confirm:
-    - It's there because CI legitimately mutates the field.
-    - The list is minimal. Anything else is silent-drift-enabling.
-
-13. **Tagging.** Every resource that supports `tags` has them, and the tag set includes at minimum `project = "my-project"`, `managed_by = "terraform"`. Tag-based cost attribution depends on this.
-
-14. **No CloudFront / WAF gaps.** The site is static; the realistic attack is volumetric (denial-of-wallet via CloudFront egress + Lambda invocations from a botnet hitting `POST /orders`). Backend already has per-IP rate limiting; API Gateway throttling is the global cap. If a WAF is provisioned anywhere, confirm it's attached to the distribution; if not, flag as a Low (the project is small enough that WAF is over-engineering, but worth surfacing).
+9. **Drift between code and docs.** Read `infra/README.md`'s layout table against `ls infra/`. A file listed but absent (or present but undocumented) is a **Low** that predicts a bigger one — this is exactly how a stale claim about a control survives an audit.
 
 ## Report
 
-- **Critical** — OIDC trust policy too broad, public S3 bucket without OAC, plaintext secrets file committed, IAM role with `*` permissions.
-- **High** — bucket versioning off, missing PAB on a bucket, CloudFront serving non-HTTPS, Lambda runtime deprecated (nodejs18.x or older), role permissions overscoped (`*` instead of specific ARNs), `terraform.tfvars` not gitignored, no AWS budget.
-- **Medium** — log retention infinite, missing security headers, weak CSP, missing tags, drift-prone resource (no `ignore_changes` on a CI-mutated field), CloudFront `PriceClass_All` without justification.
-- **Low** — version pin loose (no `~>`), undocumented `lifecycle` choice, missing `sensitive = true` on a borderline value, no WAF.
+- **Critical** — an OIDC trust policy a fork can satisfy; a bucket reachable publicly; a deploy role with account-wide IAM/KMS/secrets actions; a real credential or decrypted tfvars tracked in this public repo.
+- **High** — a SOC 2 control we assert (Object Lock, KMS rotation, encryption at rest) that the code does not actually implement, or implements more weakly than the doc claims; a deploy job missing `environment: production`.
+- **Medium** — missing lifecycle/versioning guardrail, unpinned action or provider, no budget/alarm ownership anywhere.
+- **Low** — README drift, a recommended-but-optional modernisation (S3-native state locking), undocumented deliberate choice.
 
-For each finding: file:line + the concrete change to make. Don't apply fixes without explicit confirmation.
-
-## Useful starting points
-
-- `infra/README.md` — the apply-order walkthrough
-- `infra/CLAUDE.md` — per-workspace conventions
-- `infra/github_oidc.tf` — the highest blast-radius file
-- `infra/s3_cloudfront.tf` — site hosting + CDN
-- `infra/lambda.tf` + `infra/api_gateway.tf` — backend surface
-- `infra/security_headers.tf` — CSP + HSTS + friends
-- `docs/deployment.md` — what the architecture is supposed to look like; finding deltas against that doc IS a finding
-- `docs/security.md` — risk register
-- `docs/architecture.md` — system diagram
+For each finding: `file:line`, the resource, the exact attribute to change, and — where the finding is a doc/code mismatch — which side you judge to be right and why.
 
 ## Delegate to
 
-`general-purpose` agent with this file as the prompt body. The audit reads ~10 small `.tf` files plus checks 2–3 conditions per file, well within one agent's reading window.
+Use the `repo-security-auditor` agent: `"Audit the Terraform under infra/ plus the AWS deploy workflow — KMS, S3 Object Lock/WORM against the SOC 2 claim, OIDC trust-policy least-privilege, state backend, secrets discipline in a public repo, and drift between infra/README.md and the actual files."`
 
-Read-only. Findings only. Don't run `terraform plan` or `terraform apply` — those reach AWS.
+Read-only. Report findings; don't `terraform apply` anything.

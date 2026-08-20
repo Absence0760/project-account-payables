@@ -1,5 +1,5 @@
 ---
-description: Run one, several, or all of the bug-hunting persona auditors (.claude/agents/persona-*.md). Each persona adopts a real-world point of view (approver, CFO, accountant, USA/UK/ZA business, card/payment processor, supplier, fraudster) and writes findings to reviews/<persona>.md. Usage — `/persona cfo`, `/persona uk-business,card-processor`, or `/persona all` (default).
+description: Run one, several, or all of the bug-hunting persona auditors (.claude/agents/persona-*.md). Each persona adopts a real-world point of view — the AP domain roles (approver, CFO, accountant, supplier, fraudster), the integration counterparties (card/payment processor, integrator), the jurisdictions (USA/UK/ZA business, international user), and the cross-cutting users (new user, power user, admin, data subject, accessibility user) — and writes findings to reviews/<persona>.md. Usage — `/persona cfo`, `/persona uk-business,card-processor`, or `/persona all` (default).
 ---
 
 Dispatch the persona auditors named in the argument, in parallel, and summarize
@@ -15,10 +15,19 @@ what each filed.
 - if a slug doesn't match an existing `persona-*` agent, list the available
   personas and ask which was meant — don't guess.
 
-The current panel: `approver`, `cfo`, `accountant`, `usa-business`,
-`uk-business`, `south-africa-business`, `card-processor`, `payment-processor`,
-`supplier`, `fraudster`. (Discover the live list with
-`ls .claude/agents/persona-*.md` so this stays correct as personas are added.)
+The current panel, grouped by what each is positioned to catch:
+
+- **AP domain roles** — `approver`, `cfo`, `accountant`, `supplier`, `fraudster`.
+- **Integration counterparties** — `card-processor`, `payment-processor`,
+  `integrator`.
+- **Jurisdiction / locale** — `usa-business`, `uk-business`,
+  `south-africa-business`, `international-user`.
+- **Cross-cutting users** — `new-user`, `power-user`, `admin`, `data-subject`,
+  `accessibility-user`.
+
+(Discover the live list with `ls .claude/agents/persona-*.md` so this stays
+correct as personas are added. `all` is 17 agents in parallel — for a scoped
+run, name a group's slugs explicitly.)
 
 ## Procedure
 

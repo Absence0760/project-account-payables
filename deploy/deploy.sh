@@ -65,6 +65,20 @@ for var in POSTGRES_PASSWORD APP_DOMAIN API_DOMAIN ACME_EMAIL AWS_REGION \
 done
 [ -z "$MISSING" ] || die "required var(s) missing/empty in the sops env:$MISSING (contract: deploy/env.example)"
 
+# The app refuses to boot on a weak JWT key (config.py
+# _require_real_secret_key_in_deployed_envs: not the default, >= 32 chars).
+# The presence loop above passes any non-empty value, so a short key would
+# survive preflight and only surface ~5 minutes later as an `up -d --wait`
+# healthcheck timeout, after the frontend build, image build, and migrations
+# have all run. Mirror the boot rule here so it fails in the first second.
+SECRET_KEY_VALUE=$(grep -E '^FEOH_SECRET_KEY=' .env | tail -1 | cut -d= -f2- || true)
+case "$SECRET_KEY_VALUE" in
+change-me-in-production)
+	die "FEOH_SECRET_KEY is still the public default — generate one with 'openssl rand -hex 32'." ;;
+esac
+[ "${#SECRET_KEY_VALUE}" -ge 32 ] ||
+	die "FEOH_SECRET_KEY is ${#SECRET_KEY_VALUE} chars; the app refuses to boot below 32 (openssl rand -hex 32)."
+
 # Per-VM tenant host list for Caddy (gitignored) — seed from the example so
 # the Caddyfile's `import tenants.caddy` always resolves.
 [ -f tenants.caddy ] || cp tenants.caddy.example tenants.caddy
