@@ -61,7 +61,13 @@ export const NAV: NavEntry[] = [
 	// Sanctions-screening review queue (a sub-route of /vendors). Reuses the
 	// existing `vendors.col.screening` message ("Screening") as its label — a
 	// dedicated `nav.screening` key is a later i18n slice (Lane A owns locales).
-	{ kind: 'link', label: 'Screening', labelKey: 'vendors.col.screening', href: '/vendors/screening', icon: 'exceptions', roles: ['admin', 'ap_manager', 'cfo'] },
+	// ap_clerk included deliberately: both endpoints this page calls —
+	// `GET /api/vendors/screening/review-queue` and `.../screening-history` —
+	// are require_roles(ADMIN, AP_MANAGER, AP_CLERK, CFO). Every mutating
+	// control on it is gated further (re-screen on `auth.isManager`,
+	// block/unblock on the `vendor.block` permission), so it renders read-only
+	// for a clerk and hiding the row was a dead end, not a gate.
+	{ kind: 'link', label: 'Screening', labelKey: 'vendors.col.screening', href: '/vendors/screening', icon: 'exceptions', roles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 	// Vendor bank / tax change-approval queue (a second sub-route of /vendors).
 	// The dual-control BEC gate's only UI: a staged change never applies until
 	// a SECOND user signs it off, so without a nav row the queue — and with it
@@ -94,13 +100,20 @@ export const NAV: NavEntry[] = [
 		children: [
 			{ label: 'Contracts', labelKey: 'nav.contracts', href: '/contracts', roles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 			{ label: 'Expenses', labelKey: 'nav.expenses', href: '/expenses', roles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
-			{ label: 'Credit Memos', labelKey: 'nav.creditMemos', href: '/credit-memos', roles: ['admin', 'ap_manager', 'cfo'] },
+			// ap_clerk included deliberately: `GET /api/credit-memos` is
+			// require_roles(ADMIN, AP_MANAGER, AP_CLERK, CFO). Create / apply /
+			// void are admin | ap_manager and are gated on the page, so it
+			// renders read-only for a clerk.
+			{ label: 'Credit Memos', labelKey: 'nav.creditMemos', href: '/credit-memos', roles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 			// ap_clerk included deliberately: `api/discounts.py::_READ_ROLES`
 			// grants a clerk the dashboard, the offer list and the per-invoice ROI.
 			// The page renders read-only for them (accept/decline stay gated on
 			// admin/ap_manager/cfo), so hiding the link was a dead end, not a gate.
 			{ label: 'Discounts', labelKey: 'nav.discounts', href: '/discounts', roles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
-			{ label: 'Recurring', labelKey: 'nav.recurring', href: '/recurring', roles: ['admin', 'ap_manager', 'cfo'] },
+			// ap_clerk included deliberately: `api/recurring.py::_READ_ROLES`
+			// includes ROLE_AP_CLERK. Create and every row action are behind
+			// `auth.isManager` on the page, matching `_WRITE_ROLES`.
+			{ label: 'Recurring', labelKey: 'nav.recurring', href: '/recurring', roles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 			{ label: 'Statements', labelKey: 'nav.statements', href: '/vendor-statements', roles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 			{ label: 'Positive Pay', labelKey: 'nav.positivePay', href: '/positive-pay', roles: ['admin', 'ap_manager', 'cfo'] },
 			// Platform billing — the AP platform's OWN subscription / plan / usage
