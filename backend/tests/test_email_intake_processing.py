@@ -470,6 +470,71 @@ async def test_process_releases_dedup_claim_on_downstream_failure_so_retry_succe
     dispatch2.assert_awaited_once()
 
 
+async def test_post_commit_failure_keeps_the_dedup_claim_so_a_retry_cannot_duplicate():
+    """The mirror of the test above, and the line between them is the COMMIT.
+
+    Releasing the claim is correct only while nothing it guards is durable.
+    Once the tenant transaction has committed the invoices exist, so a failure
+    after that point — `dispatch_extraction`, which in `lambda` mode is a real
+    boto3 SQS round trip — must NOT release: the provider's redelivery would
+    then sail past the dedup check and create a SECOND payable per attachment
+    for the same email.
+
+    `api/payments.py`'s webhook already draws this line the right way (its
+    post-commit ERP sync sits outside the try that releases); this pins it for
+    email intake.
+    """
+    org = _org(token="aaa", enabled=True, slug="acme")
+    session = _FakeSession()
+    engine = MagicMock(dispose=AsyncMock())
+    inv_id = uuid.uuid4()
+    released: list[tuple[str, str]] = []
+
+    async def _record_release(provider, event_id):
+        released.append((provider, event_id))
+
+    async def _dispatch_boom(*_a, **_k):
+        raise RuntimeError("SQS unavailable")
+
+    email = InboundEmail(
+        to="invoices+aaa@ap.co",
+        sender="v@x.com",
+        message_id="<already-committed@vendor.example.com>",
+        attachments=[_pdf("bill.pdf")],
+    )
+
+    with (
+        patch.object(email_intake, "resolve_tenant_from_recipient", AsyncMock(return_value=org)),
+        patch.object(
+            email_intake, "_create_invoice_from_attachment", AsyncMock(return_value=inv_id)
+        ),
+        patch.object(email_intake, "is_event_already_processed", AsyncMock(return_value=False)),
+        patch.object(email_intake, "release_event_claim", _record_release),
+        patch(
+            "app.database._make_tenant_url",
+            MagicMock(return_value="postgresql+asyncpg://x/feoh_acme"),
+        ),
+        patch("sqlalchemy.ext.asyncio.create_async_engine", MagicMock(return_value=engine)),
+        patch("sqlalchemy.ext.asyncio.async_sessionmaker", MagicMock(return_value=lambda: session)),
+        patch("app.services.storage._get_client", MagicMock(return_value=MagicMock())),
+        patch("app.services.storage._ensure_bucket", MagicMock()),
+        patch("app.services.extraction_dispatch.dispatch_extraction", _dispatch_boom),
+    ):
+        result = await email_intake.process_inbound_email(MagicMock(), email)
+
+    # The invoices committed, so the message WAS processed…
+    session.commit.assert_awaited_once()
+    assert result.invoices_created == [inv_id]
+    # …the dispatch failure is swallowed (the route must not ask for a
+    # redelivery of work that already landed)…
+    assert result.error is None
+    # …and above all the claim still stands.
+    assert released == [], (
+        "the dedup claim was released after the tenant commit — the provider's "
+        "redelivery would create a duplicate invoice per attachment"
+    )
+
+
 # ---------------------------------------------------------------------------
 # _create_invoice_from_attachment
 # ---------------------------------------------------------------------------
