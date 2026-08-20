@@ -218,7 +218,7 @@ See [`docs/self-service-signup.md`](../../docs/self-service-signup.md) for the f
 | `POST` | `/api/invoices/upload`            | admin/manager/cfo | Multipart file upload. Creates invoice + optionally triggers extraction. |
 | `POST` | `/api/invoices/{id}/extract`      | admin/manager/cfo | Re-trigger extraction on `new` or `failed` invoices |
 | `POST` | `/api/invoices/{id}/reset-extraction` | admin/manager/cfo | Reset stuck `pending` extraction back to `new` |
-| `POST` | `/api/invoices/{id}/assign`       | admin/manager | Assign reviewer (body `{user_id}`) |
+| `POST` | `/api/invoices/{id}/assign`       | admin/manager | Assign reviewer (body `{user_id}`). The reviewer is resolved **inside the caller's own org and must be active** — `users` is control-plane, so an unscoped by-id lookup reached every tenant's accounts: a foreign user could be stamped onto `Invoice.assigned_to_id` and then emailed this tenant's invoice number, vendor and amount, while the invoice sat owned by an account that can never act on it. Wrong-org, deactivated and unknown are the same opaque 404 (no enumeration); a malformed `user_id` is a 422. Same guard as `POST /api/exceptions/{id}/assign` and `POST /api/auth/delegation`, and it accepts exactly what `GET /api/invoices/assignable-reviewers` offers. |
 | `POST` | `/api/invoices/{id}/approve`      | admin/manager/cfo | Approve. Body may include field corrections. |
 | `POST` | `/api/invoices/{id}/reject`       | admin/manager/cfo | Reject (body `{reason}`) |
 | `POST` | `/api/invoices/{id}/resubmit`     | admin/manager/cfo | Resubmit after rejection |

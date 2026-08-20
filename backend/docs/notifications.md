@@ -319,6 +319,16 @@ For each recipient, `notify_event`:
 Recipients are de-duplicated, so a user who is both uploader and AP manager
 gets one notification.
 
+**Recipient resolution is org-scoped at the data layer.** `users` is a
+control-plane table, so `_load_recipients` takes the dispatching
+`organization_id` and filters on it — an id belonging to another tenant simply
+does not resolve, and the recipient loop's documented "wrong org — skip
+silently" branch is therefore true rather than aspirational. This is the
+backstop for a caller that fails to scope its own lookup (the invoice-assign
+route did, and stamped a foreign tenant's user onto `Invoice.assigned_to_id`);
+without it, the `invoice_assigned` email — invoice number, vendor name and
+amount — would have been addressed outside the tenant it belongs to.
+
 ## Preferences
 
 User-global, stored on the control-plane `users.notification_prefs` JSONB:
