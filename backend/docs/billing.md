@@ -176,6 +176,31 @@ the webhook route is explicitly turned on — the documented local-first default
 requires a real Stripe key. Deployed envs must pair the switch with a real
 provider (`FEOH_BILLING_PROVIDER=stripe_billing`, key via sops).
 
+**The guard checks the registry, not just the string `"mock"`.** There are two
+ways to end up serving the fixture adapter here and the equality test only saw
+one. `get_billing_adapter` falls back to `mock` for **any unregistered name**
+(deliberately — a bad config must not 500 the billing read paths), and the
+route's own `provider != settings.billing_provider` check compares the URL
+segment to the setting, never to the registry. So
+`FEOH_BILLING_PROVIDER=stripe` — one plausible keystroke from the registered
+`stripe_billing`, and not the literal `"mock"` — booted clean, matched at the
+route, resolved to `MockBillingAdapter`, and turned
+`POST /api/billing/webhook/stripe` into an unauthenticated subscription-lifecycle
+mutator: an unsigned `{"id":…, "type":…, "subscription":…, "status":"canceled"}`
+body cancelled a live subscription (and with it every plan entitlement). The
+boot guard now refuses any `FEOH_BILLING_PROVIDER` that names no registered
+adapter, listing the registered ones — the same allowlist shape
+`FEOH_AUDIT_SHIPPING_PROVIDERS` already uses ten lines below it, and §26's
+boot-time allowlist applied to the other env-sourced provider name whose
+fallback reaches a public route (`../../docs/decisions.md` §26, §29).
+
+As a second line of defence the route itself checks that the name **resolved**
+to the adapter it asked for (`adapter.provider_name != provider` → opaque 204),
+so the signature-free parser is never reached with a real body even if a process
+somehow serves an unregistered name. Guards:
+`tests/test_billing_webhook.py::test_boot_refuses_unregistered_provider_with_webhook_enabled`
+and `::test_unregistered_provider_is_refused_at_the_route_too`.
+
 Pipeline (mirrors the PEPPOL-inbound webhook, honouring invariant #9):
 
 1. **Master switch** `FEOH_BILLING_WEBHOOK_ENABLED` — OFF in local dev (no outbound
@@ -596,7 +621,7 @@ dashboard and never sees the tab.
 | `FEOH_BILLING_STRIPE_WEBHOOK_SECRET` | (empty) | HMAC secret for Stripe webhook signature verification — no fallback; sops in deployed. |
 | `FEOH_BILLING_STRIPE_WEBHOOK_MAX_AGE_SECONDS` | `300` | Replay window on the `Stripe-Signature` `t=` timestamp (Stripe's own default tolerance, and the same ±5 min the Slack / Teams routes enforce). Rejects both too-old and too-far-future timestamps. Complements the `event_id` dedupe rather than duplicating it — see the webhook pipeline above. `<= 0` disables the age check, for an operator replaying an archived event. |
 | `FEOH_BILLING_STRIPE_API_BASE` | `https://api.stripe.com` | Stripe REST API base URL — overridable so a sandbox / test can point the adapter elsewhere. The adapter still fails closed without an API key regardless. |
-| `FEOH_BILLING_WEBHOOK_ENABLED` | `false` | Master switch for the inbound billing webhook route (`POST /api/billing/webhook/{provider}`). OFF in local dev (no outbound billing integration); flip ON in deployed envs. The route is HMAC-gated regardless; off → silent 204. **Boot guard**: refuses to start when this is `true` and `FEOH_BILLING_PROVIDER` is still `mock` (the mock adapter's `parse_webhook` does no signature verification) — pair with a real provider in deployed envs. |
+| `FEOH_BILLING_WEBHOOK_ENABLED` | `false` | Master switch for the inbound billing webhook route (`POST /api/billing/webhook/{provider}`). OFF in local dev (no outbound billing integration); flip ON in deployed envs. The route is HMAC-gated regardless; off → silent 204. **Boot guard**: refuses to start when this is `true` and `FEOH_BILLING_PROVIDER` is `mock` **or names no registered adapter** (the mock adapter's `parse_webhook` does no signature verification, and an unregistered name silently falls back to it) — pair with a real, correctly-spelled provider in deployed envs. |
 | `FEOH_BILLING_DUNNING_ENABLED` | `false` | Master switch for the dunning / past-due automation sweep. OFF by default; flip ON in deployed envs. The sweep only cancels subscriptions overdue past the grace window — it NEVER moves money. |
 | `FEOH_BILLING_DUNNING_INTERVAL_SECONDS` | `3600` | Dunning sweep tick interval. |
 | `FEOH_BILLING_DUNNING_GRACE_DAYS` | `14` | Grace window (days from the persisted `current_period_end`) a subscription may sit `past_due` before the dunning sweep cancels it. A row with no period end recorded (one created before `ensure_subscription` stamped one) is overdue by default. |
