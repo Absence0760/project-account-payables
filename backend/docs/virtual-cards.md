@@ -703,22 +703,40 @@ backend/app/api/cards.py              # API endpoints (generate, list, cancel, d
 | Supplier portal integration | Planned |
 | BIN sponsor graduation | Future (>$10M/month)
 
-## Charge amounts respect the ISO-4217 exponent
+## Minor units respect the ISO-4217 exponent — on both halves
 
-`api/cards._normalize_charge_amount` converts a webhook charge amount to major
-units. The unit differs by provider — Lithic reports MINOR units, Nium MAJOR —
-and the minor-unit leg now goes through
-`payment_adapters.base.minor_units_to_decimal`, the one exponent table in this
-codebase, instead of a flat `/ 100`.
+Two legs convert between major and minor units on the card rail, and they are
+**exact inverses only if they resolve the same exponent**. Both now go through
+`payment_adapters.base` — `to_minor_units` on the way out,
+`minor_units_to_decimal` on the way back — which owns the one exponent table in
+this codebase.
 
-A flat divide is right for the near-universal exponent of 2 and wrong in both
-directions elsewhere: ¥150000 is ¥150,000 (exponent 0), not ¥1,500, and 150000
-fils is 150 KWD (exponent 3), not 1,500. Lithic is USD-only in practice today,
-so nothing currently in play was mispriced — which is exactly why this was
-routed through the shared table *before* a card provider or a non-USD card
-currency arrives rather than after. The card's own `currency` is passed at the
-call site; the parameter stays optional (a webhook body need not carry one) and
-falls back to exponent 2, i.e. the previous behaviour.
+| Leg | Code | Direction |
+|---|---|---|
+| Card `spend_limit` | `card_adapters/lithic.create_card` | major → minor |
+| Webhook charge amount | `api/cards._normalize_charge_amount` | minor → major (Lithic only; Nium reports MAJOR units) |
+
+A flat `× 100` / `÷ 100` is right for the near-universal exponent of 2 and wrong
+in both directions elsewhere: ¥150000 is ¥150,000 (exponent 0), not ¥1,500, and
+150000 fils is 150 KWD (exponent 3), not 1,500.
+
+The read half was migrated first and the write half was not, which left the
+pair **asymmetric** — the state the base module explicitly warns is worse than
+the original symmetric error, because it becomes a live mispricing rather than
+a cancelling one. A ¥500,000 card went out with `spend_limit: 50000000`, i.e. a
+**¥50,000,000** authorization ceiling the vendor could actually spend, while the
+charge that came back was de-scaled correctly; `card_settlement_block` compares
+only our own `amount_limit`, so nothing downstream could see it. 5.000 KWD is
+the mirror image — 500 fils instead of 5,000, a 10x under-limit that declines a
+legitimate charge. `to_minor_units` also rounds `ROUND_HALF_UP` where the old
+expression truncated with `int()`.
+
+Lithic is USD-only in practice today, so nothing currently in play was
+mispriced — which is exactly why both halves were routed through the shared
+table *before* a card provider or a non-USD card currency arrives rather than
+after. On the read leg the card's own `currency` is passed at the call site; the
+parameter stays optional (a webhook body need not carry one) and falls back to
+exponent 2, i.e. the previous behaviour.
 
 `card_dashboard`'s `rebate_ytd` is also bounded at both ends now. `period` is a
 `YYYY-MM` string, so a bare `>= "{year}-01"` matched every FUTURE year too
