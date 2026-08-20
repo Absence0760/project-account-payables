@@ -814,6 +814,124 @@ none is a hypothesis.
       must expose the flag.
       **Trigger:** the next slice touching any of those four routes.
 
+### Surfaced by the round-14 procurement / analytics hunt
+
+Eight items the round-14 procurement and analytics agent traced to a file and
+line but did not fold into its own tranche (it landed seven fixes first). Each
+is a confirmed reading of the code, not a hypothesis.
+
+- [ ] **Adaptive approval stats mix currencies.**
+      `api/adaptive_workflows._decision_rows` pulls raw `Invoice.amount` and
+      feeds it to `compute_vendor_baseline` and
+      `recommend_auto_approve_threshold`. Three clean JPY 100,000 vendors can
+      push a recommendation to raise a USD `auto_approve_below` toward the
+      $25,000 cap. The equivalent bug in the `stat_anomaly` fraud rule was
+      already fixed (`test_stat_anomaly_currency_realdb.py`).
+      **Why not now:** the gate it feeds (`extraction.decide_auto_approve`)
+      compares raw `invoice.amount` against the same bare number, so converting
+      one side alone creates a new inconsistency.
+      **Durable fix:** decide what currency `auto_approve_below` is denominated
+      in (reporting currency, matching `cfo_approval_above` after round 14's
+      `payment_controls.cfo_approval_decision` fix), then convert both sides
+      through `currency_conversion.reporting_amount_at_locked_rate`.
+      **Trigger:** the next slice touching adaptive thresholds or auto-approve.
+
+- [ ] **`GET /api/purchase-orders/{id}` leaks cross-entity invoices.**
+      `api/purchase_orders.py:176` builds `linked_invoices` by joining on
+      `po_number` with no `apply_entity_scope` and no vendor check —
+      and `po_matching` explicitly designs around `po_number` NOT being unique
+      across subsidiaries. A US-scoped viewer sees UK invoices on the PO detail.
+      **Durable fix:** scope the join to the PO's own `entity_id` (shared-NULL
+      union, the `vendor_matching._candidate_query` pattern).
+      **Trigger:** the next slice touching purchase-order detail or 3-way match.
+
+- [ ] **`DELETE` on intake / requisition has no status guard.**
+      Deleting a converted requisition hits a RESTRICT FK → 500 rather than a
+      clean 409; deleting a converted requisition that produced a PO orphans the
+      PO. The intake convert route's dangling-link rebuild branch is currently
+      unreachable *only because* the FK restricts — a future
+      `ON DELETE SET NULL` would turn delete-then-reconvert into a double-spend.
+      **Durable fix:** refuse a delete once the record has been converted (409),
+      the way `DELETE /api/recurring/{id}` 409s once invoices are generated.
+      **Trigger:** the next slice touching either delete route, or any migration
+      changing those FK delete rules.
+
+- [ ] **`po_matching`'s 3-way leg counts cancelled goods receipts as delivered.**
+      The quantity sum ignores `GoodsReceipt.status`, so a cancelled receipt's
+      quantities still satisfy the match and over-receipt is never flagged.
+      **Durable fix:** filter the receipt join to non-cancelled statuses and add
+      an over-receipt warning.
+      **Trigger:** the next slice touching 3-way / 4-way matching.
+
+- [ ] **Intake `vendor_id` is the only cross-object link with no existence
+      validation.** An unknown UUID reaches an FK violation at flush (500
+      instead of 404), and a valid *cross-entity* vendor id rides into the
+      requisition and then the PO.
+      **Durable fix:** resolve the vendor through the same entity-scoped lookup
+      the sibling routes use before the insert.
+      **Trigger:** the next slice touching intake create/update.
+
+- [ ] **Four dashboard aggregates are each wrong in their own way.**
+      `total_paid` sums `Payment.amount` across currencies where its siblings
+      convert; `discount_capture` counts still-open discount windows as
+      "missed" (the only one of five consumers lacking the elapsed-window gate);
+      `touchless_rate` omits `sending_to_erp` / `failed` from both numerator and
+      denominator; `monthly_trend` uses a 180-day window against a
+      calendar-month `GROUP BY`, producing 7 buckets with a partial oldest one.
+      **Durable fix:** route the money ones through
+      `currency_conversion.payment_reporting_amount_sql` (as round 14 did for
+      the AML trailing-spend sum), reuse the elapsed-window predicate, and
+      anchor the trend window to calendar-month boundaries.
+      **Trigger:** the next slice touching the dashboard KPIs.
+
+- [ ] **`compute_fraud_rate_trend` reports "not computable" as the most
+      reassuring value.** A month with zero invoices and non-zero exceptions
+      returns `0.0` — a clean fraud rate — where `compute_cash_conversion_cycle`
+      returns `None` for the same shape. Same class as
+      [decisions §34](decisions.md)'s "cannot attest must never read as yes".
+      **Durable fix:** return `None` for an empty denominator and render the
+      insufficient-data state the adaptive feedback surface already has.
+      **Trigger:** the next slice touching analytics trends.
+
+- [ ] **`POST /analytics/forecast_variance` sums raw `Payment.amount` and 500s
+      on a malformed month.** No `payment_reporting_amount_sql`, so the variance
+      mixes currencies; and `month="2026-13"` escapes the guarded parse as a
+      bare `date()` `ValueError` → 500 on user input.
+      **Durable fix:** convert through the reporting-currency SQL helper and
+      return 422 on an unparseable month.
+      **Trigger:** the next slice touching forecast variance.
+
+### Unverified leads from the round-14 money-path hunt — need a confirming pass
+
+These are **hypotheses, not findings.** They were raised by exploratory
+subagents during the round-14 money-path hunt and the agent that owned the area
+did NOT confirm them itself, so none has a probe behind it and none should be
+cited as a known defect. They are recorded because the diagnosis is the
+expensive part and re-deriving the list costs more than checking it. The first
+step for each is *verify or discard*, not *fix*.
+
+- [ ] Card rebate base may be the **authorized** rather than the settled amount.
+- [ ] `card_settlement_block` may ignore `expires_at`.
+- [ ] Card and Positive Pay totals may mix currencies.
+- [ ] The fixed-width Positive Pay formatter may truncate low-order digits and
+      check numbers.
+- [ ] `discounts._org_currency` may diverge from `resolve_reporting_currency`
+      (round 14 fixed the frontend half of this class in
+      `utils/reportingCurrency.ts`).
+- [ ] The discount dashboard may sum `captured` / `missed` across currencies.
+- [ ] `discount_auto_trigger` may clobber a declined offer (unlocked read, one
+      commit) — note round 14 *did* fix this sweep's tier-aging bug, so the file
+      has moved since the lead was raised.
+- [ ] An unrecognised `screening.result` may fall through to `allow` — latent
+      either way, since no shipped adapter emits one.
+
+**Durable fix:** one scoped pass that probes each against the real DB, promotes
+whatever reproduces into a fix or a `known-issues.md` entry, and deletes the
+rest from this list.
+**Trigger:** the next money-path hunt, or the next slice touching cards,
+Positive Pay, or discounting.
+
+
 ## (a) Blocked on external credentials, accounts, or hardware
 
 None of these are startable from the editor. They are listed so they don't read
