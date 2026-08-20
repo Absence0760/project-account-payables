@@ -110,7 +110,16 @@ recipients are `VendorUser`s (tenant DB), not control-plane `User`s, and
   Vendors have no in-app center, so only the `email` channel is consulted.
 - Emails reuse the shared **PII-free** templates (`notification_templates.render`)
   — invoice number, vendor name, amount, currency, optional rejection reason.
-  Failures log the event type only, never the recipient address.
+  Failures log the event type + the exception **class name** only, never the
+  recipient address — and specifically **never `logger.exception`**, for the same
+  reason the control-plane leg documents above: the traceback carries the
+  exception's own text whatever the format string names, and
+  `smtplib.SMTPRecipientsRefused` stringifies as
+  `{'supplier@customer.com': (550, b'…')}`. The vendor send guard used
+  `logger.exception` and so wrote a supplier's address into the log sink on the
+  first refusal; `tests/test_vendor_notification_prefs.py::test_vendor_email_failure_never_logs_the_recipient_address`
+  pins it, mirroring the control-plane guard in
+  `tests/test_chat_notification_adapters.py`.
 
 The vendor-friendly API shape (`email_on_payment` / `email_on_rejection`) and
 the GET/PATCH portal endpoints are documented in
@@ -306,6 +315,31 @@ numbers. Failure logs record the event type only, never the webhook URL or the
 amount.
 
 ## Two effects per recipient, each preference-gated
+
+### `notify_event` returns what it actioned
+
+`notify_event` returns the **number of recipients something was actioned for** —
+an in-app row added, or an email queued. Most callers ignore it: for a status
+transition, "nobody had this event turned on" is a normal outcome, and the
+dispatcher must never raise into a transition either way.
+
+It exists for the two callers that write a **suppress-forever marker** right
+afterwards — `cash_flow_alerts`'s alerted-period marker and
+`contract_renewal`'s `renewal_alert_sent_at` (only
+`POST /api/contracts/{id}/renew` ever clears it). Both already skipped their
+marker when they resolved zero recipients, which covers one of the ways this
+reaches nobody. Every other silent exit — the master
+`FEOH_NOTIFICATIONS_ENABLED` switch off, an unknown event type, a template
+render that raised, the recipient load failing, every resolved recipient
+inactive or opted out — returned `None` indistinguishably from success, so the
+marker went down and the finance leaders were never warned about that projected
+shortfall period, or that contract's renewal, for the rest of its life. Nothing
+counted as a failure, so `GET /api/health/sweeps` stayed green too.
+
+A caller that suppresses future attempts must test the count. Guards:
+`tests/test_notify_event_outcome.py`,
+`tests/test_cash_flow_alerts.py::test_sweep_leaves_the_marker_unwritten_when_notifications_are_disabled`,
+`tests/test_contracts.py::test_renewal_alert_not_stamped_when_dispatch_reached_nobody`.
 
 For each recipient, `notify_event`:
 

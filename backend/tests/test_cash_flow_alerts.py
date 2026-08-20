@@ -390,6 +390,66 @@ async def test_notify_returns_false_when_org_has_no_finance_leaders():
     assert notify.await_count == 0
 
 
+async def test_notify_returns_false_when_dispatch_reached_nobody():
+    """Finance leaders EXIST but `notify_event` actioned none of them.
+
+    `notify_event` never raises: it returns early and silently when the master
+    `FEOH_NOTIFICATIONS_ENABLED` switch is off, when the recipient load fails,
+    and when every resolved leader has the event opted out. It used to return
+    nothing, so `_notify_tenant` reported success anyway, the caller wrote the
+    alerted-period marker — the permanent dedupe — and the CFO was never warned
+    about that projected shortfall period, with `alerts_sent` counting it as
+    delivered and `sweep_health` staying green.
+    """
+    fake_engine, fake_sessionmaker = _fake_engine_and_sessionmaker()
+    with (
+        patch.object(
+            cash_flow_alerts, "resolve_role_user_ids", AsyncMock(return_value=[uuid.uuid4()])
+        ),
+        # 0 = "nothing was actioned for anyone", whatever the reason.
+        patch.object(cash_flow_alerts, "notify_event", AsyncMock(return_value=0)) as notify,
+        patch.object(cash_flow_alerts, "create_async_engine", fake_engine),
+        patch.object(cash_flow_alerts, "async_sessionmaker", fake_sessionmaker),
+    ):
+        sent = await cash_flow_alerts._notify_tenant(
+            org_id=uuid.uuid4(), db_name="feoh_x", projection=_breaching()
+        )
+
+    assert notify.await_count == 1  # we did try
+    assert sent is False, (
+        "a dispatch that reached nobody reported success — the caller would "
+        "write the suppress-forever marker and the shortfall would go unannounced"
+    )
+
+
+async def test_sweep_leaves_the_marker_unwritten_when_notifications_are_disabled(monkeypatch):
+    """End-to-end shape of the same bug through the real `_notify_tenant`."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "notifications_enabled", False)
+    fake_engine, fake_sessionmaker = _fake_engine_and_sessionmaker()
+
+    with (
+        patch.object(
+            cash_flow_alerts, "control_session_factory", _fake_control_session([_org("a")])
+        ),
+        patch.object(cash_flow_alerts, "_project_tenant", AsyncMock(return_value=_breaching())),
+        patch.object(
+            cash_flow_alerts, "resolve_role_user_ids", AsyncMock(return_value=[uuid.uuid4()])
+        ),
+        patch.object(cash_flow_alerts, "create_async_engine", fake_engine),
+        patch.object(cash_flow_alerts, "async_sessionmaker", fake_sessionmaker),
+        patch.object(cash_flow_alerts, "_store_marker", AsyncMock()) as marker,
+    ):
+        result = await run_shortfall_alerts_once(today=_TODAY)
+
+    assert result.alerts_sent == 0
+    assert marker.await_count == 0, (
+        "the alerted-period marker was written even though notifications are "
+        "off — this org would never be warned about this shortfall period"
+    )
+
+
 # ---------------------------------------------------------------------------
 # _project_tenant — real Postgres
 # ---------------------------------------------------------------------------

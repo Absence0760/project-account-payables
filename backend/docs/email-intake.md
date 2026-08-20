@@ -292,10 +292,26 @@ that don't set `Message-ID` (or set an empty one) can't be deduped and are
 always processed — call out to your provider's docs to confirm they always
 populate it.
 
-If invoice creation fails partway through (e.g. a transient S3 or tenant-DB
-outage) the dedup claim is released so the *next* redelivery of that same
-`Message-ID` retries the work instead of the message being silently dropped
-for the dedup TTL window.
+If invoice creation fails partway through — **before the tenant transaction
+commits** (e.g. a transient S3 or tenant-DB outage) — the dedup claim is
+released so the *next* redelivery of that same `Message-ID` retries the work
+instead of the message being silently dropped for the dedup TTL window.
+
+**Past that commit the claim is kept, deliberately.** The invoices are durable
+by then, so a failure after it is not "this message went unprocessed" — and
+releasing would let the redelivery sail past the dedup check and create a
+SECOND payable per attachment for the same email. The realistic post-commit
+failure is `dispatch_extraction`, which under `FEOH_EXTRACTION_MODE=lambda` is
+a real boto3 SQS round trip; it is logged by exception class name and
+swallowed, and the route acks rather than asking for a redelivery.
+
+Nothing is lost by swallowing it: the invoice sits at `pending`, the
+`extraction_reaper` sweep ages it to `failed` with an `extraction_timeout`
+warning, and a reviewer re-runs extraction from the invoice. A duplicate
+payable, by contrast, is a money-path defect with no automatic remedy. This is
+the same line `api/payments.py`'s processor webhook draws — its post-commit ERP
+sync sits *outside* the `try` that releases the claim. Guarded by
+`tests/test_email_intake_processing.py::test_post_commit_failure_keeps_the_dedup_claim_so_a_retry_cannot_duplicate`.
 
 ## Troubleshooting
 

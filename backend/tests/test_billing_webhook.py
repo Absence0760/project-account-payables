@@ -641,6 +641,71 @@ async def test_boot_refuses_mock_provider_with_webhook_enabled(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_boot_refuses_unregistered_provider_with_webhook_enabled(monkeypatch):
+    """The typo case the `== "mock"` check could never see.
+
+    `get_billing_adapter` falls back to `mock` for ANY unregistered name, and
+    `MockBillingAdapter.parse_webhook` verifies no signature. The registered
+    Stripe adapter is named `stripe_billing`; `FEOH_BILLING_PROVIDER=stripe`
+    is one plausible keystroke away, is not `"mock"`, and matches the route's
+    own `provider != settings.billing_provider` guard — so it booted clean and
+    served `POST /api/billing/webhook/stripe` as an unauthenticated
+    subscription-lifecycle mutator. Same allowlist shape the audit-shipping
+    guard already uses (`docs/decisions.md` §26, §29).
+    """
+    from app.main import lifespan
+
+    monkeypatch.setattr(settings, "debug", False)
+    monkeypatch.setattr(settings, "secret_key", "a-real-non-default-secret-value")
+    monkeypatch.setattr(settings, "billing_webhook_enabled", True)
+    monkeypatch.setattr(settings, "billing_provider", "stripe")  # registered: stripe_billing
+    monkeypatch.setattr(settings, "extraction_reaper_enabled", False)
+
+    with pytest.raises(RuntimeError, match="no registered adapter"):
+        async with lifespan(object()):  # pragma: no cover - never enters body
+            pass
+
+
+@pytest.mark.asyncio
+async def test_unregistered_provider_is_refused_at_the_route_too(realdb, monkeypatch):
+    """Second line of defence: even if a process somehow serves an unregistered
+    name, the route refuses once the resolved adapter disagrees with it — so the
+    signature-free mock parser is never reached with a real request body."""
+    monkeypatch.setattr(settings, "billing_webhook_enabled", True)
+    monkeypatch.setattr(settings, "billing_provider", "stripe")  # registered: stripe_billing
+
+    org_id = realdb.info("a").org_id
+    try:
+        sub_id = await _seed_sub(
+            realdb, org_id=org_id, status="active", external_id="sub_forge_target"
+        )
+        # An UNSIGNED body in the mock adapter's dev-envelope shape: exactly
+        # what the fallback would have happily parsed and applied.
+        body = json.dumps(
+            {
+                "id": "evt_forged",
+                "type": "customer.subscription.updated",
+                "subscription": "sub_forge_target",
+                "status": "canceled",
+            }
+        ).encode()
+        async with _webhook_client(realdb) as c:
+            resp = await c.post("/api/billing/webhook/stripe", content=body)
+        assert resp.status_code == 204  # opaque, like every other rejection
+
+        async with realdb.control_sessionmaker()() as s:
+            sub = (
+                await s.execute(select(Subscription).where(Subscription.id == sub_id))
+            ).scalar_one()
+            assert sub.status == "active", (
+                "an unsigned body mutated the subscription — the unregistered "
+                "provider name resolved to the signature-free mock adapter"
+            )
+    finally:
+        await _cleanup(realdb, org_id)
+
+
+@pytest.mark.asyncio
 async def test_boot_allows_mock_provider_with_webhook_disabled(monkeypatch):
     """The documented local-first default: mock provider + the webhook route OFF
     (both defaults) must never trip the guard — a fresh `pnpm dev` clone boots fine."""

@@ -197,7 +197,18 @@ async def _send_vendor_email_best_effort(
                 brand=brand,
             )
         )
-    except Exception:  # noqa: BLE001 — PII rule: never log the address
-        logger.exception(
-            "notify_vendor_of_invoice_event: email send failed for event_type=%s", event_type
+    except Exception as exc:  # noqa: BLE001
+        # Event type + exception CLASS only — deliberately NOT `logger.exception`
+        # / `exc_info`, which append the traceback (and with it the exception's
+        # own text) regardless of what the format string names. An SMTP failure
+        # carries the addresses it refused: `smtplib.SMTPRecipientsRefused`
+        # stringifies as `{'supplier@customer.com': (550, b'…')}`, so this call
+        # site used to write a supplier's email address into the log sink — the
+        # one thing this module's docstring promises never to log. Same posture
+        # as `notification_dispatch._send_email_best_effort`, which fixed the
+        # identical exposure on the control-plane side.
+        logger.warning(
+            "notify_vendor_of_invoice_event: email send failed for event_type=%s err=%s",
+            event_type,
+            type(exc).__name__,
         )

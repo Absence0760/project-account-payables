@@ -1,5 +1,6 @@
 """Audit dispatch — routes audit log writes to local in-process or SQS/Lambda."""
 
+import asyncio
 import json
 import logging
 import uuid
@@ -27,7 +28,10 @@ async def dispatch_audit(
     """Write audit log locally or dispatch to SQS for Lambda processing."""
     if settings.audit_mode == "lambda":
         tenant_db_name = await _resolve_tenant_db_name(organization_id)
-        _send_to_sqs(
+        # Off the event loop — see `_send_to_sqs`. Every audited mutation in the
+        # app reaches this line in lambda mode.
+        await asyncio.to_thread(
+            _send_to_sqs,
             tenant_db_name=tenant_db_name,
             correlation_id=correlation_id,
             organization_id=organization_id,
@@ -101,7 +105,11 @@ async def dispatch_auth_audit(
     try:
         if settings.audit_mode == "lambda":
             tenant_db_name = await _resolve_tenant_db_name(organization_id)
-            _send_to_sqs(
+            # Off the event loop — see `_send_to_sqs`. This is the LOGIN path
+            # (`api/auth.py` writes an auth audit row on every attempt), the
+            # most concurrent surface in the app.
+            await asyncio.to_thread(
+                _send_to_sqs,
                 tenant_db_name=tenant_db_name,
                 correlation_id=correlation_id,
                 organization_id=organization_id,
@@ -157,7 +165,16 @@ def _send_to_sqs(
     entity_id: uuid.UUID,
     details: dict | None,
 ) -> None:
-    """Put audit event on SQS for Lambda to pick up."""
+    """Put audit event on SQS for Lambda to pick up.
+
+    **Blocking — never call this from a coroutine directly.** boto3 is
+    synchronous: constructing the client resolves the credential chain (which
+    can reach the instance-metadata endpoint) and ``send_message`` is a full
+    HTTPS round trip. Both callers above hand it to ``asyncio.to_thread`` so it
+    never occupies the event loop, matching ``services/storage``'s
+    ``_put_object`` and the audit-shipping adapters. Guarded by
+    ``tests/test_sqs_dispatch_nonblocking.py``.
+    """
     client = boto3.client(
         "sqs",
         endpoint_url=settings.aws_endpoint_url or settings.s3_endpoint_url,

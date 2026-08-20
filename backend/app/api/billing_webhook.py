@@ -91,14 +91,30 @@ async def billing_webhook(
     # 2. Build the named adapter (the dispatcher injects the process-level keys
     #    from config; the per-org override doesn't apply here — we haven't
     #    resolved the org yet, the event carries the provider subscription id).
-    #    An unknown provider name falls back to `mock`, whose `parse_webhook`
-    #    expects a dev JSON envelope; a real Stripe POST to a `mock`-configured
-    #    deployment simply fails to parse → 204. Verify the name matches the
-    #    configured provider so we don't quietly accept a different one.
+    #    Verify the name matches the configured provider so we don't quietly
+    #    accept a different one.
     if provider != settings.billing_provider:
         logger.warning("billing webhook rejected: provider mismatch")
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     adapter = get_billing_adapter(provider)
+    # …and verify the name actually RESOLVED to that adapter. The dispatcher
+    # falls back to `mock` for any unregistered name (local-first: a bad config
+    # must not 500 the billing read paths), and `MockBillingAdapter.parse_webhook`
+    # verifies no signature — it json.loads the body. So a typo'd
+    # FEOH_BILLING_PROVIDER (the registered name is `stripe_billing`, not
+    # `stripe`) satisfied the equality check above and turned this public route
+    # into an unauthenticated subscription-lifecycle mutator. The boot guard in
+    # `main.lifespan` refuses that config outright; this is the second line of
+    # defence, and it also covers a per-process registry that changed under a
+    # long-lived deployment. See `docs/decisions.md` §29.
+    if adapter.provider_name != provider:
+        logger.warning(
+            "billing webhook rejected: provider %r resolved to adapter %r — "
+            "an unregistered name falls back to the signature-free mock adapter",
+            provider,
+            adapter.provider_name,
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # 3. Verify the HMAC + normalize (inside the adapter). None = bad signature /
     #    unparseable / missing id|type → silent 204 (no enumeration).

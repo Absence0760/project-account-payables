@@ -208,7 +208,7 @@ async def notify_event(
     rendered: RenderedNotification | None = None,
     actor_id: uuid.UUID | None = None,
     entity_type: str = "invoice",
-) -> None:
+) -> int:
     """Notify each recipient of `event_type`, gated by their preferences.
 
     Pass either ``invoice_ctx`` (the dispatcher renders the invoice template)
@@ -222,13 +222,28 @@ async def notify_event(
     chat legs are queued to run AFTER that commit (see the module docstring), so
     no third party's latency is charged to an open transaction holding row
     locks.
+
+    **Returns the number of recipients something was actioned for** — an in-app
+    row added, or an email queued. Most callers ignore it: for a status
+    transition, "nobody had this event turned on" is a normal outcome. It exists
+    for the callers that write a **suppress-forever marker** afterwards
+    (``cash_flow_alerts``'s alerted-period marker, ``contract_renewal``'s
+    ``renewal_alert_sent_at``). Both already skip the marker when they resolve
+    zero recipients, but that only covers one of the ways this can silently
+    reach nobody: the master switch being off, an unknown event type, a template
+    render that raised, the recipient load failing, or every resolved recipient
+    being inactive / opted out. Each of those returned ``None`` indistinguishably
+    from success, so the caller stamped its marker and the finance leaders were
+    never told about that period's projected cash shortfall — or that contract's
+    renewal — for the rest of its life, with nothing counted as a failure. A
+    number the caller can test is the only honest signal.
     """
     if not settings.notifications_enabled:
-        return
+        return 0
 
     if event_type not in NOTIFICATION_EVENT_TYPES:
         logger.warning("notify_event: unknown event_type=%s — skipping", event_type)
-        return
+        return 0
 
     if rendered is None:
         if invoice_ctx is None:
@@ -238,13 +253,13 @@ async def notify_event(
             rendered = render(event_type, invoice_ctx)
         except Exception:  # noqa: BLE001 — never let a template bug break a transition
             logger.exception("notify_event: template render failed for event_type=%s", event_type)
-            return
+            return 0
 
     try:
         users_by_id = await _load_recipients(recipient_user_ids, organization_id)
     except Exception:  # noqa: BLE001
         logger.exception("notify_event: failed loading recipients for event_type=%s", event_type)
-        return
+        return 0
 
     from app.models.notification import EVENT_INVOICE_ASSIGNED
 
@@ -253,6 +268,8 @@ async def notify_event(
     # caller's commit); the outbound sends are collected and handed to
     # `post_commit` instead of awaited here.
     email_targets: list[tuple[uuid.UUID, str, str | None]] = []
+    #: Recipients something was actioned for — see this function's docstring.
+    notified = 0
 
     # De-dup recipients so a user who is both uploader and AP-manager gets one.
     for recipient_id in {uid for uid in recipient_user_ids if uid is not None}:
@@ -282,9 +299,13 @@ async def notify_event(
         if channels["email"] and getattr(user, "email", None):
             email_targets.append((recipient_id, user.email, getattr(user, "locale", None)))
 
+        if channels["in_app"] or (channels["email"] and getattr(user, "email", None)):
+            notified += 1
+
     wants_chat = entity_type == "invoice" and invoice_ctx is not None
     if not email_targets and not wants_chat:
-        return
+        # In-app rows may still have been added above — `notified` counts them.
+        return notified
 
     final_rendered = rendered
 
@@ -370,6 +391,7 @@ async def notify_event(
             )
 
     enqueue_post_commit(db, _outbound, name=f"notify-{event_type}")
+    return notified
 
 
 async def _send_email_best_effort(

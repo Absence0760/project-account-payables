@@ -910,6 +910,18 @@ Extraction, ERP push, and audit logging support two execution modes:
 
 Files: `*_dispatch.py` (router), `*_lambda.py` (Lambda handler).
 
+**In `lambda` mode the SQS send is offloaded, not inlined.** boto3 is
+synchronous: building the client resolves the credential chain (which can reach
+IMDS) and `send_message` is a full HTTPS round trip. All three `_send_to_sqs`
+helpers are reached from an `async def` — `dispatch_extraction` from the invoice
+upload route AND the public email-intake webhook, `dispatch_erp` from the ERP
+send path, `dispatch_audit` / `dispatch_auth_audit` from every audited mutation
+including **every login attempt** — so each call site hands it to
+`asyncio.to_thread`, the same arrangement `services/storage` and the
+audit-shipping adapters use. `tests/test_sqs_dispatch_nonblocking.py` is the
+drift guard (a thread-identity assertion per entry point plus an AST scan that
+fails on a bare `_send_to_sqs(...)` inside any coroutine in those modules).
+
 ### The event-loop rule (read before adding a dispatcher)
 
 `app/database.py`'s `control_engine` and `_tenant_engines` belong to the event

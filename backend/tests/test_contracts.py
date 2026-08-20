@@ -720,6 +720,61 @@ async def test_renewal_alert_sweep(realdb):
     assert after == before
 
 
+async def test_renewal_alert_not_stamped_when_dispatch_reached_nobody(realdb, monkeypatch):
+    """`renewal_alert_sent_at` is the suppress-forever marker for a contract's
+    whole remaining term — only `POST /api/contracts/{id}/renew` clears it — so
+    it must record a warning that actually went out.
+
+    `notify_event` never raises; with `FEOH_NOTIFICATIONS_ENABLED` off it
+    returns having done nothing, and the sweep stamped the marker anyway and
+    counted an `alerts_sent`. The AP manager was then never told this contract
+    was coming up for renewal, and no failure was recorded anywhere.
+    """
+    from datetime import date, timedelta
+
+    from app.config import settings as app_settings
+    from app.models.notification import Notification
+    from app.services.contract_renewal import notify_renewals_once
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id)
+    today = date.today()
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        cid = (
+            await _create_contract(
+                c,
+                vendor_id,
+                contract_number="MUTED-001",
+                end_date=(today + timedelta(days=10)).isoformat(),
+            )
+        ).json()["id"]
+        await c.post(f"/api/contracts/{cid}/activate")
+
+    monkeypatch.setattr(app_settings, "notifications_enabled", False)
+    result = await notify_renewals_once(today=today)
+
+    async with mk() as s:
+        contract = (
+            await s.execute(select(Contract).where(Contract.id == uuid.UUID(cid)))
+        ).scalar_one()
+        notes = (
+            await s.execute(
+                select(func.count())
+                .select_from(Notification)
+                .where(Notification.entity_id == uuid.UUID(cid))
+            )
+        ).scalar()
+
+    assert notes == 0  # nothing was actually sent…
+    assert contract.renewal_alert_sent_at is None, (
+        "the alert marker was stamped for a warning nobody received — the "
+        "renewal would never be raised again for this term"
+    )
+    assert result.alerts_sent == 0
+
+
 async def test_renewal_sweep_expires_overdue_contracts(realdb):
     """Issue #186 — ``expired`` was never set at runtime. The renewal sweep's
     end-of-term expiry pass must transition an over-term ``active`` contract

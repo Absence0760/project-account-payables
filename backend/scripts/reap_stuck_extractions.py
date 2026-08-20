@@ -65,6 +65,7 @@ async def main(args: argparse.Namespace) -> None:
     print(
         f"Swept {result.tenants_scanned} tenant(s); "
         f"reaped {result.invoices_reaped} stuck invoice(s); "
+        f"{result.invoice_failures} invoice failure(s); "
         f"{result.failures} sweep failure(s)."
     )
 

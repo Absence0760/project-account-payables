@@ -34,7 +34,18 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#321](https://github.com/Absence0760/project-account-payables/issues/321)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-08-19 against round 13 — a four-agent sweep of the
+**Last reconciled:** 2026-08-20 against a round-14 sweep of the background
+sweeps, the async/dispatch surfaces, the adapter registries and the notification
+paths. Six defects were fixed and committed with regression tests (the vendor
+email guard leaking a supplier address, the SQS dispatch blocking the event loop
+in lambda mode, the email-intake dedup claim released after the invoices had
+committed, the billing webhook resolving an unregistered provider name to the
+signature-free mock adapter, the reaper/escalation sweeps starving their tail on
+one bad row, and two alert sweeps writing a suppress-forever marker for an alert
+nobody received). Nine further findings were verified in the source but left
+unfixed — they are the new subsection immediately above § (a).
+
+**Previously reconciled:** 2026-08-19 against round 13 — a four-agent sweep of the
 **codeable** half of this file (the `(a)` credential-blocked and `(b)` operator
 items have no code to write, and four `(c)` items are gated on a product call or
 a third-party artifact). It closed both consistency-debt items, both transitional
@@ -546,6 +557,159 @@ own tranches.
       branch pays for it, then keep the two branches structurally identical.
       **Trigger:** the next change to the login handler or to
       `dispatch_auth_audit`'s call discipline.
+### Surfaced by the round-14 sweep of the background sweeps and adapter registries
+
+Verified in the source and left unfixed: each is a distinct area with its own
+blast radius, and folding them into the six landed fixes would make none of them
+attributable. Every one is a confirmed reading of the code, not a hypothesis.
+
+- [ ] **`payment_reconciler` holds a `FOR UPDATE` across a processor HTTP call,
+      and never releases it on its two skip paths.**
+      `payment_reconciler.py` takes `db.refresh(payment, with_for_update=True)`
+      and then calls `_settle_from_poll` → `record_settlement` →
+      `await adapter.fetch_settlement(...)` — a live rail round trip — before the
+      commit that releases the lock. `payment_webhook` takes the same row lock, so
+      a real webhook for that payment blocks for the whole fetch. Separately, both
+      re-check branches `continue` **without** `await db.rollback()`, so the lock
+      survives into every subsequent `await adapter.get_payment_status(...)` in
+      that tenant; `approval_escalation` and `extraction_reaper` both roll back on
+      the identical skip path and say why in a comment.
+      **Durable fix:** `await db.rollback()` on both skip paths, and move the
+      settlement fetch outside the lock (resolve the figure, then re-lock to write
+      it) — the shape `payment_erp_sync` uses when it resolves the ERP adapter
+      *before* taking the invoice lock.
+      **Also:** `ReconcileResult` has only `failures` ("tenants we couldn't
+      reach"), incremented for a whole-tenant abort. A per-payment
+      `adapter.get_payment_status` raise is caught, logged at INFO, and counted
+      nowhere — a processor API that is 100% down yields `polled=N, resolved=0,
+      failures=0`, which `sweep_health` reports as a healthy tick. Add a
+      `payment_failures` counter (the `*_failures` suffix is what
+      `sweep_health.failure_count` sums) and raise that log to WARNING.
+      **Trigger:** the next slice touching the reconciler or the settlement path.
+
+- [ ] **`discount_auto_trigger` and `contract_renewal` still run one transaction
+      per tenant.** Both load candidates unbounded, mutate in a loop, and commit
+      once at the end, so a single bad row discards the whole tick's work — in
+      `contract_renewal`'s case across two independent passes (a failure in the
+      expiry pass rolls back every `renewal_alert_sent_at` the alert pass just
+      stamped, and vice versa). If the failure is deterministic that tenant never
+      makes progress again.
+      **Durable fix:** commit-per-item with a per-item `try` / `rollback` and a
+      `*_failures` counter — the shape `vendor_rescreen`, `recurring_invoices`,
+      `scheduled_reports` and (as of round 14) `extraction_reaper` /
+      `approval_escalation` all use, now written up in
+      `backend/docs/background-sweeps.md` § Locking.
+      **Trigger:** the next slice touching either sweep.
+
+- [ ] **`vendor_rescreen` and `recurring_invoices` skip step 2 of the documented
+      two-phase shape.** Both call `db.get(Model, id)` with **no**
+      `with_for_update=True` and never re-check the predicate the id query used.
+      `background-sweeps.md` § Locking calls that re-check "correctness, not an
+      optimisation". With replicas, two `vendor_rescreen` sweeps both bill a
+      third-party sanctions call and write two append-only `SanctionsCheck` rows
+      for one screening event; and `uq_invoice_recurring_period` does not cover
+      `recurring_invoices`' failure mode — replica A can advance `next_run_on` to
+      P+1 and commit while replica B, reading fresh, generates an invoice for a
+      period that is not due yet.
+      **Durable fix:** `with_for_update=True` plus the predicate re-check
+      (`status == active`, `next_run_on <= today`, the staleness cutoff) under the
+      lock.
+      **Trigger:** the next slice touching either sweep, or the first deploy that
+      runs more than one replica.
+
+- [ ] **`qms_sync` accepts a `since` cursor and drops it, then writes an audit row
+      per record unconditionally.** `run_qms_sync_once(*, since=None)` never
+      references `since`, `_sweep_tenant` takes no cursor, and
+      `adapter.fetch_inspections()` is called with no argument even though the
+      adapter contract is `fetch_inspections(*, since=None)`. So every tick
+      re-fetches the tenant's whole inspection history — and because the
+      `quality_inspection.synced` audit write is unconditional (`change` is
+      `"updated"` even when nothing changed), each hourly tick appends
+      `len(records)` rows to the append-only, WORM-shipped `audit_log`. That table
+      cannot be deleted from (migration 0022's BEFORE-DELETE trigger), so it is
+      unbounded growth in exactly the table the audit shipper drains.
+      **Durable fix:** thread `since` through `run_qms_sync_once` →
+      `_sweep_tenant` → `sync_tenant_inspections` → `fetch_inspections`, persist
+      the high-water mark per org, and write the audit row only on a real
+      create/update. Also surface the computed-then-discarded `skipped` count on
+      `QMSSyncResult` (as `templates_skipped` is on `recurring_invoices`).
+      **Trigger:** before `FEOH_QMS_SYNC_ENABLED` is turned on anywhere.
+
+- [ ] **`retention_sweep`'s no-op-manifest guard cannot hold.** It writes the
+      `retention.archived` manifest when `archived or overdue_total`, but
+      `overdue_total` counts `audit_log` rows past the window and the sweep never
+      deletes audit rows — so once a tenant crosses its window the condition is
+      permanently true and a manifest row is written every tick with
+      `invoices_archived: 0`. Each manifest is itself an `audit_log` row that
+      becomes overdue later and inflates the next tick's count.
+      **Durable fix:** gate on the actionable signal (`archived or
+      overdue_unshipped`) or on a change against the previously recorded counts.
+      **Trigger:** before `FEOH_RETENTION_ENABLED` is turned on anywhere.
+
+- [ ] **`billing/dunning_sweep` has no per-row guard and no failure counter.** A
+      raise on `control_db.commit()` aborts the remaining `past_due` rows for the
+      tick (the module docstring claims the opposite), and `_dunning_tick` returns
+      a bare `int`, which `sweep_health.extract_counts` maps to `{"count": n}` —
+      no `failures` key, so this sweep can never report anything but `ok` short of
+      the tick raising outright. The cancellation itself also commits whether or
+      not `dispatch_auth_audit` (fail-soft by design) actually wrote the
+      `billing.subscription_canceled` row.
+      **Durable fix:** per-row `try` / `rollback`, a result dataclass with
+      `failures`, and treat a swallowed audit write as a failure rather than a
+      silent success.
+      **Trigger:** before `FEOH_BILLING_DUNNING_ENABLED` is turned on anywhere.
+
+- [ ] **`audit_log_shipper` head-of-line-blocks a tenant on one unshippable row.**
+      Batches are all-or-nothing and ordered `created_at ASC`, so a row whose
+      `details` JSONB the sink refuses makes `adapter.ship` raise on every tick and
+      no newer audit row for that tenant ever ships — the WORM evidence trail stops
+      there. Ranked below the others only because `ShipResult.failures` does
+      increment, so `sweep_health` correctly goes `degraded` and the
+      `NOT MAKING PROGRESS` line fires; the defect is that the remedy is manual.
+      **Durable fix:** quarantine the poison row (ship it with a PII-free
+      truncation marker, the way `cloudwatch_adapter` already handles an oversized
+      single event) so the trail keeps moving.
+      **Trigger:** the first time the alert fires in a deployed env, or the next
+      slice touching the shipper.
+
+- [ ] **Four more adapter registries fail OPEN on an unregistered provider name.**
+      `docs/decisions.md` §29 fixed this for payments / ERP / FX / extraction and
+      §36 for sanctions; round 14 fixed `billing_adapters` because its fallback
+      reached a PUBLIC webhook route. These remain, each verified in the source:
+      `card_adapters` (`get_card_adapter` → `mock`, whose `create_card` returns
+      `success=True` with a fabricated PAN that `card_issuance` then persists as
+      an issued `VirtualCard` — a money path §29 did not reach);
+      `tax_filing_adapters` (→ `mock`, which returns `BATCH_ACCEPTED` with a
+      `MOCK-…` confirmation that `api/tax.py` persists, so an org is told its
+      1099s were e-filed when nothing reached the IRS);
+      `tin_validation_adapters` (→ `mock`, format+checksum only, yet
+      `vendor.tin_verified_at` is stamped from it — driving B-notice / 24%
+      backup-withholding decisions off a regex);
+      `positive_pay_adapters` (`bank_format` is a free-form `str(max_length=30)`
+      with no allowlist and an unknown value silently renders `csv` while the row
+      is labelled with the requested format — the operator believes the bank got
+      its layout and the cheque-fraud control never applies).
+      **Durable fix:** §29's rule — absent/empty still resolves `mock` (local-first
+      default), a NAMED provider with no adapter raises, and each caller decides
+      what the refusal means. For `positive_pay` the cheaper half is an allowlist
+      on the `bank_format` field itself, validated against the registry rather
+      than a restated literal.
+      **Trigger:** take them one registry at a time, cards first (it is the money
+      path), each with the caller-by-caller refusal table §29 established.
+
+- [ ] **`aws_textract` is the one adapter that blocks the event loop.**
+      `boto3.client("textract", ...)` + `textract.analyze_expense(...)` run
+      synchronously inside `async def extract`, and again inside
+      `async def test_connection` — which `POST /api/organization/test-extraction`
+      awaits directly on the request path. Every other adapter in all 21
+      registries uses `httpx.AsyncClient`, and the audit-shipping / SES / storage
+      boto3 call sites all wrap in `asyncio.to_thread`. The `extract` call is
+      partly covered (local-mode extraction runs on `extraction_dispatch`'s own
+      worker thread); `test_connection` has no such cover.
+      **Durable fix:** `await asyncio.to_thread(...)` around both, matching
+      `services/storage`'s `_put_object` and round 14's SQS dispatch fix; extend
+      `tests/test_sqs_dispatch_nonblocking.py`'s AST scan to cover it.
+      **Trigger:** the next slice touching the extraction adapters.
 
 ## (a) Blocked on external credentials, accounts, or hardware
 
