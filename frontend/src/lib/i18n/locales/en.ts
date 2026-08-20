@@ -74,6 +74,7 @@ export const en = {
 	'common.saving': 'Saving…',
 	'common.cancel': 'Cancel',
 	'common.loading': 'Loading…',
+	'common.loadFailed': 'Couldn’t load this list. Refresh to try again.',
 
 	// Profile → Language picker (profile/+page.svelte)
 	'profile.language.heading': 'Language',

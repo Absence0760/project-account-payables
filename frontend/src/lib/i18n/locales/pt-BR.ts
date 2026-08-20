@@ -66,6 +66,7 @@ export const messages = {
 	'common.saving': 'Salvando…',
 	'common.cancel': 'Cancelar',
 	'common.loading': 'Carregando…',
+	'common.loadFailed': 'Não foi possível carregar esta lista. Atualize para tentar novamente.',
 
 	// Profile → Language picker
 	'profile.language.heading': 'Idioma',

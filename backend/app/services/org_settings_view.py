@@ -51,6 +51,18 @@ NON_ADMIN_SETTINGS: dict[str, set[str] | None] = {
     # `invoice_defaults.currency` to format every aggregate figure, for every
     # role (`frontend/src/lib/stores/orgSettings.svelte.ts`).
     "invoice_defaults": None,
+    # The org's REPORTING (base) currency — a bare top-level string, not a
+    # block. It is the first candidate `currency_conversion.resolve_reporting_
+    # currency` reads, and every cross-currency rollup the API serves
+    # (`/payments/summary`, the CFO forecast + cash position, the dashboard's
+    # `reporting` block) is denominated in the code it resolves. The web store
+    # had only `invoice_defaults.currency` to go on, so an org reporting in GBP
+    # while invoicing defaults to USD had its converted GBP totals rendered
+    # with a `$`. PII-free and credential-free — a three-letter ISO code.
+    "reporting_currency": None,
+    # ONLY the home currency. Second in that same resolution order. The rest of
+    # the payments block is the processor credential set and stays admin-only.
+    "payments": {"home_currency"},
     # White-label brand. Already readable by any authed role through
     # `GET /api/organization/branding`, and PII-free by construction.
     "brand": None,

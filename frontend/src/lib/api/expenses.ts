@@ -9,6 +9,7 @@ import type {
 	Expense,
 	ExpenseCreate,
 	ExpenseListResponse,
+	ExpenseSummary,
 	ExpenseReport,
 	ExpenseReportCreate,
 	ExpenseReportListResponse,
@@ -94,6 +95,20 @@ export function listExpenses(params: ExpenseListParams = {}): Promise<ExpenseLis
 	qs.set('page', String(params.page ?? 1));
 	qs.set('page_size', String(params.page_size ?? 20));
 	return api.get<ExpenseListResponse>(`/api/expenses?${qs}`);
+}
+
+/**
+ * Whole-set rollup for the KPI row — `GET /api/expenses/summary`.
+ *
+ * Takes the same params as `listExpenses` (minus pagination, which it has none
+ * of) and the backend runs them through the same filter builder, so the cards
+ * and the table always describe one set. Deriving the KPIs from
+ * `listExpenses().items` instead described only the loaded page.
+ */
+export function getExpenseSummary(params: ExpenseListParams = {}): Promise<ExpenseSummary> {
+	const qs = expenseQuery(params);
+	const query = qs.toString();
+	return api.get<ExpenseSummary>(`/api/expenses/summary${query ? `?${query}` : ''}`);
 }
 
 export function getExpense(id: string): Promise<Expense> {

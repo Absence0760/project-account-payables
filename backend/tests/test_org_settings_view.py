@@ -135,9 +135,45 @@ def test_projection_handles_empty(settings):
     assert settings_for_response(settings, is_admin=False) == {}
 
 
+def test_non_admin_can_resolve_the_reporting_currency():
+    """The web `orgCurrency` store mirrors `resolve_reporting_currency`, so it
+    needs the two candidates that outrank `invoice_defaults.currency`.
+
+    Without them a non-admin's aggregate figures were labelled with the invoice
+    default while the API had denominated them in the reporting currency — a
+    `$` on a converted GBP total.
+    """
+    projected = settings_for_response(
+        {
+            **SECRETS,
+            "reporting_currency": "GBP",
+            "payments": {**SECRETS["payments"], "home_currency": "EUR"},
+        },
+        is_admin=False,
+    )
+    assert projected["reporting_currency"] == "GBP"
+    assert projected["payments"] == {"home_currency": "EUR"}
+    # …and nothing else from the payments block came with it.
+    assert "pay-webhook-secret" not in str(projected)
+    assert "modern_treasury" not in str(projected)
+
+
+def test_payments_block_is_dropped_entirely_when_it_holds_no_home_currency():
+    """`if subset:` — an all-credential payments block projects to nothing, not
+    to an empty dict the client would have to special-case."""
+    projected = settings_for_response(SECRETS, is_admin=False)
+    assert "payments" not in projected
+
+
 def test_erp_allow_list_holds_only_the_routing_mode():
     """A drift guard: widening this set is how a credential gets back out."""
     assert NON_ADMIN_SETTINGS["erp"] == {"integration_method"}
+
+
+def test_payments_allow_list_holds_only_the_home_currency():
+    """The same drift guard on the block that carries the processor
+    credentials — every other key in it is enough to move money as the tenant."""
+    assert NON_ADMIN_SETTINGS["payments"] == {"home_currency"}
 
 
 def test_always_redacted_covers_the_chat_webhook():

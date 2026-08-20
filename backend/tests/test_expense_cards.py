@@ -8,6 +8,7 @@ rejection, RBAC denial, and tenant isolation. Money round-trips exact through
 ``Numeric(15, 2)``; audit rows are asserted on the trail.
 """
 
+import asyncio
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -607,3 +608,84 @@ async def test_tenant_isolation(realdb):
         assert (
             await c.post(f"/api/corporate-card-transactions/{txn_id}/ignore")
         ).status_code == 404
+
+
+async def test_concurrent_create_expense_mints_one_expense(realdb):
+    """Two concurrent create-expense calls must mint ONE expense.
+
+    The already-matched 409 is a read-then-write check, not a constraint: both
+    requests read `matched_expense_id IS NULL` and both proceeded, so one card
+    charge produced TWO expenses and two `expense.created` audit rows — a
+    duplicate that then flows into an expense-report total. The txn row is now
+    taken FOR UPDATE, so the loser sees the winner's write and 409s.
+
+    Reachable from the UI as a plain double-click: the row's own `{#if
+    unmatched}` only re-renders once the refetch lands, and the button did not
+    bind the in-flight flag its handler was already setting.
+    """
+    mk = realdb.sessionmaker("a")
+    txn_id = await _make_txn(realdb, merchant="Hilton", amount="310.00", txn_date="2026-06-04")
+
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        first, second = await asyncio.gather(
+            c.post(f"/api/corporate-card-transactions/{txn_id}/create-expense"),
+            c.post(f"/api/corporate-card-transactions/{txn_id}/create-expense"),
+        )
+
+    assert sorted([first.status_code, second.status_code]) == [200, 409], (
+        first.status_code,
+        second.status_code,
+        first.text,
+        second.text,
+    )
+
+    async with mk() as s:
+        expenses = (await s.execute(select(Expense))).scalars().all()
+        assert len(expenses) == 1
+        actions = (
+            (await s.execute(select(AuditLog.action).where(AuditLog.entity_type == "expense")))
+            .scalars()
+            .all()
+        )
+        assert list(actions).count("expense.created") == 1
+
+
+async def test_sequential_create_expense_is_refused_the_second_time(realdb):
+    """The same invariant without the race — one expense, and the second call
+    is an explicit 409 rather than a silent no-op."""
+    mk = realdb.sessionmaker("a")
+    txn_id = await _make_txn(realdb, merchant="Hilton", amount="310.00")
+
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        first = await c.post(f"/api/corporate-card-transactions/{txn_id}/create-expense")
+        second = await c.post(f"/api/corporate-card-transactions/{txn_id}/create-expense")
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 409, second.text
+
+    async with mk() as s:
+        assert len((await s.execute(select(Expense))).scalars().all()) == 1
+
+
+def test_every_reconciliation_write_locks_the_transaction_row():
+    """Drift guard: a mutating handler that reads the reconciliation state and
+    then writes it MUST take the row lock, or the 409 above is decorative.
+
+    A source scan rather than four more concurrency tests — the property is
+    "no unlocked read on a write path", which is a statement about the file.
+    """
+    import inspect
+
+    from app.api import expense_cards
+
+    source = inspect.getsource(expense_cards)
+    for handler in (
+        "async def match_card_transaction",
+        "async def unmatch_card_transaction",
+        "async def ignore_card_transaction",
+        "async def create_expense_from_card",
+    ):
+        start = source.index(handler)
+        # Up to the first re-read of the fresh row, which is deliberately unlocked.
+        body = source[start : source.index("fresh = await _get_txn_or_404", start)]
+        assert "_get_txn_or_404(db, txn_id, entity_id, for_update=True)" in body, handler

@@ -39,8 +39,16 @@
 	import { formatDate } from '$lib/utils/time';
 
 	const canCreate = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk'));
-	// approve / reject / convert = admin | ap_manager (convert is the money step).
-	const canApprove = $derived(auth.isManager);
+	// approve / reject = admin | ap_manager | CFO. One predicate used to cover
+	// approve, reject AND convert, which silently dropped the CFO: `/requisitions`
+	// approve and reject are `require_roles(ADMIN, AP_MANAGER, CFO)`, so a CFO
+	// could open the queue and had no decision control on it — exactly the split
+	// `/expenses` already had to make between its report approve (allows cfo) and
+	// reject (does not).
+	const canDecideRole = $derived(auth.isManager || auth.isCfo);
+	// convert-to-PO stays admin | ap_manager — it is the money step, and
+	// `requisitions.py::convert_to_po` gates it that way.
+	const canConvert = $derived(auth.isManager);
 
 	const PAGE_SIZE = 100;
 
@@ -332,7 +340,7 @@
 	// the requester (the backend also enforces this — 403).
 	function canDecide(r: Requisition): boolean {
 		return (
-			canApprove &&
+			canDecideRole &&
 			r.status === 'pending_approval' &&
 			auth.user?.id !== r.requester_user_id
 		);
@@ -392,7 +400,7 @@
 							<RowAction variant="success" onclick={() => doApprove(r)} disabled={busyId === r.id}>{m('requisitions.row.approve')}</RowAction>
 							<RowAction variant="danger" onclick={() => doReject(r)} disabled={busyId === r.id}>{m('requisitions.row.reject')}</RowAction>
 						{/if}
-						{#if canApprove && r.status === 'approved'}
+						{#if canConvert && r.status === 'approved'}
 							<RowAction variant="default" onclick={() => doConvert(r)} disabled={busyId === r.id}>{m('requisitions.row.convertToPo')}</RowAction>
 						{/if}
 						{#if canCreate && (r.status === 'draft' || r.status === 'submitted' || r.status === 'pending_approval' || r.status === 'approved')}

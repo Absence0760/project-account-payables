@@ -69,6 +69,7 @@ export const messages = {
 	'common.saving': '保存中…',
 	'common.cancel': 'キャンセル',
 	'common.loading': '読み込み中…',
+	'common.loadFailed': 'このリストを読み込めませんでした。更新して再試行してください。',
 
 	// Profile → Language picker
 	'profile.language.heading': '言語',

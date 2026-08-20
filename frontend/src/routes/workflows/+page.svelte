@@ -204,9 +204,18 @@
 		{/snippet}
 	</BulkBar>
 
+	<!-- Three states, not two. The mount effect swallows the load rejection (the
+	     store's `errored` flag is what the UI renders — a flag the store did NOT
+	     have until now), so a 500 left this page asserting "No workflows
+	     configured." with no toast and no retry, on the screen that decides
+	     whether invoices get routed for approval at all. -->
 	<DataTable
 		isEmpty={workflowStore.all.length === 0}
-		empty={workflowStore.loading ? m('common.loading') : m('workflows.list.empty')}
+		empty={workflowStore.loading
+			? m('common.loading')
+			: workflowStore.errored
+				? m('common.loadFailed')
+				: m('workflows.list.empty')}
 		colspan={6}
 	>
 		{#snippet header()}

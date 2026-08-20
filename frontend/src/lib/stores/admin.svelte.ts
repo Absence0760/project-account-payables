@@ -42,6 +42,20 @@ function createAdminStore() {
 	let page = $state(1);
 	let pageSize = $state(20);
 
+	// Did the most recent (non-append) users load fail? The table's empty state
+	// reads it: without it a 500 / offline backend leaves `users` empty and the
+	// user directory renders "No users." — an outage indistinguishable from a
+	// tenant with nobody in it, on the page an admin goes to when access is
+	// already misbehaving. Both call sites already carried a comment claiming
+	// this flag existed; it did not, and the `.catch(() => {})` beside them ate
+	// the only signal there was. Set only while this is still the newest request
+	// (`isCurrentRequest`, the same rule `loading` uses), and the error is
+	// re-thrown so an awaiting caller keeps its own handling. Mirrors
+	// `stores/invoices.svelte.ts`.
+	let errored = $state(false);
+	// The same, for the independent roles request.
+	let rolesErrored = $state(false);
+
 	// Users and roles are two independent lists loaded by two independent
 	// requests, so they get a sequencer each — a roles refresh must not mark an
 	// in-flight users fetch un-committable, or vice versa. Within each, the
@@ -67,6 +81,10 @@ function createAdminStore() {
 			total = res.total;
 			page = nextPage;
 			if (opts.pageSize) pageSize = opts.pageSize;
+			errored = false;
+		} catch (err) {
+			if (usersSequence.isCurrentRequest(token)) errored = true;
+			throw err;
 		} finally {
 			if (usersSequence.isCurrentRequest(token)) loading = false;
 		}
@@ -125,8 +143,13 @@ function createAdminStore() {
 			const fetched = await api.get<Role[]>('/api/admin/roles');
 			if (!rolesSequence.canCommit(token)) return;
 			roles = fetched;
+			rolesErrored = false;
 		} catch {
-			// non-critical
+			// Swallowed rather than re-thrown (this is the fire-and-forget
+			// companion of the users load), but no longer silent: the panel reads
+			// `rolesErrored` so a failed load says so instead of asserting "No
+			// system roles." on the page that decides who can do what.
+			if (rolesSequence.isCurrentRequest(token)) rolesErrored = true;
 		}
 	}
 
@@ -235,6 +258,8 @@ function createAdminStore() {
 		get roles() { return roles; },
 		get permissionCatalog() { return permissionCatalog; },
 		get loading() { return loading; },
+		get errored() { return errored; },
+		get rolesErrored() { return rolesErrored; },
 		get total() { return total; },
 		get page() { return page; },
 		get pageSize() { return pageSize; },

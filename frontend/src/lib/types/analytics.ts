@@ -167,11 +167,26 @@ export interface CfoRebateYield {
 	annualised_rebates: MoneyString;
 }
 
+/**
+ * One foreign currency's open exposure.
+ *
+ * **The four money fields are NOT all in the same currency**, which is what
+ * makes this row easy to render wrong (and it was): `open_original_amount` is
+ * denominated in this row's own `currency`, the other three in the org's
+ * REPORTING currency. `compute_unrealized_fx_gain_loss` skips same-currency
+ * invoices outright, so `currency` here is never the reporting currency —
+ * formatting the open exposure with the reporting code is always wrong, never
+ * merely redundant.
+ */
 export interface CfoUnrealizedFxByCurrency {
 	currency: string;
+	/** In `currency` above — this row's own, never the reporting currency. */
 	open_original_amount: MoneyString;
+	/** In the REPORTING currency, at the rate locked when it was materialized. */
 	booked_reporting_amount: MoneyString;
+	/** In the REPORTING currency, at today's rate. */
 	current_reporting_amount: MoneyString;
+	/** In the REPORTING currency: booked − current (positive = gain). */
 	unrealized_gain_loss: MoneyString;
 	/**
 	 * Open invoices in this currency with no locked exchange rate. A count, not

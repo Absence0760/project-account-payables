@@ -273,7 +273,20 @@
 	{/snippet}
 </BulkBar>
 
-<DataTable isEmpty={adminStore.users.length === 0} empty={m('admin.users.empty')} colspan={7}>
+<!-- Three states, not one. The mount effect swallows the load rejection (the
+     store's `errored` flag is what the UI renders — a flag the store did NOT
+     have until now), so a 500 or an offline backend used to leave the user
+     directory asserting "No users found." with no toast, no banner and no
+     retry, on the page an admin opens precisely when access is misbehaving. -->
+<DataTable
+	isEmpty={adminStore.users.length === 0}
+	empty={adminStore.loading
+		? m('common.loading')
+		: adminStore.errored
+			? m('common.loadFailed')
+			: m('admin.users.empty')}
+	colspan={7}
+>
 	{#snippet header()}
 		<tr>
 			<th class="checkbox-col">

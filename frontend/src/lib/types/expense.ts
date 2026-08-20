@@ -3,6 +3,8 @@
 // `ExpenseResponse` / `ExpenseReportResponse`). Money fields arrive as
 // numbers (backend `float(...)`); date/datetime fields are ISO strings.
 
+import type { MoneyString } from '$lib/utils/money';
+
 export type ExpenseStatus = 'draft' | 'submitted' | 'approved' | 'rejected' | 'reimbursed';
 
 // Every value the `expenses.status` column can hold — the full mirror of the
@@ -165,6 +167,30 @@ export interface ExpenseListResponse {
 	total: number;
 	page: number;
 	page_size: number;
+}
+
+/** One currency's slice of `GET /api/expenses/summary`. */
+export interface ExpenseCurrencyTotal {
+	currency: string;
+	/** Exact decimal string — never parse into a float for arithmetic. */
+	total: MoneyString;
+	count: number;
+}
+
+/**
+ * Whole-set rollup from `GET /api/expenses/summary`, over the SAME filters the
+ * list ran with.
+ *
+ * The KPI row used to derive its figures from the loaded page, so "Period
+ * total" and "Pending" described 20 rows while the "Expenses" card beside them
+ * described every row. `by_currency` is grouped rather than summed — adding EUR
+ * to USD produces a figure denominated in nothing (see
+ * `$lib/utils/currencyGroups`).
+ */
+export interface ExpenseSummary {
+	total: number;
+	by_status: Record<string, number>;
+	by_currency: ExpenseCurrencyTotal[];
 }
 
 export interface ExpenseReport {

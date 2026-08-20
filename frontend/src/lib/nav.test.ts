@@ -77,3 +77,34 @@ test('sectionTabActive: a deeper sibling path does not light up the query tab', 
 	expect(sectionTabActive(kid('/admin?tab=users'), kids, url('/admin/api-keys'))).toBe(false);
 	expect(sectionTabActive(kid('/admin?tab=roles'), kids, url('/admin/api-keys'))).toBe(false);
 });
+
+test('every clerk-readable page offers the clerk a way in', () => {
+	// Same drift the /discounts test above pins, on the three rows that still
+	// had it. Each of these backends grants ap_clerk READ, and each page gates
+	// its mutations separately — so hiding the nav row made a page the API
+	// serves unreachable, which reads exactly like a deliberate gate:
+	//
+	//   /credit-memos      list   require_roles(ADMIN, AP_MANAGER, AP_CLERK, CFO)
+	//   /recurring         list   recurring.py::_READ_ROLES (includes AP_CLERK)
+	//   /vendors/screening queue  require_roles(ADMIN, AP_MANAGER, AP_CLERK, CFO)
+	const allLinks = NAV.flatMap((e) => (e.kind === 'group' ? e.children : [e]));
+	for (const href of ['/credit-memos', '/recurring', '/vendors/screening']) {
+		const entry = allLinks.find((l) => l.href === href)!;
+		expect(entry, href).toBeDefined();
+		expect(entry.roles, href).toContain('ap_clerk');
+	}
+});
+
+test('a page whose API 403s a clerk still hides its row', () => {
+	// The inverse half, so "add ap_clerk everywhere" can't pass as the fix:
+	// these three are genuinely clerk-forbidden at the API and must stay hidden.
+	//   /payments                 require_roles(ADMIN, AP_MANAGER, CFO)
+	//   /vendors/change-requests  require_roles(ADMIN, AP_MANAGER)
+	//   /billing (subscription)   require_roles(ADMIN, CFO)
+	const allLinks = NAV.flatMap((e) => (e.kind === 'group' ? e.children : [e]));
+	for (const href of ['/payments', '/vendors/change-requests', '/billing']) {
+		const entry = allLinks.find((l) => l.href === href)!;
+		expect(entry, href).toBeDefined();
+		expect(entry.roles, href).not.toContain('ap_clerk');
+	}
+});

@@ -1,5 +1,9 @@
 import { api } from '$lib/api';
 import { DEFAULT_CURRENCY } from '$lib/utils/money';
+import {
+	resolveReportingCurrency,
+	type ReportingCurrencySettings
+} from '$lib/utils/reportingCurrency';
 
 /**
  * Tenant-wide display currency for *aggregate* figures that don't carry
@@ -9,24 +13,37 @@ import { DEFAULT_CURRENCY } from '$lib/utils/money';
  * `<Money currency={row.currency} />`; this store only backs the
  * roll-ups where there is no single row to read from.
  *
- * Sourced from `Organization.settings.invoice_defaults.currency`
- * (`GET /api/organization`). That route is open to any authenticated org
- * user, but the settings it returns are projected by role: a non-admin gets
- * an allow-list that deliberately keeps `invoice_defaults` (this store is
- * one of the consumers it exists for) and drops the tenant's third-party
- * credentials. See `backend/app/services/org_settings_view.py` — if a
- * future field is needed here, it has to be added to that allow-list.
- * Resilient by design: any failure degrades to {@link DEFAULT_CURRENCY}
- * rather than breaking a dashboard render.
+ * Resolved from `GET /api/organization` in the SAME order the backend uses —
+ * `settings.reporting_currency` → `settings.payments.home_currency` →
+ * `settings.invoice_defaults.currency` → {@link DEFAULT_CURRENCY}. That order
+ * is not a preference; it is `currency_conversion.resolve_reporting_currency`,
+ * the function that decides what currency the API's cross-currency rollups are
+ * *actually denominated in* (`/api/payments/summary`, the CFO forecast + cash
+ * position, the dashboard `reporting` block, the discount dashboard).
+ *
+ * Reading only `invoice_defaults.currency` — as this store did — was therefore
+ * a mislabel, not a fallback: an org reporting in GBP while its invoice default
+ * stayed USD had its converted GBP totals rendered with a `$`, on every
+ * aggregate figure in the app. The two keys agree in the common case, which is
+ * exactly why it went unnoticed.
+ *
+ * `GET /api/organization` is open to any authenticated org user, but the
+ * settings it returns are projected by role: a non-admin gets an allow-list
+ * that keeps the three keys above (this store is the consumer they are listed
+ * for) and drops the tenant's third-party credentials — `payments` is admitted
+ * for `home_currency` ONLY, never the processor credentials beside it. See
+ * `backend/app/services/org_settings_view.py`; a future field needed here has
+ * to be added there on purpose.
+ *
+ * Resilient by design: any failure degrades to {@link DEFAULT_CURRENCY} rather
+ * than breaking a dashboard render.
  *
  * Cached for the session after the first successful load; `reset()`
  * clears it (e.g. on logout / tenant switch).
  */
 
 interface OrgResponse {
-	settings?: {
-		invoice_defaults?: { currency?: string | null } | null;
-	} | null;
+	settings?: ReportingCurrencySettings | null;
 }
 
 class OrgSettingsStore {
@@ -45,10 +62,8 @@ class OrgSettingsStore {
 		this.#inflight = (async () => {
 			try {
 				const org = await api.get<OrgResponse>('/api/organization');
-				const ccy = org?.settings?.invoice_defaults?.currency;
-				if (ccy && ccy.trim().length === 3) {
-					this.currency = ccy.trim().toUpperCase();
-				}
+				const ccy = resolveReportingCurrency(org?.settings);
+				if (ccy) this.currency = ccy;
 				this.#loaded = true;
 			} catch {
 				// Transient error (or a signed-out race): keep the default and

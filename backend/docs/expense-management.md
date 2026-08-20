@@ -103,6 +103,7 @@ string-Decimal amounts — never PII.
 | POST | `/api/expenses/{id}/receipt` | Upload a receipt to S3 (`upload_expense_receipt`) and stamp `receipt_file_key`. |
 | GET | `/api/expenses/export` | **(WF2)** Stream the filtered expense register as `text/csv` (`expenses_<today>.csv` via Content-Disposition). `?status=&category=&date_from=&date_to=&report_id=`; entity-scoped, no pagination (full filtered set). Outer-joins `GLAccount` (gl code) + `ExpenseReport` (report number) so an uncoded/unattached expense still emits a row. Serialised by `report_export.export_expense_register` (the `expense_register` exporter). Read RBAC (incl. CFO). Declared before `/{expense_id}`. |
 | POST | `/api/expenses/bulk-gl-code` | **(WF2)** Set `gl_account_id` on many expenses at once (`null` clears it). Body `{ expense_ids: [uuid], gl_account_id: uuid\|null }`. Each id resolved within the entity scope (out-of-scope/cross-tenant id → 404); a non-`null` GL is validated against the org's chart. One `expense.bulk_gl_coded` audit row per expense; returns `{ updated }`. Mutation RBAC (`admin`/`ap_manager`/`ap_clerk`). Declared before `/{expense_id}`. |
+| GET | `/api/expenses/summary` | Whole-set rollup for the list's KPI row: `{ total, by_status: {status: n}, by_currency: [{currency, total, count}] }`. Takes the SAME `?status=&report_id=&search=` filters as the list and runs them through the same `_expense_list_filters`, so the cards and the table can't describe different sets. Each bucket's `total` is an EXACT decimal string, and buckets are never added together — a cross-currency sum is a figure denominated in nothing. The KPIs used to reduce over the LOADED page (20 rows), so "Period total" summed a page while the "Expenses" card beside it showed the server's whole-set count. Read RBAC (all four roles — a rollup exposes strictly less than the rows it summarises). Declared before `/{expense_id}`. |
 | GET | `/api/expenses/{id}` | Get one expense. |
 | PATCH | `/api/expenses/{id}` | Update mutable fields (`amount` still `gt=0`). Audits only when a field actually changed. An `amount` change or a `report_id` move recomputes the affected report total(s) — and is **409** if any affected report has left `draft` into a locked state (submitted/pending_approval/approved/reimbursed), so an edit can't silently move a total the CFO gate / approval signature already ran against. |
 | DELETE | `/api/expenses/{id}` | Delete an expense; recomputes the owning report total if it was attached. **409** if the owning report is locked (submitted/approved/…) — deleting would shrink a total past its approval. |
@@ -119,6 +120,17 @@ string-Decimal amounts — never PII.
 ### Corporate-card reconciliation routes (WF4)
 
 Router `app/api/expense_cards.py`, prefix `/api/corporate-card-transactions`. Read = all roles; mutate = `admin`/`ap_manager` (create-expense also allows `ap_clerk`). Every mutation is audited and entity-scoped; PII is `card_last_four` only.
+
+**Every reconciliation write locks the transaction row.** `match` / `unmatch` /
+`ignore` / `create-expense` all read the reconciliation state and then write it,
+and their "already matched" **409** is a read-then-write check, not a
+constraint: two overlapping requests both read `matched_expense_id IS NULL` and
+both proceeded. On `create-expense` that minted **two** `Expense` rows (and two
+`expense.created` audit rows) for one card charge — a duplicate that then flows
+into an expense-report total. `_get_txn_or_404(..., for_update=True)` serialises
+them so the loser sees the winner's write. `tests/test_expense_cards.py` covers
+it concurrently, sequentially, and with a source-scan drift guard so a new
+mutating handler can't reopen the hole.
 
 | Method | Path | Purpose |
 |--------|------|---------|

@@ -8,6 +8,13 @@
 		EmailRecipientKind,
 	} from '$lib/types/workflow';
 	import { m } from '$lib/i18n/store.svelte';
+	import {
+		headersToRows,
+		rowsMatchHeaders,
+		rowsToHeaders,
+		type HeaderRow
+	} from '$lib/utils/webhookHeaders';
+	import { untrack } from 'svelte';
 
 	type Props = {
 		type: Extract<WorkflowStepType, 'webhook' | 'email' | 'delay'>;
@@ -24,33 +31,52 @@
 		onchange({ ...webhook, ...p });
 	}
 
-	// Headers are stored as an object; we surface them as editable key/value rows.
-	let headerRows = $derived(Object.entries(webhook.headers ?? {}));
+	// Headers persist as an OBJECT but are edited as key/value ROWS, and the two
+	// shapes are not interchangeable: an object cannot hold a blank key, which
+	// is exactly what a row being typed has. So the rows are local STATE seeded
+	// from the config — not a `$derived` round-trip through it.
+	//
+	// As a `$derived` this was a dead control: "+ Add header" appended
+	// `['', '']`, the projection dropped it, `onchange` handed back a
+	// byte-identical config, and the row re-derived away. No blank row ever
+	// appeared, so a webhook header could not be added through the UI at all.
+	// The same round trip made clearing an existing header's NAME delete the
+	// whole row mid-edit, including the value the user had not touched.
+	// `untrack` states the intent the compiler would otherwise warn about: this
+	// is a SEED, read once. The $effect below owns every later re-seed.
+	let headerRows = $state<HeaderRow[]>(untrack(() => headersToRows(webhook.headers)));
 
-	function setHeaders(rows: [string, string][]) {
-		const obj: Record<string, string> = {};
-		for (const [k, v] of rows) {
-			if (k.trim()) obj[k.trim()] = v;
-		}
-		patchWebhook({ headers: obj });
+	// Re-seed only when the incoming config no longer describes these rows — a
+	// different step selected, a version restored. `rowsMatchHeaders` ignores
+	// key ORDER and projects blank-key rows away, so a row being typed is NOT a
+	// mismatch and survives. `untrack` on the read so writing the state this
+	// effect also inspects can't loop.
+	$effect(() => {
+		const incoming = webhook.headers;
+		if (rowsMatchHeaders(untrack(() => headerRows), incoming)) return;
+		headerRows = headersToRows(incoming);
+	});
+
+	/** Apply an edit locally, then push its projection down to the config. */
+	function commitRows(rows: HeaderRow[]) {
+		headerRows = rows;
+		patchWebhook({ headers: rowsToHeaders(rows) });
 	}
 
 	function patchHeaderKey(idx: number, key: string) {
-		const rows = headerRows.map((r, i) => (i === idx ? ([key, r[1]] as [string, string]) : r));
-		setHeaders(rows);
+		commitRows(headerRows.map((r, i) => (i === idx ? ([key, r[1]] as HeaderRow) : r)));
 	}
 
 	function patchHeaderValue(idx: number, value: string) {
-		const rows = headerRows.map((r, i) => (i === idx ? ([r[0], value] as [string, string]) : r));
-		setHeaders(rows);
+		commitRows(headerRows.map((r, i) => (i === idx ? ([r[0], value] as HeaderRow) : r)));
 	}
 
 	function addHeader() {
-		setHeaders([...headerRows, ['', '']]);
+		commitRows([...headerRows, ['', '']]);
 	}
 
 	function removeHeader(idx: number) {
-		setHeaders(headerRows.filter((_, i) => i !== idx));
+		commitRows(headerRows.filter((_, i) => i !== idx));
 	}
 
 	// ── Email ──

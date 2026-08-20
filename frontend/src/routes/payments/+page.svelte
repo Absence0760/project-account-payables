@@ -19,6 +19,7 @@
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { formatMoney } from '$lib/utils/money';
 	import {
+		formatCurrencyTotals,
 		groupAmountsByCurrency,
 		spansMultipleCurrencies,
 		type CurrencyGroup
@@ -286,7 +287,10 @@
 	 *  currency, which is what "nothing selected" costs. */
 	function formatGroups(groups: CurrencyGroup[]): string {
 		if (groups.length === 0) return formatCurrency(0);
-		return groups.map((g) => formatCurrency(g.total, g.currency)).join(' · ');
+		// The per-currency rendering itself lives in `currencyGroups` now, so
+		// /expenses' KPI rollup and this pay bar can't drift on it; only the
+		// "nothing selected" reading stays a per-caller display choice.
+		return formatCurrencyTotals(groups, orgCurrency.currency).join(' · ');
 	}
 
 	// The server's refusal, kept on screen. A 409 from
@@ -907,7 +911,11 @@
 			</div>
 			{#if Number(summary.total_rebates) > 0}
 				<div class="scard rebate">
-					<span class="scard-value">{formatCurrency(summary.total_rebates)}</span>
+					<!-- `summary.currency` is what the API says EVERY money figure in
+					     this block is denominated in, `total_rebates` included — the
+					     three cards above pass it and this one didn't, falling through
+					     to the store instead of the response's own declaration. -->
+					<span class="scard-value">{formatCurrency(summary.total_rebates, summary.currency)}</span>
 					<span class="scard-label">{m('payments.summary.rebatesEarned')}</span>
 				</div>
 			{/if}

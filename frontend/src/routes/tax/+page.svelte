@@ -8,6 +8,7 @@
 	import { formatMoney, isPositiveAmount } from '$lib/utils/money';
 	import { get1099Report } from '$lib/api/tax';
 	import { m } from '$lib/i18n/store.svelte';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import type { Report1099, Vendor1099Row } from '$lib/types/tax';
 	import { formatDate } from '$lib/utils/time';
 
@@ -26,16 +27,31 @@
 	// Typed as string to match FilterChips' bindable `active`.
 	let rowFilter = $state('all');
 
+	// Sequences `load` (latest-issued wins). Stepping the year selector twice
+	// quickly left two GETs in flight with nothing deciding which may write, so
+	// the table — and the totals denominated via `report.currency` — could show
+	// 2024's per-vendor YTD figures while the selector read 2023. This is the
+	// surface people read to decide which vendors get a 1099 filed.
+	// See `frontend/CLAUDE.md` § Sequencing list fetches.
+	const loadSequence = createRequestSequencer();
+
 	async function load() {
+		const token = loadSequence.start();
 		loading = true;
 		error = null;
 		try {
-			report = await get1099Report(year);
+			const res = await get1099Report(year);
+			if (!loadSequence.canCommit(token)) return;
+			report = res;
 		} catch (e) {
-			report = null;
-			error = e instanceof Error ? e.message : m('tax.error.load');
+			if (loadSequence.isCurrentRequest(token)) {
+				report = null;
+				error = e instanceof Error ? e.message : m('tax.error.load');
+			}
 		} finally {
-			loading = false;
+			// `isCurrentRequest`, never `canCommit` — a superseded response must
+			// not clear the spinner the newest request owns.
+			if (loadSequence.isCurrentRequest(token)) loading = false;
 		}
 	}
 

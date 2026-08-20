@@ -7,6 +7,7 @@
 	import { formatPeriod } from '$lib/utils/time';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { m } from '$lib/i18n/store.svelte';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import type { CfoAnalytics } from '$lib/types/analytics';
 
 	// DPO, cash conversion cycle, accruals, supplier concentration, fraud-rate
@@ -26,12 +27,28 @@
 	let loading = $state(false);
 	let error = $state<string | null>(null);
 
+	/** Format a figure the API has already expressed in the REPORTING currency. */
 	function fmt(amount: MoneyAmount): string {
 		return formatMoney(amount, { currency: orgCurrency.currency, whole: true });
 	}
 
+	/** Format a figure denominated in its OWN currency — the unrealized-FX
+	 *  table's open-exposure column is the one such figure on this component,
+	 *  and `fmt` would mislabel it with the reporting code. */
+	function fmtIn(amount: MoneyAmount, currency: string): string {
+		return formatMoney(amount, { currency, whole: true });
+	}
+
 	let maxDpo = $derived(Math.max(1, ...(data?.dpo_trend ?? []).map((r) => r.dpo)));
 	let maxFraudRate = $derived(Math.max(1, ...(data?.fraud_rate_trend ?? []).map((r) => r.rate_pct)));
+
+	// Sequences `load` (latest-issued wins). `periodDays` comes from the 30/90/
+	// 180/365 button group on `/cfo`, so two clicks in quick succession left two
+	// requests in flight with nothing deciding which one may write: the DPO,
+	// cash-conversion-cycle and fraud-rate tables could settle on the 30-day
+	// figures under an active "365 days" button.
+	// See `frontend/CLAUDE.md` § Sequencing list fetches.
+	const loadSequence = createRequestSequencer();
 
 	$effect(() => {
 		void periodDays;
@@ -40,14 +57,21 @@
 	});
 
 	async function load() {
+		const token = loadSequence.start();
 		loading = true;
 		error = null;
 		try {
-			data = await api.get<CfoAnalytics>(`/api/analytics/cfo?period_days=${periodDays}`);
+			const res = await api.get<CfoAnalytics>(`/api/analytics/cfo?period_days=${periodDays}`);
+			if (!loadSequence.canCommit(token)) return;
+			data = res;
 		} catch (e) {
-			error = e instanceof Error ? e.message : m('cfoMetrics.loadFailed');
+			if (loadSequence.isCurrentRequest(token)) {
+				error = e instanceof Error ? e.message : m('cfoMetrics.loadFailed');
+			}
 		} finally {
-			loading = false;
+			// `isCurrentRequest`, never `canCommit` — a superseded response must
+			// not clear the spinner the newest request owns.
+			if (loadSequence.isCurrentRequest(token)) loading = false;
 		}
 	}
 </script>
@@ -188,7 +212,13 @@
 						{#each data?.unrealized_fx.by_currency ?? [] as e (e.currency)}
 							<tr>
 								<td>{e.currency}</td>
-								<td class="num">{fmt(e.open_original_amount)}</td>
+								<!-- The open exposure is in the row's OWN currency; only the
+								     three columns after it are in the reporting currency
+								     (see CfoUnrealizedFxByCurrency). `fmt` stamps the
+								     reporting code, so this one column can't use it — a
+								     EUR 10,000 exposure read "$10,000" with its real code
+								     sitting in the cell immediately to the left. -->
+								<td class="num">{fmtIn(e.open_original_amount, e.currency)}</td>
 								<td class="num">{fmt(e.booked_reporting_amount)}</td>
 								<td class="num">{fmt(e.current_reporting_amount)}</td>
 								<td class="num" class:cfm-alert={isNegativeAmount(e.unrealized_gain_loss)}>
