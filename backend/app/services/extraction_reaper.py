@@ -38,6 +38,13 @@ class ReapResult:
     tenants_scanned: int = 0
     invoices_reaped: int = 0
     failures: int = 0  # tenant DBs we couldn't reach
+    #: Individual invoices whose reap raised. Counted apart from ``failures``
+    #: because one bad row no longer takes its tenant's remaining invoices down
+    #: with it — mirrors ``vendor_rescreen.vendor_failures``. The ``*_failures``
+    #: suffix is load-bearing: ``sweep_health.failure_count`` sums it, so a
+    #: reaper that keeps completing while rows inside it fail is reported
+    #: ``partial`` rather than healthy.
+    invoice_failures: int = 0
 
 
 async def reap_once(*, threshold_seconds: int | None = None) -> ReapResult:
@@ -58,26 +65,32 @@ async def reap_once(*, threshold_seconds: int | None = None) -> ReapResult:
     for _org_id, db_name in tenants:
         result.tenants_scanned += 1
         try:
-            reaped = await _reap_tenant(db_name, cutoff, threshold_seconds=threshold)
+            reaped, row_failures = await _reap_tenant(db_name, cutoff, threshold_seconds=threshold)
             result.invoices_reaped += reaped
+            result.invoice_failures += row_failures
         except Exception as exc:
             # Don't let one tenant's DB outage halt the sweep — log and move on.
             # Class only, not the message (PII-out-of-logs invariant).
             logger.warning("[reaper] failed to sweep %s: %s", db_name, exc.__class__.__name__)
             result.failures += 1
 
-    if result.invoices_reaped or result.failures:
+    if result.invoices_reaped or result.failures or result.invoice_failures:
         logger.info(
-            "[reaper] swept %d tenant(s); reaped=%d failed_sweeps=%d",
+            "[reaper] swept %d tenant(s); reaped=%d failed_sweeps=%d failed_invoices=%d",
             result.tenants_scanned,
             result.invoices_reaped,
             result.failures,
+            result.invoice_failures,
         )
     return result
 
 
-async def _reap_tenant(db_name: str, cutoff: datetime, *, threshold_seconds: int) -> int:
+async def _reap_tenant(
+    db_name: str, cutoff: datetime, *, threshold_seconds: int
+) -> tuple[int, int]:
     """Transition stuck `pending` invoices in one tenant DB to `failed`.
+
+    Returns ``(reaped, failed_rows)``.
 
     Uses a fresh engine per call — same pattern as `extraction_dispatch._run_local`.
     The reaper runs in the FastAPI event loop, but tenant engines aren't
@@ -104,11 +117,21 @@ async def _reap_tenant(db_name: str, cutoff: datetime, *, threshold_seconds: int
 
     Committing per row also stops one invoice's failure from discarding the
     tick's other work — the same reason `vendor_rescreen` and
-    `recurring_invoices` moved off a single per-tenant transaction.
+    `recurring_invoices` moved off a single per-tenant transaction. The
+    **per-row `try`** is the other half of that claim, and without it the claim
+    was false: ids are read `ORDER BY id ASC`, and a raise propagated straight
+    out of this function, so a single row whose reap kept failing (a malformed
+    workflow snapshot, an audit write that will not land) aborted the loop at
+    the same place on every tick and **no invoice with a higher id was ever
+    reaped again**. Nothing about that row changes between ticks, so it is a
+    permanent block — the tail starvation `../docs/background-sweeps.md`
+    § Locking warns about, arriving through error handling rather than through
+    a cap.
     """
     engine = create_async_engine(_make_tenant_url(db_name))
     factory = async_sessionmaker(engine, expire_on_commit=False)
     reaped = 0
+    failed_rows = 0
 
     try:
         async with factory() as db:
@@ -132,54 +155,72 @@ async def _reap_tenant(db_name: str, cutoff: datetime, *, threshold_seconds: int
             from app.services.workflow_engine import transition_invoice
 
             for invoice_id in stuck_ids:
-                # `with_for_update` bypasses the identity map, so this is a real
-                # `SELECT ... FOR UPDATE` on exactly one row.
-                inv = await db.get(Invoice, invoice_id, with_for_update=True)
-                if inv is None or inv.status is not InvoiceStatus.pending:
-                    # Deleted, or extraction completed between the id read and
-                    # the lock. End the transaction so the lock is released now
-                    # rather than at the end of the tick.
+                try:
+                    # `with_for_update` bypasses the identity map, so this is a
+                    # real `SELECT ... FOR UPDATE` on exactly one row.
+                    inv = await db.get(Invoice, invoice_id, with_for_update=True)
+                    if inv is None or inv.status is not InvoiceStatus.pending:
+                        # Deleted, or extraction completed between the id read
+                        # and the lock. End the transaction so the lock is
+                        # released now rather than at the end of the tick.
+                        await db.rollback()
+                        continue
+                    age = int((datetime.now(UTC) - inv.created_at).total_seconds())
+                    # Route the system transition through transition_invoice so
+                    # the SOC 2 audit-shipping pipeline captures the row, same
+                    # as every other status change. `actor_id=None` marks it as
+                    # a system action; the audit row's `action` distinguishes
+                    # reaper sweeps from user-driven failures.
+                    await transition_invoice(
+                        db,
+                        inv,
+                        InvoiceStatus.failed,
+                        actor_id=None,
+                        action_name="invoice.extraction_reaped",
+                        details={"age_seconds": age, "threshold_seconds": threshold_seconds},
+                    )
+                    # The warnings array stays — it's the reviewer-facing
+                    # surface (visible in the row drawer); the audit row is the
+                    # auditor-facing one. Both serve different SOC 2 readers.
+                    warnings = list(inv.warnings or [])
+                    warnings.append(
+                        {
+                            "type": "extraction_timeout",
+                            "severity": "error",
+                            "message": (
+                                f"Extraction stuck in 'pending' for >{age}s; "
+                                "auto-transitioned to 'failed' by the reaper. "
+                                "Re-trigger extraction or fall back to manual entry."
+                            ),
+                        }
+                    )
+                    inv.warnings = warnings
+                    await db.commit()
+                except Exception as exc:  # noqa: BLE001 — one row must not halt the tenant
+                    # Class only, never the message — an asyncpg / workflow
+                    # error string can echo invoice values (PII-out-of-logs).
+                    logger.warning(
+                        "[reaper] invoice=%s reap failed in %s: %s",
+                        invoice_id,
+                        db_name,
+                        exc.__class__.__name__,
+                    )
                     await db.rollback()
+                    failed_rows += 1
                     continue
-                age = int((datetime.now(UTC) - inv.created_at).total_seconds())
-                # Route the system transition through transition_invoice so
-                # the SOC 2 audit-shipping pipeline captures the row, same
-                # as every other status change. `actor_id=None` marks it as
-                # a system action; the audit row's `action` distinguishes
-                # reaper sweeps from user-driven failures.
-                await transition_invoice(
-                    db,
-                    inv,
-                    InvoiceStatus.failed,
-                    actor_id=None,
-                    action_name="invoice.extraction_reaped",
-                    details={"age_seconds": age, "threshold_seconds": threshold_seconds},
-                )
-                # The warnings array stays — it's the reviewer-facing surface
-                # (visible in the row drawer); the audit row is the
-                # auditor-facing one. Both serve different SOC 2 readers.
-                warnings = list(inv.warnings or [])
-                warnings.append(
-                    {
-                        "type": "extraction_timeout",
-                        "severity": "error",
-                        "message": (
-                            f"Extraction stuck in 'pending' for >{age}s; "
-                            "auto-transitioned to 'failed' by the reaper. "
-                            "Re-trigger extraction or fall back to manual entry."
-                        ),
-                    }
-                )
-                inv.warnings = warnings
-                await db.commit()
                 reaped += 1
 
-            if reaped:
-                logger.info("[reaper] %s: reaped %d stuck invoice(s)", db_name, reaped)
+            if reaped or failed_rows:
+                logger.info(
+                    "[reaper] %s: reaped %d stuck invoice(s), %d failed",
+                    db_name,
+                    reaped,
+                    failed_rows,
+                )
     finally:
         await engine.dispose()
 
-    return reaped
+    return reaped, failed_rows
 
 
 async def run_reaper_loop() -> None:

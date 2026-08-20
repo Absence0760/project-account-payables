@@ -88,7 +88,9 @@ async def test_escalate_once_iterates_every_tenant():
             "control_session_factory",
             _fake_control_session(["feoh_a", "feoh_b", "feoh_c"]),
         ),
-        patch.object(approval_escalation, "_escalate_tenant", AsyncMock(return_value=2)) as sweep,
+        patch.object(
+            approval_escalation, "_escalate_tenant", AsyncMock(return_value=(2, 0))
+        ) as sweep,
     ):
         result = await approval_escalation.escalate_once()
 
@@ -100,7 +102,7 @@ async def test_escalate_once_iterates_every_tenant():
 
 async def test_escalate_once_continues_after_one_tenant_fails():
     """A malformed/unreachable tenant must not abort the whole sweep."""
-    side_effects = [2, RuntimeError("bad json"), 1]
+    side_effects = [(2, 0), RuntimeError("bad json"), (1, 0)]
     with (
         patch.object(
             approval_escalation,
@@ -150,11 +152,58 @@ async def test_escalate_tenant_commits_only_when_something_escalated():
         patches[2],
         patch.object(approval_escalation, "apply_escalation", MagicMock(side_effect=[True, False])),
     ):
-        n = await approval_escalation._escalate_tenant("feoh_acme", datetime.now(UTC))
+        n, _failed = await approval_escalation._escalate_tenant("feoh_acme", datetime.now(UTC))
 
     assert n == 1
     session.commit.assert_awaited_once()
     engine.dispose.assert_awaited_once()
+
+
+async def test_escalate_tenant_isolates_one_bad_instance_so_the_tail_still_escalates():
+    """A single instance whose escalation raises must not starve the rest.
+
+    The keyset cursor `after` is a LOCAL that resets to `None` every tick, so a
+    raise unwound the whole paging loop and the next tick restarted at page 1 —
+    hitting the same instance at the same place, forever. `approval_levels` is
+    free-form JSONB and `dispatch_audit` can fail, so this is reachable; nothing
+    past the offending instance in that tenant was ever escalated again, which
+    is the tail starvation the pagination exists to prevent.
+    """
+    good_a, bad, good_b = _stub_instance(), _stub_instance(), _stub_instance()
+    session = _FakeTenantSession([good_a, bad, good_b])
+    engine, patches = _patch_tenant(session)
+
+    def _apply(inst, *, now):
+        if inst is bad:
+            raise ValueError("malformed approval_levels")
+        return True
+
+    with (
+        patches[0],
+        patches[1],
+        patches[2],
+        patch.object(approval_escalation, "apply_escalation", MagicMock(side_effect=_apply)),
+    ):
+        n, failed = await approval_escalation._escalate_tenant("feoh_acme", datetime.now(UTC))
+
+    assert (n, failed) == (2, 1), "the instance after the bad one was never reached"
+
+
+async def test_escalate_once_surfaces_instance_failures_to_sweep_health():
+    """`instance_failures` reaches the shared runner's failure count, so a sweep
+    that completes while its instances fail reports `partial`, never `ok`."""
+    from app.services import sweep_health
+
+    with (
+        patch.object(
+            approval_escalation, "control_session_factory", _fake_control_session(["feoh_a"])
+        ),
+        patch.object(approval_escalation, "_escalate_tenant", AsyncMock(return_value=(0, 2))),
+    ):
+        result = await approval_escalation.escalate_once()
+
+    assert result.instance_failures == 2
+    assert sweep_health.failure_count(sweep_health.extract_counts(result)) == 2
 
 
 async def test_escalate_tenant_writes_audit_row_per_escalation():
@@ -198,7 +247,7 @@ async def test_escalate_tenant_writes_audit_row_per_escalation():
         patch.object(approval_escalation, "apply_escalation", MagicMock(return_value=True)),
         patch.object(approval_escalation, "dispatch_audit", _capture_audit),
     ):
-        n = await approval_escalation._escalate_tenant(
+        n, _failed = await approval_escalation._escalate_tenant(
             "feoh_acme", datetime.now(UTC), org_id=org_id
         )
 
@@ -222,7 +271,7 @@ async def test_escalate_tenant_does_not_commit_when_nothing_overdue():
         patches[2],
         patch.object(approval_escalation, "apply_escalation", MagicMock(return_value=False)),
     ):
-        n = await approval_escalation._escalate_tenant("feoh_acme", datetime.now(UTC))
+        n, _failed = await approval_escalation._escalate_tenant("feoh_acme", datetime.now(UTC))
 
     assert n == 0
     session.commit.assert_not_awaited()
@@ -366,7 +415,7 @@ async def test_escalate_tenant_escalates_only_active_overdue_instances(realdb):
         active_id, completed_id = active.id, completed.id
 
     # The sweeper escalates exactly one instance (the active one).
-    escalated = await _escalate_tenant(info.db_name, datetime.now(UTC))
+    escalated, _failed = await _escalate_tenant(info.db_name, datetime.now(UTC))
     assert escalated == 1
 
     async with mk() as s:
@@ -419,7 +468,7 @@ async def test_escalate_tenant_locks_one_row_at_a_time():
         patches[2],
         patch.object(approval_escalation, "apply_escalation", MagicMock(return_value=True)),
     ):
-        n = await approval_escalation._escalate_tenant("feoh_acme", datetime.now(UTC))
+        n, _failed = await approval_escalation._escalate_tenant("feoh_acme", datetime.now(UTC))
 
     assert n == 2
     # Phase 1: the candidate page is a plain SELECT — no FOR UPDATE.
@@ -445,7 +494,7 @@ async def test_escalate_tenant_releases_the_lock_when_nothing_changes():
         patches[2],
         patch.object(approval_escalation, "apply_escalation", MagicMock(return_value=False)),
     ):
-        n = await approval_escalation._escalate_tenant("feoh_acme", datetime.now(UTC))
+        n, _failed = await approval_escalation._escalate_tenant("feoh_acme", datetime.now(UTC))
 
     assert n == 0
     session.commit.assert_not_awaited()
@@ -467,7 +516,7 @@ async def test_escalate_tenant_skips_an_instance_that_completed_under_the_lock()
         patches[2],
         patch.object(approval_escalation, "apply_escalation", apply_spy),
     ):
-        n = await approval_escalation._escalate_tenant("feoh_acme", datetime.now(UTC))
+        n, _failed = await approval_escalation._escalate_tenant("feoh_acme", datetime.now(UTC))
 
     assert n == 0
     apply_spy.assert_not_called()
@@ -551,7 +600,7 @@ async def test_escalate_tenant_pages_until_the_tenant_is_exhausted(realdb):
     original = cfg.approval_escalation_batch_size
     cfg.approval_escalation_batch_size = 2
     try:
-        escalated = await _escalate_tenant(info.db_name, datetime.now(UTC))
+        escalated, _failed = await _escalate_tenant(info.db_name, datetime.now(UTC))
     finally:
         cfg.approval_escalation_batch_size = original
 

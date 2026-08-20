@@ -45,7 +45,9 @@ async def test_reap_once_iterates_every_tenant():
             "control_session_factory",
             _fake_control_session(["feoh_a", "feoh_b", "feoh_c"]),
         ),
-        patch.object(extraction_reaper, "_reap_tenant", AsyncMock(return_value=2)) as reap_tenant,
+        patch.object(
+            extraction_reaper, "_reap_tenant", AsyncMock(return_value=(2, 0))
+        ) as reap_tenant,
     ):
         result = await extraction_reaper.reap_once()
 
@@ -60,7 +62,7 @@ async def test_reap_once_continues_after_one_tenant_fails():
     """One bad tenant DB shouldn't halt the sweep — log + move on."""
     from app.services import extraction_reaper
 
-    side_effects = [2, RuntimeError("connection refused"), 1]
+    side_effects = [(2, 0), RuntimeError("connection refused"), (1, 0)]
     with (
         patch.object(
             extraction_reaper,
@@ -86,7 +88,7 @@ async def test_reap_once_uses_explicit_threshold_over_default():
     async def capture(db_name, cutoff, *, threshold_seconds):
         captured["cutoff"] = cutoff
         captured["threshold_seconds"] = threshold_seconds
-        return 0
+        return 0, 0
 
     with (
         patch.object(
@@ -156,10 +158,104 @@ async def test_reap_tenant_audit_detail_records_real_threshold_not_epoch():
             AsyncMock(side_effect=fake_transition),
         ),
     ):
-        reaped = await extraction_reaper._reap_tenant("feoh_x", cutoff, threshold_seconds=600)
+        reaped, failed_rows = await extraction_reaper._reap_tenant(
+            "feoh_x", cutoff, threshold_seconds=600
+        )
 
-    assert reaped == 1
+    assert (reaped, failed_rows) == (1, 0)
     assert captured["details"]["threshold_seconds"] == 600  # not int(cutoff.timestamp())
+
+
+@pytest.mark.asyncio
+async def test_reap_tenant_isolates_one_bad_row_so_the_tail_still_reaps():
+    """A row whose reap raises must not starve every higher id, forever.
+
+    Candidate ids are read `ORDER BY id ASC` and the loop had no per-row
+    `try`, so a raise propagated out of `_reap_tenant` — and because nothing
+    about the offending row changes, the next tick re-selected the same list
+    and aborted at the same place. Every invoice after it was permanently
+    unreachable, while the tenant merely registered one `failures`.
+
+    `vendor_rescreen` and `recurring_invoices` already isolate per item; this
+    sweep had adopted only their per-row COMMIT, which is what its own
+    docstring claimed the property from.
+    """
+    from app.models.invoice import InvoiceStatus
+    from app.services import extraction_reaper
+
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(seconds=600)
+
+    def _inv(name):
+        return SimpleNamespace(
+            id=name,
+            created_at=now - timedelta(seconds=900),
+            status=InvoiceStatus.pending,
+            warnings=None,
+        )
+
+    invoices = {name: _inv(name) for name in ("inv-1", "inv-2", "inv-3")}
+
+    scalars = MagicMock(all=lambda: list(invoices))
+    fake_session = MagicMock()
+    fake_session.execute = AsyncMock(return_value=MagicMock(scalars=lambda: scalars))
+    fake_session.get = AsyncMock(side_effect=lambda _model, key, **_kw: invoices[key])
+    fake_session.commit = AsyncMock()
+    fake_session.rollback = AsyncMock()
+
+    session_cm = AsyncMock()
+    session_cm.__aenter__.return_value = fake_session
+    session_cm.__aexit__.return_value = None
+
+    transitioned: list[str] = []
+
+    async def fake_transition(db, inv, target, *, actor_id, action_name, details):
+        if inv.id == "inv-2":
+            raise RuntimeError("audit write refused")
+        transitioned.append(inv.id)
+
+    fake_engine = MagicMock(dispose=AsyncMock())
+
+    with (
+        patch.object(extraction_reaper, "create_async_engine", lambda *a, **k: fake_engine),
+        patch.object(
+            extraction_reaper,
+            "async_sessionmaker",
+            lambda *a, **k: MagicMock(return_value=session_cm),
+        ),
+        patch(
+            "app.services.workflow_engine.transition_invoice",
+            AsyncMock(side_effect=fake_transition),
+        ),
+    ):
+        reaped, failed_rows = await extraction_reaper._reap_tenant(
+            "feoh_x", cutoff, threshold_seconds=600
+        )
+
+    # The tail past the poison row is reached…
+    assert transitioned == ["inv-1", "inv-3"]
+    assert (reaped, failed_rows) == (2, 1)
+    # …and the failure is visible to `sweep_health` (the `*_failures` suffix is
+    # what `failure_count` sums), not rounded down to a healthy tick.
+    assert fake_session.rollback.await_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_reap_once_surfaces_row_failures_to_sweep_health():
+    """`invoice_failures` reaches the shared runner's failure count, so a reaper
+    that completes while its rows fail reports `partial`, never `ok`."""
+    from app.services import extraction_reaper, sweep_health
+
+    with (
+        patch.object(
+            extraction_reaper, "control_session_factory", _fake_control_session(["feoh_a"])
+        ),
+        patch.object(extraction_reaper, "_reap_tenant", AsyncMock(return_value=(0, 3))),
+    ):
+        result = await extraction_reaper.reap_once()
+
+    assert result.invoice_failures == 3
+    assert sweep_health.failure_count(sweep_health.extract_counts(result)) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +328,7 @@ async def test_reap_skips_an_invoice_whose_extraction_landed_mid_tick(realdb):
         return await real_transition(db, inv, target, **kw)
 
     with patch("app.services.workflow_engine.transition_invoice", AsyncMock(side_effect=wrapper)):
-        reaped = await extraction_reaper._reap_tenant(
+        reaped, failed_rows = await extraction_reaper._reap_tenant(
             db_name, datetime.now(UTC) - timedelta(hours=1), threshold_seconds=3600
         )
 
@@ -241,7 +337,7 @@ async def test_reap_skips_an_invoice_whose_extraction_landed_mid_tick(realdb):
 
     # Exactly one was genuinely stuck by the time its turn came; the other had
     # completed and keeps the status extraction gave it.
-    assert reaped == 1
+    assert (reaped, failed_rows) == (1, 0)
     assert sorted(st.value for st in statuses.values()) == ["failed", "ready_for_review"]
 
 
