@@ -10,10 +10,18 @@
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { auth } from '$lib/stores/auth.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { formatDate } from '$lib/utils/time';
 	import { currencyOptions } from '$lib/utils/money';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
+
+	// Create / apply / void are all `require_roles(ADMIN, AP_MANAGER)` on the
+	// backend, while the LIST is open to all four roles. The page carried no
+	// role check at all: a CFO — who reaches it through nav.ts — completed the
+	// create modal, or armed the two-click Void, and only then got a 403. Read
+	// stays open, which is also what lets the nav row admit a clerk.
+	const canMutate = $derived(auth.isManager);
 
 	const STATUS_CHIPS = $derived([
 		{ key: 'all', label: m('common.all') },
@@ -306,7 +314,9 @@
 
 <PageHeader title={m('creditMemos.title')}>
 	{#snippet actions()}
-		<button class="btn-primary" onclick={() => (showCreate = true)}>{m('creditMemos.new')}</button>
+		{#if canMutate}
+			<button class="btn-primary" onclick={() => (showCreate = true)}>{m('creditMemos.new')}</button>
+		{/if}
 	{/snippet}
 
 	<FilterChips chips={STATUS_CHIPS} bind:active={statusFilter} />
@@ -326,7 +336,7 @@
 					<td class="mono muted">{memo.invoice_number ?? '—'}</td>
 					<td><span class="badge {memo.status}">{memo.status}</span></td>
 					<td class="actions">
-						{#if memo.status === 'open'}
+						{#if canMutate && memo.status === 'open'}
 							<RowAction onclick={() => { applyTargetId = memo.id; applyInvoiceId = ''; }}>{m('creditMemos.row.apply')}</RowAction>
 							<RowAction
 								variant="danger"

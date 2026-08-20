@@ -11,6 +11,7 @@
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { auth } from '$lib/stores/auth.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { formatDate } from '$lib/utils/time';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
@@ -284,9 +285,14 @@
 
 <PageHeader title={m('purchaseOrders.title')}>
 	{#snippet actions()}
-		<button class="btn-outline" disabled={syncing} onclick={syncFromErp}>
-			{syncing ? m('purchaseOrders.action.syncing') : m('purchaseOrders.action.syncErp')}
-		</button>
+		{#if auth.isManager}
+			<!-- `POST /api/purchase-orders/sync-erp` is
+			     require_roles(ADMIN, AP_MANAGER). A CFO reaches this page for the
+			     read (nav.ts) but holds neither role, so the button only 403'd. -->
+			<button class="btn-outline" disabled={syncing} onclick={syncFromErp}>
+				{syncing ? m('purchaseOrders.action.syncing') : m('purchaseOrders.action.syncErp')}
+			</button>
+		{/if}
 	{/snippet}
 
 	<div class="filter-row">

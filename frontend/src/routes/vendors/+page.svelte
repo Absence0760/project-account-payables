@@ -290,9 +290,14 @@
 				Merge duplicates
 			</button>
 		{/if}
-		<button class="btn-outline" disabled={syncing} onclick={syncFromErp}>
-			{syncing ? m('vendors.action.syncing') : m('vendors.action.syncErp')}
-		</button>
+		{#if auth.isManager}
+			<!-- `POST /api/vendors/sync-erp` is require_roles(ADMIN, AP_MANAGER).
+			     A CFO reaches this page (nav.ts admits them for the read) but
+			     holds neither role, so the button only ever 403'd. -->
+			<button class="btn-outline" disabled={syncing} onclick={syncFromErp}>
+				{syncing ? m('vendors.action.syncing') : m('vendors.action.syncErp')}
+			</button>
+		{/if}
 	{/snippet}
 
 	<div class="filter-row">
@@ -346,14 +351,24 @@
 							<span class="muted">—</span>
 						{/if}
 					</td>
+					<!-- Verify / reject / bank-change all sit behind
+					     `require_permission(vendor.manage)` on the backend, which a
+					     CFO does not hold (`ROLE_DEFAULT_PERMISSIONS`) — yet a CFO
+					     reaches this page for the read. Ungated, they filled in the
+					     whole bank-details dialog before the save 403'd, on the
+					     BEC-sensitive path. `canManageVendors` is the same granular
+					     permission the backend checks, so a custom role that grants
+					     it works too. -->
 					<td class="actions">
-						{#if v.status === 'unverified'}
-							<RowAction variant="success" onclick={() => verifyVendor(v.id)}>{m('vendors.row.verify')}</RowAction>
-							<RowAction variant="danger" onclick={() => rejectVendor(v.id)}>{m('vendors.row.reject')}</RowAction>
+						{#if canManageVendors}
+							{#if v.status === 'unverified'}
+								<RowAction variant="success" onclick={() => verifyVendor(v.id)}>{m('vendors.row.verify')}</RowAction>
+								<RowAction variant="danger" onclick={() => rejectVendor(v.id)}>{m('vendors.row.reject')}</RowAction>
+							{/if}
+							<RowAction onclick={() => openBankEditor(v)}>
+								{v.bank_details?.counterparty_id ? m('vendors.row.bankSet') : m('vendors.row.bank')}
+							</RowAction>
 						{/if}
-						<RowAction onclick={() => openBankEditor(v)}>
-							{v.bank_details?.counterparty_id ? m('vendors.row.bankSet') : m('vendors.row.bank')}
-						</RowAction>
 					</td>
 				</tr>
 			{/each}
