@@ -601,6 +601,9 @@ class UnrealizedFXEntry:
     booked_reporting_amount: Decimal  # at the locked rate when materialized
     current_reporting_amount: Decimal  # at today's rate
     unrealized_gain_loss: Decimal  # booked - current (gain when liability shrank)
+    #: Open invoices in this currency carrying no usable reporting lock. They
+    #: are EXCLUDED from every figure above — see `compute_unrealized_fx_gain_loss`.
+    unconverted_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -608,6 +611,9 @@ class UnrealizedFXResult:
     reporting_currency: str
     total_unrealized_gain_loss: Decimal
     by_currency: list[UnrealizedFXEntry]
+    #: Open foreign invoices left out of the exposure entirely because no rate
+    #: was ever locked on them (`decisions §35`).
+    unconverted_count: int = 0
 
 
 async def compute_unrealized_fx_gain_loss(
@@ -633,6 +639,19 @@ async def compute_unrealized_fx_gain_loss(
 
     Same-currency invoices carry no FX exposure and are skipped. One FX call per
     distinct foreign currency (today's rate), not per row.
+
+    **A row with no usable reporting lock is EXCLUDED and counted**, never
+    booked at face value — `decisions §35`. The booked leg is what the row was
+    recorded at in the reporting currency; `reporting_amount_for_row`'s
+    face-value fallback returns the amount in the row's OWN currency, which is
+    right for a spend rollup (an approximate total with a caveat beats a blank
+    panel) and wrong here, because the mark-to-market leg then converts the same
+    original amount at today's rate and the arithmetic reports the *conversion
+    itself* as a gain or loss. A single EUR 1 000 invoice whose materialization
+    failed once produced an $87 unrealized LOSS on an exposure that never moved.
+    `invoice_warnings._refresh_reporting_amount` is best-effort and documents
+    leaving the fields NULL on an FX blip, and the `/cfo` query applies no
+    `IS NOT NULL` filter, so this is a live path rather than a theoretical one.
     """
     tgt = reporting_currency.upper()
 
@@ -643,7 +662,7 @@ async def compute_unrealized_fx_gain_loss(
         if cur == tgt:
             continue
         amount = Decimal(str(inv.get("amount") or 0))
-        rep_amt, _ = reporting_amount_for_row(
+        rep_amt, unconverted = reporting_amount_for_row(
             amount=amount,
             currency=cur,
             reporting_currency=tgt,
@@ -651,14 +670,37 @@ async def compute_unrealized_fx_gain_loss(
             persisted_reporting_amount=inv.get("reporting_amount"),
         )
         b = by_cur.setdefault(
-            cur, {"open_original": Decimal("0"), "booked_reporting": Decimal("0")}
+            cur,
+            {"open_original": Decimal("0"), "booked_reporting": Decimal("0"), "unconverted": 0},
         )
+        if unconverted:
+            # No booked reporting figure exists for this row, so it can be on
+            # NEITHER side of the comparison. Counted so the omission is visible.
+            b["unconverted"] += 1
+            continue
         b["open_original"] += amount
         b["booked_reporting"] += rep_amt
 
     entries: list[UnrealizedFXEntry] = []
     total = Decimal("0")
+    unconverted_total = 0
     for cur, b in by_cur.items():
+        unconverted_total += b["unconverted"]
+        if b["open_original"] == 0 and b["booked_reporting"] == 0:
+            # Every open row in this currency is unconverted. There is no
+            # exposure to mark, and no rate to fetch — but the currency still
+            # appears, carrying its count, rather than vanishing from the report.
+            entries.append(
+                UnrealizedFXEntry(
+                    currency=cur,
+                    open_original_amount=Decimal("0.00"),
+                    booked_reporting_amount=Decimal("0.00"),
+                    current_reporting_amount=Decimal("0.00"),
+                    unrealized_gain_loss=Decimal("0.00"),
+                    unconverted_count=b["unconverted"],
+                )
+            )
+            continue
         fx = await fx_adapter.get_rate(cur, tgt)
         if fx.rate <= 0:
             raise ValueError(f"FX provider returned non-positive rate for {cur}->{tgt}: {fx.rate}")
@@ -673,6 +715,7 @@ async def compute_unrealized_fx_gain_loss(
                 booked_reporting_amount=booked,
                 current_reporting_amount=current_reporting,
                 unrealized_gain_loss=gain_loss,
+                unconverted_count=b["unconverted"],
             )
         )
 
@@ -681,4 +724,5 @@ async def compute_unrealized_fx_gain_loss(
         reporting_currency=tgt,
         total_unrealized_gain_loss=_quantize_money(total),
         by_currency=entries,
+        unconverted_count=unconverted_total,
     )

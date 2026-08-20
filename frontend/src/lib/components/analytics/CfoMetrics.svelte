@@ -160,6 +160,21 @@
 		{#if data.unrealized_fx.available && data.unrealized_fx.by_currency.length > 0}
 			<div class="cfm-subsection">
 				<h3>{m('cfoMetrics.fx.title')}</h3>
+				<!-- Open foreign invoices with no locked rate are EXCLUDED from the
+				     exposure rather than booked at face value: the mark-to-market leg
+				     converts the same original amount at today's rate, so a face-value
+				     booking reports the conversion itself as a gain/loss. Excluding
+				     them silently would understate the exposure instead, so the count
+				     has to be on screen — the number and its caveat must not live in
+				     different places (decisions §35). -->
+				{#if data.unrealized_fx.unconverted_count > 0}
+					<p class="cfm-skipped" role="alert" data-testid="unconverted-fx">
+						{m('cfoMetrics.fx.unconverted', {
+							n: data.unrealized_fx.unconverted_count,
+							currency: data.unrealized_fx.reporting_currency
+						})}
+					</p>
+				{/if}
 				<DataTable
 					columns={[
 						{ label: m('cfoMetrics.fx.colCurrency') },
@@ -307,5 +322,14 @@
 
 	.cfm-alert {
 		color: var(--danger);
+	}
+	/* Amber, not red — the exposure below is still usable, it just doesn't
+	   cover every open foreign invoice. Same treatment as `/cfo`'s
+	   `.cf-skipped`, which carries the sibling outflow-side caveat. */
+	.cfm-skipped {
+		color: #d4940a;
+		font-size: 0.85rem;
+		font-weight: 600;
+		margin: 0 0 12px;
 	}
 </style>

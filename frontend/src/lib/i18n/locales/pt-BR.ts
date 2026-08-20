@@ -1094,6 +1094,8 @@ export const messages = {
 	'cfoMetrics.fx.colBooked': 'Registrado',
 	'cfoMetrics.fx.colCurrent': 'Atual',
 	'cfoMetrics.fx.colGainLoss': 'Ganho / perda',
+	'cfoMetrics.fx.unconverted':
+		'Excluídas: {n, plural, one {# fatura em aberto} other {# faturas em aberto}} sem taxa de câmbio para {currency}, portanto fora da exposição abaixo. Registre a taxa ausente para incluí-las.',
 
 	// Expense Management (routes/expenses/+page.svelte)
 	'expenses.title': 'Despesas',

@@ -175,14 +175,37 @@ reports the difference vs the booked (rate-locked) reporting amount.
   `international_payments.realized_fx_gain_loss_for_settlement` measures — this is the
   open-position companion.
 
+### A row with no locked rate is excluded and counted, never booked at face value
+
+The booked leg is what the invoice was **recorded at** in the reporting
+currency. `reporting_amount_for_row`'s face-value fallback returns the amount in
+the row's *own* currency — right for a spend rollup (an approximate total with a
+caveat beats a blank panel) and **wrong here**, because the mark-to-market leg
+then converts the same original amount at today's rate and the arithmetic
+reports the *conversion itself* as a gain or loss.
+
+Dropping that helper's `unconverted` flag made a single EUR 1 000 open invoice
+whose materialization had failed once produce an **$87 unrealized loss on an
+exposure that never moved**. `invoice_warnings._refresh_reporting_amount` is
+best-effort and documents leaving the fields NULL on an FX blip, and the `/cfo`
+query applies no `IS NOT NULL` filter, so this is a live path.
+
+Such a row is now left out of **both** legs and counted (`unconverted_count`, on
+the result and per currency) — `decisions §35`, the sixth instance of the same
+shape. A currency where *every* open row is unconverted still appears, carrying
+its count with zeroed money, and no rate is fetched for it: an FX outage must
+not be what decides whether the omission is reported. The count renders on the
+`/cfo` FX card, so the number and its caveat are never in different places.
+
 Open statuses considered: `approved`, `sending_to_erp`, `sent_to_erp`,
 `posted_in_erp`, `payment_scheduled`.
 
 Surfaced on `GET /api/analytics/cfo` → `unrealized_fx`:
 `reporting_currency`, `total_unrealized_gain_loss`, `by_currency[]`
 (`open_original_amount`, `booked_reporting_amount`, `current_reporting_amount`,
-`unrealized_gain_loss`), and `available` (false when the FX lookup failed — the
-CFO dashboard degrades rather than 500-ing).
+`unrealized_gain_loss`, `unconverted_count`), `unconverted_count`, and
+`available` (false when the FX lookup failed — the CFO dashboard degrades rather
+than 500-ing).
 
 ## FX provider
 

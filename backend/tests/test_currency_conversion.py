@@ -639,6 +639,85 @@ async def test_unrealized_one_fx_call_per_distinct_currency():
     assert sorted(calls) == [("EUR", "USD"), ("GBP", "USD")]
 
 
+@pytest.mark.asyncio
+async def test_unrealized_excludes_and_counts_a_row_with_no_locked_rate():
+    """An open foreign invoice whose reporting materialization never succeeded
+    has no booked figure, so it can be on NEITHER side of the comparison.
+
+    `reporting_amount_for_row` falls back to the row's face value in its OWN
+    currency — right for a spend rollup, wrong here: the mark-to-market leg
+    converts the same original amount at today's rate, so the arithmetic
+    reports the *conversion itself* as a gain or loss. Dropping the helper's
+    `unconverted` flag made one EUR 1,000 invoice produce an $87 unrealized
+    LOSS on an exposure that never moved. `decisions §35`.
+    """
+    inv = {
+        "amount": Decimal("1000.00"),
+        "currency": "EUR",
+        "reporting_amount": None,
+        "reporting_currency": None,
+    }
+    fx = MockFXAdapter({"mock_rates": {"EUR": "0.92"}})
+    result = await compute_unrealized_fx_gain_loss([inv], reporting_currency="USD", fx_adapter=fx)
+    assert result.total_unrealized_gain_loss == Decimal("0.00")
+    assert result.unconverted_count == 1
+    # The currency still appears, carrying its count — excluded, not vanished.
+    entry = result.by_currency[0]
+    assert entry.currency == "EUR"
+    assert entry.unconverted_count == 1
+    assert entry.open_original_amount == Decimal("0.00")
+    assert entry.booked_reporting_amount == Decimal("0.00")
+    assert entry.current_reporting_amount == Decimal("0.00")
+
+
+@pytest.mark.asyncio
+async def test_unrealized_mixes_converted_and_unconverted_rows_in_one_currency():
+    """The converted rows still produce a real gain/loss; the unconverted one is
+    left out of BOTH legs (not just the booked one) so the exposure stays
+    internally consistent."""
+    invs = [
+        {
+            "amount": Decimal("1000.00"),
+            "currency": "EUR",
+            "reporting_amount": Decimal("1111.11"),
+            "reporting_currency": "USD",
+        },
+        {
+            "amount": Decimal("9999.00"),
+            "currency": "EUR",
+            "reporting_amount": None,
+            "reporting_currency": None,
+        },
+    ]
+    fx = MockFXAdapter({"mock_rates": {"EUR": "0.92"}})
+    result = await compute_unrealized_fx_gain_loss(invs, reporting_currency="USD", fx_adapter=fx)
+    entry = result.by_currency[0]
+    # Identical to the single-converted-row case — the 9,999 row changed nothing.
+    assert entry.open_original_amount == Decimal("1000.00")
+    assert entry.booked_reporting_amount == Decimal("1111.11")
+    assert entry.current_reporting_amount == Decimal("1086.96")
+    assert entry.unrealized_gain_loss == Decimal("24.15")
+    assert result.total_unrealized_gain_loss == Decimal("24.15")
+    assert result.unconverted_count == 1
+
+
+@pytest.mark.asyncio
+async def test_unrealized_makes_no_fx_call_for_a_wholly_unconverted_currency():
+    """No exposure to mark means no rate to fetch — and an FX outage must not
+    be what decides whether the omission is reported."""
+    inv = {
+        "amount": Decimal("1000.00"),
+        "currency": "GBP",
+        "reporting_amount": None,
+        "reporting_currency": None,
+    }
+    fx = MockFXAdapter()
+    fx.get_rate = _exploding_get_rate()  # must not be called
+    result = await compute_unrealized_fx_gain_loss([inv], reporting_currency="USD", fx_adapter=fx)
+    assert result.unconverted_count == 1
+    assert result.total_unrealized_gain_loss == Decimal("0.00")
+
+
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------

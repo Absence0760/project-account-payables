@@ -1078,6 +1078,8 @@ export const messages = {
 	'cfoMetrics.fx.colBooked': '計上済み',
 	'cfoMetrics.fx.colCurrent': '現在',
 	'cfoMetrics.fx.colGainLoss': '損益',
+	'cfoMetrics.fx.unconverted':
+		'除外: {currency} への為替レートが未設定の未決済請求書が {n, plural, other {# 件}}あり、以下のエクスポージャーには含まれていません。レートを登録すると含まれます。',
 
 	// Expense Management (routes/expenses/+page.svelte)
 	'expenses.title': '経費',
