@@ -498,8 +498,12 @@ def _mock_db(*, run, payment, invoice, vendor_bank, compliance_vendor=None, comp
         )
         vendor_lookup_res = MagicMock()
         vendor_lookup_res.scalar_one_or_none = MagicMock(return_value=v)
+        # The AML trailing-spend query returns TWO columns and is consumed with
+        # `.one()`: the home-currency sum and a count of the payments that
+        # couldn't be expressed there (excluded, not summed at face value — see
+        # `compliance._trailing_12m_spend`).
         spend_res = MagicMock()
-        spend_res.scalar = MagicMock(return_value=Decimal("0"))
+        spend_res.one = MagicMock(return_value=(Decimal("0"), 0))
         queue.extend([vendor_lookup_res, spend_res])
 
     if completes:

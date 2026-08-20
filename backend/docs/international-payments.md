@@ -164,8 +164,8 @@ sub-checks run in order; the most-severe verdict wins:
    parameter is **required with no default**, so a new caller that doesn't say
    what currency it holds fails loudly instead of silently picking a
    direction. When the amount is not provably in the home currency the gate
-   **fails closed** and requires KYC. The AML trailing-12-month sum reads
-   `COALESCE(source_amount, amount)` for the same reason.
+   **fails closed** and requires KYC. The AML trailing-12-month sum is
+   denominated in the same currency — see below for how it resolves one.
 
    The default high-risk set is `INTERNATIONAL_PAYMENT_METHODS`
    (`services/payment_methods.py`) — imported, not restated, so a new
@@ -179,9 +179,35 @@ sub-checks run in order; the most-severe verdict wins:
 
 3. **AML trailing-12m spend signal**. Sum of completed payments to
    this vendor in the last 365 days plus the new payment; if it
-   reaches `compliance.aml_spend_alert_threshold` (default $100k),
-   returns `hold` with a review reason. Setting the threshold to
-   `0` disables this check entirely.
+   reaches `compliance.aml_spend_alert_threshold` (default 100 000 in the
+   **home currency**), returns `hold` with a review reason. Setting the
+   threshold to `0` disables this check entirely.
+
+   **The sum is currency-resolved, not `COALESCE(source_amount, amount)`.**
+   `source_amount` is the home-currency leg, but it is NULL on every payment
+   that never took the FX path — the whole `virtual_card` leg returns before
+   it — and the `amount` fallback is in the *invoice's* currency. So a ¥500,000
+   card payment (≈ $3.4k) was added onto a USD threshold as `500000`: a ~150x
+   over-count that holds a vendor at a fraction of its real spend, with the
+   mirror case (a JPY-home org paying a USD vendor) under-counting by the same
+   factor and never firing. `_trailing_12m_spend` now resolves each row through
+   `currency_conversion.payment_reporting_amount_sql` targeting the **home**
+   currency — the same two-rung resolver every other money rollup uses.
+
+   What it cannot express is **excluded and counted**
+   ([decisions §35](../../docs/decisions.md)), and the alert states the
+   exclusion so its figure reads as the floor it is. Deliberately NOT a
+   `reasons` entry on the *under*-threshold path: that would hold every payment
+   to that vendor forever, and `POST /api/payments/{id}/compliance/release`
+   re-runs this same gate, so it could never clear — a dead end rather than a
+   control. The exclusion is logged (PII-free: vendor id, count, currency)
+   instead. This differs from the KYC gate above, which fails closed because a
+   KYC gap is a *refusal* with a real remedy (verify the vendor).
+
+   The reason string carries the currency code rather than a hardcoded `$`,
+   which was wrong for every non-USD tenant.
+
+   Guards: `tests/test_compliance_aml_currency.py`.
 
 Verdict resolution:
 
