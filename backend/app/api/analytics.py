@@ -923,11 +923,22 @@ async def get_cfo_analytics(
     fraud_trend = compute_fraud_rate_trend(fraud_rows)
 
     # ----- Rebate yield -----
+    # Windowed to the SAME trailing `period_days` as `total_spend`, which is the
+    # denominator it is divided by and the span `months_in_period` describes.
+    # Without the predicate the numerator was LIFETIME rebates: `yield_pct`
+    # became lifetime-over-30-days and `annualised_rebates` multiplied a
+    # three-year total by 12 — a tenant with $36k of rebates booked over 36
+    # months reported a 36% yield and a $432k annual run-rate off a 30-day
+    # window, against a truth of ~1% and ~$12k. `created_at` is when the rebate
+    # was booked; the `period` column is a display label, not a filter key.
     try:
         rebate_q = await db.execute(
             apply_entity_scope(
-                select(func.coalesce(func.sum(CardRebate.amount), 0)).join(
-                    VirtualCard, CardRebate.virtual_card_id == VirtualCard.id
+                select(func.coalesce(func.sum(CardRebate.amount), 0))
+                .join(VirtualCard, CardRebate.virtual_card_id == VirtualCard.id)
+                .where(
+                    CardRebate.created_at
+                    >= datetime.combine(period_start, datetime.min.time()).replace(tzinfo=UTC)
                 ),
                 VirtualCard,
                 entity_id,

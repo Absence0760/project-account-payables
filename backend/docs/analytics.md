@@ -152,7 +152,16 @@ Response:
 - `working_capital_impact_5_days` — `avg_daily_outflow × 5`
 - `supplier_concentration.{top_10_share_pct, top_50_share_pct, largest_vendor, largest_vendor_share_pct, flagged}` — `flagged=true` iff the largest vendor **reaches or** exceeds 25% (configurable; the boundary is inclusive on purpose — a risk flag that stays dark at exactly the configured limit is the wrong direction to be wrong in). **Every share is computed against the whole period's spend**, never a top-N subtotal: `compute_supplier_concentration` derives its denominator from the list it is handed and takes its own `[:10]`/`[:50]` cuts, so the caller must pass the full vendor set and slice only for display. Passing a pre-sliced top-50 made `total_spend` the top-50 subtotal, inflated `top_10_share_pct` / `largest_vendor_share_pct` (and with them `flagged`), and pinned `top_50_share_pct` at exactly `100.0` on any tenant with 50+ vendors. The same rule governs `/drill/spend_concentration`, whose `total_spend` and `share_pct` are computed before `?limit=` is applied — otherwise `limit` silently rebased both and the drill disagreed with the tile it was opened from. Excludes `rejected` invoices (never real spend) — the SAME population its drill-through and the `vendor_spend` export/scheduled report use, so clicking from the tile into either agrees with the number the CFO started from. Also the SAME reporting-currency rollup as the dashboard's `vendor_spend` (see above) — a vendor's multi-currency invoices are converted before summing, never naively added across currencies
 - `fraud_rate_trend` — exceptions / invoices × 100 per month
-- `rebate_yield.{yield_pct, annualised_rebates, ...}`
+- `rebate_yield.{yield_pct, annualised_rebates, ...}` — **windowed to the same
+  trailing `period_days` as `total_spend`**, which is the denominator it divides
+  by and the span `months_in_period` describes. The rebate sum carried no date
+  predicate at all, so the numerator was every rebate the tenant had ever
+  booked: `yield_pct` was lifetime-over-this-window and `annualised_rebates`
+  multiplied a multi-year total by 12. A three-year-old tenant with $36k of
+  rebates and $100k of spend in the last 30 days reported a 36% yield and a
+  $432k annual run-rate against a truth of ~1% and ~$12k. Filtered on
+  `CardRebate.created_at` (when the rebate was booked); the `period` column is a
+  display label, not a filter key.
 
 ### DPO trend + drill-through — one population, one calculation
 
