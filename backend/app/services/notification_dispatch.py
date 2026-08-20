@@ -72,11 +72,25 @@ def resolve_prefs(notification_prefs: dict | None, event_type: str) -> dict:
     }
 
 
-async def _load_recipients(recipient_user_ids: list[uuid.UUID]) -> dict[uuid.UUID, object]:
+async def _load_recipients(
+    recipient_user_ids: list[uuid.UUID],
+    organization_id: uuid.UUID | None = None,
+) -> dict[uuid.UUID, object]:
     """Load control-plane User rows for the given ids, keyed by id.
 
     Uses its own control-plane session (the caller's `db` is tenant-scoped),
     mirroring `approval_chain.resolve_assignee`.
+
+    **Scoped to ``organization_id``** — `users` is control-plane, so an
+    unscoped ``WHERE id IN (…)`` resolves accounts in EVERY tenant. The
+    recipient loop below already documents that a wrong-org recipient must be
+    skipped; that only holds if the query never returns one. Any id that
+    reaches here from a caller that failed to scope its own lookup (the
+    invoice-assign route did) is simply not found, so the notification — an
+    email carrying this tenant's invoice number, vendor and amount — is never
+    addressed outside the tenant it belongs to. ``None`` (the default) keeps the
+    old unscoped behaviour for callers with no org in hand; every production
+    caller goes through ``notify_event``, which always has one.
     """
     from app.database import control_session_factory
     from app.models.user import User
@@ -85,8 +99,12 @@ async def _load_recipients(recipient_user_ids: list[uuid.UUID]) -> dict[uuid.UUI
     if not unique_ids:
         return {}
 
+    stmt = select(User).where(User.id.in_(unique_ids))
+    if organization_id is not None:
+        stmt = stmt.where(User.organization_id == organization_id)
+
     async with control_session_factory() as ctrl_db:
-        result = await ctrl_db.execute(select(User).where(User.id.in_(unique_ids)))
+        result = await ctrl_db.execute(stmt)
         users = result.scalars().all()
     return {u.id: u for u in users}
 
@@ -223,7 +241,7 @@ async def notify_event(
             return
 
     try:
-        users_by_id = await _load_recipients(recipient_user_ids)
+        users_by_id = await _load_recipients(recipient_user_ids, organization_id)
     except Exception:  # noqa: BLE001
         logger.exception("notify_event: failed loading recipients for event_type=%s", event_type)
         return

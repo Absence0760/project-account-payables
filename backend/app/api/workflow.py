@@ -256,8 +256,38 @@ async def assign_reviewer(
             status_code=409, detail="Invoice must be in 'ready_for_review' to assign a reviewer"
         )
 
-    reviewer_id = uuid.UUID(body.user_id)
-    result = await control_db.execute(select(User).where(User.id == reviewer_id))
+    try:
+        reviewer_id = uuid.UUID(body.user_id)
+    except (TypeError, ValueError) as exc:
+        # Attacker-controlled input; a validation error, never a bare 500.
+        raise HTTPException(status_code=422, detail="`user_id` must be a UUID.") from exc
+
+    # Scope the reviewer to the CALLER'S OWN org, at the data layer.
+    #
+    # `users` is control-plane, so an unscoped `WHERE id = :id` reaches every
+    # tenant's accounts: an admin/ap_manager of tenant A could stamp tenant B's
+    # user onto `Invoice.assigned_to_id`, and `review.assign_reviewer` then
+    # dispatched the `invoice_assigned` notification to them — an email carrying
+    # tenant A's invoice number, vendor and amount to somebody in another
+    # tenant. The invoice was also left owned by an account that can never open
+    # it (`get_tenant`'s org-claim cross-check refuses them, and the email
+    # approval link's `_load_reviewer` rejects a wrong-org actor), so it sat in
+    # the queue owned by nobody.
+    #
+    # `is_active` is part of the same guard for the second reason: a
+    # deactivated reviewer is the identical quiet failure — this is exactly what
+    # `POST /api/auth/delegation` and `POST /api/exceptions/{id}/assign` already
+    # check for, and `GET /api/invoices/assignable-reviewers` (this endpoint's
+    # own picker) only ever offers active same-org users. Same opaque 404 for
+    # "another tenant's user", "deactivated" and "no such user", so the response
+    # can't enumerate accounts across tenants.
+    result = await control_db.execute(
+        select(User).where(
+            User.id == reviewer_id,
+            User.organization_id == user.organization_id,
+            User.is_active.is_(True),
+        )
+    )
     reviewer = result.scalar_one_or_none()
     if not reviewer:
         raise HTTPException(status_code=404, detail="Reviewer not found")
