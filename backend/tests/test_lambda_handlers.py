@@ -315,9 +315,15 @@ async def test_reap_tenant_transitions_stuck_invoice_as_system_action():
     cutoff = datetime.now(UTC) - timedelta(seconds=600)
 
     with _reaper_harness([inv], transition) as h:
-        reaped = await extraction_reaper._reap_tenant("feoh_acme", cutoff, threshold_seconds=600)
+        reaped, row_failures = await extraction_reaper._reap_tenant(
+            "feoh_acme", cutoff, threshold_seconds=600
+        )
 
+    # `_reap_tenant` returns (reaped, row_failures) — the second element is what
+    # `sweep_health.failure_count` sums, so a tick that keeps completing while
+    # individual rows fail still reports `partial` instead of green.
     assert reaped == 1
+    assert row_failures == 0
     transition.assert_awaited_once()
     # Positional: (db, invoice, target_status); target is `failed`.
     assert transition.await_args.args[1] is inv
@@ -343,9 +349,12 @@ async def test_reap_tenant_no_stuck_invoices_does_not_commit():
     transition = AsyncMock()
     cutoff = datetime.now(UTC) - timedelta(seconds=600)
     with _reaper_harness([], transition) as h:
-        reaped = await extraction_reaper._reap_tenant("feoh_acme", cutoff, threshold_seconds=600)
+        reaped, row_failures = await extraction_reaper._reap_tenant(
+            "feoh_acme", cutoff, threshold_seconds=600
+        )
 
     assert reaped == 0
+    assert row_failures == 0
     transition.assert_not_awaited()
     h.session.commit.assert_not_awaited()
     # Engine is always disposed (finally), even with nothing to reap.
