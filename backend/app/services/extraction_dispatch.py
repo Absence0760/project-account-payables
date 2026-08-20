@@ -95,7 +95,14 @@ async def dispatch_extraction(
 ) -> None:
     """Trigger extraction via the configured mode (local or lambda)."""
     if settings.extraction_mode == "lambda":
-        _send_to_sqs(invoice_id, org_id, actor_id)
+        # boto3 is synchronous: building the client resolves the credential
+        # chain (which can reach IMDS) and `send_message` is a full HTTPS round
+        # trip to SQS. This coroutine is awaited straight from the invoice
+        # upload route and from the public email-intake webhook, so running it
+        # inline occupies the event loop for that whole window and every other
+        # in-flight request on the worker waits behind it. Same offload
+        # `services/storage` and the audit-shipping adapters already use.
+        await asyncio.to_thread(_send_to_sqs, invoice_id, org_id, actor_id)
     else:
         _job_queue.put((invoice_id, org_id, actor_id))
         _ensure_workers()
@@ -111,7 +118,15 @@ def _send_to_sqs(
     org_id: uuid.UUID,
     actor_id: uuid.UUID,
 ) -> None:
-    """Put extraction job on SQS for Lambda to pick up."""
+    """Put extraction job on SQS for Lambda to pick up.
+
+    **Blocking — never call this from a coroutine directly.** boto3 is
+    synchronous: constructing the client resolves the credential chain (which
+    can reach the instance-metadata endpoint) and ``send_message`` is a full
+    HTTPS round trip. The caller above hands it to ``asyncio.to_thread`` so it
+    never occupies the event loop, matching ``services/storage``'s
+    ``_put_object``. Guarded by ``tests/test_sqs_dispatch_nonblocking.py``.
+    """
     client = boto3.client(
         "sqs",
         endpoint_url=settings.aws_endpoint_url or settings.s3_endpoint_url,  # LocalStack when set
