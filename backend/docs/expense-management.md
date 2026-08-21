@@ -50,6 +50,15 @@ duplicate_object` blocks (Postgres has no `ADD CONSTRAINT IF NOT EXISTS`). The
 constraint names are identical on both sides so a migrated tenant and a
 `create_all` tenant carry the same constraints (create_all parity).
 
+Neither leg carries `ON DELETE`, so **the cycle constrains deletion**:
+`DELETE /api/expenses/{id}` is refused by Postgres while a card transaction
+still points at that expense. That refusal used to escape as an unhandled
+`ForeignKeyViolationError` — a 500 for an ordinary user action. The route now
+checks for a referencing transaction first and answers **409** naming it. It
+deliberately does *not* unmatch on the caller's behalf: silently clearing a
+reconciliation as a side effect of deleting the row on the other side of the
+link is exactly the invisible state change `/ignore` refuses to make.
+
 ### Import idempotency
 
 `corporate_card_transactions` has a **partial unique index**
@@ -106,7 +115,7 @@ string-Decimal amounts — never PII.
 | GET | `/api/expenses/summary` | Whole-set rollup for the list's KPI row: `{ total, by_status: {status: n}, by_currency: [{currency, total, count}] }`. Takes the SAME `?status=&report_id=&search=` filters as the list and runs them through the same `_expense_list_filters`, so the cards and the table can't describe different sets. Each bucket's `total` is an EXACT decimal string, and buckets are never added together — a cross-currency sum is a figure denominated in nothing. The KPIs used to reduce over the LOADED page (20 rows), so "Period total" summed a page while the "Expenses" card beside it showed the server's whole-set count. Read RBAC (all four roles — a rollup exposes strictly less than the rows it summarises). Declared before `/{expense_id}`. |
 | GET | `/api/expenses/{id}` | Get one expense. |
 | PATCH | `/api/expenses/{id}` | Update mutable fields (`amount` still `gt=0`). Audits only when a field actually changed. An `amount` change or a `report_id` move recomputes the affected report total(s) — and is **409** if any affected report has left `draft` into a locked state (submitted/pending_approval/approved/reimbursed), so an edit can't silently move a total the CFO gate / approval signature already ran against. |
-| DELETE | `/api/expenses/{id}` | Delete an expense; recomputes the owning report total if it was attached. **409** if the owning report is locked (submitted/approved/…) — deleting would shrink a total past its approval. |
+| DELETE | `/api/expenses/{id}` | Delete an expense; recomputes the owning report total if it was attached. **409** if the owning report is locked (submitted/approved/…) — deleting would shrink a total past its approval. Also **409** when a `CorporateCardTransaction` is reconciled to it (`matched_expense_id` is a real FK, so Postgres refused the DELETE and it surfaced as an unhandled `ForeignKeyViolationError` — a bare 500); the detail names the transaction to `/unmatch` first, the same posture `/ignore` takes. |
 | GET | `/api/expense-reports` | List, paginated, entity-scoped; `?status=` filter. |
 | POST | `/api/expense-reports` | Create a report. `employee_user_id` is **always the authenticated caller** — a report can't be raised on someone else's behalf. The body field is accepted for wire compatibility and ignored (a stale client gets a report owned by itself rather than a 422), the same posture `POST /api/expense-preapprovals` takes with its `requester_user_id`. Honouring it would have handed the creator the one value approval checks SoD against, so one user could raise a report "for" an arbitrary uuid and then approve it themselves. |
 | GET | `/api/expense-reports/{id}` | Get one report (with its expenses). |

@@ -31,6 +31,7 @@ from app.api.deps import (
 )
 from app.api.pagination import PaginationParams, pagination_params
 from app.models.expense import (
+    CorporateCardTransaction,
     Expense,
     ExpensePolicy,
     ExpensePreapproval,
@@ -939,6 +940,33 @@ async def delete_expense(
     # below the total the CFO gate / approval signature ran against (issue #155).
     if owning_report:
         _require_report_unlocked(await _get_report_or_404(db, owning_report))
+    # A card-reconciled expense is the target of a real FK
+    # (`corporate_card_transactions.matched_expense_id`), so Postgres refused
+    # the DELETE and it surfaced as an unhandled `ForeignKeyViolationError` — a
+    # bare 500 on an ordinary user action. Refuse it here instead, exactly the
+    # way `/corporate-card-transactions/{id}/ignore` refuses a matched
+    # transaction: unmatch first. Doing the unmatch implicitly would mutate the
+    # card feed as an invisible side effect of a DELETE on the other side of
+    # the link; naming the transaction id makes the 409 actionable instead.
+    linked_txn_id = (
+        (
+            await db.execute(
+                select(CorporateCardTransaction.id).where(
+                    CorporateCardTransaction.matched_expense_id == expense.id
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if linked_txn_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Expense is reconciled to card transaction {linked_txn_id}; "
+                "unmatch it before deleting."
+            ),
+        )
     await dispatch_audit(
         db,
         correlation_id=uuid.uuid4(),
