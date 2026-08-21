@@ -460,6 +460,49 @@ async def test_export_over_cap_surfaces_truncation_note(realdb):
         assert pdf_resp.content[:4] == b"%PDF"
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Dépenses 报表",  # non-latin-1: used to raise UnicodeEncodeError → 500
+        'Q1 "spend" report',  # a quote used to break the quoted-string form
+        "back\\slash report",
+    ],
+)
+async def test_export_filename_survives_an_awkward_report_name(realdb, name):
+    """The download filename is derived from the user-chosen report name, so it
+    can never be interpolated raw into a header. A non-latin-1 name crashed the
+    export outright (Starlette latin-1-encodes header values) and a `"` broke
+    out of `filename="..."` so browsers saved a truncated name."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _add_invoice(mk, org_id, vendor_name="FilenameCo", amount="9.00")
+
+    async with realdb.client(key="a", role="cfo") as c:
+        created = await c.post(
+            "/api/reports",
+            json={
+                "name": name,
+                "data_source": "invoices",
+                "dimensions": [{"key": "vendor_name"}],
+                "measures": [{"key": "amount", "agg": "sum"}],
+            },
+        )
+        assert created.status_code == 201, created.text
+        report_id = created.json()["id"]
+
+        for fmt in ("csv", "pdf"):
+            resp = await c.get(f"/api/reports/{report_id}/export?format={fmt}")
+            assert resp.status_code == 200, resp.text
+            disposition = resp.headers["content-disposition"]
+            # RFC 6266 pair: a sanitized ASCII fallback + the true UTF-8 name.
+            assert disposition.startswith('attachment; filename="')
+            assert "filename*=UTF-8''" in disposition
+            ascii_part = disposition.split('filename="', 1)[1].split('"', 1)[0]
+            # Nothing that would terminate or escape the quoted string survives.
+            assert '"' not in ascii_part and "\\" not in ascii_part
+            assert ascii_part.isascii()
+
+
 # --------------------------------------------------------------------------- #
 # Date filters over a TIMESTAMP column cover the whole calendar day
 # --------------------------------------------------------------------------- #

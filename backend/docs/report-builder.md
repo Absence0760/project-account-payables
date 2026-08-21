@@ -165,6 +165,17 @@ in `tenant_provisioning`.
 
 Both reuse the shared helpers so the brand treatment matches every other export.
 
+The download filename is `<report name>_<YYYY-MM-DD>.<ext>`, and the report name
+is user-chosen free text — so the header is built by the shared
+`utils/http.content_disposition_attachment` (RFC 6266: a sanitized ASCII
+`filename=` fallback plus a percent-encoded UTF-8 `filename*=`), never
+interpolated raw. A raw f-string had two failure modes: a non-latin-1 name
+("报表", an emoji) raised `UnicodeEncodeError` when Starlette latin-1-encoded the
+header value — an unhandled 500 on every export of that report — and a name
+containing `"` or `\` broke out of the quoted-string form so clients saved the
+file under a truncated name. Guarded by
+`test_export_filename_survives_an_awkward_report_name`.
+
 ### Row-cap truncation is surfaced in the file, not silent
 
 `run_report`'s `total_rows` is the full matching-row count (only capped by the
