@@ -293,6 +293,74 @@ def test_payment_register_handles_orphan_payment_with_no_invoice():
     assert out[1][2] == ""  # invoice_number blank
 
 
+def _sqlalchemy_rows(keys: list[str], data: list[tuple]) -> list:
+    """Real `sqlalchemy.engine.row.Row` objects, built without a database.
+
+    A `Row` is what every production caller actually passes (`rows.all()`), and
+    it behaves differently from the plain tuples the other tests use — it is
+    NOT an `isinstance(tuple)`. Building the genuine article is the only way to
+    cover the shape that ships."""
+    from sqlalchemy.engine.result import IteratorResult, SimpleResultMetaData
+
+    return IteratorResult(SimpleResultMetaData(keys), iter(data)).all()
+
+
+def test_payment_register_reads_a_sqlalchemy_row_not_just_a_tuple():
+    """Both real callers pass `rows.all()` from a `select(Payment, Invoice)`
+    join — SQLAlchemy `Row`s, which are `Sequence`s but NOT tuple instances.
+    Branching on `isinstance(pair, (tuple, list))` missed every production
+    call and fell into the bare-object branch, where a `Row` has none of the
+    attributes looked up: the register exported one ALL-BLANK row per payment
+    with a hardcoded `USD` as its only content."""
+    payment = SimpleNamespace(
+        id=uuid.uuid4(),
+        invoice_id=uuid.uuid4(),
+        amount=Decimal("500"),
+        method="ach",
+        status="completed",
+        provider="modern_treasury",
+        reference="REF-123",
+        submitted_at=datetime(2026, 5, 1, tzinfo=UTC),
+        completed_at=datetime(2026, 5, 3, tzinfo=UTC),
+    )
+    invoice = SimpleNamespace(invoice_number="INV-001", vendor_name="Acme", currency="EUR")
+    rows = _sqlalchemy_rows(["Payment", "Invoice"], [(payment, invoice)])
+    assert not isinstance(rows[0], (tuple, list))  # the trap this test exists for
+
+    out = _read(export_payment_register(rows))
+    assert out[1][0] == str(payment.id)
+    assert out[1][1] == str(payment.invoice_id)
+    assert out[1][2] == "INV-001"
+    assert out[1][3] == "Acme"
+    assert out[1][4] == "500.00"
+    assert out[1][5] == "EUR"  # the invoice's real currency, not a fallback
+    assert out[1][6] == "ach"
+    assert out[1][7] == "completed"
+    assert out[1][8] == "modern_treasury"
+    assert out[1][9] == "REF-123"
+
+
+def test_payment_register_row_with_an_orphaned_invoice():
+    """The outer join yields `(payment, None)` as a `Row` too."""
+    payment = SimpleNamespace(
+        id=uuid.uuid4(),
+        invoice_id=uuid.uuid4(),
+        amount=Decimal("100"),
+        method="wire",
+        status="failed",
+        provider=None,
+        reference=None,
+        submitted_at=None,
+        completed_at=None,
+    )
+    rows = _sqlalchemy_rows(["Payment", "Invoice"], [(payment, None)])
+    out = _read(export_payment_register(rows))
+    assert out[1][0] == str(payment.id)
+    assert out[1][2] == ""  # invoice_number blank
+    assert out[1][4] == "100.00"
+    assert out[1][6] == "wire"
+
+
 # ---------------------------------------------------------------------------
 # aging_snapshot
 # ---------------------------------------------------------------------------
