@@ -631,3 +631,101 @@ async def test_user_manage_only_caller_may_still_manage_a_lesser_user(realdb):
             await c.delete(f"/api/admin/users/{clerk_id}")
             await c.delete(f"/api/admin/users/{actor_id}")
             await c.delete(f"/api/admin/roles/{role_id}")
+
+
+# --------------------------------------------------------------------------
+# Persona-panel finding #328 — the sole org admin could self-demote or
+# self-deactivate with no recovery short of a DB fix. `_authorize_target_mutation`
+# only stops a caller from touching someone ELSE's account with more authority
+# than they hold; self-mutation always passed it. These pin the last-admin
+# lockout guard end-to-end against the real endpoint.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sole_admin_cannot_self_deactivate(realdb):
+    info = realdb.info("a")
+    admin_id = info.users["admin"]
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.patch(f"/api/admin/users/{admin_id}", json={"is_active": False})
+        assert resp.status_code == 409, resp.text
+        assert "last active admin" in resp.json()["detail"].lower()
+
+        # Confirm nothing was mutated by the refused request.
+        check = await c.get("/api/admin/users")
+        me = next(u for u in check.json()["items"] if u["id"] == str(admin_id))
+        assert me["is_active"] is True
+
+
+@pytest.mark.asyncio
+async def test_sole_admin_cannot_self_demote(realdb):
+    info = realdb.info("a")
+    admin_id = info.users["admin"]
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.patch(f"/api/admin/users/{admin_id}", json={"role_names": []})
+        assert resp.status_code == 409, resp.text
+        assert "last active admin" in resp.json()["detail"].lower()
+
+        check = await c.get("/api/admin/users")
+        me = next(u for u in check.json()["items"] if u["id"] == str(admin_id))
+        assert any(r["name"] == "admin" for r in me["roles"])
+
+
+@pytest.mark.asyncio
+async def test_sole_admin_cannot_self_demote_and_deactivate_together(realdb):
+    """Both fields changed in one PATCH — still refused, and still nothing
+    partially applied (the guard runs before any field is mutated)."""
+    info = realdb.info("a")
+    admin_id = info.users["admin"]
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.patch(
+            f"/api/admin/users/{admin_id}",
+            json={"role_names": ["ap_clerk"], "is_active": False},
+        )
+        assert resp.status_code == 409, resp.text
+
+        check = await c.get("/api/admin/users")
+        me = next(u for u in check.json()["items"] if u["id"] == str(admin_id))
+        assert me["is_active"] is True
+        assert any(r["name"] == "admin" for r in me["roles"])
+
+
+@pytest.mark.asyncio
+async def test_admin_can_self_demote_when_another_active_admin_exists(realdb):
+    """The guard only blocks the LAST admin — with a second active admin in
+    place, self-demotion is a legitimate handoff and must succeed."""
+    from app.api.deps import create_access_token
+
+    info = realdb.info("a")
+    admin_id = info.users["admin"]
+    suffix = uuid.uuid4().hex[:8]
+    async with realdb.client(key="a", role="admin") as c:
+        second = await c.post(
+            "/api/admin/users",
+            json={
+                "email": f"second-admin-{suffix}@acme.test",
+                "full_name": "Second Admin",
+                "role_names": ["admin"],
+            },
+        )
+        assert second.status_code == 201, second.text
+        second_id = second.json()["id"]
+        second_auth = {
+            "Authorization": f"Bearer {create_access_token(uuid.UUID(second_id), info.org_id)}"
+        }
+        try:
+            demote = await c.patch(f"/api/admin/users/{admin_id}", json={"role_names": []})
+            assert demote.status_code == 200, demote.text
+            assert demote.json()["roles"] == []
+        finally:
+            # Restore the seeded admin's role (via the second admin — the
+            # original's token no longer clears an admin-gated route) so
+            # later tests in this session see the fixture unchanged, then
+            # remove the second admin this test created.
+            restore = await c.patch(
+                f"/api/admin/users/{admin_id}",
+                json={"role_names": ["admin"]},
+                headers=second_auth,
+            )
+            assert restore.status_code == 200, restore.text
+            await c.delete(f"/api/admin/users/{second_id}", headers=second_auth)

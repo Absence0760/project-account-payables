@@ -374,6 +374,68 @@ def _authorize_target_mutation(caller: User, target: User) -> None:
         )
 
 
+async def _org_has_other_active_admin(
+    db: AsyncSession, org_id: uuid.UUID, *, exclude_user_id: uuid.UUID
+) -> bool:
+    """Whether the org has an active system-``admin`` holder other than the
+    excluded user. Backs the last-admin lockout guard below."""
+    result = await db.execute(
+        select(func.count(func.distinct(User.id)))
+        .select_from(User)
+        .join(UserRole, UserRole.user_id == User.id)
+        .join(Role, Role.id == UserRole.role_id)
+        .where(
+            User.organization_id == org_id,
+            User.id != exclude_user_id,
+            User.is_active.is_(True),
+            Role.name == ROLE_ADMIN,
+            Role.organization_id.is_(None),
+        )
+    )
+    return (result.scalar() or 0) > 0
+
+
+async def _guard_against_last_admin_lockout(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    target: User,
+    was_active: bool,
+    previous_role_names: list[str],
+    new_is_active: bool,
+    new_role_names: list[str],
+) -> None:
+    """Refuse a mutation that would leave the org with zero active admins.
+
+    `_authorize_target_mutation` only stops a caller from seizing authority
+    on SOMEONE ELSE's account — self-mutation always passes it (a user's own
+    permissions are trivially a subset of themselves), so it does nothing to
+    stop the org's sole admin from removing their own `admin` role or
+    deactivating their own account. Either is a one-way door: once the last
+    admin is gone, nothing short of a DB fix can create a new one (role
+    grants and reactivation both require `user.manage`, which only an admin
+    holds by default).
+
+    Fires whenever the target is CURRENTLY an active admin and the mutation
+    would make them not one (demoted, deactivated, or both) — self or not —
+    and no OTHER active admin exists to undo it. For a caller acting on
+    someone else, `_authorize_target_mutation` already required the caller
+    to be an admin themselves, so the caller remains one and this is a
+    no-op; it only ever actually blocks the self-service case.
+    """
+    is_admin_now = was_active and ROLE_ADMIN in previous_role_names
+    stays_admin = new_is_active and ROLE_ADMIN in new_role_names
+    if is_admin_now and not stays_admin:
+        if not await _org_has_other_active_admin(db, org_id, exclude_user_id=target.id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Cannot remove the organization's last active admin. "
+                    "Promote another user to admin first."
+                ),
+            )
+
+
 def _validate_admin_set_password(password: str) -> None:
     """Run an admin-set password through the same complexity policy as
     self-service change-password (issue #158) — a ``user.manage`` actor must not
@@ -485,6 +547,24 @@ async def update_user(
     previous_role_names = sorted(r.name for r in target.roles)
     was_active = target.is_active
 
+    # Refuse — before touching anything — a mutation that would leave the org
+    # with zero active admins. Must run on the pre-mutation snapshot, not
+    # `target` in-place, since role/active changes below are applied directly
+    # onto the ORM object this same `db` session will flush.
+    new_role_names = (
+        sorted(set(body.role_names)) if body.role_names is not None else previous_role_names
+    )
+    new_is_active = body.is_active if body.is_active is not None else was_active
+    await _guard_against_last_admin_lockout(
+        db,
+        org_id=org_id,
+        target=target,
+        was_active=was_active,
+        previous_role_names=previous_role_names,
+        new_is_active=new_is_active,
+        new_role_names=new_role_names,
+    )
+
     changed_fields = []
     if body.full_name is not None:
         target.full_name = body.full_name
@@ -508,7 +588,6 @@ async def update_user(
 
     roles_changed = False
     if body.role_names is not None:
-        new_role_names = sorted(set(body.role_names))
         roles_changed = new_role_names != previous_role_names
         await db.execute(UserRole.__table__.delete().where(UserRole.user_id == user_id))
         if body.role_names:
@@ -527,8 +606,20 @@ async def update_user(
 
     await db.flush()
 
+    # `populate_existing()`: the role change above deletes `UserRole` rows via
+    # a raw Core-level `.delete()`, which bypasses the ORM unit-of-work and
+    # never touches `target.roles` in memory. On a SELF-mutating request
+    # `target` is the same identity-mapped object `get_current_user` already
+    # loaded (with `roles` already populated) earlier in this same request —
+    # so without this, a plain re-`select` sees the object is already in the
+    # session and skips re-loading the (already-populated) relationship,
+    # silently returning the pre-delete role list in the response even though
+    # the DB write itself is correct.
     result = await db.execute(
-        select(User).where(User.id == user_id).options(selectinload(User.roles))
+        select(User)
+        .where(User.id == user_id)
+        .options(selectinload(User.roles))
+        .execution_options(populate_existing=True)
     )
     target = result.scalar_one()
     await db.commit()
