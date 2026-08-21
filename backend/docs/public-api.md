@@ -401,8 +401,9 @@ invoice back to `approved`) and `paid` more than once (a later run re-pays it),
 and the integrator has to hear about each one.
 
 Keyed on the invoice, the second occurrence was permanently undeliverable: the
-`(subscription_id, event_id)` unique index rejected the insert and the emitter's
-`IntegrityError` branch swallowed it silently — and even with the index gone,
+`(subscription_id, event_id)` unique index rejected the insert and the emitter
+skipped it silently (then via a caught `IntegrityError`; now via
+`ON CONFLICT DO NOTHING` — see § Services) — and even with the index gone,
 the payload `id` would still repeat, so a conforming receiver deduping on
 `X-Webhook-Event-Id` would drop it too. The customer's ERP was never told the
 invoice had been voided and re-paid.
@@ -438,10 +439,23 @@ PII-free — invoice/exception metadata only, no bank/tax/PAN fields.
 - **emit** (`dispatch.emit_event`) — the single chokepoint the event sources
   call. Opens its OWN short-lived control-plane session (the caller's session is
   tenant-scoped), inserts one `WebhookDelivery(status=pending)` per matching
-  active subscription (deduped on `(subscription_id, event_id)`), then kicks off
-  a fire-and-forget immediate delivery attempt on the running loop. **Never
-  raises into the caller** and is a silent no-op when `FEOH_WEBHOOKS_ENABLED` is
-  off (same best-effort contract as `notification_dispatch.notify_event`).
+  active subscription in a **single `INSERT ... ON CONFLICT DO NOTHING`** on
+  `(subscription_id, event_id)`, then kicks off a fire-and-forget immediate
+  delivery attempt (one per row `RETURNING` actually inserted) on the running
+  loop. **Never raises into the caller** and is a silent no-op when
+  `FEOH_WEBHOOKS_ENABLED` is off (same best-effort contract as
+  `notification_dispatch.notify_event`).
+
+  *The dedupe must stay a DB conflict, not a caught `IntegrityError`.* Emit used
+  to loop over the loaded subscriptions, commit per row, and `db.rollback()` on
+  a duplicate. A rollback **expires every instance the session loaded**, so the
+  next iteration's `sub.event_types` read became an implicit lazy refresh —
+  synchronous IO from an async context (`MissingGreenlet`) — which
+  `emit_event`'s blanket best-effort handler then swallowed. One already-queued
+  duplicate therefore dropped the event for **every remaining subscription of
+  that org**, silently and with no delivery row to show for it, on exactly the
+  replay the dedupe exists to make safe. An org with a single subscription never
+  saw it. Guard: `tests/test_outbound_webhooks.py::test_emit_duplicate_for_one_sub_still_queues_the_others`.
 - **deliver** (`delivery.process_delivery`) — signs the byte-identical frozen
   payload, POSTs via `httpx` (10 s timeout), classifies the result. `2xx` →
   `delivered`; otherwise increment `attempt_count` and, if attempts remain
