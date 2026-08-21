@@ -255,6 +255,13 @@ _RETRY_SAFE_FAILURE_PREFIXES = (
     # no longer what the vendor is owed. `_execute_single_payment` refuses
     # BEFORE the adapter call, so no order exists at the processor.
     "net_amount_changed",
+    # The invoice left `PAYABLE_INVOICE_STATUSES` between booking and dispatch
+    # (an ERP push walked it to `sent_to_erp`, a void took it back). Same shape
+    # as `net_amount_changed`: `_execute_single_payment` refuses BEFORE the
+    # adapter call, so nothing exists at the processor. `/retry-failed` re-runs
+    # the payability gate itself and skips while the invoice is still
+    # unpayable, so this only unlocks the retry once it is payable again.
+    "invoice_not_payable",
 )
 
 # Per-adapter pre-flight refusals — checked before any HTTP call is made.
