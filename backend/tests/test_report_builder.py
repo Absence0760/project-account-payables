@@ -16,7 +16,7 @@ tenants, plus pure catalog/whitelist checks:
 from __future__ import annotations
 
 import uuid
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -169,7 +169,18 @@ async def _add_many_invoices(mk, org_id, *, count, amount="10.00", prefix="Bulk"
         await s.commit()
 
 
-async def _add_invoice(mk, org_id, *, vendor_name, amount, status=InvoiceStatus.approved, num=None):
+async def _add_invoice(
+    mk,
+    org_id,
+    *,
+    vendor_name,
+    amount,
+    status=InvoiceStatus.approved,
+    num=None,
+    invoice_date=None,
+    created_at=None,
+    tax_amount=None,
+):
     async with mk() as s:
         inv = Invoice(
             organization_id=org_id,
@@ -177,11 +188,16 @@ async def _add_invoice(mk, org_id, *, vendor_name, amount, status=InvoiceStatus.
             invoice_number=num or f"INV-{uuid.uuid4().hex[:8]}",
             vendor_name=vendor_name,
             amount=Decimal(amount),
+            tax_amount=(Decimal(tax_amount) if tax_amount is not None else None),
             currency="USD",
-            invoice_date=_TODAY,
+            invoice_date=invoice_date or _TODAY,
             due_date=_TODAY + timedelta(days=30),
             status=status,
         )
+        if created_at is not None:
+            # Override the server_default so a test can pin the instant a row
+            # was recorded at (the timestamp-vs-date filter cases below).
+            inv.created_at = created_at
         s.add(inv)
         await s.commit()
         await s.refresh(inv)
@@ -444,3 +460,225 @@ async def test_export_over_cap_surfaces_truncation_note(realdb):
         pdf_resp = await c.get(f"/api/reports/{report_id}/export?format=pdf")
         assert pdf_resp.status_code == 200, pdf_resp.text
         assert pdf_resp.content[:4] == b"%PDF"
+
+
+async def test_empty_money_aggregate_is_blank_not_zero(realdb):
+    """`tax_amount` is nullable, so a group whose rows never carried tax makes
+    SQL return NULL for every aggregate. `sum` of nothing is meaningfully 0.00
+    — but the MIN / MAX / AVG of nothing is undefined, and reporting "0.00"
+    there puts a money figure nobody recorded in front of a CFO."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _add_invoice(mk, org_id, vendor_name="NoTaxCo", amount="10.00")
+
+    body = {
+        "data_source": "invoices",
+        "dimensions": [{"key": "vendor_name"}],
+        "measures": [
+            {"key": "tax_amount", "agg": "sum"},
+            {"key": "tax_amount", "agg": "min"},
+            {"key": "tax_amount", "agg": "max"},
+            {"key": "tax_amount", "agg": "avg"},
+        ],
+        "filters": [{"key": "vendor_name", "op": "eq", "value": "NoTaxCo"}],
+    }
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.post("/api/reports/run", json=body)
+    assert resp.status_code == 200, resp.text
+    row = resp.json()["rows"][0]
+    assert row["tax_amount_sum"] == "0.00"
+    assert row["tax_amount_min"] is None
+    assert row["tax_amount_max"] is None
+    assert row["tax_amount_avg"] is None
+
+
+async def test_money_aggregate_with_values_still_serializes_exactly(realdb):
+    """The control for the NULL case above — a group that DOES carry tax still
+    reports every aggregate as an exact decimal string."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _add_invoice(mk, org_id, vendor_name="TaxedCo", amount="10.00", tax_amount="1.25")
+    await _add_invoice(mk, org_id, vendor_name="TaxedCo", amount="10.00", tax_amount="3.75")
+
+    body = {
+        "data_source": "invoices",
+        "dimensions": [{"key": "vendor_name"}],
+        "measures": [
+            {"key": "tax_amount", "agg": "sum"},
+            {"key": "tax_amount", "agg": "min"},
+            {"key": "tax_amount", "agg": "max"},
+            {"key": "tax_amount", "agg": "avg"},
+        ],
+        "filters": [{"key": "vendor_name", "op": "eq", "value": "TaxedCo"}],
+    }
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.post("/api/reports/run", json=body)
+    assert resp.status_code == 200, resp.text
+    row = resp.json()["rows"][0]
+    assert row["tax_amount_sum"] == "5.00"
+    assert row["tax_amount_min"] == "1.25"
+    assert row["tax_amount_max"] == "3.75"
+    assert row["tax_amount_avg"] == "2.50"
+
+
+async def test_page_past_the_end_returns_an_empty_page(realdb):
+    """`page` has a floor (>= 1) but no ceiling. A page starting past the last
+    matching row must return an empty page — not a 500. A big enough `page`
+    overflowed the int64 OFFSET bind and asyncpg raised a DataError straight
+    out of the request."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _add_invoice(mk, org_id, vendor_name="PagerCo", amount="5.00")
+
+    base = {
+        "data_source": "invoices",
+        "dimensions": [{"key": "vendor_name"}],
+        "measures": [{"key": "amount", "agg": "sum"}],
+        "filters": [{"key": "vendor_name", "op": "eq", "value": "PagerCo"}],
+    }
+    async with realdb.client(key="a", role="cfo") as c:
+        first = await c.post("/api/reports/run", json=dict(base, page=1, page_size=100))
+        assert first.status_code == 200, first.text
+        assert first.json()["total_rows"] == 1
+
+        for page in (2, 10**9, 10**18):
+            resp = await c.post("/api/reports/run", json=dict(base, page=page, page_size=100))
+            assert resp.status_code == 200, resp.text
+            data = resp.json()
+            assert data["rows"] == []
+            # The whole-set count is still honest on an over-run page.
+            assert data["total_rows"] == 1
+            assert data["page"] == page
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Dépenses 报表",  # non-latin-1: used to raise UnicodeEncodeError → 500
+        'Q1 "spend" report',  # a quote used to break the quoted-string form
+        "back\\slash report",
+    ],
+)
+async def test_export_filename_survives_an_awkward_report_name(realdb, name):
+    """The download filename is derived from the user-chosen report name, so it
+    can never be interpolated raw into a header. A non-latin-1 name crashed the
+    export outright (Starlette latin-1-encodes header values) and a `"` broke
+    out of `filename="..."` so browsers saved a truncated name."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _add_invoice(mk, org_id, vendor_name="FilenameCo", amount="9.00")
+
+    async with realdb.client(key="a", role="cfo") as c:
+        created = await c.post(
+            "/api/reports",
+            json={
+                "name": name,
+                "data_source": "invoices",
+                "dimensions": [{"key": "vendor_name"}],
+                "measures": [{"key": "amount", "agg": "sum"}],
+            },
+        )
+        assert created.status_code == 201, created.text
+        report_id = created.json()["id"]
+
+        for fmt in ("csv", "pdf"):
+            resp = await c.get(f"/api/reports/{report_id}/export?format={fmt}")
+            assert resp.status_code == 200, resp.text
+            disposition = resp.headers["content-disposition"]
+            # RFC 6266 pair: a sanitized ASCII fallback + the true UTF-8 name.
+            assert disposition.startswith('attachment; filename="')
+            assert "filename*=UTF-8''" in disposition
+            ascii_part = disposition.split('filename="', 1)[1].split('"', 1)[0]
+            # Nothing that would terminate or escape the quoted string survives.
+            assert '"' not in ascii_part and "\\" not in ascii_part
+            assert ascii_part.isascii()
+
+
+# --------------------------------------------------------------------------- #
+# Date filters over a TIMESTAMP column cover the whole calendar day
+# --------------------------------------------------------------------------- #
+async def _run_filtered(realdb, filters, *, vendor):
+    body = {
+        "data_source": "invoices",
+        "dimensions": [{"key": "vendor_name"}],
+        "measures": [{"key": "amount", "agg": "sum"}],
+        "filters": [{"key": "vendor_name", "op": "eq", "value": vendor}, *filters],
+    }
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.post("/api/reports/run", json=body)
+    assert resp.status_code == 200, resp.text
+    return resp.json()["rows"]
+
+
+async def test_date_filter_on_timestamp_column_covers_the_whole_day(realdb):
+    """``created_at`` is a TIMESTAMP, not a DATE. Binding a bare date onto it
+    resolves to that day's MIDNIGHT, so ``lte`` / ``between`` / ``eq`` answered
+    the wrong question — an invoice recorded at 15:30 today was invisible to a
+    report filtered "created_at up to today", while ``gt today`` wrongly swept
+    it in. Every operator now compares calendar days via half-open
+    ``[day, day+1)`` bounds."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    stamp = datetime.now(UTC).replace(hour=15, minute=30, second=0, microsecond=0)
+    day = stamp.date().isoformat()
+    yesterday = (stamp.date() - timedelta(days=1)).isoformat()
+    tomorrow = (stamp.date() + timedelta(days=1)).isoformat()
+    await _add_invoice(mk, org_id, vendor_name="AfternoonCo", amount="77.00", created_at=stamp)
+
+    # Inclusive of the day itself.
+    for filt in (
+        {"key": "created_at", "op": "eq", "value": day},
+        {"key": "created_at", "op": "lte", "value": day},
+        {"key": "created_at", "op": "gte", "value": day},
+        {"key": "created_at", "op": "between", "value": [yesterday, day]},
+        {"key": "created_at", "op": "between", "value": [day, day]},
+    ):
+        rows = await _run_filtered(realdb, [filt], vendor="AfternoonCo")
+        assert rows and rows[0]["amount_sum"] == "77.00", f"{filt} lost the row"
+
+    # Exclusive of the day itself — the mirror image, which the midnight
+    # comparison got backwards for ``gt``.
+    for filt in (
+        {"key": "created_at", "op": "gt", "value": day},
+        {"key": "created_at", "op": "lt", "value": day},
+        {"key": "created_at", "op": "ne", "value": day},
+        {"key": "created_at", "op": "between", "value": [tomorrow, tomorrow]},
+    ):
+        rows = await _run_filtered(realdb, [filt], vendor="AfternoonCo")
+        assert rows == [], f"{filt} should not match a row stamped on {day}"
+
+
+async def test_date_filter_on_real_date_column_is_unchanged(realdb):
+    """``invoice_date`` IS a DATE column — the calendar-day translation must
+    not disturb it. Same operators, same inclusive semantics."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    day = _TODAY.isoformat()
+    await _add_invoice(mk, org_id, vendor_name="PlainDateCo", amount="12.00", invoice_date=_TODAY)
+
+    for filt in (
+        {"key": "invoice_date", "op": "eq", "value": day},
+        {"key": "invoice_date", "op": "lte", "value": day},
+        {"key": "invoice_date", "op": "between", "value": [day, day]},
+    ):
+        rows = await _run_filtered(realdb, [filt], vendor="PlainDateCo")
+        assert rows and rows[0]["amount_sum"] == "12.00", f"{filt} lost the row"
+
+    rows = await _run_filtered(
+        realdb, [{"key": "invoice_date", "op": "gt", "value": day}], vendor="PlainDateCo"
+    )
+    assert rows == []
+
+
+def test_date_in_op_would_also_be_day_scoped():
+    """No shipped date filter allows ``in`` today (``_DATE_OPS`` omits it), but
+    the day translation covers it so *adding* ``in`` to a date filter's ops
+    can't silently reintroduce the midnight-comparison bug. Asserted at the
+    clause level since the catalog gives no route to it."""
+    from app.services.report_builder import FilterDef, _build_where
+
+    fdef = FilterDef("created_at", "Created", "date", Invoice.created_at, ("in",))
+    clause = str(_build_where(fdef, "in", ["2026-06-30", "2026-07-01"]))
+    # Two half-open windows OR'd together — never a bare `IN (...)` of dates.
+    assert "IN " not in clause.upper()
+    assert clause.count(">=") == 2 and clause.count("<") >= 2

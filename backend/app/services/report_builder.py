@@ -22,11 +22,11 @@ See ``backend/docs/report-builder.md``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import DateTime, cast, func, select
+from sqlalchemy import DateTime, and_, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.expense import Expense, ExpensePaymentMethod, ExpenseStatus
@@ -367,6 +367,63 @@ def _coerce_scalar(fdef: FilterDef, raw: Any) -> Any:
     return value
 
 
+def _is_timestamp_column(col: Any) -> bool:
+    """True when a catalog column stores a TIMESTAMP, not a plain DATE.
+
+    ``sqlalchemy.Date`` is *not* a subclass of ``sqlalchemy.DateTime``, so this
+    cleanly separates ``Invoice.invoice_date`` (a calendar date) from
+    ``Invoice.created_at`` / ``Payment.completed_at`` (instants)."""
+    return isinstance(getattr(col, "type", None), DateTime)
+
+
+def _day_start(value: date | datetime) -> datetime:
+    """UTC midnight opening the calendar day ``value`` falls on.
+
+    UTC because that's the day boundary the rest of the app reports on
+    (``utils/dates.utc_today``) — pinning it here makes the answer independent
+    of the database session's ``TimeZone`` setting."""
+    if isinstance(value, datetime):
+        value = value.date()
+    return datetime(value.year, value.month, value.day, tzinfo=UTC)
+
+
+def _day_window(col: Any, value: date | datetime) -> Any:
+    """``col`` falls somewhere inside the calendar day ``value`` names."""
+    start = _day_start(value)
+    return and_(col >= start, col < start + timedelta(days=1))
+
+
+def _timestamp_day_where(col: Any, op: str, value: date | datetime) -> Any:
+    """Compare a TIMESTAMP column against a calendar DATE, whole-day-inclusive.
+
+    A date bound straight onto a timestamp column resolves to that day's
+    *midnight*, which quietly answers the wrong question: ``created_at <=
+    2026-06-30`` dropped every row stamped after 00:00:00 on the 30th (i.e.
+    almost all of them), ``created_at = 2026-06-30`` matched only rows stamped
+    exactly at midnight, and ``created_at > 2026-06-30`` swept the 30th *in*.
+    A user filtering a report by date means the calendar day, so each operator
+    is translated to half-open ``[day, day+1)`` bounds instead — which keeps
+    the comparison sargable (no per-row ``::date`` cast) so an index on the
+    column still applies."""
+    start = _day_start(value)
+    next_start = start + timedelta(days=1)
+    if op == "eq":
+        return _day_window(col, value)
+    if op == "ne":
+        # Mirrors SQL `!=`: NULL rows are excluded either way.
+        return or_(col < start, col >= next_start)
+    if op == "gt":
+        return col >= next_start
+    if op == "gte":
+        return col >= start
+    if op == "lt":
+        return col < start
+    if op == "lte":
+        return col < next_start
+    # Unreachable — op was validated against ALLOWED_OPS + the filter's ops.
+    raise ReportValidationError(f"unsupported operator '{op}'")
+
+
 def _build_where(fdef: FilterDef, op: str, value: Any) -> Any:
     """Build ONE parameterised WHERE clause from a whitelisted (filter, op).
 
@@ -374,10 +431,15 @@ def _build_where(fdef: FilterDef, op: str, value: Any) -> Any:
     parameter by SQLAlchemy. op has already been validated against the filter's
     allowed-ops list, and structurally against its type."""
     col = fdef.column
+    # A `date`-typed filter over a TIMESTAMP column compares calendar days, not
+    # instants — see `_timestamp_day_where`.
+    day_scoped = fdef.type == "date" and _is_timestamp_column(col)
     if op == "in":
         if not isinstance(value, (list, tuple)) or not value:
             raise ReportValidationError(f"filter '{fdef.key}' op 'in' needs a non-empty list")
         coerced = [_coerce_scalar(fdef, v) for v in value]
+        if day_scoped:
+            return or_(*[_day_window(col, v) for v in coerced])
         return col.in_(coerced)
     if op == "between":
         if not isinstance(value, (list, tuple)) or len(value) != 2:
@@ -386,12 +448,18 @@ def _build_where(fdef: FilterDef, op: str, value: Any) -> Any:
             )
         low = _coerce_scalar(fdef, value[0])
         high = _coerce_scalar(fdef, value[1])
+        if day_scoped:
+            # Inclusive of BOTH end days — `between` reads as inclusive, and the
+            # high bound is the one a midnight comparison silently truncated.
+            return and_(col >= _day_start(low), col < _day_start(high) + timedelta(days=1))
         return col.between(low, high)
     if op == "contains":
         # String substring match — the value is escaped/parameterised by ilike.
         return col.ilike(f"%{_coerce_scalar(fdef, value)}%")
     # scalar comparison
     coerced = _coerce_scalar(fdef, value)
+    if day_scoped:
+        return _timestamp_day_where(col, op, coerced)
     if op == "eq":
         return col == coerced
     if op == "ne":
@@ -547,8 +615,18 @@ def _serialize_dimension(dim: _PlannedDimension, value: Any) -> Any:
 
 def _serialize_measure(measure: _PlannedMeasure, value: Any) -> Any:
     if measure.type == "money":
+        if value is None:
+            # SQL returns NULL when a group has nothing to aggregate — every
+            # row's column is NULL (e.g. `tax_amount` on invoices that never
+            # carried tax). A `sum` of nothing is meaningfully 0.00, the same
+            # answer `count` gives; the MINIMUM / MAXIMUM / AVERAGE of nothing
+            # is undefined, and answering "0.00" there invents a money figure
+            # nobody recorded. Leave those cells empty instead.
+            if measure.agg != "sum":
+                return None
+            value = 0
         # Exact decimal string, 2 dp — never a float.
-        return str(Decimal(str(value if value is not None else 0)).quantize(Decimal("0.01")))
+        return str(Decimal(str(value)).quantize(Decimal("0.01")))
     # number
     if value is None:
         return 0 if measure.agg == "count" else None
@@ -621,7 +699,13 @@ async def run_report(
         effective_limit = min(page_size, remaining)
 
     rows: list[dict] = []
-    if effective_limit > 0:
+    # A page that starts past the last matching row has nothing to return, so
+    # don't ask the database for it. `total_rows` is the real (already
+    # limit-clamped) group count, which makes skipping exactly equivalent to
+    # running the query — and it bounds `offset`, which is otherwise unbounded:
+    # `page` has no ceiling, and a big enough one overflows the int64 OFFSET
+    # bind and surfaces as an asyncpg DataError (a 500 the caller can't act on).
+    if effective_limit > 0 and offset < total_rows:
         data_stmt = data_stmt.limit(effective_limit).offset(offset)
         result = await db.execute(data_stmt)
         for row in result.mappings().all():

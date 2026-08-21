@@ -77,12 +77,22 @@ class RecodeChange:
 
 @dataclass
 class RecodeReport:
+    """Outcome of one pass. The skip buckets **partition** the matched set:
+    every one of `matched` invoices lands in exactly one of `changes`, the
+    `skipped_*` counters, or (dry-run + AI) `ai_candidates`, so the numbers an
+    operator reads always reconcile against `matched`."""
+
     matched: int = 0
     skipped_immutable: int = 0
     skipped_no_vendor: int = 0
     skipped_no_change: int = 0
+    # The vendor has no learned `gl_account` correction at all, and AI fallback
+    # wasn't requested. (An invoice whose prior EXISTS but isn't live in its
+    # chart belongs to `skipped_invalid_code`, never here.)
     skipped_no_prior_no_ai: int = 0
     skipped_ai_failed: int = 0
+    # The vendor prior exists but isn't a live code in this invoice's effective
+    # chart (shared ∪ its own entity), and AI fallback wasn't requested.
     skipped_invalid_code: int = 0
     # Number of invoices a non-dry AI pass would attempt. Only populated
     # when `dry_run=True and include_ai_fallback=True` — gives the
@@ -314,21 +324,28 @@ async def bulk_recode_gl(
 
     # First pass: priors-only. Cheap, free, hits as many invoices as the
     # learned cache covers.
-    needs_ai: list[Invoice] = []
+    #
+    # The two reasons a prior can't be applied are tracked apart, because they
+    # are different answers for the operator ("this vendor has never been
+    # corrected" vs "the code we learned isn't live in this invoice's chart")
+    # and because an invoice must land in exactly ONE terminal skip bucket —
+    # counting it under both made the report's buckets sum to more than
+    # `matched`, and filed an invoice that HAS a learned code under the bucket
+    # the UI labels "no learned code".
+    no_prior: list[Invoice] = []
+    invalid_prior: list[Invoice] = []
     for inv in eligible:
         prior_code = priors.get(inv.vendor_id)
         if prior_code is None:
-            needs_ai.append(inv)
+            no_prior.append(inv)
             continue
 
         if not active_chart.is_empty() and not active_chart.is_valid_for(prior_code, inv.entity_id):
             # Cached value isn't in this invoice's effective chart (shared ∪ the
             # invoice's own entity) — don't apply, but try AI fallback if the
-            # operator opted in. Otherwise count as invalid. An entity-B-only
-            # code is rejected here for an entity-A invoice even though it's a
-            # live code elsewhere in the org.
-            report.skipped_invalid_code += 1
-            needs_ai.append(inv)
+            # operator opted in. An entity-B-only code is rejected here for an
+            # entity-A invoice even though it's a live code elsewhere in the org.
+            invalid_prior.append(inv)
             continue
 
         if inv.gl_account == prior_code:
@@ -349,7 +366,8 @@ async def bulk_recode_gl(
         if not dry_run:
             inv.gl_account = prior_code
 
-    # Second pass: AI fallback for invoices with no usable prior.
+    # Second pass: AI fallback for invoices with no usable prior — an absent
+    # prior and a rejected one both qualify.
     #
     # Critical: in dry-run mode we DO NOT call the AI runner at all.
     # `run_extraction` writes line items, vendor priors, RAG entries,
@@ -359,6 +377,7 @@ async def bulk_recode_gl(
     # one that doesn't try. Operators get an `ai_candidates` count
     # so they know what a non-dry pass would attempt; if that number
     # looks reasonable they re-issue with `dry_run=false`.
+    needs_ai: list[Invoice] = [*no_prior, *invalid_prior]
     if needs_ai and include_ai_fallback:
         if dry_run:
             report.ai_candidates = len(needs_ai)
@@ -406,7 +425,14 @@ async def bulk_recode_gl(
                 report.by_source["ai"] += 1
 
     elif needs_ai and not include_ai_fallback:
-        report.skipped_no_prior_no_ai += len(needs_ai)
+        # Nothing else will touch these, so this is where they land for good —
+        # one bucket each, never both. With AI fallback ON their disposition
+        # comes from the AI leg instead (a change, `ai_failed`, `no_change`, or
+        # `ai_candidates` in a dry run), which is why neither counter is bumped
+        # there: run the default priors-only pass to size how many priors the
+        # chart rejected.
+        report.skipped_no_prior_no_ai += len(no_prior)
+        report.skipped_invalid_code += len(invalid_prior)
 
     # Audit log + commit when persisting. Route through dispatch_audit (the
     # mode-aware chokepoint every other mutation uses), NOT the low-level

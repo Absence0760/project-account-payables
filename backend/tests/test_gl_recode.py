@@ -270,8 +270,15 @@ async def test_prior_with_stale_code_skipped_or_routed_to_ai():
     )
 
     assert report.skipped_invalid_code == 1
-    assert report.skipped_no_prior_no_ai == 1  # routed to AI then dropped
+    # The vendor HAS a learned code — it's just not live in the chart — so it
+    # must not also be filed under "no learned code". One invoice, one bucket:
+    # the skip counters have to reconcile against `matched`.
+    assert report.skipped_no_prior_no_ai == 0
     assert report.changes == []
+    assert (
+        report.skipped_invalid_code + report.skipped_no_prior_no_ai + len(report.changes)
+        == report.matched
+    )
 
 
 @pytest.mark.asyncio
@@ -294,6 +301,80 @@ async def test_no_prior_skipped_when_ai_fallback_disabled():
 
     assert report.skipped_no_prior_no_ai == 1
     assert report.changes == []
+
+
+@pytest.mark.asyncio
+async def test_skip_buckets_partition_the_matched_set():
+    """Every matched invoice lands in exactly ONE terminal bucket, so an
+    operator can reconcile the report against `matched`. Previously an invoice
+    whose prior was rejected by the chart was counted twice — once as
+    `invalid_code` and again as `no_prior_no_ai`, the bucket the UI labels
+    "no learned code" — so the panel added up to more invoices than it
+    matched."""
+    stale_vendor, absent_vendor, good_vendor, coded_vendor = (uuid.uuid4() for _ in range(4))
+    inv_stale = _make_invoice(vendor_id=stale_vendor, gl_account=None, invoice_number="STALE")
+    inv_absent = _make_invoice(vendor_id=absent_vendor, gl_account=None, invoice_number="ABSENT")
+    inv_good = _make_invoice(vendor_id=good_vendor, gl_account=None, invoice_number="GOOD")
+    inv_same = _make_invoice(vendor_id=coded_vendor, gl_account="6100", invoice_number="SAME")
+
+    db = _make_db_for(
+        active_codes=["6100", "6200"],
+        eligible_invoices=[inv_stale, inv_absent, inv_good, inv_same],
+        priors={
+            stale_vendor: "5500",  # not in the chart
+            good_vendor: "6200",  # applies
+            coded_vendor: "6100",  # already coded → no change
+        },
+    )
+    report = await bulk_recode_gl(
+        db,
+        organization_id=uuid.uuid4(),
+        filt=RecodeFilter(),
+        dry_run=True,
+        include_ai_fallback=False,
+    )
+
+    assert report.matched == 4
+    assert len(report.changes) == 1
+    assert report.skipped_no_change == 1
+    assert report.skipped_invalid_code == 1
+    assert report.skipped_no_prior_no_ai == 1
+    assert (
+        len(report.changes)
+        + report.skipped_no_change
+        + report.skipped_invalid_code
+        + report.skipped_no_prior_no_ai
+        + report.skipped_ai_failed
+        == report.matched
+    )
+
+
+@pytest.mark.asyncio
+async def test_rejected_prior_is_an_ai_candidate_not_a_skip():
+    """With AI fallback on, an out-of-chart prior is just "no usable prior" —
+    the AI pass owns the invoice's disposition, so it is a candidate, not a
+    terminal skip. Counting it as both inflated the panel."""
+    stale_vendor = uuid.uuid4()
+    inv = _make_invoice(vendor_id=stale_vendor, gl_account=None)
+
+    db = _make_db_for(
+        active_codes=["6100"],
+        eligible_invoices=[inv],
+        priors={stale_vendor: "5500"},
+    )
+    report = await bulk_recode_gl(
+        db,
+        organization_id=uuid.uuid4(),
+        filt=RecodeFilter(),
+        dry_run=True,
+        include_ai_fallback=True,
+        ai_runner=AsyncMock(),
+    )
+
+    assert report.matched == 1
+    assert report.ai_candidates == 1
+    assert report.skipped_invalid_code == 0
+    assert report.skipped_no_prior_no_ai == 0
 
 
 # ---------- AI fallback ---------------------------------------------------

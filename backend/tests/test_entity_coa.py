@@ -145,12 +145,14 @@ async def test_entity_specific_code_applies_only_to_its_own_entity():
     )
 
     # Only the entity-B invoice gets the entity-B code; the entity-A invoice is
-    # rejected as an invalid code (and routed to AI-then-dropped here).
+    # rejected as an invalid code.
     changed = {c.invoice_number for c in report.changes}
     assert changed == {"B"}
     assert report.changes[0].new_gl == "6000"
     assert report.skipped_invalid_code == 1  # the entity-A invoice
-    assert report.skipped_no_prior_no_ai == 1  # rejected → AI candidate → dropped
+    # It HAS a learned code (just not one live in entity A's chart), so it is
+    # not also counted as having none — one invoice, one bucket.
+    assert report.skipped_no_prior_no_ai == 0
 
 
 @pytest.mark.asyncio

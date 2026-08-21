@@ -430,6 +430,22 @@ above), not a raw `SUM(amount)` — `currencies` lists every distinct original
 invoice currency that rolled into the total, so a mixed-currency vendor's row
 is auditable (e.g. `"EUR, USD"`) rather than looking like a same-currency sum.
 
+### `Row` is not a tuple — duck-type the joined exporters
+
+`payment_register` and `expense_register` take **joined** rows, and every real
+caller (this endpoint and the scheduled-report runner) hands them `rows.all()`
+— a list of `sqlalchemy.engine.row.Row`. A `Row` implements `Sequence` but is
+**not** an `isinstance(tuple)` in SQLAlchemy 2.x, so an exporter branching on
+`isinstance(row, (tuple, list))` silently misses every production call and
+falls into its attribute-access fallback, where a `Row` has none of the ORM
+attributes and `getattr(..., default)` swallows each miss. That shipped twice:
+`vendor_spend` exported a blank `total_amount`, and `payment_register` exported
+a header plus one **all-blank row per payment** (a hardcoded `USD` its only
+content). Both now duck-type on `__getitem__`, so `Row` and `tuple`/`list`
+share the positional path. Any new joined exporter must do the same, and its
+test must exercise a genuine `Row` (`tests/test_report_export.py::_sqlalchemy_rows`
+builds one with no database) — plain-tuple fixtures cannot catch this.
+
 Column order is pinned by `tests/test_report_export.py` — finance
 imports rely on column position; a reorder breaks downstream
 pipelines.
