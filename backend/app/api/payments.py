@@ -98,6 +98,7 @@ from app.tenant import (
     get_write_entity_id,
 )
 from app.utils.dates import utc_today
+from app.utils.http import content_disposition_attachment
 
 logger = logging.getLogger(__name__)
 
@@ -819,11 +820,17 @@ async def get_payment_remittance(
     )
     pdf_bytes = await asyncio.to_thread(render_remittance_pdf, ctx)
 
+    # `Payment.reference` is free text the processor supplies, so it reaches
+    # here unsanitised: Starlette latin-1-encodes header values, so a non-ASCII
+    # reference raised UnicodeEncodeError out of the ASGI app instead of
+    # returning the PDF, and a `"` broke out of the quoted string. RFC 6266
+    # ASCII fallback + UTF-8 `filename*=`, via the shared helper the invoice and
+    # portal downloads already use.
     filename = f"remittance-{payment.reference or str(payment.id)[:8]}.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": content_disposition_attachment(filename)},
     )
 
 

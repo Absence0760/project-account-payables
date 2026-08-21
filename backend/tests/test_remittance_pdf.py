@@ -121,3 +121,30 @@ def test_pdf_handles_negative_amount():
     pdf = render_remittance_pdf(_ctx(payment_amount=Decimal("-500.00")))
     assert pdf.startswith(b"%PDF-")
     assert "-USD 500.00" in _extract_text(pdf)
+
+
+def test_download_header_survives_a_processor_supplied_reference():
+    """`Payment.reference` is free text the processor supplies, and it names the
+    downloaded file.
+
+    Starlette latin-1-encodes header values, so interpolating a non-ASCII
+    reference raised `UnicodeEncodeError` out of the ASGI app rather than
+    returning the PDF, and a `"` broke out of the quoted string. Asserts the
+    header the route now builds is both latin-1 encodable and unambiguous.
+    """
+    from app.utils.http import content_disposition_attachment
+
+    for reference in (
+        "Zahlung-Überweisung-2026",  # non-latin-1 → used to 500 the download
+        'A"B',  # quote → used to break the quoted-string syntax
+        "réf/../../etc/passwd",  # separators must not survive into the fallback
+    ):
+        header = content_disposition_attachment(f"remittance-{reference}.pdf")
+        # The bug was an unhandled encode error on the way out of the app.
+        header.encode("latin-1")
+        assert header.startswith("attachment; ")
+        # A bare `filename=` cannot carry these, so the UTF-8 form must be there.
+        assert "filename*=UTF-8''" in header
+        assert '"' not in header.split("filename*=")[0].removeprefix(
+            'attachment; filename="'
+        ).removesuffix('"; ')
