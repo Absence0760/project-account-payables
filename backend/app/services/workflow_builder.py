@@ -668,6 +668,13 @@ def validate_builder_steps(steps: list[dict]) -> list[str]:
         name = step.get("name") or step_type
         label = f"step {number} ('{name}')"
         config = step.get("config")
+        if canonical_validator is not None and config is None:
+            # A canonical step's `config` is OPTIONAL — `{"number": 1, "type":
+            # "approval"}` with no config at all is a valid step (it is how a
+            # minimal experiment variant is written). Absent means "no thresholds
+            # to check", not "malformed". The five BUILDER types below genuinely
+            # require a config object, and keep demanding one.
+            config = {}
         if not isinstance(config, dict):
             errors.append(f"{label}: 'config' must be an object")
             continue

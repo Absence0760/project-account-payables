@@ -634,6 +634,27 @@ def test_validate_rejects_a_bad_extraction_confidence_bar(bad):
     assert errors and "auto_approve_threshold" in errors[0]
 
 
+def test_validate_accepts_a_canonical_step_with_no_config_key_at_all():
+    """`config` is OPTIONAL on a canonical step — `{"number": 1, "type":
+    "approval"}` is how a minimal experiment variant is written
+    (`schemas/workflow_experiments` runs this same validator over `config_a` /
+    `config_b`). Absent means "no thresholds to check", not "malformed"; the
+    five BUILDER types are the ones that genuinely require a config object."""
+    from app.services.workflow_builder import validate_builder_steps
+
+    assert not validate_builder_steps(
+        [
+            {"number": 1, "type": "approval"},
+            {"number": 2, "type": "extraction"},
+        ]
+    )
+    # A PRESENT but non-object config is still wrong.
+    assert any(
+        "config" in e
+        for e in validate_builder_steps([{"number": 1, "type": "approval", "config": "oops"}])
+    )
+
+
 def test_validate_still_ignores_canonical_steps_that_carry_no_gates():
     from app.services.workflow_builder import validate_builder_steps
 
