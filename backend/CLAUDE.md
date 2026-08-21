@@ -338,7 +338,10 @@ backend/
    - `Role` — name (admin, ap_manager, ap_clerk, cfo)
    - `UserRole` — junction table
    - `WebAuthnCredential` — registered passkey (credential_id, public_key, sign_count, transports) per `user_id`; the WebAuthn second factor (migration 0063)
-   - `ExtractionUsage` — billing: invoice_id, provider, program_type, period
+   - `AssistantUsage` — billing: per-org/month assistant token meter. The
+     *only* usage meter that is control-plane; `ExtractionUsage` and
+     `CardRebate` read like control-plane data but are tenant-local (see
+     the tenant list below and `docs/decisions.md` §57)
 
 2. **Tenant DBs** (`feoh_<slug>`) — isolated per customer
    - `Entity` — legal entity / subsidiary within the tenant (name, slug, currency, is_default, is_active). Business tables carry a nullable `entity_id` FK (`EntityMixin`); every tenant has one `is_default` Entity. Multi-entity Phase 2 (reads/writes scoped by the `X-Entity-ID` header) — see `../docs/multi-entity.md`

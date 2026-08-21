@@ -12,8 +12,10 @@ the presence of the ``invoices`` table.
     models are registered.
 
   - **Control plane** (no ``invoices``): ``assistant_usage`` (per-org/month
-    token meter — billing is a control-plane concern, next to
-    ``extraction_usage``). Applied via plain ``alembic upgrade head``.
+    token meter — this one genuinely is control-plane; do NOT infer the same
+    for ``extraction_usage`` / ``card_rebates``, which despite the same
+    per-org billing framing are tenant-local, see ``docs/decisions.md`` §57).
+    Applied via plain ``alembic upgrade head``.
     ``assistant_usage`` is in ``tenant_provisioning.CONTROL_TABLES`` so it is
     never created on a tenant DB.
 
