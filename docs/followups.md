@@ -987,6 +987,19 @@ rather than patched. None is a diagnosed defect (those go to
   shared `_money_gate_applies` body). **Trigger:** the next change touching those
   resolvers.
 
+- **e2e specs still hand-roll invoice teardown.** `invoices` is referenced by 16
+  foreign keys and none cascade, so a bare `DELETE FROM invoices WHERE ...` only
+  works while the invoice happens to have no children. Round 15 added
+  `tests-e2e/fixtures/helpers.ts::deleteInvoicesWhere`, which owns the full child
+  graph, and moved the one spec that broke (`upload-refetch-failure`, which
+  started failing teardown the moment extraction began succeeding and writing
+  line items). About 19 other specs still delete invoices directly. They pass
+  today because the invoices they create never acquire the children in question —
+  which is exactly the implicit dependency that just bit. **Durable fix:** move
+  the remaining call sites onto `deleteInvoicesWhere`. **Trigger:** the next e2e
+  teardown failure on a foreign-key violation, or the next spec added that runs a
+  real extraction.
+
 - **The card family's local-first story is weaker than its siblings'.**
   `card_adapters/dispatcher.REGION_DEFAULTS` resolves an *unset* provider to
   `lithic`, not `mock`, and `scripts/seed.py` seeds every demo tenant with
