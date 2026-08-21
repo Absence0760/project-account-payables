@@ -50,6 +50,15 @@ duplicate_object` blocks (Postgres has no `ADD CONSTRAINT IF NOT EXISTS`). The
 constraint names are identical on both sides so a migrated tenant and a
 `create_all` tenant carry the same constraints (create_all parity).
 
+Neither leg carries `ON DELETE`, so **the cycle constrains deletion**:
+`DELETE /api/expenses/{id}` is refused by Postgres while a card transaction
+still points at that expense. That refusal used to escape as an unhandled
+`ForeignKeyViolationError` — a 500 for an ordinary user action. The route now
+checks for a referencing transaction first and answers **409** naming it. It
+deliberately does *not* unmatch on the caller's behalf: silently clearing a
+reconciliation as a side effect of deleting the row on the other side of the
+link is exactly the invisible state change `/ignore` refuses to make.
+
 ### Import idempotency
 
 `corporate_card_transactions` has a **partial unique index**
@@ -105,8 +114,8 @@ string-Decimal amounts — never PII.
 | POST | `/api/expenses/bulk-gl-code` | **(WF2)** Set `gl_account_id` on many expenses at once (`null` clears it). Body `{ expense_ids: [uuid], gl_account_id: uuid\|null }`. Each id resolved within the entity scope (out-of-scope/cross-tenant id → 404); a non-`null` GL is validated against the org's chart. One `expense.bulk_gl_coded` audit row per expense; returns `{ updated }`. Mutation RBAC (`admin`/`ap_manager`/`ap_clerk`). Declared before `/{expense_id}`. |
 | GET | `/api/expenses/summary` | Whole-set rollup for the list's KPI row: `{ total, by_status: {status: n}, by_currency: [{currency, total, count}] }`. Takes the SAME `?status=&report_id=&search=` filters as the list and runs them through the same `_expense_list_filters`, so the cards and the table can't describe different sets. Each bucket's `total` is an EXACT decimal string, and buckets are never added together — a cross-currency sum is a figure denominated in nothing. The KPIs used to reduce over the LOADED page (20 rows), so "Period total" summed a page while the "Expenses" card beside it showed the server's whole-set count. Read RBAC (all four roles — a rollup exposes strictly less than the rows it summarises). Declared before `/{expense_id}`. |
 | GET | `/api/expenses/{id}` | Get one expense. |
-| PATCH | `/api/expenses/{id}` | Update mutable fields (`amount` still `gt=0`). Audits only when a field actually changed. An `amount` change or a `report_id` move recomputes the affected report total(s) — and is **409** if any affected report has left `draft` into a locked state (submitted/pending_approval/approved/reimbursed), so an edit can't silently move a total the CFO gate / approval signature already ran against. |
-| DELETE | `/api/expenses/{id}` | Delete an expense; recomputes the owning report total if it was attached. **409** if the owning report is locked (submitted/approved/…) — deleting would shrink a total past its approval. |
+| PATCH | `/api/expenses/{id}` | Update mutable fields (`amount` still `gt=0`). Audits only when a field actually changed. An `amount` change or a `report_id` move recomputes the affected report total(s) — and is **409** if any affected report has left `draft` into a locked state (submitted/pending_approval/approved/reimbursed), so an edit can't silently move a total the CFO gate / approval signature already ran against. Moving an expense **onto** a report is an attach, so the TARGET gates on `_require_draft_report` like the other two attach paths: a `rejected` / `cancelled` report is a **409** too (it can never be resubmitted, so the line would just vanish onto a dead row). Detaching (`report_id: null`) **from** a terminal report stays allowed — that is how its expenses get re-reported. |
+| DELETE | `/api/expenses/{id}` | Delete an expense; recomputes the owning report total if it was attached. **409** if the owning report is locked (submitted/approved/…) — deleting would shrink a total past its approval. Also **409** when a `CorporateCardTransaction` is reconciled to it (`matched_expense_id` is a real FK, so Postgres refused the DELETE and it surfaced as an unhandled `ForeignKeyViolationError` — a bare 500); the detail names the transaction to `/unmatch` first, the same posture `/ignore` takes. |
 | GET | `/api/expense-reports` | List, paginated, entity-scoped; `?status=` filter. |
 | POST | `/api/expense-reports` | Create a report. `employee_user_id` is **always the authenticated caller** — a report can't be raised on someone else's behalf. The body field is accepted for wire compatibility and ignored (a stale client gets a report owned by itself rather than a 422), the same posture `POST /api/expense-preapprovals` takes with its `requester_user_id`. Honouring it would have handed the creator the one value approval checks SoD against, so one user could raise a report "for" an arbitrary uuid and then approve it themselves. |
 | GET | `/api/expense-reports/{id}` | Get one report (with its expenses). |
@@ -238,6 +247,46 @@ the working without re-deriving it. `mileage_miles` is settable from the web UI
 (`ExpenseModal`) as well as the API — before this it was API-only, which is the
 other reason the rate could never bite.
 
+#### The engine's inputs are entity-scoped
+
+`ExpensePolicy` and `ExpensePreapproval` both carry `EntityMixin`, and their CRUD
+routers list and stamp them per-entity — but the two reads the engine actually
+runs on had **no scope at all**, so a multi-entity tenant's subsidiaries policed
+each other:
+
+- `_active_policies` loaded every active policy in the tenant. Since
+  `receipt_required` is a BLOCKING code, one subsidiary's
+  `requires_receipt_above: 1.00` flagged — and then refused submission of —
+  every receipt-less expense in the whole tenant. The mirror case is worse: that
+  subsidiary's *looser* limits silently sanctioned spend it never approved.
+- `_approved_preapproval_amount` matched on status + currency + (report OR
+  category), so one subsidiary's approved request cleared another's blocking
+  `preapproval_required`.
+
+Both now scope to the **expense's own `entity_id`** (`apply_entity_scope`), the
+same fix `services/vendor_matching` carries for the same reason. They scope
+differently on purpose, each in its fail-closed direction:
+
+| Read | NULL `entity_id` on the row | Why |
+|---|---|---|
+| policies | `include_shared=True` — still applies | An unstamped policy is a row written around the API (which always stamps one). Dropping it would switch a live rule OFF — fail-open. |
+| pre-approval cover | excluded | A pre-approval is a specific authorization. Excluding it leaves the blocking violation raised — fail-closed. |
+
+`apply_entity_scope` is a no-op when the *expense's* own `entity_id` is NULL, so
+an unstamped expense keeps the old whole-tenant behaviour rather than being
+un-policed.
+
+Report submit runs **one pass per entity** over its lines rather than one pass
+with a merged policy list — `evaluate_report` applies every policy handed to it
+to every expense, so a single list would re-open the same bleed at report level.
+A report is normally single-entity (one pass).
+
+`_active_policies` also orders (`created_at, id`). The engine's mileage rule is
+"first applicable policy with a usable rate", and an unordered `SELECT` made
+that non-deterministic whenever two applicable policies both set one — the same
+expense could flag or not flag between runs, in a module whose whole contract is
+being pure and deterministic.
+
 #### Digit bounds — an over-range amount is a 422, not a 500
 
 Every request-side `Decimal` in `app/schemas/expense.py` carries `max_digits` /
@@ -267,6 +316,61 @@ Two deliberate calls:
   construction. `CorporateCardTransaction.amount` deliberately is **not** — a
   card refund / merchant credit is a real negative line on the feed, and
   rejecting it would drop genuine transactions.
+
+#### A PATCH `null` into a NOT NULL column is a 422, not a 500
+
+Same shape as the digit bounds above, one layer along: a PATCH schema field
+typed `X | None` accepts an explicit `null`, the handler `setattr`s it, and the
+flush raises `NotNullViolationError` — **a 500 for input the caller got wrong.**
+It was found and fixed once, on `ExpenseUpdate.expense_date`, and left live on
+every sibling NOT NULL column: `amount`, `currency`, `payment_method`,
+`reimbursable` (`expenses`), `report_number`, `currency` (`expense_reports`), and
+`name`, `active`, `per_diem_currency` (`expense_policies`).
+
+`amount` was the sharpest of them. The PATCH handler re-locks the line's FX
+conversion off `expense.amount or 0` *before* the flush, so a `null` amount
+re-priced the owning report's line at zero on its way to the DB error.
+
+The fix is the pattern `expense_date` already used — annotate the field
+**non-optional** with a `None` sentinel default. `model_dump(exclude_unset=True)`
+means omitting the key still leaves the stored value untouched (the PATCH stays
+partial), while sending `null` fails type validation with a 422. Pydantic v2 does
+not validate defaults, so the sentinel never trips validation itself.
+
+Genuinely nullable columns keep `| None`: `merchant`, `category`, `description`,
+`gl_account_id`, `mileage_miles`, `report_id` (the detach), `title`, `notes`,
+the policy `category` / `threshold_currency` / thresholds. `null` there is the
+documented way to clear the value, not a mistake.
+
+#### Currency codes are normalized at the boundary
+
+`ExpensePolicy.threshold_currency` was uppercased + ISO-4217-shape-checked from
+the day it landed. The older `currency` columns it has to be *compared against*
+were not — `max_length=3` alone accepts `""`, `"us"` and `"usd"` — so
+`Expense`, `ExpenseReport`, `ExpensePreapproval`, `CorporateCardTransaction` and
+`ExpensePolicy.per_diem_currency` all took whatever the client sent. They now
+share one `CurrencyCode` annotated type (`normalize_iso_currency`): stripped,
+uppercased, and a 422 unless it is exactly three letters.
+
+A currency code is only a *label* until something groups or compares on it, and
+two things did:
+
+- `""` is read by `expense_currency.normalize_currency(code, default=…)` as
+  "whatever the target currency is" — the silent assume-the-default that
+  locked-FX exists to eliminate. A blank-currency expense attached to a USD
+  report was locked at rate 1 as if it had been filed in USD.
+- `"usd"` and `"USD"` are two `GROUP BY` keys, so `GET /api/expenses/summary`
+  emitted two `by_currency` entries which the response then relabelled
+  identically — one currency's money split across two rows both reading `USD`.
+  And `suggest_matches` compared `Expense.currency == txn.currency` in raw SQL
+  while `/match` uppercased both sides, so a lowercase expense was invisible to
+  the suggestions for a transaction `/match` would happily link it to.
+
+Two read paths additionally normalize **in SQL** (`func.upper`) so a row written
+before the validator still behaves: the summary's `GROUP BY` / `ORDER BY`, and
+the card match-suggestion candidate query. No backfill migration — normalising
+the read is enough, and rewriting historical rows to guess an intended code is
+the kind of silent correction this area avoids everywhere else.
 
 #### Threshold currency — what a policy's numbers mean
 
@@ -413,6 +517,17 @@ Rules that keep the numbers honest:
   line is attached (legacy rows predating the columns), listing their ids.
 - **Detach clears the lock** — it was an expression in *that* report's currency.
 - **Same currency is a no-op fetch**: rate `1`, no adapter call, exact face value.
+  This is also why a **missing rate source doesn't break a domestic report**.
+  `get_fx_adapter` raises for a *named* provider it has no adapter for rather
+  than silently resolving to `mock` (`decisions §29`), and the expense path
+  turns that into "no FX available". The attach guard used to demand an adapter
+  before asking whether a conversion was even needed, so one typo in
+  `settings.fx.provider` 422'd **every** attach in the tenant — including a USD
+  line on a USD report, which never consults the provider. The guard now checks
+  the currency pair first: the cross-currency line (the one that could
+  understate the total the CFO gate reads) is still refused, the same-currency
+  line locks at 1 and proceeds. Refusing a conversion nobody asked for isn't
+  fail-closed, it's an outage.
 - **Local-first**: the FX provider comes from `Organization.settings.fx` via the
   existing `fx_adapters` registry, defaulting to the deterministic `mock`
   adapter — multi-currency reports work with no cloud account.

@@ -19,8 +19,9 @@ endpoints are wired in WF1.
 
 from datetime import date
 from decimal import Decimal
+from typing import Annotated
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AfterValidator, BaseModel, Field, field_validator
 
 from app.api.pagination import PageMeta
 from app.models.expense import (
@@ -30,6 +31,47 @@ from app.models.expense import (
     PreapprovalStatus,
     ReconciliationStatus,
 )
+
+# ---------------------------------------------------------------------------
+# Currency codes
+# ---------------------------------------------------------------------------
+
+
+def normalize_iso_currency(value: str) -> str:
+    """Uppercase + shape-check an ISO 4217 code on the way in.
+
+    ``ExpensePolicy.threshold_currency`` was validated this way from the day it
+    landed; the older ``currency`` columns it has to be compared against were
+    not, and ``max_length=3`` alone accepts ``""``, ``"e"``, ``"us"`` and
+    ``"usd"``. Each is a real defect downstream, because a currency code is only
+    ever a *label* until something groups or compares on it:
+
+    * ``""`` is silently read as the target currency by
+      ``expense_currency.normalize_currency(code, default=...)`` — so a blank
+      code became "whatever this report/threshold is in", the quiet
+      assume-the-default that locked-FX exists to eliminate;
+    * ``"usd"`` and ``"USD"`` are two ``GROUP BY`` keys, so
+      ``GET /api/expenses/summary`` emitted two ``by_currency`` buckets both
+      labelled ``USD`` after the response uppercased them; and
+    * the card-reconciliation candidate query compares
+      ``Expense.currency == txn.currency`` in SQL, while the card CSV importer
+      already uppercases — so a lowercase expense was invisible to the
+      suggestions for a transaction it exactly matched.
+
+    Normalising at the boundary fixes all three at the source and keeps what is
+    stored comparable with the codes every other surface writes.
+    """
+    code = (value or "").strip().upper()
+    if len(code) != 3 or not code.isalpha():
+        raise ValueError("currency must be a 3-letter ISO 4217 code")
+    return code
+
+
+#: A NOT NULL ``currency`` column's request-side type. Carries its own shape
+#: check instead of a bare ``max_length=3``, which would reject `" USD"` before
+#: the strip could rescue it and accept `""` / `"usd"` after.
+CurrencyCode = Annotated[str, AfterValidator(normalize_iso_currency)]
+
 
 # ---------------------------------------------------------------------------
 # Expenses
@@ -46,7 +88,7 @@ class ExpenseBase(BaseModel):
     # is a credit memo, not an expense). See issue #156.
     # Digits match `expenses.amount` Numeric(15, 2) — see the module docstring.
     amount: Decimal = Field(gt=0, max_digits=15, decimal_places=2)
-    currency: str = Field(default="USD", max_length=3)
+    currency: CurrencyCode = "USD"
     gl_account_id: str | None = None
     payment_method: ExpensePaymentMethod = ExpensePaymentMethod.out_of_pocket
     reimbursable: bool = True
@@ -63,7 +105,15 @@ class ExpenseCreate(ExpenseBase):
 
 class ExpenseUpdate(BaseModel):
     """PATCH — every field optional. ``status`` moves through dedicated flows in
-    later workflows, not here."""
+    later workflows, not here.
+
+    **The NOT NULL columns are annotated non-optional with a ``None`` sentinel
+    default** (see ``expense_date`` below): omitting the key leaves the stored
+    value untouched, sending an explicit ``null`` is a 422. The nullable columns
+    below (``merchant`` / ``category`` / ``description`` / ``gl_account_id`` /
+    ``mileage_miles`` / ``report_id``) keep ``| None``, because ``null`` there is
+    a meaningful "clear it" — ``report_id: null`` is how an expense is detached.
+    """
 
     # NOT `date | None`. ``expenses.expense_date`` is NOT NULL, so an explicit
     # ``null`` used to pass validation, reach ``setattr`` in the PATCH handler
@@ -77,11 +127,17 @@ class ExpenseUpdate(BaseModel):
     merchant: str | None = Field(default=None, max_length=255)
     category: str | None = Field(default=None, max_length=100)
     description: str | None = None
-    amount: Decimal | None = Field(default=None, gt=0, max_digits=15, decimal_places=2)
-    currency: str | None = Field(default=None, max_length=3)
+    # `amount` / `currency` / `payment_method` / `reimbursable` are all NOT NULL
+    # on `expenses`, and each was typed `| None` — the same 500 the sentinel
+    # above was introduced to close, left open on its four siblings. `amount`
+    # was the worst of them: the handler also re-locks the line's FX conversion
+    # off `expense.amount or 0` before the flush, so a `null` amount briefly
+    # re-priced the owning report's line at zero on its way to the DB error.
+    amount: Decimal = Field(default=None, gt=0, max_digits=15, decimal_places=2)  # type: ignore[assignment]
+    currency: CurrencyCode = Field(default=None)  # type: ignore[assignment]
     gl_account_id: str | None = None
-    payment_method: ExpensePaymentMethod | None = None
-    reimbursable: bool | None = None
+    payment_method: ExpensePaymentMethod = Field(default=None)  # type: ignore[assignment]
+    reimbursable: bool = Field(default=None)  # type: ignore[assignment]
     mileage_miles: Decimal | None = Field(default=None, ge=0, max_digits=10, decimal_places=2)
     report_id: str | None = None
 
@@ -162,7 +218,7 @@ class ExpenseSummaryResponse(BaseModel):
 class ExpenseReportBase(BaseModel):
     report_number: str = Field(..., max_length=50)
     title: str | None = Field(default=None, max_length=255)
-    currency: str = Field(default="USD", max_length=3)
+    currency: CurrencyCode = "USD"
     notes: str | None = None
 
 
@@ -177,11 +233,17 @@ class ExpenseReportCreate(ExpenseReportBase):
 
 
 class ExpenseReportUpdate(BaseModel):
-    """PATCH — every field optional. Status changes belong to later workflows."""
+    """PATCH — every field optional. Status changes belong to later workflows.
 
-    report_number: str | None = Field(default=None, max_length=50)
+    ``report_number`` / ``currency`` are NOT NULL on ``expense_reports``, so they
+    take the same non-optional-with-``None``-sentinel treatment as
+    ``ExpenseUpdate.expense_date``: omit to leave untouched, explicit ``null`` is
+    a 422 rather than a ``NotNullViolationError`` 500. ``title`` / ``notes`` are
+    nullable, so ``null`` legitimately clears them."""
+
+    report_number: str = Field(default=None, max_length=50)  # type: ignore[assignment]
     title: str | None = Field(default=None, max_length=255)
-    currency: str | None = Field(default=None, max_length=3)
+    currency: CurrencyCode = Field(default=None)  # type: ignore[assignment]
     notes: str | None = None
 
 
@@ -269,7 +331,7 @@ class ExpensePolicyBase(BaseModel):
     # threshold has no meaning the engine can act on (`0` already expresses
     # "always require"). Digits match the `expense_policies` columns.
     per_diem_amount: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
-    per_diem_currency: str = Field(default="USD", max_length=3)
+    per_diem_currency: CurrencyCode = "USD"
     mileage_rate: Decimal | None = Field(default=None, ge=0, max_digits=10, decimal_places=4)
     category_limit: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     requires_preapproval_above: Decimal | None = Field(
@@ -300,14 +362,20 @@ class ExpensePolicyCreate(ExpensePolicyBase):
 
 
 class ExpensePolicyUpdate(BaseModel):
-    """PATCH — every field optional."""
+    """PATCH — every field optional.
 
-    name: str | None = Field(default=None, max_length=255)
-    active: bool | None = None
+    ``name`` / ``active`` / ``per_diem_currency`` are NOT NULL on
+    ``expense_policies`` and so are non-optional with a ``None`` sentinel (omit
+    to leave untouched; explicit ``null`` → 422, not a 500). ``category`` /
+    ``threshold_currency`` / the thresholds stay ``| None`` — ``null`` there is
+    the documented way to clear a rule."""
+
+    name: str = Field(default=None, max_length=255)  # type: ignore[assignment]
+    active: bool = Field(default=None)  # type: ignore[assignment]
     category: str | None = Field(default=None, max_length=100)
     threshold_currency: str | None = None
     per_diem_amount: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
-    per_diem_currency: str | None = Field(default=None, max_length=3)
+    per_diem_currency: CurrencyCode = Field(default=None)  # type: ignore[assignment]
     mileage_rate: Decimal | None = Field(default=None, ge=0, max_digits=10, decimal_places=4)
     category_limit: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     requires_preapproval_above: Decimal | None = Field(
@@ -371,7 +439,7 @@ class CorporateCardTransactionBase(BaseModel):
     # Deliberately NOT `ge=0`: a card refund / merchant credit is a genuine
     # negative line on the feed, and rejecting it would drop real transactions.
     amount: Decimal = Field(max_digits=15, decimal_places=2)
-    currency: str = Field(default="USD", max_length=3)
+    currency: CurrencyCode = "USD"
     external_txn_id: str | None = Field(default=None, max_length=255)
     import_batch: str | None = Field(default=None, max_length=100)
     raw: dict | None = None
@@ -427,7 +495,7 @@ class ExpensePreapprovalBase(BaseModel):
     title: str = Field(..., max_length=255)
     # Digits match `expense_preapprovals.estimated_amount` Numeric(15, 2).
     estimated_amount: Decimal = Field(ge=0, max_digits=15, decimal_places=2)
-    currency: str = Field(default="USD", max_length=3)
+    currency: CurrencyCode = "USD"
     category: str | None = Field(default=None, max_length=100)
     justification: str | None = None
 

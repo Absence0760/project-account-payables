@@ -12,7 +12,7 @@ new tables incl. the circular FK; an explicit table-existence test pins it.
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 
 from app.models.expense import Expense, ExpenseReport
 from app.models.workflow import AuditLog
@@ -130,6 +130,62 @@ async def test_expense_date_cannot_be_cleared_or_omitted(realdb):
         moved = await c.patch(f"/api/expenses/{eid}", json={"expense_date": "2026-06-09"})
         assert moved.status_code == 200, moved.text
         assert moved.json()["expense_date"] == "2026-06-09"
+
+
+async def test_not_null_columns_cannot_be_cleared_by_an_explicit_patch_null(realdb):
+    """The sibling NOT NULL columns get the same treatment ``expense_date`` does.
+
+    ``expense_date`` was fixed; ``amount``, ``currency``, ``payment_method`` and
+    ``reimbursable`` were left typed ``| None`` on ``ExpenseUpdate``, and the
+    same PATCH-``null`` reached ``setattr`` and raised ``NotNullViolationError``
+    — a bare 500 each. ``amount`` was the sharpest: the handler also re-locks the
+    line's FX conversion off ``expense.amount or 0``, so a ``null`` re-priced the
+    owning report's line at zero on its way to the DB error.
+
+    The same rule holds on a report (``report_number`` / ``currency``) and on a
+    policy (``name`` / ``active`` / ``per_diem_currency``). Genuinely nullable
+    columns are unaffected — ``null`` still clears them.
+    """
+    async with realdb.client(key="a", role="ap_manager") as c:
+        eid = (
+            await c.post(
+                "/api/expenses",
+                json={"expense_date": "2026-06-01", "amount": "10.00", "currency": "USD"},
+            )
+        ).json()["id"]
+        for field in ("amount", "currency", "payment_method", "reimbursable"):
+            cleared = await c.patch(f"/api/expenses/{eid}", json={field: None})
+            assert cleared.status_code == 422, f"{field}: {cleared.status_code} {cleared.text}"
+
+        # The row is untouched by all that, and a real edit still lands.
+        after = await c.get(f"/api/expenses/{eid}")
+        assert after.json()["amount"] == 10.0
+        assert after.json()["currency"] == "USD"
+        assert (await c.patch(f"/api/expenses/{eid}", json={"amount": "12.50"})).json()[
+            "amount"
+        ] == 12.5
+        # A nullable column still clears on an explicit null.
+        assert (await c.patch(f"/api/expenses/{eid}", json={"merchant": None})).status_code == 200
+
+        rid = (
+            await c.post(
+                "/api/expense-reports", json={"report_number": "R-NULLS", "currency": "USD"}
+            )
+        ).json()["id"]
+        for field in ("report_number", "currency"):
+            cleared = await c.patch(f"/api/expense-reports/{rid}", json={field: None})
+            assert cleared.status_code == 422, f"{field}: {cleared.status_code} {cleared.text}"
+        assert (
+            await c.patch(f"/api/expense-reports/{rid}", json={"notes": None})
+        ).status_code == 200
+
+        pid = (await c.post("/api/expense-policies", json={"name": "Nulls"})).json()["id"]
+        for field in ("name", "active", "per_diem_currency"):
+            cleared = await c.patch(f"/api/expense-policies/{pid}", json={field: None})
+            assert cleared.status_code == 422, f"{field}: {cleared.status_code} {cleared.text}"
+        assert (
+            await c.patch(f"/api/expense-policies/{pid}", json={"category_limit": None})
+        ).status_code == 200
 
 
 async def test_list_filter_and_get(realdb):
@@ -516,6 +572,71 @@ async def test_summary_never_adds_across_currencies(realdb):
         {"currency": "EUR", "total": "5.05", "count": 1},
         {"currency": "USD", "total": "30.30", "count": 2},
     ]
+
+
+async def test_currency_codes_are_normalized_on_write(realdb):
+    """A currency code is only a *label* until something groups or compares on it.
+
+    ``max_length=3`` alone accepted ``""``, ``"us"`` and ``"usd"`` on every
+    expense / report / pre-approval write (``ExpensePolicy.threshold_currency``
+    was shape-checked from the start; its older siblings were not). Two
+    consequences were live:
+
+    * ``""`` is read by ``expense_currency.normalize_currency(code, default=…)``
+      as "whatever the target is" — the silent assume-the-default that locked-FX
+      exists to eliminate; and
+    * ``"usd"`` and ``"USD"`` are two ``GROUP BY`` keys, so
+      ``GET /api/expenses/summary`` returned two ``by_currency`` entries the
+      response then relabelled identically, splitting one currency's money
+      across two rows both reading ``USD``.
+
+    The code is now uppercased + shape-checked at the boundary, and the summary
+    groups on the uppercased column so a row written before that still rolls up
+    into one bucket.
+    """
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        for bad in ("", "us", "usdd", "12$"):
+            refused = await c.post(
+                "/api/expenses",
+                json={"expense_date": "2026-06-01", "amount": "1.00", "currency": bad},
+            )
+            assert refused.status_code == 422, f"{bad!r}: {refused.status_code}"
+
+        created = await c.post(
+            "/api/expenses",
+            json={"expense_date": "2026-06-01", "amount": "10.00", "currency": " eur "},
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["currency"] == "EUR"
+
+        report = await c.post(
+            "/api/expense-reports", json={"report_number": "R-CUR", "currency": "gbp"}
+        )
+        assert report.status_code == 201, report.text
+        assert report.json()["currency"] == "GBP"
+
+        preapproval = await c.post(
+            "/api/expense-preapprovals",
+            json={"title": "Trip", "estimated_amount": "50.00", "currency": "jpy"},
+        )
+        assert preapproval.status_code == 201, preapproval.text
+        assert preapproval.json()["currency"] == "JPY"
+
+    # A row that predates the validator still rolls into ONE bucket.
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        await s.execute(update(Expense).where(Expense.currency == "EUR").values(currency="eur"))
+        await s.commit()
+
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        await c.post(
+            "/api/expenses",
+            json={"expense_date": "2026-06-02", "amount": "5.00", "currency": "EUR"},
+        )
+        body = (await c.get("/api/expenses/summary")).json()
+
+    eur = [row for row in body["by_currency"] if row["currency"] == "EUR"]
+    assert eur == [{"currency": "EUR", "total": "15.00", "count": 2}], body["by_currency"]
 
 
 async def test_summary_applies_the_same_filters_as_the_list(realdb):
