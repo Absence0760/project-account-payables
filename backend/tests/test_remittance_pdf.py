@@ -145,6 +145,9 @@ def test_download_header_survives_a_processor_supplied_reference():
         assert header.startswith("attachment; ")
         # A bare `filename=` cannot carry these, so the UTF-8 form must be there.
         assert "filename*=UTF-8''" in header
-        assert '"' not in header.split("filename*=")[0].removeprefix(
-            'attachment; filename="'
-        ).removesuffix('"; ')
+
+        ascii_fallback = header.split('"')[1]
+        # Neither may survive into the legacy parameter: a quote would break out
+        # of the quoted string, a slash is a path separator.
+        assert '"' not in ascii_fallback
+        assert "/" not in ascii_fallback

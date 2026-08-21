@@ -372,7 +372,7 @@ async def export_report(
     # Interpolating it directly used to 500 on any non-latin-1 name (Starlette
     # latin-1-encodes header values) and a name containing `"` broke out of the
     # quoted-string form so browsers saved the file under a truncated name.
-    safe_name = row.name.replace(" ", "_").replace("/", "_") or "report"
+    safe_name = row.name.replace(" ", "_") or "report"
 
     if format == "pdf":
         from app.services.analytics_report_pdf import (

@@ -12,12 +12,16 @@ from urllib.parse import quote
 
 # Characters that break the `filename="..."` quoted-string form of a
 # Content-Disposition header, or aren't safe to echo back in a header at
-# all: the quote itself, the backslash escape character, every ASCII
-# control character (0x00-0x1F, 0x7F — includes CR/LF, though the ASGI
-# server already rejects raw CRLF in header values before this ever runs),
-# and anything outside printable ASCII (non-ASCII bytes in the legacy
-# `filename=` parameter aren't reliably interpreted by every client).
-_UNSAFE_FILENAME_CHARS = re.compile(r'["\\]|[^\x20-\x7e]')
+# all: the quote itself, the backslash escape character, the forward slash
+# (a path separator — browsers strip path components from a
+# `Content-Disposition` filename anyway, but callers were hand-stripping it
+# before calling here, so the helper should own the property rather than leave
+# each caller to remember), every ASCII control character (0x00-0x1F, 0x7F —
+# includes CR/LF, though the ASGI server already rejects raw CRLF in header
+# values before this ever runs), and anything outside printable ASCII
+# (non-ASCII bytes in the legacy `filename=` parameter aren't reliably
+# interpreted by every client).
+_UNSAFE_FILENAME_CHARS = re.compile(r'["\\/]|[^\x20-\x7e]')
 
 
 def content_disposition_attachment(filename: str) -> str:
