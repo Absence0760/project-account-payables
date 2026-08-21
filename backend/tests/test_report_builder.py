@@ -460,6 +460,36 @@ async def test_export_over_cap_surfaces_truncation_note(realdb):
         assert pdf_resp.content[:4] == b"%PDF"
 
 
+async def test_page_past_the_end_returns_an_empty_page(realdb):
+    """`page` has a floor (>= 1) but no ceiling. A page starting past the last
+    matching row must return an empty page — not a 500. A big enough `page`
+    overflowed the int64 OFFSET bind and asyncpg raised a DataError straight
+    out of the request."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _add_invoice(mk, org_id, vendor_name="PagerCo", amount="5.00")
+
+    base = {
+        "data_source": "invoices",
+        "dimensions": [{"key": "vendor_name"}],
+        "measures": [{"key": "amount", "agg": "sum"}],
+        "filters": [{"key": "vendor_name", "op": "eq", "value": "PagerCo"}],
+    }
+    async with realdb.client(key="a", role="cfo") as c:
+        first = await c.post("/api/reports/run", json=dict(base, page=1, page_size=100))
+        assert first.status_code == 200, first.text
+        assert first.json()["total_rows"] == 1
+
+        for page in (2, 10**9, 10**18):
+            resp = await c.post("/api/reports/run", json=dict(base, page=page, page_size=100))
+            assert resp.status_code == 200, resp.text
+            data = resp.json()
+            assert data["rows"] == []
+            # The whole-set count is still honest on an over-run page.
+            assert data["total_rows"] == 1
+            assert data["page"] == page
+
+
 @pytest.mark.parametrize(
     "name",
     [

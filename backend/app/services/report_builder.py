@@ -689,7 +689,13 @@ async def run_report(
         effective_limit = min(page_size, remaining)
 
     rows: list[dict] = []
-    if effective_limit > 0:
+    # A page that starts past the last matching row has nothing to return, so
+    # don't ask the database for it. `total_rows` is the real (already
+    # limit-clamped) group count, which makes skipping exactly equivalent to
+    # running the query — and it bounds `offset`, which is otherwise unbounded:
+    # `page` has no ceiling, and a big enough one overflows the int64 OFFSET
+    # bind and surfaces as an asyncpg DataError (a 500 the caller can't act on).
+    if effective_limit > 0 and offset < total_rows:
         data_stmt = data_stmt.limit(effective_limit).offset(offset)
         result = await db.execute(data_stmt)
         for row in result.mappings().all():

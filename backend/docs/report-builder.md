@@ -115,7 +115,11 @@ report_definition`, details = `{name, data_source}`).
 ```
 
 - `POST /run` body = `ReportSpec` + `{ page?, page_size? }` (default `page=1`,
-  `page_size=100`, cap `1000`).
+  `page_size=100`, cap `1000`). `page` has a floor (`>= 1`) but no ceiling; a
+  page starting past the last matching row short-circuits to an empty `rows`
+  with the true `total_rows`, and never issues the query — which is both
+  equivalent and the thing that keeps a huge `page` from overflowing the int64
+  `OFFSET` bind into an asyncpg `DataError` (a 500).
 - `POST /` body = `ReportSpec` + `{ name, description? }`.
 - `sort[].key` is a measure output key (`<measure_key>_<agg>`) or a dimension key
   that is actually selected — otherwise 422.
