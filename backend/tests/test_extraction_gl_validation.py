@@ -30,7 +30,7 @@ from app.services.extraction_adapters.base import (
     ExtractionResult,
 )
 
-# ---------- Fixtures (mirrors test_extraction_ctrl_db patterns) -----------
+# ---------- Fixtures (mirrors test_extraction_usage_placement patterns) -----------
 
 
 def _make_invoice():
@@ -139,7 +139,7 @@ def _result_with_gl(
 
 def _patch_internals(extraction_result: ExtractionResult, *, applied_priors: list[str] = None):
     """Mock everything `run_extraction` reaches for, like
-    test_extraction_ctrl_db does. Returns an ExitStack."""
+    test_extraction_usage_placement does. Returns an ExitStack."""
     stack = ExitStack()
 
     mock_s3 = MagicMock()
