@@ -325,6 +325,7 @@ async def test_send_to_erp_internal_passes_org_erp_config_to_call_erp():
 
     inv = _invoice(status=InvoiceStatus.sending_to_erp)
     inst = _instance()
+    db = AsyncMock()
     call_erp = AsyncMock(return_value="ERP-REF-1")
     cfg = {"type": "netsuite", "integration_method": "direct", "account_id": "ACCT"}
 
@@ -334,9 +335,9 @@ async def test_send_to_erp_internal_passes_org_erp_config_to_call_erp():
         patch("app.services.erp.get_workflow_instance", AsyncMock(return_value=inst)),
         patch("app.services.erp.complete_workflow", AsyncMock()),
     ):
-        await send_to_erp_internal(AsyncMock(), inv, erp_config=cfg)
+        await send_to_erp_internal(db, inv, erp_config=cfg)
 
-    call_erp.assert_awaited_once_with(inv, cfg)
+    call_erp.assert_awaited_once_with(db, inv, cfg)
 
 
 @pytest.mark.asyncio
@@ -355,6 +356,7 @@ async def test_call_erp_dispatches_via_configured_adapter_not_mock():
         client = cm.return_value.__aenter__.return_value
         client.post = AsyncMock(return_value=resp)
         ref = await _call_erp(
+            _line_items_db([]),
             _invoice(),
             {"integration_method": "merge_dev", "api_key": "k", "account_token": "t"},
         )
@@ -362,3 +364,96 @@ async def test_call_erp_dispatches_via_configured_adapter_not_mock():
     assert ref == "merge-inv-77"
     posted_url = client.post.await_args.args[0]
     assert posted_url.endswith("/invoices")
+
+
+# ---------------------------------------------------------------------------
+# _call_erp — line items reach the adapter payload.
+# ---------------------------------------------------------------------------
+
+
+def _line_items_db(rows):
+    """A fake AsyncSession whose `.execute()` answers `_fetch_line_items`'s
+    query with the given rows, in the order given (mirrors the real
+    query's ORDER BY)."""
+    db = AsyncMock()
+    exec_result = SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: rows))
+    db.execute = AsyncMock(return_value=exec_result)
+    return db
+
+
+def _line_item(
+    *,
+    line_number=1,
+    item_code="SKU-1",
+    description="Widget",
+    quantity=Decimal("2"),
+    unit_price=Decimal("10.00"),
+    tax=Decimal("1.00"),
+    total=Decimal("21.00"),
+    gl_account="6000",
+):
+    return SimpleNamespace(
+        line_number=line_number,
+        item_code=item_code,
+        description=description,
+        quantity=quantity,
+        unit_price=unit_price,
+        tax=tax,
+        total=total,
+        gl_account=gl_account,
+    )
+
+
+@pytest.mark.asyncio
+async def test_call_erp_includes_line_items_in_payload():
+    """Regression: `_build_payload` used to never populate
+    `InvoicePayload.line_items`, so every ERP push — regardless of
+    adapter — collapsed a per-line-GL-coded invoice into a single line
+    at the header GL code. Merge.dev's `post_invoice` renders
+    `payload.line_items` straight into the request body, so asserting
+    on the posted JSON proves the line items made it all the way from
+    the DB fixture through `_build_payload` to the wire."""
+    from app.services.erp import _call_erp
+
+    rows = [
+        _line_item(line_number=1, item_code="SKU-1", gl_account="6000", total=Decimal("21.00")),
+        # A hand-keyed row with no line_number — must fall back to its
+        # position in the query's stable order (2nd → line_number 2),
+        # not be dropped from the payload.
+        _line_item(line_number=None, item_code="SKU-2", gl_account="6100", total=Decimal("50.00")),
+    ]
+    db = _line_items_db(rows)
+
+    resp = AsyncMock()
+    resp.status_code = 201
+    resp.json = lambda: {"model": {"id": "merge-inv-88", "number": "INV-1"}}
+
+    with patch("httpx.AsyncClient") as cm:
+        client = cm.return_value.__aenter__.return_value
+        client.post = AsyncMock(return_value=resp)
+        await _call_erp(
+            db,
+            _invoice(),
+            {"integration_method": "merge_dev", "api_key": "k", "account_token": "t"},
+        )
+
+    posted_body = client.post.await_args.kwargs["json"]
+    posted_lines = posted_body["model"]["line_items"]
+    assert len(posted_lines) == 2
+    assert posted_lines[0]["account"] == "6000"
+    assert posted_lines[0]["total_line_amount"] == 21.00
+    assert posted_lines[1]["account"] == "6100"
+    assert posted_lines[1]["total_line_amount"] == 50.00
+
+
+def test_build_payload_falls_back_to_query_order_for_null_line_number():
+    """`_build_payload`'s `LineItemPayload.line_number` isn't nullable
+    (unlike the DB column) — a legacy/hand-keyed row with no
+    `line_number` must still get a positive one derived from its
+    position in the (already-ordered) query result."""
+    from app.services.erp import _build_payload
+
+    rows = [_line_item(line_number=None), _line_item(line_number=None)]
+    payload = _build_payload(_invoice(), rows)
+
+    assert [li.line_number for li in payload.line_items] == [1, 2]

@@ -488,6 +488,20 @@ exactly as before.
     target's effective permissions are not a subset of the caller's. It shares
     `permissions_for_role` / `effective_permissions` with the grant guard, so
     the two rules cannot drift.
+  - **You cannot lock the org out of its own admin account.**
+    `_authorize_target_mutation` only stops a caller from touching someone
+    ELSE's account with more authority than they hold — self-mutation always
+    passes it trivially. That left the org's sole admin free to strip their
+    own `admin` role or deactivate their own account via `PATCH
+    /api/admin/users/{id}`, a one-way door: recovering needs `user.manage`,
+    which by default only an admin holds. `_guard_against_last_admin_lockout`
+    closes it: before any field is mutated, if the target is currently an
+    active admin and the update would make them not one (role removal,
+    deactivation, or both), the request is refused (409) unless another
+    active admin already exists in the org to undo it. Applies to self and
+    third-party targets alike, though for a third party it's a no-op — acting
+    on an admin already required the caller to be one themselves, so the org
+    never actually reaches zero admins in that case.
 - **Frontend** — `auth.can(perm)` mirrors `require_permission`; the gated
   controls converted so far are payment Execute, payment Void, and vendor
   Block/Unblock. The `/admin/roles` editor renders permission checkboxes from

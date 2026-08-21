@@ -3,11 +3,13 @@
 import asyncio
 import uuid
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.invoice import Invoice, InvoiceStatus
+from app.models.invoice import Invoice, InvoiceLineItem, InvoiceStatus
 from app.services.erp_adapters import (
     InvoicePayload,
+    LineItemPayload,
     get_erp_adapter,
 )
 from app.services.workflow_engine import (
@@ -20,8 +22,8 @@ MAX_RETRIES = 3
 BASE_DELAY_SECONDS = 2
 
 
-def _build_payload(invoice: Invoice) -> InvoicePayload:
-    """Convert an Invoice ORM object to a normalized ERP payload."""
+def _build_payload(invoice: Invoice, line_items: list[InvoiceLineItem]) -> InvoicePayload:
+    """Convert an Invoice ORM object (+ its line items) to a normalized ERP payload."""
     return InvoicePayload(
         correlation_id=str(invoice.correlation_id),
         invoice_number=invoice.invoice_number,
@@ -45,7 +47,40 @@ def _build_payload(invoice: Invoice) -> InvoicePayload:
         bill_to_address=invoice.bill_to_address,
         remit_to_address=invoice.remit_to_address,
         vendor_address=invoice.vendor_address,
+        line_items=[
+            LineItemPayload(
+                # A hand-keyed / legacy row can have a NULL line_number; fall
+                # back to its position in the (stable) query order rather than
+                # drop it from the ERP payload.
+                line_number=li.line_number if li.line_number is not None else idx + 1,
+                item_code=li.item_code,
+                description=li.description,
+                quantity=li.quantity,
+                unit_price=li.unit_price,
+                tax=li.tax,
+                total=li.total,
+                gl_account=li.gl_account,
+            )
+            for idx, li in enumerate(line_items)
+        ],
     )
+
+
+async def _fetch_line_items(db: AsyncSession, invoice_id: uuid.UUID) -> list[InvoiceLineItem]:
+    """Load an invoice's line items in stable order.
+
+    A plain query rather than the `Invoice.line_items` relationship: the
+    invoice object reaching `_call_erp` may come from a session/loop the
+    relationship was never eagerly loaded on (e.g. the `erp_dispatch`
+    background task's own session), and a lazy load there would raise
+    `MissingGreenlet` instead of silently working.
+    """
+    result = await db.execute(
+        select(InvoiceLineItem)
+        .where(InvoiceLineItem.invoice_id == invoice_id)
+        .order_by(InvoiceLineItem.line_number.asc().nulls_last(), InvoiceLineItem.id.asc())
+    )
+    return list(result.scalars().all())
 
 
 async def send_to_erp(
@@ -73,7 +108,7 @@ async def send_to_erp(
 
     for attempt in range(retry_count, MAX_RETRIES):
         try:
-            erp_ref = await _call_erp(invoice, erp_config)
+            erp_ref = await _call_erp(db, invoice, erp_config)
 
             # Success → sent_to_erp → done
             await transition_invoice(
@@ -189,7 +224,7 @@ async def send_to_erp_internal(
     state_data = (instance.state_data if instance else None) or {}
 
     try:
-        erp_ref = await _call_erp(invoice, erp_config)
+        erp_ref = await _call_erp(db, invoice, erp_config)
 
         await transition_invoice(
             db,
@@ -228,7 +263,7 @@ async def send_to_erp_internal(
         await db.commit()
 
 
-async def _call_erp(invoice: Invoice, erp_config: dict | None = None) -> str:
+async def _call_erp(db: AsyncSession, invoice: Invoice, erp_config: dict | None = None) -> str:
     """Send invoice to the configured ERP via the adapter pattern.
 
     Uses the invoice's correlation_id as an idempotency key.
@@ -243,7 +278,8 @@ async def _call_erp(invoice: Invoice, erp_config: dict | None = None) -> str:
     import app.services.erp_adapters.netsuite  # noqa: F401
 
     adapter = get_erp_adapter(config)
-    payload = _build_payload(invoice)
+    line_items = await _fetch_line_items(db, invoice.id)
+    payload = _build_payload(invoice, line_items)
     result = await adapter.post_invoice(payload)
 
     if not result.success:
