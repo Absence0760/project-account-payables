@@ -359,19 +359,30 @@ async def test_emit_duplicate_for_one_sub_still_queues_the_others(realdb, monkey
     sub_ids = [sub.id for sub in subs]
     event_id = f"{EVENT_INVOICE_APPROVED}:dupe-key"
 
-    # Pre-queue the delivery for ONE of them so emit hits the conflict.
-    already = WebhookDelivery(
-        id=uuid.uuid4(),
-        subscription_id=sub_ids[0],
-        organization_id=org_id,
-        event_id=event_id,
-        event_type=EVENT_INVOICE_APPROVED,
-        payload={"id": event_id, "type": EVENT_INVOICE_APPROVED, "data": {}},
-        status=DELIVERY_PENDING,
-        attempt_count=0,
-        next_attempt_at=datetime.now(UTC),
-    )
-    await _persist(control_mk, *subs, already)
+    # Pre-queue the delivery for TWO of the three so emit hits a conflict.
+    #
+    # Two, not one, and deliberately so: the old loop only broke on the
+    # iteration AFTER a rollback expired the session's instances, so a single
+    # duplicate that happened to come LAST in the (unordered) subscription query
+    # would let the buggy code queue every other subscription and pass. The
+    # query has no ORDER BY, so that position is not ours to assume. With two of
+    # three duplicated, every permutation puts a duplicate before some other
+    # subscription, and the old code fails whichever order Postgres returns.
+    already = [
+        WebhookDelivery(
+            id=uuid.uuid4(),
+            subscription_id=sub_id,
+            organization_id=org_id,
+            event_id=event_id,
+            event_type=EVENT_INVOICE_APPROVED,
+            payload={"id": event_id, "type": EVENT_INVOICE_APPROVED, "data": {}},
+            status=DELIVERY_PENDING,
+            attempt_count=0,
+            next_attempt_at=datetime.now(UTC),
+        )
+        for sub_id in sub_ids[:2]
+    ]
+    await _persist(control_mk, *subs, *already)
 
     monkeypatch.setattr(settings, "webhooks_enabled", True)
     monkeypatch.setattr(dispatch_mod, "_spawn_immediate_attempt", lambda did: None)
@@ -398,8 +409,9 @@ async def test_emit_duplicate_for_one_sub_still_queues_the_others(realdb, monkey
                 .scalars()
                 .all()
             )
-        # Exactly one delivery per subscription — the duplicate was skipped, the
-        # other two were queued.
+        # Exactly one delivery per subscription — the two duplicates were
+        # skipped, the third was queued. A count check as well as a set check:
+        # ON CONFLICT DO NOTHING must skip the duplicates, not re-insert them.
         assert {r.subscription_id for r in rows} == set(sub_ids)
         assert len(rows) == len(sub_ids)
     finally:
