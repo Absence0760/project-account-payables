@@ -383,21 +383,26 @@ overwriting the locally-resolved window with them is always safe.
 
 `change_plan(control_db, org=…, new_plan_code=…, actor_id=…, change_at=None)`:
 
-1. resolve the org's live subscription + current plan **row-locked**
+1. resolve the target `Plan` by `code` (active only); **404** when unknown;
+2. **pre-flight, deliberately UNLOCKED** — confirm the org has a live
+   subscription at all (**404**, no enumeration) and short-circuit the
+   **idempotent no-op** when it is already on the target plan (`changed=False`,
+   zero proration, no mutation, no provider call, **no audit row**; mirrors the
+   `transition_invoice` / `apply_billing_event` no-op rule, so a retry of the
+   same change can't double-charge). Then `provision_org_billing`
+   (resolve-or-create customer + the new plan's price) — fails closed with the
+   live adapter and no key, before anything is locked or mutated. This step must
+   stay **ahead** of the lock: it commits, and see § Concurrency;
+3. resolve the org's live subscription + current plan **row-locked**
    (`_get_active_subscription_for_update`, `SELECT ... FOR UPDATE`, `change_plan`-only —
-   see § Concurrency below); **404** (no enumeration) when there's no live subscription;
-2. resolve the target `Plan` by `code` (active only); **404** when unknown;
-3. **idempotent no-op** when the target equals the current plan — `changed=False`,
-   zero proration, no mutation, no provider call, **no audit row** (mirrors the
-   `transition_invoice` / `apply_billing_event` no-op rule). A retry of the same
-   change therefore can't double-charge;
+   see § Concurrency below), re-checking both the no-live-subscription and
+   already-on-plan cases under the lock (a racer may have moved the org since
+   the peek);
 4. resolve the subscription's current billing window (`period.current_period`)
    and **persist** it, then compute the proration (`compute_proration`, pure
    Decimal) against it — see § The billing period for why the persisted bounds
    can be absent or stale;
-5. `provision_org_billing` (resolve-or-create customer + the new plan's price) —
-   fails closed before any mutation with the live adapter and no key;
-6. drop any stale **canceled** subscription row for the target plan (guards the
+5. drop any stale **canceled** subscription row for the target plan (guards the
    `uq_subscription_org_plan` unique constraint), repoint `plan_id`, and write an
    append-only `billing.plan_changed` audit row (PII-free — org + old/new plan
    code + proration as an exact decimal **string** + day counts), dispatched
@@ -434,6 +439,33 @@ the lock, not the value both calls originally read. This locked lookup is
 concurrency test (`tests/test_billing_concurrency.py`), the same pattern as
 `tests/test_payment_concurrency.py` — a single mocked session can't model two
 connections contending for a row lock.
+
+**Two things the lock depends on, both easy to undo by accident.**
+
+*Nothing may commit between taking the lock and the repoint.* `provision_org_billing`
+persists the resolved Stripe customer / price ids onto `Organization.settings.billing`
+and **commits** — and a commit releases the row lock. It used to be called *inside*
+the locked section, so the waiting racer's `FOR UPDATE` unblocked at that commit and
+read the still-unrepointed subscription: both changes prorated off the same stale
+plan and both wrote a `billing.plan_changed` row claiming the same `from_plan` — the
+exact lost update the lock exists to prevent. It fired whenever provisioning had
+anything to persist, i.e. on the **first change to any plan the org has no stored
+price id for** — the ordinary case, not an edge one. Provisioning therefore runs in
+its own transaction *ahead* of the lock (which also keeps the live Stripe round-trip
+out of the locked window, so an inbound billing webhook or the dunning sweep can't be
+parked behind it on the same row).
+
+*The locked read must carry `populate_existing=True`.* The pre-flight peek loads the
+`Subscription` into the session's identity map; without `populate_existing` SQLAlchemy
+hands that same instance back from the locked SELECT with its **previously-loaded**
+column values, discarding the ones Postgres just returned. The unblocked racer would
+re-read a row that had changed and still see the old `plan_id`. `api/webhooks.py::_get_owned_subscription`
+sets it before a secret rotation for the same reason.
+
+`tests/test_billing_concurrency.py` covers both arrangements: the original test
+pre-provisions `settings.billing` so provisioning is a no-op (isolating the plain
+unlocked-read bug), and `test_concurrent_plan_changes_serialize_when_provisioning_persists`
+leaves it absent so provisioning genuinely commits.
 
 ## Entitlement gating (`services/billing/entitlements.py` + `api/deps.py`)
 
