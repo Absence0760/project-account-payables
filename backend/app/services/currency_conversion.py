@@ -86,13 +86,20 @@ async def convert_amount(
     amount: Decimal,
     source_currency: str,
     reporting_currency: str,
-    fx_adapter: FXAdapter,
+    fx_adapter: FXAdapter | None,
 ) -> ConvertedAmount:
     """Convert `amount` from `source_currency` into `reporting_currency`.
 
     `rate` is the multiplier such that `reporting = source_amount * rate`
     (the FXRate contract: rate is units of target per unit of source). For
     same-currency the rate is 1 and no adapter call is made.
+
+    `fx_adapter` may be `None` when the caller has no usable FX provider: a
+    same-currency conversion never needs one, and callers rely on that (see
+    `expense_currency.lock_expense_conversion`, which must still lock a
+    same-currency line at rate 1 for a tenant whose configured provider names no
+    registered adapter). A cross-currency conversion with no adapter raises
+    rather than returning an unconverted figure that would read as converted.
 
     Raises `ValueError` if the adapter returns a non-positive rate — a zero /
     negative rate would zero out or invert the converted figure.
@@ -107,6 +114,8 @@ async def convert_amount(
             fx_rate=Decimal("1"),
             as_of=datetime.now().astimezone(),
         )
+    if fx_adapter is None:
+        raise ValueError(f"no FX rate source available to convert {src}->{tgt}")
     fx: FXRate = await fx_adapter.get_rate(src, tgt)
     if fx.rate <= 0:
         raise ValueError(f"FX provider returned non-positive rate for {src}->{tgt}: {fx.rate}")
