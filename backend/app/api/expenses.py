@@ -930,6 +930,17 @@ async def update_expense(
             if expense.report_id:
                 affected_reports.add(expense.report_id)
             if new_report:
+                # Moving an expense ONTO a report is an attach, and the target
+                # has to gate like one. `_require_report_unlocked` (applied to
+                # every affected report below) only refuses the four
+                # locked-for-approval states — so this path was the one attach
+                # of the three that would still add a line to a `rejected` /
+                # `cancelled` report, which `POST /{id}/expenses` and
+                # `POST /api/expenses` both refuse. A terminal report cannot be
+                # resubmitted, so the line just disappeared onto a dead row.
+                # Detaching (`report_id: null`) stays allowed from a terminal
+                # report — that is how its expenses get re-reported.
+                _require_draft_report(await _get_report_or_404(db, new_report))
                 affected_reports.add(new_report)
             expense.report_id = new_report
 

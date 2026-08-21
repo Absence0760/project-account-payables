@@ -538,6 +538,47 @@ async def test_rejected_report_expenses_can_be_re_reported(realdb):
     assert moved["total_amount"] == 100.0
 
 
+async def test_patch_cannot_attach_an_expense_to_a_terminal_report(realdb):
+    """All three attach paths gate on the TARGET still being a draft.
+
+    `POST /expense-reports/{id}/expenses` and `POST /api/expenses` with a
+    `report_id` both call `_require_draft_report`; the PATCH path only ran
+    `_require_report_unlocked`, which refuses the four locked-for-approval
+    states but not the terminal `rejected` / `cancelled` ones. So this was the
+    one attach that could still add a line to a report that can never be
+    resubmitted — the expense simply disappeared onto a dead row.
+
+    Detaching FROM a terminal report stays allowed; that is how its expenses
+    get re-reported (the test above).
+    """
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        rid, _ = await _make_report_with_expense(c, amount="100.00", receipt=True)
+        assert (await c.post(f"/api/expense-reports/{rid}/submit")).status_code == 200
+    async with realdb.client(key="a", role="ap_manager") as c:
+        assert (await c.post(f"/api/expense-reports/{rid}/reject")).status_code == 200
+
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        loose = (
+            await c.post("/api/expenses", json={"expense_date": "2026-06-02", "amount": "25.00"})
+        ).json()["id"]
+        refused = await c.patch(f"/api/expenses/{loose}", json={"report_id": rid})
+        assert refused.status_code == 409, refused.text
+
+        # The rejected report is untouched, and the loose expense is still free.
+        assert (await c.get(f"/api/expense-reports/{rid}")).json()["total_amount"] == 100.0
+        assert (await c.get(f"/api/expenses/{loose}")).json()["report_id"] is None
+
+        # …and it still attaches to a fresh draft report.
+        fresh = (
+            await c.post(
+                "/api/expense-reports", json={"report_number": f"R-{uuid.uuid4().hex[:8]}"}
+            )
+        ).json()["id"]
+        moved = await c.patch(f"/api/expenses/{loose}", json={"report_id": fresh})
+        assert moved.status_code == 200, moved.text
+        assert (await c.get(f"/api/expense-reports/{fresh}")).json()["total_amount"] == 25.0
+
+
 # ---------------------------------------------------------------------------
 # Threshold currency — the unit a policy's money thresholds are read in
 # ---------------------------------------------------------------------------
