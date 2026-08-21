@@ -247,6 +247,46 @@ the working without re-deriving it. `mileage_miles` is settable from the web UI
 (`ExpenseModal`) as well as the API — before this it was API-only, which is the
 other reason the rate could never bite.
 
+#### The engine's inputs are entity-scoped
+
+`ExpensePolicy` and `ExpensePreapproval` both carry `EntityMixin`, and their CRUD
+routers list and stamp them per-entity — but the two reads the engine actually
+runs on had **no scope at all**, so a multi-entity tenant's subsidiaries policed
+each other:
+
+- `_active_policies` loaded every active policy in the tenant. Since
+  `receipt_required` is a BLOCKING code, one subsidiary's
+  `requires_receipt_above: 1.00` flagged — and then refused submission of —
+  every receipt-less expense in the whole tenant. The mirror case is worse: that
+  subsidiary's *looser* limits silently sanctioned spend it never approved.
+- `_approved_preapproval_amount` matched on status + currency + (report OR
+  category), so one subsidiary's approved request cleared another's blocking
+  `preapproval_required`.
+
+Both now scope to the **expense's own `entity_id`** (`apply_entity_scope`), the
+same fix `services/vendor_matching` carries for the same reason. They scope
+differently on purpose, each in its fail-closed direction:
+
+| Read | NULL `entity_id` on the row | Why |
+|---|---|---|
+| policies | `include_shared=True` — still applies | An unstamped policy is a row written around the API (which always stamps one). Dropping it would switch a live rule OFF — fail-open. |
+| pre-approval cover | excluded | A pre-approval is a specific authorization. Excluding it leaves the blocking violation raised — fail-closed. |
+
+`apply_entity_scope` is a no-op when the *expense's* own `entity_id` is NULL, so
+an unstamped expense keeps the old whole-tenant behaviour rather than being
+un-policed.
+
+Report submit runs **one pass per entity** over its lines rather than one pass
+with a merged policy list — `evaluate_report` applies every policy handed to it
+to every expense, so a single list would re-open the same bleed at report level.
+A report is normally single-entity (one pass).
+
+`_active_policies` also orders (`created_at, id`). The engine's mileage rule is
+"first applicable policy with a usable rate", and an unordered `SELECT` made
+that non-deterministic whenever two applicable policies both set one — the same
+expense could flag or not flag between runs, in a module whose whole contract is
+being pure and deterministic.
+
 #### Digit bounds — an over-range amount is a 422, not a 500
 
 Every request-side `Decimal` in `app/schemas/expense.py` carries `max_digits` /

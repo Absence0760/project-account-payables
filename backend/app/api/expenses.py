@@ -353,9 +353,38 @@ async def _lock_line_conversion(expense: Expense, report: ExpenseReport, org: Or
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
 
 
-async def _active_policies(db: AsyncSession) -> list[ExpensePolicy]:
+async def _active_policies(db: AsyncSession, entity_id: uuid.UUID | None) -> list[ExpensePolicy]:
+    """The active policies that govern a row belonging to ``entity_id``.
+
+    **Entity-scoped.** ``ExpensePolicy`` carries `EntityMixin`, the CRUD router
+    lists and stamps it per-entity, and `receipt_required` / `preapproval_required`
+    are BLOCKING codes — but this read had no scope at all, so a subsidiary's
+    reimbursement table governed every *other* subsidiary's expenses. One
+    entity's ``requires_receipt_above: 1.00`` blocked the whole tenant's
+    submissions, and its looser limits silently sanctioned spend it never
+    approved. Same class as the fix in `services/vendor_matching`.
+
+    ``include_shared=True``: a NULL ``entity_id`` is an *unstamped* row (the API
+    always stamps one via `get_write_entity_id`, so NULL means seeded or written
+    around it), and dropping it would silently switch a live policy OFF — the
+    fail-OPEN direction. `apply_entity_scope` is a no-op when ``entity_id`` is
+    itself NULL, which keeps an unstamped expense on the old whole-tenant
+    behaviour rather than un-policing it.
+
+    Ordered so the engine's "first applicable policy carries the mileage rate"
+    rule is deterministic — an unordered SELECT let the same expense flag or not
+    flag between runs whenever two applicable policies both set a rate."""
     return list(
-        (await db.execute(select(ExpensePolicy).where(ExpensePolicy.active.is_(True))))
+        (
+            await db.execute(
+                apply_entity_scope(
+                    select(ExpensePolicy).where(ExpensePolicy.active.is_(True)),
+                    ExpensePolicy,
+                    entity_id,
+                    include_shared=True,
+                ).order_by(ExpensePolicy.created_at, ExpensePolicy.id)
+            )
+        )
         .scalars()
         .all()
     )
@@ -375,7 +404,14 @@ async def _approved_preapproval_amount(db: AsyncSession, expense: Expense) -> De
     for a $500 USD expense. We deliberately do NOT convert here — this is an
     advisory, best-effort path with no FX budget, and "not covered" is the
     fail-closed answer (it raises a blocking violation rather than waving the
-    expense through)."""
+    expense through).
+
+    Scoped to the expense's own entity for the same reason the currency is
+    matched: a pre-approval is a specific authorization, and one subsidiary's
+    approved request has no standing to clear another subsidiary's blocking
+    `preapproval_required`. Unlike the policy read this scopes STRICTLY (no
+    `include_shared`) — excluding an unstamped row leaves the violation raised,
+    which is the fail-closed direction here."""
     if expense.report_id is None and expense.category is None:
         return None
     conditions = []
@@ -388,7 +424,11 @@ async def _approved_preapproval_amount(db: AsyncSession, expense: Expense) -> De
     rows = (
         (
             await db.execute(
-                select(ExpensePreapproval.estimated_amount).where(
+                apply_entity_scope(
+                    select(ExpensePreapproval.estimated_amount),
+                    ExpensePreapproval,
+                    expense.entity_id,
+                ).where(
                     ExpensePreapproval.status == PreapprovalStatus.approved,
                     func.upper(func.coalesce(ExpensePreapproval.currency, "USD"))
                     == normalize_currency(expense.currency),
@@ -414,7 +454,7 @@ async def _refresh_policy_violations(db: AsyncSession, expense: Expense, org: Or
     Best-effort: any failure leaves the stored value untouched and never breaks
     the surrounding write (the violations are advisory)."""
     try:
-        policies = await _active_policies(db)
+        policies = await _active_policies(db, expense.entity_id)
         covered = await _approved_preapproval_amount(db, expense)
         violations = evaluate_expense(
             expense,
@@ -1367,19 +1407,34 @@ async def submit_report(
             },
         )
 
-    policies = await _active_policies(db)
     cover: dict[str, Decimal] = {}
     for child in report.expenses:
         amount = await _approved_preapproval_amount(db, child)
         if amount is not None:
             cover[str(child.id)] = amount
-    violations = evaluate_report(
-        report,
-        list(report.expenses),
-        policies,
-        preapproval_amount_by_expense=cover,
-        default_threshold_currency=resolve_reporting_currency(org.settings),
-    )
+
+    # Policies are per-entity, so each line is judged against ITS OWN entity's
+    # rule set — `evaluate_report` applies every policy handed to it to every
+    # expense, so one shared list would re-introduce the cross-entity bleed at
+    # the report level. A report is normally single-entity (one pass); a mixed
+    # one gets one pass per entity rather than letting one subsidiary's table
+    # govern another's line.
+    lines_by_entity: dict[uuid.UUID | None, list[Expense]] = {}
+    for child in report.expenses:
+        lines_by_entity.setdefault(child.entity_id, []).append(child)
+
+    reporting_currency_for_policies = resolve_reporting_currency(org.settings)
+    violations: list[dict] = []
+    for line_entity_id, group in lines_by_entity.items():
+        violations.extend(
+            evaluate_report(
+                report,
+                group,
+                await _active_policies(db, line_entity_id),
+                preapproval_amount_by_expense=cover,
+                default_threshold_currency=reporting_currency_for_policies,
+            )
+        )
     blocking = blocking_violations(violations)
     if blocking:
         raise HTTPException(
