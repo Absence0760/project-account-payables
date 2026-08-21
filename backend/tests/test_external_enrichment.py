@@ -20,6 +20,7 @@ import pytest
 
 from app.services.enrichment_adapters import (
     EnrichmentNotConfigured,
+    UnknownEnrichmentProviderError,
     VendorEnrichmentQuery,
     get_enrichment_adapter,
 )
@@ -38,9 +39,29 @@ def test_selector_defaults_to_mock_on_empty_config():
     assert adapter.provider_name == "mock"
 
 
-def test_selector_unknown_provider_falls_back_to_mock():
-    adapter = get_enrichment_adapter({"provider": "totally_made_up"})
-    assert isinstance(adapter, MockEnrichmentAdapter)
+def test_selector_refuses_a_named_unknown_provider():
+    """A NAMED provider with no registered adapter raises — it never resolves
+    to `mock`.
+
+    `mock` fabricates a complete, plausible identity (legal name, registered
+    address, DUNS, employee count) with `matched=True`. Falling back to it meant
+    a typo in `settings.enrichment.provider` presented invented firmographics to
+    a steward as a D&B / Clearbit lookup, one click from being written onto a
+    real supplier by `POST .../apply` — where `name` is a screened identity
+    field. Same call as `decisions.md` §29 (payments/ERP/FX) and §36 (sanctions).
+    """
+    with pytest.raises(UnknownEnrichmentProviderError) as exc:
+        get_enrichment_adapter({"provider": "totally_made_up"})
+    assert exc.value.provider == "totally_made_up"
+    # Names the registered alternatives; no credential is echoed.
+    assert "mock" in str(exc.value)
+
+
+def test_selector_still_defaults_to_mock_when_no_provider_is_named():
+    """The local-first default is untouched — an org that configured nothing
+    still enriches with no cloud account (guard rail 7)."""
+    assert isinstance(get_enrichment_adapter({}), MockEnrichmentAdapter)
+    assert isinstance(get_enrichment_adapter({"provider": ""}), MockEnrichmentAdapter)
 
 
 def test_selector_resolves_real_providers_by_name():
