@@ -140,6 +140,13 @@ report_definition`, details = `{name, data_source}`).
 Money values in `rows` are exact decimal **strings**; counts are ints; date
 dimensions are ISO date strings.
 
+A money measure is `null` (an empty cell in the CSV/PDF) when the group had
+nothing to aggregate — `min` / `max` / `avg` over a column that is NULL on every
+row of the group. `sum` and `count` still report `"0.00"` / `0` there, because a
+total of nothing is meaningfully zero; a *minimum* or *average* of nothing is
+not, and answering `"0.00"` would put a money figure nobody recorded in front of
+a CFO. Guarded by `test_empty_money_aggregate_is_blank_not_zero`.
+
 `ReportDefinition` = `ReportSpec` + `{ id, name, description, created_by_user_id,
 created_at, updated_at }`.
 

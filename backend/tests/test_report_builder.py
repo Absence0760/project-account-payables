@@ -179,6 +179,7 @@ async def _add_invoice(
     num=None,
     invoice_date=None,
     created_at=None,
+    tax_amount=None,
 ):
     async with mk() as s:
         inv = Invoice(
@@ -187,6 +188,7 @@ async def _add_invoice(
             invoice_number=num or f"INV-{uuid.uuid4().hex[:8]}",
             vendor_name=vendor_name,
             amount=Decimal(amount),
+            tax_amount=(Decimal(tax_amount) if tax_amount is not None else None),
             currency="USD",
             invoice_date=invoice_date or _TODAY,
             due_date=_TODAY + timedelta(days=30),
@@ -458,6 +460,65 @@ async def test_export_over_cap_surfaces_truncation_note(realdb):
         pdf_resp = await c.get(f"/api/reports/{report_id}/export?format=pdf")
         assert pdf_resp.status_code == 200, pdf_resp.text
         assert pdf_resp.content[:4] == b"%PDF"
+
+
+async def test_empty_money_aggregate_is_blank_not_zero(realdb):
+    """`tax_amount` is nullable, so a group whose rows never carried tax makes
+    SQL return NULL for every aggregate. `sum` of nothing is meaningfully 0.00
+    — but the MIN / MAX / AVG of nothing is undefined, and reporting "0.00"
+    there puts a money figure nobody recorded in front of a CFO."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _add_invoice(mk, org_id, vendor_name="NoTaxCo", amount="10.00")
+
+    body = {
+        "data_source": "invoices",
+        "dimensions": [{"key": "vendor_name"}],
+        "measures": [
+            {"key": "tax_amount", "agg": "sum"},
+            {"key": "tax_amount", "agg": "min"},
+            {"key": "tax_amount", "agg": "max"},
+            {"key": "tax_amount", "agg": "avg"},
+        ],
+        "filters": [{"key": "vendor_name", "op": "eq", "value": "NoTaxCo"}],
+    }
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.post("/api/reports/run", json=body)
+    assert resp.status_code == 200, resp.text
+    row = resp.json()["rows"][0]
+    assert row["tax_amount_sum"] == "0.00"
+    assert row["tax_amount_min"] is None
+    assert row["tax_amount_max"] is None
+    assert row["tax_amount_avg"] is None
+
+
+async def test_money_aggregate_with_values_still_serializes_exactly(realdb):
+    """The control for the NULL case above — a group that DOES carry tax still
+    reports every aggregate as an exact decimal string."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _add_invoice(mk, org_id, vendor_name="TaxedCo", amount="10.00", tax_amount="1.25")
+    await _add_invoice(mk, org_id, vendor_name="TaxedCo", amount="10.00", tax_amount="3.75")
+
+    body = {
+        "data_source": "invoices",
+        "dimensions": [{"key": "vendor_name"}],
+        "measures": [
+            {"key": "tax_amount", "agg": "sum"},
+            {"key": "tax_amount", "agg": "min"},
+            {"key": "tax_amount", "agg": "max"},
+            {"key": "tax_amount", "agg": "avg"},
+        ],
+        "filters": [{"key": "vendor_name", "op": "eq", "value": "TaxedCo"}],
+    }
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.post("/api/reports/run", json=body)
+    assert resp.status_code == 200, resp.text
+    row = resp.json()["rows"][0]
+    assert row["tax_amount_sum"] == "5.00"
+    assert row["tax_amount_min"] == "1.25"
+    assert row["tax_amount_max"] == "3.75"
+    assert row["tax_amount_avg"] == "2.50"
 
 
 async def test_page_past_the_end_returns_an_empty_page(realdb):

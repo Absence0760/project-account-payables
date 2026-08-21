@@ -615,8 +615,18 @@ def _serialize_dimension(dim: _PlannedDimension, value: Any) -> Any:
 
 def _serialize_measure(measure: _PlannedMeasure, value: Any) -> Any:
     if measure.type == "money":
+        if value is None:
+            # SQL returns NULL when a group has nothing to aggregate — every
+            # row's column is NULL (e.g. `tax_amount` on invoices that never
+            # carried tax). A `sum` of nothing is meaningfully 0.00, the same
+            # answer `count` gives; the MINIMUM / MAXIMUM / AVERAGE of nothing
+            # is undefined, and answering "0.00" there invents a money figure
+            # nobody recorded. Leave those cells empty instead.
+            if measure.agg != "sum":
+                return None
+            value = 0
         # Exact decimal string, 2 dp — never a float.
-        return str(Decimal(str(value if value is not None else 0)).quantize(Decimal("0.01")))
+        return str(Decimal(str(value)).quantize(Decimal("0.01")))
     # number
     if value is None:
         return 0 if measure.agg == "count" else None
