@@ -987,6 +987,32 @@ rather than patched. None is a diagnosed defect (those go to
   shared `_money_gate_applies` body). **Trigger:** the next change touching those
   resolvers.
 
+- **The card family's local-first story is weaker than its siblings'.**
+  `card_adapters/dispatcher.REGION_DEFAULTS` resolves an *unset* provider to
+  `lithic`, not `mock`, and `scripts/seed.py` seeds every demo tenant with
+  `cards.enabled: true` and no provider — so a fresh clone's
+  `POST /api/cards/generate` reaches for a real issuer, which guard rail 7 says
+  it should not. Pre-existing and untouched by the round-15 refusal work (that
+  only fires on a *named* unknown provider, and deliberately left the unset path
+  alone). **Durable fix:** default an unset provider to `mock` like the other two
+  registries, and make `REGION_DEFAULTS` a preference applied only once a real
+  provider is configured — or seed the demo tenants with an explicit
+  `cards.provider: "mock"`. **Trigger:** the next change to card provider
+  resolution, or the first contributor surprised by a fresh clone calling out.
+
+- **A same-currency expense report can be submitted with a NULL reporting total.**
+  Round 15 taught the *line*-level lock (`_lock_line_conversion`) to resolve the
+  currency pair before demanding an FX adapter, so a same-currency line locks at
+  rate 1 for a tenant whose `settings.fx.provider` names no registered adapter.
+  The *report*-level lock was not given the same treatment, so such a tenant
+  submits with `reporting_amount` NULL and `reporting_total: null` in the audit
+  row. **Not a control failure** — `expense_currency.report_amount_for_gate`
+  falls back to `total_amount` when the report currency equals the reporting
+  currency, so the CFO gate still evaluates the right figure — it is a
+  completeness gap in the stored snapshot. **Durable fix:** mirror the
+  pair-first check at the report level. **Trigger:** the next change to expense
+  report submission, or the first report of a null `reporting_total`.
+
 - **`GET /api/experiments/{id}/results` would 500 on a non-object `audit_log.details`.**
   `api/workflow_experiments._experiment_metric_rows` does
   `dec["details"].get("changes")` after `details = details or {}`, so a `details`
