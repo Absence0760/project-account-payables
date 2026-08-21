@@ -440,6 +440,78 @@ export function tenantPsql(query: string, slug?: string): string {
 	return out.toString();
 }
 
+/**
+ * Delete the invoices matching `predicate`, and everything that references them.
+ *
+ * `invoices` is referenced by 16 foreign keys and none of them cascade, so a
+ * bare `DELETE FROM invoices WHERE ...` only works while the invoice happens to
+ * have no children. Specs that hand-maintained a subset of that list were
+ * quietly depending on which children the app had created for them — and one of
+ * them broke the moment invoice extraction started succeeding (it had always
+ * been rolling back before writing its line items, so none existed to block the
+ * delete).
+ *
+ * Deletes second-level children first, then every direct child, then the
+ * invoices themselves. `predicate` is the WHERE clause body, so callers can
+ * scope by id, `invoice_number LIKE`, `vendor_id`, or anything else.
+ */
+export function deleteInvoicesWhere(predicate: string, slug?: string): void {
+	const ids = `SELECT id FROM invoices WHERE ${predicate}`;
+
+	// Second level — these reference a child, not the invoice.
+	tenantPsql(
+		`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id IN (${ids}))`,
+		slug
+	);
+	tenantPsql(
+		`DELETE FROM supplier_chat_messages WHERE thread_id IN (SELECT id FROM supplier_chat_threads WHERE invoice_id IN (${ids}))`,
+		slug
+	);
+	tenantPsql(
+		`DELETE FROM bank_transactions WHERE matched_payment_id IN (SELECT id FROM payments WHERE invoice_id IN (${ids}))`,
+		slug
+	);
+	tenantPsql(
+		`DELETE FROM virtual_cards WHERE payment_id IN (SELECT id FROM payments WHERE invoice_id IN (${ids}))`,
+		slug
+	);
+
+	// Direct children. `payments` is self-referential via `retry_of_payment_id`,
+	// so clear that link before deleting the rows.
+	tenantPsql(
+		`UPDATE payments SET retry_of_payment_id = NULL WHERE invoice_id IN (${ids})`,
+		slug
+	);
+	for (const table of [
+		'agent_decisions',
+		'credit_memos',
+		'discount_offers',
+		'exceptions',
+		'invoice_embeddings',
+		'invoice_extraction_results',
+		'invoice_line_items',
+		'payment_schedules',
+		'payments',
+		'peppol_transmissions',
+		'supplier_chat_threads',
+		'virtual_cards',
+		'workflow_instances'
+	]) {
+		tenantPsql(`DELETE FROM ${table} WHERE invoice_id IN (${ids})`, slug);
+	}
+	tenantPsql(
+		`UPDATE vendor_statement_recon_lines SET matched_invoice_id = NULL WHERE matched_invoice_id IN (${ids})`,
+		slug
+	);
+	// An inter-company mirror points at its origin invoice.
+	tenantPsql(
+		`UPDATE invoices SET intercompany_mirror_id = NULL WHERE intercompany_mirror_id IN (${ids})`,
+		slug
+	);
+
+	tenantPsql(`DELETE FROM invoices WHERE ${predicate}`, slug);
+}
+
 /** Per-worker API origin. Specs that hit `${API_BASE}/api/...` directly
  *  can import this instead of redeclaring `process.env.PUBLIC_API_URL ?? …`. */
 export const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
