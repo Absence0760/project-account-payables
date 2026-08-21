@@ -83,13 +83,17 @@ async def lock_expense_conversion(
     expense,
     *,
     target_currency: str,
-    fx_adapter: FXAdapter,
+    fx_adapter: FXAdapter | None,
 ) -> None:
     """Lock ``expense.amount`` into ``target_currency`` onto the row.
 
     Writes ``converted_currency`` / ``converted_amount`` / ``converted_fx_rate``
     / ``converted_fx_locked_at`` in place (the caller flushes). Same-currency
-    locks at rate ``1`` with **no** adapter call.
+    locks at rate ``1`` with **no** adapter call — which is why ``fx_adapter``
+    is allowed to be ``None``: a tenant with no usable rate source must still be
+    able to build a single-currency report. ``None`` with a currency pair that
+    genuinely needs converting raises ``ExpenseConversionError`` like any other
+    unavailable rate, so the fail-closed direction is unchanged.
 
     Called only from write paths that change what needs converting (create with
     a report, amount/currency edit, attach, report-currency change) — never from

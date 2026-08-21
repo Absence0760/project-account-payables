@@ -477,6 +477,17 @@ Rules that keep the numbers honest:
   line is attached (legacy rows predating the columns), listing their ids.
 - **Detach clears the lock** — it was an expression in *that* report's currency.
 - **Same currency is a no-op fetch**: rate `1`, no adapter call, exact face value.
+  This is also why a **missing rate source doesn't break a domestic report**.
+  `get_fx_adapter` raises for a *named* provider it has no adapter for rather
+  than silently resolving to `mock` (`decisions §29`), and the expense path
+  turns that into "no FX available". The attach guard used to demand an adapter
+  before asking whether a conversion was even needed, so one typo in
+  `settings.fx.provider` 422'd **every** attach in the tenant — including a USD
+  line on a USD report, which never consults the provider. The guard now checks
+  the currency pair first: the cross-currency line (the one that could
+  understate the total the CFO gate reads) is still refused, the same-currency
+  line locks at 1 and proceeds. Refusing a conversion nobody asked for isn't
+  fail-closed, it's an outage.
 - **Local-first**: the FX provider comes from `Organization.settings.fx` via the
   existing `fx_adapters` registry, defaulting to the deterministic `mock`
   adapter — multi-currency reports work with no cloud account.

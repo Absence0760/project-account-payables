@@ -610,3 +610,58 @@ async def test_same_currency_preapproval_still_covers(realdb):
         line = (await c.get(f"/api/expenses/{usd}")).json()
     codes = {v["code"] for v in (line["policy_violations"] or [])}
     assert "preapproval_required" not in codes
+
+
+async def test_same_currency_line_attaches_without_a_usable_fx_provider(realdb):
+    """A single-currency report must not need an FX provider.
+
+    ``_lock_line_conversion`` demanded an adapter BEFORE asking whether a
+    conversion was even needed, so one bad ``settings.fx.provider`` value —
+    which ``get_fx_adapter`` refuses rather than silently resolving to ``mock``
+    (`decisions §29`) — 422'd every attach in the tenant, including an entirely
+    domestic USD line on a USD report. That line has no FX question to fail
+    closed ON: ``lock_expense_conversion`` locks it at rate 1 with no adapter
+    call at all.
+
+    The cross-currency line, which genuinely could understate the total the CFO
+    gate reads, is still refused.
+    """
+    org_id = realdb.info("a").org_id
+    ctrl = realdb.control_sessionmaker()
+    async with ctrl() as s:
+        org = (await s.execute(select(Organization).where(Organization.id == org_id))).scalar_one()
+        cfg = dict(org.settings or {})
+        cfg["fx"] = {"provider": "definitely-not-a-registered-provider"}
+        org.settings = cfg
+        flag_modified(org, "settings")
+        await s.commit()
+    try:
+        async with realdb.client(key="a", role="ap_clerk") as c:
+            rid = await _mk_report(c, "USD")
+            usd = await _mk_expense(c, "40.00", "USD")
+            eur = await _mk_expense(c, "40.00", "EUR")
+
+            attached = await c.post(
+                f"/api/expense-reports/{rid}/expenses", json={"expense_ids": [usd]}
+            )
+            assert attached.status_code == 200, attached.text
+            assert attached.json()["total_amount_exact"] == "40.00"
+            line = next(e for e in attached.json()["expenses"] if e["id"] == usd)
+            assert line["converted_currency"] == "USD"
+            assert line["converted_fx_rate"] == "1.00000000"
+
+            # The foreign line still fails closed.
+            refused = await c.post(
+                f"/api/expense-reports/{rid}/expenses", json={"expense_ids": [eur]}
+            )
+            assert refused.status_code == 422, refused.text
+    finally:
+        async with ctrl() as s:
+            org = (
+                await s.execute(select(Organization).where(Organization.id == org_id))
+            ).scalar_one()
+            cfg = dict(org.settings or {})
+            cfg.pop("fx", None)
+            org.settings = cfg
+            flag_modified(org, "settings")
+            await s.commit()

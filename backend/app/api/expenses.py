@@ -323,12 +323,24 @@ async def _lock_line_conversion(expense: Expense, report: ExpenseReport, org: Or
     Fail-closed: rather than attaching a line we cannot express in the report's
     currency (which would understate the total the CFO gate reads), the write is
     rejected. The message carries only currency codes — no PII."""
+    target = normalize_currency(report.currency)
+    source = normalize_currency(expense.currency, default=target)
     fx_adapter = _fx_adapter_for(org)
-    if fx_adapter is None:
+    if fx_adapter is None and source != target:
         # Same fail-closed direction as an unconvertible currency pair: refuse
         # the attach rather than understate the total. No provider name — this
         # message is read by any expense user, not just the admin who owns the
         # setting.
+        #
+        # Gated on `source != target` because a same-currency line needs no
+        # rate: `lock_expense_conversion` locks it at 1 with NO adapter call
+        # (`currency_conversion.convert_amount` short-circuits before touching
+        # the provider). Demanding an adapter up front meant one bad
+        # `settings.fx.provider` value 422'd every attach in the tenant —
+        # including an entirely domestic USD line on a USD report, which has no
+        # FX question to fail closed ON. Refusing a conversion nobody asked for
+        # isn't caution, it's an outage; the cross-currency line, which is the
+        # one that could understate the total, is still refused.
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="No FX rate source is configured, so this line cannot be converted.",
