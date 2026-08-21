@@ -1069,6 +1069,46 @@ def _recommend_threshold(
     )
 
 
+async def _resolve_threshold_recommendation(
+    db: AsyncSession,
+    org: Organization,
+    *,
+    since: datetime,
+    entity_id: uuid.UUID | None,
+    current: Decimal,
+) -> tuple[ThresholdRecommendation, ThresholdRecommendation, OutcomeStats]:
+    """``(base, adjusted, outcomes)`` — the ONE resolver every threshold surface
+    calls, so the read, the explainer and the WRITE cannot disagree.
+
+    ``base`` is the forward, approval-history-only recommendation; ``adjusted``
+    is that folded with the realised overturn rate of the auto-approved
+    population (``outcome_adjusted_threshold``), which declines to raise while
+    those auto-approvals are being walked back.
+
+    **Every caller acts on ``adjusted``.** The feedback loop existed only on
+    ``GET /feedback`` — so ``POST /threshold-recommendation/apply``, the single
+    endpoint that actually widens auto-approve, recomputed the *forward*
+    recommendation and widened it anyway. An admin could read "holding at $0 —
+    20 % of auto-approvals were later voided or rejected" and, in the same
+    breath, apply a raise to $5,000 with ``reason_code: "ok"``. The brake was
+    wired to the dashboard, not to the control. (Its routing sibling never had
+    this gap: the per-approver penalty is folded into the candidate `score`
+    itself, so `POST /routing-suggestion/apply` inherits it for free.)
+
+    ``base`` is still returned so ``/feedback`` can show *why* a raise was held
+    back — the explainability the surface was built for.
+
+    Forward-references `_auto_approval_outcome_rows` / `_FEEDBACK_MIN_SAMPLE`,
+    which live with the rest of the feedback machinery further down; both
+    resolve at call time.
+    """
+    decisions = await _decision_rows(db, since=since, entity_id=entity_id)
+    base = _recommend_threshold(org, decisions, current)
+    outcome_rows = await _auto_approval_outcome_rows(db, since=since, entity_id=entity_id)
+    outcomes = compute_outcome_stats(outcome_rows, min_sample=_FEEDBACK_MIN_SAMPLE)
+    return base, outcome_adjusted_threshold(base, outcomes), outcomes
+
+
 def _threshold_response_dict(rec: ThresholdRecommendation) -> dict:
     return {
         "should_raise": rec.should_raise,
@@ -1093,7 +1133,15 @@ async def threshold_recommendation(
     user: User = Depends(require_roles(*_READ_ROLES)),
 ):
     """Advisory: recommend a conservative raise to the org-wide
-    ``auto_approve_below`` threshold from clean-history vendor patterns.
+    ``auto_approve_below`` threshold from clean-history vendor patterns,
+    **outcome-adjusted** — the loop declines to raise while the invoices the
+    system already auto-approved are being voided / corrected / rejected.
+
+    This is the same recommendation ``POST /threshold-recommendation/apply``
+    acts on (one resolver, `_resolve_threshold_recommendation`), so the read and
+    the write can't contradict each other. ``GET /feedback`` returns this
+    alongside the un-adjusted base when you need to see *why* a raise was held
+    back.
 
     **Read-only** — never mutates the workflow definition. The apply path is
     ``POST /threshold-recommendation/apply`` (admin-only). The current threshold
@@ -1102,8 +1150,9 @@ async def threshold_recommendation(
     current = _approval_auto_below(defn.steps_config) if defn else Decimal("0")
 
     since = datetime.now(UTC) - timedelta(days=days)
-    decisions = await _decision_rows(db, since=since, entity_id=entity_id)
-    rec = _recommend_threshold(org, decisions, current)
+    _base, rec, _outcomes = await _resolve_threshold_recommendation(
+        db, org, since=since, entity_id=entity_id, current=current
+    )
 
     payload = _threshold_response_dict(rec)
     payload["workflow_id"] = str(defn.id) if defn else None
@@ -1149,8 +1198,12 @@ async def apply_threshold_recommendation(
 
     current = _approval_auto_below(defn.steps_config)
     since = datetime.now(UTC) - timedelta(days=days)
-    decisions = await _decision_rows(db, since=since, entity_id=entity_id)
-    rec = _recommend_threshold(org, decisions, current)
+    # The OUTCOME-ADJUSTED recommendation, not the forward one. Widening
+    # auto-approve is exactly the act the feedback loop exists to hold back
+    # while the already-auto-approved population is being walked back.
+    _base, rec, _outcomes = await _resolve_threshold_recommendation(
+        db, org, since=since, entity_id=entity_id, current=current
+    )
 
     # Optimistic-concurrency guard: refuse a stale apply.
     if body.expected_recommended_threshold is not None:
@@ -1431,18 +1484,15 @@ async def feedback(
     specified) workflow definition's approval step. Manager/CFO read surface."""
     since = datetime.now(UTC) - timedelta(days=days)
 
-    # 1. The forward (approval-history-only) threshold recommendation.
+    # 1-3. The forward recommendation, the realised outcomes of the
+    # auto-approved population, and the two folded together — through the same
+    # resolver `GET /threshold-recommendation` and the apply POST use, so this
+    # explainer can never describe a different decision than the one they act on.
     defn = await _active_workflow_definition(db, org.id, workflow_id=workflow_id)
     current = _approval_auto_below(defn.steps_config) if defn else Decimal("0")
-    decisions = await _decision_rows(db, since=since, entity_id=entity_id)
-    base_rec = _recommend_threshold(org, decisions, current)
-
-    # 2. The realised outcomes of the auto-approved population.
-    outcome_rows = await _auto_approval_outcome_rows(db, since=since, entity_id=entity_id)
-    outcomes = compute_outcome_stats(outcome_rows, min_sample=_FEEDBACK_MIN_SAMPLE)
-
-    # 3. Fold the outcome signal back into the recommendation.
-    adjusted_rec = outcome_adjusted_threshold(base_rec, outcomes)
+    base_rec, adjusted_rec, outcomes = await _resolve_threshold_recommendation(
+        db, org, since=since, entity_id=entity_id, current=current
+    )
 
     # 4. Effectiveness metrics (overturn rate + recommendation acceptance).
     applied_n, total_n = await _suggestion_acceptance_counts(db, org_id=org.id)
