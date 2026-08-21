@@ -691,6 +691,35 @@ def test_every_reconciliation_write_locks_the_transaction_row():
         assert "_get_txn_or_404(db, txn_id, entity_id, for_update=True)" in body, handler
 
 
+async def test_match_suggestions_compare_currency_case_insensitively(realdb):
+    """The candidate query and the control it stands in for must agree.
+
+    `/match` uppercases both codes before comparing, and the card CSV importer
+    uppercases on write — but `suggest_matches` compared `Expense.currency ==
+    txn.currency` in raw SQL, so a row written before the expense schema
+    normalized (`usd`) was excluded from the suggestions for a transaction it
+    exactly matched, while `/match` would happily link the same pair.
+    """
+    mk = realdb.sessionmaker("a")
+    txn_id = await _make_txn(realdb, merchant="Shell", amount="61.00", txn_date="2026-06-04")
+    expense_id = await _make_expense(
+        realdb, merchant="Shell", amount="61.00", expense_date="2026-06-04"
+    )
+
+    # Simulate a legacy row that predates the write-side normalization.
+    async with mk() as s:
+        row = (
+            await s.execute(select(Expense).where(Expense.id == uuid.UUID(expense_id)))
+        ).scalar_one()
+        row.currency = "usd"
+        await s.commit()
+
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        resp = await c.get(f"/api/corporate-card-transactions/{txn_id}/match-suggestions")
+    assert resp.status_code == 200, resp.text
+    assert [s["expense"]["id"] for s in resp.json()] == [expense_id]
+
+
 async def test_deleting_a_reconciled_expense_is_refused_not_a_500(realdb):
     """``corporate_card_transactions.matched_expense_id`` is a real FK onto
     ``expenses.id``, so deleting a reconciled expense was refused by Postgres and

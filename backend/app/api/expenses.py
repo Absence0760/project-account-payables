@@ -790,12 +790,18 @@ async def expense_summary(
     ).all()
     by_status = {str(row_status): int(n) for row_status, n in status_rows}
 
+    # GROUP BY the UPPERCASED code, not the stored one. The write schemas
+    # normalize now, but a row written before they did can still hold `usd`
+    # while its neighbour holds `USD` — two group keys that the response then
+    # relabelled identically, so the KPI row showed the same currency twice with
+    # the money split between the two entries.
+    currency_key = func.upper(Expense.currency)
     currency_rows = (
         await db.execute(
             _expense_list_filters(
                 apply_entity_scope(
                     select(
-                        Expense.currency,
+                        currency_key,
                         func.coalesce(func.sum(Expense.amount), 0),
                         func.count(),
                     ).select_from(Expense),
@@ -806,8 +812,8 @@ async def expense_summary(
                 report_id=report_id,
                 search=search,
             )
-            .group_by(Expense.currency)
-            .order_by(Expense.currency)
+            .group_by(currency_key)
+            .order_by(currency_key)
         )
     ).all()
 

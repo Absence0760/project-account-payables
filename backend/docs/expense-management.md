@@ -277,6 +277,61 @@ Two deliberate calls:
   card refund / merchant credit is a real negative line on the feed, and
   rejecting it would drop genuine transactions.
 
+#### A PATCH `null` into a NOT NULL column is a 422, not a 500
+
+Same shape as the digit bounds above, one layer along: a PATCH schema field
+typed `X | None` accepts an explicit `null`, the handler `setattr`s it, and the
+flush raises `NotNullViolationError` — **a 500 for input the caller got wrong.**
+It was found and fixed once, on `ExpenseUpdate.expense_date`, and left live on
+every sibling NOT NULL column: `amount`, `currency`, `payment_method`,
+`reimbursable` (`expenses`), `report_number`, `currency` (`expense_reports`), and
+`name`, `active`, `per_diem_currency` (`expense_policies`).
+
+`amount` was the sharpest of them. The PATCH handler re-locks the line's FX
+conversion off `expense.amount or 0` *before* the flush, so a `null` amount
+re-priced the owning report's line at zero on its way to the DB error.
+
+The fix is the pattern `expense_date` already used — annotate the field
+**non-optional** with a `None` sentinel default. `model_dump(exclude_unset=True)`
+means omitting the key still leaves the stored value untouched (the PATCH stays
+partial), while sending `null` fails type validation with a 422. Pydantic v2 does
+not validate defaults, so the sentinel never trips validation itself.
+
+Genuinely nullable columns keep `| None`: `merchant`, `category`, `description`,
+`gl_account_id`, `mileage_miles`, `report_id` (the detach), `title`, `notes`,
+the policy `category` / `threshold_currency` / thresholds. `null` there is the
+documented way to clear the value, not a mistake.
+
+#### Currency codes are normalized at the boundary
+
+`ExpensePolicy.threshold_currency` was uppercased + ISO-4217-shape-checked from
+the day it landed. The older `currency` columns it has to be *compared against*
+were not — `max_length=3` alone accepts `""`, `"us"` and `"usd"` — so
+`Expense`, `ExpenseReport`, `ExpensePreapproval`, `CorporateCardTransaction` and
+`ExpensePolicy.per_diem_currency` all took whatever the client sent. They now
+share one `CurrencyCode` annotated type (`normalize_iso_currency`): stripped,
+uppercased, and a 422 unless it is exactly three letters.
+
+A currency code is only a *label* until something groups or compares on it, and
+two things did:
+
+- `""` is read by `expense_currency.normalize_currency(code, default=…)` as
+  "whatever the target currency is" — the silent assume-the-default that
+  locked-FX exists to eliminate. A blank-currency expense attached to a USD
+  report was locked at rate 1 as if it had been filed in USD.
+- `"usd"` and `"USD"` are two `GROUP BY` keys, so `GET /api/expenses/summary`
+  emitted two `by_currency` entries which the response then relabelled
+  identically — one currency's money split across two rows both reading `USD`.
+  And `suggest_matches` compared `Expense.currency == txn.currency` in raw SQL
+  while `/match` uppercased both sides, so a lowercase expense was invisible to
+  the suggestions for a transaction `/match` would happily link it to.
+
+Two read paths additionally normalize **in SQL** (`func.upper`) so a row written
+before the validator still behaves: the summary's `GROUP BY` / `ORDER BY`, and
+the card match-suggestion candidate query. No backfill migration — normalising
+the read is enough, and rewriting historical rows to guess an intended code is
+the kind of silent correction this area avoids everywhere else.
+
 #### Threshold currency — what a policy's numbers mean
 
 A policy's money thresholds (`category_limit`, `per_diem_amount`,
