@@ -174,6 +174,26 @@ Chain state is tracked in `WorkflowInstance.state_data["approval_levels"]`. Leve
 
 The single-level strategy `"specific"` applies the same named-approver check (`approver_ids`, or the deprecated single `approver_id`) without the multi-level chain machinery — useful when a step needs exactly one or a small fixed set of eligible people but no sequential levels.
 
+#### Escalation widens eligibility — it never narrows it
+
+A level may carry `escalation_hours` + `escalation_to_user_ids`. When it has sat
+at the head of the chain longer than `escalation_hours`, the
+`approval_escalation` sweep calls `approval_chain.apply_escalation`, which makes
+the escalation targets eligible and appends a PII-free record to the level's
+`escalations` list (the sweep also writes an `invoice.approval_escalated` audit
+row). The one invariant across every branch: **the set of people who may approve
+can only grow.**
+
+| Level shape | What escalation does |
+|---|---|
+| `parallel_mode: "any"`, non-empty `approver_ids` | Appends the targets, preserving the configured order — a new approver who can independently clear `required_approvals`. |
+| `parallel_mode: "all"`, non-empty `approver_ids` | **Substitutes** every not-yet-approved approver with the targets (already-signed-off approvers are kept). Appending would make a stuck level need *more* sign-offs than before — the opposite of unblocking (issue #128). |
+| **Empty `approver_ids` (unrestricted)** | **No-op, both modes.** `check_level_approver` reads an empty allow-list as "any RBAC-cleared actor may approve", so the targets are already eligible. Writing them in would turn `[]` into `[target…]` and 403 the entire AP team — the issue-#128 inversion arriving through the empty-list case. Such a level is never eligibility-blocked anyway: `any` mode counts distinct approvals without consulting `approver_ids`, and `all` mode over an empty list is satisfied by the first approval. |
+
+Escalation is idempotent — once a level has absorbed a target set, re-running is
+a no-op, so the sweep can run on a tight interval and across overlapping
+replicas.
+
 ### Segregation of Duties
 
 `require_segregation: bool` on the approval step config. When enabled:

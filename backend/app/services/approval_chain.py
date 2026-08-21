@@ -420,6 +420,18 @@ def apply_escalation(instance: WorkflowInstance, *, now: datetime | None = None)
     level's requirement shrinks to "already-approved + escalation targets"
     rather than growing to "everyone, plus the escalation targets too".
 
+    An **unrestricted** level (empty `approver_ids`) is a no-op in BOTH modes.
+    `check_level_approver` treats an empty allow-list as "any actor who cleared
+    the endpoint's RBAC gate may approve", so the escalation targets are
+    already eligible and there is nothing to add. Writing them in would turn
+    `[]` into `[target…]` — *narrowing* an open level to those users alone and
+    403-ing the entire AP team that could approve it a moment earlier. That is
+    the same inversion issue #128 fixed for `all` mode, arriving through the
+    empty-list case instead; an escalation must never shrink who may approve.
+    (Such a level is never eligibility-blocked in the first place: `any` mode
+    counts distinct approvals without consulting `approver_ids`, and `all` mode
+    over an empty list is satisfied by the first approval.)
+
     Idempotent — once a level is escalated to a given user set, re-running
     is a no-op."""
     now = now or datetime.now(UTC)
@@ -453,7 +465,13 @@ def apply_escalation(instance: WorkflowInstance, *, now: datetime | None = None)
     if age < timedelta(hours=hours):
         return False
 
-    existing = set(level.get("approver_ids", []))
+    approver_ids = level.get("approver_ids") or []
+    if not approver_ids:
+        # Unrestricted level — see the docstring. Everyone the RBAC gate admits
+        # can already approve it, so escalating can only take eligibility away.
+        return False
+
+    existing = set(approver_ids)
     new_targets = [uid for uid in targets if uid not in existing]
     if not new_targets:
         return False  # already escalated to these users — idempotent
@@ -468,7 +486,10 @@ def apply_escalation(instance: WorkflowInstance, *, now: datetime | None = None)
         kept = [uid for uid in level.get("approver_ids", []) if uid in approved_ids]
         level["approver_ids"] = kept + [uid for uid in new_targets if uid not in kept]
     else:
-        level["approver_ids"] = list(existing | set(new_targets))
+        # Append, preserving the configured order. `list(set | set)` produced a
+        # PYTHONHASHSEED-dependent ordering, so the same escalation rewrote the
+        # JSONB differently run to run — noise in an audit-visible column.
+        level["approver_ids"] = approver_ids + new_targets
     level.setdefault("escalations", []).append(
         {
             "at": now.isoformat(),
