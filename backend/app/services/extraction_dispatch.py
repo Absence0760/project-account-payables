@@ -191,8 +191,10 @@ async def _run_local(
     ctrl_factory = async_sessionmaker(ctrl_engine, expire_on_commit=False)
 
     try:
-        # Keep ctrl_db open for the whole extraction — run_extraction needs it
-        # for ExtractionUsage tracking (control-plane table).
+        # ctrl_db resolves the Organization (a control-plane row) so the
+        # tenant slug and org settings are known before the tenant engine is
+        # built. The ExtractionUsage meter is NOT written here — it is a tenant
+        # table and run_extraction writes it through the tenant session.
         async with ctrl_factory() as ctrl_db:
             result = await ctrl_db.execute(select(Organization).where(Organization.id == org_id))
             org = result.scalar_one_or_none()
@@ -236,7 +238,6 @@ async def _run_local(
                             invoice,
                             actor_id=actor_id,
                             org_settings=org.settings,
-                            ctrl_db=ctrl_db,
                         )
                         logger.info(
                             "[extraction] Completed extraction for invoice %s, status=%s",

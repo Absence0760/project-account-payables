@@ -8,11 +8,20 @@ The app uses a **database-per-tenant** isolation model:
 
 | Database            | Purpose                    | Contains                                                                                    |
 |---------------------|----------------------------|---------------------------------------------------------------------------------------------|
-| `feohledger`  | Control plane              | organizations, users, roles, user_roles, email_verifications, extraction_usage, card_rebates |
-| `feoh_acme`           | Acme Corp tenant           | invoices, vendors, payments, workflows, vendor_extraction_priors, invoice_embeddings, ...   |
+| `feohledger`  | Control plane              | organizations, users, roles, user_roles, email_verifications, plans, subscriptions, api_keys, assistant_usage |
+| `feoh_acme`           | Acme Corp tenant           | invoices, vendors, payments, workflows, vendor_extraction_priors, invoice_embeddings, extraction_usage, card_rebates, ... |
 | `feoh_techflow`       | TechFlow Inc tenant        | invoices, vendors, payments, workflows, vendor_extraction_priors, invoice_embeddings, ...   |
 
 All databases run on the same PostgreSQL instance. Tenant database URLs are derived from the control-plane URL by swapping the database name.
+
+**The two billing meters are TENANT tables**, despite being a per-org concern:
+`extraction_usage` and `card_rebates` are absent from
+`tenant_provisioning.CONTROL_TABLES`, no Alembic revision creates them in the
+control plane, and `services/billing`'s `rollup_usage` reads them per tenant.
+This table said otherwise for a long time, and `services/extraction.py` was
+written against the claim — the resulting INSERT against a table the control
+plane does not have raised into the extraction handler and marked successful
+invoices `failed`. `assistant_usage`, by contrast, genuinely *is* control-plane.
 
 ## Connection
 

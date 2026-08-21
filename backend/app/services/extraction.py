@@ -280,13 +280,16 @@ async def run_extraction(
     *,
     actor_id: uuid.UUID | None = None,
     org_settings: dict | None = None,
-    ctrl_db: AsyncSession | None = None,
 ) -> None:
     """Extract invoice fields from the uploaded file and update the invoice.
 
     This is called as a background task after file upload.
-    ``ctrl_db`` is the control-plane session used for ExtractionUsage tracking
-    (the ``extraction_usage`` table lives in the control DB, not the tenant DB).
+
+    The ``ExtractionUsage`` billing meter is written through the TENANT session:
+    ``extraction_usage`` is not in ``tenant_provisioning.CONTROL_TABLES``, no
+    migration creates it in the control plane, and ``services/billing``'s
+    ``rollup_usage`` reads it from the tenant DB — the same place the sibling
+    meter ``card_rebates`` lives.
     """
     # Cache IDs before try block — after rollback, invoice attrs may be expired
     invoice_id = invoice.id
@@ -653,19 +656,23 @@ async def run_extraction(
         )
         db.add(extraction_result)
 
-        # Track usage for billing (extraction_usage lives in the control DB)
+        # Track usage for billing. This rides the tenant transaction and its
+        # single commit below, so the meter and the extraction result land
+        # together or not at all. It was previously committed to a control-plane
+        # session, where `extraction_usage` does not exist — the resulting
+        # UndefinedTableError was caught by this function's own handler, which
+        # rolled the extraction back and marked a SUCCESSFUL invoice `failed`.
         program_type = config.get("program_type", "platform")
-        usage = ExtractionUsage(
-            invoice_id=invoice.id,
-            provider=result.provider or config.get("provider", "unknown"),
-            program_type=program_type,
-            period=datetime.now(UTC).strftime("%Y-%m"),
-            success=True,
-            organization_id=invoice.organization_id,
+        db.add(
+            ExtractionUsage(
+                invoice_id=invoice.id,
+                provider=result.provider or config.get("provider", "unknown"),
+                program_type=program_type,
+                period=datetime.now(UTC).strftime("%Y-%m"),
+                success=True,
+                organization_id=invoice.organization_id,
+            )
         )
-        if ctrl_db is not None:
-            ctrl_db.add(usage)
-            await ctrl_db.commit()
 
         # Decide target status: auto-approve or ready_for_review
         from app.services.workflow_engine import get_step_config
@@ -745,14 +752,18 @@ async def run_extraction(
             await db.commit()
             return
 
-        # Track failed usage (extraction_usage lives in the control DB)
+        # Track failed usage on the tenant session, riding the same commit as
+        # the exception record below (see the success path for why it is not the
+        # control plane). Still guarded: `_resolve_extraction_config` can raise
+        # on a bad provider name, and losing the meter must not also cost us the
+        # exception record that tells a human the extraction failed.
         try:
-            if ctrl_db is not None:
-                # Silent: the success path above already announced any provider
-                # fallback for this attempt, and repeating it here would double
-                # every such warning per failed extraction.
-                config = _resolve_extraction_config(org_settings, announce=False)
-                usage = ExtractionUsage(
+            # Silent: the success path above already announced any provider
+            # fallback for this attempt, and repeating it here would double
+            # every such warning per failed extraction.
+            config = _resolve_extraction_config(org_settings, announce=False)
+            db.add(
+                ExtractionUsage(
                     invoice_id=invoice_id,
                     provider=config.get("provider", "unknown"),
                     program_type=config.get("program_type", "platform"),
@@ -760,8 +771,7 @@ async def run_extraction(
                     success=False,
                     organization_id=invoice_org_id,
                 )
-                ctrl_db.add(usage)
-                await ctrl_db.commit()
+            )
         except Exception:
             pass
 
