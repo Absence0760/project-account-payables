@@ -192,13 +192,53 @@ def _resolve_card_config(org: Organization) -> dict:
             }
         else:
             # e.g. "mock" for local-first testing — no live credentials
-            # needed. Any other/unrecognized value falls through to
-            # get_card_adapter's own mock backstop.
+            # needed. Any other/unrecognized value is REFUSED by
+            # `get_card_adapter` (`UnknownCardProviderError`) rather than
+            # resolving to the fixture adapter — see `decisions.md` §29.
             return {
                 "provider": provider,
                 "region": region,
                 "default_expiry_days": expiry_days,
             }
+
+
+def _require_card_adapter(org: Organization):
+    """Resolve the org's card adapter or 409 naming the unregistered provider.
+
+    `get_card_adapter` refuses a NAMED provider it has no adapter for rather
+    than substituting `mock`, whose `create_card` reports success with a fixture
+    PAN and whose `get_card_details` returns `4242424242424242`
+    (`decisions.md` §29). Every route here that reaches a provider funnels
+    through this so the refusal is a clean, actionable 409 instead of a 500 — and
+    so a settings typo can't quietly mint or reveal fixture cards.
+
+    409 (not 400/422): the request is well-formed; the org's card configuration
+    is in a state that cannot service it. The provider name is admin-supplied
+    config, not PII, and the exception bounds it to 50 characters.
+    """
+    import app.services.card_adapters.lithic  # noqa: F401
+    import app.services.card_adapters.mock_adapter  # noqa: F401
+    import app.services.card_adapters.nium  # noqa: F401
+    from app.services.card_adapters import UnknownCardProviderError, get_card_adapter
+    from app.services.card_adapters.dispatcher import list_available_providers
+
+    card_config = _resolve_card_config(org)
+    try:
+        return get_card_adapter(card_config)
+    except UnknownCardProviderError as exc:
+        logger.warning(
+            "[cards] card provider %r has no registered adapter for org %s",
+            exc.provider,
+            org.id,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"'{exc.provider}' is not a supported card provider "
+                f"(one of: {', '.join(list_available_providers())}). "
+                "Fix it in Organization Settings and retry."
+            ),
+        ) from None
 
 
 def _card_response(
@@ -378,6 +418,15 @@ async def generate_cards(
     from app.services.card_issuance import issue_card_for_invoice, persist_card
     from app.services.compliance import check_payment_compliance
 
+    # Refuse the whole batch up front when the configured provider names no
+    # registered adapter. `issue_card_for_invoice` would refuse each invoice
+    # individually anyway, but the loop's per-invoice `continue` reports that as
+    # "0 cards generated" — indistinguishable from "nothing was eligible", which
+    # is how a settings typo stayed invisible. Naming the bad value here is the
+    # same call `/organization/test-erp` makes (`decisions.md` §29); it is admin
+    # config, never a credential.
+    _require_card_adapter(org)
+
     # Load invoices — only ones that have cleared AP approval are eligible.
     # PAYABLE_INVOICE_STATUSES is the single source of truth shared with the
     # payment queue / run builder so a card can't be minted against an
@@ -512,14 +561,10 @@ async def get_card_details(
         details={"last_four": card.last_four},
     )
 
-    card_config = _resolve_card_config(org)
-
-    import app.services.card_adapters.lithic  # noqa: F401
-    import app.services.card_adapters.mock_adapter  # noqa: F401
-    import app.services.card_adapters.nium  # noqa: F401
-    from app.services.card_adapters import get_card_adapter
-
-    adapter = get_card_adapter(card_config)
+    # Refuses (409) when the org names an unregistered provider — otherwise the
+    # mock adapter would hand this route the fixture PAN 4242424242424242 and
+    # the caller would have no way to tell it apart from the real thing.
+    adapter = _require_card_adapter(org)
     details = await adapter.get_card_details(card.provider_card_id)
 
     return CardDetailsResponse(
@@ -544,14 +589,10 @@ async def cancel_card(
     if card.status in ("charged", "completed", "cancelled"):
         raise HTTPException(status_code=409, detail=f"Cannot cancel card in '{card.status}' status")
 
-    card_config = _resolve_card_config(org)
-
-    import app.services.card_adapters.lithic  # noqa: F401
-    import app.services.card_adapters.mock_adapter  # noqa: F401
-    import app.services.card_adapters.nium  # noqa: F401
-    from app.services.card_adapters import get_card_adapter
-
-    adapter = get_card_adapter(card_config)
+    # Refuses (409) when the org names an unregistered provider — the mock's
+    # `cancel_card` returns True unconditionally, so the row would be marked
+    # cancelled while the real card stayed live and chargeable.
+    adapter = _require_card_adapter(org)
     # Cancel at the provider FIRST, then reflect it in the DB — never the other
     # way round. The fail-safe direction is "dead at the provider, maybe stale
     # in the DB"; the dangerous direction is a card the AP team believes is

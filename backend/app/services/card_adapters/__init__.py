@@ -7,13 +7,17 @@ from app.services.card_adapters.base import (
     CardStatus,
     VirtualCardPayload,
 )
-from app.services.card_adapters.dispatcher import get_card_adapter
+from app.services.card_adapters.dispatcher import (
+    UnknownCardProviderError,
+    get_card_adapter,
+)
 
 __all__ = [
     "CardAdapter",
     "CardDetails",
     "CardResult",
     "CardStatus",
+    "UnknownCardProviderError",
     "VirtualCardPayload",
     "get_card_adapter",
 ]
