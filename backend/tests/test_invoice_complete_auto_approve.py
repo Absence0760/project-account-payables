@@ -99,3 +99,128 @@ async def test_complete_auto_approves_and_formats_the_threshold_message(realdb):
     finally:
         async with realdb.client(key=TENANT, role="admin") as c:
             await c.patch(f"/api/workflows/{workflow_id}", json={"steps": original_steps})
+
+
+async def _set_extraction_confidence_bar(realdb, *, workflow_id: str, threshold: float):
+    """Turn the extraction step's confidence auto-approve ON with the given bar,
+    and leave the approval step with NO amount floor."""
+    async with realdb.client(key=TENANT, role="admin") as c:
+        wf = (await c.get(f"/api/workflows/{workflow_id}")).json()
+        steps = wf["steps_config"]["steps"]
+        for step in steps:
+            if step["type"] == "extraction":
+                step["enabled"] = True
+                step["config"] = {
+                    "auto_approve_enabled": True,
+                    "auto_approve_threshold": threshold,
+                }
+            if step["type"] == "approval":
+                step["enabled"] = True
+                cfg = {**step.get("config", {}), "required": True}
+                cfg.pop("auto_approve_below", None)
+                step["config"] = cfg
+        resp = await c.patch(f"/api/workflows/{workflow_id}", json={"steps": steps})
+        assert resp.status_code == 200, resp.text
+
+
+async def test_complete_never_auto_approves_on_the_extraction_confidence_bar(realdb):
+    """`complete_invoice` hands `decide_auto_approve` a hardcoded
+    `overall_confidence=0.0` — a sentinel meaning "there is no extraction result
+    on this path", not a measurement. It also used to hand it the extraction
+    step's config, and `auto_approve_threshold` is a schema-valid `0.0..1.0`
+    float, so an org that dragged the confidence bar to `0` (meaning
+    "auto-approve at any confidence", for the EXTRACTION path) made
+    `0.0 >= 0.0` fire here instead: a $999,999 invoice auto-approved with **no
+    amount floor configured at all**, stamped `reason: "below_threshold"` with a
+    null threshold, and then 500-ing on the response message — *after* the
+    commit, so the caller saw an error while the invoice was silently approved.
+
+    The amount floor is the only trigger that means anything on this path."""
+    workflow_id = await _get_active_workflow_id(realdb)
+    async with realdb.client(key=TENANT, role="admin") as c:
+        original_steps = (await c.get(f"/api/workflows/{workflow_id}")).json()["steps_config"][
+            "steps"
+        ]
+
+    try:
+        await _set_extraction_confidence_bar(realdb, workflow_id=workflow_id, threshold=0.0)
+
+        async with realdb.client(key=TENANT, role="ap_manager") as c:
+            create_resp = await c.post(
+                "/api/invoices",
+                json={
+                    "vendor": "No Floor Vendor",
+                    "invoice_number": f"NOFLOOR-{workflow_id[:8]}",
+                    "amount": "999999.00",
+                    "currency": "USD",
+                },
+            )
+        assert create_resp.status_code == 201, create_resp.text
+        invoice_id = create_resp.json()["id"]
+
+        async with realdb.client(key=TENANT, role="admin") as c:
+            complete_resp = await c.post(f"/api/invoices/{invoice_id}/complete")
+        # Not a 500, and not an auto-approval — it goes to a human.
+        assert complete_resp.status_code == 200, complete_resp.text
+        assert complete_resp.json()["status"] == "ready_for_review"
+
+        mk = realdb.sessionmaker(TENANT)
+        async with mk() as s:
+            inv = await s.get(Invoice, invoice_id)
+            assert inv.status == InvoiceStatus.ready_for_review
+            assert inv.approved_by is None
+    finally:
+        async with realdb.client(key=TENANT, role="admin") as c:
+            await c.patch(f"/api/workflows/{workflow_id}", json={"steps": original_steps})
+
+
+async def test_complete_audit_row_records_the_threshold_as_an_exact_string(realdb):
+    """The `invoice.auto_approved` row's `threshold` is the parsed floor as an
+    exact decimal string — the same figure the comparison and the response
+    message use, never a raw JSONB value or a null."""
+    from sqlalchemy import select
+
+    from app.models.workflow import AuditLog
+
+    workflow_id = await _get_active_workflow_id(realdb)
+    async with realdb.client(key=TENANT, role="admin") as c:
+        original_steps = (await c.get(f"/api/workflows/{workflow_id}")).json()["steps_config"][
+            "steps"
+        ]
+
+    try:
+        await _set_auto_approve_below(realdb, workflow_id=workflow_id, threshold="5000.00")
+
+        async with realdb.client(key=TENANT, role="ap_manager") as c:
+            create_resp = await c.post(
+                "/api/invoices",
+                json={
+                    "vendor": "Audit Threshold Vendor",
+                    "invoice_number": f"AUDTH-{workflow_id[:8]}",
+                    "amount": "100.00",
+                    "currency": "USD",
+                },
+            )
+        invoice_id = create_resp.json()["id"]
+        async with realdb.client(key=TENANT, role="admin") as c:
+            assert (await c.post(f"/api/invoices/{invoice_id}/complete")).status_code == 200
+
+        mk = realdb.sessionmaker(TENANT)
+        async with mk() as s:
+            row = (
+                (
+                    await s.execute(
+                        select(AuditLog).where(
+                            AuditLog.action == "invoice.auto_approved",
+                            AuditLog.entity_id == invoice_id,
+                        )
+                    )
+                )
+                .scalars()
+                .one()
+            )
+            assert row.details["reason"] == "below_threshold"
+            assert row.details["threshold"] == "5000.00"
+    finally:
+        async with realdb.client(key=TENANT, role="admin") as c:
+            await c.patch(f"/api/workflows/{workflow_id}", json={"steps": original_steps})

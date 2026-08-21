@@ -365,6 +365,42 @@ can never go negative. Pinned by
 `tests/test_payment_create_credit_memo_netting.py` (standalone) and
 `tests/test_payment_run_credit_memo_netting.py` (runs).
 
+### The invoice's payability is re-checked before the adapter call
+
+Booking a run does not freeze the invoice. `POST /api/invoices/{id}/send-to-erp`
+happily walks an invoice that already holds a `pending` run payment
+`approved → sending_to_erp → sent_to_erp`, and the state machine only lets
+`sent_to_erp` advance to `posted_in_erp` / `done` — `payment_scheduled` is
+**not** a legal successor.
+
+The dispatch leg used to discover that at the `transition_invoice` call, which
+sits *after* `adapter.create_payment` returned and `provider_payment_id` was
+assigned. `validate_transition`'s 409 unwound into `_dispatch_run_payments`'
+generic `except`, which recorded `failed` / `unexpected_error:HTTPException` on
+a payment the processor had already accepted — and nothing ever corrected it:
+`classify_payment_failure` correctly reads the populated `provider_payment_id`
+as `IN_DOUBT` (so `/retry-failed` refuses), the webhook won't advance an
+already-terminal payment, and the reconciler only polls
+`submitted`/`processing`. The money moved and no surface said so.
+
+`_execute_single_payment` now refuses a non-payable invoice **before** the
+adapter is called — beside the credit-memo `net_amount_changed` guard, and
+retry-safe for the same reason (no order exists at the processor):
+
+- `failure_reason` is `invoice_not_payable:<status>`, a named refusal rather
+  than an `unexpected_error:*`.
+- The prefix is in `_RETRY_SAFE_FAILURE_PREFIXES`, so `/retry-failed` may
+  re-attempt it — and its own payability gate keeps skipping the row (as
+  `invoice_not_payable`) until the ERP push completes and the invoice reaches
+  the payable `posted_in_erp`.
+- `api/payments.SCHEDULABLE_INVOICE_STATUSES` — the statuses the three dispatch
+  legs transition to `payment_scheduled` — is now **derived** from
+  `workflow_engine.VALID_TRANSITIONS` rather than restated as a literal, so it
+  can never again name a status the state machine refuses. It is
+  `PAYABLE_INVOICE_STATUSES` minus `payment_scheduled` (already there).
+
+Pinned by `tests/test_payment_run_invoice_payability.py`.
+
 ### Why a payment failed, and retrying it
 
 `Payment.failure_reason` is written on every failure path — compliance refusal,

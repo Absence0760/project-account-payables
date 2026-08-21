@@ -352,3 +352,75 @@ def test_decide_auto_approve_revoked_on_malformed_cfo_gate(bad_threshold):
         overall_confidence=0.99,
         amount=Decimal("1000000"),
     )
+
+
+# ---------------------------------------------------------------------------
+# The other two thresholds must fail closed the same way. `decide_auto_approve`
+# is a PURE function called from the extraction path — a raise there does not
+# surface as a refusal, it lands the invoice in `failed`. Every one of these
+# used to raise: `max_invoice_amount` and `auto_approve_below` on a bare
+# `Decimal(str(...))`, and `auto_approve_threshold` on `0.99 >= "high"`
+# (TypeError). `POST /api/workflows/import` takes `steps_config` free-form, so
+# a non-numeric value can genuinely be persisted.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", ["abc", "10,000", "", {"x": 1}, [1], "NaN", "Infinity"])
+def test_decide_auto_approve_revoked_on_malformed_max_amount(bad):
+    from decimal import Decimal
+
+    from app.services.extraction import decide_auto_approve
+
+    assert not decide_auto_approve(
+        {"auto_approve_enabled": True, "auto_approve_threshold": 0.95},
+        {"max_invoice_amount": bad},
+        overall_confidence=0.99,
+        amount=Decimal("100"),
+    )
+
+
+@pytest.mark.parametrize("bad", ["abc", "1,000", "", {"x": 1}, [1], "NaN", "Infinity"])
+def test_malformed_auto_approve_floor_is_not_a_floor(bad):
+    """An unusable `auto_approve_below` must not raise AND must not trigger
+    auto-approve — an amount is never 'below' a threshold nobody can read."""
+    from decimal import Decimal
+
+    from app.services.extraction import decide_auto_approve
+
+    assert not decide_auto_approve(
+        {"auto_approve_enabled": False},
+        {"auto_approve_below": bad},
+        overall_confidence=0.0,
+        amount=Decimal("1"),
+    )
+
+
+@pytest.mark.parametrize("bad", ["high", "", None, {"x": 1}, [0.9], float("nan"), 95, -1])
+def test_malformed_confidence_bar_disables_the_confidence_trigger(bad):
+    """A non-numeric or out-of-range `auto_approve_threshold` must disable the
+    confidence trigger rather than raise a TypeError out of a pure function."""
+    from decimal import Decimal
+
+    from app.services.extraction import decide_auto_approve
+
+    assert not decide_auto_approve(
+        {"auto_approve_enabled": True, "auto_approve_threshold": bad},
+        {},
+        overall_confidence=0.99,
+        amount=Decimal("100"),
+    )
+
+
+def test_wellformed_thresholds_still_auto_approve():
+    """Guard against over-refusing — every fail-closed branch above must fire
+    only on a genuinely unusable value."""
+    from decimal import Decimal
+
+    from app.services.extraction import decide_auto_approve
+
+    assert decide_auto_approve(
+        {"auto_approve_enabled": True, "auto_approve_threshold": "0.90"},
+        {"max_invoice_amount": "10000", "auto_approve_below": "500", "require_cfo_above": "9000"},
+        overall_confidence=0.95,
+        amount=Decimal("100"),
+    )

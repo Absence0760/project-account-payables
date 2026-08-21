@@ -558,9 +558,33 @@ Invariants: it **never lowers** the existing threshold (only declines to raise,
 consistent with the forward rule); and when the auto-approved sample is below the
 minimum (default 5), `insufficient_data` is True and the loop **leaves the
 forward recommendation untouched** — it never reacts to one-off noise. Pure /
-deterministic; the endpoint returns BOTH the base (history-only) and the adjusted
+deterministic; `/feedback` returns BOTH the base (history-only) and the adjusted
 recommendation so a held-back raise is **explainable** (mirroring how the anomaly
 surface returns the baseline it compared against).
+
+#### The adjustment governs the WRITE, not just the dashboard
+
+`GET /threshold-recommendation`, `POST /threshold-recommendation/apply` and
+`GET /feedback` all resolve the recommendation through the single
+`_resolve_threshold_recommendation`, and **all three act on the adjusted one**.
+
+This is load-bearing, not tidiness. The fold used to live only inside
+`/feedback`, so the apply POST — the one endpoint that actually widens
+auto-approve — recomputed the *forward* recommendation and widened it anyway. An
+admin could read "holding at $0: 2 of 10 auto-approved invoices were later voided
+or rejected (20 % overturn)" and, in the same request cycle, apply a raise to
+$5,000 reported as `reason_code: "ok"`. The brake was wired to the dashboard and
+not to the control, and the two read surfaces contradicted each other.
+
+A held-back apply is a clean no-op: `applied=false`, `reason_code`
+`outcome_pullback` / `outcome_freeze`, the measured rate in the `rationale`, and
+**no** `WorkflowVersion` snapshot or `workflow.auto_approve_threshold_raised`
+audit row (nothing changed, so nothing is recorded as having changed). Clean
+outcomes still let the raise through unchanged.
+
+The routing sibling never had this gap: its per-approver penalty is folded into
+the candidate `score` itself, so `POST /routing-suggestion/apply` — which assigns
+whichever candidate ranks first — inherits the down-weight for free.
 
 ### A real effectiveness signal (`compute_effectiveness`, pure)
 
@@ -598,8 +622,8 @@ SOX-instrumented reads. **Compute-on-read** over `audit_log` + the existing
 | `/api/adaptive/suggestions/{id}/dismiss` | POST | admin / ap_manager | idempotent; 404 outside tenant |
 | `/api/adaptive/routing-suggestion` | GET | admin / ap_manager / cfo | `?invoice_id=<uuid>` (required), `?days=180` lookback; 404 if the invoice isn't in this tenant/entity. Ranked, advisory — assigns nobody |
 | `/api/adaptive/routing-suggestion/apply` | POST | admin / ap_manager | Body `{invoice_id}`, `?days=180`. Assigns the top recommendation via the audited `review.assign_reviewer`. 409 if not `ready_for_review`; 422 if no eligible approver; 404 outside tenant/entity; idempotent no-op when already assigned to the chosen approver. **Write surface — CFO excluded (read-only on routing).** |
-| `/api/adaptive/threshold-recommendation` | GET | admin / ap_manager / cfo | `?days=365` lookback, `?workflow_id=<uuid>` (defaults to active definition). Conservative recommended raise to `auto_approve_below` + evidence + rationale. Read-only — never mutates the definition |
-| `/api/adaptive/threshold-recommendation/apply` | POST | **admin only** | Body `{workflow_id?, expected_recommended_threshold?}`, `?days=365`. Raises `auto_approve_below` through the audited workflow-definition PATCH path (WorkflowVersion snapshot + audit rows). 409 if no definition / stale `expected_recommended_threshold`; idempotent no-op when the recommendation doesn't raise. **Write surface — matches who can edit workflow definitions; CFO/ap_manager excluded.** Affects only NEW invoices (frozen workflow snapshots) |
+| `/api/adaptive/threshold-recommendation` | GET | admin / ap_manager / cfo | `?days=365` lookback, `?workflow_id=<uuid>` (defaults to active definition). Conservative recommended raise to `auto_approve_below` + evidence + rationale, **outcome-adjusted** — the same decision the apply POST acts on. Read-only — never mutates the definition |
+| `/api/adaptive/threshold-recommendation/apply` | POST | **admin only** | Body `{workflow_id?, expected_recommended_threshold?}`, `?days=365`. Raises `auto_approve_below` through the audited workflow-definition PATCH path (WorkflowVersion snapshot + audit rows). Acts on the **outcome-adjusted** recommendation, so it holds back (`applied=false`, `reason_code` `outcome_pullback`/`outcome_freeze`, no snapshot/audit row) while the auto-approved population is being walked back. 409 if no definition / stale `expected_recommended_threshold`; idempotent no-op when the recommendation doesn't raise. **Write surface — matches who can edit workflow definitions; CFO/ap_manager excluded.** Affects only NEW invoices (frozen workflow snapshots) |
 | `/api/adaptive/feedback` | GET | admin / ap_manager / cfo | `?days=365` lookback, `?workflow_id=<uuid>` (defaults to active definition). The feedback loop — reads the realised OUTCOMES (voids/re-rejections/corrections) of auto-approved invoices from `audit_log`, returns the outcome tallies + two effectiveness metrics (each with an insufficient-data state) + BOTH the base and the outcome-adjusted threshold recommendation. **Read-only** — never mutates; writes a PII-free `adaptive_feedback.viewed` access-audit row |
 
 Read routes exclude `ap_clerk` — this is a manager/CFO surface, matching the

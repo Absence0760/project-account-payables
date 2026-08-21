@@ -146,6 +146,85 @@ async def test_import_rejects_malformed_condition(realdb):
     assert "errors" in detail and detail["errors"]
 
 
+async def test_import_rejects_a_non_numeric_approval_money_threshold(realdb):
+    """Import is the ONE save path that takes `steps_config` as a free-form dict
+    — every other one types these fields `Decimal | None` through Pydantic. A
+    non-numeric `max_invoice_amount` persisted here used to raise
+    `InvalidOperation` out of `review._enforce_approval_thresholds`: a 500 on
+    every approval under that workflow, with no path forward. The gates now fail
+    closed, and the definition is refused at the boundary."""
+    bad_steps = [
+        {
+            "number": 1,
+            "type": "approval",
+            "name": "Manager Approval",
+            "enabled": True,
+            "config": {
+                "required": True,
+                "max_invoice_amount": "ten thousand",
+                "require_cfo_above": "5,000",
+            },
+        }
+    ]
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post(
+            "/api/workflows/import",
+            json={
+                "name": "Bad thresholds",
+                "definition": {
+                    "schema_version": 1,
+                    "name": "Bad thresholds",
+                    "steps_config": {"steps": bad_steps},
+                },
+            },
+        )
+    assert resp.status_code == 422
+    errors = resp.json()["detail"]["errors"]
+    joined = " ".join(errors)
+    assert "max_invoice_amount" in joined
+    assert "require_cfo_above" in joined
+
+
+async def test_import_accepts_wellformed_approval_thresholds(realdb):
+    """Guard against over-rejecting: string-encoded numbers are how a JSONB
+    export legitimately carries a Decimal."""
+    good_steps = [
+        {
+            "number": 1,
+            "type": "extraction",
+            "name": "Extraction",
+            "enabled": True,
+            "config": {"auto_approve_enabled": True, "auto_approve_threshold": 0.95},
+        },
+        {
+            "number": 2,
+            "type": "approval",
+            "name": "Manager Approval",
+            "enabled": True,
+            "config": {
+                "required": True,
+                "max_invoice_amount": "10000.00",
+                "require_cfo_above": 5000,
+                "auto_approve_below": None,
+                "approval_chain": [{"name": "L1", "min_amount": 0, "max_amount": "9999.99"}],
+            },
+        },
+    ]
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post(
+            "/api/workflows/import",
+            json={
+                "name": "Good thresholds",
+                "definition": {
+                    "schema_version": 1,
+                    "name": "Good thresholds",
+                    "steps_config": {"steps": good_steps},
+                },
+            },
+        )
+    assert resp.status_code == 201, resp.text
+
+
 # ---------------------------------------------------------------------------
 # RBAC + tenant isolation
 # ---------------------------------------------------------------------------

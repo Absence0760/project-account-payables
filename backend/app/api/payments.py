@@ -89,7 +89,7 @@ from app.services.payment_settlement_record import (
     open_settlement_mismatch_exception,
     record_settlement,
 )
-from app.services.workflow_engine import transition_invoice
+from app.services.workflow_engine import VALID_TRANSITIONS, transition_invoice
 from app.tenant import (
     apply_entity_scope,
     get_entity_id,
@@ -114,6 +114,23 @@ PAYABLE_INVOICE_STATUSES = (
     InvoiceStatus.approved.value,
     InvoiceStatus.posted_in_erp.value,
     InvoiceStatus.payment_scheduled.value,
+)
+
+# Of those, the ones that still need the `→ payment_scheduled` transition once a
+# payment settles. DERIVED from the state machine rather than restated, so it
+# can never name a status `validate_transition` would refuse: a payable status
+# is schedulable exactly when `payment_scheduled` is a legal successor.
+# (`payment_scheduled` itself is payable — a re-attempt — but is already there,
+# and drops out here because it isn't its own successor.) The three dispatch
+# legs used to spell this out as a literal that included `sent_to_erp`, which
+# `VALID_TRANSITIONS` does NOT allow — and the transition runs AFTER the
+# processor accepted the order, so the resulting 409 recorded a settled payment
+# as `failed`. `_execute_single_payment` now refuses a non-payable invoice
+# before the adapter call; this keeps the two facts from drifting apart again.
+SCHEDULABLE_INVOICE_STATUSES = tuple(
+    value
+    for value in PAYABLE_INVOICE_STATUSES
+    if InvoiceStatus.payment_scheduled in VALID_TRANSITIONS.get(InvoiceStatus(value), set())
 )
 
 # Exception classes that block an invoice from entering a payment run while
@@ -2194,6 +2211,36 @@ async def _execute_single_payment(
         payment.completed_at = now
         return
 
+    # Is the invoice still PAYABLE now, immediately before the adapter call?
+    #
+    # The run was built against `PAYABLE_INVOICE_STATUSES`, but nothing freezes
+    # the invoice between booking and dispatch: `POST /api/invoices/{id}/send-to-erp`
+    # happily walks an invoice holding a `pending` run payment
+    # `approved → sending_to_erp → sent_to_erp`, and `sent_to_erp` can only
+    # advance to `posted_in_erp` / `done` — `payment_scheduled` is NOT a legal
+    # successor (`workflow_engine.VALID_TRANSITIONS`).
+    #
+    # Without this guard the mismatch surfaced in the worst possible place: the
+    # `transition_invoice` call sits AFTER `adapter.create_payment` returned and
+    # `provider_payment_id` was assigned, so `validate_transition`'s 409 unwound
+    # into `_dispatch_run_payments`' generic `except`, which recorded
+    # `failed / unexpected_error:HTTPException` on a payment the processor had
+    # already accepted. `classify_payment_failure` then read the populated
+    # `provider_payment_id` as IN_DOUBT (correctly — `/retry-failed` must not
+    # re-send), the webhook refuses to advance an already-terminal payment and
+    # the reconciler only polls `submitted`/`processing`, so nothing ever
+    # corrected it: the money moved and no surface said so.
+    #
+    # Refusing HERE — before any order exists at the processor — turns that into
+    # a named, retry-safe refusal (`invoice_not_payable:<status>`), exactly like
+    # the `net_amount_changed` guard below. A fresh run re-derives the payment
+    # once the ERP push completes (`posted_in_erp` is payable).
+    if invoice.status.value not in PAYABLE_INVOICE_STATUSES:
+        payment.status = "failed"
+        payment.failure_reason = f"invoice_not_payable:{invoice.status.value}"
+        payment.completed_at = now
+        return
+
     # What the invoice is worth NOW, immediately before the adapter call.
     # `payment.amount` was netted against applied credit memos when the row was
     # booked (`payment_runs.net_payable_amount`), but `credit_memos.py` gates an
@@ -2366,11 +2413,7 @@ async def _execute_single_payment(
         await _capture_discount_offers(
             db, org=org, invoice=invoice, payment=payment, actor_id=user.id, now=now
         )
-        if invoice.status.value in (
-            "approved",
-            "sent_to_erp",
-            "posted_in_erp",
-        ):
+        if invoice.status.value in SCHEDULABLE_INVOICE_STATUSES:
             await transition_invoice(
                 db,
                 invoice,
@@ -2587,11 +2630,7 @@ async def _execute_single_payment(
         await _capture_discount_offers(
             db, org=org, invoice=invoice, payment=payment, actor_id=user.id, now=now
         )
-        if invoice and invoice.status.value in (
-            "approved",
-            "sent_to_erp",
-            "posted_in_erp",
-        ):
+        if invoice and invoice.status.value in SCHEDULABLE_INVOICE_STATUSES:
             await transition_invoice(
                 db,
                 invoice,
@@ -2603,11 +2642,7 @@ async def _execute_single_payment(
     elif result_obj.status in (PaymentStatus.submitted, PaymentStatus.processing):
         # Real money in flight; webhook will finalize.
         payment.status = result_obj.status.value
-        if invoice and invoice.status.value in (
-            "approved",
-            "sent_to_erp",
-            "posted_in_erp",
-        ):
+        if invoice and invoice.status.value in SCHEDULABLE_INVOICE_STATUSES:
             await transition_invoice(
                 db,
                 invoice,

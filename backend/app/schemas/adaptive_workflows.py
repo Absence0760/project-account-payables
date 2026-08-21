@@ -193,6 +193,10 @@ class ThresholdRecommendationResponse(BaseModel):
     qualifying_vendor_count: int
     total_clean_invoices: int
     reason_code: str  # "ok" | "insufficient_evidence" | "no_increase" | "at_cap"
+    # ...plus "outcome_pullback" / "outcome_freeze" — every threshold surface now
+    # returns the OUTCOME-ADJUSTED recommendation (see api/adaptive_workflows.py
+    # ::_resolve_threshold_recommendation), so a raise held back by the feedback
+    # loop reports why here rather than in a second, contradictory payload.
     rationale: str
     evidence: list[ThresholdEvidenceItem]
     # The active workflow definition the apply path would mutate (None when the
