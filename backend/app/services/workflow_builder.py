@@ -34,7 +34,11 @@ import logging
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from app.services.workflow_step_types import BUILDER_STEP_TYPES, is_known_step_type
+from app.services.workflow_step_types import (
+    BUILDER_STEP_TYPES,
+    is_known_step_type,
+    resolve_step_type,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -518,6 +522,96 @@ _VALIDATORS = {
     "delay": _validate_delay,
 }
 
+# Money thresholds on the canonical `approval` step, and the chain levels' own
+# amount bounds. Each is a real gate at runtime, and each is typed
+# `Decimal | None` by `schemas/workflow.ApprovalStepConfig` /
+# `ApprovalLevelConfig` — so every save path EXCEPT `POST /api/workflows/import`
+# already refuses a non-numeric one. Import takes `steps_config` as a free-form
+# dict, which is why they are re-checked here.
+_APPROVAL_MONEY_FIELDS = ("auto_approve_below", "require_cfo_above", "max_invoice_amount")
+_LEVEL_MONEY_FIELDS = ("min_amount", "max_amount")
+
+
+def _numeric_error(value: Any, label: str, field: str) -> str | None:
+    """``None`` when ``value`` is an absent or usable finite number, else the
+    error string. Booleans are rejected outright — `True` is a Decimal-coercible
+    `1` and would silently become a $1 threshold."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return f"{label}: '{field}' must be a number, not a boolean"
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return f"{label}: '{field}' must be a number (got {value!r})"
+    if not parsed.is_finite():
+        return f"{label}: '{field}' must be a finite number (got {value!r})"
+    return None
+
+
+def _validate_approval(config: dict, label: str) -> list[str]:
+    """Money-threshold shape on the canonical ``approval`` step.
+
+    These are gates, not decoration: an unusable `max_invoice_amount` /
+    `require_cfo_above` now makes the runtime refuse the approval fail-closed
+    (`approval_chain.max_amount_gate_applies` / `cfo_gate_applies`), and an
+    unusable `auto_approve_below` silently stops being a floor. Refusing the
+    definition at the boundary is what keeps that fail-closed behaviour a
+    backstop rather than the way an org discovers its workflow is broken."""
+    errors: list[str] = []
+    for field in _APPROVAL_MONEY_FIELDS:
+        err = _numeric_error(config.get(field), label, field)
+        if err:
+            errors.append(err)
+
+    chain = config.get("approval_chain")
+    if chain is not None and not isinstance(chain, list):
+        errors.append(f"{label}: 'approval_chain' must be a list")
+        chain = []
+    for i, level in enumerate(chain or []):
+        if not isinstance(level, dict):
+            errors.append(f"{label}: approval_chain level {i} must be an object")
+            continue
+        for field in _LEVEL_MONEY_FIELDS:
+            # `resolve_applicable_levels` reads an unparseable bound as "no
+            # bound", so a typo here doesn't crash — it quietly widens the level
+            # to every amount, routing money past the tier that should have seen it.
+            err = _numeric_error(level.get(field), f"{label} level {i}", field)
+            if err:
+                errors.append(err)
+    return errors
+
+
+def _validate_extraction(config: dict, label: str) -> list[str]:
+    """Confidence bar on the canonical ``extraction`` step.
+
+    `decide_auto_approve` compares `overall_confidence >= auto_approve_threshold`;
+    a non-numeric bar is a `TypeError` out of a pure function, and one outside
+    0..1 can never be met (or is always met). Both now disable the confidence
+    trigger fail-closed at runtime — this refuses them at the boundary."""
+    errors: list[str] = []
+    raw = config.get("auto_approve_threshold")
+    if raw is None:
+        return errors
+    if isinstance(raw, bool):
+        return [f"{label}: 'auto_approve_threshold' must be a number, not a boolean"]
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return [f"{label}: 'auto_approve_threshold' must be a number (got {raw!r})"]
+    if not (0.0 <= value <= 1.0):
+        errors.append(f"{label}: 'auto_approve_threshold' must be between 0 and 1 (got {raw!r})")
+    return errors
+
+
+# Canonical (engine) steps whose config carries runtime-load-bearing numbers.
+# Separate from `_VALIDATORS` so the builder-step contract stays exactly as it
+# was: these run IN ADDITION, keyed by canonical type.
+_CANONICAL_VALIDATORS = {
+    "approval": _validate_approval,
+    "extraction": _validate_extraction,
+}
+
 
 def validate_builder_steps(steps: list[dict]) -> list[str]:
     """Validate a steps list before it is persisted as a workflow definition.
@@ -535,10 +629,19 @@ def validate_builder_steps(steps: list[dict]) -> list[str]:
        and then be *silently ignored* at runtime — a typo'd ``"aproval"`` step
        reads to the engine as "no approval step configured", which drops the
        approval gate off the workflow rather than failing loudly.
-    2. **Builder-step config shape** — only the five builder types are
-       inspected here; canonical engine steps carry no builder config. Also
-       cross-checks every ``condition`` ``goto`` target against the set of step
-       numbers actually present, so a dangling branch is caught before persist.
+    2. **Builder-step config shape** — the five builder types are inspected by
+       ``_VALIDATORS``. Also cross-checks every ``condition`` ``goto`` target
+       against the set of step numbers actually present, so a dangling branch is
+       caught before persist.
+    3. **Canonical-step numbers that gate money** — the ``approval`` step's
+       ``auto_approve_below`` / ``require_cfo_above`` / ``max_invoice_amount``
+       (and each chain level's ``min_amount`` / ``max_amount``), plus the
+       ``extraction`` step's ``auto_approve_threshold``. Every other save path
+       types these through Pydantic (``Decimal | None`` / a bounded float);
+       import is the one that does not, and a non-numeric threshold reaching the
+       runtime used to raise ``InvalidOperation`` out of the approval gate — a
+       500 on every approval under that workflow. The gates now fail closed, and
+       this refuses the definition before it can get there.
     """
     errors: list[str] = []
     if not isinstance(steps, list):
@@ -558,14 +661,20 @@ def validate_builder_steps(steps: list[dict]) -> list[str]:
                 "at runtime, silently removing that step from the workflow"
             )
             continue
-        if step_type not in BUILDER_STEP_TYPES:
-            continue  # canonical step — no builder config to check
+        canonical_validator = _CANONICAL_VALIDATORS.get(resolve_step_type(step_type))
+        if step_type not in BUILDER_STEP_TYPES and canonical_validator is None:
+            continue  # canonical step with no runtime-load-bearing numbers
         number = step.get("number")
         name = step.get("name") or step_type
         label = f"step {number} ('{name}')"
         config = step.get("config")
         if not isinstance(config, dict):
             errors.append(f"{label}: 'config' must be an object")
+            continue
+
+        if canonical_validator is not None:
+            errors.extend(canonical_validator(config, label))
+        if step_type not in BUILDER_STEP_TYPES:
             continue
 
         errors.extend(_VALIDATORS[step_type](config, label))

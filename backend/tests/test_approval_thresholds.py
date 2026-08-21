@@ -508,3 +508,73 @@ def test_cfo_gate_applies_malformed_fails_closed(bad):
 
     # Even a tiny amount trips the gate when the threshold can't be parsed.
     assert cfo_gate_applies(bad, Decimal("1")) is True
+
+
+# ---------------------------------------------------------------------------
+# Malformed max_invoice_amount — the cap must FAIL CLOSED too.
+#
+# Both enforcement sites coerced this with a bare `Decimal(str(...))`, so a
+# non-numeric value raised `InvalidOperation` — an unhandled 500 on EVERY
+# approval under that workflow, legitimate ones included, with no path forward.
+# `POST /api/workflows/import` makes that reachable: it takes `steps_config` as
+# a free-form dict, which no Pydantic `Decimal` field constrains.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad_threshold",
+    ["abc", "10,000", "", "5000 USD", {"nope": 1}, [1, 2], "NaN", "Infinity"],
+)
+@pytest.mark.asyncio
+async def test_malformed_max_amount_refuses_instead_of_500(bad_threshold):
+    from app.services.review import _enforce_approval_thresholds
+
+    db = _db_mock()
+    invoice = _make_invoice(amount=100)
+    instance = _make_instance({"max_invoice_amount": bad_threshold})
+
+    with patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)):
+        with pytest.raises(HTTPException) as exc_info:
+            await _enforce_approval_thresholds(db, invoice, actor_roles={"cfo"})
+
+    # A clean, actionable 422 — not InvalidOperation escaping as a 500.
+    assert exc_info.value.status_code == 422
+    assert "max_invoice_amount" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_wellformed_max_amount_still_allows_an_under_cap_invoice():
+    """Guard against over-refusing: the fail-closed branch must fire only when
+    the threshold is genuinely unusable."""
+    from app.services.review import _enforce_approval_thresholds
+
+    db = _db_mock()
+    invoice = _make_invoice(amount=100)
+    instance = _make_instance({"max_invoice_amount": "10000"})
+
+    with patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)):
+        await _enforce_approval_thresholds(db, invoice, actor_roles={"ap_manager"})
+
+
+def test_max_amount_gate_applies_matches_the_cfo_gate_contract():
+    from app.services.approval_chain import max_amount_gate_applies
+
+    assert max_amount_gate_applies(None, Decimal("999999")) is False
+    assert max_amount_gate_applies(10000, Decimal("50000")) is True
+    assert max_amount_gate_applies("10000", Decimal("50000")) is True
+    # At the cap is allowed — the cap is `>`, not `>=`.
+    assert max_amount_gate_applies(10000, Decimal("10000")) is False
+    for bad in ("abc", "10,000", "", {"x": 1}, [1], "NaN", "Infinity"):
+        assert max_amount_gate_applies(bad, Decimal("1")) is True, bad
+
+
+def test_finite_money_threshold_rejects_unusable_values():
+    from app.services.approval_chain import finite_money_threshold
+
+    assert finite_money_threshold(None) is None
+    assert finite_money_threshold("abc") is None
+    assert finite_money_threshold("NaN") is None
+    assert finite_money_threshold("Infinity") is None
+    assert finite_money_threshold("-Infinity") is None
+    assert finite_money_threshold("2500.50") == Decimal("2500.50")
+    assert finite_money_threshold(2500) == Decimal("2500")

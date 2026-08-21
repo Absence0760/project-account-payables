@@ -145,31 +145,40 @@ async def _enforce_approval_thresholds(
             f"(last {structuring_window_days} days) it totals ${aggregate_amount:,.2f}."
         )
 
-    # Hard reject if over max. Coerce the threshold to Decimal ONCE and both
-    # compare AND format against that Decimal — the JSONB config value may be a
-    # string (a hand-edited / imported steps_config), which the comparison
-    # already tolerates; formatting the raw value with `:,.2f` would otherwise
-    # raise ValueError and turn this gate into a 500 instead of the intended
-    # reject.
+    # Both money gates below read the config through the shared fail-CLOSED
+    # parsers in `approval_chain`. `steps_config` is a JSONB blob and
+    # `POST /api/workflows/import` accepts it free-form (no Pydantic `Decimal`
+    # field constrains it there), so a threshold can genuinely arrive as a
+    # non-numeric string — and a bare `Decimal(str(...))` on it raises
+    # InvalidOperation, which is a 500 on EVERY approval under that workflow,
+    # legitimate ones included. A misconfigured money control must refuse
+    # loudly, never crash and never silently skip itself.
+    from app.services.approval_chain import _to_decimal, cfo_gate_applies, max_amount_gate_applies
+
+    # Hard reject if over max. The parsed Decimal is used for BOTH the
+    # comparison and the message; when it is unusable the gate still fires
+    # (fail-closed) and the message names the misconfiguration instead of
+    # formatting a value that would raise.
     max_amount = config.get("max_invoice_amount")
-    if max_amount is not None:
-        max_amount_dec = Decimal(str(max_amount))
-        if aggregate_amount > max_amount_dec:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=(
-                    f"Invoice amount ${amount:,.2f} exceeds maximum allowed ${max_amount_dec:,.2f}."
-                    + _structuring_note(max_amount_dec)
-                ),
+    if max_amount_gate_applies(max_amount, aggregate_amount):
+        max_amount_dec = _to_decimal(max_amount)
+        if max_amount_dec is None or not max_amount_dec.is_finite():
+            detail = (
+                "This workflow's approval step has an unusable 'max_invoice_amount'. "
+                "Approval is blocked until an admin corrects the workflow definition."
             )
+        else:
+            detail = (
+                f"Invoice amount ${amount:,.2f} exceeds maximum allowed ${max_amount_dec:,.2f}."
+                + _structuring_note(max_amount_dec)
+            )
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail)
 
     # CFO role gate for high-value invoices. `cfo_gate_applies` is the shared
     # fail-CLOSED parse: a configured-but-malformed `require_cfo_above` demands
     # CFO sign-off (never silently skips the gate) instead of raising an
     # InvalidOperation that would 500 every approval — even a legitimate CFO's —
     # and brick the queue on a single settings typo.
-    from app.services.approval_chain import _to_decimal, cfo_gate_applies
-
     cfo_threshold = config.get("require_cfo_above")
     # The gate reads `aggregate_amount`, not `amount`, so the structuring bypass
     # (split one payable into several under-threshold invoices from the same

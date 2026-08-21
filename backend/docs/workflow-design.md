@@ -137,6 +137,42 @@ gate. The malformed value is logged PII-free (a money threshold, not a secret)
 for an admin to correct. The payment-run CFO gate (`payments.cfo_approval_above`)
 enforces the same fail-closed discipline inline (see `payments.md`).
 
+**So does `max_invoice_amount`, and so do the auto-approve knobs.** The cap has
+its own named sibling, `approval_chain.max_amount_gate_applies` (both share one
+`_money_gate_applies` body, so the two can't drift), and
+`extraction.decide_auto_approve` reads `auto_approve_below` through
+`approval_chain.finite_money_threshold` and the confidence bar through its own
+`_confidence_threshold`. Every one of those sites previously coerced the raw
+config with a bare `Decimal(str(...))` or compared straight against it, so a
+non-numeric value **raised**:
+
+- out of `review._enforce_approval_thresholds` as an unhandled `InvalidOperation`
+  — a **500 on every approval** under that workflow, legitimate ones included,
+  with no path forward at all (unlike the CFO gate, where a CFO can still
+  approve past a fail-closed refusal);
+- out of the pure `decide_auto_approve`, which on the extraction path lands the
+  invoice in `failed` rather than surfacing as a refusal.
+
+Now: an unusable cap **refuses** the approval (422, naming the misconfiguration
+rather than formatting a value that would raise); an unusable
+`auto_approve_below` is simply not a floor, and an unusable
+`auto_approve_threshold` disables the confidence trigger — both directions that
+send the invoice to a human. `NaN`/`Infinity` count as unusable everywhere, for
+the reasons in `finite_money_threshold`'s docstring.
+
+**These values are also refused at the save boundary.** `steps_config` is JSONB
+and `POST /api/workflows/import` accepts it as a free-form dict — the one save
+path no Pydantic `Decimal | None` field constrains (create/update go through
+`WorkflowStepConfig`). `workflow_builder.validate_builder_steps` therefore now
+checks the canonical `approval` step's three money thresholds and each chain
+level's `min_amount` / `max_amount`, plus the `extraction` step's
+`auto_approve_threshold`, and returns a per-field 422. The runtime fail-closed
+behaviour above stays the backstop for definitions that predate this check or
+were edited directly in the database. Chain bounds matter here even though
+`resolve_applicable_levels` never raises on them: it reads an unparseable bound
+as *no bound*, silently widening the level to every amount and routing money
+past the tier that should have seen it.
+
 **Structuring guard**: both gates above compare against `invoice.amount` **plus** the same vendor's other invoice amounts over a trailing window (`services/structuring.py`, called from `review._enforce_approval_thresholds` on the human path and from `extraction.resolve_gate_aggregate` on the unattended one) — closing the "split one large payable into several under-threshold invoices with distinct invoice numbers" bypass (the exact-match duplicate check in `invoice_warnings.py` never fires on distinct numbers, and per-invoice thresholds never aggregated). Config lives alongside the other fraud-rule knobs on `Organization.settings.fraud_rules`: `structuring_enabled` (default `true`) and `structuring_window_days` (default `7`). Rejected/failed invoices don't count toward the aggregate; everything else does, including still-pending ones. The rejection/CFO-required message names the aggregate and the vendor's other recent spend when the single invoice alone would have passed.
 
 **The auto-approve path measures the same aggregate.** `extraction.decide_auto_approve`
