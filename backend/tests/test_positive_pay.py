@@ -4,7 +4,8 @@ Two pure halves are covered here (no DB, no fixtures — plain pytest functions)
 
   * the formatter adapters (``positive_pay_adapters``): CSV + fixed-width
     rendering of check-issue and ACH-authorization files, incl. headers, exact
-    decimal amounts, empty lists, and the dispatcher default + unknown fallback;
+    decimal amounts, empty lists, the dispatcher default, and its refusal of a
+    named-but-unregistered bank layout;
   * the return classifier (``services.positive_pay.classify_presented_items``):
     every classification — ``matched_ok`` / ``amount_mismatch`` (altered) /
     ``not_on_file`` — plus check-number normalisation and the tolerance
@@ -19,6 +20,8 @@ from __future__ import annotations
 import datetime
 from decimal import Decimal
 
+import pytest
+
 from app.services.positive_pay import (
     CLASS_AMOUNT_MISMATCH,
     CLASS_MATCHED_OK,
@@ -32,6 +35,7 @@ from app.services.positive_pay_adapters import (
     AchAuthorizationItem,
     CheckIssueItem,
     FormatterContext,
+    UnknownPositivePayFormatError,
     get_positive_pay_formatter,
 )
 from app.services.positive_pay_adapters.csv_formatter import CsvPositivePayFormatter
@@ -81,8 +85,34 @@ def test_dispatcher_fixed_width():
     assert isinstance(get_positive_pay_formatter("fixed_width"), FixedWidthPositivePayFormatter)
 
 
-def test_dispatcher_unknown_falls_back_to_csv():
-    assert isinstance(get_positive_pay_formatter("wells_fargo_xyz"), CsvPositivePayFormatter)
+def test_dispatcher_refuses_a_named_unknown_format():
+    """A NAMED layout we have no formatter for raises — it never renders `csv`
+    under the requested name.
+
+    Positive Pay is a fraud control the bank enforces off the file we hand it.
+    The old fallback rendered a CSV body, stored it, stamped the
+    `PositivePayFile` row + audit trail with the *requested* format, filed the
+    `(run, bank_format)` idempotency slot under it and returned 201 — so a typo
+    left the tenant believing Positive Pay was in force on a file its bank
+    cannot parse. Same call as `decisions.md` §29 / §36.
+    """
+    with pytest.raises(UnknownPositivePayFormatError) as exc:
+        get_positive_pay_formatter("wells_fargo_xyz")
+    # Names the bad value and the real alternatives; bounded, no credential.
+    assert exc.value.name == "wells_fargo_xyz"
+    assert "csv" in str(exc.value)
+
+    # A config dict naming an unknown layout is refused identically.
+    with pytest.raises(UnknownPositivePayFormatError):
+        get_positive_pay_formatter({"bank_format": "wells_fargo_xyz"})
+
+
+def test_dispatcher_bounds_an_absurd_format_name():
+    """The echoed name is capped at the column width so an oversized value
+    can't bloat a log line or an HTTP body."""
+    with pytest.raises(UnknownPositivePayFormatError) as exc:
+        get_positive_pay_formatter("x" * 500)
+    assert len(exc.value.name) == 30
 
 
 def test_dispatcher_accepts_config_dict():
