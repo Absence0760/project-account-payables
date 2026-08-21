@@ -408,7 +408,7 @@ def _timestamp_day_where(col: Any, op: str, value: date | datetime) -> Any:
     start = _day_start(value)
     next_start = start + timedelta(days=1)
     if op == "eq":
-        return and_(col >= start, col < next_start)
+        return _day_window(col, value)
     if op == "ne":
         # Mirrors SQL `!=`: NULL rows are excluded either way.
         return or_(col < start, col >= next_start)
