@@ -5,9 +5,9 @@ names the root cause, the evidence, blast radius, and a recommended fix
 approach — this is a staging area for real problems, not a place to let them
 go stale. See root `CLAUDE.md` guard rail 6 (no dangling deferred findings).
 
-Two entries are open (below). Everything after them is a `~~struck-through~~`
+**No entries are currently open.** Everything below is a `~~struck-through~~`
 resolved stub, kept because the *diagnosis* is the expensive part and is worth
-not re-deriving. Add a new entry above them when a defect is diagnosed but
+not re-deriving. Add a new entry at the top when a defect is diagnosed but
 can't be fixed in the same session.
 
 **Scope:** *diagnosed defects* only. A deferral that isn't a defect — blocked on
@@ -17,82 +17,80 @@ goes to [decisions.md](decisions.md).
 
 ---
 
-## A named-but-unregistered CARD provider still falls back to `mock`
+## ~~A named-but-unregistered CARD provider still falls back to `mock`~~ — FIXED 2026-08-21
 
-[decisions.md §29](decisions.md) removed exactly this fallback from
-`payment_adapters`, `erp_adapters` and `fx_adapters` — a NAMED provider we have
-no adapter for must raise, because `mock` is not an inert stub. **Cards were not
-included**, and `card_adapters/dispatcher.get_card_adapter` still does:
+**Resolved.** `card_adapters/dispatcher.get_card_adapter` now raises
+`UnknownCardProviderError` for a NAMED provider it has no adapter for; an unset
+provider still resolves through `REGION_DEFAULTS` (the local-first default). The
+dispatcher imports the three built-in adapters itself, so the refusal no longer
+depends on each call site's `import app.services.card_adapters.lithic` preamble.
 
-```python
-adapter_cls = _ADAPTER_REGISTRY.get(provider)
-if not adapter_cls:
-    adapter_cls = _ADAPTER_REGISTRY.get("mock")
-```
+*The defect.* `MockCardAdapter` is not an inert stub — `create_card` returns
+`success=True` with a `mock_card_…` id and `last_four="4242"`, `get_card_details`
+returns the PAN `4242424242424242`, `cancel_card` returns `True` unconditionally.
+One typo in `settings.cards.provider` made every issuance "succeed": rows landed
+with `card_provider="mock"`, the payment-run card leg marked each payment
+`completed` and each invoice `payment_scheduled`, `POST /api/cards/generate`
+reported cards minted, and vendors were emailed reveal links resolving to a
+fixture PAN.
 
-*Blast radius.* `MockCardAdapter.create_card` returns `success=True` with a
-synthetic `mock_card_…` id and `last_four="4242"`, and `get_card_details`
-returns the PAN `4242424242424242`. So one typo in an admin-entered
-`settings.cards.provider` (a BYOK tenant writing `"marqeta"`) makes every
-issuance "succeed": `VirtualCard` rows land with `card_provider="mock"`, the
-payment-run card leg marks each payment `completed` and each invoice
-`payment_scheduled`, `POST /api/cards/generate` reports cards minted, and
-vendors are emailed single-use reveal links resolving to a fixture PAN. No money
-moves and nothing fails — the same shape §29 called out for the other three
-dispatchers. An *unset* provider resolving to `mock` stays correct; that is the
-local-first default.
+*The per-caller table §29 requires*, which is why this took its own change:
+`issue_card_for_invoice` returns `card_provider_not_configured` (no provider call
+was made, so `payment_runs.classify_payment_failure` already reads the
+`_not_configured` suffix as RETRY_SAFE); `POST /api/cards/generate` 409s the batch,
+because a per-invoice `continue` reported `total: 0` — indistinguishable from
+"nothing was eligible", which is how this stayed invisible;
+`GET /cards/{id}/details` 409s rather than returning the fixture PAN;
+`POST /cards/{id}/cancel` 409s and leaves the row `active`;
+`cancel_card_at_provider` records `card_provider_not_configured` rather than a
+cancel it never obtained; and the supplier-portal reveal degrades to its PII-free
+body. **The card webhook needed no change** — the recommended fix assumed
+otherwise, but `POST /api/cards/webhook/{provider}` normalises by the URL segment
+and returns for anything but `lithic`/`nium`; it never resolves an adapter.
 
-*Verified, not inferred:* read `card_adapters/dispatcher.py:88-96` and
-`card_adapters/mock_adapter.py:25-54` directly.
+The same sweep closed the identical shape in two more registries:
+`positive_pay_adapters` (an unknown `bank_format` rendered CSV under the requested
+name — a fraud control the bank silently could not enforce) and
+`enrichment_adapters` (an unknown provider fabricated firmographics with
+`matched=True`, one click from being applied onto a real supplier). See
+`decisions.md` §56.
 
-**Recommended fix.** `UnknownCardProviderError`, mirroring
-`UnknownPaymentProviderError` — plus the §29 table work, because each of the
-five call sites has to decide what the refusal *means*: the payment-run card leg
-should fail that payment (retry-safe, no card minted), `POST /api/cards/generate`
-should refuse the batch, `_cancel_card_for_void` should record
-`provider_not_supported` (it already has that shape for payments), the PAN
-reveal should 409, and the webhook route should 204 like its
-`provider == "mock"` sibling. That per-caller decision is why this wasn't folded
-into the round's card commit. Guard alongside
-`tests/test_payment_provider_resolution.py`.
-
----
-
-## An invoice pushed to the ERP mid-run records a settled payment as `failed`
-
-`api/payments._execute_single_payment` transitions the invoice to
-`payment_scheduled` when its status is in `("approved", "sent_to_erp",
-"posted_in_erp")` — but `sent_to_erp → payment_scheduled` is **not** in
-`workflow_engine.VALID_TRANSITIONS` (`sent_to_erp` may only go to
-`posted_in_erp` or `done`). `validate_transition` raises `HTTPException(409)`.
-
-*The window.* A run is built while the invoice is `approved`
-(`PAYABLE_INVOICE_STATUSES`), then `POST /api/invoices/{id}/send-to-erp` walks
-it `approved → sending_to_erp → sent_to_erp` before `/execute` runs. Nothing
-refuses an ERP push for an invoice that already holds a `pending` run payment.
-
-*Blast radius, and why it is worse than a 409.* The transition is attempted
-**after** `adapter.create_payment` returned and `provider_payment_id` was
-assigned. `_dispatch_run_payments`' `except` then writes
-`status="failed", failure_reason="unexpected_error:HTTPException"`. So the
-processor has accepted the order and the row says the payment failed. Because
-`provider_payment_id` is populated, `classify_payment_failure` correctly returns
-`IN_DOUBT`, so `/retry-failed` won't double-send — but the webhook handler
-refuses to advance an already-terminal payment, and the reconciler only polls
-`submitted`/`processing`, so nothing ever corrects it. The money moved and no
-surface says so.
-
-**Recommended fix.** Re-check payability *before* the adapter call — the same
-place the credit-memo `net_amount_changed` guard sits, which is retry-safe by
-construction because no order exists yet — and fail the payment with a named
-reason rather than letting an invalid transition surface as
-`unexpected_error:*`. Drop `sent_to_erp` from the branch's status tuple in the
-same change: it is already excluded from `PAYABLE_INVOICE_STATUSES`, so naming
-it there only ever produced this raise. Consider also refusing an ERP push for
-an invoice holding a live payment, which closes the window rather than handling
-it.
+Guard: `tests/test_card_provider_resolution.py`.
 
 ---
+
+## ~~An invoice pushed to the ERP mid-run records a settled payment as `failed`~~ — FIXED 2026-08-21
+
+**Resolved** in `api/payments._execute_single_payment`, the way the diagnosis
+recommended: re-check payability *before* the adapter call rather than let an
+invalid transition surface after it.
+
+*The defect.* A run built while the invoice was `approved` could have
+`POST /api/invoices/{id}/send-to-erp` walk it to `sent_to_erp` before `/execute`.
+`sent_to_erp → payment_scheduled` is not in `VALID_TRANSITIONS`, and the
+transition ran **after** `adapter.create_payment` returned and
+`provider_payment_id` was assigned — so `validate_transition`'s 409 unwound into
+`_dispatch_run_payments`' generic `except`, recording
+`failed / unexpected_error:HTTPException` on a payment the processor had already
+accepted. Nothing corrected it: `classify_payment_failure` read the populated
+handle as `IN_DOUBT` (so `/retry-failed` refused), the webhook won't advance an
+already-terminal payment, and the reconciler only polls `submitted`/`processing`.
+
+*The fix.* The payability re-check sits beside the credit-memo
+`net_amount_changed` guard — before any order exists at the processor, hence
+retry-safe by construction. The payment fails with the named
+`invoice_not_payable:<status>` (added to `_RETRY_SAFE_FAILURE_PREFIXES`), and
+`/retry-failed`'s own payability gate keeps skipping the row until the ERP push
+completes and the invoice reaches the payable `posted_in_erp`.
+
+`sent_to_erp` is also gone from the three dispatch legs' transition branch — but
+not by deleting a literal: `api/payments.SCHEDULABLE_INVOICE_STATUSES` is now
+**derived** from `workflow_engine.VALID_TRANSITIONS`, so the branch can never
+again name a status the state machine refuses.
+
+Coverage: `backend/tests/test_payment_run_invoice_payability.py`. Doc:
+`backend/docs/payments.md` § The invoice's payability is re-checked before the
+adapter call.
 
 ## ~~`extraction_dispatch` / `erp_dispatch` run on a foreign event loop~~ — FIXED 2026-08-17
 

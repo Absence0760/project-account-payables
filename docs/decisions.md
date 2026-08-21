@@ -2129,3 +2129,71 @@ with whichever subsidiary happened to be selected. The run entity now derives
 from the plan's own scope — the selected entity for a scoped plan, the tenant's
 default for a consolidated one — matching what an entity-less
 `POST /api/payments/runs` already does.
+
+---
+
+## 56. The fixture-adapter fallback is gone from every remaining registry
+
+**Decided:** 2026-08-21 · `backend/app/services/{card_adapters,positive_pay_adapters,enrichment_adapters}/dispatcher.py`
+
+§29 removed "a named unknown provider resolves to `mock`" from payments, ERP and
+FX; §36 from sanctions. Three registries still had it, and in each the fixture is
+exactly the confident-wrong-answer §29 describes:
+
+| Family | What the fallback returned | What a typo'd config produced |
+|---|---|---|
+| cards | `create_card` → `success=True` + `mock_card_…` / `4242`; `get_card_details` → the PAN `4242424242424242`; `cancel_card` → `True` | every issuance "succeeded"; the run's card leg marked payments `completed` and invoices `payment_scheduled`; vendors were emailed reveal links to a fixture PAN |
+| positive pay | the `csv` formatter, under the requested `bank_format` | a CSV file the bank cannot parse, stored + audited + idempotency-slotted as the requested layout — so a fraud control the tenant believed was in force was not |
+| enrichment | fabricated firmographics (legal name / address / DUNS / employee count) with `matched=True` | an invented identity presented as a D&B lookup, one click from `POST .../apply` writing it onto a real supplier's *screened* `name` |
+
+Same rule, same shape: **no configured provider still means the default**
+(local-first, guard rail 7); a **named** one we have no adapter for raises. And,
+as §29 established, each caller decides what the refusal means — the card table
+is in `backend/docs/virtual-cards.md` § Provider resolution.
+
+One addition beyond §29's pattern: `get_card_adapter` now imports its own
+built-in adapters. A refusal is only trustworthy if every adapter has had a
+chance to register, and relying on each call site's `# noqa` import preamble made
+that a property of the caller rather than of the dispatcher.
+
+---
+
+## 57. The two billing meters are tenant tables; `assistant_usage` is not
+
+**Decided:** 2026-08-21 · `backend/app/services/extraction.py`, `backend/docs/database.md`
+
+`extraction_usage` and `card_rebates` read like control-plane data — they meter
+the platform's own billing, which is keyed by org — and three docstrings plus
+`docs/database.md` said they were. They are not, and never have been: neither is
+in `tenant_provisioning.CONTROL_TABLES`, no Alembic revision creates them, and
+`scripts/seed.py::create_control_tables` filters to the control set. They exist
+only where `provision_tenant` puts them, per tenant, which is also where
+`services/billing`'s `rollup_usage` reads them.
+
+`services/extraction.py` was written against the claim rather than the schema and
+committed the meter through a control-plane session. `to_regclass` is NULL there,
+so the INSERT raised `UndefinedTableError` *inside* `run_extraction`'s own `try` —
+its handler rolled the tenant transaction back, opened an `extraction_failed`
+exception and transitioned the invoice to `failed`. A successful extraction was
+recorded as a failure, and billing's primary meter stayed permanently zero.
+
+The meter now rides the tenant session and its existing commit, so it lands with
+the extraction result or not at all, and the `ctrl_db` parameter that existed
+solely for this write is removed rather than left available to a future caller.
+
+Rejected: adding the tables to `CONTROL_TABLES` with a control-plane migration.
+That direction additionally requires repointing `api/billing.get_subscription` at
+`control_db` and migrating every existing tenant's rows, and it would split the
+two meters across two databases for no gain — `rollup_usage` already reads them
+together, per tenant.
+
+`assistant_usage` was checked against the same question and is genuinely
+control-plane (it *is* in `CONTROL_TABLES`, present in `feohledger`, absent from
+tenants). The asymmetry is real, so it is written down here rather than left to
+be re-derived — and `docs/conversational-assistant.md` no longer cites
+`extraction_usage` as its precedent.
+
+**Guard:** `tests/test_extraction_usage_placement.py` asks Postgres where the
+table is, both ways round. The file it replaced asserted the broken placement in
+all eight of its tests, using an `AsyncMock` control session — so the INSERT was
+never executed against a real database, which is why this survived.
