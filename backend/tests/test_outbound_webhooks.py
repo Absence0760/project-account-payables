@@ -702,7 +702,7 @@ async def test_re_approval_of_the_same_invoice_queues_a_second_delivery(realdb, 
 
     Regression: `event_key` used to be the invoice id, so the second approval
     collided with the first on `uq_webhook_delivery_sub_event` and was dropped
-    on the `IntegrityError` branch — silently.
+    as a duplicate — silently.
     """
     from sqlalchemy import select
 
