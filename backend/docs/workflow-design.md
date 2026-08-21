@@ -137,6 +137,42 @@ gate. The malformed value is logged PII-free (a money threshold, not a secret)
 for an admin to correct. The payment-run CFO gate (`payments.cfo_approval_above`)
 enforces the same fail-closed discipline inline (see `payments.md`).
 
+**So does `max_invoice_amount`, and so do the auto-approve knobs.** The cap has
+its own named sibling, `approval_chain.max_amount_gate_applies` (both share one
+`_money_gate_applies` body, so the two can't drift), and
+`extraction.decide_auto_approve` reads `auto_approve_below` through
+`approval_chain.finite_money_threshold` and the confidence bar through its own
+`_confidence_threshold`. Every one of those sites previously coerced the raw
+config with a bare `Decimal(str(...))` or compared straight against it, so a
+non-numeric value **raised**:
+
+- out of `review._enforce_approval_thresholds` as an unhandled `InvalidOperation`
+  — a **500 on every approval** under that workflow, legitimate ones included,
+  with no path forward at all (unlike the CFO gate, where a CFO can still
+  approve past a fail-closed refusal);
+- out of the pure `decide_auto_approve`, which on the extraction path lands the
+  invoice in `failed` rather than surfacing as a refusal.
+
+Now: an unusable cap **refuses** the approval (422, naming the misconfiguration
+rather than formatting a value that would raise); an unusable
+`auto_approve_below` is simply not a floor, and an unusable
+`auto_approve_threshold` disables the confidence trigger — both directions that
+send the invoice to a human. `NaN`/`Infinity` count as unusable everywhere, for
+the reasons in `finite_money_threshold`'s docstring.
+
+**These values are also refused at the save boundary.** `steps_config` is JSONB
+and `POST /api/workflows/import` accepts it as a free-form dict — the one save
+path no Pydantic `Decimal | None` field constrains (create/update go through
+`WorkflowStepConfig`). `workflow_builder.validate_builder_steps` therefore now
+checks the canonical `approval` step's three money thresholds and each chain
+level's `min_amount` / `max_amount`, plus the `extraction` step's
+`auto_approve_threshold`, and returns a per-field 422. The runtime fail-closed
+behaviour above stays the backstop for definitions that predate this check or
+were edited directly in the database. Chain bounds matter here even though
+`resolve_applicable_levels` never raises on them: it reads an unparseable bound
+as *no bound*, silently widening the level to every amount and routing money
+past the tier that should have seen it.
+
 **Structuring guard**: both gates above compare against `invoice.amount` **plus** the same vendor's other invoice amounts over a trailing window (`services/structuring.py`, called from `review._enforce_approval_thresholds` on the human path and from `extraction.resolve_gate_aggregate` on the unattended one) — closing the "split one large payable into several under-threshold invoices with distinct invoice numbers" bypass (the exact-match duplicate check in `invoice_warnings.py` never fires on distinct numbers, and per-invoice thresholds never aggregated). Config lives alongside the other fraud-rule knobs on `Organization.settings.fraud_rules`: `structuring_enabled` (default `true`) and `structuring_window_days` (default `7`). Rejected/failed invoices don't count toward the aggregate; everything else does, including still-pending ones. The rejection/CFO-required message names the aggregate and the vendor's other recent spend when the single invoice alone would have passed.
 
 **The auto-approve path measures the same aggregate.** `extraction.decide_auto_approve`
@@ -173,6 +209,26 @@ Chain state is tracked in `WorkflowInstance.state_data["approval_levels"]`. Leve
 **Named-approver enforcement**: a non-empty `approver_ids` on the current level is a hard allow-list, enforced by `approval_chain.check_level_approver` before the approval is recorded — the endpoint's role-based RBAC gate (`require_permission(PERM_INVOICE_APPROVE)`, held by any `ap_manager`/`cfo`/`admin`) only confirms the actor holds an approving role, not that they are one of the named approvers, so this is a separate, additional check. An empty `approver_ids` list is unrestricted (any actor who cleared RBAC may approve, matching legacy behaviour). A named approver's active delegate (`User.delegate_to_id` / `delegate_until`) is also authorized. A non-authorized actor gets a 403 and the approval is not recorded.
 
 The single-level strategy `"specific"` applies the same named-approver check (`approver_ids`, or the deprecated single `approver_id`) without the multi-level chain machinery — useful when a step needs exactly one or a small fixed set of eligible people but no sequential levels.
+
+#### Escalation widens eligibility — it never narrows it
+
+A level may carry `escalation_hours` + `escalation_to_user_ids`. When it has sat
+at the head of the chain longer than `escalation_hours`, the
+`approval_escalation` sweep calls `approval_chain.apply_escalation`, which makes
+the escalation targets eligible and appends a PII-free record to the level's
+`escalations` list (the sweep also writes an `invoice.approval_escalated` audit
+row). The one invariant across every branch: **the set of people who may approve
+can only grow.**
+
+| Level shape | What escalation does |
+|---|---|
+| `parallel_mode: "any"`, non-empty `approver_ids` | Appends the targets, preserving the configured order — a new approver who can independently clear `required_approvals`. |
+| `parallel_mode: "all"`, non-empty `approver_ids` | **Substitutes** every not-yet-approved approver with the targets (already-signed-off approvers are kept). Appending would make a stuck level need *more* sign-offs than before — the opposite of unblocking (issue #128). |
+| **Empty `approver_ids` (unrestricted)** | **No-op, both modes.** `check_level_approver` reads an empty allow-list as "any RBAC-cleared actor may approve", so the targets are already eligible. Writing them in would turn `[]` into `[target…]` and 403 the entire AP team — the issue-#128 inversion arriving through the empty-list case. Such a level is never eligibility-blocked anyway: `any` mode counts distinct approvals without consulting `approver_ids`, and `all` mode over an empty list is satisfied by the first approval. |
+
+Escalation is idempotent — once a level has absorbed a target set, re-running is
+a no-op, so the sweep can run on a tight interval and across overlapping
+replicas.
 
 ### Segregation of Duties
 

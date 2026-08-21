@@ -20,6 +20,7 @@ from decimal import Decimal
 
 from sqlalchemy import select
 
+from app.models.entity import Entity
 from app.models.expense import Expense, ExpensePolicy
 from app.models.organization import Organization
 from app.models.workflow import AuditLog
@@ -537,6 +538,47 @@ async def test_rejected_report_expenses_can_be_re_reported(realdb):
     assert moved["total_amount"] == 100.0
 
 
+async def test_patch_cannot_attach_an_expense_to_a_terminal_report(realdb):
+    """All three attach paths gate on the TARGET still being a draft.
+
+    `POST /expense-reports/{id}/expenses` and `POST /api/expenses` with a
+    `report_id` both call `_require_draft_report`; the PATCH path only ran
+    `_require_report_unlocked`, which refuses the four locked-for-approval
+    states but not the terminal `rejected` / `cancelled` ones. So this was the
+    one attach that could still add a line to a report that can never be
+    resubmitted — the expense simply disappeared onto a dead row.
+
+    Detaching FROM a terminal report stays allowed; that is how its expenses
+    get re-reported (the test above).
+    """
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        rid, _ = await _make_report_with_expense(c, amount="100.00", receipt=True)
+        assert (await c.post(f"/api/expense-reports/{rid}/submit")).status_code == 200
+    async with realdb.client(key="a", role="ap_manager") as c:
+        assert (await c.post(f"/api/expense-reports/{rid}/reject")).status_code == 200
+
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        loose = (
+            await c.post("/api/expenses", json={"expense_date": "2026-06-02", "amount": "25.00"})
+        ).json()["id"]
+        refused = await c.patch(f"/api/expenses/{loose}", json={"report_id": rid})
+        assert refused.status_code == 409, refused.text
+
+        # The rejected report is untouched, and the loose expense is still free.
+        assert (await c.get(f"/api/expense-reports/{rid}")).json()["total_amount"] == 100.0
+        assert (await c.get(f"/api/expenses/{loose}")).json()["report_id"] is None
+
+        # …and it still attaches to a fresh draft report.
+        fresh = (
+            await c.post(
+                "/api/expense-reports", json={"report_number": f"R-{uuid.uuid4().hex[:8]}"}
+            )
+        ).json()["id"]
+        moved = await c.patch(f"/api/expenses/{loose}", json={"report_id": fresh})
+        assert moved.status_code == 200, moved.text
+        assert (await c.get(f"/api/expense-reports/{fresh}")).json()["total_amount"] == 25.0
+
+
 # ---------------------------------------------------------------------------
 # Threshold currency — the unit a policy's money thresholds are read in
 # ---------------------------------------------------------------------------
@@ -780,3 +822,170 @@ async def test_negative_mileage_is_refused_on_create_and_patch(realdb):
         # Zero is a legitimate value (a logged-but-distance-free line), not an error.
         zeroed = await c.patch(f"/api/expenses/{eid}", json={"mileage_miles": "0"})
         assert zeroed.status_code == 200, zeroed.text
+
+
+# ---------------------------------------------------------------------------
+# Entity scoping of the policy engine's inputs
+# ---------------------------------------------------------------------------
+
+
+async def _make_entity(realdb, *, name: str, slug: str) -> str:
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        entity = Entity(
+            organization_id=realdb.info("a").org_id, name=name, slug=slug, is_default=False
+        )
+        s.add(entity)
+        await s.commit()
+        return str(entity.id)
+
+
+async def _default_entity_id(realdb) -> str:
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        return str(
+            (
+                await s.execute(
+                    select(Entity.id).where(
+                        Entity.organization_id == realdb.info("a").org_id,
+                        Entity.is_default.is_(True),
+                    )
+                )
+            ).scalar_one()
+        )
+
+
+async def test_a_subsidiarys_policy_does_not_govern_another_entitys_expense(realdb):
+    """``ExpensePolicy`` is entity-scoped everywhere except where it mattered.
+
+    The CRUD router lists and stamps policies per-entity, but the engine's own
+    read (`_active_policies`) had no scope at all — so subsidiary B's
+    reimbursement table judged subsidiary A's expenses. `receipt_required` is a
+    BLOCKING code, so B's ``requires_receipt_above: 1.00`` flagged, and then
+    refused submission of, every receipt-less expense in the whole tenant; the
+    mirror case is worse — B's looser limits silently sanctioning spend A never
+    approved. Same class as the entity scoping in `services/vendor_matching`.
+    """
+    entity_b = await _make_entity(realdb, name="Sub B", slug=f"sub-b-{uuid.uuid4().hex[:6]}")
+    entity_a = await _default_entity_id(realdb)
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        created = await c.post(
+            "/api/expense-policies",
+            json={"name": "B receipts", "requires_receipt_above": "1.00"},
+            headers={"X-Entity-ID": entity_b},
+        )
+        assert created.status_code == 201, created.text
+
+        # A receipt-less expense under entity A: B's rule must not reach it.
+        in_a = await c.post(
+            "/api/expenses",
+            json={"expense_date": "2026-06-01", "amount": "500.00", "currency": "USD"},
+            headers={"X-Entity-ID": entity_a},
+        )
+        assert in_a.status_code == 201, in_a.text
+        assert not in_a.json()["policy_violations"], in_a.json()["policy_violations"]
+
+        # The same expense under entity B DOES hit it — the rule still works.
+        in_b = await c.post(
+            "/api/expenses",
+            json={"expense_date": "2026-06-01", "amount": "500.00", "currency": "USD"},
+            headers={"X-Entity-ID": entity_b},
+        )
+        assert in_b.status_code == 201, in_b.text
+        assert {v["code"] for v in (in_b.json()["policy_violations"] or [])} == {"receipt_required"}
+
+        # …and submit gates on the OWNING entity's rules, not the tenant's union.
+        rid = (
+            await c.post(
+                "/api/expense-reports",
+                json={"report_number": f"R-{uuid.uuid4().hex[:8]}", "currency": "USD"},
+                headers={"X-Entity-ID": entity_a},
+            )
+        ).json()["id"]
+        attached = await c.post(
+            f"/api/expense-reports/{rid}/expenses",
+            json={"expense_ids": [in_a.json()["id"]]},
+            headers={"X-Entity-ID": entity_a},
+        )
+        assert attached.status_code == 200, attached.text
+        submitted = await c.post(
+            f"/api/expense-reports/{rid}/submit", headers={"X-Entity-ID": entity_a}
+        )
+        assert submitted.status_code == 200, submitted.text
+
+
+async def test_a_subsidiarys_preapproval_does_not_cover_another_entitys_expense(realdb):
+    """A pre-approval is a specific authorization, not an ambient one.
+
+    ``_approved_preapproval_amount`` matched on status + currency + (report OR
+    category) with no entity scope, so one subsidiary's approved request cleared
+    another subsidiary's BLOCKING `preapproval_required` — the fail-OPEN
+    direction, which is why this read scopes strictly (an unstamped row is
+    excluded and the violation stays raised).
+    """
+    entity_b = await _make_entity(realdb, name="Sub C", slug=f"sub-c-{uuid.uuid4().hex[:6]}")
+    entity_a = await _default_entity_id(realdb)
+    category = f"cat-{uuid.uuid4().hex[:6]}"
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        policy = await c.post(
+            "/api/expense-policies",
+            json={
+                "name": "A preapproval",
+                "category": category,
+                "requires_preapproval_above": "100.00",
+            },
+            headers={"X-Entity-ID": entity_a},
+        )
+        assert policy.status_code == 201, policy.text
+
+    # An approved pre-approval raised (and decided) under entity B.
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        pre = await c.post(
+            "/api/expense-preapprovals",
+            json={
+                "title": "B tooling",
+                "estimated_amount": "5000.00",
+                "currency": "USD",
+                "category": category,
+            },
+            headers={"X-Entity-ID": entity_b},
+        )
+        assert pre.status_code == 201, pre.text
+    async with realdb.client(key="a", role="ap_manager") as c:
+        assert (
+            await c.post(f"/api/expense-preapprovals/{pre.json()['id']}/approve")
+        ).status_code == 200
+
+        # An entity-A expense over the threshold is NOT covered by B's approval.
+        in_a = await c.post(
+            "/api/expenses",
+            json={
+                "expense_date": "2026-06-01",
+                "amount": "500.00",
+                "currency": "USD",
+                "category": category,
+            },
+            headers={"X-Entity-ID": entity_a},
+        )
+        assert in_a.status_code == 201, in_a.text
+        assert "preapproval_required" in {
+            v["code"] for v in (in_a.json()["policy_violations"] or [])
+        }
+
+        # The same expense under entity B IS covered.
+        in_b = await c.post(
+            "/api/expenses",
+            json={
+                "expense_date": "2026-06-01",
+                "amount": "500.00",
+                "currency": "USD",
+                "category": category,
+            },
+            headers={"X-Entity-ID": entity_b},
+        )
+        assert in_b.status_code == 201, in_b.text
+        assert "preapproval_required" not in {
+            v["code"] for v in (in_b.json()["policy_violations"] or [])
+        }

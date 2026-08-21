@@ -145,39 +145,90 @@ def _to_decimal(value) -> Decimal | None:
         return None
 
 
-def cfo_gate_applies(threshold_raw, amount: Decimal) -> bool:
-    """Does the CFO-approval money gate apply to an invoice/report of ``amount``?
+def finite_money_threshold(value) -> Decimal | None:
+    """The usable Decimal a configured money threshold denotes, or ``None``.
 
-    Returns ``True`` when the amount must carry CFO sign-off. This is the single
-    fail-CLOSED decision shared by every CFO-threshold site (human approval, the
-    expense-report approval gate, and the auto-approve revoke check):
+    ``None`` means "there is no threshold here to compare against" — the value
+    was unset, unparseable (a settings typo, a hand-edited / imported
+    ``steps_config``), or non-finite. A caller that gates on the result must
+    decide what "no usable threshold" means for ITS control and fail in the safe
+    direction; this helper never raises and never guesses.
 
-    - threshold explicitly unset (``None``)  → ``False`` (no gate configured).
-    - threshold parses and ``amount > threshold`` → ``True``.
-    - threshold is present but **unparseable** (a settings typo, or a value an
-      insider tampered to defeat the control) → ``True``. A configured-but-
-      malformed CFO gate must DEMAND sign-off, never silently skip itself — the
-      only safe direction for a fraud control. The malformed value is logged
-      PII-free (it is a money threshold, not a secret / PII) so an admin can fix
-      it; we never raise, so one bad settings write can't brick the whole
-      approval queue with a 500.
+    `NaN` and `Infinity` are lumped in with unparseable deliberately: `NaN`
+    raises on an ordering comparison (a 500 out of whatever gate touched it) and
+    `Infinity` makes ``amount > threshold`` silently False — a control that
+    quietly stops existing. Neither is a threshold anyone meant to configure.
+    """
+    threshold = _to_decimal(value)
+    if threshold is None or not threshold.is_finite():
+        return None
+    return threshold
+
+
+def _money_gate_applies(threshold_raw, amount: Decimal, *, gate: str, consequence: str) -> bool:
+    """Shared fail-CLOSED body behind ``cfo_gate_applies`` / ``max_amount_gate_applies``.
+
+    - threshold explicitly unset (``None``) → ``False`` (no gate configured).
+    - threshold usable and ``amount > threshold`` → ``True``.
+    - threshold present but unusable (see ``finite_money_threshold``) → ``True``.
+      A configured-but-malformed money control must fire, never silently skip
+      itself — the only safe direction. The malformed value is logged PII-free
+      (it is a money threshold, not a secret) so an admin can fix it, and we
+      never raise, so one bad settings write can't brick the approval queue with
+      a 500.
 
     Amount comparison is exact-Decimal (money is never float).
     """
     if threshold_raw is None:
         return False
-    threshold = _to_decimal(threshold_raw)
-    # A non-finite threshold (`NaN` raises on comparison → a 500; `Infinity`
-    # would silently make `amount > threshold` always False → a SKIPPED gate) is
-    # as malformed as an unparseable string — treat it the same, fail-closed.
-    if threshold is None or not threshold.is_finite():
+    threshold = finite_money_threshold(threshold_raw)
+    if threshold is None:
         logger.error(
-            "auto-approval money threshold is unparseable (%r); requiring human "
-            "(CFO) approval (fail-closed)",
+            "%s money threshold is unparseable (%r); %s (fail-closed)",
+            gate,
             threshold_raw,
+            consequence,
         )
         return True
     return amount > threshold
+
+
+def cfo_gate_applies(threshold_raw, amount: Decimal) -> bool:
+    """Does the CFO-approval money gate apply to an invoice/report of ``amount``?
+
+    Returns ``True`` when the amount must carry CFO sign-off. The single
+    fail-CLOSED decision shared by every CFO-threshold site (human approval, the
+    expense-report approval gate, the auto-approve revoke check, and the
+    exception-agent resolvers). See ``_money_gate_applies`` for the contract.
+    """
+    return _money_gate_applies(
+        threshold_raw,
+        amount,
+        gate="auto-approval",
+        consequence="requiring human (CFO) approval",
+    )
+
+
+def max_amount_gate_applies(threshold_raw, amount: Decimal) -> bool:
+    """Does the hard ``max_invoice_amount`` cap reject an amount of ``amount``?
+
+    The cap's sibling of ``cfo_gate_applies``, with the identical fail-CLOSED
+    contract — and it exists because the two call sites that enforce this cap
+    (``review._enforce_approval_thresholds`` and
+    ``extraction.decide_auto_approve``) coerced the raw config value with a bare
+    ``Decimal(str(...))``. A non-numeric ``max_invoice_amount`` — which
+    ``POST /api/workflows/import`` accepts, since it takes ``steps_config`` as a
+    free-form dict that no Pydantic ``Decimal`` field constrains — therefore
+    raised ``InvalidOperation`` out of the gate: a 500 on EVERY approval for that
+    workflow (the queue bricked), and invoices dropped to ``failed`` on the
+    extraction path. A misconfigured control must refuse loudly, not crash.
+    """
+    return _money_gate_applies(
+        threshold_raw,
+        amount,
+        gate="max-invoice-amount",
+        consequence="refusing the approval",
+    )
 
 
 def resolve_applicable_levels(
@@ -420,6 +471,18 @@ def apply_escalation(instance: WorkflowInstance, *, now: datetime | None = None)
     level's requirement shrinks to "already-approved + escalation targets"
     rather than growing to "everyone, plus the escalation targets too".
 
+    An **unrestricted** level (empty `approver_ids`) is a no-op in BOTH modes.
+    `check_level_approver` treats an empty allow-list as "any actor who cleared
+    the endpoint's RBAC gate may approve", so the escalation targets are
+    already eligible and there is nothing to add. Writing them in would turn
+    `[]` into `[target…]` — *narrowing* an open level to those users alone and
+    403-ing the entire AP team that could approve it a moment earlier. That is
+    the same inversion issue #128 fixed for `all` mode, arriving through the
+    empty-list case instead; an escalation must never shrink who may approve.
+    (Such a level is never eligibility-blocked in the first place: `any` mode
+    counts distinct approvals without consulting `approver_ids`, and `all` mode
+    over an empty list is satisfied by the first approval.)
+
     Idempotent — once a level is escalated to a given user set, re-running
     is a no-op."""
     now = now or datetime.now(UTC)
@@ -453,7 +516,13 @@ def apply_escalation(instance: WorkflowInstance, *, now: datetime | None = None)
     if age < timedelta(hours=hours):
         return False
 
-    existing = set(level.get("approver_ids", []))
+    approver_ids = level.get("approver_ids") or []
+    if not approver_ids:
+        # Unrestricted level — see the docstring. Everyone the RBAC gate admits
+        # can already approve it, so escalating can only take eligibility away.
+        return False
+
+    existing = set(approver_ids)
     new_targets = [uid for uid in targets if uid not in existing]
     if not new_targets:
         return False  # already escalated to these users — idempotent
@@ -468,7 +537,10 @@ def apply_escalation(instance: WorkflowInstance, *, now: datetime | None = None)
         kept = [uid for uid in level.get("approver_ids", []) if uid in approved_ids]
         level["approver_ids"] = kept + [uid for uid in new_targets if uid not in kept]
     else:
-        level["approver_ids"] = list(existing | set(new_targets))
+        # Append, preserving the configured order. `list(set | set)` produced a
+        # PYTHONHASHSEED-dependent ordering, so the same escalation rewrote the
+        # JSONB differently run to run — noise in an audit-visible column.
+        level["approver_ids"] = approver_ids + new_targets
     level.setdefault("escalations", []).append(
         {
             "at": now.isoformat(),

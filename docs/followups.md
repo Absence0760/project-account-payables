@@ -932,6 +932,112 @@ rest from this list.
 Positive Pay, or discounting.
 
 
+### Surfaced by the round-15 bug hunt
+
+Each of these was found while fixing something else, was judged out of the
+fixing agent's file scope, or could not be proven reachable — so it was reported
+rather than patched. None is a diagnosed defect (those go to
+[known-issues.md](known-issues.md), which is currently empty).
+
+- **Vendor enrichment is not entity-scoped.** `POST /api/enrichment/vendors/{id}/enrich`
+  and `.../apply` take `get_entity_id` purely as a tenant chokepoint
+  (`# noqa: ARG001`) and never scope the `Vendor` lookup, so in a multi-entity
+  tenant a steward on subsidiary A can enrich and apply firmographics onto
+  subsidiary B's vendor — including `name`, which the apply path re-screens.
+  Same-tenant only, so no cross-tenant exposure. **Durable fix:** wrap both
+  lookups in `apply_entity_scope(select(Vendor)…, include_shared=True)`, matching
+  `vendor_matching._candidate_query`, and add an entity-isolation case to
+  `tests/test_enrichment_apply.py`. **Trigger:** the next change touching
+  `app/api/enrichment.py`, or the next multi-entity audit pass.
+
+- **GL account codes have no uniqueness, and the ERP sync upsert ignores entity.**
+  `POST /api/gl-accounts` performs no duplicate check and `gl_accounts` carries no
+  unique constraint on `(organization_id, code)`, so the same code can be created
+  twice; and `POST /api/gl-accounts/sync-erp` matches existing accounts on
+  `(code, organization_id)` **without** the entity filter, so in a multi-entity
+  tenant a sync run while entity B is selected updates entity A's row rather than
+  creating B's — contradicting the route's own docstring ("same rule as manual
+  create"). **Durable fix:** make the sync upsert key entity-aware (shared ∪
+  selected entity, mirroring `gl_recode._ActiveChart.is_valid_for`) plus a partial
+  unique index over `(organization_id, entity_id, code)` in a fanned-out
+  migration. **Trigger:** the next change to the chart-of-accounts write path, or
+  the first multi-entity tenant running an ERP chart sync per subsidiary.
+
+- **Corporate-card unmatch leaves a stale `Expense.payment_method`.**
+  `api/expense_cards.py::unmatch_card_transaction` clears both FK legs but never
+  restores the payment method `_link_both_sides` stamped, so an expense
+  mis-matched to a card reads `corporate_card` / `virtual_card` forever. Resetting
+  to `out_of_pocket` is *not* the fix — an expense can legitimately be card-marked
+  before its feed row is imported, so that would be a different wrong guess.
+  **Durable fix:** record the pre-match value (a nullable
+  `payment_method_before_match` column, migration) and restore it on unmatch.
+  Fold in `create_expense_from_card`, which mints an expense without calling
+  `_refresh_policy_violations`, so a card-derived line carries no policy flags
+  until its next PATCH. **Trigger:** the next change that makes
+  `Expense.payment_method` load-bearing beyond `services/report_builder`
+  reporting — e.g. a reimbursement run that skips card-funded lines.
+
+- **Exception-agent resolvers call the max-amount cap by the CFO gate's name.**
+  `services/exception_agents/resolvers/{amount_mismatch,gl_coding,missing_po,multi_po_split}.py`
+  evaluate `max_invoice_amount` with `cfo_gate_applies(max_amount, amount)`. The
+  contract is identical and fail-closed, so behaviour is correct — but on a
+  malformed threshold it logs *"requiring human (CFO) approval"* for a **max cap**
+  trip, pointing an operator at the wrong setting. **Durable fix:** swap the four
+  call sites to `approval_chain.max_amount_gate_applies` (added 2026-08-21, same
+  shared `_money_gate_applies` body). **Trigger:** the next change touching those
+  resolvers.
+
+- **e2e specs still hand-roll invoice teardown.** `invoices` is referenced by 16
+  foreign keys and none cascade, so a bare `DELETE FROM invoices WHERE ...` only
+  works while the invoice happens to have no children. Round 15 added
+  `tests-e2e/fixtures/helpers.ts::deleteInvoicesWhere`, which owns the full child
+  graph, and moved the one spec that broke (`upload-refetch-failure`, which
+  started failing teardown the moment extraction began succeeding and writing
+  line items). About 19 other specs still delete invoices directly. They pass
+  today because the invoices they create never acquire the children in question —
+  which is exactly the implicit dependency that just bit. **Durable fix:** move
+  the remaining call sites onto `deleteInvoicesWhere`. **Trigger:** the next e2e
+  teardown failure on a foreign-key violation, or the next spec added that runs a
+  real extraction.
+
+- **The card family's local-first story is weaker than its siblings'.**
+  `card_adapters/dispatcher.REGION_DEFAULTS` resolves an *unset* provider to
+  `lithic`, not `mock`, and `scripts/seed.py` seeds every demo tenant with
+  `cards.enabled: true` and no provider — so a fresh clone's
+  `POST /api/cards/generate` reaches for a real issuer, which guard rail 7 says
+  it should not. Pre-existing and untouched by the round-15 refusal work (that
+  only fires on a *named* unknown provider, and deliberately left the unset path
+  alone). **Durable fix:** default an unset provider to `mock` like the other two
+  registries, and make `REGION_DEFAULTS` a preference applied only once a real
+  provider is configured — or seed the demo tenants with an explicit
+  `cards.provider: "mock"`. **Trigger:** the next change to card provider
+  resolution, or the first contributor surprised by a fresh clone calling out.
+
+- **A same-currency expense report can be submitted with a NULL reporting total.**
+  Round 15 taught the *line*-level lock (`_lock_line_conversion`) to resolve the
+  currency pair before demanding an FX adapter, so a same-currency line locks at
+  rate 1 for a tenant whose `settings.fx.provider` names no registered adapter.
+  The *report*-level lock was not given the same treatment, so such a tenant
+  submits with `reporting_amount` NULL and `reporting_total: null` in the audit
+  row. **Not a control failure** — `expense_currency.report_amount_for_gate`
+  falls back to `total_amount` when the report currency equals the reporting
+  currency, so the CFO gate still evaluates the right figure — it is a
+  completeness gap in the stored snapshot. **Durable fix:** mirror the
+  pair-first check at the report level. **Trigger:** the next change to expense
+  report submission, or the first report of a null `reporting_total`.
+
+- **`GET /api/experiments/{id}/results` would 500 on a non-object `audit_log.details`.**
+  `api/workflow_experiments._experiment_metric_rows` does
+  `dec["details"].get("changes")` after `details = details or {}`, so a `details`
+  that is a list or scalar raises `AttributeError` and loses the whole readout.
+  **Deliberately not fixed:** the raising expression was proven, but no real write
+  path can put a non-dict there — every writer passes a dict — and manufacturing a
+  fix for an unreachable state is how speculative complexity gets in. It is the
+  same *direct-DB-tamper* shape `services/approval_signature.check_approval_row`
+  already absorbs by counting the row rather than failing the period. **Durable
+  fix:** treat a non-dict `details` as "no changes". **Trigger:** the next change
+  to the experiment results readout, or the first report of a 500 there.
+
 ## (a) Blocked on external credentials, accounts, or hardware
 
 None of these are startable from the editor. They are listed so they don't read

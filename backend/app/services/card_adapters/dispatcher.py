@@ -6,6 +6,41 @@ from app.services.card_adapters.base import CardAdapter
 
 _ADAPTER_REGISTRY: dict[str, type[CardAdapter]] = {}
 
+# How much of an admin-supplied provider name may be echoed back in an error.
+# The column it comes from is `String(50)`; bounding it keeps an absurd
+# settings value out of a log line or an HTTP body.
+_PROVIDER_NAME_ECHO_LIMIT = 50
+
+
+class UnknownCardProviderError(ValueError):
+    """`settings.cards.provider` names an issuer we have no adapter for.
+
+    Raised instead of silently substituting `mock`, whose `create_card` returns
+    `success=True` with a synthetic `mock_card_…` id and `last_four="4242"` and
+    whose `get_card_details` hands back the fixture PAN `4242424242424242`. A
+    single typo in an admin-entered provider name therefore made every issuance
+    "succeed": cards landed with `card_provider="mock"`, the payment-run card
+    leg marked each payment `completed` and each invoice `payment_scheduled`,
+    and vendors were emailed reveal links resolving to a fixture PAN — no money
+    moved and nothing failed.
+
+    This is `decisions.md` §29 applied to the one dispatcher family it missed
+    (§36 did the same for sanctions). An *unset* provider still resolves via
+    `REGION_DEFAULTS` — that is the local-first default and a normal state.
+    Callers on the money path turn this into a refusal; best-effort callers
+    (upstream cancel, vendor PAN reveal) degrade and record the reason.
+    """
+
+    def __init__(self, provider: str):
+        # `provider` is admin-supplied config, not PII — but bound it anyway so
+        # an oversized value can't bloat a log line or a response body.
+        self.provider = str(provider)[:_PROVIDER_NAME_ECHO_LIMIT]
+        super().__init__(
+            f"No card adapter registered for provider '{self.provider}'. "
+            f"Registered providers: {', '.join(list_available_providers())}."
+        )
+
+
 # Default provider per region
 REGION_DEFAULTS: dict[str, str] = {
     "US": "lithic",
@@ -81,8 +116,22 @@ def get_card_adapter(card_config: dict) -> CardAdapter:
             ...provider-specific fields...
         }
 
-    If provider is not specified, auto-select based on region.
+    **No provider → the region default** (unchanged): that is the local-first
+    default, and an org that has never named an issuer is a normal state.
+
+    **A configured provider we have no adapter for →
+    ``UnknownCardProviderError``.** This used to fall back to ``mock``, which is
+    not an inert stub — see the exception's docstring for what a single typo in
+    ``settings.cards.provider`` bought. Same call `decisions.md` §29 made for
+    the payment / ERP / FX dispatchers and §36 for sanctions.
     """
+    # Make the registry authoritative regardless of what the caller imported:
+    # the refusal below is only trustworthy if every built-in adapter has had a
+    # chance to register itself. Mirrors `get_enrichment_adapter`.
+    import app.services.card_adapters.lithic  # noqa: F401
+    import app.services.card_adapters.mock_adapter  # noqa: F401
+    import app.services.card_adapters.nium  # noqa: F401
+
     provider = card_config.get("provider")
     region = card_config.get("region", "US")
 
@@ -90,10 +139,8 @@ def get_card_adapter(card_config: dict) -> CardAdapter:
         provider = REGION_DEFAULTS.get(region, "nium")
 
     adapter_cls = _ADAPTER_REGISTRY.get(provider)
-    if not adapter_cls:
-        adapter_cls = _ADAPTER_REGISTRY.get("mock")
-        if not adapter_cls:
-            raise ValueError(f"No card adapter registered for '{provider}' and no mock fallback")
+    if adapter_cls is None:
+        raise UnknownCardProviderError(provider)
 
     return adapter_cls(card_config)
 

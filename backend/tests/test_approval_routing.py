@@ -347,6 +347,101 @@ def test_apply_escalation_skips_levels_without_config():
     assert apply_escalation(inst) is False
 
 
+def test_apply_escalation_appends_in_configured_order():
+    """The `any` branch used to spell the union as `list(set | set)`, whose
+    iteration order depends on PYTHONHASHSEED — so the same escalation rewrote
+    an audit-visible JSONB column differently run to run."""
+    from app.services.approval_chain import apply_escalation, init_chain_state
+
+    inst = _instance()
+    init_chain_state(
+        inst,
+        [
+            {
+                "name": "L",
+                "approver_ids": ["a", "b"],
+                "escalation_hours": 4,
+                "escalation_to_user_ids": ["esc-1", "esc-2"],
+            }
+        ],
+    )
+    levels = inst.state_data["approval_levels"]["levels"]
+    levels[0]["entered_at"] = (datetime.now(UTC) - timedelta(hours=5)).isoformat()
+    inst.state_data = inst.state_data
+
+    assert apply_escalation(inst) is True
+    after = inst.state_data["approval_levels"]["levels"][0]
+    assert after["approver_ids"] == ["a", "b", "esc-1", "esc-2"]
+
+
+# ---------------------------------------------------------------------------
+# An UNRESTRICTED level (empty `approver_ids`) must not be escalated at all.
+# `check_level_approver` reads an empty allow-list as "any RBAC-cleared actor
+# may approve", so writing the escalation targets in NARROWS an open level to
+# those users alone — 403-ing everyone who could approve it a moment earlier.
+# Same inversion as issue #128, arriving through the empty-list case.
+# ---------------------------------------------------------------------------
+
+
+def _overdue_unrestricted_instance(parallel_mode: str):
+    from app.services.approval_chain import init_chain_state
+
+    inst = _instance()
+    init_chain_state(
+        inst,
+        [
+            {
+                "name": "Any manager",
+                "approver_ids": [],  # unrestricted
+                "parallel_mode": parallel_mode,
+                "escalation_hours": 4,
+                "escalation_to_user_ids": ["esc-1"],
+            }
+        ],
+    )
+    levels = inst.state_data["approval_levels"]["levels"]
+    levels[0]["entered_at"] = (datetime.now(UTC) - timedelta(hours=5)).isoformat()
+    inst.state_data = inst.state_data
+    return inst
+
+
+def test_apply_escalation_leaves_an_unrestricted_any_level_open():
+    from app.services.approval_chain import apply_escalation
+
+    inst = _overdue_unrestricted_instance("any")
+    assert apply_escalation(inst) is False
+    after = inst.state_data["approval_levels"]["levels"][0]
+    # Still unrestricted — nobody lost the ability to approve.
+    assert after["approver_ids"] == []
+    assert after["escalations"] == []
+
+
+def test_apply_escalation_leaves_an_unrestricted_all_level_open():
+    from app.services.approval_chain import apply_escalation
+
+    inst = _overdue_unrestricted_instance("all")
+    assert apply_escalation(inst) is False
+    assert inst.state_data["approval_levels"]["levels"][0]["approver_ids"] == []
+
+
+async def test_escalating_an_unrestricted_level_never_locks_out_an_eligible_approver():
+    """End-to-end on the gate the escalation feeds: before the sweep any actor
+    passes `check_level_approver`; after it, the same actor must still pass."""
+    from app.services.approval_chain import apply_escalation, check_level_approver
+
+    inst = _overdue_unrestricted_instance("any")
+    actor = uuid.uuid4()
+
+    level = inst.state_data["approval_levels"]["levels"][0]
+    await check_level_approver(level.get("approver_ids", []), actor)  # no raise
+
+    apply_escalation(inst)
+
+    level = inst.state_data["approval_levels"]["levels"][0]
+    # Would raise HTTPException(403) if the escalation had narrowed the level.
+    await check_level_approver(level.get("approver_ids", []), actor)
+
+
 # ---------------------------------------------------------------------------
 # 'all' mode escalation must SUBSTITUTE the stuck approver(s), not append on
 # top of the requirement (issue #128) — appending makes an 'all' level need

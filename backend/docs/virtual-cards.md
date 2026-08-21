@@ -204,6 +204,47 @@ The payment run UI should:
 
 ## Card Provider Integration
 
+### Provider resolution — a named unknown provider is refused, never `mock`
+
+`card_adapters/dispatcher.get_card_adapter` resolves a **missing**
+`settings.cards.provider` through `REGION_DEFAULTS` (the local-first default; an
+org that has never named an issuer is a normal state) and raises
+`UnknownCardProviderError` for a **named** provider it has no adapter for.
+
+It used to fall back to `mock`, and `mock` is not an inert stub:
+
+| `MockCardAdapter` method | What it returns |
+|---|---|
+| `create_card` | `success=True`, a synthetic `mock_card_…` id, `last_four="4242"` |
+| `get_card_details` | the fixture PAN `4242424242424242` |
+| `cancel_card` | `True`, unconditionally |
+
+So one typo in an admin-entered provider name (a BYOK tenant writing
+`"marqeta"`) made every issuance "succeed": `VirtualCard` rows landed with
+`card_provider="mock"`, the payment-run card leg marked each payment `completed`
+and each invoice `payment_scheduled`, `POST /api/cards/generate` reported cards
+minted, and vendors were emailed single-use reveal links resolving to a fixture
+PAN. No money moved and nothing failed. This is the one dispatcher family
+`decisions.md` §29 missed (§36 did the same for sanctions).
+
+Because a dispatcher cannot know whether its caller is moving money or drawing a
+screen, **each caller decides what the refusal means**:
+
+| Call site | On refusal |
+|---|---|
+| `card_issuance.issue_card_for_invoice` (the batch endpoint AND the payment-run card leg) | `CardIssueResult(success=False, failure_reason="card_provider_not_configured")`. No provider call is made, so no card exists anywhere — the `_not_configured` suffix puts it in `payment_runs`' existing "per-adapter pre-flight refusal" bucket, i.e. `RETRY_SAFE`. The reason names the *condition*, never the admin's raw settings value: every AP user reads `failure_reason` while only an admin owns the setting (same split as `fx_provider_unsupported`). |
+| `POST /api/cards/generate` | 409 up front, naming the bad value and the registered alternatives. Per-invoice refusal alone would report `total: 0`, indistinguishable from "nothing was eligible" — which is how the misconfiguration stayed invisible. |
+| `GET /api/cards/{id}/details` | 409 — the caller must never receive the fixture PAN believing it came from a real issuer. |
+| `POST /api/cards/{id}/cancel` | 409, and the row stays `active`. `mock.cancel_card` returns `True`, so the fallback marked the row cancelled while the real card stayed live and chargeable — the exact direction this endpoint's provider-first ordering exists to prevent. |
+| `card_issuance.cancel_card_at_provider` (payment void) | `card_provider_not_configured`, distinct from `cards_not_configured` (cards switched off). Best-effort like every other outcome here: recorded on the `payment.voided` audit row, never raised, and never a claimed cancel. |
+| `GET /portal/cards/{token}` (vendor reveal) | The PII-free degraded body (`pan`/`cvv` `None` + a warning), same as a provider outage. The single-use token stays spent — a link that survives a failed reveal is indistinguishable from a twice-revealable one. |
+
+The dispatcher imports the three built-in adapter modules itself, so the refusal
+does not depend on each call site remembering its
+`import app.services.card_adapters.lithic  # noqa` preamble.
+
+Guard: `tests/test_card_provider_resolution.py`.
+
 ### Stripe Issuing (Alternative)
 
 **Why**: Best documentation, good if you already use Stripe. However, Stripe does not share interchange by default — requires negotiation at scale.

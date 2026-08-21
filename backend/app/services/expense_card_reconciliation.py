@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.expense import CorporateCardTransaction, Expense
@@ -78,9 +78,15 @@ async def suggest_matches(
     currency-scoped (CFO gate → reporting currency, policy thresholds →
     ``threshold_currency``, pre-approval cover → currency-matched SQL).
     """
+    # Compare the codes CASE-INSENSITIVELY. `/match`'s own guard already
+    # uppercases both sides, and the card CSV importer uppercases on write, so a
+    # legacy lowercase `usd` expense was excluded from the suggestions for a
+    # transaction it exactly matched while `/match` would happily link it — the
+    # candidate query and the control it stands in for disagreeing about the
+    # same pair.
     base = apply_entity_scope(select(Expense), Expense, entity_id).where(
         Expense.amount == txn.amount,
-        Expense.currency == txn.currency,
+        func.upper(Expense.currency) == (txn.currency or "").strip().upper(),
         Expense.card_transaction_id.is_(None),
     )
     rows = (await db.execute(base)).scalars().all()

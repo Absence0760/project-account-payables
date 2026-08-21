@@ -62,6 +62,7 @@ from app.tenant import (
     get_write_entity_id,
 )
 from app.utils.dates import utc_today
+from app.utils.http import content_disposition_attachment
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -365,7 +366,13 @@ async def export_report(
 
     brand = get_brand_context(org.settings if org else None)
     generated_at = datetime.now(UTC)
-    safe_name = row.name.replace(" ", "_").replace("/", "_") or "report"
+    # The report name is user-chosen free text, so it never goes raw into a
+    # header — `content_disposition_attachment` builds the RFC 6266 pair (an
+    # ASCII-sanitized `filename=` plus a percent-encoded UTF-8 `filename*=`).
+    # Interpolating it directly used to 500 on any non-latin-1 name (Starlette
+    # latin-1-encodes header values) and a name containing `"` broke out of the
+    # quoted-string form so browsers saved the file under a truncated name.
+    safe_name = row.name.replace(" ", "_") or "report"
 
     if format == "pdf":
         from app.services.analytics_report_pdf import (
@@ -388,7 +395,7 @@ async def export_report(
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            headers={"Content-Disposition": content_disposition_attachment(filename)},
         )
 
     # CSV: brand provenance comment block, then the data grid, then (when
@@ -414,5 +421,5 @@ async def export_report(
     return Response(
         content=branded_csv,
         media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": content_disposition_attachment(filename)},
     )

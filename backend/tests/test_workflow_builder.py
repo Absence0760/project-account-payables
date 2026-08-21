@@ -565,3 +565,120 @@ async def test_email_step_failure_detail_omits_recipient_address():
     assert "vendor-secret@example.com" not in result["detail"]
     assert "example.com" not in result["detail"]
     assert "RuntimeError" in result["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Canonical-step numbers that gate money. `validate_builder_steps` used to skip
+# every canonical step outright ("no builder config to check"), so the ONE save
+# path that takes `steps_config` free-form — `POST /api/workflows/import` —
+# persisted a non-numeric `max_invoice_amount` / `require_cfo_above` /
+# `auto_approve_below`, which then raised `InvalidOperation` out of the approval
+# gate: a 500 on every approval under that workflow.
+# ---------------------------------------------------------------------------
+
+
+def _approval_step(config: dict) -> list[dict]:
+    return [{"number": 1, "type": "approval", "name": "Approval", "config": config}]
+
+
+@pytest.mark.parametrize("bad", ["abc", "10,000", "5000 USD", "NaN", "Infinity", True])
+def test_validate_rejects_a_non_numeric_approval_threshold(bad):
+    from app.services.workflow_builder import validate_builder_steps
+
+    for field in ("auto_approve_below", "require_cfo_above", "max_invoice_amount"):
+        errors = validate_builder_steps(_approval_step({field: bad}))
+        assert errors, (field, bad)
+        assert field in errors[0]
+
+
+def test_validate_accepts_wellformed_approval_thresholds():
+    from app.services.workflow_builder import validate_builder_steps
+
+    assert not validate_builder_steps(
+        _approval_step(
+            {
+                "required": True,
+                "auto_approve_below": None,
+                "require_cfo_above": 5000,
+                "max_invoice_amount": "10000.00",
+            }
+        )
+    )
+
+
+def test_validate_rejects_a_non_numeric_chain_level_bound():
+    """`resolve_applicable_levels` reads an unparseable bound as 'no bound', so
+    a typo here silently widens the level to every amount instead of failing."""
+    from app.services.workflow_builder import validate_builder_steps
+
+    errors = validate_builder_steps(
+        _approval_step({"approval_chain": [{"name": "L1", "min_amount": "lots"}]})
+    )
+    assert errors and "min_amount" in errors[0]
+
+
+@pytest.mark.parametrize("bad", ["high", 95, -1, True])
+def test_validate_rejects_a_bad_extraction_confidence_bar(bad):
+    from app.services.workflow_builder import validate_builder_steps
+
+    errors = validate_builder_steps(
+        [
+            {
+                "number": 1,
+                "type": "extraction",
+                "name": "Extract",
+                "config": {"auto_approve_threshold": bad},
+            }
+        ]
+    )
+    assert errors and "auto_approve_threshold" in errors[0]
+
+
+def test_validate_accepts_a_canonical_step_with_no_config_key_at_all():
+    """`config` is OPTIONAL on a canonical step — `{"number": 1, "type":
+    "approval"}` is how a minimal experiment variant is written
+    (`schemas/workflow_experiments` runs this same validator over `config_a` /
+    `config_b`). Absent means "no thresholds to check", not "malformed"; the
+    five BUILDER types are the ones that genuinely require a config object."""
+    from app.services.workflow_builder import validate_builder_steps
+
+    assert not validate_builder_steps(
+        [
+            {"number": 1, "type": "approval"},
+            {"number": 2, "type": "extraction"},
+        ]
+    )
+    # A PRESENT but non-object config is still wrong.
+    assert any(
+        "config" in e
+        for e in validate_builder_steps([{"number": 1, "type": "approval", "config": "oops"}])
+    )
+
+
+def test_validate_still_ignores_canonical_steps_that_carry_no_gates():
+    from app.services.workflow_builder import validate_builder_steps
+
+    assert not validate_builder_steps(
+        [
+            {"number": 1, "type": "erp_export", "name": "ERP", "config": {"whatever": "x"}},
+            {"number": 2, "type": "done", "name": "Done", "config": {}},
+        ]
+    )
+
+
+def test_validate_checks_the_legacy_review_alias_too():
+    """`review` is the legacy alias for `approval`; a definition still spelling
+    it that way carries the same live gates."""
+    from app.services.workflow_builder import validate_builder_steps
+
+    errors = validate_builder_steps(
+        [
+            {
+                "number": 1,
+                "type": "review",
+                "name": "Review",
+                "config": {"max_invoice_amount": "abc"},
+            }
+        ]
+    )
+    assert errors and "max_invoice_amount" in errors[0]

@@ -469,18 +469,33 @@ async def complete_invoice(
         # Check auto_approve_below — skip review for small invoices
         instance = await get_workflow_instance(db, invoice.id)
         approval_config: dict = {}
-        extraction_config: dict = {}
         if instance and instance.steps_config_snapshot:
             approval_config = get_step_config(instance.steps_config_snapshot, "approval")
-            extraction_config = get_step_config(instance.steps_config_snapshot, "extraction")
 
-        auto_below = approval_config.get("auto_approve_below")
         # Use the shared, gated decision so the amount-floor auto-approve still
         # honours the max_invoice_amount / require_cfo_above money-control gates
         # (a misconfigured high `auto_approve_below` must not slip a CFO-gated
-        # amount past review). confidence 0.0 → only the amount floor can fire.
-        from app.services.approval_chain import violates_segregation
+        # amount past review).
+        #
+        # The extraction step's config is deliberately NOT passed. There is no
+        # extraction result on this path — the `0.0` below is a sentinel meaning
+        # "no confidence evidence", not a measurement — and `auto_approve_threshold`
+        # is a schema-valid `0.0..1.0` float, so an org that set the bar to `0`
+        # ("auto-approve at any confidence", meant for the extraction path) made
+        # `0.0 >= 0.0` fire HERE: every manually-completed invoice auto-approved
+        # with no amount floor configured at all, stamped `reason:
+        # "below_threshold"` with a null threshold, and then 500-ing on the
+        # response message AFTER the commit — so the caller saw an error while
+        # the invoice was silently approved. Handing in `{}` makes the code match
+        # the rule this branch documents: on the manual-complete path the amount
+        # floor is the only trigger that means anything.
+        from app.services.approval_chain import finite_money_threshold, violates_segregation
         from app.services.extraction import decide_auto_approve, resolve_gate_aggregate
+
+        # The parsed floor: also what the success message formats, so the figure
+        # shown can never diverge from the one compared against (and an unusable
+        # value simply isn't a floor — `decide_auto_approve` reads it the same way).
+        auto_below = finite_money_threshold(approval_config.get("auto_approve_below"))
 
         # Segregation of duties is another control gate the amount floor must
         # honour: if the caller uploaded this invoice and the org requires
@@ -494,7 +509,7 @@ async def complete_invoice(
         # piece past the controls unattended.
         gate_aggregate = await resolve_gate_aggregate(db, invoice, org_settings=org.settings)
         if decide_auto_approve(
-            extraction_config,
+            {},  # no extraction result here — see the note above
             approval_config,
             overall_confidence=0.0,
             amount=invoice.amount,
@@ -510,7 +525,10 @@ async def complete_invoice(
                 action_name="invoice.auto_approved",
                 details={
                     "reason": "below_threshold",
-                    "threshold": auto_below,
+                    # Exact decimal string — money never rides an audit row as a
+                    # float, and this is now guaranteed non-null: the branch is
+                    # only reachable through the floor.
+                    "threshold": str(auto_below),
                     "amount": str(invoice.amount),
                 },
             )
@@ -523,12 +541,12 @@ async def complete_invoice(
                 "correlation_id": str(invoice.correlation_id),
                 "status": invoice.status.value,
                 "message": (
-                    # auto_below comes straight off the JSONB snapshot, which
-                    # (correctly, per the money invariant) stores it as an
-                    # exact string, not a float — Decimal(str(...)) mirrors
-                    # the same coercion decide_auto_approve() already applies
-                    # before comparing it against the invoice amount.
-                    f"Auto-approved (amount below ${Decimal(str(auto_below)):,.2f} threshold)."
+                    # `auto_below` is the SAME parsed Decimal the comparison
+                    # used, so the figure shown can't diverge from the figure
+                    # enforced — and formatting can't raise on a raw JSONB value
+                    # the way `Decimal(str(auto_below))` did when the branch was
+                    # reachable without a floor at all.
+                    f"Auto-approved (amount below ${auto_below:,.2f} threshold)."
                 ),
             }
 

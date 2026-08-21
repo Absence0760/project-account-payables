@@ -202,32 +202,78 @@ def decide_auto_approve(
     # score some other way still can't trip it.
     confidence = overall_confidence if 0.0 <= overall_confidence <= 1.0 else 0.0
 
+    # Every threshold below is read through `approval_chain`'s fail-CLOSED
+    # parsers. `steps_config` is a JSONB blob and `POST /api/workflows/import`
+    # accepts it free-form, so any of these can arrive non-numeric; a bare
+    # `Decimal(str(...))` / a `>=` against a string raised out of this pure
+    # function and landed the invoice in `failed`. Unusable here always means
+    # "don't auto-approve" — the direction that sends the invoice to a human.
+    from app.services.approval_chain import (
+        cfo_gate_applies,
+        finite_money_threshold,
+        max_amount_gate_applies,
+    )
+
     auto_approved = False
-    if ext_cfg.get("auto_approve_enabled") and confidence >= ext_cfg.get(
-        "auto_approve_threshold", 0.95
+    confidence_threshold = _confidence_threshold(ext_cfg.get("auto_approve_threshold", 0.95))
+    if (
+        ext_cfg.get("auto_approve_enabled")
+        and confidence_threshold is not None
+        and confidence >= confidence_threshold
     ):
         auto_approved = True
 
-    auto_below = approval_cfg.get("auto_approve_below")
-    if auto_below is not None and amount_dec < Decimal(str(auto_below)):
+    # An unusable floor is NOT a floor — it must not trigger auto-approve, and it
+    # must not raise. (`finite_money_threshold` returns None for unset too, so
+    # "no floor configured" and "floor misconfigured" converge on the same safe
+    # behaviour: this trigger simply doesn't fire.)
+    auto_below = finite_money_threshold(approval_cfg.get("auto_approve_below"))
+    if auto_below is not None and amount_dec < auto_below:
         auto_approved = True
 
     if not auto_approved:
         return False
 
-    # `cfo_gate_applies` is the shared fail-CLOSED CFO-threshold parse: a
-    # malformed `require_cfo_above` counts as gate-tripped (needs_cfo=True), so a
-    # settings typo revokes auto-approve into human review rather than raising an
-    # InvalidOperation (which would land the invoice in `failed`) or slipping a
-    # CFO-gated amount past review.
-    from app.services.approval_chain import cfo_gate_applies
-
-    max_amount = approval_cfg.get("max_invoice_amount")
-    exceeds_max = max_amount is not None and gate_amount > Decimal(str(max_amount))
+    # `cfo_gate_applies` / `max_amount_gate_applies` are the shared fail-CLOSED
+    # threshold parses: a malformed `require_cfo_above` or `max_invoice_amount`
+    # counts as gate-tripped, so a settings typo revokes auto-approve into human
+    # review rather than raising (which would land the invoice in `failed`) or
+    # slipping a gated amount past review.
     needs_cfo = cfo_gate_applies(approval_cfg.get("require_cfo_above"), gate_amount)
+    exceeds_max = max_amount_gate_applies(approval_cfg.get("max_invoice_amount"), gate_amount)
     if exceeds_max or needs_cfo:
         return False
     return True
+
+
+def _confidence_threshold(raw) -> float | None:
+    """The extraction confidence bar as a usable float in ``0..1``, or ``None``.
+
+    ``None`` means the configured value can't gate anything — unset, non-numeric
+    (``0.99 >= "high"`` is a `TypeError`, not a decision), NaN, or outside the
+    0..1 the score itself is normalised into. Callers treat that as "the
+    confidence trigger does not fire", so a misconfigured bar sends the invoice
+    to a human instead of raising or auto-approving on a comparison nobody
+    meant."""
+    if isinstance(raw, bool) or raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logger.error(
+            "[extraction] auto_approve_threshold is not a number (%r); the confidence "
+            "auto-approve trigger is disabled for this workflow (fail-closed)",
+            raw,
+        )
+        return None
+    if not (0.0 <= value <= 1.0):
+        logger.error(
+            "[extraction] auto_approve_threshold %r is outside 0..1; the confidence "
+            "auto-approve trigger is disabled for this workflow (fail-closed)",
+            raw,
+        )
+        return None
+    return value
 
 
 async def resolve_gate_aggregate(
@@ -280,13 +326,16 @@ async def run_extraction(
     *,
     actor_id: uuid.UUID | None = None,
     org_settings: dict | None = None,
-    ctrl_db: AsyncSession | None = None,
 ) -> None:
     """Extract invoice fields from the uploaded file and update the invoice.
 
     This is called as a background task after file upload.
-    ``ctrl_db`` is the control-plane session used for ExtractionUsage tracking
-    (the ``extraction_usage`` table lives in the control DB, not the tenant DB).
+
+    The ``ExtractionUsage`` billing meter is written through the TENANT session:
+    ``extraction_usage`` is not in ``tenant_provisioning.CONTROL_TABLES``, no
+    migration creates it in the control plane, and ``services/billing``'s
+    ``rollup_usage`` reads it from the tenant DB — the same place the sibling
+    meter ``card_rebates`` lives.
     """
     # Cache IDs before try block — after rollback, invoice attrs may be expired
     invoice_id = invoice.id
@@ -653,19 +702,23 @@ async def run_extraction(
         )
         db.add(extraction_result)
 
-        # Track usage for billing (extraction_usage lives in the control DB)
+        # Track usage for billing. This rides the tenant transaction and its
+        # single commit below, so the meter and the extraction result land
+        # together or not at all. It was previously committed to a control-plane
+        # session, where `extraction_usage` does not exist — the resulting
+        # UndefinedTableError was caught by this function's own handler, which
+        # rolled the extraction back and marked a SUCCESSFUL invoice `failed`.
         program_type = config.get("program_type", "platform")
-        usage = ExtractionUsage(
-            invoice_id=invoice.id,
-            provider=result.provider or config.get("provider", "unknown"),
-            program_type=program_type,
-            period=datetime.now(UTC).strftime("%Y-%m"),
-            success=True,
-            organization_id=invoice.organization_id,
+        db.add(
+            ExtractionUsage(
+                invoice_id=invoice.id,
+                provider=result.provider or config.get("provider", "unknown"),
+                program_type=program_type,
+                period=datetime.now(UTC).strftime("%Y-%m"),
+                success=True,
+                organization_id=invoice.organization_id,
+            )
         )
-        if ctrl_db is not None:
-            ctrl_db.add(usage)
-            await ctrl_db.commit()
 
         # Decide target status: auto-approve or ready_for_review
         from app.services.workflow_engine import get_step_config
@@ -745,14 +798,18 @@ async def run_extraction(
             await db.commit()
             return
 
-        # Track failed usage (extraction_usage lives in the control DB)
+        # Track failed usage on the tenant session, riding the same commit as
+        # the exception record below (see the success path for why it is not the
+        # control plane). Still guarded: `_resolve_extraction_config` can raise
+        # on a bad provider name, and losing the meter must not also cost us the
+        # exception record that tells a human the extraction failed.
         try:
-            if ctrl_db is not None:
-                # Silent: the success path above already announced any provider
-                # fallback for this attempt, and repeating it here would double
-                # every such warning per failed extraction.
-                config = _resolve_extraction_config(org_settings, announce=False)
-                usage = ExtractionUsage(
+            # Silent: the success path above already announced any provider
+            # fallback for this attempt, and repeating it here would double
+            # every such warning per failed extraction.
+            config = _resolve_extraction_config(org_settings, announce=False)
+            db.add(
+                ExtractionUsage(
                     invoice_id=invoice_id,
                     provider=config.get("provider", "unknown"),
                     program_type=config.get("program_type", "platform"),
@@ -760,8 +817,7 @@ async def run_extraction(
                     success=False,
                     organization_id=invoice_org_id,
                 )
-                ctrl_db.add(usage)
-                await ctrl_db.commit()
+            )
         except Exception:
             pass
 

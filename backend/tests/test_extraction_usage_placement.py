@@ -1,14 +1,22 @@
-"""Tests that run_extraction uses ctrl_db correctly for ExtractionUsage.
+"""Where `run_extraction` writes the `ExtractionUsage` billing meter.
 
-ExtractionUsage lives in the control-plane DB, not the tenant DB. These
-tests confirm that:
-  1. When ctrl_db is provided, ExtractionUsage is added to ctrl_db (not db).
-  2. When ctrl_db is None, ExtractionUsage tracking is silently skipped.
-  3. On the failure path, the same ctrl_db vs None semantics apply.
+`extraction_usage` is a TENANT table. It is not in
+`tenant_provisioning.CONTROL_TABLES`, no Alembic revision creates it, and
+`scripts/seed.py::create_control_tables` filters to the control set — so it is
+created only by `provision_tenant`, in each tenant DB. `services/billing`'s
+`rollup_usage` reads it there, alongside the sibling meter `card_rebates`.
 
-We mock everything that touches the network or DB — S3, the extraction
-adapter, RAG, vendor matching, vendor priors, duplicate detection,
-invoice_warnings, and workflow_engine — so the tests are fully hermetic.
+It used to be written through a control-plane session, on the strength of a
+comment claiming the table lived there. It does not: the INSERT raised
+`UndefinedTableError` into `run_extraction`'s own `except Exception`, which
+rolled the tenant transaction back, opened an `extraction_failed` exception and
+transitioned the invoice to `failed`. A SUCCESSFUL extraction was recorded as a
+failure, and platform billing's primary meter was permanently zero.
+
+The whole previous version of this file asserted that broken placement, using an
+`AsyncMock` for the control session — so no test ever executed the INSERT
+against a real database. `test_extraction_usage_table_is_tenant_local` is the
+guard that closes that gap: it asks Postgres where the table actually is.
 """
 
 from __future__ import annotations
@@ -176,143 +184,75 @@ def _patch_extraction_internals(extraction_result: ExtractionResult):
 
 
 # ---------------------------------------------------------------------------
-# Success path: ctrl_db provided
+# The meter goes to the tenant session
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_usage_added_to_ctrl_db_on_success():
-    """When extraction succeeds and ctrl_db is provided, ExtractionUsage is
-    added to ctrl_db and ctrl_db.commit() is called."""
+async def test_usage_is_written_through_the_tenant_session_on_success():
+    """A successful extraction adds exactly one ExtractionUsage to the tenant db."""
     from app.models.usage import ExtractionUsage
     from app.services.extraction import run_extraction
 
     invoice = _make_invoice()
     db = _make_db()
-    ctrl_db = AsyncMock()
-    ctrl_db.add = MagicMock()
 
     with _patch_extraction_internals(_successful_extraction_result()):
-        await run_extraction(
-            db,
-            invoice,
-            actor_id=uuid.uuid4(),
-            org_settings=None,
-            ctrl_db=ctrl_db,
-        )
+        await run_extraction(db, invoice, actor_id=uuid.uuid4(), org_settings=None)
 
-    ctrl_add_calls = ctrl_db.add.call_args_list
-    usage_calls = [c for c in ctrl_add_calls if isinstance(c.args[0], ExtractionUsage)]
-    assert len(usage_calls) == 1, "Expected exactly one ExtractionUsage added to ctrl_db"
+    usage_calls = [c for c in db.add.call_args_list if isinstance(c.args[0], ExtractionUsage)]
+    assert len(usage_calls) == 1, "Expected exactly one ExtractionUsage on the tenant session"
 
     usage: ExtractionUsage = usage_calls[0].args[0]
-    assert usage.invoice_id == invoice.id
-    assert usage.success is True
-
-    ctrl_db.commit.assert_awaited()
-
-
-@pytest.mark.asyncio
-async def test_usage_not_added_to_tenant_db_on_success():
-    """ExtractionUsage must never be added to the tenant db session."""
-    from app.models.usage import ExtractionUsage
-    from app.services.extraction import run_extraction
-
-    invoice = _make_invoice()
-    db = _make_db()
-    ctrl_db = AsyncMock()
-    ctrl_db.add = MagicMock()
-
-    with _patch_extraction_internals(_successful_extraction_result()):
-        await run_extraction(db, invoice, ctrl_db=ctrl_db)
-
-    for c in db.add.call_args_list:
-        assert not isinstance(c.args[0], ExtractionUsage), (
-            "ExtractionUsage must go to ctrl_db, not the tenant db"
-        )
-
-
-@pytest.mark.asyncio
-async def test_usage_contains_correct_fields_on_success():
-    """The ExtractionUsage row fields must be plausible billing metadata."""
-    from app.models.usage import ExtractionUsage
-    from app.services.extraction import run_extraction
-
-    invoice = _make_invoice()
-    db = _make_db()
-    ctrl_db = AsyncMock()
-    ctrl_db.add = MagicMock()
-
-    with _patch_extraction_internals(_successful_extraction_result()):
-        await run_extraction(db, invoice, actor_id=uuid.uuid4(), ctrl_db=ctrl_db)
-
-    usage = next(
-        c.args[0] for c in ctrl_db.add.call_args_list if isinstance(c.args[0], ExtractionUsage)
-    )
     assert usage.invoice_id == invoice.id
     assert usage.organization_id == invoice.organization_id
     assert usage.success is True
-    # period is "YYYY-MM"
-    assert len(usage.period) == 7
-    assert usage.period[4] == "-"
-
-
-# ---------------------------------------------------------------------------
-# Success path: ctrl_db is None
-# ---------------------------------------------------------------------------
+    assert len(usage.period) == 7 and usage.period[4] == "-"
 
 
 @pytest.mark.asyncio
-async def test_usage_silently_skipped_when_ctrl_db_is_none():
-    """When ctrl_db=None, no ExtractionUsage is created and no error is raised."""
-    from app.models.usage import ExtractionUsage
+async def test_usage_rides_the_extraction_commit_rather_than_its_own():
+    """The meter is not committed separately — it lands with the extraction result.
+
+    A separate commit is what made the old control-plane write able to fail
+    independently of (and destroy) the extraction it was recording.
+    """
     from app.services.extraction import run_extraction
 
     invoice = _make_invoice()
     db = _make_db()
 
     with _patch_extraction_internals(_successful_extraction_result()):
-        await run_extraction(db, invoice, ctrl_db=None)
+        await run_extraction(db, invoice)
 
-    for c in db.add.call_args_list:
-        assert not isinstance(c.args[0], ExtractionUsage)
-
-
-# ---------------------------------------------------------------------------
-# Failure path: ctrl_db provided
-# ---------------------------------------------------------------------------
+    # One commit for the whole successful path, not one per side effect.
+    assert db.commit.await_count == 1
 
 
 @pytest.mark.asyncio
-async def test_failed_usage_added_to_ctrl_db_on_extraction_failure():
-    """On adapter failure, a failed ExtractionUsage row is added to ctrl_db."""
+async def test_failed_usage_is_written_through_the_tenant_session():
+    """On adapter failure a failed meter row is added to the tenant db."""
     from app.models.usage import ExtractionUsage
     from app.services.extraction import run_extraction
 
     invoice = _make_invoice()
-
-    # After rollback the service re-fetches the invoice via db.execute
     re_fetched = _make_invoice()
     re_fetched.id = invoice.id
     re_fetched.organization_id = invoice.organization_id
 
     db = _make_db(re_fetch_invoice=re_fetched)
-    ctrl_db = AsyncMock()
-    ctrl_db.add = MagicMock()
 
     with _patch_extraction_internals(_failing_extraction_result()):
-        await run_extraction(db, invoice, ctrl_db=ctrl_db)
+        await run_extraction(db, invoice)
 
-    usage_calls = [c for c in ctrl_db.add.call_args_list if isinstance(c.args[0], ExtractionUsage)]
+    usage_calls = [c for c in db.add.call_args_list if isinstance(c.args[0], ExtractionUsage)]
     assert len(usage_calls) == 1
-    usage: ExtractionUsage = usage_calls[0].args[0]
-    assert usage.invoice_id == invoice.id
-    assert usage.success is False
+    assert usage_calls[0].args[0].success is False
 
 
 @pytest.mark.asyncio
-async def test_failed_usage_not_added_to_tenant_db_on_failure():
-    """On failure, ExtractionUsage must still go to ctrl_db, not the tenant db."""
+async def test_unexpected_error_still_writes_a_failed_meter_row():
+    """A hard adapter exception still records the failed attempt."""
     from app.models.usage import ExtractionUsage
     from app.services.extraction import run_extraction
 
@@ -322,67 +262,8 @@ async def test_failed_usage_not_added_to_tenant_db_on_failure():
     re_fetched.organization_id = invoice.organization_id
 
     db = _make_db(re_fetch_invoice=re_fetched)
-    ctrl_db = AsyncMock()
-    ctrl_db.add = MagicMock()
-
-    with _patch_extraction_internals(_failing_extraction_result()):
-        await run_extraction(db, invoice, ctrl_db=ctrl_db)
-
-    for c in db.add.call_args_list:
-        assert not isinstance(c.args[0], ExtractionUsage), (
-            "ExtractionUsage must go to ctrl_db, not the tenant db, even on failure"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Failure path: ctrl_db is None
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_failed_usage_silently_skipped_when_ctrl_db_is_none():
-    """When ctrl_db=None and extraction fails, no ExtractionUsage is created
-    and run_extraction does not raise."""
-    from app.models.usage import ExtractionUsage
-    from app.services.extraction import run_extraction
-
-    invoice = _make_invoice()
-    re_fetched = _make_invoice()
-    re_fetched.id = invoice.id
-    re_fetched.organization_id = invoice.organization_id
-
-    db = _make_db(re_fetch_invoice=re_fetched)
-
-    with _patch_extraction_internals(_failing_extraction_result()):
-        await run_extraction(db, invoice, ctrl_db=None)
-
-    for c in db.add.call_args_list:
-        assert not isinstance(c.args[0], ExtractionUsage)
-
-
-# ---------------------------------------------------------------------------
-# Unexpected adapter exception — ctrl_db behaviour
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_unexpected_error_still_writes_failed_usage_to_ctrl_db():
-    """When the adapter raises a hard error, the failure handler must still
-    record a failed ExtractionUsage on ctrl_db."""
-    from app.models.usage import ExtractionUsage
-    from app.services.extraction import run_extraction
-
-    invoice = _make_invoice()
-    re_fetched = _make_invoice()
-    re_fetched.id = invoice.id
-    re_fetched.organization_id = invoice.organization_id
-
-    db = _make_db(re_fetch_invoice=re_fetched)
-    ctrl_db = AsyncMock()
-    ctrl_db.add = MagicMock()
 
     with _patch_extraction_internals(_successful_extraction_result()) as stack:
-        # Override the adapter to raise instead of returning a result
         exploding_adapter = MagicMock()
         exploding_adapter.provider_name = "mock"
         exploding_adapter.extract = AsyncMock(side_effect=RuntimeError("OOM"))
@@ -392,8 +273,92 @@ async def test_unexpected_error_still_writes_failed_usage_to_ctrl_db():
                 return_value=exploding_adapter,
             )
         )
-        await run_extraction(db, invoice, ctrl_db=ctrl_db)
+        await run_extraction(db, invoice)
 
-    usage_calls = [c for c in ctrl_db.add.call_args_list if isinstance(c.args[0], ExtractionUsage)]
+    usage_calls = [c for c in db.add.call_args_list if isinstance(c.args[0], ExtractionUsage)]
     assert len(usage_calls) == 1
     assert usage_calls[0].args[0].success is False
+
+
+def test_run_extraction_takes_no_control_plane_session():
+    """The `ctrl_db` parameter is gone — re-adding it would re-open the defect.
+
+    A signature guard rather than a behavioural one, because the failure mode was
+    a caller handing in the wrong session, which no amount of mocking inside this
+    module can catch.
+    """
+    import inspect
+
+    from app.services.extraction import run_extraction
+
+    params = inspect.signature(run_extraction).parameters
+    assert "ctrl_db" not in params, (
+        "ExtractionUsage is a tenant table; run_extraction must not take a "
+        "control-plane session for it"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Where the table actually is (the guard the old file lacked)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_extraction_usage_table_is_tenant_local(realdb):
+    """Ask Postgres where `extraction_usage` lives, both ways round.
+
+    The old code was written against a comment, not against the schema. This
+    fails the moment either half of the placement drifts — the table appearing
+    in the control plane, or vanishing from a tenant.
+    """
+    from sqlalchemy import text
+
+    async with realdb.sessionmaker("a")() as s:
+        tenant_reg = await s.scalar(text("select to_regclass('public.extraction_usage')"))
+    assert tenant_reg is not None, "extraction_usage must exist in every tenant DB"
+
+    async with realdb.control_sessionmaker()() as s:
+        control_reg = await s.scalar(text("select to_regclass('public.extraction_usage')"))
+    assert control_reg is None, (
+        "extraction_usage must NOT exist in the control plane — if it does, the "
+        "meter is now split across two databases and rollup_usage reads only one"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_meter_row_round_trips_through_the_tenant_session(realdb):
+    """The write run_extraction performs, executed for real.
+
+    Under the old control-plane placement this INSERT raised
+    `asyncpg.exceptions.UndefinedTableError`.
+    """
+    from datetime import UTC, datetime
+
+    from sqlalchemy import select
+
+    from app.models.usage import ExtractionUsage
+
+    org_id = realdb.info("a").org_id
+    invoice_id = uuid.uuid4()
+    period = datetime.now(UTC).strftime("%Y-%m")
+
+    async with realdb.sessionmaker("a")() as s:
+        s.add(
+            ExtractionUsage(
+                invoice_id=invoice_id,
+                provider="mock",
+                program_type="platform",
+                period=period,
+                success=True,
+                organization_id=org_id,
+            )
+        )
+        await s.commit()
+
+    async with realdb.sessionmaker("a")() as s:
+        row = await s.scalar(
+            select(ExtractionUsage).where(ExtractionUsage.invoice_id == invoice_id)
+        )
+    assert row is not None
+    assert row.success is True
+    assert row.organization_id == org_id

@@ -2241,3 +2241,156 @@ async def test_feedback_endpoint_rbac_and_auth(realdb):
         assert (await cfo.get(path)).status_code == 200
     async with realdb.client(key="a", role="admin") as admin:
         assert (await admin.get(path)).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# The feedback loop must govern the WRITE, not just the dashboard.
+#
+# `outcome_adjusted_threshold` was only ever called from `GET /feedback`, so
+# `POST /threshold-recommendation/apply` — the single endpoint that actually
+# widens auto-approve — recomputed the FORWARD recommendation and widened it
+# anyway. An admin could read "holding at $0, 20% of auto-approvals were later
+# voided or rejected" and, in the same breath, apply a $5,000 raise with
+# `reason_code: "ok"`. Its routing sibling never had this gap (the per-approver
+# penalty is folded into the candidate score, so apply inherits it).
+# ---------------------------------------------------------------------------
+
+
+async def _seed_overturned_auto_approvals(realdb, mk, org_id, actor_id):
+    """Clean vendor history (base recommendation WOULD raise to $5,000) plus 10
+    auto-approvals of which 2 were walked back — a 20% overturn rate, past the
+    15% freeze band."""
+    await _set_adaptive_min_history(realdb, org_id, 3)
+    wf_id = await _seed_active_workflow(mk, org_id)
+    await _seed_clean_vendors(
+        mk, org_id, actor_id, [("Clean A", 5000, 3), ("Clean B", 3000, 3), ("Clean C", 1000, 3)]
+    )
+    await _seed_auto_approved(mk, org_id, count=10, voided_ids=(0,), rejected_ids=(1,))
+    return wf_id
+
+
+async def test_threshold_apply_is_held_back_by_the_outcome_freeze(realdb):
+    from sqlalchemy import select
+
+    from app.models.workflow import AuditLog, WorkflowDefinition, WorkflowVersion
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+    wf_id = await _seed_overturned_auto_approvals(realdb, mk, org_id, actor_id)
+
+    async with realdb.client(key="a", role="admin") as client:
+        r = await client.post("/api/adaptive/threshold-recommendation/apply", json={})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["applied"] is False
+    assert body["reason_code"] == "outcome_freeze"
+    assert body["new_threshold"] == body["previous_threshold"] == "0"
+    assert body["version_number"] is None
+    # The rationale explains the hold with the measured rate, not a bare refusal.
+    assert "20.0% overturn rate" in body["rationale"]
+
+    async with mk() as s:
+        defn = (
+            await s.execute(select(WorkflowDefinition).where(WorkflowDefinition.id == wf_id))
+        ).scalar_one()
+        approval = next(st for st in defn.steps_config["steps"] if st["type"] == "approval")
+        # Auto-approve was NOT widened.
+        assert approval.get("config", {}).get("auto_approve_below") in (None, "0")
+        # A no-op writes neither a version snapshot nor a threshold audit row.
+        assert (
+            await s.execute(select(WorkflowVersion).where(WorkflowVersion.definition_id == wf_id))
+        ).scalars().all() == []
+        raised = (
+            (
+                await s.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "workflow.auto_approve_threshold_raised"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert raised == []
+
+
+async def test_threshold_read_and_apply_agree_on_the_adjusted_recommendation(realdb):
+    """`GET /threshold-recommendation` returns the same decision the apply POST
+    acts on — one resolver, so the read can't say 'raise' while the write holds
+    (and `GET /feedback` still shows the un-adjusted base for explainability)."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+    await _seed_overturned_auto_approvals(realdb, mk, org_id, actor_id)
+
+    async with realdb.client(key="a", role="admin") as client:
+        read = (await client.get("/api/adaptive/threshold-recommendation")).json()
+        fb = (await client.get("/api/adaptive/feedback")).json()
+
+    assert read["should_raise"] is False
+    assert read["reason_code"] == "outcome_freeze"
+    assert read["recommended_threshold"] == read["current_threshold"]
+    # /feedback still exposes BOTH, so the held-back raise is explainable.
+    assert fb["base_recommendation"]["should_raise"] is True
+    assert fb["adjusted_recommendation"]["reason_code"] == read["reason_code"]
+
+
+async def test_threshold_apply_still_raises_when_the_outcomes_are_clean(realdb):
+    """Guard against over-refusing: the loop must only hold back a raise when
+    the auto-approved population is genuinely being walked back."""
+    from sqlalchemy import select
+
+    from app.models.workflow import WorkflowDefinition
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+    await _set_adaptive_min_history(realdb, org_id, 3)
+    wf_id = await _seed_active_workflow(mk, org_id)
+    await _seed_clean_vendors(
+        mk, org_id, actor_id, [("Clean A", 5000, 3), ("Clean B", 3000, 3), ("Clean C", 1000, 3)]
+    )
+    await _seed_auto_approved(mk, org_id, count=8)  # all clean
+
+    async with realdb.client(key="a", role="admin") as client:
+        r = await client.post("/api/adaptive/threshold-recommendation/apply", json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["applied"] is True
+    assert r.json()["new_threshold"] == "5000.00"
+
+    async with mk() as s:
+        defn = (
+            await s.execute(select(WorkflowDefinition).where(WorkflowDefinition.id == wf_id))
+        ).scalar_one()
+        approval = next(st for st in defn.steps_config["steps"] if st["type"] == "approval")
+        assert approval["config"]["auto_approve_below"] == "5000.00"
+
+
+# ---------------------------------------------------------------------------
+# `_approval_auto_below` reads the CURRENT threshold off the frozen JSONB. Its
+# hand-rolled `except (TypeError, ValueError)` did not catch what a bad value
+# actually raises — `Decimal("abc")` raises `decimal.InvalidOperation`, an
+# `ArithmeticError` — so a malformed `auto_approve_below` 500'd all three
+# threshold surfaces. `"NaN"` / `"Infinity"` parsed straight THROUGH the guard
+# and blew up downstream instead (`Decimal("NaN") > 0` raises; an infinite
+# current threshold reaches `_q2`'s quantize).
+# ---------------------------------------------------------------------------
+
+
+def test_approval_auto_below_reads_an_unusable_threshold_as_unset():
+    from app.api.adaptive_workflows import _approval_auto_below
+
+    for bad in ("abc", "10,000", "", "5000 USD", {"x": 1}, [1], "NaN", "Infinity", "-Infinity"):
+        steps = {"steps": [{"type": "approval", "config": {"auto_approve_below": bad}}]}
+        assert _approval_auto_below(steps) == Decimal("0"), bad
+
+
+def test_approval_auto_below_reads_a_usable_threshold_exactly():
+    from app.api.adaptive_workflows import _approval_auto_below
+
+    for raw, expected in (("2500.00", Decimal("2500.00")), (2500, Decimal("2500"))):
+        steps = {"steps": [{"type": "approval", "config": {"auto_approve_below": raw}}]}
+        assert _approval_auto_below(steps) == expected
+    assert _approval_auto_below({"steps": []}) == Decimal("0")
+    assert _approval_auto_below({"steps": [{"type": "approval", "config": {}}]}) == Decimal("0")

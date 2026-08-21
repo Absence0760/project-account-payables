@@ -136,9 +136,12 @@ tenant's conversation id **404s** (not 403, so it can't enumerate).
 
 ## Token budget + usage meter (control plane)
 
-`assistant_usage` lives in the control plane (next to `extraction_usage`):
-billing is a per-org concern and one upsert-on-`(org, period)` row enforces the
-cap without fanning a sum across every tenant DB on each call.
+`assistant_usage` lives in the control plane: billing is a per-org concern and
+one upsert-on-`(org, period)` row enforces the cap without fanning a sum across
+every tenant DB on each call. (It is in `tenant_provisioning.CONTROL_TABLES` and
+is created there — unlike the `extraction_usage` / `card_rebates` meters, which
+despite the same per-org framing are tenant-local. This line used to cite
+`extraction_usage` as the precedent; it was never a control-plane table.)
 
 - **Enforcement** — `usage.assert_within_budget` at the **top of `run_turn`**,
   before any adapter/model/tool work. It takes a **`SELECT … FOR UPDATE`** on

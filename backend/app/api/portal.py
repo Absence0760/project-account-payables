@@ -1638,8 +1638,13 @@ async def reveal_card(
     import app.services.card_adapters.mock_adapter  # noqa: F401
     import app.services.card_adapters.nium  # noqa: F401
 
-    adapter = get_card_adapter(config)
     try:
+        # Adapter resolution is INSIDE the guard: `get_card_adapter` refuses a
+        # provider name it has no adapter for (`UnknownCardProviderError`,
+        # `decisions.md` §29) instead of substituting `mock`, which would hand a
+        # vendor the fixture PAN. A misconfigured tenant degrades here exactly
+        # like a provider outage — the token is already spent either way.
+        adapter = get_card_adapter(config)
         details = await adapter.get_card_details(card.provider_card_id)
     except Exception:  # noqa: BLE001
         # Provider outage. The token stays spent: we cannot tell from here

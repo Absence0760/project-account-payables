@@ -328,6 +328,97 @@ async def test_emit_enqueues_one_per_matching_active_sub_and_dedupes(realdb, mon
 
 
 @pytest.mark.asyncio
+async def test_emit_duplicate_for_one_sub_still_queues_the_others(realdb, monkeypatch):
+    """A delivery already queued for ONE subscription must not swallow the event
+    for the org's other subscriptions.
+
+    BUG — `_emit` looped over the loaded subscriptions committing per row and
+    calling `db.rollback()` on the duplicate `(subscription, event_id)`. A
+    rollback EXPIRES every instance the session loaded, so the next iteration's
+    `sub.event_types` read became an implicit lazy refresh — synchronous IO from
+    an async context (`MissingGreenlet`) — which `emit_event`'s blanket handler
+    swallowed. One duplicate therefore dropped the event for every remaining
+    subscription, with no delivery row to show for it, on exactly the replay the
+    dedupe exists to make safe.
+
+    FIX — a single `INSERT ... ON CONFLICT DO NOTHING`: the dedupe is the DB
+    constraint, there is no rollback, and nothing reads an ORM instance after
+    one.
+    """
+    from app.config import settings
+    from app.services.webhooks import dispatch as dispatch_mod
+
+    org_id = realdb.info("a").org_id
+    control_mk = realdb.control_sessionmaker()
+
+    subs = []
+    for _ in range(3):
+        sub, _delivery = _make_sub_and_delivery(org_id)
+        sub.event_types = [EVENT_INVOICE_APPROVED]
+        subs.append(sub)
+    sub_ids = [sub.id for sub in subs]
+    event_id = f"{EVENT_INVOICE_APPROVED}:dupe-key"
+
+    # Pre-queue the delivery for TWO of the three so emit hits a conflict.
+    #
+    # Two, not one, and deliberately so: the old loop only broke on the
+    # iteration AFTER a rollback expired the session's instances, so a single
+    # duplicate that happened to come LAST in the (unordered) subscription query
+    # would let the buggy code queue every other subscription and pass. The
+    # query has no ORDER BY, so that position is not ours to assume. With two of
+    # three duplicated, every permutation puts a duplicate before some other
+    # subscription, and the old code fails whichever order Postgres returns.
+    already = [
+        WebhookDelivery(
+            id=uuid.uuid4(),
+            subscription_id=sub_id,
+            organization_id=org_id,
+            event_id=event_id,
+            event_type=EVENT_INVOICE_APPROVED,
+            payload={"id": event_id, "type": EVENT_INVOICE_APPROVED, "data": {}},
+            status=DELIVERY_PENDING,
+            attempt_count=0,
+            next_attempt_at=datetime.now(UTC),
+        )
+        for sub_id in sub_ids[:2]
+    ]
+    await _persist(control_mk, *subs, *already)
+
+    monkeypatch.setattr(settings, "webhooks_enabled", True)
+    monkeypatch.setattr(dispatch_mod, "_spawn_immediate_attempt", lambda did: None)
+
+    from sqlalchemy import select
+
+    try:
+        await dispatch_mod.emit_event(
+            organization_id=org_id,
+            event_type=EVENT_INVOICE_APPROVED,
+            event_key="dupe-key",
+            data={"invoice_id": "x"},
+        )
+        async with control_mk() as s:
+            rows = (
+                (
+                    await s.execute(
+                        select(WebhookDelivery).where(
+                            WebhookDelivery.organization_id == org_id,
+                            WebhookDelivery.event_id == event_id,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        # Exactly one delivery per subscription — the two duplicates were
+        # skipped, the third was queued. A count check as well as a set check:
+        # ON CONFLICT DO NOTHING must skip the duplicates, not re-insert them.
+        assert {r.subscription_id for r in rows} == set(sub_ids)
+        assert len(rows) == len(sub_ids)
+    finally:
+        await _cleanup(control_mk, *sub_ids)
+
+
+@pytest.mark.asyncio
 async def test_emit_is_noop_when_disabled(realdb, monkeypatch):
     from sqlalchemy import select
 
@@ -623,7 +714,7 @@ async def test_re_approval_of_the_same_invoice_queues_a_second_delivery(realdb, 
 
     Regression: `event_key` used to be the invoice id, so the second approval
     collided with the first on `uq_webhook_delivery_sub_event` and was dropped
-    on the `IntegrityError` branch — silently.
+    as a duplicate — silently.
     """
     from sqlalchemy import select
 

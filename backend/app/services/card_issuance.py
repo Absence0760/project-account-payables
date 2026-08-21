@@ -301,8 +301,9 @@ def _resolve_card_config(org_settings: dict, app_settings) -> dict | None:
             "default_expiry_days": expiry_days,
         }
     # e.g. "mock" for local-first testing — no live credentials needed. Any
-    # other/unrecognized value falls through to get_card_adapter's own mock
-    # backstop.
+    # other/unrecognized value is REFUSED by `get_card_adapter`
+    # (`UnknownCardProviderError`) rather than resolving to the fixture adapter
+    # — see `decisions.md` §29. Both card call sites below absorb that raise.
     return {
         "provider": provider,
         "region": region,
@@ -332,6 +333,8 @@ async def issue_card_for_invoice(
 
     Returns success=False with a populated failure_reason when:
       - The org hasn't enabled cards (`cards.enabled` falsy)
+      - The org names a card provider we have no adapter for
+        (`card_provider_not_configured` — never resolved to `mock`)
       - The adapter call fails
 
     Caller decides what to do on failure (skip the row, downgrade to
@@ -345,9 +348,31 @@ async def issue_card_for_invoice(
     import app.services.card_adapters.lithic  # noqa: F401
     import app.services.card_adapters.mock_adapter  # noqa: F401
     import app.services.card_adapters.nium  # noqa: F401
-    from app.services.card_adapters import VirtualCardPayload, get_card_adapter
+    from app.services.card_adapters import (
+        UnknownCardProviderError,
+        VirtualCardPayload,
+        get_card_adapter,
+    )
 
-    adapter = get_card_adapter(config)
+    try:
+        adapter = get_card_adapter(config)
+    except UnknownCardProviderError as exc:
+        # The org named an issuer we have no adapter for. Refuse the issuance
+        # rather than let it resolve to `mock`, which reports success with a
+        # fixture PAN and marks the payment settled (`decisions.md` §29). The
+        # refusal lands BEFORE any provider call, so no card exists anywhere —
+        # the reason ends in `_not_configured`, which
+        # `payment_runs.classify_payment_failure` already treats as RETRY_SAFE.
+        # The AP-facing `failure_reason` names the condition only, never the
+        # admin's raw settings value: every AP user reads it, only an admin
+        # owns the setting (same split as `fx_provider_unsupported`).
+        logger.warning(
+            "[card_issuance] card provider %r has no registered adapter — refusing to issue",
+            exc.provider,
+        )
+        return CardIssueResult(
+            card=None, success=False, failure_reason="card_provider_not_configured"
+        )
     expiry_days = config.get("default_expiry_days", DEFAULT_CARD_EXPIRY_DAYS)
 
     payload = VirtualCardPayload(
@@ -425,8 +450,9 @@ async def cancel_card_at_provider(
     fail-safe one: "dead at the provider, maybe stale in the DB" is recoverable,
     "cancelled in our DB but still chargeable at the provider" is not.
 
-    Outcomes: ``cancelled`` | ``cards_not_configured`` | ``card_cancel_rejected``
-    | ``card_cancel_error:<ExceptionType>``.
+    Outcomes: ``cancelled`` | ``cards_not_configured`` |
+    ``card_provider_not_configured`` | ``card_cancel_rejected`` |
+    ``card_cancel_error:<ExceptionType>``.
     """
     config = _resolve_card_config(org_settings, app_settings)
     if config is None:
@@ -435,10 +461,25 @@ async def cancel_card_at_provider(
     import app.services.card_adapters.lithic  # noqa: F401
     import app.services.card_adapters.mock_adapter  # noqa: F401
     import app.services.card_adapters.nium  # noqa: F401
-    from app.services.card_adapters import get_card_adapter
+    from app.services.card_adapters import UnknownCardProviderError, get_card_adapter
 
     try:
-        confirmed = await get_card_adapter(config).cancel_card(card.provider_card_id)
+        adapter = get_card_adapter(config)
+    except UnknownCardProviderError as exc:
+        # Distinct from `cards_not_configured` (cards switched off): here the
+        # org names an issuer we cannot talk to, so the card is left LIVE at
+        # whatever provider actually minted it. Record that; never claim a
+        # cancel we did not obtain. Mirrors the payment rail's
+        # `provider_not_supported` void outcome.
+        logger.warning(
+            "[card_issuance] card provider %r has no registered adapter — cannot cancel card %s",
+            exc.provider,
+            card.id,
+        )
+        return "card_provider_not_configured"
+
+    try:
+        confirmed = await adapter.cancel_card(card.provider_card_id)
     except Exception as exc:  # noqa: BLE001
         # PII guard: the exception TYPE only — a card-provider error string can
         # embed a partial PAN or a merchant token.

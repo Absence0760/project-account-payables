@@ -58,6 +58,28 @@ and **filters**. `GET /api/reports/catalog` returns this shape for the frontend.
 Adding a field is a one-line catalog entry pointing at a real column — never a
 free-form column name from the client.
 
+### A date filter means the calendar DAY, even on a timestamp column
+
+Some catalog date filters sit on real `DATE` columns (`invoice_date`,
+`due_date`, `expense_date`); the rest sit on `TIMESTAMP`s (`created_at`,
+`submitted_at`, `completed_at`). Binding a bare date onto a timestamp column
+resolves to that day's **midnight**, which answers a question nobody asked:
+`created_at <= 2026-06-30` dropped every row recorded after 00:00:00 on the
+30th (i.e. essentially the whole day), `created_at = 2026-06-30` matched only
+rows recorded exactly at midnight, and `created_at > 2026-06-30` swept the 30th
+back *in*.
+
+`report_builder._build_where` therefore translates a `date`-typed filter over a
+timestamp column into half-open `[day, day+1)` bounds — `eq` → `>= day AND <
+day+1`, `lte` → `< day+1`, `gt` → `>= day+1`, `between [lo, hi]` → `>= lo AND <
+hi+1` (inclusive of BOTH end days), and so on. Day boundaries are **UTC**, the
+same day the rest of the app reports on (`utils/dates.utc_today`), so the answer
+doesn't move with the database session's `TimeZone`. The translation is
+sargable — no per-row `::date` cast — so an index on the column still applies.
+Filters on real `DATE` columns are untouched. Guarded by
+`test_date_filter_on_timestamp_column_covers_the_whole_day` /
+`test_date_filter_on_real_date_column_is_unchanged`.
+
 ## Endpoints (`/api/reports`, JWT + tenant-gated)
 
 | Method + path | Roles | Purpose |
@@ -93,7 +115,11 @@ report_definition`, details = `{name, data_source}`).
 ```
 
 - `POST /run` body = `ReportSpec` + `{ page?, page_size? }` (default `page=1`,
-  `page_size=100`, cap `1000`).
+  `page_size=100`, cap `1000`). `page` has a floor (`>= 1`) but no ceiling; a
+  page starting past the last matching row short-circuits to an empty `rows`
+  with the true `total_rows`, and never issues the query — which is both
+  equivalent and the thing that keeps a huge `page` from overflowing the int64
+  `OFFSET` bind into an asyncpg `DataError` (a 500).
 - `POST /` body = `ReportSpec` + `{ name, description? }`.
 - `sort[].key` is a measure output key (`<measure_key>_<agg>`) or a dimension key
   that is actually selected — otherwise 422.
@@ -113,6 +139,13 @@ report_definition`, details = `{name, data_source}`).
 
 Money values in `rows` are exact decimal **strings**; counts are ints; date
 dimensions are ISO date strings.
+
+A money measure is `null` (an empty cell in the CSV/PDF) when the group had
+nothing to aggregate — `min` / `max` / `avg` over a column that is NULL on every
+row of the group. `sum` and `count` still report `"0.00"` / `0` there, because a
+total of nothing is meaningfully zero; a *minimum* or *average* of nothing is
+not, and answering `"0.00"` would put a money figure nobody recorded in front of
+a CFO. Guarded by `test_empty_money_aggregate_is_blank_not_zero`.
 
 `ReportDefinition` = `ReportSpec` + `{ id, name, description, created_by_user_id,
 created_at, updated_at }`.
@@ -142,6 +175,17 @@ in `tenant_provisioning`.
   white-label chrome as the analytics export surface.
 
 Both reuse the shared helpers so the brand treatment matches every other export.
+
+The download filename is `<report name>_<YYYY-MM-DD>.<ext>`, and the report name
+is user-chosen free text — so the header is built by the shared
+`utils/http.content_disposition_attachment` (RFC 6266: a sanitized ASCII
+`filename=` fallback plus a percent-encoded UTF-8 `filename*=`), never
+interpolated raw. A raw f-string had two failure modes: a non-latin-1 name
+("报表", an emoji) raised `UnicodeEncodeError` when Starlette latin-1-encoded the
+header value — an unhandled 500 on every export of that report — and a name
+containing `"` or `\` broke out of the quoted-string form so clients saved the
+file under a truncated name. Guarded by
+`test_export_filename_survives_an_awkward_report_name`.
 
 ### Row-cap truncation is surfaced in the file, not silent
 

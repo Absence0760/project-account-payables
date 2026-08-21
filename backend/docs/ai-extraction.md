@@ -314,6 +314,17 @@ Defaults to `dry_run=true`. Response shape:
 }
 ```
 
+The buckets **partition** the matched set — every one of `matched` invoices
+lands in exactly one of `changes`, a `skipped.*` counter, or (dry-run + AI)
+`ai_candidates`, so the panel always reconciles against `matched`. In
+particular `no_prior_no_ai` means the vendor has *no* learned `gl_account`
+correction at all, while `invalid_code` means one exists but isn't live in that
+invoice's effective chart (shared ∪ its own entity); an invoice is never filed
+under both. With `include_ai_fallback=true` an out-of-chart prior is simply "no
+usable prior" and the AI leg owns the outcome (a change, `ai_failed`,
+`no_change`, or `ai_candidates`), so neither skip counter is bumped — run the
+default priors-only pass to size how many priors the chart rejected.
+
 Each persisted change writes an `invoice.gl_recoded` audit-log row with `{old_gl, new_gl, source, bulk_run_at}` so the activity is traceable on the invoice's history.
 
 Frontend: "Bulk Re-code GL" toolbar button on `/invoices` (admin-only) opens a preview-then-apply modal in `frontend/src/lib/components/BulkRecodeGLModal.svelte`.

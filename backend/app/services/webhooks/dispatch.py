@@ -9,9 +9,14 @@ break the invoice/payment transition that produced the event (same contract as
      tenant-scoped; subscriptions live in the control plane — mirrors
      ``audit_dispatch.dispatch_auth_audit``),
   2. finds every active subscription for the org subscribed to the event type,
-  3. inserts one ``WebhookDelivery`` (status=pending) per subscription, deduped
-     on ``(subscription_id, event_id)`` so a re-fired/replayed event can't queue
-     the same delivery twice (webhook discipline — dedupe by event id), and
+  3. inserts one ``WebhookDelivery`` (status=pending) per subscription in a
+     single ``INSERT ... ON CONFLICT DO NOTHING``, deduped on
+     ``(subscription_id, event_id)`` so a re-fired/replayed event can't queue
+     the same delivery twice (webhook discipline — dedupe by event id). The
+     dedupe is the DB constraint, never a caught ``IntegrityError``: rolling
+     one back expired the session's loaded subscriptions, and the next
+     iteration's attribute read then raised out of the loop, so a duplicate for
+     ONE subscription dropped the event for every remaining one, and
   4. kicks off an in-process, fire-and-forget delivery attempt for each new row
      (local-first: deliveries run in-process, no cloud queue). The background
      retry sweep (``delivery.run_webhook_delivery_loop``) is the durable backstop
@@ -29,7 +34,7 @@ import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.config import settings
 from app.models.webhook import (
@@ -146,29 +151,52 @@ async def _emit(
             .scalars()
             .all()
         )
-        for sub in subs:
-            if event_type not in (sub.event_types or []):
-                continue
-            delivery = WebhookDelivery(
-                id=uuid.uuid4(),
-                subscription_id=sub.id,
-                organization_id=organization_id,
-                event_id=event_id,
-                event_type=event_type,
-                payload=payload,
-                status=DELIVERY_PENDING,
-                attempt_count=0,
-                next_attempt_at=datetime.now(UTC),
+        # Only the subscription ID is carried forward — never the ORM instance.
+        # The previous shape looped over `subs`, committing per subscription and
+        # calling `db.rollback()` on a duplicate. A rollback EXPIRES every
+        # instance the session loaded, so the next iteration's `sub.event_types`
+        # read became an implicit lazy refresh — synchronous IO from an async
+        # context, i.e. `MissingGreenlet`. `emit_event`'s blanket handler
+        # swallowed it, so ONE already-queued duplicate silently dropped the
+        # event for every remaining subscription of that org, with no delivery
+        # row to show for it. That fired on exactly the replay the dedupe exists
+        # to make safe (a re-emitted occurrence).
+        target_ids = [sub.id for sub in subs if event_type in (sub.event_types or [])]
+
+        if target_ids:
+            # One statement, and the dedupe is the DB's `uq_webhook_delivery_sub_event`
+            # constraint rather than a caught exception — so there is no rollback
+            # to expire anything, and a duplicate for one subscription cannot
+            # affect any other. `RETURNING` yields only the rows actually
+            # inserted, which is exactly the set to attempt immediately.
+            stmt = (
+                pg_insert(WebhookDelivery)
+                .values(
+                    [
+                        {
+                            "id": uuid.uuid4(),
+                            "subscription_id": sub_id,
+                            "organization_id": organization_id,
+                            "event_id": event_id,
+                            "event_type": event_type,
+                            "payload": payload,
+                            "status": DELIVERY_PENDING,
+                            "attempt_count": 0,
+                            "next_attempt_at": datetime.now(UTC),
+                        }
+                        for sub_id in target_ids
+                    ]
+                )
+                .on_conflict_do_nothing(
+                    index_elements=[
+                        WebhookDelivery.subscription_id,
+                        WebhookDelivery.event_id,
+                    ]
+                )
+                .returning(WebhookDelivery.id)
             )
-            db.add(delivery)
-            try:
-                await db.commit()
-            except IntegrityError:
-                # Duplicate (subscription, event_id) — this event already queued
-                # for this subscription. Dedupe wins; skip silently.
-                await db.rollback()
-                continue
-            new_delivery_ids.append(delivery.id)
+            new_delivery_ids = list((await db.execute(stmt)).scalars().all())
+            await db.commit()
 
     # Fire-and-forget an immediate attempt for each freshly-queued delivery so a
     # local dev / single-process deploy delivers without waiting for the sweep.

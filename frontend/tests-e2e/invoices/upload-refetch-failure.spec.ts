@@ -1,4 +1,4 @@
-import { expect, tenantPsql, test } from '../fixtures/helpers';
+import { deleteInvoicesWhere, expect, test } from '../fixtures/helpers';
 
 /**
  * /invoices — the Upload button must recover when the post-upload REFETCH fails.
@@ -28,10 +28,10 @@ test.describe('/invoices upload recovery', () => {
 	let uploadedId: string | null = null;
 	test.afterEach(() => {
 		if (!uploadedId) return;
-		tenantPsql(`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${uploadedId}')`);
-		tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${uploadedId}'`);
-		tenantPsql(`DELETE FROM exceptions WHERE invoice_id='${uploadedId}'`);
-		tenantPsql(`DELETE FROM invoices WHERE id='${uploadedId}'`);
+		// The upload really runs extraction, so this invoice has line items and an
+		// extraction result as well as its workflow rows — `deleteInvoicesWhere`
+		// owns the full child graph rather than this spec tracking a subset.
+		deleteInvoicesWhere(`id='${uploadedId}'`);
 		uploadedId = null;
 	});
 

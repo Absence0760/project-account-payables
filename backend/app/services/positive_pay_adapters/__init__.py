@@ -16,6 +16,7 @@ from app.services.positive_pay_adapters.base import (
     PositivePayFormatter,
 )
 from app.services.positive_pay_adapters.dispatcher import (
+    UnknownPositivePayFormatError,
     get_positive_pay_formatter,
     list_available_formats,
     register_positive_pay_formatter,
@@ -26,6 +27,7 @@ __all__ = [
     "CheckIssueItem",
     "FormatterContext",
     "PositivePayFormatter",
+    "UnknownPositivePayFormatError",
     "get_positive_pay_formatter",
     "list_available_formats",
     "register_positive_pay_formatter",

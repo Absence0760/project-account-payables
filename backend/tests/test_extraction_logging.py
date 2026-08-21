@@ -26,6 +26,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+# Import the real database module up front, at collection time. The dispatch
+# test below patches `sqlalchemy.ext.asyncio.async_sessionmaker` globally —
+# `extraction_dispatch` imports it inside the function under test, so there is
+# no module-local name to patch instead. If `app.database` were first imported
+# inside that window, its module-level `_default_control_session_factory` would
+# be built from the MagicMock and stay a plain lambda for the rest of the
+# process, so the next realdb test to call `.configure(bind=…)` on it would die
+# with `AttributeError: 'function' object has no attribute 'configure'`.
+# Importing here binds the real factory before any patch can be active.
+import app.database  # noqa: F401  (imported for its module-level side effect)
+
 # A fake bank number embedded in the sentinel exception message. If the raw
 # exception message leaks into any log record, this string proves it.
 _PII_SENTINEL = "BANK-999888777"
@@ -120,7 +131,7 @@ async def test_extraction_failure_logs_class_name_not_raw_message(caplog):
     with caplog.at_level(logging.DEBUG, logger="app.services.extraction"):
         with _patch_failing_internals(_sentinel_exc()):
             # run_extraction handles its own exception internally (no re-raise).
-            await run_extraction(db, invoice, ctrl_db=None)
+            await run_extraction(db, invoice)
 
     extraction_errors = [
         r
@@ -173,7 +184,7 @@ async def test_extraction_failure_does_not_log_adapter_error_body(caplog):
 
     with caplog.at_level(logging.DEBUG, logger="app.services.extraction"):
         with stack:
-            await run_extraction(db, invoice, ctrl_db=None)
+            await run_extraction(db, invoice)
 
     assert _PII_SENTINEL not in caplog.text, "adapter result.error body leaked into the logs"
 

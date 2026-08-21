@@ -237,7 +237,20 @@ def export_payment_register(payments_with_invoice: Iterable) -> str:
     them). For payments whose invoice was deleted / orphaned, the
     second slot may be None — we emit the payment row with the
     invoice columns blank rather than skipping (the finance team
-    still wants to see the money out)."""
+    still wants to see the money out).
+
+    A SQLAlchemy `Row` is NOT an `isinstance(tuple)` in 2.x (it implements
+    `Sequence`, not `tuple`) — the same trap `export_vendor_spend` documents.
+    Both real callers (`GET /api/analytics/export?report=payment_register` and
+    the scheduled-report runner) pass `rows.all()` from a
+    `select(Payment, Invoice)` join, so branching on
+    `isinstance(pair, (tuple, list))` missed every production call and fell
+    into the bare-object branch — where a `Row` carries none of the attributes
+    looked up (`.id`, `.amount`, `.status`, …) and `getattr(..., default)`
+    swallowed each miss. The register exported a header plus one ALL-BLANK row
+    per payment, with a hardcoded `USD` as the only content. Duck-type on
+    `__getitem__` instead so `Row` and `tuple`/`list` share the positional
+    path; only an attribute-only object (a test double) falls through."""
     buf, w = _writer(
         [
             "payment_id",
@@ -255,7 +268,7 @@ def export_payment_register(payments_with_invoice: Iterable) -> str:
         ]
     )
     for pair in payments_with_invoice:
-        if isinstance(pair, (tuple, list)):
+        if hasattr(pair, "__getitem__"):
             payment, invoice = pair[0], pair[1] if len(pair) > 1 else None
         else:
             payment = pair
