@@ -1014,16 +1014,28 @@ _THRESHOLD_APPLY_ROLES = (ROLE_ADMIN,)
 def _approval_auto_below(steps_config: dict) -> Decimal:
     """Read the current ``auto_approve_below`` off the approval step (0 = unset).
 
-    Mirrors `workflow_engine.get_step_config` lookup but returns a Decimal."""
+    Mirrors `workflow_engine.get_step_config`'s lookup but returns a Decimal, via
+    the shared `approval_chain.finite_money_threshold` — the same parse
+    `decide_auto_approve` uses, so "what the threshold currently is" can't be
+    read differently here than where it is enforced.
+
+    The hand-rolled `except (TypeError, ValueError)` this replaces did not catch
+    what a bad value actually raises: `Decimal("abc")` raises
+    `decimal.InvalidOperation`, an `ArithmeticError`, so it escaped as a 500 on
+    all three threshold surfaces (`GET /threshold-recommendation`,
+    `GET /feedback`, `POST .../apply`). `"NaN"` / `"Infinity"` parsed *through*
+    the guard and then blew up downstream instead — `Decimal("NaN") > 0` raises,
+    and an infinite current threshold reaches `_q2`'s quantize. All of them now
+    read as "no threshold configured" (0), which is the honest answer and the
+    safe one: it is the baseline a raise is measured against, not a control.
+    """
+    from app.services.approval_chain import finite_money_threshold
+
     for step in (steps_config or {}).get("steps", []):
         if step.get("type") == "approval":
-            raw = (step.get("config") or {}).get("auto_approve_below")
-            if raw is None:
-                return Decimal("0")
-            try:
-                return Decimal(str(raw))
-            except (TypeError, ValueError):
-                return Decimal("0")
+            return finite_money_threshold((step.get("config") or {}).get("auto_approve_below")) or (
+                Decimal("0")
+            )
     return Decimal("0")
 
 

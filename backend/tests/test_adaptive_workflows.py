@@ -2365,3 +2365,32 @@ async def test_threshold_apply_still_raises_when_the_outcomes_are_clean(realdb):
         ).scalar_one()
         approval = next(st for st in defn.steps_config["steps"] if st["type"] == "approval")
         assert approval["config"]["auto_approve_below"] == "5000.00"
+
+
+# ---------------------------------------------------------------------------
+# `_approval_auto_below` reads the CURRENT threshold off the frozen JSONB. Its
+# hand-rolled `except (TypeError, ValueError)` did not catch what a bad value
+# actually raises — `Decimal("abc")` raises `decimal.InvalidOperation`, an
+# `ArithmeticError` — so a malformed `auto_approve_below` 500'd all three
+# threshold surfaces. `"NaN"` / `"Infinity"` parsed straight THROUGH the guard
+# and blew up downstream instead (`Decimal("NaN") > 0` raises; an infinite
+# current threshold reaches `_q2`'s quantize).
+# ---------------------------------------------------------------------------
+
+
+def test_approval_auto_below_reads_an_unusable_threshold_as_unset():
+    from app.api.adaptive_workflows import _approval_auto_below
+
+    for bad in ("abc", "10,000", "", "5000 USD", {"x": 1}, [1], "NaN", "Infinity", "-Infinity"):
+        steps = {"steps": [{"type": "approval", "config": {"auto_approve_below": bad}}]}
+        assert _approval_auto_below(steps) == Decimal("0"), bad
+
+
+def test_approval_auto_below_reads_a_usable_threshold_exactly():
+    from app.api.adaptive_workflows import _approval_auto_below
+
+    for raw, expected in (("2500.00", Decimal("2500.00")), (2500, Decimal("2500"))):
+        steps = {"steps": [{"type": "approval", "config": {"auto_approve_below": raw}}]}
+        assert _approval_auto_below(steps) == expected
+    assert _approval_auto_below({"steps": []}) == Decimal("0")
+    assert _approval_auto_below({"steps": [{"type": "approval", "config": {}}]}) == Decimal("0")
