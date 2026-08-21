@@ -1,8 +1,14 @@
 """Platform billing & metering services.
 
-``usage_rollup`` aggregates control-plane usage tables (``extraction_usage``,
+``usage_rollup`` aggregates the usage tables (``extraction_usage``,
 ``card_rebates``) into billable meters per org per period. Pure / queryable,
-``Decimal``-exact, no mutation. See ``backend/docs/billing.md``.
+``Decimal``-exact, no mutation.
+
+Those two tables are **tenant-scoped**, not control-plane: neither is in
+``tenant_provisioning.CONTROL_TABLES``, so they are created in every tenant DB
+and in none of the control plane. ``rollup_usage`` therefore takes a TENANT
+session. ``Plan`` / ``Subscription`` / entitlements ARE control-plane. See
+``backend/docs/billing.md`` § Where it lives.
 """
 
 from app.services.billing.entitlements import (

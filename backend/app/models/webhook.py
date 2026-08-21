@@ -95,8 +95,12 @@ class WebhookDelivery(Base, TimestampMixin):
     __table_args__ = (
         # One delivery per (subscription, event) — the dedupe that keeps a
         # re-fired or replayed event from queueing the same delivery twice
-        # (webhook discipline: dedupe by event id). The emit path swallows the
-        # IntegrityError on a duplicate.
+        # (webhook discipline: dedupe by event id). The emit path inserts every
+        # subscription's delivery in ONE `INSERT ... ON CONFLICT DO NOTHING`
+        # against this constraint; it deliberately does NOT catch an
+        # `IntegrityError`, because rolling one back expires the session's
+        # loaded subscriptions and the fan-out then dies mid-loop (see
+        # `services/webhooks/dispatch.py`).
         UniqueConstraint("subscription_id", "event_id", name="uq_webhook_delivery_sub_event"),
     )
 

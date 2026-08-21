@@ -89,9 +89,13 @@ async def _seed_subscription(realdb, *, org_id, plan_id) -> uuid.UUID:
 async def _preprovision_settings(realdb, org_id, *, price_ids: dict[str, str]) -> None:
     """Pre-populate settings.billing with a customer id + every target plan's
     price id, so ``provision_org_billing`` is a total no-op (no mutation, no
-    intermediate commit) inside ``change_plan``. This isolates the test to the
-    specific bug the issue describes — the unlocked read of the Subscription
-    row — rather than the (separate, orthogonal) provisioning commit path."""
+    commit of its own). This isolates the test to the original bug — the
+    unlocked read of the Subscription row.
+
+    The provisioning-commit path is NOT orthogonal to it (it was once described
+    that way here): that commit released the very row lock this test's fix
+    installs. ``test_concurrent_plan_changes_serialize_when_provisioning_persists``
+    below is the case that exercises it."""
     async with realdb.control_sessionmaker()() as s:
         org = (await s.execute(select(Organization).where(Organization.id == org_id))).scalar_one()
         settings_dict = dict(org.settings or {})
@@ -245,5 +249,97 @@ async def test_concurrent_plan_changes_serialize_not_lost_update(realdb):
         assert len(rows) == 2
         from_plans = sorted(r["from_plan"] for r in rows)
         assert from_plans == sorted([PLAN_A[0], first.new_plan_code])
+    finally:
+        await _cleanup(realdb, org_id)
+
+
+async def _clear_billing_settings(realdb, org_id) -> None:
+    """Leave `settings.billing` ABSENT so `provision_org_billing` has both the
+    customer id and every plan price id to resolve — i.e. it mutates and
+    commits. That commit is the whole point of the test below."""
+    async with realdb.control_sessionmaker()() as s:
+        org = (await s.execute(select(Organization).where(Organization.id == org_id))).scalar_one()
+        settings_dict = dict(org.settings or {})
+        settings_dict.pop("billing", None)
+        org.settings = settings_dict
+        flag_modified(org, "settings")
+        await s.commit()
+
+
+async def test_concurrent_plan_changes_serialize_when_provisioning_persists(realdb):
+    """The same serialization, with provisioning ACTUALLY DOING WORK.
+
+    BUG — ``provision_org_billing`` persists the resolved Stripe customer/price
+    ids onto ``Organization.settings.billing`` and **commits**. It used to be
+    called between the ``SELECT ... FOR UPDATE`` and the repoint, so that commit
+    released the subscription row lock half-way through the read-modify-write:
+    the waiting racer's blocked SELECT returned the still-unrepointed row, both
+    changes prorated off the same stale baseline, and both wrote a
+    ``billing.plan_changed`` row claiming the same ``from_plan``. It fired
+    whenever provisioning had anything to persist — the FIRST change to any plan
+    the org has no stored price id for, i.e. the ordinary case. The test above
+    pre-provisions settings precisely so provisioning is a no-op, so it could
+    not see this.
+
+    FIX — provisioning moved AHEAD of the lock (its own transaction), and the
+    locked read carries ``populate_existing=True`` so the unblocked racer sees
+    the freshly-read columns rather than the instance its own pre-flight peek
+    left in the session's identity map.
+    """
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["admin"]
+    try:
+        plan_a_id = await _seed_plan(realdb, code=PLAN_A[0], price=PLAN_A[1])
+        await _seed_plan(realdb, code=PLAN_B[0], price=PLAN_B[1])
+        await _seed_plan(realdb, code=PLAN_C[0], price=PLAN_C[1])
+        sub_id = await _seed_subscription(realdb, org_id=org_id, plan_id=plan_a_id)
+        await _clear_billing_settings(realdb, org_id)
+
+        res_b, res_c = await asyncio.gather(
+            _change(realdb, org_id, target_code=PLAN_B[0], actor_id=actor_id),
+            _change(realdb, org_id, target_code=PLAN_C[0], actor_id=actor_id),
+        )
+
+        assert res_b.changed is True
+        assert res_c.changed is True
+
+        # Exactly one racer may baseline off the original plan; the other must
+        # observe the first's already-applied plan.
+        baselined_off_original = [r for r in (res_b, res_c) if r.old_plan_code == PLAN_A[0]]
+        assert len(baselined_off_original) == 1, (
+            "both racers baselined off the original plan — the provisioning "
+            f"commit released the row lock (b.old={res_b.old_plan_code} "
+            f"c.old={res_c.old_plan_code})"
+        )
+        first = baselined_off_original[0]
+        second = res_c if first is res_b else res_b
+        assert second.old_plan_code == first.new_plan_code
+
+        # And its proration is computed off the REAL prior price, not plan A's.
+        price_by_code = {PLAN_A[0]: PLAN_A[1], PLAN_B[0]: PLAN_B[1], PLAN_C[0]: PLAN_C[1]}
+        expected_second = compute_proration(
+            old_monthly=price_by_code[first.new_plan_code],
+            new_monthly=price_by_code[second.new_plan_code],
+            period_start=PERIOD_START,
+            period_end=PERIOD_END,
+            change_at=CHANGE_AT,
+        )
+        assert second.proration.amount == expected_second.amount
+
+        # Two coherent audit rows: A->first and first->second.
+        async with realdb.sessionmaker("a")() as s:
+            rows = (
+                (
+                    await s.execute(
+                        select(AuditLog.details).where(
+                            AuditLog.action == "billing.plan_changed",
+                            AuditLog.entity_id == sub_id,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert sorted(r["from_plan"] for r in rows) == sorted([PLAN_A[0], first.new_plan_code])
     finally:
         await _cleanup(realdb, org_id)

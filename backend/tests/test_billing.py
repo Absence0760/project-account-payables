@@ -164,6 +164,32 @@ def test_usage_rollup_as_meters_serialises_decimal_as_string():
     assert all(isinstance(v, str) for v in meters.values())
 
 
+def test_usage_meters_are_tenant_tables_not_control_plane():
+    """`rollup_usage` is handed a TENANT session, and that has to stay true.
+
+    `extraction_usage` / `card_rebates` are absent from `CONTROL_TABLES`, which
+    is exactly what makes `tenant_provisioning` create them in every tenant DB
+    and in none of the control plane — `to_regclass('extraction_usage')` is NULL
+    in `feohledger` however that database was built (`alembic upgrade head`, or
+    `scripts/seed.py`, which creates only `CONTROL_TABLES` there).
+
+    Three docstrings used to call these "control-plane meters", and that claim is
+    what makes a control-plane session look like the right thing to hand
+    `rollup_usage`. Moving either table into `CONTROL_TABLES` without also
+    switching `api/billing.get_subscription` off `get_tenant_db` would report
+    zero usage on the billing surface, silently.
+    """
+    from app.models.usage import ExtractionUsage as _ExtractionUsage
+    from app.models.virtual_card import CardRebate as _CardRebate
+    from app.services.tenant_provisioning import CONTROL_TABLES
+
+    assert _ExtractionUsage.__tablename__ not in CONTROL_TABLES
+    assert _CardRebate.__tablename__ not in CONTROL_TABLES
+    # …while the billing model the meters feed IS control-plane.
+    assert Plan.__tablename__ in CONTROL_TABLES
+    assert Subscription.__tablename__ in CONTROL_TABLES
+
+
 @pytest.mark.asyncio
 async def test_mock_list_invoices_is_deterministic():
     adapter = MockBillingAdapter()

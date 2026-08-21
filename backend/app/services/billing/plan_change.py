@@ -3,26 +3,38 @@
 Changing the plan behind an org's live ``Subscription`` part-way through a
 billing period:
 
-  1. Resolve the org's live subscription + current plan **row-locked**
+  1. **Pre-flight, unlocked.** Resolve the target plan, confirm the org has a
+     live subscription at all, and short-circuit a same-plan retry (so it never
+     reaches the provider). Then resolve-or-create the provider customer + the
+     NEW plan's price (`provision_org_billing`).
+  2. Resolve the org's live subscription + current plan **row-locked**
      (`_get_active_subscription_for_update`, ``SELECT ... FOR UPDATE``). A
      second concurrent ``change_plan`` call for the same org blocks behind
      this one's commit and then re-reads the already-updated subscription as
      its own baseline, instead of racing off the same stale "current" plan
      (see `docs/billing.md` § Concurrency).
-  2. **Idempotent no-op** when the target plan equals the current plan — returns
+  3. **Idempotent no-op** when the target plan equals the current plan — returns
      a zero proration, mutates nothing, writes no audit row (mirrors
      `transition_invoice` / `apply_billing_event`'s no-op rule). A retry of the
-     same change therefore can't double-charge.
-  3. Resolve (and persist) the subscription's current billing window via
+     same change therefore can't double-charge. Re-checked here under the lock,
+     because a racer may have moved the org onto this plan since the peek.
+  4. Resolve (and persist) the subscription's current billing window via
      `period.current_period`, then compute the prorated adjustment
      (`compute_proration`, pure Decimal) off the locked baseline. Nothing used
      to write `current_period_start`/`_end`, so this step used to divide by a
      zero-length window and prorate `0.00` on every change.
-  4. Resolve-or-create the provider customer + the NEW plan's price
-     (`provision_org_billing`) so the live adapter has what it needs.
   5. Repoint the subscription at the new plan, persist, and write an append-only
      ``billing.plan_changed`` audit row (PII-free; old/new plan + proration as an
      exact decimal string).
+
+**Step 1 must stay ahead of step 2.** `provision_org_billing` commits, and a
+commit inside the locked section RELEASES the row lock mid-transaction: the
+waiting racer's ``FOR UPDATE`` then returned the still-unrepointed row, both
+changes prorated off the same stale plan, and both wrote an audit row claiming
+the same ``from_plan``. That happened whenever provisioning had anything to
+persist — i.e. on the first change to any plan the org had no stored price id
+for. Keeping it ahead of the lock also keeps the (live, third-party) Stripe
+round-trip out of the locked window.
 
 Money-path boundary
 -------------------
@@ -46,6 +58,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.billing import Plan, Subscription
 from app.models.organization import Organization
 from app.services.audit_dispatch import dispatch_auth_audit
+from app.services.billing.entitlements import get_active_subscription
 from app.services.billing.period import current_period
 from app.services.billing.proration import ProrationResult, compute_proration
 from app.services.billing.provisioning import provision_org_billing
@@ -81,6 +94,15 @@ async def _get_active_subscription_for_update(
     only ``Subscription`` and then issuing a fresh, unlocked ``Plan`` lookup
     keyed off the just-locked (and therefore current) ``plan_id`` sidesteps
     the pitfall entirely.
+
+    ``populate_existing=True`` is load-bearing, not defensive tidiness. If this
+    session already holds the ``Subscription`` in its identity map — which it
+    does, because ``change_plan``'s unlocked pre-flight peek loaded it — the
+    default behaviour hands that instance BACK with its previously-loaded
+    column values and discards the ones the locked SELECT just read. A second
+    racer would then unblock, re-read the row Postgres has since updated, and
+    still see the stale ``plan_id``, defeating the lock entirely. Same reason
+    ``api/webhooks._get_owned_subscription`` sets it before a rotation.
     """
     subscription = (
         await db.execute(
@@ -92,6 +114,7 @@ async def _get_active_subscription_for_update(
             .order_by(Subscription.created_at.desc())
             .limit(1)
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
     if subscription is None:
@@ -133,11 +156,6 @@ async def change_plan(
     """
     now = change_at or datetime.now(UTC)
 
-    active = await _get_active_subscription_for_update(control_db, org.id)
-    if active is None:
-        raise PlanChangeError("no_live_subscription")
-    subscription, current_plan = active
-
     new_plan = (
         await control_db.execute(
             select(Plan).where(Plan.code == new_plan_code, Plan.is_active.is_(True))
@@ -146,8 +164,51 @@ async def change_plan(
     if new_plan is None:
         raise PlanChangeError("unknown_plan")
 
-    # Idempotent no-op: already on the target plan. No mutation, no audit row, no
-    # provider call — a retry of the same change can't double-charge.
+    # --- Pre-flight, deliberately BEFORE the row lock ------------------------
+    # `provision_org_billing` COMMITS (it persists the resolved provider ids onto
+    # `Organization.settings.billing`). Calling it between the `FOR UPDATE` read
+    # and the repoint released that lock half-way through the read-modify-write:
+    # the second racer's blocked SELECT then returned the still-unrepointed row,
+    # so BOTH changes prorated off the same stale baseline and both wrote an
+    # audit row claiming the same `from_plan` — the exact lost update
+    # `_get_active_subscription_for_update` exists to prevent. It fired whenever
+    # provisioning had anything to persist, i.e. on the FIRST change to any plan
+    # the org has no stored price id for — the common case, not an edge one.
+    #
+    # Provisioning here also keeps the provider round-trip (up to two live
+    # Stripe calls) OUT of the locked window, so an inbound billing webhook or
+    # the dunning sweep can't be parked behind it on the same subscription row.
+    #
+    # The unlocked peek is what preserves "a same-plan retry makes no provider
+    # call"; the AUTHORITATIVE no-live-subscription / already-on-plan checks are
+    # still the locked ones below.
+    peek = await get_active_subscription(control_db, org.id)
+    if peek is None:
+        raise PlanChangeError("no_live_subscription")
+    _peek_subscription, peek_plan = peek
+    if peek_plan.id == new_plan.id:
+        return PlanChangeResult(
+            changed=False,
+            old_plan_code=peek_plan.code,
+            new_plan_code=new_plan.code,
+            proration=_zero_proration(peek_plan.monthly_price, new_plan.monthly_price),
+            reason="already_on_plan",
+        )
+
+    # Resolve-or-create the provider customer + the NEW plan's price so the live
+    # adapter has what create/update needs. Fails closed (BillingNotConfigured)
+    # with the live adapter and no key — before anything is locked or mutated.
+    await provision_org_billing(control_db, org=org, plan=new_plan)
+
+    # --- Locked read-modify-write: ONE transaction, ONE commit ---------------
+    active = await _get_active_subscription_for_update(control_db, org.id)
+    if active is None:
+        raise PlanChangeError("no_live_subscription")
+    subscription, current_plan = active
+
+    # Idempotent no-op: already on the target plan. No mutation, no audit row —
+    # a retry of the same change can't double-charge. Re-checked under the lock
+    # because a racer may have moved the org onto this plan since the peek.
     if current_plan.id == new_plan.id:
         return PlanChangeResult(
             changed=False,
@@ -177,11 +238,6 @@ async def change_plan(
         period_end=period.end,
         change_at=now,
     )
-
-    # Resolve-or-create the provider customer + the NEW plan's price so the live
-    # adapter has what create/update needs. Fails closed (BillingNotConfigured)
-    # with the live adapter and no key — before we mutate the subscription.
-    await provision_org_billing(control_db, org=org, plan=new_plan)
 
     # Guard the (org, plan) unique constraint: a leftover *canceled* row for the
     # target plan would collide when we repoint plan_id. Drop the stale canceled
