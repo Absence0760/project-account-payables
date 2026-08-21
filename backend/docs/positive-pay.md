@@ -90,8 +90,8 @@ generate as many as you like.
 ## Formatter adapters (`services/positive_pay_adapters/`)
 
 The rendering layer mirrors `payment_adapters/`: a pluggable, per-bank
-formatter, selected by the `bank_format` key, with a default and a safe
-fallback.
+formatter, selected by the `bank_format` key, with a default for a **missing**
+key and a refusal for an unrecognised one.
 
 ```python
 @register_positive_pay_formatter("my_bank")
@@ -111,8 +111,30 @@ The dataclasses (`base.py`):
 - `FormatterContext(company_name, account_number, file_date, currency)`
 
 `get_positive_pay_formatter(name_or_config)` (`dispatcher.py`) resolves the
-formatter; the default is `csv`, and an **unknown name falls back to `csv`**
-(never raises — a bad config can't break generation).
+formatter. A **missing** name resolves to `csv` — the local-first default every
+install ships. A **named** layout we have no formatter for raises
+`UnknownPositivePayFormatError`, which both generate routes turn into a **422**
+naming the bad value and the registered alternatives.
+
+It used to fall back to `csv` for a named-unknown layout too, on the reasoning
+that a bad config shouldn't break file generation. That trade was wrong here for
+the same reason `decisions.md` §29 gives for the payment / ERP / FX dispatchers
+and §36 for sanctions: the fallback is not inert, so the misconfiguration became
+a confident wrong answer. Positive Pay is a **fraud control the bank enforces off
+the file we hand it**, so one typo in `bank_format` (`"wells_fargo_fixed"` for a
+registered layout) rendered a CSV body, stored it in MinIO, stamped the
+`PositivePayFile` row *and* the audit trail with the **requested** name, filed
+the `(payment_run_id, bank_format)` idempotency slot under it, and returned 201.
+The bank then cannot parse the file — so either every cheque in the run is
+refused, or Positive Pay is simply not in force and an altered cheque clears with
+nothing to match it against. Nothing anywhere said so.
+
+The refusal lands **before** the items are projected, so no cheque or vendor bank
+data is rendered and no object is uploaded for a file that could never have been
+formatted correctly. It lands **after** the idempotency lookup, so a row
+generated under a since-removed format name is still returned rather than 422'd.
+Guard: `tests/test_positive_pay.py` (dispatcher) + `tests/test_positive_pay_api.py`
+(both routes, and that the idempotency slot stays free).
 
 Registered formatters:
 
@@ -252,15 +274,32 @@ Exception for **every** fraud signal (`exception_type="fraud_flag"`,
 <num> <reason>"` — no account numbers):
 
 - **`amount_mismatch`** (an *altered* cheque whose number we did issue) maps to
-  its invoice → an invoice-scoped `fraud_flag`. Dedupe: skip if an open/escalated
-  `fraud_flag` already exists for that invoice (mirrors
-  `invoice_warnings._ensure_exception`).
+  its invoice → an invoice-scoped `fraud_flag`.
 - **`not_on_file`** (a cheque the bank cleared that we *never issued* — the
   strongest fraud signal) has, by definition, no invoice on our side. It becomes
   a **standalone `fraud_flag` with `invoice_id = None`**, so it's a first-class,
-  queryable item in the exception queue rather than a buried JSON field. Dedupe:
-  skip if an open/escalated invoice-less `fraud_flag` with the same description
-  (which carries the unique cheque number) already exists.
+  queryable item in the exception queue rather than a buried JSON field.
+
+**The dedupe key is the description, not the invoice.** Both branches skip only
+when an open/escalated `fraud_flag` with the **same description** already exists
+(narrowed by `invoice_id` when there is one) — and the description carries this
+cheque's number and its verdict, so a bank redelivery of the same return still
+creates nothing.
+
+It used to be `(invoice_id, "fraud_flag")` on the invoice-scoped branch,
+mirroring `invoice_warnings._ensure_exception`. That is the right key for a
+*re-derived per-invoice rule* — re-running extraction must not re-raise the
+round-amount flag — but the wrong key for a bank return, because the invoice may
+already carry an open `fraud_flag` raised by something else entirely: the
+round-amount rule (`severity="info"`), a settlement-amount divergence, or an
+a cheque from an earlier run on the same invoice (re-paid after a void). That
+unrelated row silently absorbed the bank telling us a cheque had been
+**altered**: `process-return` returned `amount_mismatches: 1,
+exceptions_created: 0`, and the queue showed only the pre-existing — possibly
+`info`-severity — description. Narrowing the key can only ever raise *more*
+rows, never suppress one. Guard:
+`test_altered_cheque_raises_even_when_the_invoice_already_has_a_fraud_flag` in
+`tests/test_positive_pay_api.py`.
 
 **Why this needs a nullable `invoice_id`.** Migration `0049` drops the
 `exceptions.invoice_id` NOT NULL constraint precisely so a never-issued cheque

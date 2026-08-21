@@ -429,8 +429,26 @@ pattern (the same shape as `sanctions_adapters` / `fx_adapters` /
 Registry via the `@register_enrichment_adapter` decorator;
 `get_enrichment_adapter(config)` resolves per-org
 `Organization.settings.enrichment.provider` → the `FEOH_VENDOR_ENRICHMENT_PROVIDER`
-env default (`mock`). An unknown provider name falls back to `mock` (a typo can't
-break enrichment), but the real providers still fail closed on a missing key.
+env default → `mock`. The real providers fail closed on a missing key.
+
+**A NAMED provider with no registered adapter raises
+`UnknownEnrichmentProviderError`**, which the enrich route turns into a 422
+naming the bad value and the registered alternatives. An **absent or empty**
+provider still resolves to `mock` — that is the local-first default, and a fresh
+clone must enrich with no cloud account.
+
+It used to fall back to `mock` for a named-unknown provider too, on the
+reasoning that a typo can't break enrichment. But `mock` is not inert: it
+fabricates a *complete, plausible* identity — legal name, registered address,
+DUNS, employee count, revenue — and reports `matched: true`. So a typo in
+`settings.enrichment.provider` presented invented firmographics to a steward as a
+D&B / Clearbit lookup, one click from `POST .../apply` writing them onto a real
+supplier — where `name` is a **screened identity field** that re-runs sanctions
+screening. The `(MOCK)` marker on the legal name is a courtesy, not a control: it
+rides one of six fields and nothing refuses an apply because of it. Same call as
+`decisions.md` §29 (payments / ERP / FX) and §36 (sanctions): the fixture adapter
+is never an inert stub, so substituting it turns a configuration error into a
+silent, confident wrong answer. Guard: `tests/test_external_enrichment.py`.
 
 To add a provider: copy `mock_adapter.py`, implement `enrich_vendor` +
 `test_connection`, register with the decorator.

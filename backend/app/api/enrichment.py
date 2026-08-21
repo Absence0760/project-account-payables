@@ -58,8 +58,10 @@ from app.services.audit_access import build_field_diff
 from app.services.audit_dispatch import dispatch_audit
 from app.services.enrichment_adapters import (
     EnrichmentNotConfigured,
+    UnknownEnrichmentProviderError,
     VendorEnrichmentQuery,
     get_enrichment_adapter,
+    list_available_providers,
 )
 from app.services.vendor_consolidation import (
     VendorRecord,
@@ -711,7 +713,21 @@ async def enrich_vendor(
         raise HTTPException(status_code=404, detail="Vendor not found")
 
     enrichment_cfg = (org.settings or {}).get("enrichment") or {}
-    adapter = get_enrichment_adapter(enrichment_cfg)
+    try:
+        adapter = get_enrichment_adapter(enrichment_cfg)
+    except UnknownEnrichmentProviderError as exc:
+        # Fail closed and NAME the bad value (admin config, never a credential).
+        # The alternative — `mock` — returns fabricated firmographics with
+        # `matched=True`, which a steward would have no way to distinguish from
+        # a real D&B / Clearbit result before applying it onto the vendor row.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"'{exc.provider}' is not a supported vendor-enrichment provider "
+                f"(one of: {', '.join(list_available_providers())}). "
+                "Fix it in Organization Settings and retry."
+            ),
+        ) from None
     query = VendorEnrichmentQuery(
         vendor_name=vendor.name,
         vendor_country=None,

@@ -20,15 +20,19 @@ from app.services.enrichment_adapters.base import (
     VendorFirmographics,
 )
 from app.services.enrichment_adapters.dispatcher import (
+    UnknownEnrichmentProviderError,
     get_enrichment_adapter,
+    list_available_providers,
     register_enrichment_adapter,
 )
 
 __all__ = [
     "EnrichmentNotConfigured",
+    "UnknownEnrichmentProviderError",
     "VendorEnrichmentAdapter",
     "VendorEnrichmentQuery",
     "VendorFirmographics",
     "get_enrichment_adapter",
+    "list_available_providers",
     "register_enrichment_adapter",
 ]

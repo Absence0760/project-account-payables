@@ -621,6 +621,90 @@ async def test_process_return_raises_fraud_including_standalone_not_on_file(real
         await _clear_settings(realdb, org_id)
 
 
+async def test_altered_cheque_raises_even_when_the_invoice_already_has_a_fraud_flag(realdb):
+    """An UNRELATED open `fraud_flag` must not absorb the bank's altered-cheque
+    signal.
+
+    The dedupe key was `(invoice_id, "fraud_flag")` — right for a re-derived
+    per-invoice rule, wrong for a bank return. An invoice can already carry an
+    open `fraud_flag` from something else entirely (the round-amount rule, at
+    severity `info`; a settlement-amount divergence; an earlier cheque), and
+    that row silently swallowed the ALTERED-cheque exception: `process-return`
+    reported `amount_mismatches: 1, exceptions_created: 0` and the queue showed
+    only the pre-existing description. The fraud signal Positive Pay exists to
+    deliver never arrived. The key is now the description (which carries the
+    cheque number + verdict), narrowed by invoice.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _set_check_account(realdb, org_id)
+    try:
+        vendor_id = await _add_vendor(mk, org_id, name="Prior Flag Co")
+        invoice_id = await _add_invoice(
+            mk, org_id, vendor_id=vendor_id, invoice_number="INV-PRIORFLAG", amount="1000.00"
+        )
+        run_id = await _add_check_run(
+            mk, org_id, invoice_id=invoice_id, check_number="CHKPF001", amount="1000.00"
+        )
+
+        # An unrelated, lower-severity fraud_flag already open on this invoice —
+        # exactly what `invoice_warnings` raises for a round amount.
+        async with mk() as s:
+            s.add(
+                APException(
+                    organization_id=org_id,
+                    entity_id=await _default_entity_id(s),
+                    invoice_id=uuid.UUID(invoice_id),
+                    exception_type="fraud_flag",
+                    severity="info",
+                    status="open",
+                    description="Suspicious round amount: $1000.00",
+                )
+            )
+            await s.commit()
+
+        async with realdb.client(key="a", role="ap_manager") as c:
+            file_id = (
+                await c.post(f"/api/positive-pay/payment-runs/{run_id}/check-issue", json={})
+            ).json()["id"]
+            resp = await c.post(
+                f"/api/positive-pay/{file_id}/process-return",
+                json={"presented_items": [{"check_number": "CHKPF001", "amount": "9500.00"}]},
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["amount_mismatches"] == 1
+        assert resp.json()["exceptions_created"] == 1
+
+        async with mk() as s:
+            rows = (
+                (
+                    await s.execute(
+                        select(APException).where(
+                            APException.invoice_id == uuid.UUID(invoice_id),
+                            APException.exception_type == "fraud_flag",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            # Both survive — the pre-existing info row AND the altered-cheque error.
+            assert len(rows) == 2
+            altered = [r for r in rows if "CHKPF001" in (r.description or "")]
+            assert len(altered) == 1
+            assert altered[0].severity == "error"
+
+        # A bank redelivery of the SAME return is still deduped.
+        async with realdb.client(key="a", role="ap_manager") as c:
+            again = await c.post(
+                f"/api/positive-pay/{file_id}/process-return",
+                json={"presented_items": [{"check_number": "CHKPF001", "amount": "9500.00"}]},
+            )
+        assert again.json()["exceptions_created"] == 0
+    finally:
+        await _clear_settings(realdb, org_id)
+
+
 async def test_process_return_classifies_against_persisted_snapshot_not_live_status(realdb):
     """Issue #178: a cheque issued (and appears on the file sent to the bank),
     then later VOIDED in the app, must still classify against what the bank
@@ -788,3 +872,92 @@ async def test_cfo_can_read_list(realdb):
     async with realdb.client(key="a", role="cfo") as c:
         resp = await c.get("/api/positive-pay")
     assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Unsupported bank format
+# ---------------------------------------------------------------------------
+
+
+async def test_check_issue_refuses_an_unregistered_bank_format(realdb):
+    """A `bank_format` we have no formatter for is a 422 — never a CSV file
+    filed under the requested name.
+
+    The dispatcher used to fall back to `csv`. Positive Pay is a fraud control
+    the BANK enforces off the file we hand it, so that fallback stored a CSV
+    body, stamped the row + audit trail with the requested format, burned the
+    `(run, bank_format)` idempotency slot on it and returned 201 — leaving the
+    tenant believing the control was in force on a file its bank cannot parse.
+    Nothing must persist: no `PositivePayFile` row, and the slot stays free.
+    """
+    from app.models.positive_pay import PositivePayFile
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    vendor_id = await _add_vendor(mk, org_id, name="BadFormat Co")
+    invoice_id = await _add_invoice(mk, org_id, vendor_id=vendor_id, invoice_number="INV-BF1")
+    run_id = await _add_check_run(mk, org_id, invoice_id=invoice_id, check_number="CHKBF001")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            f"/api/positive-pay/payment-runs/{run_id}/check-issue",
+            json={"bank_format": "wells_fargo_xyz"},
+        )
+        assert resp.status_code == 422, resp.text
+        detail = resp.json()["detail"]
+        # Names the bad value and the real alternatives (caller input, never a
+        # credential).
+        assert "wells_fargo_xyz" in detail
+        assert "csv" in detail
+
+        # The valid format still works on the same run — the refusal did not
+        # consume the idempotency slot.
+        ok = await c.post(
+            f"/api/positive-pay/payment-runs/{run_id}/check-issue", json={"bank_format": "csv"}
+        )
+        assert ok.status_code == 201, ok.text
+
+    async with mk() as s:
+        rows = (
+            (
+                await s.execute(
+                    select(PositivePayFile).where(
+                        PositivePayFile.payment_run_id == uuid.UUID(run_id)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert [r.bank_format for r in rows] == ["csv"]
+
+
+async def test_ach_authorization_refuses_an_unregistered_bank_format(realdb):
+    """Same refusal on the org-wide ACH file — and it lands BEFORE the vendor
+    bank details are projected, so no routing/account number is rendered for a
+    file that could never have been formatted correctly."""
+    from app.models.positive_pay import PositivePayFile
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    await _add_vendor(
+        mk,
+        org_id,
+        name="ACH BadFormat",
+        bank_details={"routing_number": "021000021", "account_number": "555000111"},
+    )
+    async with mk() as s:
+        before = (await s.execute(select(func.count()).select_from(PositivePayFile))).scalar() or 0
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/positive-pay/ach-authorization", json={"bank_format": "chase_fixed"}
+        )
+    assert resp.status_code == 422, resp.text
+    assert "chase_fixed" in resp.json()["detail"]
+
+    async with mk() as s:
+        after = (await s.execute(select(func.count()).select_from(PositivePayFile))).scalar() or 0
+    assert after == before

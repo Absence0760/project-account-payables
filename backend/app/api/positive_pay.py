@@ -70,7 +70,9 @@ from app.services.positive_pay import (
 )
 from app.services.positive_pay_adapters import (
     FormatterContext,
+    UnknownPositivePayFormatError,
     get_positive_pay_formatter,
+    list_available_formats,
 )
 from app.tenant import (
     apply_entity_scope,
@@ -130,6 +132,29 @@ def _resolve_company_account(org: Organization) -> tuple[str, str]:
 def _last4(account_number: str) -> str | None:
     cleaned = (account_number or "").strip()
     return cleaned[-4:] if len(cleaned) >= 4 else (cleaned or None)
+
+
+def _require_formatter(bank_format: str):
+    """Resolve the bank layout or 422 naming the unregistered format.
+
+    ``get_positive_pay_formatter`` refuses a NAMED layout it has no formatter
+    for rather than rendering ``csv`` under the requested name — see its module
+    docstring. Refusing here keeps the whole record honest: no MinIO object, no
+    ``PositivePayFile`` row claiming a layout it isn't, no audit row asserting
+    it, and — for check-issue — no ``(run, bank_format)`` idempotency slot
+    burned on a format the bank can't read. 422 because the bad value is in the
+    request body; the format name is caller input, never a credential.
+    """
+    try:
+        return get_positive_pay_formatter(bank_format)
+    except UnknownPositivePayFormatError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"'{exc.name}' is not a supported bank format "
+                f"(one of: {', '.join(list_available_formats())})."
+            ),
+        ) from None
 
 
 async def _get_scoped_file(
@@ -220,12 +245,18 @@ async def generate_check_issue(
         response.status_code = status.HTTP_200_OK
         return _file_to_response(existing)
 
+    # Resolve the layout BEFORE building the items — an unsupported format is a
+    # request error, and refusing it here means no cheque data is projected and
+    # no object is uploaded for a file that could never have been rendered
+    # correctly. (After the idempotency lookup, so a row generated under a
+    # since-removed format name is still returned rather than 422'd.)
+    formatter = _require_formatter(bank_format)
+
     company_name, account_number = _resolve_company_account(org)
     items, total, mapping = await service.build_check_issue_items(
         db, run=run, entity_id=entity_id, account_number=account_number
     )
 
-    formatter = get_positive_pay_formatter(bank_format)
     ctx = FormatterContext(
         company_name=company_name,
         account_number=account_number,
@@ -329,11 +360,13 @@ async def generate_ach_authorization(
     (``file_type=ach_authorization``, no payment run). 201.
     """
     bank_format = body.bank_format or "csv"
+    # Same refusal as check-issue: an unsupported layout never reaches a file.
+    formatter = _require_formatter(bank_format)
+
     company_name, account_number = _resolve_company_account(org)
 
     items = await service.build_ach_authorization_items(db, org_id=org_id, entity_id=entity_id)
 
-    formatter = get_positive_pay_formatter(bank_format)
     ctx = FormatterContext(
         company_name=company_name,
         account_number=account_number,
@@ -529,21 +562,33 @@ async def process_return(
         )
         description = f"Positive Pay return: check {result.check_number} {reason}"
 
-        # Dedupe so re-processing a redelivery doesn't pile up duplicates
-        # (mirrors invoice_warnings._ensure_exception). Invoice-scoped rows
-        # dedupe on the invoice; invoice-less rows dedupe on the description
-        # (which carries the unique cheque number) since there's no invoice key.
+        # Dedupe so re-processing a bank redelivery doesn't pile up duplicates.
+        # The key is the DESCRIPTION — which carries this cheque's number and
+        # its verdict — on both branches, narrowed by `invoice_id` when we have
+        # one.
+        #
+        # It used to be `(invoice_id, "fraud_flag")` on the invoice-scoped
+        # branch, mirroring `invoice_warnings._ensure_exception`. That is the
+        # right key for a re-derived per-invoice rule (re-running extraction
+        # must not re-raise the round-amount flag), but it is the wrong key for
+        # a bank return: the invoice may ALREADY carry an open `fraud_flag`
+        # raised by something else entirely — the round-amount rule (severity
+        # `info`), a settlement-amount divergence, a cheque from an earlier run
+        # on the same invoice — and that unrelated row silently absorbed the
+        # bank telling us a cheque had been ALTERED. `exceptions_created` came
+        # back 0, the queue showed only the pre-existing (possibly
+        # `info`-severity) description, and the fraud signal Positive Pay exists
+        # to deliver never arrived.
+        # Narrowing the key can only ever raise MORE rows, never suppress one.
         dedupe = select(func.count()).where(
             APException.exception_type == "fraud_flag",
             APException.status.in_(["open", "escalated"]),
+            APException.description == description,
         )
         if invoice_id is not None:
             dedupe = dedupe.where(APException.invoice_id == invoice_id)
         else:
-            dedupe = dedupe.where(
-                APException.invoice_id.is_(None),
-                APException.description == description,
-            )
+            dedupe = dedupe.where(APException.invoice_id.is_(None))
         already = (await db.execute(dedupe)).scalar() or 0
         if already > 0:
             continue
