@@ -106,7 +106,36 @@ is in the reporting currency; its outlay is not) and is listed in
 `reporting_currency=None` disables the guard, which is why every production
 caller passes it and only the pure unit tests omit it.
 
-**Tier window is measured from `valid_from`, not from today.** Every call site that resolves a tier — `best_tier_for_date` (best-tier-today) and `select_tier_for_date` (a caller-named tier, e.g. the accept endpoints' `tier_days`) — takes an optional `reference_date` that should be the offer's `valid_from` (when it was actually extended). A tier `{"days": N}`'s real deadline is `valid_from + N days`; omitting `reference_date` (or passing `None`) silently measures every deadline from "today" instead, which makes every tier look perpetually achievable regardless of how long the offer has been open — the exact bug in issue #124. `select_tier` alone (no `_for_date` suffix) has **no date check at all**; only use it when the caller has already verified the tier's window separately.
+**Tier window is measured from the offer, not from today.** Every call site that
+resolves a tier — `best_tier_for_date` (best-tier-today) and
+`select_tier_for_date` (a caller-named tier, e.g. the accept endpoints'
+`tier_days`) — takes an optional `reference_date`, and it must come from
+**`discount_offers.offer_reference_date(offer)`**. A tier `{"days": N}`'s real
+deadline is `reference + N days`; omitting `reference_date` (or passing `None`)
+silently measures every deadline from "today" instead, which makes every tier
+look perpetually achievable regardless of how long the offer has been open —
+the exact bug in issue #124.
+
+`offer_reference_date` resolves **`valid_from`, else the offer's `created_at`
+date** (UTC, matching `utils/dates.utc_today`). The second rung is what the
+first fix was missing: every call site passed `offer.valid_from` directly, and
+that column is nullable — `build_bulk_offer.as_offer_kwargs` has no `valid_from`
+key **at all**, so *every bulk negotiation* was created with a NULL one, and
+`DiscountOfferCreate.valid_from` defaults to `None` too. Those offers kept the
+rolling deadline. An offer opened on Jan 1 with
+`[{days: 5, percent: 3}, {days: 30, percent: 1}]` still selected the 3% rung in
+August; on a 500,000 bulk offer that is a 15,000 deduction the supplier never
+agreed to. `_tier_deadline` (the shared `pay_by` the router and the sweep both
+render) goes through the same resolver. `None` is returned only for an
+unpersisted offer carrying neither date, where "measure from today" is correct.
+
+`select_tier` alone (no `_for_date` suffix) has **no date check at all**; only
+use it when the caller has already verified the tier's window separately.
+
+Guards: `tests/test_discount_offers.py` — the resolver's own cases, the
+end-to-end aged-bulk-offer case, and an AST drift guard that fails when any call
+site under `app/` resolves `reference_date` from anything other than
+`offer_reference_date`.
 
 ### Supplier-financing adapters (`services/financing_adapters/`)
 

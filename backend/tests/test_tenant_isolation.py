@@ -21,7 +21,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from jose import jwt
 
 from app.config import settings
@@ -204,3 +204,103 @@ async def test_get_tenant_ignores_non_bearer_authorization():
         authorization="Basic dXNlcjpwYXNz",
     )
     assert org.id == acme_id
+
+
+# ---------------------------------------------------------------------------
+# End-to-end wiring: does a REAL request actually run the guard?
+#
+# Everything above exercises `get_tenant` directly. That proves the guard is
+# correct — it does NOT prove it is reached, and reaching it is the whole
+# control: most tenant-data routes depend only on `get_tenant_db`, which pulls
+# `get_tenant` as its own dependency. If that chain were ever broken (a
+# "simplified" `get_tenant_db` that resolved the Organization itself), every
+# test above would still pass while any authenticated user could read any
+# tenant by swapping one header.
+#
+# The realdb harness cannot cover this: `RealDB.client()` overrides
+# `get_tenant_db` wholesale to swap in a per-loop engine, so `get_tenant` never
+# runs for a route that depends only on the session provider. That is the same
+# shape as the late-commit override recorded in decisions §20 — an override
+# that quietly replaced semantics rather than just the engine — so the gap is
+# closed here with a client that overrides ONLY `get_control_db` and lets the
+# production `get_tenant_db` run for real.
+#
+# Safe against the cross-loop engine hazard those harness overrides exist to
+# avoid: `get_tenant_engine` caches per db_name in a module global, and the
+# `realdb` fixture calls `dispose_all_engines()` (which `.clear()`s that cache)
+# after every test — so the engine this builds is created on, and discarded
+# with, this test's own event loop.
+# ---------------------------------------------------------------------------
+
+
+def _real_path_client(realdb, *, token: str | None = None, slug: str | None = None):
+    """An ASGI client on the PRODUCTION dependency chain.
+
+    Only `get_control_db` is redirected (at this slot's control-plane DB, where
+    the harness's Organization rows live). `get_tenant` and `get_tenant_db` are
+    untouched, so the request walks exactly the path a deployed one does.
+    """
+    import httpx
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from app.database import commit_before_response, get_control_db
+    from app.main import app
+    from app.tenant import get_tenant_db
+
+    ctrl_engine = create_async_engine(realdb.control_db_url(), poolclass=NullPool)
+    realdb._engines.append(ctrl_engine)
+    ctrl_mk = async_sessionmaker(ctrl_engine, expire_on_commit=False)
+
+    async def _control_db(request: Request):
+        async with ctrl_mk() as session:
+            commit_before_response(session, request)
+            try:
+                yield session
+                if session.in_transaction():
+                    await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+
+    app.dependency_overrides[get_control_db] = _control_db
+    # Load-bearing: the moment this is overridden the test proves nothing.
+    app.dependency_overrides.pop(get_tenant_db, None)
+
+    headers: dict[str, str] = {}
+    if slug is not None:
+        headers["X-Tenant-Slug"] = slug
+    if token is not None:
+        headers["Authorization"] = f"Bearer {token}"
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test", headers=headers
+    )
+
+
+@pytest.mark.asyncio
+async def test_end_to_end_matching_slug_is_served(realdb):
+    """Positive control — without it the two refusals below could pass for
+    reasons that have nothing to do with the guard."""
+    info = realdb.info("a")
+    async with _real_path_client(realdb, token=realdb.token("a", "admin"), slug=info.slug) as c:
+        resp = await c.get("/api/invoices")
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_end_to_end_swapped_tenant_header_is_refused(realdb):
+    """The headline attack, over HTTP: tenant A's token + tenant B's slug."""
+    other = realdb.info("b")
+    async with _real_path_client(realdb, token=realdb.token("a", "admin"), slug=other.slug) as c:
+        resp = await c.get("/api/invoices")
+    assert resp.status_code == 403, resp.text
+    assert "tenant" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_end_to_end_missing_tenant_header_is_refused(realdb):
+    """No `X-Tenant-Slug` and no custom-domain `Host` match — the resolver must
+    refuse rather than fall back to any tenant."""
+    async with _real_path_client(realdb, token=realdb.token("a", "admin")) as c:
+        resp = await c.get("/api/invoices")
+    assert resp.status_code == 400, resp.text

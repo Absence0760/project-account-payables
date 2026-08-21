@@ -141,7 +141,11 @@
 			{m('admin.roles.system.hint')}
 		</p>
 	</div>
-	<DataTable columns={SYSTEM_COLUMNS} isEmpty={systemRoles.length === 0} empty={m('admin.roles.system.empty')}>
+	<DataTable
+	columns={SYSTEM_COLUMNS}
+	isEmpty={systemRoles.length === 0}
+	empty={adminStore.rolesErrored ? m('common.loadFailed') : m('admin.roles.system.empty')}
+>
 		{#snippet body()}
 			{#each systemRoles as role (role.id)}
 				<tr>
@@ -164,7 +168,11 @@
 			{m('admin.roles.custom.hintPost')}
 		</p>
 	</div>
-	<DataTable columns={CUSTOM_COLUMNS} isEmpty={customRoles.length === 0} empty={m('admin.roles.custom.empty')}>
+	<DataTable
+	columns={CUSTOM_COLUMNS}
+	isEmpty={customRoles.length === 0}
+	empty={adminStore.rolesErrored ? m('common.loadFailed') : m('admin.roles.custom.empty')}
+>
 		{#snippet body()}
 			{#each customRoles as role (role.id)}
 				<tr>

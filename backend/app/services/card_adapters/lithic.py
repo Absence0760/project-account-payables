@@ -21,6 +21,7 @@ from app.services.card_adapters.base import (
     VirtualCardPayload,
 )
 from app.services.card_adapters.dispatcher import register_card_adapter
+from app.services.payment_adapters.base import to_minor_units
 
 LITHIC_API_BASE = "https://api.lithic.com/v1"
 LITHIC_SANDBOX_BASE = "https://sandbox.lithic.com/v1"
@@ -55,7 +56,21 @@ class LithicAdapter(CardAdapter):
     async def create_card(self, payload: VirtualCardPayload) -> CardResult:
         body = {
             "type": "SINGLE_USE",
-            "spend_limit": int(payload.amount * 100),  # cents
+            # Minor units, resolved through the ONE ISO-4217 exponent table this
+            # codebase has (`payment_adapters.base`). This was a flat
+            # `int(amount * 100)` while the read half — `api/cards.
+            # _normalize_charge_amount`, which de-scales a Lithic webhook amount
+            # — had already been migrated to `minor_units_to_decimal`. That
+            # asymmetry is the state the base module explicitly warns is worse
+            # than the original symmetric bug: a ¥500,000 card went out as a
+            # ¥50,000,000 authorization ceiling (exponent 0, so no scaling
+            # applies), 100x the payable and spendable by the vendor, while the
+            # charge that came back was de-scaled correctly and `card_settlement_
+            # block` — which only ever compares our own `amount_limit` — could
+            # not see it. 5.000 KWD is the mirror image: 500 fils instead of
+            # 5,000, a 10x under-limit that declines a legitimate charge.
+            # `to_minor_units` also rounds ROUND_HALF_UP rather than truncating.
+            "spend_limit": to_minor_units(payload.amount, payload.currency),
             "spend_limit_duration": "TRANSACTION",
             "state": "OPEN",
             "memo": f"{payload.vendor_name} - {payload.description or payload.correlation_id}",

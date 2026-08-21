@@ -45,6 +45,7 @@ from app.schemas.payment import (
 from app.services.audit_access import log_access
 from app.services.currency_conversion import (
     payment_reporting_amount_sql,
+    reporting_amount_at_locked_rate,
     reporting_amount_for_row,
     resolve_reporting_currency,
 )
@@ -60,12 +61,18 @@ from app.services.payment_adapters import (
     UnknownPaymentProviderError,
     get_payment_adapter,
 )
-from app.services.payment_controls import check_run_segregation
+from app.services.payment_controls import (
+    CFO_REASON_AMOUNT_NOT_EXPRESSIBLE,
+    CFO_REASON_THRESHOLD_UNPARSEABLE,
+    cfo_approval_decision,
+    check_run_segregation,
+)
 from app.services.payment_runs import (
     PaymentRunItemInput,
     active_run_payments,
     blocked_invoice_ids,
     blocking_exception_types,
+    card_claimed_invoice_ids,
     create_payment_run_for_invoices,
     derive_run_status,
     is_retry_safe,
@@ -1499,6 +1506,22 @@ async def create_payment(
             ),
         )
 
+    # A live virtual card is already paying this invoice. Same gate the run
+    # builder runs, through the same shared helper, so the run's refusal can't
+    # be walked around by posting here instead — the reasoning the
+    # financial-integrity exception gate above already documents. `virtual_card`
+    # is exempt: that rail converges on the existing card.
+    if await card_claimed_invoice_ids(
+        db, [(invoice.id, body.method.value if body.method else None)]
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Invoice already has a live virtual card issued against it — pay it by "
+                f"card, or cancel the card first: {invoice.invoice_number}"
+            ),
+        )
+
     # The payment amount is the invoice amount NET OF APPLIED CREDIT MEMOS —
     # never a caller-supplied value. Trusting `body.amount` let an actor book a
     # $99,999 payment against a $500 approved invoice, so the figure is bound
@@ -1532,28 +1555,45 @@ async def create_payment(
     # live exploit — see the issue's severity note. Mirrors
     # create_payment_run's `requires_cfo` computation exactly (same threshold
     # setting, same fail-closed handling of a corrupted/unparseable value).
+    #
+    # The comparison is against the NET amount — the money that actually moves
+    # — **expressed in the org's reporting currency**, exactly as
+    # create_payment_run compares its credit-netted total. The threshold is a
+    # bare number in that currency, so comparing a foreign-currency payable at
+    # face value made the gate fail OPEN below it (a GBP 9,000 invoice slipping
+    # under a USD 10,000 threshold). No FX call: the rate was locked onto the
+    # invoice row when it was last saved, and a row we can't price fails closed.
     pmt_cfg = (org.settings or {}).get("payments") or {}
-    cfo_threshold_raw = pmt_cfg.get("cfo_approval_above")
-    requires_cfo = False
-    if cfo_threshold_raw is not None:
-        try:
-            cfo_threshold = Decimal(str(cfo_threshold_raw))
-        except (ValueError, ArithmeticError):
-            logger.error(
-                "payments.cfo_approval_above is unparseable (%r) for org %s; "
-                "requiring CFO sign-off on this standalone payment (fail-closed)",
-                cfo_threshold_raw,
-                org.id,
-            )
-            requires_cfo = True
-        else:
-            # Strict `>` matches the setting name; a threshold of 0/negative
-            # means "no gate" — same semantics as create_payment_run. The
-            # comparison is against the NET amount, i.e. the money that
-            # actually moves, exactly as create_payment_run compares its
-            # credit-netted total.
-            if cfo_threshold > 0 and net_amount > cfo_threshold:
-                requires_cfo = True
+    reporting_currency = resolve_reporting_currency(org.settings)
+    reporting_net, reporting_unconverted = reporting_amount_at_locked_rate(
+        amount=net_amount,
+        currency=invoice.currency,
+        reporting_currency=reporting_currency,
+        persisted_reporting_currency=invoice.reporting_currency,
+        persisted_reporting_source_currency=invoice.reporting_source_currency,
+        persisted_fx_rate=invoice.reporting_fx_rate,
+    )
+    cfo = cfo_approval_decision(
+        payment_config=pmt_cfg,
+        reporting_amount=reporting_net,
+        reporting_currency=reporting_currency,
+        unconverted=reporting_unconverted,
+    )
+    requires_cfo = cfo.required
+    if cfo.reason == CFO_REASON_THRESHOLD_UNPARSEABLE:
+        logger.error(
+            "payments.cfo_approval_above is unparseable (%r) for org %s; "
+            "requiring CFO sign-off on this standalone payment (fail-closed)",
+            pmt_cfg.get("cfo_approval_above"),
+            org.id,
+        )
+    elif cfo.reason == CFO_REASON_AMOUNT_NOT_EXPRESSIBLE:
+        logger.warning(
+            "standalone payment for org %s could not be expressed in %s (no locked "
+            "rate on the invoice); requiring CFO sign-off (fail-closed)",
+            org.id,
+            reporting_currency,
+        )
 
     if requires_cfo:
         has_cfo = any(r.name == ROLE_CFO for r in (user.roles or ()))
@@ -3133,6 +3173,7 @@ async def retry_failed_payments(
     invoices: dict[uuid.UUID, Invoice] = {}
     payable_ids: set[uuid.UUID] = set()
     blocked_ids: set[uuid.UUID] = set()
+    card_claimed_ids: set[uuid.UUID] = set()
     occupied_ids: set[uuid.UUID] = set()
     if invoice_ids:
         invoices = {
@@ -3145,6 +3186,13 @@ async def retry_failed_payments(
             iid for iid, inv in invoices.items() if inv.status.value in PAYABLE_INVOICE_STATUSES
         }
         blocked_ids = await blocked_invoice_ids(db, invoice_ids)
+        # A live virtual card minted since the run was built claims the invoice
+        # on a rail this retry isn't using. Same shared gate the run builder and
+        # the standalone endpoint run — a retry dispatches real money days or
+        # weeks later, so it re-checks everything they check.
+        card_claimed_ids = await card_claimed_invoice_ids(
+            db, ((p.invoice_id, p.method) for p in failed_payments)
+        )
         occupied_ids = set(
             (
                 await db.execute(
@@ -3166,6 +3214,9 @@ async def retry_failed_payments(
             continue
         if payment.invoice_id in blocked_ids:
             skipped.append("invoice_has_blocking_exception")
+            continue
+        if payment.invoice_id in card_claimed_ids:
+            skipped.append("invoice_has_live_card")
             continue
         if not is_retry_safe(payment):
             # We can't prove the processor never took the original order. A

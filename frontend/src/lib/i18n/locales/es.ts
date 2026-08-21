@@ -65,6 +65,7 @@ export const messages = {
 	'common.saving': 'Guardando…',
 	'common.cancel': 'Cancelar',
 	'common.loading': 'Cargando…',
+	'common.loadFailed': 'No se pudo cargar esta lista. Actualiza para volver a intentarlo.',
 
 	// Profile → Language picker
 	'profile.language.heading': 'Idioma',
@@ -1092,6 +1093,8 @@ export const messages = {
 	'cfoMetrics.fx.colBooked': 'Registrado',
 	'cfoMetrics.fx.colCurrent': 'Actual',
 	'cfoMetrics.fx.colGainLoss': 'Ganancia / pérdida',
+	'cfoMetrics.fx.unconverted':
+		'Excluidas: {n, plural, one {# factura abierta} other {# facturas abiertas}} sin tipo de cambio a {currency}, por lo que quedan fuera de la exposición siguiente. Registra el tipo de cambio para incluirlas.',
 
 	// Expense Management (routes/expenses/+page.svelte)
 	'expenses.title': 'Gastos',

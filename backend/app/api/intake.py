@@ -436,6 +436,45 @@ async def cancel_intake(
     return _to_response(fresh)
 
 
+@router.post("/{intake_id}/reopen", response_model=IntakeRequestResponse)
+async def reopen_intake(
+    intake_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK, ROLE_CFO)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Reopen a rejected intake for rework: ``rejected -> open``.
+
+    ``VALID_TRANSITIONS`` has always declared this edge and the lifecycle
+    diagram has always documented it, but no route performed it — which left a
+    rejected intake permanently stranded. From ``rejected`` nothing else moves:
+    ``submit`` wants ``open``, ``cancel`` is not reachable from ``rejected``,
+    and ``PATCH`` is open-only. The requester's only recourse was to DELETE the
+    row and re-key the ask, losing the request number, the reviewer's reason
+    (``form_data.review_reason``), and the link between the two attempts in the
+    audit trail.
+
+    The reviewer's reason is deliberately left on ``form_data`` — it is the
+    brief for the rework, and a later rejection overwrites it.
+    """
+    intake = await _get_intake_or_404(db, intake_id)
+    guard_transition(intake.status, IntakeStatus.open)
+    intake.status = IntakeStatus.open
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="intake.reopened",
+        entity_type="intake_request",
+        entity_id=intake.id,
+        details={"request_number": intake.request_number},
+    )
+    await db.commit()
+    fresh = await _get_intake_or_404(db, intake.id)
+    return _to_response(fresh)
+
+
 # ---------------------------------------------------------------------------
 # Convert to requisition — only when approved; idempotent.
 # ---------------------------------------------------------------------------

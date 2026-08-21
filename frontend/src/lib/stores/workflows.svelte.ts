@@ -57,6 +57,14 @@ function createWorkflowStore() {
 	// list fetches.
 	const fetchSequence = createRequestSequencer();
 
+	// Did the most recent load fail? `/workflows` fires it and swallows the
+	// rejection (the route's comment already claimed this flag existed; it did
+	// not), so a 500 left the page asserting "No workflows configured." — on the
+	// screen that decides whether invoices get routed for approval at all. Set
+	// only while this is still the newest request, and the error is re-thrown so
+	// an awaiting caller keeps its own handling. Mirrors `stores/invoices`.
+	let errored = $state(false);
+
 	async function load(opts: { append?: boolean; nextPage?: number } = {}) {
 		const nextPage = opts.nextPage ?? 1;
 		const token = fetchSequence.start();
@@ -70,6 +78,10 @@ function createWorkflowStore() {
 			workflows = opts.append ? appendUnique(workflows, res.items) : res.items;
 			total = res.total;
 			page = nextPage;
+			errored = false;
+		} catch (err) {
+			if (fetchSequence.isCurrentRequest(token)) errored = true;
+			throw err;
 		} finally {
 			if (fetchSequence.isCurrentRequest(token)) loading = false;
 		}
@@ -223,6 +235,9 @@ function createWorkflowStore() {
 	return {
 		get all() {
 			return workflows;
+		},
+		get errored() {
+			return errored;
 		},
 		get loading() {
 			return loading;

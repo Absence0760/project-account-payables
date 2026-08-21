@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { groupAmountsByCurrency, spansMultipleCurrencies } from './currencyGroups';
+import {
+	formatCurrencyTotals,
+	groupAmountsByCurrency,
+	spansMultipleCurrencies
+} from './currencyGroups';
 
 describe('groupAmountsByCurrency', () => {
 	it('returns [] for an empty selection', () => {
@@ -107,5 +111,61 @@ describe('spansMultipleCurrencies', () => {
 				])
 			)
 		).toBe(true);
+	});
+});
+
+
+describe('formatCurrencyTotals', () => {
+	it('returns [] for nothing, leaving the "no total" reading to the caller', () => {
+		expect(formatCurrencyTotals([], 'USD')).toEqual([]);
+	});
+
+	it('formats an exact decimal STRING without routing it through a float', () => {
+		// The shape `GET /api/expenses/summary` sends. 30.30 is exactly the sum
+		// of 10.10 + 20.20 — a float reduce would have produced 30.299999….
+		expect(formatCurrencyTotals([{ currency: 'USD', total: '30.30' }], 'USD')).toEqual([
+			'$30.30'
+		]);
+	});
+
+	it('renders EACH currency in its own — never one combined figure', () => {
+		// The bug: EUR 5.05 + USD 30.30 shown as a single "$35.35".
+		const out = formatCurrencyTotals(
+			[
+				{ currency: 'EUR', total: '5.05' },
+				{ currency: 'USD', total: '30.30' }
+			],
+			'USD'
+		);
+		expect(out).toHaveLength(2);
+		expect(out[0]).toContain('5.05');
+		expect(out[1]).toBe('$30.30');
+		expect(out.join(' · ')).not.toBe('$35.35');
+	});
+
+	it('falls back to the org currency when a row carries no usable code', () => {
+		expect(formatCurrencyTotals([{ currency: '', total: '1.00' }], 'USD')).toEqual(['$1.00']);
+		expect(formatCurrencyTotals([{ currency: null, total: '1.00' }], 'USD')).toEqual(['$1.00']);
+	});
+
+	it('preserves input order rather than re-sorting', () => {
+		// The server already orders `by_currency`; re-sorting here would make the
+		// headline figure on a KPI card jump between renders.
+		const out = formatCurrencyTotals(
+			[
+				{ currency: 'USD', total: '2.00' },
+				{ currency: 'EUR', total: '1.00' }
+			],
+			'USD'
+		);
+		expect(out[0]).toBe('$2.00');
+	});
+
+	it('accepts a locally-computed CurrencyGroup unchanged', () => {
+		const groups = groupAmountsByCurrency([
+			{ amount: '10.00', currency: 'USD' },
+			{ amount: '5.00', currency: 'USD' }
+		]);
+		expect(formatCurrencyTotals(groups, 'USD')).toEqual(['$15.00']);
 	});
 });

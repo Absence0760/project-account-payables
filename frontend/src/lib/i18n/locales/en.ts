@@ -74,6 +74,7 @@ export const en = {
 	'common.saving': 'Saving…',
 	'common.cancel': 'Cancel',
 	'common.loading': 'Loading…',
+	'common.loadFailed': 'Couldn’t load this list. Refresh to try again.',
 
 	// Profile → Language picker (profile/+page.svelte)
 	'profile.language.heading': 'Language',
@@ -1132,6 +1133,8 @@ export const en = {
 	'cfoMetrics.fx.colBooked': 'Booked',
 	'cfoMetrics.fx.colCurrent': 'Current',
 	'cfoMetrics.fx.colGainLoss': 'Gain / loss',
+	'cfoMetrics.fx.unconverted':
+		'Excluded: {n, plural, one {# open invoice} other {# open invoices}} with no exchange rate into {currency}, so they are left out of the exposure below. Book the missing rate to include them.',
 
 	// Expense Management (routes/expenses/+page.svelte)
 	'expenses.title': 'Expenses',

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import HTTPException, status
 
@@ -63,12 +63,35 @@ def guard_transition(current: RequisitionStatus, target: RequisitionStatus) -> N
         )
 
 
+#: The precision every requisition / PO money column actually holds
+#: (``Numeric(15, 2)``). ``quantity`` is ``Numeric(12, 4)``, so the raw product
+#: can carry six decimal places — a figure no column on either side of the
+#: conversion can store.
+_MONEY_QUANT = Decimal("0.01")
+
+
 def line_total(quantity: Decimal | None, unit_price: Decimal | None) -> Decimal | None:
-    """Exact ``quantity * unit_price``. Returns ``None`` when either side is
-    absent (a description-only line carries no money)."""
+    """``quantity * unit_price``, quantized to the 2 dp the column stores.
+
+    Returns ``None`` when either side is absent (a description-only line carries
+    no money).
+
+    **The quantize is load-bearing, not cosmetic.** ``line_items.total`` and
+    ``purchase_requisitions.total`` are both ``Numeric(15, 2)`` while the product
+    can carry 6 dp, so returning the raw product meant Postgres rounded each
+    line on the way in while :func:`recompute_total` summed the UNROUNDED
+    values: the header became the rounding of a sum and the lines a sum of
+    roundings. Twelve lines of ``1.5 x 10.01`` stored a header of ``180.18``
+    against lines summing to ``180.24`` — six cents apart in one response,
+    growing linearly with the line count, and carried onto the
+    ``PurchaseOrder`` that ``po_matching`` runs its tolerance gate against.
+    Rounding here means the figure summed is the figure stored.
+
+    ``ROUND_HALF_UP``, matching every other money quantize in the codebase.
+    """
     if quantity is None or unit_price is None:
         return None
-    return Decimal(quantity) * Decimal(unit_price)
+    return (Decimal(quantity) * Decimal(unit_price)).quantize(_MONEY_QUANT, rounding=ROUND_HALF_UP)
 
 
 def recompute_total(req: PurchaseRequisition) -> Decimal:

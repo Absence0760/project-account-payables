@@ -245,6 +245,38 @@ lowest-id rows forever and never reach the rest; it keyset-paginates
 `recurring_invoices` *can* cap, because an archived invoice / a generated period
 leaves the candidate set and the next tick resumes past it.
 
+**And isolate per item, or the pagination is decorative.** A raise from inside
+the loop is the second way to starve a tail, and it does not look like a
+pagination bug at all. Candidate ids are ordered ascending and the cursor is a
+local that resets every tick, so one row that keeps failing aborts the loop at
+the *same place* on every tick and nothing after it is ever processed again —
+permanently, because nothing about that row changes. Both `extraction_reaper`
+and `approval_escalation` had adopted the per-row **commit** from
+`vendor_rescreen` / `recurring_invoices` but not their per-row
+`try` / `rollback`, and both docstrings claimed the property the commit alone
+does not give. The shape is:
+
+```python
+for row_id in candidate_ids:
+    try:
+        ...                       # lock, re-check, apply
+        await db.commit()
+    except Exception as exc:      # one item must not halt the tenant
+        logger.warning("... %s", exc.__class__.__name__)   # class only
+        await db.rollback()       # the next item must start clean
+        item_failures += 1
+        continue
+    processed += 1
+```
+
+The counter is not optional either, and its **name** carries meaning: the
+per-item total is surfaced as a `*_failures` field on the sweep's result
+dataclass (`invoice_failures`, `instance_failures`, `vendor_failures`,
+`template_failures`) because `sweep_health.failure_count` sums exactly those.
+Swallow the item without counting it and the tick reports `ok` while making no
+progress — the blind spot this whole registry exists to close. Keep it separate
+from `failures`, which means "the tenant sweep aborted outright".
+
 `webhooks/delivery.deliver_due` is the same shape with one addition: the claim
 is `FOR UPDATE SKIP LOCKED`, because a delivery already in flight elsewhere
 should be skipped, not waited for (see `public-api.md` § A due delivery is

@@ -21,7 +21,11 @@ async def dispatch_erp(
 ) -> None:
     """Trigger ERP send via the configured mode (local or lambda)."""
     if settings.erp_mode == "lambda":
-        _send_to_sqs(invoice_id, org_id, actor_id)
+        # Off the event loop: boto3 is synchronous, so the client build (which
+        # resolves the credential chain, possibly via IMDS) plus the SQS round
+        # trip would occupy the loop for their full duration on a request path.
+        # See `extraction_dispatch.dispatch_extraction` for the same call.
+        await asyncio.to_thread(_send_to_sqs, invoice_id, org_id, actor_id)
     else:
         # Scheduled on the CALLER's loop, deliberately not a detached thread
         # running a second one. The send reaches `transition_invoice`, whose
@@ -46,7 +50,15 @@ def _send_to_sqs(
     org_id: uuid.UUID,
     actor_id: uuid.UUID,
 ) -> None:
-    """Put ERP job on SQS for Lambda to pick up."""
+    """Put ERP job on SQS for Lambda to pick up.
+
+    **Blocking — never call this from a coroutine directly.** boto3 is
+    synchronous: constructing the client resolves the credential chain (which
+    can reach the instance-metadata endpoint) and ``send_message`` is a full
+    HTTPS round trip. The caller above hands it to ``asyncio.to_thread`` so it
+    never occupies the event loop, matching ``services/storage``'s
+    ``_put_object``. Guarded by ``tests/test_sqs_dispatch_nonblocking.py``.
+    """
     client = boto3.client(
         "sqs",
         endpoint_url=settings.aws_endpoint_url or settings.s3_endpoint_url,  # LocalStack when set

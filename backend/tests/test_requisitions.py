@@ -286,6 +286,64 @@ async def test_approve_invalid_state_422(realdb):
     assert resp.status_code == 422
 
 
+async def test_reopen_rejected_requisition_returns_it_to_draft(realdb):
+    """A rejected requisition must be re-openable for rework.
+
+    ``requisition_service.VALID_TRANSITIONS`` declares ``rejected -> draft`` and
+    the lifecycle diagram documents it, but for a long time NO route performed
+    the move: submit/cancel both 422 from ``rejected`` and PATCH is draft-only,
+    so a rejected requisition was permanently stranded and the buyer's only
+    recourse was DELETE + re-key.
+    """
+    mk = realdb.sessionmaker("a")
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        rid = (await c.post("/api/requisitions", json=_payload(_num()))).json()["id"]
+        await c.post(f"/api/requisitions/{rid}/submit")
+    async with realdb.client(key="a", role="ap_manager") as c:
+        rejected = await c.post(f"/api/requisitions/{rid}/reject", json={"reason": "over budget"})
+    assert rejected.json()["status"] == "rejected"
+
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        # Before the fix every exit from `rejected` was a dead end.
+        assert (await c.post(f"/api/requisitions/{rid}/submit")).status_code == 422
+        assert (await c.post(f"/api/requisitions/{rid}/cancel")).status_code == 422
+        assert (
+            await c.patch(f"/api/requisitions/{rid}", json={"title": "Reworked"})
+        ).status_code == 422
+
+        reopened = await c.post(f"/api/requisitions/{rid}/reopen")
+        assert reopened.status_code == 200, reopened.text
+        assert reopened.json()["status"] == "draft"
+        assert reopened.json()["submitted_at"] is None
+        # The reviewer's brief survives the reopen.
+        assert reopened.json()["rejection_reason"] == "over budget"
+
+        # ...and the row is editable + re-submittable again.
+        patched = await c.patch(f"/api/requisitions/{rid}", json={"title": "Reworked"})
+        assert patched.status_code == 200
+        assert patched.json()["title"] == "Reworked"
+        assert (await c.post(f"/api/requisitions/{rid}/submit")).json()["status"] == (
+            "pending_approval"
+        )
+
+    async with mk() as s:
+        actions = (
+            (await s.execute(select(AuditLog.action).where(AuditLog.entity_type == "requisition")))
+            .scalars()
+            .all()
+        )
+        assert "requisition.reopened" in actions
+
+
+async def test_reopen_is_422_from_any_non_rejected_state(realdb):
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        rid = (await c.post("/api/requisitions", json=_payload(_num()))).json()["id"]
+        # draft -> draft is not a declared transition.
+        assert (await c.post(f"/api/requisitions/{rid}/reopen")).status_code == 422
+        await c.post(f"/api/requisitions/{rid}/submit")
+        assert (await c.post(f"/api/requisitions/{rid}/reopen")).status_code == 422
+
+
 # ---------------------------------------------------------------------------
 # Convert to PO + idempotency
 # ---------------------------------------------------------------------------

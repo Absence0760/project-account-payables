@@ -289,7 +289,14 @@
 							{m('paymentRuns.runDetail.cancelRun')}
 						</button>
 					{/if}
-					{#if pendingCfo && auth.isCfo}
+					<!-- `hasRole('cfo')`, NOT `auth.isCfo` (= admin | cfo): the backend
+					     gate is `require_roles(ROLE_CFO)` and require_roles does not
+					     special-case admin, so an admin without the cfo role saw
+					     "Approve as CFO" and every click 403'd — while Execute stayed
+					     disabled on `pendingCfo`, leaving the run with no usable
+					     control at all. Widening the backend is not the fix: a CFO
+					     sign-off an admin can grant themselves is not a sign-off. -->
+					{#if pendingCfo && auth.hasRole('cfo')}
 						<button
 							class="btn-approve"
 							disabled={approving}

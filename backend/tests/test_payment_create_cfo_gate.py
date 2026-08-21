@@ -46,7 +46,22 @@ async def _default_entity_id(s):
     return (await s.execute(select(Entity.id).where(Entity.is_default))).scalar_one()
 
 
-async def _seed_approved_invoice(mk, org_id, amount: Decimal) -> uuid.UUID:
+async def _seed_approved_invoice(
+    mk,
+    org_id,
+    amount: Decimal,
+    *,
+    currency: str = "USD",
+    reporting_fx_rate: Decimal | None = None,
+) -> uuid.UUID:
+    """Seed one approved invoice, optionally in a foreign currency.
+
+    `reporting_fx_rate` writes the same rate lock
+    `currency_conversion.materialize_reporting_amount` puts on every saved
+    invoice — the CFO threshold is denominated in the org's REPORTING currency,
+    so that lock is what lets the gate express a foreign payable in it without
+    an FX call.
+    """
     async with mk() as s:
         ent = await _default_entity_id(s)
         inv = Invoice(
@@ -55,9 +70,14 @@ async def _seed_approved_invoice(mk, org_id, amount: Decimal) -> uuid.UUID:
             invoice_number=f"CFOGATE-{uuid.uuid4().hex[:8]}",
             vendor_name="CFO Gate Vendor",
             amount=amount,
-            currency="USD",
+            currency=currency,
             status=InvoiceStatus.approved,
         )
+        if reporting_fx_rate is not None:
+            inv.reporting_currency = "USD"
+            inv.reporting_source_currency = currency
+            inv.reporting_fx_rate = reporting_fx_rate
+            inv.reporting_amount = (amount * reporting_fx_rate).quantize(Decimal("0.01"))
         s.add(inv)
         await s.commit()
         return inv.id
@@ -130,6 +150,61 @@ async def test_below_threshold_non_cfo_actor_unaffected(realdb):
                 json={"invoice_id": str(inv_id), "amount": "500.00", "method": "ach"},
             )
         assert resp.status_code == 201, resp.text
+    finally:
+        await _set_cfo_threshold(realdb, org_id=org_id, value=None)
+
+
+@pytest.mark.asyncio
+async def test_foreign_currency_below_threshold_at_face_value_still_needs_cfo(realdb):
+    """The threshold is denominated in the org's REPORTING currency.
+
+    A GBP 9,000 invoice is USD 11,400 at the rate locked on its row, so it is
+    over a USD 10,000 gate — but its face value is under it. Comparing bare
+    numbers let exactly this payment be booked by a non-CFO actor.
+    """
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    try:
+        await _set_cfo_threshold(realdb, org_id=org_id, value="10000.00")
+        inv_id = await _seed_approved_invoice(
+            mk,
+            org_id,
+            Decimal("9000.00"),
+            currency="GBP",
+            reporting_fx_rate=Decimal("1.26666667"),
+        )
+
+        async with realdb.client(key=TENANT, role="admin") as client:
+            resp = await client.post(
+                "/api/payments",
+                json={"invoice_id": str(inv_id), "amount": "9000.00", "method": "ach"},
+            )
+        assert resp.status_code == 403, resp.text
+        assert "CFO" in resp.json()["detail"]
+    finally:
+        await _set_cfo_threshold(realdb, org_id=org_id, value=None)
+
+
+@pytest.mark.asyncio
+async def test_foreign_currency_with_no_locked_rate_fails_closed(realdb):
+    """A foreign invoice we can't express in the reporting currency is treated
+    as OVER the threshold, never under — the same fail-closed posture
+    `services/expense_currency` takes for an unavailable reporting figure."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    try:
+        await _set_cfo_threshold(realdb, org_id=org_id, value="10000.00")
+        # No `reporting_fx_rate` — nothing on the row prices this in USD.
+        inv_id = await _seed_approved_invoice(
+            mk, org_id, Decimal("10.00"), currency="EUR", reporting_fx_rate=None
+        )
+
+        async with realdb.client(key=TENANT, role="admin") as client:
+            resp = await client.post(
+                "/api/payments",
+                json={"invoice_id": str(inv_id), "amount": "10.00", "method": "ach"},
+            )
+        assert resp.status_code == 403, resp.text
     finally:
         await _set_cfo_threshold(realdb, org_id=org_id, value=None)
 

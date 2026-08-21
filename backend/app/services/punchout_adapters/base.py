@@ -28,7 +28,12 @@ body. :class:`PunchoutError` carries a PII-free reason *code* only.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
+
+#: Storage precision for every money column a cart lands in
+#: (`PunchoutSession.cart_total`, `RequisitionLineItem.total` — both
+#: `Numeric(15, 2)`).
+_MONEY_QUANT = Decimal("0.01")
 
 
 class PunchoutError(Exception):
@@ -84,8 +89,19 @@ class PunchoutCartItem:
 
     @property
     def line_total(self) -> Decimal:
-        """Exact ``quantity * unit_price`` (both ``Decimal``)."""
-        return Decimal(self.quantity) * Decimal(self.unit_price)
+        """``quantity * unit_price`` (both ``Decimal``), at storage precision.
+
+        Quantized for the same reason `requisition_service.line_total` is: this
+        line becomes a `RequisitionLineItem.total` (`Numeric(15, 2)`) and the
+        cart's sum becomes `PunchoutSession.cart_total` (also `Numeric(15, 2)`),
+        while `quantity` carries 4 dp — so an unrounded product made the stored
+        cart total the rounding of a sum and the stored lines a sum of
+        roundings. Same convention (`ROUND_HALF_UP`, 2 dp) so a cart and the
+        requisition it converts into report the same money.
+        """
+        return (Decimal(self.quantity) * Decimal(self.unit_price)).quantize(
+            _MONEY_QUANT, rounding=ROUND_HALF_UP
+        )
 
 
 @dataclass

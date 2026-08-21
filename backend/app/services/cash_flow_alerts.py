@@ -230,9 +230,20 @@ async def _notify_tenant(
     projection: ShortfallProjection,
 ) -> bool:
     """Send the alert to the org's finance leaders. Returns whether anyone was
-    notified — a recipient-less org leaves the marker unwritten so a later
-    sweep (once it has a CFO/admin) still fires, mirroring
-    ``contract_renewal``'s handling of the same case."""
+    notified — an org nobody was told about leaves the marker unwritten so a
+    later sweep still fires, mirroring ``contract_renewal``'s handling of the
+    same case.
+
+    "Nobody was told" is more than "no CFO/admin exists". ``notify_event``
+    never raises and used to return nothing, so it was indistinguishable from
+    success when the master ``FEOH_NOTIFICATIONS_ENABLED`` switch is off, when
+    the recipient load failed, or when every resolved leader had the event
+    opted out. Returning ``True`` in those cases wrote the alerted-period
+    marker, which is the permanent dedupe — the finance leaders were then never
+    warned about that projected shortfall period at all, while the sweep logged
+    ``alerts=1`` and ``sweep_health`` stayed green. So this reports what
+    ``notify_event`` actually actioned, not merely that recipients exist.
+    """
     recipients: list[uuid.UUID] = []
     for role in ALERT_ROLES:
         recipients.extend(await resolve_role_user_ids(org_id, role))
@@ -253,7 +264,7 @@ async def _notify_tenant(
     factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with factory() as db:
-            await notify_event(
+            notified = await notify_event(
                 db,
                 correlation_id=uuid.uuid4(),
                 organization_id=org_id,
@@ -268,7 +279,13 @@ async def _notify_tenant(
             await db.commit()
     finally:
         await engine.dispose()
-    return True
+    if not notified:
+        logger.warning(
+            "[cashflow-shortfall] org=%s: shortfall alert reached no recipient; "
+            "leaving the alerted-period marker unwritten so the next tick retries",
+            org_id,
+        )
+    return bool(notified)
 
 
 async def _store_marker(org_id: uuid.UUID, *, period: str | None, sent_on: str | None) -> None:

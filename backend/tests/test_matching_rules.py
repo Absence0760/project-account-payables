@@ -193,6 +193,56 @@ def test_float_tolerance_bridged_through_str_not_binary_float():
     assert isinstance(rule.tolerance_pct, Decimal)
 
 
+def test_string_tolerance_is_honoured_and_never_loosened_to_the_default():
+    """An exact-decimal STRING is the project's own JSONB money representation.
+
+    These rules live in a hand-edited settings blob and `match_invoice_to_po`
+    already types its `tolerance_pct` `Decimal | float | int | str`. Rejecting
+    `"1.0"` returned `None` — which means "fall through" — so the walk ended at
+    `DEFAULT_TOLERANCE_PCT` (5.0), LOOSER than any tolerance an org would
+    bother configuring. A supplier tightened to 1% silently got 5%: an invoice
+    4.5% over its PO read `within_tolerance: True` and never raised a
+    `po_mismatch`.
+    """
+    settings = {
+        "matching": {
+            "tolerance_pct": 6.0,
+            "vendor_rules": {str(_VENDOR_ID): {"tolerance_pct": "1.0"}},
+        }
+    }
+    rule = resolve_match_rule(settings, vendor_id=_VENDOR_ID, gl_account=None)
+    assert rule.tolerance_pct == Decimal("1.0")
+    assert isinstance(rule.tolerance_pct, Decimal)
+    # Emphatically not the org value, and above all not the 5.0 default.
+    assert rule.tolerance_pct != DEFAULT_TOLERANCE_PCT
+
+    # ...at every layer of the walk, not just the vendor one.
+    org_only = resolve_match_rule(
+        {"matching": {"tolerance_pct": "2.50"}}, vendor_id=None, gl_account=None
+    )
+    assert org_only.tolerance_pct == Decimal("2.50")
+    commodity = resolve_match_rule(
+        {"matching": {"commodity_rules": {"6000": {"tolerance_pct": " 3 "}}}},
+        vendor_id=None,
+        gl_account="6000",
+    )
+    assert commodity.tolerance_pct == Decimal("3")
+
+
+def test_non_finite_string_tolerance_falls_through():
+    """`Decimal("NaN")` parses but cannot be compared against a variance —
+    treat it as absent config rather than as a rule."""
+    for junk in ("NaN", "Infinity", "-Infinity"):
+        settings = {
+            "matching": {
+                "tolerance_pct": 6.0,
+                "vendor_rules": {str(_VENDOR_ID): {"tolerance_pct": junk}},
+            }
+        }
+        rule = resolve_match_rule(settings, vendor_id=_VENDOR_ID, gl_account=None)
+        assert rule.tolerance_pct == Decimal("6.0"), junk
+
+
 def test_commodity_inspection_false_overrides_org_true():
     # An explicit False at the commodity layer must win over an org-level True
     # (per-field "first present value", not "first truthy").

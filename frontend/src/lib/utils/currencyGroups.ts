@@ -18,7 +18,7 @@
  * beside `money.ts` and is unit-tested under the plain-Node vitest config.
  */
 
-import { DEFAULT_CURRENCY, sumMoney, type MoneyAmount } from './money';
+import { DEFAULT_CURRENCY, formatMoney, sumMoney, type MoneyAmount } from './money';
 
 /** One currency's slice of a mixed-currency selection. */
 export interface CurrencyGroup {
@@ -90,4 +90,29 @@ export function groupAmountsByCurrency(
  */
 export function spansMultipleCurrencies(groups: CurrencyGroup[]): boolean {
 	return groups.length > 1;
+}
+
+/**
+ * Render one formatted subtotal per currency, in the order given.
+ *
+ * The display half of the same rule: each figure is formatted in its OWN
+ * currency and they are shown side by side — never concatenated into a single
+ * number, never converted. Accepts a bare `{currency, total}` shape so it works
+ * on both a locally-computed {@link CurrencyGroup} and a server rollup that
+ * sends exact decimal STRINGS (`GET /api/expenses/summary`'s `by_currency`) —
+ * the string path is the better one, since it never round-trips a total through
+ * a float at all.
+ *
+ * Returns `[]` for an empty input. What "nothing" reads as is the caller's
+ * decision (a zero in the org currency on `/payments`' pay bar; a zero on the
+ * `/expenses` KPI card), because that is a display choice, not a money one.
+ */
+export function formatCurrencyTotals(
+	totals: Iterable<{ currency?: string | null; total: MoneyAmount }>,
+	fallbackCurrency: string = DEFAULT_CURRENCY
+): string[] {
+	const fallback = resolveCurrency(fallbackCurrency, DEFAULT_CURRENCY);
+	return [...totals].map((t) =>
+		formatMoney(t.total, { currency: resolveCurrency(t.currency, fallback) })
+	);
 }

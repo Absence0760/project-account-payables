@@ -103,12 +103,43 @@ async def lifespan(app: FastAPI):
                 "FEOH_PUNCHOUT_RETURN_SIGNING_SECRET must be set when "
                 "FEOH_PUNCHOUT_PROVIDER is not 'mock'"
             )
-        if settings.billing_webhook_enabled and settings.billing_provider == "mock":
-            raise RuntimeError(
-                "FEOH_BILLING_PROVIDER must not be 'mock' when FEOH_BILLING_WEBHOOK_ENABLED "
-                "is true — the mock adapter's parse_webhook performs no signature "
-                "verification, so serving it publicly would accept unauthenticated events"
-            )
+        if settings.billing_webhook_enabled:
+            from app.services.billing_adapters import list_available_providers as _billing_providers
+
+            # Two ways to end up serving the fixture adapter on a PUBLIC route,
+            # and the equality check only ever caught the first.
+            #
+            # `MockBillingAdapter.parse_webhook` verifies no signature — it just
+            # json.loads the body — so whichever way it is reached,
+            # `POST /api/billing/webhook/{provider}` becomes an unauthenticated
+            # subscription-lifecycle mutator.
+            #
+            # 1. The name is literally "mock".
+            # 2. The name is a TYPO. `get_billing_adapter` falls back to `mock`
+            #    for any unregistered name, and the route's own
+            #    `provider != settings.billing_provider` guard compares the URL
+            #    segment to the setting, not to the registry — so
+            #    FEOH_BILLING_PROVIDER=stripe (the registered name is
+            #    `stripe_billing`) satisfied every check and served the mock.
+            #
+            # This is §26's boot-time allowlist and the audit-shipping guard
+            # below, applied to the one other env-sourced provider name whose
+            # fallback reaches a public route. See `docs/decisions.md` §29.
+            if settings.billing_provider == "mock":
+                raise RuntimeError(
+                    "FEOH_BILLING_PROVIDER must not be 'mock' when FEOH_BILLING_WEBHOOK_ENABLED "
+                    "is true — the mock adapter's parse_webhook performs no signature "
+                    "verification, so serving it publicly would accept unauthenticated events"
+                )
+            if settings.billing_provider not in _billing_providers():
+                raise RuntimeError(
+                    f"FEOH_BILLING_PROVIDER names no registered adapter "
+                    f"({settings.billing_provider!r}) while FEOH_BILLING_WEBHOOK_ENABLED is "
+                    f"true — registered providers: {_billing_providers()}. An unregistered "
+                    "name silently resolves to the mock adapter, whose parse_webhook performs "
+                    "no signature verification, so the public webhook route would accept "
+                    "unauthenticated subscription events"
+                )
         if settings.webhooks_allow_private_targets:
             raise RuntimeError(
                 "FEOH_WEBHOOKS_ALLOW_PRIVATE_TARGETS must not be true when FEOH_DEBUG=false — "

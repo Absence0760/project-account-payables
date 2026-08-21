@@ -719,3 +719,101 @@ async def test_list_experiments_scopes_by_entity(realdb):
             "US experiment",
             "Default experiment",
         }
+
+
+# ---------------------------------------------------------------------------
+# An assigned experiment's arms are frozen, and its record is not disposable
+#
+# `stop` is the documented way to leave `running`, and it returns the row to
+# `draft` WITH its `assignments` intact. That re-opened both draft-only guards:
+# the config could be rewritten under invoices already running the old arms,
+# and the row could be deleted outright — destroying the very measurement
+# history the delete guard's own message says it exists to preserve.
+# ---------------------------------------------------------------------------
+
+
+async def _experiment_with_one_assignment(realdb, mk, org_id) -> str:
+    """Create -> start -> assign one invoice -> stop. Returns the experiment id."""
+    from app.models.invoice import Invoice, InvoiceStatus
+    from app.services.workflow_engine import create_workflow_instance
+
+    defn_id, _ = await _seed_definition(mk, org_id)
+    async with realdb.client(key="a", role="admin") as client:
+        payload = _payload(defn_id) | {"split_a_pct": 100}
+        eid = (await client.post("/api/experiments", json=payload)).json()["id"]
+        await client.post(f"/api/experiments/{eid}/start")
+
+    async with mk() as s:
+        inv = Invoice(
+            organization_id=org_id,
+            invoice_number=f"EXPFREEZE-{uuid.uuid4().hex[:6]}",
+            vendor_name="V",
+            amount=Decimal("500"),
+            status=InvoiceStatus.new,
+        )
+        s.add(inv)
+        await s.commit()
+        await s.refresh(inv)
+        await create_workflow_instance(s, inv)
+        await s.commit()
+
+    async with realdb.client(key="a", role="admin") as client:
+        stopped = await client.post(f"/api/experiments/{eid}/stop")
+        # `stop` is what makes the row `draft` again while keeping the record.
+        assert stopped.json()["status"] == "draft"
+        assert stopped.json()["assigned_count"] == 1
+    return eid
+
+
+async def test_a_stopped_experiment_cannot_have_its_arms_rewritten(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    eid = await _experiment_with_one_assignment(realdb, mk, org_id)
+
+    async with realdb.client(key="a", role="admin") as client:
+        for field, value in (
+            ("config_a", {"steps": [{"type": "approval", "config": {"auto_approve_below": 9000}}]}),
+            ("config_b", {"steps": [{"type": "approval", "config": {"auto_approve_below": 1}}]}),
+            ("split_a_pct", 10),
+        ):
+            resp = await client.patch(f"/api/experiments/{eid}", json={field: value})
+            assert resp.status_code == 409, f"{field}: {resp.status_code} {resp.text}"
+            assert field in resp.json()["detail"]
+
+        # The readout knobs stay editable — they change how the same data is
+        # presented, not what the data is.
+        ok = await client.patch(
+            f"/api/experiments/{eid}",
+            json={"name": "Renamed", "min_sample_per_variant": 3, "description": "why"},
+        )
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["name"] == "Renamed"
+
+        # The arms are untouched by the refused PATCHes.
+        current = await client.get("/api/experiments")
+        exp = next(e for e in current.json()["experiments"] if e["id"] == eid)
+        assert exp["config_b"]["steps"][0]["config"]["auto_approve_below"] == 5000
+        assert exp["split_a_pct"] == 100
+
+
+async def test_a_stopped_experiment_with_assignments_cannot_be_deleted(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    eid = await _experiment_with_one_assignment(realdb, mk, org_id)
+
+    async with realdb.client(key="a", role="admin") as client:
+        resp = await client.delete(f"/api/experiments/{eid}")
+        assert resp.status_code == 409, resp.text
+        # The row — and with it `GET /results` — survives.
+        assert (await client.get(f"/api/experiments/{eid}/results")).status_code == 200
+
+
+async def test_an_unassigned_draft_experiment_is_still_deletable(realdb):
+    """The guard keys on evidence, not on status — a draft that never ran is
+    still a mistake an admin should be able to clean up."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    defn_id, _ = await _seed_definition(mk, org_id)
+    async with realdb.client(key="a", role="admin") as client:
+        eid = (await client.post("/api/experiments", json=_payload(defn_id))).json()["id"]
+        assert (await client.delete(f"/api/experiments/{eid}")).status_code == 204

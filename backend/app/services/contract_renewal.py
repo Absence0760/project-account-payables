@@ -154,7 +154,7 @@ async def _sweep_tenant(db_name: str, ref_today: date) -> tuple[int, int]:
                     end_date=contract.end_date,
                     days_until=days_until,
                 )
-                await notify_event(
+                notified = await notify_event(
                     db,
                     correlation_id=uuid.uuid4(),
                     organization_id=contract.organization_id,
@@ -164,6 +164,22 @@ async def _sweep_tenant(db_name: str, ref_today: date) -> tuple[int, int]:
                     rendered=rendered,
                     entity_type="contract",
                 )
+                if not notified:
+                    # Same reasoning as the recipient-less branch above, one
+                    # layer deeper. `notify_event` never raises, so an off
+                    # master switch / a failed recipient load / everyone having
+                    # the event opted out all looked exactly like a delivered
+                    # alert. Stamping `renewal_alert_sent_at` on that swallows
+                    # the warning for the whole remaining term (only
+                    # `POST /api/contracts/{id}/renew` ever clears it) while
+                    # `alerts_sent` counts it as delivered.
+                    logger.warning(
+                        "[contract-renewal] contract=%s: renewal alert reached no "
+                        "recipient; leaving renewal_alert_sent_at unset so the next "
+                        "tick retries",
+                        contract.id,
+                    )
+                    continue
                 contract.renewal_alert_sent_at = datetime.now(UTC)
                 sent += 1
 

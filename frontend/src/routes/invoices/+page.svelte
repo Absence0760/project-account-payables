@@ -458,9 +458,17 @@
 				{m('invoices.action.create')}
 			</button>
 		{/if}
-		<button class="btn-upload" disabled={uploading} onclick={() => fileInput.click()}>
-			{uploading ? uploadProgress || m('invoices.action.uploading') : m('invoices.action.upload')}
-		</button>
+		<!-- Same gate as Create above, because it is the same capability: both
+		     create an invoice, and `POST /api/invoices/upload` is
+		     `require_roles(ADMIN, AP_MANAGER, CFO)` exactly like `POST
+		     /api/invoices`. Ungated, a clerk (who reaches this page — /invoices
+		     carries no `roles` in nav.ts) picked files and watched every one
+		     fail. -->
+		{#if auth.hasAnyRole('admin', 'ap_manager', 'cfo')}
+			<button class="btn-upload" disabled={uploading} onclick={() => fileInput.click()}>
+				{uploading ? uploadProgress || m('invoices.action.uploading') : m('invoices.action.upload')}
+			</button>
+		{/if}
 	{/snippet}
 
 	<div class="filter-row">

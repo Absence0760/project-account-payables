@@ -66,6 +66,48 @@ def test_apply_pref_update_ignores_unknown_field():
 
 
 # ---------------------------------------------------------------------------
+# PII discipline on the send path (no DB)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_vendor_email_failure_never_logs_the_recipient_address(caplog, monkeypatch):
+    """`smtplib.SMTPRecipientsRefused` stringifies as
+    `{'supplier@customer.com': (550, b'…')}`, and `logger.exception` attaches
+    the traceback — and so that text — whatever the format string names. This
+    module's docstring promises failures log "the event type only — never a
+    recipient address"; the send guard used `logger.exception`, so the first
+    refusal from a supplier's mail server wrote their address into the log
+    sink. `notification_dispatch._send_email_best_effort` fixed the identical
+    exposure on the control-plane side; this pins the vendor sibling.
+    """
+    import logging
+    import smtplib
+
+    from app.services import vendor_notifications as vn
+
+    class _Boom:
+        async def send(self, message):  # noqa: D401
+            raise smtplib.SMTPRecipientsRefused({"supplier@customer.example": (550, b"nope")})
+
+    monkeypatch.setattr("app.services.email_adapters.get_email_adapter", lambda: _Boom())
+    caplog.set_level(logging.DEBUG)
+
+    await vn._send_vendor_email_best_effort(
+        "supplier@customer.example",
+        "subject",
+        "body",
+        None,
+        event_type=EVENT_INVOICE_PAID,
+    )
+
+    assert "supplier@customer.example" not in caplog.text
+    # …but the failure is still visible enough to act on.
+    assert "email send failed" in caplog.text
+    assert "SMTPRecipientsRefused" in caplog.text
+
+
+# ---------------------------------------------------------------------------
 # Helpers (real DB)
 # ---------------------------------------------------------------------------
 

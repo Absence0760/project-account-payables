@@ -31,10 +31,17 @@ Security:
       ``webhook_security.is_event_already_processed`` Redis guard) before
       any Invoice is created — a provider retry or duplicate delivery of
       the same message must not create a second invoice. If invoice
-      creation then fails downstream (e.g. S3/tenant-DB outage), the claim
-      is released via ``release_event_claim`` so the next redelivery can
-      retry instead of the message being silently dropped for the TTL
-      window (mirrors ``api/cards.py``'s webhook claim/release discipline).
+      creation then fails **before the tenant commit** (e.g. S3/tenant-DB
+      outage), the claim is released via ``release_event_claim`` so the next
+      redelivery can retry instead of the message being silently dropped for
+      the TTL window (mirrors ``api/cards.py``'s webhook claim/release
+      discipline). **Past that commit the claim stands**: the invoices are
+      durable, so releasing would invite the redelivery to create a SECOND
+      payable per attachment. A post-commit failure (the extraction dispatch,
+      which in ``lambda`` mode is a real SQS round trip) is logged by class
+      name and swallowed; the invoice sits at ``pending`` and
+      ``extraction_reaper`` ages it out, from where a reviewer re-runs
+      extraction.
     - We silently drop attachments that are not PDFs / images (avoid
       shipping .docx Trojans into the extraction pipeline).
     - Rate-limiting is the provider's job — point SES at a Lambda that
@@ -287,42 +294,63 @@ async def process_inbound_email(
     tenant_factory = async_sessionmaker(tenant_engine, expire_on_commit=False)
 
     try:
-        async with tenant_factory() as tenant_db:
-            # Email intake has no entity selector — land invoices under the
-            # tenant's default entity so they stay visible in entity-scoped
-            # views (multi-entity Phase 2). Resolved once per batch.
-            from app.models.entity import Entity
+        try:
+            async with tenant_factory() as tenant_db:
+                # Email intake has no entity selector — land invoices under the
+                # tenant's default entity so they stay visible in entity-scoped
+                # views (multi-entity Phase 2). Resolved once per batch.
+                from app.models.entity import Entity
 
-            entity_id = (
-                await tenant_db.execute(select(Entity.id).where(Entity.is_default))
-            ).scalar_one_or_none()
-            for att in attachments:
-                invoice_id = await _create_invoice_from_attachment(
-                    tenant_db=tenant_db,
-                    org_id=org.id,
-                    entity_id=entity_id,
-                    sender=payload.sender,
-                    subject=payload.subject,
-                    attachment=att,
-                )
-                result.invoices_created.append(invoice_id)
-            await tenant_db.commit()
+                entity_id = (
+                    await tenant_db.execute(select(Entity.id).where(Entity.is_default))
+                ).scalar_one_or_none()
+                for att in attachments:
+                    invoice_id = await _create_invoice_from_attachment(
+                        tenant_db=tenant_db,
+                        org_id=org.id,
+                        entity_id=entity_id,
+                        sender=payload.sender,
+                        subject=payload.subject,
+                        attachment=att,
+                    )
+                    result.invoices_created.append(invoice_id)
+                await tenant_db.commit()
+        except Exception:
+            # ONLY this block may release the claim, and only because nothing
+            # it guards is durable yet. The dedup claim guards the invoice rows;
+            # if S3 or the tenant DB was briefly unreachable they did not land,
+            # so releasing lets the provider's redelivery reprocess instead of
+            # the invoice being dropped for the full TTL. Mirrors
+            # api/cards.py's webhook claim/release discipline. Re-raise so the
+            # route answers 503 and the provider actually redelivers.
+            result.invoices_created.clear()
+            await release_event_claim("email_intake", payload.message_id)
+            raise
 
-        # Dispatch extraction OUTSIDE the tenant transaction so failures
-        # here don't roll back the invoice rows.
+        # PAST THE COMMIT the claim MUST stand. The invoices exist; a failure
+        # from here on is not "this message went unprocessed", and releasing
+        # would invite the redelivery to create a SECOND set of payables for
+        # the same email — a duplicate invoice per attachment, which is a
+        # money-path defect rather than a lost document. `dispatch_extraction`
+        # is a real failure candidate in `lambda` mode (a boto3 SQS round trip),
+        # which is exactly how this used to fire. Same split
+        # api/payments.py's webhook already uses: its post-commit ERP sync sits
+        # OUTSIDE the try that releases.
+        #
+        # The cost of swallowing is bounded and already covered: an invoice
+        # whose extraction never started sits at `pending` and the
+        # `extraction_reaper` sweep ages it to `failed`, from which a reviewer
+        # re-runs extraction. No document is lost.
         for invoice_id in result.invoices_created:
-            await dispatch_extraction(invoice_id, org.id, SYSTEM_ACTOR_ID)
-    except Exception:
-        # The dedup claim above guards a side effect (the invoice rows) that
-        # may not have actually landed — e.g. S3 or the tenant DB briefly
-        # unreachable. Release it so the provider's retry can reprocess this
-        # message instead of the invoice being silently dropped for the full
-        # dedup TTL window. Mirrors the same release-on-failure discipline in
-        # api/cards.py's webhook handler. The caller (inbound_webhook) still
-        # acks this request silently — release-then-reraise lets the NEXT
-        # delivery of the same message_id actually retry the work.
-        await release_event_claim("email_intake", payload.message_id)
-        raise
+            try:
+                await dispatch_extraction(invoice_id, org.id, SYSTEM_ACTOR_ID)
+            except Exception as exc:  # noqa: BLE001 — class name only (PII)
+                logger.warning(
+                    "Email intake: extraction dispatch failed for invoice %s: %s "
+                    "(invoice created; extraction_reaper will age it out)",
+                    invoice_id,
+                    exc.__class__.__name__,
+                )
     finally:
         await tenant_engine.dispose()
 

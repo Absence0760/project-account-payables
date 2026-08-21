@@ -59,17 +59,27 @@ test.describe('RBAC — non-admin roles (one fresh sign-in each)', () => {
 		await signInAndWait(page, tenantClerk);
 		// A group row links to the FIRST child the role can see.
 		expect(await sidebarHrefs(page)).toEqual(
-			['/', '/invoices', '/requisitions', '/contracts', '/assistant'].sort()
+			['/', '/invoices', '/vendors/screening', '/requisitions', '/contracts', '/assistant'].sort()
 		);
 		// Procurement tabs: only the all-roles children.
 		expect(await sectionTabHrefs(page, '/requisitions')).toEqual(
 			['/requisitions', '/intake', '/catalogs'].sort()
 		);
-		// Billing tabs: no Credit Memos for a clerk. Vendor Statements and
-		// Discounts are both all-roles READ on the API (`/discounts` grants every
-		// role read and only gates the mutations), so a clerk sees both.
+		// Billing tabs: every child whose LIST endpoint admits a clerk. Credit
+		// Memos and Recurring joined this set when the nav stopped hiding pages
+		// the API grants — `GET /api/credit-memos` and `api/recurring.py`'s
+		// `_READ_ROLES` both include `ap_clerk`, and each page gates its own
+		// mutations. Positive Pay and Billing stay out (admin/manager/cfo and
+		// admin/cfo respectively).
 		expect(await sectionTabHrefs(page, '/contracts')).toEqual(
-			['/contracts', '/expenses', '/vendor-statements', '/discounts'].sort()
+			[
+				'/contracts',
+				'/expenses',
+				'/credit-memos',
+				'/discounts',
+				'/recurring',
+				'/vendor-statements'
+			].sort()
 		);
 	});
 

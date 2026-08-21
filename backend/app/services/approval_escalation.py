@@ -63,6 +63,13 @@ class EscalateResult:
     tenants_scanned: int = 0
     instances_escalated: int = 0
     failures: int = 0
+    #: Individual workflow instances whose escalation raised. Counted apart from
+    #: ``failures`` because one bad instance no longer takes its tenant's
+    #: remaining pages down with it — mirrors
+    #: ``vendor_rescreen.vendor_failures``. The ``*_failures`` suffix is
+    #: load-bearing: ``sweep_health.failure_count`` sums it, so a sweep that
+    #: keeps completing while instances inside it fail reports ``partial``.
+    instance_failures: int = 0
 
 
 async def escalate_once(*, now: datetime | None = None) -> EscalateResult:
@@ -77,8 +84,9 @@ async def escalate_once(*, now: datetime | None = None) -> EscalateResult:
     for org_id, db_name in tenants:
         result.tenants_scanned += 1
         try:
-            n = await _escalate_tenant(db_name, now, org_id=org_id)
+            n, instance_failures = await _escalate_tenant(db_name, now, org_id=org_id)
             result.instances_escalated += n
+            result.instance_failures += instance_failures
         except Exception as exc:
             # Log the exception CLASS only — a raw message could carry PII.
             logger.warning(
@@ -86,18 +94,24 @@ async def escalate_once(*, now: datetime | None = None) -> EscalateResult:
             )
             result.failures += 1
 
-    if result.instances_escalated or result.failures:
+    if result.instances_escalated or result.failures or result.instance_failures:
         logger.info(
-            "[approval-escalation] swept %d tenant(s); escalated=%d failed_sweeps=%d",
+            "[approval-escalation] swept %d tenant(s); escalated=%d "
+            "failed_sweeps=%d failed_instances=%d",
             result.tenants_scanned,
             result.instances_escalated,
             result.failures,
+            result.instance_failures,
         )
     return result
 
 
-async def _escalate_tenant(db_name: str, now: datetime, *, org_id: uuid.UUID | None = None) -> int:
+async def _escalate_tenant(
+    db_name: str, now: datetime, *, org_id: uuid.UUID | None = None
+) -> tuple[int, int]:
     """Mutate every active instance whose current chain level is overdue.
+
+    Returns ``(escalated, failed_instances)``.
 
     Reads only `state="active"` rows carrying an ``approval_levels`` chain —
     completed/abandoned instances don't move money, and one with no chain can
@@ -129,6 +143,7 @@ async def _escalate_tenant(db_name: str, now: datetime, *, org_id: uuid.UUID | N
     engine = create_async_engine(_make_tenant_url(db_name))
     factory = async_sessionmaker(engine, expire_on_commit=False)
     escalated = 0
+    failed_instances = 0
 
     try:
         async with factory() as db:
@@ -153,43 +168,69 @@ async def _escalate_tenant(db_name: str, now: datetime, *, org_id: uuid.UUID | N
                 after = instance_ids[-1]
 
                 for instance_id in instance_ids:
-                    # `with_for_update` bypasses the identity map, so this is a
-                    # real `SELECT ... FOR UPDATE` on exactly one row.
-                    inst = await db.get(WorkflowInstance, instance_id, with_for_update=True)
-                    if inst is None or inst.state != "active":
-                        # Deleted or completed between the id read and the lock.
-                        await db.rollback()
-                        continue
-                    if not apply_escalation(inst, now=now):
-                        # Nothing to write — end the transaction so the row lock
-                        # is released immediately instead of at end of tick.
-                        await db.rollback()
-                        continue
-                    if org_id is not None:
-                        await dispatch_audit(
-                            db,
-                            correlation_id=inst.correlation_id or uuid.uuid4(),
-                            organization_id=org_id,
-                            actor_id=None,  # system-initiated sweep
-                            action="invoice.approval_escalated",
-                            entity_type="invoice",
-                            entity_id=inst.invoice_id,
-                            details=_last_escalation_detail(inst),
+                    # The per-instance `try` is what makes the keyset pagination
+                    # above mean anything. `after` is a LOCAL that resets to
+                    # `None` every tick, so a raise here used to unwind the whole
+                    # `while` and the next tick restarted at page 1 — hitting the
+                    # same instance (a malformed free-form `approval_levels`
+                    # blob, an audit write that will not land) at the same place,
+                    # forever. Nothing past it in that tenant was ever escalated:
+                    # exactly the tail starvation this sweep was rewritten to
+                    # page around, arriving through error handling instead of
+                    # through a cap.
+                    try:
+                        # `with_for_update` bypasses the identity map, so this is
+                        # a real `SELECT ... FOR UPDATE` on exactly one row.
+                        inst = await db.get(WorkflowInstance, instance_id, with_for_update=True)
+                        if inst is None or inst.state != "active":
+                            # Deleted or completed between the id read and the lock.
+                            await db.rollback()
+                            continue
+                        if not apply_escalation(inst, now=now):
+                            # Nothing to write — end the transaction so the row
+                            # lock is released immediately instead of at end of tick.
+                            await db.rollback()
+                            continue
+                        if org_id is not None:
+                            await dispatch_audit(
+                                db,
+                                correlation_id=inst.correlation_id or uuid.uuid4(),
+                                organization_id=org_id,
+                                actor_id=None,  # system-initiated sweep
+                                action="invoice.approval_escalated",
+                                entity_type="invoice",
+                                entity_id=inst.invoice_id,
+                                details=_last_escalation_detail(inst),
+                            )
+                        await db.commit()
+                    except Exception as exc:  # noqa: BLE001 — one instance must not halt the tenant
+                        # Class only, never the message — an asyncpg / audit
+                        # error string can echo row values (PII-out-of-logs).
+                        logger.warning(
+                            "[approval-escalation] instance=%s escalation failed in %s: %s",
+                            instance_id,
+                            db_name,
+                            exc.__class__.__name__,
                         )
-                    await db.commit()
+                        await db.rollback()
+                        failed_instances += 1
+                        continue
                     escalated += 1
 
                 if len(instance_ids) < page_size:
                     break
 
-            if escalated:
+            if escalated or failed_instances:
                 logger.info(
-                    "[approval-escalation] %s: escalated %d instance(s)", db_name, escalated
+                    "[approval-escalation] %s: escalated %d instance(s), %d failed",
+                    db_name,
+                    escalated,
+                    failed_instances,
                 )
     finally:
         await engine.dispose()
 
-    return escalated
+    return escalated, failed_instances
 
 
 async def run_escalation_loop() -> None:

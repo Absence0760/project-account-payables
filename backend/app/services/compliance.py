@@ -49,17 +49,19 @@ Threshold knobs live in `Organization.settings.compliance`:
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, not_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.payment import Payment
 from app.models.sanctions_check import SanctionsCheck
 from app.models.vendor import Vendor
+from app.services.currency_conversion import payment_reporting_amount_sql
 from app.services.payment_methods import (
     INTERNATIONAL_PAYMENT_METHODS,
     normalize_payment_method,
@@ -74,6 +76,8 @@ from app.services.sanctions_categories import (
     adverse_media_reason,
     merge_categories_into_raw_response,
 )
+
+logger = logging.getLogger(__name__)
 
 # Defaults — tenant settings override.
 _DEFAULT_KYC_REQUIRED_ABOVE = Decimal("1000")
@@ -186,25 +190,50 @@ def _sanctions_adapter_from_settings(org_settings: dict | None) -> SanctionsAdap
 async def _trailing_12m_spend(
     db: AsyncSession,
     vendor_id: uuid.UUID,
-) -> Decimal:
-    """Sum of completed payments to this vendor in the last 365 days.
+    *,
+    home_currency: str,
+) -> tuple[Decimal, int]:
+    """Completed spend with this vendor over the last 365 days, expressed in the
+    org's HOME currency, plus how many payments could not be expressed there.
 
-    Reads through the invoice→vendor join because Payment doesn't
-    carry vendor_id directly. We bound the lookback to a year to
-    keep the query cheap; the AML signal is "unusual recent uptick",
-    not lifetime spend.
+    Reads through the invoice→vendor join because Payment doesn't carry
+    vendor_id directly. We bound the lookback to a year to keep the query
+    cheap; the AML signal is "unusual recent uptick", not lifetime spend.
+
+    **The sum is currency-resolved, not `COALESCE(source_amount, amount)`.**
+    `Payment.source_amount` is the home-currency leg locked at submission for an
+    international payment, but it is NULL on every payment that never took the
+    FX path — including the whole `virtual_card` leg, which returns before it —
+    and the `amount` fallback is denominated in the INVOICE's currency. So the
+    old expression added a ¥500,000 card payment straight onto a USD threshold:
+    a 150x over-count that holds a vendor at a fraction of the real spend, and
+    the mirror case (a JPY-home org paying a USD vendor) under-counts by the
+    same factor and never fires at all.
+
+    `currency_conversion.payment_reporting_amount_sql` is the resolver every
+    other money rollup already uses; here it targets the **home** currency,
+    because that is what `compliance.aml_spend_alert_threshold` is denominated
+    in (`_home_currency`), not necessarily the org's reporting currency. What it
+    cannot express is EXCLUDED and counted rather than added at face value
+    (`docs/decisions.md` §35), and the caller states the exclusion in the alert
+    so the figure reads as the floor it is.
     """
     cutoff = datetime.now(UTC) - timedelta(days=365)
     from app.models.invoice import Invoice
 
-    # `Payment.amount` is in the INVOICE's currency; `Payment.source_amount` is
-    # the home-currency leg locked at submission for an international payment.
-    # Summing raw `amount` across a vendor billing in several currencies makes
-    # the AML total a meaningless mixture, so prefer the home-currency figure
-    # wherever one was locked. The threshold this feeds is a home-currency
-    # number.
+    reported = payment_reporting_amount_sql(
+        reporting_currency=home_currency,
+        payment_amount=Payment.amount,
+        payment_source_amount=Payment.source_amount,
+        payment_source_currency=Payment.source_currency,
+        invoice_currency=Invoice.currency,
+    )
+    countable = reported.is_expressible
     result = await db.execute(
-        select(func.coalesce(func.sum(func.coalesce(Payment.source_amount, Payment.amount)), 0))
+        select(
+            func.coalesce(func.sum(case((countable, reported.amount))), Decimal("0")),
+            func.count(case((not_(countable), Payment.id))),
+        )
         .select_from(Payment)
         .join(Invoice, Invoice.id == Payment.invoice_id)
         .where(
@@ -213,7 +242,8 @@ async def _trailing_12m_spend(
             Payment.completed_at >= cutoff,
         )
     )
-    return Decimal(str(result.scalar() or 0))
+    total, excluded = result.one()
+    return Decimal(str(total or 0)), int(excluded or 0)
 
 
 async def check_payment_compliance(
@@ -354,12 +384,48 @@ async def check_payment_compliance(
     # ---------- 3. AML trailing-12m spend signal -----------------------------
     threshold = _aml_threshold(org_settings)
     if threshold > 0:
-        trailing = await _trailing_12m_spend(db, vendor.id)
-        projected = trailing + payment_amount
+        home_currency = _home_currency(org_settings)
+        trailing, excluded = await _trailing_12m_spend(db, vendor.id, home_currency=home_currency)
+        # `payment_amount` is only addable when it is denominated in the same
+        # currency as `trailing` and the threshold. In practice it always is —
+        # `_execute_single_payment` locks an FX leg (`source_amount` /
+        # `source_currency` = home) for any invoice not already in the home
+        # currency, and hands this gate that leg. When it isn't, count only what
+        # is comparable rather than adding two currencies together; the
+        # exclusion is stated in the alert below.
+        comparable = (payment_currency or "").strip().upper() == home_currency
+        projected = trailing + (payment_amount if comparable else Decimal("0"))
+        if not comparable:
+            excluded += 1
         if projected >= threshold:
+            # Money is a bare figure plus its currency code — the `$` here was
+            # hardcoded and wrong for every non-USD tenant.
+            caveat = (
+                ""
+                if not excluded
+                else (
+                    f" — at least, on {excluded} payment(s) excluded for having no "
+                    f"{home_currency} figure, so the real total is higher"
+                )
+            )
             reasons.append(
                 f"trailing 12-month spend with vendor would reach "
-                f"${projected} (threshold ${threshold}); AP review required"
+                f"{projected} {home_currency} (threshold {threshold} {home_currency}); "
+                f"AP review required{caveat}"
+            )
+        elif excluded:
+            # Under the threshold ONLY on the figures we could express. Say so
+            # in the log rather than let an unmeasurable remainder read as a
+            # clean pass. Deliberately NOT a `reasons` entry: that would hold
+            # every payment to the vendor forever, and re-running the same gate
+            # via `/compliance/release` could never clear it — a dead end, not
+            # a control. PII-free: ids and counts only.
+            logger.warning(
+                "AML trailing-spend for vendor %s excluded %d payment(s) with no %s "
+                "figure; the signal is a floor, not a total",
+                vendor.id,
+                excluded,
+                home_currency,
             )
 
     verdict = "hold" if reasons else "allow"

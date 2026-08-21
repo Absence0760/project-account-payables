@@ -387,6 +387,24 @@ shaping in `api/workflow_experiments.py`.
 | `started_at` / `ended_at` | Lifecycle timestamps. |
 | `assignments` | `{invoice_id: "A"|"B"}` — the recorded, stable assignment per in-flight invoice, so the split is auditable and reproducible. |
 
+**Once `assignments` is non-empty, the arms are frozen and the row is not
+disposable.** `PATCH` refuses `config_a` / `config_b` / `split_a_pct` (409) and
+`DELETE` refuses outright (409). Both guards key on the assignment record, not
+on `status`, because `stop` — the documented way to leave `running` — returns
+the row to `draft` **with its assignments intact**, which re-opened both
+draft-only checks. Editing an arm then pooled invoices that ran the old config
+with invoices that ran the new one under one label, so `GET /results` could
+crown a variant on a config half the sample never saw — the per-invoice frozen
+snapshot invariant (`../../docs/decisions.md` §13) broken one level up. And
+`DELETE` destroyed the only record of which invoice ran which arm: `/results`
+derives everything from `assignments`, the invoices' snapshots outlive the row,
+and the `invoice.experiment_assigned` audit rows would be left naming an
+experiment id that no longer resolves — exactly what the delete guard's own
+message says it exists to prevent. The readout knobs (`name`, `description`,
+`primary_metric`, `min_sample_per_variant`) stay editable: they change how the
+same data is presented, not what the data is. A draft that never assigned
+anything is still deletable.
+
 Fans out to every tenant via `scripts/migrate_all_tenants.py`; fresh tenants get
 it from `create_all` via the registered model (it is NOT a control table).
 

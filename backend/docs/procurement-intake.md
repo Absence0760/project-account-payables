@@ -25,8 +25,11 @@ open ──submit──▶ in_review ──approve──▶ approved ──conve
 - `open` — draft; the requester can still edit the form (only state that's editable).
 - `in_review` — submitted; the questionnaire is frozen; awaiting a reviewer.
 - `approved` — a reviewer accepted it; eligible for conversion.
-- `rejected` — a reviewer declined it; can be reopened to `open` for rework. The
-  rejection reason is stamped into `form_data.review_reason`.
+- `rejected` — a reviewer declined it; `POST /intake/{id}/reopen` returns it to
+  `open` for rework. The rejection reason is stamped into
+  `form_data.review_reason` and deliberately survives the reopen (it is the
+  brief). Without that route a rejected intake was stranded: `submit`,
+  `cancel` and `PATCH` all 422 from `rejected`, so the only exit was `DELETE`.
 - `converted` — a `PurchaseRequisition` was created from it (terminal).
 - `cancelled` — withdrawn (terminal).
 
@@ -81,6 +84,7 @@ If the linked requisition was deleted, the dangling link is rebuilt.
 | `POST /intake/{id}/approve` | admin / ap_manager | `in_review → approved` |
 | `POST /intake/{id}/reject` | admin / ap_manager | `in_review → rejected`; reason → `form_data.review_reason` |
 | `POST /intake/{id}/cancel` | admin / ap_manager / ap_clerk / cfo | `open\|in_review\|approved → cancelled` |
+| `POST /intake/{id}/reopen` | admin / ap_manager / ap_clerk / cfo | `rejected → open` (rework loop) |
 | `POST /intake/{id}/convert-to-requisition` | admin / ap_manager | approved-only; idempotent |
 
 ## RBAC
@@ -113,7 +117,8 @@ and a PO booked on a requisition nobody else ever saw.
 - **Money is exact** — `estimated_amount` / requisition `total` use `Decimal` in
   and `Numeric(15, 2)` at rest; responses serialise `float` only.
 - **Audit on every status change** — `intake.{created,updated,deleted,submitted,
-  approved,rejected,cancelled,converted_to_requisition}` rows via `dispatch_audit`.
+  approved,rejected,reopened,cancelled,converted_to_requisition}` rows via
+  `dispatch_audit`.
 - **Tenant isolation** via `get_tenant_db`; **entity scope** via
   `apply_entity_scope` / `get_write_entity_id`.
 - **Convert is idempotent** — a re-convert returns the existing requisition.

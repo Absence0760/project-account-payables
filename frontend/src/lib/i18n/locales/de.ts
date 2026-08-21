@@ -65,6 +65,7 @@ export const messages = {
 	'common.saving': 'Wird gespeichert …',
 	'common.cancel': 'Abbrechen',
 	'common.loading': 'Wird geladen …',
+	'common.loadFailed': 'Diese Liste konnte nicht geladen werden. Zum erneuten Versuch aktualisieren.',
 
 	// Profile → Language picker
 	'profile.language.heading': 'Sprache',
@@ -1094,6 +1095,8 @@ export const messages = {
 	'cfoMetrics.fx.colBooked': 'Gebucht',
 	'cfoMetrics.fx.colCurrent': 'Aktuell',
 	'cfoMetrics.fx.colGainLoss': 'Gewinn/Verlust',
+	'cfoMetrics.fx.unconverted':
+		'Ausgeschlossen: {n, plural, one {# offene Rechnung} other {# offene Rechnungen}} ohne Wechselkurs in {currency} und daher nicht in der folgenden Risikoposition enthalten. Erfassen Sie den fehlenden Kurs, um sie einzubeziehen.',
 
 	// Expense Management (routes/expenses/+page.svelte)
 	'expenses.title': 'Ausgaben',

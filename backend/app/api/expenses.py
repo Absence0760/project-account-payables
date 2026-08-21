@@ -45,6 +45,7 @@ from app.models.user import User
 from app.schemas.expense import (
     ExpenseBulkGlCode,
     ExpenseCreate,
+    ExpenseCurrencyTotal,
     ExpenseListResponse,
     ExpenseReportAttach,
     ExpenseReportCreate,
@@ -54,6 +55,7 @@ from app.schemas.expense import (
     ExpenseReportSummary,
     ExpenseReportUpdate,
     ExpenseResponse,
+    ExpenseSummaryResponse,
     ExpenseUpdate,
 )
 from app.services.approval_chain import check_segregation
@@ -417,6 +419,36 @@ async def _refresh_policy_violations(db: AsyncSession, expense: Expense, org: Or
 # ---------------------------------------------------------------------------
 
 
+def _expense_list_filters(
+    query,
+    *,
+    status_filter: str | None,
+    report_id: uuid.UUID | None,
+    search: str | None,
+):
+    """Apply the expense-list status / report / free-text filters to ``query``.
+
+    Shared by ``GET /api/expenses`` and ``GET /api/expenses/summary`` so the
+    rollup can never describe a different set than the rows it sits above — the
+    exact drift that made the KPI row contradict itself. Entity scope is
+    applied by the caller, because the two build their ``select()`` differently.
+    """
+    if status_filter:
+        query = query.where(Expense.status == status_filter)
+    if report_id:
+        query = query.where(Expense.report_id == report_id)
+    if search and search.strip():
+        pattern = f"%{search.strip()}%"
+        query = query.where(
+            or_(
+                Expense.merchant.ilike(pattern),
+                Expense.description.ilike(pattern),
+                Expense.category.ilike(pattern),
+            )
+        )
+    return query
+
+
 @router.get("", response_model=ExpenseListResponse)
 async def list_expenses(
     db: AsyncSession = Depends(get_tenant_db),
@@ -435,20 +467,12 @@ async def list_expenses(
     it had already loaded, so a term matching an expense past the first page
     read as "nothing matched".
     """
-    base = apply_entity_scope(select(Expense), Expense, entity_id)
-    if status_filter:
-        base = base.where(Expense.status == status_filter)
-    if report_id:
-        base = base.where(Expense.report_id == report_id)
-    if search and search.strip():
-        pattern = f"%{search.strip()}%"
-        base = base.where(
-            or_(
-                Expense.merchant.ilike(pattern),
-                Expense.description.ilike(pattern),
-                Expense.category.ilike(pattern),
-            )
-        )
+    base = _expense_list_filters(
+        apply_entity_scope(select(Expense), Expense, entity_id),
+        status_filter=status_filter,
+        report_id=report_id,
+        search=search,
+    )
 
     total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0)
     paged = (
@@ -722,6 +746,83 @@ async def bulk_gl_code(
 # ---------------------------------------------------------------------------
 # Expenses — get / patch / delete
 # ---------------------------------------------------------------------------
+
+
+# Declared BEFORE the parametric `/{expense_id}` route so the literal `/summary`
+# path isn't swallowed by `expense_id` (which would 422 on the non-UUID
+# segment). FastAPI matches routes in declaration order — the same ordering
+# constraint `/export` and `/bulk-gl-code` above already live under.
+@router.get("/summary", response_model=ExpenseSummaryResponse)
+async def expense_summary(
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK, ROLE_CFO)),
+    status_filter: str | None = Query(None, alias="status"),
+    report_id: uuid.UUID | None = Query(None),
+    search: str | None = Query(None),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Whole-set status counts + per-currency totals for the expenses KPI row.
+
+    Takes the SAME filters as `GET /api/expenses` and runs them through the same
+    `_expense_list_filters`, so the rollup and the table always describe one set.
+    The read gate matches the list's (all four roles) — a rollup exposes strictly
+    less than the rows it summarises.
+
+    Totals are grouped BY CURRENCY and serialised as exact decimal strings. They
+    are never added across currencies and never FX-converted: an FX rate fetched
+    on a read would make the figure non-deterministic, and a cross-currency SUM
+    is a number denominated in nothing.
+    """
+    status_rows = (
+        await db.execute(
+            _expense_list_filters(
+                apply_entity_scope(
+                    select(Expense.status, func.count()).select_from(Expense),
+                    Expense,
+                    entity_id,
+                ),
+                status_filter=status_filter,
+                report_id=report_id,
+                search=search,
+            ).group_by(Expense.status)
+        )
+    ).all()
+    by_status = {str(row_status): int(n) for row_status, n in status_rows}
+
+    currency_rows = (
+        await db.execute(
+            _expense_list_filters(
+                apply_entity_scope(
+                    select(
+                        Expense.currency,
+                        func.coalesce(func.sum(Expense.amount), 0),
+                        func.count(),
+                    ).select_from(Expense),
+                    Expense,
+                    entity_id,
+                ),
+                status_filter=status_filter,
+                report_id=report_id,
+                search=search,
+            )
+            .group_by(Expense.currency)
+            .order_by(Expense.currency)
+        )
+    ).all()
+
+    return ExpenseSummaryResponse(
+        total=sum(by_status.values()),
+        by_status=by_status,
+        by_currency=[
+            ExpenseCurrencyTotal(
+                currency=str(currency or "").upper(),
+                # `Decimal` in, exact string out — the money never touches a float.
+                total=str(Decimal(total_amount)),
+                count=int(n),
+            )
+            for currency, total_amount, n in currency_rows
+        ],
+    )
 
 
 @router.get("/{expense_id}", response_model=ExpenseResponse)

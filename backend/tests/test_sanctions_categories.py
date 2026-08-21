@@ -135,6 +135,12 @@ def _vendor(**over):
 def _db():
     res = MagicMock()
     res.scalar = MagicMock(return_value=Decimal("0"))
+    # `_trailing_12m_spend` selects TWO columns — the reporting-currency total and
+    # the count of payments that could not be expressed in it — and unpacks them
+    # with `result.one()`. A fake modelling only `.scalar()` diverges from the row
+    # production always returns, so it is the fake that gets fixed here, never the
+    # app made defensive about its own query's shape.
+    res.one = MagicMock(return_value=(Decimal("0"), 0))
     db = AsyncMock()
     db.execute = AsyncMock(return_value=res)
     db.add = MagicMock()

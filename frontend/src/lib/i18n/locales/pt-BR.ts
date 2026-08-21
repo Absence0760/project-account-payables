@@ -66,6 +66,7 @@ export const messages = {
 	'common.saving': 'Salvando…',
 	'common.cancel': 'Cancelar',
 	'common.loading': 'Carregando…',
+	'common.loadFailed': 'Não foi possível carregar esta lista. Atualize para tentar novamente.',
 
 	// Profile → Language picker
 	'profile.language.heading': 'Idioma',
@@ -1094,6 +1095,8 @@ export const messages = {
 	'cfoMetrics.fx.colBooked': 'Registrado',
 	'cfoMetrics.fx.colCurrent': 'Atual',
 	'cfoMetrics.fx.colGainLoss': 'Ganho / perda',
+	'cfoMetrics.fx.unconverted':
+		'Excluídas: {n, plural, one {# fatura em aberto} other {# faturas em aberto}} sem taxa de câmbio para {currency}, portanto fora da exposição abaixo. Registre a taxa ausente para incluí-las.',
 
 	// Expense Management (routes/expenses/+page.svelte)
 	'expenses.title': 'Despesas',

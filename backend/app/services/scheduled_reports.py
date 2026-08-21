@@ -59,42 +59,66 @@ from app.services.email_adapters import EmailMessage, get_email_adapter
 logger = logging.getLogger(__name__)
 
 
+#: Cadences whose step is a fixed duration.
 _CADENCE_DELTA = {
     "daily": timedelta(days=1),
     "weekly": timedelta(weeks=1),
-    "monthly": timedelta(days=30),
+}
+
+#: Cadences whose step is a number of CALENDAR months. ``monthly`` used to sit
+#: in ``_CADENCE_DELTA`` as ``timedelta(days=30)``, and 30 days is never a
+#: month: anchored on 31 Jan the grid ran 2 Mar → 1 Apr → 1 May → 31 May, so
+#: February received no report at all and the slot slid five days inside half a
+#: year. A month has to be counted in months.
+_CADENCE_MONTHS = {
+    "monthly": 1,
 }
 
 
 def known_cadences() -> tuple[str, ...]:
     """The cadences a schedule may declare.
 
-    Derived from ``_CADENCE_DELTA`` so the CRUD surface validates against the
-    runner's OWN registry rather than a restated copy: an unknown cadence
-    silently falls back to daily below, which would quietly reschedule a
+    Derived from the two step registries below so the CRUD surface validates
+    against the runner's OWN vocabulary rather than a restated copy: an unknown
+    cadence silently falls back to daily, which would quietly reschedule a
     "monthly" report as daily. Adding a cadence updates the API for free.
     """
-    return tuple(_CADENCE_DELTA)
+    return (*_CADENCE_DELTA, *_CADENCE_MONTHS)
 
 
-def _cadence_delta(cadence: str) -> timedelta:
-    """The cadence's step. Unknown cadences fall back to daily so a stale legacy
-    row doesn't poison the scheduler — a WARN log surfaces the misconfig."""
+def _step(cadence: str, when: datetime, steps: int = 1) -> datetime:
+    """``when`` advanced by ``steps`` whole cadence periods.
+
+    Fixed-duration cadences add their ``timedelta``; ``monthly`` adds calendar
+    months via the shared ``billing.period.add_months`` (day clamped to the
+    target month's length, time-of-day and tzinfo preserved) rather than a
+    fourth hand-rolled copy of that arithmetic.
+
+    An unknown cadence falls back to daily so a stale legacy row doesn't poison
+    the scheduler — a WARN log surfaces the misconfig.
+    """
+    if (months := _CADENCE_MONTHS.get(cadence)) is not None:
+        # Local import: a pure calendar helper, no billing coupling. It is
+        # already the tested owner of clamped month arithmetic on `datetime`
+        # (`tests/test_billing_period.py`).
+        from app.services.billing.period import add_months
+
+        return add_months(when, months * steps)
     delta = _CADENCE_DELTA.get(cadence)
     if delta is None:
         logger.warning("[scheduled_reports] unknown cadence %r; falling back to daily", cadence)
         delta = _CADENCE_DELTA["daily"]
-    return delta
+    return when + delta * steps
 
 
 def compute_next_run(cadence: str, from_dt: datetime) -> datetime:
-    """Add the cadence's delta to `from_dt`. One step, no catch-up.
+    """Advance `from_dt` by one cadence period. One step, no catch-up.
 
     Used when seeding a brand-new schedule. To ADVANCE a schedule that just
     ran, use :func:`advance_next_run` — anchoring on the wall clock is what
     made every run drift later than the last.
     """
-    return from_dt + _cadence_delta(cadence)
+    return _step(cadence, from_dt)
 
 
 def advance_next_run(cadence: str, *, scheduled_for: datetime, now: datetime) -> datetime:
@@ -115,8 +139,15 @@ def advance_next_run(cadence: str, *, scheduled_for: datetime, now: datetime) ->
 
     ``scheduled_for`` in the future (a hand-edited row, a clock stepping
     backwards) yields exactly one step past it, never a slot in the past.
+
+    For ``monthly``, every candidate is counted from ``scheduled_for`` itself
+    (``anchor + n months``), never by re-adding a month to the previous
+    candidate — so one call's clamping can't compound. Across calls the anchor
+    is the stored slot, so a 31st schedule settles on the 28th after its first
+    February and stays there; holding the 31st would need an anchor column the
+    row does not carry, and a stable day is a far better answer than the
+    30-day drift it replaces.
     """
-    delta = _cadence_delta(cadence)
     # `next_run_at` is `DateTime(timezone=True)`, but a row seeded through raw
     # SQL (the only way to create one before the CRUD router existed) can come
     # back naive. Comparing a naive to an aware datetime is a TypeError, which
@@ -126,7 +157,26 @@ def advance_next_run(cadence: str, *, scheduled_for: datetime, now: datetime) ->
         scheduled_for = scheduled_for.replace(tzinfo=UTC)
     if now.tzinfo is None:
         now = now.replace(tzinfo=UTC)
-    next_run = scheduled_for + delta
+
+    if cadence in _CADENCE_MONTHS:
+        # Seed from the whole-month gap so a long-dormant schedule resolves in
+        # a couple of iterations rather than one per missed month; the clamped
+        # day means the arithmetic can land a step either side, so the loop
+        # settles it. Bounded by construction — `steps` only ever grows.
+        elapsed_months = (now.year - scheduled_for.year) * 12 + (now.month - scheduled_for.month)
+        steps = max(1, elapsed_months // _CADENCE_MONTHS[cadence])
+        next_run = _step(cadence, scheduled_for, steps)
+        while next_run <= now:
+            steps += 1
+            next_run = _step(cadence, scheduled_for, steps)
+        return next_run
+
+    delta = _CADENCE_DELTA.get(cadence)
+    if delta is None:
+        next_run = _step(cadence, scheduled_for)  # logs the unknown cadence
+        delta = _CADENCE_DELTA["daily"]
+    else:
+        next_run = scheduled_for + delta
     if next_run <= now:
         # Whole steps to clear `now`, in one arithmetic hop rather than a loop
         # (a schedule dormant for a year would otherwise spin 365 times).

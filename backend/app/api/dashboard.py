@@ -318,10 +318,18 @@ async def get_dashboard(
     )
     total_paid = Decimal(str(paid_q.scalar() or 0))
 
+    # The canonical in-flight set, imported rather than restated. This list was
+    # a hand-copy that had already drifted: `submitted` and `pending_compliance`
+    # were missing, so money authorized and moving — or held by the sanctions
+    # gate waiting on a human — showed in NEITHER dashboard KPI (not paid, not
+    # pending) and simply vanished from the landing page. `/payments/summary`
+    # states exactly that reasoning where the tuple is defined.
+    from app.api.payments import PENDING_PAYMENT_STATUSES
+
     pending_q = await db.execute(
         _pay(
             select(func.coalesce(func.sum(Payment.amount), 0)).where(
-                Payment.status.in_(["pending", "processing"])
+                Payment.status.in_(PENDING_PAYMENT_STATUSES)
             )
         )
     )
