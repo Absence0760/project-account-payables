@@ -7,10 +7,12 @@ are later slices.
 
 Auth-before-everything: behind JWT + ``require_roles(admin, cfo)`` (billing is a
 finance/admin concern). The org is resolved from the tenant chokepoint
-(``get_tenant``), and the usage rollup reads the CONTROL-PLANE usage tables off
-``get_control_db``. Money is serialised as exact decimal strings (never float) —
-this is a billing surface where exactness is the point. See
-``backend/docs/billing.md``.
+(``get_tenant``). ``Plan`` / ``Subscription`` are control-plane, so those reads
+use ``get_control_db``; the usage METERS (``extraction_usage`` / ``card_rebates``)
+are **tenant** tables — neither is in ``tenant_provisioning.CONTROL_TABLES``, so
+neither exists in the control DB at all — and the rollup reads ``get_tenant_db``.
+Money is serialised as exact decimal strings (never float) — this is a billing
+surface where exactness is the point. See ``backend/docs/billing.md``.
 """
 
 from __future__ import annotations

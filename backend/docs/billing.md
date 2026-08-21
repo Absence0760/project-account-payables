@@ -30,11 +30,19 @@ accounts-payable money path the app manages for customers.
 ## Where it lives (control plane)
 
 Billing is a property of the **customer account**, so — like `Organization`,
-`User`, `ExtractionUsage`, `CardRebate`, and `ApiKey` — it lives in the
-**control-plane** DB (`feohledger`) keyed by `organization_id`. It never
-fans out to per-tenant DBs. The two tables are in `CONTROL_TABLES`
-(`services/tenant_provisioning.py`), guarded by the coverage test in
-`tests/test_tenant_provisioning.py`.
+`User` and `ApiKey` — it lives in the **control-plane** DB (`feohledger`) keyed
+by `organization_id`. It never fans out to per-tenant DBs. The two tables are in
+`CONTROL_TABLES` (`services/tenant_provisioning.py`), guarded by the coverage
+test in `tests/test_tenant_provisioning.py`.
+
+**The usage METERS are not.** `extraction_usage` and `card_rebates` are absent
+from `CONTROL_TABLES`, so they are created in every **tenant** DB and in none of
+the control plane — `to_regclass('extraction_usage')` is NULL in `feohledger`,
+whether that database was built by `alembic upgrade head` or by
+`scripts/seed.py` (which creates only `CONTROL_TABLES` there). That is why
+`GET /api/billing/subscription` hands `rollup_usage` its `tenant_db`, not
+`control_db`. Read `Organization.settings`-adjacent placement claims carefully:
+"keyed by org" is not the same as "in the control DB".
 
 ### Models (`app/models/billing.py`)
 
@@ -88,9 +96,11 @@ status <> 'canceled'` (a canceled row is kept for history). Migration
 ## Usage rollup (`services/billing/usage_rollup.py`)
 
 `rollup_usage(db, organization_id=…, period="YYYY-MM") -> UsageRollup` aggregates
-the existing control-plane meters into billable counters. Pure read, no mutation,
-`Decimal`-exact (`card_rebate_total` sums the `Numeric` `card_rebates.amount` via
-`COALESCE(..., 0.00)` so an empty month yields `Decimal('0.00')`, never `None`).
+the existing meters into billable counters. **`db` is a TENANT session** — both
+source tables live in the tenant DB (see § Where it lives). Pure read, no
+mutation, `Decimal`-exact (`card_rebate_total` sums the `Numeric`
+`card_rebates.amount` via `COALESCE(..., 0.00)` so an empty month yields
+`Decimal('0.00')`, never `None`).
 
 | Meter | Source |
 |-------|--------|
