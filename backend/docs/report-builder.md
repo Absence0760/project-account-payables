@@ -58,6 +58,28 @@ and **filters**. `GET /api/reports/catalog` returns this shape for the frontend.
 Adding a field is a one-line catalog entry pointing at a real column — never a
 free-form column name from the client.
 
+### A date filter means the calendar DAY, even on a timestamp column
+
+Some catalog date filters sit on real `DATE` columns (`invoice_date`,
+`due_date`, `expense_date`); the rest sit on `TIMESTAMP`s (`created_at`,
+`submitted_at`, `completed_at`). Binding a bare date onto a timestamp column
+resolves to that day's **midnight**, which answers a question nobody asked:
+`created_at <= 2026-06-30` dropped every row recorded after 00:00:00 on the
+30th (i.e. essentially the whole day), `created_at = 2026-06-30` matched only
+rows recorded exactly at midnight, and `created_at > 2026-06-30` swept the 30th
+back *in*.
+
+`report_builder._build_where` therefore translates a `date`-typed filter over a
+timestamp column into half-open `[day, day+1)` bounds — `eq` → `>= day AND <
+day+1`, `lte` → `< day+1`, `gt` → `>= day+1`, `between [lo, hi]` → `>= lo AND <
+hi+1` (inclusive of BOTH end days), and so on. Day boundaries are **UTC**, the
+same day the rest of the app reports on (`utils/dates.utc_today`), so the answer
+doesn't move with the database session's `TimeZone`. The translation is
+sargable — no per-row `::date` cast — so an index on the column still applies.
+Filters on real `DATE` columns are untouched. Guarded by
+`test_date_filter_on_timestamp_column_covers_the_whole_day` /
+`test_date_filter_on_real_date_column_is_unchanged`.
+
 ## Endpoints (`/api/reports`, JWT + tenant-gated)
 
 | Method + path | Roles | Purpose |

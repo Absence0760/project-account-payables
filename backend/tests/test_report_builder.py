@@ -16,7 +16,7 @@ tenants, plus pure catalog/whitelist checks:
 from __future__ import annotations
 
 import uuid
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -169,7 +169,17 @@ async def _add_many_invoices(mk, org_id, *, count, amount="10.00", prefix="Bulk"
         await s.commit()
 
 
-async def _add_invoice(mk, org_id, *, vendor_name, amount, status=InvoiceStatus.approved, num=None):
+async def _add_invoice(
+    mk,
+    org_id,
+    *,
+    vendor_name,
+    amount,
+    status=InvoiceStatus.approved,
+    num=None,
+    invoice_date=None,
+    created_at=None,
+):
     async with mk() as s:
         inv = Invoice(
             organization_id=org_id,
@@ -178,10 +188,14 @@ async def _add_invoice(mk, org_id, *, vendor_name, amount, status=InvoiceStatus.
             vendor_name=vendor_name,
             amount=Decimal(amount),
             currency="USD",
-            invoice_date=_TODAY,
+            invoice_date=invoice_date or _TODAY,
             due_date=_TODAY + timedelta(days=30),
             status=status,
         )
+        if created_at is not None:
+            # Override the server_default so a test can pin the instant a row
+            # was recorded at (the timestamp-vs-date filter cases below).
+            inv.created_at = created_at
         s.add(inv)
         await s.commit()
         await s.refresh(inv)
@@ -444,3 +458,93 @@ async def test_export_over_cap_surfaces_truncation_note(realdb):
         pdf_resp = await c.get(f"/api/reports/{report_id}/export?format=pdf")
         assert pdf_resp.status_code == 200, pdf_resp.text
         assert pdf_resp.content[:4] == b"%PDF"
+
+
+# --------------------------------------------------------------------------- #
+# Date filters over a TIMESTAMP column cover the whole calendar day
+# --------------------------------------------------------------------------- #
+async def _run_filtered(realdb, filters, *, vendor):
+    body = {
+        "data_source": "invoices",
+        "dimensions": [{"key": "vendor_name"}],
+        "measures": [{"key": "amount", "agg": "sum"}],
+        "filters": [{"key": "vendor_name", "op": "eq", "value": vendor}, *filters],
+    }
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.post("/api/reports/run", json=body)
+    assert resp.status_code == 200, resp.text
+    return resp.json()["rows"]
+
+
+async def test_date_filter_on_timestamp_column_covers_the_whole_day(realdb):
+    """``created_at`` is a TIMESTAMP, not a DATE. Binding a bare date onto it
+    resolves to that day's MIDNIGHT, so ``lte`` / ``between`` / ``eq`` answered
+    the wrong question — an invoice recorded at 15:30 today was invisible to a
+    report filtered "created_at up to today", while ``gt today`` wrongly swept
+    it in. Every operator now compares calendar days via half-open
+    ``[day, day+1)`` bounds."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    stamp = datetime.now(UTC).replace(hour=15, minute=30, second=0, microsecond=0)
+    day = stamp.date().isoformat()
+    yesterday = (stamp.date() - timedelta(days=1)).isoformat()
+    tomorrow = (stamp.date() + timedelta(days=1)).isoformat()
+    await _add_invoice(mk, org_id, vendor_name="AfternoonCo", amount="77.00", created_at=stamp)
+
+    # Inclusive of the day itself.
+    for filt in (
+        {"key": "created_at", "op": "eq", "value": day},
+        {"key": "created_at", "op": "lte", "value": day},
+        {"key": "created_at", "op": "gte", "value": day},
+        {"key": "created_at", "op": "between", "value": [yesterday, day]},
+        {"key": "created_at", "op": "between", "value": [day, day]},
+    ):
+        rows = await _run_filtered(realdb, [filt], vendor="AfternoonCo")
+        assert rows and rows[0]["amount_sum"] == "77.00", f"{filt} lost the row"
+
+    # Exclusive of the day itself — the mirror image, which the midnight
+    # comparison got backwards for ``gt``.
+    for filt in (
+        {"key": "created_at", "op": "gt", "value": day},
+        {"key": "created_at", "op": "lt", "value": day},
+        {"key": "created_at", "op": "ne", "value": day},
+        {"key": "created_at", "op": "between", "value": [tomorrow, tomorrow]},
+    ):
+        rows = await _run_filtered(realdb, [filt], vendor="AfternoonCo")
+        assert rows == [], f"{filt} should not match a row stamped on {day}"
+
+
+async def test_date_filter_on_real_date_column_is_unchanged(realdb):
+    """``invoice_date`` IS a DATE column — the calendar-day translation must
+    not disturb it. Same operators, same inclusive semantics."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    day = _TODAY.isoformat()
+    await _add_invoice(mk, org_id, vendor_name="PlainDateCo", amount="12.00", invoice_date=_TODAY)
+
+    for filt in (
+        {"key": "invoice_date", "op": "eq", "value": day},
+        {"key": "invoice_date", "op": "lte", "value": day},
+        {"key": "invoice_date", "op": "between", "value": [day, day]},
+    ):
+        rows = await _run_filtered(realdb, [filt], vendor="PlainDateCo")
+        assert rows and rows[0]["amount_sum"] == "12.00", f"{filt} lost the row"
+
+    rows = await _run_filtered(
+        realdb, [{"key": "invoice_date", "op": "gt", "value": day}], vendor="PlainDateCo"
+    )
+    assert rows == []
+
+
+def test_date_in_op_would_also_be_day_scoped():
+    """No shipped date filter allows ``in`` today (``_DATE_OPS`` omits it), but
+    the day translation covers it so *adding* ``in`` to a date filter's ops
+    can't silently reintroduce the midnight-comparison bug. Asserted at the
+    clause level since the catalog gives no route to it."""
+    from app.services.report_builder import FilterDef, _build_where
+
+    fdef = FilterDef("created_at", "Created", "date", Invoice.created_at, ("in",))
+    clause = str(_build_where(fdef, "in", ["2026-06-30", "2026-07-01"]))
+    # Two half-open windows OR'd together — never a bare `IN (...)` of dates.
+    assert "IN " not in clause.upper()
+    assert clause.count(">=") == 2 and clause.count("<") >= 2
