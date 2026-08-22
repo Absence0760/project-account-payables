@@ -256,26 +256,25 @@ def test_every_label_covers_catalog():
     assert set(PERMISSION_LABELS) == set(ALL_PERMISSIONS)
 
 
-# ---------- POST /runs/{id}/approve — migrated off require_roles(ROLE_CFO) ---
+# ---------- POST /runs/{id}/approve — deliberately NOT on this permission ---
 
 
 @pytest.mark.asyncio
-async def test_approve_payment_run_route_wires_run_approve_permission():
-    """`POST /runs/{id}/approve` (the CFO sign-off endpoint) used to gate on
-    `require_roles(ROLE_CFO)` — a hardcoded role name, inconsistent with its
-    sibling `POST /runs` (create/approve), which already gates on
-    `payment_run.approve`. It now shares that permission, so:
+async def test_approve_payment_run_route_checks_the_cfo_role_not_the_permission():
+    """`POST /runs/{id}/approve` (the CFO sign-off above the org's dollar
+    threshold) must stay on `require_roles(ROLE_CFO)`, NOT
+    `require_permission(PERM_PAYMENT_RUN_APPROVE)` — that permission's
+    default holders (admin, ap_manager) also cover `POST /runs` (create), and
+    granting them the sign-off too defeats the control a genuine CFO
+    signature exists to provide. A prior round migrated this on a
+    false-consistency reading of the two routes, letting a non-CFO admin/
+    ap_manager sign off — caught by `tests-e2e/payments/cfo-approval.spec.ts`
+    and `tests-e2e/auth/rbac-api.spec.ts`.
 
-    * a custom role holding ONLY `payment_run.approve` — no CFO role, nothing
-      else granted — can call it (the whole point of the migration: an org
-      can split this sign-off duty away from the CFO title), and
-    * the old assumption still holds — a CFO, who carries this permission by
-      default per `ROLE_DEFAULT_PERMISSIONS[ROLE_CFO]`, can still call it.
-
-    Extracts the actual `Depends(...)` callable off the route function and
-    drives it directly (same technique as the `require_permission` tests
-    above), so a regression back to role-only gating fails here rather than
-    only surfacing in an e2e spec.
+    Proves the *behavior*, not which factory built the checker: a user
+    holding the ROLE name "cfo" but none of the granular permissions passes,
+    and a user holding the PERMISSION but no cfo role name is refused — only
+    `require_roles` semantics produce that combination.
     """
     import inspect
 
@@ -283,16 +282,18 @@ async def test_approve_payment_run_route_wires_run_approve_permission():
 
     checker = inspect.signature(approve_payment_run).parameters["user"].default.dependency
 
-    custom_role_user = _fake_user_with_perms(PERM_PAYMENT_RUN_APPROVE)
-    assert (await checker(request=_fake_request(), user=custom_role_user)) is custom_role_user
+    cfo_role_only = MagicMock(spec=["id", "organization_id", "roles", "effective_permissions"])
+    cfo_role_only.id = uuid.uuid4()
+    cfo_role_only.organization_id = uuid.uuid4()
+    cfo_role_only.roles = [SimpleNamespace(name="cfo")]
+    cfo_role_only.effective_permissions = frozenset()
+    assert (await checker(request=_fake_request(), user=cfo_role_only)) is cfo_role_only
 
-    cfo_like_user = _fake_user_with_perms(*ROLE_DEFAULT_PERMISSIONS[ROLE_CFO])
-    assert (await checker(request=_fake_request(), user=cfo_like_user)) is cfo_like_user
-
-    # A holder of an unrelated permission alone (e.g. vendor management, no
-    # run-approval) is refused — the permission check is still enforced, not
-    # bypassed by the migration.
-    other_user = _fake_user_with_perms(PERM_VENDOR_MANAGE)
+    permission_only = MagicMock(spec=["id", "organization_id", "roles", "effective_permissions"])
+    permission_only.id = uuid.uuid4()
+    permission_only.organization_id = uuid.uuid4()
+    permission_only.roles = [SimpleNamespace(name="admin")]
+    permission_only.effective_permissions = frozenset({PERM_PAYMENT_RUN_APPROVE})
     with pytest.raises(HTTPException) as exc:
-        await checker(request=_fake_request(), user=other_user)
+        await checker(request=_fake_request(), user=permission_only)
     assert exc.value.status_code == 403

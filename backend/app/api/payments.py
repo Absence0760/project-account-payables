@@ -1932,19 +1932,24 @@ async def approve_payment_run(
     run_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
-    # SoD-splittable, like every sibling payment-run/execute/void endpoint —
-    # `require_roles(ROLE_CFO)` hardcoded the sign-off to the CFO role by name,
-    # inconsistent with `POST /runs` (the run-approve endpoint this mirrors),
-    # which already gates on the permission. Defaults map to admin/ap_manager/
-    # cfo (the same set `PERM_PAYMENT_RUN_APPROVE` already grants elsewhere),
-    # so a bare CFO-only assumption still holds unless an org reassigns the
-    # permission; a custom role can now be granted run sign-off WITHOUT the
-    # full CFO role.
-    user: User = Depends(require_permission(PERM_PAYMENT_RUN_APPROVE)),
+    # Deliberately NOT `require_permission(PERM_PAYMENT_RUN_APPROVE)`, unlike
+    # its sibling `POST /runs` (create). That permission is admin/ap_manager/
+    # cfo by default — fine for creating a draft run, but `requires_cfo_approval`
+    # exists specifically to force a genuine CFO signature above the org's
+    # dollar threshold; granting admin or ap_manager the same authority here
+    # defeats the control entirely (they may be the same person who created or
+    # will execute the run). A prior round migrated this to the shared
+    # permission on a false-consistency reading of the two endpoints and it
+    # regressed exactly that — an admin/ap_manager could sign off a run above
+    # threshold, caught by `tests-e2e/payments/cfo-approval.spec.ts` and
+    # `tests-e2e/auth/rbac-api.spec.ts`. A custom role CAN still be granted
+    # this specific sign-off without the full CFO title — just not via the
+    # same catalog entry `POST /runs` uses; that would need a distinct
+    # permission (e.g. `payment_run.cfo_signoff`) if ever wanted.
+    user: User = Depends(require_roles(ROLE_CFO)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    """Sign-off on a draft run above the org's CFO-approval threshold. Only
-    valid from `draft` AND
+    """CFO sign-off on a draft run. Only valid from `draft` AND
     `requires_cfo_approval=True`. After this lands, /execute will accept
     the run from any actor with the standard payments role set."""
     # Row-lock the run: two concurrent CFO approvals both read

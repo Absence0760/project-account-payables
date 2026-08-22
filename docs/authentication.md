@@ -455,11 +455,13 @@ exactly as before.
   `require_permission(*perms)` (any-of semantics, 403 on miss, WARN log; typos
   rejected at import time).
 - **Migrated endpoints** — only the splittable sensitive set moved to
-  `require_permission`: payment-run create AND CFO sign-off (`payment_run.approve`
-  on both `POST /api/payments/runs` and `POST /api/payments/runs/{id}/approve`
-  — the latter used to be hardcoded `require_roles(ROLE_CFO)`, inconsistent with
-  its sibling; the maker-checker identity check still refuses a run's own
-  creator regardless of which permission holder signs off), payment-run
+  `require_permission`: payment-run create (`payment_run.approve`) — its
+  sibling `POST /api/payments/runs/{id}/approve` (the CFO sign-off above the
+  org's dollar threshold) deliberately stays on `require_roles(ROLE_CFO)`
+  rather than sharing that permission: the two "approve" names look like
+  siblings but aren't — granting the create-draft permission's default
+  holders (admin/ap_manager) the sign-off too defeats the control a genuine
+  CFO signature exists to provide — payment-run
   execute (`payment.execute`), payment void (`payment.void`), vendor
   create/update/verify/reject (`vendor.manage`), vendor block/unblock
   (`vendor.block`), vendor bank-change approve (`vendor.bank_change.approve`),
