@@ -1,0 +1,72 @@
+import type { InvoiceStatus } from './invoice';
+import type { PaymentStatus } from './payment';
+
+/**
+ * Vendor-facing status labels for the supplier portal.
+ *
+ * The supplier portal is not the internal AP console: a vendor doesn't need
+ * to distinguish `sending_to_erp` from `posted_in_erp`, and the raw
+ * workflow-engine / payment-rail enum values (see
+ * `backend/app/models/invoice.py::InvoiceStatus` and
+ * `backend/app/models/payment.py`) are internal jargon that must never
+ * render verbatim in front of a supplier (persona-supplier audit finding,
+ * issue #328).
+ *
+ * These maps collapse the internal state machines into the handful of
+ * phases a vendor actually cares about — "Submitted", "Processing",
+ * "Approved", "Paid", "Rejected" — while staying keyed on the SAME
+ * `InvoiceStatus` / `PaymentStatus` types the internal app uses
+ * (`$lib/types/invoice`, `$lib/types/payment`): a `Record<InvoiceStatus, …>`
+ * fails typechecking here (and `messages_parity`-style drift guards below)
+ * until a vendor label is added for a new backend status, instead of a new
+ * status silently falling through to the raw string.
+ */
+export const PORTAL_INVOICE_STATUS_LABELS: Record<InvoiceStatus, string> = {
+	new: 'Submitted',
+	pending: 'Processing',
+	ready_for_review: 'Under Review',
+	approved: 'Approved',
+	rejected: 'Rejected',
+	sending_to_erp: 'Processing',
+	sent_to_erp: 'Processing',
+	posted_in_erp: 'Processing',
+	payment_scheduled: 'Payment Scheduled',
+	paid: 'Paid',
+	// `done` is reachable straight from `approved` (a workflow with no ERP
+	// step and no scheduled payment) as well as after `paid` — it doesn't
+	// always mean "paid", so it gets its own vendor-neutral label rather
+	// than reusing "Paid" and asserting something that may not be true.
+	done: 'Completed',
+	// System-managed retry state (`failed → pending | sending_to_erp`) — not
+	// a rejection, and not something a vendor can act on.
+	failed: 'Processing'
+};
+
+export const PORTAL_PAYMENT_STATUS_LABELS: Record<PaymentStatus, string> = {
+	pending: 'Scheduled',
+	pending_compliance: 'Processing',
+	submitted: 'Processing',
+	processing: 'Processing',
+	completed: 'Completed',
+	failed: 'Failed',
+	cancelled: 'Cancelled',
+	voided: 'Cancelled'
+};
+
+/**
+ * Fail-soft lookups for portal status rendering: an unrecognised value
+ * (a not-yet-classified backend status, stale portal build, or test fixture)
+ * never renders raw — falls back to a neutral "Processing" rather than
+ * leaking the internal string.
+ */
+export function portalInvoiceStatusLabel(status: string): string {
+	return (
+		(PORTAL_INVOICE_STATUS_LABELS as Record<string, string>)[status] ?? 'Processing'
+	);
+}
+
+export function portalPaymentStatusLabel(status: string): string {
+	return (
+		(PORTAL_PAYMENT_STATUS_LABELS as Record<string, string>)[status] ?? 'Processing'
+	);
+}

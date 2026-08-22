@@ -12,6 +12,7 @@
 	import { appendUnique } from '$lib/utils/pagination';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { m } from '$lib/i18n/store.svelte';
+	import { portalInvoiceStatusLabel } from '$lib/types/portalStatus';
 	import SupplierChatThread from '$lib/components/chat/SupplierChatThread.svelte';
 	import type { PortalChatThread } from '$lib/types/supplierChat';
 	import {
@@ -215,7 +216,7 @@
 						<td>{formatDate(inv.invoice_date, m('portal.common.dash'))}</td>
 						<td>{formatDate(inv.due_date, m('portal.common.dash'))}</td>
 						<td class="num">{fmtAmount(inv.amount, inv.currency)}</td>
-						<td><span class="status s-{inv.status}">{inv.status}</span></td>
+						<td><span class="status s-{inv.status}">{portalInvoiceStatusLabel(inv.status)}</span></td>
 					</tr>
 					{#if expandedId === inv.id}
 						<!-- svelte-ignore a11y_no_static_element_interactions -->
