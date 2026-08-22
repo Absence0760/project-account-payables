@@ -313,9 +313,26 @@ class BulkStatusRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=1000)
 
 
+class BulkStatusSkip(BaseModel):
+    """One invoice `bulk/status` didn't move, and why.
+
+    `bulk_status_change` routes `approved`/`rejected` through the same
+    `review.approve_invoice` / `reject_invoice` the single-invoice endpoint
+    uses, so a skip there can be a segregation-of-duties refusal, a CFO-gate
+    refusal, or a max-amount cap — not just an immutable status. A bare id
+    list can't distinguish "this needs a different signer" from "this is
+    frozen"; `reason` carries the real cause (the underlying service's own
+    `HTTPException.detail`) so the caller isn't misled into treating an
+    authorization refusal as a data problem.
+    """
+
+    id: str
+    reason: str
+
+
 class BulkStatusResponse(BaseModel):
     updated: int
-    skipped: list[str] = []
+    skipped: list[BulkStatusSkip] = []
 
 
 class BulkExportRequest(BaseModel):
