@@ -1925,6 +1925,9 @@ export const messages = {
 	'portal.invoices.loadMore': 'Charger plus ({shown} sur {total})',
 	'portal.invoices.showingAll':
 		'{total, plural, one {Affichage de la # facture} other {Affichage des # factures}}',
+	'portal.invoices.downloadFile': 'Télécharger le fichier',
+	'portal.invoices.preparing': 'Préparation…',
+	'portal.invoices.fileDownloadFailed': 'Échec du téléchargement',
 	'portal.payments.title': 'Paiements',
 	'portal.payments.loadFailed': 'Échec du chargement',
 	'portal.payments.downloadFailed': 'Échec du téléchargement',

@@ -1974,6 +1974,9 @@ export const en = {
 	'portal.invoices.loadMore': 'Load more ({shown} of {total})',
 	'portal.invoices.showingAll':
 		'{total, plural, one {Showing all # invoice} other {Showing all # invoices}}',
+	'portal.invoices.downloadFile': 'Download file',
+	'portal.invoices.preparing': 'Preparing…',
+	'portal.invoices.fileDownloadFailed': 'Download failed',
 
 	// Portal payments (routes/portal/payments/+page.svelte)
 	'portal.payments.title': 'Payments',

@@ -1932,6 +1932,9 @@ export const messages = {
 	'portal.invoices.loadMore': 'Cargar más ({shown} de {total})',
 	'portal.invoices.showingAll':
 		'{total, plural, one {Mostrando # factura} other {Mostrando todas las # facturas}}',
+	'portal.invoices.downloadFile': 'Descargar archivo',
+	'portal.invoices.preparing': 'Preparando…',
+	'portal.invoices.fileDownloadFailed': 'Error al descargar',
 
 	// Pagos del portal (routes/portal/payments/+page.svelte)
 	'portal.payments.title': 'Pagos',
