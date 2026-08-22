@@ -26,6 +26,13 @@ class CompanyProfile(BaseModel):
     website: str = ""
     tax_id: str = ""
     logo_url: str = ""
+    # `tax_id` above is generically labelled "Tax ID / EIN" with a US-shaped
+    # (`XX-XXXXXXX`) placeholder in the UI — it doesn't fit a UK company's own
+    # identifiers. These two are separate, optional, plain strings (no format
+    # validation — VAT number and Companies House registration number formats
+    # vary by jurisdiction) rather than overloading `tax_id`.
+    vat_registration_number: str = ""
+    companies_house_number: str = ""
 
 
 class InvoiceDefaults(BaseModel):

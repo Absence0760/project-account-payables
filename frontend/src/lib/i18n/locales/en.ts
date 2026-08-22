@@ -319,6 +319,15 @@ export const en = {
 	'vendors.bank.bankName': 'Bank name',
 	'vendors.bank.accountLast4': 'Account last 4',
 	'vendors.bank.routingLast4': 'Routing last 4',
+	// Mailing address for the `checkeeper` check-printing rail — without it,
+	// every check payment to this vendor fails `checkeeper_missing_mailing_address`.
+	'vendors.bank.mailingAddressSection': 'Check mailing address',
+	'vendors.bank.mailingHint': 'Where a printed check to this vendor gets mailed.',
+	'vendors.bank.mailingStreet': 'Street',
+	'vendors.bank.mailingCity': 'City',
+	'vendors.bank.mailingState': 'State',
+	'vendors.bank.mailingPostal': 'Postal code',
+	'vendors.bank.mailingCountry': 'Country',
 	// Bank-detail dual control (the BEC / bank-redirect gate) — the /vendors
 	// bank editor stages a change; the queue below is where it gets signed off.
 	'vendors.bank.dualControlHint':
@@ -683,6 +692,8 @@ export const en = {
 	'org.company.name': 'Company Name',
 	'org.company.taxId': 'Tax ID / EIN',
 	'org.company.taxIdPlaceholder': 'XX-XXXXXXX',
+	'org.company.vatNumber': 'VAT Registration Number',
+	'org.company.companiesHouseNumber': 'Companies House Number',
 	'org.company.address': 'Address',
 	'org.company.addressPlaceholder': 'Street, City, State, ZIP',
 	'org.company.phone': 'Phone',

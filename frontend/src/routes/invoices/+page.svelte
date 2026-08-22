@@ -20,6 +20,7 @@
 	import Money from '$lib/components/ui/Money.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { workflowStore } from '$lib/stores/workflows.svelte';
+	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
@@ -151,6 +152,9 @@
 		// `errored` flags are what the UI reads.
 		invoiceStore.fetchCounts().catch(() => {});
 		workflowStore.fetchActiveSteps().catch(() => {});
+		// So CreateInvoiceModal's currency default is ready by the time the
+		// toolbar button is clicked, not still resolving on first open.
+		orgCurrency.ensureLoaded();
 	});
 
 	// Re-fetch when status filters or advanced filters change

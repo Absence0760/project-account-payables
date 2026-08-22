@@ -1429,7 +1429,10 @@ Payment execution requires integration with a payment processor or bank API:
 
 - **ACH**: Requires bank routing + account number (stored in vendor `bank_details`)
 - **Wire**: Requires SWIFT/BIC + IBAN or routing + account
-- **Check**: Requires mailing address (vendor's `remit_to_address` or `address`)
+- **Check**: Requires a mailing address on the vendor's own `bank_details.mailing_address`
+  (street/city/state/postal/country) — the `checkeeper` adapter reads that exact
+  key; a vendor with none refuses with `checkeeper_missing_mailing_address` (see
+  `services/payment_adapters/checkeeper.py`)
 - **Virtual Card**: Requires vendor acceptance of card payments
 
 Currently, payment execution is a status change only — actual bank integration is a future phase.

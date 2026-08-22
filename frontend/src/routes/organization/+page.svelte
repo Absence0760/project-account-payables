@@ -23,6 +23,8 @@
 		website: string;
 		tax_id: string;
 		logo_url: string;
+		vat_registration_number?: string;
+		companies_house_number?: string;
 	}
 
 	interface InvoiceDefaults {
@@ -106,6 +108,8 @@
 	let phone = $state('');
 	let website = $state('');
 	let taxId = $state('');
+	let vatNumber = $state('');
+	let companiesHouseNumber = $state('');
 	let currency = $state('USD');
 	let paymentTerms = $state('Net 30');
 	let numberPrefix = $state('INV-');
@@ -278,6 +282,8 @@
 			phone = data.settings.company.phone;
 			website = data.settings.company.website;
 			taxId = data.settings.company.tax_id;
+			vatNumber = data.settings.company.vat_registration_number ?? '';
+			companiesHouseNumber = data.settings.company.companies_house_number ?? '';
 			currency = data.settings.invoice_defaults.currency;
 			paymentTerms = data.settings.invoice_defaults.payment_terms;
 			numberPrefix = data.settings.invoice_defaults.number_prefix;
@@ -455,6 +461,8 @@
 				company: {
 					address, phone, website,
 					tax_id: taxId,
+					vat_registration_number: vatNumber,
+					companies_house_number: companiesHouseNumber,
 					logo_url: org?.settings.company.logo_url ?? '',
 				},
 			});
@@ -1049,6 +1057,14 @@
 					<label>
 						<span>{m('org.company.taxId')}</span>
 						<input type="text" bind:value={taxId} placeholder={m('org.company.taxIdPlaceholder')} />
+					</label>
+					<label>
+						<span>{m('org.company.vatNumber')}</span>
+						<input type="text" bind:value={vatNumber} />
+					</label>
+					<label>
+						<span>{m('org.company.companiesHouseNumber')}</span>
+						<input type="text" bind:value={companiesHouseNumber} />
 					</label>
 					<label class="full-width">
 						<span>{m('org.company.address')}</span>
