@@ -124,6 +124,56 @@ async def test_zero_payment_vendor_has_clean_zero_ytd(realdb):
 
 
 # ---------------------------------------------------------------------------
+# W-9 vs W-8 — `w9_file_key` is shared by both uploads (no separate vendor
+# column); a bare not-None check used to report a foreign vendor who filed a
+# W-8 as "1099-ready" and rolled them into the domestic export.
+# ---------------------------------------------------------------------------
+
+
+async def test_w8_vendor_does_not_report_w9_on_file(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    async with mk() as s:
+        v = Vendor(organization_id=org_id, name="Foreign Co", tax_id="000000000")
+        s.add(v)
+        await s.commit()
+        await s.refresh(v)
+        vendor_id = v.id
+        # Exact key shape `upload_tax_form_file` writes for a W-8.
+        v.w9_file_key = f"{org_id}/tax-forms/{vendor_id}/w8/form.pdf"
+        await s.commit()
+
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.get(f"/api/tax/1099-report?year={YEAR}")
+    assert resp.status_code == 200, resp.text
+    row = next(r for r in resp.json()["rows"] if r["vendor_name"] == "Foreign Co")
+    assert row["w9_on_file"] is False
+
+
+async def test_w9_vendor_still_reports_w9_on_file(realdb):
+    """The fix must not regress the true-W-9 case, on either key shape the
+    app writes: the legacy AP-side upload (no form-type segment) and the
+    newer shared `tax-forms/<vendor>/w9/...` shape."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    async with mk() as s:
+        v = Vendor(organization_id=org_id, name="Domestic Co", tax_id="12-3456789")
+        s.add(v)
+        await s.commit()
+        await s.refresh(v)
+        v.w9_file_key = f"{org_id}/tax-forms/{v.id}/w9/form.pdf"
+        await s.commit()
+
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.get(f"/api/tax/1099-report?year={YEAR}")
+    assert resp.status_code == 200, resp.text
+    row = next(r for r in resp.json()["rows"] if r["vendor_name"] == "Domestic Co")
+    assert row["w9_on_file"] is True
+
+
+# ---------------------------------------------------------------------------
 # Card-rail exclusion (IRS: card payments are the settlement entity's 1099-K)
 # ---------------------------------------------------------------------------
 

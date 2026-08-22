@@ -75,6 +75,7 @@ from app.services.extraction_dispatch import dispatch_extraction
 from app.services.invoice_warnings import refresh_warnings
 from app.services.storage import (
     get_file,
+    tax_form_type_from_key,
     upload_chat_file,
     upload_invoice_file,
     upload_tax_form_file,
@@ -1084,23 +1085,9 @@ async def list_my_change_requests(
 # (w9 vs w8) is encoded in the S3 key path segment, so no vendor column / no
 # migration is needed to distinguish the two. The tax ID is never read, logged,
 # or echoed by any handler here — only an on-file boolean + form type + date.
-
-
-def _tax_form_type_from_key(file_key: str | None) -> str | None:
-    """Recover the coarse form type (w9 / w8) from a stored tax-form S3 key.
-
-    The key shape is ``<org>/tax-forms/<vendor>/<form_type>/<file>`` (see
-    ``storage.upload_tax_form_file``). A key written by the AP-side W-9 upload
-    uses a different prefix (``<org>/w9/<vendor>/<file>``) and has no form-type
-    segment — that path defaults to ``w9`` since the AP flow only handles W-9s.
-    """
-    if not file_key:
-        return None
-    parts = file_key.split("/")
-    if len(parts) >= 5 and parts[1] == "tax-forms" and parts[3] in TAX_FORM_TYPES:
-        return parts[3]
-    # A W-9 stored via the AP-side upload (or any legacy key) — it's a W-9.
-    return "w9"
+# The key-shape decoder itself lives in `services.storage.tax_form_type_from_key`
+# (next to the encoder, `upload_tax_form_file`, that defines the shape) — also
+# consumed by `services.tax_1099` so a W-8 vendor isn't reported 1099-ready.
 
 
 @router.get("/company/tax-form", response_model=PortalTaxFormResponse)
@@ -1122,7 +1109,7 @@ async def get_my_tax_form(
     on_file = bool(vendor.w9_file_key)
     return PortalTaxFormResponse(
         on_file=on_file,
-        form_type=_tax_form_type_from_key(vendor.w9_file_key) if on_file else None,
+        form_type=tax_form_type_from_key(vendor.w9_file_key) if on_file else None,
         received_date=vendor.w9_received_date if on_file else None,
         suggested_form_type="w9",
     )
@@ -1184,7 +1171,7 @@ async def upload_my_tax_form(
 
     return PortalTaxFormResponse(
         on_file=True,
-        form_type=_tax_form_type_from_key(vendor.w9_file_key),
+        form_type=tax_form_type_from_key(vendor.w9_file_key),
         received_date=vendor.w9_received_date,
         suggested_form_type="w9",
     )

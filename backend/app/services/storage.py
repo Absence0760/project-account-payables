@@ -256,6 +256,23 @@ async def upload_tax_form_file(
     return file_key, file_url
 
 
+def tax_form_type_from_key(file_key: str | None) -> str | None:
+    """Recover the coarse form type (``"w9"`` / ``"w8"``) from a stored
+    tax-form S3 key — the exact inverse of the key shape ``upload_tax_form_file``
+    builds above.
+
+    A key written by the older AP-side W-9-only upload uses a different
+    prefix (``<org>/w9/<vendor>/<file>``) with no form-type segment — that
+    path predates W-8 support and defaults to ``"w9"``.
+    """
+    if not file_key:
+        return None
+    parts = file_key.split("/")
+    if len(parts) >= 5 and parts[1] == "tax-forms" and parts[3] in ("w9", "w8"):
+        return parts[3]
+    return "w9"
+
+
 async def upload_chat_file(
     org_id: uuid.UUID,
     invoice_id: uuid.UUID,

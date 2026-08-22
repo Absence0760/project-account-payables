@@ -32,6 +32,7 @@ from app.models.payment import Payment
 from app.models.vendor import Vendor
 from app.services.currency_conversion import payment_reporting_amount_sql
 from app.services.payment_methods import card_payment_method_clause
+from app.services.storage import tax_form_type_from_key
 from app.utils.dates import utc_today
 
 # IRS 1099-NEC / 1099-MISC reporting threshold for the 2024+ tax years.
@@ -260,7 +261,13 @@ async def build_1099_report(
                 tax_classification=row.tax_classification,
                 is_1099_eligible=bool(row.is_1099_eligible),
                 w9_received_date=row.w9_received_date,
-                w9_on_file=row.w9_file_key is not None,
+                # `w9_file_key` is shared with W-8 uploads (no separate vendor
+                # column — see `storage.upload_tax_form_file`), so a bare
+                # not-None check reported a foreign vendor who filed a W-8 as
+                # "1099-ready", rolling them into the Tax1099 export as if
+                # they'd filed the domestic form. The form type is encoded in
+                # the key's path segment — only an actual W-9 counts here.
+                w9_on_file=tax_form_type_from_key(row.w9_file_key) == "w9",
                 ytd_paid=ytd,
                 over_threshold=ytd >= THRESHOLD_USD,
                 payment_count=int(row.payment_count or 0),

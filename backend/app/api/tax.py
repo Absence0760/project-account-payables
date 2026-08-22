@@ -48,6 +48,7 @@ from app.services.storage import (
     ALLOWED_CONTENT_TYPES,
     _put_object,
     _safe_filename,
+    tax_form_type_from_key,
 )
 from app.services.tax_1099 import build_1099_dashboard, build_1099_report
 from app.services.tax_1099_forms import (
@@ -567,7 +568,9 @@ def _vendor_tax_response(vendor: Vendor) -> dict:
         "w9_received_date": (
             vendor.w9_received_date.isoformat() if vendor.w9_received_date else None
         ),
-        "w9_on_file": vendor.w9_file_key is not None,
+        # Shared with W-8 uploads (no separate vendor column) — only an
+        # actual W-9 counts as "on file" here. See tax_1099.build_1099_report.
+        "w9_on_file": tax_form_type_from_key(vendor.w9_file_key) == "w9",
         "tin_verified_at": (
             vendor.tin_verified_at.isoformat()
             if isinstance(vendor.tin_verified_at, datetime)
