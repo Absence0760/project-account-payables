@@ -234,7 +234,14 @@ async def build_1099_report(
             Payment,
             (Payment.invoice_id == Invoice.id)
             & (Payment.status == "completed")
-            & (extract("year", Payment.completed_at) == year),
+            # `Payment.completed_at` is `TIMESTAMPTZ` — a bare `EXTRACT(YEAR
+            # FROM …)` resolves against the Postgres session `timezone` GUC,
+            # not UTC. `func.timezone("UTC", …)` normalises to the UTC
+            # calendar year first (the same pattern
+            # `bank_reconciliation.py`'s `sent_on_expr` uses), so a payment
+            # completed late on Dec 31 UTC doesn't drift into next year's
+            # filing — or the reverse — on a non-UTC server session.
+            & (extract("year", func.timezone("UTC", Payment.completed_at)) == year),
         )
         .where(Vendor.organization_id == organization_id)
         .group_by(
