@@ -664,6 +664,8 @@ export const messages = {
 	'org.company.name': 'Nome da empresa',
 	'org.company.taxId': 'CNPJ / EIN',
 	'org.company.taxIdPlaceholder': 'XX-XXXXXXX',
+	'org.company.vatNumber': 'Número de Registro de IVA',
+	'org.company.companiesHouseNumber': 'Número do Companies House',
 	'org.company.address': 'Endereço',
 	'org.company.addressPlaceholder': 'Rua, cidade, estado, CEP',
 	'org.company.phone': 'Telefone',

@@ -681,6 +681,8 @@ export const en = {
 	'org.company.name': 'Company Name',
 	'org.company.taxId': 'Tax ID / EIN',
 	'org.company.taxIdPlaceholder': 'XX-XXXXXXX',
+	'org.company.vatNumber': 'VAT Registration Number',
+	'org.company.companiesHouseNumber': 'Companies House Number',
 	'org.company.address': 'Address',
 	'org.company.addressPlaceholder': 'Street, City, State, ZIP',
 	'org.company.phone': 'Phone',

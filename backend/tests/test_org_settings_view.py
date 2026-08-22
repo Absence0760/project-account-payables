@@ -265,3 +265,35 @@ async def test_patch_organization_still_merges_other_blocks(realdb):
         )
     assert resp.status_code == 200
     assert resp.json()["settings"]["invoice_defaults"]["currency"] == "GBP"
+
+
+@pytest.mark.asyncio
+async def test_vat_and_companies_house_numbers_round_trip(realdb):
+    """A UK company has no use for the US-shaped `tax_id` field — these two
+    are its own optional identifiers (`CompanyProfile.vat_registration_number`
+    / `.companies_house_number`, `backend/app/schemas/organization.py`), and
+    must save + read back through the same generic settings PATCH/GET every
+    other company-profile field uses."""
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.patch(
+            "/api/organization",
+            json={
+                "settings": {
+                    "company": {
+                        "vat_registration_number": "GB123456789",
+                        "companies_house_number": "12345678",
+                    }
+                }
+            },
+        )
+        assert resp.status_code == 200
+        company = resp.json()["settings"]["company"]
+        assert company["vat_registration_number"] == "GB123456789"
+        assert company["companies_house_number"] == "12345678"
+
+        # And a fresh GET (not just the PATCH echo) reads the same values back.
+        resp = await c.get("/api/organization")
+    assert resp.status_code == 200
+    company = resp.json()["settings"]["company"]
+    assert company["vat_registration_number"] == "GB123456789"
+    assert company["companies_house_number"] == "12345678"

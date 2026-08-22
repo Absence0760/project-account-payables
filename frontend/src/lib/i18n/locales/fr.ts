@@ -663,6 +663,8 @@ export const messages = {
 	'org.company.name': 'Nom de l\'entreprise',
 	'org.company.taxId': 'Numéro fiscal / EIN',
 	'org.company.taxIdPlaceholder': 'XX-XXXXXXX',
+	'org.company.vatNumber': 'Numéro de TVA',
+	'org.company.companiesHouseNumber': 'Numéro Companies House',
 	'org.company.address': 'Adresse',
 	'org.company.addressPlaceholder': 'Rue, ville, région, code postal',
 	'org.company.phone': 'Téléphone',

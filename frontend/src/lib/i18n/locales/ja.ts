@@ -656,6 +656,8 @@ export const messages = {
 	'org.company.name': '会社名',
 	'org.company.taxId': '納税者番号 / EIN',
 	'org.company.taxIdPlaceholder': 'XX-XXXXXXX',
+	'org.company.vatNumber': 'VAT登録番号',
+	'org.company.companiesHouseNumber': 'Companies House登録番号',
 	'org.company.address': '住所',
 	'org.company.addressPlaceholder': '番地、市区町村、都道府県、郵便番号',
 	'org.company.phone': '電話番号',

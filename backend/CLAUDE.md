@@ -1040,7 +1040,8 @@ user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER))
 Stored in `Organization.settings`:
 ```json
 {
-  "company": { "name", "tax_id", "address", "phone", "website", "logo_url" },
+  "company": { "name", "tax_id", "address", "phone", "website", "logo_url",
+               "vat_registration_number", "companies_house_number" },
   "invoice_defaults": { "currency", "payment_terms", "number_prefix", "default_gl_account", "default_cost_center" },
   "erp": { "type", "integration_method", "credentials": { ... }, "webhook_signing_secret": "..." },
   "extraction": { "program_type": "platform"|"byok", "provider", "api_key", "model" },
