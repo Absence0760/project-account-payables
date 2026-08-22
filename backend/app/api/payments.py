@@ -343,8 +343,11 @@ async def list_payments(
     total_q = select(func.count()).select_from(count_base.subquery())
     total = (await db.execute(total_q)).scalar() or 0
 
-    # Paginate
-    query = query.order_by(Payment.created_at.desc())
+    # Paginate. `.id` tie-breaker: bulk-created rows (a payment run) can share
+    # `created_at` down to the microsecond, so without it Postgres can order
+    # them differently between pages — a row duplicated onto two pages or
+    # skipped entirely.
+    query = query.order_by(Payment.created_at.desc(), Payment.id.desc())
     query = query.offset(pagination.offset).limit(pagination.limit)
     result = await db.execute(query)
     rows = result.all()
@@ -1714,7 +1717,8 @@ async def list_payment_runs(
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar() or 0
 
-    query = query.order_by(PaymentRun.created_at.desc())
+    # `.id` tie-breaker: same fix as the sibling payment list above.
+    query = query.order_by(PaymentRun.created_at.desc(), PaymentRun.id.desc())
     query = query.offset(pagination.offset).limit(pagination.limit)
     result = await db.execute(query)
     runs = result.scalars().all()

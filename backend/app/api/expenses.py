@@ -528,8 +528,13 @@ async def list_expenses(
     )
 
     total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0)
+    # `.id` tie-breaker: bulk-imported expenses can share `created_at`, so
+    # without it Postgres can order them differently between pages — a row
+    # duplicated onto two pages or skipped entirely.
     paged = (
-        base.order_by(Expense.created_at.desc()).offset(pagination.offset).limit(pagination.limit)
+        base.order_by(Expense.created_at.desc(), Expense.id.desc())
+        .offset(pagination.offset)
+        .limit(pagination.limit)
     )
     rows = (await db.execute(paged)).scalars().all()
     return ExpenseListResponse(
@@ -1073,9 +1078,10 @@ async def list_reports(
         base = base.where(ExpenseReport.status == status_filter)
 
     total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0)
+    # `.id` tie-breaker: see the same fix on the sibling expense list above.
     paged = (
         base.options(selectinload(ExpenseReport.expenses))
-        .order_by(ExpenseReport.created_at.desc())
+        .order_by(ExpenseReport.created_at.desc(), ExpenseReport.id.desc())
         .offset(pagination.offset)
         .limit(pagination.limit)
     )

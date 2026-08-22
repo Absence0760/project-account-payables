@@ -333,7 +333,13 @@ async def list_vendors(
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar() or 0
 
-    query = query.order_by(Vendor.name).offset(pagination.offset).limit(pagination.limit)
+    # `.id` tie-breaker: `Vendor.name` alone isn't unique (two vendors can
+    # share a name, e.g. a bulk import), so without it Postgres is free to
+    # order same-name rows differently between the offset=0 and offset=N
+    # queries — a row can be duplicated onto two pages or skipped entirely.
+    query = (
+        query.order_by(Vendor.name, Vendor.id).offset(pagination.offset).limit(pagination.limit)
+    )
     result = await db.execute(query)
     vendors = result.scalars().all()
 

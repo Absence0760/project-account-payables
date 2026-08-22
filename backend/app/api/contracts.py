@@ -169,7 +169,10 @@ async def list_contracts(
         base.add_columns(Vendor.name)
         .outerjoin(Vendor, Contract.vendor_id == Vendor.id)
         .options(selectinload(Contract.line_items))
-        .order_by(Contract.created_at.desc())
+        # `.id` tie-breaker: bulk-created rows can share `created_at`, so
+        # without it Postgres can order them differently between pages — a
+        # row duplicated onto two pages or skipped entirely.
+        .order_by(Contract.created_at.desc(), Contract.id.desc())
         .offset(pagination.offset)
         .limit(pagination.limit)
     )
