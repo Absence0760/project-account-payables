@@ -1932,10 +1932,19 @@ async def approve_payment_run(
     run_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
-    user: User = Depends(require_roles(ROLE_CFO)),
+    # SoD-splittable, like every sibling payment-run/execute/void endpoint —
+    # `require_roles(ROLE_CFO)` hardcoded the sign-off to the CFO role by name,
+    # inconsistent with `POST /runs` (the run-approve endpoint this mirrors),
+    # which already gates on the permission. Defaults map to admin/ap_manager/
+    # cfo (the same set `PERM_PAYMENT_RUN_APPROVE` already grants elsewhere),
+    # so a bare CFO-only assumption still holds unless an org reassigns the
+    # permission; a custom role can now be granted run sign-off WITHOUT the
+    # full CFO role.
+    user: User = Depends(require_permission(PERM_PAYMENT_RUN_APPROVE)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    """CFO sign-off on a draft run. Only valid from `draft` AND
+    """Sign-off on a draft run above the org's CFO-approval threshold. Only
+    valid from `draft` AND
     `requires_cfo_approval=True`. After this lands, /execute will accept
     the run from any actor with the standard payments role set."""
     # Row-lock the run: two concurrent CFO approvals both read

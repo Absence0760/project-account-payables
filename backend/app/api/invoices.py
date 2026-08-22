@@ -60,6 +60,7 @@ from app.schemas.invoice import (
     BulkRecodeGLRequest,
     BulkStatusRequest,
     BulkStatusResponse,
+    BulkStatusSkip,
     ChatAttachmentOut,
     ChatMessageCreate,
     ChatMessageResponse,
@@ -1949,6 +1950,23 @@ BULK_STATUS_REFUSALS: dict[DBInvoiceStatus, str] = {
     ),
 }
 
+
+def _skip_reason(exc: HTTPException, fallback: str) -> str:
+    """The human-readable cause a bulk-status skip is reported with.
+
+    `approve_invoice` / `reject_invoice` / `resubmit_invoice` /
+    `transition_invoice` all raise `HTTPException` with a plain-string
+    `detail` (segregation-of-duties, the CFO gate, the max-amount cap, the
+    state-machine's own "cannot transition" message) — that string IS the
+    real cause, and it's what should reach the caller instead of a generic
+    label that can't distinguish an authorization refusal from a data
+    problem. `detail` is typed `Any` on `HTTPException`, so a non-string
+    (a future caller that raises a structured detail) falls back rather than
+    handing the client a stringified dict.
+    """
+    return exc.detail if isinstance(exc.detail, str) else fallback
+
+
 # Targets a human may legitimately drive in bulk. Each is routed below through
 # its owning service where one exists (`approved` / `rejected` / a resubmit).
 BULK_STATUS_TARGETS: frozenset[DBInvoiceStatus] = frozenset(
@@ -1993,7 +2011,7 @@ async def bulk_status_change(
     invoices = result.scalars().all()
 
     updated = 0
-    skipped: list[str] = []
+    skipped: list[BulkStatusSkip] = []
     # Bulk-approving must NOT bypass the approval controls. Routing a transition
     # straight to `approved` skipped segregation-of-duties, the max-amount cap,
     # and the CFO gate — so an AP manager could bulk-approve their own uploads or
@@ -2012,7 +2030,12 @@ async def bulk_status_change(
     actor_roles = {r.name for r in user.roles}
     for inv in invoices:
         if inv.status in IMMUTABLE_STATUSES:
-            skipped.append(str(inv.id))
+            skipped.append(
+                BulkStatusSkip(
+                    id=str(inv.id),
+                    reason=f"invoice is in an immutable status ({inv.status.value})",
+                )
+            )
             continue
         if target == DBInvoiceStatus.approved:
             from app.services.review import approve_invoice
@@ -2026,10 +2049,14 @@ async def bulk_status_change(
                     actor_roles=actor_roles,
                     org_settings=org.settings,
                 )
-            except HTTPException:
+            except HTTPException as exc:
                 # Segregation / threshold / CFO-gate violation — skip this one,
-                # keep processing the rest of the batch.
-                skipped.append(str(inv.id))
+                # keep processing the rest of the batch. The service's own
+                # `detail` names WHICH control fired; that's what the caller
+                # needs to know, not a generic label.
+                skipped.append(
+                    BulkStatusSkip(id=str(inv.id), reason=_skip_reason(exc, "approval was refused"))
+                )
                 continue
             updated += 1
         elif target == DBInvoiceStatus.rejected:
@@ -2043,9 +2070,13 @@ async def bulk_status_change(
                     actor_name=user.full_name,
                     reason=reason_text,
                 )
-            except HTTPException:
+            except HTTPException as exc:
                 # Not in `ready_for_review` — skip, same as the approve branch.
-                skipped.append(str(inv.id))
+                skipped.append(
+                    BulkStatusSkip(
+                        id=str(inv.id), reason=_skip_reason(exc, "rejection was refused")
+                    )
+                )
                 continue
             updated += 1
         elif target == DBInvoiceStatus.ready_for_review and inv.status == DBInvoiceStatus.rejected:
@@ -2056,8 +2087,10 @@ async def bulk_status_change(
 
             try:
                 await resubmit_invoice(db, inv, actor_id=user.id)
-            except HTTPException:
-                skipped.append(str(inv.id))
+            except HTTPException as exc:
+                skipped.append(
+                    BulkStatusSkip(id=str(inv.id), reason=_skip_reason(exc, "resubmit was refused"))
+                )
                 continue
             await refresh_warnings(db, inv, org_settings=org.settings)
             updated += 1
@@ -2078,8 +2111,12 @@ async def bulk_status_change(
                     actor_id=user.id,
                     action_name="invoice.bulk_status_change",
                 )
-            except HTTPException:
-                skipped.append(str(inv.id))
+            except HTTPException as exc:
+                skipped.append(
+                    BulkStatusSkip(
+                        id=str(inv.id), reason=_skip_reason(exc, "transition was refused")
+                    )
+                )
                 continue
             await refresh_warnings(db, inv, org_settings=org.settings)
             updated += 1

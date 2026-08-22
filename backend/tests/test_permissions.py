@@ -254,3 +254,45 @@ def test_every_label_covers_catalog():
     from app.api.permissions import PERMISSION_LABELS
 
     assert set(PERMISSION_LABELS) == set(ALL_PERMISSIONS)
+
+
+# ---------- POST /runs/{id}/approve — migrated off require_roles(ROLE_CFO) ---
+
+
+@pytest.mark.asyncio
+async def test_approve_payment_run_route_wires_run_approve_permission():
+    """`POST /runs/{id}/approve` (the CFO sign-off endpoint) used to gate on
+    `require_roles(ROLE_CFO)` — a hardcoded role name, inconsistent with its
+    sibling `POST /runs` (create/approve), which already gates on
+    `payment_run.approve`. It now shares that permission, so:
+
+    * a custom role holding ONLY `payment_run.approve` — no CFO role, nothing
+      else granted — can call it (the whole point of the migration: an org
+      can split this sign-off duty away from the CFO title), and
+    * the old assumption still holds — a CFO, who carries this permission by
+      default per `ROLE_DEFAULT_PERMISSIONS[ROLE_CFO]`, can still call it.
+
+    Extracts the actual `Depends(...)` callable off the route function and
+    drives it directly (same technique as the `require_permission` tests
+    above), so a regression back to role-only gating fails here rather than
+    only surfacing in an e2e spec.
+    """
+    import inspect
+
+    from app.api.payments import approve_payment_run
+
+    checker = inspect.signature(approve_payment_run).parameters["user"].default.dependency
+
+    custom_role_user = _fake_user_with_perms(PERM_PAYMENT_RUN_APPROVE)
+    assert (await checker(request=_fake_request(), user=custom_role_user)) is custom_role_user
+
+    cfo_like_user = _fake_user_with_perms(*ROLE_DEFAULT_PERMISSIONS[ROLE_CFO])
+    assert (await checker(request=_fake_request(), user=cfo_like_user)) is cfo_like_user
+
+    # A holder of an unrelated permission alone (e.g. vendor management, no
+    # run-approval) is refused — the permission check is still enforced, not
+    # bypassed by the migration.
+    other_user = _fake_user_with_perms(PERM_VENDOR_MANAGE)
+    with pytest.raises(HTTPException) as exc:
+        await checker(request=_fake_request(), user=other_user)
+    assert exc.value.status_code == 403

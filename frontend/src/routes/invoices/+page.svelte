@@ -348,17 +348,28 @@
 	async function bulkStatusChange() {
 		bulkBusy = true;
 		try {
-			const res = await api.post('/api/invoices/bulk/status', {
+			const res = (await api.post('/api/invoices/bulk/status', {
 				ids: [...selected],
 				status: bulkStatusValue,
-			}) as { updated: number; skipped: string[] };
+			})) as { updated: number; skipped: { id: string; reason: string }[] };
 			await invoiceStore.fetch(buildParams());
 			await invoiceStore.fetchCounts();
 			selected = new Set();
 			showBulkStatusSelect = false;
-			const msg = res.skipped?.length
-				? `Updated ${res.updated}, skipped ${res.skipped.length} (immutable)`
-				: `Updated ${res.updated} invoice(s)`;
+			// A skip can be an immutable status, but it can just as easily be a
+			// segregation-of-duties or CFO-threshold refusal — an authorization
+			// decision, not a data problem. Surface the backend's own reason(s)
+			// rather than a single hardcoded label that misrepresents every
+			// non-immutable skip.
+			let msg: string;
+			if (res.skipped?.length) {
+				const uniqueReasons = [...new Set(res.skipped.map((s) => s.reason))];
+				const reasonText =
+					uniqueReasons.length === 1 ? uniqueReasons[0] : `${uniqueReasons.length} different reasons`;
+				msg = `Updated ${res.updated}, skipped ${res.skipped.length} (${reasonText})`;
+			} else {
+				msg = `Updated ${res.updated} invoice(s)`;
+			}
 			toast(msg, 'success');
 		} catch (err) {
 			toast(err instanceof Error ? err.message : 'Bulk status change failed', 'error');

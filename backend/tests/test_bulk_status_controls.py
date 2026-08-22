@@ -74,7 +74,14 @@ async def test_bulk_approve_of_own_upload_is_skipped_by_segregation(realdb):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["updated"] == 0
-    assert str(inv_id) in body["skipped"]
+    assert len(body["skipped"]) == 1
+    skip = body["skipped"][0]
+    assert skip["id"] == str(inv_id)
+    # The real cause — segregation of duties — must reach the caller, not the
+    # generic "(immutable)" label a bare id list forced the frontend into
+    # showing for every skip regardless of why it happened.
+    assert "immutable" not in skip["reason"].lower()
+    assert "segregation" in skip["reason"].lower()
 
     mk = realdb.sessionmaker("a")
     async with mk() as s:
@@ -88,6 +95,35 @@ async def test_bulk_approve_of_own_upload_is_skipped_by_segregation(realdb):
             )
         ).scalar_one()
     assert approved_rows == 0
+
+
+@pytest.mark.asyncio
+async def test_bulk_approve_mix_reports_a_distinct_reason_per_skip(realdb):
+    """A mixed selection must not collapse different skip causes into one
+    label. One invoice trips segregation-of-duties (an authorization
+    refusal); another is already `done` (immutable, a state problem). The
+    two are different facts and must be reported as such."""
+    info = realdb.info("a")
+    actor_id = info.users["ap_manager"]
+    mk = realdb.sessionmaker("a")
+    segregation_id = await _seed(mk, info.org_id, number="BULK-MIX-SEG", uploaded_by_id=actor_id)
+    immutable_id = await _seed(mk, info.org_id, number="BULK-MIX-DONE", status=InvoiceStatus.done)
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/invoices/bulk/status",
+            json={"ids": [str(segregation_id), str(immutable_id)], "status": "approved"},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["updated"] == 0
+    reasons_by_id = {s["id"]: s["reason"] for s in body["skipped"]}
+    assert set(reasons_by_id) == {str(segregation_id), str(immutable_id)}
+    assert "segregation" in reasons_by_id[str(segregation_id)].lower()
+    assert "immutable" not in reasons_by_id[str(segregation_id)].lower()
+    assert "immutable" in reasons_by_id[str(immutable_id)].lower()
+    # The two reasons must actually differ — collapsing them defeats the point.
+    assert reasons_by_id[str(segregation_id)] != reasons_by_id[str(immutable_id)]
 
 
 @pytest.mark.asyncio
@@ -369,7 +405,9 @@ async def test_one_illegal_transition_is_skipped_not_a_batch_abort(realdb):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["updated"] == 1
-    assert body["skipped"] == [str(bad_id)]
+    assert [s["id"] for s in body["skipped"]] == [str(bad_id)]
+    # The state machine's own refusal message, not a generic label.
+    assert "ready_for_review" in body["skipped"][0]["reason"]
 
     async with mk() as s:
         ok = (await s.execute(select(Invoice).where(Invoice.id == ok_id))).scalar_one()
