@@ -94,6 +94,10 @@ PERMISSION_LABELS: dict[str, str] = {
 #   payment execute   require_roles(ADMIN, AP_MANAGER, CFO)
 #   payment void      require_roles(ADMIN, CFO)
 #   payment-run approve (create draft) require_roles(ADMIN, AP_MANAGER, CFO)
+#   payment-run approve (CFO sign-off) require_roles(CFO) — since migrated to
+#     this same permission for consistency with its sibling above; the
+#     maker-checker identity check (`check_run_segregation`) still refuses
+#     the run's own creator regardless of which role/permission approves it
 #   vendor bank-change approve         require_roles(ADMIN, AP_MANAGER)
 #   vendor block/unblock               require_roles(ADMIN, AP_MANAGER)
 #   vendor manage (create/edit/verify) require_roles(ADMIN, AP_MANAGER)
