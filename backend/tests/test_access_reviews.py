@@ -227,6 +227,78 @@ async def test_access_review_tenant_isolation(realdb):
     assert admin_b["last_privileged_action_at"] is None
 
 
+async def test_custom_role_with_sensitive_permission_is_elevated(realdb):
+    """A user holding ONLY a custom role (not one of the 3 system role names)
+    that grants `payment.execute` must still be surfaced by the access review
+    — the whole point of the granular-permission layer is that a custom role
+    can carry fraud-sensitive authority under any name, and a review keyed
+    only on role NAME would miss it entirely."""
+    from app.api.permissions import PERM_PAYMENT_EXECUTE
+
+    ctrl_mk = realdb.control_sessionmaker()
+    tenant_mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    now = datetime(2026, 6, 1, tzinfo=UTC)
+
+    custom_role_id = uuid.uuid4()
+    custom_user_id = uuid.uuid4()
+    async with ctrl_mk() as s:
+        s.add(
+            Role(
+                id=custom_role_id,
+                name="Treasury Ops",
+                organization_id=org_id,
+                permissions=[PERM_PAYMENT_EXECUTE],
+            )
+        )
+        s.add(
+            User(
+                id=custom_user_id,
+                email=f"treasury-{custom_user_id}@{realdb.info('a').slug}.test",
+                full_name="Custom Role Payer",
+                hashed_password="x",
+                is_active=True,
+                organization_id=org_id,
+                must_change_password=False,
+            )
+        )
+        await s.flush()
+        s.add(UserRole(user_id=custom_user_id, role_id=custom_role_id))
+        await s.commit()
+
+    try:
+        # Dormant: last mutating action is 200 days before `now`, past the
+        # 90-day threshold used elsewhere in this file.
+        await _add_audit_row(
+            tenant_mk,
+            org_id,
+            custom_user_id,
+            "payment.executed",
+            when=now - timedelta(days=200),
+        )
+
+        async with ctrl_mk() as ctrl_db, tenant_mk() as tenant_db:
+            rows = await compute_access_review(
+                ctrl_db,
+                tenant_db,
+                organization_id=org_id,
+                dormant_after_days=90,
+                now=now,
+            )
+        by_user = {r.user_id: r for r in rows}
+        assert custom_user_id in by_user, "custom role granting payment.execute must be elevated"
+        row = by_user[custom_user_id]
+        assert row.roles == ["Treasury Ops"]
+        assert row.dormant is True
+        assert row.days_since == 200
+    finally:
+        async with ctrl_mk() as s:
+            await s.execute(UserRole.__table__.delete().where(UserRole.user_id == custom_user_id))
+            await s.execute(User.__table__.delete().where(User.id == custom_user_id))
+            await s.execute(Role.__table__.delete().where(Role.id == custom_role_id))
+            await s.commit()
+
+
 async def test_inactive_elevated_user_excluded(realdb):
     """A deactivated user is dropped from the review (you can't review access for
     someone who can't log in)."""

@@ -2,11 +2,17 @@
 
 A SOX access-control requirement is to *review* who holds privileged access and
 prove that access is still used. This service is the read side of that review:
-it lists every user in the org who holds an elevated role and, for each, derives
-their "last privileged action" from the tenant ``audit_log`` (the append-only,
-WORM-shipped trail every mutation already writes). A user whose last privileged
-action is older than the dormancy window — or who has never acted — is flagged
-DORMANT so a reviewer can decide whether to revoke the access.
+it lists every user in the org who holds an elevated role **or an elevated
+granular permission** and, for each, derives their "last privileged action"
+from the tenant ``audit_log`` (the append-only, WORM-shipped trail every
+mutation already writes). A user whose last privileged action is older than the
+dormancy window — or who has never acted — is flagged DORMANT so a reviewer can
+decide whether to revoke the access.
+
+"Elevated" is not just the three system role names (``admin`` / ``ap_manager``
+/ ``cfo``): a custom role (`app/api/permissions.py`) can grant a fraud-sensitive
+permission like ``payment.execute`` to a role named anything at all, and that
+user must be just as visible to this review — see ``ELEVATED_PERMISSIONS``.
 
 Compute-on-read: there is **no** ``last_elevated_use`` column and no migration.
 The index is derived live by aggregating ``MAX(audit_log.created_at)`` per actor.
@@ -36,6 +42,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO
+from app.api.permissions import (
+    PERM_PAYMENT_EXECUTE,
+    PERM_PAYMENT_RUN_APPROVE,
+    PERM_PAYMENT_VOID,
+    PERM_USER_MANAGE,
+    PERM_VENDOR_BANK_CHANGE_APPROVE,
+    PERM_VENDOR_BLOCK,
+    effective_permissions,
+)
 from app.models.user import User
 from app.models.workflow import AuditLog
 
@@ -44,6 +59,26 @@ from app.models.workflow import AuditLog
 # ``ap_clerk`` is deliberately excluded: it is the baseline operator role, not a
 # privileged grant, so reviewing it as "unused elevated access" is noise.
 ELEVATED_ROLES = frozenset({ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO})
+
+# Granular permissions that make a user "elevated" for access-review purposes
+# EVEN WHEN none of their roles is one of the three ELEVATED_ROLES names. A
+# custom role (`roles.permissions`, see `app/api/permissions.py`) can grant a
+# fraud-sensitive permission — most importantly `payment.execute` — to a role
+# named anything at all, and a review keyed only on role NAME would never see
+# it: exactly the access a SOX access review exists to catch. This list is
+# deliberately the money-movement / access-control subset of the full
+# permission catalog (not every catalog entry) — the same subset the finding
+# that added this called out as fraud-sensitive.
+ELEVATED_PERMISSIONS = frozenset(
+    {
+        PERM_PAYMENT_EXECUTE,
+        PERM_PAYMENT_VOID,
+        PERM_PAYMENT_RUN_APPROVE,
+        PERM_VENDOR_BANK_CHANGE_APPROVE,
+        PERM_VENDOR_BLOCK,
+        PERM_USER_MANAGE,
+    }
+)
 
 # Audit-action suffixes that represent *reads*, not mutations. A read does not
 # exercise a user's elevated write permission, so it must not reset the dormancy
@@ -107,7 +142,9 @@ async def compute_access_review(
     elevated: list[tuple[User, list[str]]] = []
     for u in users:
         held = sorted(r.name for r in u.roles)
-        if any(r in ELEVATED_ROLES for r in held):
+        has_elevated_role = any(r in ELEVATED_ROLES for r in held)
+        has_elevated_permission = bool(effective_permissions(u.roles) & ELEVATED_PERMISSIONS)
+        if has_elevated_role or has_elevated_permission:
             elevated.append((u, held))
 
     if not elevated:
