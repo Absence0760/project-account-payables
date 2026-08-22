@@ -338,9 +338,7 @@ async def list_vendors(
     # share a name, e.g. a bulk import), so without it Postgres is free to
     # order same-name rows differently between the offset=0 and offset=N
     # queries — a row can be duplicated onto two pages or skipped entirely.
-    query = (
-        query.order_by(Vendor.name, Vendor.id).offset(pagination.offset).limit(pagination.limit)
-    )
+    query = query.order_by(Vendor.name, Vendor.id).offset(pagination.offset).limit(pagination.limit)
     result = await db.execute(query)
     vendors = result.scalars().all()
 
