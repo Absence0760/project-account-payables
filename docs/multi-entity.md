@@ -183,8 +183,29 @@ the scope from the scoped invoice query they consume.
 | GET | `/api/entities` | any authenticated | list (default first); `?active_only` |
 | POST | `/api/entities` | admin | create (validates slug, 409 on dup) |
 | PATCH | `/api/entities/{id}` | admin | rename / currency / (de)activate — can't deactivate the default |
+| POST | `/api/entities/{id}/set-default` | admin | make this entity the tenant's default (see below) |
 
 Reads are open to all roles because the Phase 2 entity selector needs the list.
+
+### Changing the default entity
+
+Provisioning creates exactly one default entity, and until `set-default`
+shipped nothing could ever change which one it was — the first entity was
+permanently stuck as default, and (since the default can't be deactivated
+either) permanently un-deactivatable. `POST /api/entities/{id}/set-default`
+(admin-only, audited `entity.default_changed`) makes the target entity the
+default; it 400s on an inactive target and is a no-op (200, no audit row) when
+the target is already the default.
+
+Exactly one entity must be the default at all times — `uq_entities_one_default`
+is a partial unique index, not deferred. The handler fetches BOTH the target
+row and the current default row with `SELECT ... FOR UPDATE` in a **single**
+query (`WHERE id = :target OR is_default IS TRUE ORDER BY id`), then unsets the
+old default and flushes before setting the new one — the partial unique index
+would otherwise reject the second UPDATE while the first was still live.
+Locking both candidates in one id-ordered statement (rather than two sequential
+lookups) is what keeps two concurrent `set-default` calls from deadlocking each
+other: both acquire row locks in the same order.
 
 ## Phase 3 — entity-level COA + per-entity workflow (shipped)
 
