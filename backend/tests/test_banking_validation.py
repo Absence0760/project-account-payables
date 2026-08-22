@@ -22,6 +22,7 @@ from app.utils.banking import (
     SEPA_COUNTRIES,
     country_from_iban,
     is_sepa_country,
+    validate_aba_routing,
     validate_iban,
     validate_swift_bic,
 )
@@ -177,3 +178,46 @@ def test_sepa_country_set_is_a_frozenset():
     """SEPA_COUNTRIES must be a frozenset so a typo elsewhere
     can't mutate the membership list at runtime."""
     assert isinstance(SEPA_COUNTRIES, frozenset)
+
+
+# ---------------------------------------------------------------------------
+# ABA / routing-transit number
+# ---------------------------------------------------------------------------
+
+# Real-world routing numbers (all pass the standard checksum).
+_VALID_ABA_ROUTING = [
+    "021000021",  # JPMorgan Chase, NY
+    "011401533",
+    "111000025",
+    "091000019",
+    "026009593",
+    "122105155",
+    "121000248",
+]
+
+
+@pytest.mark.parametrize("routing", _VALID_ABA_ROUTING)
+def test_valid_aba_routing_passes_checksum(routing):
+    assert validate_aba_routing(routing) is True
+
+
+@pytest.mark.parametrize(
+    "routing",
+    [
+        None,
+        "",
+        "   ",
+        "12345678",  # 8 digits — too short
+        "1234567890",  # 10 digits — too long
+        "021000020",  # last digit off by one (breaks the checksum)
+        "02100002X",  # non-digit
+        "!!!!!!!!!",
+    ],
+)
+def test_invalid_aba_routing_rejected(routing):
+    assert validate_aba_routing(routing) is False
+
+
+def test_aba_routing_spaces_are_ignored():
+    """Some UIs group a routing number for readability."""
+    assert validate_aba_routing("021 000 021") == validate_aba_routing("021000021") is True

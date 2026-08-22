@@ -248,6 +248,28 @@ def validate_swift_bic(bic: str | None) -> bool:
     return True
 
 
+def validate_aba_routing(routing_number: str | None) -> bool:
+    """Validate a US ABA / routing-transit number structurally.
+
+    Nine digits; the standard checksum (ABA Technical Bulletin 2003-1):
+
+        3*(d1+d4+d7) + 7*(d2+d5+d8) + 1*(d3+d6+d9) ≡ 0 (mod 10)
+
+    Same posture as `validate_iban` / `validate_swift_bic` above: this
+    doesn't check the bank actually exists at the Fed, only that the
+    number is well-formed. Catching a fat-fingered digit here is cheap;
+    catching it at the bank costs a returned/misdirected ACH.
+    """
+    if not routing_number:
+        return False
+    digits = "".join(routing_number.split())
+    if len(digits) != 9 or not digits.isdigit():
+        return False
+    d = [int(c) for c in digits]
+    checksum = 3 * (d[0] + d[3] + d[6]) + 7 * (d[1] + d[4] + d[7]) + (d[2] + d[5] + d[8])
+    return checksum % 10 == 0
+
+
 def is_sepa_country(country_code: str | None) -> bool:
     """True iff the 2-letter country code is in the SEPA zone."""
     if not country_code:

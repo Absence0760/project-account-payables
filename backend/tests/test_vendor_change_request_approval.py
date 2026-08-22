@@ -311,6 +311,35 @@ async def test_ap_bank_change_endpoint_stages_and_returns_202(realdb):
 
 
 @pytest.mark.asyncio
+async def test_ap_bank_change_rejects_a_malformed_routing_number(realdb):
+    """A routing number that fails the ABA checksum must 422 before it's even
+    staged — nothing validated it before, so a typo silently reached the
+    change-request queue and only surfaced as a returned ACH days later."""
+    info = realdb.info(TENANT)
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id = await _seed_vendor(mk, info.org_id, bank_details={})
+
+    async with realdb.client(key=TENANT, role="admin") as client:
+        resp = await client.post(
+            f"/api/vendors/{vendor_id}/bank-change",
+            json={"bank_details": {"routing_number": "021000020", "account_number": "12345"}},
+        )
+    assert resp.status_code == 422, resp.text
+
+    async with mk() as s:
+        rows = (
+            (
+                await s.execute(
+                    select(VendorChangeRequest).where(VendorChangeRequest.vendor_id == vendor_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert rows == [], "malformed routing number must never reach the staging queue"
+
+
+@pytest.mark.asyncio
 async def test_requester_cannot_approve_their_own_bank_change(realdb):
     """Segregation of duties: the admin who proposed the change can't approve
     it — that would collapse dual control back to a one-person bank redirect."""

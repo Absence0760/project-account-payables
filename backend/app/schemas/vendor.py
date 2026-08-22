@@ -1,6 +1,7 @@
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.services.vendor_consolidation import mask_tax_id
+from app.utils.banking import validate_aba_routing
 
 
 def _is_masked_tax_id(value) -> bool:
@@ -250,3 +251,17 @@ class VendorBankChangeRequest(BaseModel):
     and optionally a full account/routing/iban)."""
 
     bank_details: dict
+
+    @field_validator("bank_details")
+    @classmethod
+    def _validate_routing_number(cls, v: dict) -> dict:
+        # Structural check only, and only when a US routing number is present
+        # at all — an international vendor's staged change carries `iban`/
+        # `swift_bic` instead. Unlike IBAN/SWIFT (checked at payment time in
+        # `services/international_payments.py`), nothing validated a routing
+        # number anywhere, so a fat-fingered digit surfaced only as a returned
+        # ACH days later. Reject it at the point it's first written instead.
+        routing = v.get("routing_number")
+        if routing and not validate_aba_routing(routing):
+            raise ValueError("routing_number is not a valid 9-digit ABA routing number")
+        return v

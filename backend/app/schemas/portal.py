@@ -4,10 +4,11 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated
 
-from pydantic import BaseModel, Field, PlainSerializer
+from pydantic import BaseModel, Field, PlainSerializer, field_validator
 
 from app.api.pagination import PageMeta
 from app.schemas.money import MoneyAmount, OptionalMoneyAmount
+from app.utils.banking import validate_aba_routing
 
 
 def _decimal_to_number(value: Decimal | None) -> float | None:
@@ -280,6 +281,17 @@ class PortalCompanyInfoUpdateRequest(BaseModel):
 
 class PortalBankChangeRequest(BaseModel):
     bank_details: dict
+
+    @field_validator("bank_details")
+    @classmethod
+    def _validate_routing_number(cls, v: dict) -> dict:
+        # Same structural gate as the AP-initiated staging path
+        # (`schemas.vendor.VendorBankChangeRequest`) — a vendor self-service
+        # submission is exactly as unvalidated otherwise.
+        routing = v.get("routing_number")
+        if routing and not validate_aba_routing(routing):
+            raise ValueError("routing_number is not a valid 9-digit ABA routing number")
+        return v
 
 
 class PortalTaxIdChangeRequest(BaseModel):
