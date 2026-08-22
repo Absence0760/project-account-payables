@@ -232,6 +232,8 @@ export const messages = {
 	'payments.runs.empty': 'Aucun lot de paiement pour le moment.',
 	'payments.cards.rebatesThisMonth': 'Remises ce mois-ci',
 	'payments.cards.rebatesYtd': "Remises depuis le début de l'année",
+	'payments.cards.rebatesRealizedHint': 'confirmées + versées',
+	'payments.cards.rebatesPendingHint': '+{amount} en attente de confirmation',
 	'payments.cards.projectedAnnual': 'Projection annuelle',
 	'payments.cards.atRunRate': 'au rythme actuel',
 	'payments.cards.activeCards': 'Cartes actives',

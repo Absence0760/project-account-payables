@@ -740,13 +740,22 @@
 	let loadingMoreCards = $state(false);
 	let hasMoreCards = $derived(cards.length < cardsTotal);
 
+	interface RebateStatusBreakdown {
+		pending_total: number;
+		confirmed_total: number;
+		paid_out_total: number;
+	}
 	interface CardDashboard {
 		active_cards: number;
 		active_cards_value: number;
 		spend_this_month: number;
+		// REALIZED (confirmed + paid_out) only — see `rebates_*_by_status` for
+		// the full breakdown, incl. still-`pending` (unconfirmed) money.
 		rebates_this_month: number;
 		rebates_ytd: number;
 		projected_annual_rebates: number;
+		rebates_this_month_by_status: RebateStatusBreakdown;
+		rebates_ytd_by_status: RebateStatusBreakdown;
 	}
 	let cardDashboard = $state<CardDashboard | null>(null);
 
@@ -1276,10 +1285,26 @@
 				<div class="rebate-card">
 					<span class="rebate-label">{m('payments.cards.rebatesThisMonth')}</span>
 					<span class="rebate-value">{formatCurrency(cardDashboard.rebates_this_month)}</span>
+					<span class="rebate-hint">{m('payments.cards.rebatesRealizedHint')}</span>
+					{#if cardDashboard.rebates_this_month_by_status.pending_total > 0}
+						<span class="rebate-hint">
+							{m('payments.cards.rebatesPendingHint', {
+								amount: formatCurrency(cardDashboard.rebates_this_month_by_status.pending_total)
+							})}
+						</span>
+					{/if}
 				</div>
 				<div class="rebate-card">
 					<span class="rebate-label">{m('payments.cards.rebatesYtd')}</span>
 					<span class="rebate-value">{formatCurrency(cardDashboard.rebates_ytd)}</span>
+					<span class="rebate-hint">{m('payments.cards.rebatesRealizedHint')}</span>
+					{#if cardDashboard.rebates_ytd_by_status.pending_total > 0}
+						<span class="rebate-hint">
+							{m('payments.cards.rebatesPendingHint', {
+								amount: formatCurrency(cardDashboard.rebates_ytd_by_status.pending_total)
+							})}
+						</span>
+					{/if}
 				</div>
 				<div class="rebate-card highlight">
 					<span class="rebate-label">{m('payments.cards.projectedAnnual')}</span>

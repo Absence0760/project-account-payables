@@ -65,6 +65,8 @@ NUMERIC_FIELDS: frozenset[str] = frozenset(
         "invoice_count",
         "exception_count",
         "open_exceptions",
+        "reporting_avg_daily_outflow_unconverted_count",
+        "reporting_outstanding_unconverted_count",
     }
 )
 

@@ -18,6 +18,7 @@ from app.schemas.virtual_card import (
     CardResponse,
     RebateListResponse,
     RebateResponse,
+    RebateStatusBreakdown,
 )
 
 # Every money field on each card response schema.
@@ -32,6 +33,7 @@ _MONEY_FIELDS = {
     ],
     RebateResponse: ["amount", "rate"],
     RebateListResponse: ["total"],
+    RebateStatusBreakdown: ["pending_total", "confirmed_total", "paid_out_total"],
 }
 
 
@@ -86,12 +88,17 @@ def test_rebate_rate_stays_exact_decimal():
 
 
 def test_dashboard_projection_default_is_decimal_zero():
+    zero_breakdown = RebateStatusBreakdown(
+        pending_total=Decimal("0"), confirmed_total=Decimal("0"), paid_out_total=Decimal("0")
+    )
     d = CardDashboardResponse(
         active_cards=0,
         active_cards_value=Decimal("0"),
         spend_this_month=Decimal("0"),
         rebates_this_month=Decimal("0"),
         rebates_ytd=Decimal("0"),
+        rebates_this_month_by_status=zero_breakdown,
+        rebates_ytd_by_status=zero_breakdown,
     )
     assert isinstance(d.projected_annual_rebates, Decimal)
     assert d.model_dump(mode="json")["projected_annual_rebates"] == 0

@@ -232,6 +232,8 @@ export const messages = {
 	'payments.runs.empty': 'Noch keine Zahlungsläufe.',
 	'payments.cards.rebatesThisMonth': 'Rückvergütungen diesen Monat',
 	'payments.cards.rebatesYtd': 'Rückvergütungen lfd. Jahr',
+	'payments.cards.rebatesRealizedHint': 'bestätigt + ausgezahlt',
+	'payments.cards.rebatesPendingHint': '+{amount} noch unbestätigt',
 	'payments.cards.projectedAnnual': 'Prognose Jahr',
 	'payments.cards.atRunRate': 'bei aktueller Rate',
 	'payments.cards.activeCards': 'Aktive Karten',

@@ -22,7 +22,7 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import case, func, not_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -62,6 +62,7 @@ from app.services.cashflow import (
 )
 from app.services.currency_conversion import (
     compute_unrealized_fx_gain_loss,
+    payment_reporting_amount_sql,
     reporting_amount_for_row,
     resolve_reporting_currency,
     rollup_to_reporting_currency,
@@ -761,6 +762,30 @@ async def get_cfo_analytics(
     )
     ap_balance = Decimal(str(ap_balance_q.scalar() or 0))
 
+    # ----- Multi-currency reporting rollup of the AP balance -----
+    # `ap_balance` above is a naive cross-currency SUM — the same mistake
+    # `total_spend` had until `spend_rollup` was added next to it. Re-roll the
+    # same OPEN_AP_STATUSES population through each row's rate-locked
+    # `reporting_amount`, mirroring `spend_rollup` exactly. See
+    # backend/docs/multi-currency.md.
+    ap_balance_rows_q = await db.execute(
+        _inv(
+            select(
+                Invoice.amount,
+                Invoice.currency,
+                Invoice.reporting_amount,
+                Invoice.reporting_currency,
+            ).where(Invoice.status.in_(OPEN_AP_STATUSES))
+        )
+    )
+    ap_balance_rollup = rollup_to_reporting_currency(
+        [
+            {"amount": r[0], "currency": r[1], "reporting_amount": r[2], "reporting_currency": r[3]}
+            for r in ap_balance_rows_q.all()
+        ],
+        reporting_currency=reporting_currency,
+    )
+
     # ----- DPO (using `total_spend` as a COGS proxy when the org -----
     # ----- doesn't surface real COGS data — the dashboard tile -----
     # ----- annotates this as a proxy estimate). -----
@@ -829,6 +854,49 @@ async def get_cfo_analytics(
     avg_daily_outflow = (paid_in_period / Decimal(days_in_period)).quantize(Decimal("0.01"))
     wc_impact_5d = compute_working_capital_impact(
         avg_daily_outflow=avg_daily_outflow, days_extended=5
+    )
+
+    # ----- Multi-currency reporting rollup of the working-capital outflow -----
+    # `paid_in_period` (and everything derived from it — `avg_daily_outflow`,
+    # `wc_impact_5d`) sums the raw `Payment.amount`, which is denominated in the
+    # INVOICE's currency, not the org's reporting currency (see
+    # `currency_conversion.payment_reporting_amount_sql`'s docstring). A book
+    # with one foreign-currency payment in the window makes this a silent
+    # two-currency mixture. Resolved the same way `/payments/summary` resolves
+    # `total_paid`: the rate-locked home-currency leg when the payment carries
+    # one, else the payment's own amount when the invoice is already in the
+    # reporting currency; unestablishable rows are excluded and counted rather
+    # than added at face value.
+    reported_paid = payment_reporting_amount_sql(
+        reporting_currency=reporting_currency,
+        payment_amount=Payment.amount,
+        payment_source_amount=Payment.source_amount,
+        payment_source_currency=Payment.source_currency,
+        invoice_currency=Invoice.currency,
+    )
+    reported_paid_countable = reported_paid.is_expressible
+    reporting_paid_q = await db.execute(
+        _pay(
+            select(
+                func.coalesce(func.sum(case((reported_paid_countable, reported_paid.amount))), 0),
+                func.count(case((not_(reported_paid_countable), Payment.id))),
+            )
+            .select_from(Payment)
+            .join(Invoice, Invoice.id == Payment.invoice_id)
+            .where(
+                Payment.completed_at
+                >= datetime.combine(period_start, datetime.min.time()).replace(tzinfo=UTC),
+                Payment.status == "completed",
+            )
+        )
+    )
+    reporting_paid_in_period_raw, reporting_paid_unconverted_count = reporting_paid_q.one()
+    reporting_paid_in_period = Decimal(str(reporting_paid_in_period_raw or 0))
+    reporting_avg_daily_outflow = (reporting_paid_in_period / Decimal(days_in_period)).quantize(
+        Decimal("0.01")
+    )
+    reporting_wc_impact_5d = compute_working_capital_impact(
+        avg_daily_outflow=reporting_avg_daily_outflow, days_extended=5
     )
 
     # ----- Supplier concentration (top-10 / top-50) -----
@@ -1050,6 +1118,27 @@ async def get_cfo_analytics(
         },
         "unrealized_fx": unrealized_payload,
         "accounts_payable_balance": _money(ap_balance),
+        # Currency-aware AP-balance rollup (the unified reporting-currency
+        # total + the per-currency split), mirroring `reporting_spend` above.
+        # `accounts_payable_balance` stays the legacy naive SUM for back-compat;
+        # `reporting_accounts_payable_balance.total_amount` is the figure to
+        # trust when the org books in multiple currencies.
+        "reporting_accounts_payable_balance": {
+            "reporting_currency": ap_balance_rollup.reporting_currency,
+            "total_amount": _money(ap_balance_rollup.total_reporting_amount),
+            "total_count": ap_balance_rollup.total_count,
+            "unconverted_count": ap_balance_rollup.unconverted_count,
+            "by_currency": [
+                {
+                    "currency": e.currency,
+                    "original_amount": _money(e.original_amount),
+                    "reporting_amount": _money(e.reporting_amount),
+                    "count": e.count,
+                    "unconverted_count": e.unconverted_count,
+                }
+                for e in ap_balance_rollup.by_currency
+            ],
+        },
         # `dpo_*` and `cash_conversion_cycle` are DAY COUNTS, not money — they
         # stay JSON numbers, matching `/drill/dpo`'s `dpo`.
         "dpo_current": float(dpo),
@@ -1063,6 +1152,15 @@ async def get_cfo_analytics(
         },
         "working_capital_impact_5_days": _money(wc_impact_5d),
         "avg_daily_outflow": _money(avg_daily_outflow),
+        # Reporting-currency counterparts of the two lines above — see the
+        # `payment_reporting_amount_sql` comment at their computation.
+        "reporting_working_capital_impact_5_days": _money(reporting_wc_impact_5d),
+        "reporting_avg_daily_outflow": _money(reporting_avg_daily_outflow),
+        # Completed-in-window payments excluded from the reporting-currency
+        # outflow above because neither rung of `payment_reporting_amount_sql`
+        # could establish a reporting-currency figure for them (declared in
+        # tests/test_analytics_money_serialization.py::NUMERIC_FIELDS).
+        "reporting_avg_daily_outflow_unconverted_count": int(reporting_paid_unconverted_count or 0),
         "supplier_concentration": {
             # `total_spend` is money; the three `*_share_pct` are percentages.
             "total_spend": _money(concentration.total_spend),
@@ -1190,6 +1288,7 @@ async def _entity_metrics(
     *,
     entity_id: uuid.UUID | None,
     period_start: date,
+    reporting_currency: str,
 ) -> dict:
     """Compute the per-entity AP rollup for one ``entity_id`` (``None`` =
     consolidated across every entity). Reuses the same entity-scoped query
@@ -1239,6 +1338,29 @@ async def _entity_metrics(
     )
     outstanding_amount = Decimal(str(outstanding_q.scalar() or 0))
 
+    # Currency-aware counterpart — `outstanding_amount` above is a naive
+    # cross-currency SUM, the same mistake `/cfo`'s `accounts_payable_balance`
+    # had until `reporting_accounts_payable_balance` was added beside it.
+    # Reuses that surface's exact rollup so the two figures can never disagree
+    # for the consolidated (entity_id=None) row.
+    outstanding_rows_q = await db.execute(
+        _inv(
+            select(
+                Invoice.amount,
+                Invoice.currency,
+                Invoice.reporting_amount,
+                Invoice.reporting_currency,
+            ).where(Invoice.status.in_(_OPEN_AP_STATUSES))
+        )
+    )
+    outstanding_rollup = rollup_to_reporting_currency(
+        [
+            {"amount": r[0], "currency": r[1], "reporting_amount": r[2], "reporting_currency": r[3]}
+            for r in outstanding_rows_q.all()
+        ],
+        reporting_currency=reporting_currency,
+    )
+
     # Open-exceptions count (entity-scoped) — fails soft to 0.
     open_exceptions = 0
     try:
@@ -1266,6 +1388,12 @@ async def _entity_metrics(
     return {
         "total_spend": _money(total_spend),
         "outstanding_amount": _money(outstanding_amount),
+        # Reporting-currency counterpart, matching `/cfo`'s
+        # `reporting_accounts_payable_balance`. `reporting_currency` is
+        # org-wide, so it is the same across every entity row.
+        "reporting_outstanding_amount": _money(outstanding_rollup.total_reporting_amount),
+        "reporting_currency": outstanding_rollup.reporting_currency,
+        "reporting_outstanding_unconverted_count": outstanding_rollup.unconverted_count,
         "invoice_count": invoice_count,
         "open_exceptions": open_exceptions,
         "open_po_amount": _money(open_po_amount),
@@ -1276,6 +1404,7 @@ async def _entity_metrics(
 async def get_analytics_by_entity(
     period_days: int = Query(365, ge=30, le=730),
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(*_CFO_ROLES)),
 ):
     """Side-by-side per-entity AP rollup PLUS a consolidated total — the
@@ -1293,6 +1422,7 @@ async def get_analytics_by_entity(
     from app.models.entity import Entity
 
     period_start = utc_today() - timedelta(days=period_days)
+    reporting_currency = resolve_reporting_currency(org.settings)
 
     entities = (
         (
@@ -1308,7 +1438,9 @@ async def get_analytics_by_entity(
 
     rows: list[dict] = []
     for e in entities:
-        metrics = await _entity_metrics(db, entity_id=e.id, period_start=period_start)
+        metrics = await _entity_metrics(
+            db, entity_id=e.id, period_start=period_start, reporting_currency=reporting_currency
+        )
         rows.append(
             {
                 "entity_id": str(e.id),
@@ -1320,7 +1452,9 @@ async def get_analytics_by_entity(
             }
         )
 
-    consolidated = await _entity_metrics(db, entity_id=None, period_start=period_start)
+    consolidated = await _entity_metrics(
+        db, entity_id=None, period_start=period_start, reporting_currency=reporting_currency
+    )
 
     return {
         "period_days": period_days,

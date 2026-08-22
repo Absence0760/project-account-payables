@@ -40,7 +40,7 @@ from fastapi import HTTPException
 # ---------------------------------------------------------------------------
 
 
-def _make_invoice(*, amount, uploaded_by_id=None):
+def _make_invoice(*, amount, uploaded_by_id=None, vendor_id=None):
     return SimpleNamespace(
         id=uuid.uuid4(),
         correlation_id=uuid.uuid4(),
@@ -48,6 +48,7 @@ def _make_invoice(*, amount, uploaded_by_id=None):
         entity_id=None,
         amount=Decimal(str(amount)),
         vendor_name="Vendor",
+        vendor_id=vendor_id,
         uploaded_by_id=uploaded_by_id,
         file_key=None,
         approval_date=None,
@@ -389,6 +390,189 @@ async def test_no_corrections_does_not_rerun_refresh_warnings():
         )
 
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# Corrected vendor NAME at approve-time re-links `Invoice.vendor_id`
+#
+# `PATCH /api/invoices/{id}` already re-runs `match_and_link_vendor` whenever
+# the vendor name is (re)saved and the link is stale or absent — because
+# `vendor_id`, not `vendor_name`, is what the payment run reads the payee's
+# bank details from. `approve_invoice(corrections=...)` is a SEPARATE entry
+# point into a vendor-name change and did not re-run the matcher, so an
+# approver correcting a misread vendor name could leave `vendor_id` pointing
+# at the pre-correction vendor even though the invoice now displays a
+# different name.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_vendor_name_correction_relinks_vendor_id():
+    """corrections={"vendor": "New Vendor Co"} must re-run
+    `match_and_link_vendor` and pick up whatever vendor_id it resolves,
+    mirroring the PATCH-path fix for the same class of bug."""
+    from app.services import review
+
+    stale_vendor_id = uuid.uuid4()
+    matched_vendor_id = uuid.uuid4()
+    invoice = _make_invoice(amount=250, vendor_id=stale_vendor_id)
+    instance = _instance(_single_level_snapshot({}))
+    db = AsyncMock()
+
+    captured: dict = {}
+
+    async def _fake_match_and_link(_db, inv, organization_id, source="ai_extracted"):
+        captured["invoice"] = inv
+        captured["organization_id"] = organization_id
+        captured["source"] = source
+        # Simulate the real matcher resolving a (possibly new) vendor and
+        # stamping the link onto the row.
+        inv.vendor_id = matched_vendor_id
+        return None, "linked"
+
+    with (
+        patch.object(review, "get_workflow_instance", new=AsyncMock(return_value=instance)),
+        patch.object(review, "record_corrections", new=AsyncMock()),
+        patch.object(review, "store_embedding", new=AsyncMock()),
+        patch.object(review, "_fetch_invoice_bytes", new=AsyncMock(return_value=None)),
+        patch.object(review, "transition_invoice", new=AsyncMock()),
+        patch.object(review, "advance_workflow", new=AsyncMock()),
+        patch("app.services.invoice_warnings.refresh_warnings", new=AsyncMock()),
+        patch("app.services.vendor_matching.match_and_link_vendor", new=_fake_match_and_link),
+    ):
+        await review.approve_invoice(
+            db,
+            invoice,
+            actor_id=uuid.uuid4(),
+            actor_name="Manager",
+            actor_roles={"ap_manager"},
+            corrections={"vendor": "New Vendor Co"},
+        )
+
+    assert invoice.vendor_name == "New Vendor Co"
+    # The stale pre-correction link must not survive the approval.
+    assert invoice.vendor_id == matched_vendor_id
+    assert invoice.vendor_id != stale_vendor_id
+    assert captured["invoice"] is invoice
+    assert captured["organization_id"] == invoice.organization_id
+    assert captured["source"] == "manual"
+
+
+@pytest.mark.asyncio
+async def test_vendor_name_correction_matching_current_name_still_relinks_when_unlinked():
+    """Even when the corrected name equals the CURRENT `vendor_name`, a
+    still-missing `vendor_id` (e.g. a legacy unlinked invoice) must be
+    resolved — the same "link is stale or absent" rule the PATCH path uses,
+    not just "the name changed"."""
+    from app.services import review
+
+    invoice = _make_invoice(amount=250, vendor_id=None)
+    invoice.vendor_name = "Vendor"  # matches the correction below
+    instance = _instance(_single_level_snapshot({}))
+    db = AsyncMock()
+
+    matched_vendor_id = uuid.uuid4()
+    calls: list = []
+
+    async def _fake_match_and_link(_db, inv, organization_id, source="ai_extracted"):
+        calls.append((inv, organization_id, source))
+        inv.vendor_id = matched_vendor_id
+        return None, "linked"
+
+    with (
+        patch.object(review, "get_workflow_instance", new=AsyncMock(return_value=instance)),
+        patch.object(review, "record_corrections", new=AsyncMock()),
+        patch.object(review, "store_embedding", new=AsyncMock()),
+        patch.object(review, "_fetch_invoice_bytes", new=AsyncMock(return_value=None)),
+        patch.object(review, "transition_invoice", new=AsyncMock()),
+        patch.object(review, "advance_workflow", new=AsyncMock()),
+        patch("app.services.invoice_warnings.refresh_warnings", new=AsyncMock()),
+        patch("app.services.vendor_matching.match_and_link_vendor", new=_fake_match_and_link),
+    ):
+        await review.approve_invoice(
+            db,
+            invoice,
+            actor_id=uuid.uuid4(),
+            actor_name="Manager",
+            actor_roles={"ap_manager"},
+            corrections={"vendor": "Vendor"},
+        )
+
+    assert len(calls) == 1
+    assert invoice.vendor_id == matched_vendor_id
+
+
+@pytest.mark.asyncio
+async def test_vendor_name_correction_to_blank_clears_vendor_id_without_matching():
+    """Clearing the vendor name at approve-time must clear the LINK too —
+    `match_and_link_vendor` no-ops on a blank name, which would otherwise
+    leave a nameless invoice still pointing at the previous vendor."""
+    from app.services import review
+
+    invoice = _make_invoice(amount=250, vendor_id=uuid.uuid4())
+    instance = _instance(_single_level_snapshot({}))
+    db = AsyncMock()
+
+    match_mock = AsyncMock()
+
+    with (
+        patch.object(review, "get_workflow_instance", new=AsyncMock(return_value=instance)),
+        patch.object(review, "record_corrections", new=AsyncMock()),
+        patch.object(review, "store_embedding", new=AsyncMock()),
+        patch.object(review, "_fetch_invoice_bytes", new=AsyncMock(return_value=None)),
+        patch.object(review, "transition_invoice", new=AsyncMock()),
+        patch.object(review, "advance_workflow", new=AsyncMock()),
+        patch("app.services.invoice_warnings.refresh_warnings", new=AsyncMock()),
+        patch("app.services.vendor_matching.match_and_link_vendor", new=match_mock),
+    ):
+        await review.approve_invoice(
+            db,
+            invoice,
+            actor_id=uuid.uuid4(),
+            actor_name="Manager",
+            actor_roles={"ap_manager"},
+            corrections={"vendor": "   "},
+        )
+
+    match_mock.assert_not_called()
+    assert invoice.vendor_id is None
+
+
+@pytest.mark.asyncio
+async def test_non_vendor_correction_does_not_touch_vendor_link():
+    """A correction that never names the vendor (e.g. `po_number`) must not
+    re-run vendor matching at all — the stale/absent-link rule only fires
+    when `vendor_name` is actually part of the correction."""
+    from app.services import review
+
+    original_vendor_id = uuid.uuid4()
+    invoice = _make_invoice(amount=250, vendor_id=original_vendor_id)
+    instance = _instance(_single_level_snapshot({}))
+    db = AsyncMock()
+
+    match_mock = AsyncMock()
+
+    with (
+        patch.object(review, "get_workflow_instance", new=AsyncMock(return_value=instance)),
+        patch.object(review, "record_corrections", new=AsyncMock()),
+        patch.object(review, "store_embedding", new=AsyncMock()),
+        patch.object(review, "_fetch_invoice_bytes", new=AsyncMock(return_value=None)),
+        patch.object(review, "transition_invoice", new=AsyncMock()),
+        patch.object(review, "advance_workflow", new=AsyncMock()),
+        patch("app.services.invoice_warnings.refresh_warnings", new=AsyncMock()),
+        patch("app.services.vendor_matching.match_and_link_vendor", new=match_mock),
+    ):
+        await review.approve_invoice(
+            db,
+            invoice,
+            actor_id=uuid.uuid4(),
+            actor_name="Manager",
+            actor_roles={"ap_manager"},
+            corrections={"po_number": "PO-999"},
+        )
+
+    match_mock.assert_not_called()
+    assert invoice.vendor_id == original_vendor_id
 
 
 # ---------------------------------------------------------------------------

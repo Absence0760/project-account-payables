@@ -236,6 +236,8 @@ export const messages = {
 	'payments.runs.empty': 'まだ支払いバッチはありません。',
 	'payments.cards.rebatesThisMonth': '今月のリベート',
 	'payments.cards.rebatesYtd': '年初来のリベート',
+	'payments.cards.rebatesRealizedHint': '確定済み + 支払済み',
+	'payments.cards.rebatesPendingHint': '+{amount} 確認待ち',
 	'payments.cards.projectedAnnual': '年間予測',
 	'payments.cards.atRunRate': '現在のペースで',
 	'payments.cards.activeCards': '有効なカード',

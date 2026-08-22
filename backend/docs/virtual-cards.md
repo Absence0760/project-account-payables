@@ -442,6 +442,23 @@ on a status that isn't the required predecessor, and write an append-only
 `card_rebate.confirmed` / `card_rebate.paid_out` audit row. No frontend surface
 yet — API-only, mirroring `/bank-reconciliation`.
 
+### Dashboard "Rebates Earned" is REALIZED money only
+
+`GET /api/cards/dashboard`'s `rebates_this_month` / `rebates_ytd` /
+`projected_annual_rebates` used to blend `pending` + `confirmed` + `paid_out`
+`CardRebate` rows into one SUM with no breakdown — so 100% of a displayed
+"Rebates Earned" figure could be entirely unconfirmed money that might never
+be paid out. Each is now the sum of `confirmed` + `paid_out` rows ONLY (the
+two statuses the lifecycle above calls realized), with the full split
+surfaced alongside on `rebates_this_month_by_status` /
+`rebates_ytd_by_status` — `{pending_total, confirmed_total, paid_out_total}`,
+computed in the same query via `case()` rather than a second round trip. The
+`/payments` Cards tab renders the realized headline plus a muted "+{amount}
+pending confirmation" hint whenever the pending bucket is non-zero, so a large
+unconfirmed balance is visible rather than silently inflating the headline.
+`tests/test_card_dashboard.py` pins the split with a mix of all three
+statuses.
+
 ## Security
 
 - **PAN-reveal role gate**: `GET /api/cards/{id}/details` is `require_roles(admin, ap_manager, cfo)`
