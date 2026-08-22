@@ -19,6 +19,8 @@ from app.models.virtual_card import CardRebate, VirtualCard
 from app.schemas.dashboard import DashboardResponse
 from app.services.analytics import OPEN_AP_STATUSES
 from app.services.currency_conversion import (
+    payment_reporting_amount_sql,
+    reporting_amount_for_row,
     resolve_reporting_currency,
     rollup_from_grouped_rows,
     vendor_rollup_to_reporting_currency,
@@ -196,6 +198,20 @@ async def get_dashboard(
         "days_90": Decimal("0"),
         "days_90_plus": Decimal("0"),
     }
+    # Reporting-currency counterpart — `aging_dec` above sums the raw
+    # `Invoice.amount` across currencies, same mistake `total_amount` had
+    # before `reporting`/`rollup` was added. Reuses `_rep_expr` (defined
+    # above for the whole-book rollup): the persisted rate-locked
+    # `reporting_amount` when it's locked for the org's target currency, else
+    # face `amount` (foreign rows without a lock fall back to face value, same
+    # fallback the rest of this endpoint's reporting figures use).
+    aging_reporting_dec = {
+        "current": Decimal("0"),
+        "days_30": Decimal("0"),
+        "days_60": Decimal("0"),
+        "days_90": Decimal("0"),
+        "days_90_plus": Decimal("0"),
+    }
     # Aging covers the same open-payable population as the AP balance so the
     # bands reconcile with it (F-4): approved → payment_scheduled. The AP
     # balance has no due_date filter, so aging must not either — an open
@@ -216,14 +232,20 @@ async def get_dashboard(
     )
     aging_rows = await db.execute(
         _inv(
-            select(_aging_bucket.label("bucket"), func.coalesce(func.sum(Invoice.amount), 0))
+            select(
+                _aging_bucket.label("bucket"),
+                func.coalesce(func.sum(Invoice.amount), 0),
+                func.coalesce(func.sum(_rep_expr), 0),
+            )
             .where(Invoice.status.in_(OPEN_AP_STATUSES))
             .group_by(_aging_bucket)
         )
     )
-    for bucket, total in aging_rows.all():
+    for bucket, total, rep_total in aging_rows.all():
         aging_dec[bucket] = Decimal(str(total))
+        aging_reporting_dec[bucket] = Decimal(str(rep_total))
     aging = aging_dec
+    aging_reporting = aging_reporting_dec
 
     # Monthly trend (last 6 months) — bucket by calendar month in SQL rather
     # than streaming every recent invoice into Python. Summing amounts in the
@@ -234,7 +256,12 @@ async def get_dashboard(
     trend_rows = await db.execute(
         _inv(
             select(
-                _month_key.label("month"), func.count(), func.coalesce(func.sum(Invoice.amount), 0)
+                _month_key.label("month"),
+                func.count(),
+                func.coalesce(func.sum(Invoice.amount), 0),
+                # Reporting-currency counterpart — same `_rep_expr` CASE as the
+                # aging buckets / whole-book rollup above.
+                func.coalesce(func.sum(_rep_expr), 0),
             )
             .where(Invoice.invoice_date >= six_months_ago, Invoice.invoice_date.isnot(None))
             .group_by(_month_key)
@@ -242,8 +269,13 @@ async def get_dashboard(
         )
     )
     monthly_trend = [
-        {"month": month, "count": count, "amount": Decimal(str(amount))}
-        for month, count, amount in trend_rows.all()
+        {
+            "month": month,
+            "count": count,
+            "amount": Decimal(str(amount)),
+            "reporting_amount": Decimal(str(rep_amount)),
+        }
+        for month, count, amount, rep_amount in trend_rows.all()
     ]
 
     # Upcoming payments (due within 7 days + overdue)
@@ -257,6 +289,9 @@ async def get_dashboard(
                 Invoice.vendor_name,
                 Invoice.amount,
                 Invoice.due_date,
+                Invoice.currency,
+                Invoice.reporting_amount,
+                Invoice.reporting_currency,
             )
             .where(
                 Invoice.due_date.isnot(None),
@@ -288,6 +323,26 @@ async def get_dashboard(
     # already-lossy floats accumulates drift). The float hop happens once,
     # at JSON-serialization time, via `DashboardResponse`'s `MoneyAmount`.
     upcoming_total_amount = sum((r[3] for r in _upcoming_rows_all), Decimal("0"))
+    # Reporting-currency counterpart — `upcoming_total_amount` above sums the
+    # raw per-row `amount`, which mixes currencies the moment one of these ten
+    # invoices is foreign. Resolved row-at-a-time via `reporting_amount_for_row`
+    # (the same helper `/payments/queue` uses for its own "amount due" total) —
+    # a row whose reporting figure can't be established still counts at face
+    # value (dropping it would understate what's due) but is tallied on
+    # `upcoming_unconverted_count`.
+    upcoming_total_amount_reporting = Decimal("0")
+    upcoming_unconverted_count = 0
+    for r in _upcoming_rows_all:
+        rep_amt, unconverted = reporting_amount_for_row(
+            amount=r[3],
+            currency=r[5],
+            reporting_currency=reporting_currency,
+            persisted_reporting_currency=r[7],
+            persisted_reporting_amount=r[6],
+        )
+        upcoming_total_amount_reporting += rep_amt
+        if unconverted:
+            upcoming_unconverted_count += 1
 
     # Touchless rate — share of invoices that cleared review straight through
     # (reached approved-or-beyond) out of every invoice that has finished the
@@ -334,6 +389,45 @@ async def get_dashboard(
         )
     )
     total_pending = Decimal(str(pending_q.scalar() or 0))
+
+    # Reporting-currency counterparts — `total_paid` / `total_pending` above
+    # sum the raw `Payment.amount`, which is denominated in the INVOICE's
+    # currency, not the org's reporting currency
+    # (`currency_conversion.payment_reporting_amount_sql`'s docstring). A book
+    # with one foreign-currency payment makes both a silent two-currency
+    # mixture. Resolved the same way `GET /api/payments/summary` resolves its
+    # own `total_paid` / `total_pending`: the rate-locked home-currency leg
+    # when the payment carries one, else the payment's own amount when the
+    # invoice is already in the reporting currency; a payment neither rung can
+    # establish is excluded and counted rather than added at face value.
+    reported_payment = payment_reporting_amount_sql(
+        reporting_currency=reporting_currency,
+        payment_amount=Payment.amount,
+        payment_source_amount=Payment.source_amount,
+        payment_source_currency=Payment.source_currency,
+        invoice_currency=Invoice.currency,
+    )
+    _reported_countable = reported_payment.is_expressible
+
+    async def _reporting_payment_total(status_clause) -> tuple[Decimal, int]:
+        q = _pay(
+            select(
+                func.coalesce(func.sum(case((_reported_countable, reported_payment.amount))), 0),
+                func.count(case((not_(_reported_countable), Payment.id))),
+            )
+            .select_from(Payment)
+            .join(Invoice, Invoice.id == Payment.invoice_id)
+            .where(status_clause)
+        )
+        total, excluded = (await db.execute(q)).one()
+        return Decimal(str(total or 0)), int(excluded or 0)
+
+    total_paid_reporting, total_paid_unconverted_count = await _reporting_payment_total(
+        Payment.status == "completed"
+    )
+    total_pending_reporting, total_pending_unconverted_count = await _reporting_payment_total(
+        Payment.status.in_(PENDING_PAYMENT_STATUSES)
+    )
 
     # Rebates. CardRebate carries no entity_id of its own — join to
     # VirtualCard (which does, via EntityMixin) so switching the entity
@@ -531,6 +625,12 @@ async def get_dashboard(
         },
         "total_paid": total_paid,
         "total_pending": total_pending,
+        # Reporting-currency counterparts of the two lines above — see the
+        # `payment_reporting_amount_sql` comment at their computation.
+        "total_paid_reporting": total_paid_reporting,
+        "total_pending_reporting": total_pending_reporting,
+        "total_paid_unconverted_count": total_paid_unconverted_count,
+        "total_pending_unconverted_count": total_pending_unconverted_count,
         "total_rebates": total_rebates,
         "open_exceptions": open_exceptions,
         "touchless_rate": touchless_rate,
@@ -538,9 +638,14 @@ async def get_dashboard(
         "pipeline": pipeline,
         "vendor_spend": vendor_spend,
         "aging": aging,
+        # Reporting-currency counterpart of `aging` — see the `_rep_expr`
+        # comment above the whole-book rollup.
+        "aging_reporting": aging_reporting,
         "monthly_trend": monthly_trend,
         "upcoming_payments": upcoming,
         "upcoming_total_amount": upcoming_total_amount,
+        "upcoming_total_amount_reporting": upcoming_total_amount_reporting,
+        "upcoming_unconverted_count": upcoming_unconverted_count,
         "processing_time": {
             "avg_upload_to_approval_days": float(pt.avg_upload_to_approval_days),
             "median_upload_to_approval_days": float(pt.median_upload_to_approval_days),
