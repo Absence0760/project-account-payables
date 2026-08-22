@@ -4,6 +4,7 @@
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
+	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 
 	interface GLAccountOption {
 		code: string;
@@ -16,7 +17,11 @@
 	let vendor = $state('');
 	let invoice_number = $state('');
 	let amount = $state<number | null>(null);
-	let currency = $state('USD');
+	// Defaults to the org's configured invoice currency (`orgCurrency`, which
+	// itself falls back to USD when the org has none configured) rather than
+	// hardcoding USD — a UK/non-US tenant's manual entries should start in
+	// their own currency, not silently assume the platform default.
+	let currency = $state(orgCurrency.currency);
 	let invoice_date = $state('');
 	let due_date = $state('');
 	let po_number = $state('');
