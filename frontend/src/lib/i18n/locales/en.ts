@@ -1920,6 +1920,8 @@ export const en = {
 	'portal.nav.company': 'Company',
 	'portal.nav.notifications': 'Notifications',
 	'portal.shell.logOut': 'Log out',
+	'portal.shell.footerSupport': 'Support',
+	'portal.shell.footerLegal': 'Legal',
 
 	// Portal login + MFA (routes/portal/login/+page.svelte)
 	'portal.login.subtitle': 'Sign in to submit invoices and view payments',

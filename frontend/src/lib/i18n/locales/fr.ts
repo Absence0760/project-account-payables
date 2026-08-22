@@ -1877,6 +1877,8 @@ export const messages = {
 	'portal.nav.company': 'Entreprise',
 	'portal.nav.notifications': 'Notifications',
 	'portal.shell.logOut': 'Se déconnecter',
+	'portal.shell.footerSupport': 'Assistance',
+	'portal.shell.footerLegal': 'Mentions légales',
 	'portal.login.subtitle': 'Connectez-vous pour soumettre des factures et consulter les paiements',
 	'portal.login.email': 'E-mail',
 	'portal.login.password': 'Mot de passe',

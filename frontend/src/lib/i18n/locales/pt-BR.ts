@@ -1880,6 +1880,8 @@ export const messages = {
 	'portal.nav.company': 'Empresa',
 	'portal.nav.notifications': 'Notificações',
 	'portal.shell.logOut': 'Sair',
+	'portal.shell.footerSupport': 'Suporte',
+	'portal.shell.footerLegal': 'Jurídico',
 
 	// Login do portal + MFA (routes/portal/login/+page.svelte)
 	'portal.login.subtitle': 'Faça login para enviar faturas e ver pagamentos',

@@ -93,3 +93,69 @@ test.describe('supplier-portal white-label theming', () => {
 		await expect(page.locator(`img[src="${LOGO_URL}"]`).first()).toBeVisible();
 	});
 });
+
+/**
+ * Support / legal footer (persona-supplier audit finding, issue #328).
+ *
+ * The portal already fetched `support_url`/`legal_url` off `GET
+ * /api/portal/branding` (via `portalBrand`) but never rendered either,
+ * leaving a stuck vendor with no "who do I contact" affordance anywhere in
+ * the authed shell. The footer in `routes/portal/+layout.svelte` renders
+ * Support/Legal links when the branding carries them, and fails soft
+ * (renders nothing) when it doesn't — matching how the rest of
+ * white-labeling degrades.
+ */
+
+const SUPPORT_URL = 'https://support.e2e.test/help';
+const LEGAL_URL = 'https://legal.e2e.test/terms';
+
+const PORTAL_EMAIL = 'supplier@portal.test';
+const PORTAL_PASSWORD = 'demo';
+
+async function portalSignIn(page: import('@playwright/test').Page): Promise<void> {
+	await page.goto('/portal/login');
+	await page.waitForLoadState('networkidle');
+	await page.locator('input[type="email"]').fill(PORTAL_EMAIL);
+	await page.locator('input[type="password"]').fill(PORTAL_PASSWORD);
+	await page.locator('button[type="submit"]').click();
+	await page.waitForURL(/\/portal\/invoices/);
+}
+
+test.describe('supplier-portal support/legal footer', () => {
+	// Opt out of the worker-admin storage state: these tests drive the portal
+	// login UI directly with a separate VendorUser identity/token.
+	test.use({ storageState: { cookies: [], origins: [] } });
+
+	test.afterEach(async ({ page }) => {
+		// Restore via the employee admin path (needs its own sign-in — the
+		// portal test above left no employee session on this fresh context).
+		await signInAndWait(page);
+		await putBranding(page, EMPTY_BRAND).catch(() => {});
+	});
+
+	test('renders Support + Legal links when the tenant configures them', async ({ page }) => {
+		await signInAndWait(page);
+		await putBranding(page, { ...EMPTY_BRAND, support_url: SUPPORT_URL, legal_url: LEGAL_URL });
+
+		await portalSignIn(page);
+
+		const support = page.getByRole('link', { name: 'Support' });
+		const legal = page.getByRole('link', { name: 'Legal' });
+		await expect(support).toBeVisible();
+		await expect(support).toHaveAttribute('href', SUPPORT_URL);
+		await expect(legal).toBeVisible();
+		await expect(legal).toHaveAttribute('href', LEGAL_URL);
+	});
+
+	test('renders no footer when the tenant configures neither URL (fail-soft)', async ({
+		page
+	}) => {
+		await signInAndWait(page);
+		await putBranding(page, EMPTY_BRAND);
+
+		await portalSignIn(page);
+
+		await expect(page.getByRole('link', { name: 'Support' })).toHaveCount(0);
+		await expect(page.getByRole('link', { name: 'Legal' })).toHaveCount(0);
+	});
+});

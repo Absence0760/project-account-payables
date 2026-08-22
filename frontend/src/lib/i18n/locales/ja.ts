@@ -1855,6 +1855,8 @@ export const messages = {
 	'portal.nav.company': '会社情報',
 	'portal.nav.notifications': '通知',
 	'portal.shell.logOut': 'ログアウト',
+	'portal.shell.footerSupport': 'サポート',
+	'portal.shell.footerLegal': '法的情報',
 
 	// ポータルのログイン + MFA (routes/portal/login/+page.svelte)
 	'portal.login.subtitle': 'サインインして請求書を送信し、支払いを確認します',
