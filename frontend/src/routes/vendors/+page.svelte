@@ -46,7 +46,8 @@
 		counterparty_id: '',
 		account_last4: '',
 		routing_last4: '',
-		bank_name: ''
+		bank_name: '',
+		mailing_address: { street: '', city: '', state: '', postal: '', country: '' }
 	});
 	let savingBank = $state(false);
 
@@ -56,7 +57,14 @@
 			counterparty_id: v.bank_details?.counterparty_id ?? '',
 			account_last4: v.bank_details?.account_last4 ?? '',
 			routing_last4: v.bank_details?.routing_last4 ?? '',
-			bank_name: v.bank_details?.bank_name ?? ''
+			bank_name: v.bank_details?.bank_name ?? '',
+			mailing_address: {
+				street: v.bank_details?.mailing_address?.street ?? '',
+				city: v.bank_details?.mailing_address?.city ?? '',
+				state: v.bank_details?.mailing_address?.state ?? '',
+				postal: v.bank_details?.mailing_address?.postal ?? '',
+				country: v.bank_details?.mailing_address?.country ?? ''
+			}
 		};
 	}
 
@@ -440,6 +448,44 @@
 					<input type="text" maxlength="4" bind:value={bankForm.routing_last4} />
 				</label>
 			</div>
+			<h3>{m('vendors.bank.mailingAddressSection')}</h3>
+			<p class="modal-hint">{m('vendors.bank.mailingHint')}</p>
+			<label>
+				<span>{m('vendors.bank.mailingStreet')}</span>
+				<input
+					type="text"
+					maxlength="255"
+					bind:value={bankForm.mailing_address!.street}
+				/>
+			</label>
+			<div class="form-row">
+				<label>
+					<span>{m('vendors.bank.mailingCity')}</span>
+					<input type="text" maxlength="100" bind:value={bankForm.mailing_address!.city} />
+				</label>
+				<label>
+					<span>{m('vendors.bank.mailingState')}</span>
+					<input type="text" maxlength="100" bind:value={bankForm.mailing_address!.state} />
+				</label>
+			</div>
+			<div class="form-row">
+				<label>
+					<span>{m('vendors.bank.mailingPostal')}</span>
+					<input
+						type="text"
+						maxlength="20"
+						bind:value={bankForm.mailing_address!.postal}
+					/>
+				</label>
+				<label>
+					<span>{m('vendors.bank.mailingCountry')}</span>
+					<input
+						type="text"
+						maxlength="2"
+						bind:value={bankForm.mailing_address!.country}
+					/>
+				</label>
+			</div>
 			<div class="modal-footer">
 				<button type="button" class="btn-cancel" onclick={() => (bankEditing = null)}>
 					{m('common.cancel')}
@@ -560,5 +606,10 @@
 		display: grid;
 		grid-template-columns: 1fr 1fr;
 		gap: 12px;
+	}
+	.modal h3 {
+		margin: 4px 0 0;
+		font-size: 0.95rem;
+		font-weight: 600;
 	}
 </style>

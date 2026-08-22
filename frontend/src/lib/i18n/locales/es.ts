@@ -298,6 +298,13 @@ export const messages = {
 	'vendors.bank.bankName': 'Nombre del banco',
 	'vendors.bank.accountLast4': 'Últimos 4 de la cuenta',
 	'vendors.bank.routingLast4': 'Últimos 4 del enrutamiento',
+	'vendors.bank.mailingAddressSection': 'Dirección postal para cheque',
+	'vendors.bank.mailingHint': 'Adónde se envía un cheque impreso a este proveedor.',
+	'vendors.bank.mailingStreet': 'Calle',
+	'vendors.bank.mailingCity': 'Ciudad',
+	'vendors.bank.mailingState': 'Estado / Provincia',
+	'vendors.bank.mailingPostal': 'Código postal',
+	'vendors.bank.mailingCountry': 'País',
 	'vendors.bank.dualControlHint':
 		'Al guardar, el cambio queda pendiente de aprobación: no se aplica hasta que una segunda persona lo firme.',
 	'vendors.bank.reviewQueueLink': 'Abrir aprobaciones de cambios bancarios',

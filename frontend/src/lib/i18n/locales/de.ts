@@ -298,6 +298,13 @@ export const messages = {
 	'vendors.bank.bankName': 'Name der Bank',
 	'vendors.bank.accountLast4': 'Konto letzte 4',
 	'vendors.bank.routingLast4': 'Bankleitzahl letzte 4',
+	'vendors.bank.mailingAddressSection': 'Postanschrift für Scheck',
+	'vendors.bank.mailingHint': 'Wohin ein gedruckter Scheck an diesen Lieferanten gesendet wird.',
+	'vendors.bank.mailingStreet': 'Straße',
+	'vendors.bank.mailingCity': 'Stadt',
+	'vendors.bank.mailingState': 'Bundesland',
+	'vendors.bank.mailingPostal': 'Postleitzahl',
+	'vendors.bank.mailingCountry': 'Land',
 	'vendors.bank.dualControlHint':
 		'Das Speichern reicht diese Änderung zur Freigabe ein — sie wird erst wirksam, wenn eine zweite Person sie freigibt.',
 	'vendors.bank.reviewQueueLink': 'Bankänderungs-Freigaben öffnen',

@@ -302,6 +302,13 @@ export const messages = {
 	'vendors.bank.bankName': '銀行名',
 	'vendors.bank.accountLast4': '口座番号の下4桁',
 	'vendors.bank.routingLast4': 'ルーティング番号の下4桁',
+	'vendors.bank.mailingAddressSection': '小切手の送付先住所',
+	'vendors.bank.mailingHint': 'この取引先宛に印刷された小切手の送付先。',
+	'vendors.bank.mailingStreet': '番地',
+	'vendors.bank.mailingCity': '市区町村',
+	'vendors.bank.mailingState': '都道府県/州',
+	'vendors.bank.mailingPostal': '郵便番号',
+	'vendors.bank.mailingCountry': '国',
 	'vendors.bank.dualControlHint':
 		'保存すると承認待ちとして登録されます。2人目の承認者が承認するまで反映されません。',
 	'vendors.bank.reviewQueueLink': '銀行情報変更の承認を開く',

@@ -299,6 +299,13 @@ export const messages = {
 	'vendors.bank.bankName': 'Nome do banco',
 	'vendors.bank.accountLast4': 'Últimos 4 da conta',
 	'vendors.bank.routingLast4': 'Últimos 4 do roteamento',
+	'vendors.bank.mailingAddressSection': 'Endereço postal para cheque',
+	'vendors.bank.mailingHint': 'Para onde um cheque impresso a este fornecedor é enviado.',
+	'vendors.bank.mailingStreet': 'Rua',
+	'vendors.bank.mailingCity': 'Cidade',
+	'vendors.bank.mailingState': 'Estado',
+	'vendors.bank.mailingPostal': 'CEP',
+	'vendors.bank.mailingCountry': 'País',
 	'vendors.bank.dualControlHint':
 		'Salvar envia esta alteração para aprovação — ela só passa a valer depois que um segundo aprovador assinar.',
 	'vendors.bank.reviewQueueLink': 'Abrir aprovações de alterações bancárias',

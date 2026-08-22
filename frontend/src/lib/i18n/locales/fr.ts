@@ -298,6 +298,13 @@ export const messages = {
 	'vendors.bank.bankName': 'Nom de la banque',
 	'vendors.bank.accountLast4': '4 derniers du compte',
 	'vendors.bank.routingLast4': '4 derniers du code de routage',
+	'vendors.bank.mailingAddressSection': 'Adresse postale pour chèque',
+	'vendors.bank.mailingHint': 'Où un chèque imprimé pour ce fournisseur est envoyé.',
+	'vendors.bank.mailingStreet': 'Rue',
+	'vendors.bank.mailingCity': 'Ville',
+	'vendors.bank.mailingState': 'État / Région',
+	'vendors.bank.mailingPostal': 'Code postal',
+	'vendors.bank.mailingCountry': 'Pays',
 	'vendors.bank.dualControlHint':
 		'L’enregistrement soumet cette modification pour validation : elle ne s’applique qu’une fois approuvée par une seconde personne.',
 	'vendors.bank.reviewQueueLink': 'Ouvrir les validations de changements bancaires',
