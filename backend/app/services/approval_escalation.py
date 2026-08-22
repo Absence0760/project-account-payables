@@ -58,6 +58,59 @@ def _last_escalation_detail(instance: WorkflowInstance) -> dict:
     return detail
 
 
+async def _notify_escalated_approvers(
+    db,
+    *,
+    invoice_id: uuid.UUID,
+    organization_id: uuid.UUID,
+    correlation_id: uuid.UUID,
+    added_user_ids: list[str],
+) -> None:
+    """Best-effort: tell the newly-eligible approver(s) an invoice is now
+    theirs to clear. Reuses the `invoice_assigned` event/template — an
+    escalation target IS newly eligible to approve, the same fact
+    `review.assign_reviewer` notifies on, and reusing it also wires in the
+    email-approval action links for free. Mirrors `assign_reviewer`'s own
+    best-effort guard: `notify_event` already swallows its internal
+    failures, but this outer guard is the final backstop so a notification
+    bug can never unwind the escalation mutation or the audit row already
+    written in this same transaction — never raises."""
+    from app.models.invoice import Invoice
+    from app.models.notification import EVENT_INVOICE_ASSIGNED
+    from app.services.notification_dispatch import notify_event
+    from app.services.notification_templates import InvoiceContext
+
+    try:
+        recipient_ids = [uuid.UUID(uid) for uid in added_user_ids]
+    except (TypeError, ValueError):
+        logger.warning("[approval-escalation] malformed added_user_ids; skipping notification")
+        return
+
+    try:
+        invoice = await db.get(Invoice, invoice_id)
+        if invoice is None:
+            return
+        await notify_event(
+            db,
+            correlation_id=correlation_id,
+            organization_id=organization_id,
+            event_type=EVENT_INVOICE_ASSIGNED,
+            entity_id=invoice_id,
+            recipient_user_ids=recipient_ids,
+            invoice_ctx=InvoiceContext(
+                invoice_number=invoice.invoice_number,
+                vendor_name=invoice.vendor_name,
+                amount=invoice.amount,
+                currency=invoice.currency or "USD",
+            ),
+            actor_id=None,  # system-initiated sweep
+        )
+    except Exception:  # noqa: BLE001 — never let a notification bug break escalation
+        logger.warning(
+            "[approval-escalation] notification dispatch failed for invoice=%s", invoice_id
+        )
+
+
 @dataclass
 class EscalateResult:
     tenants_scanned: int = 0
@@ -192,16 +245,34 @@ async def _escalate_tenant(
                             await db.rollback()
                             continue
                         if org_id is not None:
+                            correlation_id = inst.correlation_id or uuid.uuid4()
+                            detail = _last_escalation_detail(inst)
                             await dispatch_audit(
                                 db,
-                                correlation_id=inst.correlation_id or uuid.uuid4(),
+                                correlation_id=correlation_id,
                                 organization_id=org_id,
                                 actor_id=None,  # system-initiated sweep
                                 action="invoice.approval_escalated",
                                 entity_type="invoice",
                                 entity_id=inst.invoice_id,
-                                details=_last_escalation_detail(inst),
+                                details=detail,
                             )
+                            # Tell the newly-added approver(s) — escalation
+                            # expands who may approve, but that fact lived only
+                            # in mutable state_data (+ the audit row above) with
+                            # no signal reaching the humans it concerns. Without
+                            # this, an escalated invoice sat invisibly stalled
+                            # for exactly the people who just became able to
+                            # unblock it.
+                            added_user_ids = detail.get("added_user_ids") or []
+                            if added_user_ids:
+                                await _notify_escalated_approvers(
+                                    db,
+                                    invoice_id=inst.invoice_id,
+                                    organization_id=org_id,
+                                    correlation_id=correlation_id,
+                                    added_user_ids=added_user_ids,
+                                )
                         await db.commit()
                     except Exception as exc:  # noqa: BLE001 — one instance must not halt the tenant
                         # Class only, never the message — an asyncpg / audit
