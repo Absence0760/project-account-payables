@@ -50,6 +50,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
+from app.api.exceptions import EXCEPTION_TYPE_LABELS
 from app.config import settings
 from app.models.invoice import Invoice, InvoiceExtractionResult
 from app.models.user import User
@@ -296,7 +297,8 @@ def build_template_summary(
             # reason the invoice stalled; a bare "flagged" doesn't.
             exception_type = e.details.get("exception_type")
             if exception_type:
-                phrase = f"{phrase} ({exception_type})"
+                label = EXCEPTION_TYPE_LABELS.get(exception_type, exception_type)
+                phrase = f"{phrase} ({label})"
             if e.action != "exception.raised" and e.actor_name:
                 phrase = f"{phrase} by {e.actor_name}"
             phrases.append(phrase)

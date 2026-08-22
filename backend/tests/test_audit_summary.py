@@ -183,9 +183,11 @@ def test_template_summary_is_deterministic_and_covers_events():
     assert "Manny Manager" in a.text
     assert "sent to ERP" in a.text
     # Exception activity is why an invoice stalls — the reviewer catching up
-    # needs to see it named, and who cleared it.
-    assert "flagged (po_mismatch)" in a.text
-    assert "had its exception cleared (po_mismatch) by Manny Manager" in a.text
+    # needs to see it named, and who cleared it. The type is rendered as its
+    # humanized label (EXCEPTION_TYPE_LABELS), not the raw snake_case code.
+    assert "flagged (PO Mismatch)" in a.text
+    assert "had its exception cleared (PO Mismatch) by Manny Manager" in a.text
+    assert "po_mismatch" not in a.text
     # confidence clause
     assert a.confidence_context is not None
     assert "95%" in a.confidence_context
@@ -203,6 +205,39 @@ def test_template_summary_no_events():
     assert "INV-42" in summary.text
     assert "no recorded timeline activity" in summary.text
     assert summary.confidence_context is None
+
+
+def test_template_summary_uses_humanized_exception_label():
+    """The generated sentence must read the same humanized label the
+    exception queue UI shows (`api.exceptions.EXCEPTION_TYPE_LABELS`), not
+    the raw snake_case `exception_type` code — a reviewer catching up on an
+    invoice shouldn't see internal codes like `fraud_flag` in prose."""
+    events = [
+        AuditEvent(
+            action="exception.raised",
+            actor_name=None,
+            created_at="2026-05-01T10:06:30+00:00",
+            details={"exception_type": "fraud_flag"},
+        ),
+    ]
+    summary = build_template_summary(_invoice(), events, None)
+    assert "Fraud Flag" in summary.text
+    assert "fraud_flag" not in summary.text
+
+
+def test_template_summary_falls_back_to_raw_code_for_unmapped_type():
+    """An exception_type with no entry in EXCEPTION_TYPE_LABELS (a stale or
+    corrupted row) still renders something rather than raising."""
+    events = [
+        AuditEvent(
+            action="exception.raised",
+            actor_name=None,
+            created_at="2026-05-01T10:06:30+00:00",
+            details={"exception_type": "totally_unknown_type"},
+        ),
+    ]
+    summary = build_template_summary(_invoice(), events, None)
+    assert "totally_unknown_type" in summary.text
 
 
 # ---------- summarize fail-soft + happy path -------------------------------
