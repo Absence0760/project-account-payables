@@ -5,6 +5,7 @@ import { api, formatApiDetail } from '$lib/api';
 import { PUBLIC_API_URL } from '$env/static/public';
 import { getTenantSlug } from '$lib/tenant';
 import { getSelectedEntityId } from '$lib/entity';
+import type { MatchingIdsResponse } from '$lib/utils/pagination';
 import type {
 	Expense,
 	ExpenseCreate,
@@ -109,6 +110,21 @@ export function getExpenseSummary(params: ExpenseListParams = {}): Promise<Expen
 	const qs = expenseQuery(params);
 	const query = qs.toString();
 	return api.get<ExpenseSummary>(`/api/expenses/summary${query ? `?${query}` : ''}`);
+}
+
+/**
+ * Every expense id matching the current list filters — `GET /api/expenses/ids`.
+ *
+ * Backs the "select all N matching" affordance on the expenses list page:
+ * the header checkbox only ever selects the currently-LOADED page
+ * (`expenseStore.all`), so a bulk action over "select all" silently skipped
+ * every row past it. Same params as `listExpenses` (minus pagination), so
+ * the resolved id set always matches what the table is showing.
+ */
+export function getExpenseIds(params: ExpenseListParams = {}): Promise<MatchingIdsResponse> {
+	const qs = expenseQuery(params);
+	const query = qs.toString();
+	return api.get<MatchingIdsResponse>(`/api/expenses/ids${query ? `?${query}` : ''}`);
 }
 
 export function getExpense(id: string): Promise<Expense> {

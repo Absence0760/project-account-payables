@@ -26,7 +26,12 @@ from app.api.deps import (
     get_org_id,
     require_roles,
 )
-from app.api.pagination import PaginationParams, pagination_params
+from app.api.pagination import (
+    MAX_SELECT_ALL_IDS,
+    MatchingIdsResponse,
+    PaginationParams,
+    pagination_params,
+)
 from app.api.permissions import PERM_INVOICE_APPROVE, effective_permissions
 from app.database import get_control_db
 from app.models.agent_decision import AgentDecision
@@ -159,30 +164,38 @@ _FINANCIAL_FIELDS = frozenset(
 router = APIRouter(prefix="/invoices", tags=["invoices"])
 
 
-@router.get("", response_model=InvoiceListResponse)
-async def list_invoices(
-    pagination: PaginationParams = Depends(pagination_params),
-    status: str | None = None,
-    vendor: str | None = None,
-    invoice_number: str | None = None,
-    po_number: str | None = None,
-    description: str | None = None,
-    amount_min: float | None = None,
-    amount_max: float | None = None,
-    due_date_from: date | None = None,
-    due_date_to: date | None = None,
-    search: str | None = None,
-    db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
-    entity_id: uuid.UUID | None = Depends(get_entity_id),
+def _invoice_list_filters(
+    query,
+    *,
+    status: str | None,
+    vendor: str | None,
+    invoice_number: str | None,
+    po_number: str | None,
+    description: str | None,
+    amount_min: float | None,
+    amount_max: float | None,
+    due_date_from: date | None,
+    due_date_to: date | None,
+    search: str | None,
+    exclude_status: str | None = None,
 ):
-    # Scope to the selected entity (None = consolidated, all entities).
-    query = apply_entity_scope(select(Invoice), Invoice, entity_id)
+    """Apply the invoice-list filters to ``query``.
 
-    # Filters
+    Shared by ``GET /api/invoices`` and ``GET /api/invoices/ids`` so the
+    "select all N matching" affordance resolves EXACTLY the set the table is
+    showing — a second, independently-maintained filter builder is how the
+    two would silently drift apart. ``exclude_status`` is ``/ids``-only (the
+    list endpoint has no use for it): it lets the frontend ask for only the
+    ids a bulk action can actually act on, e.g. excluding the system-managed
+    statuses `SYSTEM_MANAGED_STATUSES` never lets a user check in the first
+    place.
+    """
     if status:
         statuses = [s.strip() for s in status.split(",")]
         query = query.where(Invoice.status.in_(statuses))
+    if exclude_status:
+        excluded = [s.strip() for s in exclude_status.split(",")]
+        query = query.where(Invoice.status.notin_(excluded))
     if vendor:
         query = query.where(Invoice.vendor_name.ilike(f"%{vendor}%"))
     if invoice_number:
@@ -207,6 +220,41 @@ async def list_invoices(
             | Invoice.po_number.ilike(pattern)
             | Invoice.description.ilike(pattern)
         )
+    return query
+
+
+@router.get("", response_model=InvoiceListResponse)
+async def list_invoices(
+    pagination: PaginationParams = Depends(pagination_params),
+    status: str | None = None,
+    vendor: str | None = None,
+    invoice_number: str | None = None,
+    po_number: str | None = None,
+    description: str | None = None,
+    amount_min: float | None = None,
+    amount_max: float | None = None,
+    due_date_from: date | None = None,
+    due_date_to: date | None = None,
+    search: str | None = None,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    # Scope to the selected entity (None = consolidated, all entities).
+    query = apply_entity_scope(select(Invoice), Invoice, entity_id)
+    query = _invoice_list_filters(
+        query,
+        status=status,
+        vendor=vendor,
+        invoice_number=invoice_number,
+        po_number=po_number,
+        description=description,
+        amount_min=amount_min,
+        amount_max=amount_max,
+        due_date_from=due_date_from,
+        due_date_to=due_date_to,
+        search=search,
+    )
 
     # Count
     count_query = select(func.count()).select_from(query.subquery())
@@ -255,6 +303,59 @@ async def invoice_counts(
         key = db_status.value if hasattr(db_status, "value") else str(db_status)
         counts[key] = count
     return InvoiceCountsResponse(counts=counts, total=sum(counts.values()))
+
+
+# Registered BEFORE the parametric `/{invoice_id}` route — same reason
+# `/counts` sits above it.
+@router.get("/ids", response_model=MatchingIdsResponse)
+async def list_invoice_ids(
+    status: str | None = None,
+    vendor: str | None = None,
+    invoice_number: str | None = None,
+    po_number: str | None = None,
+    description: str | None = None,
+    amount_min: float | None = None,
+    amount_max: float | None = None,
+    due_date_from: date | None = None,
+    due_date_to: date | None = None,
+    search: str | None = None,
+    exclude_status: str | None = None,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Every invoice id matching the caller's list filters — the resolver
+    behind "select all N matching" on the invoices list page.
+
+    The bulk endpoints (`/bulk/delete`, `/bulk/status`, `/bulk/export`) only
+    accept an explicit id list, and the list page only ever has the currently
+    LOADED page of rows client-side. A "select all" that captured only those
+    silently skipped every row past the first page with no warning. This
+    endpoint resolves the whole filtered set server-side so the client can
+    select it for real. Same filters as `GET /invoices` (so the two describe
+    the same set) plus `exclude_status`, used by the frontend to drop the
+    system-managed statuses a row's checkbox is already disabled for.
+    """
+    query = apply_entity_scope(select(Invoice.id), Invoice, entity_id)
+    query = _invoice_list_filters(
+        query,
+        status=status,
+        vendor=vendor,
+        invoice_number=invoice_number,
+        po_number=po_number,
+        description=description,
+        amount_min=amount_min,
+        amount_max=amount_max,
+        due_date_from=due_date_from,
+        due_date_to=due_date_to,
+        search=search,
+        exclude_status=exclude_status,
+    )
+
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
+    query = query.order_by(Invoice.created_at.desc(), Invoice.id.desc()).limit(MAX_SELECT_ALL_IDS)
+    ids = [str(row) for row in (await db.execute(query)).scalars().all()]
+    return MatchingIdsResponse(ids=ids, total=int(total), truncated=int(total) > len(ids))
 
 
 class AssignableReviewerResponse(BaseModel):

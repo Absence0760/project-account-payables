@@ -29,7 +29,12 @@ from app.api.deps import (
     get_org_id,
     require_roles,
 )
-from app.api.pagination import PaginationParams, pagination_params
+from app.api.pagination import (
+    MAX_SELECT_ALL_IDS,
+    MatchingIdsResponse,
+    PaginationParams,
+    pagination_params,
+)
 from app.models.expense import (
     CorporateCardTransaction,
     Expense,
@@ -545,6 +550,33 @@ async def list_expenses(
         page=pagination.page,
         page_size=pagination.page_size,
     )
+
+
+# Registered BEFORE the parametric `/{expense_id}` route — same reason
+# `/export` / `/summary` / `/bulk-gl-code` sit above it.
+@router.get("/ids", response_model=MatchingIdsResponse)
+async def list_expense_ids(
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK, ROLE_CFO)),
+    status_filter: str | None = Query(None, alias="status"),
+    report_id: uuid.UUID | None = Query(None),
+    search: str | None = Query(None),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Every expense id matching the caller's list filters — the resolver
+    behind "select all N matching" on the expenses list page. Same filters
+    (and the same shared `_expense_list_filters`) as `GET /expenses`, so the
+    two describe the same set."""
+    base = _expense_list_filters(
+        apply_entity_scope(select(Expense.id), Expense, entity_id),
+        status_filter=status_filter,
+        report_id=report_id,
+        search=search,
+    )
+    total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0)
+    query = base.order_by(Expense.created_at.desc(), Expense.id.desc()).limit(MAX_SELECT_ALL_IDS)
+    ids = [str(row) for row in (await db.execute(query)).scalars().all()]
+    return MatchingIdsResponse(ids=ids, total=total, truncated=total > len(ids))
 
 
 @router.post("", response_model=ExpenseResponse, status_code=status.HTTP_201_CREATED)

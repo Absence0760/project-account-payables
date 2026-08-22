@@ -13,6 +13,7 @@
 	import RowLink from '$lib/components/ui/RowLink.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { pruneSelection } from '$lib/utils/selection';
+	import type { MatchingIdsResponse } from '$lib/utils/pagination';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
@@ -156,12 +157,24 @@
 	$effect(() => {
 		activeStatuses;
 		advancedFilters;
+		// The "select all N matching" set was resolved against the FILTERS
+		// active at the time — once they change it no longer describes
+		// anything real, so drop out of matching mode. Must happen here
+		// (synchronously, before the fetch below lands) so the prune effect
+		// resumes narrowing `selected` down to whatever the new filter
+		// actually shows, instead of leaving stale ids from the old filter
+		// selected forever.
+		selectedAllMatching = false;
 		invoiceStore.fetch(buildParams()).catch(() => {});
 	});
 
 	// Re-fetch on search input (debounced)
 	$effect(() => {
 		search;
+		// Same reasoning as the status/advanced-filter effect above — a
+		// changed search term invalidates whatever "select all matching" had
+		// resolved against the OLD term.
+		selectedAllMatching = false;
 		debouncedFetch();
 		// Cancel a pending debounce on teardown: without it the timer fires
 		// after the page is gone and lands a stale list into the shared store.
@@ -268,6 +281,17 @@
 	let bulkStatusValue = $state<InvoiceStatus>('approved');
 	let showBulkStatusSelect = $state(false);
 
+	// True once "Select all N matching" has resolved the WHOLE filtered set
+	// (not just the loaded page) into `selected` — see `selectAllMatching()`
+	// below. While true the prune effect must NOT narrow `selected` down to
+	// `invoiceStore.all` (the loaded page): that's exactly the id set beyond
+	// the page that matching-mode intentionally selected. Reset to false by
+	// the status/advanced-filter and search effects whenever the filters
+	// actually change, since a stale "matching" selection from a previous
+	// filter no longer describes anything real.
+	let selectedAllMatching = $state(false);
+	let selectingAllMatching = $state(false);
+
 	// Prune the selection to ids still visible whenever the list refetches
 	// (status chip, search, advanced filter, modal-close re-apply, load-more).
 	// Otherwise `selected` retains ids that fell off the list — inflating the
@@ -275,6 +299,7 @@
 	// (the same guard the exceptions queue applies). `pruneSelection` returns the
 	// same Set when nothing went stale, so the guarded reassignment never loops.
 	$effect(() => {
+		if (selectedAllMatching) return;
 		const pruned = pruneSelection(
 			selected,
 			invoiceStore.all.map((inv) => inv.id)
@@ -322,8 +347,39 @@
 	function toggleSelectAll() {
 		if (allSelected) {
 			selected = new Set();
+			selectedAllMatching = false;
 		} else {
 			selected = new Set(selectableInvoices.map((inv) => inv.id));
+		}
+	}
+
+	// Resolve and select EVERY invoice matching the current filters (not just
+	// the loaded page) via `GET /api/invoices/ids` — the header checkbox above
+	// only ever covers `invoiceStore.all`, the rows fetched so far. Without
+	// this, "select all" + bulk delete/status/export silently acted on the
+	// loaded page only, with no indication anything past it was skipped.
+	// `exclude_status` mirrors `selectableInvoices`: a bulk action can't touch
+	// a system-managed-status row, so "matching" must not include one either.
+	async function selectAllMatching() {
+		selectingAllMatching = true;
+		try {
+			const params = new URLSearchParams(buildParams());
+			params.set('exclude_status', [...SYSTEM_MANAGED_STATUSES].join(','));
+			const res = await api.get<MatchingIdsResponse>(`/api/invoices/ids?${params}`);
+			selected = new Set(res.ids);
+			selectedAllMatching = true;
+			if (res.truncated) {
+				toast(
+					`Selected the first ${res.ids.length} of ${res.total} matching — narrow your filters to select the rest.`,
+					'error'
+				);
+			} else {
+				toast(`Selected all ${res.ids.length} matching invoice(s)`, 'success');
+			}
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Failed to select all matching', 'error');
+		} finally {
+			selectingAllMatching = false;
 		}
 	}
 
@@ -334,6 +390,7 @@
 			await invoiceStore.fetch(buildParams());
 			await invoiceStore.fetchCounts();
 			selected = new Set();
+			selectedAllMatching = false;
 			const msg = res.skipped?.length
 				? `Deleted ${res.deleted}, skipped ${res.skipped.length} (immutable)`
 				: `Deleted ${res.deleted} invoice(s)`;
@@ -355,6 +412,7 @@
 			await invoiceStore.fetch(buildParams());
 			await invoiceStore.fetchCounts();
 			selected = new Set();
+			selectedAllMatching = false;
 			showBulkStatusSelect = false;
 			const msg = res.skipped?.length
 				? `Updated ${res.updated}, skipped ${res.skipped.length} (immutable)`
@@ -510,7 +568,14 @@
 	{#if selected.size > 0}
 		<div class="bulk-bar">
 			<span class="bulk-count">{m('invoices.bulk.selected', { n: selected.size })}</span>
-			<button class="bulk-clear" onclick={() => (selected = new Set())}>{m('common.clear')}</button>
+			{#if allSelected && !selectedAllMatching && invoiceStore.total > selectableInvoices.length}
+				<button class="bulk-select-all-matching" disabled={selectingAllMatching} onclick={selectAllMatching}>
+					{selectingAllMatching ? m('common.loading') : `Select all ${invoiceStore.total} matching`}
+				</button>
+			{:else if selectedAllMatching}
+				<span class="bulk-all-matching-note">All matching selected</span>
+			{/if}
+			<button class="bulk-clear" onclick={() => { selected = new Set(); selectedAllMatching = false; }}>{m('common.clear')}</button>
 			<div class="bulk-divider"></div>
 
 			{#if !auth.isClerkOnly}
@@ -901,6 +966,35 @@
 	.bulk-clear:hover {
 		color: var(--text);
 		background: var(--bg);
+	}
+
+	.bulk-select-all-matching {
+		padding: 4px 10px;
+		border-radius: 4px;
+		border: 1px solid var(--accent);
+		background: transparent;
+		color: var(--accent);
+		font-size: 0.8rem;
+		font-weight: 600;
+		cursor: pointer;
+		font-family: inherit;
+		white-space: nowrap;
+	}
+
+	.bulk-select-all-matching:disabled {
+		opacity: 0.6;
+		cursor: default;
+	}
+
+	.bulk-select-all-matching:not(:disabled):hover {
+		background: var(--accent);
+		color: var(--surface);
+	}
+
+	.bulk-all-matching-note {
+		font-size: 0.8rem;
+		color: var(--text-muted);
+		white-space: nowrap;
 	}
 
 	.bulk-btn-wrap {

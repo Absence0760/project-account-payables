@@ -71,3 +71,28 @@ class PageMeta(BaseModel):
 def paginated(items: list[Any], total: int, p: PaginationParams) -> dict[str, Any]:
     """Build the canonical envelope for a dict-returning list handler."""
     return {"items": items, "total": total, "page": p.page, "page_size": p.page_size}
+
+
+# Cap on how many ids a "select all N matching" bulk-selection query ever
+# returns in one call. The bulk mutation endpoints (invoice bulk delete /
+# status-change, exception bulk resolve, expense bulk-gl-code) only accept an
+# explicit id list — a client-side "select all" that only captured the
+# currently-LOADED page silently skipped every row past it, with no warning.
+# The fix is a client that resolves the *whole filtered set* of ids before
+# selecting, via the `/ids` sibling of each list endpoint below — but an
+# unbounded query on a huge tenant would turn "select all" into "load the
+# whole table" and a single POST body with tens of thousands of ids. Capped
+# here; `MatchingIdsResponse.truncated` tells the caller when it was hit, so a
+# partial selection is never silently presented as complete.
+MAX_SELECT_ALL_IDS = 5000
+
+
+class MatchingIdsResponse(BaseModel):
+    """Every id matching the caller's list filters (up to
+    :data:`MAX_SELECT_ALL_IDS`), for a "select all N matching" bulk-selection
+    affordance. Mirrors ``PageMeta``'s role: one shared shape so a new
+    ``/ids`` sibling endpoint can't quietly drift from the others."""
+
+    ids: list[str]
+    total: int
+    truncated: bool

@@ -334,3 +334,66 @@ async def test_cfo_cannot_bulk_gl_code(realdb):
             json={"expense_ids": [str(uuid.uuid4())], "gl_account_id": None},
         )
     assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# GET /api/expenses/ids — the "select all N matching" resolver
+# ---------------------------------------------------------------------------
+
+
+async def test_expense_ids_exceeds_a_single_list_page(realdb):
+    """More matching expenses than one `GET /api/expenses` page (page_size
+    20) — every id must come back, not just the first page's worth. This is
+    the resolver behind the expenses page's "select all N matching"
+    affordance, mirroring `test_invoice_ids.py`."""
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        created = []
+        for i in range(25):
+            r = await c.post(
+                "/api/expenses",
+                json={"expense_date": "2026-06-01", "amount": "5.00", "merchant": f"IdsCo{i}"},
+            )
+            created.append(r.json()["id"])
+
+        resp = await c.get("/api/expenses/ids")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["total"] == 25
+    assert body["truncated"] is False
+    assert set(body["ids"]) == set(created)
+
+
+async def test_expense_ids_honours_status_and_search_filters(realdb):
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        matching = (
+            await c.post(
+                "/api/expenses",
+                json={"expense_date": "2026-06-01", "amount": "5.00", "merchant": "FilterTarget"},
+            )
+        ).json()["id"]
+        await c.post(
+            "/api/expenses",
+            json={"expense_date": "2026-06-01", "amount": "5.00", "merchant": "SomethingElse"},
+        )
+
+        resp = await c.get("/api/expenses/ids", params={"search": "FilterTarget"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["ids"] == [matching]
+
+
+async def test_expense_ids_truncates_past_the_cap(realdb, monkeypatch):
+    monkeypatch.setattr("app.api.expenses.MAX_SELECT_ALL_IDS", 5, raising=True)
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        for i in range(8):
+            await c.post(
+                "/api/expenses",
+                json={"expense_date": "2026-06-01", "amount": "5.00", "merchant": f"CapCo{i}"},
+            )
+        resp = await c.get("/api/expenses/ids")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["total"] == 8
+    assert len(body["ids"]) == 5
+    assert body["truncated"] is True
