@@ -2197,3 +2197,33 @@ be re-derived — and `docs/conversational-assistant.md` no longer cites
 table is, both ways round. The file it replaced asserted the broken placement in
 all eight of its tests, using an `AsyncMock` control session — so the INSERT was
 never executed against a real database, which is why this survived.
+
+---
+
+## 58. `settings.mfa.required` is accepted even when `FEOH_MFA_ENABLED` is off — the inertness is reported, not refused
+
+**Decided:** 2026-08-22 · `backend/app/api/organization.py`
+
+Saving Org Settings → Security → "Require two-factor authentication for all
+users" writes `settings.mfa.required=true`, but MFA itself only runs behind the
+platform master switch `FEOH_MFA_ENABLED` (off by default — guard rail 7). Before
+this decision, an admin could save the toggle with no signal anywhere that it
+was currently inert: no user would ever be prompted.
+
+Two options were on the table: refuse the save with a 409, or accept it and
+surface the mismatch. Refusing is wrong here because the config isn't invalid —
+an admin pre-configuring `required: true` ahead of a deployed environment
+flipping `FEOH_MFA_ENABLED` on is a legitimate, common sequencing (the same
+tenant settings travel with the org across environments; nothing about the
+*setting* is malformed). This is the same shape of problem §34's residency
+`alignment` block and `extraction.py`'s `platform_provider_reason` already
+solved: accept the config, and answer "is it actually in effect right now?" as
+a separate, computed-on-read signal.
+
+`PATCH /api/organization` now logs a loud warning when accepting
+`mfa.required=true` while the switch is off, and `_org_response` (shared by
+`GET` and `PATCH`, mirroring `_residency_response`) injects
+`settings.mfa.enforcement_active` — `required AND FEOH_MFA_ENABLED` — computed
+fresh on every read, never persisted. The frontend toggle isn't wired to the new
+field yet (tracked in `docs/followups.md`); the API contract is what this
+decision fixes.

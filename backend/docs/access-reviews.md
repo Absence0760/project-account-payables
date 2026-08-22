@@ -25,6 +25,15 @@ ELEVATED_ROLES = {admin, ap_manager, cfo}
 `ap_clerk` is deliberately excluded — it's the baseline operator role, not a
 privileged grant, so reviewing it as "unused elevated access" is noise.
 
+Role NAME is not the whole story, though: a **custom role** (granular
+permissions, `app/api/permissions.py`) can grant a fraud-sensitive permission —
+`payment.execute`, `payment.void`, `payment_run.approve`,
+`vendor.bank_change.approve`, `vendor.block`, `user.manage` — to a role named
+anything at all. A user holding *only* such a custom role is still flagged
+elevated: `compute_access_review` also unions each user's `effective_permissions`
+(the same helper `get_current_user` uses) against `ELEVATED_PERMISSIONS`, so the
+review can't be blinded by a role name that doesn't say "admin".
+
 ## What counts as a "privileged action"
 
 The last-action index aggregates `MAX(audit_log.created_at)` per actor, scoped to

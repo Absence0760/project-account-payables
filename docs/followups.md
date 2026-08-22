@@ -1063,6 +1063,21 @@ rather than patched. None is a diagnosed defect (those go to
   `frontend/pnpm-lock.yaml` is regenerated for any reason (a dependency bump, a
   Dependabot PR) — verify the overrides survived before committing the lock.
 
+- **The "Require MFA for all users" toggle doesn't show the frontend when it's
+  inert.** `PATCH`/`GET /api/organization` now return
+  `settings.mfa.enforcement_active` (decisions.md §58) — `true` only when both
+  `settings.mfa.required` and the platform switch `FEOH_MFA_ENABLED` are on — so
+  an admin saving the toggle while the switch is off gets a real signal in the
+  API response and a loud backend log line. `frontend/src/routes/organization/
+  +page.svelte`'s Security card does not read that field yet, so the toggle
+  still looks unconditionally "on" in the UI after saving. **Durable fix:** wire
+  a `mfaEnforcementActive` derived value off the PATCH/GET response and render an
+  inline warning under the checkbox when `mfaRequired && !mfaEnforcementActive`
+  (needs a new i18n key across all six locale files + `messages_parity.test.ts`
+  coverage, which is why this round scoped the fix to the API contract).
+  **Trigger:** the next change touching the Security card, or the first
+  admin-reported "I turned MFA on and nobody got prompted" ticket.
+
 ## (a) Blocked on external credentials, accounts, or hardware
 
 None of these are startable from the editor. They are listed so they don't read

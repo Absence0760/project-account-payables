@@ -11,7 +11,7 @@ import re
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import ROLE_ADMIN, get_current_user, get_org_id, require_roles
@@ -152,3 +152,75 @@ async def update_entity(
             details={"slug": entity.slug, "changed": changed},
         )
     return _serialize(entity)
+
+
+@router.post("/{entity_id}/set-default")
+async def set_default_entity(
+    entity_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Make ``entity_id`` the tenant's default entity.
+
+    Provisioning creates exactly one default (the home for un-scoped / new
+    rows) and, until this endpoint, nothing could ever change which one that
+    was — the first entity was permanently stuck as default. Exactly one
+    entity must be the default at all times (``uq_entities_one_default``, a
+    partial unique index), so the old default is unset and the new one set in
+    the SAME transaction.
+
+    Both candidate rows are fetched with ``FOR UPDATE`` in a single query,
+    ordered by ``id`` — a single statement rather than two sequential locks,
+    so two concurrent ``set-default`` calls acquire row locks in the same
+    (id-sorted) order and can't deadlock each other, and neither can observe
+    a moment with zero or two defaults.
+    """
+    rows = (
+        (
+            await db.execute(
+                select(Entity)
+                .where(or_(Entity.id == entity_id, Entity.is_default.is_(True)))
+                .order_by(Entity.id)
+                .with_for_update()
+            )
+        )
+        .scalars()
+        .all()
+    )
+    target = next((e for e in rows if e.id == entity_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    if not target.is_active:
+        raise HTTPException(status_code=400, detail="Cannot make an inactive entity the default.")
+
+    if target.is_default:
+        return _serialize(target)  # already the default — idempotent no-op
+
+    current_default = next((e for e in rows if e.is_default and e.id != target.id), None)
+    previous_default_id = current_default.id if current_default is not None else None
+    if current_default is not None:
+        # Unset THEN set — both must be flushed in this order, or the second
+        # UPDATE trips uq_entities_one_default before the first one's UPDATE
+        # has cleared it.
+        current_default.is_default = False
+        await db.flush()
+
+    target.is_default = True
+    await db.flush()
+
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="entity.default_changed",
+        entity_type="entity",
+        entity_id=target.id,
+        details={
+            "slug": target.slug,
+            "previous_default_id": str(previous_default_id) if previous_default_id else None,
+        },
+    )
+    return _serialize(target)
