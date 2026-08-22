@@ -70,7 +70,17 @@ test.describe('/payments virtual-card reveal', () => {
 					spend_this_month: '0',
 					rebates_this_month: '0',
 					rebates_ytd: '0',
-					projected_annual_rebates: '0'
+					projected_annual_rebates: '0',
+					rebates_this_month_by_status: {
+						pending_total: '0',
+						confirmed_total: '0',
+						paid_out_total: '0'
+					},
+					rebates_ytd_by_status: {
+						pending_total: '0',
+						confirmed_total: '0',
+						paid_out_total: '0'
+					}
 				})
 			})
 		);

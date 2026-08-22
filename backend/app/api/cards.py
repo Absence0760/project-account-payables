@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import extract, func, select
+from sqlalchemy import case, extract, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,6 +32,7 @@ from app.schemas.virtual_card import (
     GenerateCardsRequest,
     RebateListResponse,
     RebateResponse,
+    RebateStatusBreakdown,
 )
 from app.services.payment_adapters.base import minor_units_to_decimal
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
@@ -333,43 +334,77 @@ async def card_dashboard(
     spend_result = await db.execute(spend_q)
     spend_this_month = spend_result.scalar() or 0
 
-    # Rebates this month
-    rebate_month_q = select(func.coalesce(func.sum(CardRebate.amount), 0)).where(
-        CardRebate.period == now.strftime("%Y-%m")
-    )
-    rebate_month = (await db.execute(rebate_month_q)).scalar() or 0
+    # Rebates this month — split by lifecycle status in one query rather than
+    # a blind SUM. A `pending` `CardRebate` is the processor's own ESTIMATE:
+    # not yet confirmed by the processor's out-of-band settlement (`POST
+    # /rebates/{id}/confirm`) and further still from an actual payout
+    # (`/mark-paid`). Blending all three into one "Rebates Earned" figure let
+    # 100% of a displayed "earned" total be entirely unconfirmed money that
+    # may never materialize. Only `confirmed` + `paid_out` is REALIZED.
+    _pending_amt = case((CardRebate.status == "pending", CardRebate.amount), else_=0)
+    _confirmed_amt = case((CardRebate.status == "confirmed", CardRebate.amount), else_=0)
+    _paid_out_amt = case((CardRebate.status == "paid_out", CardRebate.amount), else_=0)
+
+    rebate_month_q = select(
+        func.coalesce(func.sum(_pending_amt), 0),
+        func.coalesce(func.sum(_confirmed_amt), 0),
+        func.coalesce(func.sum(_paid_out_amt), 0),
+    ).where(CardRebate.period == now.strftime("%Y-%m"))
+    month_pending, month_confirmed, month_paid_out = (await db.execute(rebate_month_q)).one()
+    month_pending = Decimal(str(month_pending or 0))
+    month_confirmed = Decimal(str(month_confirmed or 0))
+    month_paid_out = Decimal(str(month_paid_out or 0))
+    rebate_month_realized = month_confirmed + month_paid_out
 
     # Rebates YTD. BOUNDED at both ends: `period` is a `YYYY-MM` string, so a
     # bare `>= "{year}-01"` also matches every FUTURE year ("2027-03" sorts
     # above "2026-01"), letting a forward-dated row leak into a
     # year-to-date figure — and `projected_annual` divides that figure by
     # months elapsed, so one such row inflates the projection too.
-    rebate_ytd_q = select(func.coalesce(func.sum(CardRebate.amount), 0)).where(
+    rebate_ytd_q = select(
+        func.coalesce(func.sum(_pending_amt), 0),
+        func.coalesce(func.sum(_confirmed_amt), 0),
+        func.coalesce(func.sum(_paid_out_amt), 0),
+    ).where(
         CardRebate.period >= f"{now.year}-01",
         CardRebate.period <= now.strftime("%Y-%m"),
     )
-    rebate_ytd = (await db.execute(rebate_ytd_q)).scalar() or 0
+    ytd_pending, ytd_confirmed, ytd_paid_out = (await db.execute(rebate_ytd_q)).one()
+    ytd_pending = Decimal(str(ytd_pending or 0))
+    ytd_confirmed = Decimal(str(ytd_confirmed or 0))
+    ytd_paid_out = Decimal(str(ytd_paid_out or 0))
+    rebate_ytd_realized = ytd_confirmed + ytd_paid_out
 
-    # Projected annual: (YTD / months elapsed) × 12. In January where
-    # YTD is short, the per-day rate is too noisy, so we fall back to
-    # rebates_this_month × 12 if we haven't accrued any YTD yet.
-    # Decimal throughout (money is exact). The aggregates above are already
-    # Decimal (sum over Numeric columns); keep them so and quantize the
+    # Projected annual: (REALIZED YTD / months elapsed) × 12 — never the
+    # pending amount, which may be revised or never confirmed at all. In
+    # January where realized YTD is short, the per-day rate is too noisy, so
+    # we fall back to this month's realized total × 12 if nothing has been
+    # confirmed/paid yet. Decimal throughout (money is exact); quantize the
     # projection to cents rather than hopping through float.
     months_elapsed = now.month
-    if rebate_ytd:
-        projected_annual = Decimal(rebate_ytd) / months_elapsed * 12
+    if rebate_ytd_realized:
+        projected_annual = rebate_ytd_realized / months_elapsed * 12
     else:
-        projected_annual = Decimal(rebate_month) * 12
+        projected_annual = rebate_month_realized * 12
     projected_annual = projected_annual.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     return CardDashboardResponse(
         active_cards=active_count or 0,
         active_cards_value=active_value,
         spend_this_month=spend_this_month,
-        rebates_this_month=rebate_month,
-        rebates_ytd=rebate_ytd,
+        rebates_this_month=rebate_month_realized,
+        rebates_ytd=rebate_ytd_realized,
         projected_annual_rebates=projected_annual,
+        rebates_this_month_by_status=RebateStatusBreakdown(
+            pending_total=month_pending,
+            confirmed_total=month_confirmed,
+            paid_out_total=month_paid_out,
+        ),
+        rebates_ytd_by_status=RebateStatusBreakdown(
+            pending_total=ytd_pending,
+            confirmed_total=ytd_confirmed,
+            paid_out_total=ytd_paid_out,
+        ),
     )
 
 

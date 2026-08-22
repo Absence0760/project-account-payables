@@ -251,6 +251,8 @@ export const en = {
 	'payments.runs.empty': 'No payment runs yet.',
 	'payments.cards.rebatesThisMonth': 'Rebates this month',
 	'payments.cards.rebatesYtd': 'Rebates YTD',
+	'payments.cards.rebatesRealizedHint': 'confirmed + paid out',
+	'payments.cards.rebatesPendingHint': '+{amount} pending confirmation',
 	'payments.cards.projectedAnnual': 'Projected annual',
 	'payments.cards.atRunRate': 'at current run rate',
 	'payments.cards.activeCards': 'Active cards',

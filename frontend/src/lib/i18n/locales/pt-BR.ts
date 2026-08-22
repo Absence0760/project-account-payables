@@ -233,6 +233,8 @@ export const messages = {
 	'payments.runs.empty': 'Ainda não há lotes de pagamento.',
 	'payments.cards.rebatesThisMonth': 'Reembolsos neste mês',
 	'payments.cards.rebatesYtd': 'Reembolsos no ano',
+	'payments.cards.rebatesRealizedHint': 'confirmados + pagos',
+	'payments.cards.rebatesPendingHint': '+{amount} aguardando confirmação',
 	'payments.cards.projectedAnnual': 'Projeção anual',
 	'payments.cards.atRunRate': 'no ritmo atual',
 	'payments.cards.activeCards': 'Cartões ativos',
