@@ -182,11 +182,24 @@ export function expenseReportSummary(id: string): Promise<ExpenseReportSummary> 
 
 // --- Bulk GL code (WF2) ---
 
+/** One id `bulk-gl-code` couldn't apply the GL code to, and why (invalid id
+ *  shape or not found in this entity scope) — mirrors the invoice bulk
+ *  endpoints' `{updated, skipped}` partial-success contract. */
+export interface ExpenseBulkGlCodeSkip {
+	id: string;
+	reason: string;
+}
+
+export interface ExpenseBulkGlCodeResponse {
+	updated: number;
+	skipped: ExpenseBulkGlCodeSkip[];
+}
+
 export function bulkGlCode(
 	expenseIds: string[],
 	glAccountId: string | null
-): Promise<{ updated: number }> {
-	return api.post<{ updated: number }>('/api/expenses/bulk-gl-code', {
+): Promise<ExpenseBulkGlCodeResponse> {
+	return api.post<ExpenseBulkGlCodeResponse>('/api/expenses/bulk-gl-code', {
 		expense_ids: expenseIds,
 		gl_account_id: glAccountId
 	});

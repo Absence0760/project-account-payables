@@ -247,14 +247,83 @@ async def test_bulk_gl_code_unknown_gl_404(realdb):
     assert resp.status_code == 404
 
 
-async def test_bulk_gl_code_unknown_expense_404(realdb):
+async def test_bulk_gl_code_unknown_expense_skipped_not_404(realdb):
+    """An unresolvable id is skipped-and-reported, not a batch-wide 404 — the
+    ``gl_account_id`` check (a real 404, applies to the whole batch) is
+    unaffected; only the per-expense resolution partial-succeeds."""
     gl_id = await _mk_gl_account(realdb, code="6002")
+    bad_id = str(uuid.uuid4())
     async with realdb.client(key="a", role="ap_clerk") as c:
         resp = await c.post(
             "/api/expenses/bulk-gl-code",
-            json={"expense_ids": [str(uuid.uuid4())], "gl_account_id": str(gl_id)},
+            json={"expense_ids": [bad_id], "gl_account_id": str(gl_id)},
         )
-    assert resp.status_code == 404
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["updated"] == 0
+    assert body["skipped"] == [{"id": bad_id, "reason": "not found"}]
+
+
+async def test_bulk_gl_code_partial_success_does_not_roll_back(realdb):
+    """A batch of 3 valid ids + 1 unresolvable one persists the 3 valid
+    updates (never rolled back by the one bad row) and reports the failure
+    with a reason — the invoice-bulk-endpoints partial-success contract."""
+    mk = realdb.sessionmaker("a")
+    gl_id = await _mk_gl_account(realdb, code="6003", name="Consulting")
+
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        good_ids = [
+            (
+                await c.post(
+                    "/api/expenses", json={"expense_date": "2026-06-01", "amount": "10.00"}
+                )
+            ).json()["id"]
+            for _ in range(3)
+        ]
+        bad_id = str(uuid.uuid4())
+        resp = await c.post(
+            "/api/expenses/bulk-gl-code",
+            json={"expense_ids": [*good_ids, bad_id], "gl_account_id": str(gl_id)},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["updated"] == 3
+    assert body["skipped"] == [{"id": bad_id, "reason": "not found"}]
+
+    # The 3 valid rows really were persisted — not rolled back by the bad id.
+    async with mk() as s:
+        for raw in good_ids:
+            e = (await s.execute(select(Expense).where(Expense.id == uuid.UUID(raw)))).scalar_one()
+            assert e.gl_account_id == gl_id
+        rows = (
+            (
+                await s.execute(
+                    select(AuditLog.action).where(AuditLog.action == "expense.bulk_gl_coded")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 3
+
+
+async def test_bulk_gl_code_invalid_id_format_skipped(realdb):
+    """A malformed (non-UUID) id in the batch is also a skip, not a
+    batch-aborting 400 — the id-shape check used to raise before any row was
+    ever touched."""
+    gl_id = await _mk_gl_account(realdb, code="6004")
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        good_id = (
+            await c.post("/api/expenses", json={"expense_date": "2026-06-01", "amount": "5.00"})
+        ).json()["id"]
+        resp = await c.post(
+            "/api/expenses/bulk-gl-code",
+            json={"expense_ids": [good_id, "not-a-uuid"], "gl_account_id": str(gl_id)},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["updated"] == 1
+    assert body["skipped"] == [{"id": "not-a-uuid", "reason": "invalid id format"}]
 
 
 async def test_cfo_cannot_bulk_gl_code(realdb):

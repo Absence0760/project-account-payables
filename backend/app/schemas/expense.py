@@ -263,6 +263,21 @@ class ExpenseBulkGlCode(BaseModel):
     gl_account_id: str | None = None
 
 
+class ExpenseBulkGlCodeSkip(BaseModel):
+    id: str
+    reason: str
+
+
+class ExpenseBulkGlCodeResponse(BaseModel):
+    """Mirrors the invoice bulk endpoints' partial-success contract
+    (``api/invoices.py::BulkStatusResponse``): each id is resolved
+    independently, a bad one is skipped-and-reported rather than rolling
+    back the whole batch."""
+
+    updated: int
+    skipped: list[ExpenseBulkGlCodeSkip] = Field(default_factory=list)
+
+
 class ExpenseReportSummary(BaseModel):
     """Aggregate rollup of a report's attached expenses, expressed in the
     report's own ``currency`` via each line's rate-locked conversion — never a
@@ -570,6 +585,8 @@ __all__ = [
     "ExpenseReportUpdate",
     "ExpenseReportAttach",
     "ExpenseBulkGlCode",
+    "ExpenseBulkGlCodeSkip",
+    "ExpenseBulkGlCodeResponse",
     "ExpenseReportSummary",
     "ExpenseReportResponse",
     "ExpenseReportListResponse",

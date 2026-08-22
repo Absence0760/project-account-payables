@@ -359,7 +359,10 @@
 		bulkBusy = true;
 		try {
 			const res = await bulkGlCode([...selected], bulkGl || null);
-			toast(m('expenses.toast.glCoded', { n: res.updated }), 'success');
+			const msg = res.skipped?.length
+				? `${m('expenses.toast.glCoded', { n: res.updated })} (skipped ${res.skipped.length})`
+				: m('expenses.toast.glCoded', { n: res.updated });
+			toast(msg, 'success');
 			selected = new Set();
 			bulkGl = '';
 			// Records the term like `loadExpenses()` does — this refetch IS the
