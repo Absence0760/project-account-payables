@@ -12,6 +12,7 @@
 	import { appendUnique } from '$lib/utils/pagination';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { m } from '$lib/i18n/store.svelte';
+	import { portalInvoiceStatusLabel } from '$lib/types/portalStatus';
 	import SupplierChatThread from '$lib/components/chat/SupplierChatThread.svelte';
 	import type { PortalChatThread } from '$lib/types/supplierChat';
 	import {
@@ -33,6 +34,7 @@
 	let uploading = $state(false);
 	let error = $state('');
 	let message = $state('');
+	let downloadingFileId = $state<string | null>(null);
 
 	const hasMore = $derived(items.length < total);
 
@@ -151,6 +153,33 @@
 		return formatMoney(amount, { currency: ccy }, formatMoney(0, { currency: ccy }));
 	}
 
+	/** Re-download the source file THIS vendor submitted for `inv`, via the
+	 * vendor-scoped `GET /api/portal/invoices/{id}/file` proxy — the
+	 * employee-only `/api/invoices/file/{key}` route (what an internal
+	 * `file_url` used to always point at) rejects a vendor JWT outright, so
+	 * a supplier had no way to ever re-view a document they themselves
+	 * uploaded. */
+	async function downloadInvoiceFile(inv: PortalInvoice) {
+		if (!inv.file_url) return;
+		downloadingFileId = inv.id;
+		error = '';
+		try {
+			const blob = await portalApi.download(inv.file_url);
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = `invoice-${inv.invoice_number || inv.id.slice(0, 8)}`;
+			document.body.appendChild(a);
+			a.click();
+			a.remove();
+			URL.revokeObjectURL(url);
+		} catch (err) {
+			error = err instanceof Error ? err.message : m('portal.invoices.fileDownloadFailed');
+		} finally {
+			downloadingFileId = null;
+		}
+	}
+
 	onMount(refresh);
 </script>
 
@@ -183,6 +212,7 @@
 					<th>{m('portal.invoices.col.due')}</th>
 					<th class="num">{m('portal.invoices.col.amount')}</th>
 					<th>{m('portal.invoices.col.status')}</th>
+					<th class="actions-col"></th>
 				</tr>
 			</thead>
 			<tbody>
@@ -215,12 +245,29 @@
 						<td>{formatDate(inv.invoice_date, m('portal.common.dash'))}</td>
 						<td>{formatDate(inv.due_date, m('portal.common.dash'))}</td>
 						<td class="num">{fmtAmount(inv.amount, inv.currency)}</td>
-						<td><span class="status s-{inv.status}">{inv.status}</span></td>
+						<td><span class="status s-{inv.status}">{portalInvoiceStatusLabel(inv.status)}</span></td>
+						<td class="actions">
+							{#if inv.file_url}
+								<button
+									type="button"
+									class="file-btn"
+									disabled={downloadingFileId === inv.id}
+									onclick={(e) => {
+										e.stopPropagation();
+										downloadInvoiceFile(inv);
+									}}
+								>
+									{downloadingFileId === inv.id
+										? m('portal.invoices.preparing')
+										: m('portal.invoices.downloadFile')}
+								</button>
+							{/if}
+						</td>
 					</tr>
 					{#if expandedId === inv.id}
 						<!-- svelte-ignore a11y_no_static_element_interactions -->
 						<tr class="chat-row" onclick={(e) => e.stopPropagation()}>
-							<td colspan="6">
+							<td colspan="7">
 								<SupplierChatThread
 									surface="vendor"
 									thread={chatThreads[inv.id] ?? null}
@@ -367,6 +414,29 @@
 	.s-rejected {
 		background: rgba(224, 64, 64, 0.12);
 		border-color: rgba(224, 64, 64, 0.35);
+	}
+	.actions-col {
+		width: 1%;
+	}
+	.actions {
+		white-space: nowrap;
+	}
+	.file-btn {
+		padding: 4px 12px;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		background: transparent;
+		color: var(--text);
+		font-size: 0.8rem;
+		cursor: pointer;
+	}
+	.file-btn:hover:not(:disabled) {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+	.file-btn:disabled {
+		opacity: 0.6;
+		cursor: default;
 	}
 	.empty,
 	.loading {

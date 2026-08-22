@@ -1877,6 +1877,8 @@ export const messages = {
 	'portal.nav.company': 'Entreprise',
 	'portal.nav.notifications': 'Notifications',
 	'portal.shell.logOut': 'Se déconnecter',
+	'portal.shell.footerSupport': 'Assistance',
+	'portal.shell.footerLegal': 'Mentions légales',
 	'portal.login.subtitle': 'Connectez-vous pour soumettre des factures et consulter les paiements',
 	'portal.login.email': 'E-mail',
 	'portal.login.password': 'Mot de passe',
@@ -1925,6 +1927,9 @@ export const messages = {
 	'portal.invoices.loadMore': 'Charger plus ({shown} sur {total})',
 	'portal.invoices.showingAll':
 		'{total, plural, one {Affichage de la # facture} other {Affichage des # factures}}',
+	'portal.invoices.downloadFile': 'Télécharger le fichier',
+	'portal.invoices.preparing': 'Préparation…',
+	'portal.invoices.fileDownloadFailed': 'Échec du téléchargement',
 	'portal.payments.title': 'Paiements',
 	'portal.payments.loadFailed': 'Échec du chargement',
 	'portal.payments.downloadFailed': 'Échec du téléchargement',

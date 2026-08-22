@@ -1880,6 +1880,8 @@ export const messages = {
 	'portal.nav.company': 'Empresa',
 	'portal.nav.notifications': 'Notificações',
 	'portal.shell.logOut': 'Sair',
+	'portal.shell.footerSupport': 'Suporte',
+	'portal.shell.footerLegal': 'Jurídico',
 
 	// Login do portal + MFA (routes/portal/login/+page.svelte)
 	'portal.login.subtitle': 'Faça login para enviar faturas e ver pagamentos',
@@ -1934,6 +1936,9 @@ export const messages = {
 	'portal.invoices.loadMore': 'Carregar mais ({shown} de {total})',
 	'portal.invoices.showingAll':
 		'{total, plural, one {Exibindo # fatura} other {Exibindo todas as # faturas}}',
+	'portal.invoices.downloadFile': 'Baixar arquivo',
+	'portal.invoices.preparing': 'Preparando…',
+	'portal.invoices.fileDownloadFailed': 'Falha no download',
 
 	// Pagamentos do portal (routes/portal/payments/+page.svelte)
 	'portal.payments.title': 'Pagamentos',

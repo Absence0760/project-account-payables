@@ -1920,6 +1920,8 @@ export const en = {
 	'portal.nav.company': 'Company',
 	'portal.nav.notifications': 'Notifications',
 	'portal.shell.logOut': 'Log out',
+	'portal.shell.footerSupport': 'Support',
+	'portal.shell.footerLegal': 'Legal',
 
 	// Portal login + MFA (routes/portal/login/+page.svelte)
 	'portal.login.subtitle': 'Sign in to submit invoices and view payments',
@@ -1974,6 +1976,9 @@ export const en = {
 	'portal.invoices.loadMore': 'Load more ({shown} of {total})',
 	'portal.invoices.showingAll':
 		'{total, plural, one {Showing all # invoice} other {Showing all # invoices}}',
+	'portal.invoices.downloadFile': 'Download file',
+	'portal.invoices.preparing': 'Preparing…',
+	'portal.invoices.fileDownloadFailed': 'Download failed',
 
 	// Portal payments (routes/portal/payments/+page.svelte)
 	'portal.payments.title': 'Payments',

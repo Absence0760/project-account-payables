@@ -1877,6 +1877,8 @@ export const messages = {
 	'portal.nav.company': 'Unternehmen',
 	'portal.nav.notifications': 'Benachrichtigungen',
 	'portal.shell.logOut': 'Abmelden',
+	'portal.shell.footerSupport': 'Support',
+	'portal.shell.footerLegal': 'Rechtliches',
 	'portal.login.subtitle': 'Melden Sie sich an, um Rechnungen einzureichen und Zahlungen einzusehen',
 	'portal.login.email': 'E-Mail',
 	'portal.login.password': 'Passwort',
@@ -1925,6 +1927,9 @@ export const messages = {
 	'portal.invoices.loadMore': 'Mehr laden ({shown} von {total})',
 	'portal.invoices.showingAll':
 		'{total, plural, one {Alle # Rechnung werden angezeigt} other {Alle # Rechnungen werden angezeigt}}',
+	'portal.invoices.downloadFile': 'Datei herunterladen',
+	'portal.invoices.preparing': 'Wird vorbereitet…',
+	'portal.invoices.fileDownloadFailed': 'Download fehlgeschlagen',
 	'portal.payments.title': 'Zahlungen',
 	'portal.payments.loadFailed': 'Laden fehlgeschlagen',
 	'portal.payments.downloadFailed': 'Download fehlgeschlagen',

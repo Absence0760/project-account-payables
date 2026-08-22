@@ -1248,6 +1248,63 @@ async def delete_vendor_portal_user(
     await db.commit()
 
 
+@router.post(
+    "/{vendor_id}/portal-users/{vendor_user_id}/reset-password",
+    response_model=PortalInviteResponse,
+)
+async def reset_vendor_portal_user_password(
+    vendor_id: uuid.UUID,
+    vendor_user_id: uuid.UUID,
+    org_id: uuid.UUID = Depends(get_org_id),
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+):
+    """AP-admin-triggered password reset for a locked-out supplier-portal
+    user.
+
+    Before this route existed, the only recovery for a vendor user who lost
+    their password was AP deleting and re-inviting them — a new `VendorUser.id`
+    that breaks anything referencing the old one (chat authorship, audit rows,
+    the notification-preferences row) and forces the vendor to re-learn a new
+    login. This mints a fresh temp password onto the SAME row instead: same
+    permission gate as invite/delete (admin/ap_manager), the SHARED
+    `utils/passwords.generate_temp_password()` (never a local one — see
+    `backend/CLAUDE.md` § Passwords), and forces a change on next login via
+    the existing `must_change_password` flag (mirrors `invite_vendor_portal_user`).
+    Overwriting `hashed_password` immediately invalidates the old password —
+    there is no separate "revoke" step.
+    """
+    result = await db.execute(
+        select(VendorUser).where(
+            VendorUser.id == vendor_user_id,
+            VendorUser.vendor_id == vendor_id,
+        )
+    )
+    vu = result.scalar_one_or_none()
+    if not vu:
+        raise HTTPException(status_code=404, detail="Portal user not found")
+
+    temp_password = generate_temp_password()
+    vu.hashed_password = await hash_password(temp_password)
+    vu.must_change_password = True
+    await db.flush()
+    await db.refresh(vu)
+
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="vendor_portal_user.password_reset",
+        entity_type="vendor_user",
+        entity_id=vu.id,
+        details={"vendor_id": str(vendor_id)},
+    )
+    await db.commit()
+
+    return PortalInviteResponse(user=_vendor_user_response(vu), temp_password=temp_password)
+
+
 # ---------- Vendor change-request approval (fraud-prevention gate) ----------
 #
 # Bank-detail and tax-ID changes initiated by a supplier-portal user stage a

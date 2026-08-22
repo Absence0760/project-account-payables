@@ -1855,6 +1855,8 @@ export const messages = {
 	'portal.nav.company': '会社情報',
 	'portal.nav.notifications': '通知',
 	'portal.shell.logOut': 'ログアウト',
+	'portal.shell.footerSupport': 'サポート',
+	'portal.shell.footerLegal': '法的情報',
 
 	// ポータルのログイン + MFA (routes/portal/login/+page.svelte)
 	'portal.login.subtitle': 'サインインして請求書を送信し、支払いを確認します',
@@ -1908,6 +1910,9 @@ export const messages = {
 	'portal.invoices.pendingExtraction': '（抽出待ち）',
 	'portal.invoices.loadMore': 'さらに読み込む（{total}件中{shown}件）',
 	'portal.invoices.showingAll': '{total, plural, other {#件すべての請求書を表示中}}',
+	'portal.invoices.downloadFile': 'ファイルをダウンロード',
+	'portal.invoices.preparing': '準備しています…',
+	'portal.invoices.fileDownloadFailed': 'ダウンロードに失敗しました',
 
 	// ポータルの支払い (routes/portal/payments/+page.svelte)
 	'portal.payments.title': '支払い',
