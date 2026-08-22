@@ -162,6 +162,11 @@ class PortalInviteResponse(BaseModel):
     # out-of-band if email delivery isn't configured (local dev, etc).
     # In production the welcome email also carries it.
     temp_password: str
+    # The real tenant portal URL (built from `FEOH_TENANT_URL_TEMPLATE`, same
+    # construction as the signup welcome email / supplier-chat portal-link
+    # email) — echoed back so the admin can share it manually alongside the
+    # temp password. `None` when no template is configured.
+    portal_url: str | None = None
 
 
 class PortalInvoiceListItem(BaseModel):
