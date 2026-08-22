@@ -5,6 +5,7 @@ import { api, formatApiDetail } from '$lib/api';
 import { PUBLIC_API_URL } from '$env/static/public';
 import { getTenantSlug } from '$lib/tenant';
 import { getSelectedEntityId } from '$lib/entity';
+import type { MatchingIdsResponse } from '$lib/utils/pagination';
 import type {
 	Expense,
 	ExpenseCreate,
@@ -111,6 +112,21 @@ export function getExpenseSummary(params: ExpenseListParams = {}): Promise<Expen
 	return api.get<ExpenseSummary>(`/api/expenses/summary${query ? `?${query}` : ''}`);
 }
 
+/**
+ * Every expense id matching the current list filters — `GET /api/expenses/ids`.
+ *
+ * Backs the "select all N matching" affordance on the expenses list page:
+ * the header checkbox only ever selects the currently-LOADED page
+ * (`expenseStore.all`), so a bulk action over "select all" silently skipped
+ * every row past it. Same params as `listExpenses` (minus pagination), so
+ * the resolved id set always matches what the table is showing.
+ */
+export function getExpenseIds(params: ExpenseListParams = {}): Promise<MatchingIdsResponse> {
+	const qs = expenseQuery(params);
+	const query = qs.toString();
+	return api.get<MatchingIdsResponse>(`/api/expenses/ids${query ? `?${query}` : ''}`);
+}
+
 export function getExpense(id: string): Promise<Expense> {
 	return api.get<Expense>(`/api/expenses/${id}`);
 }
@@ -182,11 +198,24 @@ export function expenseReportSummary(id: string): Promise<ExpenseReportSummary> 
 
 // --- Bulk GL code (WF2) ---
 
+/** One id `bulk-gl-code` couldn't apply the GL code to, and why (invalid id
+ *  shape or not found in this entity scope) — mirrors the invoice bulk
+ *  endpoints' `{updated, skipped}` partial-success contract. */
+export interface ExpenseBulkGlCodeSkip {
+	id: string;
+	reason: string;
+}
+
+export interface ExpenseBulkGlCodeResponse {
+	updated: number;
+	skipped: ExpenseBulkGlCodeSkip[];
+}
+
 export function bulkGlCode(
 	expenseIds: string[],
 	glAccountId: string | null
-): Promise<{ updated: number }> {
-	return api.post<{ updated: number }>('/api/expenses/bulk-gl-code', {
+): Promise<ExpenseBulkGlCodeResponse> {
+	return api.post<ExpenseBulkGlCodeResponse>('/api/expenses/bulk-gl-code', {
 		expense_ids: expenseIds,
 		gl_account_id: glAccountId
 	});

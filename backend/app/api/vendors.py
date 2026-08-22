@@ -25,6 +25,7 @@ from app.api.permissions import (
     PERM_VENDOR_BLOCK,
     PERM_VENDOR_MANAGE,
 )
+from app.config import settings
 from app.models.contract import Contract
 from app.models.credit_memo import CreditMemo
 from app.models.discount import DiscountOffer
@@ -1199,7 +1200,12 @@ async def invite_vendor_portal_user(
     # `temp_password` so the admin can share it manually — same pattern as
     # the tenant-signup welcome email.
     email_adapter = get_email_adapter()
-    portal_url = f"https://{org.slug}.app.com/portal"
+    # Real tenant portal URL, built from the same `FEOH_TENANT_URL_TEMPLATE`
+    # the signup welcome email (app/api/signup.py::_tenant_url) and the
+    # supplier-chat portal-link email (services/supplier_chat.py) use — never
+    # a hardcoded placeholder domain. No template configured -> no URL line.
+    template_base = (settings.tenant_url_template or "").replace("{slug}", org.slug)
+    portal_url = f"{template_base.rstrip('/')}/portal" if template_base else None
     try:
         await email_adapter.send(
             EmailMessage(
@@ -1210,8 +1216,8 @@ async def invite_vendor_portal_user(
                     f"{org.name} has set up a supplier-portal account for "
                     f"{vendor.name}. Use it to submit invoices and track "
                     f"payment status.\n\n"
-                    f"  URL:      {portal_url}\n"
-                    f"  Email:    {body.email}\n"
+                    + (f"  URL:      {portal_url}\n" if portal_url else "")
+                    + f"  Email:    {body.email}\n"
                     f"  Password: {temp_password}\n\n"
                     "You'll be asked to change your password on first sign-in.\n"
                 ),
@@ -1222,7 +1228,9 @@ async def invite_vendor_portal_user(
             "Portal-user welcome email failed for %s (vendor=%s)", body.email, vendor.id
         )
 
-    return PortalInviteResponse(user=_vendor_user_response(vu), temp_password=temp_password)
+    return PortalInviteResponse(
+        user=_vendor_user_response(vu), temp_password=temp_password, portal_url=portal_url
+    )
 
 
 @router.delete(

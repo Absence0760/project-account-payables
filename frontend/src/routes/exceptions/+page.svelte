@@ -3,6 +3,7 @@
 	import { replaceState } from '$app/navigation';
 	import { api } from '$lib/api';
 	import { appendUnique } from '$lib/utils/pagination';
+	import type { MatchingIdsResponse } from '$lib/utils/pagination';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
@@ -67,6 +68,13 @@
 	let statusFilter = $state('open');
 	let typeFilter = $state<string | null>(null);
 	let selectedIds = $state<Set<string>>(new Set());
+	// True once "Select all N matching" (below) has resolved the WHOLE
+	// filtered set of open/escalated exceptions — not just the loaded page —
+	// into `selectedIds`. See the identical mechanism on the invoices list
+	// page (`routes/invoices/+page.svelte`) for the full rationale. Reset by
+	// `loadExceptions` whenever `statusFilter`/`typeFilter` actually change.
+	let selectedAllMatching = $state(false);
+	let selectingAllMatching = $state(false);
 
 	let hasMore = $derived(exceptions.length < total);
 
@@ -135,6 +143,12 @@
 	$effect(() => {
 		statusFilter;
 		typeFilter;
+		// The "select all N matching" set was resolved against the FILTERS
+		// active when it was clicked; once they change it no longer describes
+		// anything real, so drop out of matching mode. Must happen here,
+		// synchronously, before `loadExceptions()` — see the identical note on
+		// the invoices list page.
+		selectedAllMatching = false;
 		loadExceptions();
 	});
 
@@ -190,7 +204,15 @@
 			// selection whose exception someone else resolved between loads.
 			// Unconditional: it reads the rows currently on screen, so it is
 			// correct for a discarded response too.
-			selectedIds = pruneSelection(selectedIds, selectableIds);
+			//
+			// EXCEPT while `selectedAllMatching` is true: that selection
+			// deliberately spans ids beyond the loaded page (or beyond the
+			// loaded page at load-more time), and pruning to `selectableIds`
+			// (derived from the loaded rows only) would silently narrow it back
+			// down to the exact bug "select all N matching" exists to fix.
+			if (!selectedAllMatching) {
+				selectedIds = pruneSelection(selectedIds, selectableIds);
+			}
 		}
 	}
 
@@ -269,6 +291,7 @@
 			bulkResolveOpen = false;
 			resolutionText = '';
 			selectedIds = new Set();
+			selectedAllMatching = false;
 			await Promise.all([loadExceptions(), loadSummary()]);
 		} catch (err) {
 			toast(extractError(err), 'error');
@@ -302,8 +325,44 @@
 	);
 
 	function toggleSelectAll() {
-		if (allSelected) selectedIds = new Set();
-		else selectedIds = new Set(selectableIds);
+		if (allSelected) {
+			selectedIds = new Set();
+			selectedAllMatching = false;
+		} else {
+			selectedIds = new Set(selectableIds);
+		}
+	}
+
+	// Resolve and select EVERY open/escalated exception matching the current
+	// queue filters (not just the loaded page) via `GET /api/exceptions/ids`.
+	// The header checkbox above only ever covers the exceptions fetched so
+	// far — see the identical mechanism (and full rationale) on the invoices
+	// list page's `selectAllMatching`.
+	async function selectAllMatching() {
+		selectingAllMatching = true;
+		try {
+			const params = new URLSearchParams();
+			// Bulk resolve only ever acts on open/escalated rows — mirrors
+			// `selectableIds`. `statusFilter === 'all'` has no narrower value to
+			// reuse, so it's spelled out explicitly.
+			params.set('status', statusFilter === 'all' ? 'open,escalated' : statusFilter);
+			if (typeFilter) params.set('type', typeFilter);
+			const res = await api.get<MatchingIdsResponse>(`/api/exceptions/ids?${params}`);
+			selectedIds = new Set(res.ids);
+			selectedAllMatching = true;
+			if (res.truncated) {
+				toast(
+					`Selected the first ${res.ids.length} of ${res.total} matching — narrow your filters to select the rest.`,
+					'error'
+				);
+			} else {
+				toast(`Selected all ${res.ids.length} matching exception(s)`, 'success');
+			}
+		} catch {
+			toast('Failed to select all matching', 'error');
+		} finally {
+			selectingAllMatching = false;
+		}
 	}
 
 	function formatCurrency(n: number | null): string {
@@ -407,8 +466,21 @@
 		{/if}
 	{/if}
 
-	<BulkBar count={selectedIds.size} onclear={() => (selectedIds = new Set())}>
+	<BulkBar
+		count={selectedIds.size}
+		onclear={() => {
+			selectedIds = new Set();
+			selectedAllMatching = false;
+		}}
+	>
 		{#snippet actions()}
+			{#if allSelected && !selectedAllMatching && total > selectableIds.size}
+				<button class="bulk-action-btn" disabled={selectingAllMatching} onclick={selectAllMatching}>
+					{selectingAllMatching ? m('common.loading') : `Select all ${total} matching`}
+				</button>
+			{:else if selectedAllMatching}
+				<span class="bulk-all-matching-note">All matching selected</span>
+			{/if}
 			<button class="bulk-action-btn" onclick={openBulkResolve}>
 				{m('exceptions.bulk.resolve', { n: selectedIds.size })}
 			</button>
@@ -678,6 +750,18 @@
 
 	.bulk-action-btn:hover {
 		filter: brightness(1.1);
+	}
+
+	.bulk-action-btn:disabled {
+		opacity: 0.6;
+		cursor: default;
+		filter: none;
+	}
+
+	.bulk-all-matching-note {
+		font-size: 0.85rem;
+		color: var(--text-muted);
+		white-space: nowrap;
 	}
 
 	/* --- Bespoke cells / rows --- */

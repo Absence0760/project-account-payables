@@ -29,7 +29,12 @@ from app.api.deps import (
     get_org_id,
     require_roles,
 )
-from app.api.pagination import PaginationParams, pagination_params
+from app.api.pagination import (
+    MAX_SELECT_ALL_IDS,
+    MatchingIdsResponse,
+    PaginationParams,
+    pagination_params,
+)
 from app.models.expense import (
     CorporateCardTransaction,
     Expense,
@@ -45,6 +50,8 @@ from app.models.organization import Organization
 from app.models.user import User
 from app.schemas.expense import (
     ExpenseBulkGlCode,
+    ExpenseBulkGlCodeResponse,
+    ExpenseBulkGlCodeSkip,
     ExpenseCreate,
     ExpenseCurrencyTotal,
     ExpenseListResponse,
@@ -545,6 +552,33 @@ async def list_expenses(
     )
 
 
+# Registered BEFORE the parametric `/{expense_id}` route — same reason
+# `/export` / `/summary` / `/bulk-gl-code` sit above it.
+@router.get("/ids", response_model=MatchingIdsResponse)
+async def list_expense_ids(
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK, ROLE_CFO)),
+    status_filter: str | None = Query(None, alias="status"),
+    report_id: uuid.UUID | None = Query(None),
+    search: str | None = Query(None),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Every expense id matching the caller's list filters — the resolver
+    behind "select all N matching" on the expenses list page. Same filters
+    (and the same shared `_expense_list_filters`) as `GET /expenses`, so the
+    two describe the same set."""
+    base = _expense_list_filters(
+        apply_entity_scope(select(Expense.id), Expense, entity_id),
+        status_filter=status_filter,
+        report_id=report_id,
+        search=search,
+    )
+    total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0)
+    query = base.order_by(Expense.created_at.desc(), Expense.id.desc()).limit(MAX_SELECT_ALL_IDS)
+    ids = [str(row) for row in (await db.execute(query)).scalars().all()]
+    return MatchingIdsResponse(ids=ids, total=total, truncated=total > len(ids))
+
+
 @router.post("", response_model=ExpenseResponse, status_code=status.HTTP_201_CREATED)
 async def create_expense(
     body: ExpenseCreate,
@@ -738,7 +772,7 @@ async def export_expenses(
     )
 
 
-@router.post("/bulk-gl-code")
+@router.post("/bulk-gl-code", response_model=ExpenseBulkGlCodeResponse)
 async def bulk_gl_code(
     body: ExpenseBulkGlCode,
     db: AsyncSession = Depends(get_tenant_db),
@@ -750,7 +784,13 @@ async def bulk_gl_code(
 
     Each id is resolved within the entity scope (an out-of-scope / cross-tenant
     id is a 404), then one ``dispatch_audit`` row is written per expense so the
-    SOX trail records every coded row. Returns the updated count."""
+    SOX trail records every coded row.
+
+    Same partial-success contract as the sibling invoice bulk endpoints
+    (``api/invoices.py::bulk_status_change``): a malformed or unresolvable
+    expense id is skipped-and-reported, not a reason to roll back the whole
+    batch — a batch of 500 shouldn't lose its other 499 rows because one id
+    is stale."""
     gl_uuid: uuid.UUID | None = None
     if body.gl_account_id is not None:
         try:
@@ -768,22 +808,24 @@ async def bulk_gl_code(
         if gl is None:
             raise HTTPException(status_code=404, detail="GL account not found")
 
-    expense_uuids: list[uuid.UUID] = []
+    updated = 0
+    skipped: list[ExpenseBulkGlCodeSkip] = []
     for raw in body.expense_ids:
         try:
-            expense_uuids.append(uuid.UUID(raw))
+            eid = uuid.UUID(raw)
         except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid expense id: {raw}")
+            skipped.append(ExpenseBulkGlCodeSkip(id=raw, reason="invalid id format"))
+            continue
 
-    updated = 0
-    for eid in expense_uuids:
         expense = (
             await db.execute(
                 apply_entity_scope(select(Expense), Expense, entity_id).where(Expense.id == eid)
             )
         ).scalar_one_or_none()
         if expense is None:
-            raise HTTPException(status_code=404, detail=f"Expense not found: {eid}")
+            skipped.append(ExpenseBulkGlCodeSkip(id=raw, reason="not found"))
+            continue
+
         expense.gl_account_id = gl_uuid
         await dispatch_audit(
             db,
@@ -798,7 +840,7 @@ async def bulk_gl_code(
         updated += 1
 
     await db.commit()
-    return {"updated": updated}
+    return ExpenseBulkGlCodeResponse(updated=updated, skipped=skipped)
 
 
 # ---------------------------------------------------------------------------
