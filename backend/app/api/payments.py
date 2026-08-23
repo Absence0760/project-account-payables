@@ -289,7 +289,15 @@ async def list_payments(
     amount_min: float | None = None,
     amount_max: float | None = None,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    # `payment.execute` OR `payment.void`: the History-tab list a custom-role
+    # holder of either needs to REACH the row they'd act on (void a payment, or
+    # just see what a run already executed). Exact match to the prior role set:
+    # ADMIN holds both by default, AP_MANAGER holds execute-only, CFO holds
+    # both; AP_CLERK holds neither — so this reproduces
+    # `require_roles(ADMIN, AP_MANAGER, CFO)` exactly for the four system
+    # roles and additionally opens it to a custom role granted only one of
+    # the two.
+    user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     query = (
@@ -841,7 +849,10 @@ async def get_payment_remittance(
 async def get_payment(
     payment_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    # Same any-of as the list above — the single-payment companion of a
+    # resource a `payment.execute`/`payment.void` custom-role holder can
+    # already list.
+    user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     p = await _get_scoped_payment(db, payment_id, entity_id)
@@ -1705,7 +1716,11 @@ async def list_payment_runs(
     pagination: PaginationParams = Depends(pagination_params),
     status_filter: str | None = Query(None, alias="status"),
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    # The Runs tab a `payment.execute` holder needs to REACH a draft run's
+    # RunDetailModal (where the Execute button lives). Exact match: default
+    # holders are ADMIN, AP_MANAGER, CFO — the same set `require_roles`
+    # granted, AP_CLERK excluded either way.
+    user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     query = apply_entity_scope(select(PaymentRun), PaymentRun, entity_id)
@@ -1848,7 +1863,10 @@ async def create_payment_run(
 async def get_payment_run(
     run_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    # `RunDetailModal.svelte` fetches this on open — it's the load-bearing
+    # read that puts the Execute button (itself gated on `payment.execute`)
+    # on screen at all. Same exact-match reasoning as the list above.
+    user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Get a payment run with its individual payments.
