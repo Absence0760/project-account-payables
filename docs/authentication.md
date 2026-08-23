@@ -514,6 +514,23 @@ exactly as before.
   the catalog and shows each custom role's grants. This composes with the
   instance-level SoD check (`check_segregation`, approver ≠ creator), which is
   unchanged.
+  - **A permission-gated control is unreachable if the nav row that leads to
+    it is still role-only.** A custom role holding ONLY `payment.execute` (no
+    `admin`/`ap_manager`/`cfo`) could call every backend endpoint the
+    `/payments` page needs — the supporting reads (`GET /api/payments`,
+    `GET /api/payments/{id}`, `GET /api/payments/runs/`,
+    `GET /api/payments/runs/{id}`) are `require_permission(PERM_PAYMENT_EXECUTE
+    [, PERM_PAYMENT_VOID])`, exactly matching the prior
+    `require_roles(ADMIN, AP_MANAGER, CFO)` footprint — but the sidebar's
+    `$lib/nav.ts` entry only understood `roles`, so the row (the only way to
+    reach the page through the app) stayed hidden. `NavLink`/`NavChild` now
+    also take an optional `permissions?: string[]`, OR'd with `roles` in
+    `canSee`/`isEntryVisible`/`visibleChildren`/`groupHref` (all now take an
+    optional `can: PermissionCheck` alongside the existing `has: RoleCheck`);
+    `Sidebar.svelte` and `SectionTabs.svelte` pass `auth.can`. The Payments nav
+    entry carries `permissions: [PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID]`.
+    `src/lib/nav.test.ts` pins that a permission-only holder (no role at all)
+    sees the row and a holder of neither does not.
 
 ### Segregation of duties on a workflow's approval step
 
