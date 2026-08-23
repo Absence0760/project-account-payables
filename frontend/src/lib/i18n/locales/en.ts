@@ -55,6 +55,9 @@ export const en = {
 	'nav.apiKeys': 'API Keys',
 	'nav.webhooks': 'Webhooks',
 	'nav.partner': 'Partner Admin',
+	'nav.retention': 'Retention Policy',
+	'nav.accessReview': 'Access Review',
+	'nav.privacy': 'Privacy & DSAR',
 
 	// App shell / sidebar (Sidebar.svelte, +layout.svelte)
 	'shell.appName': 'FeohLedger',

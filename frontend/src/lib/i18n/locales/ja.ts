@@ -50,6 +50,9 @@ export const messages = {
 	'nav.apiKeys': 'APIキー',
 	'nav.webhooks': 'Webhook',
 	'nav.partner': 'パートナー管理',
+	'nav.retention': '保持ポリシー',
+	'nav.accessReview': 'アクセスレビュー',
+	'nav.privacy': 'プライバシーとDSAR',
 
 	// App shell / sidebar
 	'shell.appName': 'FeohLedger',
