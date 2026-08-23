@@ -1,0 +1,161 @@
+import { API_BASE, currentTenantSlug, expect, signInAndWait, test } from '../fixtures/helpers';
+
+/**
+ * /admin/privacy — GDPR/CCPA DSAR export + right-to-erasure (admin only).
+ *
+ * Surfaces the existing backend endpoints (`backend/app/api/privacy.py`):
+ *  - POST /api/privacy/dsar     → portable PII bundle for a subject
+ *  - POST /api/privacy/erasure  → irreversible PII redaction (confirm: true required)
+ *  - GET  /api/privacy/requests → PII-free request history
+ *
+ * Exercises a `vendor_contact` subject (a Vendor row) end to end: DSAR export
+ * shows the bundle, then erasure redacts it — asserting both the UI's
+ * confirm-then-act gate (checkbox required, armed two-click) and the real
+ * effect on the vendor row via a follow-up API read.
+ */
+
+interface VendorSummary {
+	id: string;
+	name: string;
+	email: string | null;
+}
+
+async function apiHeaders(page: import('@playwright/test').Page) {
+	const token = await page.evaluate(() => localStorage.getItem('auth_token'));
+	return {
+		Authorization: `Bearer ${token}`,
+		'X-Tenant-Slug': currentTenantSlug(),
+		'Content-Type': 'application/json'
+	};
+}
+
+/** Create a throwaway vendor via the API so erasure has something disposable
+ *  to act on — this spec must not touch seeded demo data other tests rely on. */
+async function createVendor(page: import('@playwright/test').Page, name: string): Promise<string> {
+	const headers = await apiHeaders(page);
+	const resp = await page.request.post(`${API_BASE}/api/vendors`, {
+		headers,
+		data: {
+			name,
+			email: `${name.toLowerCase().replace(/\s+/g, '.')}@example.test`,
+			tax_id: `99-${Date.now()}`
+		}
+	});
+	expect(resp.ok()).toBe(true);
+	const vendor = (await resp.json()) as VendorSummary;
+	return vendor.id;
+}
+
+test.describe('/admin/privacy (admin)', () => {
+	test.use({ storageState: { cookies: [], origins: [] } });
+
+	test.beforeEach(async ({ page }) => {
+		await signInAndWait(page);
+	});
+
+	test('exports a DSAR bundle for a vendor contact', async ({ page }) => {
+		const name = `E2E Privacy Vendor ${Date.now()}`;
+		const vendorId = await createVendor(page, name);
+
+		await page.goto('/admin/privacy');
+		await expect(page.getByRole('heading', { name: 'Privacy & DSAR' })).toBeVisible();
+
+		await page.getByLabel('Subject type').selectOption('vendor_contact');
+		await page.getByLabel('Identifier').fill(vendorId);
+		await page.getByRole('button', { name: 'Export data (DSAR)' }).click();
+
+		const dsarModal = page.getByRole('dialog', { name: 'Data export' });
+		await expect(dsarModal).toBeVisible({ timeout: 10_000 });
+		const bundle = dsarModal.getByTestId('dsar-bundle');
+		await expect(bundle).toBeVisible();
+		await expect(bundle).toContainText(name);
+		await dsarModal.getByRole('button', { name: 'Close' }).click();
+		await expect(dsarModal).toBeHidden();
+
+		// The request lands in the history table.
+		await expect(page.getByText('DSAR export').first()).toBeVisible();
+	});
+
+	test('erasure requires the acknowledgement checkbox and is a real, irreversible redaction', async ({
+		page
+	}) => {
+		const name = `E2E Erase Vendor ${Date.now()}`;
+		const vendorId = await createVendor(page, name);
+
+		await page.goto('/admin/privacy');
+		await page.getByLabel('Subject type').selectOption('vendor_contact');
+		await page.getByLabel('Identifier').fill(vendorId);
+		await page.getByRole('button', { name: 'Erase data…' }).click();
+
+		const eraseModal = page.getByRole('dialog', { name: 'Erase subject data' });
+		await expect(eraseModal).toBeVisible();
+		await expect(eraseModal.getByText(name)).toHaveCount(0); // identifier shown is the UUID, not the name
+		await expect(eraseModal.locator('.mono')).toHaveText(vendorId);
+
+		const confirmBtn = eraseModal.getByRole('button', { name: 'Erase permanently' });
+		// Gated: unchecked acknowledgement disables the destructive control.
+		await expect(confirmBtn).toBeDisabled();
+
+		await eraseModal.getByLabel(/I understand this action is permanent/).check();
+		await expect(confirmBtn).toBeEnabled();
+
+		// First click arms (two-step confirm), doesn't erase yet.
+		await confirmBtn.click();
+		await expect(eraseModal.getByRole('button', { name: 'Click again to confirm' })).toBeVisible();
+
+		// Second click actually erases.
+		await eraseModal.getByRole('button', { name: 'Click again to confirm' }).click();
+		await expect(eraseModal).toBeHidden({ timeout: 10_000 });
+		await expect(page.getByText(/field\(s\) redacted/)).toBeVisible({ timeout: 10_000 });
+
+		// Verify the real effect server-side. `vendor.name` is DELIBERATELY
+		// preserved by erasure (it's denormalised onto every Invoice's
+		// `vendor_name` money field — see backend/docs/privacy.md § What is
+		// redacted vs. preserved) — only contact PII (email/phone/address/
+		// tax_id/bank_details) is redacted. Asserting the name changed would
+		// be asserting behavior the backend explicitly does not have.
+		const headers = await apiHeaders(page);
+		const vendorResp = await page.request.get(`${API_BASE}/api/vendors/${vendorId}`, { headers });
+		expect(vendorResp.ok()).toBe(true);
+		const vendor = (await vendorResp.json()) as VendorSummary;
+		expect(vendor.name).toBe(name);
+		expect(vendor.email).toBeNull();
+
+		// Re-running erasure on the same subject is a safe no-op, surfaced in
+		// the history as "Already erased" rather than a second real redaction.
+		await page.reload();
+		await page.getByLabel('Subject type').selectOption('vendor_contact');
+		await page.getByLabel('Identifier').fill(vendorId);
+		await page.getByRole('button', { name: 'Erase data…' }).click();
+		await page.getByLabel(/I understand this action is permanent/).check();
+		const confirmBtn2 = page.getByRole('button', { name: 'Erase permanently' });
+		await confirmBtn2.click();
+		await page.getByRole('button', { name: 'Click again to confirm' }).click();
+		await expect(page.getByText('This subject was already erased')).toBeVisible({
+			timeout: 10_000
+		});
+	});
+
+	test('lists past requests', async ({ page }) => {
+		await page.goto('/admin/privacy');
+		await expect(page.getByRole('heading', { name: 'Request history', level: 2 })).toBeVisible();
+		// Loading resolves either to rows or the explicit empty state — never stuck.
+		await expect(page.getByTestId('privacy-loading')).toHaveCount(0, { timeout: 10_000 });
+	});
+});
+
+test.describe('/admin/privacy (clerk — not authorized)', () => {
+	test.use({ storageState: { cookies: [], origins: [] } });
+
+	test('ap_clerk is redirected away and the API 403s them', async ({ page, tenantClerk }) => {
+		await signInAndWait(page, tenantClerk);
+
+		await page.goto('/admin/privacy');
+		await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
+		await expect(page.getByRole('heading', { name: 'Privacy & DSAR' })).toHaveCount(0);
+
+		const headers = await apiHeaders(page);
+		const resp = await page.request.get(`${API_BASE}/api/privacy/requests`, { headers });
+		expect(resp.status()).toBe(403);
+	});
+});
