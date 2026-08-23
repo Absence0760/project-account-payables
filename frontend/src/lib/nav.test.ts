@@ -1,5 +1,6 @@
 import { test, expect } from 'vitest';
-import { NAV, isEntryActive, sectionTabActive, type NavLink, type NavGroup } from './nav';
+import { NAV, canSee, isEntryActive, isEntryVisible, sectionTabActive, type NavLink, type NavGroup } from './nav';
+import { PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID } from './types/admin';
 
 const links = NAV.filter((e): e is NavLink => e.kind === 'link');
 const link = (href: string): NavLink => links.find((l) => l.href === href)!;
@@ -107,4 +108,33 @@ test('a page whose API 403s a clerk still hides its row', () => {
 		expect(entry, href).toBeDefined();
 		expect(entry.roles, href).not.toContain('ap_clerk');
 	}
+});
+
+test('the Payments row is reachable by role OR by holding payment.execute/payment.void', () => {
+	// Closes the finding: a custom role granted ONLY `payment.execute` (or
+	// only `payment.void`), with none of admin/ap_manager/cfo, must still see
+	// the sidebar row — the supporting reads it needs (GET /api/payments,
+	// GET /api/payments/runs/, …) are permission-gated for exactly this.
+	const payments = link('/payments');
+	expect(payments.permissions).toEqual([PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID]);
+
+	const hasNoRole = () => false;
+	const canNothing = () => false;
+	expect(canSee(payments.roles, hasNoRole, payments.permissions, canNothing)).toBe(false);
+
+	const canExecuteOnly = (perm: string) => perm === PERM_PAYMENT_EXECUTE;
+	expect(canSee(payments.roles, hasNoRole, payments.permissions, canExecuteOnly)).toBe(true);
+
+	const canVoidOnly = (perm: string) => perm === PERM_PAYMENT_VOID;
+	expect(canSee(payments.roles, hasNoRole, payments.permissions, canVoidOnly)).toBe(true);
+
+	// The pre-existing role-only path is untouched: a cfo with no granted
+	// permissions still sees it.
+	const hasCfo = (...roles: string[]) => roles.includes('cfo');
+	expect(canSee(payments.roles, hasCfo, payments.permissions, canNothing)).toBe(true);
+
+	// And `isEntryVisible` (what Sidebar actually calls) agrees at the whole-
+	// entry level, not just via the lower-level `canSee` helper.
+	expect(isEntryVisible(payments, hasNoRole, canExecuteOnly)).toBe(true);
+	expect(isEntryVisible(payments, hasNoRole, canNothing)).toBe(false);
 });

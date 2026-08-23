@@ -8,7 +8,9 @@
 	// the current route, if any. Top-level links (Invoices, Payments, …) return
 	// null → no sub-tab bar. Children the current role can't see are dropped.
 	let group = $derived(groupForPath(page.url.pathname));
-	let tabs = $derived(group ? visibleChildren(group, auth.hasAnyRole.bind(auth)) : []);
+	let tabs = $derived(
+		group ? visibleChildren(group, auth.hasAnyRole.bind(auth), auth.can.bind(auth)) : []
+	);
 </script>
 
 <!-- Only show the bar when the section actually offers a choice. A lone
