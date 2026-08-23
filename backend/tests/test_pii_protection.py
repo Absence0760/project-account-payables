@@ -54,6 +54,12 @@ def test_vendor_bank_details_schema_only_exposes_last_four():
         "iban_last4",
         "swift_bic",
         "country",
+        # Where a `check` payment via the `checkeeper` rail gets physically
+        # mailed. Not a banking secret — same trust level as the vendor's
+        # own `address` field, which is already recorded verbatim elsewhere
+        # (including the audit trail), so it needs no last4-style masking.
+        # See `VendorMailingAddress` in `app/schemas/vendor.py`.
+        "mailing_address",
     }
     extra = fields - allowed
     assert not extra, f"VendorBankDetails grew unfamiliar fields {extra}; review for PII leak"

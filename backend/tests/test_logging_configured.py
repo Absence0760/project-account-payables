@@ -25,13 +25,20 @@ from pathlib import Path
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 
+#: A distinctive prefix for the two lines this check cares about, so a stray
+#: line some third-party import prints to stdout (observed in CI, not
+#: reproducible locally — almost certainly a one-time notice on a cold venv)
+#: can't shift a positional split and fail the whole check on unrelated noise.
+_MARKER = "FEOH_LOGGING_CHECK:"
+
+
 def _run_import_check(*, debug_env: str) -> tuple[int, int]:
     script = (
         "import logging\n"
         "import app.main\n"
         "root = logging.getLogger()\n"
-        "print(len(root.handlers))\n"
-        "print(root.getEffectiveLevel())\n"
+        f"print({_MARKER!r} + 'handlers=' + str(len(root.handlers)))\n"
+        f"print({_MARKER!r} + 'level=' + str(root.getEffectiveLevel()))\n"
     )
     env = {**os.environ, "FEOH_DEBUG": debug_env}
     result = subprocess.run(
@@ -43,8 +50,12 @@ def _run_import_check(*, debug_env: str) -> tuple[int, int]:
         timeout=60,
     )
     assert result.returncode == 0, result.stderr
-    handler_count_str, level_str = result.stdout.strip().splitlines()
-    return int(handler_count_str), int(level_str)
+    marked = [
+        line[len(_MARKER) :] for line in result.stdout.splitlines() if line.startswith(_MARKER)
+    ]
+    values = {k: v for k, v in (line.split("=", 1) for line in marked)}
+    assert values.keys() == {"handlers", "level"}, (result.stdout, result.stderr)
+    return int(values["handlers"]), int(values["level"])
 
 
 def test_app_main_configures_root_logger_handler():
