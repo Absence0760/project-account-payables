@@ -53,7 +53,7 @@ dependencies = [
     # Loaded by the local-dev entrypoint (main.py) to read .env.development /
     # .env. Already pulled in transitively by uvicorn[standard]; declared here
     # because main.py imports it directly. Never imported on Lambda/prod paths.
-    "python-dotenv>=1.2.2,<2",
+    "python-dotenv>=1.2.3,<2",
     # AWS Lambda Runtime Interface Client. The single container image is
     # dual-use: ECS runs it via the uvicorn CMD, and the async-worker Lambdas
     # (services/{extraction,erp,audit}_lambda.py) run the SAME image as a
