@@ -179,6 +179,7 @@ def _invoice_list_filters(
     due_date_to: date | None,
     search: str | None,
     exclude_status: str | None = None,
+    assigned_to_id: uuid.UUID | None = None,
 ):
     """Apply the invoice-list filters to ``query``.
 
@@ -189,7 +190,10 @@ def _invoice_list_filters(
     list endpoint has no use for it): it lets the frontend ask for only the
     ids a bulk action can actually act on, e.g. excluding the system-managed
     statuses `SYSTEM_MANAGED_STATUSES` never lets a user check in the first
-    place.
+    place. ``assigned_to_id`` powers both the "Assigned to" filter and the
+    "My Approvals" quick view (the caller's own id) — an exact match, not a
+    search, since it's always a real user id from the assignable-reviewers
+    picker or `auth.user.id`, never free text.
     """
     if status:
         statuses = [s.strip() for s in status.split(",")]
@@ -221,6 +225,8 @@ def _invoice_list_filters(
             | Invoice.po_number.ilike(pattern)
             | Invoice.description.ilike(pattern)
         )
+    if assigned_to_id:
+        query = query.where(Invoice.assigned_to_id == assigned_to_id)
     return query
 
 
@@ -237,6 +243,7 @@ async def list_invoices(
     due_date_from: date | None = None,
     due_date_to: date | None = None,
     search: str | None = None,
+    assigned_to_id: uuid.UUID | None = None,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
@@ -255,6 +262,7 @@ async def list_invoices(
         due_date_from=due_date_from,
         due_date_to=due_date_to,
         search=search,
+        assigned_to_id=assigned_to_id,
     )
 
     # Count
@@ -321,6 +329,7 @@ async def list_invoice_ids(
     due_date_to: date | None = None,
     search: str | None = None,
     exclude_status: str | None = None,
+    assigned_to_id: uuid.UUID | None = None,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
@@ -351,6 +360,7 @@ async def list_invoice_ids(
         due_date_to=due_date_to,
         search=search,
         exclude_status=exclude_status,
+        assigned_to_id=assigned_to_id,
     )
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
