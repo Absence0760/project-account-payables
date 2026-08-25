@@ -1,11 +1,14 @@
 """Vendor CRUD endpoints with verification workflow + portal-user management."""
 
+import csv
 import dataclasses
+import io
 import logging
 import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi.responses import Response
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,12 +22,19 @@ from app.api.deps import (
     require_permission,
     require_roles,
 )
-from app.api.pagination import PaginationParams, paginated, pagination_params
+from app.api.pagination import (
+    MAX_SELECT_ALL_IDS,
+    MatchingIdsResponse,
+    PaginationParams,
+    paginated,
+    pagination_params,
+)
 from app.api.permissions import (
     PERM_VENDOR_BANK_CHANGE_APPROVE,
     PERM_VENDOR_BLOCK,
     PERM_VENDOR_MANAGE,
 )
+from app.api.sorting import SortParams, resolve_order_by, sort_params
 from app.config import settings
 from app.models.contract import Contract
 from app.models.credit_memo import CreditMemo
@@ -52,6 +62,13 @@ from app.schemas.sanctions import (
 )
 from app.schemas.vendor import (
     VendorBankChangeRequest,
+    VendorBulkExportRequest,
+    VendorBulkScreenRequest,
+    VendorBulkScreenResponse,
+    VendorBulkScreenSkip,
+    VendorBulkStatusRequest,
+    VendorBulkStatusResponse,
+    VendorBulkStatusSkip,
     VendorChangeRequestResponse,
     VendorChangeReviewRequest,
     VendorCreate,
@@ -62,6 +79,7 @@ from app.services.audit_access import build_field_diff, log_access
 from app.services.audit_dispatch import dispatch_audit
 from app.services.csv_import import MAX_CSV_IMPORT_SIZE, import_vendors_csv
 from app.services.email_adapters import EmailMessage, get_email_adapter
+from app.services.report_export import csv_safe_cell
 from app.services.sanctions_categories import (
     categories_from_raw_response,
     has_adverse_media,
@@ -309,17 +327,32 @@ async def _flag_payable_invoices_for_bank_change(db: AsyncSession, *, vendor: Ve
         )
 
 
-@router.get("")
-async def list_vendors(
-    pagination: PaginationParams = Depends(pagination_params),
-    search: str | None = None,
-    status_filter: str | None = Query(None, alias="status"),
-    source: str | None = None,
-    db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
-    entity_id: uuid.UUID | None = Depends(get_entity_id),
+# `sort=` allowlist for `GET /vendors` — see `api/sorting.py`. `.id` is
+# always appended as the final tie-break regardless of which column is
+# picked (mirrors the pre-existing `name, id` default order below).
+VENDOR_SORTABLE_COLUMNS: dict[str, object] = {
+    "name": Vendor.name,
+    "code": Vendor.code,
+    "status": Vendor.status,
+    "created_at": Vendor.created_at,
+}
+
+
+def _vendor_list_filters(
+    query,
+    *,
+    search: str | None,
+    status_filter: str | None,
+    source: str | None,
 ):
-    query = apply_entity_scope(select(Vendor), Vendor, entity_id)
+    """Apply the vendor-list search / status / source filters to ``query``.
+
+    Shared by ``GET /api/vendors`` and ``GET /api/vendors/ids`` so the
+    "select all N matching" bulk-selection affordance resolves EXACTLY the
+    set the table is showing — a second, independently-maintained filter
+    builder is how the two would silently drift apart (the same reasoning
+    as ``api/expenses.py::_expense_list_filters``).
+    """
     if search:
         pattern = f"%{search}%"
         query = query.where(
@@ -330,6 +363,26 @@ async def list_vendors(
         query = query.where(Vendor.status.in_(statuses))
     if source:
         query = query.where(Vendor.source == source)
+    return query
+
+
+@router.get("")
+async def list_vendors(
+    pagination: PaginationParams = Depends(pagination_params),
+    search: str | None = None,
+    status_filter: str | None = Query(None, alias="status"),
+    source: str | None = None,
+    sort: SortParams = Depends(sort_params),
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    query = _vendor_list_filters(
+        apply_entity_scope(select(Vendor), Vendor, entity_id),
+        search=search,
+        status_filter=status_filter,
+        source=source,
+    )
 
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar() or 0
@@ -338,7 +391,15 @@ async def list_vendors(
     # share a name, e.g. a bulk import), so without it Postgres is free to
     # order same-name rows differently between the offset=0 and offset=N
     # queries — a row can be duplicated onto two pages or skipped entirely.
-    query = query.order_by(Vendor.name, Vendor.id).offset(pagination.offset).limit(pagination.limit)
+    # `sort=`/`order=` (validated against `VENDOR_SORTABLE_COLUMNS`) override
+    # the default when supplied — see `api/sorting.py`.
+    order_by = resolve_order_by(
+        sort,
+        VENDOR_SORTABLE_COLUMNS,
+        id_column=Vendor.id,
+        default=[Vendor.name.asc(), Vendor.id.asc()],
+    )
+    query = query.order_by(*order_by).offset(pagination.offset).limit(pagination.limit)
     result = await db.execute(query)
     vendors = result.scalars().all()
 
@@ -350,6 +411,213 @@ async def list_vendors(
         items.append(VendorResponse.from_db(v, inv_count))
 
     return paginated(items, total, pagination)
+
+
+# Registered BEFORE the parametric `/{vendor_id}` route so the literal `/ids`
+# path isn't swallowed by `vendor_id` (which would 422 on the non-UUID
+# segment). FastAPI matches routes in declaration order — the same ordering
+# constraint `/counts` below sits under.
+@router.get("/ids", response_model=MatchingIdsResponse)
+async def list_vendor_ids(
+    search: str | None = None,
+    status_filter: str | None = Query(None, alias="status"),
+    source: str | None = None,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Every vendor id matching the caller's list filters — the resolver
+    behind "select all N matching" on the vendors list page. Same filters
+    (and the same shared `_vendor_list_filters`) as `GET /vendors`, so the
+    two describe the same set."""
+    query = _vendor_list_filters(
+        apply_entity_scope(select(Vendor.id), Vendor, entity_id),
+        search=search,
+        status_filter=status_filter,
+        source=source,
+    )
+    total = int(
+        (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
+    )
+    query = query.order_by(Vendor.name.asc(), Vendor.id.asc()).limit(MAX_SELECT_ALL_IDS)
+    ids = [str(row) for row in (await db.execute(query)).scalars().all()]
+    return MatchingIdsResponse(ids=ids, total=total, truncated=total > len(ids))
+
+
+# Vendor targets a bulk `status` change may legitimately drive — the same two
+# the single-row `POST /{vendor_id}/verify` / `/reject` endpoints support.
+# Each starting status is enforced per-row below, mirroring those endpoints'
+# own 409s, so a bulk call can't reach a state the single-row path refuses.
+_VENDOR_BULK_STATUS_STARTING: dict[str, set[str]] = {
+    "active": {"unverified"},
+    "rejected": {"unverified", "active"},
+}
+
+
+@router.post("/bulk/status", response_model=VendorBulkStatusResponse)
+async def bulk_vendor_status(
+    body: VendorBulkStatusRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_permission(PERM_VENDOR_MANAGE)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Bulk verify / reject over a hand-picked set of vendors.
+
+    Same partial-success contract as the sibling bulk endpoints
+    (`api/invoices.py::bulk_status_change`, `api/expenses.py::bulk_gl_code`):
+    each id is resolved independently and a vendor whose current status isn't
+    a legal starting point for the target — or whose id doesn't resolve at
+    all — is skipped-and-reported, never a reason to roll back the whole
+    batch. Mirrors `verify_vendor` / `reject_vendor` exactly (same status
+    writes, same audit actions) so a bulk call can't do anything the
+    single-row endpoints wouldn't.
+    """
+    starting = _VENDOR_BULK_STATUS_STARTING[body.status]
+    updated = 0
+    skipped: list[VendorBulkStatusSkip] = []
+    for raw in body.ids:
+        try:
+            vid = uuid.UUID(raw)
+        except ValueError:
+            skipped.append(VendorBulkStatusSkip(id=raw, reason="invalid id format"))
+            continue
+
+        vendor = (await db.execute(select(Vendor).where(Vendor.id == vid))).scalar_one_or_none()
+        if vendor is None:
+            skipped.append(VendorBulkStatusSkip(id=raw, reason="not found"))
+            continue
+        if vendor.status not in starting:
+            skipped.append(
+                VendorBulkStatusSkip(
+                    id=raw, reason=f"vendor is in '{vendor.status}' status, not {sorted(starting)}"
+                )
+            )
+            continue
+
+        prev_status = vendor.status
+        vendor.status = body.status
+        if body.status == "active":
+            vendor.verified_by = user.full_name
+            vendor.verified_at = datetime.now(UTC)
+        await db.flush()
+
+        await dispatch_audit(
+            db,
+            correlation_id=uuid.uuid4(),
+            organization_id=org_id,
+            actor_id=user.id,
+            action="vendor.verified" if body.status == "active" else "vendor.rejected",
+            entity_type="vendor",
+            entity_id=vendor.id,
+            details={"status": {"old": prev_status, "new": body.status}},
+        )
+        updated += 1
+
+    await db.commit()
+    return VendorBulkStatusResponse(updated=updated, skipped=skipped)
+
+
+@router.post("/bulk/screen", response_model=VendorBulkScreenResponse)
+async def bulk_screen_vendors(
+    body: VendorBulkScreenRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Manually re-screen many vendors against the configured sanctions
+    provider in one call.
+
+    Same partial-success contract as `bulk_vendor_status` above: each vendor
+    is screened independently, so a stale id or a provider failure on ONE
+    vendor is skipped-and-reported rather than aborting the whole batch — a
+    provider hiccup on vendor 50 of 200 shouldn't lose the other 199 re-screens
+    that already succeeded. Mirrors the single-row `POST /{vendor_id}/screen`
+    (same `screen_vendor_record` call, same foreground failure handling)."""
+    screened = 0
+    skipped: list[VendorBulkScreenSkip] = []
+    for raw in body.ids:
+        try:
+            vid = uuid.UUID(raw)
+        except ValueError:
+            skipped.append(VendorBulkScreenSkip(id=raw, reason="invalid id format"))
+            continue
+
+        vendor = (await db.execute(select(Vendor).where(Vendor.id == vid))).scalar_one_or_none()
+        if vendor is None:
+            skipped.append(VendorBulkScreenSkip(id=raw, reason="not found"))
+            continue
+
+        try:
+            await screen_vendor_record(
+                db,
+                vendor=vendor,
+                organization_id=org_id,
+                org_settings=org.settings,
+                check_type="manual",
+                actor_id=user.id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Log the exception type only, never the message/traceback — a
+            # sanctions adapter's error string could embed a vendor
+            # identifier (invariant #7, PII out of logs).
+            logger.warning(
+                "Bulk sanctions screen failed for vendor=%s: %s",
+                vendor.id,
+                exc.__class__.__name__,
+            )
+            skipped.append(
+                VendorBulkScreenSkip(id=raw, reason="sanctions provider screening failed")
+            )
+            continue
+        screened += 1
+
+    await db.commit()
+    return VendorBulkScreenResponse(screened=screened, skipped=skipped)
+
+
+@router.post("/bulk/export")
+async def bulk_export_vendors(
+    body: VendorBulkExportRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+):
+    """Export a hand-picked set of vendors as CSV.
+
+    Deliberately narrow columns — name / code / email / phone / status /
+    source / created_at — never `bank_details` or the raw `tax_id`: a bulk
+    CSV a manager opens in Excel is exactly the kind of artifact the PII/
+    banking-data-out-of-logs-and-exports invariant exists to keep off a
+    laptop. Mirrors `api/invoices.py::bulk_export`'s CSV branch, including the
+    CSV-formula-injection guard (CWE-1236) on every cell.
+    """
+    ids = [uuid.UUID(i) for i in body.ids]
+    result = await db.execute(select(Vendor).where(Vendor.id.in_(ids)))
+    vendors = result.scalars().all()
+    if not vendors:
+        raise HTTPException(status_code=404, detail="No vendors found")
+
+    fieldnames = ["name", "code", "email", "phone", "status", "source", "created_at"]
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    for v in vendors:
+        writer.writerow(
+            {
+                "name": csv_safe_cell(v.name),
+                "code": csv_safe_cell(v.code or ""),
+                "email": csv_safe_cell(v.email or ""),
+                "phone": csv_safe_cell(v.phone or ""),
+                "status": csv_safe_cell(v.status),
+                "source": csv_safe_cell(v.source),
+                "created_at": v.created_at.isoformat() if v.created_at else "",
+            }
+        )
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="vendors-export.csv"'},
+    )
 
 
 @router.get("/counts")

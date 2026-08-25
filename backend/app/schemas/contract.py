@@ -2,11 +2,19 @@
 
 from datetime import date
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from app.api.pagination import PageMeta
 from app.models.contract import ContractType
+
+# Bulk lifecycle actions a human may legitimately drive over a hand-picked
+# set of contracts — the same three the single-row `POST /{contract_id}/
+# activate|terminate|cancel` endpoints already expose (`renew` needs a
+# per-contract `end_date` and isn't a good bulk fit). Typed as a Literal so an
+# out-of-scope action is a 422 from Pydantic itself.
+ContractBulkAction = Literal["activate", "terminate", "cancel"]
 
 
 class ContractLineItemBase(BaseModel):
@@ -140,3 +148,33 @@ class ContractResponse(BaseModel):
 class ContractListResponse(PageMeta):
     items: list[ContractResponse]
     total: int
+
+
+class ContractBulkStatusRequest(BaseModel):
+    """Bulk lifecycle transition over a hand-picked set of contracts — the
+    bulk counterpart of `POST /{contract_id}/activate|terminate|cancel`."""
+
+    ids: list[str] = Field(..., min_length=1)
+    action: ContractBulkAction
+
+
+class ContractBulkStatusSkip(BaseModel):
+    """One contract `bulk/status` didn't move, and why — a status that isn't
+    a legal starting point for the action (mirroring the single-row
+    endpoints' 409), or a bad/unresolvable id."""
+
+    id: str
+    reason: str
+
+
+class ContractBulkStatusResponse(BaseModel):
+    """Same partial-success contract as the invoice/expense/vendor bulk
+    endpoints: each id is resolved independently, a bad one is
+    skipped-and-reported rather than rolling back the whole batch."""
+
+    updated: int
+    skipped: list[ContractBulkStatusSkip] = Field(default_factory=list)
+
+
+class ContractBulkExportRequest(BaseModel):
+    ids: list[str] = Field(..., min_length=1)
