@@ -463,11 +463,24 @@ exactly as before.
   holders (admin/ap_manager) the sign-off too defeats the control a genuine
   CFO signature exists to provide — payment-run
   execute (`payment.execute`), payment void (`payment.void`), vendor
-  create/update/verify/reject (`vendor.manage`), vendor block/unblock
-  (`vendor.block`), vendor bank-change approve (`vendor.bank_change.approve`),
-  and user create/update/delete/bulk-delete (`user.manage`). Role/permission
-  CRUD itself stays admin-only on `require_roles` (managing the catalog must not
-  be a grantable permission — that would be a privilege-escalation path).
+  create/update/verify/reject/delete + the bulk vendor-create paths (ERP sync,
+  CSV import) + the manual re-screen trigger + the consolidation-merge execute
+  (`vendor.manage` — every one of these had a role set of exactly
+  admin/ap_manager already, so migrating them changes nothing for the four
+  system roles), vendor block/unblock (`vendor.block`), vendor bank-change
+  approve (`vendor.bank_change.approve` — its sibling
+  `POST /vendors/change-requests/{id}/reject` deliberately stays on
+  `require_roles(ADMIN, AP_MANAGER)`: reject never touches the vendor row, so
+  it isn't the fraud-sensitive action the permission exists to gate — see
+  "Approve and reject are not always the same role set" below), and user
+  create/update/delete/bulk-delete (`user.manage`). The vendor list/detail/
+  counts reads and the change-request queue's own `GET /vendors/change-requests`
+  stay on `require_roles` too — broader than any one splittable permission
+  (cfo can read vendor detail without holding `vendor.manage`), matching the
+  same "reads stay coarse, only the specific action splits" pattern payments.py
+  uses for `GET /payments/queue` etc. Role/permission CRUD itself stays
+  admin-only on `require_roles` (managing the catalog must not be a grantable
+  permission — that would be a privilege-escalation path).
   - **Role-grant is bounded by the grantor.** `user.manage` lets you assign
     roles, but not roles more powerful than you hold: `_authorize_role_grant`
     refuses to grant the system `admin` role unless the caller is themselves an
@@ -509,11 +522,20 @@ exactly as before.
     on an admin already required the caller to be one themselves, so the org
     never actually reaches zero admins in that case.
 - **Frontend** — `auth.can(perm)` mirrors `require_permission`; the gated
-  controls converted so far are payment Execute, payment Void, and vendor
-  Block/Unblock. The `/admin/roles` editor renders permission checkboxes from
-  the catalog and shows each custom role's grants. This composes with the
-  instance-level SoD check (`check_segregation`, approver ≠ creator), which is
-  unchanged.
+  controls converted so far are payment Execute, payment Void, vendor
+  Block/Unblock (`VendorModal.svelte`), vendor create/edit + the consolidation
+  merge action (`vendor.manage` — `/vendors/+page.svelte`,
+  `VendorConsolidationModal.svelte`), and the bank-change-approval queue's
+  Approve button (`vendor.bank_change.approve` — `/vendors/change-requests/
+  +page.svelte`; its Reject button stays on the page's role-based
+  `auth.isManager` gate, matching the backend). Page-level route access
+  (nav visibility, the `auth.isManager`/role redirect guards) is deliberately
+  NOT part of this split — it mirrors whatever `require_roles` the page's
+  READ endpoint uses, same as the backend split above; only the specific
+  sensitive ACTION checks moved to `auth.can(perm)`. The `/admin/roles` editor
+  renders permission checkboxes from the catalog and shows each custom role's
+  grants. This composes with the instance-level SoD check
+  (`check_segregation`, approver ≠ creator), which is unchanged.
 
 ### Segregation of duties on a workflow's approval step
 
