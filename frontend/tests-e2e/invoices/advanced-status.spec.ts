@@ -47,8 +47,9 @@ test.describe('/invoices advanced status filter', () => {
 		await expect(chip).toBeVisible();
 		await expect(chip).toHaveClass(/active/);
 
-		// Table narrowed to posted_in_erp (status badge is second-to-last column).
-		const badges = await page.locator('table tbody tr td:nth-last-child(2)').allTextContents();
+		// Table narrowed to posted_in_erp (status badge is third-to-last column —
+		// Assigned To then Actions follow it).
+		const badges = await page.locator('table tbody tr td:nth-last-child(3)').allTextContents();
 		expect(badges.length).toBeGreaterThan(0);
 		expect(badges.every((b) => b.toLowerCase().includes('posted'))).toBe(true);
 	});

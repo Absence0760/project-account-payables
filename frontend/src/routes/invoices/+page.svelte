@@ -3,6 +3,7 @@
 	import { INVOICE_STATUSES, STATUS_LABELS, EMPTY_ADVANCED_FILTERS, SYSTEM_MANAGED_STATUSES, IMMUTABLE_STATUSES, commonTransitions } from '$lib/types/invoice';
 	import { invoiceStore } from '$lib/stores/invoices.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
+	import { adminStore } from '$lib/stores/admin.svelte';
 	import { api } from '$lib/api';
 	import StatusBadge from '$lib/components/ui/StatusBadge.svelte';
 	import InvoiceModal from '$lib/components/modals/InvoiceModal.svelte';
@@ -37,8 +38,18 @@
 	let showBulkRecode = $state(false);
 	let showCreate = $state(false);
 
+	// "Assigned to" filter — an exact match on `assigned_to_id`, narrowed to a
+	// specific reviewer via the dropdown or to the caller via the "My
+	// Approvals" toggle (`myApprovalsActive` below). URL-backed so the queue an
+	// approver narrowed to survives a reload or a shared link — see `syncUrl()`.
+	let assignedToId = $state($page.url.searchParams.get('assigned_to_id') ?? '');
+	let myApprovalsActive = $derived(!!auth.user?.id && assignedToId === auth.user.id);
+	function toggleMyApprovals() {
+		assignedToId = myApprovalsActive ? '' : (auth.user?.id ?? '');
+	}
+
 	async function handleInvoiceCreated() {
-		await invoiceStore.fetch(buildParams());
+		await invoiceStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
 		await invoiceStore.fetchCounts();
 	}
 
@@ -76,7 +87,7 @@
 		// and re-picking the same file wouldn't even fire `change` (the input's
 		// value was never cleared). Only a page reload recovered.
 		try {
-			await invoiceStore.fetch(buildParams());
+			await invoiceStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
 			await invoiceStore.fetchCounts();
 
 			if (total === 1 && succeeded === 1) {
@@ -130,10 +141,32 @@
 		if (af.amount_max) params.amount_max = af.amount_max;
 		if (af.due_date_from) params.due_date_from = af.due_date_from;
 		if (af.due_date_to) params.due_date_to = af.due_date_to;
+		if (assignedToId) params.assigned_to_id = assignedToId;
 		// Status is sourced solely from `activeStatuses` (the inline chips); the
 		// modal's Status section writes back into `activeStatuses` on apply, so
 		// the two never fight over `params.status`.
 		return params;
+	}
+
+	/**
+	 * Reflect `assignedToId` into the URL as `?assigned_to_id=` — the "Assigned
+	 * to" filter and the "My Approvals" toggle (which just sets this to the
+	 * caller's own id) both drive off the one param, so a reload or a shared
+	 * link reproduces the same view. Mirrors the `syncUrl()` convention on
+	 * `/contracts` and `/expenses`: every read here is untracked, `$page.url`
+	 * included, because this is a WRITER called from the filter `$effect`
+	 * below — a tracked `$page.url` read would self-trigger the very effect
+	 * that calls `replaceState`. Scoped to only the param this page owns —
+	 * `search`/`status`/the advanced filters predate this and aren't
+	 * URL-synced yet (a separate, pre-existing gap; see `docs/followups.md`).
+	 */
+	function syncUrl() {
+		untrack(() => {
+			const url = new URL($page.url);
+			if (assignedToId) url.searchParams.set('assigned_to_id', assignedToId);
+			else url.searchParams.delete('assigned_to_id');
+			replaceState(`${url.pathname}${url.search}`, {});
+		});
 	}
 
 	// Debounce timer for search input
@@ -143,7 +176,7 @@
 		// `.catch` because nothing awaits this: the store re-throws so an
 		// awaiting caller keeps its own handling (the post-upload toast relies
 		// on it), and `invoiceStore.errored` is what the table renders.
-		searchTimer = setTimeout(() => invoiceStore.fetch(buildParams()).catch(() => {}), 300);
+		searchTimer = setTimeout(() => invoiceStore.fetch(buildParams()).catch(() => {}), 300); // noqa: raw-fetch-in-component — store method, routes through api client
 	}
 
 	// Fetch status counts and active workflow on mount
@@ -155,12 +188,21 @@
 		// So CreateInvoiceModal's currency default is ready by the time the
 		// toolbar button is clicked, not still resolving on first open.
 		orgCurrency.ensureLoaded();
+		// Populates the "Assigned to" filter dropdown — same directory the
+		// approver-assignment picker in `InvoiceModal` uses (active users
+		// holding `invoice.approve`), so the filter can only name someone who
+		// could actually be assigned. Resolves `false` rather than throwing;
+		// `reviewersErrored`/`reviewersLoaded` are what the dropdown reads.
+		adminStore.fetchAssignableReviewers().catch(() => {});
 	});
 
-	// Re-fetch when status filters or advanced filters change
+	// Re-fetch when status filters, advanced filters, or the assignee filter
+	// change. `assignedToId` also gets its own URL sync — see `syncUrl()`.
 	$effect(() => {
 		activeStatuses;
 		advancedFilters;
+		assignedToId;
+		syncUrl();
 		// The "select all N matching" set was resolved against the FILTERS
 		// active at the time — once they change it no longer describes
 		// anything real, so drop out of matching mode. Must happen here
@@ -169,7 +211,7 @@
 		// actually shows, instead of leaving stale ids from the old filter
 		// selected forever.
 		selectedAllMatching = false;
-		invoiceStore.fetch(buildParams()).catch(() => {});
+		invoiceStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
 	});
 
 	// Re-fetch on search input (debounced)
@@ -205,12 +247,12 @@
 	 *
 	 * Handed to `InvoiceModal` as `onrefresh` so a refresh triggered from
 	 * inside the modal (an extraction poll finishing, a contract link) goes
-	 * through the filters rather than the store's param-less `fetch()`, which
+	 * through the filters rather than the store's param-less load, which
 	 * would widen the list to every status and reset `lastParams` so Load-more
 	 * paged a different set.
 	 */
 	async function refreshInvoiceList() {
-		await invoiceStore.fetch(buildParams());
+		await invoiceStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
 		await invoiceStore.fetchCounts();
 	}
 
@@ -391,7 +433,7 @@
 		bulkBusy = true;
 		try {
 			const res = await api.post('/api/invoices/bulk/delete', { ids: [...selected] }) as { deleted: number; skipped: string[] };
-			await invoiceStore.fetch(buildParams());
+			await invoiceStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
 			await invoiceStore.fetchCounts();
 			selected = new Set();
 			selectedAllMatching = false;
@@ -413,7 +455,7 @@
 				ids: [...selected],
 				status: bulkStatusValue,
 			})) as { updated: number; skipped: { id: string; reason: string }[] };
-			await invoiceStore.fetch(buildParams());
+			await invoiceStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
 			await invoiceStore.fetchCounts();
 			selected = new Set();
 			selectedAllMatching = false;
@@ -490,7 +532,7 @@
 		deletingId = id;
 		try {
 			await api.delete(`/api/invoices/${id}`);
-			await invoiceStore.fetch(buildParams());
+			await invoiceStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
 			await invoiceStore.fetchCounts();
 			toast('Invoice deleted', 'success');
 		} catch (err) {
@@ -567,6 +609,28 @@
 					<span class="dot"></span>
 				{/if}
 			</button>
+		</div>
+		<div class="assignee-group">
+			<button
+				type="button"
+				class="filter-chip my-approvals-chip"
+				class:active={myApprovalsActive}
+				onclick={toggleMyApprovals}
+				data-testid="my-approvals-toggle"
+			>
+				{m('invoices.filter.myApprovals')}
+			</button>
+			<select
+				class="assignee-select"
+				bind:value={assignedToId}
+				aria-label={m('invoices.filter.assignedToAria')}
+				data-testid="assigned-to-filter"
+			>
+				<option value="">{m('invoices.filter.assignedToAny')}</option>
+				{#each adminStore.assignableReviewers as r (r.id)}
+					<option value={r.id}>{r.full_name}</option>
+				{/each}
+			</select>
 		</div>
 		<nav class="filters">
 			<button class="filter-chip" class:active={activeStatuses.length === 0} onclick={() => (activeStatuses = [])}>
@@ -652,7 +716,7 @@
 		</div>
 	{/if}
 
-	<DataTable isEmpty={invoiceStore.all.length === 0} empty={emptyMessage} colspan={9} fixed stickyHeader>
+	<DataTable isEmpty={invoiceStore.all.length === 0} empty={emptyMessage} colspan={10} fixed stickyHeader>
 		{#snippet header()}
 			<tr>
 				<th class="checkbox-col"><input type="checkbox" aria-label={m('invoices.selectAllAria')} checked={allSelected} onchange={toggleSelectAll} /></th>
@@ -663,6 +727,7 @@
 				<th class="right">{m('invoices.col.amount')}</th>
 				<th>{m('invoices.col.dueDate')}</th>
 				<th>{m('invoices.col.status')}</th>
+				<th>{m('invoices.col.assignedTo')}</th>
 				<th class="actions-col"></th>
 			</tr>
 		{/snippet}
@@ -712,6 +777,7 @@
 					<td class="right mono"><Money amount={invoice.amount} currency={invoice.currency} /></td>
 					<td>{invoice.due_date}</td>
 					<td><StatusBadge status={invoice.status} /></td>
+					<td class="assignee">{invoice.assigned_to || '—'}</td>
 					<td class="actions">
 						{#if !auth.isClerkOnly && !IMMUTABLE_STATUSES.has(invoice.status)}
 							<RowAction
@@ -774,7 +840,7 @@
 	<BulkRecodeGLModal
 		onclose={() => (showBulkRecode = false)}
 		onapplied={() => {
-			invoiceStore.fetch(buildParams()).catch(() => {});
+			invoiceStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
 			invoiceStore.fetchCounts().catch(() => {});
 		}}
 	/>
@@ -835,16 +901,39 @@
 		background: var(--accent);
 	}
 
+	.assignee-group {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.my-approvals-chip {
+		white-space: nowrap;
+	}
+
+	.assignee-select {
+		min-width: 160px;
+		max-width: 220px;
+	}
+
 	/* Fixed column widths pair with DataTable's `fixed`/`stickyHeader` props.
 	   These <th> widths apply because the header row is rendered from this
 	   page's snippet (page CSS scope). */
 	th:nth-child(1) { width: 40px; }
 	th:nth-child(2) { width: 11%; }
-	th:nth-child(3) { width: 16%; }
+	th:nth-child(3) { width: 15%; }
 	th:nth-child(5) { width: 8%; }
 	th:nth-child(6) { width: 9%; }
 	th:nth-child(7) { width: 9%; }
-	th:nth-child(8) { width: 15%; }
+	th:nth-child(8) { width: 13%; }
+	th:nth-child(9) { width: 11%; }
+
+	.assignee {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		color: var(--text-muted);
+	}
 	th:nth-child(9) { width: 170px; }
 
 	td {
