@@ -35,6 +35,7 @@ from app.api.pagination import (
     PaginationParams,
     pagination_params,
 )
+from app.api.sorting import SortParams, resolve_order_by, sort_params
 from app.models.expense import (
     CorporateCardTransaction,
     Expense,
@@ -509,6 +510,19 @@ def _expense_list_filters(
     return query
 
 
+# `sort=` allowlist for `GET /expenses` — see `api/sorting.py`. `.id` is
+# always appended as the final tie-break regardless of which column is
+# picked (mirrors the pre-existing `created_at, id` default order below).
+EXPENSE_SORTABLE_COLUMNS: dict[str, object] = {
+    "created_at": Expense.created_at,
+    "expense_date": Expense.expense_date,
+    "amount": Expense.amount,
+    "merchant": Expense.merchant,
+    "status": Expense.status,
+    "category": Expense.category,
+}
+
+
 @router.get("", response_model=ExpenseListResponse)
 async def list_expenses(
     db: AsyncSession = Depends(get_tenant_db),
@@ -516,6 +530,7 @@ async def list_expenses(
     status_filter: str | None = Query(None, alias="status"),
     report_id: uuid.UUID | None = Query(None),
     search: str | None = Query(None),
+    sort: SortParams = Depends(sort_params),
     pagination: PaginationParams = Depends(pagination_params),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
@@ -537,12 +552,16 @@ async def list_expenses(
     total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0)
     # `.id` tie-breaker: bulk-imported expenses can share `created_at`, so
     # without it Postgres can order them differently between pages — a row
-    # duplicated onto two pages or skipped entirely.
-    paged = (
-        base.order_by(Expense.created_at.desc(), Expense.id.desc())
-        .offset(pagination.offset)
-        .limit(pagination.limit)
+    # duplicated onto two pages or skipped entirely. `sort=`/`order=`
+    # (validated against `EXPENSE_SORTABLE_COLUMNS`) override the default
+    # when supplied.
+    order_by = resolve_order_by(
+        sort,
+        EXPENSE_SORTABLE_COLUMNS,
+        id_column=Expense.id,
+        default=[Expense.created_at.desc(), Expense.id.desc()],
     )
+    paged = base.order_by(*order_by).offset(pagination.offset).limit(pagination.limit)
     rows = (await db.execute(paged)).scalars().all()
     return ExpenseListResponse(
         items=[_to_response(e) for e in rows],

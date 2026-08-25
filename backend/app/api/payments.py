@@ -28,6 +28,7 @@ from app.api.permissions import (
     PERM_PAYMENT_RUN_APPROVE,
     PERM_PAYMENT_VOID,
 )
+from app.api.sorting import SortParams, resolve_order_by, sort_params
 from app.models.exception import Exception as APException
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.organization import Organization
@@ -278,6 +279,16 @@ async def _get_scoped_run(
 
 # ── Individual Payments ──────────────────────────────────────────────
 
+# `sort=` allowlist for `GET /payments` — see `api/sorting.py`. `.id` is
+# always appended as the final tie-break regardless of which column is
+# picked (mirrors the pre-existing `created_at, id` default order below).
+PAYMENT_SORTABLE_COLUMNS: dict[str, object] = {
+    "created_at": Payment.created_at,
+    "amount": Payment.amount,
+    "status": Payment.status,
+    "method": Payment.method,
+}
+
 
 @router.get("", response_model=PaymentListResponse)
 async def list_payments(
@@ -288,6 +299,7 @@ async def list_payments(
     search: str | None = None,
     amount_min: float | None = None,
     amount_max: float | None = None,
+    sort: SortParams = Depends(sort_params),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
@@ -346,8 +358,15 @@ async def list_payments(
     # Paginate. `.id` tie-breaker: bulk-created rows (a payment run) can share
     # `created_at` down to the microsecond, so without it Postgres can order
     # them differently between pages — a row duplicated onto two pages or
-    # skipped entirely.
-    query = query.order_by(Payment.created_at.desc(), Payment.id.desc())
+    # skipped entirely. `sort=`/`order=` (validated against
+    # `PAYMENT_SORTABLE_COLUMNS`) override the default when supplied.
+    order_by = resolve_order_by(
+        sort,
+        PAYMENT_SORTABLE_COLUMNS,
+        id_column=Payment.id,
+        default=[Payment.created_at.desc(), Payment.id.desc()],
+    )
+    query = query.order_by(*order_by)
     query = query.offset(pagination.offset).limit(pagination.limit)
     result = await db.execute(query)
     rows = result.all()
