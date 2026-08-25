@@ -3,10 +3,10 @@
 	// Risk Screening feature. Shows the current screening status, last-screened
 	// time, payment-block state + reason, risk level/score, and the screening
 	// history timeline. Mutating actions (re-screen, recompute risk, block,
-	// unblock) are role-gated to admin / ap_manager via the auth store and emit
-	// the updated vendor (or refreshed risk) back to the parent list.
+	// unblock) default to admin / ap_manager and emit the updated vendor (or
+	// refreshed risk) back to the parent list.
 	import { auth } from '$lib/stores/auth.svelte';
-	import { PERM_VENDOR_BLOCK } from '$lib/types/admin';
+	import { PERM_VENDOR_BLOCK, PERM_VENDOR_MANAGE } from '$lib/types/admin';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
@@ -51,7 +51,15 @@
 		onupdated: (v: Vendor) => void;
 	} = $props();
 
-	const canMutate = $derived(auth.isManager); // admin | ap_manager (re-screen/recompute)
+	// Re-screen (`POST /vendors/{id}/screen`) moved to the granular
+	// `vendor.manage` permission — same duty as create/edit/verify/reject.
+	// Recompute-risk (`POST /vendors/{id}/risk/recompute`) is a DIFFERENT
+	// backend route that stayed on plain `require_roles(ADMIN, AP_MANAGER)`
+	// (it's not vendor create/edit/verify/reject, just a scoring refresh), so
+	// it keeps the role check rather than sharing `vendor.manage` — a custom
+	// role holding only `vendor.manage` sees Re-screen but not Recompute Risk.
+	const canReScreen = $derived(auth.can(PERM_VENDOR_MANAGE));
+	const canRecomputeRisk = $derived(auth.isManager); // admin | ap_manager
 	// Block/unblock moved to the granular permission so an org can split it from
 	// the rest of vendor management. Defaults to admin/ap_manager (unchanged).
 	const canBlock = $derived(auth.can(PERM_VENDOR_BLOCK));
@@ -248,10 +256,12 @@
 		</div>
 
 		<div class="actions-row">
-			{#if canMutate}
+			{#if canReScreen}
 				<RowAction onclick={reScreen} disabled={busy !== ''}>
 					{busy === 'screen' ? m('vendors.modal.screening') : m('vendors.modal.rescreenNow')}
 				</RowAction>
+			{/if}
+			{#if canRecomputeRisk}
 				<RowAction onclick={recompute} disabled={busy !== ''}>
 					{busy === 'risk' ? m('vendors.modal.recomputing') : m('vendors.modal.recomputeRisk')}
 				</RowAction>
@@ -269,7 +279,7 @@
 					{/if}
 				</RowAction>
 			{/if}
-			{#if !canMutate && !canBlock}
+			{#if !canReScreen && !canRecomputeRisk && !canBlock}
 				<span class="muted">{m('vendors.modal.noPermission')}</span>
 			{/if}
 		</div>
