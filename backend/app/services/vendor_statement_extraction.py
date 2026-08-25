@@ -45,6 +45,7 @@ from app.services.extraction_adapters.base import (
     ExtractionAdapter,
     StatementExtractionResult,
 )
+from app.utils.dates import resolve_day_first_preference
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +144,8 @@ def resolve_statement_adapter(org_settings: dict | None) -> ExtractionAdapter:
 
 def normalize_extracted_lines(
     result: StatementExtractionResult,
+    *,
+    day_first: bool = False,
 ) -> list[recon.StatementLine]:
     """Turn an adapter's raw strings into the engine's typed statement lines.
 
@@ -155,6 +158,10 @@ def normalize_extracted_lines(
     The decimal convention is resolved across the WHOLE document first, for the
     same reason the CSV path does it: a supplier writing ``850,00`` means
     850.00, and only the other rows can prove it.
+
+    ``day_first`` resolves the ambiguous slashed ``invoice_date`` string the
+    same way the CSV intake does (see
+    ``app.utils.dates.resolve_day_first_preference``).
     """
     convention = recon.detect_amount_convention(line.amount for line in result.lines)
     lines: list[recon.StatementLine] = []
@@ -166,7 +173,7 @@ def normalize_extracted_lines(
         lines.append(
             recon.StatementLine(
                 invoice_number=number,
-                invoice_date=recon.parse_date(extracted.invoice_date),
+                invoice_date=recon.parse_date(extracted.invoice_date, day_first=day_first),
                 amount=amount,
                 status=(extracted.status or "").strip() or None,
                 raw={
@@ -224,7 +231,7 @@ async def extract_statement_lines(
             )
         raise StatementExtractionError(result.reason or STATEMENT_REASON_UNREADABLE)
 
-    lines = normalize_extracted_lines(result)
+    lines = normalize_extracted_lines(result, day_first=resolve_day_first_preference(org_settings))
     if not lines:
         # The adapter reported success but nothing survived normalisation —
         # treat it as "no open items", not as an empty statement.
