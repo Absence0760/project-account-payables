@@ -19,6 +19,11 @@
 	import type { AuditEntry, AuditFieldChange } from '$lib/types/audit';
 	import { getInvoiceAuditLog } from '$lib/api/audit';
 
+	import type { WorkflowInstanceDetail } from '$lib/types/workflowInstance';
+	import { chainIsComplete, chainLevelRemaining } from '$lib/types/workflowInstance';
+	import { getInvoiceWorkflowInstance } from '$lib/api/workflowInstance';
+	import ApprovalChainProgress from '$lib/components/ui/ApprovalChainProgress.svelte';
+
 	import SupplierChatThread from '$lib/components/chat/SupplierChatThread.svelte';
 	import type { ChatThread, ChatTemplate } from '$lib/types/supplierChat';
 	import {
@@ -252,10 +257,53 @@
 	 * failure is state the picker renders (see `approverNote`). The `.catch` is
 	 * there for the fire-and-forget rule (`utils/storeLoadRejection.test.ts`),
 	 * which is textual and blunt on purpose, not because this can reject.
+	 *
+	 * The approval-chain stepper below (`chainLevels`) reuses this same
+	 * directory to resolve a named approver's id to a display name — it's the
+	 * correct source (active users holding `invoice.approve`), not a
+	 * coincidence of reuse.
 	 */
 	$effect(() => {
-		if (needsApproverSelect) adminStore.fetchAssignableReviewers().catch(() => {});
+		if (needsApproverSelect || chainLevels.length > 0) {
+			adminStore.fetchAssignableReviewers().catch(() => {});
+		}
 	});
+
+	/**
+	 * Multi-level approval-chain progress (`state_data.approval_levels` on the
+	 * invoice's `WorkflowInstance` — backend/app/services/approval_chain.py) —
+	 * which levels are done, who's approved, who's still pending. `null` for
+	 * an invoice with no chain (manual/specific/auto strategy) or no workflow
+	 * instance yet (`new`).
+	 */
+	let workflowInstance = $state<WorkflowInstanceDetail | null>(null);
+	let chainState = $derived(workflowInstance?.state_data?.approval_levels ?? null);
+	let chainLevels = $derived(chainState?.levels ?? []);
+	let chainCurrentLevel = $derived(chainState?.current_level ?? 0);
+
+	async function loadWorkflowInstance() {
+		try {
+			workflowInstance = await getInvoiceWorkflowInstance(invoice.id);
+		} catch {
+			// non-critical — modal still works without the chain-progress stepper
+			workflowInstance = null;
+		}
+	}
+
+	function resolveApproverName(userId: string): string {
+		const match = adminStore.assignableReviewers.find((u) => u.id === userId);
+		return match?.full_name ?? m('invoices.modal.chain.unknownApprover');
+	}
+
+	function chainStatusLabel(chainStepStatus: 'done' | 'current' | 'pending'): string {
+		if (chainStepStatus === 'done') return m('invoices.modal.chain.statusDone');
+		if (chainStepStatus === 'current') return m('invoices.modal.chain.statusCurrent');
+		return m('invoices.modal.chain.statusPending');
+	}
+
+	function chainProgressLabel(approved: number, required: number): string {
+		return m('invoices.modal.chain.progress', { approved, required });
+	}
 
 	/** Who the picker offers: active assignable reviewers other than the
 	 *  submitter. */
@@ -431,8 +479,31 @@
 	async function handleApprove() {
 		reviewing = true;
 		try {
-			await api.post(`/api/invoices/${invoice.id}/approve`, {});
-			toast(m('invoices.modal.toast.approved'), 'success');
+			const prevStatus = status;
+			const result = await api.post<Invoice>(`/api/invoices/${invoice.id}/approve`, {});
+			// A multi-level approval chain (services/review.py::approve_invoice)
+			// stays in `ready_for_review` until every level is satisfied — the
+			// backend recorded this approval on the current level (writing an
+			// `invoice.approval_step` audit row, not `invoice.approved`) but the
+			// invoice hasn't moved. Distinguishing that from a final approval is
+			// the whole point: an approver who thinks their sign-off just sent
+			// the invoice onward, when in fact two more people still need to act,
+			// is the exact "chain progress is invisible" gap this closes.
+			if (result.status === prevStatus) {
+				await loadWorkflowInstance();
+				const state = workflowInstance?.state_data?.approval_levels;
+				const activeLevel =
+					state && !chainIsComplete(state) ? state.levels[state.current_level] : undefined;
+				const remaining = activeLevel ? chainLevelRemaining(activeLevel) : null;
+				toast(
+					remaining !== null
+						? m('invoices.modal.toast.approvedPartial', { n: remaining })
+						: m('invoices.modal.toast.approvedPartialGeneric'),
+					'success'
+				);
+			} else {
+				toast(m('invoices.modal.toast.approvedFinal'), 'success');
+			}
 			// The host (/invoices) refetches the list with ITS active filters
 			// in closeInvoiceModal, so refreshing here would only race that
 			// refetch — and any refresh that skipped the host's filters would
@@ -1005,6 +1076,7 @@
 		loadSummary();
 		loadChatThread();
 		loadChatTemplates();
+		loadWorkflowInstance();
 	});
 
 	async function loadSummary() {
@@ -1593,6 +1665,18 @@
 								</div>
 							{/if}
 						</div>
+					{/if}
+
+					{#if chainLevels.length > 0}
+						<ApprovalChainProgress
+							levels={chainLevels}
+							currentLevel={chainCurrentLevel}
+							{resolveApproverName}
+							statusLabel={chainStatusLabel}
+							formatProgress={chainProgressLabel}
+							anyApproverLabel={m('invoices.modal.chain.anyApprover')}
+							title={m('invoices.modal.chain.title')}
+						/>
 					{/if}
 
 					{#if isErpStatus || (status === 'failed' && erpInfo)}
