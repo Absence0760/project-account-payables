@@ -623,6 +623,102 @@ async def test_patch_allows_nonfinancial_edit_after_approved(realdb):
         assert inv.amount == Decimal("100.00")
 
 
+# ---------------------------------------------------------------------------
+# PATCH optimistic-concurrency guard — `expected_updated_at` (persona-panel
+# power-user finding). Two clerks editing the same invoice at once used to
+# silently clobber each other: an unguarded full-object read-modify-write with
+# last-write-wins and no warning. The guard mirrors If-Unmodified-Since: when
+# the client supplies the `updated_at` it loaded alongside the invoice and the
+# row has since moved, the PATCH is refused 409 instead of overwriting.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_patch_stale_expected_updated_at_is_refused_409(realdb):
+    """Two sequential PATCHes, the second carrying an `expected_updated_at`
+    captured BEFORE the first PATCH landed (the two-clerks-editing-at-once
+    scenario): the second is refused 409, and the invoice reflects only the
+    first PATCH's change — never a silent clobber."""
+    info = realdb.info("a")
+    inv_id = await _seed_invoice(
+        realdb.sessionmaker("a"), info.org_id, status=InvoiceStatus.new, number="CP-OPTIMISTIC-1"
+    )
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        # Both editors "load" the invoice before either one saves.
+        loaded = await c.get(f"/api/invoices/{inv_id}")
+        assert loaded.status_code == 200, loaded.text
+        stale_token = loaded.json()["updated_at"]
+        assert stale_token, "InvoiceResponse.updated_at must be populated"
+
+        first = await c.patch(
+            f"/api/invoices/{inv_id}",
+            json={"notes": "editor A's note", "expected_updated_at": stale_token},
+        )
+        assert first.status_code == 200, first.text
+        assert first.json()["notes"] == "editor A's note"
+        fresh_token = first.json()["updated_at"]
+        assert fresh_token != stale_token, "a successful PATCH must advance updated_at"
+
+        # Editor B never re-loaded — still holds the token from before A saved.
+        second = await c.patch(
+            f"/api/invoices/{inv_id}",
+            json={"notes": "editor B's clobber attempt", "expected_updated_at": stale_token},
+        )
+        assert second.status_code == 409, second.text
+        assert "modified since you loaded it" in second.json()["detail"]
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        inv = (await s.execute(select(Invoice).where(Invoice.id == inv_id))).scalar_one()
+        assert inv.notes == "editor A's note", "the stale second PATCH must not have applied"
+
+
+@pytest.mark.asyncio
+async def test_patch_fresh_expected_updated_at_succeeds(realdb):
+    """The positive control: a re-loaded, current `expected_updated_at`
+    applies normally — the guard only refuses a STALE token, never a correct
+    one."""
+    info = realdb.info("a")
+    inv_id = await _seed_invoice(
+        realdb.sessionmaker("a"), info.org_id, status=InvoiceStatus.new, number="CP-OPTIMISTIC-2"
+    )
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        loaded = await c.get(f"/api/invoices/{inv_id}")
+        current_token = loaded.json()["updated_at"]
+
+        resp = await c.patch(
+            f"/api/invoices/{inv_id}",
+            json={"notes": "up to date", "expected_updated_at": current_token},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["notes"] == "up to date"
+
+
+@pytest.mark.asyncio
+async def test_patch_without_expected_updated_at_is_backward_compatible(realdb):
+    """Omitting the field entirely (every caller that predates this guard)
+    behaves exactly as before — no check runs, last write still wins. This is
+    the documented, deliberate default: only an opted-in caller gets the
+    guard."""
+    info = realdb.info("a")
+    inv_id = await _seed_invoice(
+        realdb.sessionmaker("a"), info.org_id, status=InvoiceStatus.new, number="CP-OPTIMISTIC-3"
+    )
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        first = await c.patch(f"/api/invoices/{inv_id}", json={"notes": "no token A"})
+        assert first.status_code == 200, first.text
+        second = await c.patch(f"/api/invoices/{inv_id}", json={"notes": "no token B"})
+        assert second.status_code == 200, second.text
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        inv = (await s.execute(select(Invoice).where(Invoice.id == inv_id))).scalar_one()
+        assert inv.notes == "no token B"
+
+
 @pytest.mark.asyncio
 async def test_line_items_frozen_after_approved(realdb):
     info = realdb.info("a")

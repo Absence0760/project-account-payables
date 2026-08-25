@@ -89,7 +89,14 @@ function createInvoiceStore() {
 		}
 	}
 
-	async function update(id: string, changes: Partial<Invoice>) {
+	async function update(
+		id: string,
+		// `expected_updated_at` isn't an `Invoice` field — it's the
+		// optimistic-concurrency token (see `InvoiceModal.svelte`'s
+		// `invoiceFieldPayload()`), so it's typed as an addition, not a `Partial`
+		// override.
+		changes: Partial<Invoice> & { expected_updated_at?: string }
+	) {
 		const updated = await api.patch<Invoice>(`/api/invoices/${id}`, changes);
 		// A fetch already in flight read the invoice BEFORE this PATCH landed,
 		// so its response would revert the edit. Retire it before applying.

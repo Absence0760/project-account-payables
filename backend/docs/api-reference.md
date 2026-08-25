@@ -202,7 +202,7 @@ See [`docs/self-service-signup.md`](../../docs/self-service-signup.md) for the f
 | `POST`   | `/api/invoices/{id}/file`           | admin/manager/cfo | Attach a source file to a manually-entered invoice that has none yet. 409 if it already has one. |
 | `PUT`    | `/api/invoices/{id}/file`           | admin/manager/cfo | Replace an invoice's existing file. 404 if none to replace, 409 if the invoice is done. |
 | `DELETE` | `/api/invoices/{id}/file`           | admin/manager/cfo | Delete an invoice's file. 404 if none to delete, 409 if the invoice is done. |
-| `PATCH`  | `/api/invoices/{id}`                | admin/manager/cfo | Update invoice |
+| `PATCH`  | `/api/invoices/{id}`                | admin/manager/cfo | Update invoice. Optional optimistic-concurrency guard: pass `expected_updated_at` (the `updated_at` ISO timestamp read alongside the invoice) and a row that has since moved (checked under a row lock — same pattern as `get_invoice_for_update`) is refused 409 instead of silently overwritten; omit it for the pre-existing behavior. |
 | `DELETE` | `/api/invoices/{id}`                | admin/manager/cfo | Delete invoice |
 | `POST`   | `/api/invoices/bulk/delete`         | admin/manager/cfo | Bulk delete |
 | `POST`   | `/api/invoices/bulk/status`         | admin/manager/cfo | Bulk status change. Partial-success: returns `{updated, skipped}`; a member the state machine refuses (or that fails a control on the `approved`/`rejected` paths) is listed in `skipped` and never aborts the batch. Only `new`/`pending`/`ready_for_review`/`approved`/`rejected`/`done` are settable — the rest 422 (they are workflow-engine driven). |

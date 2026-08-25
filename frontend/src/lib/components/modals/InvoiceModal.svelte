@@ -6,7 +6,7 @@
 	import { invoiceStore } from '$lib/stores/invoices.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { adminStore } from '$lib/stores/admin.svelte';
-	import { api } from '$lib/api';
+	import { api, ApiError } from '$lib/api';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
@@ -378,6 +378,12 @@
 			cost_center: cost_center || null,
 			department: department || null,
 			project: project || null,
+			// Optimistic-concurrency token: the `updated_at` this modal loaded
+			// alongside `invoice` (a static snapshot — see the `$props()` doc
+			// above). Sent back VERBATIM as captured, never round-tripped
+			// through a JS `Date` (see the field's own doc in `types/invoice.ts`
+			// for why that would false-positive every save).
+			expected_updated_at: invoice.updated_at,
 		};
 		if (!financiallyLocked) {
 			payload.vendor = vendor;
@@ -387,6 +393,29 @@
 		return payload;
 	}
 
+	/**
+	 * True (and handled — a confirm-to-reload prompt, never a silent failure)
+	 * when `err` is the backend's stale-`expected_updated_at` 409: another user
+	 * saved this invoice after this modal loaded it. Distinguished from the
+	 * PATCH endpoint's OTHER 409s (immutable status, financially-locked fields)
+	 * by the backend's own detail text — same substring-match convention
+	 * `submitDone()`'s catch below already uses to tell a validation 409 apart
+	 * from a generic failure.
+	 */
+	function handleStaleConflict(err: unknown): boolean {
+		if (!(err instanceof ApiError) || err.status !== 409) return false;
+		if (!err.message.toLowerCase().includes('modified since you loaded it')) return false;
+		if (confirm(m('invoices.modal.staleConflict.confirm'))) {
+			// Discard this modal's stale edits and let the host reopen it fresh —
+			// nothing in this modal re-fetches a single invoice by id.
+			refreshList();
+			onclose();
+		} else {
+			toast(m('invoices.modal.toast.staleConflict'), 'error');
+		}
+		return true;
+	}
+
 	async function save() {
 		saving = true;
 		try {
@@ -394,7 +423,9 @@
 			toast(m('invoices.modal.toast.saved'), 'success');
 			onclose();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : m('invoices.modal.toast.saveFailed'), 'error');
+			if (!handleStaleConflict(err)) {
+				toast(err instanceof Error ? err.message : m('invoices.modal.toast.saveFailed'), 'error');
+			}
 		} finally {
 			saving = false;
 		}
@@ -418,6 +449,7 @@
 			// `handleApprove` doesn't refresh either).
 			onclose();
 		} catch (err) {
+			if (handleStaleConflict(err)) return;
 			const msg = err instanceof Error ? err.message : m('invoices.modal.toast.submitFailed');
 			// Don't toast field validation errors — the form highlights them already
 			if (!msg.toLowerCase().includes('missing') && !msg.toLowerCase().includes('required field')) {
