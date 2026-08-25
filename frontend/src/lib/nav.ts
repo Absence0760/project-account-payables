@@ -15,6 +15,14 @@
  * group is visible when at least one child is; its sidebar link points at the
  * first child the current role can see. Child order = sub-tab order.
  *
+ * `perm` is an OR alternative to `roles` — an entry is visible if the caller
+ * matches `roles` (when given) OR holds `perm` (when given). It exists for
+ * the granular permission layer (`auth.can`, mirroring backend
+ * `require_permission`): a custom role holding only a splittable permission
+ * (e.g. `user.manage`) should see the nav entry its permission unlocks even
+ * though it doesn't hold the system role the entry also lists. Omit `perm`
+ * for anything not behind `require_permission` on the backend.
+ *
  * i18n: each entry carries a `labelKey` (an i18n message key) — the single
  * source of truth for the *translated* display string. The bare `label` is
  * retained as a stable, locale-independent identifier (used as an `{#each}`
@@ -23,6 +31,7 @@
  */
 
 import type { MessageKey } from '$lib/i18n/messages';
+import { PERM_USER_MANAGE } from '$lib/types/admin';
 
 export interface NavLink {
 	kind: 'link';
@@ -31,6 +40,7 @@ export interface NavLink {
 	href: string;
 	icon: string;
 	roles?: string[];
+	perm?: string;
 }
 
 export interface NavChild {
@@ -38,6 +48,7 @@ export interface NavChild {
 	labelKey: MessageKey;
 	href: string;
 	roles?: string[];
+	perm?: string;
 }
 
 export interface NavGroup {
@@ -52,6 +63,9 @@ export type NavEntry = NavLink | NavGroup;
 
 /** Matches the signature of `auth.hasAnyRole`. */
 export type RoleCheck = (...roles: string[]) => boolean;
+
+/** Matches the signature of `auth.can`. */
+export type PermCheck = (perm: string) => boolean;
 
 export const NAV: NavEntry[] = [
 	{ kind: 'link', label: 'Dashboard', labelKey: 'nav.dashboard', href: '/', icon: 'dashboard' },
@@ -148,7 +162,13 @@ export const NAV: NavEntry[] = [
 			{ label: 'Organization', labelKey: 'nav.organization', href: '/organization', roles: ['admin'] },
 			// Users + Roles share the /admin route via ?tab=; they're surfaced as
 			// peer section tabs (not a second tab row inside the page).
-			{ label: 'Users', labelKey: 'nav.users', href: '/admin?tab=users', roles: ['admin'] },
+			// Users: `GET /api/admin/users` is `require_permission(user.manage)`
+			// (defaults to admin-only, same as `roles` below — see
+			// docs/authentication.md § Granular permissions), so a custom role
+			// holding only `user.manage` sees this tab too via `perm`.
+			{ label: 'Users', labelKey: 'nav.users', href: '/admin?tab=users', roles: ['admin'], perm: PERM_USER_MANAGE },
+			// Roles: role CRUD (defining what a role can grant) stays
+			// admin-only on the backend — no `perm` here on purpose.
 			{ label: 'Roles', labelKey: 'nav.roles', href: '/admin?tab=roles', roles: ['admin'] },
 			{ label: 'Audit Trail', labelKey: 'nav.auditTrail', href: '/audit', roles: ['admin', 'cfo'] },
 			{ label: 'Workflows', labelKey: 'nav.workflows', href: '/workflows', roles: ['admin'] },
@@ -168,23 +188,38 @@ export const NAV: NavEntry[] = [
 	},
 ];
 
-export function canSee(roles: string[] | undefined, has: RoleCheck): boolean {
-	return !roles || has(...roles);
+/**
+ * `entry` is visible when it declares neither gate (always visible), OR the
+ * caller matches its `roles` (when given), OR holds its `perm` (when given).
+ * `roles` and `perm` are an OR, not an AND — an entry naming both is visible
+ * to either route in.
+ */
+export function canSee(
+	entry: { roles?: string[]; perm?: string },
+	has: RoleCheck,
+	canPerm?: PermCheck
+): boolean {
+	if (!entry.roles && !entry.perm) return true;
+	if (entry.roles && has(...entry.roles)) return true;
+	if (entry.perm && canPerm?.(entry.perm)) return true;
+	return false;
 }
 
 /** The children of a group the current role is allowed to see, in order. */
-export function visibleChildren(group: NavGroup, has: RoleCheck): NavChild[] {
-	return group.children.filter((c) => canSee(c.roles, has));
+export function visibleChildren(group: NavGroup, has: RoleCheck, canPerm?: PermCheck): NavChild[] {
+	return group.children.filter((c) => canSee(c, has, canPerm));
 }
 
 /** A link is visible by its own gate; a group is visible if any child is. */
-export function isEntryVisible(entry: NavEntry, has: RoleCheck): boolean {
-	return entry.kind === 'link' ? canSee(entry.roles, has) : visibleChildren(entry, has).length > 0;
+export function isEntryVisible(entry: NavEntry, has: RoleCheck, canPerm?: PermCheck): boolean {
+	return entry.kind === 'link'
+		? canSee(entry, has, canPerm)
+		: visibleChildren(entry, has, canPerm).length > 0;
 }
 
 /** Where a group's sidebar row navigates to — its first accessible child. */
-export function groupHref(group: NavGroup, has: RoleCheck): string | null {
-	return visibleChildren(group, has)[0]?.href ?? null;
+export function groupHref(group: NavGroup, has: RoleCheck, canPerm?: PermCheck): string | null {
+	return visibleChildren(group, has, canPerm)[0]?.href ?? null;
 }
 
 /**

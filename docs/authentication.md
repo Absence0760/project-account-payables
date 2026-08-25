@@ -436,8 +436,9 @@ exactly as before.
   constants (dotted strings): `invoice.approve`, `payment_run.approve`,
   `payment.execute`, `payment.void`, `vendor.bank_change.approve`,
   `vendor.block`, `vendor.manage`, `user.manage`. `GET /api/admin/permissions`
-  (admin) returns the catalog (key + label) for the role editor. Everything not
-  in the catalog stays on `require_roles`.
+  returns the catalog (key + label) for the role editor — gated `user.manage`
+  (see below), same as its sibling reads. Everything not in the catalog stays
+  on `require_roles`.
 - **System-role defaults** — a static map (`ROLE_DEFAULT_PERMISSIONS`)
   reproduces today's matrix exactly: `admin` holds all; `ap_manager` holds
   invoice approve + run approve/execute + vendor bank-change/block/manage (NOT
@@ -468,6 +469,23 @@ exactly as before.
   and user create/update/delete/bulk-delete (`user.manage`). Role/permission
   CRUD itself stays admin-only on `require_roles` (managing the catalog must not
   be a grantable permission — that would be a privilege-escalation path).
+  - **The reads a `user.manage` holder needs to actually use the grant are
+    migrated too.** `GET /api/admin/users` (the roster), `GET /api/admin/roles`
+    (the picker `role_names` is chosen from) and `GET /api/admin/permissions`
+    (the key→label lookup for the permission keys `GET /api/admin/roles`
+    already echoes) are all `require_permission(PERM_USER_MANAGE)` — read-only,
+    and the default holder set (`{admin}`) is byte-for-byte the same set
+    `require_roles(ROLE_ADMIN)` produced, so this is a no-op for the four
+    system roles and additive only for a custom role. `POST`/`PATCH`/`DELETE
+    /api/admin/roles` (defining what a role CAN grant) stay
+    `require_roles(ROLE_ADMIN)` — deliberately NOT migrated, because minting or
+    editing a role definition can bundle any catalog permission at all,
+    including ones the definer doesn't hold; that's a materially stronger
+    capability than assigning an *existing* role to a user (which
+    `_authorize_role_grant` already bounds to the grantor's own permissions),
+    and granting it via `user.manage` would let a "user admin" custom role
+    mint itself a role that grants everything, sidestepping the grant guard by
+    never touching a `role_names` field.
   - **Role-grant is bounded by the grantor.** `user.manage` lets you assign
     roles, but not roles more powerful than you hold: `_authorize_role_grant`
     refuses to grant the system `admin` role unless the caller is themselves an
@@ -509,11 +527,15 @@ exactly as before.
     on an admin already required the caller to be one themselves, so the org
     never actually reaches zero admins in that case.
 - **Frontend** — `auth.can(perm)` mirrors `require_permission`; the gated
-  controls converted so far are payment Execute, payment Void, and vendor
-  Block/Unblock. The `/admin/roles` editor renders permission checkboxes from
-  the catalog and shows each custom role's grants. This composes with the
-  instance-level SoD check (`check_segregation`, approver ≠ creator), which is
-  unchanged.
+  controls converted so far are payment Execute, payment Void, vendor
+  Block/Unblock, and the Users page/nav entry (`user.manage`). The `/admin`
+  Users tab and sidebar/section-tab entry are visible to `admin` OR a
+  `user.manage` holder (`$lib/nav.ts`'s `perm` field, checked alongside
+  `roles`); the Roles tab stays `admin`-only, matching the backend's
+  admin-only role CRUD. The `/admin/roles` editor renders permission
+  checkboxes from the catalog and shows each custom role's grants. This
+  composes with the instance-level SoD check (`check_segregation`, approver ≠
+  creator), which is unchanged.
 
 ### Segregation of duties on a workflow's approval step
 

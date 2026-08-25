@@ -29,22 +29,23 @@
 		}
 	}
 
-	// Role check bound to the auth store; reads reactive role state so the
-	// visible-entry list recomputes if the user's roles change.
+	// Role + granular-permission checks bound to the auth store; reads
+	// reactive state so the visible-entry list recomputes if either changes.
 	const has = (...roles: string[]) => auth.hasAnyRole(...roles);
+	const canPerm = (perm: string) => auth.can(perm);
 
 	// The primary nav (`$lib/nav`) is the single source of truth, shared with
 	// the per-page section sub-tab bar. High-traffic destinations are top-level
 	// links; the rest are folded into groups (Procurement / Billing / Insights /
 	// Settings) that open a sub-tabbed page. Filter to what this role can see.
-	let entries = $derived(NAV.filter((e) => isEntryVisible(e, has)));
+	let entries = $derived(NAV.filter((e) => isEntryVisible(e, has, canPerm)));
 	let pathname = $derived(page.url.pathname);
 
 	// A group's row navigates to its first accessible child (links use their own
 	// href). `entries` already dropped groups with no visible child, so the
 	// fallback is unreachable.
 	function hrefFor(entry: NavEntry): string {
-		return entry.kind === 'link' ? entry.href : (groupHref(entry, has) ?? '#');
+		return entry.kind === 'link' ? entry.href : (groupHref(entry, has, canPerm) ?? '#');
 	}
 </script>
 

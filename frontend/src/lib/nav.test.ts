@@ -1,5 +1,15 @@
 import { test, expect } from 'vitest';
-import { NAV, isEntryActive, sectionTabActive, type NavLink, type NavGroup } from './nav';
+import {
+	NAV,
+	canSee,
+	isEntryActive,
+	isEntryVisible,
+	sectionTabActive,
+	visibleChildren,
+	type NavLink,
+	type NavGroup,
+} from './nav';
+import { PERM_USER_MANAGE } from './types/admin';
 
 const links = NAV.filter((e): e is NavLink => e.kind === 'link');
 const link = (href: string): NavLink => links.find((l) => l.href === href)!;
@@ -107,4 +117,52 @@ test('a page whose API 403s a clerk still hides its row', () => {
 		expect(entry, href).toBeDefined();
 		expect(entry.roles, href).not.toContain('ap_clerk');
 	}
+});
+
+test('the Users tab lists both admin AND user.manage as its gate; Roles is admin-only', () => {
+	// `GET /api/admin/users` migrated to require_permission(user.manage) —
+	// see backend/app/api/admin.py — so a custom role holding only that
+	// permission must see the Users tab. `POST/PATCH/DELETE /api/admin/roles`
+	// (role CRUD) stayed require_roles(ROLE_ADMIN), so the Roles tab must NOT
+	// gain a `perm` alternative.
+	const users = kid('/admin?tab=users');
+	const roles = kid('/admin?tab=roles');
+	expect(users.roles).toEqual(['admin']);
+	expect(users.perm).toBe(PERM_USER_MANAGE);
+	expect(roles.roles).toEqual(['admin']);
+	expect(roles.perm).toBeUndefined();
+});
+
+test('canSee: perm is an OR alternative to roles, not an AND', () => {
+	const noHas = () => false;
+	const noCan = () => false;
+	const hasAdmin = (...roles: string[]) => roles.includes('admin');
+	const canUserManage = (perm: string) => perm === PERM_USER_MANAGE;
+
+	// Neither gate declared → always visible.
+	expect(canSee({}, noHas)).toBe(true);
+	// roles-only entry: unaffected by canPerm being absent or always-false.
+	expect(canSee({ roles: ['admin'] }, hasAdmin)).toBe(true);
+	expect(canSee({ roles: ['admin'] }, noHas, canUserManage)).toBe(false);
+	// perm-only match: roles fails (or is absent) but the permission matches.
+	expect(canSee({ roles: ['admin'], perm: PERM_USER_MANAGE }, noHas, canUserManage)).toBe(true);
+	// Neither the role nor the permission match → hidden.
+	expect(canSee({ roles: ['admin'], perm: PERM_USER_MANAGE }, noHas, noCan)).toBe(false);
+	// perm declared but no canPerm function supplied (e.g. a caller that never
+	// passes one) must not throw and must not grant access on its own.
+	expect(canSee({ perm: PERM_USER_MANAGE }, noHas)).toBe(false);
+});
+
+test('a user.manage-only custom role sees the Users tab but not Roles', () => {
+	const noRoles = () => false; // holds no system role at all
+	const onlyUserManage = (perm: string) => perm === PERM_USER_MANAGE;
+	const settingsGroup = NAV.find(
+		(e): e is NavGroup => e.kind === 'group' && e.label === 'Settings'
+	)!;
+	const visible = visibleChildren(settingsGroup, noRoles, onlyUserManage);
+	expect(visible.map((c) => c.href)).toContain('/admin?tab=users');
+	expect(visible.map((c) => c.href)).not.toContain('/admin?tab=roles');
+	// The group itself must therefore still be visible (isEntryVisible), even
+	// though the holder has no system role at all.
+	expect(isEntryVisible(settingsGroup, noRoles, onlyUserManage)).toBe(true);
 });
