@@ -270,6 +270,48 @@ def validate_aba_routing(routing_number: str | None) -> bool:
     return checksum % 10 == 0
 
 
+def validate_uk_sort_code(sort_code: str | None) -> bool:
+    """Validate a UK bank sort code structurally.
+
+    Six digits, accepted either grouped (``NN-NN-NN``, the printed/UI form
+    most UK banking screens render) or bare (``NNNNNN``). Unlike an ABA
+    routing number or an IBAN, a sort code carries no public checksum — it's
+    a pure bank/branch identifier (the account-level modulus check UK banks
+    run keys off the sort code + account number pair against a
+    bank-specific weight table maintained by Vocalink, which isn't
+    reproducible without their reference data) — so this is a shape check
+    only, same posture as `validate_aba_routing`: cheap to catch a
+    fat-fingered digit here, expensive to catch it at the bank.
+    """
+    if not sort_code:
+        return False
+    s = sort_code.strip()
+    parts = s.split("-")
+    if len(parts) == 3:
+        if not all(len(p) == 2 and p.isdigit() for p in parts):
+            return False
+        digits = "".join(parts)
+    elif len(parts) == 1:
+        digits = parts[0]
+    else:
+        return False
+    return len(digits) == 6 and digits.isdigit()
+
+
+def validate_uk_account_number(account_number: str | None) -> bool:
+    """Validate a UK bank account number structurally: exactly 8 digits.
+
+    Same no-checksum posture as `validate_uk_sort_code` — the account
+    number alone carries no verifiable check digit; only the sort-code +
+    account-number PAIR does, via bank-specific reference data this
+    validator doesn't have. A shape check only.
+    """
+    if not account_number:
+        return False
+    digits = "".join(account_number.split())
+    return len(digits) == 8 and digits.isdigit()
+
+
 def is_sepa_country(country_code: str | None) -> bool:
     """True iff the 2-letter country code is in the SEPA zone."""
     if not country_code:

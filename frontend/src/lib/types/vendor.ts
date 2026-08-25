@@ -19,6 +19,11 @@ export interface VendorBankDetails {
 	account_last4: string | null;
 	routing_last4: string | null;
 	bank_name: string | null;
+	// ISO 3166-1 alpha-2 destination-bank country. Drives the routing-number
+	// vs. sort-code label/validation switch on the AP bank-change modal (a
+	// UK vendor uses a sort code, not a US ABA routing number) — mirrors the
+	// backend `schemas.vendor.VendorBankDetails.country` field.
+	country?: string | null;
 	// Where a printed check to this vendor gets mailed — required by the
 	// `checkeeper` check-printing payment rail (see `services/payment_adapters/
 	// checkeeper.py`); without it that rail refuses with

@@ -340,6 +340,52 @@ async def test_ap_bank_change_rejects_a_malformed_routing_number(realdb):
 
 
 @pytest.mark.asyncio
+async def test_ap_bank_change_rejects_a_malformed_sort_code(realdb):
+    """The UK equivalent of the routing-number check — a sort code that
+    isn't 6 digits (grouped or bare) must 422 before staging, same as a bad
+    ABA routing number."""
+    info = realdb.info(TENANT)
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id = await _seed_vendor(mk, info.org_id, bank_details={})
+
+    async with realdb.client(key=TENANT, role="admin") as client:
+        resp = await client.post(
+            f"/api/vendors/{vendor_id}/bank-change",
+            json={"bank_details": {"sort_code": "12-34", "account_number": "12345678"}},
+        )
+    assert resp.status_code == 422, resp.text
+
+    async with mk() as s:
+        rows = (
+            (
+                await s.execute(
+                    select(VendorChangeRequest).where(VendorChangeRequest.vendor_id == vendor_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert rows == [], "malformed sort code must never reach the staging queue"
+
+
+@pytest.mark.asyncio
+async def test_ap_bank_change_accepts_a_valid_sort_code(realdb):
+    """A well-formed sort code (either grouped or bare) stages cleanly,
+    alongside the ABA routing_number field it's mutually exclusive with in
+    practice — only the field that's actually present is validated."""
+    info = realdb.info(TENANT)
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id = await _seed_vendor(mk, info.org_id, bank_details={})
+
+    async with realdb.client(key=TENANT, role="admin") as client:
+        resp = await client.post(
+            f"/api/vendors/{vendor_id}/bank-change",
+            json={"bank_details": {"sort_code": "20-00-00", "account_number": "12345678"}},
+        )
+    assert resp.status_code == 202, resp.text
+
+
+@pytest.mark.asyncio
 async def test_requester_cannot_approve_their_own_bank_change(realdb):
     """Segregation of duties: the admin who proposed the change can't approve
     it — that would collapse dual control back to a one-person bank redirect."""

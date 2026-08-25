@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, PlainSerializer, field_validator
 
 from app.api.pagination import PageMeta
 from app.schemas.money import MoneyAmount, OptionalMoneyAmount
-from app.utils.banking import validate_aba_routing
+from app.utils.banking import validate_aba_routing, validate_uk_sort_code
 
 
 def _decimal_to_number(value: Decimal | None) -> float | None:
@@ -296,6 +296,11 @@ class PortalBankChangeRequest(BaseModel):
         routing = v.get("routing_number")
         if routing and not validate_aba_routing(routing):
             raise ValueError("routing_number is not a valid 9-digit ABA routing number")
+        # UK equivalent, same "only when present" posture — a US supplier's
+        # submission never carries a sort_code.
+        sort_code = v.get("sort_code")
+        if sort_code and not validate_uk_sort_code(sort_code):
+            raise ValueError("sort_code is not a valid 6-digit UK sort code")
         return v
 
 

@@ -47,9 +47,17 @@
 		account_last4: '',
 		routing_last4: '',
 		bank_name: '',
+		country: '',
 		mailing_address: { street: '', city: '', state: '', postal: '', country: '' }
 	});
 	let savingBank = $state(false);
+	// GB uses a 6-digit sort code, not a 9-digit US ABA routing number — the
+	// destination-bank `country` field (distinct from the check-mailing
+	// `mailing_address.country`) drives which label/shape the routing/sort
+	// field below shows. Backend validation mirrors this: `schemas.vendor
+	// .VendorBankChangeRequest` checks `sort_code` via `validate_uk_sort_code`
+	// only when present, same "only when present" posture as `routing_number`.
+	const bankIsUK = $derived((bankForm.country || '').trim().toUpperCase() === 'GB');
 
 	function openBankEditor(v: Vendor) {
 		bankEditing = v;
@@ -58,6 +66,7 @@
 			account_last4: v.bank_details?.account_last4 ?? '',
 			routing_last4: v.bank_details?.routing_last4 ?? '',
 			bank_name: v.bank_details?.bank_name ?? '',
+			country: v.bank_details?.country ?? '',
 			mailing_address: {
 				street: v.bank_details?.mailing_address?.street ?? '',
 				city: v.bank_details?.mailing_address?.city ?? '',
@@ -438,14 +447,22 @@
 				<span>{m('vendors.bank.bankName')}</span>
 				<input type="text" maxlength="255" bind:value={bankForm.bank_name} />
 			</label>
+			<label>
+				<span>{m('vendors.bank.destinationCountry')}</span>
+				<input type="text" maxlength="2" bind:value={bankForm.country} />
+			</label>
 			<div class="form-row">
 				<label>
 					<span>{m('vendors.bank.accountLast4')}</span>
 					<input type="text" maxlength="4" bind:value={bankForm.account_last4} />
 				</label>
 				<label>
-					<span>{m('vendors.bank.routingLast4')}</span>
-					<input type="text" maxlength="4" bind:value={bankForm.routing_last4} />
+					<span>{bankIsUK ? m('vendors.bank.sortCodeLast2') : m('vendors.bank.routingLast4')}</span>
+					<input
+						type="text"
+						maxlength={bankIsUK ? 2 : 4}
+						bind:value={bankForm.routing_last4}
+					/>
 				</label>
 			</div>
 			<h3>{m('vendors.bank.mailingAddressSection')}</h3>
