@@ -26,6 +26,9 @@ from app.api.permissions import (
     PERM_INVOICE_APPROVE,
     PERM_PAYMENT_EXECUTE,
     PERM_PAYMENT_RUN_APPROVE,
+    PERM_VENDOR_BANK_CHANGE_APPROVE,
+    PERM_VENDOR_BLOCK,
+    PERM_VENDOR_MANAGE,
 )
 from app.main import app
 
@@ -120,6 +123,29 @@ CASES = [
     ("/api/invoices/{invoice_id}/reject", "POST", PERM_INVOICE_APPROVE),
     ("/api/payments", "POST", PERM_PAYMENT_EXECUTE),
     ("/api/payments/runs", "POST", PERM_PAYMENT_RUN_APPROVE),
+    # --- vendor.manage: create / edit / verify / reject / delete a vendor, and
+    # the bulk-import paths that do the same thing at volume. ---
+    ("/api/vendors", "POST", PERM_VENDOR_MANAGE),
+    ("/api/vendors/{vendor_id}", "PATCH", PERM_VENDOR_MANAGE),
+    ("/api/vendors/{vendor_id}", "DELETE", PERM_VENDOR_MANAGE),
+    ("/api/vendors/{vendor_id}/bank-change", "POST", PERM_VENDOR_MANAGE),
+    ("/api/vendors/{vendor_id}/verify", "POST", PERM_VENDOR_MANAGE),
+    ("/api/vendors/{vendor_id}/reject", "POST", PERM_VENDOR_MANAGE),
+    ("/api/vendors/{vendor_id}/screen", "POST", PERM_VENDOR_MANAGE),
+    ("/api/vendors/sync-erp", "POST", PERM_VENDOR_MANAGE),
+    ("/api/vendors/import-csv", "POST", PERM_VENDOR_MANAGE),
+    ("/api/enrichment/vendors/consolidation/merge", "POST", PERM_VENDOR_MANAGE),
+    # --- vendor.block: sticky payment block/unblock. ---
+    ("/api/vendors/{vendor_id}/block", "POST", PERM_VENDOR_BLOCK),
+    ("/api/vendors/{vendor_id}/unblock", "POST", PERM_VENDOR_BLOCK),
+    # --- vendor.bank_change.approve: the BEC / bank-redirect dual-control gate.
+    # Its sibling `POST /change-requests/{id}/reject` is deliberately NOT here —
+    # reject never touches the vendor row (it can't redirect a payment), so it
+    # stays on `require_roles(ADMIN, AP_MANAGER)` rather than sharing the
+    # money-authorizing permission. See the route's own comment in
+    # app/api/vendors.py and docs/authentication.md § "Approve and reject are
+    # not always the same role set".
+    ("/api/vendors/change-requests/{request_id}/approve", "POST", PERM_VENDOR_BANK_CHANGE_APPROVE),
 ]
 
 
