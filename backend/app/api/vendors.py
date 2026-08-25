@@ -427,6 +427,15 @@ async def list_change_requests(
     pagination: PaginationParams = Depends(pagination_params),
     status_filter: str | None = Query("pending", alias="status"),
     db: AsyncSession = Depends(get_tenant_db),
+    # Deliberately NOT `require_permission(PERM_VENDOR_BANK_CHANGE_APPROVE)`:
+    # this is the READ side of the queue, not the approve action itself, and
+    # the established precedent across the app (payments.py's `/queue`,
+    # `/runs`, etc.) is that supporting reads stay on `require_roles` while
+    # only the specific splittable action moves to `require_permission` — see
+    # docs/authentication.md § Granular permissions ("Frontend" + the
+    # migrated-endpoints list). The page's own top-of-file comment documents
+    # this same "two different gates, honestly reflected" split for READ vs.
+    # APPROVE, and its frontend guard (`auth.isManager`) is role-based to match.
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
 ):
     """Change-request queue across all vendors. Defaults to the pending
@@ -723,7 +732,9 @@ async def request_bank_change(
 async def delete_vendor(
     vendor_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    # Deleting the master record is the same duty as creating/editing it
+    # (`PERM_VENDOR_MANAGE`); the role set was already exactly admin/ap_manager.
+    user: User = Depends(require_permission(PERM_VENDOR_MANAGE)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     result = await db.execute(select(Vendor).where(Vendor.id == vendor_id))
@@ -811,7 +822,12 @@ async def screen_vendor(
     vendor_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    # A manual re-screen is part of the vendor-verification workflow (role set
+    # was already exactly admin/ap_manager, matching `PERM_VENDOR_MANAGE`'s
+    # default) — the standing sanctions-review-queue READ above
+    # (`GET /screening/review-queue`) stays on `require_roles` since it's read
+    # by all four roles, broader than `vendor.manage`.
+    user: User = Depends(require_permission(PERM_VENDOR_MANAGE)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     """Manually re-screen one vendor against the configured sanctions provider.
@@ -1026,7 +1042,9 @@ async def reject_vendor(
 async def sync_vendors_from_erp_endpoint(
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    # Bulk vendor create/update — the same duty as the single-vendor create/edit
+    # routes above (role set was already exactly admin/ap_manager).
+    user: User = Depends(require_permission(PERM_VENDOR_MANAGE)),
     org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
@@ -1085,7 +1103,9 @@ async def sync_vendors_from_erp_endpoint(
 async def import_vendors_from_csv(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    # Bulk vendor create — same duty as `POST /vendors` (role set was already
+    # exactly admin/ap_manager, matching `PERM_VENDOR_MANAGE`'s default).
+    user: User = Depends(require_permission(PERM_VENDOR_MANAGE)),
     org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
@@ -1448,6 +1468,19 @@ async def reject_change_request(
     body: VendorChangeReviewRequest | None = None,
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
+    # Deliberately NOT `require_permission(PERM_VENDOR_BANK_CHANGE_APPROVE)`,
+    # even though this route's role set is identical to approve's
+    # (admin/ap_manager) and it superficially looks like the "other half" of
+    # the same review decision. Reject never touches the vendor row — it
+    # can't redirect a payment, so it isn't the fraud-sensitive action
+    # `vendor.bank_change.approve` exists to gate — and it deliberately skips
+    # approve's proposer-can't-be-reviewer segregation check for the same
+    # reason. Gating it on the approve permission would force a split-duty
+    # org to hand out the money-authorizing permission just so someone could
+    # decline an obviously-bad request. See docs/authentication.md §
+    # "Approve and reject are not always the same role set", and this page's
+    # own top-of-file comment (frontend/src/routes/vendors/change-requests/
+    # +page.svelte), which documents this exact split.
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
 ):
     """Mark the request rejected without ever touching the vendor row."""
