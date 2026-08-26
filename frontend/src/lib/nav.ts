@@ -23,6 +23,7 @@
  */
 
 import type { MessageKey } from '$lib/i18n/messages';
+import { PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID } from '$lib/types/admin';
 
 export interface NavLink {
 	kind: 'link';
@@ -31,6 +32,15 @@ export interface NavLink {
 	href: string;
 	icon: string;
 	roles?: string[];
+	/**
+	 * OR'd with `roles` — visible if the user holds ANY of these granular
+	 * permissions too, even without a listed role. Exists for a custom-role
+	 * grantee: `roles` alone means a role gate hides the nav row entirely for
+	 * someone whose ONLY access is a granular permission (e.g. `payment.execute`
+	 * with no `admin`/`ap_manager`/`cfo` role), stranding them on a page they
+	 * can't navigate to despite the backend letting every call through.
+	 */
+	permissions?: string[];
 }
 
 export interface NavChild {
@@ -38,6 +48,8 @@ export interface NavChild {
 	labelKey: MessageKey;
 	href: string;
 	roles?: string[];
+	/** See `NavLink.permissions`. */
+	permissions?: string[];
 }
 
 export interface NavGroup {
@@ -53,10 +65,29 @@ export type NavEntry = NavLink | NavGroup;
 /** Matches the signature of `auth.hasAnyRole`. */
 export type RoleCheck = (...roles: string[]) => boolean;
 
+/** Matches the signature of `auth.can`. */
+export type PermissionCheck = (perm: string) => boolean;
+
 export const NAV: NavEntry[] = [
 	{ kind: 'link', label: 'Dashboard', labelKey: 'nav.dashboard', href: '/', icon: 'dashboard' },
 	{ kind: 'link', label: 'Invoices', labelKey: 'nav.invoices', href: '/invoices', icon: 'invoices' },
-	{ kind: 'link', label: 'Payments', labelKey: 'nav.payments', href: '/payments', icon: 'payments', roles: ['admin', 'ap_manager', 'cfo'] },
+	// `permissions` OR's in a custom role holding ONLY `payment.execute` /
+	// `payment.void` (no `admin`/`ap_manager`/`cfo` role) — those are the two
+	// granular permissions whose supporting read endpoints
+	// (GET /api/payments, GET /api/payments/{id}, GET /api/payments/runs/,
+	// GET /api/payments/runs/{id}) are gated with `require_permission` for
+	// exactly this reason. Without this the sidebar row — the only way to
+	// reach the page — stayed role-gated even though every call the page
+	// makes would succeed.
+	{
+		kind: 'link',
+		label: 'Payments',
+		labelKey: 'nav.payments',
+		href: '/payments',
+		icon: 'payments',
+		roles: ['admin', 'ap_manager', 'cfo'],
+		permissions: [PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID]
+	},
 	{ kind: 'link', label: 'Vendors', labelKey: 'nav.vendors', href: '/vendors', icon: 'vendors', roles: ['admin', 'ap_manager', 'cfo'] },
 	// Sanctions-screening review queue (a sub-route of /vendors). Reuses the
 	// existing `vendors.col.screening` message ("Screening") as its label — a
@@ -168,23 +199,43 @@ export const NAV: NavEntry[] = [
 	},
 ];
 
-export function canSee(roles: string[] | undefined, has: RoleCheck): boolean {
-	return !roles || has(...roles);
+/**
+ * `roles` and `permissions` are OR'd: no gate at all (both omitted) is
+ * visible to everyone; otherwise visible if EITHER the role check OR the
+ * permission check passes. A custom role holding only the permission (no
+ * listed role) still sees the entry.
+ */
+export function canSee(
+	roles: string[] | undefined,
+	has: RoleCheck,
+	permissions?: string[],
+	can?: PermissionCheck
+): boolean {
+	if (!roles && !permissions) return true;
+	if (roles && has(...roles)) return true;
+	if (permissions && can && permissions.some((p) => can(p))) return true;
+	return false;
 }
 
-/** The children of a group the current role is allowed to see, in order. */
-export function visibleChildren(group: NavGroup, has: RoleCheck): NavChild[] {
-	return group.children.filter((c) => canSee(c.roles, has));
+/** The children of a group the current role/permissions can see, in order. */
+export function visibleChildren(
+	group: NavGroup,
+	has: RoleCheck,
+	can?: PermissionCheck
+): NavChild[] {
+	return group.children.filter((c) => canSee(c.roles, has, c.permissions, can));
 }
 
 /** A link is visible by its own gate; a group is visible if any child is. */
-export function isEntryVisible(entry: NavEntry, has: RoleCheck): boolean {
-	return entry.kind === 'link' ? canSee(entry.roles, has) : visibleChildren(entry, has).length > 0;
+export function isEntryVisible(entry: NavEntry, has: RoleCheck, can?: PermissionCheck): boolean {
+	return entry.kind === 'link'
+		? canSee(entry.roles, has, entry.permissions, can)
+		: visibleChildren(entry, has, can).length > 0;
 }
 
 /** Where a group's sidebar row navigates to — its first accessible child. */
-export function groupHref(group: NavGroup, has: RoleCheck): string | null {
-	return visibleChildren(group, has)[0]?.href ?? null;
+export function groupHref(group: NavGroup, has: RoleCheck, can?: PermissionCheck): string | null {
+	return visibleChildren(group, has, can)[0]?.href ?? null;
 }
 
 /**

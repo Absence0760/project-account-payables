@@ -297,3 +297,104 @@ async def test_approve_payment_run_route_checks_the_cfo_role_not_the_permission(
     with pytest.raises(HTTPException) as exc:
         await checker(request=_fake_request(), user=permission_only)
     assert exc.value.status_code == 403
+
+
+# ---------- payment.execute / payment.void — custom-role-only end-to-end ------
+#
+# Proves the finding this migration closes: a custom role holding ONLY the
+# granular permission (no admin/ap_manager/cfo system role at all) can reach
+# the money-moving endpoint AND its supporting read endpoints — the queue/run
+# list, the run detail, the payment list/detail — that the web UI needs to
+# even present the Execute/Void button. Same checker-introspection pattern as
+# `test_approve_payment_run_route_checks_the_cfo_role_not_the_permission`
+# above: pull the real dependency off the route function so a future edit to
+# the route can't drift from what this test exercises.
+
+
+def _permission_only_user(*perms: str) -> MagicMock:
+    """A user with NO system role name at all — only the effective permission
+    set a custom role would confer. If this passes, the permission alone
+    (not an implicit role membership) is what let the request through."""
+    user = MagicMock(spec=["id", "organization_id", "roles", "effective_permissions"])
+    user.id = uuid.uuid4()
+    user.organization_id = uuid.uuid4()
+    user.roles = [SimpleNamespace(name="Custom AP Payments Role")]
+    user.effective_permissions = frozenset(perms)
+    return user
+
+
+def _checker_for(func):
+    import inspect
+
+    return inspect.signature(func).parameters["user"].default.dependency
+
+
+@pytest.mark.asyncio
+async def test_custom_role_with_only_payment_execute_can_execute_a_run():
+    from app.api.payments import execute_payment_run
+
+    checker = _checker_for(execute_payment_run)
+    holder = _permission_only_user(PERM_PAYMENT_EXECUTE)
+    assert (await checker(request=_fake_request(), user=holder)) is holder
+
+    non_holder = _permission_only_user(PERM_PAYMENT_VOID)
+    with pytest.raises(HTTPException) as exc:
+        await checker(request=_fake_request(), user=non_holder)
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_custom_role_with_only_payment_void_can_void_a_payment():
+    from app.api.payments import void_payment
+
+    checker = _checker_for(void_payment)
+    holder = _permission_only_user(PERM_PAYMENT_VOID)
+    assert (await checker(request=_fake_request(), user=holder)) is holder
+
+    non_holder = _permission_only_user(PERM_PAYMENT_EXECUTE)
+    with pytest.raises(HTTPException) as exc:
+        await checker(request=_fake_request(), user=non_holder)
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_custom_role_with_either_permission_reaches_the_payment_list_and_detail():
+    """`GET /api/payments` and `GET /api/payments/{id}` are the History-tab
+    reads a `payment.void`-only holder needs to find the row to void — and,
+    symmetrically, what a `payment.execute`-only holder needs to check what a
+    run already paid. Any-of over both permissions, matching the exact prior
+    `require_roles(ADMIN, AP_MANAGER, CFO)` footprint (see the migration
+    comment on `list_payments` in `app/api/payments.py`)."""
+    from app.api.payments import get_payment, list_payments
+
+    for route in (list_payments, get_payment):
+        checker = _checker_for(route)
+        execute_holder = _permission_only_user(PERM_PAYMENT_EXECUTE)
+        assert (await checker(request=_fake_request(), user=execute_holder)) is execute_holder
+
+        void_holder = _permission_only_user(PERM_PAYMENT_VOID)
+        assert (await checker(request=_fake_request(), user=void_holder)) is void_holder
+
+        neither = _permission_only_user(PERM_INVOICE_APPROVE)
+        with pytest.raises(HTTPException) as exc:
+            await checker(request=_fake_request(), user=neither)
+        assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_custom_role_with_only_payment_execute_reaches_the_runs_list_and_detail():
+    """`GET /api/payments/runs/` and `GET /api/payments/runs/{id}` are what
+    `RunDetailModal.svelte` loads to put the Execute button on screen at all —
+    without these a `payment.execute`-only holder could call the execute
+    endpoint directly but never reach it through the app."""
+    from app.api.payments import get_payment_run, list_payment_runs
+
+    for route in (list_payment_runs, get_payment_run):
+        checker = _checker_for(route)
+        holder = _permission_only_user(PERM_PAYMENT_EXECUTE)
+        assert (await checker(request=_fake_request(), user=holder)) is holder
+
+        non_holder = _permission_only_user(PERM_PAYMENT_VOID)
+        with pytest.raises(HTTPException) as exc:
+            await checker(request=_fake_request(), user=non_holder)
+        assert exc.value.status_code == 403
