@@ -10,6 +10,8 @@
 	import CreateInvoiceModal from '$lib/components/modals/CreateInvoiceModal.svelte';
 	import AdvancedSearchModal from '$lib/components/modals/AdvancedSearchModal.svelte';
 	import BulkRecodeGLModal from '$lib/components/modals/BulkRecodeGLModal.svelte';
+	import ImportCsvModal from '$lib/components/modals/ImportCsvModal.svelte';
+	import type { ImportResult } from '$lib/types/csvImport';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import RowLink from '$lib/components/ui/RowLink.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
@@ -37,6 +39,7 @@
 	let fileInput: HTMLInputElement;
 	let showBulkRecode = $state(false);
 	let showCreate = $state(false);
+	let showImportCsv = $state(false);
 
 	// "Assigned to" filter — an exact match on `assigned_to_id`, narrowed to a
 	// specific reviewer via the dropdown or to the caller via the "My
@@ -312,9 +315,16 @@
 		return INVOICE_STATUSES.filter((s) => quick.has(s) || activeStatuses.includes(s));
 	});
 
-	// Three states, not two: a failed load must not read as "nothing matched".
+	// Four states, not two: a failed load must not read as "nothing matched",
+	// and a genuinely fresh tenant (no invoices, no active search/status
+	// filter) gets a CTA toward the two ways to add the first one instead of
+	// a bare "nothing here".
 	let emptyMessage = $derived(
-		invoiceStore.errored ? m('invoices.empty.errored') : m('invoices.empty')
+		invoiceStore.errored
+			? m('invoices.empty.errored')
+			: invoiceStore.all.length === 0 && !search.trim() && activeStatuses.length === 0
+				? m('invoices.empty.fresh')
+				: m('invoices.empty')
 	);
 
 	function statusCount(status: InvoiceStatus): number {
@@ -584,6 +594,14 @@
 				{uploading ? uploadProgress || m('invoices.action.uploading') : m('invoices.action.upload')}
 			</button>
 		{/if}
+		{#if auth.isManager}
+			<!-- Day-0 bulk load — `POST /api/invoices/import-csv` is
+			     require_roles(ADMIN, AP_MANAGER), narrower than Create/Upload
+			     above (no CFO). See backend/docs/csv-import.md. -->
+			<button class="btn-secondary" onclick={() => (showImportCsv = true)}>
+				{m('invoices.action.importCsv')}
+			</button>
+		{/if}
 	{/snippet}
 
 	<div class="filter-row">
@@ -848,6 +866,29 @@
 
 {#if showCreate}
 	<CreateInvoiceModal onclose={() => (showCreate = false)} onsaved={handleInvoiceCreated} />
+{/if}
+
+{#if showImportCsv}
+	<ImportCsvModal
+		title={m('invoices.action.importCsv')}
+		ariaLabel={m('invoices.action.importCsv')}
+		onimport={(file: File): Promise<ImportResult> => api.upload<ImportResult>('/api/invoices/import-csv', file)}
+		onclose={() => (showImportCsv = false)}
+		onimported={() => {
+			invoiceStore.fetch(buildParams()).catch(() => {});
+			invoiceStore.fetchCounts().catch(() => {});
+		}}
+	>
+		{#snippet columnsHint()}
+			<p>{m('csvImport.invoices.hint.intro')}</p>
+			<ul>
+				<li>{m('csvImport.invoices.hint.required')}</li>
+				<li>{m('csvImport.invoices.hint.vendor')}</li>
+				<li>{m('csvImport.invoices.hint.status')}</li>
+			</ul>
+			<p>{m('csvImport.invoices.hint.noFile')}</p>
+		{/snippet}
+	</ImportCsvModal>
 {/if}
 
 <style>
