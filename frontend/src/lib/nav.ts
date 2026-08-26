@@ -15,13 +15,14 @@
  * group is visible when at least one child is; its sidebar link points at the
  * first child the current role can see. Child order = sub-tab order.
  *
- * `perm` is an OR alternative to `roles` — an entry is visible if the caller
- * matches `roles` (when given) OR holds `perm` (when given). It exists for
- * the granular permission layer (`auth.can`, mirroring backend
- * `require_permission`): a custom role holding only a splittable permission
- * (e.g. `user.manage`) should see the nav entry its permission unlocks even
- * though it doesn't hold the system role the entry also lists. Omit `perm`
- * for anything not behind `require_permission` on the backend.
+ * `permissions` is an OR alternative to `roles` — an entry is visible if the
+ * caller matches `roles` (when given) OR holds ANY of `permissions` (when
+ * given). It exists for the granular permission layer (`auth.can`, mirroring
+ * backend `require_permission`): a custom role holding only a splittable
+ * permission (e.g. `user.manage`) should see the nav entry its permission
+ * unlocks even though it doesn't hold the system role the entry also lists.
+ * Omit `permissions` for anything not behind `require_permission` on the
+ * backend.
  *
  * i18n: each entry carries a `labelKey` (an i18n message key) — the single
  * source of truth for the *translated* display string. The bare `label` is
