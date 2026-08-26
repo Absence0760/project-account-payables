@@ -2,6 +2,8 @@
 // shared `api` client (Bearer + X-Tenant-Slug + 401-bounce). Mirrors the
 // pattern of `src/lib/api/tax.ts` / `audit.ts`.
 import { api } from '$lib/api';
+import type { MatchingIdsResponse } from '$lib/utils/pagination';
+import { triggerDownload } from '$lib/utils/download';
 import type {
 	Contract,
 	ContractCreate,
@@ -13,19 +15,67 @@ export interface ContractListParams {
 	contract_type?: string;
 	vendor_id?: string;
 	search?: string;
+	sort?: string;
+	order?: 'asc' | 'desc';
 	page?: number;
 	page_size?: number;
 }
 
-export function listContracts(params: ContractListParams = {}): Promise<ContractListResponse> {
+function contractQuery(params: ContractListParams): URLSearchParams {
 	const qs = new URLSearchParams();
 	if (params.status) qs.set('status', params.status);
 	if (params.contract_type) qs.set('contract_type', params.contract_type);
 	if (params.vendor_id) qs.set('vendor_id', params.vendor_id);
 	if (params.search) qs.set('search', params.search);
+	if (params.sort) qs.set('sort', params.sort);
+	if (params.order) qs.set('order', params.order);
+	return qs;
+}
+
+export function listContracts(params: ContractListParams = {}): Promise<ContractListResponse> {
+	const qs = contractQuery(params);
 	qs.set('page', String(params.page ?? 1));
 	qs.set('page_size', String(params.page_size ?? 20));
 	return api.get<ContractListResponse>(`/api/contracts?${qs}`);
+}
+
+/** Every contract id matching the current list filters — `GET
+ * /api/contracts/ids`. Backs "select all N matching" (see
+ * `getVendorIds`/`getExpenseIds` for the identical rationale). */
+export function getContractIds(params: ContractListParams = {}): Promise<MatchingIdsResponse> {
+	const qs = contractQuery(params);
+	const query = qs.toString();
+	return api.get<MatchingIdsResponse>(`/api/contracts/ids${query ? `?${query}` : ''}`);
+}
+
+// --- Bulk operations ---
+
+export interface BulkSkip {
+	id: string;
+	reason: string;
+}
+
+export interface ContractBulkStatusResponse {
+	updated: number;
+	skipped: BulkSkip[];
+}
+
+export type ContractBulkAction = 'activate' | 'terminate' | 'cancel';
+
+/** Bulk lifecycle transition over a hand-picked set of contracts — routed
+ * through the same `_transition` helper the single-row activate/terminate/
+ * cancel endpoints use. admin / ap_manager. */
+export function bulkContractStatus(
+	ids: string[],
+	action: ContractBulkAction
+): Promise<ContractBulkStatusResponse> {
+	return api.post<ContractBulkStatusResponse>('/api/contracts/bulk/status', { ids, action });
+}
+
+/** CSV export of a hand-picked set of contracts. */
+export async function exportContractsCsv(ids: string[]): Promise<void> {
+	const blob = await api.downloadBlobPost('/api/contracts/bulk/export', { ids });
+	triggerDownload(blob, `contracts-export.csv`);
 }
 
 export function getContract(id: string): Promise<Contract> {
