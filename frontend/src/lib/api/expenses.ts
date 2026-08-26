@@ -56,6 +56,11 @@ export interface ExpenseListParams {
 	/** Export only — ignored by `GET /api/expenses`. */
 	date_to?: string;
 	report_id?: string;
+	/** List only — ignored by `/export`, `/summary`, and `/ids` (none of the
+	 *  three declare a `sort` leg, so it's a silent no-op on them, same as
+	 *  `search` is on `/export`). */
+	sort?: string;
+	order?: 'asc' | 'desc';
 	page?: number;
 	page_size?: number;
 }
@@ -88,6 +93,8 @@ function expenseQuery(params: ExpenseListParams): URLSearchParams {
 	if (params.date_from) qs.set('date_from', params.date_from);
 	if (params.date_to) qs.set('date_to', params.date_to);
 	if (params.report_id) qs.set('report_id', params.report_id);
+	if (params.sort) qs.set('sort', params.sort);
+	if (params.order) qs.set('order', params.order);
 	return qs;
 }
 

@@ -25,6 +25,8 @@
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
 	import { untrack } from 'svelte';
+	import SortableHeader from '$lib/components/ui/SortableHeader.svelte';
+	import { toggleSort, type SortOrder } from '$lib/utils/sort';
 
 	let search = $state('');
 	let activeStatuses = $state<InvoiceStatus[]>([]);
@@ -38,7 +40,7 @@
 	let showCreate = $state(false);
 
 	async function handleInvoiceCreated() {
-		await invoiceStore.fetch(buildParams());
+		await invoiceStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
 		await invoiceStore.fetchCounts();
 	}
 
@@ -76,7 +78,7 @@
 		// and re-picking the same file wouldn't even fire `change` (the input's
 		// value was never cleared). Only a page reload recovered.
 		try {
-			await invoiceStore.fetch(buildParams());
+			await invoiceStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
 			await invoiceStore.fetchCounts();
 
 			if (total === 1 && succeeded === 1) {
@@ -108,6 +110,34 @@
 		}
 	}
 
+	// Column sort — URL-backed (`?sort=&order=`), mirrors /expenses'
+	// `syncUrl()` pattern. `null` field = the backend's own default order
+	// (most-recent first).
+	let sortField = $state<string | null>($page.url.searchParams.get('sort'));
+	let sortOrder = $state<SortOrder>(($page.url.searchParams.get('order') as SortOrder) ?? 'desc');
+
+	function syncSortUrl() {
+		untrack(() => {
+			const url = new URL($page.url);
+			if (sortField) {
+				url.searchParams.set('sort', sortField);
+				url.searchParams.set('order', sortOrder);
+			} else {
+				url.searchParams.delete('sort');
+				url.searchParams.delete('order');
+			}
+			replaceState(`${url.pathname}${url.search}`, {});
+		});
+	}
+
+	function handleSort(field: string) {
+		const next = toggleSort({ field: sortField, order: sortOrder }, field);
+		sortField = next.field;
+		sortOrder = next.order;
+		syncSortUrl();
+		invoiceStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
+	}
+
 	function buildParams(): Record<string, string> {
 		const params: Record<string, string> = {};
 		if (activeStatuses.length > 0) params.status = activeStatuses.join(',');
@@ -133,6 +163,12 @@
 		// Status is sourced solely from `activeStatuses` (the inline chips); the
 		// modal's Status section writes back into `activeStatuses` on apply, so
 		// the two never fight over `params.status`.
+		// Same `untrack` reasoning as `search` above.
+		const currentSort = untrack(() => sortField);
+		if (currentSort) {
+			params.sort = currentSort;
+			params.order = untrack(() => sortOrder);
+		}
 		return params;
 	}
 
@@ -143,7 +179,7 @@
 		// `.catch` because nothing awaits this: the store re-throws so an
 		// awaiting caller keeps its own handling (the post-upload toast relies
 		// on it), and `invoiceStore.errored` is what the table renders.
-		searchTimer = setTimeout(() => invoiceStore.fetch(buildParams()).catch(() => {}), 300);
+		searchTimer = setTimeout(() => invoiceStore.fetch(buildParams()).catch(() => {}), 300); // noqa: raw-fetch-in-component — store method, routes through api client
 	}
 
 	// Fetch status counts and active workflow on mount
@@ -169,7 +205,7 @@
 		// actually shows, instead of leaving stale ids from the old filter
 		// selected forever.
 		selectedAllMatching = false;
-		invoiceStore.fetch(buildParams()).catch(() => {});
+		invoiceStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
 	});
 
 	// Re-fetch on search input (debounced)
@@ -205,12 +241,12 @@
 	 *
 	 * Handed to `InvoiceModal` as `onrefresh` so a refresh triggered from
 	 * inside the modal (an extraction poll finishing, a contract link) goes
-	 * through the filters rather than the store's param-less `fetch()`, which
+	 * through the filters rather than the store's param-less `fetch()`, which // noqa: raw-fetch-in-component — store method, routes through api client
 	 * would widen the list to every status and reset `lastParams` so Load-more
 	 * paged a different set.
 	 */
 	async function refreshInvoiceList() {
-		await invoiceStore.fetch(buildParams());
+		await invoiceStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
 		await invoiceStore.fetchCounts();
 	}
 
@@ -391,7 +427,7 @@
 		bulkBusy = true;
 		try {
 			const res = await api.post('/api/invoices/bulk/delete', { ids: [...selected] }) as { deleted: number; skipped: string[] };
-			await invoiceStore.fetch(buildParams());
+			await invoiceStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
 			await invoiceStore.fetchCounts();
 			selected = new Set();
 			selectedAllMatching = false;
@@ -413,7 +449,7 @@
 				ids: [...selected],
 				status: bulkStatusValue,
 			})) as { updated: number; skipped: { id: string; reason: string }[] };
-			await invoiceStore.fetch(buildParams());
+			await invoiceStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
 			await invoiceStore.fetchCounts();
 			selected = new Set();
 			selectedAllMatching = false;
@@ -490,7 +526,7 @@
 		deletingId = id;
 		try {
 			await api.delete(`/api/invoices/${id}`);
-			await invoiceStore.fetch(buildParams());
+			await invoiceStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
 			await invoiceStore.fetchCounts();
 			toast('Invoice deleted', 'success');
 		} catch (err) {
@@ -656,13 +692,13 @@
 		{#snippet header()}
 			<tr>
 				<th class="checkbox-col"><input type="checkbox" aria-label={m('invoices.selectAllAria')} checked={allSelected} onchange={toggleSelectAll} /></th>
-				<th>{m('invoices.col.invoiceNumber')}</th>
-				<th>{m('invoices.col.vendor')}</th>
+				<SortableHeader field="invoice_number" label={m('invoices.col.invoiceNumber')} active={sortField === 'invoice_number'} order={sortOrder} onsort={handleSort} />
+				<SortableHeader field="vendor_name" label={m('invoices.col.vendor')} active={sortField === 'vendor_name'} order={sortOrder} onsort={handleSort} />
 				<th>{m('invoices.col.description')}</th>
 				<th>{m('invoices.col.poNumber')}</th>
-				<th class="right">{m('invoices.col.amount')}</th>
-				<th>{m('invoices.col.dueDate')}</th>
-				<th>{m('invoices.col.status')}</th>
+				<SortableHeader field="amount" label={m('invoices.col.amount')} class="right" active={sortField === 'amount'} order={sortOrder} onsort={handleSort} />
+				<SortableHeader field="due_date" label={m('invoices.col.dueDate')} active={sortField === 'due_date'} order={sortOrder} onsort={handleSort} />
+				<SortableHeader field="status" label={m('invoices.col.status')} active={sortField === 'status'} order={sortOrder} onsort={handleSort} />
 				<th class="actions-col"></th>
 			</tr>
 		{/snippet}
@@ -774,7 +810,7 @@
 	<BulkRecodeGLModal
 		onclose={() => (showBulkRecode = false)}
 		onapplied={() => {
-			invoiceStore.fetch(buildParams()).catch(() => {});
+			invoiceStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
 			invoiceStore.fetchCounts().catch(() => {});
 		}}
 	/>

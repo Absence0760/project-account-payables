@@ -31,17 +31,10 @@
 	import { PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID } from '$lib/types/admin';
 	import { m } from '$lib/i18n/store.svelte';
 	import { untrack } from 'svelte';
-
-	let HISTORY_COLUMNS = $derived([
-		{ label: m('payments.col.invoiceNumber') },
-		{ label: m('payments.col.vendor') },
-		{ label: m('payments.col.method') },
-		{ label: m('payments.col.amount'), class: 'right' },
-		{ label: m('payments.col.status') },
-		{ label: m('payments.col.reference') },
-		{ label: m('payments.col.date') },
-		{ class: 'actions-col' }
-	]);
+	import { page } from '$app/stores';
+	import { replaceState } from '$app/navigation';
+	import SortableHeader from '$lib/components/ui/SortableHeader.svelte';
+	import { toggleSort, type SortOrder } from '$lib/utils/sort';
 
 	let RUNS_COLUMNS = $derived([
 		{ label: m('payments.col.run') },
@@ -67,6 +60,34 @@
 	let activeTab = $state<Tab>('queue');
 	let search = $state('');
 	let activeStatus = $state<PaymentStatus | 'all'>('all');
+
+	// History-tab column sort — URL-backed (`?sort=&order=`), mirrors the
+	// /expenses `syncUrl()` pattern. `null` field = the backend's own default
+	// order (most-recent first).
+	let sortField = $state<string | null>($page.url.searchParams.get('sort'));
+	let sortOrder = $state<SortOrder>(($page.url.searchParams.get('order') as SortOrder) ?? 'desc');
+
+	function syncSortUrl() {
+		untrack(() => {
+			const url = new URL($page.url);
+			if (sortField) {
+				url.searchParams.set('sort', sortField);
+				url.searchParams.set('order', sortOrder);
+			} else {
+				url.searchParams.delete('sort');
+				url.searchParams.delete('order');
+			}
+			replaceState(`${url.pathname}${url.search}`, {});
+		});
+	}
+
+	function handleHistorySort(field: string) {
+		const next = toggleSort({ field: sortField, order: sortOrder }, field);
+		sortField = next.field;
+		sortOrder = next.order;
+		syncSortUrl();
+		paymentStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method; routes through api.get
+	}
 
 	/**
 	 * Badge tone per payment status.
@@ -592,6 +613,13 @@
 		// dependency of whichever effect happens to be calling this.
 		const currentSearch = untrack(() => search);
 		if (currentSearch.trim()) params.search = currentSearch.trim();
+		// Same `untrack` reasoning as `search` above — this function is also
+		// called from the tab-change effect and the debounced search fetch.
+		const currentSort = untrack(() => sortField);
+		if (currentSort) {
+			params.sort = currentSort;
+			params.order = untrack(() => sortOrder);
+		}
 		return params;
 	}
 
@@ -1174,11 +1202,22 @@
 
 	{:else if activeTab === 'history'}
 		<DataTable
-			columns={HISTORY_COLUMNS}
 			isEmpty={paymentStore.all.length === 0}
 			empty={historyEmptyMessage}
 			colspan={8}
 		>
+			{#snippet header()}
+				<tr>
+					<th scope="col">{m('payments.col.invoiceNumber')}</th>
+					<th scope="col">{m('payments.col.vendor')}</th>
+					<SortableHeader field="method" label={m('payments.col.method')} active={sortField === 'method'} order={sortOrder} onsort={handleHistorySort} />
+					<SortableHeader field="amount" label={m('payments.col.amount')} class="right" active={sortField === 'amount'} order={sortOrder} onsort={handleHistorySort} />
+					<SortableHeader field="status" label={m('payments.col.status')} active={sortField === 'status'} order={sortOrder} onsort={handleHistorySort} />
+					<th scope="col">{m('payments.col.reference')}</th>
+					<SortableHeader field="created_at" label={m('payments.col.date')} active={sortField === 'created_at'} order={sortOrder} onsort={handleHistorySort} />
+					<th class="actions-col"></th>
+				</tr>
+			{/snippet}
 			{#snippet body()}
 				{#each paymentStore.all as p (p.id)}
 					<tr>
