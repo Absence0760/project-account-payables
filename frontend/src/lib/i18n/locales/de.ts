@@ -2115,6 +2115,33 @@ export const messages = {
 	'auth.login.ssoOnly': 'Dieser Arbeitsbereich verwendet Single Sign-on.',
 	'auth.login.or': 'oder',
 	'auth.login.signInWith': 'Anmelden mit {provider}',
+	'auth.login.forgotPassword': 'Passwort vergessen?',
+
+	// Auth — forgot password (routes/login/forgot-password/+page.svelte)
+	'auth.forgotPassword.heading': 'Passwort zurücksetzen',
+	'auth.forgotPassword.subtitle':
+		'Geben Sie Ihre E-Mail-Adresse ein, und wir senden Ihnen einen Link zum Zurücksetzen Ihres Passworts.',
+	'auth.forgotPassword.email': 'E-Mail',
+	'auth.forgotPassword.submit': 'Link zum Zurücksetzen senden',
+	'auth.forgotPassword.sending': 'Wird gesendet...',
+	'auth.forgotPassword.success':
+		'Falls ein Konto mit dieser E-Mail-Adresse existiert, haben wir einen Link zum Zurücksetzen des Passworts gesendet.',
+	'auth.forgotPassword.backToLogin': 'Zurück zur Anmeldung',
+
+	// Auth — reset password (routes/login/reset-password/+page.svelte)
+	'auth.resetPassword.heading': 'Neues Passwort festlegen',
+	'auth.resetPassword.subtitle': 'Wählen Sie ein neues Passwort für Ihr Konto.',
+	'auth.resetPassword.newPassword': 'Neues Passwort',
+	'auth.resetPassword.confirmPassword': 'Neues Passwort bestätigen',
+	'auth.resetPassword.submit': 'Passwort zurücksetzen',
+	'auth.resetPassword.submitting': 'Wird zurückgesetzt...',
+	'auth.resetPassword.success': 'Ihr Passwort wurde zurückgesetzt. Sie können sich jetzt anmelden.',
+	'auth.resetPassword.mismatch': 'Die Passwörter stimmen nicht überein.',
+	'auth.resetPassword.missingToken':
+		'Diesem Link zum Zurücksetzen fehlt das Token. Bitte verwenden Sie den Link aus Ihrer E-Mail.',
+	'auth.resetPassword.invalidToken':
+		'Dieser Link zum Zurücksetzen ist ungültig oder abgelaufen. Bitte fordern Sie einen neuen an.',
+	'auth.resetPassword.goToLogin': 'Zur Anmeldung',
 
 	// Auth — MFA verification (routes/login/mfa/+page.svelte)
 	'auth.mfa.heading': 'Zwei-Faktor-Verifizierung',

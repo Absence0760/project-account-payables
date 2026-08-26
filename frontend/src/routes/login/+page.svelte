@@ -127,6 +127,7 @@
 			<button type="submit" disabled={loading}>
 				{loading ? m('auth.login.signingIn') : m('auth.login.signIn')}
 			</button>
+			<a class="forgot-link" href="/login/forgot-password">{m('auth.login.forgotPassword')}</a>
 		{:else}
 			<p class="sso-only-note">{m('auth.login.ssoOnly')}</p>
 		{/if}
@@ -184,6 +185,14 @@
 		font-size: 0.9rem;
 		color: var(--text-muted);
 		text-align: center;
+	}
+
+	.forgot-link {
+		margin-top: -4px;
+		font-size: 0.82rem;
+		color: var(--accent);
+		text-align: center;
+		text-decoration: underline;
 	}
 
 	.error {

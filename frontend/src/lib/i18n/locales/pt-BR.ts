@@ -2145,6 +2145,33 @@ export const messages = {
 	'auth.login.ssoOnly': 'Este espaço de trabalho usa login único (SSO).',
 	'auth.login.or': 'ou',
 	'auth.login.signInWith': 'Entrar com {provider}',
+	'auth.login.forgotPassword': 'Esqueceu a senha?',
+
+	// Auth — forgot password (routes/login/forgot-password/+page.svelte)
+	'auth.forgotPassword.heading': 'Redefinir sua senha',
+	'auth.forgotPassword.subtitle':
+		'Digite seu e-mail e enviaremos um link para redefinir sua senha.',
+	'auth.forgotPassword.email': 'E-mail',
+	'auth.forgotPassword.submit': 'Enviar link de redefinição',
+	'auth.forgotPassword.sending': 'Enviando...',
+	'auth.forgotPassword.success':
+		'Se existir uma conta com esse e-mail, enviamos um link para redefinir sua senha.',
+	'auth.forgotPassword.backToLogin': 'Voltar para o login',
+
+	// Auth — reset password (routes/login/reset-password/+page.svelte)
+	'auth.resetPassword.heading': 'Defina uma nova senha',
+	'auth.resetPassword.subtitle': 'Escolha uma nova senha para sua conta.',
+	'auth.resetPassword.newPassword': 'Nova senha',
+	'auth.resetPassword.confirmPassword': 'Confirmar nova senha',
+	'auth.resetPassword.submit': 'Redefinir senha',
+	'auth.resetPassword.submitting': 'Redefinindo...',
+	'auth.resetPassword.success': 'Sua senha foi redefinida. Você já pode entrar.',
+	'auth.resetPassword.mismatch': 'As senhas não coincidem.',
+	'auth.resetPassword.missingToken':
+		'Este link de redefinição está sem o token. Use o link do seu e-mail.',
+	'auth.resetPassword.invalidToken':
+		'Este link de redefinição é inválido ou expirou. Solicite um novo.',
+	'auth.resetPassword.goToLogin': 'Ir para o login',
 
 	// Auth — MFA verification (routes/login/mfa/+page.svelte)
 	'auth.mfa.heading': 'Verificação em duas etapas',
