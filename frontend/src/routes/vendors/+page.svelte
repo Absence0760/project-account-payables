@@ -1,14 +1,24 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { appendUnique } from '$lib/utils/pagination';
+	import type { MatchingIdsResponse } from '$lib/utils/pagination';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
+	import { pruneSelection } from '$lib/utils/selection';
+	import { toggleSort, type SortOrder } from '$lib/utils/sort';
 	import { untrack } from 'svelte';
+	// Aliased: this page already has a local `page` variable for the loaded
+	// vendor-list page number (below) — `$app/stores`'s page is the URL/route
+	// store, unrelated, and the two names would otherwise collide.
+	import { page as urlStore } from '$app/stores';
+	import { replaceState } from '$app/navigation';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import RowLink from '$lib/components/ui/RowLink.svelte';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
+	import SortableHeader from '$lib/components/ui/SortableHeader.svelte';
+	import BulkBar from '$lib/components/ui/BulkBar.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import ScreeningBadge from '$lib/components/ui/ScreeningBadge.svelte';
 	import VendorModal from '$lib/components/modals/VendorModal.svelte';
@@ -22,18 +32,7 @@
 	import { importVendorsCsv } from '$lib/api/vendors';
 	import type { Vendor, VendorBankDetails } from '$lib/types/vendor';
 	import type { ImportResult } from '$lib/types/csvImport';
-
-	let COLUMNS = $derived([
-		{ label: m('vendors.col.vendor') },
-		{ label: m('vendors.col.code') },
-		{ label: m('vendors.col.email') },
-		{ label: m('vendors.col.status') },
-		{ label: m('vendors.col.screening') },
-		{ label: m('vendors.col.source') },
-		{ label: m('vendors.col.invoices') },
-		{ label: m('vendors.col.erp') },
-		{ class: 'actions-col' }
-	]);
+	import { getVendorIds, bulkVendorStatus, bulkScreenVendors, exportVendorsCsv } from '$lib/api/vendors';
 
 	type BankDetails = VendorBankDetails;
 
@@ -126,6 +125,51 @@
 	let loadingMore = $state(false);
 	let hasMore = $derived(vendors.length < total);
 
+	// Column sort — URL-backed (`?sort=&order=`) so it survives a reload/share,
+	// mirroring the /expenses `syncUrl()` pattern (see `syncSortUrl` below).
+	// `null` field = the backend's own default order (name ascending).
+	let sortField = $state<string | null>($urlStore.url.searchParams.get('sort'));
+	let sortOrder = $state<SortOrder>(($urlStore.url.searchParams.get('order') as SortOrder) ?? 'asc');
+
+	// --- Bulk selection ---
+	let selected = $state<Set<string>>(new Set());
+	// True once "Select all N matching" has resolved the whole filtered set
+	// (not just the loaded page) into `selected` — mirrors the identical
+	// mechanism on /invoices and /expenses (`selectAllMatching` below).
+	let selectedAllMatching = $state(false);
+	let selectingAllMatching = $state(false);
+	let bulkBusy = $state(false);
+
+	// Prune the selection to ids still visible whenever the list refetches, so
+	// `selected` can't retain ids that fell off the list (inflating the
+	// bulk-bar count and feeding invisible ids into a bulk mutation).
+	$effect(() => {
+		if (selectedAllMatching) return;
+		const pruned = pruneSelection(
+			selected,
+			vendors.map((v) => v.id)
+		);
+		if (pruned !== selected) selected = pruned;
+	});
+
+	let allSelected = $derived(vendors.length > 0 && vendors.every((v) => selected.has(v.id)));
+
+	function toggleSelect(id: string) {
+		const next = new Set(selected);
+		if (next.has(id)) next.delete(id);
+		else next.add(id);
+		selected = next;
+	}
+
+	function toggleSelectAll() {
+		if (allSelected) {
+			selected = new Set();
+			selectedAllMatching = false;
+		} else {
+			selected = new Set(vendors.map((v) => v.id));
+		}
+	}
+
 	// Status tallies over the WHOLE (search-scoped) vendor set, from
 	// GET /api/vendors/counts — so the chip counts (and the red Unverified
 	// attention badge) reflect every page, not just the loaded one.
@@ -197,6 +241,14 @@
 			const currentSearch = untrack(() => search);
 			if (currentSearch.trim()) params.set('search', currentSearch.trim());
 			if (statusFilter !== 'all') params.set('status', statusFilter);
+			// Same `untrack` reasoning as `search` above: this function is also
+			// called from the status/search effects, and a plain read here would
+			// make THOSE effects depend on the sort state too.
+			const currentSort = untrack(() => sortField);
+			if (currentSort) {
+				params.set('sort', currentSort);
+				params.set('order', untrack(() => sortOrder));
+			}
 			const data = await api.get<{ items: Vendor[]; total: number }>(
 				`/api/vendors?${params}`
 			);
@@ -220,6 +272,128 @@
 			await fetchVendors({ append: true, nextPage: page + 1 });
 		} finally {
 			loadingMore = false;
+		}
+	}
+
+	// Reflect the live sort state into the URL (mirrors /expenses' syncUrl()).
+	// `untrack` on the `$urlStore` read: this is a WRITER, not a dependency
+	// source — a tracked read here would self-trigger on its own replaceState.
+	function syncSortUrl() {
+		untrack(() => {
+			const url = new URL($urlStore.url);
+			if (sortField) {
+				url.searchParams.set('sort', sortField);
+				url.searchParams.set('order', sortOrder);
+			} else {
+				url.searchParams.delete('sort');
+				url.searchParams.delete('order');
+			}
+			replaceState(`${url.pathname}${url.search}`, {});
+		});
+	}
+
+	function handleSort(field: string) {
+		const next = toggleSort({ field: sortField, order: sortOrder }, field);
+		sortField = next.field;
+		sortOrder = next.order;
+		syncSortUrl();
+		fetchVendors();
+	}
+
+	// Resolve and select EVERY vendor matching the current filters (not just
+	// the loaded page) via `GET /api/vendors/ids` — mirrors the identical
+	// "select all N matching" affordance on /invoices and /expenses.
+	async function selectAllMatching() {
+		selectingAllMatching = true;
+		try {
+			const params: { search?: string; status?: string } = {};
+			const currentSearch = search.trim();
+			if (currentSearch) params.search = currentSearch;
+			if (statusFilter !== 'all') params.status = statusFilter;
+			const res: MatchingIdsResponse = await getVendorIds(params);
+			selected = new Set(res.ids);
+			selectedAllMatching = true;
+			if (res.truncated) {
+				toast(
+					`Selected the first ${res.ids.length} of ${res.total} matching — narrow your filters to select the rest.`,
+					'error'
+				);
+			} else {
+				toast(`Selected all ${res.ids.length} matching vendor(s)`, 'success');
+			}
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Failed to select all matching', 'error');
+		} finally {
+			selectingAllMatching = false;
+		}
+	}
+
+	function clearSelection() {
+		selected = new Set();
+		selectedAllMatching = false;
+	}
+
+	async function bulkVerify() {
+		bulkBusy = true;
+		try {
+			const res = await bulkVendorStatus([...selected], 'active');
+			await fetchVendors();
+			clearSelection();
+			const msg = res.skipped.length
+				? m('vendors.bulk.verified', { n: res.updated }) + m('vendors.bulk.skipped', { n: res.skipped.length })
+				: m('vendors.bulk.verified', { n: res.updated });
+			toast(msg, res.updated > 0 ? 'success' : 'error');
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Bulk verify failed', 'error');
+		} finally {
+			bulkBusy = false;
+		}
+	}
+
+	async function bulkReject() {
+		bulkBusy = true;
+		try {
+			const res = await bulkVendorStatus([...selected], 'rejected');
+			await fetchVendors();
+			clearSelection();
+			const msg = res.skipped.length
+				? m('vendors.bulk.rejected', { n: res.updated }) + m('vendors.bulk.skipped', { n: res.skipped.length })
+				: m('vendors.bulk.rejected', { n: res.updated });
+			toast(msg, res.updated > 0 ? 'success' : 'error');
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Bulk reject failed', 'error');
+		} finally {
+			bulkBusy = false;
+		}
+	}
+
+	async function bulkScreen() {
+		bulkBusy = true;
+		try {
+			const res = await bulkScreenVendors([...selected]);
+			await fetchVendors();
+			clearSelection();
+			const msg = res.skipped.length
+				? m('vendors.bulk.screened', { n: res.screened }) + m('vendors.bulk.skipped', { n: res.skipped.length })
+				: m('vendors.bulk.screened', { n: res.screened });
+			toast(msg, res.screened > 0 ? 'success' : 'error');
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Bulk screen failed', 'error');
+		} finally {
+			bulkBusy = false;
+		}
+	}
+
+	async function bulkExport() {
+		bulkBusy = true;
+		try {
+			const ids = [...selected];
+			await exportVendorsCsv(ids);
+			toast(m('vendors.bulk.exported', { n: ids.length }), 'success');
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Bulk export failed', 'error');
+		} finally {
+			bulkBusy = false;
 		}
 	}
 
@@ -338,17 +512,43 @@
 		<FilterChips chips={statusChips} bind:active={statusFilter} />
 	</div>
 
-	<DataTable columns={COLUMNS} isEmpty={vendors.length === 0} empty={emptyMessage}>
+	<DataTable isEmpty={vendors.length === 0} empty={emptyMessage} colspan={10} fixed>
+		{#snippet header()}
+			<tr>
+				<th class="checkbox-col">
+					<input type="checkbox" aria-label={m('vendors.selectAllAria')} checked={allSelected} onchange={toggleSelectAll} />
+				</th>
+				<SortableHeader field="name" label={m('vendors.col.vendor')} active={sortField === 'name'} order={sortOrder} onsort={handleSort} />
+				<SortableHeader field="code" label={m('vendors.col.code')} active={sortField === 'code'} order={sortOrder} onsort={handleSort} />
+				<th scope="col">{m('vendors.col.email')}</th>
+				<SortableHeader field="status" label={m('vendors.col.status')} active={sortField === 'status'} order={sortOrder} onsort={handleSort} />
+				<th scope="col">{m('vendors.col.screening')}</th>
+				<th scope="col">{m('vendors.col.source')}</th>
+				<th scope="col">{m('vendors.col.invoices')}</th>
+				<th scope="col">{m('vendors.col.erp')}</th>
+				<th class="actions-col"></th>
+			</tr>
+		{/snippet}
 		{#snippet body()}
 			{#each vendors as v (v.id)}
 				<tr
 						class="clickable"
+						class:row-selected={selected.has(v.id)}
 						class:unverified={v.status === 'unverified'}
 						class:rejected={v.status === 'rejected'}
 						onclick={(e) => {
 							if (isRowOpenClick(e)) detailVendor = v;
 						}}
 					>
+						<td class="checkbox-col">
+							<input
+								type="checkbox"
+								checked={selected.has(v.id)}
+								onclick={(e) => e.stopPropagation()}
+								onchange={() => toggleSelect(v.id)}
+								aria-label={`Select ${v.name}`}
+							/>
+						</td>
 						<td class="vendor-name">
 							<RowLink onclick={() => (detailVendor = v)} ariaLabel={`Open vendor ${v.name}`}>
 								{v.name}
@@ -418,6 +618,25 @@
 		<div class="load-more-row">
 			<span class="load-more-end">{m('vendors.showingAll', { total })}</span>
 		</div>
+	{/if}
+
+	{#if canManageVendors}
+		<BulkBar count={selected.size} onclear={clearSelection}>
+			{#snippet actions()}
+				{#if allSelected && !selectedAllMatching && total > vendors.length}
+					<button class="bulk-action-btn secondary" disabled={selectingAllMatching} onclick={selectAllMatching}>
+						{selectingAllMatching ? m('common.loading') : `Select all ${total} matching`}
+					</button>
+				{:else if selectedAllMatching}
+					<span class="bulk-all-matching-note">All matching selected</span>
+				{/if}
+				<RowAction variant="success" disabled={bulkBusy} onclick={bulkVerify}>{m('vendors.row.verify')}</RowAction>
+				<RowAction variant="danger" disabled={bulkBusy} onclick={bulkReject}>{m('vendors.row.reject')}</RowAction>
+				<div class="bulk-divider"></div>
+				<RowAction disabled={bulkBusy} onclick={bulkScreen}>{m('vendors.bulk.screen')}</RowAction>
+				<RowAction disabled={bulkBusy} onclick={bulkExport}>{m('vendors.bulk.exportCsv')}</RowAction>
+			{/snippet}
+		</BulkBar>
 	{/if}
 </PageHeader>
 
@@ -656,5 +875,40 @@
 		margin: 4px 0 0;
 		font-size: 0.95rem;
 		font-weight: 600;
+	}
+
+	/* Bulk-bar "select all N matching" affordance — mirrors /expenses. */
+	.bulk-action-btn {
+		padding: 6px 14px;
+		border-radius: 6px;
+		border: 1px solid var(--accent-strong);
+		background: var(--accent-strong);
+		color: #fff;
+		font-size: 0.82rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+		white-space: nowrap;
+	}
+	.bulk-action-btn:hover:not(:disabled) {
+		filter: brightness(1.1);
+	}
+	.bulk-action-btn:disabled {
+		opacity: 0.6;
+		cursor: default;
+	}
+	.bulk-action-btn.secondary {
+		background: transparent;
+		color: var(--accent-strong);
+	}
+	.bulk-all-matching-note {
+		font-size: 0.82rem;
+		color: var(--text-muted);
+		white-space: nowrap;
+	}
+	.bulk-divider {
+		width: 1px;
+		height: 20px;
+		background: var(--border);
 	}
 </style>

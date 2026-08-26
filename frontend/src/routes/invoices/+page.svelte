@@ -28,6 +28,8 @@
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
 	import { untrack } from 'svelte';
+	import SortableHeader from '$lib/components/ui/SortableHeader.svelte';
+	import { toggleSort, type SortOrder } from '$lib/utils/sort';
 
 	let search = $state('');
 	let activeStatuses = $state<InvoiceStatus[]>([]);
@@ -122,6 +124,34 @@
 		}
 	}
 
+	// Column sort — URL-backed (`?sort=&order=`), mirrors /expenses'
+	// `syncUrl()` pattern. `null` field = the backend's own default order
+	// (most-recent first).
+	let sortField = $state<string | null>($page.url.searchParams.get('sort'));
+	let sortOrder = $state<SortOrder>(($page.url.searchParams.get('order') as SortOrder) ?? 'desc');
+
+	function syncSortUrl() {
+		untrack(() => {
+			const url = new URL($page.url);
+			if (sortField) {
+				url.searchParams.set('sort', sortField);
+				url.searchParams.set('order', sortOrder);
+			} else {
+				url.searchParams.delete('sort');
+				url.searchParams.delete('order');
+			}
+			replaceState(`${url.pathname}${url.search}`, {});
+		});
+	}
+
+	function handleSort(field: string) {
+		const next = toggleSort({ field: sortField, order: sortOrder }, field);
+		sortField = next.field;
+		sortOrder = next.order;
+		syncSortUrl();
+		invoiceStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
+	}
+
 	function buildParams(): Record<string, string> {
 		const params: Record<string, string> = {};
 		if (activeStatuses.length > 0) params.status = activeStatuses.join(',');
@@ -148,6 +178,12 @@
 		// Status is sourced solely from `activeStatuses` (the inline chips); the
 		// modal's Status section writes back into `activeStatuses` on apply, so
 		// the two never fight over `params.status`.
+		// Same `untrack` reasoning as `search` above.
+		const currentSort = untrack(() => sortField);
+		if (currentSort) {
+			params.sort = currentSort;
+			params.order = untrack(() => sortOrder);
+		}
 		return params;
 	}
 
@@ -738,13 +774,13 @@
 		{#snippet header()}
 			<tr>
 				<th class="checkbox-col"><input type="checkbox" aria-label={m('invoices.selectAllAria')} checked={allSelected} onchange={toggleSelectAll} /></th>
-				<th>{m('invoices.col.invoiceNumber')}</th>
-				<th>{m('invoices.col.vendor')}</th>
+				<SortableHeader field="invoice_number" label={m('invoices.col.invoiceNumber')} active={sortField === 'invoice_number'} order={sortOrder} onsort={handleSort} />
+				<SortableHeader field="vendor_name" label={m('invoices.col.vendor')} active={sortField === 'vendor_name'} order={sortOrder} onsort={handleSort} />
 				<th>{m('invoices.col.description')}</th>
 				<th>{m('invoices.col.poNumber')}</th>
-				<th class="right">{m('invoices.col.amount')}</th>
-				<th>{m('invoices.col.dueDate')}</th>
-				<th>{m('invoices.col.status')}</th>
+				<SortableHeader field="amount" label={m('invoices.col.amount')} class="right" active={sortField === 'amount'} order={sortOrder} onsort={handleSort} />
+				<SortableHeader field="due_date" label={m('invoices.col.dueDate')} active={sortField === 'due_date'} order={sortOrder} onsort={handleSort} />
+				<SortableHeader field="status" label={m('invoices.col.status')} active={sortField === 'status'} order={sortOrder} onsort={handleSort} />
 				<th>{m('invoices.col.assignedTo')}</th>
 				<th class="actions-col"></th>
 			</tr>

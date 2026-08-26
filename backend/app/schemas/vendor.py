@@ -1,7 +1,16 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.services.vendor_consolidation import mask_tax_id
 from app.utils.banking import validate_aba_routing
+
+# Bulk-status targets a human may legitimately drive over a hand-picked set of
+# vendors — the same two the single-row `POST /{vendor_id}/verify` /
+# `/reject` endpoints already expose. Typed as a Literal (not the free-form
+# `Vendor.status` string column) so an out-of-scope target is a 422 from
+# Pydantic itself rather than reaching the endpoint and failing per-row.
+VendorBulkStatusTarget = Literal["active", "rejected"]
 
 
 def _is_masked_tax_id(value) -> bool:
@@ -287,3 +296,54 @@ class VendorBankChangeRequest(BaseModel):
         if routing and not validate_aba_routing(routing):
             raise ValueError("routing_number is not a valid 9-digit ABA routing number")
         return v
+
+
+class VendorBulkStatusRequest(BaseModel):
+    """Bulk verify / reject over a hand-picked set of vendors — the bulk
+    counterpart of `POST /{vendor_id}/verify` and `/reject`. `status` is
+    restricted to the two targets those single-row endpoints already
+    support (see `VendorBulkStatusTarget`); anything else is a 422 before
+    the endpoint even runs."""
+
+    ids: list[str] = Field(..., min_length=1)
+    status: VendorBulkStatusTarget
+
+
+class VendorBulkStatusSkip(BaseModel):
+    """One vendor `bulk/status` didn't move, and why. Mirrors
+    `api/invoices.py::BulkStatusSkip` — a skip can be "not found", a status
+    that isn't a legal starting point for the target (mirroring the
+    single-row endpoints' 409), or a bad id format; `reason` carries the
+    real cause rather than a single generic label."""
+
+    id: str
+    reason: str
+
+
+class VendorBulkStatusResponse(BaseModel):
+    updated: int
+    skipped: list[VendorBulkStatusSkip] = Field(default_factory=list)
+
+
+class VendorBulkScreenRequest(BaseModel):
+    ids: list[str] = Field(..., min_length=1)
+
+
+class VendorBulkScreenSkip(BaseModel):
+    id: str
+    reason: str
+
+
+class VendorBulkScreenResponse(BaseModel):
+    """Same partial-success contract as `VendorBulkStatusResponse` /
+    `api/expenses.py::ExpenseBulkGlCodeResponse`: each vendor is screened
+    independently, so a sanctions-provider failure or a stale id on one
+    vendor is skipped-and-reported rather than aborting the whole batch —
+    a batch of 200 shouldn't lose its other 199 because one id is stale."""
+
+    screened: int
+    skipped: list[VendorBulkScreenSkip] = Field(default_factory=list)
+
+
+class VendorBulkExportRequest(BaseModel):
+    ids: list[str] = Field(..., min_length=1)

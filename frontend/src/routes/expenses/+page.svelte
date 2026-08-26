@@ -79,6 +79,8 @@
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { appendUnique } from '$lib/utils/pagination';
 	import { m } from '$lib/i18n/store.svelte';
+	import SortableHeader from '$lib/components/ui/SortableHeader.svelte';
+	import { toggleSort, type SortOrder } from '$lib/utils/sort';
 
 	const canCreate = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk'));
 	// Policy CRUD + report/pre-approval REJECT = admin | ap_manager.
@@ -99,6 +101,10 @@
 	// `loadExpenses()`, read by the debounce effect — see the comment there.
 	let appliedSearch = $state(($page.url.searchParams.get('search') ?? '').trim());
 	let statusFilter = $state<string>($page.url.searchParams.get('status') ?? 'all');
+	// Column sort (expenses tab only) — URL-backed via the same `syncUrl()`
+	// below. `null` field = the backend's own default order (most-recent first).
+	let sortField = $state<string | null>($page.url.searchParams.get('sort'));
+	let sortOrder = $state<SortOrder>(($page.url.searchParams.get('order') as SortOrder) ?? 'desc');
 
 	// --- Modal + selection state ---
 	let showCreate = $state(false);
@@ -224,6 +230,13 @@
 		const params: ExpenseListParams = { ...buildExportParams() };
 		const term = currentSearchTerm();
 		if (term) params.search = term;
+		// Same `untrack` reasoning as `currentSearchTerm()` — this is called
+		// synchronously from effects that must not depend on the sort state.
+		const currentSort = untrack(() => sortField);
+		if (currentSort) {
+			params.sort = currentSort;
+			params.order = untrack(() => sortOrder);
+		}
 		return params;
 	}
 
@@ -281,8 +294,23 @@
 			// Reconciliation status filter only belongs in the URL while on the cards tab.
 			if (tab === 'cards' && reconFilter !== 'all') url.searchParams.set('recon', reconFilter);
 			else url.searchParams.delete('recon');
+			if (sortField) {
+				url.searchParams.set('sort', sortField);
+				url.searchParams.set('order', sortOrder);
+			} else {
+				url.searchParams.delete('sort');
+				url.searchParams.delete('order');
+			}
 			replaceState(`${url.pathname}${url.search}`, {});
 		});
+	}
+
+	function handleSort(field: string) {
+		const next = toggleSort({ field: sortField, order: sortOrder }, field);
+		sortField = next.field;
+		sortOrder = next.order;
+		syncUrl();
+		loadExpenses();
 	}
 
 	// A keystroke now costs a request, so the term is debounced 300ms (the
@@ -1136,12 +1164,12 @@
 							onchange={toggleSelectAll}
 						/>
 					</th>
-					<th>{m('expenses.col.date')}</th>
-					<th>{m('expenses.col.merchant')}</th>
-					<th>{m('expenses.col.category')}</th>
+					<SortableHeader field="expense_date" label={m('expenses.col.date')} active={sortField === 'expense_date'} order={sortOrder} onsort={handleSort} />
+					<SortableHeader field="merchant" label={m('expenses.col.merchant')} active={sortField === 'merchant'} order={sortOrder} onsort={handleSort} />
+					<SortableHeader field="category" label={m('expenses.col.category')} active={sortField === 'category'} order={sortOrder} onsort={handleSort} />
 					<th>{m('expenses.col.method')}</th>
-					<th class="right">{m('expenses.col.amount')}</th>
-					<th>{m('expenses.col.status')}</th>
+					<SortableHeader field="amount" label={m('expenses.col.amount')} class="right" active={sortField === 'amount'} order={sortOrder} onsort={handleSort} />
+					<SortableHeader field="status" label={m('expenses.col.status')} active={sortField === 'status'} order={sortOrder} onsort={handleSort} />
 					<th class="actions-col"></th>
 				</tr>
 			{/snippet}

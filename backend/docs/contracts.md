@@ -196,7 +196,8 @@ Mounted at `/api/contracts`.
 
 | Method + path | Purpose | RBAC |
 |---------------|---------|------|
-| `GET /contracts` | List (filters: `status`, `contract_type`, `vendor_id`, `search`; paginated) | read |
+| `GET /contracts` | List (filters: `status`, `contract_type`, `vendor_id`, `search`; paginated; `sort=contract_number\|title\|status\|start_date\|end_date\|total_value&order=asc\|desc`, `.id` tie-break) | read |
+| `GET /contracts/ids` | Every contract id matching the caller's list filters, capped at `MAX_SELECT_ALL_IDS` — the "select all N matching" resolver | read |
 | `POST /contracts` | Create (always lands in `draft`) | mutate |
 | `GET /contracts/{id}` | Detail + spend summary | read |
 | `PATCH /contracts/{id}` | Update (status excluded — lifecycle endpoints own it) | mutate |
@@ -208,6 +209,8 @@ Mounted at `/api/contracts`.
 | `POST /contracts/{id}/cancel` | Lifecycle → `cancelled` | mutate |
 | `POST /contracts/{id}/renew` | Extend `end_date`, re-activate, re-arm alert | mutate |
 | `POST /contracts/{id}/create-po` | Spawn a PO from the contract | mutate |
+| `POST /contracts/bulk/status` | Bulk activate/terminate/cancel over a hand-picked set (`{ids, action}`), routed through the same `_transition` helper the single-row endpoints use | mutate |
+| `POST /contracts/bulk/export` | CSV export of a hand-picked set (`{ids}`) | read |
 
 Plus the invoice-side link endpoints (`POST /api/invoices/{id}/link-contract`
 and `/unlink-contract`, `admin` / `ap_manager` / `cfo`).
@@ -219,6 +222,22 @@ and `/unlink-contract`, `admin` / `ap_manager` / `cfo`).
   `admin`, `ap_manager`
 - The file-proxy route uses `get_current_user` plus the org-prefix cross-tenant
   check (any authenticated user, scoped to their own org's keys).
+
+### Bulk operations (issue #328)
+
+`/contracts` was, along with `/vendors`, one of the two primary list pages
+shipping zero bulk actions. `POST /bulk/status` resolves each id
+independently and calls the SAME `_transition(action, contract_id, …)`
+helper `POST /{id}/activate|terminate|cancel` use — so a bulk call can't
+reach a status (or skip an audit row) the single-row path wouldn't allow.
+A contract not in a legal starting status for the action, or an id that
+doesn't resolve, is skipped-and-reported (`{updated, skipped: [{id,
+reason}]}`) rather than failing the whole batch — the same partial-success
+contract as `api/vendors.py::bulk_vendor_status` /
+`api/invoices.py::bulk_status_change`. `renew` is deliberately NOT a bulk
+action — it needs a per-contract `end_date`, which has no sane bulk default.
+See `backend/tests/test_contract_bulk_ops.py` and
+`backend/tests/test_list_sorting.py`.
 
 ## Audit actions
 

@@ -2,6 +2,8 @@
 // requests route through the shared `api` client (Bearer + X-Tenant-Slug +
 // 401-bounce). Mirrors the pattern of `src/lib/api/contracts.ts` / `tax.ts`.
 import { api } from '$lib/api';
+import type { MatchingIdsResponse } from '$lib/utils/pagination';
+import { triggerDownload } from '$lib/utils/download';
 import type {
 	Vendor,
 	SanctionsCheck,
@@ -15,6 +17,80 @@ import type {
 	VendorMergeResponse
 } from '$lib/types/vendor';
 import type { ImportResult } from '$lib/types/csvImport';
+
+// --- List / select-all-matching / sort ---
+
+export interface VendorListParams {
+	search?: string;
+	status?: string;
+	source?: string;
+	sort?: string;
+	order?: 'asc' | 'desc';
+	page?: number;
+	page_size?: number;
+}
+
+function vendorQuery(params: VendorListParams): URLSearchParams {
+	const qs = new URLSearchParams();
+	if (params.search) qs.set('search', params.search);
+	if (params.status) qs.set('status', params.status);
+	if (params.source) qs.set('source', params.source);
+	if (params.sort) qs.set('sort', params.sort);
+	if (params.order) qs.set('order', params.order);
+	return qs;
+}
+
+/**
+ * Every vendor id matching the current list filters — `GET /api/vendors/ids`.
+ * Backs "select all N matching" the same way `getExpenseIds` /
+ * `GET /api/invoices/ids` do: the header checkbox only ever covers the
+ * currently-loaded page, so a bulk action over "select all" would otherwise
+ * silently skip every row past it.
+ */
+export function getVendorIds(params: VendorListParams = {}): Promise<MatchingIdsResponse> {
+	const qs = vendorQuery(params);
+	const query = qs.toString();
+	return api.get<MatchingIdsResponse>(`/api/vendors/ids${query ? `?${query}` : ''}`);
+}
+
+// --- Bulk operations ---
+
+export interface BulkSkip {
+	id: string;
+	reason: string;
+}
+
+export interface VendorBulkStatusResponse {
+	updated: number;
+	skipped: BulkSkip[];
+}
+
+/** Bulk verify (`status: 'active'`) / reject over a hand-picked set of
+ * vendors — the bulk counterpart of the single-row verify/reject row
+ * actions. `vendor.manage`-gated on the backend. */
+export function bulkVendorStatus(
+	ids: string[],
+	status: 'active' | 'rejected'
+): Promise<VendorBulkStatusResponse> {
+	return api.post<VendorBulkStatusResponse>('/api/vendors/bulk/status', { ids, status });
+}
+
+export interface VendorBulkScreenResponse {
+	screened: number;
+	skipped: BulkSkip[];
+}
+
+/** Bulk re-screen against the configured sanctions provider. admin / ap_manager. */
+export function bulkScreenVendors(ids: string[]): Promise<VendorBulkScreenResponse> {
+	return api.post<VendorBulkScreenResponse>('/api/vendors/bulk/screen', { ids });
+}
+
+/** CSV export of a hand-picked set of vendors (name/code/email/phone/status/
+ * source/created_at only — never bank details or the raw tax id). */
+export async function exportVendorsCsv(ids: string[]): Promise<void> {
+	const blob = await api.downloadBlobPost('/api/vendors/bulk/export', { ids });
+	triggerDownload(blob, `vendors-export.csv`);
+}
 
 // Manual re-screen of a vendor against the sanctions provider. admin / ap_manager.
 export function screenVendor(id: string): Promise<Vendor> {

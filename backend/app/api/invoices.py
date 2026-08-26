@@ -33,6 +33,7 @@ from app.api.pagination import (
     pagination_params,
 )
 from app.api.permissions import PERM_INVOICE_APPROVE, effective_permissions
+from app.api.sorting import SortParams, resolve_order_by, sort_params
 from app.database import get_control_db
 from app.models.agent_decision import AgentDecision
 from app.models.contract import Contract
@@ -164,6 +165,19 @@ _FINANCIAL_FIELDS = frozenset(
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
 
+# `sort=` allowlist for `GET /invoices` — see `api/sorting.py`. The client
+# sends one of these keys; the raw value is never interpolated into SQL. `.id`
+# is always appended as the final tie-break regardless of which column is
+# picked (same reasoning as the pre-existing `created_at, id` default order).
+INVOICE_SORTABLE_COLUMNS: dict[str, object] = {
+    "created_at": Invoice.created_at,
+    "due_date": Invoice.due_date,
+    "amount": Invoice.amount,
+    "vendor_name": Invoice.vendor_name,
+    "invoice_number": Invoice.invoice_number,
+    "status": Invoice.status,
+}
+
 
 def _invoice_list_filters(
     query,
@@ -244,6 +258,7 @@ async def list_invoices(
     due_date_to: date | None = None,
     search: str | None = None,
     assigned_to_id: uuid.UUID | None = None,
+    sort: SortParams = Depends(sort_params),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
@@ -275,7 +290,15 @@ async def list_invoices(
     # alone gives Postgres no stable order across OFFSET/LIMIT pages — page 2
     # could re-return a page-1 row, which the frontend's keyed list rejects as a
     # duplicate id. Tie-break on the unique PK for deterministic pagination.
-    query = query.order_by(Invoice.created_at.desc(), Invoice.id.desc())
+    # `sort=`/`order=` (validated against `INVOICE_SORTABLE_COLUMNS`) override
+    # the default when supplied — see `api/sorting.py`.
+    order_by = resolve_order_by(
+        sort,
+        INVOICE_SORTABLE_COLUMNS,
+        id_column=Invoice.id,
+        default=[Invoice.created_at.desc(), Invoice.id.desc()],
+    )
+    query = query.order_by(*order_by)
     query = query.offset(pagination.offset).limit(pagination.limit)
     query = query.options(selectinload(Invoice.extraction_results))
     result = await db.execute(query)
