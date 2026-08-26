@@ -330,6 +330,15 @@ _PERMISSION_GATED_ENDPOINTS = {
     ("PATCH", "/admin/users/{user_id}"): perm_catalog.PERM_USER_MANAGE,
     ("DELETE", "/admin/users/{user_id}"): perm_catalog.PERM_USER_MANAGE,
     ("POST", "/admin/users/bulk-delete"): perm_catalog.PERM_USER_MANAGE,
+    # Read-only supporting endpoints a user.manage-only custom role needs to
+    # actually use the grant — see docs/authentication.md § Granular
+    # permissions. `POST`/`PATCH`/`DELETE /admin/roles` (role CRUD) deliberately
+    # stay off this map: they remain `require_roles(ROLE_ADMIN)`, not
+    # `require_permission`, because minting/editing a role definition can
+    # bundle any catalog permission at all.
+    ("GET", "/admin/users"): perm_catalog.PERM_USER_MANAGE,
+    ("GET", "/admin/roles"): perm_catalog.PERM_USER_MANAGE,
+    ("GET", "/admin/permissions"): perm_catalog.PERM_USER_MANAGE,
 }
 
 

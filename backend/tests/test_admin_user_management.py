@@ -633,6 +633,111 @@ async def test_user_manage_only_caller_may_still_manage_a_lesser_user(realdb):
             await c.delete(f"/api/admin/roles/{role_id}")
 
 
+@pytest.mark.asyncio
+async def test_user_manage_only_caller_can_read_the_supporting_endpoints(realdb):
+    """Persona-panel finding — `GET /admin/users`, `/admin/roles` and
+    `/admin/permissions` were still `require_roles(ROLE_ADMIN)` even after the
+    mutating `/admin/users` routes moved to `require_permission(user.manage)`,
+    so a custom role holding ONLY user.manage could grant/manage users but
+    couldn't SEE the roster or the role picker it needs to do it. All three
+    are now `require_permission(PERM_USER_MANAGE)` (role CRUD itself —
+    `POST`/`PATCH`/`DELETE /admin/roles` — deliberately was not moved)."""
+    info = realdb.info("a")
+    async with realdb.client(key="a", role="admin") as c:
+        token, actor_id, role_id = await _make_user_manage_principal(c, info.org_id)
+        auth = {"Authorization": f"Bearer {token}"}
+        try:
+            users_resp = await c.get("/api/admin/users", headers=auth)
+            assert users_resp.status_code == 200, users_resp.text
+
+            roles_resp = await c.get("/api/admin/roles", headers=auth)
+            assert roles_resp.status_code == 200, roles_resp.text
+            # The picker POST/PATCH /admin/users reads role_names from.
+            assert any(r["name"] == "ap_clerk" for r in roles_resp.json())
+
+            perms_resp = await c.get("/api/admin/permissions", headers=auth)
+            assert perms_resp.status_code == 200, perms_resp.text
+            assert any(p["key"] == PERM_USER_MANAGE for p in perms_resp.json())
+        finally:
+            await c.delete(f"/api/admin/users/{actor_id}")
+            await c.delete(f"/api/admin/roles/{role_id}")
+
+
+@pytest.mark.asyncio
+async def test_user_manage_only_caller_can_create_update_delete_a_user(realdb):
+    """The full lifecycle the permission is FOR: a custom role holding ONLY
+    user.manage can create a lesser user, update it, and delete it — end to
+    end through the real endpoints, not just the pure guard functions."""
+    info = realdb.info("a")
+    async with realdb.client(key="a", role="admin") as c:
+        token, actor_id, role_id = await _make_user_manage_principal(c, info.org_id)
+        auth = {"Authorization": f"Bearer {token}"}
+        suffix = uuid.uuid4().hex[:8]
+        try:
+            created = await c.post(
+                "/api/admin/users",
+                json={
+                    "email": f"lifecycle-{suffix}@acme.test",
+                    "full_name": "Lifecycle Clerk",
+                    "role_names": ["ap_clerk"],
+                },
+                headers=auth,
+            )
+            assert created.status_code == 201, created.text
+            lesser_id = created.json()["id"]
+
+            updated = await c.patch(
+                f"/api/admin/users/{lesser_id}",
+                json={"full_name": "Lifecycle Clerk Renamed"},
+                headers=auth,
+            )
+            assert updated.status_code == 200, updated.text
+            assert updated.json()["full_name"] == "Lifecycle Clerk Renamed"
+
+            deleted = await c.delete(f"/api/admin/users/{lesser_id}", headers=auth)
+            assert deleted.status_code == 204, deleted.text
+
+            # Confirmed gone — a follow-up read via the admin client 404s.
+            gone = await c.get("/api/admin/users", params={"search": f"lifecycle-{suffix}"})
+            assert gone.json()["total"] == 0
+        finally:
+            await c.delete(f"/api/admin/users/{actor_id}")
+            await c.delete(f"/api/admin/roles/{role_id}")
+
+
+@pytest.mark.asyncio
+async def test_without_user_manage_every_admin_users_route_is_refused(realdb):
+    """The other half: a role that does NOT hold user.manage (a plain
+    ap_clerk — none of the four system roles except admin default-hold it,
+    see `ROLE_DEFAULT_PERMISSIONS`) is refused on every user.manage-gated
+    route, including the three read endpoints this finding wired up."""
+    info = realdb.info("a")
+    auth = {"Authorization": f"Bearer {realdb.token('a', 'ap_clerk')}"}
+    async with realdb.client(key="a", role="admin") as c:
+        assert (await c.get("/api/admin/users", headers=auth)).status_code == 403
+        assert (await c.get("/api/admin/roles", headers=auth)).status_code == 403
+        assert (await c.get("/api/admin/permissions", headers=auth)).status_code == 403
+        assert (
+            await c.post(
+                "/api/admin/users",
+                json={"email": "nope@acme.test", "full_name": "Nope", "role_names": []},
+                headers=auth,
+            )
+        ).status_code == 403
+        admin_id = info.users["admin"]
+        assert (
+            await c.patch(f"/api/admin/users/{admin_id}", json={"full_name": "x"}, headers=auth)
+        ).status_code == 403
+        assert (await c.delete(f"/api/admin/users/{admin_id}", headers=auth)).status_code == 403
+        # Role CRUD stays admin-only regardless — a user.manage grant (which
+        # this clerk doesn't even hold) still wouldn't reach it.
+        assert (
+            await c.post(
+                "/api/admin/roles", json={"name": f"nope-{uuid.uuid4().hex[:6]}"}, headers=auth
+            )
+        ).status_code == 403
+
+
 # --------------------------------------------------------------------------
 # Persona-panel finding #328 — the sole org admin could self-demote or
 # self-deactivate with no recovery short of a DB fix. `_authorize_target_mutation`

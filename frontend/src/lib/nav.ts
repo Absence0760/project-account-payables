@@ -15,6 +15,14 @@
  * group is visible when at least one child is; its sidebar link points at the
  * first child the current role can see. Child order = sub-tab order.
  *
+ * `perm` is an OR alternative to `roles` — an entry is visible if the caller
+ * matches `roles` (when given) OR holds `perm` (when given). It exists for
+ * the granular permission layer (`auth.can`, mirroring backend
+ * `require_permission`): a custom role holding only a splittable permission
+ * (e.g. `user.manage`) should see the nav entry its permission unlocks even
+ * though it doesn't hold the system role the entry also lists. Omit `perm`
+ * for anything not behind `require_permission` on the backend.
+ *
  * i18n: each entry carries a `labelKey` (an i18n message key) — the single
  * source of truth for the *translated* display string. The bare `label` is
  * retained as a stable, locale-independent identifier (used as an `{#each}`
@@ -23,7 +31,7 @@
  */
 
 import type { MessageKey } from '$lib/i18n/messages';
-import { PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID } from '$lib/types/admin';
+import { PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID, PERM_USER_MANAGE } from '$lib/types/admin';
 
 export interface NavLink {
 	kind: 'link';
@@ -38,7 +46,8 @@ export interface NavLink {
 	 * grantee: `roles` alone means a role gate hides the nav row entirely for
 	 * someone whose ONLY access is a granular permission (e.g. `payment.execute`
 	 * with no `admin`/`ap_manager`/`cfo` role), stranding them on a page they
-	 * can't navigate to despite the backend letting every call through.
+	 * can't navigate to despite the backend letting every call through. A
+	 * single-permission entry is just a one-element array (e.g. `[PERM_USER_MANAGE]`).
 	 */
 	permissions?: string[];
 }
@@ -179,7 +188,19 @@ export const NAV: NavEntry[] = [
 			{ label: 'Organization', labelKey: 'nav.organization', href: '/organization', roles: ['admin'] },
 			// Users + Roles share the /admin route via ?tab=; they're surfaced as
 			// peer section tabs (not a second tab row inside the page).
-			{ label: 'Users', labelKey: 'nav.users', href: '/admin?tab=users', roles: ['admin'] },
+			// Users: `GET /api/admin/users` is `require_permission(user.manage)`
+			// (defaults to admin-only, same as `roles` below — see
+			// docs/authentication.md § Granular permissions), so a custom role
+			// holding only `user.manage` sees this tab too via `permissions`.
+			{
+				label: 'Users',
+				labelKey: 'nav.users',
+				href: '/admin?tab=users',
+				roles: ['admin'],
+				permissions: [PERM_USER_MANAGE]
+			},
+			// Roles: role CRUD (defining what a role can grant) stays
+			// admin-only on the backend — no `permissions` here on purpose.
 			{ label: 'Roles', labelKey: 'nav.roles', href: '/admin?tab=roles', roles: ['admin'] },
 			{ label: 'Audit Trail', labelKey: 'nav.auditTrail', href: '/audit', roles: ['admin', 'cfo'] },
 			{ label: 'Workflows', labelKey: 'nav.workflows', href: '/workflows', roles: ['admin'] },

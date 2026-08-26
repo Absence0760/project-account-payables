@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 
@@ -121,6 +121,14 @@ class InvoiceUpdate(BaseModel):
     cost_center: str | None = Field(default=None, max_length=100)
     department: str | None = Field(default=None, max_length=100)
     project: str | None = Field(default=None, max_length=100)
+    # Optimistic-concurrency guard (If-Unmodified-Since style): the `updated_at`
+    # the client read alongside the invoice it's editing. When supplied and it
+    # no longer matches the row's CURRENT `updated_at` (checked under a row
+    # lock — see `get_invoice_for_update`), the PATCH is refused 409 instead of
+    # silently overwriting a change another user made in between. Omitted
+    # entirely (the pre-existing default) is unchanged — no check runs,
+    # matching every caller that predates this field.
+    expected_updated_at: datetime | None = None
 
     @model_validator(mode="after")
     def _guard_masked_tax_id(self):
@@ -195,6 +203,10 @@ class InvoiceResponse(BaseModel):
     # small "priors applied" indicator on the invoice-list row. Null when no
     # extraction ran or no priors fired.
     priors_summary: dict | None = None
+    # The row's current `updated_at`, ISO-8601. The invoice-edit UI captures
+    # this on load and echoes it back as `expected_updated_at` on the next
+    # `PATCH` — the client-side half of the optimistic-concurrency guard.
+    updated_at: str
 
     model_config = {"from_attributes": True}
 
@@ -246,6 +258,7 @@ class InvoiceResponse(BaseModel):
                 str(inv.intercompany_mirror_id) if inv.intercompany_mirror_id else None
             ),
             created_at=inv.created_at.isoformat() if inv.created_at else "",
+            updated_at=inv.updated_at.isoformat() if inv.updated_at else "",
             file_url=inv.file_url,
             warnings=inv.warnings,
             po_match=inv.po_match,

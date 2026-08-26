@@ -436,8 +436,9 @@ exactly as before.
   constants (dotted strings): `invoice.approve`, `payment_run.approve`,
   `payment.execute`, `payment.void`, `vendor.bank_change.approve`,
   `vendor.block`, `vendor.manage`, `user.manage`. `GET /api/admin/permissions`
-  (admin) returns the catalog (key + label) for the role editor. Everything not
-  in the catalog stays on `require_roles`.
+  returns the catalog (key + label) for the role editor — gated `user.manage`
+  (see below), same as its sibling reads. Everything not in the catalog stays
+  on `require_roles`.
 - **System-role defaults** — a static map (`ROLE_DEFAULT_PERMISSIONS`)
   reproduces today's matrix exactly: `admin` holds all; `ap_manager` holds
   invoice approve + run approve/execute + vendor bank-change/block/manage (NOT
@@ -481,6 +482,23 @@ exactly as before.
   uses for `GET /payments/queue` etc. Role/permission CRUD itself stays
   admin-only on `require_roles` (managing the catalog must not be a grantable
   permission — that would be a privilege-escalation path).
+  - **The reads a `user.manage` holder needs to actually use the grant are
+    migrated too.** `GET /api/admin/users` (the roster), `GET /api/admin/roles`
+    (the picker `role_names` is chosen from) and `GET /api/admin/permissions`
+    (the key→label lookup for the permission keys `GET /api/admin/roles`
+    already echoes) are all `require_permission(PERM_USER_MANAGE)` — read-only,
+    and the default holder set (`{admin}`) is byte-for-byte the same set
+    `require_roles(ROLE_ADMIN)` produced, so this is a no-op for the four
+    system roles and additive only for a custom role. `POST`/`PATCH`/`DELETE
+    /api/admin/roles` (defining what a role CAN grant) stay
+    `require_roles(ROLE_ADMIN)` — deliberately NOT migrated, because minting or
+    editing a role definition can bundle any catalog permission at all,
+    including ones the definer doesn't hold; that's a materially stronger
+    capability than assigning an *existing* role to a user (which
+    `_authorize_role_grant` already bounds to the grantor's own permissions),
+    and granting it via `user.manage` would let a "user admin" custom role
+    mint itself a role that grants everything, sidestepping the grant guard by
+    never touching a `role_names` field.
   - **Role-grant is bounded by the grantor.** `user.manage` lets you assign
     roles, but not roles more powerful than you hold: `_authorize_role_grant`
     refuses to grant the system `admin` role unless the caller is themselves an
@@ -525,37 +543,40 @@ exactly as before.
   controls converted so far are payment Execute, payment Void, vendor
   Block/Unblock (`VendorModal.svelte`), vendor create/edit + the consolidation
   merge action (`vendor.manage` — `/vendors/+page.svelte`,
-  `VendorConsolidationModal.svelte`), and the bank-change-approval queue's
+  `VendorConsolidationModal.svelte`), the bank-change-approval queue's
   Approve button (`vendor.bank_change.approve` — `/vendors/change-requests/
   +page.svelte`; its Reject button stays on the page's role-based
-  `auth.isManager` gate, matching the backend). The `/admin/roles` editor
-  renders permission checkboxes from the catalog and shows each custom role's
-  grants. This composes with the instance-level SoD check
-  (`check_segregation`, approver ≠ creator), which is unchanged.
+  `auth.isManager` gate, matching the backend), and the Users page/nav entry
+  (`user.manage`). The `/admin/roles` editor renders permission checkboxes
+  from the catalog and shows each custom role's grants. This composes with
+  the instance-level SoD check (`check_segregation`, approver ≠ creator),
+  which is unchanged.
   - **Page-level route access (nav visibility, the `auth.isManager`/role
     redirect guards) mirrors whatever `require_roles` the page's READ
     endpoint uses by default** — only the specific sensitive ACTION checks
     move to `auth.can(perm)`. The vendor pages above follow that default.
   - **Exception: a permission-gated control is unreachable if the nav row
-    that leads to it is still role-only.** For payments specifically, a
-    custom role holding ONLY `payment.execute` (no `admin`/`ap_manager`/
-    `cfo`) could call every backend endpoint the `/payments` page needs —
-    the supporting reads (`GET /api/payments`, `GET /api/payments/{id}`,
-    `GET /api/payments/runs/`, `GET /api/payments/runs/{id}`) are
-    `require_permission(PERM_PAYMENT_EXECUTE[, PERM_PAYMENT_VOID])`, exactly
-    matching the prior `require_roles(ADMIN, AP_MANAGER, CFO)` footprint —
-    but the sidebar's `$lib/nav.ts` entry only understood `roles`, so the row
-    (the only way to reach the page through the app) stayed hidden.
-    `NavLink`/`NavChild` now also take an optional `permissions?: string[]`,
-    OR'd with `roles` in `canSee`/`isEntryVisible`/`visibleChildren`/
-    `groupHref` (all now take an optional `can: PermissionCheck` alongside
-    the existing `has: RoleCheck`); `Sidebar.svelte` and `SectionTabs.svelte`
-    pass `auth.can`. The Payments nav entry carries `permissions:
-    [PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID]`. `src/lib/nav.test.ts` pins
-    that a permission-only holder (no role at all) sees the row and a holder
-    of neither does not. The vendor pages above didn't need this treatment —
-    their read endpoints stayed on the same role set their actions default
-    to, so no custom-role holder loses reachability.
+    that leads to it is still role-only.** `NavLink`/`NavChild` take an
+    optional `permissions?: string[]`, OR'd with `roles` in
+    `canSee`/`isEntryVisible`/`visibleChildren`/`groupHref` (all take an
+    optional `can: PermissionCheck` alongside the existing `has: RoleCheck`);
+    `Sidebar.svelte` and `SectionTabs.svelte` pass `auth.can`. Two nav
+    entries need this: **Payments** — a custom role holding ONLY
+    `payment.execute` (no `admin`/`ap_manager`/`cfo`) could call every
+    backend endpoint the `/payments` page needs (the supporting reads
+    are `require_permission(PERM_PAYMENT_EXECUTE[, PERM_PAYMENT_VOID])`,
+    exactly matching the prior `require_roles(ADMIN, AP_MANAGER, CFO)`
+    footprint) but the sidebar row stayed hidden without this — carries
+    `permissions: [PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID]`. **Users** — 
+    `GET /api/admin/users` migrated to `require_permission(user.manage)`,
+    so a custom role holding only that permission needs the tab too —
+    carries `permissions: [PERM_USER_MANAGE]`; the sibling Roles tab
+    deliberately does NOT (role CRUD stays `require_roles(ROLE_ADMIN)` — see
+    above). `src/lib/nav.test.ts` pins that a permission-only holder (no
+    role at all) sees each row and a holder of neither does not. The vendor
+    pages above didn't need this treatment — their read endpoints stayed on
+    the same role set their actions default to, so no custom-role holder
+    loses reachability.
 
 ### Segregation of duties on a workflow's approval step
 

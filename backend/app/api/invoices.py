@@ -1283,19 +1283,41 @@ async def update_invoice(
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
-    # selectinload extraction_results — see get_invoice for the why.
-    result = await db.execute(
-        select(Invoice)
-        .options(selectinload(Invoice.extraction_results))
-        .where(Invoice.id == invoice_id)
-    )
-    invoice = result.scalar_one_or_none()
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
+    # Row-locked read (same pattern as every status transition —
+    # `get_invoice_for_update` — and needed here for the same reason: without
+    # the lock, two concurrent PATCHes can both read the pre-edit row, both
+    # pass the `expected_updated_at` check against it, and the second commit
+    # still silently clobbers the first). Also does the selectinload +
+    # 404 `get_invoice` needs.
+    invoice = await get_invoice_for_update(db, invoice_id)
     if invoice.status in IMMUTABLE_STATUSES:
         raise HTTPException(status_code=409, detail="Cannot update invoice in this status")
 
     update_data = body.model_dump(exclude_unset=True)
+    # Optimistic-concurrency guard (If-Unmodified-Since style). Omitted
+    # entirely → unchanged behavior (every caller that predates this field).
+    # Supplied → must match the row's CURRENT `updated_at`, taken under the
+    # row lock above, or refuse rather than overwrite a change the client
+    # never saw. Popped out of `update_data` immediately — it's a request
+    # concurrency token, not an `Invoice` column, and the generic
+    # `setattr(invoice, field, value)` loop below has no idea it isn't one.
+    expected_updated_at = update_data.pop("expected_updated_at", None)
+    if expected_updated_at is not None:
+        # `invoice.updated_at` is always tz-aware (Postgres `timestamptz`); a
+        # client that sent a naive ISO timestamp (no offset) is assumed UTC
+        # rather than raising on a naive/aware comparison — this field is a
+        # concurrency token round-tripped from our own response, not
+        # user-authored input worth rejecting over a missing `Z`.
+        if expected_updated_at.tzinfo is None:
+            expected_updated_at = expected_updated_at.replace(tzinfo=UTC)
+        if expected_updated_at != invoice.updated_at:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This invoice was modified since you loaded it. "
+                    "Reload and reapply your changes."
+                ),
+            )
     # An approved invoice is financially frozen — the signed-off amount is what
     # the payment run pays. Non-financial edits (notes, addresses, GL coding)
     # stay allowed in the `approved` window so AP can keep cleaning up metadata;
