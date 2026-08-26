@@ -82,6 +82,7 @@ from app.models.invoice import Invoice
 from app.models.payment import Payment
 from app.services.numeric_bounds import STATEMENT_NUMERIC, fits_numeric
 from app.services.vendor_matching import _normalize, _similarity
+from app.utils.dates import parse_ambiguous_date
 
 logger = logging.getLogger(__name__)
 
@@ -298,24 +299,29 @@ def _find_col(headers: list[str], candidates: set[str]) -> str | None:
     return None
 
 
-def _parse_date(raw: str) -> date | None:
+def _parse_date(raw: str, *, day_first: bool = False) -> date | None:
     """Accept common bank date formats: ISO, MM/DD/YYYY, DD/MM/YYYY.
 
-    We try ISO first because it's unambiguous; then US-style
-    MM/DD/YYYY (most US bank exports); then DMY as a last resort.
-    A truly ambiguous date like 01/02/2026 will be read as Jan 2 —
-    the parser can't know better. CSV-driven imports should use
-    ISO when possible.
+    We try ISO first because it's unambiguous. The MM/DD/YYYY vs DD/MM/YYYY
+    case (``01/02/2026``) is genuinely ambiguous — nothing in the string can
+    settle it — so it's resolved by the caller-supplied ``day_first`` (the
+    org's own configured locale signal — see
+    ``app.utils.dates.resolve_day_first_preference``) via the shared
+    ``parse_ambiguous_date`` helper, never a hardcoded US-first order.
+    CSV-driven imports should use ISO when possible.
     """
     if not raw:
         return None
     raw = raw.strip()
-    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d"):
-        try:
-            return datetime.strptime(raw, fmt).date()
-        except ValueError:
-            continue
-    return None
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date()
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(raw, "%Y/%m/%d").date()
+    except ValueError:
+        pass
+    return parse_ambiguous_date(raw, day_first=day_first)
 
 
 def _parse_amount(raw: str) -> Decimal | None:
@@ -360,10 +366,14 @@ def parse_csv_statement(
     currency: str = "USD",
     imported_by: uuid.UUID | None = None,
     file_key: str | None = None,
+    day_first: bool = False,
 ) -> tuple[BankStatement, list[BankTransaction]]:
     """Parse a CSV bank-statement export into a Statement + list of
     Transaction rows. The transactions are NOT yet matched — call
     `match_statement_transactions` after persisting.
+
+    ``day_first`` resolves the ambiguous MM/DD vs DD/MM transaction-date
+    column (see ``app.utils.dates.resolve_day_first_preference``).
 
     The parser is forgiving: it sniffs the header row, accepts
     common column-name synonyms, handles amount sign via both
@@ -411,7 +421,7 @@ def parse_csv_statement(
             continue  # blank line
         if len(row) < len(headers):
             row = row + [""] * (len(headers) - len(row))
-        d = _parse_date(row[header_to_idx[date_col]])
+        d = _parse_date(row[header_to_idx[date_col]], day_first=day_first)
         if d is None:
             logger.warning("[bank_reconciliation] row %d: bad date, skipping", row_no)
             continue

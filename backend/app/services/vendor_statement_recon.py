@@ -58,6 +58,7 @@ from app.services.decimal_convention import (  # noqa: F401 — re-exported
     detect_convention,
 )
 from app.services.numeric_bounds import STATEMENT_NUMERIC, fits_numeric
+from app.utils.dates import parse_ambiguous_date
 
 # Matching tolerances — overridable per call.
 DEFAULT_AMOUNT_TOLERANCE = Decimal("0.01")
@@ -210,31 +211,38 @@ def _find_col(headers: list[str], candidates: set[str]) -> str | None:
     return None
 
 
-def parse_date(raw: str | None) -> date | None:
-    """Accept ISO, MM/DD/YYYY, DD/MM/YYYY, YYYY/MM/DD. Returns ``None`` on a
-    blank or unrecognised value (never raises).
+def parse_date(raw: str | None, *, day_first: bool = False) -> date | None:
+    """Accept ISO, YYYY/MM/DD, the genuinely ambiguous M/D/Y-or-D/M/Y slash
+    form, and a dotted D.M.Y/M.D.Y form. Returns ``None`` on a blank or
+    unrecognised value (never raises).
 
     Public because the PDF intake path (``vendor_statement_extraction``)
     normalises an extraction adapter's raw date STRING with the same parser the
-    CSV path uses — one statement date format story, not two."""
+    CSV path uses — one statement date format story, not two.
+
+    The SLASHED numeric case (``01/02/2026``) can't be read from the string
+    alone, so it's resolved by the caller-supplied ``day_first`` (the org's
+    own configured locale signal — see
+    ``app.utils.dates.resolve_day_first_preference``) via the shared
+    ``parse_ambiguous_date`` helper — never a hardcoded US-first order. A
+    DOTTED date stays hardcoded day-first (``15.01.2026`` = 15 January) — that
+    convention is a property of the SEPARATOR, not the org's locale, so it
+    isn't threaded through ``day_first``.
+    """
     if not raw:
         return None
     raw = raw.strip()
     if not raw:
         return None
-    # Ordering encodes the convention each separator carries: a SLASHED date is
-    # US-first (01/15/2026 = January 15), a DOTTED one is European-first
-    # (15.01.2026 = 15 January). Where the first pattern is impossible — month
-    # 15 — the next one takes it, so both orderings still read.
-    for fmt in (
-        "%Y-%m-%d",
-        "%m/%d/%Y",
-        "%d/%m/%Y",
-        "%Y/%m/%d",
-        "%d.%m.%Y",
-        "%m.%d.%Y",
-        "%Y.%m.%d",
-    ):
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    ambiguous = parse_ambiguous_date(raw, day_first=day_first)
+    if ambiguous is not None:
+        return ambiguous
+    for fmt in ("%d.%m.%Y", "%m.%d.%Y", "%Y.%m.%d"):
         try:
             return datetime.strptime(raw, fmt).date()
         except ValueError:
@@ -332,7 +340,7 @@ def parse_amount(raw: str | None, *, convention: AmountConvention | None = None)
     return -amount if negative else amount
 
 
-def parse_statement_csv(raw_csv: bytes) -> list[StatementLine]:
+def parse_statement_csv(raw_csv: bytes, *, day_first: bool = False) -> list[StatementLine]:
     """Parse a supplier-statement CSV into a list of :class:`StatementLine`.
 
     Forgiving: decodes ``utf-8-sig`` (BOM-tolerant) and falls back to
@@ -346,6 +354,9 @@ def parse_statement_csv(raw_csv: bytes) -> list[StatementLine]:
     A data row with an unparseable amount **and** no invoice number is skipped
     (it carries nothing to match on); otherwise the row is kept with whatever
     parsed (``amount`` may be ``None``).
+
+    ``day_first`` resolves the ambiguous slashed statement-date column (see
+    ``app.utils.dates.resolve_day_first_preference``).
     """
     try:
         text = raw_csv.decode("utf-8-sig")
@@ -390,7 +401,7 @@ def parse_statement_csv(raw_csv: bytes) -> list[StatementLine]:
 
         invoice_number = row[idx[invoice_col]].strip() if invoice_col else ""
         invoice_number = invoice_number or None
-        statement_date = parse_date(row[idx[date_col]]) if date_col else None
+        statement_date = parse_date(row[idx[date_col]], day_first=day_first) if date_col else None
         amount = parse_amount(row[idx[amount_col]], convention=convention) if amount_col else None
         status = row[idx[status_col]].strip() if status_col else None
         status = status or None

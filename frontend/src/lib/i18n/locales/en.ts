@@ -338,6 +338,11 @@ export const en = {
 	'vendors.bank.bankName': 'Bank name',
 	'vendors.bank.accountLast4': 'Account last 4',
 	'vendors.bank.routingLast4': 'Routing last 4',
+	// Destination-bank country (ISO 3166-1 alpha-2) — drives the routing-number
+	// vs. sort-code label/validation switch below (GB uses a sort code, not a
+	// US ABA routing number).
+	'vendors.bank.destinationCountry': 'Destination bank country',
+	'vendors.bank.sortCodeLast2': 'Sort code last 2',
 	// Mailing address for the `checkeeper` check-printing rail — without it,
 	// every check payment to this vendor fails `checkeeper_missing_mailing_address`.
 	'vendors.bank.mailingAddressSection': 'Check mailing address',
@@ -2119,6 +2124,8 @@ export const en = {
 	'portal.company.bank.name': 'Bank name',
 	'portal.company.bank.account': 'Account number',
 	'portal.company.bank.routing': 'Routing number',
+	'portal.company.bank.sortCode': 'Sort code',
+	'portal.company.bank.country': 'Destination bank country',
 	'portal.company.bank.request': 'Request bank-detail change',
 	'portal.company.bank.submitting': 'Submitting…',
 	'portal.company.bank.requestFailed': 'Request failed',

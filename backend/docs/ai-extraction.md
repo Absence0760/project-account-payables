@@ -203,6 +203,40 @@ statement cell can't drift apart:
   cleaners and into `run_self_correction`, so the header, the lines and the
   checker can't be read under different rules.
 
+### Date disambiguation (DD/MM vs MM/DD)
+
+A numeric date like `03/04/2026` is the same class of problem as the amount
+convention above: both `03 April` and `March 04` are structurally valid, and
+nothing in the string can settle it. `app/utils/dates.py` is the shared
+resolver, used by every call site that faces this ambiguity — `services/
+extraction.py` (`_clean_date`), `services/csv_import.py`, `services/
+bank_reconciliation.py`, and `services/vendor_statement_recon.py` (both the
+CSV and PDF-statement intake paths, via `parse_date`).
+
+- **`parse_ambiguous_date(raw, *, day_first)`** tries the caller's preferred
+  order first, falls back to the other order only when the preferred one is
+  structurally invalid for that string (e.g. `day_first=True` but the second
+  component is > 12), and returns `None` — never guesses — when neither order
+  parses. It only disambiguates the `M/D/Y`-vs-`D/M/Y` (and `M-D-Y`-vs-`D-M-Y`)
+  shape; ISO, `YYYY/MM/DD`, dotted (`DD.MM.YYYY`, conventionally day-first
+  regardless of locale) and human-readable forms are unambiguous and stay in
+  each caller's own format list.
+- **`resolve_day_first_preference(settings)`** derives `day_first` from the
+  tenant `Organization.settings` JSONB. The signal is a non-empty
+  `company.companies_house_number` — Companies House registers UK entities
+  only, unlike `company.vat_registration_number` (common well outside the UK).
+  No signal (the common case) resolves to `False`, preserving the pre-existing
+  month-first reading — no behavior change for an org that hasn't said
+  otherwise.
+- **The disambiguating signal comes from the org, never the string.** Before
+  this, all four call sites hand-rolled their own try/except order and all
+  four tried month-first first, so a UK invoice dated `03/04/2026` silently
+  booked as March 4th instead of April 3rd — no error, just a wrong date.
+- Guarded by `tests/test_ambiguous_dates.py`, which both unit-tests the
+  disambiguation logic and AST-scans the four call sites so none of them can
+  quietly regrow a hardcoded `"%m/%d/%Y"` / `"%d/%m/%Y"` pair — mirrors the
+  `UTC_TODAY_MODULES` convergence guard in `tests/test_utc_today.py`.
+
 ### Self-Correction Pass
 
 Runs after `_apply_extraction()`, before line items are saved. Implemented in `services/extraction_self_correction.py`.

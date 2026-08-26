@@ -73,6 +73,14 @@
 	let bankName = $state('');
 	let accountNumber = $state('');
 	let routingNumber = $state('');
+	let sortCode = $state('');
+	let bankCountry = $state('');
+	// GB uses a 6-digit sort code, not a 9-digit US ABA routing number — the
+	// country field picks which one this form collects + submits. Backend
+	// validation mirrors this: `schemas.portal.PortalBankChangeRequest` checks
+	// whichever key is actually present via `validate_aba_routing` /
+	// `validate_uk_sort_code`, never both required.
+	const bankIsUK = $derived(bankCountry.trim().toUpperCase() === 'GB');
 	let bankSaving = $state(false);
 	let bankErr = $state('');
 
@@ -179,11 +187,14 @@
 			await portalCompany.requestBankChange({
 				bank_name: bankName,
 				account_number: accountNumber,
-				routing_number: routingNumber,
+				...(bankIsUK ? { sort_code: sortCode } : { routing_number: routingNumber }),
+				...(bankCountry ? { country: bankCountry } : {})
 			});
 			accountNumber = '';
 			routingNumber = '';
+			sortCode = '';
 			bankName = '';
+			bankCountry = '';
 		} catch (err) {
 			bankErr = err instanceof Error ? err.message : m('portal.company.bank.requestFailed');
 		} finally {
@@ -263,9 +274,20 @@
 				<input type="text" bind:value={accountNumber} autocomplete="off" />
 			</label>
 			<label>
-				{m('portal.company.bank.routing')}
-				<input type="text" bind:value={routingNumber} autocomplete="off" />
+				{m('portal.company.bank.country')}
+				<input type="text" maxlength="2" bind:value={bankCountry} autocomplete="off" />
 			</label>
+			{#if bankIsUK}
+				<label>
+					{m('portal.company.bank.sortCode')}
+					<input type="text" bind:value={sortCode} autocomplete="off" />
+				</label>
+			{:else}
+				<label>
+					{m('portal.company.bank.routing')}
+					<input type="text" bind:value={routingNumber} autocomplete="off" />
+				</label>
+			{/if}
 			<button
 				type="submit"
 				class="btn-primary"

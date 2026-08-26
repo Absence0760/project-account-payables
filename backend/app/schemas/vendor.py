@@ -3,7 +3,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.services.vendor_consolidation import mask_tax_id
-from app.utils.banking import validate_aba_routing
+from app.utils.banking import validate_aba_routing, validate_uk_sort_code
 
 # Bulk-status targets a human may legitimately drive over a hand-picked set of
 # vendors — the same two the single-row `POST /{vendor_id}/verify` /
@@ -295,6 +295,12 @@ class VendorBankChangeRequest(BaseModel):
         routing = v.get("routing_number")
         if routing and not validate_aba_routing(routing):
             raise ValueError("routing_number is not a valid 9-digit ABA routing number")
+        # Same posture for the UK equivalent — a sort code, only checked when
+        # present (a US vendor's staged change never carries one). Accepted
+        # either grouped (NN-NN-NN) or bare (NNNNNN); see validate_uk_sort_code.
+        sort_code = v.get("sort_code")
+        if sort_code and not validate_uk_sort_code(sort_code):
+            raise ValueError("sort_code is not a valid 6-digit UK sort code")
         return v
 
 

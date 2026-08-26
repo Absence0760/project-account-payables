@@ -2227,3 +2227,48 @@ a separate, computed-on-read signal.
 fresh on every read, never persisted. The frontend toggle isn't wired to the new
 field yet (tracked in `docs/followups.md`); the API contract is what this
 decision fixes.
+
+---
+
+## 59. Ambiguous-date day-first preference reads a Companies-House number, not the data-residency region
+
+**Decided:** 2026-08-25 · `backend/app/utils/dates.py`
+
+Four call sites — `services/extraction.py`, `services/csv_import.py`,
+`services/bank_reconciliation.py`, `services/vendor_statement_recon.py` — each
+hand-rolled their own try/except order for a numeric date like `03/04/2026`,
+and all four tried `%m/%d/%Y` before `%d/%m/%Y`. A UK invoice dated 3 April
+booked silently as March 4th — no error, just a wrong date. `03/04/2026` is
+genuinely ambiguous (both readings are structurally valid), so fixing the
+order can only trade which locale gets corrupted; the real fix needs a signal
+from outside the string.
+
+Two existing org-configured signals could have supplied it:
+`settings.residency.region` (`us`/`eu`/`uk`/`ca`/`au`, §34's GDPR/CCPA data
+pin) and `settings.company.companies_house_number` (added alongside
+`vat_registration_number` for a different UK-persona finding in this same
+round). Residency was rejected: it answers *where this tenant's data is
+legally required to live*, not *what country this company operates in* — a US
+company can legitimately pin EU residency for a subsidiary's data, and reading
+that as "this org is day-first" would corrupt a US company's dates on an
+unrelated legal configuration. `vat_registration_number` was also rejected: VAT
+registration is common across the EU and beyond, so its presence doesn't imply
+UK, or even which day-first country. `companies_house_number` is the one
+signal that means UK and only UK — Companies House registers UK entities
+exclusively — so `resolve_day_first_preference` reads that field alone. No
+signal (the default for every org that hasn't set it) resolves to
+`day_first=False`, preserving the pre-existing month-first reading for the
+common case.
+
+The disambiguation itself (`parse_ambiguous_date`) is a second, orthogonal
+piece: given `day_first`, try the preferred order, fall back to the other only
+when the preferred order is structurally invalid for that string, and return
+`None` — never guess — when neither parses. It is intentionally narrow (only
+the `M/D/Y`-vs-`D/M/Y` slash/dash shape); ISO, `YYYY/MM/DD` and dotted
+(`DD.MM.YYYY`, conventionally day-first by SEPARATOR, not by org locale) forms
+are unambiguous and stay in each caller's own format list.
+
+**Guard:** `tests/test_ambiguous_dates.py` unit-tests both functions and
+AST-scans the four call sites (mirroring `UTC_TODAY_MODULES` in
+`tests/test_utc_today.py`) so none of them can quietly regrow a hardcoded
+`"%m/%d/%Y"` / `"%d/%m/%Y"` pair outside the shared helper.

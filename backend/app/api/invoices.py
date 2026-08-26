@@ -110,6 +110,7 @@ from app.tenant import (
     get_tenant_db,
     get_write_entity_id,
 )
+from app.utils.dates import resolve_day_first_preference
 from app.utils.http import content_disposition_attachment
 
 IMMUTABLE_STATUSES = {
@@ -2028,6 +2029,7 @@ async def import_invoices_from_csv(
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
     org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID = Depends(get_write_entity_id),
+    org: Organization = Depends(get_tenant),
 ):
     """Bulk-import historical invoices from a CSV export.
 
@@ -2048,7 +2050,13 @@ async def import_invoices_from_csv(
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="CSV must be UTF-8 encoded") from None
 
-    result = await import_invoices_csv(db, org_id, csv_text, entity_id=entity_id)
+    result = await import_invoices_csv(
+        db,
+        org_id,
+        csv_text,
+        entity_id=entity_id,
+        day_first=resolve_day_first_preference(org.settings or {}),
+    )
     await db.commit()
     return result.to_dict()
 

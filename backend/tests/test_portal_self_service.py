@@ -545,6 +545,48 @@ async def test_bank_change_rejects_a_malformed_routing_number(realdb):
 
 
 @pytest.mark.asyncio
+async def test_bank_change_rejects_a_malformed_sort_code(realdb):
+    """UK equivalent of the routing-number check — a vendor self-service
+    submission with a bad sort code is rejected before staging, same as a
+    bad ABA routing number."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        resp = await client.post(
+            "/api/portal/company/bank-change",
+            json={"bank_details": {"sort_code": "1234567", "account_number": "12345678"}},
+        )
+    assert resp.status_code == 422, resp.text
+
+    async with mk() as s:
+        rows = (
+            (
+                await s.execute(
+                    select(VendorChangeRequest).where(VendorChangeRequest.vendor_id == vendor_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_bank_change_accepts_a_valid_sort_code(realdb):
+    """A well-formed bare-digit sort code stages cleanly."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        resp = await client.post(
+            "/api/portal/company/bank-change",
+            json={"bank_details": {"sort_code": "200000", "account_number": "12345678"}},
+        )
+    assert resp.status_code == 202, resp.text
+
+
+@pytest.mark.asyncio
 async def test_tax_id_change_stages_and_does_not_mutate_vendor(realdb):
     org_id = realdb.info(TENANT).org_id
     mk = realdb.sessionmaker(TENANT)

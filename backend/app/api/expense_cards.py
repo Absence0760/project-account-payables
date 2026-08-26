@@ -47,6 +47,7 @@ from app.models.expense import (
     ExpensePaymentMethod,
     ReconciliationStatus,
 )
+from app.models.organization import Organization
 from app.models.user import User
 from app.schemas.expense import (
     CorporateCardMatchRequest,
@@ -60,9 +61,11 @@ from app.services.expense_card_reconciliation import suggest_matches, sync_virtu
 from app.tenant import (
     apply_entity_scope,
     get_entity_id,
+    get_tenant,
     get_tenant_db,
     get_write_entity_id,
 )
+from app.utils.dates import resolve_day_first_preference
 
 router = APIRouter(prefix="/corporate-card-transactions", tags=["corporate-card-transactions"])
 
@@ -234,6 +237,7 @@ async def import_card_csv(
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
     org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID = Depends(get_write_entity_id),
+    org: Organization = Depends(get_tenant),
 ):
     """Import a corporate-card transaction feed CSV.
 
@@ -254,7 +258,12 @@ async def import_card_csv(
 
     import_batch = uuid.uuid4().hex
     result = await import_corporate_card_csv(
-        db, org_id, csv_text, entity_id=entity_id, import_batch=import_batch
+        db,
+        org_id,
+        csv_text,
+        entity_id=entity_id,
+        import_batch=import_batch,
+        day_first=resolve_day_first_preference(org.settings or {}),
     )
     await dispatch_audit(
         db,
