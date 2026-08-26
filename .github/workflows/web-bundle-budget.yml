@@ -43,7 +43,17 @@ env:
   #
   # ── Ceiling change log — append a dated entry with the measurement + reason ──
   # 2026-08-06 — initial: total 850, largest 100. Baseline 747 / 43.
-  MAX_TOTAL_KB: 850
+  # 2026-08-26 — total 850 → 1000. Measured 890 / 210 files, largest chunk
+  # unchanged at 53 (well under 100, no bump needed there). The persona-panel
+  # round-2 batch (issue #328) shipped nine real features in one PR: the 1099
+  # e-filing admin workflow, a Day-0 vendor/invoice CSV import UI, three new
+  # admin pages (retention policy, access review, privacy/DSAR), the
+  # multi-level approval-chain progress stepper, forgot/reset-password pages,
+  # clickable column sort across five list views, and bulk operations on
+  # vendors/contracts — each adding its own route/component weight. ~14%
+  # headroom on the new 890 baseline, matching the original ceiling's headroom
+  # over its baseline.
+  MAX_TOTAL_KB: 1000
   MAX_LARGEST_CHUNK_KB: 100
 
 jobs:

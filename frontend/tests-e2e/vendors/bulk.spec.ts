@@ -49,7 +49,7 @@ test.describe('/vendors bulk operations (acme admin)', () => {
 		const verifyResponse = page.waitForResponse(
 			(r) => r.url().includes('/api/vendors/bulk/status') && r.request().method() === 'POST'
 		);
-		await page.getByRole('button', { name: 'Verify', exact: true }).click();
+		await page.getByRole('toolbar', { name: 'Bulk actions' }).getByRole('button', { name: 'Verify', exact: true }).click();
 		const resp = await verifyResponse;
 		expect(resp.status()).toBe(200);
 		const body = (await resp.json()) as { updated: number; skipped: unknown[] };
@@ -85,7 +85,7 @@ test.describe('/vendors bulk operations (acme admin)', () => {
 		const verifyResponse = page.waitForResponse(
 			(r) => r.url().includes('/api/vendors/bulk/status') && r.request().method() === 'POST'
 		);
-		await page.getByRole('button', { name: 'Verify', exact: true }).click();
+		await page.getByRole('toolbar', { name: 'Bulk actions' }).getByRole('button', { name: 'Verify', exact: true }).click();
 		const body = (await (await verifyResponse).json()) as {
 			updated: number;
 			skipped: { id: string; reason: string }[];
