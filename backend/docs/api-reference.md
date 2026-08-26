@@ -209,7 +209,7 @@ See [`docs/self-service-signup.md`](../../docs/self-service-signup.md) for the f
 | `POST`   | `/api/invoices/bulk/export`         | *     | Bulk export (CSV/JSON/XML) |
 | `POST`   | `/api/invoices/bulk-recode-gl`      | admin | Bulk GL re-code via vendor priors (+ optional AI fallback). Defaults to dry-run. See [`ai-extraction.md`](ai-extraction.md) § Bulk re-coding. |
 
-**Query parameters for `GET /api/invoices`:** `page`, `page_size`, `status` (comma-sep), `vendor`, `invoice_number`, `po_number`, `description`, `amount_min`, `amount_max`, `due_date_from`, `due_date_to`, `search`.
+**Query parameters for `GET /api/invoices`:** `page`, `page_size`, `status` (comma-sep), `vendor`, `invoice_number`, `po_number`, `description`, `amount_min`, `amount_max`, `due_date_from`, `due_date_to`, `search`, `assigned_to_id` (exact match on `Invoice.assigned_to_id`; the frontend's "Assigned to" filter and "My Approvals" quick view both drive off it — the latter passing the caller's own id). `GET /api/invoices/ids` (the select-all-matching resolver) accepts the same filter set, `assigned_to_id` included, so a select-all under either filter can't silently widen past what's on screen. Every invoice row already carries `assigned_to_id` + `assigned_to` (the display name, denormalized at assign time) in `InvoiceResponse` — no separate lookup needed to render an assignee column.
 
 ## Workflow Actions (per invoice)
 
