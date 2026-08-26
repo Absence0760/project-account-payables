@@ -579,7 +579,7 @@
 	}
 
 	.confirmation-number {
-		font-family: var(--font-mono, monospace);
+		font-family: var(--font-mono);
 	}
 
 	.btn-secondary {

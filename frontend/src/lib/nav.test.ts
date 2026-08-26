@@ -172,7 +172,8 @@ test('canSee: permissions is an OR alternative to roles, not an AND', () => {
 	expect(canSee(undefined, noHas)).toBe(true);
 	// roles-only entry: unaffected by can being absent or always-false.
 	expect(canSee(['admin'], hasAdmin)).toBe(true);
-	expect(canSee(['admin'], noHas, [PERM_USER_MANAGE], canUserManage)).toBe(false);
+	// roles fail and no permissions declared → hidden.
+	expect(canSee(['admin'], noHas)).toBe(false);
 	// permissions-only match: roles fails (or is absent) but the permission matches.
 	expect(canSee(['admin'], noHas, [PERM_USER_MANAGE], canUserManage)).toBe(true);
 	// Neither the role nor the permission match → hidden.
