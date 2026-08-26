@@ -13,12 +13,15 @@
 	import ScreeningBadge from '$lib/components/ui/ScreeningBadge.svelte';
 	import VendorModal from '$lib/components/modals/VendorModal.svelte';
 	import VendorConsolidationModal from '$lib/components/modals/VendorConsolidationModal.svelte';
+	import ImportCsvModal from '$lib/components/modals/ImportCsvModal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { PERM_VENDOR_MANAGE } from '$lib/types/admin';
 	import { m } from '$lib/i18n/store.svelte';
+	import { importVendorsCsv } from '$lib/api/vendors';
 	import type { Vendor, VendorBankDetails } from '$lib/types/vendor';
+	import type { ImportResult } from '$lib/types/csvImport';
 
 	let COLUMNS = $derived([
 		{ label: m('vendors.col.vendor') },
@@ -40,6 +43,12 @@
 	// vendor.manage by default; the action surfaces only for them. Gated on the
 	// granular permission, not a role check (mirrors the backend gate).
 	let showConsolidation = $state(false);
+	// Day-0 CSV import — `POST /api/vendors/import-csv` is
+	// `require_roles(ADMIN, AP_MANAGER)`, the same plain-role gate as the ERP
+	// sync button above, so this reuses `auth.isManager` rather than the
+	// granular `vendor.manage` permission (which could diverge under a
+	// custom role split).
+	let showImportCsv = $state(false);
 	const canManageVendors = $derived(auth.can(PERM_VENDOR_MANAGE));
 	let bankEditing = $state<Vendor | null>(null);
 	let bankForm = $state<BankDetails>({
@@ -282,6 +291,15 @@
 		{ key: 'active', label: m('vendors.filter.active') },
 		{ key: 'rejected', label: m('vendors.filter.rejected') }
 	]);
+	// Only the true "this tenant has zero vendors" state points at the CSV
+	// import CTA — a search/status filter that matches nothing gets the plain
+	// message, since "import a CSV" would be a non-sequitur when the tenant
+	// already has vendors and the filter is just narrow.
+	let emptyMessage = $derived(
+		vendors.length === 0 && !search.trim() && statusFilter === 'all'
+			? m('vendors.empty.fresh')
+			: m('vendors.empty')
+	);
 </script>
 
 <PageHeader title={m('vendors.title')}>
@@ -306,6 +324,13 @@
 				{syncing ? m('vendors.action.syncing') : m('vendors.action.syncErp')}
 			</button>
 		{/if}
+		{#if auth.isManager}
+			<!-- Day-0 bulk load — `POST /api/vendors/import-csv`, same gate as
+			     the sync button above. See backend/docs/csv-import.md. -->
+			<button class="btn-outline" onclick={() => (showImportCsv = true)}>
+				{m('vendors.action.importCsv')}
+			</button>
+		{/if}
 	{/snippet}
 
 	<div class="filter-row">
@@ -313,7 +338,7 @@
 		<FilterChips chips={statusChips} bind:active={statusFilter} />
 	</div>
 
-	<DataTable columns={COLUMNS} isEmpty={vendors.length === 0} empty={m('vendors.empty')}>
+	<DataTable columns={COLUMNS} isEmpty={vendors.length === 0} empty={emptyMessage}>
 		{#snippet body()}
 			{#each vendors as v (v.id)}
 				<tr
@@ -409,6 +434,26 @@
 		onclose={() => (showConsolidation = false)}
 		onmerged={() => fetchVendors()}
 	/>
+{/if}
+
+{#if showImportCsv}
+	<ImportCsvModal
+		title={m('vendors.action.importCsv')}
+		ariaLabel={m('vendors.action.importCsv')}
+		onimport={(file: File): Promise<ImportResult> => importVendorsCsv(file)}
+		onclose={() => (showImportCsv = false)}
+		onimported={() => fetchVendors()}
+	>
+		{#snippet columnsHint()}
+			<p>{m('csvImport.vendors.hint.intro')}</p>
+			<ul>
+				<li>{m('csvImport.vendors.hint.name')}</li>
+				<li>{m('csvImport.vendors.hint.code')}</li>
+				<li>{m('csvImport.vendors.hint.dedup')}</li>
+			</ul>
+			<p>{m('csvImport.vendors.hint.status')}</p>
+		{/snippet}
+	</ImportCsvModal>
 {/if}
 
 <Modal

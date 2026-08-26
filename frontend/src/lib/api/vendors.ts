@@ -14,6 +14,7 @@ import type {
 	VendorConsolidationResponse,
 	VendorMergeResponse
 } from '$lib/types/vendor';
+import type { ImportResult } from '$lib/types/csvImport';
 
 // Manual re-screen of a vendor against the sanctions provider. admin / ap_manager.
 export function screenVendor(id: string): Promise<Vendor> {
@@ -92,4 +93,11 @@ export function mergeVendorConsolidation(
 		canonical_vendor_id: canonicalVendorId,
 		duplicate_vendor_ids: duplicateVendorIds
 	});
+}
+
+// Day-0 CSV import — bulk-create vendors from a customer export. Dedup by
+// `code` first, then case-insensitive `name`; skip-and-report (a bad row
+// never aborts the batch). admin / ap_manager. See backend/docs/csv-import.md.
+export function importVendorsCsv(file: File): Promise<ImportResult> {
+	return api.upload<ImportResult>('/api/vendors/import-csv', file);
 }
