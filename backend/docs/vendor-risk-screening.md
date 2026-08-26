@@ -158,6 +158,42 @@ the control is hidden for a non-holder; re-screen is gated on
 `/vendors` also surfaces the same screening/risk actions per-vendor via
 `VendorModal`.)
 
+## Bulk operations and list sort (issue #328)
+
+`GET /api/vendors` accepts `sort=name|code|status|created_at&order=asc|desc`
+(`api/sorting.py`'s shared allowlist — an out-of-list value is a 422, never
+silently ignored) with `.id` always appended as the final tie-break so
+OFFSET/LIMIT pagination stays deterministic regardless of which column is
+picked. The frontend's `SortableHeader` persists the choice to the URL
+(`?sort=&order=`).
+
+`/vendors` was, along with `/contracts`, one of the two primary list pages
+shipping zero bulk actions. It now mirrors the invoices/expenses bulk shape:
+
+- `GET /api/vendors/ids` — every vendor id matching the caller's list
+  filters (capped at `MAX_SELECT_ALL_IDS`), backing "select all N matching"
+  the same way `GET /api/invoices/ids` does.
+- `POST /api/vendors/bulk/status` (`{ids, status: "active"|"rejected"}`,
+  `vendor.manage`) — bulk verify/reject, routed through the identical status
+  writes + audit actions (`vendor.verified`/`vendor.rejected`) the
+  single-row `POST /{id}/verify`/`/reject` endpoints use. Each id is
+  resolved independently; a vendor outside the legal starting status for
+  the target, or an id that doesn't resolve, is skipped-and-reported
+  (`{updated, skipped: [{id, reason}]}`) rather than failing the whole
+  batch — the same partial-success contract as
+  `api/invoices.py::bulk_status_change`.
+- `POST /api/vendors/bulk/screen` (`{ids}`, admin/ap_manager) — bulk
+  re-screen against the configured sanctions provider (same
+  `screen_vendor_record` call as the single-row `POST /{id}/screen`); a
+  per-vendor provider failure is skipped-and-reported rather than aborting
+  the rest of the batch.
+- `POST /api/vendors/bulk/export` (`{ids}`) — CSV of the selection.
+  Deliberately narrow columns (name/code/email/phone/status/source/
+  created_at) — never `bank_details` or the raw `tax_id`.
+
+See `backend/tests/test_vendor_bulk_ops.py` and
+`backend/tests/test_list_sorting.py`.
+
 ## Periodic re-screening
 
 `services/vendor_rescreen.py` is a background loop (same shape as

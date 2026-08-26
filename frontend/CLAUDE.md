@@ -361,6 +361,46 @@ grid page instead of hand-rolling `<div class="grid-container"><table>`:
   `stickyHeader`. These two MUST be props (they target DataTable-owned
   `<table>`/`<thead>`, which a page-scoped selector can't reach).
 
+### Column sort (`SortableHeader`)
+
+`$lib/components/ui/SortableHeader.svelte` renders one clickable, sortable
+`<th>` for use inside a `DataTable`'s `header` snippet (see the note in
+*Data tables* above). Pairs with the pure `$lib/utils/sort.ts::toggleSort`
+helper — click an inactive column to sort it ascending, click the active
+one again to flip direction:
+
+```svelte
+<script lang="ts">
+    import SortableHeader from '$lib/components/ui/SortableHeader.svelte';
+    import { toggleSort, type SortOrder } from '$lib/utils/sort';
+
+    let sortField = $state<string | null>($page.url.searchParams.get('sort'));
+    let sortOrder = $state<SortOrder>(($page.url.searchParams.get('order') as SortOrder) ?? 'desc');
+
+    function handleSort(field: string) {
+        const next = toggleSort({ field: sortField, order: sortOrder }, field);
+        sortField = next.field;
+        sortOrder = next.order;
+        syncUrl(); // fold sort into the page's existing URL sync, or a dedicated syncSortUrl()
+        store.fetch(buildParams());
+    }
+</script>
+
+<SortableHeader field="amount" label={m('…col.amount')} active={sortField === 'amount'} order={sortOrder} onsort={handleSort} />
+```
+
+- The backend validates `sort=` against a per-endpoint allowlist
+  (`backend/app/api/sorting.py`) — an out-of-list value is a 422, so only
+  pass field keys the endpoint actually declares.
+- `null` field = the backend's own default order; only send `sort`/`order`
+  in `buildParams()` when `sortField` is set (`untrack()` the read the same
+  way `search` is — `buildParams()` is called from filter effects too).
+- Persist the choice to the URL the same way the page's other filter state
+  is persisted (mirror `/expenses`' `syncUrl()`, or a page-local
+  `syncSortUrl()` when the page has no existing filter→URL sync).
+- Shipped on `/invoices`, `/vendors`, `/payments` (History tab), `/expenses`,
+  and `/contracts` — the five primary list pages.
+
 ### Search (`SearchBox`)
 
 Pill-shaped search input with a magnifier-glass SVG. Single component:
@@ -462,6 +502,16 @@ appears when one or more rows are selected:
 `<div class="pay-bar">` because it's a payment-run *builder*
 (selection drives the next step's UI, not row actions). Don't copy
 this pattern elsewhere.
+
+Shipped on `/invoices`, `/expenses`, `/vendors` (bulk verify/reject via
+`POST /api/vendors/bulk/status`, bulk re-screen via `.../bulk/screen`, CSV
+export via `.../bulk/export`; gated to `vendor.manage`) and `/contracts`
+(bulk activate/terminate/cancel via `POST /api/contracts/bulk/status`,
+routed through the same `_transition` helper the single-row lifecycle
+buttons use; CSV export) — the "select all N matching" affordance on each
+resolves the whole filtered set via that resource's `GET .../ids` sibling
+endpoint (`getVendorIds`/`getContractIds`/`getExpenseIds`) rather than only
+the currently-loaded page.
 
 ### Pagination + Load more
 
