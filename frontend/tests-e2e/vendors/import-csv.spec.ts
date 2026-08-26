@@ -51,7 +51,13 @@ test.describe('/vendors — Import CSV', () => {
 		// List refetched — the newly-imported vendor is visible without a
 		// manual page reload, landed as `unverified` per the import contract.
 		await page.getByRole('textbox', { name: /search vendors/i }).fill(goodName);
-		await expect(page.getByRole('cell', { name: goodName })).toBeVisible({ timeout: 15_000 });
+		// Scoped to the vendor-name cell specifically — the bulk-select
+		// checkbox cell's own aria-label ("Select {name}") also contains the
+		// vendor name as a substring, so an unscoped role query resolves
+		// ambiguously to both cells.
+		await expect(page.locator('td.vendor-name', { hasText: goodName })).toBeVisible({
+			timeout: 15_000
+		});
 	});
 
 	test('a hard failure (non-CSV upload) surfaces as an error toast, not a silent no-op', async ({ page }) => {
