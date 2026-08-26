@@ -216,6 +216,16 @@ export const NAV: NavEntry[] = [
 			// Admin only (the backend /api/partner surface 403s the rest). A
 			// standalone org sees an empty "not a partner" state.
 			{ label: 'Partner Admin', labelKey: 'nav.partner', href: '/admin/partner', roles: ['admin'] },
+			// SOX records-management config — per-record-class retention windows.
+			// Admin only (the backend GET/PUT /api/retention-policy 403s the rest).
+			{ label: 'Retention Policy', labelKey: 'nav.retention', href: '/admin/retention', roles: ['admin'] },
+			// Periodic SOX access review — flags dormant elevated-role users.
+			// Admin | CFO (the reviewer privilege), matching the backend's
+			// require_roles(ADMIN, CFO) on both /api/access-reviews routes.
+			{ label: 'Access Review', labelKey: 'nav.accessReview', href: '/admin/access-review', roles: ['admin', 'cfo'] },
+			// GDPR/CCPA data-subject rights — DSAR export + right-to-erasure.
+			// Admin only (the backend /api/privacy surface 403s the rest).
+			{ label: 'Privacy & DSAR', labelKey: 'nav.privacy', href: '/admin/privacy', roles: ['admin'] },
 		],
 	},
 ];

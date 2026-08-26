@@ -46,6 +46,9 @@ export const messages = {
 	'nav.apiKeys': 'API-Schlüssel',
 	'nav.webhooks': 'Webhooks',
 	'nav.partner': 'Partner-Verwaltung',
+	'nav.retention': 'Aufbewahrungsrichtlinie',
+	'nav.accessReview': 'Zugriffsprüfung',
+	'nav.privacy': 'Datenschutz & DSAR',
 
 	// App shell / sidebar
 	'shell.appName': 'FeohLedger',
