@@ -1,6 +1,8 @@
 """Auth endpoints — login (with optional MFA challenge), MFA enroll/verify, logout, profile."""
 
+import asyncio
 import json
+import logging
 import uuid
 from datetime import UTC, datetime
 
@@ -22,6 +24,8 @@ from app.models.user import User
 from app.models.webauthn_credential import WebAuthnCredential
 from app.schemas.auth import (
     ChangePasswordRequest,
+    ForgotPasswordRequest,
+    ForgotPasswordResponse,
     LoginRequest,
     MFAChallengeResponse,
     MFADisableRequest,
@@ -30,6 +34,8 @@ from app.schemas.auth import (
     MFAEnrollVerifyRequest,
     MFAStepUpRequest,
     MFAVerifyRequest,
+    ResetPasswordRequest,
+    ResetPasswordResponse,
     SessionResponse,
     SessionRevokeResponse,
     TokenResponse,
@@ -43,7 +49,7 @@ from app.schemas.auth import (
     WebAuthnRegisterStartResponse,
     WebAuthnStepUpStartRequest,
 )
-from app.services import mfa, webauthn
+from app.services import mfa, password_reset, webauthn
 from app.services.audit_dispatch import dispatch_auth_audit
 from app.services.email_adapters import (
     EmailMessage,
@@ -70,6 +76,7 @@ from app.services.session_management import (
     register_session,
     revoke_one_session,
     revoke_other_sessions,
+    revoke_user_sessions,
 )
 from app.services.sso import is_sso_only
 from app.utils.passwords import (
@@ -80,7 +87,29 @@ from app.utils.passwords import (
     verify_password,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# Strong references to in-flight background tasks (the forgot-password email
+# send) — without this the only reference is the local in `_spawn_background`,
+# and the event loop's own registry is weak, so the task could be
+# garbage-collected mid-send. Mirrors `services/post_commit.py`'s `_tasks`.
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_background(coro) -> None:
+    """Fire-and-forget a coroutine, keeping a strong ref until it completes.
+
+    Used for the forgot-password email so the HTTP response returns before
+    the send completes — awaiting it inline would make a match's response
+    measurably slower than a non-match's (DB lookup + Redis write + an
+    outbound send vs. just a DB lookup), which is exactly the enumeration
+    side-channel the equalized response body is trying to close.
+    """
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +389,160 @@ async def login(
         access_token=token,
         must_change_password=user.must_change_password,
     )
+
+
+# ---------------------------------------------------------------------------
+# Forgot / reset password (self-service recovery — main app only; the
+# supplier portal is a separate, unauthenticated `VendorUser` surface and is
+# deliberately out of scope here)
+# ---------------------------------------------------------------------------
+
+
+def _password_reset_url(slug: str, token: str) -> str:
+    from urllib.parse import quote
+
+    # Same construction as the signup welcome email / supplier-portal invite
+    # (`_tenant_url` / `invite_vendor_portal_user`'s `template_base`) — the
+    # tenant's own subdomain, never a placeholder domain.
+    template_base = (settings.tenant_url_template or "http://{slug}.localhost:7777").replace(
+        "{slug}", slug
+    )
+    # Nested under `/login/` — same reason `/login/mfa` and the SSO/SAML
+    # callback pages are, not top-level routes: the root layout redirects any
+    # unauthenticated visitor off a top-level path unless it starts with
+    # `/login` (or is in its small public-paths allowlist), so this is the
+    # path of least footprint for a public, unauthenticated page.
+    return f"{template_base.rstrip('/')}/login/reset-password?token={quote(token)}"
+
+
+async def _send_password_reset_email(user: User, reset_url: str) -> None:
+    """Best-effort — exceptions are swallowed here (this runs detached via
+    `_spawn_background`, so nothing is left to propagate to)."""
+    msg = EmailMessage(
+        to=user.email,
+        subject="Reset your FeohLedger password",
+        body_text=(
+            f"Hi {user.full_name},\n\n"
+            "We received a request to reset your FeohLedger password. If you "
+            "made this request, click the link below to choose a new one:\n\n"
+            f"  {reset_url}\n\n"
+            f"This link expires in {settings.password_reset_ttl_minutes} minutes "
+            "and can only be used once.\n\n"
+            "If you didn't request this, you can safely ignore this email — "
+            "your password will not be changed.\n"
+        ),
+    )
+    try:
+        await get_email_adapter().send(msg)
+    except Exception:  # noqa: BLE001
+        logger.exception("Password reset email failed for user %s", user.id)
+
+
+@router.post("/forgot-password", response_model=ForgotPasswordResponse)
+async def forgot_password(
+    body: ForgotPasswordRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_control_db),
+):
+    """Request a password-reset link. Public, unauthenticated.
+
+    `User.email` is globally unique across the control plane (see
+    `app/models/user.py`), so — exactly like `/auth/login` — this resolves the
+    account without any tenant header; the user's own `organization_id` is
+    what picks the tenant subdomain the reset link points at.
+
+    Always returns the same generic response regardless of whether `email`
+    matched a real account, and the outbound email (the only place a match is
+    observable) is dispatched on a detached background task rather than
+    awaited — an enumeration oracle here is exactly the class of leak
+    `docs/authentication.md`'s brute-force section already guards against on
+    `/auth/login` and `/auth/mfa/verify`.
+    """
+    # Per-IP request budget — an unauthenticated endpoint that triggers an
+    # outbound email is the same abuse shape signup/captcha already guard
+    # against.
+    await check_rate_limit("auth_forgot_password", request, limit=5, window_seconds=3600)
+    # Per-ACCOUNT budget too, keyed on the submitted address exactly like the
+    # login failure throttle (checked before the lookup, so an unknown address
+    # throttles identically) — a per-IP cap alone can't stop an attacker
+    # rotating source addresses to email-bomb one victim's inbox with reset
+    # links.
+    await check_rate_limit(
+        "auth_forgot_password_email",
+        subject=auth_identity_key(body.email),
+        limit=3,
+        window_seconds=3600,
+    )
+
+    result = await db.execute(select(User).where(User.email == body.email))
+    user = result.scalar_one_or_none()
+
+    if user is not None and user.is_active:
+        org = await _load_user_org(db, user.organization_id)
+        if org is not None:
+            token = await password_reset.issue_reset_token(user.id)
+            reset_url = _password_reset_url(org.slug, token)
+            _spawn_background(_send_password_reset_email(user, reset_url))
+            await dispatch_auth_audit(
+                organization_id=user.organization_id,
+                actor_id=None,
+                action="auth.password_reset.requested",
+                entity_id=user.id,
+                details={"ip": _client_ip(request)},
+            )
+
+    return ForgotPasswordResponse()
+
+
+@router.post("/reset-password", response_model=ResetPasswordResponse)
+async def reset_password(
+    body: ResetPasswordRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_control_db),
+):
+    """Redeem a forgot-password reset token and set a new password. Public,
+    unauthenticated — the token itself IS the credential, the same posture
+    `services/email_action_token.py` uses for the email-approval link.
+
+    Single-use: `password_reset.consume_reset_token` atomically GETDELs the
+    Redis mapping, so a replayed or reused token 400s exactly like an expired
+    one — the two are deliberately indistinguishable to the caller.
+    """
+    await check_rate_limit("auth_reset_password", request, limit=10, window_seconds=60)
+
+    try:
+        validate_password_complexity(body.new_password)
+    except PasswordError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    user_id = await password_reset.consume_reset_token(body.token)
+    if user_id is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset link.")
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset link.")
+
+    user.hashed_password = await hash_password(body.new_password)
+    user.must_change_password = False
+    await db.commit()
+
+    # Force logout of every existing session — same posture as the
+    # admin-triggered password reset (`api/admin.py::update_user`) and exactly
+    # the scenario a forgot-password flow exists for: a session on a device
+    # the real account owner may no longer control.
+    await revoke_user_sessions(user.id)
+
+    await dispatch_auth_audit(
+        organization_id=user.organization_id,
+        actor_id=user.id,
+        action="auth.password_reset.completed",
+        entity_id=user.id,
+        details={"ip": _client_ip(request)},
+    )
+
+    return ResetPasswordResponse()
 
 
 @router.post("/mfa/challenge/email", status_code=status.HTTP_204_NO_CONTENT)
