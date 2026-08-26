@@ -45,9 +45,7 @@ async def test_list_filters_by_assigned_to_id(realdb):
     manager_id = realdb.info("a").users["ap_manager"]
     cfo_id = realdb.info("a").users["cfo"]
 
-    mine = await _add_invoice(
-        mk, org_id, assigned_to_id=manager_id, assigned_to="AP Manager", n=2
-    )
+    mine = await _add_invoice(mk, org_id, assigned_to_id=manager_id, assigned_to="AP Manager", n=2)
     await _add_invoice(mk, org_id, assigned_to_id=cfo_id, assigned_to="CFO", n=3)
     await _add_invoice(mk, org_id, n=1)  # unassigned
 
