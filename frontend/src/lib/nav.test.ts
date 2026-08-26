@@ -196,3 +196,27 @@ test('a user.manage-only custom role sees the Users tab but not Roles', () => {
 	// though the holder has no system role at all.
 	expect(isEntryVisible(settingsGroup, noRoles, onlyUserManage)).toBe(true);
 });
+
+test('retention, access-review, and privacy nav entries match their backend RBAC', () => {
+	// GET/PUT /api/retention-policy and the /api/privacy surface are admin-only;
+	// /api/access-reviews is require_roles(ADMIN, CFO) — see nav.ts's own
+	// comments beside each entry.
+	const retention = kid('/admin/retention');
+	const accessReview = kid('/admin/access-review');
+	const privacy = kid('/admin/privacy');
+	expect(retention.roles).toEqual(['admin']);
+	expect(accessReview.roles).toEqual(['admin', 'cfo']);
+	expect(privacy.roles).toEqual(['admin']);
+
+	const hasAdmin = (...roles: string[]) => roles.includes('admin');
+	const hasCfo = (...roles: string[]) => roles.includes('cfo');
+	const hasClerk = (...roles: string[]) => roles.includes('ap_clerk');
+
+	expect(canSee(retention.roles, hasAdmin)).toBe(true);
+	expect(canSee(retention.roles, hasCfo)).toBe(false);
+	expect(canSee(accessReview.roles, hasAdmin)).toBe(true);
+	expect(canSee(accessReview.roles, hasCfo)).toBe(true);
+	expect(canSee(accessReview.roles, hasClerk)).toBe(false);
+	expect(canSee(privacy.roles, hasAdmin)).toBe(true);
+	expect(canSee(privacy.roles, hasCfo)).toBe(false);
+});
