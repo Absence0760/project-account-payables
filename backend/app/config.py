@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     # blocklist. Set to 0 to disable the cap. Default 5 — a reasonable mix of
     # desktop + mobile + tablet without encouraging shared credentials.
     max_concurrent_sessions: int = 5
+    # Self-service "forgot password" reset-link lifetime. The token lives in
+    # Redis only (see `services/password_reset.py`), never a DB row — a stray
+    # un-redeemed link just expires. Thirty minutes is enough to find the
+    # email and click through, short enough that a lingering inbox message
+    # months later is inert.
+    password_reset_ttl_minutes: int = 30
 
     # S3 / MinIO
     s3_endpoint_url: str = "http://localhost:9000"

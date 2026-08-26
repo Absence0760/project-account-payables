@@ -2115,6 +2115,34 @@ export const messages = {
 	'auth.login.ssoOnly': 'Cet espace de travail utilise l\'authentification unique (SSO).',
 	'auth.login.or': 'ou',
 	'auth.login.signInWith': 'Se connecter avec {provider}',
+	'auth.login.forgotPassword': 'Mot de passe oublié ?',
+
+	// Auth — forgot password (routes/login/forgot-password/+page.svelte)
+	'auth.forgotPassword.heading': 'Réinitialiser votre mot de passe',
+	'auth.forgotPassword.subtitle':
+		'Saisissez votre e-mail et nous vous enverrons un lien pour réinitialiser votre mot de passe.',
+	'auth.forgotPassword.email': 'E-mail',
+	'auth.forgotPassword.submit': 'Envoyer le lien de réinitialisation',
+	'auth.forgotPassword.sending': 'Envoi en cours...',
+	'auth.forgotPassword.success':
+		"Si un compte existe avec cet e-mail, nous vous avons envoyé un lien pour réinitialiser votre mot de passe.",
+	'auth.forgotPassword.backToLogin': 'Retour à la connexion',
+
+	// Auth — reset password (routes/login/reset-password/+page.svelte)
+	'auth.resetPassword.heading': 'Définir un nouveau mot de passe',
+	'auth.resetPassword.subtitle': 'Choisissez un nouveau mot de passe pour votre compte.',
+	'auth.resetPassword.newPassword': 'Nouveau mot de passe',
+	'auth.resetPassword.confirmPassword': 'Confirmer le nouveau mot de passe',
+	'auth.resetPassword.submit': 'Réinitialiser le mot de passe',
+	'auth.resetPassword.submitting': 'Réinitialisation...',
+	'auth.resetPassword.success':
+		'Votre mot de passe a été réinitialisé. Vous pouvez maintenant vous connecter.',
+	'auth.resetPassword.mismatch': 'Les mots de passe ne correspondent pas.',
+	'auth.resetPassword.missingToken':
+		"Ce lien de réinitialisation n'a pas de jeton. Veuillez utiliser le lien de votre e-mail.",
+	'auth.resetPassword.invalidToken':
+		'Ce lien de réinitialisation est invalide ou a expiré. Veuillez en demander un nouveau.',
+	'auth.resetPassword.goToLogin': 'Aller à la connexion',
 
 	// Auth — MFA verification (routes/login/mfa/+page.svelte)
 	'auth.mfa.heading': 'Vérification à deux facteurs',

@@ -2187,6 +2187,33 @@ export const en = {
 	'auth.login.ssoOnly': 'This workspace uses single sign-on.',
 	'auth.login.or': 'or',
 	'auth.login.signInWith': 'Sign in with {provider}',
+	'auth.login.forgotPassword': 'Forgot password?',
+
+	// Auth — forgot password (routes/login/forgot-password/+page.svelte)
+	'auth.forgotPassword.heading': 'Reset your password',
+	'auth.forgotPassword.subtitle':
+		"Enter your email and we'll send you a link to reset your password.",
+	'auth.forgotPassword.email': 'Email',
+	'auth.forgotPassword.submit': 'Send reset link',
+	'auth.forgotPassword.sending': 'Sending...',
+	'auth.forgotPassword.success':
+		"If an account with that email exists, we've sent a link to reset your password.",
+	'auth.forgotPassword.backToLogin': 'Back to sign in',
+
+	// Auth — reset password (routes/login/reset-password/+page.svelte)
+	'auth.resetPassword.heading': 'Set a new password',
+	'auth.resetPassword.subtitle': 'Choose a new password for your account.',
+	'auth.resetPassword.newPassword': 'New password',
+	'auth.resetPassword.confirmPassword': 'Confirm new password',
+	'auth.resetPassword.submit': 'Reset password',
+	'auth.resetPassword.submitting': 'Resetting...',
+	'auth.resetPassword.success': 'Your password has been reset. You can now sign in.',
+	'auth.resetPassword.mismatch': "Passwords don't match.",
+	'auth.resetPassword.missingToken':
+		'This reset link is missing its token. Please use the link from your email.',
+	'auth.resetPassword.invalidToken':
+		'This reset link is invalid or has expired. Please request a new one.',
+	'auth.resetPassword.goToLogin': 'Go to sign in',
 
 	// Auth — MFA verification (routes/login/mfa/+page.svelte)
 	'auth.mfa.heading': 'Two-factor verification',

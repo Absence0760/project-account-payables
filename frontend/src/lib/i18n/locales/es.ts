@@ -2143,6 +2143,33 @@ export const messages = {
 	'auth.login.ssoOnly': 'Este espacio de trabajo usa inicio de sesión único (SSO).',
 	'auth.login.or': 'o',
 	'auth.login.signInWith': 'Iniciar sesión con {provider}',
+	'auth.login.forgotPassword': '¿Olvidaste tu contraseña?',
+
+	// Auth — forgot password (routes/login/forgot-password/+page.svelte)
+	'auth.forgotPassword.heading': 'Restablece tu contraseña',
+	'auth.forgotPassword.subtitle':
+		'Ingresa tu correo electrónico y te enviaremos un enlace para restablecer tu contraseña.',
+	'auth.forgotPassword.email': 'Correo electrónico',
+	'auth.forgotPassword.submit': 'Enviar enlace de restablecimiento',
+	'auth.forgotPassword.sending': 'Enviando...',
+	'auth.forgotPassword.success':
+		'Si existe una cuenta con ese correo electrónico, te hemos enviado un enlace para restablecer tu contraseña.',
+	'auth.forgotPassword.backToLogin': 'Volver a iniciar sesión',
+
+	// Auth — reset password (routes/login/reset-password/+page.svelte)
+	'auth.resetPassword.heading': 'Establece una nueva contraseña',
+	'auth.resetPassword.subtitle': 'Elige una nueva contraseña para tu cuenta.',
+	'auth.resetPassword.newPassword': 'Nueva contraseña',
+	'auth.resetPassword.confirmPassword': 'Confirmar nueva contraseña',
+	'auth.resetPassword.submit': 'Restablecer contraseña',
+	'auth.resetPassword.submitting': 'Restableciendo...',
+	'auth.resetPassword.success': 'Tu contraseña se ha restablecido. Ya puedes iniciar sesión.',
+	'auth.resetPassword.mismatch': 'Las contraseñas no coinciden.',
+	'auth.resetPassword.missingToken':
+		'A este enlace de restablecimiento le falta el token. Usa el enlace de tu correo electrónico.',
+	'auth.resetPassword.invalidToken':
+		'Este enlace de restablecimiento no es válido o ha caducado. Solicita uno nuevo.',
+	'auth.resetPassword.goToLogin': 'Ir a iniciar sesión',
 
 	// Auth — MFA verification (routes/login/mfa/+page.svelte)
 	'auth.mfa.heading': 'Verificación en dos pasos',

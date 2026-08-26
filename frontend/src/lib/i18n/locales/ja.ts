@@ -2116,6 +2116,33 @@ export const messages = {
 	'auth.login.ssoOnly': 'このワークスペースはシングルサインオン（SSO）を使用します。',
 	'auth.login.or': 'または',
 	'auth.login.signInWith': '{provider}でサインイン',
+	'auth.login.forgotPassword': 'パスワードをお忘れですか？',
+
+	// Auth — forgot password (routes/login/forgot-password/+page.svelte)
+	'auth.forgotPassword.heading': 'パスワードをリセット',
+	'auth.forgotPassword.subtitle':
+		'メールアドレスを入力すると、パスワードをリセットするリンクをお送りします。',
+	'auth.forgotPassword.email': 'メールアドレス',
+	'auth.forgotPassword.submit': 'リセットリンクを送信',
+	'auth.forgotPassword.sending': '送信しています...',
+	'auth.forgotPassword.success':
+		'そのメールアドレスのアカウントが存在する場合、パスワードをリセットするリンクを送信しました。',
+	'auth.forgotPassword.backToLogin': 'サインインに戻る',
+
+	// Auth — reset password (routes/login/reset-password/+page.svelte)
+	'auth.resetPassword.heading': '新しいパスワードを設定',
+	'auth.resetPassword.subtitle': 'アカウントの新しいパスワードを選択してください。',
+	'auth.resetPassword.newPassword': '新しいパスワード',
+	'auth.resetPassword.confirmPassword': '新しいパスワード（確認）',
+	'auth.resetPassword.submit': 'パスワードをリセット',
+	'auth.resetPassword.submitting': 'リセットしています...',
+	'auth.resetPassword.success': 'パスワードがリセットされました。サインインできます。',
+	'auth.resetPassword.mismatch': 'パスワードが一致しません。',
+	'auth.resetPassword.missingToken':
+		'このリセットリンクにはトークンがありません。メール内のリンクをご利用ください。',
+	'auth.resetPassword.invalidToken':
+		'このリセットリンクは無効か期限切れです。もう一度リクエストしてください。',
+	'auth.resetPassword.goToLogin': 'サインインへ',
 
 	// Auth — MFA verification (routes/login/mfa/+page.svelte)
 	'auth.mfa.heading': '二要素認証',
