@@ -447,7 +447,10 @@
 					? m('tax.fileModal.filing')
 					: fileArmed
 						? m('tax.fileModal.confirmFinal')
-						: m('tax.fileModal.confirmArm', { count: report.vendor_count_eligible_over_threshold })}
+						: m('tax.fileModal.confirmArm', {
+								count: report.vendor_count_eligible_over_threshold,
+								year
+							})}
 			</button>
 		</div>
 	{/if}
