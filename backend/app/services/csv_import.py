@@ -198,6 +198,7 @@ async def import_vendors_csv(
         name = (row.get("name") or "").strip()
         if not name:
             result.errors.append(ImportRowError(row=i, message="name is required"))
+            result.skipped += 1
             continue
 
         code = (row.get("code") or "").strip() or None
@@ -280,16 +281,19 @@ async def import_invoices_csv(
 
         if not invoice_number:
             result.errors.append(ImportRowError(row=i, message="invoice_number is required"))
+            result.skipped += 1
             continue
         if not vendor_name and not vendor_code:
             result.errors.append(
                 ImportRowError(row=i, message="vendor_name or vendor_code is required")
             )
+            result.skipped += 1
             continue
         if amount is None or amount < 0:
             result.errors.append(
                 ImportRowError(row=i, message=f"amount invalid: {row.get('amount')!r}")
             )
+            result.skipped += 1
             continue
 
         vendor = await _resolve_or_create_vendor(
@@ -305,6 +309,7 @@ async def import_invoices_csv(
             status_val = InvoiceStatus(status_raw)
         except ValueError:
             result.errors.append(ImportRowError(row=i, message=f"status invalid: {status_raw!r}"))
+            result.skipped += 1
             continue
         # A CSV import bypasses the workflow engine (no audit / segregation /
         # approval signature), so it may only land at a safe initial/terminal
@@ -320,6 +325,7 @@ async def import_invoices_csv(
                     ),
                 )
             )
+            result.skipped += 1
             continue
 
         # Dedup on (vendor_id, invoice_number) — the natural AP uniqueness key
@@ -460,11 +466,13 @@ async def import_corporate_card_csv(
             result.errors.append(
                 ImportRowError(row=i, message=f"amount invalid: {row.get('amount')!r}")
             )
+            result.skipped += 1
             continue
         if txn_date is None:
             result.errors.append(
                 ImportRowError(row=i, message=f"date invalid: {row.get('date')!r}")
             )
+            result.skipped += 1
             continue
 
         # Dedupe (idempotency guard) — in-file first, then against the DB.
