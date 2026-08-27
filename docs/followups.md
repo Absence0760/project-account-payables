@@ -1063,20 +1063,165 @@ rather than patched. None is a diagnosed defect (those go to
   `frontend/pnpm-lock.yaml` is regenerated for any reason (a dependency bump, a
   Dependabot PR) — verify the overrides survived before committing the lock.
 
-- **The "Require MFA for all users" toggle doesn't show the frontend when it's
-  inert.** `PATCH`/`GET /api/organization` now return
-  `settings.mfa.enforcement_active` (decisions.md §58) — `true` only when both
-  `settings.mfa.required` and the platform switch `FEOH_MFA_ENABLED` are on — so
-  an admin saving the toggle while the switch is off gets a real signal in the
-  API response and a loud backend log line. `frontend/src/routes/organization/
-  +page.svelte`'s Security card does not read that field yet, so the toggle
-  still looks unconditionally "on" in the UI after saving. **Durable fix:** wire
-  a `mfaEnforcementActive` derived value off the PATCH/GET response and render an
-  inline warning under the checkbox when `mfaRequired && !mfaEnforcementActive`
-  (needs a new i18n key across all six locale files + `messages_parity.test.ts`
-  coverage, which is why this round scoped the fix to the API contract).
-  **Trigger:** the next change touching the Security card, or the first
-  admin-reported "I turned MFA on and nobody got prompted" ticket.
+  _(The MFA-enforcement-inactive UI bullet that stood here is **closed** — PR
+  #341 wired the `settings.mfa.enforcement_active` signal into the Security
+  card's inline warning.)_
+
+### Surfaced by the issue #328 checklist reconciliation (2026-08-27)
+
+Going through all 56 persona-panel findings + 8 acknowledged gaps against `main`
+after PRs #329, #330 and #341 landed left **13 findings genuinely open** plus
+**8 product-fit gaps awaiting a keep-or-drop call**. They are parked here so
+issue #328 can close — the checklist itself is not a destination (guard rail 6).
+Every one is category **(c)**: a sized-but-unstarted piece of work, or a
+deferred-with-reason finding awaiting a product/architecture call.
+
+**Frontend gaps — built on the backend, unreachable in the product:**
+
+- [ ] **No UI to create a vendor or invite one to the supplier portal.**
+      `POST /api/vendors` and `POST /api/vendors/{id}/portal-users` both exist;
+      `frontend/src/routes/vendors/+page.svelte` has neither action. A new tenant
+      cannot onboard a supplier by clicking anything.
+      **Durable fix:** a create-vendor modal (mirror `CreateInvoiceModal`) and a
+      row-action "Invite to portal" calling the portal-users endpoint. The
+      invite email's `portal_url` was fixed in #330; this is the UI half.
+      **Trigger:** the next slice touching `/vendors`.
+
+- [ ] **No onboarding empty-state / CTA anywhere for a brand-new zero-data
+      tenant.** Dashboard, `/invoices` and `/vendors` all render a bare "no
+      results" with no next step, and no shared `EmptyState` component exists.
+      **Durable fix:** an `EmptyState` component in `lib/components/`, adopted on
+      the primary list routes with a route-appropriate primary action.
+      **Trigger:** the next slice touching first-run UX, or the create-vendor UI
+      above (same surfaces).
+
+- [ ] **[Low] Organization/Settings is ~15 undifferentiated advanced sections
+      with no first-time-admin prioritization.** No ordering, grouping, or
+      "start here" affordance.
+      **Durable fix:** group the sections and surface the handful a new admin
+      needs first (users, entities, branding, approval thresholds).
+      **Trigger:** the next redesign pass on `/organization`.
+
+- [ ] **[Low] The marketing pricing page (`Pricing.svelte`) is USD-only.**
+      Hardcoded `$` figures; no currency awareness.
+      **Durable fix:** a product call on whether to localise pricing at all, then
+      per-locale figures if yes.
+      **Trigger:** an international pricing decision.
+
+**Supplier portal — the loop-closing steps are missing:**
+
+- [ ] **A vendor has no in-portal way to learn why an invoice is rejected or
+      stuck.** The reason exists (audit log, `review_rejected` exception,
+      rejection email) but never reaches the portal API or UI.
+      **Durable fix:** surface the latest rejection reason + a friendly current
+      status on `GET /portal/invoices/{id}` (PII-free, AP-author-masked like
+      supplier chat already is) and render it on the portal invoice detail.
+      **Trigger:** the next slice touching the supplier portal.
+
+- [ ] **No resubmission path for a rejected portal invoice.** The only option is
+      uploading a whole new file, which risks a false-positive duplicate flag
+      with no link back to the original.
+      **Durable fix:** a "revise & resubmit" action on a `rejected` portal
+      invoice that reuses the invoice id and clears the duplicate suppression
+      against its own prior version.
+      **Trigger:** paired with the why-rejected finding above.
+
+- [ ] **No search or filter on the vendor's own invoice / payment lists in the
+      portal.** `GET /api/portal/invoices` and `.../payments` are "Load more"
+      only — no status, invoice-number, or date-range filter.
+      **Durable fix:** add the same status/search/date params the internal list
+      endpoints take, vendor-scoped, and a `SearchBox` + status chips on the
+      portal pages.
+      **Trigger:** the next slice touching the supplier portal.
+
+**Volume surfaces:**
+
+- [ ] **`GET /api/payments/queue` has no pagination.** It loads the tenant's
+      entire approved-unpaid invoice set on every page view.
+      **Durable fix:** keyset pagination with an `id` tie-breaker, matching the
+      invoice list; the frontend `/payments` Queue tab consumes "Load more".
+      **Trigger:** the next slice touching the payments queue, or the first
+      tenant that reports the page hanging.
+
+- [ ] **URL filter/search persistence is partial on `/invoices`, `/payments`
+      and `/vendors`.** They now persist `sort`/`order` (and `/invoices` also
+      `assigned_to_id`), but the search term and status filter still never reach
+      the URL — refresh / back / share loses them, while `/contracts` and
+      `/expenses` do this correctly via `syncUrl()`.
+      **Durable fix:** extend `syncUrl()` on the three pages to cover `search`
+      and the status filter, untracked like the sibling routes.
+      **Trigger:** the next slice touching any of the three list pages.
+
+- [ ] **Budgets "Total Allocated" KPI** — already tracked in
+      _§ Surfaced by the round-14 frontend hunt_ ("the same page-scoped-KPI bug …
+      still live on six sibling pages", `/budgets` `totalAllocated` `:82`). Same
+      fix, same trigger; not re-filed here.
+
+**UK / tax — needs its own design session, not a patch:**
+
+- [ ] **The invoice tax model has no rate category or reverse-charge flag, and
+      UK domestic (same-country) VAT reverse charge is structurally
+      impossible.** `Invoice`/`InvoiceLineItem` carry one flat
+      `tax_amount`/`tax_rate`; `international_tax/vat.py` hardcodes domestic
+      reverse charge to `False` and models GB as non-EU, so the UK CIS domestic
+      reverse charge can never be expressed, and the `/api/international-tax`
+      calculator is never wired to a real invoice.
+      **Durable fix:** a tax-treatment design session — per-line rate category +
+      a reverse-charge flag on the line, the calculator wired into the invoice
+      lifecycle, and a real frontend for it. Explicitly scoped out of the
+      parallel bug-fix rounds as architecture, not a fix.
+      **Trigger:** a decision to support UK/EU VAT properly (a prerequisite for
+      the UK-business go-to-market).
+
+- [ ] **A GBP→GB domestic payment falls through to `international_wire`.**
+      `payment_corridor.pick_corridor` has no domestic-GB branch, forcing SWIFT
+      and a 2.5% fee anchor; BACS / Faster Payments / CHAPS don't exist in the
+      codebase or the payment-method dropdowns.
+      **Durable fix:** add the UK domestic rails to the `PaymentMethod` enum and
+      `DOMESTIC_PAYMENT_METHODS`, and a GBP-domestic corridor branch.
+      **Trigger:** the UK-business go-to-market, or the next slice touching
+      `payment_corridor`.
+
+**Investigated, deliberately not changed (recorded so it isn't re-litigated):**
+
+- `approve_payment_run` stays on `require_roles(ROLE_CFO)` rather than
+  `require_permission(PERM_PAYMENT_RUN_APPROVE)`. Migrating it was tried and
+  reverted during #330 — it let non-CFO admin/ap_manager bypass the
+  CFO-approval-threshold control (a real regression caught by CI). The inline
+  comment in `backend/app/api/payments.py` is the durable record.
+
+### Persona-panel acknowledged gaps — keep-or-drop call outstanding (issue #328)
+
+Eight capabilities the personas confirmed absent and classified as *product-fit
+gaps* (the app never claimed them), not defects. Each needs a keep (→ roadmap) or
+drop (→ documented non-goal) decision. Listed so the decision isn't lost when
+#328 closes.
+
+- [ ] **No US sales/use-tax self-assessment** — no self-assessed use tax on
+      out-of-state purchases, no nexus tracking, no resale/exemption
+      certificates. `Invoice.tax_rate` only records what the vendor charged. US
+      AP table stakes above a certain company size.
+- [ ] **Positive Pay has no frontend** — `/api/positive-pay` is API-only (already
+      noted as known state in the root `CLAUDE.md` architecture table).
+- [ ] **`bank_details` has one generic `routing_number`** — no way to record a
+      separate wire vs ACH routing number, common at larger US banks.
+- [ ] **1099-MISC per-box allocation is not split** — the whole total goes to the
+      requested box (documented simplification in `tax_1099_forms.py`).
+- [ ] **No consolidated org-wide budget-vs-actual rollup on the CFO dashboard** —
+      only the standalone `/budgets` page and per-budget `GET /budgets/{id}/spend`.
+- [ ] **No saved views / per-list default view, and no keyboard shortcuts or
+      command palette** anywhere in the app.
+- [ ] **No supplier-portal dashboard/home** — `/portal` redirects straight to
+      `/portal/invoices`; a vendor gets no at-a-glance "N need nothing from you,
+      M await your action".
+- [ ] **Leading-zero / numeric invoice-number normalization** (`INV-001` vs
+      `INV-1`) is not handled by the rule-based duplicate check; the
+      semantic-similarity path is the intended backstop only when RAG is enabled.
+
+_Two further gaps were considered and explicitly declined (recorded so they
+aren't re-raised): IR35 / contractor status (payroll/HR tooling, not AP), and a
+dedicated `country_code`/`is_foreign` column on `Vendor` (superseded by the
+filed W-8 finding, fixed in #330)._
 
 ## (a) Blocked on external credentials, accounts, or hardware
 
