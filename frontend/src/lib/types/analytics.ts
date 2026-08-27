@@ -228,6 +228,10 @@ export interface CfoAnalytics {
 	reporting_spend: CfoReportingSpend;
 	unrealized_fx: CfoUnrealizedFx;
 	accounts_payable_balance: MoneyString;
+	// Currency-aware counterpart — `accounts_payable_balance` above is a
+	// naive cross-currency sum kept for API back-compat; this is the figure
+	// to render, same shape as `reporting_spend`.
+	reporting_accounts_payable_balance: CfoReportingSpend;
 	/** A day count, not money. */
 	dpo_current: number;
 	dpo_trend: CfoDpoTrendPoint[];
@@ -250,6 +254,12 @@ export interface CfoAnalytics {
 export interface EntityMetrics {
 	total_spend: string;
 	outstanding_amount: string;
+	// Currency-aware counterpart of `outstanding_amount` — that field is a
+	// naive cross-currency sum; this is the same rollup `/cfo`'s
+	// `reporting_accounts_payable_balance` uses, in `reporting_currency`.
+	reporting_outstanding_amount: string;
+	reporting_currency: string;
+	reporting_outstanding_unconverted_count: number;
 	invoice_count: number;
 	open_exceptions: number;
 	open_po_amount: string;

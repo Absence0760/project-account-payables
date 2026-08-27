@@ -124,6 +124,8 @@ export const en = {
 	'dashboard.kpi.exceptions': 'Exceptions',
 	'dashboard.kpi.staleApprovals': 'Stale Approvals',
 	'dashboard.kpi.rebatesEarned': 'Rebates Earned',
+	'dashboard.reporting.unconverted':
+		'Some totals above exclude rows with no locked exchange rate into {currency} — treat them as a floor, not an exact figure.',
 	'dashboard.chart.pipeline': 'Invoice Pipeline',
 	'dashboard.chart.topVendors': 'Top Vendors by Spend',
 	'dashboard.chart.aging': 'Invoice Aging',
@@ -949,6 +951,8 @@ export const en = {
 	'org.security.hint':
 		'Require all users in this workspace to enable two-factor authentication. Existing users without MFA will be prompted to enroll on their next sign-in.',
 	'org.security.requireMfa': 'Require two-factor authentication for all users',
+	'org.security.mfaEnforcementInactive':
+		'This is saved, but not enforced yet — two-factor is off platform-wide for this deployment. Users will not be prompted until it is turned on.',
 	'org.security.save': 'Save',
 	'org.section.fraud': 'Fraud Detection',
 	'org.section.fraudSaved': 'Fraud detection',
@@ -1158,6 +1162,8 @@ export const en = {
 	'cfoMetrics.kpi.ccc': 'Cash conversion cycle',
 	'cfoMetrics.kpi.cccUnavailable': 'needs receivables data',
 	'cfoMetrics.kpi.apBalance': 'Accounts payable balance',
+	'cfoMetrics.apBalance.unconverted':
+		'Excluded: {n, plural, one {# open invoice} other {# open invoices}} with no exchange rate into {currency}, so the balance above is a floor, not the exact total. Book the missing rate to include them.',
 	'cfoMetrics.kpi.rebateYield': 'Card rebate yield',
 	'cfoMetrics.dpoTrend.title': 'DPO trend (6 months)',
 	'cfoMetrics.dpoTrend.hint': "Closed months only — this month isn't included until it ends.",
@@ -1866,6 +1872,8 @@ export const en = {
 	'byEntity.consolidated': 'Consolidated',
 	'byEntity.loading': 'Loading…',
 	'byEntity.loadFailed': 'Failed to load per-entity breakdown',
+	'byEntity.unconverted':
+		'Excluded from the consolidated Outstanding total: {n, plural, one {# open invoice} other {# open invoices}} with no locked exchange rate into {currency}.',
 
 	// Scheduled reports (components/analytics/ScheduledReportsPanel.svelte) —
 	// the CRUD surface for the report runner, hosted on /cfo. The report-type

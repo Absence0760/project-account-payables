@@ -105,6 +105,8 @@ export const messages = {
 	'dashboard.kpi.exceptions': 'Excepciones',
 	'dashboard.kpi.staleApprovals': 'Aprobaciones atrasadas',
 	'dashboard.kpi.rebatesEarned': 'Reembolsos obtenidos',
+	'dashboard.reporting.unconverted':
+		'Algunos totales anteriores excluyen filas sin tipo de cambio fijado a {currency}; considérelos un mínimo, no una cifra exacta.',
 	'dashboard.chart.pipeline': 'Flujo de facturas',
 	'dashboard.chart.topVendors': 'Principales proveedores por gasto',
 	'dashboard.chart.aging': 'Antigüedad de facturas',
@@ -912,6 +914,8 @@ export const messages = {
 	'org.section.securitySaved': 'Seguridad',
 	'org.security.hint': 'Exija que todos los usuarios de este espacio de trabajo habiliten la autenticación de dos factores. A los usuarios existentes sin MFA se les pedirá que se inscriban en su próximo inicio de sesión.',
 	'org.security.requireMfa': 'Exigir autenticación de dos factores para todos los usuarios',
+	'org.security.mfaEnforcementInactive':
+		'Esto está guardado, pero aún no se aplica: la autenticación de dos factores está desactivada en toda la plataforma para este despliegue. Los usuarios no verán la solicitud hasta que se active.',
 	'org.security.save': 'Guardar',
 	'org.section.fraud': 'Detección de fraude',
 	'org.section.fraudSaved': 'Detección de fraude',
@@ -1112,6 +1116,8 @@ export const messages = {
 	'cfoMetrics.kpi.ccc': 'Ciclo de conversión de efectivo',
 	'cfoMetrics.kpi.cccUnavailable': 'requiere datos de cuentas por cobrar',
 	'cfoMetrics.kpi.apBalance': 'Saldo de cuentas por pagar',
+	'cfoMetrics.apBalance.unconverted':
+		'Excluidas: {n, plural, one {# factura abierta} other {# facturas abiertas}} sin tipo de cambio a {currency}, por lo que el saldo anterior es un mínimo, no el total exacto. Registra el tipo de cambio para incluirlas.',
 	'cfoMetrics.kpi.rebateYield': 'Rendimiento de reembolsos de tarjeta',
 	'cfoMetrics.dpoTrend.title': 'Tendencia de DPO (6 meses)',
 	'cfoMetrics.dpoTrend.hint':
@@ -1821,6 +1827,8 @@ export const messages = {
 	'byEntity.consolidated': 'Consolidado',
 	'byEntity.loading': 'Cargando…',
 	'byEntity.loadFailed': 'Error al cargar el desglose por entidad',
+	'byEntity.unconverted':
+		'Excluidas del total consolidado de Pendiente: {n, plural, one {# factura abierta} other {# facturas abiertas}} sin tipo de cambio fijado a {currency}.',
 
 	// Informes programados (components/analytics/ScheduledReportsPanel.svelte)
 	'scheduledReports.heading': 'Informes programados',

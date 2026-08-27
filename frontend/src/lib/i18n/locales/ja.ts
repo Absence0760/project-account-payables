@@ -109,6 +109,8 @@ export const messages = {
 	'dashboard.kpi.exceptions': '例外',
 	'dashboard.kpi.staleApprovals': '滞留中の承認',
 	'dashboard.kpi.rebatesEarned': '獲得リベート',
+	'dashboard.reporting.unconverted':
+		'上記の一部の合計には、{currency} への為替レートが未確定の項目は含まれていません。正確な数値ではなく下限としてお考えください。',
 	'dashboard.chart.pipeline': '請求書パイプライン',
 	'dashboard.chart.topVendors': '支出上位の取引先',
 	'dashboard.chart.aging': '請求書の経過日数',
@@ -906,6 +908,8 @@ export const messages = {
 	'org.section.securitySaved': 'セキュリティ',
 	'org.security.hint': 'このワークスペースのすべてのユーザーに二要素認証の有効化を必須にします。MFA未設定の既存ユーザーは次回サインイン時に登録を求められます。',
 	'org.security.requireMfa': 'すべてのユーザーに二要素認証を必須にする',
+	'org.security.mfaEnforcementInactive':
+		'この設定は保存されましたが、まだ適用されていません。このデプロイでは二要素認証がプラットフォーム全体で無効になっています。有効化されるまでユーザーに求められることはありません。',
 	'org.security.save': '保存',
 	'org.section.fraud': '不正検知',
 	'org.section.fraudSaved': '不正検知',
@@ -1099,6 +1103,8 @@ export const messages = {
 	'cfoMetrics.kpi.ccc': 'キャッシュ・コンバージョン・サイクル',
 	'cfoMetrics.kpi.cccUnavailable': '売掛金データが必要です',
 	'cfoMetrics.kpi.apBalance': '買掛金残高',
+	'cfoMetrics.apBalance.unconverted':
+		'除外: {currency} への為替レートが未設定の未決済請求書が{n, plural, other {# 件}}あり、上記の残高は正確な合計ではなく下限です。レートを登録すると含まれます。',
 	'cfoMetrics.kpi.rebateYield': 'カードリベート利回り',
 	'cfoMetrics.dpoTrend.title': 'DPO推移(6か月)',
 	'cfoMetrics.dpoTrend.hint': '完了した月のみ表示します。当月は終了するまで含まれません。',
@@ -1800,6 +1806,8 @@ export const messages = {
 	'byEntity.consolidated': '連結',
 	'byEntity.loading': '読み込み中…',
 	'byEntity.loadFailed': 'エンティティ別内訳の読み込みに失敗しました',
+	'byEntity.unconverted':
+		'統合された未払い合計から除外: {currency} への為替レートが未確定の未決済請求書が{n, plural, other {# 件}}あります。',
 
 	// 定期レポート (components/analytics/ScheduledReportsPanel.svelte)
 	'scheduledReports.heading': '定期レポート',

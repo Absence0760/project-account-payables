@@ -105,6 +105,8 @@ export const messages = {
 	'dashboard.kpi.exceptions': 'Ausnahmen',
 	'dashboard.kpi.staleApprovals': 'Überfällige Freigaben',
 	'dashboard.kpi.rebatesEarned': 'Erzielte Rückvergütungen',
+	'dashboard.reporting.unconverted':
+		'Einige der obigen Summen schließen Zeilen ohne festgelegten Wechselkurs in {currency} aus – behandeln Sie sie als Untergrenze, nicht als exakten Wert.',
 	'dashboard.chart.pipeline': 'Rechnungs-Pipeline',
 	'dashboard.chart.topVendors': 'Top-Lieferanten nach Ausgaben',
 	'dashboard.chart.aging': 'Rechnungsalter',
@@ -914,6 +916,8 @@ export const messages = {
 	'org.section.securitySaved': 'Sicherheit',
 	'org.security.hint': 'Verlangen Sie von allen Benutzern in diesem Arbeitsbereich, die Zwei-Faktor-Authentifizierung zu aktivieren. Bestehende Benutzer ohne MFA werden bei der nächsten Anmeldung zur Registrierung aufgefordert.',
 	'org.security.requireMfa': 'Zwei-Faktor-Authentifizierung für alle Benutzer verlangen',
+	'org.security.mfaEnforcementInactive':
+		'Dies ist gespeichert, wird aber noch nicht erzwungen – die Zwei-Faktor-Authentifizierung ist für dieses Deployment plattformweit deaktiviert. Nutzer werden erst dazu aufgefordert, wenn sie aktiviert wird.',
 	'org.security.save': 'Speichern',
 	'org.section.fraud': 'Betrugserkennung',
 	'org.section.fraudSaved': 'Betrugserkennung',
@@ -1114,6 +1118,8 @@ export const messages = {
 	'cfoMetrics.kpi.ccc': 'Cash-Conversion-Zyklus',
 	'cfoMetrics.kpi.cccUnavailable': 'benötigt Forderungsdaten',
 	'cfoMetrics.kpi.apBalance': 'Verbindlichkeitssaldo',
+	'cfoMetrics.apBalance.unconverted':
+		'Ausgeschlossen: {n, plural, one {# offene Rechnung} other {# offene Rechnungen}} ohne Wechselkurs in {currency}, daher ist der obige Betrag eine Untergrenze und keine exakte Summe. Erfassen Sie den fehlenden Kurs, um sie einzubeziehen.',
 	'cfoMetrics.kpi.rebateYield': 'Karten-Rückvergütungsrendite',
 	'cfoMetrics.dpoTrend.title': 'DPO-Trend (6 Monate)',
 	'cfoMetrics.dpoTrend.hint':
@@ -1823,6 +1829,8 @@ export const messages = {
 	'byEntity.consolidated': 'Konsolidiert',
 	'byEntity.loading': 'Wird geladen…',
 	'byEntity.loadFailed': 'Aufschlüsselung nach Einheit konnte nicht geladen werden',
+	'byEntity.unconverted':
+		'Vom konsolidierten Ausstehend-Betrag ausgeschlossen: {n, plural, one {# offene Rechnung} other {# offene Rechnungen}} ohne festgelegten Wechselkurs in {currency}.',
 
 	// Geplante Berichte (components/analytics/ScheduledReportsPanel.svelte)
 	'scheduledReports.heading': 'Geplante Berichte',
