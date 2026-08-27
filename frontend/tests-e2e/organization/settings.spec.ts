@@ -190,4 +190,40 @@ test.describe('/organization settings', () => {
 			});
 		}
 	});
+
+	test('Security warns when "require MFA" is saved but the platform switch is off', async ({
+		page
+	}) => {
+		// Local/CI dev always runs with FEOH_MFA_ENABLED=false, so saving
+		// required=true here always lands on the "not enforced yet" branch —
+		// see `settings.mfa.enforcement_active` in
+		// backend/app/api/organization.py::_org_response.
+		try {
+			const securityCard = page.locator('section.card', {
+				has: page.getByRole('heading', { name: 'Security' })
+			});
+			const checkbox = securityCard.locator('label.switch-row input[type="checkbox"]');
+			await checkbox.check();
+
+			const saved = page.waitForResponse(
+				(r) =>
+					r.url().endsWith('/api/organization') &&
+					r.request().method() === 'PATCH' &&
+					r.status() === 200
+			);
+			await securityCard.getByRole('button', { name: /Save/ }).click();
+			await saved;
+
+			await expect(page.getByTestId('mfa-enforcement-inactive')).toBeVisible();
+
+			// The warning is derived from the PATCH response, not just the
+			// initial load — reload and confirm it still renders from a fresh
+			// GET too.
+			await page.reload();
+			await page.waitForLoadState('networkidle');
+			await expect(page.getByTestId('mfa-enforcement-inactive')).toBeVisible();
+		} finally {
+			await patchOrg(page, { settings: { mfa: { required: false } } });
+		}
+	});
 });

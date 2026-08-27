@@ -399,6 +399,17 @@
 	// Security
 	let mfaRequired = $state(false);
 	let savingSecurity = $state(false);
+	// Advisory, computed server-side on every read (never persisted) — whether
+	// "require MFA" is actually enforced right now, or a silent no-op because
+	// the platform master switch (FEOH_MFA_ENABLED) is off. Derived off `org`
+	// (not a plain load-time assignment) so it stays correct after
+	// `saveSecurity()` replaces `org` with the PATCH response too. See
+	// backend/app/api/organization.py's `_org_response`.
+	let mfaEnforcementActive = $derived(
+		((org?.settings as unknown as Record<string, unknown> | undefined)?.mfa as
+			| Record<string, unknown>
+			| undefined)?.enforcement_active === true
+	);
 
 	// Fraud detection — defaults loaded once from the backend; the form
 	// reflects (defaults ⊕ org overrides) so a stale UI can't drift from
@@ -1843,6 +1854,12 @@
 					<span>{m('org.security.requireMfa')}</span>
 				</label>
 
+				{#if mfaRequired && !mfaEnforcementActive}
+					<p class="mfa-enforcement-warning" role="alert" data-testid="mfa-enforcement-inactive">
+						{m('org.security.mfaEnforcementInactive')}
+					</p>
+				{/if}
+
 				<div class="section-footer">
 					<button class="btn-save-section" disabled={savingSecurity} onclick={saveSecurity}>
 						{savingSecurity ? m('org.common.saving') : m('org.security.save')}
@@ -2574,6 +2591,13 @@
 		accent-color: var(--accent);
 		cursor: pointer;
 		flex-shrink: 0;
+	}
+
+	.mfa-enforcement-warning {
+		color: var(--warning-on-tint);
+		font-size: 0.82rem;
+		font-weight: 600;
+		margin: 8px 0 0;
 	}
 
 	/* --- Fraud detection panel --- */
