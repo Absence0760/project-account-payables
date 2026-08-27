@@ -86,6 +86,7 @@ from app.tenant import (
     get_tenant_db,
     get_write_entity_id,
 )
+from app.utils.dates import resolve_day_first_preference
 
 logger = logging.getLogger(__name__)
 
@@ -504,13 +505,18 @@ async def upload_reconciliation(
     if len(raw) > storage.MAX_FILE_SIZE:
         raise HTTPException(status_code=413, detail=_TOO_LARGE)
 
+    # Fetched unconditionally (not just on the PDF branch) — the CSV parser
+    # also needs the org's day-first date preference (see
+    # app.utils.dates.resolve_day_first_preference).
+    org = (
+        await ctrl_db.execute(select(Organization).where(Organization.id == org_id))
+    ).scalar_one_or_none()
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    day_first = resolve_day_first_preference(org.settings or {})
+
     meta: dict | None = None
     if extraction.looks_like_pdf(raw, filename=file.filename, content_type=file.content_type):
-        org = (
-            await ctrl_db.execute(select(Organization).where(Organization.id == org_id))
-        ).scalar_one_or_none()
-        if org is None:
-            raise HTTPException(status_code=404, detail="Organization not found")
         try:
             statement_lines, extraction_meta = await extraction.extract_statement_lines(
                 org_settings=org.settings or {},
@@ -526,7 +532,7 @@ async def upload_reconciliation(
         meta = {"extraction": extraction_meta}
     else:
         try:
-            statement_lines = recon.parse_statement_csv(raw)
+            statement_lines = recon.parse_statement_csv(raw, day_first=day_first)
         except recon.StatementParseError as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
         source_format = SOURCE_CSV

@@ -5,12 +5,23 @@
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
+	import Modal from '$lib/components/ui/Modal.svelte';
+	import RowAction from '$lib/components/ui/RowAction.svelte';
+	import VendorTaxModal from '$lib/components/modals/VendorTaxModal.svelte';
+	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { formatMoney, isPositiveAmount } from '$lib/utils/money';
-	import { get1099Report } from '$lib/api/tax';
+	import { get1099Report, file1099Batch } from '$lib/api/tax';
+	import { auth } from '$lib/stores/auth.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
-	import type { Report1099, Vendor1099Row } from '$lib/types/tax';
+	import type { Filing1099Response, Report1099, Vendor1099Row } from '$lib/types/tax';
 	import { formatDate } from '$lib/utils/time';
+
+	// `POST /api/tax/vendors/{id}/{w9,tin-verify}` and `POST /api/tax/1099/file`
+	// are all `require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)` — a CFO can read this
+	// page (RBAC admits admin/ap_manager/cfo on the report/dashboard/PDF-download
+	// endpoints) but not mutate compliance state. Mirrors the backend exactly.
+	const canManage = $derived(auth.hasAnyRole('admin', 'ap_manager'));
 
 	// Year selector — current year and the prior five (1099s are filed for
 	// completed calendar years, so people mostly look back).
@@ -23,9 +34,23 @@
 	let error = $state<string | null>(null);
 
 	let search = $state('');
-	// Chip keys: 'all' | 'reportable' | 'missing_w9' | 'over_threshold'.
-	// Typed as string to match FilterChips' bindable `active`.
+	// Chip keys: 'all' | 'reportable' | 'missing_w9' | 'over_threshold' |
+	// 'tin_unverified' | 'card_excluded'. Typed as string to match FilterChips'
+	// bindable `active`.
 	let rowFilter = $state('all');
+
+	// Row-level "manage this vendor's tax bookkeeping" modal (W-9 upload/edit,
+	// TIN verify, PDF download) — admin/ap_manager only.
+	let manageRow = $state<Vendor1099Row | null>(null);
+
+	// E-filing is a confirm-then-act flow (arm, then confirm) mirroring
+	// `RunDetailModal`'s execute button and `payments/+page.svelte`'s void
+	// dialog — submitting to the IRS is not reversible from this app.
+	let showFileModal = $state(false);
+	let fileArmed = $state(false);
+	let filing = $state(false);
+	let fileResult = $state<Filing1099Response | null>(null);
+	let fileError = $state<string | null>(null);
 
 	// Sequences `load` (latest-issued wins). Stepping the year selector twice
 	// quickly left two GETs in flight with nothing deciding which may write, so
@@ -89,6 +114,8 @@
 					return isReportable(r);
 				case 'missing_w9':
 					return isReportable(r) && !r.w9_on_file;
+				case 'tin_unverified':
+					return needsTinVerification(r);
 				case 'over_threshold':
 					return r.over_threshold;
 				case 'card_excluded':
@@ -108,17 +135,84 @@
 		{ label: m('tax.col.tin'), class: 'center' },
 		{ label: m('tax.col.payments'), class: 'right' },
 		{ label: m('tax.col.ytdPaid'), class: 'right' },
-		{ label: m('tax.col.cardExcluded'), class: 'right' }
+		{ label: m('tax.col.cardExcluded'), class: 'right' },
+		...(canManage ? [{ label: m('tax.col.actions'), class: 'actions-col' }] : [])
 	]);
 
-	// A TIN counts as "on file" when the vendor has a tax id captured.
-	function hasTin(r: Vendor1099Row): boolean {
-		return !!r.tax_id && r.tax_id.trim().length > 0;
+	// A TIN is only "verified" once `POST .../tin-verify` has stamped
+	// `tin_verified_at` — merely having a tax id captured is not proof it
+	// matched the IRS (or even passed the offline format check).
+	function isTinVerified(r: Vendor1099Row): boolean {
+		return r.tin_verified;
+	}
+
+	// Reportable + over threshold but not yet TIN-verified — the other half
+	// of the January chase list alongside "missing W-9".
+	function needsTinVerification(r: Vendor1099Row): boolean {
+		return isReportable(r) && !r.tin_verified;
 	}
 
 	// Display string for the IRS threshold, e.g. "$600". Derived so the
 	// snippet body (where `report` isn't narrowed) can use it safely.
 	let thresholdLabel = $derived(report ? `$${report.threshold_usd}` : '$600');
+
+	// Patches one row in place after a `VendorTaxModal` mutation (W-9
+	// upload/edit, TIN verify) — avoids a full report re-fetch for a
+	// single-vendor change, and keeps the KPI/filter counts (which derive
+	// from `report.rows`) in sync since they read the same array.
+	function onVendorUpdated(vendorId: string, patch: Partial<Vendor1099Row>) {
+		if (!report) return;
+		const idx = report.rows.findIndex((r) => r.vendor_id === vendorId);
+		if (idx === -1) return;
+		report.rows[idx] = { ...report.rows[idx], ...patch };
+	}
+
+	function openFileModal() {
+		fileArmed = false;
+		fileResult = null;
+		fileError = null;
+		showFileModal = true;
+	}
+
+	function closeFileModal() {
+		if (filing) return;
+		showFileModal = false;
+		fileArmed = false;
+		fileResult = null;
+		fileError = null;
+	}
+
+	// E-filing is genuinely irreversible once a real filing adapter (vs. the
+	// local `mock`) is configured — a submitted 1099 batch reaches the IRS.
+	// Arm-then-confirm mirrors `RunDetailModal`'s execute button: the first
+	// click reveals the eligible-vendor count + a plain-language warning, the
+	// second actually submits. The endpoint is itself idempotent (same
+	// `idempotency_key` → the stored confirmation, never a duplicate filing),
+	// so a page refresh mid-flight and a retry are both safe — but the UI
+	// still shouldn't invite a stray click to trigger the first submit.
+	async function submitFile() {
+		if (!fileArmed) {
+			fileArmed = true;
+			return;
+		}
+		filing = true;
+		fileError = null;
+		try {
+			fileResult = await file1099Batch(year, '1099-NEC');
+			toast(
+				fileResult.already_filed
+					? m('tax.fileModal.toast.alreadyFiled')
+					: m('tax.fileModal.toast.filed', { accepted: fileResult.accepted_count, submitted: fileResult.submitted_count }),
+				'success'
+			);
+			await load();
+		} catch (err) {
+			fileError = err instanceof Error ? err.message : m('tax.fileModal.toast.failed');
+			toast(fileError, 'error');
+		} finally {
+			filing = false;
+		}
+	}
 </script>
 
 <PageHeader title={m('tax.title')}>
@@ -131,6 +225,15 @@
 				{/each}
 			</select>
 		</label>
+		{#if canManage}
+			<button
+				class="btn-secondary"
+				disabled={!report || report.vendor_count_eligible_over_threshold === 0}
+				onclick={openFileModal}
+			>
+				{m('tax.fileButton')}
+			</button>
+		{/if}
 	{/snippet}
 
 	{#if error}
@@ -180,6 +283,11 @@
 						alert: report.vendor_count_over_threshold_without_w9 > 0
 					},
 					{
+						key: 'tin_unverified',
+						label: m('tax.filter.tinUnverified'),
+						count: report.rows.filter(needsTinVerification).length
+					},
+					{
 						key: 'over_threshold',
 						label: m('tax.filter.overThreshold', { threshold: report.threshold_usd }),
 						count: report.rows.filter((r) => r.over_threshold).length
@@ -222,8 +330,10 @@
 							{/if}
 						</td>
 						<td class="center">
-							{#if hasTin(r)}
+							{#if isTinVerified(r)}
 								<span class="chip chip-on">{m('tax.chip.verified')}</span>
+							{:else if r.tax_id}
+								<span class="chip chip-warn">{m('tax.chip.unverified')}</span>
 							{:else}
 								<span class="chip chip-warn">{m('tax.chip.missing')}</span>
 							{/if}
@@ -250,6 +360,13 @@
 								<span class="muted">—</span>
 							{/if}
 						</td>
+						{#if canManage}
+							<td class="actions-col">
+								<RowAction onclick={() => (manageRow = r)}>
+									{m('tax.action.manage')}
+								</RowAction>
+							</td>
+						{/if}
 					</tr>
 				{/each}
 			{/snippet}
@@ -265,6 +382,79 @@
 		</p>
 	{/if}
 </PageHeader>
+
+{#if manageRow}
+	{@const activeVendorId = manageRow.vendor_id}
+	<VendorTaxModal
+		row={manageRow}
+		{year}
+		currency={reportCurrency}
+		onclose={() => (manageRow = null)}
+		onupdated={(patch) => onVendorUpdated(activeVendorId, patch)}
+	/>
+{/if}
+
+<Modal
+	open={showFileModal}
+	ariaLabel={m('tax.fileModal.title', { year })}
+	title={m('tax.fileModal.title', { year })}
+	onclose={closeFileModal}
+>
+	{#if fileResult}
+		<p class="modal-hint">
+			{fileResult.already_filed
+				? m('tax.fileModal.resultAlready')
+				: m('tax.fileModal.resultAccepted', {
+						accepted: fileResult.accepted_count,
+						submitted: fileResult.submitted_count
+					})}
+		</p>
+		{#if fileResult.confirmation_number}
+			<p class="modal-hint confirmation-number">
+				{m('tax.fileModal.confirmationNumber')}: {fileResult.confirmation_number}
+			</p>
+		{/if}
+		<div class="modal-footer">
+			<button type="button" class="btn-primary" onclick={closeFileModal}>
+				{m('tax.fileModal.close')}
+			</button>
+		</div>
+	{:else if report}
+		<p class="modal-hint">
+			{m('tax.fileModal.summary', {
+				count: report.vendor_count_eligible_over_threshold,
+				year,
+				amount: formatMoney(report.total_reportable, { currency: report.currency })
+			})}
+		</p>
+		<p class="modal-warn">{m('tax.fileModal.warning')}</p>
+		{#if fileArmed}
+			<p class="modal-warn armed" role="alert">{m('tax.fileModal.armedNote')}</p>
+		{/if}
+		{#if fileError}
+			<p class="modal-warn" role="alert">{fileError}</p>
+		{/if}
+		<div class="modal-footer">
+			<button type="button" class="btn-cancel" onclick={closeFileModal}>{m('common.cancel')}</button>
+			<button
+				type="button"
+				class="btn-danger"
+				class:armed={fileArmed}
+				disabled={filing || report.vendor_count_eligible_over_threshold === 0}
+				onclick={submitFile}
+			>
+				{filing
+					? m('tax.fileModal.filing')
+					: fileArmed
+						? m('tax.fileModal.confirmFinal')
+						: m('tax.fileModal.confirmArm', {
+								count: report.vendor_count_eligible_over_threshold,
+								year
+							})}
+			</button>
+		</div>
+	{/if}
+</Modal>
 
 <style>
 	.year-select {
@@ -384,5 +574,81 @@
 		font-size: 0.8rem;
 		color: var(--text-muted);
 		margin: 4px 2px 0;
+	}
+
+	.actions-col {
+		white-space: nowrap;
+		width: 1%;
+	}
+
+	.confirmation-number {
+		font-family: var(--font-mono);
+	}
+
+	.btn-secondary {
+		padding: 8px 16px;
+		border-radius: 6px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text);
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+		white-space: nowrap;
+	}
+
+	.btn-secondary:hover:not(:disabled) {
+		background: var(--bg);
+	}
+
+	.btn-secondary:disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
+	}
+
+	/* --- File-1099s confirm modal --- */
+
+	.modal-warn {
+		font-size: 0.82rem;
+		color: var(--text);
+		margin: 0 0 14px;
+		padding: 10px 12px;
+		background: rgba(224, 64, 64, 0.08);
+		border: 1px solid rgba(224, 64, 64, 0.3);
+		border-radius: 4px;
+	}
+
+	.modal-warn.armed {
+		font-weight: 600;
+	}
+
+	.btn-danger {
+		padding: 8px 18px;
+		border-radius: 4px;
+		border: 1px solid var(--danger-strong);
+		background: transparent;
+		color: var(--danger-strong);
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	/* Armed = the second, committing click — filled instead of outlined, the
+	   same "unarmed vs armed" visual escalation `RunDetailModal`'s
+	   `.btn-execute.armed` uses. */
+	.btn-danger.armed {
+		background: var(--danger-strong);
+		color: #fff;
+	}
+
+	.btn-danger:hover:not(:disabled) {
+		filter: brightness(1.1);
+	}
+
+	.btn-danger:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
 	}
 </style>

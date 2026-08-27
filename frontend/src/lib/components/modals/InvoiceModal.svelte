@@ -6,7 +6,7 @@
 	import { invoiceStore } from '$lib/stores/invoices.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { adminStore } from '$lib/stores/admin.svelte';
-	import { api } from '$lib/api';
+	import { api, ApiError } from '$lib/api';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
@@ -18,6 +18,11 @@
 
 	import type { AuditEntry, AuditFieldChange } from '$lib/types/audit';
 	import { getInvoiceAuditLog } from '$lib/api/audit';
+
+	import type { WorkflowInstanceDetail } from '$lib/types/workflowInstance';
+	import { chainIsComplete, chainLevelRemaining } from '$lib/types/workflowInstance';
+	import { getInvoiceWorkflowInstance } from '$lib/api/workflowInstance';
+	import ApprovalChainProgress from '$lib/components/ui/ApprovalChainProgress.svelte';
 
 	import SupplierChatThread from '$lib/components/chat/SupplierChatThread.svelte';
 	import type { ChatThread, ChatTemplate } from '$lib/types/supplierChat';
@@ -252,10 +257,53 @@
 	 * failure is state the picker renders (see `approverNote`). The `.catch` is
 	 * there for the fire-and-forget rule (`utils/storeLoadRejection.test.ts`),
 	 * which is textual and blunt on purpose, not because this can reject.
+	 *
+	 * The approval-chain stepper below (`chainLevels`) reuses this same
+	 * directory to resolve a named approver's id to a display name — it's the
+	 * correct source (active users holding `invoice.approve`), not a
+	 * coincidence of reuse.
 	 */
 	$effect(() => {
-		if (needsApproverSelect) adminStore.fetchAssignableReviewers().catch(() => {});
+		if (needsApproverSelect || chainLevels.length > 0) {
+			adminStore.fetchAssignableReviewers().catch(() => {});
+		}
 	});
+
+	/**
+	 * Multi-level approval-chain progress (`state_data.approval_levels` on the
+	 * invoice's `WorkflowInstance` — backend/app/services/approval_chain.py) —
+	 * which levels are done, who's approved, who's still pending. `null` for
+	 * an invoice with no chain (manual/specific/auto strategy) or no workflow
+	 * instance yet (`new`).
+	 */
+	let workflowInstance = $state<WorkflowInstanceDetail | null>(null);
+	let chainState = $derived(workflowInstance?.state_data?.approval_levels ?? null);
+	let chainLevels = $derived(chainState?.levels ?? []);
+	let chainCurrentLevel = $derived(chainState?.current_level ?? 0);
+
+	async function loadWorkflowInstance() {
+		try {
+			workflowInstance = await getInvoiceWorkflowInstance(invoice.id);
+		} catch {
+			// non-critical — modal still works without the chain-progress stepper
+			workflowInstance = null;
+		}
+	}
+
+	function resolveApproverName(userId: string): string {
+		const match = adminStore.assignableReviewers.find((u) => u.id === userId);
+		return match?.full_name ?? m('invoices.modal.chain.unknownApprover');
+	}
+
+	function chainStatusLabel(chainStepStatus: 'done' | 'current' | 'pending'): string {
+		if (chainStepStatus === 'done') return m('invoices.modal.chain.statusDone');
+		if (chainStepStatus === 'current') return m('invoices.modal.chain.statusCurrent');
+		return m('invoices.modal.chain.statusPending');
+	}
+
+	function chainProgressLabel(approved: number, required: number): string {
+		return m('invoices.modal.chain.progress', { approved, required });
+	}
 
 	/** Who the picker offers: active assignable reviewers other than the
 	 *  submitter. */
@@ -378,6 +426,12 @@
 			cost_center: cost_center || null,
 			department: department || null,
 			project: project || null,
+			// Optimistic-concurrency token: the `updated_at` this modal loaded
+			// alongside `invoice` (a static snapshot — see the `$props()` doc
+			// above). Sent back VERBATIM as captured, never round-tripped
+			// through a JS `Date` (see the field's own doc in `types/invoice.ts`
+			// for why that would false-positive every save).
+			expected_updated_at: invoice.updated_at,
 		};
 		if (!financiallyLocked) {
 			payload.vendor = vendor;
@@ -387,6 +441,29 @@
 		return payload;
 	}
 
+	/**
+	 * True (and handled — a confirm-to-reload prompt, never a silent failure)
+	 * when `err` is the backend's stale-`expected_updated_at` 409: another user
+	 * saved this invoice after this modal loaded it. Distinguished from the
+	 * PATCH endpoint's OTHER 409s (immutable status, financially-locked fields)
+	 * by the backend's own detail text — same substring-match convention
+	 * `submitDone()`'s catch below already uses to tell a validation 409 apart
+	 * from a generic failure.
+	 */
+	function handleStaleConflict(err: unknown): boolean {
+		if (!(err instanceof ApiError) || err.status !== 409) return false;
+		if (!err.message.toLowerCase().includes('modified since you loaded it')) return false;
+		if (confirm(m('invoices.modal.staleConflict.confirm'))) {
+			// Discard this modal's stale edits and let the host reopen it fresh —
+			// nothing in this modal re-fetches a single invoice by id.
+			refreshList();
+			onclose();
+		} else {
+			toast(m('invoices.modal.toast.staleConflict'), 'error');
+		}
+		return true;
+	}
+
 	async function save() {
 		saving = true;
 		try {
@@ -394,7 +471,9 @@
 			toast(m('invoices.modal.toast.saved'), 'success');
 			onclose();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : m('invoices.modal.toast.saveFailed'), 'error');
+			if (!handleStaleConflict(err)) {
+				toast(err instanceof Error ? err.message : m('invoices.modal.toast.saveFailed'), 'error');
+			}
 		} finally {
 			saving = false;
 		}
@@ -418,6 +497,7 @@
 			// `handleApprove` doesn't refresh either).
 			onclose();
 		} catch (err) {
+			if (handleStaleConflict(err)) return;
 			const msg = err instanceof Error ? err.message : m('invoices.modal.toast.submitFailed');
 			// Don't toast field validation errors — the form highlights them already
 			if (!msg.toLowerCase().includes('missing') && !msg.toLowerCase().includes('required field')) {
@@ -431,8 +511,31 @@
 	async function handleApprove() {
 		reviewing = true;
 		try {
-			await api.post(`/api/invoices/${invoice.id}/approve`, {});
-			toast(m('invoices.modal.toast.approved'), 'success');
+			const prevStatus = status;
+			const result = await api.post<Invoice>(`/api/invoices/${invoice.id}/approve`, {});
+			// A multi-level approval chain (services/review.py::approve_invoice)
+			// stays in `ready_for_review` until every level is satisfied — the
+			// backend recorded this approval on the current level (writing an
+			// `invoice.approval_step` audit row, not `invoice.approved`) but the
+			// invoice hasn't moved. Distinguishing that from a final approval is
+			// the whole point: an approver who thinks their sign-off just sent
+			// the invoice onward, when in fact two more people still need to act,
+			// is the exact "chain progress is invisible" gap this closes.
+			if (result.status === prevStatus) {
+				await loadWorkflowInstance();
+				const state = workflowInstance?.state_data?.approval_levels;
+				const activeLevel =
+					state && !chainIsComplete(state) ? state.levels[state.current_level] : undefined;
+				const remaining = activeLevel ? chainLevelRemaining(activeLevel) : null;
+				toast(
+					remaining !== null
+						? m('invoices.modal.toast.approvedPartial', { n: remaining })
+						: m('invoices.modal.toast.approvedPartialGeneric'),
+					'success'
+				);
+			} else {
+				toast(m('invoices.modal.toast.approvedFinal'), 'success');
+			}
 			// The host (/invoices) refetches the list with ITS active filters
 			// in closeInvoiceModal, so refreshing here would only race that
 			// refetch — and any refresh that skipped the host's filters would
@@ -1005,6 +1108,7 @@
 		loadSummary();
 		loadChatThread();
 		loadChatTemplates();
+		loadWorkflowInstance();
 	});
 
 	async function loadSummary() {
@@ -1593,6 +1697,18 @@
 								</div>
 							{/if}
 						</div>
+					{/if}
+
+					{#if chainLevels.length > 0}
+						<ApprovalChainProgress
+							levels={chainLevels}
+							currentLevel={chainCurrentLevel}
+							{resolveApproverName}
+							statusLabel={chainStatusLabel}
+							formatProgress={chainProgressLabel}
+							anyApproverLabel={m('invoices.modal.chain.anyApprover')}
+							title={m('invoices.modal.chain.title')}
+						/>
 					{/if}
 
 					{#if isErpStatus || (status === 'failed' && erpInfo)}

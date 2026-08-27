@@ -110,9 +110,11 @@ test.describe('RBAC — non-admin roles (one fresh sign-in each)', () => {
 		expect(await sidebarHrefs(page)).toEqual(
 			['/', '/invoices', '/payments', '/vendors', '/vendors/screening', '/purchase-orders', '/contracts', '/assistant', '/audit'].sort()
 		);
-		// cfo sees Audit Trail + Experiments in Settings → the section bar renders
-		// both (more than one tab, so it's no longer suppressed).
-		expect(await sectionTabHrefs(page, '/audit')).toEqual(['/audit', '/experiments'].sort());
+		// cfo sees Audit Trail + Experiments in Settings, plus Access Review
+		// (roles: ['admin', 'cfo']) → the section bar renders all three.
+		expect(await sectionTabHrefs(page, '/audit')).toEqual(
+			['/audit', '/experiments', '/admin/access-review'].sort()
+		);
 	});
 });
 
@@ -124,7 +126,20 @@ test.describe('RBAC — admin (cached session, no extra login)', () => {
 			['/', '/invoices', '/payments', '/vendors', '/vendors/screening', '/vendors/change-requests', '/exceptions', '/purchase-orders', '/contracts', '/assistant', '/organization'].sort()
 		);
 		expect(await sectionTabHrefs(page, '/organization')).toEqual(
-			['/organization', '/admin?tab=users', '/admin?tab=roles', '/audit', '/workflows', '/experiments', '/admin/api-keys', '/admin/webhooks', '/admin/partner'].sort()
+			[
+				'/organization',
+				'/admin?tab=users',
+				'/admin?tab=roles',
+				'/audit',
+				'/workflows',
+				'/experiments',
+				'/admin/api-keys',
+				'/admin/webhooks',
+				'/admin/partner',
+				'/admin/retention',
+				'/admin/access-review',
+				'/admin/privacy'
+			].sort()
 		);
 		// Direct (non-grouped) routes have no section bar.
 		await page.goto('/invoices');

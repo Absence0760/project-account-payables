@@ -28,7 +28,7 @@ from app.services.workflow_engine import (
     get_workflow_instance,
     transition_invoice,
 )
-from app.utils.dates import utc_today
+from app.utils.dates import parse_ambiguous_date, resolve_day_first_preference, utc_today
 
 logger = logging.getLogger(__name__)
 
@@ -471,7 +471,7 @@ async def run_extraction(
         amount_convention = extraction_amount_convention(result)
 
         # Apply extracted fields to invoice
-        _apply_extraction(invoice, result, amount_convention)
+        _apply_extraction(invoice, result, amount_convention, org_settings=org_settings)
 
         # Self-correction pass — verify arithmetic, date ordering, line-item
         # math.  Lowers confidence on suspect fields and adds warnings.
@@ -1040,13 +1040,16 @@ def _normalize_payment_method(val: str | None) -> str | None:
     return None
 
 
-def _clean_date(val: str | None) -> date | None:
+def _clean_date(val: str | None, *, day_first: bool = False) -> date | None:
     """Parse a model-returned date string into a `date`.
 
-    Tries ISO first (the format we ask for in the prompt), then the
-    common variations vision models slip into: US `MM/DD/YYYY`,
-    European `DD/MM/YYYY` (ambiguous with US — we try US first since
-    most invoices we see are US), and human-readable `Month DD, YYYY`.
+    Tries ISO first (the format we ask for in the prompt), then the genuinely
+    ambiguous numeric case (`3/15/2024` vs `15/3/2024`) via the shared
+    :func:`app.utils.dates.parse_ambiguous_date` — which orders the two
+    interpretations by ``day_first`` (the org's own configured signal, see
+    :func:`app.utils.dates.resolve_day_first_preference`) rather than always
+    guessing US-first — then the unambiguous common variations vision models
+    slip into: `YYYY/MM/DD` and human-readable `Month DD, YYYY`.
 
     Strict `date.fromisoformat` was silently dropping anything but
     `YYYY-MM-DD`, which meant a model returning "March 15, 2024" lost
@@ -1064,12 +1067,16 @@ def _clean_date(val: str | None) -> date | None:
     except ValueError:
         pass
 
-    # Common alternates, in priority order.
+    # The ambiguous DD/MM vs MM/DD (and DD-MM vs MM-DD) case — one shared
+    # helper, org-locale-aware, so this call site can't drift from the
+    # others that face the same ambiguity (CSV import, bank/vendor-statement
+    # reconciliation).
+    ambiguous = parse_ambiguous_date(s, day_first=day_first)
+    if ambiguous is not None:
+        return ambiguous
+
+    # Common alternates that are NOT ambiguous, in priority order.
     formats = (
-        "%m/%d/%Y",  # 3/15/2024
-        "%m-%d-%Y",  # 3-15-2024
-        "%d/%m/%Y",  # 15/3/2024 (EU)
-        "%d-%m-%Y",
         "%Y/%m/%d",  # 2024/3/15
         "%B %d, %Y",  # March 15, 2024
         "%b %d, %Y",  # Mar 15, 2024
@@ -1090,6 +1097,7 @@ def _apply_extraction(
     invoice: Invoice,
     result: ExtractionResult,
     convention: AmountConvention | None = None,
+    org_settings: dict | None = None,
 ) -> None:
     """Apply extracted fields to the invoice record.
 
@@ -1106,9 +1114,15 @@ def _apply_extraction(
     the line items (``extract_invoice``) resolve it once and pass it here so the
     header and the lines are read by the same rule; omitting it resolves it from
     this result.
+
+    ``org_settings`` resolves the ambiguous-date day-first preference (see
+    ``app.utils.dates.resolve_day_first_preference``) for the two date fields
+    below — an org with no configured signal keeps the pre-existing
+    month-first reading.
     """
     if convention is None:
         convention = extraction_amount_convention(result)
+    day_first = resolve_day_first_preference(org_settings)
 
     # Free-form text fields — sentinel-filter only.
     for src, dst in (
@@ -1145,7 +1159,7 @@ def _apply_extraction(
         (result.invoice_date, "invoice_date"),
         (result.due_date, "due_date"),
     ):
-        d = _clean_date(src.value)
+        d = _clean_date(src.value, day_first=day_first)
         if d is not None:
             setattr(invoice, dst, d)
 

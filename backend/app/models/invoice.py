@@ -38,6 +38,20 @@ class InvoiceStatus(enum.StrEnum):
 
 class Invoice(Base, EntityMixin, TimestampMixin):
     __tablename__ = "invoices"
+    # `updated_at` carries a server-side `onupdate=func.now()` (TimestampMixin);
+    # without `eager_defaults`, SQLAlchemy just marks it expired after a flush
+    # that touches the row, so the NEXT plain attribute read (e.g.
+    # `InvoiceResponse.from_db`'s `inv.updated_at.isoformat()`, needed for the
+    # optimistic-concurrency token on PATCH — see `schemas/invoice.py`) tries a
+    # lazy re-SELECT outside an awaited context and raises `MissingGreenlet`
+    # under the async ORM. `eager_defaults=True` uses PostgreSQL's `RETURNING`
+    # on the same INSERT/UPDATE statement instead, so the attribute is already
+    # populated by the time flush() returns — no separate refresh needed at any
+    # of the many call sites that build an `InvoiceResponse` right after a
+    # mutation. Same pitfall `api/scim.py::update_user` hit (fixed there with an
+    # explicit `await db.refresh(user)`); this is the structural fix so a new
+    # response field never has to remember the workaround.
+    __mapper_args__ = {"eager_defaults": True}
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     correlation_id: Mapped[uuid.UUID] = mapped_column(

@@ -53,9 +53,10 @@ test.describe('/invoices status filter', () => {
 		expect(afterRows).toBeLessThanOrEqual(beforeRows);
 
 		// All visible status badges in the body show 'Approved'. The
-		// Status column is now second-to-last (last is actions).
+		// Status column is now third-to-last (Assigned To, then Actions,
+		// follow it).
 		const badges = await page
-			.locator('table tbody tr td:nth-last-child(2)')
+			.locator('table tbody tr td:nth-last-child(3)')
 			.allTextContents();
 		expect(badges.every((b) => b.toLowerCase().includes('approved'))).toBe(true);
 	});

@@ -1,4 +1,27 @@
-import { expect, signInAndWait, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
+
+interface OrgResponse {
+	settings: Record<string, unknown> & {
+		invoice_defaults?: { currency?: string };
+	};
+}
+
+async function getOrg(page: import('@playwright/test').Page): Promise<OrgResponse> {
+	const resp = await page.request.get(`${API_BASE}/api/organization`, {
+		headers: await authedTenantHeaders(page)
+	});
+	return (await resp.json()) as OrgResponse;
+}
+
+async function patchOrg(
+	page: import('@playwright/test').Page,
+	body: Record<string, unknown>
+): Promise<void> {
+	await page.request.patch(`${API_BASE}/api/organization`, {
+		headers: await authedTenantHeaders(page),
+		data: body
+	});
+}
 
 /**
  * Manual invoice entry — "+ Create Invoice" on the /invoices toolbar opens
@@ -85,6 +108,57 @@ test.describe('/invoices — Create Invoice modal', () => {
 		await expect(detail.locator('.activity-action', { hasText: 'File attached' })).toBeVisible({
 			timeout: 5_000
 		});
+	});
+
+	test('currency field defaults to the org-configured default, not a hardcoded USD', async ({
+		page
+	}) => {
+		// `authedTenantHeaders` reads the JWT out of localStorage, which only
+		// exists once the page has visited the tenant origin (storageState
+		// applies at context creation, but localStorage is only readable once
+		// we're actually on that origin).
+		await page.goto('/invoices');
+
+		const before = await getOrg(page);
+		const originalCurrency = before.settings.invoice_defaults?.currency ?? 'USD';
+		// Pick a non-USD, non-current currency so a hardcoded 'USD' default
+		// (the bug) is unambiguously distinguishable from the fix.
+		const next = originalCurrency === 'EUR' ? 'GBP' : 'EUR';
+
+		try {
+			await patchOrg(page, {
+				settings: {
+					invoice_defaults: {
+						...(before.settings.invoice_defaults ?? {}),
+						currency: next
+					}
+				}
+			});
+
+			// Reload so the page's ensureLoaded() effect resolves the org
+			// currency from scratch (the store is session-cached) before the
+			// modal reads it at construction time.
+			await page.goto('/invoices');
+			await page.waitForLoadState('networkidle');
+
+			await page.getByRole('button', { name: 'Create Invoice' }).click();
+			const modal = page.locator('div.modal[role="dialog"][aria-label="Create Invoice"]');
+			await expect(modal).toBeVisible();
+
+			const currencyInput = modal.locator('label', { hasText: 'Currency' }).locator('input');
+			await expect(currencyInput).toHaveValue(next);
+
+			await modal.getByRole('button', { name: 'Cancel' }).click();
+		} finally {
+			await patchOrg(page, {
+				settings: {
+					invoice_defaults: {
+						...(before.settings.invoice_defaults ?? {}),
+						currency: originalCurrency
+					}
+				}
+			});
+		}
 	});
 
 	test('ap_clerk does not see the toolbar button', async ({ page, tenantClerk }) => {

@@ -96,12 +96,13 @@ function createAdminStore() {
 
 	// --- Assignable reviewers (non-admin-readable) ---
 	//
-	// `GET /api/admin/users` is admin-only, so every non-admin that opened the
-	// invoice approver picker got a 403, an empty `<select>`, and a Submit
-	// button disabled forever — including the ap_manager and cfo the backend
-	// explicitly allows to submit and assign. This is the narrow list they can
-	// read. It lives beside the user directory (same subject, one owner) rather
-	// than in a second store, and it never widens the admin endpoint.
+	// `GET /api/admin/users` is gated `user.manage` (admin by default), so
+	// every ap_manager/cfo/ap_clerk that opened the invoice approver picker
+	// got a 403, an empty `<select>`, and a Submit button disabled forever —
+	// even though the backend explicitly allows them to submit and assign.
+	// This is the narrow list they can read. It lives beside the user
+	// directory (same subject, one owner) rather than in a second store, and
+	// it never widens the admin endpoint.
 	let assignableReviewers = $state<AssignableReviewer[]>([]);
 	// Settled-with-nothing vs not-settled-yet: the picker must not flash a
 	// "no reviewers" note while the request is still in flight, and the caller

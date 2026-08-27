@@ -51,6 +51,7 @@
 		ignoreCardTxn,
 		createExpenseFromCard,
 		getExpenseSummary,
+		getExpenseIds,
 		type ExpenseListParams,
 		type GlAccountOption
 	} from '$lib/api/expenses';
@@ -78,6 +79,8 @@
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { appendUnique } from '$lib/utils/pagination';
 	import { m } from '$lib/i18n/store.svelte';
+	import SortableHeader from '$lib/components/ui/SortableHeader.svelte';
+	import { toggleSort, type SortOrder } from '$lib/utils/sort';
 
 	const canCreate = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk'));
 	// Policy CRUD + report/pre-approval REJECT = admin | ap_manager.
@@ -98,6 +101,10 @@
 	// `loadExpenses()`, read by the debounce effect — see the comment there.
 	let appliedSearch = $state(($page.url.searchParams.get('search') ?? '').trim());
 	let statusFilter = $state<string>($page.url.searchParams.get('status') ?? 'all');
+	// Column sort (expenses tab only) — URL-backed via the same `syncUrl()`
+	// below. `null` field = the backend's own default order (most-recent first).
+	let sortField = $state<string | null>($page.url.searchParams.get('sort'));
+	let sortOrder = $state<SortOrder>(($page.url.searchParams.get('order') as SortOrder) ?? 'desc');
 
 	// --- Modal + selection state ---
 	let showCreate = $state(false);
@@ -108,6 +115,13 @@
 	let glAccounts = $state<GlAccountOption[]>([]);
 	let bulkGl = $state('');
 	let bulkBusy = $state(false);
+	// True once "Select all N matching" has resolved the whole filtered set
+	// (not just the loaded page) into `selected`. See the identical
+	// mechanism (and full rationale) on the invoices list page's
+	// `selectAllMatching`. Reset by the status-filter and search effects
+	// whenever the filters actually change.
+	let selectedAllMatching = $state(false);
+	let selectingAllMatching = $state(false);
 
 	// Chip statuses = the reachable subset ∪ whatever is ACTIVE. The subset omits
 	// `rejected` and `reimbursed` because nothing in the backend ever assigns
@@ -216,6 +230,13 @@
 		const params: ExpenseListParams = { ...buildExportParams() };
 		const term = currentSearchTerm();
 		if (term) params.search = term;
+		// Same `untrack` reasoning as `currentSearchTerm()` — this is called
+		// synchronously from effects that must not depend on the sort state.
+		const currentSort = untrack(() => sortField);
+		if (currentSort) {
+			params.sort = currentSort;
+			params.order = untrack(() => sortOrder);
+		}
 		return params;
 	}
 
@@ -273,8 +294,23 @@
 			// Reconciliation status filter only belongs in the URL while on the cards tab.
 			if (tab === 'cards' && reconFilter !== 'all') url.searchParams.set('recon', reconFilter);
 			else url.searchParams.delete('recon');
+			if (sortField) {
+				url.searchParams.set('sort', sortField);
+				url.searchParams.set('order', sortOrder);
+			} else {
+				url.searchParams.delete('sort');
+				url.searchParams.delete('order');
+			}
 			replaceState(`${url.pathname}${url.search}`, {});
 		});
+	}
+
+	function handleSort(field: string) {
+		const next = toggleSort({ field: sortField, order: sortOrder }, field);
+		sortField = next.field;
+		sortOrder = next.order;
+		syncUrl();
+		loadExpenses();
 	}
 
 	// A keystroke now costs a request, so the term is debounced 300ms (the
@@ -290,6 +326,10 @@
 		const next = search.trim();
 		clearTimeout(searchTimer);
 		if (next === appliedSearch) return;
+		// The "select all N matching" set was resolved against the OLD search
+		// term; once it changes the set no longer describes anything real.
+		// See the identical mechanism on the invoices list page.
+		selectedAllMatching = false;
 		searchTimer = setTimeout(() => {
 			syncUrl();
 			loadExpenses();
@@ -303,6 +343,7 @@
 	// A chip click is a discrete action — it loads immediately, no debounce.
 	$effect(() => {
 		statusFilter;
+		selectedAllMatching = false;
 		syncUrl();
 		loadExpenses();
 	});
@@ -332,6 +373,7 @@
 	// select-all `size === length` comparison, and feed invisible ids into the
 	// bulk GL re-code.
 	$effect(() => {
+		if (selectedAllMatching) return;
 		const pruned = pruneSelection(
 			selected,
 			expenseStore.all.map((e) => e.id)
@@ -346,11 +388,41 @@
 		selected = next;
 	}
 
+	let allSelected = $derived(
+		expenseStore.all.length > 0 && selected.size === expenseStore.all.length
+	);
+
 	function toggleSelectAll() {
-		if (selected.size === expenseStore.all.length) {
+		if (allSelected) {
 			selected = new Set();
+			selectedAllMatching = false;
 		} else {
 			selected = new Set(expenseStore.all.map((e) => e.id));
+		}
+	}
+
+	// Resolve and select EVERY expense matching the current list filters (not
+	// just the loaded page) via `GET /api/expenses/ids`. The header checkbox
+	// above only ever covers `expenseStore.all` — see the identical mechanism
+	// (and full rationale) on the invoices list page's `selectAllMatching`.
+	async function selectAllMatching() {
+		selectingAllMatching = true;
+		try {
+			const res = await getExpenseIds(buildParams());
+			selected = new Set(res.ids);
+			selectedAllMatching = true;
+			if (res.truncated) {
+				toast(
+					`Selected the first ${res.ids.length} of ${res.total} matching — narrow your filters to select the rest.`,
+					'error'
+				);
+			} else {
+				toast(`Selected all ${res.ids.length} matching expense(s)`, 'success');
+			}
+		} catch {
+			toast('Failed to select all matching', 'error');
+		} finally {
+			selectingAllMatching = false;
 		}
 	}
 
@@ -359,8 +431,12 @@
 		bulkBusy = true;
 		try {
 			const res = await bulkGlCode([...selected], bulkGl || null);
-			toast(m('expenses.toast.glCoded', { n: res.updated }), 'success');
+			const msg = res.skipped?.length
+				? `${m('expenses.toast.glCoded', { n: res.updated })} (skipped ${res.skipped.length})`
+				: m('expenses.toast.glCoded', { n: res.updated });
+			toast(msg, 'success');
 			selected = new Set();
+			selectedAllMatching = false;
 			bulkGl = '';
 			// Records the term like `loadExpenses()` does — this refetch IS the
 			// newest issued load, so a debounce still pending for the same term
@@ -1084,16 +1160,16 @@
 						<input
 							type="checkbox"
 							aria-label={m('expenses.selectAllAria')}
-							checked={expenseStore.all.length > 0 && selected.size === expenseStore.all.length}
+							checked={allSelected}
 							onchange={toggleSelectAll}
 						/>
 					</th>
-					<th>{m('expenses.col.date')}</th>
-					<th>{m('expenses.col.merchant')}</th>
-					<th>{m('expenses.col.category')}</th>
+					<SortableHeader field="expense_date" label={m('expenses.col.date')} active={sortField === 'expense_date'} order={sortOrder} onsort={handleSort} />
+					<SortableHeader field="merchant" label={m('expenses.col.merchant')} active={sortField === 'merchant'} order={sortOrder} onsort={handleSort} />
+					<SortableHeader field="category" label={m('expenses.col.category')} active={sortField === 'category'} order={sortOrder} onsort={handleSort} />
 					<th>{m('expenses.col.method')}</th>
-					<th class="right">{m('expenses.col.amount')}</th>
-					<th>{m('expenses.col.status')}</th>
+					<SortableHeader field="amount" label={m('expenses.col.amount')} class="right" active={sortField === 'amount'} order={sortOrder} onsort={handleSort} />
+					<SortableHeader field="status" label={m('expenses.col.status')} active={sortField === 'status'} order={sortOrder} onsort={handleSort} />
 					<th class="actions-col"></th>
 				</tr>
 			{/snippet}
@@ -1511,8 +1587,21 @@
 
 <!-- Bulk GL code bar (expenses tab only) -->
 {#if tab === 'expenses'}
-	<BulkBar count={selected.size} onclear={() => (selected = new Set())}>
+	<BulkBar
+		count={selected.size}
+		onclear={() => {
+			selected = new Set();
+			selectedAllMatching = false;
+		}}
+	>
 		{#snippet actions()}
+			{#if allSelected && !selectedAllMatching && expenseStore.total > expenseStore.all.length}
+				<button class="bulk-action-btn secondary" disabled={selectingAllMatching} onclick={selectAllMatching}>
+					{selectingAllMatching ? m('common.loading') : `Select all ${expenseStore.total} matching`}
+				</button>
+			{:else if selectedAllMatching}
+				<span class="bulk-all-matching-note">All matching selected</span>
+			{/if}
 			<select class="bulk-gl-select" bind:value={bulkGl} aria-label={m('expenses.bulk.glAria')} disabled={bulkBusy}>
 				<option value="">{m('expenses.bulk.clearGl')}</option>
 				{#each glAccounts as g (g.id)}
@@ -1714,6 +1803,39 @@
 		border-radius: 6px;
 		background-color: var(--surface);
 		font-size: 0.82rem;
+	}
+
+	.bulk-action-btn {
+		padding: 6px 14px;
+		border-radius: 6px;
+		border: 1px solid var(--accent-strong);
+		background: var(--accent-strong);
+		color: #fff;
+		font-size: 0.82rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+		white-space: nowrap;
+	}
+
+	.bulk-action-btn:hover:not(:disabled) {
+		filter: brightness(1.1);
+	}
+
+	.bulk-action-btn:disabled {
+		opacity: 0.6;
+		cursor: default;
+	}
+
+	.bulk-action-btn.secondary {
+		background: transparent;
+		color: var(--accent-strong);
+	}
+
+	.bulk-all-matching-note {
+		font-size: 0.82rem;
+		color: var(--text-muted);
+		white-space: nowrap;
 	}
 
 	/* --- Reports --- */

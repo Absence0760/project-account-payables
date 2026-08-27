@@ -1,5 +1,6 @@
 """User management endpoints for organization admins."""
 
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -24,6 +25,7 @@ from app.api.permissions import (
     permissions_for_role,
     sanitize_permissions,
 )
+from app.config import settings
 from app.database import get_control_db, get_tenant_engine
 from app.models.organization import Organization
 from app.models.user import Role, User, UserRole
@@ -39,6 +41,7 @@ from app.schemas.admin import (
     UpdateUserRequest,
 )
 from app.services.audit_dispatch import dispatch_auth_audit
+from app.services.email_adapters import EmailMessage, get_email_adapter
 from app.services.session_management import revoke_user_sessions
 from app.utils.passwords import (
     PasswordError,
@@ -46,6 +49,8 @@ from app.utils.passwords import (
     hash_password,
     validate_password_complexity,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -79,7 +84,10 @@ def _user_to_response(user: User) -> AdminUserResponse:
 @router.get("/users", response_model=AdminUserListResponse)
 async def list_users(
     db: AsyncSession = Depends(get_control_db),
-    user: User = Depends(require_roles(ROLE_ADMIN)),
+    # user.manage defaults to admin-only (unchanged) — matches the mutating
+    # /users routes below. A custom role holding only user.manage still needs
+    # to SEE the roster it's allowed to manage.
+    user: User = Depends(require_permission(PERM_USER_MANAGE)),
     org_id: uuid.UUID = Depends(get_org_id),
     search: str | None = Query(None, description="Filter by full_name or email (case-insensitive)"),
     pagination: PaginationParams = Depends(pagination_params),
@@ -111,7 +119,16 @@ async def list_users(
 @router.get("/roles", response_model=list[RoleResponse])
 async def list_roles(
     db: AsyncSession = Depends(get_control_db),
-    user: User = Depends(require_roles(ROLE_ADMIN)),
+    # Read-only and needed by a user.manage-only holder to populate the role
+    # picker on user create/update (`POST/PATCH /admin/users` already accept
+    # `role_names`, gated by the grant/mutation guards below — not by this
+    # read). Role CRUD (`POST/PATCH/DELETE /admin/roles` below) stays
+    # require_roles(ROLE_ADMIN): minting/editing a role definition can bundle
+    # ANY catalog permission (including ones the definer doesn't hold), which
+    # is a materially stronger capability than assigning an EXISTING role to a
+    # user — see `_authorize_role_grant`'s docstring. Listing existing roles
+    # carries no such risk.
+    user: User = Depends(require_permission(PERM_USER_MANAGE)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     """System roles + this org's custom roles. The four built-ins
@@ -127,13 +144,20 @@ async def list_roles(
 
 @router.get("/permissions", response_model=list[PermissionCatalogEntry])
 async def list_permission_catalog(
-    user: User = Depends(require_roles(ROLE_ADMIN)),
+    # Static data, no DB read, PII-free — the same low-risk profile as
+    # `GET /admin/roles` above. Primarily the /admin/roles editor's companion
+    # (which stays admin-only), but a user.manage-only holder legitimately
+    # reaches this too since `GET /admin/roles` already echoes each role's
+    # permission KEYS on `RoleResponse.permissions` — this is only the
+    # key→label lookup for rendering them, not a new grant of any kind.
+    user: User = Depends(require_permission(PERM_USER_MANAGE)),
 ):
     """The granular-permission catalog (key + human label), in display order.
 
     Drives the permission checkboxes in the /admin/roles create/edit modal so
-    the frontend never hardcodes the catalog. Admin-only (it's the role editor's
-    companion); it's static data, no DB read."""
+    the frontend never hardcodes the catalog; also usable anywhere a role's
+    permission keys (already visible via `GET /admin/roles`) need a human
+    label. Static data, no DB read."""
     return [
         PermissionCatalogEntry(key=key, label=PERMISSION_LABELS[key]) for key in ALL_PERMISSIONS
     ]
@@ -507,6 +531,38 @@ async def create_user(
         entity_id=new_user.id,
         details={"role_names": sorted(r.name for r in new_user.roles)},
     )
+
+    # Best-effort welcome email — same posture as the supplier-portal invite
+    # (`vendors.py::invite_vendor_portal_user`) and the tenant-signup welcome
+    # email: a failed send never breaks user creation, and the temp password
+    # keeps riding the API response below so local dev (where email may be
+    # unconfigured — `console` adapter just logs) and an admin who'd rather
+    # relay it out-of-band both still work. This makes "Invite User" an actual
+    # email invite instead of only a shown-once password the admin must copy.
+    org_row = (
+        await db.execute(select(Organization).where(Organization.id == org_id))
+    ).scalar_one_or_none()
+    if org_row is not None:
+        template_base = (settings.tenant_url_template or "").replace("{slug}", org_row.slug)
+        tenant_url = template_base if template_base else None
+        try:
+            await get_email_adapter().send(
+                EmailMessage(
+                    to=new_user.email,
+                    subject=f"You've been invited to {org_row.name} on FeohLedger",
+                    body_text=(
+                        f"Hi {new_user.full_name},\n\n"
+                        f"An administrator has created an account for you on "
+                        f"{org_row.name}'s FeohLedger workspace.\n\n"
+                        + (f"  URL:      {tenant_url}\n" if tenant_url else "")
+                        + f"  Email:    {new_user.email}\n"
+                        f"  Password: {temp_password}\n\n"
+                        "You'll be asked to change your password on first sign-in.\n"
+                    ),
+                )
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Welcome email failed for new user %s (org=%s)", new_user.id, org_id)
 
     resp = _user_to_response(new_user)
     return CreateUserResponse(**resp.model_dump(), temporary_password=temp_password)

@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.vendor import Vendor
 from app.services.numeric_bounds import MONEY_NUMERIC, fits_numeric
+from app.utils.dates import parse_ambiguous_date
 
 # CSV imports are always small structured text (vendor lists, invoice batches,
 # card-transaction feeds) — well under the general 25 MB file-upload cap in
@@ -154,15 +155,21 @@ def _parse_decimal(raw: str | None) -> Decimal | None:
     return value if fits_numeric(value, *MONEY_NUMERIC) else None
 
 
-def _parse_date(raw: str | None) -> date | None:
+def _parse_date(raw: str | None, *, day_first: bool = False) -> date | None:
+    """Parse a CSV date cell. ISO and ``YYYY/MM/DD`` are unambiguous and tried
+    first; the remaining ``M/D/Y`` vs ``D/M/Y`` case is genuinely ambiguous and
+    is resolved by the caller-supplied ``day_first`` (the org's own configured
+    locale signal — see ``app.utils.dates.resolve_day_first_preference``)
+    via the shared ``parse_ambiguous_date`` helper, never a hardcoded order."""
     if not raw:
         return None
-    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d"):
+    raw = raw.strip()
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
         try:
             return datetime.strptime(raw, fmt).date()
         except ValueError:
             continue
-    return None
+    return parse_ambiguous_date(raw, day_first=day_first)
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +198,7 @@ async def import_vendors_csv(
         name = (row.get("name") or "").strip()
         if not name:
             result.errors.append(ImportRowError(row=i, message="name is required"))
+            result.skipped += 1
             continue
 
         code = (row.get("code") or "").strip() or None
@@ -247,13 +255,17 @@ async def import_invoices_csv(
     organization_id: uuid.UUID,
     csv_text: str,
     entity_id: uuid.UUID | None = None,
+    day_first: bool = False,
 ) -> ImportResult:
     """Import historical invoices. Vendor resolution: code > name. Missing vendors
     get an auto-created stub with status='unverified' so the row still lands.
 
     ``entity_id`` (multi-entity Phase 2) is the entity imported invoices and any
     auto-created vendor stubs land under — the selected entity or the tenant
-    default, resolved at the endpoint."""
+    default, resolved at the endpoint.
+
+    ``day_first`` resolves ambiguous ``invoice_date`` / ``due_date`` cells
+    (see ``app.utils.dates.resolve_day_first_preference``)."""
     result = ImportResult()
     try:
         rows = _read_rows(csv_text)
@@ -269,16 +281,19 @@ async def import_invoices_csv(
 
         if not invoice_number:
             result.errors.append(ImportRowError(row=i, message="invoice_number is required"))
+            result.skipped += 1
             continue
         if not vendor_name and not vendor_code:
             result.errors.append(
                 ImportRowError(row=i, message="vendor_name or vendor_code is required")
             )
+            result.skipped += 1
             continue
         if amount is None or amount < 0:
             result.errors.append(
                 ImportRowError(row=i, message=f"amount invalid: {row.get('amount')!r}")
             )
+            result.skipped += 1
             continue
 
         vendor = await _resolve_or_create_vendor(
@@ -294,6 +309,7 @@ async def import_invoices_csv(
             status_val = InvoiceStatus(status_raw)
         except ValueError:
             result.errors.append(ImportRowError(row=i, message=f"status invalid: {status_raw!r}"))
+            result.skipped += 1
             continue
         # A CSV import bypasses the workflow engine (no audit / segregation /
         # approval signature), so it may only land at a safe initial/terminal
@@ -309,6 +325,7 @@ async def import_invoices_csv(
                     ),
                 )
             )
+            result.skipped += 1
             continue
 
         # Dedup on (vendor_id, invoice_number) — the natural AP uniqueness key
@@ -331,8 +348,8 @@ async def import_invoices_csv(
             vendor_id=vendor.id,
             amount=amount,
             currency=(row.get("currency") or "USD").upper()[:3],
-            invoice_date=_parse_date(row.get("invoice_date")),
-            due_date=_parse_date(row.get("due_date")),
+            invoice_date=_parse_date(row.get("invoice_date"), day_first=day_first),
+            due_date=_parse_date(row.get("due_date"), day_first=day_first),
             po_number=(row.get("po_number") or None) or None,
             description=(row.get("description") or None) or None,
             gl_account=(row.get("gl_account") or None) or None,
@@ -400,6 +417,7 @@ async def import_corporate_card_csv(
     csv_text: str,
     entity_id: uuid.UUID | None = None,
     import_batch: str | None = None,
+    day_first: bool = False,
 ) -> ImportResult:
     """Import a corporate-card transaction feed from CSV into
     ``CorporateCardTransaction`` rows.
@@ -433,7 +451,7 @@ async def import_corporate_card_csv(
     for i, row in enumerate(rows, start=2):  # +1 header, +1 for 1-indexing
         external_txn_id = (row.get("external_txn_id") or "").strip() or None
         amount = _parse_decimal(row.get("amount"))
-        txn_date = _parse_date(row.get("date"))
+        txn_date = _parse_date(row.get("date"), day_first=day_first)
 
         # Negatives are DELIBERATELY allowed here, unlike the invoice importer:
         # a card refund / merchant credit / chargeback is a real negative line
@@ -448,11 +466,13 @@ async def import_corporate_card_csv(
             result.errors.append(
                 ImportRowError(row=i, message=f"amount invalid: {row.get('amount')!r}")
             )
+            result.skipped += 1
             continue
         if txn_date is None:
             result.errors.append(
                 ImportRowError(row=i, message=f"date invalid: {row.get('date')!r}")
             )
+            result.skipped += 1
             continue
 
         # Dedupe (idempotency guard) — in-file first, then against the DB.
@@ -487,7 +507,7 @@ async def import_corporate_card_csv(
             entity_id=entity_id,
             external_txn_id=external_txn_id,
             txn_date=txn_date,
-            posted_date=_parse_date(row.get("posted_date")),
+            posted_date=_parse_date(row.get("posted_date"), day_first=day_first),
             merchant=(row.get("merchant") or None) or None,
             amount=amount,
             currency=(row.get("currency") or "USD").upper()[:3],

@@ -199,6 +199,16 @@ export interface Invoice {
 	project: string | null;
 	contract_id: string | null;
 	created_at: string;
+	/**
+	 * The row's current `updated_at`, ISO-8601. Capture this verbatim when the
+	 * invoice loads and echo it back as `expected_updated_at` on the next
+	 * `PATCH` — the optimistic-concurrency token. Treat it as an opaque
+	 * string, never round-trip it through a JS `Date` (`toISOString()`
+	 * truncates to millisecond precision, which would make an untouched
+	 * invoice look "modified" against the backend's microsecond timestamp
+	 * and false-positive every save with a 409).
+	 */
+	updated_at: string;
 	file_url: string | null;
 	warnings: InvoiceWarning[] | null;
 	po_match: PoMatch | null;

@@ -1,11 +1,14 @@
 """Vendor CRUD endpoints with verification workflow + portal-user management."""
 
+import csv
 import dataclasses
+import io
 import logging
 import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi.responses import Response
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,12 +22,20 @@ from app.api.deps import (
     require_permission,
     require_roles,
 )
-from app.api.pagination import PaginationParams, paginated, pagination_params
+from app.api.pagination import (
+    MAX_SELECT_ALL_IDS,
+    MatchingIdsResponse,
+    PaginationParams,
+    paginated,
+    pagination_params,
+)
 from app.api.permissions import (
     PERM_VENDOR_BANK_CHANGE_APPROVE,
     PERM_VENDOR_BLOCK,
     PERM_VENDOR_MANAGE,
 )
+from app.api.sorting import SortParams, resolve_order_by, sort_params
+from app.config import settings
 from app.models.contract import Contract
 from app.models.credit_memo import CreditMemo
 from app.models.discount import DiscountOffer
@@ -51,6 +62,13 @@ from app.schemas.sanctions import (
 )
 from app.schemas.vendor import (
     VendorBankChangeRequest,
+    VendorBulkExportRequest,
+    VendorBulkScreenRequest,
+    VendorBulkScreenResponse,
+    VendorBulkScreenSkip,
+    VendorBulkStatusRequest,
+    VendorBulkStatusResponse,
+    VendorBulkStatusSkip,
     VendorChangeRequestResponse,
     VendorChangeReviewRequest,
     VendorCreate,
@@ -61,6 +79,7 @@ from app.services.audit_access import build_field_diff, log_access
 from app.services.audit_dispatch import dispatch_audit
 from app.services.csv_import import MAX_CSV_IMPORT_SIZE, import_vendors_csv
 from app.services.email_adapters import EmailMessage, get_email_adapter
+from app.services.report_export import csv_safe_cell
 from app.services.sanctions_categories import (
     categories_from_raw_response,
     has_adverse_media,
@@ -308,17 +327,32 @@ async def _flag_payable_invoices_for_bank_change(db: AsyncSession, *, vendor: Ve
         )
 
 
-@router.get("")
-async def list_vendors(
-    pagination: PaginationParams = Depends(pagination_params),
-    search: str | None = None,
-    status_filter: str | None = Query(None, alias="status"),
-    source: str | None = None,
-    db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
-    entity_id: uuid.UUID | None = Depends(get_entity_id),
+# `sort=` allowlist for `GET /vendors` — see `api/sorting.py`. `.id` is
+# always appended as the final tie-break regardless of which column is
+# picked (mirrors the pre-existing `name, id` default order below).
+VENDOR_SORTABLE_COLUMNS: dict[str, object] = {
+    "name": Vendor.name,
+    "code": Vendor.code,
+    "status": Vendor.status,
+    "created_at": Vendor.created_at,
+}
+
+
+def _vendor_list_filters(
+    query,
+    *,
+    search: str | None,
+    status_filter: str | None,
+    source: str | None,
 ):
-    query = apply_entity_scope(select(Vendor), Vendor, entity_id)
+    """Apply the vendor-list search / status / source filters to ``query``.
+
+    Shared by ``GET /api/vendors`` and ``GET /api/vendors/ids`` so the
+    "select all N matching" bulk-selection affordance resolves EXACTLY the
+    set the table is showing — a second, independently-maintained filter
+    builder is how the two would silently drift apart (the same reasoning
+    as ``api/expenses.py::_expense_list_filters``).
+    """
     if search:
         pattern = f"%{search}%"
         query = query.where(
@@ -329,11 +363,43 @@ async def list_vendors(
         query = query.where(Vendor.status.in_(statuses))
     if source:
         query = query.where(Vendor.source == source)
+    return query
+
+
+@router.get("")
+async def list_vendors(
+    pagination: PaginationParams = Depends(pagination_params),
+    search: str | None = None,
+    status_filter: str | None = Query(None, alias="status"),
+    source: str | None = None,
+    sort: SortParams = Depends(sort_params),
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    query = _vendor_list_filters(
+        apply_entity_scope(select(Vendor), Vendor, entity_id),
+        search=search,
+        status_filter=status_filter,
+        source=source,
+    )
 
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar() or 0
 
-    query = query.order_by(Vendor.name).offset(pagination.offset).limit(pagination.limit)
+    # `.id` tie-breaker: `Vendor.name` alone isn't unique (two vendors can
+    # share a name, e.g. a bulk import), so without it Postgres is free to
+    # order same-name rows differently between the offset=0 and offset=N
+    # queries — a row can be duplicated onto two pages or skipped entirely.
+    # `sort=`/`order=` (validated against `VENDOR_SORTABLE_COLUMNS`) override
+    # the default when supplied — see `api/sorting.py`.
+    order_by = resolve_order_by(
+        sort,
+        VENDOR_SORTABLE_COLUMNS,
+        id_column=Vendor.id,
+        default=[Vendor.name.asc(), Vendor.id.asc()],
+    )
+    query = query.order_by(*order_by).offset(pagination.offset).limit(pagination.limit)
     result = await db.execute(query)
     vendors = result.scalars().all()
 
@@ -345,6 +411,213 @@ async def list_vendors(
         items.append(VendorResponse.from_db(v, inv_count))
 
     return paginated(items, total, pagination)
+
+
+# Registered BEFORE the parametric `/{vendor_id}` route so the literal `/ids`
+# path isn't swallowed by `vendor_id` (which would 422 on the non-UUID
+# segment). FastAPI matches routes in declaration order — the same ordering
+# constraint `/counts` below sits under.
+@router.get("/ids", response_model=MatchingIdsResponse)
+async def list_vendor_ids(
+    search: str | None = None,
+    status_filter: str | None = Query(None, alias="status"),
+    source: str | None = None,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Every vendor id matching the caller's list filters — the resolver
+    behind "select all N matching" on the vendors list page. Same filters
+    (and the same shared `_vendor_list_filters`) as `GET /vendors`, so the
+    two describe the same set."""
+    query = _vendor_list_filters(
+        apply_entity_scope(select(Vendor.id), Vendor, entity_id),
+        search=search,
+        status_filter=status_filter,
+        source=source,
+    )
+    total = int(
+        (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
+    )
+    query = query.order_by(Vendor.name.asc(), Vendor.id.asc()).limit(MAX_SELECT_ALL_IDS)
+    ids = [str(row) for row in (await db.execute(query)).scalars().all()]
+    return MatchingIdsResponse(ids=ids, total=total, truncated=total > len(ids))
+
+
+# Vendor targets a bulk `status` change may legitimately drive — the same two
+# the single-row `POST /{vendor_id}/verify` / `/reject` endpoints support.
+# Each starting status is enforced per-row below, mirroring those endpoints'
+# own 409s, so a bulk call can't reach a state the single-row path refuses.
+_VENDOR_BULK_STATUS_STARTING: dict[str, set[str]] = {
+    "active": {"unverified"},
+    "rejected": {"unverified", "active"},
+}
+
+
+@router.post("/bulk/status", response_model=VendorBulkStatusResponse)
+async def bulk_vendor_status(
+    body: VendorBulkStatusRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_permission(PERM_VENDOR_MANAGE)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Bulk verify / reject over a hand-picked set of vendors.
+
+    Same partial-success contract as the sibling bulk endpoints
+    (`api/invoices.py::bulk_status_change`, `api/expenses.py::bulk_gl_code`):
+    each id is resolved independently and a vendor whose current status isn't
+    a legal starting point for the target — or whose id doesn't resolve at
+    all — is skipped-and-reported, never a reason to roll back the whole
+    batch. Mirrors `verify_vendor` / `reject_vendor` exactly (same status
+    writes, same audit actions) so a bulk call can't do anything the
+    single-row endpoints wouldn't.
+    """
+    starting = _VENDOR_BULK_STATUS_STARTING[body.status]
+    updated = 0
+    skipped: list[VendorBulkStatusSkip] = []
+    for raw in body.ids:
+        try:
+            vid = uuid.UUID(raw)
+        except ValueError:
+            skipped.append(VendorBulkStatusSkip(id=raw, reason="invalid id format"))
+            continue
+
+        vendor = (await db.execute(select(Vendor).where(Vendor.id == vid))).scalar_one_or_none()
+        if vendor is None:
+            skipped.append(VendorBulkStatusSkip(id=raw, reason="not found"))
+            continue
+        if vendor.status not in starting:
+            skipped.append(
+                VendorBulkStatusSkip(
+                    id=raw, reason=f"vendor is in '{vendor.status}' status, not {sorted(starting)}"
+                )
+            )
+            continue
+
+        prev_status = vendor.status
+        vendor.status = body.status
+        if body.status == "active":
+            vendor.verified_by = user.full_name
+            vendor.verified_at = datetime.now(UTC)
+        await db.flush()
+
+        await dispatch_audit(
+            db,
+            correlation_id=uuid.uuid4(),
+            organization_id=org_id,
+            actor_id=user.id,
+            action="vendor.verified" if body.status == "active" else "vendor.rejected",
+            entity_type="vendor",
+            entity_id=vendor.id,
+            details={"status": {"old": prev_status, "new": body.status}},
+        )
+        updated += 1
+
+    await db.commit()
+    return VendorBulkStatusResponse(updated=updated, skipped=skipped)
+
+
+@router.post("/bulk/screen", response_model=VendorBulkScreenResponse)
+async def bulk_screen_vendors(
+    body: VendorBulkScreenRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Manually re-screen many vendors against the configured sanctions
+    provider in one call.
+
+    Same partial-success contract as `bulk_vendor_status` above: each vendor
+    is screened independently, so a stale id or a provider failure on ONE
+    vendor is skipped-and-reported rather than aborting the whole batch — a
+    provider hiccup on vendor 50 of 200 shouldn't lose the other 199 re-screens
+    that already succeeded. Mirrors the single-row `POST /{vendor_id}/screen`
+    (same `screen_vendor_record` call, same foreground failure handling)."""
+    screened = 0
+    skipped: list[VendorBulkScreenSkip] = []
+    for raw in body.ids:
+        try:
+            vid = uuid.UUID(raw)
+        except ValueError:
+            skipped.append(VendorBulkScreenSkip(id=raw, reason="invalid id format"))
+            continue
+
+        vendor = (await db.execute(select(Vendor).where(Vendor.id == vid))).scalar_one_or_none()
+        if vendor is None:
+            skipped.append(VendorBulkScreenSkip(id=raw, reason="not found"))
+            continue
+
+        try:
+            await screen_vendor_record(
+                db,
+                vendor=vendor,
+                organization_id=org_id,
+                org_settings=org.settings,
+                check_type="manual",
+                actor_id=user.id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Log the exception type only, never the message/traceback — a
+            # sanctions adapter's error string could embed a vendor
+            # identifier (invariant #7, PII out of logs).
+            logger.warning(
+                "Bulk sanctions screen failed for vendor=%s: %s",
+                vendor.id,
+                exc.__class__.__name__,
+            )
+            skipped.append(
+                VendorBulkScreenSkip(id=raw, reason="sanctions provider screening failed")
+            )
+            continue
+        screened += 1
+
+    await db.commit()
+    return VendorBulkScreenResponse(screened=screened, skipped=skipped)
+
+
+@router.post("/bulk/export")
+async def bulk_export_vendors(
+    body: VendorBulkExportRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+):
+    """Export a hand-picked set of vendors as CSV.
+
+    Deliberately narrow columns — name / code / email / phone / status /
+    source / created_at — never `bank_details` or the raw `tax_id`: a bulk
+    CSV a manager opens in Excel is exactly the kind of artifact the PII/
+    banking-data-out-of-logs-and-exports invariant exists to keep off a
+    laptop. Mirrors `api/invoices.py::bulk_export`'s CSV branch, including the
+    CSV-formula-injection guard (CWE-1236) on every cell.
+    """
+    ids = [uuid.UUID(i) for i in body.ids]
+    result = await db.execute(select(Vendor).where(Vendor.id.in_(ids)))
+    vendors = result.scalars().all()
+    if not vendors:
+        raise HTTPException(status_code=404, detail="No vendors found")
+
+    fieldnames = ["name", "code", "email", "phone", "status", "source", "created_at"]
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    for v in vendors:
+        writer.writerow(
+            {
+                "name": csv_safe_cell(v.name),
+                "code": csv_safe_cell(v.code or ""),
+                "email": csv_safe_cell(v.email or ""),
+                "phone": csv_safe_cell(v.phone or ""),
+                "status": csv_safe_cell(v.status),
+                "source": csv_safe_cell(v.source),
+                "created_at": v.created_at.isoformat() if v.created_at else "",
+            }
+        )
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="vendors-export.csv"'},
+    )
 
 
 @router.get("/counts")
@@ -422,6 +695,15 @@ async def list_change_requests(
     pagination: PaginationParams = Depends(pagination_params),
     status_filter: str | None = Query("pending", alias="status"),
     db: AsyncSession = Depends(get_tenant_db),
+    # Deliberately NOT `require_permission(PERM_VENDOR_BANK_CHANGE_APPROVE)`:
+    # this is the READ side of the queue, not the approve action itself, and
+    # the established precedent across the app (payments.py's `/queue`,
+    # `/runs`, etc.) is that supporting reads stay on `require_roles` while
+    # only the specific splittable action moves to `require_permission` — see
+    # docs/authentication.md § Granular permissions ("Frontend" + the
+    # migrated-endpoints list). The page's own top-of-file comment documents
+    # this same "two different gates, honestly reflected" split for READ vs.
+    # APPROVE, and its frontend guard (`auth.isManager`) is role-based to match.
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
 ):
     """Change-request queue across all vendors. Defaults to the pending
@@ -718,7 +1000,9 @@ async def request_bank_change(
 async def delete_vendor(
     vendor_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    # Deleting the master record is the same duty as creating/editing it
+    # (`PERM_VENDOR_MANAGE`); the role set was already exactly admin/ap_manager.
+    user: User = Depends(require_permission(PERM_VENDOR_MANAGE)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     result = await db.execute(select(Vendor).where(Vendor.id == vendor_id))
@@ -806,7 +1090,12 @@ async def screen_vendor(
     vendor_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    # A manual re-screen is part of the vendor-verification workflow (role set
+    # was already exactly admin/ap_manager, matching `PERM_VENDOR_MANAGE`'s
+    # default) — the standing sanctions-review-queue READ above
+    # (`GET /screening/review-queue`) stays on `require_roles` since it's read
+    # by all four roles, broader than `vendor.manage`.
+    user: User = Depends(require_permission(PERM_VENDOR_MANAGE)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     """Manually re-screen one vendor against the configured sanctions provider.
@@ -1021,7 +1310,9 @@ async def reject_vendor(
 async def sync_vendors_from_erp_endpoint(
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    # Bulk vendor create/update — the same duty as the single-vendor create/edit
+    # routes above (role set was already exactly admin/ap_manager).
+    user: User = Depends(require_permission(PERM_VENDOR_MANAGE)),
     org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
@@ -1080,7 +1371,9 @@ async def sync_vendors_from_erp_endpoint(
 async def import_vendors_from_csv(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    # Bulk vendor create — same duty as `POST /vendors` (role set was already
+    # exactly admin/ap_manager, matching `PERM_VENDOR_MANAGE`'s default).
+    user: User = Depends(require_permission(PERM_VENDOR_MANAGE)),
     org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
@@ -1193,7 +1486,12 @@ async def invite_vendor_portal_user(
     # `temp_password` so the admin can share it manually — same pattern as
     # the tenant-signup welcome email.
     email_adapter = get_email_adapter()
-    portal_url = f"https://{org.slug}.app.com/portal"
+    # Real tenant portal URL, built from the same `FEOH_TENANT_URL_TEMPLATE`
+    # the signup welcome email (app/api/signup.py::_tenant_url) and the
+    # supplier-chat portal-link email (services/supplier_chat.py) use — never
+    # a hardcoded placeholder domain. No template configured -> no URL line.
+    template_base = (settings.tenant_url_template or "").replace("{slug}", org.slug)
+    portal_url = f"{template_base.rstrip('/')}/portal" if template_base else None
     try:
         await email_adapter.send(
             EmailMessage(
@@ -1204,8 +1502,8 @@ async def invite_vendor_portal_user(
                     f"{org.name} has set up a supplier-portal account for "
                     f"{vendor.name}. Use it to submit invoices and track "
                     f"payment status.\n\n"
-                    f"  URL:      {portal_url}\n"
-                    f"  Email:    {body.email}\n"
+                    + (f"  URL:      {portal_url}\n" if portal_url else "")
+                    + f"  Email:    {body.email}\n"
                     f"  Password: {temp_password}\n\n"
                     "You'll be asked to change your password on first sign-in.\n"
                 ),
@@ -1216,7 +1514,9 @@ async def invite_vendor_portal_user(
             "Portal-user welcome email failed for %s (vendor=%s)", body.email, vendor.id
         )
 
-    return PortalInviteResponse(user=_vendor_user_response(vu), temp_password=temp_password)
+    return PortalInviteResponse(
+        user=_vendor_user_response(vu), temp_password=temp_password, portal_url=portal_url
+    )
 
 
 @router.delete(
@@ -1240,6 +1540,63 @@ async def delete_vendor_portal_user(
         raise HTTPException(status_code=404, detail="Portal user not found")
     await db.delete(vu)
     await db.commit()
+
+
+@router.post(
+    "/{vendor_id}/portal-users/{vendor_user_id}/reset-password",
+    response_model=PortalInviteResponse,
+)
+async def reset_vendor_portal_user_password(
+    vendor_id: uuid.UUID,
+    vendor_user_id: uuid.UUID,
+    org_id: uuid.UUID = Depends(get_org_id),
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+):
+    """AP-admin-triggered password reset for a locked-out supplier-portal
+    user.
+
+    Before this route existed, the only recovery for a vendor user who lost
+    their password was AP deleting and re-inviting them — a new `VendorUser.id`
+    that breaks anything referencing the old one (chat authorship, audit rows,
+    the notification-preferences row) and forces the vendor to re-learn a new
+    login. This mints a fresh temp password onto the SAME row instead: same
+    permission gate as invite/delete (admin/ap_manager), the SHARED
+    `utils/passwords.generate_temp_password()` (never a local one — see
+    `backend/CLAUDE.md` § Passwords), and forces a change on next login via
+    the existing `must_change_password` flag (mirrors `invite_vendor_portal_user`).
+    Overwriting `hashed_password` immediately invalidates the old password —
+    there is no separate "revoke" step.
+    """
+    result = await db.execute(
+        select(VendorUser).where(
+            VendorUser.id == vendor_user_id,
+            VendorUser.vendor_id == vendor_id,
+        )
+    )
+    vu = result.scalar_one_or_none()
+    if not vu:
+        raise HTTPException(status_code=404, detail="Portal user not found")
+
+    temp_password = generate_temp_password()
+    vu.hashed_password = await hash_password(temp_password)
+    vu.must_change_password = True
+    await db.flush()
+    await db.refresh(vu)
+
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="vendor_portal_user.password_reset",
+        entity_type="vendor_user",
+        entity_id=vu.id,
+        details={"vendor_id": str(vendor_id)},
+    )
+    await db.commit()
+
+    return PortalInviteResponse(user=_vendor_user_response(vu), temp_password=temp_password)
 
 
 # ---------- Vendor change-request approval (fraud-prevention gate) ----------
@@ -1379,6 +1736,19 @@ async def reject_change_request(
     body: VendorChangeReviewRequest | None = None,
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
+    # Deliberately NOT `require_permission(PERM_VENDOR_BANK_CHANGE_APPROVE)`,
+    # even though this route's role set is identical to approve's
+    # (admin/ap_manager) and it superficially looks like the "other half" of
+    # the same review decision. Reject never touches the vendor row — it
+    # can't redirect a payment, so it isn't the fraud-sensitive action
+    # `vendor.bank_change.approve` exists to gate — and it deliberately skips
+    # approve's proposer-can't-be-reviewer segregation check for the same
+    # reason. Gating it on the approve permission would force a split-duty
+    # org to hand out the money-authorizing permission just so someone could
+    # decline an obviously-bad request. See docs/authentication.md §
+    # "Approve and reject are not always the same role set", and this page's
+    # own top-of-file comment (frontend/src/routes/vendors/change-requests/
+    # +page.svelte), which documents this exact split.
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
 ):
     """Mark the request rejected without ever touching the vendor row."""

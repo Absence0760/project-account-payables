@@ -26,8 +26,14 @@ from app.api.deps import (
     get_org_id,
     require_roles,
 )
-from app.api.pagination import PaginationParams, pagination_params
+from app.api.pagination import (
+    MAX_SELECT_ALL_IDS,
+    MatchingIdsResponse,
+    PaginationParams,
+    pagination_params,
+)
 from app.api.permissions import PERM_INVOICE_APPROVE, effective_permissions
+from app.api.sorting import SortParams, resolve_order_by, sort_params
 from app.database import get_control_db
 from app.models.agent_decision import AgentDecision
 from app.models.contract import Contract
@@ -60,6 +66,7 @@ from app.schemas.invoice import (
     BulkRecodeGLRequest,
     BulkStatusRequest,
     BulkStatusResponse,
+    BulkStatusSkip,
     ChatAttachmentOut,
     ChatMessageCreate,
     ChatMessageResponse,
@@ -103,6 +110,7 @@ from app.tenant import (
     get_tenant_db,
     get_write_entity_id,
 )
+from app.utils.dates import resolve_day_first_preference
 from app.utils.http import content_disposition_attachment
 
 IMMUTABLE_STATUSES = {
@@ -158,31 +166,56 @@ _FINANCIAL_FIELDS = frozenset(
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
 
+# `sort=` allowlist for `GET /invoices` — see `api/sorting.py`. The client
+# sends one of these keys; the raw value is never interpolated into SQL. `.id`
+# is always appended as the final tie-break regardless of which column is
+# picked (same reasoning as the pre-existing `created_at, id` default order).
+INVOICE_SORTABLE_COLUMNS: dict[str, object] = {
+    "created_at": Invoice.created_at,
+    "due_date": Invoice.due_date,
+    "amount": Invoice.amount,
+    "vendor_name": Invoice.vendor_name,
+    "invoice_number": Invoice.invoice_number,
+    "status": Invoice.status,
+}
 
-@router.get("", response_model=InvoiceListResponse)
-async def list_invoices(
-    pagination: PaginationParams = Depends(pagination_params),
-    status: str | None = None,
-    vendor: str | None = None,
-    invoice_number: str | None = None,
-    po_number: str | None = None,
-    description: str | None = None,
-    amount_min: float | None = None,
-    amount_max: float | None = None,
-    due_date_from: date | None = None,
-    due_date_to: date | None = None,
-    search: str | None = None,
-    db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
-    entity_id: uuid.UUID | None = Depends(get_entity_id),
+
+def _invoice_list_filters(
+    query,
+    *,
+    status: str | None,
+    vendor: str | None,
+    invoice_number: str | None,
+    po_number: str | None,
+    description: str | None,
+    amount_min: float | None,
+    amount_max: float | None,
+    due_date_from: date | None,
+    due_date_to: date | None,
+    search: str | None,
+    exclude_status: str | None = None,
+    assigned_to_id: uuid.UUID | None = None,
 ):
-    # Scope to the selected entity (None = consolidated, all entities).
-    query = apply_entity_scope(select(Invoice), Invoice, entity_id)
+    """Apply the invoice-list filters to ``query``.
 
-    # Filters
+    Shared by ``GET /api/invoices`` and ``GET /api/invoices/ids`` so the
+    "select all N matching" affordance resolves EXACTLY the set the table is
+    showing — a second, independently-maintained filter builder is how the
+    two would silently drift apart. ``exclude_status`` is ``/ids``-only (the
+    list endpoint has no use for it): it lets the frontend ask for only the
+    ids a bulk action can actually act on, e.g. excluding the system-managed
+    statuses `SYSTEM_MANAGED_STATUSES` never lets a user check in the first
+    place. ``assigned_to_id`` powers both the "Assigned to" filter and the
+    "My Approvals" quick view (the caller's own id) — an exact match, not a
+    search, since it's always a real user id from the assignable-reviewers
+    picker or `auth.user.id`, never free text.
+    """
     if status:
         statuses = [s.strip() for s in status.split(",")]
         query = query.where(Invoice.status.in_(statuses))
+    if exclude_status:
+        excluded = [s.strip() for s in exclude_status.split(",")]
+        query = query.where(Invoice.status.notin_(excluded))
     if vendor:
         query = query.where(Invoice.vendor_name.ilike(f"%{vendor}%"))
     if invoice_number:
@@ -207,6 +240,46 @@ async def list_invoices(
             | Invoice.po_number.ilike(pattern)
             | Invoice.description.ilike(pattern)
         )
+    if assigned_to_id:
+        query = query.where(Invoice.assigned_to_id == assigned_to_id)
+    return query
+
+
+@router.get("", response_model=InvoiceListResponse)
+async def list_invoices(
+    pagination: PaginationParams = Depends(pagination_params),
+    status: str | None = None,
+    vendor: str | None = None,
+    invoice_number: str | None = None,
+    po_number: str | None = None,
+    description: str | None = None,
+    amount_min: float | None = None,
+    amount_max: float | None = None,
+    due_date_from: date | None = None,
+    due_date_to: date | None = None,
+    search: str | None = None,
+    assigned_to_id: uuid.UUID | None = None,
+    sort: SortParams = Depends(sort_params),
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    # Scope to the selected entity (None = consolidated, all entities).
+    query = apply_entity_scope(select(Invoice), Invoice, entity_id)
+    query = _invoice_list_filters(
+        query,
+        status=status,
+        vendor=vendor,
+        invoice_number=invoice_number,
+        po_number=po_number,
+        description=description,
+        amount_min=amount_min,
+        amount_max=amount_max,
+        due_date_from=due_date_from,
+        due_date_to=due_date_to,
+        search=search,
+        assigned_to_id=assigned_to_id,
+    )
 
     # Count
     count_query = select(func.count()).select_from(query.subquery())
@@ -218,7 +291,15 @@ async def list_invoices(
     # alone gives Postgres no stable order across OFFSET/LIMIT pages — page 2
     # could re-return a page-1 row, which the frontend's keyed list rejects as a
     # duplicate id. Tie-break on the unique PK for deterministic pagination.
-    query = query.order_by(Invoice.created_at.desc(), Invoice.id.desc())
+    # `sort=`/`order=` (validated against `INVOICE_SORTABLE_COLUMNS`) override
+    # the default when supplied — see `api/sorting.py`.
+    order_by = resolve_order_by(
+        sort,
+        INVOICE_SORTABLE_COLUMNS,
+        id_column=Invoice.id,
+        default=[Invoice.created_at.desc(), Invoice.id.desc()],
+    )
+    query = query.order_by(*order_by)
     query = query.offset(pagination.offset).limit(pagination.limit)
     query = query.options(selectinload(Invoice.extraction_results))
     result = await db.execute(query)
@@ -255,6 +336,61 @@ async def invoice_counts(
         key = db_status.value if hasattr(db_status, "value") else str(db_status)
         counts[key] = count
     return InvoiceCountsResponse(counts=counts, total=sum(counts.values()))
+
+
+# Registered BEFORE the parametric `/{invoice_id}` route — same reason
+# `/counts` sits above it.
+@router.get("/ids", response_model=MatchingIdsResponse)
+async def list_invoice_ids(
+    status: str | None = None,
+    vendor: str | None = None,
+    invoice_number: str | None = None,
+    po_number: str | None = None,
+    description: str | None = None,
+    amount_min: float | None = None,
+    amount_max: float | None = None,
+    due_date_from: date | None = None,
+    due_date_to: date | None = None,
+    search: str | None = None,
+    exclude_status: str | None = None,
+    assigned_to_id: uuid.UUID | None = None,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Every invoice id matching the caller's list filters — the resolver
+    behind "select all N matching" on the invoices list page.
+
+    The bulk endpoints (`/bulk/delete`, `/bulk/status`, `/bulk/export`) only
+    accept an explicit id list, and the list page only ever has the currently
+    LOADED page of rows client-side. A "select all" that captured only those
+    silently skipped every row past the first page with no warning. This
+    endpoint resolves the whole filtered set server-side so the client can
+    select it for real. Same filters as `GET /invoices` (so the two describe
+    the same set) plus `exclude_status`, used by the frontend to drop the
+    system-managed statuses a row's checkbox is already disabled for.
+    """
+    query = apply_entity_scope(select(Invoice.id), Invoice, entity_id)
+    query = _invoice_list_filters(
+        query,
+        status=status,
+        vendor=vendor,
+        invoice_number=invoice_number,
+        po_number=po_number,
+        description=description,
+        amount_min=amount_min,
+        amount_max=amount_max,
+        due_date_from=due_date_from,
+        due_date_to=due_date_to,
+        search=search,
+        exclude_status=exclude_status,
+        assigned_to_id=assigned_to_id,
+    )
+
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
+    query = query.order_by(Invoice.created_at.desc(), Invoice.id.desc()).limit(MAX_SELECT_ALL_IDS)
+    ids = [str(row) for row in (await db.execute(query)).scalars().all()]
+    return MatchingIdsResponse(ids=ids, total=int(total), truncated=int(total) > len(ids))
 
 
 class AssignableReviewerResponse(BaseModel):
@@ -1181,19 +1317,41 @@ async def update_invoice(
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
-    # selectinload extraction_results — see get_invoice for the why.
-    result = await db.execute(
-        select(Invoice)
-        .options(selectinload(Invoice.extraction_results))
-        .where(Invoice.id == invoice_id)
-    )
-    invoice = result.scalar_one_or_none()
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
+    # Row-locked read (same pattern as every status transition —
+    # `get_invoice_for_update` — and needed here for the same reason: without
+    # the lock, two concurrent PATCHes can both read the pre-edit row, both
+    # pass the `expected_updated_at` check against it, and the second commit
+    # still silently clobbers the first). Also does the selectinload +
+    # 404 `get_invoice` needs.
+    invoice = await get_invoice_for_update(db, invoice_id)
     if invoice.status in IMMUTABLE_STATUSES:
         raise HTTPException(status_code=409, detail="Cannot update invoice in this status")
 
     update_data = body.model_dump(exclude_unset=True)
+    # Optimistic-concurrency guard (If-Unmodified-Since style). Omitted
+    # entirely → unchanged behavior (every caller that predates this field).
+    # Supplied → must match the row's CURRENT `updated_at`, taken under the
+    # row lock above, or refuse rather than overwrite a change the client
+    # never saw. Popped out of `update_data` immediately — it's a request
+    # concurrency token, not an `Invoice` column, and the generic
+    # `setattr(invoice, field, value)` loop below has no idea it isn't one.
+    expected_updated_at = update_data.pop("expected_updated_at", None)
+    if expected_updated_at is not None:
+        # `invoice.updated_at` is always tz-aware (Postgres `timestamptz`); a
+        # client that sent a naive ISO timestamp (no offset) is assumed UTC
+        # rather than raising on a naive/aware comparison — this field is a
+        # concurrency token round-tripped from our own response, not
+        # user-authored input worth rejecting over a missing `Z`.
+        if expected_updated_at.tzinfo is None:
+            expected_updated_at = expected_updated_at.replace(tzinfo=UTC)
+        if expected_updated_at != invoice.updated_at:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This invoice was modified since you loaded it. "
+                    "Reload and reapply your changes."
+                ),
+            )
     # An approved invoice is financially frozen — the signed-off amount is what
     # the payment run pays. Non-financial edits (notes, addresses, GL coding)
     # stay allowed in the `approved` window so AP can keep cleaning up metadata;
@@ -1871,6 +2029,7 @@ async def import_invoices_from_csv(
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
     org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID = Depends(get_write_entity_id),
+    org: Organization = Depends(get_tenant),
 ):
     """Bulk-import historical invoices from a CSV export.
 
@@ -1891,7 +2050,13 @@ async def import_invoices_from_csv(
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="CSV must be UTF-8 encoded") from None
 
-    result = await import_invoices_csv(db, org_id, csv_text, entity_id=entity_id)
+    result = await import_invoices_csv(
+        db,
+        org_id,
+        csv_text,
+        entity_id=entity_id,
+        day_first=resolve_day_first_preference(org.settings or {}),
+    )
     await db.commit()
     return result.to_dict()
 
@@ -1949,6 +2114,23 @@ BULK_STATUS_REFUSALS: dict[DBInvoiceStatus, str] = {
     ),
 }
 
+
+def _skip_reason(exc: HTTPException, fallback: str) -> str:
+    """The human-readable cause a bulk-status skip is reported with.
+
+    `approve_invoice` / `reject_invoice` / `resubmit_invoice` /
+    `transition_invoice` all raise `HTTPException` with a plain-string
+    `detail` (segregation-of-duties, the CFO gate, the max-amount cap, the
+    state-machine's own "cannot transition" message) — that string IS the
+    real cause, and it's what should reach the caller instead of a generic
+    label that can't distinguish an authorization refusal from a data
+    problem. `detail` is typed `Any` on `HTTPException`, so a non-string
+    (a future caller that raises a structured detail) falls back rather than
+    handing the client a stringified dict.
+    """
+    return exc.detail if isinstance(exc.detail, str) else fallback
+
+
 # Targets a human may legitimately drive in bulk. Each is routed below through
 # its owning service where one exists (`approved` / `rejected` / a resubmit).
 BULK_STATUS_TARGETS: frozenset[DBInvoiceStatus] = frozenset(
@@ -1993,7 +2175,7 @@ async def bulk_status_change(
     invoices = result.scalars().all()
 
     updated = 0
-    skipped: list[str] = []
+    skipped: list[BulkStatusSkip] = []
     # Bulk-approving must NOT bypass the approval controls. Routing a transition
     # straight to `approved` skipped segregation-of-duties, the max-amount cap,
     # and the CFO gate — so an AP manager could bulk-approve their own uploads or
@@ -2012,7 +2194,12 @@ async def bulk_status_change(
     actor_roles = {r.name for r in user.roles}
     for inv in invoices:
         if inv.status in IMMUTABLE_STATUSES:
-            skipped.append(str(inv.id))
+            skipped.append(
+                BulkStatusSkip(
+                    id=str(inv.id),
+                    reason=f"invoice is in an immutable status ({inv.status.value})",
+                )
+            )
             continue
         if target == DBInvoiceStatus.approved:
             from app.services.review import approve_invoice
@@ -2026,10 +2213,14 @@ async def bulk_status_change(
                     actor_roles=actor_roles,
                     org_settings=org.settings,
                 )
-            except HTTPException:
+            except HTTPException as exc:
                 # Segregation / threshold / CFO-gate violation — skip this one,
-                # keep processing the rest of the batch.
-                skipped.append(str(inv.id))
+                # keep processing the rest of the batch. The service's own
+                # `detail` names WHICH control fired; that's what the caller
+                # needs to know, not a generic label.
+                skipped.append(
+                    BulkStatusSkip(id=str(inv.id), reason=_skip_reason(exc, "approval was refused"))
+                )
                 continue
             updated += 1
         elif target == DBInvoiceStatus.rejected:
@@ -2043,9 +2234,13 @@ async def bulk_status_change(
                     actor_name=user.full_name,
                     reason=reason_text,
                 )
-            except HTTPException:
+            except HTTPException as exc:
                 # Not in `ready_for_review` — skip, same as the approve branch.
-                skipped.append(str(inv.id))
+                skipped.append(
+                    BulkStatusSkip(
+                        id=str(inv.id), reason=_skip_reason(exc, "rejection was refused")
+                    )
+                )
                 continue
             updated += 1
         elif target == DBInvoiceStatus.ready_for_review and inv.status == DBInvoiceStatus.rejected:
@@ -2056,8 +2251,10 @@ async def bulk_status_change(
 
             try:
                 await resubmit_invoice(db, inv, actor_id=user.id)
-            except HTTPException:
-                skipped.append(str(inv.id))
+            except HTTPException as exc:
+                skipped.append(
+                    BulkStatusSkip(id=str(inv.id), reason=_skip_reason(exc, "resubmit was refused"))
+                )
                 continue
             await refresh_warnings(db, inv, org_settings=org.settings)
             updated += 1
@@ -2078,8 +2275,12 @@ async def bulk_status_change(
                     actor_id=user.id,
                     action_name="invoice.bulk_status_change",
                 )
-            except HTTPException:
-                skipped.append(str(inv.id))
+            except HTTPException as exc:
+                skipped.append(
+                    BulkStatusSkip(
+                        id=str(inv.id), reason=_skip_reason(exc, "transition was refused")
+                    )
+                )
                 continue
             await refresh_warnings(db, inv, org_settings=org.settings)
             updated += 1

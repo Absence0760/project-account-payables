@@ -8,6 +8,26 @@ class LoginRequest(BaseModel):
     password: str = Field(..., min_length=1)
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: str = Field(..., max_length=320)
+
+
+class ForgotPasswordResponse(BaseModel):
+    """Always the same shape/message regardless of whether `email` matched an
+    account — see `app/api/auth.py::forgot_password`."""
+
+    detail: str = "If an account with that email exists, we've sent password reset instructions."
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=12, max_length=128)
+
+
+class ResetPasswordResponse(BaseModel):
+    detail: str = "Password has been reset. You can now log in with your new password."
+
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"

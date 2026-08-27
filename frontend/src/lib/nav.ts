@@ -15,6 +15,15 @@
  * group is visible when at least one child is; its sidebar link points at the
  * first child the current role can see. Child order = sub-tab order.
  *
+ * `permissions` is an OR alternative to `roles` — an entry is visible if the
+ * caller matches `roles` (when given) OR holds ANY of `permissions` (when
+ * given). It exists for the granular permission layer (`auth.can`, mirroring
+ * backend `require_permission`): a custom role holding only a splittable
+ * permission (e.g. `user.manage`) should see the nav entry its permission
+ * unlocks even though it doesn't hold the system role the entry also lists.
+ * Omit `permissions` for anything not behind `require_permission` on the
+ * backend.
+ *
  * i18n: each entry carries a `labelKey` (an i18n message key) — the single
  * source of truth for the *translated* display string. The bare `label` is
  * retained as a stable, locale-independent identifier (used as an `{#each}`
@@ -23,6 +32,7 @@
  */
 
 import type { MessageKey } from '$lib/i18n/messages';
+import { PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID, PERM_USER_MANAGE } from '$lib/types/admin';
 
 export interface NavLink {
 	kind: 'link';
@@ -31,6 +41,16 @@ export interface NavLink {
 	href: string;
 	icon: string;
 	roles?: string[];
+	/**
+	 * OR'd with `roles` — visible if the user holds ANY of these granular
+	 * permissions too, even without a listed role. Exists for a custom-role
+	 * grantee: `roles` alone means a role gate hides the nav row entirely for
+	 * someone whose ONLY access is a granular permission (e.g. `payment.execute`
+	 * with no `admin`/`ap_manager`/`cfo` role), stranding them on a page they
+	 * can't navigate to despite the backend letting every call through. A
+	 * single-permission entry is just a one-element array (e.g. `[PERM_USER_MANAGE]`).
+	 */
+	permissions?: string[];
 }
 
 export interface NavChild {
@@ -38,6 +58,8 @@ export interface NavChild {
 	labelKey: MessageKey;
 	href: string;
 	roles?: string[];
+	/** See `NavLink.permissions`. */
+	permissions?: string[];
 }
 
 export interface NavGroup {
@@ -53,10 +75,29 @@ export type NavEntry = NavLink | NavGroup;
 /** Matches the signature of `auth.hasAnyRole`. */
 export type RoleCheck = (...roles: string[]) => boolean;
 
+/** Matches the signature of `auth.can`. */
+export type PermissionCheck = (perm: string) => boolean;
+
 export const NAV: NavEntry[] = [
 	{ kind: 'link', label: 'Dashboard', labelKey: 'nav.dashboard', href: '/', icon: 'dashboard' },
 	{ kind: 'link', label: 'Invoices', labelKey: 'nav.invoices', href: '/invoices', icon: 'invoices' },
-	{ kind: 'link', label: 'Payments', labelKey: 'nav.payments', href: '/payments', icon: 'payments', roles: ['admin', 'ap_manager', 'cfo'] },
+	// `permissions` OR's in a custom role holding ONLY `payment.execute` /
+	// `payment.void` (no `admin`/`ap_manager`/`cfo` role) — those are the two
+	// granular permissions whose supporting read endpoints
+	// (GET /api/payments, GET /api/payments/{id}, GET /api/payments/runs/,
+	// GET /api/payments/runs/{id}) are gated with `require_permission` for
+	// exactly this reason. Without this the sidebar row — the only way to
+	// reach the page — stayed role-gated even though every call the page
+	// makes would succeed.
+	{
+		kind: 'link',
+		label: 'Payments',
+		labelKey: 'nav.payments',
+		href: '/payments',
+		icon: 'payments',
+		roles: ['admin', 'ap_manager', 'cfo'],
+		permissions: [PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID]
+	},
 	{ kind: 'link', label: 'Vendors', labelKey: 'nav.vendors', href: '/vendors', icon: 'vendors', roles: ['admin', 'ap_manager', 'cfo'] },
 	// Sanctions-screening review queue (a sub-route of /vendors). Reuses the
 	// existing `vendors.col.screening` message ("Screening") as its label — a
@@ -148,7 +189,19 @@ export const NAV: NavEntry[] = [
 			{ label: 'Organization', labelKey: 'nav.organization', href: '/organization', roles: ['admin'] },
 			// Users + Roles share the /admin route via ?tab=; they're surfaced as
 			// peer section tabs (not a second tab row inside the page).
-			{ label: 'Users', labelKey: 'nav.users', href: '/admin?tab=users', roles: ['admin'] },
+			// Users: `GET /api/admin/users` is `require_permission(user.manage)`
+			// (defaults to admin-only, same as `roles` below — see
+			// docs/authentication.md § Granular permissions), so a custom role
+			// holding only `user.manage` sees this tab too via `permissions`.
+			{
+				label: 'Users',
+				labelKey: 'nav.users',
+				href: '/admin?tab=users',
+				roles: ['admin'],
+				permissions: [PERM_USER_MANAGE]
+			},
+			// Roles: role CRUD (defining what a role can grant) stays
+			// admin-only on the backend — no `permissions` here on purpose.
 			{ label: 'Roles', labelKey: 'nav.roles', href: '/admin?tab=roles', roles: ['admin'] },
 			{ label: 'Audit Trail', labelKey: 'nav.auditTrail', href: '/audit', roles: ['admin', 'cfo'] },
 			{ label: 'Workflows', labelKey: 'nav.workflows', href: '/workflows', roles: ['admin'] },
@@ -164,27 +217,57 @@ export const NAV: NavEntry[] = [
 			// Admin only (the backend /api/partner surface 403s the rest). A
 			// standalone org sees an empty "not a partner" state.
 			{ label: 'Partner Admin', labelKey: 'nav.partner', href: '/admin/partner', roles: ['admin'] },
+			// SOX records-management config — per-record-class retention windows.
+			// Admin only (the backend GET/PUT /api/retention-policy 403s the rest).
+			{ label: 'Retention Policy', labelKey: 'nav.retention', href: '/admin/retention', roles: ['admin'] },
+			// Periodic SOX access review — flags dormant elevated-role users.
+			// Admin | CFO (the reviewer privilege), matching the backend's
+			// require_roles(ADMIN, CFO) on both /api/access-reviews routes.
+			{ label: 'Access Review', labelKey: 'nav.accessReview', href: '/admin/access-review', roles: ['admin', 'cfo'] },
+			// GDPR/CCPA data-subject rights — DSAR export + right-to-erasure.
+			// Admin only (the backend /api/privacy surface 403s the rest).
+			{ label: 'Privacy & DSAR', labelKey: 'nav.privacy', href: '/admin/privacy', roles: ['admin'] },
 		],
 	},
 ];
 
-export function canSee(roles: string[] | undefined, has: RoleCheck): boolean {
-	return !roles || has(...roles);
+/**
+ * `roles` and `permissions` are OR'd: no gate at all (both omitted) is
+ * visible to everyone; otherwise visible if EITHER the role check OR the
+ * permission check passes. A custom role holding only the permission (no
+ * listed role) still sees the entry.
+ */
+export function canSee(
+	roles: string[] | undefined,
+	has: RoleCheck,
+	permissions?: string[],
+	can?: PermissionCheck
+): boolean {
+	if (!roles && !permissions) return true;
+	if (roles && has(...roles)) return true;
+	if (permissions && can && permissions.some((p) => can(p))) return true;
+	return false;
 }
 
-/** The children of a group the current role is allowed to see, in order. */
-export function visibleChildren(group: NavGroup, has: RoleCheck): NavChild[] {
-	return group.children.filter((c) => canSee(c.roles, has));
+/** The children of a group the current role/permissions can see, in order. */
+export function visibleChildren(
+	group: NavGroup,
+	has: RoleCheck,
+	can?: PermissionCheck
+): NavChild[] {
+	return group.children.filter((c) => canSee(c.roles, has, c.permissions, can));
 }
 
 /** A link is visible by its own gate; a group is visible if any child is. */
-export function isEntryVisible(entry: NavEntry, has: RoleCheck): boolean {
-	return entry.kind === 'link' ? canSee(entry.roles, has) : visibleChildren(entry, has).length > 0;
+export function isEntryVisible(entry: NavEntry, has: RoleCheck, can?: PermissionCheck): boolean {
+	return entry.kind === 'link'
+		? canSee(entry.roles, has, entry.permissions, can)
+		: visibleChildren(entry, has, can).length > 0;
 }
 
 /** Where a group's sidebar row navigates to — its first accessible child. */
-export function groupHref(group: NavGroup, has: RoleCheck): string | null {
-	return visibleChildren(group, has)[0]?.href ?? null;
+export function groupHref(group: NavGroup, has: RoleCheck, can?: PermissionCheck): string | null {
+	return visibleChildren(group, has, can)[0]?.href ?? null;
 }
 
 /**

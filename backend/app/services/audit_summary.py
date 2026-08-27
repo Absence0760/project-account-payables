@@ -46,10 +46,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm.attributes import flag_modified
 
+from app.api.exceptions import EXCEPTION_TYPE_LABELS
 from app.config import settings
 from app.models.invoice import Invoice, InvoiceExtractionResult
 from app.models.user import User
@@ -296,7 +296,8 @@ def build_template_summary(
             # reason the invoice stalled; a bare "flagged" doesn't.
             exception_type = e.details.get("exception_type")
             if exception_type:
-                phrase = f"{phrase} ({exception_type})"
+                label = EXCEPTION_TYPE_LABELS.get(exception_type, exception_type)
+                phrase = f"{phrase} ({label})"
             if e.action != "exception.raised" and e.actor_name:
                 phrase = f"{phrase} by {e.actor_name}"
             phrases.append(phrase)
@@ -528,12 +529,27 @@ async def get_or_build_summary(
         "generated_at": generated_at,
         "model": config.get("model") or "",
     }
-    # Reassign the whole dict + flag_modified so SQLAlchemy persists the JSONB
-    # mutation (in-place dict edits aren't tracked).
     new_meta = dict(invoice.meta or {})
     new_meta["audit_summary"] = payload
-    invoice.meta = new_meta
-    flag_modified(invoice, "meta")
+    # A Core UPDATE, not `invoice.meta = ...` + ORM flush: this write is
+    # read-shaped — a fingerprint-idempotent cache fill triggered by opening
+    # the invoice, not a user edit — but `updated_at`'s `onupdate=func.now()`
+    # fires on ANY ORM-flushed update to the row unless the column is given
+    # an explicit value IN THE SAME STATEMENT (self-assigning
+    # `invoice.updated_at = invoice.updated_at` does not count — an
+    # unchanged value never dirties the attribute, so onupdate still wins).
+    # A Core `update().values(...)` naming the column explicitly is the
+    # reliable way to override it. Left alone, opening the invoice modal
+    # (which calls this) silently bumps `updated_at` behind the
+    # optimistic-concurrency lock's back: the frontend's
+    # `expected_updated_at` (captured moments earlier from the same GET)
+    # goes stale before the user touches anything, and the very next
+    # PATCH/approve/complete 409s as a phantom conflict.
+    await db.execute(
+        update(Invoice)
+        .where(Invoice.id == invoice.id)
+        .values(meta=new_meta, updated_at=invoice.updated_at)
+    )
     await db.commit()
 
     logger.info(

@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -76,6 +77,20 @@ from app.api import (
 from app.api.v1 import router as public_v1_router
 from app.api.v1_openapi import router as public_v1_openapi_router
 from app.config import settings
+
+# The stdlib root logger has no handler until something configures one —
+# uvicorn's default log config only wires up its OWN "uvicorn"/"uvicorn.access"
+# loggers, never root. Without this, every `logging.getLogger(__name__).info(...)`
+# call anywhere under `app/` (the console email adapter's "email sent" dump,
+# every background sweep's progress line, etc.) is silently dropped: INFO is
+# below the root logger's default WARNING level, so it never reaches even
+# Python's `logging.lastResort` fallback handler. This runs once per process
+# (each uvicorn worker / reload subprocess re-imports this module fresh) and
+# is a no-op for Lambda entry points, which never import `app.main`.
+logging.basicConfig(
+    level=logging.DEBUG if settings.debug else logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 
 @asynccontextmanager

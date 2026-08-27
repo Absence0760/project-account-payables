@@ -33,6 +33,7 @@ from app.api.portal import (
     get_my_tax_form_file,
     upload_my_tax_form,
 )
+from app.services.storage import tax_form_type_from_key
 
 
 def _vendor(**overrides) -> SimpleNamespace:
@@ -106,12 +107,15 @@ def test_tax_form_routes_use_vendor_auth():
 
 
 def test_form_type_recovered_from_key():
+    # Moved to services.storage (next to the encoder, upload_tax_form_file,
+    # that defines the key shape) so services.tax_1099 can reuse it too —
+    # see the w9_on_file fix.
     org, ven = uuid.uuid4(), uuid.uuid4()
-    assert portal._tax_form_type_from_key(f"{org}/tax-forms/{ven}/w8/form.pdf") == "w8"
-    assert portal._tax_form_type_from_key(f"{org}/tax-forms/{ven}/w9/form.pdf") == "w9"
+    assert tax_form_type_from_key(f"{org}/tax-forms/{ven}/w8/form.pdf") == "w8"
+    assert tax_form_type_from_key(f"{org}/tax-forms/{ven}/w9/form.pdf") == "w9"
     # AP-side W-9 upload key (no form-type segment) → defaults to w9.
-    assert portal._tax_form_type_from_key(f"{org}/w9/{ven}/form.pdf") == "w9"
-    assert portal._tax_form_type_from_key(None) is None
+    assert tax_form_type_from_key(f"{org}/w9/{ven}/form.pdf") == "w9"
+    assert tax_form_type_from_key(None) is None
 
 
 # ---------- GET status -----------------------------------------------------

@@ -56,9 +56,76 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 
-__all__ = ["utc_today"]
+__all__ = ["parse_ambiguous_date", "resolve_day_first_preference", "utc_today"]
 
 
 def utc_today() -> date:
     """Today's date in UTC — never the server's local timezone."""
     return datetime.now(UTC).date()
+
+
+def resolve_day_first_preference(settings: dict | None) -> bool:
+    """Whether an ambiguous numeric date should be read day-first (DD/MM).
+
+    ``settings`` is a tenant ``Organization.settings`` JSONB dict. The one
+    signal in there that unambiguously identifies the org as UK-registered
+    is a non-empty ``company.companies_house_number`` — Companies House
+    registers UK entities only. ``company.vat_registration_number`` was
+    deliberately NOT used for this: VAT registration is common across the EU
+    and beyond, so its presence doesn't tell us the org is day-first (or even
+    which day-first country it might be), whereas a Companies House number
+    does.
+
+    No signal (an org that never set it, or any non-UK org) resolves to
+    ``False`` — the pre-existing month-first behavior, so nothing changes for
+    the common case. Never raises: a malformed settings shape just means "no
+    signal", not an error.
+    """
+    if not isinstance(settings, dict):
+        return False
+    company = settings.get("company")
+    if not isinstance(company, dict):
+        return False
+    return bool((company.get("companies_house_number") or "").strip())
+
+
+def parse_ambiguous_date(raw: str | None, *, day_first: bool) -> date | None:
+    """Parse a slash- or dash-separated three-part numeric date.
+
+    ``03/04/2026`` is genuinely ambiguous — both "3 April" (day_first) and
+    "March 4" (month_first) are structurally valid, and nothing in the string
+    itself can settle it. The disambiguating signal has to come from OUTSIDE
+    the string — the caller's ``day_first`` argument (typically resolved via
+    :func:`resolve_day_first_preference`).
+
+    Tries the ``day_first``-preferred order first. When that order is
+    structurally invalid for this particular string (e.g. ``day_first=True``
+    but the second component is > 12, so it cannot be a month — ``03/25/2026``
+    can only be March 25), falls back to the other order, which is exactly
+    what makes an UNAMBIGUOUS date parse correctly regardless of preference.
+    Returns ``None`` — never guesses — when NEITHER order parses (e.g.
+    ``13/13/2026``, or the string isn't `/`- or `-`-separated at all).
+
+    This is deliberately narrow: it only disambiguates DD/MM vs MM/DD. ISO
+    (`YYYY-MM-DD`), dotted (`DD.MM.YYYY` — never ambiguous with a US format,
+    since a dot-separated date is conventionally day-first regardless of
+    locale) and human-readable (`March 15, 2024`) forms are unambiguous and
+    stay in each caller's own format list.
+    """
+    if not raw:
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    sep = "/" if "/" in raw else ("-" if "-" in raw else None)
+    if sep is None:
+        return None
+    day_first_fmt = f"%d{sep}%m{sep}%Y"
+    month_first_fmt = f"%m{sep}%d{sep}%Y"
+    order = (day_first_fmt, month_first_fmt) if day_first else (month_first_fmt, day_first_fmt)
+    for fmt in order:
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    return None

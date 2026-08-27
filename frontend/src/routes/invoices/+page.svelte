@@ -3,26 +3,33 @@
 	import { INVOICE_STATUSES, STATUS_LABELS, EMPTY_ADVANCED_FILTERS, SYSTEM_MANAGED_STATUSES, IMMUTABLE_STATUSES, commonTransitions } from '$lib/types/invoice';
 	import { invoiceStore } from '$lib/stores/invoices.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
+	import { adminStore } from '$lib/stores/admin.svelte';
 	import { api } from '$lib/api';
 	import StatusBadge from '$lib/components/ui/StatusBadge.svelte';
 	import InvoiceModal from '$lib/components/modals/InvoiceModal.svelte';
 	import CreateInvoiceModal from '$lib/components/modals/CreateInvoiceModal.svelte';
 	import AdvancedSearchModal from '$lib/components/modals/AdvancedSearchModal.svelte';
 	import BulkRecodeGLModal from '$lib/components/modals/BulkRecodeGLModal.svelte';
+	import ImportCsvModal from '$lib/components/modals/ImportCsvModal.svelte';
+	import type { ImportResult } from '$lib/types/csvImport';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import RowLink from '$lib/components/ui/RowLink.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { pruneSelection } from '$lib/utils/selection';
+	import type { MatchingIdsResponse } from '$lib/utils/pagination';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { workflowStore } from '$lib/stores/workflows.svelte';
+	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
 	import { untrack } from 'svelte';
+	import SortableHeader from '$lib/components/ui/SortableHeader.svelte';
+	import { toggleSort, type SortOrder } from '$lib/utils/sort';
 
 	let search = $state('');
 	let activeStatuses = $state<InvoiceStatus[]>([]);
@@ -34,9 +41,20 @@
 	let fileInput: HTMLInputElement;
 	let showBulkRecode = $state(false);
 	let showCreate = $state(false);
+	let showImportCsv = $state(false);
+
+	// "Assigned to" filter — an exact match on `assigned_to_id`, narrowed to a
+	// specific reviewer via the dropdown or to the caller via the "My
+	// Approvals" toggle (`myApprovalsActive` below). URL-backed so the queue an
+	// approver narrowed to survives a reload or a shared link — see `syncUrl()`.
+	let assignedToId = $state($page.url.searchParams.get('assigned_to_id') ?? '');
+	let myApprovalsActive = $derived(!!auth.user?.id && assignedToId === auth.user.id);
+	function toggleMyApprovals() {
+		assignedToId = myApprovalsActive ? '' : (auth.user?.id ?? '');
+	}
 
 	async function handleInvoiceCreated() {
-		await invoiceStore.fetch(buildParams());
+		await invoiceStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
 		await invoiceStore.fetchCounts();
 	}
 
@@ -74,7 +92,7 @@
 		// and re-picking the same file wouldn't even fire `change` (the input's
 		// value was never cleared). Only a page reload recovered.
 		try {
-			await invoiceStore.fetch(buildParams());
+			await invoiceStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
 			await invoiceStore.fetchCounts();
 
 			if (total === 1 && succeeded === 1) {
@@ -106,6 +124,34 @@
 		}
 	}
 
+	// Column sort — URL-backed (`?sort=&order=`), mirrors /expenses'
+	// `syncUrl()` pattern. `null` field = the backend's own default order
+	// (most-recent first).
+	let sortField = $state<string | null>($page.url.searchParams.get('sort'));
+	let sortOrder = $state<SortOrder>(($page.url.searchParams.get('order') as SortOrder) ?? 'desc');
+
+	function syncSortUrl() {
+		untrack(() => {
+			const url = new URL($page.url);
+			if (sortField) {
+				url.searchParams.set('sort', sortField);
+				url.searchParams.set('order', sortOrder);
+			} else {
+				url.searchParams.delete('sort');
+				url.searchParams.delete('order');
+			}
+			replaceState(`${url.pathname}${url.search}`, {});
+		});
+	}
+
+	function handleSort(field: string) {
+		const next = toggleSort({ field: sortField, order: sortOrder }, field);
+		sortField = next.field;
+		sortOrder = next.order;
+		syncSortUrl();
+		invoiceStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
+	}
+
 	function buildParams(): Record<string, string> {
 		const params: Record<string, string> = {};
 		if (activeStatuses.length > 0) params.status = activeStatuses.join(',');
@@ -128,10 +174,38 @@
 		if (af.amount_max) params.amount_max = af.amount_max;
 		if (af.due_date_from) params.due_date_from = af.due_date_from;
 		if (af.due_date_to) params.due_date_to = af.due_date_to;
+		if (assignedToId) params.assigned_to_id = assignedToId;
 		// Status is sourced solely from `activeStatuses` (the inline chips); the
 		// modal's Status section writes back into `activeStatuses` on apply, so
 		// the two never fight over `params.status`.
+		// Same `untrack` reasoning as `search` above.
+		const currentSort = untrack(() => sortField);
+		if (currentSort) {
+			params.sort = currentSort;
+			params.order = untrack(() => sortOrder);
+		}
 		return params;
+	}
+
+	/**
+	 * Reflect `assignedToId` into the URL as `?assigned_to_id=` — the "Assigned
+	 * to" filter and the "My Approvals" toggle (which just sets this to the
+	 * caller's own id) both drive off the one param, so a reload or a shared
+	 * link reproduces the same view. Mirrors the `syncUrl()` convention on
+	 * `/contracts` and `/expenses`: every read here is untracked, `$page.url`
+	 * included, because this is a WRITER called from the filter `$effect`
+	 * below — a tracked `$page.url` read would self-trigger the very effect
+	 * that calls `replaceState`. Scoped to only the param this page owns —
+	 * `search`/`status`/the advanced filters predate this and aren't
+	 * URL-synced yet (a separate, pre-existing gap; see `docs/followups.md`).
+	 */
+	function syncUrl() {
+		untrack(() => {
+			const url = new URL($page.url);
+			if (assignedToId) url.searchParams.set('assigned_to_id', assignedToId);
+			else url.searchParams.delete('assigned_to_id');
+			replaceState(`${url.pathname}${url.search}`, {});
+		});
 	}
 
 	// Debounce timer for search input
@@ -141,7 +215,7 @@
 		// `.catch` because nothing awaits this: the store re-throws so an
 		// awaiting caller keeps its own handling (the post-upload toast relies
 		// on it), and `invoiceStore.errored` is what the table renders.
-		searchTimer = setTimeout(() => invoiceStore.fetch(buildParams()).catch(() => {}), 300);
+		searchTimer = setTimeout(() => invoiceStore.fetch(buildParams()).catch(() => {}), 300); // noqa: raw-fetch-in-component — store method, routes through api client
 	}
 
 	// Fetch status counts and active workflow on mount
@@ -150,18 +224,42 @@
 		// `errored` flags are what the UI reads.
 		invoiceStore.fetchCounts().catch(() => {});
 		workflowStore.fetchActiveSteps().catch(() => {});
+		// So CreateInvoiceModal's currency default is ready by the time the
+		// toolbar button is clicked, not still resolving on first open.
+		orgCurrency.ensureLoaded();
+		// Populates the "Assigned to" filter dropdown — same directory the
+		// approver-assignment picker in `InvoiceModal` uses (active users
+		// holding `invoice.approve`), so the filter can only name someone who
+		// could actually be assigned. Resolves `false` rather than throwing;
+		// `reviewersErrored`/`reviewersLoaded` are what the dropdown reads.
+		adminStore.fetchAssignableReviewers().catch(() => {});
 	});
 
-	// Re-fetch when status filters or advanced filters change
+	// Re-fetch when status filters, advanced filters, or the assignee filter
+	// change. `assignedToId` also gets its own URL sync — see `syncUrl()`.
 	$effect(() => {
 		activeStatuses;
 		advancedFilters;
-		invoiceStore.fetch(buildParams()).catch(() => {});
+		assignedToId;
+		syncUrl();
+		// The "select all N matching" set was resolved against the FILTERS
+		// active at the time — once they change it no longer describes
+		// anything real, so drop out of matching mode. Must happen here
+		// (synchronously, before the fetch below lands) so the prune effect
+		// resumes narrowing `selected` down to whatever the new filter
+		// actually shows, instead of leaving stale ids from the old filter
+		// selected forever.
+		selectedAllMatching = false;
+		invoiceStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
 	});
 
 	// Re-fetch on search input (debounced)
 	$effect(() => {
 		search;
+		// Same reasoning as the status/advanced-filter effect above — a
+		// changed search term invalidates whatever "select all matching" had
+		// resolved against the OLD term.
+		selectedAllMatching = false;
 		debouncedFetch();
 		// Cancel a pending debounce on teardown: without it the timer fires
 		// after the page is gone and lands a stale list into the shared store.
@@ -188,12 +286,12 @@
 	 *
 	 * Handed to `InvoiceModal` as `onrefresh` so a refresh triggered from
 	 * inside the modal (an extraction poll finishing, a contract link) goes
-	 * through the filters rather than the store's param-less `fetch()`, which
+	 * through the filters rather than the store's param-less load, which
 	 * would widen the list to every status and reset `lastParams` so Load-more
 	 * paged a different set.
 	 */
 	async function refreshInvoiceList() {
-		await invoiceStore.fetch(buildParams());
+		await invoiceStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
 		await invoiceStore.fetchCounts();
 	}
 
@@ -253,9 +351,16 @@
 		return INVOICE_STATUSES.filter((s) => quick.has(s) || activeStatuses.includes(s));
 	});
 
-	// Three states, not two: a failed load must not read as "nothing matched".
+	// Four states, not two: a failed load must not read as "nothing matched",
+	// and a genuinely fresh tenant (no invoices, no active search/status
+	// filter) gets a CTA toward the two ways to add the first one instead of
+	// a bare "nothing here".
 	let emptyMessage = $derived(
-		invoiceStore.errored ? m('invoices.empty.errored') : m('invoices.empty')
+		invoiceStore.errored
+			? m('invoices.empty.errored')
+			: invoiceStore.all.length === 0 && !search.trim() && activeStatuses.length === 0
+				? m('invoices.empty.fresh')
+				: m('invoices.empty')
 	);
 
 	function statusCount(status: InvoiceStatus): number {
@@ -268,6 +373,17 @@
 	let bulkStatusValue = $state<InvoiceStatus>('approved');
 	let showBulkStatusSelect = $state(false);
 
+	// True once "Select all N matching" has resolved the WHOLE filtered set
+	// (not just the loaded page) into `selected` — see `selectAllMatching()`
+	// below. While true the prune effect must NOT narrow `selected` down to
+	// `invoiceStore.all` (the loaded page): that's exactly the id set beyond
+	// the page that matching-mode intentionally selected. Reset to false by
+	// the status/advanced-filter and search effects whenever the filters
+	// actually change, since a stale "matching" selection from a previous
+	// filter no longer describes anything real.
+	let selectedAllMatching = $state(false);
+	let selectingAllMatching = $state(false);
+
 	// Prune the selection to ids still visible whenever the list refetches
 	// (status chip, search, advanced filter, modal-close re-apply, load-more).
 	// Otherwise `selected` retains ids that fell off the list — inflating the
@@ -275,6 +391,7 @@
 	// (the same guard the exceptions queue applies). `pruneSelection` returns the
 	// same Set when nothing went stale, so the guarded reassignment never loops.
 	$effect(() => {
+		if (selectedAllMatching) return;
 		const pruned = pruneSelection(
 			selected,
 			invoiceStore.all.map((inv) => inv.id)
@@ -322,8 +439,39 @@
 	function toggleSelectAll() {
 		if (allSelected) {
 			selected = new Set();
+			selectedAllMatching = false;
 		} else {
 			selected = new Set(selectableInvoices.map((inv) => inv.id));
+		}
+	}
+
+	// Resolve and select EVERY invoice matching the current filters (not just
+	// the loaded page) via `GET /api/invoices/ids` — the header checkbox above
+	// only ever covers `invoiceStore.all`, the rows fetched so far. Without
+	// this, "select all" + bulk delete/status/export silently acted on the
+	// loaded page only, with no indication anything past it was skipped.
+	// `exclude_status` mirrors `selectableInvoices`: a bulk action can't touch
+	// a system-managed-status row, so "matching" must not include one either.
+	async function selectAllMatching() {
+		selectingAllMatching = true;
+		try {
+			const params = new URLSearchParams(buildParams());
+			params.set('exclude_status', [...SYSTEM_MANAGED_STATUSES].join(','));
+			const res = await api.get<MatchingIdsResponse>(`/api/invoices/ids?${params}`);
+			selected = new Set(res.ids);
+			selectedAllMatching = true;
+			if (res.truncated) {
+				toast(
+					`Selected the first ${res.ids.length} of ${res.total} matching — narrow your filters to select the rest.`,
+					'error'
+				);
+			} else {
+				toast(`Selected all ${res.ids.length} matching invoice(s)`, 'success');
+			}
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Failed to select all matching', 'error');
+		} finally {
+			selectingAllMatching = false;
 		}
 	}
 
@@ -331,9 +479,10 @@
 		bulkBusy = true;
 		try {
 			const res = await api.post('/api/invoices/bulk/delete', { ids: [...selected] }) as { deleted: number; skipped: string[] };
-			await invoiceStore.fetch(buildParams());
+			await invoiceStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
 			await invoiceStore.fetchCounts();
 			selected = new Set();
+			selectedAllMatching = false;
 			const msg = res.skipped?.length
 				? `Deleted ${res.deleted}, skipped ${res.skipped.length} (immutable)`
 				: `Deleted ${res.deleted} invoice(s)`;
@@ -348,17 +497,29 @@
 	async function bulkStatusChange() {
 		bulkBusy = true;
 		try {
-			const res = await api.post('/api/invoices/bulk/status', {
+			const res = (await api.post('/api/invoices/bulk/status', {
 				ids: [...selected],
 				status: bulkStatusValue,
-			}) as { updated: number; skipped: string[] };
-			await invoiceStore.fetch(buildParams());
+			})) as { updated: number; skipped: { id: string; reason: string }[] };
+			await invoiceStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
 			await invoiceStore.fetchCounts();
 			selected = new Set();
+			selectedAllMatching = false;
 			showBulkStatusSelect = false;
-			const msg = res.skipped?.length
-				? `Updated ${res.updated}, skipped ${res.skipped.length} (immutable)`
-				: `Updated ${res.updated} invoice(s)`;
+			// A skip can be an immutable status, but it can just as easily be a
+			// segregation-of-duties or CFO-threshold refusal — an authorization
+			// decision, not a data problem. Surface the backend's own reason(s)
+			// rather than a single hardcoded label that misrepresents every
+			// non-immutable skip.
+			let msg: string;
+			if (res.skipped?.length) {
+				const uniqueReasons = [...new Set(res.skipped.map((s) => s.reason))];
+				const reasonText =
+					uniqueReasons.length === 1 ? uniqueReasons[0] : `${uniqueReasons.length} different reasons`;
+				msg = `Updated ${res.updated}, skipped ${res.skipped.length} (${reasonText})`;
+			} else {
+				msg = `Updated ${res.updated} invoice(s)`;
+			}
 			toast(msg, 'success');
 		} catch (err) {
 			toast(err instanceof Error ? err.message : 'Bulk status change failed', 'error');
@@ -417,7 +578,7 @@
 		deletingId = id;
 		try {
 			await api.delete(`/api/invoices/${id}`);
-			await invoiceStore.fetch(buildParams());
+			await invoiceStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
 			await invoiceStore.fetchCounts();
 			toast('Invoice deleted', 'success');
 		} catch (err) {
@@ -469,6 +630,14 @@
 				{uploading ? uploadProgress || m('invoices.action.uploading') : m('invoices.action.upload')}
 			</button>
 		{/if}
+		{#if auth.isManager}
+			<!-- Day-0 bulk load — `POST /api/invoices/import-csv` is
+			     require_roles(ADMIN, AP_MANAGER), narrower than Create/Upload
+			     above (no CFO). See backend/docs/csv-import.md. -->
+			<button class="btn-secondary" onclick={() => (showImportCsv = true)}>
+				{m('invoices.action.importCsv')}
+			</button>
+		{/if}
 	{/snippet}
 
 	<div class="filter-row">
@@ -495,6 +664,28 @@
 				{/if}
 			</button>
 		</div>
+		<div class="assignee-group">
+			<button
+				type="button"
+				class="filter-chip my-approvals-chip"
+				class:active={myApprovalsActive}
+				onclick={toggleMyApprovals}
+				data-testid="my-approvals-toggle"
+			>
+				{m('invoices.filter.myApprovals')}
+			</button>
+			<select
+				class="assignee-select"
+				bind:value={assignedToId}
+				aria-label={m('invoices.filter.assignedToAria')}
+				data-testid="assigned-to-filter"
+			>
+				<option value="">{m('invoices.filter.assignedToAny')}</option>
+				{#each adminStore.assignableReviewers as r (r.id)}
+					<option value={r.id}>{r.full_name}</option>
+				{/each}
+			</select>
+		</div>
 		<nav class="filters">
 			<button class="filter-chip" class:active={activeStatuses.length === 0} onclick={() => (activeStatuses = [])}>
 				{m('common.all')} <span class="count">{totalCount}</span>
@@ -510,7 +701,14 @@
 	{#if selected.size > 0}
 		<div class="bulk-bar">
 			<span class="bulk-count">{m('invoices.bulk.selected', { n: selected.size })}</span>
-			<button class="bulk-clear" onclick={() => (selected = new Set())}>{m('common.clear')}</button>
+			{#if allSelected && !selectedAllMatching && invoiceStore.total > selectableInvoices.length}
+				<button class="bulk-select-all-matching" disabled={selectingAllMatching} onclick={selectAllMatching}>
+					{selectingAllMatching ? m('common.loading') : `Select all ${invoiceStore.total} matching`}
+				</button>
+			{:else if selectedAllMatching}
+				<span class="bulk-all-matching-note">All matching selected</span>
+			{/if}
+			<button class="bulk-clear" onclick={() => { selected = new Set(); selectedAllMatching = false; }}>{m('common.clear')}</button>
 			<div class="bulk-divider"></div>
 
 			{#if !auth.isClerkOnly}
@@ -572,17 +770,18 @@
 		</div>
 	{/if}
 
-	<DataTable isEmpty={invoiceStore.all.length === 0} empty={emptyMessage} colspan={9} fixed stickyHeader>
+	<DataTable isEmpty={invoiceStore.all.length === 0} empty={emptyMessage} colspan={10} fixed stickyHeader>
 		{#snippet header()}
 			<tr>
 				<th class="checkbox-col"><input type="checkbox" aria-label={m('invoices.selectAllAria')} checked={allSelected} onchange={toggleSelectAll} /></th>
-				<th>{m('invoices.col.invoiceNumber')}</th>
-				<th>{m('invoices.col.vendor')}</th>
+				<SortableHeader field="invoice_number" label={m('invoices.col.invoiceNumber')} active={sortField === 'invoice_number'} order={sortOrder} onsort={handleSort} />
+				<SortableHeader field="vendor_name" label={m('invoices.col.vendor')} active={sortField === 'vendor_name'} order={sortOrder} onsort={handleSort} />
 				<th>{m('invoices.col.description')}</th>
 				<th>{m('invoices.col.poNumber')}</th>
-				<th class="right">{m('invoices.col.amount')}</th>
-				<th>{m('invoices.col.dueDate')}</th>
-				<th>{m('invoices.col.status')}</th>
+				<SortableHeader field="amount" label={m('invoices.col.amount')} class="right" active={sortField === 'amount'} order={sortOrder} onsort={handleSort} />
+				<SortableHeader field="due_date" label={m('invoices.col.dueDate')} active={sortField === 'due_date'} order={sortOrder} onsort={handleSort} />
+				<SortableHeader field="status" label={m('invoices.col.status')} active={sortField === 'status'} order={sortOrder} onsort={handleSort} />
+				<th>{m('invoices.col.assignedTo')}</th>
 				<th class="actions-col"></th>
 			</tr>
 		{/snippet}
@@ -632,6 +831,7 @@
 					<td class="right mono"><Money amount={invoice.amount} currency={invoice.currency} /></td>
 					<td>{invoice.due_date}</td>
 					<td><StatusBadge status={invoice.status} /></td>
+					<td class="assignee">{invoice.assigned_to || '—'}</td>
 					<td class="actions">
 						{#if !auth.isClerkOnly && !IMMUTABLE_STATUSES.has(invoice.status)}
 							<RowAction
@@ -694,7 +894,7 @@
 	<BulkRecodeGLModal
 		onclose={() => (showBulkRecode = false)}
 		onapplied={() => {
-			invoiceStore.fetch(buildParams()).catch(() => {});
+			invoiceStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
 			invoiceStore.fetchCounts().catch(() => {});
 		}}
 	/>
@@ -702,6 +902,29 @@
 
 {#if showCreate}
 	<CreateInvoiceModal onclose={() => (showCreate = false)} onsaved={handleInvoiceCreated} />
+{/if}
+
+{#if showImportCsv}
+	<ImportCsvModal
+		title={m('invoices.action.importCsv')}
+		ariaLabel={m('invoices.action.importCsv')}
+		onimport={(file: File): Promise<ImportResult> => api.upload<ImportResult>('/api/invoices/import-csv', file)}
+		onclose={() => (showImportCsv = false)}
+		onimported={() => {
+			invoiceStore.fetch(buildParams()).catch(() => {});
+			invoiceStore.fetchCounts().catch(() => {});
+		}}
+	>
+		{#snippet columnsHint()}
+			<p>{m('csvImport.invoices.hint.intro')}</p>
+			<ul>
+				<li>{m('csvImport.invoices.hint.required')}</li>
+				<li>{m('csvImport.invoices.hint.vendor')}</li>
+				<li>{m('csvImport.invoices.hint.status')}</li>
+			</ul>
+			<p>{m('csvImport.invoices.hint.noFile')}</p>
+		{/snippet}
+	</ImportCsvModal>
 {/if}
 
 <style>
@@ -755,16 +978,40 @@
 		background: var(--accent);
 	}
 
+	.assignee-group {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+
+	.my-approvals-chip {
+		white-space: nowrap;
+	}
+
+	.assignee-select {
+		min-width: 160px;
+		max-width: 220px;
+	}
+
 	/* Fixed column widths pair with DataTable's `fixed`/`stickyHeader` props.
 	   These <th> widths apply because the header row is rendered from this
 	   page's snippet (page CSS scope). */
 	th:nth-child(1) { width: 40px; }
 	th:nth-child(2) { width: 11%; }
-	th:nth-child(3) { width: 16%; }
+	th:nth-child(3) { width: 15%; }
 	th:nth-child(5) { width: 8%; }
 	th:nth-child(6) { width: 9%; }
 	th:nth-child(7) { width: 9%; }
-	th:nth-child(8) { width: 15%; }
+	th:nth-child(8) { width: 13%; }
+	th:nth-child(9) { width: 11%; }
+
+	.assignee {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		color: var(--text-muted);
+	}
 	th:nth-child(9) { width: 170px; }
 
 	td {
@@ -901,6 +1148,35 @@
 	.bulk-clear:hover {
 		color: var(--text);
 		background: var(--bg);
+	}
+
+	.bulk-select-all-matching {
+		padding: 4px 10px;
+		border-radius: 4px;
+		border: 1px solid var(--accent);
+		background: transparent;
+		color: var(--accent);
+		font-size: 0.8rem;
+		font-weight: 600;
+		cursor: pointer;
+		font-family: inherit;
+		white-space: nowrap;
+	}
+
+	.bulk-select-all-matching:disabled {
+		opacity: 0.6;
+		cursor: default;
+	}
+
+	.bulk-select-all-matching:not(:disabled):hover {
+		background: var(--accent);
+		color: var(--surface);
+	}
+
+	.bulk-all-matching-note {
+		font-size: 0.8rem;
+		color: var(--text-muted);
+		white-space: nowrap;
 	}
 
 	.bulk-btn-wrap {

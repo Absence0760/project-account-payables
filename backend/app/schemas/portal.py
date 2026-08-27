@@ -4,10 +4,11 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated
 
-from pydantic import BaseModel, Field, PlainSerializer
+from pydantic import BaseModel, Field, PlainSerializer, field_validator
 
 from app.api.pagination import PageMeta
 from app.schemas.money import MoneyAmount, OptionalMoneyAmount
+from app.utils.banking import validate_aba_routing, validate_uk_sort_code
 
 
 def _decimal_to_number(value: Decimal | None) -> float | None:
@@ -161,6 +162,11 @@ class PortalInviteResponse(BaseModel):
     # out-of-band if email delivery isn't configured (local dev, etc).
     # In production the welcome email also carries it.
     temp_password: str
+    # The real tenant portal URL (built from `FEOH_TENANT_URL_TEMPLATE`, same
+    # construction as the signup welcome email / supplier-chat portal-link
+    # email) — echoed back so the admin can share it manually alongside the
+    # temp password. `None` when no template is configured.
+    portal_url: str | None = None
 
 
 class PortalInvoiceListItem(BaseModel):
@@ -280,6 +286,22 @@ class PortalCompanyInfoUpdateRequest(BaseModel):
 
 class PortalBankChangeRequest(BaseModel):
     bank_details: dict
+
+    @field_validator("bank_details")
+    @classmethod
+    def _validate_routing_number(cls, v: dict) -> dict:
+        # Same structural gate as the AP-initiated staging path
+        # (`schemas.vendor.VendorBankChangeRequest`) — a vendor self-service
+        # submission is exactly as unvalidated otherwise.
+        routing = v.get("routing_number")
+        if routing and not validate_aba_routing(routing):
+            raise ValueError("routing_number is not a valid 9-digit ABA routing number")
+        # UK equivalent, same "only when present" posture — a US supplier's
+        # submission never carries a sort_code.
+        sort_code = v.get("sort_code")
+        if sort_code and not validate_uk_sort_code(sort_code):
+            raise ValueError("sort_code is not a valid 6-digit UK sort code")
+        return v
 
 
 class PortalTaxIdChangeRequest(BaseModel):

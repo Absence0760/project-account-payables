@@ -1,12 +1,38 @@
-from pydantic import BaseModel, Field, model_validator
+from typing import Literal
+
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.services.vendor_consolidation import mask_tax_id
+from app.utils.banking import validate_aba_routing, validate_uk_sort_code
+
+# Bulk-status targets a human may legitimately drive over a hand-picked set of
+# vendors — the same two the single-row `POST /{vendor_id}/verify` /
+# `/reject` endpoints already expose. Typed as a Literal (not the free-form
+# `Vendor.status` string column) so an out-of-scope target is a 422 from
+# Pydantic itself rather than reaching the endpoint and failing per-row.
+VendorBulkStatusTarget = Literal["active", "rejected"]
 
 
 def _is_masked_tax_id(value) -> bool:
     """True when a caller echoed back the ``***<last4>`` masked value we return
     in responses. Real tax ids are digits/separators and never start ``***``."""
     return isinstance(value, str) and value.startswith("***")
+
+
+class VendorMailingAddress(BaseModel):
+    """Physical address a printed check gets mailed to (the `checkeeper`
+    adapter's `create_payment` reads this exact shape off
+    `Vendor.bank_details["mailing_address"]` — see
+    `services/payment_adapters/checkeeper.py`). Unlike an account/routing
+    number this is not a secret — it's the same class of data as the
+    vendor's own `address` field, which is already recorded verbatim in the
+    audit trail — so it needs no last4-masking treatment."""
+
+    street: str | None = Field(default=None, max_length=255)
+    city: str | None = Field(default=None, max_length=100)
+    state: str | None = Field(default=None, max_length=100)
+    postal: str | None = Field(default=None, max_length=20)
+    country: str | None = Field(default=None, max_length=2)
 
 
 class VendorBankDetails(BaseModel):
@@ -28,7 +54,11 @@ class VendorBankDetails(BaseModel):
         information (same trust level as a US ABA routing number),
         safe to surface in the UI.
       - `country`: ISO 3166-1 alpha-2 country code for the destination
-        bank; used by the corridor selector."""
+        bank; used by the corridor selector.
+      - `mailing_address`: where a `check` payment via the `checkeeper` rail
+        gets physically mailed (street/city/state/postal/country). Without
+        it that rail refuses every payment with `checkeeper_missing_
+        mailing_address` — this is the only writer of that key."""
 
     counterparty_id: str | None = Field(default=None, max_length=255)
     account_last4: str | None = Field(default=None, max_length=4)
@@ -37,6 +67,7 @@ class VendorBankDetails(BaseModel):
     iban_last4: str | None = Field(default=None, max_length=4)
     swift_bic: str | None = Field(default=None, max_length=11)
     country: str | None = Field(default=None, max_length=2)
+    mailing_address: VendorMailingAddress | None = None
 
 
 class VendorBase(BaseModel):
@@ -137,6 +168,7 @@ class VendorResponse(BaseModel):
                 iban_last4=iban_last4,
                 swift_bic=v.bank_details.get("swift_bic"),
                 country=v.bank_details.get("country"),
+                mailing_address=v.bank_details.get("mailing_address"),
             )
         return cls(
             id=str(v.id),
@@ -250,3 +282,74 @@ class VendorBankChangeRequest(BaseModel):
     and optionally a full account/routing/iban)."""
 
     bank_details: dict
+
+    @field_validator("bank_details")
+    @classmethod
+    def _validate_routing_number(cls, v: dict) -> dict:
+        # Structural check only, and only when a US routing number is present
+        # at all — an international vendor's staged change carries `iban`/
+        # `swift_bic` instead. Unlike IBAN/SWIFT (checked at payment time in
+        # `services/international_payments.py`), nothing validated a routing
+        # number anywhere, so a fat-fingered digit surfaced only as a returned
+        # ACH days later. Reject it at the point it's first written instead.
+        routing = v.get("routing_number")
+        if routing and not validate_aba_routing(routing):
+            raise ValueError("routing_number is not a valid 9-digit ABA routing number")
+        # Same posture for the UK equivalent — a sort code, only checked when
+        # present (a US vendor's staged change never carries one). Accepted
+        # either grouped (NN-NN-NN) or bare (NNNNNN); see validate_uk_sort_code.
+        sort_code = v.get("sort_code")
+        if sort_code and not validate_uk_sort_code(sort_code):
+            raise ValueError("sort_code is not a valid 6-digit UK sort code")
+        return v
+
+
+class VendorBulkStatusRequest(BaseModel):
+    """Bulk verify / reject over a hand-picked set of vendors — the bulk
+    counterpart of `POST /{vendor_id}/verify` and `/reject`. `status` is
+    restricted to the two targets those single-row endpoints already
+    support (see `VendorBulkStatusTarget`); anything else is a 422 before
+    the endpoint even runs."""
+
+    ids: list[str] = Field(..., min_length=1)
+    status: VendorBulkStatusTarget
+
+
+class VendorBulkStatusSkip(BaseModel):
+    """One vendor `bulk/status` didn't move, and why. Mirrors
+    `api/invoices.py::BulkStatusSkip` — a skip can be "not found", a status
+    that isn't a legal starting point for the target (mirroring the
+    single-row endpoints' 409), or a bad id format; `reason` carries the
+    real cause rather than a single generic label."""
+
+    id: str
+    reason: str
+
+
+class VendorBulkStatusResponse(BaseModel):
+    updated: int
+    skipped: list[VendorBulkStatusSkip] = Field(default_factory=list)
+
+
+class VendorBulkScreenRequest(BaseModel):
+    ids: list[str] = Field(..., min_length=1)
+
+
+class VendorBulkScreenSkip(BaseModel):
+    id: str
+    reason: str
+
+
+class VendorBulkScreenResponse(BaseModel):
+    """Same partial-success contract as `VendorBulkStatusResponse` /
+    `api/expenses.py::ExpenseBulkGlCodeResponse`: each vendor is screened
+    independently, so a sanctions-provider failure or a stale id on one
+    vendor is skipped-and-reported rather than aborting the whole batch —
+    a batch of 200 shouldn't lose its other 199 because one id is stale."""
+
+    screened: int
+    skipped: list[VendorBulkScreenSkip] = Field(default_factory=list)
+
+
+class VendorBulkExportRequest(BaseModel):
+    ids: list[str] = Field(..., min_length=1)

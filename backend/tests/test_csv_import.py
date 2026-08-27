@@ -135,6 +135,7 @@ async def test_import_vendors_missing_name_is_row_error():
     result = await import_vendors_csv(db, uuid.uuid4(), csv_text)
 
     assert result.imported == 1
+    assert result.skipped == 1
     assert len(result.errors) == 1
     assert result.errors[0].row == 2  # header is 1, first data row is 2
     assert "name is required" in result.errors[0].message
@@ -201,6 +202,7 @@ async def test_import_invoices_bad_amount_is_row_error():
     result = await import_invoices_csv(db, uuid.uuid4(), csv_text)
 
     assert result.imported == 1
+    assert result.skipped == 1
     assert len(result.errors) == 1
     assert "amount invalid" in result.errors[0].message
 
@@ -213,6 +215,7 @@ async def test_import_invoices_missing_vendor_identifier_is_row_error():
     result = await import_invoices_csv(db, uuid.uuid4(), csv_text)
 
     assert result.imported == 0
+    assert result.skipped == 1
     assert len(result.errors) == 1
     assert "vendor_name or vendor_code" in result.errors[0].message
 
@@ -225,6 +228,7 @@ async def test_import_invoices_rejects_invalid_status():
     result = await import_invoices_csv(db, uuid.uuid4(), csv_text)
 
     assert result.imported == 0
+    assert result.skipped == 1
     assert len(result.errors) == 1
     assert "status invalid" in result.errors[0].message
 
@@ -239,6 +243,7 @@ async def test_import_invoices_rejects_live_pipeline_status():
         csv_text = f"invoice_number,vendor_name,amount,status\nINV-X,Acme,100.00,{bad}\n"
         result = await import_invoices_csv(db, uuid.uuid4(), csv_text)
         assert result.imported == 0, bad
+        assert result.skipped == 1, bad
         assert len(result.errors) == 1, bad
         assert "not importable" in result.errors[0].message, bad
 
@@ -544,3 +549,22 @@ async def test_corporate_card_import_drops_unlisted_pan_column_from_raw():
     assert txn.card_last_four == "1111"
     assert txn.raw["card_last_four"] == "1111"
     assert "1111222233334444" not in str(txn.raw)
+
+
+@pytest.mark.asyncio
+async def test_corporate_card_import_validation_errors_count_as_skipped():
+    """A row that fails validation (unparseable amount/date) must count in
+    `skipped`, not just `errors` — the summary a caller reports (e.g. the
+    '{imported} imported, {skipped} skipped' UI banner) would otherwise
+    silently undercount every non-dedup failure."""
+    csv_text = (
+        "external_txn_id,date,merchant,amount\n"
+        "T1,2026-06-01,Uber,not-a-number\n"
+        "T2,not-a-date,Lyft,10.00\n"
+        "T3,2026-06-02,Waymo,5.00\n"
+    )
+    db = _StubSession()
+    result = await import_corporate_card_csv(db, uuid.uuid4(), csv_text)
+    assert result.imported == 1, result.to_dict()
+    assert result.skipped == 2, result.to_dict()
+    assert len(result.errors) == 2

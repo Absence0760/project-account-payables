@@ -284,6 +284,24 @@ async def test_patch_w9_fields_updates_vendor(realdb):
         assert v.is_1099_eligible is True
 
 
+async def test_patch_w9_response_does_not_report_a_w8_as_w9_on_file(realdb):
+    """`w9_file_key` is shared with the portal's W-8 upload (no separate
+    vendor column) — only a key whose form-type segment is actually `w9`
+    counts as "on file" here."""
+    info = realdb.info("a")
+    vendor_id = await _make_vendor(realdb, "a")
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        v = await s.get(Vendor, vendor_id)
+        v.w9_file_key = f"{info.org_id}/tax-forms/{vendor_id}/w8/form.pdf"
+        await s.commit()
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.patch(f"/api/tax/vendors/{vendor_id}/w9", json={"is_1099_eligible": True})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["w9_on_file"] is False
+
+
 async def test_patch_w9_partial_update_leaves_other_fields(realdb):
     vendor_id = await _make_vendor(
         realdb, "a", tax_classification="individual", is_1099_eligible=True

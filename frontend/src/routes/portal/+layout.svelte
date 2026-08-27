@@ -112,6 +112,27 @@
 		<main id="main-content" tabindex="-1" class="portal-main">
 			<slot />
 		</main>
+		{#if portalBrand.supportUrl || portalBrand.legalUrl}
+			<!-- A stuck vendor has no AP login and no colleague to ask — the
+			     branding fetch (GET /api/portal/branding) already carries the
+			     tenant's support/legal URLs, but nothing rendered them, leaving
+			     no "who do I contact" affordance anywhere in the portal
+			     (persona-supplier audit finding, issue #328). Fail-soft like the
+			     rest of white-labeling: an empty URL renders nothing, never a
+			     dead link. -->
+			<footer class="portal-footer">
+				{#if portalBrand.supportUrl}
+					<a href={portalBrand.supportUrl} target="_blank" rel="noopener noreferrer">
+						{m('portal.shell.footerSupport')}
+					</a>
+				{/if}
+				{#if portalBrand.legalUrl}
+					<a href={portalBrand.legalUrl} target="_blank" rel="noopener noreferrer">
+						{m('portal.shell.footerLegal')}
+					</a>
+				{/if}
+			</footer>
+		{/if}
 	</div>
 {/if}
 
@@ -209,5 +230,24 @@
 	.portal-main {
 		flex: 1;
 		padding: 24px;
+	}
+
+	.portal-footer {
+		display: flex;
+		justify-content: center;
+		gap: 20px;
+		padding: 14px 24px;
+		border-top: 1px solid var(--border);
+		font-size: 0.8rem;
+	}
+
+	.portal-footer a {
+		color: var(--text-muted);
+		text-decoration: none;
+	}
+
+	.portal-footer a:hover {
+		color: var(--text);
+		text-decoration: underline;
 	}
 </style>

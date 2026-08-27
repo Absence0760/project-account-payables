@@ -50,6 +50,7 @@ class MonthlyTrendEntry(BaseModel):
     month: str
     count: int
     amount: MoneyAmount
+    reporting_amount: MoneyAmount
 
 
 class UpcomingPayment(BaseModel):
@@ -99,6 +100,12 @@ class DashboardResponse(BaseModel):
     reporting: ReportingRollup
     total_paid: MoneyAmount
     total_pending: MoneyAmount
+    # Reporting-currency counterparts of `total_paid` / `total_pending` — see
+    # `app/api/dashboard.py`'s `payment_reporting_amount_sql` comment.
+    total_paid_reporting: MoneyAmount
+    total_pending_reporting: MoneyAmount
+    total_paid_unconverted_count: int
+    total_pending_unconverted_count: int
     total_rebates: MoneyAmount
     open_exceptions: int
     touchless_rate: float
@@ -106,9 +113,12 @@ class DashboardResponse(BaseModel):
     pipeline: dict[str, int]
     vendor_spend: list[VendorSpendEntry]
     aging: AgingBuckets
+    aging_reporting: AgingBuckets
     monthly_trend: list[MonthlyTrendEntry]
     upcoming_payments: list[UpcomingPayment]
     upcoming_total_amount: MoneyAmount
+    upcoming_total_amount_reporting: MoneyAmount
+    upcoming_unconverted_count: int
     processing_time: ProcessingTimeMetrics
     approval_bottleneck: list[ApprovalBottleneckEntry]
     discount_capture: DiscountCapture

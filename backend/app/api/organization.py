@@ -97,6 +97,19 @@ def _org_response(org: Organization, *, is_admin: bool) -> OrganizationResponse:
         raw["company"] = CompanyProfile().model_dump()
     if "invoice_defaults" not in raw:
         raw["invoice_defaults"] = InvoiceDefaults().model_dump()
+    # Advisory: is "require MFA for all users" actually enforced right now?
+    # `settings.mfa.required=true` is a per-org config toggle, but MFA itself
+    # is gated behind the platform master switch (`FEOH_MFA_ENABLED`) — off by
+    # default in local dev. Saving `required: true` while the switch is off
+    # used to be a silent no-op with no signal anywhere that the toggle was
+    # inert. Computed fresh on every read (never persisted) — same shape as
+    # the data-residency `alignment` block above.
+    mfa_cfg = raw.get("mfa")
+    if isinstance(mfa_cfg, dict):
+        raw["mfa"] = {
+            **mfa_cfg,
+            "enforcement_active": bool(mfa_cfg.get("required")) and settings.mfa_enabled,
+        }
     return OrganizationResponse(
         id=str(org.id),
         name=org.name,
@@ -135,6 +148,57 @@ async def get_fraud_rule_defaults(
     return DEFAULT_FRAUD_RULES
 
 
+def _validate_settings_patch(incoming: dict) -> None:
+    """Reject the specific type-confusion holes a careless PATCH can sneak
+    through for the well-known settings sub-keys this endpoint understands.
+
+    This is deliberately NOT a schema for the whole freeform `settings` bag —
+    that JSONB blob is intentionally open-ended (see `org_settings_view.py`'s
+    module docstring on why an allow-list, not a full schema, is the right
+    shape here too). It only closes the specific type holes that would
+    otherwise persist silently and corrupt a value every other reader assumes
+    is well-typed:
+
+    * `invoice_defaults.currency` — must be a 3-letter alpha string (ISO-4217
+      shape). Every currency formatter downstream (`<Money>`, the reporting
+      rollups) assumes this; a stray int or a 2-char typo would corrupt every
+      invoice created under the default from then on.
+    * `payments.cfo_approval_above` — must be numeric (int/float, not `bool`
+      — `bool` is a `int` subclass in Python and would otherwise sneak past a
+      bare `isinstance(x, (int, float))` check) when present. It gates the
+      CFO-approval threshold on every payment run; a non-numeric value would
+      make that comparison raise or silently misbehave at the worst possible
+      moment.
+
+    Raises `HTTPException(422)` naming the offending field; returns `None`
+    when everything present is well-typed.
+    """
+    invoice_defaults = incoming.get("invoice_defaults")
+    if isinstance(invoice_defaults, dict) and "currency" in invoice_defaults:
+        currency = invoice_defaults["currency"]
+        if (
+            not isinstance(currency, str)
+            or len(currency) != 3
+            or not currency.isascii()
+            or not currency.isalpha()
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="invoice_defaults.currency must be a 3-letter currency code (e.g. 'USD').",
+            )
+
+    payments_cfg = incoming.get("payments")
+    if isinstance(payments_cfg, dict) and "cfo_approval_above" in payments_cfg:
+        threshold = payments_cfg["cfo_approval_above"]
+        if threshold is not None and (
+            isinstance(threshold, bool) or not isinstance(threshold, (int, float))
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="payments.cfo_approval_above must be a number.",
+            )
+
+
 @router.patch("", response_model=OrganizationResponse)
 async def update_organization(
     body: UpdateOrganizationRequest,
@@ -146,6 +210,8 @@ async def update_organization(
         org.name = body.name
 
     if body.settings is not None:
+        _validate_settings_patch(body.settings)
+
         # The chat webhook URL has one sanctioned writer — the audited
         # `PUT /api/organization/chat-notifications/webhook`. This generic merge
         # would otherwise be a second, unaudited way to set the credential, and
@@ -180,6 +246,26 @@ async def update_organization(
                     "change to it is normalized, checked for cross-tenant "
                     "conflicts, and audited."
                 ),
+            )
+
+        # "Require MFA for all users" is a per-org toggle, but MFA itself only
+        # runs when the platform master switch (`FEOH_MFA_ENABLED`) is on —
+        # off by default in local dev. The setting is still ACCEPTED (an admin
+        # may legitimately be pre-configuring it ahead of the switch flipping
+        # in a deployed env), but a save that would currently be a silent
+        # no-op is logged loudly, and the response's `settings.mfa.
+        # enforcement_active` (see `_org_response`) tells the caller so too.
+        incoming_mfa = body.settings.get("mfa")
+        if (
+            isinstance(incoming_mfa, dict)
+            and incoming_mfa.get("required")
+            and not settings.mfa_enabled
+        ):
+            logger.warning(
+                "[organization] org %s saved settings.mfa.required=true, but "
+                "FEOH_MFA_ENABLED is off — MFA enforcement is NOT currently active "
+                "for this org's users.",
+                org.id,
             )
 
         # Merge incoming keys into existing settings (don't replace the whole dict)

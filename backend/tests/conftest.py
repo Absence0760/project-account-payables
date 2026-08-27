@@ -128,6 +128,12 @@ class _FakeRedis:
                 count += 1
         return count
 
+    async def getdel(self, key: str):
+        # Password-reset token consumption (`services/password_reset.py`) is
+        # an atomic read+delete — GETDEL. Same non-enforced-TTL caveat as
+        # `setex` above: single-use is via the pop, not a simulated clock.
+        return self._kv.pop(key, None)
+
 
 @pytest.fixture(autouse=True)
 def _autouse_fake_redis(monkeypatch):
@@ -164,6 +170,13 @@ def _autouse_fake_redis(monkeypatch):
     # stub it here too so any test exercising the real MFA verify path doesn't
     # bind a module-level Redis connection to its event loop.
     monkeypatch.setattr("app.services.mfa.get_redis", _get_redis)
+    # Forgot/reset-password tokens (`services/password_reset.py`) are the same
+    # class of hazard as the MFA pending-enrollment secret above — stub it so
+    # a realdb test hitting `/auth/forgot-password` / `/auth/reset-password`
+    # doesn't bind a module-level Redis connection to its event loop, and so
+    # the per-IP/per-account rate-limit buckets those routes also touch reset
+    # between tests instead of accumulating for real across a whole suite run.
+    monkeypatch.setattr("app.services.password_reset.get_redis", _get_redis)
     return fake
 
 

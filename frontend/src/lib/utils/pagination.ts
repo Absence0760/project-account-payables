@@ -17,3 +17,23 @@ export function appendUnique<T extends { id: string }>(existing: T[], incoming: 
 	const seen = new Set(existing.map((item) => item.id));
 	return [...existing, ...incoming.filter((item) => !seen.has(item.id))];
 }
+
+/**
+ * Response shape of every list endpoint's `/ids` sibling (`GET
+ * /api/invoices/ids`, `/api/exceptions/ids`, `/api/expenses/ids` —
+ * `backend/app/api/pagination.py::MatchingIdsResponse`).
+ *
+ * Backs the "select all N matching" affordance: a list page's header
+ * checkbox only ever selects the currently-LOADED page of rows (the bulk
+ * endpoints take an explicit id list, and the page only has what it fetched
+ * client-side) — this is the whole filtered set instead, resolved
+ * server-side so a bulk action can't silently skip rows past the first page.
+ * `truncated` is true when the match count exceeded the server's cap
+ * (`MAX_SELECT_ALL_IDS`), so a partial selection is never presented as
+ * complete.
+ */
+export interface MatchingIdsResponse {
+	ids: string[];
+	total: number;
+	truncated: boolean;
+}

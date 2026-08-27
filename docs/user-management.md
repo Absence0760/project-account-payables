@@ -89,12 +89,20 @@ Users cannot change their own email or roles.
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/admin/users` | List all users in the organization |
-| GET | `/api/admin/roles` | List all available roles |
-| POST | `/api/admin/users` | Create a user (returns temp password) |
-| PATCH | `/api/admin/users/:id` | Update user name, email, roles, active status, or reset password |
+| GET | `/api/admin/users` | List all users in the organization (`user.manage`) |
+| GET | `/api/admin/roles` | List all available roles — the picker `role_names` is chosen from (`user.manage`) |
+| GET | `/api/admin/permissions` | The granular-permission catalog, key + label (`user.manage`) |
+| POST | `/api/admin/users` | Create a user (returns temp password) (`user.manage`) |
+| PATCH | `/api/admin/users/:id` | Update user name, email, roles, active status, or reset password (`user.manage`) |
 | POST | `/api/admin/users/:id/revoke-sessions` | Force-log-out a user without changing their account (`user.manage`, org-scoped, idempotent, audited) |
-| DELETE | `/api/admin/users/:id` | Permanently delete a user (cannot delete yourself) |
+| DELETE | `/api/admin/users/:id` | Permanently delete a user (cannot delete yourself) (`user.manage`) |
+
+`user.manage` defaults to `admin` only — identical to the four endpoints'
+prior `require_roles(ROLE_ADMIN)` gate — but an org can grant it to a custom
+role via the `/admin/roles` editor to split user administration out of full
+`admin`. `POST`/`PATCH`/`DELETE /api/admin/roles` (defining what a role can
+grant) stay admin-only; see [`authentication.md`](authentication.md) §
+Granular permissions / segregation of duties.
 
 ### Self-Service Endpoints
 

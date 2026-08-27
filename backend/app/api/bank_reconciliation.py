@@ -51,6 +51,7 @@ from app.api.deps import (
 )
 from app.models.bank_reconciliation import BankStatement, BankTransaction
 from app.models.invoice import Invoice
+from app.models.organization import Organization
 from app.models.payment import Payment
 from app.models.user import User
 from app.schemas.bank_reconciliation import (
@@ -79,7 +80,8 @@ from app.services.bank_reconciliation import (
     settlement_amount_sql,
 )
 from app.services.csv_import import MAX_CSV_IMPORT_SIZE
-from app.tenant import get_tenant_db
+from app.tenant import get_tenant, get_tenant_db
+from app.utils.dates import resolve_day_first_preference
 
 router = APIRouter(prefix="/bank-reconciliation", tags=["bank-reconciliation"])
 
@@ -343,6 +345,7 @@ async def upload_statement(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(*_WRITE_ROLES)),
     org_id: uuid.UUID = Depends(get_org_id),
+    org: Organization = Depends(get_tenant),
 ):
     """Import a bank statement CSV.
 
@@ -385,6 +388,7 @@ async def upload_statement(
                 # same as vendor-statement-recon's CSV intake; keep file_key
                 # NULL for now. See docs § Deferred.
                 file_key=None,
+                day_first=resolve_day_first_preference(org.settings or {}),
             )
         except StatementImportError as e:
             raise HTTPException(status_code=422, detail=str(e)) from e

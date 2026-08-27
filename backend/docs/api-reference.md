@@ -202,14 +202,14 @@ See [`docs/self-service-signup.md`](../../docs/self-service-signup.md) for the f
 | `POST`   | `/api/invoices/{id}/file`           | admin/manager/cfo | Attach a source file to a manually-entered invoice that has none yet. 409 if it already has one. |
 | `PUT`    | `/api/invoices/{id}/file`           | admin/manager/cfo | Replace an invoice's existing file. 404 if none to replace, 409 if the invoice is done. |
 | `DELETE` | `/api/invoices/{id}/file`           | admin/manager/cfo | Delete an invoice's file. 404 if none to delete, 409 if the invoice is done. |
-| `PATCH`  | `/api/invoices/{id}`                | admin/manager/cfo | Update invoice |
+| `PATCH`  | `/api/invoices/{id}`                | admin/manager/cfo | Update invoice. Optional optimistic-concurrency guard: pass `expected_updated_at` (the `updated_at` ISO timestamp read alongside the invoice) and a row that has since moved (checked under a row lock — same pattern as `get_invoice_for_update`) is refused 409 instead of silently overwritten; omit it for the pre-existing behavior. |
 | `DELETE` | `/api/invoices/{id}`                | admin/manager/cfo | Delete invoice |
 | `POST`   | `/api/invoices/bulk/delete`         | admin/manager/cfo | Bulk delete |
 | `POST`   | `/api/invoices/bulk/status`         | admin/manager/cfo | Bulk status change. Partial-success: returns `{updated, skipped}`; a member the state machine refuses (or that fails a control on the `approved`/`rejected` paths) is listed in `skipped` and never aborts the batch. Only `new`/`pending`/`ready_for_review`/`approved`/`rejected`/`done` are settable — the rest 422 (they are workflow-engine driven). |
 | `POST`   | `/api/invoices/bulk/export`         | *     | Bulk export (CSV/JSON/XML) |
 | `POST`   | `/api/invoices/bulk-recode-gl`      | admin | Bulk GL re-code via vendor priors (+ optional AI fallback). Defaults to dry-run. See [`ai-extraction.md`](ai-extraction.md) § Bulk re-coding. |
 
-**Query parameters for `GET /api/invoices`:** `page`, `page_size`, `status` (comma-sep), `vendor`, `invoice_number`, `po_number`, `description`, `amount_min`, `amount_max`, `due_date_from`, `due_date_to`, `search`.
+**Query parameters for `GET /api/invoices`:** `page`, `page_size`, `status` (comma-sep), `vendor`, `invoice_number`, `po_number`, `description`, `amount_min`, `amount_max`, `due_date_from`, `due_date_to`, `search`, `assigned_to_id` (exact match on `Invoice.assigned_to_id`; the frontend's "Assigned to" filter and "My Approvals" quick view both drive off it — the latter passing the caller's own id). `GET /api/invoices/ids` (the select-all-matching resolver) accepts the same filter set, `assigned_to_id` included, so a select-all under either filter can't silently widen past what's on screen. Every invoice row already carries `assigned_to_id` + `assigned_to` (the display name, denormalized at assign time) in `InvoiceResponse` — no separate lookup needed to render an assignee column.
 
 ## Workflow Actions (per invoice)
 

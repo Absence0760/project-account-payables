@@ -94,6 +94,12 @@ PERMISSION_LABELS: dict[str, str] = {
 #   payment execute   require_roles(ADMIN, AP_MANAGER, CFO)
 #   payment void      require_roles(ADMIN, CFO)
 #   payment-run approve (create draft) require_roles(ADMIN, AP_MANAGER, CFO)
+#   payment-run CFO sign-off (`POST /runs/{id}/approve`) stays on
+#     `require_roles(ROLE_CFO)`, NOT this permission — the two "approve"
+#     names collide but the actions don't: sign-off is the mandatory human
+#     CFO check above the org's dollar threshold, and granting it to
+#     whoever holds the broader create-draft permission (admin/ap_manager
+#     by default) defeats that control. See the route's own docstring.
 #   vendor bank-change approve         require_roles(ADMIN, AP_MANAGER)
 #   vendor block/unblock               require_roles(ADMIN, AP_MANAGER)
 #   vendor manage (create/edit/verify) require_roles(ADMIN, AP_MANAGER)

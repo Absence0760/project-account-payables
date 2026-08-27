@@ -28,6 +28,7 @@ from app.api.permissions import (
     PERM_PAYMENT_RUN_APPROVE,
     PERM_PAYMENT_VOID,
 )
+from app.api.sorting import SortParams, resolve_order_by, sort_params
 from app.models.exception import Exception as APException
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.organization import Organization
@@ -278,6 +279,16 @@ async def _get_scoped_run(
 
 # ── Individual Payments ──────────────────────────────────────────────
 
+# `sort=` allowlist for `GET /payments` — see `api/sorting.py`. `.id` is
+# always appended as the final tie-break regardless of which column is
+# picked (mirrors the pre-existing `created_at, id` default order below).
+PAYMENT_SORTABLE_COLUMNS: dict[str, object] = {
+    "created_at": Payment.created_at,
+    "amount": Payment.amount,
+    "status": Payment.status,
+    "method": Payment.method,
+}
+
 
 @router.get("", response_model=PaymentListResponse)
 async def list_payments(
@@ -288,8 +299,17 @@ async def list_payments(
     search: str | None = None,
     amount_min: float | None = None,
     amount_max: float | None = None,
+    sort: SortParams = Depends(sort_params),
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    # `payment.execute` OR `payment.void`: the History-tab list a custom-role
+    # holder of either needs to REACH the row they'd act on (void a payment, or
+    # just see what a run already executed). Exact match to the prior role set:
+    # ADMIN holds both by default, AP_MANAGER holds execute-only, CFO holds
+    # both; AP_CLERK holds neither — so this reproduces
+    # `require_roles(ADMIN, AP_MANAGER, CFO)` exactly for the four system
+    # roles and additionally opens it to a custom role granted only one of
+    # the two.
+    user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     query = (
@@ -343,8 +363,18 @@ async def list_payments(
     total_q = select(func.count()).select_from(count_base.subquery())
     total = (await db.execute(total_q)).scalar() or 0
 
-    # Paginate
-    query = query.order_by(Payment.created_at.desc())
+    # Paginate. `.id` tie-breaker: bulk-created rows (a payment run) can share
+    # `created_at` down to the microsecond, so without it Postgres can order
+    # them differently between pages — a row duplicated onto two pages or
+    # skipped entirely. `sort=`/`order=` (validated against
+    # `PAYMENT_SORTABLE_COLUMNS`) override the default when supplied.
+    order_by = resolve_order_by(
+        sort,
+        PAYMENT_SORTABLE_COLUMNS,
+        id_column=Payment.id,
+        default=[Payment.created_at.desc(), Payment.id.desc()],
+    )
+    query = query.order_by(*order_by)
     query = query.offset(pagination.offset).limit(pagination.limit)
     result = await db.execute(query)
     rows = result.all()
@@ -838,7 +868,10 @@ async def get_payment_remittance(
 async def get_payment(
     payment_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    # Same any-of as the list above — the single-payment companion of a
+    # resource a `payment.execute`/`payment.void` custom-role holder can
+    # already list.
+    user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     p = await _get_scoped_payment(db, payment_id, entity_id)
@@ -1702,7 +1735,11 @@ async def list_payment_runs(
     pagination: PaginationParams = Depends(pagination_params),
     status_filter: str | None = Query(None, alias="status"),
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    # The Runs tab a `payment.execute` holder needs to REACH a draft run's
+    # RunDetailModal (where the Execute button lives). Exact match: default
+    # holders are ADMIN, AP_MANAGER, CFO — the same set `require_roles`
+    # granted, AP_CLERK excluded either way.
+    user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     query = apply_entity_scope(select(PaymentRun), PaymentRun, entity_id)
@@ -1714,7 +1751,8 @@ async def list_payment_runs(
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar() or 0
 
-    query = query.order_by(PaymentRun.created_at.desc())
+    # `.id` tie-breaker: same fix as the sibling payment list above.
+    query = query.order_by(PaymentRun.created_at.desc(), PaymentRun.id.desc())
     query = query.offset(pagination.offset).limit(pagination.limit)
     result = await db.execute(query)
     runs = result.scalars().all()
@@ -1844,7 +1882,10 @@ async def create_payment_run(
 async def get_payment_run(
     run_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    # `RunDetailModal.svelte` fetches this on open — it's the load-bearing
+    # read that puts the Execute button (itself gated on `payment.execute`)
+    # on screen at all. Same exact-match reasoning as the list above.
+    user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Get a payment run with its individual payments.
@@ -1928,6 +1969,20 @@ async def approve_payment_run(
     run_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
+    # Deliberately NOT `require_permission(PERM_PAYMENT_RUN_APPROVE)`, unlike
+    # its sibling `POST /runs` (create). That permission is admin/ap_manager/
+    # cfo by default — fine for creating a draft run, but `requires_cfo_approval`
+    # exists specifically to force a genuine CFO signature above the org's
+    # dollar threshold; granting admin or ap_manager the same authority here
+    # defeats the control entirely (they may be the same person who created or
+    # will execute the run). A prior round migrated this to the shared
+    # permission on a false-consistency reading of the two endpoints and it
+    # regressed exactly that — an admin/ap_manager could sign off a run above
+    # threshold, caught by `tests-e2e/payments/cfo-approval.spec.ts` and
+    # `tests-e2e/auth/rbac-api.spec.ts`. A custom role CAN still be granted
+    # this specific sign-off without the full CFO title — just not via the
+    # same catalog entry `POST /runs` uses; that would need a distinct
+    # permission (e.g. `payment_run.cfo_signoff`) if ever wanted.
     user: User = Depends(require_roles(ROLE_CFO)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):

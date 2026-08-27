@@ -11,6 +11,7 @@
 	import { appendUnique } from '$lib/utils/pagination';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { m } from '$lib/i18n/store.svelte';
+	import { portalPaymentStatusLabel } from '$lib/types/portalStatus';
 
 	type PortalPayment = PortalPaymentListItem;
 
@@ -120,7 +121,7 @@
 						<td>{formatDate(p.completed_at, m('portal.common.dash'))}</td>
 						<td>{p.method || m('portal.common.dash')}</td>
 						<td class="num"><Money amount={p.amount} currency={p.currency} /></td>
-						<td><span class="status s-{p.status}">{p.status}</span></td>
+						<td><span class="status s-{p.status}">{portalPaymentStatusLabel(p.status)}</span></td>
 						<td>{p.reference || m('portal.common.dash')}</td>
 						<td class="actions">
 							{#if p.status === 'completed'}

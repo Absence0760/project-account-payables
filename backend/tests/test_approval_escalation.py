@@ -20,6 +20,8 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from sqlalchemy import select
+
 from app.services import approval_escalation
 
 
@@ -427,6 +429,87 @@ async def test_escalate_tenant_escalates_only_active_overdue_instances(realdb):
     assert target_uid in a_approvers
     # Completed: untouched — the state=='active' filter excluded it.
     assert target_uid not in c_approvers
+
+
+async def test_escalation_notifies_the_newly_added_approver(realdb):
+    """Escalation must not just expand `approver_ids` in mutable state_data —
+    the newly-eligible approver has to be TOLD, or the invoice sits invisibly
+    stalled for exactly the person who just became able to unblock it.
+    Real recipient, real invoice, real tenant DB — asserts the in-app
+    `Notification` row `notify_event` writes lands for the escalation target.
+    """
+    from datetime import timedelta
+    from decimal import Decimal
+
+    from app.models.invoice import Invoice
+    from app.models.notification import EVENT_INVOICE_ASSIGNED, Notification
+    from app.models.workflow import WorkflowDefinition, WorkflowInstance
+    from app.services.approval_escalation import _escalate_tenant
+
+    info = realdb.info("a")
+    org_id = info.org_id
+    mk = realdb.sessionmaker("a")
+
+    # A real, active control-plane user — the escalation target. Using an id
+    # notify_event's `_load_recipients` can actually resolve is the point:
+    # a random uuid would silently skip the notification and prove nothing.
+    target_uid = str(info.users["ap_clerk"])
+    original_approver = str(uuid.uuid4())
+    entered = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
+
+    async with mk() as s:
+        inv = Invoice(
+            organization_id=org_id,
+            invoice_number="INV-ESC-NOTIFY",
+            vendor_name="Acme",
+            amount=Decimal("42.00"),
+            currency="USD",
+        )
+        defn = WorkflowDefinition(organization_id=org_id, name="def", steps_config={"steps": []})
+        s.add_all([inv, defn])
+        await s.flush()
+        instance = WorkflowInstance(
+            definition_id=defn.id,
+            invoice_id=inv.id,
+            state="active",
+            state_data={
+                "approval_levels": {
+                    "current_level": 0,
+                    "levels": [
+                        {
+                            "escalation_hours": 24,
+                            "escalation_to_user_ids": [target_uid],
+                            "entered_at": entered,
+                            "approver_ids": [original_approver],
+                        }
+                    ],
+                }
+            },
+        )
+        s.add(instance)
+        await s.commit()
+        invoice_id = inv.id
+
+    escalated, failed = await _escalate_tenant(info.db_name, datetime.now(UTC), org_id=org_id)
+    assert (escalated, failed) == (1, 0)
+
+    async with mk() as s:
+        rows = (
+            (
+                await s.execute(
+                    select(Notification).where(
+                        Notification.recipient_user_id == uuid.UUID(target_uid),
+                        Notification.entity_id == invoice_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert len(rows) == 1, "the escalated approver must get an in-app notification"
+    assert rows[0].event_type == EVENT_INVOICE_ASSIGNED
+    assert rows[0].entity_type == "invoice"
 
 
 # ---------------------------------------------------------------------------

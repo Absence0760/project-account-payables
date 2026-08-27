@@ -130,8 +130,32 @@ Surfaced in:
   `total_amount`, `total_count`, `unconverted_count`, `by_currency[]`. The legacy
   `total_amount` (naive cross-currency `SUM`) is unchanged for back-compat;
   `reporting.total_amount` is the figure to trust for a multi-currency book.
+  The same pattern now also covers the aging buckets (`aging_reporting`,
+  alongside the legacy `aging`), the monthly trend
+  (`monthly_trend[].reporting_amount`, alongside `.amount`), and the upcoming-7-days
+  total (`upcoming_total_amount_reporting` + `upcoming_unconverted_count`,
+  alongside `upcoming_total_amount`) — all previously naive cross-currency
+  `SUM(Invoice.amount)`s with no converted counterpart at all.
+  `total_paid` / `total_pending` gain `total_paid_reporting` /
+  `total_pending_reporting` (+ their own `*_unconverted_count`), resolved via
+  `payment_reporting_amount_sql` (below) rather than a raw `SUM(Payment.amount)`
+  — the same resolver `GET /api/payments/summary` already used for its own
+  `total_paid`/`total_pending`.
 - **`GET /api/analytics/cfo`** → `reporting_spend` block (same shape, scoped to
-  the period window) plus `unrealized_fx` (below).
+  the period window) plus `unrealized_fx` (below). `accounts_payable_balance`
+  gains a `reporting_accounts_payable_balance` block (same shape as
+  `reporting_spend`) — the naive cross-currency AP-balance `SUM` had no
+  converted counterpart even after `reporting_spend` was added beside
+  `total_spend`. `avg_daily_outflow` / `working_capital_impact_5_days` gain
+  `reporting_avg_daily_outflow` / `reporting_working_capital_impact_5_days` (+
+  `reporting_avg_daily_outflow_unconverted_count`), resolved from
+  `payment_reporting_amount_sql` rather than a raw `SUM(Payment.amount)` over
+  the period's completed payments.
+- **`GET /api/analytics/by-entity`** → each entity row (and the consolidated
+  row) gains `reporting_outstanding_amount` / `reporting_currency` /
+  `reporting_outstanding_unconverted_count` beside the legacy naive
+  `outstanding_amount`, using the same rollup `reporting_accounts_payable_balance`
+  uses so the two can't disagree for the consolidated row.
 
 ### Per-vendor rollups
 
@@ -228,7 +252,11 @@ locking/idempotency, rollup, per-vendor rollup, unrealized gain/loss),
 rollup), `tests/test_analytics_rejected_exclusion.py` (realdb end-to-end
 coverage for the per-vendor rollup agreeing across the dashboard and CFO
 concentration tile for a vendor billing in more than one currency),
-`tests/test_expense_currency.py` (the expense line/report layers), and
+`tests/test_expense_currency.py` (the expense line/report layers),
 `tests/test_expense_policy.py` + `tests/test_expense_approval.py` (the
-policy-threshold layer, incl. the fail-closed cases). All deterministic against
-the mock FX adapter.
+policy-threshold layer, incl. the fail-closed cases), and
+`tests/test_multicurrency_kpi_reporting.py` (realdb: aging / monthly-trend /
+upcoming-total on `GET /api/dashboard`, AP-balance / working-capital on
+`GET /api/analytics/cfo`, and outstanding-amount on `GET /api/analytics/by-entity`
+each correctly converting a mixed USD/EUR invoice or payment set). All
+deterministic against the mock FX adapter.

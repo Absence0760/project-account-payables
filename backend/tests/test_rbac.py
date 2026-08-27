@@ -58,6 +58,11 @@ NO_AUTH_REQUIRED = {
     ("POST", "/auth/mfa/passkey/authenticate"),
     ("POST", "/auth/mfa/passkey/authenticate/verify"),
     ("POST", "/auth/logout"),  # uses Bearer header but not as a Depends
+    # auth.py — self-service password recovery. Must be reachable by a user
+    # who is, by definition, not signed in; the reset itself is gated by the
+    # single-use emailed token, not a JWT.
+    ("POST", "/auth/forgot-password"),
+    ("POST", "/auth/reset-password"),
     # cards.py — webhook authenticated by provider signature
     ("POST", "/cards/webhook/{provider}"),
     # payments.py — payment-processor webhook; HMAC-verified, tenant in URL path
@@ -330,6 +335,15 @@ _PERMISSION_GATED_ENDPOINTS = {
     ("PATCH", "/admin/users/{user_id}"): perm_catalog.PERM_USER_MANAGE,
     ("DELETE", "/admin/users/{user_id}"): perm_catalog.PERM_USER_MANAGE,
     ("POST", "/admin/users/bulk-delete"): perm_catalog.PERM_USER_MANAGE,
+    # Read-only supporting endpoints a user.manage-only custom role needs to
+    # actually use the grant — see docs/authentication.md § Granular
+    # permissions. `POST`/`PATCH`/`DELETE /admin/roles` (role CRUD) deliberately
+    # stay off this map: they remain `require_roles(ROLE_ADMIN)`, not
+    # `require_permission`, because minting/editing a role definition can
+    # bundle any catalog permission at all.
+    ("GET", "/admin/users"): perm_catalog.PERM_USER_MANAGE,
+    ("GET", "/admin/roles"): perm_catalog.PERM_USER_MANAGE,
+    ("GET", "/admin/permissions"): perm_catalog.PERM_USER_MANAGE,
 }
 
 

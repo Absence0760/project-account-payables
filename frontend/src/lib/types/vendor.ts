@@ -6,11 +6,29 @@
 export type ScreeningStatus = 'unscreened' | 'clear' | 'review' | 'match';
 export type RiskLevel = 'low' | 'medium' | 'high' | 'critical' | 'unknown';
 
+export interface VendorMailingAddress {
+	street: string | null;
+	city: string | null;
+	state: string | null;
+	postal: string | null;
+	country: string | null;
+}
+
 export interface VendorBankDetails {
 	counterparty_id: string | null;
 	account_last4: string | null;
 	routing_last4: string | null;
 	bank_name: string | null;
+	// ISO 3166-1 alpha-2 destination-bank country. Drives the routing-number
+	// vs. sort-code label/validation switch on the AP bank-change modal (a
+	// UK vendor uses a sort code, not a US ABA routing number) — mirrors the
+	// backend `schemas.vendor.VendorBankDetails.country` field.
+	country?: string | null;
+	// Where a printed check to this vendor gets mailed — required by the
+	// `checkeeper` check-printing payment rail (see `services/payment_adapters/
+	// checkeeper.py`); without it that rail refuses with
+	// `checkeeper_missing_mailing_address`.
+	mailing_address?: VendorMailingAddress | null;
 }
 
 export interface Vendor {

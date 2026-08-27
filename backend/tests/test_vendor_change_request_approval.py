@@ -311,6 +311,81 @@ async def test_ap_bank_change_endpoint_stages_and_returns_202(realdb):
 
 
 @pytest.mark.asyncio
+async def test_ap_bank_change_rejects_a_malformed_routing_number(realdb):
+    """A routing number that fails the ABA checksum must 422 before it's even
+    staged — nothing validated it before, so a typo silently reached the
+    change-request queue and only surfaced as a returned ACH days later."""
+    info = realdb.info(TENANT)
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id = await _seed_vendor(mk, info.org_id, bank_details={})
+
+    async with realdb.client(key=TENANT, role="admin") as client:
+        resp = await client.post(
+            f"/api/vendors/{vendor_id}/bank-change",
+            json={"bank_details": {"routing_number": "021000020", "account_number": "12345"}},
+        )
+    assert resp.status_code == 422, resp.text
+
+    async with mk() as s:
+        rows = (
+            (
+                await s.execute(
+                    select(VendorChangeRequest).where(VendorChangeRequest.vendor_id == vendor_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert rows == [], "malformed routing number must never reach the staging queue"
+
+
+@pytest.mark.asyncio
+async def test_ap_bank_change_rejects_a_malformed_sort_code(realdb):
+    """The UK equivalent of the routing-number check — a sort code that
+    isn't 6 digits (grouped or bare) must 422 before staging, same as a bad
+    ABA routing number."""
+    info = realdb.info(TENANT)
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id = await _seed_vendor(mk, info.org_id, bank_details={})
+
+    async with realdb.client(key=TENANT, role="admin") as client:
+        resp = await client.post(
+            f"/api/vendors/{vendor_id}/bank-change",
+            json={"bank_details": {"sort_code": "12-34", "account_number": "12345678"}},
+        )
+    assert resp.status_code == 422, resp.text
+
+    async with mk() as s:
+        rows = (
+            (
+                await s.execute(
+                    select(VendorChangeRequest).where(VendorChangeRequest.vendor_id == vendor_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert rows == [], "malformed sort code must never reach the staging queue"
+
+
+@pytest.mark.asyncio
+async def test_ap_bank_change_accepts_a_valid_sort_code(realdb):
+    """A well-formed sort code (either grouped or bare) stages cleanly,
+    alongside the ABA routing_number field it's mutually exclusive with in
+    practice — only the field that's actually present is validated."""
+    info = realdb.info(TENANT)
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id = await _seed_vendor(mk, info.org_id, bank_details={})
+
+    async with realdb.client(key=TENANT, role="admin") as client:
+        resp = await client.post(
+            f"/api/vendors/{vendor_id}/bank-change",
+            json={"bank_details": {"sort_code": "20-00-00", "account_number": "12345678"}},
+        )
+    assert resp.status_code == 202, resp.text
+
+
+@pytest.mark.asyncio
 async def test_requester_cannot_approve_their_own_bank_change(realdb):
     """Segregation of duties: the admin who proposed the change can't approve
     it — that would collapse dual control back to a one-person bank redirect."""
@@ -655,3 +730,112 @@ async def test_approving_new_vendor_bank_change_applies_it(realdb):
         v = (await s.execute(select(Vendor).where(Vendor.id == uuid.UUID(vendor_id)))).scalar_one()
         assert v.bank_details["account_last4"] == "2222"
         assert v.bank_details["bank_name"] == "Real Bank"
+
+
+@pytest.mark.asyncio
+async def test_mailing_address_round_trips_and_unblocks_checkeeper(realdb):
+    """`bank_details.mailing_address` is what the `checkeeper` check-printing
+    rail reads (`services/payment_adapters/checkeeper.py`) — before
+    `VendorBankDetails` declared the field, it was silently stripped by
+    Pydantic on every typed write path (`POST /vendors`, `PATCH /vendors/{id}`)
+    and never surfaced back out of `VendorResponse.from_db`, so a check
+    payment to ANY vendor failed `checkeeper_missing_mailing_address` forever
+    with no way to fix it from the app.
+
+    Proves the full loop: create with a mailing address (staged, not
+    applied) -> a second user approves -> it lands on `Vendor.bank_details`
+    exactly as-is -> `GET` surfaces it back -> and, with that address on the
+    row, the `checkeeper` adapter accepts a check payment to this vendor
+    instead of refusing it.
+    """
+    mk = realdb.sessionmaker(TENANT)
+    mailing_address = {
+        "street": "1 Acme Plaza",
+        "city": "Springfield",
+        "state": "IL",
+        "postal": "62701",
+        "country": "US",
+    }
+
+    async with realdb.client(key=TENANT, role="admin") as client:
+        create_resp = await client.post(
+            "/api/vendors",
+            json={
+                "name": "Check-Paid Supply Co",
+                "bank_details": {"bank_name": "Barclays", "mailing_address": mailing_address},
+            },
+        )
+        assert create_resp.status_code in (200, 201), create_resp.text
+        vendor_id = create_resp.json()["id"]
+
+    async with mk() as s:
+        req = (
+            await s.execute(
+                select(VendorChangeRequest).where(
+                    VendorChangeRequest.vendor_id == uuid.UUID(vendor_id)
+                )
+            )
+        ).scalar_one()
+        # Not silently dropped by the (formerly undeclared) schema field.
+        assert req.proposed_value["bank_details"]["mailing_address"]["street"] == ("1 Acme Plaza")
+
+    # A second user approves — same segregation-of-duties shape as the
+    # sibling test above.
+    async with realdb.client(key=TENANT, role="ap_manager") as client:
+        approve_resp = await client.post(f"/api/vendors/change-requests/{req.id}/approve")
+    assert approve_resp.status_code == 200, approve_resp.text
+
+    async with mk() as s:
+        v = (await s.execute(select(Vendor).where(Vendor.id == uuid.UUID(vendor_id)))).scalar_one()
+        assert v.bank_details["mailing_address"]["street"] == "1 Acme Plaza"
+        assert v.bank_details["mailing_address"]["postal"] == "62701"
+        stored_bank_details = dict(v.bank_details)
+
+    # GET /vendors/{id} — VendorResponse.from_db must surface it back, not
+    # just persist it. A UI that can never read the value back can't confirm
+    # it saved, and this is exactly what `from_db` dropped before the fix.
+    async with realdb.client(key=TENANT, role="admin") as client:
+        get_resp = await client.get(f"/api/vendors/{vendor_id}")
+    assert get_resp.status_code == 200, get_resp.text
+    returned_mailing = get_resp.json()["bank_details"]["mailing_address"]
+    assert returned_mailing["street"] == "1 Acme Plaza"
+    assert returned_mailing["postal"] == "62701"
+    assert returned_mailing["country"] == "US"
+
+    # And the payoff: the exact dict `api/payments.py` reads off
+    # `Vendor.bank_details` and hands to the adapter as `payload.vendor_bank`
+    # now satisfies the checkeeper rail instead of refusing the payment.
+    # httpx + the Redis idempotency gate are stubbed exactly like the
+    # adapter's own tests (`test_payment_adapters_new.py`) — this test's
+    # subject is the mailing-address plumbing, not a live network call.
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, patch
+
+    from app.services.payment_adapters import PaymentPayload
+    from app.services.payment_adapters.checkeeper import CheckeeperAdapter
+    from tests.test_payment_adapters_new import _fake_async_client, _FakeResponse
+
+    fake_client = _fake_async_client(
+        [_FakeResponse({"id": "chk_mail_1", "status": "queued", "check_number": "9001"})]
+    )
+    fake_redis = AsyncMock()
+    fake_redis.set = AsyncMock(return_value=True)  # idempotency slot claimed
+
+    adapter = CheckeeperAdapter({"api_key": "k", "bank_account_id": "bnk"})
+    payload = PaymentPayload(
+        correlation_id="cor-mailing-test",
+        invoice_id="inv-mailing-test",
+        invoice_number="INV-MAIL-1",
+        vendor_name="Check-Paid Supply Co",
+        amount=Decimal("42.00"),
+        currency="USD",
+        method="check",
+        vendor_bank=stored_bank_details,
+    )
+    with (
+        patch("app.services.payment_adapters.checkeeper.httpx.AsyncClient", fake_client),
+        patch("app.redis.get_redis", AsyncMock(return_value=fake_redis)),
+    ):
+        result = await adapter.create_payment(payload)
+    assert result.failure_reason != "checkeeper_missing_mailing_address"
+    assert result.success is True

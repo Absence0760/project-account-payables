@@ -57,6 +57,7 @@ runs on **every** path that can set an invoice's vendor — not just extraction:
 | `services/extraction` | After an AI/OCR extraction resolves a vendor name |
 | `POST /api/invoices` (manual, no-OCR entry) | On create, so a hand-keyed invoice is linked too |
 | `PATCH /api/invoices/{id}` | When the vendor name is (re)saved **and** the link is stale (name changed) or missing. Clearing the name to blank clears `vendor_id` instead — the matcher no-ops on an empty name, and a nameless invoice must not keep an uncorroborated link |
+| `services/review.approve_invoice(corrections=...)` | Same rule as the PATCH path, applied at approval time: when `corrections` includes a vendor-name change (`corrections["vendor"]`) and the resulting link is stale or missing, `vendor_id` is re-resolved before the invoice is finalized. Without this, an approver correcting a misread vendor NAME left `Invoice.vendor_id` pointing at the pre-correction vendor even though the displayed name changed — the payment run reads the payee's bank details off `vendor_id`, not `vendor_name`, so the money could still route to the wrong supplier despite a visibly correct approval |
 
 That matters beyond tidy data: `Invoice.vendor_id` — not the free-text
 `vendor_name` — is what the credit-memo vendor guard compares, and that guard is

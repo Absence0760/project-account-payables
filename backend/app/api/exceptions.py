@@ -9,7 +9,13 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import ROLE_ADMIN, ROLE_AP_MANAGER, require_roles
-from app.api.pagination import PaginationParams, paginated, pagination_params
+from app.api.pagination import (
+    MAX_SELECT_ALL_IDS,
+    MatchingIdsResponse,
+    PaginationParams,
+    paginated,
+    pagination_params,
+)
 from app.database import get_control_db
 from app.models.exception import Exception as APException
 from app.models.invoice import Invoice
@@ -83,6 +89,35 @@ def _exception_dict(exc: APException, inv: Invoice | None) -> dict:
     }
 
 
+def _exception_list_filters(
+    query,
+    *,
+    status_filter: str | None,
+    exception_type: str | None,
+    severity: str | None,
+    assigned_to_user_id: str | None,
+):
+    """Apply the exception-queue filters to ``query``.
+
+    Shared by ``GET /api/exceptions`` and ``GET /api/exceptions/ids`` so
+    "select all N matching" resolves EXACTLY the set the queue is showing.
+    """
+    if status_filter:
+        statuses = [s.strip() for s in status_filter.split(",")]
+        query = query.where(APException.status.in_(statuses))
+    if exception_type:
+        query = query.where(APException.exception_type == exception_type)
+    if severity:
+        query = query.where(APException.severity == severity)
+    if assigned_to_user_id:
+        try:
+            uid = uuid.UUID(assigned_to_user_id)
+        except ValueError as exc_:
+            raise HTTPException(status_code=400, detail="Invalid assigned_to_user_id") from exc_
+        query = query.where(APException.assigned_to_user_id == uid)
+    return query
+
+
 @router.get("")
 async def list_exceptions(
     status_filter: str | None = Query(None, alias="status"),
@@ -99,20 +134,13 @@ async def list_exceptions(
         APException,
         entity_id,
     )
-
-    if status_filter:
-        statuses = [s.strip() for s in status_filter.split(",")]
-        query = query.where(APException.status.in_(statuses))
-    if exception_type:
-        query = query.where(APException.exception_type == exception_type)
-    if severity:
-        query = query.where(APException.severity == severity)
-    if assigned_to_user_id:
-        try:
-            uid = uuid.UUID(assigned_to_user_id)
-        except ValueError as exc_:
-            raise HTTPException(status_code=400, detail="Invalid assigned_to_user_id") from exc_
-        query = query.where(APException.assigned_to_user_id == uid)
+    query = _exception_list_filters(
+        query,
+        status_filter=status_filter,
+        exception_type=exception_type,
+        severity=severity,
+        assigned_to_user_id=assigned_to_user_id,
+    )
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
 
@@ -125,6 +153,39 @@ async def list_exceptions(
     rows = result.all()
 
     return paginated([_exception_dict(exc, inv) for exc, inv in rows], int(total), pagination)
+
+
+# Registered BEFORE the parametric `/{exception_id}` route — same reason
+# `/summary` sits above it.
+@router.get("/ids", response_model=MatchingIdsResponse)
+async def list_exception_ids(
+    status_filter: str | None = Query(None, alias="status"),
+    exception_type: str | None = Query(None, alias="type"),
+    severity: str | None = None,
+    assigned_to_user_id: str | None = None,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Every exception id matching the caller's queue filters — the resolver
+    behind "select all N matching" on the exceptions queue. See
+    `invoices.list_invoice_ids` for why this exists; same filters as
+    `GET /exceptions` so the two describe the same set."""
+    query = apply_entity_scope(select(APException.id), APException, entity_id)
+    query = _exception_list_filters(
+        query,
+        status_filter=status_filter,
+        exception_type=exception_type,
+        severity=severity,
+        assigned_to_user_id=assigned_to_user_id,
+    )
+
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
+    query = query.order_by(APException.created_at.desc(), APException.id.desc()).limit(
+        MAX_SELECT_ALL_IDS
+    )
+    ids = [str(row) for row in (await db.execute(query)).scalars().all()]
+    return MatchingIdsResponse(ids=ids, total=int(total), truncated=int(total) > len(ids))
 
 
 @router.get("/summary")

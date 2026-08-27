@@ -77,14 +77,16 @@ def _mk_db(*results):
 #   2.  reporting rollup rows (per currency)       → .all() → (ccy, sum_amt, sum_rep, count, unconv)
 #   3.  pipeline status rows                       → .all()
 #   4.  vendor spend rows                          → .all()
-#   5.  aging rows (bucket, sum) — SQL-bucketed    → .all()
-#   6.  trend rows (month, count, sum) — SQL group → .all()
-#   7.  upcoming payment rows                      → .all()
+#   5.  aging rows (bucket, sum, sum_rep) — SQL-bucketed → .all()
+#   6.  trend rows (month, count, sum, sum_rep) — SQL group → .all()
+#   7.  upcoming payment rows (+ currency/reporting cols)  → .all()
 #   8.  total paid                        → .scalar()
 #   9.  total pending                     → .scalar()
-#  10.  total rebates                     → .scalar()
-#  11.  stale approvals                   → .scalar()
-#  12.  open exceptions                   → .scalar()
+#  10.  reporting total paid              → .one() → (amount, unconverted_count)
+#  11.  reporting total pending           → .one() → (amount, unconverted_count)
+#  12.  total rebates                     → .scalar()
+#  13.  stale approvals                   → .scalar()
+#  14.  open exceptions                   → .scalar()
 
 
 def _full_results(
@@ -98,6 +100,8 @@ def _full_results(
     upcoming=(),
     paid=Decimal("0"),
     pending=Decimal("0"),
+    reporting_paid=(Decimal("0"), 0),
+    reporting_pending=(Decimal("0"), 0),
     rebates=Decimal("0"),
     stale=0,
     open_exc=0,
@@ -112,6 +116,8 @@ def _full_results(
         _r(all_=list(upcoming)),
         _r(scalar=paid),
         _r(scalar=pending),
+        _r(one=reporting_paid),
+        _r(one=reporting_pending),
         _r(scalar=rebates),
         _r(scalar=stale),
         _r(scalar=open_exc),
@@ -224,9 +230,27 @@ async def test_upcoming_payments_flag_overdue_only_when_due_date_before_today():
 
     today = date.today()
     upcoming_rows = [
-        (uuid.uuid4(), "INV-1", "Acme", Decimal("100"), today - timedelta(days=1)),  # overdue
-        (uuid.uuid4(), "INV-2", "Bravo", Decimal("100"), today),  # on time
-        (uuid.uuid4(), "INV-3", "Charlie", Decimal("100"), today + timedelta(days=3)),  # future
+        (
+            uuid.uuid4(),
+            "INV-1",
+            "Acme",
+            Decimal("100"),
+            today - timedelta(days=1),
+            "USD",
+            None,
+            None,
+        ),
+        (uuid.uuid4(), "INV-2", "Bravo", Decimal("100"), today, "USD", None, None),  # on time
+        (
+            uuid.uuid4(),
+            "INV-3",
+            "Charlie",
+            Decimal("100"),
+            today + timedelta(days=3),
+            "USD",
+            None,
+            None,
+        ),  # future
     ]
     db = _mk_db(*_full_results(upcoming=upcoming_rows))
     result = await get_dashboard(db=db, org=_org(), user=_user())
@@ -249,9 +273,9 @@ async def test_upcoming_total_amount_sums_in_decimal_not_accumulated_float():
 
     today = date.today()
     upcoming_rows = [
-        (uuid.uuid4(), "INV-1", "Acme", Decimal("10.10"), today),
-        (uuid.uuid4(), "INV-2", "Bravo", Decimal("20.20"), today),
-        (uuid.uuid4(), "INV-3", "Charlie", Decimal("30.30"), today),
+        (uuid.uuid4(), "INV-1", "Acme", Decimal("10.10"), today, "USD", None, None),
+        (uuid.uuid4(), "INV-2", "Bravo", Decimal("20.20"), today, "USD", None, None),
+        (uuid.uuid4(), "INV-3", "Charlie", Decimal("30.30"), today, "USD", None, None),
     ]
     db = _mk_db(*_full_results(upcoming=upcoming_rows))
     result = await get_dashboard(db=db, org=_org(), user=_user())
@@ -288,6 +312,8 @@ async def test_payment_totals_stay_decimal():
         *_full_results(
             paid=Decimal("12345.67"),
             pending=Decimal("8900.50"),
+            reporting_paid=(Decimal("12345.67"), 0),
+            reporting_pending=(Decimal("8900.50"), 0),
             rebates=Decimal("123.45"),
         )
     )
@@ -295,9 +321,13 @@ async def test_payment_totals_stay_decimal():
     assert isinstance(result["total_paid"], Decimal)
     assert isinstance(result["total_pending"], Decimal)
     assert isinstance(result["total_rebates"], Decimal)
+    assert isinstance(result["total_paid_reporting"], Decimal)
+    assert isinstance(result["total_pending_reporting"], Decimal)
     assert result["total_paid"] == Decimal("12345.67")
     assert result["total_pending"] == Decimal("8900.50")
     assert result["total_rebates"] == Decimal("123.45")
+    assert result["total_paid_reporting"] == Decimal("12345.67")
+    assert result["total_pending_reporting"] == Decimal("8900.50")
 
 
 @pytest.mark.asyncio

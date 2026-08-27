@@ -22,8 +22,11 @@ from app.utils.banking import (
     SEPA_COUNTRIES,
     country_from_iban,
     is_sepa_country,
+    validate_aba_routing,
     validate_iban,
     validate_swift_bic,
+    validate_uk_account_number,
+    validate_uk_sort_code,
 )
 
 # Known-good IBANs from the ISO test set + a few real-world examples
@@ -177,3 +180,123 @@ def test_sepa_country_set_is_a_frozenset():
     """SEPA_COUNTRIES must be a frozenset so a typo elsewhere
     can't mutate the membership list at runtime."""
     assert isinstance(SEPA_COUNTRIES, frozenset)
+
+
+# ---------------------------------------------------------------------------
+# ABA / routing-transit number
+# ---------------------------------------------------------------------------
+
+# Real-world routing numbers (all pass the standard checksum).
+_VALID_ABA_ROUTING = [
+    "021000021",  # JPMorgan Chase, NY
+    "011401533",
+    "111000025",
+    "091000019",
+    "026009593",
+    "122105155",
+    "121000248",
+]
+
+
+@pytest.mark.parametrize("routing", _VALID_ABA_ROUTING)
+def test_valid_aba_routing_passes_checksum(routing):
+    assert validate_aba_routing(routing) is True
+
+
+@pytest.mark.parametrize(
+    "routing",
+    [
+        None,
+        "",
+        "   ",
+        "12345678",  # 8 digits — too short
+        "1234567890",  # 10 digits — too long
+        "021000020",  # last digit off by one (breaks the checksum)
+        "02100002X",  # non-digit
+        "!!!!!!!!!",
+    ],
+)
+def test_invalid_aba_routing_rejected(routing):
+    assert validate_aba_routing(routing) is False
+
+
+def test_aba_routing_spaces_are_ignored():
+    """Some UIs group a routing number for readability."""
+    assert validate_aba_routing("021 000 021") == validate_aba_routing("021000021") is True
+
+
+# ---------------------------------------------------------------------------
+# UK sort code + account number
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "sort_code",
+    [
+        "200000",  # bare 6 digits
+        "20-00-00",  # grouped, the printed/UI form
+        "12-34-56",
+        "999999",
+    ],
+)
+def test_valid_uk_sort_code_accepted(sort_code):
+    assert validate_uk_sort_code(sort_code) is True
+
+
+@pytest.mark.parametrize(
+    "sort_code",
+    [
+        None,
+        "",
+        "   ",
+        "12345",  # 5 digits — too short
+        "1234567",  # 7 digits — too long
+        "20-00-0",  # grouped but a group is short
+        "2000-00",  # grouped in the wrong places
+        "20-0X-00",  # non-digit
+        "AB-CD-EF",
+        "!!!!!!",
+    ],
+)
+def test_invalid_uk_sort_code_rejected(sort_code):
+    assert validate_uk_sort_code(sort_code) is False
+
+
+def test_uk_sort_code_no_checksum_just_shape():
+    """Unlike ABA routing, a sort code has no public checksum — any
+    well-formed 6-digit value passes; the bank/processor is the arbiter of
+    whether it's a real branch."""
+    assert validate_uk_sort_code("000000") is True
+    assert validate_uk_sort_code("123456") is True
+
+
+@pytest.mark.parametrize(
+    "account_number",
+    [
+        "12345678",
+        "00000000",
+        "99999999",
+    ],
+)
+def test_valid_uk_account_number_accepted(account_number):
+    assert validate_uk_account_number(account_number) is True
+
+
+@pytest.mark.parametrize(
+    "account_number",
+    [
+        None,
+        "",
+        "   ",
+        "1234567",  # 7 digits — too short
+        "123456789",  # 9 digits — too long
+        "1234567X",  # non-digit
+        "!!!!!!!!",
+    ],
+)
+def test_invalid_uk_account_number_rejected(account_number):
+    assert validate_uk_account_number(account_number) is False
+
+
+def test_uk_account_number_spaces_are_ignored():
+    assert validate_uk_account_number("1234 5678") == validate_uk_account_number("12345678") is True

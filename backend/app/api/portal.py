@@ -75,6 +75,7 @@ from app.services.extraction_dispatch import dispatch_extraction
 from app.services.invoice_warnings import refresh_warnings
 from app.services.storage import (
     get_file,
+    tax_form_type_from_key,
     upload_chat_file,
     upload_invoice_file,
     upload_tax_form_file,
@@ -146,6 +147,21 @@ async def portal_branding(org: Organization = Depends(get_tenant)):
 # ---------- Invoices ----------
 
 
+def _portal_invoice_file_url(inv: Invoice) -> str | None:
+    """The URL the SUPPLIER should use to re-view their own submitted file.
+
+    `Invoice.file_url` (stored at upload time by `upload_invoice_file`) points
+    at the employee-only `GET /api/invoices/file/{file_key}` proxy, which
+    rejects `typ=vendor` tokens outright — so surfacing it verbatim to the
+    portal gives a vendor a link that always 404s for them. Repoint it at the
+    vendor-scoped `GET /api/portal/invoices/{id}/file` (see
+    `get_my_invoice_file`) whenever a file was actually attached.
+    """
+    if not inv.file_key:
+        return None
+    return f"/api/portal/invoices/{inv.id}/file"
+
+
 @router.get("/invoices", response_model=PortalInvoiceListResponse)
 async def list_my_invoices(
     pagination: PaginationParams = Depends(pagination_params),
@@ -171,7 +187,7 @@ async def list_my_invoices(
                 invoice_date=inv.invoice_date,
                 due_date=inv.due_date,
                 submitted_at=inv.created_at,
-                file_url=inv.file_url,
+                file_url=_portal_invoice_file_url(inv),
             )
             for inv in rows
         ],
@@ -205,7 +221,7 @@ async def get_my_invoice(
         invoice_date=inv.invoice_date,
         due_date=inv.due_date,
         submitted_at=inv.created_at,
-        file_url=inv.file_url,
+        file_url=_portal_invoice_file_url(inv),
     )
 
 
@@ -296,6 +312,44 @@ async def get_my_invoice_einvoice(
         media_type="application/xml",
         headers={"Content-Disposition": content_disposition_attachment(filename)},
     )
+
+
+@router.get("/invoices/{invoice_id}/file")
+async def get_my_invoice_file(
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    """Vendor-scoped download of the source file the supplier THEMSELVES
+    submitted through the portal for one of their own invoices.
+
+    Before this route existed, a submitted invoice's `Invoice.file_url` still
+    pointed at the employee-only `GET /api/invoices/file/{file_key}` proxy
+    (`app/api/workflow.py::get_invoice_file`), which is gated on
+    `get_current_user` and explicitly rejects `typ=vendor` tokens — so a
+    vendor who had just uploaded a document through the portal had no way to
+    ever look at it again. This mirrors the chat-attachment / W-9 file
+    proxies: ownership is the `Invoice.vendor_id == vu.vendor_id` clause via
+    `_portal_invoice_or_404`, and a missing file (never uploaded, or another
+    vendor's / another tenant's invoice) is the same opaque 404 the rest of
+    the portal returns — never a 403 that would confirm the invoice exists.
+    """
+    inv = await _portal_invoice_or_404(db, invoice_id, vu)
+    if not inv.file_key:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Defense in depth, mirroring the employee-side proxy's org-prefix check:
+    # `file_key` is stamped `<org_id>/<invoice_id>/<filename>` at upload time,
+    # so the leading segment must match this invoice's own org.
+    prefix = inv.file_key.split("/", 1)[0]
+    if prefix != str(inv.organization_id):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        content, content_type = await get_file(inv.file_key)
+    except Exception:
+        raise HTTPException(status_code=404, detail="File not found")
+    return Response(content=content, media_type=content_type)
 
 
 @router.post("/invoices", status_code=status.HTTP_202_ACCEPTED)
@@ -1084,23 +1138,9 @@ async def list_my_change_requests(
 # (w9 vs w8) is encoded in the S3 key path segment, so no vendor column / no
 # migration is needed to distinguish the two. The tax ID is never read, logged,
 # or echoed by any handler here — only an on-file boolean + form type + date.
-
-
-def _tax_form_type_from_key(file_key: str | None) -> str | None:
-    """Recover the coarse form type (w9 / w8) from a stored tax-form S3 key.
-
-    The key shape is ``<org>/tax-forms/<vendor>/<form_type>/<file>`` (see
-    ``storage.upload_tax_form_file``). A key written by the AP-side W-9 upload
-    uses a different prefix (``<org>/w9/<vendor>/<file>``) and has no form-type
-    segment — that path defaults to ``w9`` since the AP flow only handles W-9s.
-    """
-    if not file_key:
-        return None
-    parts = file_key.split("/")
-    if len(parts) >= 5 and parts[1] == "tax-forms" and parts[3] in TAX_FORM_TYPES:
-        return parts[3]
-    # A W-9 stored via the AP-side upload (or any legacy key) — it's a W-9.
-    return "w9"
+# The key-shape decoder itself lives in `services.storage.tax_form_type_from_key`
+# (next to the encoder, `upload_tax_form_file`, that defines the shape) — also
+# consumed by `services.tax_1099` so a W-8 vendor isn't reported 1099-ready.
 
 
 @router.get("/company/tax-form", response_model=PortalTaxFormResponse)
@@ -1122,7 +1162,7 @@ async def get_my_tax_form(
     on_file = bool(vendor.w9_file_key)
     return PortalTaxFormResponse(
         on_file=on_file,
-        form_type=_tax_form_type_from_key(vendor.w9_file_key) if on_file else None,
+        form_type=tax_form_type_from_key(vendor.w9_file_key) if on_file else None,
         received_date=vendor.w9_received_date if on_file else None,
         suggested_form_type="w9",
     )
@@ -1184,7 +1224,7 @@ async def upload_my_tax_form(
 
     return PortalTaxFormResponse(
         on_file=True,
-        form_type=_tax_form_type_from_key(vendor.w9_file_key),
+        form_type=tax_form_type_from_key(vendor.w9_file_key),
         received_date=vendor.w9_received_date,
         suggested_form_type="w9",
     )

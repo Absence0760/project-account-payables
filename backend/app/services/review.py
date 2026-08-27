@@ -258,7 +258,33 @@ async def approve_invoice(
                 before[attr] = getattr(invoice, attr, None)
                 setattr(invoice, attr, value)
                 after[attr] = getattr(invoice, attr, None)
-        field_diff = build_field_diff(before, after, list(after.keys()))
+        diff_fields = list(after.keys())
+
+        # Re-resolve the vendor LINK whenever the correction (re)saved the
+        # vendor name and the link is stale or absent — the same rule
+        # `PATCH /api/invoices/{id}` applies (`api/invoices.py`). `vendor_id`,
+        # not `vendor_name`, is what the payment run reads the payee's bank
+        # details from and what the credit-memo vendor guard compares against,
+        # so approving a corrected vendor NAME without re-linking left
+        # `Invoice.vendor_id` pointing at the PRE-correction vendor — a
+        # display/payee mismatch of the same shape the PATCH-path fix already
+        # closed, just missing on this one entry point into `approved`.
+        # Blank name → no provable vendor → NULL (un-creditable / unpayable
+        # until someone names the vendor again), mirroring the PATCH path.
+        if "vendor_name" in after and (
+            before.get("vendor_name") != invoice.vendor_name or invoice.vendor_id is None
+        ):
+            from app.services.vendor_matching import match_and_link_vendor
+
+            before["vendor_id"] = invoice.vendor_id
+            if (invoice.vendor_name or "").strip():
+                await match_and_link_vendor(db, invoice, invoice.organization_id, source="manual")
+            else:
+                invoice.vendor_id = None
+            after["vendor_id"] = invoice.vendor_id
+            diff_fields.append("vendor_id")
+
+        field_diff = build_field_diff(before, after, diff_fields)
 
         # Store vendor-consistent corrections in the correction cache so
         # future extractions from the same vendor pick up the right values.

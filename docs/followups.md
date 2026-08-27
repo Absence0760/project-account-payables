@@ -1038,6 +1038,46 @@ rather than patched. None is a diagnosed defect (those go to
   fix:** treat a non-dict `details` as "no changes". **Trigger:** the next change
   to the experiment results readout, or the first report of a 500 there.
 
+### Surfaced by the persona-panel round-2 parallel fix batch (issue #328)
+
+- **`pnpm i` silently drops the frontend's security-pin overrides on pnpm 11.**
+  `frontend/package.json`'s `"pnpm": { "overrides": {...} }` pins
+  `cookie@<0.7.0 → >=0.7.0 <0.8.0` and `undici@<7.28.0 → >=7.28.0` (both CVE
+  fixes). The installed toolchain is pnpm 11.9.0, which no longer reads
+  overrides from that legacy `package.json` location — pnpm 11 moved override
+  config to a `pnpm-workspace.yaml` `overrides:` block, and `frontend/` has no
+  such file. Running a plain `pnpm i` regenerates `pnpm-lock.yaml` with the pins
+  silently gone, downgrading `cookie` back to 0.6.0 — the exact CVE the override
+  exists to block. Caught incidentally by a parallel worker doing unrelated
+  frontend edits in this round (each `pnpm i` it ran reverted the lockfile via
+  `git checkout --` before committing, so no landed commit carries the
+  downgrade), not by any dependency-audit tooling — `frontend/CLAUDE.md` /
+  `docs/environment.md` don't currently call out pnpm-version pinning the way
+  `backend/CLAUDE.md`'s dependency-lock section does for Python.
+  **Durable fix:** add `frontend/pnpm-workspace.yaml` with the two overrides
+  moved into its `overrides:` block (pnpm 11's documented location), confirm a
+  clean `pnpm i` keeps `cookie` at `>=0.7.0 <0.8.0` and `undici` at `>=7.28.0` in
+  the regenerated lockfile, and consider pinning `packageManager` in
+  `frontend/package.json` (or root `package.json`) so a contributor on an older
+  pnpm doesn't hit the inverse problem. **Trigger:** the next time
+  `frontend/pnpm-lock.yaml` is regenerated for any reason (a dependency bump, a
+  Dependabot PR) — verify the overrides survived before committing the lock.
+
+- **The "Require MFA for all users" toggle doesn't show the frontend when it's
+  inert.** `PATCH`/`GET /api/organization` now return
+  `settings.mfa.enforcement_active` (decisions.md §58) — `true` only when both
+  `settings.mfa.required` and the platform switch `FEOH_MFA_ENABLED` are on — so
+  an admin saving the toggle while the switch is off gets a real signal in the
+  API response and a loud backend log line. `frontend/src/routes/organization/
+  +page.svelte`'s Security card does not read that field yet, so the toggle
+  still looks unconditionally "on" in the UI after saving. **Durable fix:** wire
+  a `mfaEnforcementActive` derived value off the PATCH/GET response and render an
+  inline warning under the checkbox when `mfaRequired && !mfaEnforcementActive`
+  (needs a new i18n key across all six locale files + `messages_parity.test.ts`
+  coverage, which is why this round scoped the fix to the API contract).
+  **Trigger:** the next change touching the Security card, or the first
+  admin-reported "I turned MFA on and nobody got prompted" ticket.
+
 ## (a) Blocked on external credentials, accounts, or hardware
 
 None of these are startable from the editor. They are listed so they don't read
