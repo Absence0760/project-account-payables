@@ -19,7 +19,7 @@ test.describe('/vendors column sort (acme admin)', () => {
 				r.url().includes('sort=name') &&
 				r.url().includes('order=asc')
 		);
-		await page.getByRole('button', { name: 'Vendor' }).click();
+		await page.getByRole('button', { name: 'Vendor', exact: true }).click();
 		await ascRequest;
 		await expect(page).toHaveURL(/sort=name/);
 		await expect(page).toHaveURL(/order=asc/);
@@ -30,7 +30,7 @@ test.describe('/vendors column sort (acme admin)', () => {
 				r.url().includes('sort=name') &&
 				r.url().includes('order=desc')
 		);
-		await page.getByRole('button', { name: 'Vendor' }).click();
+		await page.getByRole('button', { name: 'Vendor', exact: true }).click();
 		await descRequest;
 		await expect(page).toHaveURL(/order=desc/);
 	});
@@ -39,7 +39,7 @@ test.describe('/vendors column sort (acme admin)', () => {
 		await page.goto('/vendors');
 		await expect(page.locator('table tbody tr').first()).toBeVisible();
 
-		await page.getByRole('button', { name: 'Vendor' }).click();
+		await page.getByRole('button', { name: 'Vendor', exact: true }).click();
 		await page.waitForResponse((r) => r.url().includes('sort=name'));
 
 		const statusAsc = page.waitForResponse(
