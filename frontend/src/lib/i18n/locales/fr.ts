@@ -105,6 +105,8 @@ export const messages = {
 	'dashboard.kpi.exceptions': 'Exceptions',
 	'dashboard.kpi.staleApprovals': 'Approbations en retard',
 	'dashboard.kpi.rebatesEarned': 'Remises obtenues',
+	'dashboard.reporting.unconverted':
+		'Certains totaux ci-dessus excluent les lignes sans taux de change verrouillé vers {currency} — à considérer comme un plancher, pas un montant exact.',
 	'dashboard.chart.pipeline': 'Pipeline des factures',
 	'dashboard.chart.topVendors': 'Principaux fournisseurs par dépense',
 	'dashboard.chart.aging': 'Ancienneté des factures',
@@ -913,6 +915,8 @@ export const messages = {
 	'org.section.securitySaved': 'Sécurité',
 	'org.security.hint': 'Exigez que tous les utilisateurs de cet espace de travail activent l\'authentification à deux facteurs. Les utilisateurs existants sans MFA seront invités à s\'inscrire lors de leur prochaine connexion.',
 	'org.security.requireMfa': 'Exiger l\'authentification à deux facteurs pour tous les utilisateurs',
+	'org.security.mfaEnforcementInactive':
+		'Ce paramètre est enregistré, mais pas encore appliqué — l’authentification à deux facteurs est désactivée pour l’ensemble de la plateforme sur ce déploiement. Les utilisateurs n’y seront invités qu’une fois celle-ci activée.',
 	'org.security.save': 'Enregistrer',
 	'org.section.fraud': 'Détection de fraude',
 	'org.section.fraudSaved': 'Détection de fraude',
@@ -1113,6 +1117,8 @@ export const messages = {
 	'cfoMetrics.kpi.ccc': 'Cycle de conversion de trésorerie',
 	'cfoMetrics.kpi.cccUnavailable': 'nécessite des données de créances',
 	'cfoMetrics.kpi.apBalance': 'Solde des comptes fournisseurs',
+	'cfoMetrics.apBalance.unconverted':
+		'Exclues : {n, plural, one {# facture ouverte} other {# factures ouvertes}} sans taux de change vers {currency}, le solde ci-dessus est donc un plancher, pas le total exact. Enregistrez le taux manquant pour les inclure.',
 	'cfoMetrics.kpi.rebateYield': 'Rendement des remises carte',
 	'cfoMetrics.dpoTrend.title': 'Tendance du DPO (6 mois)',
 	'cfoMetrics.dpoTrend.hint':
@@ -1822,6 +1828,8 @@ export const messages = {
 	'byEntity.consolidated': 'Consolidé',
 	'byEntity.loading': 'Chargement…',
 	'byEntity.loadFailed': 'Échec du chargement de la ventilation par entité',
+	'byEntity.unconverted':
+		'Exclues du total consolidé « En cours » : {n, plural, one {# facture ouverte} other {# factures ouvertes}} sans taux de change verrouillé vers {currency}.',
 
 	// Rapports planifiés (components/analytics/ScheduledReportsPanel.svelte)
 	'scheduledReports.heading': 'Rapports planifiés',

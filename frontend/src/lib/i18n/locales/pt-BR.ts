@@ -106,6 +106,8 @@ export const messages = {
 	'dashboard.kpi.exceptions': 'Exceções',
 	'dashboard.kpi.staleApprovals': 'Aprovações atrasadas',
 	'dashboard.kpi.rebatesEarned': 'Reembolsos obtidos',
+	'dashboard.reporting.unconverted':
+		'Alguns totais acima excluem linhas sem taxa de câmbio travada para {currency} — trate-os como um piso, não um valor exato.',
 	'dashboard.chart.pipeline': 'Pipeline de faturas',
 	'dashboard.chart.topVendors': 'Principais fornecedores por gasto',
 	'dashboard.chart.aging': 'Idade das faturas',
@@ -914,6 +916,8 @@ export const messages = {
 	'org.section.securitySaved': 'Segurança',
 	'org.security.hint': 'Exija que todos os usuários deste espaço de trabalho ativem a autenticação de dois fatores. Os usuários existentes sem MFA serão solicitados a se inscrever no próximo login.',
 	'org.security.requireMfa': 'Exigir autenticação de dois fatores para todos os usuários',
+	'org.security.mfaEnforcementInactive':
+		'Isso foi salvo, mas ainda não está em vigor — a autenticação de dois fatores está desativada em toda a plataforma nesta implantação. Os usuários não serão solicitados até que ela seja ativada.',
 	'org.security.save': 'Salvar',
 	'org.section.fraud': 'Detecção de fraude',
 	'org.section.fraudSaved': 'Detecção de fraude',
@@ -1114,6 +1118,8 @@ export const messages = {
 	'cfoMetrics.kpi.ccc': 'Ciclo de conversão de caixa',
 	'cfoMetrics.kpi.cccUnavailable': 'requer dados de contas a receber',
 	'cfoMetrics.kpi.apBalance': 'Saldo de contas a pagar',
+	'cfoMetrics.apBalance.unconverted':
+		'Excluídas: {n, plural, one {# fatura em aberto} other {# faturas em aberto}} sem taxa de câmbio para {currency}; o saldo acima é um piso, não o total exato. Registre a taxa ausente para incluí-las.',
 	'cfoMetrics.kpi.rebateYield': 'Rendimento de cashback do cartão',
 	'cfoMetrics.dpoTrend.title': 'Tendência de DPO (6 meses)',
 	'cfoMetrics.dpoTrend.hint':
@@ -1823,6 +1829,8 @@ export const messages = {
 	'byEntity.consolidated': 'Consolidado',
 	'byEntity.loading': 'Carregando…',
 	'byEntity.loadFailed': 'Falha ao carregar o detalhamento por entidade',
+	'byEntity.unconverted':
+		'Excluídas do total consolidado de Pendente: {n, plural, one {# fatura em aberto} other {# faturas em aberto}} sem taxa de câmbio travada para {currency}.',
 
 	// Relatórios agendados (components/analytics/ScheduledReportsPanel.svelte)
 	'scheduledReports.heading': 'Relatórios agendados',

@@ -9,25 +9,49 @@
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 
+	interface AgingBuckets {
+		current: number;
+		days_30: number;
+		days_60: number;
+		days_90: number;
+		days_90_plus: number;
+	}
+
 	interface DashboardData {
 		total_invoices: number;
 		total_amount: number;
+		// Currency-aware rollup of the whole invoice book into ONE reporting
+		// currency — `total_amount` above sums raw `Invoice.amount` across
+		// currencies and is kept only for API back-compat; every KPI below
+		// renders from this instead.
+		reporting: {
+			reporting_currency: string;
+			total_amount: number;
+			total_count: number;
+			unconverted_count: number;
+		};
 		total_paid: number;
 		total_pending: number;
+		// Reporting-currency counterparts of `total_paid` / `total_pending`.
+		total_paid_reporting: number;
+		total_pending_reporting: number;
+		total_paid_unconverted_count: number;
+		total_pending_unconverted_count: number;
 		total_rebates: number;
 		touchless_rate: number;
 		stale_approvals: number;
 		open_exceptions: number;
 		pipeline: Record<string, number>;
 		vendor_spend: Array<{ vendor: string; amount: number }>;
-		aging: {
-			current: number;
-			days_30: number;
-			days_60: number;
-			days_90: number;
-			days_90_plus: number;
-		};
-		monthly_trend: Array<{ month: string; count: number; amount: number }>;
+		aging: AgingBuckets;
+		// Reporting-currency counterpart of `aging`.
+		aging_reporting: AgingBuckets;
+		monthly_trend: Array<{
+			month: string;
+			count: number;
+			amount: number;
+			reporting_amount: number;
+		}>;
 		upcoming_payments: Array<{
 			id: string;
 			invoice_number: string;
@@ -104,11 +128,11 @@
 	const agingBuckets = $derived(
 		data
 			? [
-				{ label: m('dashboard.aging.current'), value: data.aging.current, color: AGING_COLORS[0] },
-				{ label: m('dashboard.aging.days30'), value: data.aging.days_30, color: AGING_COLORS[1] },
-				{ label: m('dashboard.aging.days60'), value: data.aging.days_60, color: AGING_COLORS[2] },
-				{ label: m('dashboard.aging.days90'), value: data.aging.days_90, color: AGING_COLORS[3] },
-				{ label: m('dashboard.aging.days90plus'), value: data.aging.days_90_plus, color: AGING_COLORS[4] },
+				{ label: m('dashboard.aging.current'), value: data.aging_reporting.current, color: AGING_COLORS[0] },
+				{ label: m('dashboard.aging.days30'), value: data.aging_reporting.days_30, color: AGING_COLORS[1] },
+				{ label: m('dashboard.aging.days60'), value: data.aging_reporting.days_60, color: AGING_COLORS[2] },
+				{ label: m('dashboard.aging.days90'), value: data.aging_reporting.days_90, color: AGING_COLORS[3] },
+				{ label: m('dashboard.aging.days90plus'), value: data.aging_reporting.days_90_plus, color: AGING_COLORS[4] },
 			]
 			: []
 	);
@@ -120,7 +144,20 @@
 	);
 
 	let maxTrendAmount = $derived(
-		data && data.monthly_trend.length > 0 ? Math.max(...data.monthly_trend.map(t => t.amount)) : 1
+		data && data.monthly_trend.length > 0
+			? Math.max(...data.monthly_trend.map((t) => t.reporting_amount))
+			: 1
+	);
+
+	// True whenever any reporting-currency rollup left rows out for lack of a
+	// locked exchange rate — the number above is then a floor, not the exact
+	// total, and that has to be visible right beside it (decisions §35).
+	let hasUnconvertedRows = $derived(
+		data
+			? data.reporting.unconverted_count > 0 ||
+				data.total_paid_unconverted_count > 0 ||
+				data.total_pending_unconverted_count > 0
+			: false
 	);
 </script>
 
@@ -136,9 +173,9 @@
 		<!-- KPI Cards -->
 		<div class="kpi-row">
 			<KpiCard value={data.total_invoices} label={m('dashboard.kpi.invoices')} />
-			<KpiCard value={fmt(data.total_amount)} label={m('dashboard.kpi.totalAmount')} />
-			<KpiCard value={fmt(data.total_paid)} label={m('dashboard.kpi.paid')} />
-			<KpiCard value={fmt(data.total_pending)} label={m('dashboard.kpi.pending')} />
+			<KpiCard value={fmt(data.reporting.total_amount)} label={m('dashboard.kpi.totalAmount')} />
+			<KpiCard value={fmt(data.total_paid_reporting)} label={m('dashboard.kpi.paid')} />
+			<KpiCard value={fmt(data.total_pending_reporting)} label={m('dashboard.kpi.pending')} />
 			<KpiCard
 				value={`${data.touchless_rate}%`}
 				label={m('dashboard.kpi.touchlessRate')}
@@ -157,6 +194,12 @@
 				<KpiCard value={fmt(data.total_rebates)} label={m('dashboard.kpi.rebatesEarned')} highlight="green" />
 			{/if}
 		</div>
+
+		{#if hasUnconvertedRows}
+			<p class="dashboard-skipped" role="alert" data-testid="unconverted-rollup">
+				{m('dashboard.reporting.unconverted', { currency: data.reporting.reporting_currency })}
+			</p>
+		{/if}
 
 		<div class="charts-grid">
 			<!-- Invoice Pipeline -->
@@ -262,12 +305,12 @@
 								<div class="trend-bar-wrap">
 									<div
 										class="trend-bar"
-										style="height:{maxTrendAmount > 0 ? (month.amount / maxTrendAmount * 100) : 0}%"
-										title="{fmt(month.amount)} ({month.count} invoices)"
+										style="height:{maxTrendAmount > 0 ? (month.reporting_amount / maxTrendAmount * 100) : 0}%"
+										title="{fmt(month.reporting_amount)} ({month.count} invoices)"
 									></div>
 								</div>
 								<span class="trend-label">{month.month.slice(5)}</span>
-								<span class="trend-value">{fmt(month.amount)}</span>
+								<span class="trend-value">{fmt(month.reporting_amount)}</span>
 							</div>
 						{/each}
 					</div>
@@ -304,6 +347,13 @@
 		font-size: 0.85rem;
 		text-align: center;
 		padding: 20px;
+	}
+
+	.dashboard-skipped {
+		color: var(--warning-on-tint);
+		font-size: 0.85rem;
+		font-weight: 600;
+		margin: -8px 0 16px;
 	}
 
 	/* Exceptions KPI renders as a link, so it stays inline markup using the
