@@ -58,6 +58,11 @@ NO_AUTH_REQUIRED = {
     ("POST", "/auth/mfa/passkey/authenticate"),
     ("POST", "/auth/mfa/passkey/authenticate/verify"),
     ("POST", "/auth/logout"),  # uses Bearer header but not as a Depends
+    # auth.py — self-service password recovery. Must be reachable by a user
+    # who is, by definition, not signed in; the reset itself is gated by the
+    # single-use emailed token, not a JWT.
+    ("POST", "/auth/forgot-password"),
+    ("POST", "/auth/reset-password"),
     # cards.py — webhook authenticated by provider signature
     ("POST", "/cards/webhook/{provider}"),
     # payments.py — payment-processor webhook; HMAC-verified, tenant in URL path
