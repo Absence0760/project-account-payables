@@ -97,7 +97,13 @@
 						<tr class="be-total">
 							<td>{m('byEntity.consolidated')}</td>
 							<td class="num"><Money amount={c.total_spend} currency={orgCurrency.currency} mono /></td>
-							<td class="num"><Money amount={c.outstanding_amount} currency={orgCurrency.currency} mono /></td>
+							<td class="num">
+								<Money
+									amount={c.reporting_outstanding_amount}
+									currency={c.reporting_currency}
+									mono
+								/>
+							</td>
 							<td class="num">{c.invoice_count}</td>
 							<td class="num" class:be-alert={c.open_exceptions > 0}>{c.open_exceptions}</td>
 							<td class="num"><Money amount={c.open_po_amount} currency={orgCurrency.currency} mono /></td>
@@ -105,6 +111,14 @@
 					{/if}
 				{/snippet}
 			</DataTable>
+			{#if data.consolidated.reporting_outstanding_unconverted_count > 0}
+				<p class="be-skipped" role="alert" data-testid="unconverted-outstanding">
+					{m('byEntity.unconverted', {
+						n: data.consolidated.reporting_outstanding_unconverted_count,
+						currency: data.consolidated.reporting_currency
+					})}
+				</p>
+			{/if}
 		{/if}
 	</div>
 {/if}
@@ -112,6 +126,13 @@
 <style>
 	.be-error {
 		color: var(--danger);
+	}
+
+	.be-skipped {
+		color: var(--warning-on-tint);
+		font-size: 0.85rem;
+		font-weight: 600;
+		margin: 10px 0 0;
 	}
 
 	.be-tag {

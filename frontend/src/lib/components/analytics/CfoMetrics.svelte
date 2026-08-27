@@ -90,13 +90,28 @@
 				label={m('cfoMetrics.kpi.ccc')}
 				sub={data.cash_conversion_cycle === null ? m('cfoMetrics.kpi.cccUnavailable') : null}
 			/>
-			<KpiCard value={fmt(data.accounts_payable_balance)} label={m('cfoMetrics.kpi.apBalance')} />
+			<KpiCard
+				value={fmtIn(
+					data.reporting_accounts_payable_balance.total_amount,
+					data.reporting_accounts_payable_balance.reporting_currency
+				)}
+				label={m('cfoMetrics.kpi.apBalance')}
+			/>
 			<KpiCard
 				value={`${data.rebate_yield.yield_pct.toFixed(2)}%`}
 				label={m('cfoMetrics.kpi.rebateYield')}
 				highlight={data.rebate_yield.yield_pct > 0 ? 'green' : null}
 			/>
 		</div>
+
+		{#if data.reporting_accounts_payable_balance.unconverted_count > 0}
+			<p class="cfm-skipped" role="alert" data-testid="unconverted-ap-balance">
+				{m('cfoMetrics.apBalance.unconverted', {
+					n: data.reporting_accounts_payable_balance.unconverted_count,
+					currency: data.reporting_accounts_payable_balance.reporting_currency
+				})}
+			</p>
+		{/if}
 
 		{#if data.dpo_trend.length > 0}
 			<div class="cfm-subsection">
