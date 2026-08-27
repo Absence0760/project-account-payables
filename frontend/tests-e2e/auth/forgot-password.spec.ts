@@ -67,6 +67,11 @@ test.describe('/login/reset-password', () => {
 		await page.locator('input[type="password"]').nth(1).fill('BrandNewPassw0rd!42');
 		await page.getByRole('button', { name: /Reset password/i }).click();
 
-		await expect(page.getByText(/invalid or has expired/i)).toBeVisible();
+		// The backend's actual detail ("Invalid or expired reset link.",
+		// app/api/auth.py) is what renders here — the frontend's
+		// auth.resetPassword.invalidToken i18n string is only the fallback
+		// for a non-Error/network failure, a different path than this test
+		// exercises.
+		await expect(page.getByText(/invalid or expired/i)).toBeVisible();
 	});
 });
