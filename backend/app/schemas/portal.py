@@ -179,6 +179,11 @@ class PortalInvoiceListItem(BaseModel):
     due_date: date | None = None
     submitted_at: datetime
     file_url: str | None = None
+    # The AP-authored reason from the latest `review_rejected` exception, shown
+    # only when `status == "rejected"` so a supplier knows what to fix before
+    # resubmitting. Same text the rejection email already carries; never the
+    # rejecting employee's name.
+    rejection_reason: str | None = None
 
 
 class PortalInvoiceListResponse(PageMeta):

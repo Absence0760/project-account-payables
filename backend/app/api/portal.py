@@ -31,6 +31,7 @@ from app.api.pagination import PaginationParams, pagination_params
 from app.api.portal_deps import get_current_vendor_user
 from app.database import get_control_db
 from app.models.discount import OFFER_STATUS_OFFERED, DiscountOffer
+from app.models.exception import Exception as APException
 from app.models.invoice import Invoice, InvoiceLineItem, InvoiceStatus
 from app.models.organization import Organization
 from app.models.payment import Payment
@@ -178,6 +179,56 @@ _PORTAL_PAYMENT_STATUSES = (
 )
 
 
+def _portal_invoice_item(inv: Invoice, *, rejection_reason: str | None = None):
+    status = inv.status.value if hasattr(inv.status, "value") else str(inv.status)
+    return PortalInvoiceListItem(
+        id=str(inv.id),
+        invoice_number=inv.invoice_number or "",
+        amount=inv.amount,
+        currency=inv.currency,
+        status=status,
+        invoice_date=inv.invoice_date,
+        due_date=inv.due_date,
+        submitted_at=inv.created_at,
+        file_url=_portal_invoice_file_url(inv),
+        # Only meaningful while the invoice IS rejected — a reworked invoice that
+        # moved on keeps its old exception row, so gate on the live status.
+        rejection_reason=rejection_reason if status == InvoiceStatus.rejected.value else None,
+    )
+
+
+async def _latest_rejection_reasons(
+    db: AsyncSession, invoice_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, str]:
+    """The AP-authored reason from the most recent `review_rejected` exception
+    for each of `invoice_ids`. One batch query for the whole page — the portal
+    shows this so a supplier knows what to fix before resubmitting a rejected
+    invoice, which no portal surface exposed before (issue #328).
+
+    The rejecting employee's name (`Exception.resolved_by` / `Invoice.rejected_by`)
+    is deliberately NOT read here — the vendor sees the reason, never the actor.
+    """
+    if not invoice_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(APException.invoice_id, APException.description)
+            .where(
+                APException.invoice_id.in_(invoice_ids),
+                APException.exception_type == "review_rejected",
+                APException.description.isnot(None),
+            )
+            .order_by(APException.invoice_id, APException.created_at.desc())
+        )
+    ).all()
+    reasons: dict[uuid.UUID, str] = {}
+    for inv_id, desc in rows:
+        # rows are ordered newest-first per invoice; keep the first seen.
+        if inv_id not in reasons and desc:
+            reasons[inv_id] = desc
+    return reasons
+
+
 def _invoice_number_ilike(term: str):
     """A case-insensitive `Invoice.invoice_number` substring filter that treats
     the vendor's search term as a literal — LIKE metacharacters (`% _ \\`) are
@@ -229,21 +280,16 @@ async def list_my_invoices(
     )
     rows = (await db.execute(query)).scalars().all()
 
+    rejected_ids = [
+        inv.id
+        for inv in rows
+        if (inv.status.value if hasattr(inv.status, "value") else str(inv.status))
+        == InvoiceStatus.rejected.value
+    ]
+    reasons = await _latest_rejection_reasons(db, rejected_ids)
+
     return PortalInvoiceListResponse(
-        items=[
-            PortalInvoiceListItem(
-                id=str(inv.id),
-                invoice_number=inv.invoice_number or "",
-                amount=inv.amount,
-                currency=inv.currency,
-                status=inv.status.value if hasattr(inv.status, "value") else str(inv.status),
-                invoice_date=inv.invoice_date,
-                due_date=inv.due_date,
-                submitted_at=inv.created_at,
-                file_url=_portal_invoice_file_url(inv),
-            )
-            for inv in rows
-        ],
+        items=[_portal_invoice_item(inv, rejection_reason=reasons.get(inv.id)) for inv in rows],
         total=total,
         page=pagination.page,
         page_size=pagination.page_size,
@@ -265,17 +311,11 @@ async def get_my_invoice(
     inv = result.scalar_one_or_none()
     if not inv:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    return PortalInvoiceListItem(
-        id=str(inv.id),
-        invoice_number=inv.invoice_number or "",
-        amount=inv.amount,
-        currency=inv.currency,
-        status=inv.status.value if hasattr(inv.status, "value") else str(inv.status),
-        invoice_date=inv.invoice_date,
-        due_date=inv.due_date,
-        submitted_at=inv.created_at,
-        file_url=_portal_invoice_file_url(inv),
-    )
+    status = inv.status.value if hasattr(inv.status, "value") else str(inv.status)
+    reason = None
+    if status == InvoiceStatus.rejected.value:
+        reason = (await _latest_rejection_reasons(db, [inv.id])).get(inv.id)
+    return _portal_invoice_item(inv, rejection_reason=reason)
 
 
 @router.get("/invoices/{invoice_id}/einvoice")
