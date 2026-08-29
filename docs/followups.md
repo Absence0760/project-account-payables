@@ -1126,13 +1126,15 @@ deferred-with-reason finding awaiting a product/architecture call.
       against its own prior version.
       **Trigger:** paired with the why-rejected finding above.
 
-- [ ] **No search or filter on the vendor's own invoice / payment lists in the
-      portal.** `GET /api/portal/invoices` and `.../payments` are "Load more"
-      only — no status, invoice-number, or date-range filter.
-      **Durable fix:** add the same status/search/date params the internal list
-      endpoints take, vendor-scoped, and a `SearchBox` + status chips on the
-      portal pages.
-      **Trigger:** the next slice touching the supplier portal.
+- [ ] **The portal payment list still has no search or filter.**
+      `GET /api/portal/invoices` **now takes** repeatable `status=` + `search=`
+      (vendor-facing phase chips + invoice-number search — shipped), but
+      `.../payments` is still "Load more" only, and neither list has a
+      date-range filter.
+      **Durable fix:** mirror the invoice-list change onto `list_my_payments`
+      (a `PORTAL_PAYMENT_PHASES` map beside the invoice one, `status=` on the
+      joined query), and add an optional `date_from`/`date_to` to both.
+      **Trigger:** the next slice touching the portal payment list.
 
 **Volume surfaces:**
 

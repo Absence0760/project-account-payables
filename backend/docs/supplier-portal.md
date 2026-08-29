@@ -128,7 +128,7 @@ secret generation, provisioning URI, QR, and `verify_totp` (±1 step skew).
 
 | Method | Path                             | Notes                                                                         |
 |--------|----------------------------------|-------------------------------------------------------------------------------|
-| GET    | `/portal/invoices`               | Vendor-scoped list                                                            |
+| GET    | `/portal/invoices`               | Vendor-scoped list. Optional filters: repeatable `status=` (raw `InvoiceStatus` values — the frontend's vendor-facing phase chips, `PORTAL_INVOICE_PHASES`, expand to the set behind each phase; an unrecognised value is dropped, never 422'd, so a stale portal build can't break the list) and `search=` (case-insensitive substring on the invoice number, LIKE metacharacters escaped). Both compose ON TOP of the `vendor_id ==` scope — a filter can only narrow. |
 | GET    | `/portal/invoices/{id}`          | 404 for "doesn't exist" AND "belongs to another vendor" (no ID enumeration)   |
 | POST   | `/portal/invoices`               | Multipart PDF upload — routes into the same extraction pipeline as AP uploads |
 | GET    | `/portal/payments`               | Payments joined to Invoice to filter on `vendor_id`                           |
@@ -378,7 +378,7 @@ Routes:
 |-------------------------------|--------------------------------------------------------|
 | `/portal/login`               | Sign-in form + MFA second-factor step (TOTP, with a "use email code instead" backup) |
 | `/portal/change-password`     | Forced first-login rotation                            |
-| `/portal/invoices`            | List + upload                                          |
+| `/portal/invoices`            | List (invoice-number search + vendor-facing phase chips) + upload |
 | `/portal/purchase-orders`     | PO list + per-row "Create invoice" (flip)              |
 | `/portal/payments`            | Payment history + per-row "Download remittance"        |
 | `/portal/discount-offers`     | Early-payment discount offers — accept / decline       |
