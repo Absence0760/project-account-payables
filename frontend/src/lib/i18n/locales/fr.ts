@@ -1967,6 +1967,7 @@ export const messages = {
 	'portal.invoices.emptyHint': 'Téléversez un PDF ou une photo à l\'aide du bouton ci-dessus.',
 	'portal.invoices.emptyFiltered': 'Aucune facture ne correspond à vos filtres.',
 	'portal.invoices.clearFilters': 'Effacer les filtres',
+	'portal.invoices.rejectionReasonLabel': 'Motif du rejet',
 	'portal.invoices.filterAll': 'Toutes',
 	'portal.invoices.searchLabel': 'Rechercher des factures',
 	'portal.invoices.searchPlaceholder': 'Rechercher par numéro de facture',

@@ -1967,6 +1967,7 @@ export const messages = {
 	'portal.invoices.emptyHint': 'Laden Sie über die Schaltfläche oben ein PDF oder Foto hoch.',
 	'portal.invoices.emptyFiltered': 'Keine Rechnungen entsprechen Ihren Filtern.',
 	'portal.invoices.clearFilters': 'Filter zurücksetzen',
+	'portal.invoices.rejectionReasonLabel': 'Grund für die Ablehnung',
 	'portal.invoices.filterAll': 'Alle',
 	'portal.invoices.searchLabel': 'Rechnungen suchen',
 	'portal.invoices.searchPlaceholder': 'Nach Rechnungsnummer suchen',

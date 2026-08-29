@@ -1974,6 +1974,7 @@ export const messages = {
 	'portal.invoices.emptyHint': 'Sube un PDF o una foto con el botón de arriba.',
 	'portal.invoices.emptyFiltered': 'Ninguna factura coincide con tus filtros.',
 	'portal.invoices.clearFilters': 'Borrar filtros',
+	'portal.invoices.rejectionReasonLabel': 'Motivo del rechazo',
 	'portal.invoices.filterAll': 'Todas',
 	'portal.invoices.searchLabel': 'Buscar facturas',
 	'portal.invoices.searchPlaceholder': 'Buscar por número de factura',

@@ -1951,6 +1951,7 @@ export const messages = {
 	'portal.invoices.emptyHint': '上のボタンから PDF または写真をアップロードしてください。',
 	'portal.invoices.emptyFiltered': 'フィルターに一致する請求書はありません。',
 	'portal.invoices.clearFilters': 'フィルターをクリア',
+	'portal.invoices.rejectionReasonLabel': '却下された理由',
 	'portal.invoices.filterAll': 'すべて',
 	'portal.invoices.searchLabel': '請求書を検索',
 	'portal.invoices.searchPlaceholder': '請求書番号で検索',

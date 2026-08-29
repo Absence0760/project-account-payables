@@ -2021,6 +2021,7 @@ export const en = {
 	'portal.invoices.emptyHint': 'Upload a PDF or photo using the button above.',
 	'portal.invoices.emptyFiltered': 'No invoices match your filters.',
 	'portal.invoices.clearFilters': 'Clear filters',
+	'portal.invoices.rejectionReasonLabel': 'Why it was rejected',
 	'portal.invoices.filterAll': 'All',
 	'portal.invoices.searchLabel': 'Search invoices',
 	'portal.invoices.searchPlaceholder': 'Search by invoice number',

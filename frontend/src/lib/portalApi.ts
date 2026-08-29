@@ -173,6 +173,9 @@ export interface PortalInvoiceListItem {
 	due_date: string | null;
 	submitted_at: string;
 	file_url: string | null;
+	/** AP's reason, present only while `status === 'rejected'` — what to fix
+	 *  before resubmitting. Plain text; render escaped, never as HTML. */
+	rejection_reason: string | null;
 }
 
 export interface PortalPaymentListItem {

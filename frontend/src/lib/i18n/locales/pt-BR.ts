@@ -1976,6 +1976,7 @@ export const messages = {
 	'portal.invoices.emptyHint': 'Envie um PDF ou foto usando o botão acima.',
 	'portal.invoices.emptyFiltered': 'Nenhuma nota fiscal corresponde aos seus filtros.',
 	'portal.invoices.clearFilters': 'Limpar filtros',
+	'portal.invoices.rejectionReasonLabel': 'Motivo da rejeição',
 	'portal.invoices.filterAll': 'Todas',
 	'portal.invoices.searchLabel': 'Buscar notas fiscais',
 	'portal.invoices.searchPlaceholder': 'Buscar por número da nota fiscal',

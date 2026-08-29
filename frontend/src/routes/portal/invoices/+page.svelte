@@ -293,7 +293,15 @@
 						<td>{formatDate(inv.invoice_date, m('portal.common.dash'))}</td>
 						<td>{formatDate(inv.due_date, m('portal.common.dash'))}</td>
 						<td class="num">{fmtAmount(inv.amount, inv.currency)}</td>
-						<td><span class="status s-{inv.status}">{portalInvoiceStatusLabel(inv.status)}</span></td>
+						<td>
+							<span class="status s-{inv.status}">{portalInvoiceStatusLabel(inv.status)}</span>
+							{#if inv.rejection_reason}
+								<div class="reject-reason">
+									<span class="reject-label">{m('portal.invoices.rejectionReasonLabel')}</span>
+									{inv.rejection_reason}
+								</div>
+							{/if}
+						</td>
 						<td class="actions">
 							{#if inv.file_url}
 								<button
@@ -473,6 +481,21 @@
 	.s-rejected {
 		background: rgba(224, 64, 64, 0.12);
 		border-color: rgba(224, 64, 64, 0.35);
+	}
+	.reject-reason {
+		margin-top: 6px;
+		max-width: 22rem;
+		font-size: 0.78rem;
+		color: var(--text-muted);
+		line-height: 1.35;
+	}
+	.reject-label {
+		display: block;
+		font-weight: 600;
+		color: var(--danger);
+		text-transform: uppercase;
+		font-size: 0.68rem;
+		letter-spacing: 0.03em;
 	}
 	.actions-col {
 		width: 1%;

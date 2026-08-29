@@ -128,10 +128,12 @@ test.describe('/portal/payments — filters', () => {
 
 		try {
 			// Three paid invoices, each with one payment in a different state.
+			// Numbers carry PREFIX so the shared `cleanup()` (which deletes
+			// PREFIX invoices AND their payments) covers them.
 			for (const [num, payStatus] of [
-				['PF-DONE', 'completed'],
-				['PF-FAIL', 'failed'],
-				['PF-PEND', 'pending'],
+				[`${PREFIX}-PF-DONE`, 'completed'],
+				[`${PREFIX}-PF-FAIL`, 'failed'],
+				[`${PREFIX}-PF-PEND`, 'pending'],
 			] as const) {
 				tenantPsql(
 					`WITH inv AS (
@@ -150,9 +152,9 @@ test.describe('/portal/payments — filters', () => {
 			await page.getByRole('link', { name: 'Payments' }).click();
 			await expect(page).toHaveURL(/\/portal\/payments/, { timeout: 5_000 });
 
-			const doneRow = page.locator('table tbody tr', { hasText: 'PF-DONE' });
-			const failRow = page.locator('table tbody tr', { hasText: 'PF-FAIL' });
-			const pendRow = page.locator('table tbody tr', { hasText: 'PF-PEND' });
+			const doneRow = page.locator('table tbody tr', { hasText: `${PREFIX}-PF-DONE` });
+			const failRow = page.locator('table tbody tr', { hasText: `${PREFIX}-PF-FAIL` });
+			const pendRow = page.locator('table tbody tr', { hasText: `${PREFIX}-PF-PEND` });
 
 			await expect(doneRow).toHaveCount(1, { timeout: 10_000 });
 			await expect(failRow).toHaveCount(1);
@@ -166,12 +168,12 @@ test.describe('/portal/payments — filters', () => {
 
 			// Number search narrows within the current (unfiltered) set.
 			await page.getByRole('button', { name: 'All', exact: true }).click();
-			await page.getByLabel('Search payments').fill('PF-FAIL');
+			await page.getByLabel('Search payments').fill(`${PREFIX}-PF-FAIL`);
 			await expect(failRow).toHaveCount(1);
 			await expect(doneRow).toHaveCount(0);
 			await expect(pendRow).toHaveCount(0);
 
-			await page.getByLabel('Search payments').fill('PF-NOPE');
+			await page.getByLabel('Search payments').fill(`${PREFIX}-PF-NOPE`);
 			await expect(page.getByText('No payments match your filters.')).toBeVisible();
 			await page.getByRole('button', { name: 'Clear filters' }).click();
 			await expect(doneRow).toHaveCount(1);
