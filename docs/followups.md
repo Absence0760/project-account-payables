@@ -1126,15 +1126,16 @@ deferred-with-reason finding awaiting a product/architecture call.
       against its own prior version.
       **Trigger:** paired with the why-rejected finding above.
 
-- [ ] **The portal payment list still has no search or filter.**
-      `GET /api/portal/invoices` **now takes** repeatable `status=` + `search=`
-      (vendor-facing phase chips + invoice-number search — shipped), but
-      `.../payments` is still "Load more" only, and neither list has a
-      date-range filter.
-      **Durable fix:** mirror the invoice-list change onto `list_my_payments`
-      (a `PORTAL_PAYMENT_PHASES` map beside the invoice one, `status=` on the
-      joined query), and add an optional `date_from`/`date_to` to both.
-      **Trigger:** the next slice touching the portal payment list.
+- [ ] **The portal invoice + payment lists have no date-range filter.**
+      Both `GET /api/portal/invoices` and `.../payments` **now take** repeatable
+      `status=` (vendor-facing phase chips) + `search=` (invoice-number
+      substring) via the shared `PortalListFilters.svelte` — shipped. What's
+      left is an optional `date_from`/`date_to` on both (submitted / paid
+      date), which the chips + `PortalListFilters` have no slot for yet.
+      **Durable fix:** add the two date params to both endpoints and a date
+      pair to `PortalListFilters` (emitted alongside `{phase, search}`).
+      **Trigger:** the next slice touching either portal list, or the first
+      vendor asking to see "just last quarter".
 
 **Volume surfaces:**
 

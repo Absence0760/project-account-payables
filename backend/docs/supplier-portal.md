@@ -131,7 +131,7 @@ secret generation, provisioning URI, QR, and `verify_totp` (±1 step skew).
 | GET    | `/portal/invoices`               | Vendor-scoped list. Optional filters: repeatable `status=` (raw `InvoiceStatus` values — the frontend's vendor-facing phase chips, `PORTAL_INVOICE_PHASES`, expand to the set behind each phase; an unrecognised value is dropped, never 422'd, so a stale portal build can't break the list) and `search=` (case-insensitive substring on the invoice number, LIKE metacharacters escaped). Both compose ON TOP of the `vendor_id ==` scope — a filter can only narrow. |
 | GET    | `/portal/invoices/{id}`          | 404 for "doesn't exist" AND "belongs to another vendor" (no ID enumeration)   |
 | POST   | `/portal/invoices`               | Multipart PDF upload — routes into the same extraction pipeline as AP uploads |
-| GET    | `/portal/payments`               | Payments joined to Invoice to filter on `vendor_id`                           |
+| GET    | `/portal/payments`               | Payments joined to Invoice to filter on `vendor_id`. Same optional filters as the invoice list: repeatable `status=` (allow-listed against `_PORTAL_PAYMENT_STATUSES` — an unknown value is dropped, not 422'd) + `search=` on the paid invoice's number. Both compose on top of the `vendor_id ==` scope |
 | GET    | `/portal/payments/{id}/remittance` | Vendor-scoped remittance PDF; ownership via `Payment→Invoice.vendor_id`; 404 on a foreign payment |
 
 ### Purchase orders + PO flip (`portal.py`)

@@ -207,6 +207,19 @@ The visual styling for all of the above lives **globally in `src/app.css`** (cla
   `$lib/portalChat.ts` (over `portalApi`). Types in `$lib/types/supplierChat.ts`
   (full `Chat*` for AP, masked `PortalChat*` for the portal — no internal id).
 
+**`portal/` — supplier-portal-only components:**
+- `PortalListFilters.svelte` — the filter bar for the portal invoice + payment
+  lists: a debounced number `<input type="search">` + a single-select row of
+  vendor-facing "phase" chips. Owns the phase selection, the search text AND
+  the 300ms debounce, and hands the parent a resolved `{ phase, search }` via
+  `onchange` (phase clicks fire immediately, search after typing stops). Because
+  the debounce lives here, the parent's `load()` is never reached from a
+  reactive `$effect` and needs no `untrack` (issue #168). Strings are passed in
+  already-localized; `bind:this` exposes `reset()` for a "Clear filters" empty
+  state. The phase→raw-status maps are `PORTAL_INVOICE_PHASES` /
+  `PORTAL_PAYMENT_PHASES` in `$lib/types/portalStatus.ts`, both **derived from**
+  the existing label maps so they can't drift.
+
 **`assistant/` — Conversational AP Assistant (`/assistant`):**
 - `ChatMessage.svelte` — one chat bubble (own-role right-aligned). Renders the
   message's tool results (via `ToolResultView`) before the prose, the prose as
