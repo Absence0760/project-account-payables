@@ -1110,13 +1110,19 @@ deferred-with-reason finding awaiting a product/architecture call.
 
 **Supplier portal — the loop-closing steps are missing:**
 
-- [ ] **A vendor has no in-portal way to learn why an invoice is rejected or
-      stuck.** The reason exists (audit log, `review_rejected` exception,
-      rejection email) but never reaches the portal API or UI.
-      **Durable fix:** surface the latest rejection reason + a friendly current
-      status on `GET /portal/invoices/{id}` (PII-free, AP-author-masked like
-      supplier chat already is) and render it on the portal invoice detail.
-      **Trigger:** the next slice touching the supplier portal.
+- [ ] **A vendor still can't see why an invoice is *stuck* (only why it was
+      rejected).** The **rejected** half is done — `GET /portal/invoices[/{id}]`
+      now carries `rejection_reason` (latest `review_rejected` exception's
+      description, gated on the live status, PII-free — no rejecting-employee
+      name), rendered under the status pill on the list. What's left is the
+      "stuck" case: an invoice sitting in `ready_for_review` / `pending` /
+      `sending_to_erp` for a long time has no vendor-visible "waiting on the AP
+      team for X" signal beyond the phase label.
+      **Durable fix:** derive a friendly "what's it waiting on" line from the
+      workflow instance's current step + age, PII-free, and surface it beside
+      the phase label.
+      **Trigger:** the next slice touching the supplier portal, or the first
+      vendor asking "why has this been in review for two weeks".
 
 - [ ] **No resubmission path for a rejected portal invoice.** The only option is
       uploading a whole new file, which risks a false-positive duplicate flag
