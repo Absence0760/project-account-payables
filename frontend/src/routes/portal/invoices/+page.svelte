@@ -6,7 +6,7 @@
 		type PortalInvoiceListItem,
 	} from '$lib/portalApi';
 	import { portalAuth } from '$lib/stores/portalAuth.svelte';
-	import { onMount, untrack } from 'svelte';
+	import { onMount } from 'svelte';
 	import { formatMoney } from '$lib/utils/money';
 	import { formatDate } from '$lib/utils/time';
 	import { appendUnique } from '$lib/utils/pagination';
@@ -17,6 +17,7 @@
 		PORTAL_INVOICE_PHASES,
 		type PortalInvoicePhase,
 	} from '$lib/types/portalStatus';
+	import PortalListFilters from '$lib/components/portal/PortalListFilters.svelte';
 	import SupplierChatThread from '$lib/components/chat/SupplierChatThread.svelte';
 	import type { PortalChatThread } from '$lib/types/supplierChat';
 	import {
@@ -42,32 +43,24 @@
 
 	const hasMore = $derived(items.length < total);
 
-	// --- Filters. `phase` is a vendor-facing bucket (PORTAL_INVOICE_PHASES) that
-	// maps to a set of internal InvoiceStatus values sent as repeated `?status=`;
-	// `search` is a debounced substring match on the invoice number. `load()`
-	// reads both via `untrack` so the phase-click path and the debounced-search
-	// path stay independent (frontend/CLAUDE.md § Sequencing list fetches).
-	let phase = $state<PortalInvoicePhase | null>(null);
-	let search = $state('');
-	let appliedSearch = $state('');
-	const filtered = $derived(phase !== null || appliedSearch.trim() !== '');
+	// --- Filters (PortalListFilters owns the phase chips + debounced search and
+	// hands back a resolved {phase, search}; the child's debounce means load()
+	// is never reached from a reactive effect here). `phase` is a vendor-facing
+	// bucket that expands to the InvoiceStatus values behind it, sent as
+	// repeated `?status=`.
+	let activePhase = $state<PortalInvoicePhase | null>(null);
+	let activeSearch = $state('');
+	let filtersEl = $state<{ reset: () => void } | undefined>();
+	const filtered = $derived(activePhase !== null || activeSearch.trim() !== '');
 
 	function phaseStatuses(p: PortalInvoicePhase | null): string[] | undefined {
 		if (p === null) return undefined;
 		return PORTAL_INVOICE_PHASES.find((c) => c.phase === p)?.statuses;
 	}
 
-	function selectPhase(p: PortalInvoicePhase | null) {
-		if (phase === p) return;
-		phase = p;
-		load();
-	}
-
-	function clearFilters() {
-		if (!filtered && search === '') return;
-		phase = null;
-		search = '';
-		appliedSearch = '';
+	function applyFilters(f: { phase: string | null; search: string }) {
+		activePhase = f.phase as PortalInvoicePhase | null;
+		activeSearch = f.search;
 		load();
 	}
 
@@ -84,14 +77,12 @@
 		if (opts.append) loadingMore = true;
 		else loading = true;
 		error = '';
-		const term = untrack(() => search).trim();
-		appliedSearch = untrack(() => search);
 		try {
 			const res = await listPortalInvoices({
 				page: nextPage,
 				page_size: PORTAL_PAGE_SIZE,
-				status: phaseStatuses(untrack(() => phase)),
-				search: term || undefined,
+				status: phaseStatuses(activePhase),
+				search: activeSearch.trim() || undefined,
 			});
 			if (!fetchSequence.canCommit(token)) return;
 			items = opts.append ? appendUnique(items, res.items) : res.items;
@@ -220,24 +211,6 @@
 		}
 	}
 
-	// Debounced search. Mirrors the /contracts pattern: skip the mount-time run,
-	// skip when the term already matches what the newest request carried (a
-	// phase click may have just loaded with it), and always return the timer
-	// teardown so a pending debounce can't fire against a route the user left.
-	let searchTimer: ReturnType<typeof setTimeout>;
-	let searchEffectRan = false;
-	$effect(() => {
-		search;
-		if (!searchEffectRan) {
-			searchEffectRan = true;
-			return;
-		}
-		if (search === appliedSearch) return;
-		clearTimeout(searchTimer);
-		searchTimer = setTimeout(() => load(), 300);
-		return () => clearTimeout(searchTimer);
-	});
-
 	onMount(refresh);
 </script>
 
@@ -253,37 +226,15 @@
 	{#if error}<div class="error" role="alert">{error}</div>{/if}
 	{#if message}<div class="msg" role="status" aria-live="polite">{message}</div>{/if}
 
-	<div class="filter-bar">
-		<input
-			type="search"
-			class="search"
-			bind:value={search}
-			placeholder={m('portal.invoices.searchPlaceholder')}
-			aria-label={m('portal.invoices.searchLabel')}
-		/>
-		<div class="phases" role="group" aria-label={m('portal.invoices.col.status')}>
-			<button
-				type="button"
-				class="phase-chip"
-				class:active={phase === null}
-				aria-pressed={phase === null}
-				onclick={() => selectPhase(null)}
-			>
-				{m('portal.invoices.filterAll')}
-			</button>
-			{#each PORTAL_INVOICE_PHASES as chip (chip.phase)}
-				<button
-					type="button"
-					class="phase-chip"
-					class:active={phase === chip.phase}
-					aria-pressed={phase === chip.phase}
-					onclick={() => selectPhase(chip.phase)}
-				>
-					{chip.phase}
-				</button>
-			{/each}
-		</div>
-	</div>
+	<PortalListFilters
+		bind:this={filtersEl}
+		chips={PORTAL_INVOICE_PHASES.map((c) => ({ key: c.phase, label: c.phase }))}
+		allLabel={m('portal.invoices.filterAll')}
+		groupLabel={m('portal.invoices.col.status')}
+		searchLabel={m('portal.invoices.searchLabel')}
+		searchPlaceholder={m('portal.invoices.searchPlaceholder')}
+		onchange={applyFilters}
+	/>
 
 	{#if loading && !items.length}
 		<div class="loading">{m('portal.common.loading')}</div>
@@ -291,7 +242,7 @@
 		<div class="empty">
 			{#if filtered}
 				<p>{m('portal.invoices.emptyFiltered')}</p>
-				<button type="button" class="link-btn" onclick={clearFilters}
+				<button type="button" class="link-btn" onclick={() => filtersEl?.reset()}
 					>{m('portal.invoices.clearFilters')}</button
 				>
 			{:else}
@@ -433,44 +384,6 @@
 	}
 	.upload-btn input {
 		display: none;
-	}
-	.filter-bar {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 10px;
-		margin-bottom: 16px;
-	}
-	.search {
-		flex: 0 1 260px;
-		padding: 7px 10px;
-		font-size: 0.85rem;
-		border: 1px solid var(--border);
-		border-radius: 4px;
-		background: var(--surface);
-		color: var(--text);
-	}
-	.phases {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 6px;
-	}
-	.phase-chip {
-		padding: 5px 10px;
-		font-size: 0.78rem;
-		border: 1px solid var(--border);
-		border-radius: 999px;
-		background: var(--surface);
-		color: var(--text-muted);
-		cursor: pointer;
-	}
-	.phase-chip:hover {
-		color: var(--text);
-	}
-	.phase-chip.active {
-		background: var(--accent-strong);
-		border-color: var(--accent-strong);
-		color: #fff;
 	}
 	.link-btn {
 		background: none;

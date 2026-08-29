@@ -216,9 +216,22 @@ export function listPortalInvoices(params: PortalInvoiceListParams = {}) {
 	});
 }
 
+/** Filter params for the signed-in vendor's payment history. `status` carries
+ *  the raw `payments.status` values behind a vendor-facing phase chip (see
+ *  `$lib/types/portalStatus.PORTAL_PAYMENT_PHASES`); `search` matches the paid
+ *  invoice's number. */
+export interface PortalPaymentListParams extends PortalListParams {
+	status?: string[];
+	search?: string;
+}
+
 /** Payments on the signed-in vendor's invoices (newest first). */
-export function listPortalPayments(params: PortalListParams = {}) {
-	return portalList<PortalPaymentListItem>('/api/portal/payments', pageParams(params));
+export function listPortalPayments(params: PortalPaymentListParams = {}) {
+	return portalList<PortalPaymentListItem>('/api/portal/payments', {
+		...pageParams(params),
+		status: params.status,
+		search: params.search,
+	});
 }
 
 /** Purchase orders owned by the signed-in vendor (newest first). */

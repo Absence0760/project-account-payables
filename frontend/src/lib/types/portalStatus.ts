@@ -112,3 +112,35 @@ export interface PortalInvoicePhaseChip {
 export const PORTAL_INVOICE_PHASES: PortalInvoicePhaseChip[] = PORTAL_INVOICE_PHASE_ORDER.map(
 	(phase) => ({ phase, statuses: derivePhaseStatuses(phase) })
 ).filter((chip) => chip.statuses.length > 0);
+
+/**
+ * The same idea for the portal payment-history list — a vendor filters by the
+ * collapsed phases they SEE (`PORTAL_PAYMENT_STATUS_LABELS`), and each chip
+ * carries the raw `payments.status` values behind that label.
+ * `portalStatus.test.ts` fails if a payment label is missing from the order.
+ */
+export const PORTAL_PAYMENT_PHASE_ORDER = [
+	'Scheduled',
+	'Processing',
+	'Completed',
+	'Failed',
+	'Cancelled',
+] as const;
+
+export type PortalPaymentPhase = (typeof PORTAL_PAYMENT_PHASE_ORDER)[number];
+
+export interface PortalPaymentPhaseChip {
+	phase: PortalPaymentPhase;
+	statuses: PaymentStatus[];
+}
+
+export const PORTAL_PAYMENT_PHASES: PortalPaymentPhaseChip[] = PORTAL_PAYMENT_PHASE_ORDER.map(
+	(phase) => ({
+		phase,
+		statuses: (
+			Object.entries(PORTAL_PAYMENT_STATUS_LABELS) as [PaymentStatus, string][]
+		)
+			.filter(([, label]) => label === phase)
+			.map(([status]) => status),
+	})
+).filter((chip) => chip.statuses.length > 0);

@@ -3,19 +3,19 @@ import type { Page } from '@playwright/test';
 import { currentTenantSlug, expect, test, tenantPsql } from '../fixtures/helpers';
 
 /**
- * Supplier-portal invoice list — status + invoice-number filters.
+ * Supplier-portal invoice + payment lists — status + invoice-number filters.
  *
- * persona-supplier finding (issue #328): the vendor's own invoice list was
- * "Load more" only — no way to jump to a rejected invoice or find one by
- * number in a long history. The fix adds a debounced number search and a row
- * of vendor-facing phase chips (`PORTAL_INVOICE_PHASES`, which collapse the 12
- * internal `InvoiceStatus` values into the handful a supplier sees) that send
- * `?status=` / `?search=` to `GET /api/portal/invoices`.
+ * persona-supplier finding (issue #328): the vendor's own lists were "Load
+ * more" only — no way to jump to a rejected invoice or find one by number in a
+ * long history. The fix (shared `PortalListFilters.svelte`) adds a debounced
+ * number search and a row of vendor-facing phase chips that collapse the raw
+ * internal statuses into the handful a supplier sees and send `?status=` /
+ * `?search=` to `GET /api/portal/{invoices,payments}`.
  *
- * This spec seeds three invoices for the seeded portal vendor with distinct,
- * test-owned numbers across three phases, then drives the real controls and
- * asserts on the PRESENCE / ABSENCE of those three rows — never on a total,
- * so it can't drift with whatever else the vendor already has.
+ * Each spec seeds a few rows for the seeded portal vendor with distinct,
+ * test-owned numbers across phases, drives the real controls, and asserts on
+ * the PRESENCE / ABSENCE of those rows — never on a total, so it can't drift
+ * with whatever else the vendor already has.
  *
  * Auth + seed shape mirror pagination.spec.ts.
  */
@@ -52,9 +52,14 @@ function portalVendor(): { vendorId: string; orgId: string } {
 	return { vendorId, orgId };
 }
 
-test.afterEach(() => {
+function cleanup() {
+	tenantPsql(
+		`DELETE FROM payments WHERE invoice_id IN (SELECT id FROM invoices WHERE invoice_number LIKE '${PREFIX}-%')`
+	);
 	tenantPsql(`DELETE FROM invoices WHERE invoice_number LIKE '${PREFIX}-%'`);
-});
+}
+
+test.afterEach(cleanup);
 
 test.describe('/portal/invoices — filters', () => {
 	test('phase chips and number search narrow the list without widening it', async ({ page }) => {
@@ -111,7 +116,67 @@ test.describe('/portal/invoices — filters', () => {
 			await expect(paidRow).toHaveCount(1);
 			await expect(rejRow).toHaveCount(1);
 		} finally {
-			tenantPsql(`DELETE FROM invoices WHERE invoice_number LIKE '${PREFIX}-%'`);
+			cleanup();
+		}
+	});
+});
+
+test.describe('/portal/payments — filters', () => {
+	test('phase chips and number search narrow the payment history', async ({ page }) => {
+		const { vendorId, orgId } = portalVendor();
+		cleanup();
+
+		try {
+			// Three paid invoices, each with one payment in a different state.
+			for (const [num, payStatus] of [
+				['PF-DONE', 'completed'],
+				['PF-FAIL', 'failed'],
+				['PF-PEND', 'pending'],
+			] as const) {
+				tenantPsql(
+					`WITH inv AS (
+					   INSERT INTO invoices
+					     (id, correlation_id, invoice_number, vendor_name, amount, currency, status,
+					      organization_id, vendor_id, created_at, updated_at)
+					   VALUES (gen_random_uuid(), gen_random_uuid(), '${num}', 'E2E Pay Filter Vendor',
+					           100, 'USD', 'paid', '${orgId}', '${vendorId}', now() + interval '1 hour', now())
+					   RETURNING id)
+					 INSERT INTO payments (id, invoice_id, amount, method, status, created_at, updated_at)
+					 SELECT gen_random_uuid(), inv.id, 100, 'ach', '${payStatus}', now(), now() FROM inv`
+				);
+			}
+
+			await portalSignIn(page);
+			await page.getByRole('link', { name: 'Payments' }).click();
+			await expect(page).toHaveURL(/\/portal\/payments/, { timeout: 5_000 });
+
+			const doneRow = page.locator('table tbody tr', { hasText: 'PF-DONE' });
+			const failRow = page.locator('table tbody tr', { hasText: 'PF-FAIL' });
+			const pendRow = page.locator('table tbody tr', { hasText: 'PF-PEND' });
+
+			await expect(doneRow).toHaveCount(1, { timeout: 10_000 });
+			await expect(failRow).toHaveCount(1);
+			await expect(pendRow).toHaveCount(1);
+
+			// "Completed" phase → only the completed payment.
+			await page.getByRole('button', { name: 'Completed', exact: true }).click();
+			await expect(doneRow).toHaveCount(1);
+			await expect(failRow).toHaveCount(0);
+			await expect(pendRow).toHaveCount(0);
+
+			// Number search narrows within the current (unfiltered) set.
+			await page.getByRole('button', { name: 'All', exact: true }).click();
+			await page.getByLabel('Search payments').fill('PF-FAIL');
+			await expect(failRow).toHaveCount(1);
+			await expect(doneRow).toHaveCount(0);
+			await expect(pendRow).toHaveCount(0);
+
+			await page.getByLabel('Search payments').fill('PF-NOPE');
+			await expect(page.getByText('No payments match your filters.')).toBeVisible();
+			await page.getByRole('button', { name: 'Clear filters' }).click();
+			await expect(doneRow).toHaveCount(1);
+		} finally {
+			cleanup();
 		}
 	});
 });
