@@ -165,10 +165,38 @@ def _portal_invoice_file_url(inv: Invoice) -> str | None:
 @router.get("/invoices", response_model=PortalInvoiceListResponse)
 async def list_my_invoices(
     pagination: PaginationParams = Depends(pagination_params),
+    status_filter: list[str] | None = Query(
+        default=None,
+        alias="status",
+        description=(
+            "Filter to these internal invoice statuses (repeatable). The portal "
+            "sends the raw InvoiceStatus values behind each vendor-facing phase "
+            "chip; an unknown value is ignored rather than 422'd so a stale "
+            "portal build can't break the list."
+        ),
+    ),
+    search: str | None = Query(
+        default=None,
+        max_length=100,
+        description="Case-insensitive substring match on the invoice number.",
+    ),
     db: AsyncSession = Depends(get_tenant_db),
     vu: VendorUser = Depends(get_current_vendor_user),
 ):
     query = select(Invoice).where(Invoice.vendor_id == vu.vendor_id)
+
+    valid_statuses = {s.value for s in InvoiceStatus}
+    wanted = [s for s in (status_filter or []) if s in valid_statuses]
+    if wanted:
+        query = query.where(Invoice.status.in_(wanted))
+
+    term = (search or "").strip()
+    if term:
+        # ESCAPE so a vendor searching for a literal % / _ in an invoice
+        # number matches it instead of it acting as a wildcard.
+        escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        query = query.where(Invoice.invoice_number.ilike(f"%{escaped}%", escape="\\"))
+
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
 
     query = (
