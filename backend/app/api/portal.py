@@ -162,6 +162,34 @@ def _portal_invoice_file_url(inv: Invoice) -> str | None:
     return f"/api/portal/invoices/{inv.id}/file"
 
 
+# The `payments.status` values a supplier may filter on. `payments.status` is a
+# free String column (no DB enum), so this local tuple is the allow-list — an
+# unrecognised value is dropped, mirroring the invoice endpoint, rather than
+# turning into `status IN ('bogus')` which would silently return nothing.
+_PORTAL_PAYMENT_STATUSES = (
+    "pending",
+    "pending_compliance",
+    "submitted",
+    "processing",
+    "completed",
+    "failed",
+    "cancelled",
+    "voided",
+)
+
+
+def _invoice_number_ilike(term: str):
+    """A case-insensitive `Invoice.invoice_number` substring filter that treats
+    the vendor's search term as a literal — LIKE metacharacters (`% _ \\`) are
+    escaped so a number that contains one still matches. Returns `None` for an
+    empty term so the caller can skip the clause."""
+    cleaned = (term or "").strip()
+    if not cleaned:
+        return None
+    escaped = cleaned.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return Invoice.invoice_number.ilike(f"%{escaped}%", escape="\\")
+
+
 @router.get("/invoices", response_model=PortalInvoiceListResponse)
 async def list_my_invoices(
     pagination: PaginationParams = Depends(pagination_params),
@@ -190,12 +218,9 @@ async def list_my_invoices(
     if wanted:
         query = query.where(Invoice.status.in_(wanted))
 
-    term = (search or "").strip()
-    if term:
-        # ESCAPE so a vendor searching for a literal % / _ in an invoice
-        # number matches it instead of it acting as a wildcard.
-        escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        query = query.where(Invoice.invoice_number.ilike(f"%{escaped}%", escape="\\"))
+    number_match = _invoice_number_ilike(search or "")
+    if number_match is not None:
+        query = query.where(number_match)
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
 
@@ -489,22 +514,47 @@ async def submit_invoice(
 @router.get("/payments", response_model=PortalPaymentListResponse)
 async def list_my_payments(
     pagination: PaginationParams = Depends(pagination_params),
+    status_filter: list[str] | None = Query(
+        default=None,
+        alias="status",
+        description=(
+            "Filter to these payment statuses (repeatable). The portal sends the "
+            "raw `payments.status` values behind each vendor-facing phase chip; "
+            "an unknown value is ignored rather than 422'd."
+        ),
+    ),
+    search: str | None = Query(
+        default=None,
+        max_length=100,
+        description="Case-insensitive substring match on the paid invoice's number.",
+    ),
     db: AsyncSession = Depends(get_tenant_db),
     vu: VendorUser = Depends(get_current_vendor_user),
 ):
     """Payments on invoices belonging to the caller's vendor. Joined to
     `invoices` to (a) filter on `vendor_id` and (b) surface the invoice number
     so the vendor can reconcile without an extra round trip."""
+    # `payments.status` is a free String column (no DB enum); the frontend's
+    # PORTAL_PAYMENT_PHASES is the source of truth for what a vendor may filter
+    # on, so an unrecognised value here is simply dropped — never 422.
+    filters = [Invoice.vendor_id == vu.vendor_id]
+    wanted = [s for s in (status_filter or []) if s in _PORTAL_PAYMENT_STATUSES]
+    if wanted:
+        filters.append(Payment.status.in_(wanted))
+    number_match = _invoice_number_ilike(search or "")
+    if number_match is not None:
+        filters.append(number_match)
+
     query = (
         select(Payment, Invoice.invoice_number, Invoice.currency)
         .join(Invoice, Payment.invoice_id == Invoice.id)
-        .where(Invoice.vendor_id == vu.vendor_id)
+        .where(*filters)
     )
     total_query = (
         select(func.count())
         .select_from(Payment)
         .join(Invoice, Payment.invoice_id == Invoice.id)
-        .where(Invoice.vendor_id == vu.vendor_id)
+        .where(*filters)
     )
     total = (await db.execute(total_query)).scalar() or 0
 
