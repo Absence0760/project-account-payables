@@ -70,3 +70,45 @@ export function portalPaymentStatusLabel(status: string): string {
 		(PORTAL_PAYMENT_STATUS_LABELS as Record<string, string>)[status] ?? 'Processing'
 	);
 }
+
+/**
+ * Vendor-facing phase filter for the portal invoice list.
+ *
+ * A supplier filters by the same collapsed phases they SEE
+ * (`PORTAL_INVOICE_STATUS_LABELS`), not by the 12 raw workflow-engine states.
+ * Each phase carries the set of internal `InvoiceStatus` values it covers —
+ * `derivePhaseStatuses` builds that set straight from the label map, so a new
+ * backend status is grouped under whichever phase its label already put it in
+ * and can never be silently un-filterable. `PORTAL_INVOICE_PHASE_ORDER` fixes
+ * the chip order (roughly lifecycle order); `portalStatus.test.ts` fails if a
+ * label is missing from it.
+ */
+export const PORTAL_INVOICE_PHASE_ORDER = [
+	'Submitted',
+	'Processing',
+	'Under Review',
+	'Approved',
+	'Payment Scheduled',
+	'Paid',
+	'Completed',
+	'Rejected',
+] as const;
+
+export type PortalInvoicePhase = (typeof PORTAL_INVOICE_PHASE_ORDER)[number];
+
+function derivePhaseStatuses(phase: PortalInvoicePhase): InvoiceStatus[] {
+	return (Object.entries(PORTAL_INVOICE_STATUS_LABELS) as [InvoiceStatus, string][])
+		.filter(([, label]) => label === phase)
+		.map(([status]) => status);
+}
+
+export interface PortalInvoicePhaseChip {
+	phase: PortalInvoicePhase;
+	statuses: InvoiceStatus[];
+}
+
+/** Ordered phase → internal-status mapping the portal invoice-filter chips
+ *  render from. Phases with no backing status are dropped. */
+export const PORTAL_INVOICE_PHASES: PortalInvoicePhaseChip[] = PORTAL_INVOICE_PHASE_ORDER.map(
+	(phase) => ({ phase, statuses: derivePhaseStatuses(phase) })
+).filter((chip) => chip.statuses.length > 0);

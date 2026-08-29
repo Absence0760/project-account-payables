@@ -137,15 +137,20 @@ export interface PortalListParams {
 }
 
 /** GET a paged portal list, threading `?page=&page_size=` (plus any extra
- *  per-list filter) onto the path. Empty / undefined params are dropped. */
+ *  per-list filter) onto the path. Empty / undefined params are dropped; an
+ *  array value is appended once per element (e.g. `?status=a&status=b`). */
 function portalList<T>(
 	path: string,
-	params: Record<string, string | number | undefined> = {},
+	params: Record<string, string | number | string[] | undefined> = {},
 ): Promise<PortalPage<T>> {
 	const qs = new URLSearchParams();
 	for (const [key, value] of Object.entries(params)) {
 		if (value === undefined || value === '') continue;
-		qs.set(key, String(value));
+		if (Array.isArray(value)) {
+			for (const v of value) if (v !== '') qs.append(key, String(v));
+		} else {
+			qs.set(key, String(value));
+		}
 	}
 	const query = qs.toString();
 	return portalApi.get<PortalPage<T>>(query ? `${path}?${query}` : path);
@@ -193,9 +198,22 @@ export interface PortalPOListItem {
 	created_at: string;
 }
 
+/** Filter params for the signed-in vendor's own invoice list. `status` carries
+ *  the raw internal `InvoiceStatus` values behind a vendor-facing phase chip
+ *  (see `$lib/types/portalStatus.PORTAL_INVOICE_PHASES`); `search` is a
+ *  substring match on the invoice number. */
+export interface PortalInvoiceListParams extends PortalListParams {
+	status?: string[];
+	search?: string;
+}
+
 /** The signed-in vendor's own invoices (newest first). */
-export function listPortalInvoices(params: PortalListParams = {}) {
-	return portalList<PortalInvoiceListItem>('/api/portal/invoices', pageParams(params));
+export function listPortalInvoices(params: PortalInvoiceListParams = {}) {
+	return portalList<PortalInvoiceListItem>('/api/portal/invoices', {
+		...pageParams(params),
+		status: params.status,
+		search: params.search,
+	});
 }
 
 /** Payments on the signed-in vendor's invoices (newest first). */
