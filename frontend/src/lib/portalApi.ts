@@ -210,6 +210,15 @@ export interface PortalInvoiceListParams extends PortalListParams {
 	search?: string;
 }
 
+/** Revise & resubmit a REJECTED invoice with a corrected file — reuses the
+ *  same invoice row (no duplicate flag) and sends it back to AP review. */
+export function resubmitPortalInvoice(invoiceId: string, file: File) {
+	return portalApi.upload<{ id: string; status: string; message: string }>(
+		`/api/portal/invoices/${invoiceId}/resubmit`,
+		file
+	);
+}
+
 /** The signed-in vendor's own invoices (newest first). */
 export function listPortalInvoices(params: PortalInvoiceListParams = {}) {
 	return portalList<PortalInvoiceListItem>('/api/portal/invoices', {

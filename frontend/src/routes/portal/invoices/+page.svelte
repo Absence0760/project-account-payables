@@ -2,6 +2,7 @@
 	import {
 		portalApi,
 		listPortalInvoices,
+		resubmitPortalInvoice,
 		PORTAL_PAGE_SIZE,
 		type PortalInvoiceListItem,
 	} from '$lib/portalApi';
@@ -40,6 +41,7 @@
 	let error = $state('');
 	let message = $state('');
 	let downloadingFileId = $state<string | null>(null);
+	let resubmittingId = $state<string | null>(null);
 
 	const hasMore = $derived(items.length < total);
 
@@ -122,6 +124,25 @@
 			error = err instanceof Error ? err.message : m('portal.invoices.uploadFailed');
 		} finally {
 			uploading = false;
+		}
+	}
+
+	async function handleResubmit(invoiceId: string, e: Event) {
+		const input = e.target as HTMLInputElement;
+		const file = input.files?.[0];
+		if (!file) return;
+		resubmittingId = invoiceId;
+		error = '';
+		message = '';
+		try {
+			await resubmitPortalInvoice(invoiceId, file);
+			message = m('portal.invoices.resubmitted');
+			input.value = '';
+			await refresh();
+		} catch (err) {
+			error = err instanceof Error ? err.message : m('portal.invoices.resubmitFailed');
+		} finally {
+			resubmittingId = null;
 		}
 	}
 
@@ -271,8 +292,12 @@
 						onclick={(e) => {
 							// Pointer enhancement: clicking anywhere on the row toggles the
 							// chat disclosure, except when the click lands on the in-cell
-							// toggle button (which handles it itself, incl. via keyboard).
-							if ((e.target as HTMLElement).closest('.row-toggle')) return;
+							// toggle button, or on one of the file / resubmit controls
+							// (each handles its own click).
+							if (
+								(e.target as HTMLElement).closest('.row-toggle, .resubmit-btn, .file-btn')
+							)
+								return;
 							toggleChat(inv.id);
 						}}
 					>
@@ -295,11 +320,24 @@
 						<td class="num">{fmtAmount(inv.amount, inv.currency)}</td>
 						<td>
 							<span class="status s-{inv.status}">{portalInvoiceStatusLabel(inv.status)}</span>
-							{#if inv.rejection_reason}
-								<div class="reject-reason">
-									<span class="reject-label">{m('portal.invoices.rejectionReasonLabel')}</span>
-									{inv.rejection_reason}
-								</div>
+							{#if inv.status === 'rejected'}
+								{#if inv.rejection_reason}
+									<div class="reject-reason">
+										<span class="reject-label">{m('portal.invoices.rejectionReasonLabel')}</span>
+										{inv.rejection_reason}
+									</div>
+								{/if}
+								<label class="resubmit-btn" class:busy={resubmittingId === inv.id}>
+									<input
+										type="file"
+										accept="application/pdf,image/*"
+										disabled={resubmittingId === inv.id}
+										onchange={(e) => handleResubmit(inv.id, e)}
+									/>
+									{resubmittingId === inv.id
+										? m('portal.invoices.resubmitting')
+										: m('portal.invoices.resubmit')}
+								</label>
 							{/if}
 						</td>
 						<td class="actions">
@@ -496,6 +534,29 @@
 		text-transform: uppercase;
 		font-size: 0.68rem;
 		letter-spacing: 0.03em;
+	}
+	.resubmit-btn {
+		display: inline-block;
+		margin-top: 8px;
+		padding: 4px 10px;
+		font-size: 0.78rem;
+		border: 1px solid var(--accent);
+		border-radius: 4px;
+		color: var(--accent);
+		background: transparent;
+		cursor: pointer;
+	}
+	.resubmit-btn:hover {
+		background: var(--accent-strong);
+		border-color: var(--accent-strong);
+		color: #fff;
+	}
+	.resubmit-btn.busy {
+		opacity: 0.6;
+		cursor: default;
+	}
+	.resubmit-btn input {
+		display: none;
 	}
 	.actions-col {
 		width: 1%;

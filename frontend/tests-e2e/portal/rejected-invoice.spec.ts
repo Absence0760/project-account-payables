@@ -1,0 +1,153 @@
+import type { Page } from '@playwright/test';
+
+import { currentTenantSlug, expect, test, tenantPsql } from '../fixtures/helpers';
+
+/**
+ * Supplier portal — a rejected invoice is no longer a dead end (issue #328).
+ *
+ * 1. `GET /portal/invoices` carries `rejection_reason` (the latest
+ *    `review_rejected` exception's description) for a `rejected` invoice; the
+ *    list renders it under the status pill, never the rejecting employee's name.
+ * 2. A "Revise & resubmit" file control on the rejected row swaps the document
+ *    on the SAME invoice (`POST /portal/invoices/{id}/resubmit`) and sends it
+ *    back into the pipeline.
+ *
+ * Auth + seed shape mirror pagination.spec.ts. Rows are seeded from SQL and
+ * removed in a `finally`.
+ */
+
+const PORTAL_EMAIL = 'supplier@portal.test';
+const PORTAL_PASSWORD = 'demo';
+const NUM = `E2E-REJ-${Date.now()}`;
+const REASON = 'PO number is missing from the invoice header';
+
+test.use({ storageState: { cookies: [], origins: [] } });
+
+async function portalSignIn(page: Page) {
+	await page.addInitScript(() => {
+		try {
+			localStorage.setItem('feoh_consent_choice', 'accepted');
+		} catch {
+			/* ignore */
+		}
+	});
+	await page.goto('/portal/login');
+	await page.waitForLoadState('networkidle');
+	await page.locator('input[type="email"]').fill(PORTAL_EMAIL);
+	await page.locator('input[type="password"]').fill(PORTAL_PASSWORD);
+	await page.locator('button[type="submit"]').click();
+	await expect(page).toHaveURL(/\/portal\/invoices/, { timeout: 15_000 });
+}
+
+function portalVendor(): { vendorId: string; orgId: string } {
+	const vendorId = tenantPsql(
+		`SELECT vendor_id FROM vendor_users WHERE email='${PORTAL_EMAIL}'`
+	).trim();
+	expect(vendorId, `no VendorUser seeded for ${currentTenantSlug()}`).not.toEqual('');
+	const orgId = tenantPsql(`SELECT organization_id FROM vendors WHERE id='${vendorId}'`).trim();
+	return { vendorId, orgId };
+}
+
+function cleanup() {
+	// Resubmit creates a workflow instance + review step FK-referencing the
+	// invoice, so clear those before the invoices. The invoice number is
+	// stable (resubmit does NOT re-extract), so the LIKE scope holds.
+	const scope = `SELECT id FROM invoices WHERE invoice_number LIKE 'E2E-REJ-%'`;
+	tenantPsql(
+		`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id IN (${scope}))`
+	);
+	tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id IN (${scope})`);
+	tenantPsql(`DELETE FROM exceptions WHERE invoice_id IN (${scope})`);
+	tenantPsql(`DELETE FROM invoices WHERE invoice_number LIKE 'E2E-REJ-%'`);
+}
+
+test.afterEach(cleanup);
+
+test('a rejected invoice tells the vendor why', async ({ page }) => {
+	const { vendorId, orgId } = portalVendor();
+	cleanup();
+
+	try {
+		tenantPsql(
+			`WITH inv AS (
+			   INSERT INTO invoices
+			     (id, correlation_id, invoice_number, vendor_name, amount, currency, status,
+			      rejected_by, organization_id, vendor_id, created_at, updated_at)
+			   VALUES (gen_random_uuid(), gen_random_uuid(), '${NUM}', 'E2E Rej Vendor',
+			           100, 'USD', 'rejected', 'Alice Approver', '${orgId}', '${vendorId}',
+			           now() + interval '1 hour', now())
+			   RETURNING id)
+			 INSERT INTO exceptions
+			   (id, invoice_id, exception_type, severity, description, status,
+			    organization_id, created_at, updated_at)
+			 SELECT gen_random_uuid(), inv.id, 'review_rejected', 'warning',
+			        '${REASON}', 'open', '${orgId}', now(), now() FROM inv`
+		);
+
+		await portalSignIn(page);
+
+		const row = page.locator('tr.clickable', { hasText: NUM });
+		await expect(row).toHaveCount(1, { timeout: 10_000 });
+		await expect(row.getByText('Why it was rejected')).toBeVisible();
+		await expect(row.getByText(REASON)).toBeVisible();
+		// The internal approver name is never surfaced to the vendor.
+		await expect(page.getByText('Alice Approver')).toHaveCount(0);
+	} finally {
+		cleanup();
+	}
+});
+
+test('the vendor can revise & resubmit a rejected invoice', async ({ page }) => {
+	const { vendorId, orgId } = portalVendor();
+	cleanup();
+
+	try {
+		const invId = crypto.randomUUID();
+		tenantPsql(
+			`INSERT INTO invoices
+			   (id, correlation_id, invoice_number, vendor_name, amount, currency, status,
+			    file_key, organization_id, vendor_id, created_at, updated_at)
+			 VALUES ('${invId}', gen_random_uuid(), '${NUM}', 'E2E Rej Vendor',
+			         100, 'USD', 'rejected', '${orgId}/x/original.pdf', '${orgId}', '${vendorId}',
+			         now() + interval '1 hour', now())`
+		);
+		tenantPsql(
+			`INSERT INTO exceptions
+			   (id, invoice_id, exception_type, severity, description, status,
+			    organization_id, created_at, updated_at)
+			 VALUES (gen_random_uuid(), '${invId}', 'review_rejected', 'warning',
+			         '${REASON}', 'open', '${orgId}', now(), now())`
+		);
+
+		await portalSignIn(page);
+
+		const row = page.locator('tr.clickable', { hasText: NUM });
+		await expect(row).toHaveCount(1, { timeout: 10_000 });
+
+		// The file input is hidden inside the "Revise & resubmit" label.
+		await row
+			.locator('.resubmit-btn input[type="file"]')
+			.setInputFiles({
+				name: 'corrected.pdf',
+				mimeType: 'application/pdf',
+				buffer: Buffer.from('%PDF-1.4\ncorrected\n%%EOF'),
+			});
+
+		await expect(page.locator('.msg')).toContainText('resubmitted', { timeout: 15_000 });
+
+		// Backend: the SAME invoice row moved off `rejected`, and its rejection
+		// exception is resolved.
+		await expect
+			.poll(() => tenantPsql(`SELECT status FROM invoices WHERE id='${invId}'`).trim(), {
+				timeout: 10_000,
+			})
+			.not.toEqual('rejected');
+		expect(
+			tenantPsql(
+				`SELECT status FROM exceptions WHERE invoice_id='${invId}' AND exception_type='review_rejected'`
+			).trim()
+		).toEqual('resolved');
+	} finally {
+		cleanup();
+	}
+});
