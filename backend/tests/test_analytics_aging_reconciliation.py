@@ -368,12 +368,19 @@ async def test_monthly_trend_buckets_by_month_realdb(realdb):
     mk = realdb.sessionmaker(TENANT)
     today = date.today()
 
-    # Three recent months, jumbled, two rows sharing a month. Anchor the dates
-    # ~30/60/90 days back so they stay inside the endpoint's 180-day filter
-    # regardless of what "today" is when the suite runs.
-    d_recent = today - timedelta(days=30)
-    d_mid = today - timedelta(days=60)
-    d_old = today - timedelta(days=90)
+    # Three recent months, jumbled, two rows sharing a month. Anchor to the
+    # 15th of the 1st/2nd/3rd prior CALENDAR month — day-offsets (`today - 30d`
+    # / `- 60d`) collapse two "months" into one whenever `today` is late in a
+    # 31-day month after another (Aug 30 → Jul 31 and Jul 1 are both July).
+    # Three calendar months back from mid-month is ~75-92 days: still well
+    # inside the endpoint's 180-day filter.
+    def _months_back(anchor: date, n: int) -> date:
+        month_index = anchor.year * 12 + (anchor.month - 1) - n
+        return date(month_index // 12, month_index % 12 + 1, 15)
+
+    d_recent = _months_back(today, 1)
+    d_mid = _months_back(today, 2)
+    d_old = _months_back(today, 3)
     rows = [
         (d_mid, "100.00"),
         (d_recent, "75.00"),
