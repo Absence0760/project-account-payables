@@ -1076,6 +1076,17 @@ issue #328 can close — the checklist itself is not a destination (guard rail 6
 Every one is category **(c)**: a sized-but-unstarted piece of work, or a
 deferred-with-reason finding awaiting a product/architecture call.
 
+**Progress — PR #343** (`feat/portal-invoice-search-filter`) addresses the
+supplier-portal cluster:
+
+| #328 finding | Status in #343 |
+|---|---|
+| Portal invoice list — no status/number filter | **done** — repeatable `status=` + `search=`, vendor-facing phase chips |
+| Portal payment list — no status/number filter | **done** — same, via shared `PortalListFilters.svelte` |
+| Vendor can't see why an invoice was rejected | **done** — `rejection_reason` on the portal API + rendered under the status pill |
+| No resubmit path for a rejected portal invoice | **done** — `POST /portal/invoices/{id}/resubmit` + "Revise & resubmit" row control |
+| _remainders_ | date-range filter, "why is it *stuck*" signal, constrained re-extract on resubmit — entries below |
+
 **Frontend gaps — built on the backend, unreachable in the product:**
 
 - [ ] **No UI to create a vendor or invite one to the supplier portal.**
@@ -1111,7 +1122,7 @@ deferred-with-reason finding awaiting a product/architecture call.
 **Supplier portal — the loop-closing steps are missing:**
 
 - [ ] **A vendor still can't see why an invoice is *stuck* (only why it was
-      rejected).** The **rejected** half is done — `GET /portal/invoices[/{id}]`
+      rejected).** The **rejected** half is done (**PR #343**) — `GET /portal/invoices[/{id}]`
       now carries `rejection_reason` (latest `review_rejected` exception's
       description, gated on the live status, PII-free — no rejecting-employee
       name), rendered under the status pill on the list. What's left is the
@@ -1125,7 +1136,7 @@ deferred-with-reason finding awaiting a product/architecture call.
       vendor asking "why has this been in review for two weeks".
 
 - [ ] **A resubmitted portal invoice isn't re-extracted from the corrected
-      document.** The resubmit path is **shipped** —
+      document.** The resubmit path is **shipped** (**PR #343**) —
       `POST /portal/invoices/{id}/resubmit` swaps the file on the same row (no
       duplicate flag), resolves the `review_rejected` exception, and sends it
       back to `ready_for_review`. It deliberately does **not** re-run
@@ -1143,7 +1154,7 @@ deferred-with-reason finding awaiting a product/architecture call.
 - [ ] **The portal invoice + payment lists have no date-range filter.**
       Both `GET /api/portal/invoices` and `.../payments` **now take** repeatable
       `status=` (vendor-facing phase chips) + `search=` (invoice-number
-      substring) via the shared `PortalListFilters.svelte` — shipped. What's
+      substring) via the shared `PortalListFilters.svelte` — shipped (**PR #343**). What's
       left is an optional `date_from`/`date_to` on both (submitted / paid
       date), which the chips + `PortalListFilters` have no slot for yet.
       **Durable fix:** add the two date params to both endpoints and a date
