@@ -1124,13 +1124,21 @@ deferred-with-reason finding awaiting a product/architecture call.
       **Trigger:** the next slice touching the supplier portal, or the first
       vendor asking "why has this been in review for two weeks".
 
-- [ ] **No resubmission path for a rejected portal invoice.** The only option is
-      uploading a whole new file, which risks a false-positive duplicate flag
-      with no link back to the original.
-      **Durable fix:** a "revise & resubmit" action on a `rejected` portal
-      invoice that reuses the invoice id and clears the duplicate suppression
-      against its own prior version.
-      **Trigger:** paired with the why-rejected finding above.
+- [ ] **A resubmitted portal invoice isn't re-extracted from the corrected
+      document.** The resubmit path is **shipped** —
+      `POST /portal/invoices/{id}/resubmit` swaps the file on the same row (no
+      duplicate flag), resolves the `review_rejected` exception, and sends it
+      back to `ready_for_review`. It deliberately does **not** re-run
+      extraction, because a fresh pass calls `match_and_link_vendor` and can
+      re-link `Invoice.vendor_id` to a different supplier — which would drop
+      the invoice out of the `vendor_id ==`-scoped portal list, i.e. the
+      vendor loses sight of their own resubmission. So the AP reviewer has to
+      manually reconcile the new PDF against the (stale) extracted fields.
+      **Durable fix:** an extraction mode that refreshes the money/number
+      fields from the new document but is **pinned** to the invoice's existing
+      vendor link (skip `match_and_link_vendor`, or constrain it to the known
+      `vu.vendor_id`).
+      **Trigger:** the next slice touching portal resubmit or `vendor_matching`.
 
 - [ ] **The portal invoice + payment lists have no date-range filter.**
       Both `GET /api/portal/invoices` and `.../payments` **now take** repeatable

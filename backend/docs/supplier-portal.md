@@ -131,6 +131,7 @@ secret generation, provisioning URI, QR, and `verify_totp` (±1 step skew).
 | GET    | `/portal/invoices`               | Vendor-scoped list. Optional filters: repeatable `status=` (raw `InvoiceStatus` values — the frontend's vendor-facing phase chips, `PORTAL_INVOICE_PHASES`, expand to the set behind each phase; an unrecognised value is dropped, never 422'd, so a stale portal build can't break the list) and `search=` (case-insensitive substring on the invoice number, LIKE metacharacters escaped). Both compose ON TOP of the `vendor_id ==` scope — a filter can only narrow. Each item carries `rejection_reason` (the latest `review_rejected` exception's description) **only while `status == "rejected"`** — so a supplier knows what to fix before resubmitting; never the rejecting employee's name. |
 | GET    | `/portal/invoices/{id}`          | 404 for "doesn't exist" AND "belongs to another vendor" (no ID enumeration). Same `rejection_reason` field as the list. |
 | POST   | `/portal/invoices`               | Multipart PDF upload — routes into the same extraction pipeline as AP uploads |
+| POST   | `/portal/invoices/{id}/resubmit` | **Revise & resubmit** a `rejected` invoice (multipart; 409 for any other status). Swaps the file on the SAME row — so it never trips the duplicate check against its own prior version and stays this vendor's — resolves the open `review_rejected` exception, and lands it back at `ready_for_review`. **Deliberately does NOT re-extract**: a fresh extraction pass runs `match_and_link_vendor` and could re-link `Invoice.vendor_id` to a different supplier, dropping the invoice out of `vendor_id ==`-scoped portal list. Auto re-extract (constrained not to move the link) is a followup. |
 | GET    | `/portal/payments`               | Payments joined to Invoice to filter on `vendor_id`. Same optional filters as the invoice list: repeatable `status=` (allow-listed against `_PORTAL_PAYMENT_STATUSES` — an unknown value is dropped, not 422'd) + `search=` on the paid invoice's number. Both compose on top of the `vendor_id ==` scope |
 | GET    | `/portal/payments/{id}/remittance` | Vendor-scoped remittance PDF; ownership via `Payment→Invoice.vendor_id`; 404 on a foreign payment |
 
@@ -378,7 +379,7 @@ Routes:
 |-------------------------------|--------------------------------------------------------|
 | `/portal/login`               | Sign-in form + MFA second-factor step (TOTP, with a "use email code instead" backup) |
 | `/portal/change-password`     | Forced first-login rotation                            |
-| `/portal/invoices`            | List (invoice-number search + vendor-facing phase chips) + upload |
+| `/portal/invoices`            | List (invoice-number search + vendor-facing phase chips) + upload + per-row "Revise & resubmit" on a rejected invoice |
 | `/portal/purchase-orders`     | PO list + per-row "Create invoice" (flip)              |
 | `/portal/payments`            | Payment history + per-row "Download remittance"        |
 | `/portal/discount-offers`     | Early-payment discount offers — accept / decline       |
