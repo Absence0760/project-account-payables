@@ -72,9 +72,11 @@ from app.schemas.portal import (
 )
 from app.services import discount_offers as offers_svc
 from app.services.audit_dispatch import dispatch_audit
+from app.services.exception_lifecycle import record_decision
 from app.services.extraction_dispatch import dispatch_extraction
 from app.services.invoice_warnings import refresh_warnings
 from app.services.storage import (
+    delete_file,
     get_file,
     tax_form_type_from_key,
     upload_chat_file,
@@ -91,6 +93,7 @@ from app.services.supplier_chat import (
 from app.services.workflow_engine import (
     create_workflow_instance,
     create_workflow_step,
+    get_workflow_instance,
     is_step_enabled,
     transition_invoice,
 )
@@ -545,6 +548,115 @@ async def submit_invoice(
         "correlation_id": str(invoice.correlation_id),
         "status": invoice.status.value,
         "message": message,
+    }
+
+
+@router.post("/invoices/{invoice_id}/resubmit", status_code=status.HTTP_202_ACCEPTED)
+async def resubmit_invoice(
+    invoice_id: uuid.UUID,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    """Revise & resubmit a REJECTED invoice with a corrected document.
+
+    Reuses the same invoice row — so it never trips the duplicate check against
+    its own prior version, the AP reviewer keeps the whole history, and the
+    invoice stays THIS vendor's (a fresh extraction pass could re-link
+    `vendor_id` to a different supplier and drop the invoice out of the portal
+    list). It swaps the source file, resolves the open `review_rejected`
+    exception, and puts the invoice straight back in front of a reviewer at
+    `ready_for_review` — the reviewer checks the new document and re-approves
+    or corrects. 409 for any status other than `rejected` (a vendor can't
+    recall an invoice AP is still working, or one already paid).
+
+    Auto re-extracting the corrected document is deferred (docs/followups.md) —
+    it needs to be constrained not to move the vendor link.
+    """
+    inv = await _portal_invoice_or_404(db, invoice_id, vu)
+    if inv.status != InvoiceStatus.rejected:
+        raise HTTPException(
+            status_code=409,
+            detail="Only a rejected invoice can be resubmitted.",
+        )
+
+    vendor = (
+        await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))
+    ).scalar_one_or_none()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    old_file_key = inv.file_key
+    try:
+        file_key, file_url = await upload_invoice_file(vendor.organization_id, inv.id, file)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    inv.file_key = file_key
+    inv.file_url = file_url
+
+    source_details = {
+        "actor_type": "vendor_user",
+        "vendor_user_id": str(vu.id),
+        "vendor_id": str(vendor.id),
+        "source": "supplier_portal",
+        "filename": file.filename,
+        "content_type": file.content_type,
+    }
+
+    # Resolve the open rejection exception(s) — the vendor has responded.
+    rejection_excs = (
+        (
+            await db.execute(
+                select(APException).where(
+                    APException.invoice_id == inv.id,
+                    APException.exception_type == "review_rejected",
+                    APException.status.in_(("open", "escalated")),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for exc in rejection_excs:
+        await record_decision(
+            db,
+            exception=exc,
+            action="resolve",
+            resolution="Superseded by supplier resubmission",
+            actor_id=None,
+            actor_name="Supplier portal",
+            invoice=inv,
+        )
+
+    await transition_invoice(
+        db,
+        inv,
+        InvoiceStatus.ready_for_review,
+        actor_id=None,
+        action_name="invoice.resubmitted_by_vendor",
+        details=source_details,
+    )
+
+    instance = await get_workflow_instance(db, inv.id)
+    if instance is None:
+        instance = await create_workflow_instance(db, inv)
+    await create_workflow_step(db, instance, "review")
+    await refresh_warnings(db, inv)
+    await db.commit()
+    await db.refresh(inv)
+
+    # Best-effort: drop the superseded file object if the new one has a
+    # different key (same filename overwrites in place).
+    if old_file_key and old_file_key != file_key:
+        try:
+            await delete_file(old_file_key)
+        except Exception:
+            logger.warning("could not delete superseded invoice file on resubmit")
+
+    return {
+        "id": str(inv.id),
+        "status": inv.status.value,
+        "message": "Invoice resubmitted. Awaiting AP review.",
     }
 
 
