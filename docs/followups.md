@@ -1076,8 +1076,7 @@ issue #328 can close — the checklist itself is not a destination (guard rail 6
 Every one is category **(c)**: a sized-but-unstarted piece of work, or a
 deferred-with-reason finding awaiting a product/architecture call.
 
-**Progress — PR #343** (`feat/portal-invoice-search-filter`) addresses the
-supplier-portal cluster:
+**Progress — PR #343** (`feat/portal-invoice-search-filter`):
 
 | #328 finding | Status in #343 |
 |---|---|
@@ -1085,7 +1084,8 @@ supplier-portal cluster:
 | Portal payment list — no status/number filter | **done** — same, via shared `PortalListFilters.svelte` |
 | Vendor can't see why an invoice was rejected | **done** — `rejection_reason` on the portal API + rendered under the status pill |
 | No resubmit path for a rejected portal invoice | **done** — `POST /portal/invoices/{id}/resubmit` + "Revise & resubmit" row control |
-| _remainders_ | date-range filter, "why is it *stuck*" signal, constrained re-extract on resubmit — entries below |
+| URL filter/search persistence partial on `/invoices` `/payments` `/vendors` | **done** — `search` + status chip + (payments) tab now in the query string |
+| _remainders_ | portal date-range filter, "why is it *stuck*" signal, constrained re-extract on resubmit — entries below |
 
 **Frontend gaps — built on the backend, unreachable in the product:**
 
@@ -1171,14 +1171,13 @@ supplier-portal cluster:
       **Trigger:** the next slice touching the payments queue, or the first
       tenant that reports the page hanging.
 
-- [ ] **URL filter/search persistence is partial on `/invoices`, `/payments`
-      and `/vendors`.** They now persist `sort`/`order` (and `/invoices` also
-      `assigned_to_id`), but the search term and status filter still never reach
-      the URL — refresh / back / share loses them, while `/contracts` and
-      `/expenses` do this correctly via `syncUrl()`.
-      **Durable fix:** extend `syncUrl()` on the three pages to cover `search`
-      and the status filter, untracked like the sibling routes.
-      **Trigger:** the next slice touching any of the three list pages.
+- [x] **URL filter/search persistence on `/invoices`, `/payments`, `/vendors`
+      — DONE (PR #343).** Each page now initialises `search` + the status chip
+      from the query string and folds them into its `syncUrl()` writer
+      (untracked, called from the filter effect + the debounce timer);
+      `/payments` also persists the active tab. Guard:
+      `tests-e2e/reactivity/filter-url-persistence.spec.ts`; the debounce it
+      sits next to stays covered by `search-debounce-race.spec.ts`.
 
 - [ ] **Budgets "Total Allocated" KPI** — already tracked in
       _§ Surfaced by the round-14 frontend hunt_ ("the same page-scoped-KPI bug …
