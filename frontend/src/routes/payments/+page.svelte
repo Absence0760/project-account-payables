@@ -57,20 +57,43 @@
 	]);
 
 	type Tab = 'queue' | 'history' | 'runs' | 'cards';
-	let activeTab = $state<Tab>('queue');
-	let search = $state('');
-	let activeStatus = $state<PaymentStatus | 'all'>('all');
+	const TABS: Tab[] = ['queue', 'history', 'runs', 'cards'];
 
-	// History-tab column sort — URL-backed (`?sort=&order=`), mirrors the
-	// /expenses `syncUrl()` pattern. `null` field = the backend's own default
-	// order (most-recent first).
+	// Tab + History-tab search / status filter / column sort are all URL-backed
+	// (`?tab=&search=&status=&sort=&order=`) so a reload / back / shared link
+	// reproduces the same view — mirrors `/contracts` + `/expenses`. `tab` is
+	// included because the History search/status controls are meaningless
+	// without knowing which tab is showing. See `syncUrl()`.
+	let activeTab = $state<Tab>(
+		TABS.includes($page.url.searchParams.get('tab') as Tab)
+			? ($page.url.searchParams.get('tab') as Tab)
+			: 'queue'
+	);
+	let search = $state($page.url.searchParams.get('search') ?? '');
+	let activeStatus = $state<PaymentStatus | 'all'>(
+		PAYMENT_STATUSES.includes($page.url.searchParams.get('status') as PaymentStatus)
+			? ($page.url.searchParams.get('status') as PaymentStatus)
+			: 'all'
+	);
+
 	let sortField = $state<string | null>($page.url.searchParams.get('sort'));
 	let sortOrder = $state<SortOrder>(($page.url.searchParams.get('order') as SortOrder) ?? 'desc');
 
-	function syncSortUrl() {
+	// WRITER — every read untracked, `$page.url` included (issue #168 / the
+	// self-trigger on replaceState). Called from the tab/status effect, the
+	// search debounce, the sort handler, and each tab button.
+	function syncUrl() {
 		untrack(() => {
 			const url = new URL($page.url);
-			if (sortField) {
+			if (activeTab !== 'queue') url.searchParams.set('tab', activeTab);
+			else url.searchParams.delete('tab');
+			const s = search.trim();
+			if (s && activeTab === 'history') url.searchParams.set('search', s);
+			else url.searchParams.delete('search');
+			if (activeStatus !== 'all' && activeTab === 'history')
+				url.searchParams.set('status', activeStatus);
+			else url.searchParams.delete('status');
+			if (sortField && activeTab === 'history') {
 				url.searchParams.set('sort', sortField);
 				url.searchParams.set('order', sortOrder);
 			} else {
@@ -81,11 +104,16 @@
 		});
 	}
 
+	function selectTab(tab: Tab) {
+		activeTab = tab;
+		syncUrl();
+	}
+
 	function handleHistorySort(field: string) {
 		const next = toggleSort({ field: sortField, order: sortOrder }, field);
 		sortField = next.field;
 		sortOrder = next.order;
-		syncSortUrl();
+		syncUrl();
 		paymentStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method; routes through api.get
 	}
 
@@ -636,7 +664,10 @@
 			// handling, but this call is fire-and-forget — `paymentStore.errored`
 			// is what renders the failure state, so swallow the rejection rather
 			// than log an unhandled one.
-			if (activeTab === 'history') paymentStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method; routes through api.get
+			if (activeTab === 'history') {
+				syncUrl();
+				paymentStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method; routes through api.get
+			}
 		}, 300);
 	}
 
@@ -647,6 +678,7 @@
 	});
 
 	$effect(() => {
+		syncUrl();
 		if (activeTab === 'history') {
 			activeStatus;
 			// `.catch`: fire-and-forget from an $effect — `paymentStore.errored`
@@ -973,16 +1005,16 @@
 	{/if}
 
 	<nav class="tabs">
-		<button class="tab" class:active={activeTab === 'queue'} onclick={() => (activeTab = 'queue')}>
+		<button class="tab" class:active={activeTab === 'queue'} onclick={() => selectTab('queue')}>
 			{m('payments.tab.queue')} {#if summary}<span class="tab-count">{summary.queue_count}</span>{/if}
 		</button>
-		<button class="tab" class:active={activeTab === 'history'} onclick={() => (activeTab = 'history')}>
+		<button class="tab" class:active={activeTab === 'history'} onclick={() => selectTab('history')}>
 			{m('payments.tab.history')}
 		</button>
-		<button class="tab" class:active={activeTab === 'cards'} onclick={() => (activeTab = 'cards')}>
+		<button class="tab" class:active={activeTab === 'cards'} onclick={() => selectTab('cards')}>
 			{m('payments.tab.cards')}
 		</button>
-		<button class="tab" class:active={activeTab === 'runs'} onclick={() => (activeTab = 'runs')}>
+		<button class="tab" class:active={activeTab === 'runs'} onclick={() => selectTab('runs')}>
 			{m('payments.tab.runs')}
 		</button>
 	</nav>

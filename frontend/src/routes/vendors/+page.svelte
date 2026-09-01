@@ -124,8 +124,16 @@
 		vendors = vendors.map((v) => (v.id === updated.id ? updated : v));
 		if (detailVendor && detailVendor.id === updated.id) detailVendor = updated;
 	}
-	let search = $state('');
-	let statusFilter = $state('all');
+	// Search + status filter are URL-backed (`?search=&status=`) alongside sort
+	// (below) so a reload / back-button / shared link reproduces the same view —
+	// mirrors `/contracts` + `/expenses`. See `syncUrl()`.
+	const VENDOR_STATUSES = ['active', 'unverified', 'inactive', 'rejected'];
+	let search = $state($urlStore.url.searchParams.get('search') ?? '');
+	let statusFilter = $state(
+		VENDOR_STATUSES.includes($urlStore.url.searchParams.get('status') ?? '')
+			? ($urlStore.url.searchParams.get('status') as string)
+			: 'all'
+	);
 	let syncing = $state(false);
 
 	const PAGE_SIZE = 20;
@@ -203,7 +211,10 @@
 	let searchTimer: ReturnType<typeof setTimeout>;
 	function debouncedFetch() {
 		clearTimeout(searchTimer);
-		searchTimer = setTimeout(() => fetchVendors(), 300);
+		searchTimer = setTimeout(() => {
+			syncUrl();
+			fetchVendors();
+		}, 300);
 	}
 
 	// Fetch on mount and whenever the status filter chip changes (a chip click
@@ -212,6 +223,7 @@
 	// effect doing the same on mount used to double-fetch on load.
 	$effect(() => {
 		statusFilter;
+		syncUrl();
 		fetchVendors();
 	});
 
@@ -284,12 +296,21 @@
 		}
 	}
 
-	// Reflect the live sort state into the URL (mirrors /expenses' syncUrl()).
-	// `untrack` on the `$urlStore` read: this is a WRITER, not a dependency
-	// source — a tracked read here would self-trigger on its own replaceState.
-	function syncSortUrl() {
+	// Reflect the live filter state (search + status + sort) into the URL —
+	// mirrors `/contracts` + `/expenses`. EVERY read here is untracked,
+	// `$urlStore.url` included: this is a WRITER called from the filter
+	// `$effect`s and the debounce timer, never a dependency source — a tracked
+	// `$urlStore` read would self-trigger the effect that calls `replaceState`,
+	// and a tracked `search` read would make every filter effect re-fire on
+	// each keystroke (issue #168).
+	function syncUrl() {
 		untrack(() => {
 			const url = new URL($urlStore.url);
+			const s = search.trim();
+			if (s) url.searchParams.set('search', s);
+			else url.searchParams.delete('search');
+			if (statusFilter !== 'all') url.searchParams.set('status', statusFilter);
+			else url.searchParams.delete('status');
 			if (sortField) {
 				url.searchParams.set('sort', sortField);
 				url.searchParams.set('order', sortOrder);
@@ -305,7 +326,7 @@
 		const next = toggleSort({ field: sortField, order: sortOrder }, field);
 		sortField = next.field;
 		sortOrder = next.order;
-		syncSortUrl();
+		syncUrl();
 		fetchVendors();
 	}
 

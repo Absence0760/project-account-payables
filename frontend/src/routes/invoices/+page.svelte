@@ -31,8 +31,17 @@
 	import SortableHeader from '$lib/components/ui/SortableHeader.svelte';
 	import { toggleSort, type SortOrder } from '$lib/utils/sort';
 
-	let search = $state('');
-	let activeStatuses = $state<InvoiceStatus[]>([]);
+	// Search + the quick status chips are URL-backed (`?search=&status=`)
+	// alongside `assigned_to_id` and sort, so a reload / back / shared link
+	// reproduces the view — mirrors `/contracts` + `/expenses`. The Advanced
+	// Search modal's richer filters stay out of the URL (a separate, larger
+	// surface). See `syncUrl()`.
+	let search = $state($page.url.searchParams.get('search') ?? '');
+	let activeStatuses = $state<InvoiceStatus[]>(
+		($page.url.searchParams.get('status') ?? '')
+			.split(',')
+			.filter((s): s is InvoiceStatus => (INVOICE_STATUSES as readonly string[]).includes(s))
+	);
 	let editing = $state<Invoice | null>(null);
 	let showAdvancedSearch = $state(false);
 	let advancedFilters = $state<AdvancedSearchFilters>({ ...EMPTY_ADVANCED_FILTERS });
@@ -195,15 +204,21 @@
 	 * `/contracts` and `/expenses`: every read here is untracked, `$page.url`
 	 * included, because this is a WRITER called from the filter `$effect`
 	 * below — a tracked `$page.url` read would self-trigger the very effect
-	 * that calls `replaceState`. Scoped to only the param this page owns —
-	 * `search`/`status`/the advanced filters predate this and aren't
-	 * URL-synced yet (a separate, pre-existing gap; see `docs/followups.md`).
+	 * that calls `replaceState`, and a tracked `search` read would make every
+	 * filter effect re-fire on each keystroke (issue #168). Covers the search
+	 * term + the quick status chips + `assigned_to_id`; the Advanced Search
+	 * modal's richer filters and column sort (`syncSortUrl`) are handled apart.
 	 */
 	function syncUrl() {
 		untrack(() => {
 			const url = new URL($page.url);
 			if (assignedToId) url.searchParams.set('assigned_to_id', assignedToId);
 			else url.searchParams.delete('assigned_to_id');
+			const s = search.trim();
+			if (s) url.searchParams.set('search', s);
+			else url.searchParams.delete('search');
+			if (activeStatuses.length > 0) url.searchParams.set('status', activeStatuses.join(','));
+			else url.searchParams.delete('status');
 			replaceState(`${url.pathname}${url.search}`, {});
 		});
 	}
@@ -215,7 +230,10 @@
 		// `.catch` because nothing awaits this: the store re-throws so an
 		// awaiting caller keeps its own handling (the post-upload toast relies
 		// on it), and `invoiceStore.errored` is what the table renders.
-		searchTimer = setTimeout(() => invoiceStore.fetch(buildParams()).catch(() => {}), 300); // noqa: raw-fetch-in-component — store method, routes through api client
+		searchTimer = setTimeout(() => {
+			syncUrl();
+			invoiceStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
+		}, 300);
 	}
 
 	// Fetch status counts and active workflow on mount
