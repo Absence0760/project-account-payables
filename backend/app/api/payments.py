@@ -10,7 +10,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
-from sqlalchemy import case, func, not_, select
+from sqlalchemy import and_, case, exists, func, not_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,7 +22,12 @@ from app.api.deps import (
     require_permission,
     require_roles,
 )
-from app.api.pagination import PaginationParams, pagination_params
+from app.api.pagination import (
+    DEFAULT_PAGE_SIZE,
+    MAX_SELECT_ALL_IDS,
+    PaginationParams,
+    pagination_params,
+)
 from app.api.permissions import (
     PERM_PAYMENT_EXECUTE,
     PERM_PAYMENT_RUN_APPROVE,
@@ -47,7 +52,6 @@ from app.services.audit_access import log_access
 from app.services.currency_conversion import (
     payment_reporting_amount_sql,
     reporting_amount_at_locked_rate,
-    reporting_amount_for_row,
     resolve_reporting_currency,
 )
 from app.services.exception_lifecycle import record_decision
@@ -392,86 +396,198 @@ async def list_payments(
 # get parsed as a UUID and fail with a 422 before ever reaching the handler.
 
 
+# Match the workflow state machine: only statuses that can directly transition
+# to ``payment_scheduled`` belong in the queue. ``sent_to_erp`` is excluded —
+# that row is mid-flight in the ERP push and must reach ``posted_in_erp`` (via
+# the ERP-confirmation webhook) before a payment can be scheduled against it.
+_QUEUE_ORDER = (Invoice.due_date.asc().nulls_last(), Invoice.id.asc())
+
+
+def _queue_blocking_exists():
+    """SQL EXISTS predicate — this invoice carries an unresolved
+    payment-blocking exception, the SAME condition
+    ``services/payment_runs.blocking_exception_types`` resolves. Expressed for a
+    query so the whole-set aggregates and ``/queue/ids`` don't have to stream
+    every id into Python. Correlated on ``Invoice.id``."""
+    return exists(
+        select(1).where(
+            APException.invoice_id == Invoice.id,
+            APException.exception_type.in_(PAYMENT_BLOCKING_EXCEPTION_TYPES),
+            APException.status.notin_(("resolved", "dismissed")),
+        )
+    )
+
+
+def _queue_base_where(paid_ids) -> list:
+    return [Invoice.status.in_(PAYABLE_INVOICE_STATUSES), Invoice.id.notin_(paid_ids)]
+
+
+async def _payment_queue_rollup(
+    db: AsyncSession,
+    *,
+    entity_id: uuid.UUID | None,
+    reporting_currency: str,
+    today,
+    selectable_only: bool,
+) -> dict:
+    """Whole-set (not one page) aggregates for the payment queue.
+
+    Grouped by the invoice's own currency and rolled to the org reporting
+    currency **in SQL** — the CASE expressions mirror
+    ``currency_conversion.reporting_amount_for_row`` exactly as ``api/dashboard``
+    does — so a paginated queue never loses its KPI-bar totals or its
+    blocked / early-pay-savings banners to "just this page". ``selectable_only``
+    excludes rows a payment run would refuse (the set "select all matching"
+    resolves).
+    """
+    paid_ids = select(Payment.invoice_id).where(Payment.status == "completed").scalar_subquery()
+    tgt = reporting_currency.upper()
+    cur_key = func.upper(func.coalesce(Invoice.currency, tgt))
+    has_lock = and_(
+        Invoice.reporting_amount.isnot(None),
+        func.upper(Invoice.reporting_currency) == tgt,
+    )
+    rep_expr = case((has_lock, Invoice.reporting_amount), else_=Invoice.amount)
+    unconv_expr = case((and_(not_(has_lock), cur_key != tgt), 1), else_=0)
+
+    where = _queue_base_where(paid_ids)
+    if selectable_only:
+        where.append(not_(_queue_blocking_exists()))
+
+    # Invoice-only aggregate — no schedule join, so no row fan-out on the
+    # money sums / count.
+    inv_agg = apply_entity_scope(
+        select(
+            cur_key.label("cur"),
+            func.count(Invoice.id).label("cnt"),
+            func.coalesce(func.sum(Invoice.amount), 0).label("amt"),
+            func.coalesce(func.sum(rep_expr), 0).label("rep"),
+            func.coalesce(func.sum(unconv_expr), 0).label("unconv"),
+        )
+        .select_from(Invoice)
+        .where(*where)
+        .group_by(cur_key),
+        Invoice,
+        entity_id,
+    )
+
+    # Early-pay savings — a separate INNER-join aggregate restricted to rows
+    # with a live discount window (`discount_date` in the future + a percent
+    # set). Rounded per row then summed, matching the old Python loop.
+    disc_where = [
+        *where,
+        PaymentSchedule.discount_date.isnot(None),
+        PaymentSchedule.discount_date >= today,
+        PaymentSchedule.discount_percent.isnot(None),
+    ]
+    disc_agg = apply_entity_scope(
+        select(
+            cur_key.label("cur"),
+            func.coalesce(
+                func.sum(func.round(Invoice.amount * PaymentSchedule.discount_percent / 100, 2)),
+                0,
+            ).label("save"),
+            func.coalesce(
+                func.sum(func.round(rep_expr * PaymentSchedule.discount_percent / 100, 2)), 0
+            ).label("save_rep"),
+        )
+        .select_from(Invoice)
+        .join(PaymentSchedule, PaymentSchedule.invoice_id == Invoice.id)
+        .where(*disc_where)
+        .group_by(cur_key),
+        Invoice,
+        entity_id,
+    )
+
+    inv_rows = (await db.execute(inv_agg)).all()
+    disc_rows = {r.cur: r for r in (await db.execute(disc_agg)).all()}
+
+    q2 = Decimal("0.01")
+    total = 0
+    total_amount = Decimal("0")
+    total_savings = Decimal("0")
+    unconverted_count = 0
+    by_currency: list[dict] = []
+    for cur, cnt, amt, rep, unconv in inv_rows:
+        d = disc_rows.get(cur)
+        save = Decimal(str(d.save)) if d is not None else Decimal("0")
+        save_rep = Decimal(str(d.save_rep)) if d is not None else Decimal("0")
+        total += int(cnt)
+        total_amount += Decimal(str(rep))
+        total_savings += save_rep
+        unconverted_count += int(unconv)
+        by_currency.append(
+            {
+                "currency": cur,
+                "count": int(cnt),
+                "total_amount": str(Decimal(str(amt)).quantize(q2)),
+                "total_savings": str(save.quantize(q2)),
+            }
+        )
+    by_currency.sort(key=lambda e: e["currency"])
+    return {
+        "total": total,
+        "total_amount": str(total_amount.quantize(q2)),
+        "total_savings": str(total_savings.quantize(q2)),
+        "currency": reporting_currency,
+        "unconverted_count": unconverted_count,
+        "by_currency": by_currency,
+    }
+
+
 @router.get("/queue")
 async def payment_queue(
+    pagination: PaginationParams = Depends(pagination_params),
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    """List approved invoices ready for payment (no completed payment yet).
+    """A page of approved invoices ready for payment (no completed payment yet).
 
-    Each row carries `blocked` / `blocked_reason` — whether an unresolved
-    payment-blocking exception means `POST /api/payments/runs` would refuse it.
+    Paginated (`page` / `page_size`, `id`-tie-broken order). Each row carries
+    `blocked` / `blocked_reason` — whether an unresolved payment-blocking
+    exception means `POST /api/payments/runs` would refuse it. The money totals
+    (`total_amount` / `total_savings` / `by_currency`) and the
+    `total` / `selectable_total` / `blocked_total` counts describe the WHOLE
+    queue, not the loaded page — a KPI/banner over one page would contradict
+    the list. Use `GET /api/payments/queue/ids` to resolve the whole
+    selectable set for "select all N matching".
     """
+    # Callable as a plain function in tests (`Depends(...)` isn't resolved
+    # there); fall back to the canonical first page.
+    if not isinstance(pagination, PaginationParams):
+        pagination = PaginationParams(page=1, page_size=DEFAULT_PAGE_SIZE)
+
     paid_ids = select(Payment.invoice_id).where(Payment.status == "completed").scalar_subquery()
-
-    # Match the workflow state machine: only statuses that can directly
-    # transition to ``payment_scheduled`` belong here. ``sent_to_erp``
-    # is excluded — that row is mid-flight in the ERP push and must
-    # advance to ``posted_in_erp`` (via the ERP-confirmation webhook)
-    # before a payment can be scheduled against it. Including it would
-    # let the UI offer "Pay" on a row whose execute call fails the
-    # transition with 409, surfacing as a stuck queue row to the
-    # operator.
-    payable_statuses = PAYABLE_INVOICE_STATUSES
-
-    queue_q = apply_entity_scope(
-        select(Invoice, PaymentSchedule)
-        .outerjoin(PaymentSchedule, PaymentSchedule.invoice_id == Invoice.id)
-        .where(
-            Invoice.status.in_(payable_statuses),
-            Invoice.id.notin_(paid_ids),
-        ),
-        Invoice,
-        entity_id,
-    ).order_by(Invoice.due_date.asc().nulls_last())
-    result = await db.execute(queue_q)
-    rows = result.all()
-
-    # `total_amount` / `total_savings` are SUMS, and a sum is only a number when
-    # its terms share a currency. Each row keeps its own `amount` + `currency`
-    # (the UI renders the row in the vendor's currency); the totals are
-    # accumulated in the ORG's reporting currency via the same rate-locked
-    # `reporting_amount_for_row` every sibling rollup uses — no FX call on a
-    # read. A row whose reporting figure can't be established is still counted
-    # at face value (dropping it would understate what's due) but reported on
-    # `unconverted_count`, so "these totals mix currencies" is visible rather
-    # than silent.
     reporting_currency = resolve_reporting_currency(org.settings)
-    # UTC, not the host's local date. `is_overdue` and the discount-window
-    # cutoff below are the same calendar question `services/analytics`,
-    # `discount_optimizer` and `cash_flow_alerts` answer in UTC; on a non-UTC
-    # host the local date shifts this queue's answers by a day relative to
-    # every other surface reading the same rows.
+    # UTC, not the host's local date — the same calendar question
+    # `services/analytics`, `discount_optimizer` and `cash_flow_alerts` answer.
     today = utc_today()
-    # Which of these rows `POST /api/payments/runs` would refuse. The run
-    # builder rejects the WHOLE run with a 409 when any selected invoice carries
-    # an unresolved `PAYMENT_BLOCKING_EXCEPTION_TYPES` exception, so a queue that
-    # offers such a row hands the operator a selection that can only fail —
-    # with nothing on screen saying which row did it. Resolved through the same
-    # `payment_runs` helper the builder itself uses (one predicate, one query),
-    # so the two can never disagree about what is payable.
+
+    page_q = (
+        apply_entity_scope(
+            select(Invoice, PaymentSchedule)
+            .outerjoin(PaymentSchedule, PaymentSchedule.invoice_id == Invoice.id)
+            .where(*_queue_base_where(paid_ids)),
+            Invoice,
+            entity_id,
+        )
+        .order_by(*_QUEUE_ORDER)
+        .offset(pagination.offset)
+        .limit(pagination.limit)
+    )
+    rows = (await db.execute(page_q)).all()
+
+    # Which of THIS PAGE's rows a run would refuse — resolved through the same
+    # `payment_runs` helper the run builder itself uses, so the queue can never
+    # offer a row the builder then rejects.
     blocked_types = await blocking_exception_types(db, [inv.id for inv, _ in rows])
+
     items: list[dict] = []
-    total_savings = Decimal("0")
-    total_amount = Decimal("0")
-    unconverted_count = 0
     for inv, sched in rows:
-        # Discount eligibility: schedule has a discount_date in the future
-        # AND the percent is set. Backfilled-without-schedule rows just don't
-        # surface a discount.
         discount_amount: Decimal | None = None
         discount_eligible = False
-        reporting_amount, unconverted = reporting_amount_for_row(
-            amount=inv.amount or Decimal("0"),
-            currency=inv.currency,
-            reporting_currency=reporting_currency,
-            persisted_reporting_currency=inv.reporting_currency,
-            persisted_reporting_amount=inv.reporting_amount,
-        )
-        if unconverted:
-            unconverted_count += 1
         if (
             sched is not None
             and sched.discount_date is not None
@@ -479,17 +595,9 @@ async def payment_queue(
             and sched.discount_date >= today
         ):
             discount_eligible = True
-            # Shown on the row in the INVOICE's currency…
             discount_amount = (inv.amount * sched.discount_percent / Decimal(100)).quantize(
                 Decimal("0.01")
             )
-            # …but summed in the reporting currency, off the same rate-locked
-            # figure the outflow total uses.
-            total_savings += (reporting_amount * sched.discount_percent / Decimal(100)).quantize(
-                Decimal("0.01")
-            )
-
-        total_amount += reporting_amount
         items.append(
             {
                 "id": str(inv.id),
@@ -503,9 +611,6 @@ async def payment_queue(
                 "payment_terms": inv.payment_terms,
                 "status": inv.status.value if hasattr(inv.status, "value") else inv.status,
                 "is_overdue": inv.due_date is not None and inv.due_date < today,
-                # Discount surface — null when the row isn't eligible (no
-                # schedule, no discount_date, or the discount window has
-                # already passed).
                 "discount_eligible": discount_eligible,
                 "discount_date": sched.discount_date.isoformat()
                 if sched and sched.discount_date
@@ -515,30 +620,106 @@ async def payment_queue(
                 if sched and sched.discount_percent
                 else None,
                 "discount_amount": str(discount_amount) if discount_amount else None,
-                # --- Payment-blocking exceptions -------------------------
                 # `blocked` is what the UI disables the row's checkbox on;
-                # `blocked_reason` is the exception TYPE from the fixed
-                # `PAYMENT_BLOCKING_EXCEPTION_TYPES` vocabulary — a stable code
-                # the client localises, never prose and never the exception's
-                # description (which can carry vendor / bank / amount detail).
-                # Both are always present and default to not-blocked, so a
-                # client that ignores them behaves exactly as before.
+                # `blocked_reason` is the exception TYPE only (a stable code the
+                # client localises), never the description (which can carry
+                # vendor / bank / amount detail). Both default to not-blocked.
                 "blocked": inv.id in blocked_types,
                 "blocked_reason": blocked_types.get(inv.id),
             }
         )
 
-    # Both totals are Decimal-accumulated; money serialises as an exact Decimal
-    # STRING (never float) — the frontend coerces with Number() where it sums.
+    rollup = await _payment_queue_rollup(
+        db,
+        entity_id=entity_id,
+        reporting_currency=reporting_currency,
+        today=today,
+        selectable_only=False,
+    )
+    selectable_total = (
+        await db.execute(
+            apply_entity_scope(
+                select(func.count(Invoice.id))
+                .select_from(Invoice)
+                .where(*_queue_base_where(paid_ids), not_(_queue_blocking_exists())),
+                Invoice,
+                entity_id,
+            )
+        )
+    ).scalar() or 0
+
     return {
         "items": items,
-        "total": len(items),
-        "total_amount": str(total_amount),
-        "total_savings": str(total_savings),
-        # What the two totals above are denominated in, and how many rows
-        # entered them at face value in another currency.
-        "currency": reporting_currency,
-        "unconverted_count": unconverted_count,
+        "total": rollup["total"],
+        "page": pagination.page,
+        "page_size": pagination.page_size,
+        "selectable_total": int(selectable_total),
+        "blocked_total": rollup["total"] - int(selectable_total),
+        "total_amount": rollup["total_amount"],
+        "total_savings": rollup["total_savings"],
+        "currency": rollup["currency"],
+        "unconverted_count": rollup["unconverted_count"],
+        "by_currency": rollup["by_currency"],
+    }
+
+
+@router.get("/queue/ids")
+async def payment_queue_ids(
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """The invoice ids of every SELECTABLE (non-blocked) queue row — the
+    resolver behind "select all N matching" on the payments queue.
+
+    Mirrors `GET /api/invoices/ids`: capped at `MAX_SELECT_ALL_IDS`, with
+    `truncated` flagging when the cap was hit so a partial selection is never
+    presented as complete. `by_currency` carries the same per-currency
+    `count` / `total_amount` / `total_savings` breakdown the queue endpoint
+    returns, restricted to the selectable set — so the pay-bar's totals and
+    its single-currency-per-run guard stay honest for a selection the client
+    never loaded row-by-row.
+    """
+    paid_ids = select(Payment.invoice_id).where(Payment.status == "completed").scalar_subquery()
+    today = utc_today()
+
+    total = (
+        await db.execute(
+            apply_entity_scope(
+                select(func.count(Invoice.id))
+                .select_from(Invoice)
+                .where(*_queue_base_where(paid_ids), not_(_queue_blocking_exists())),
+                Invoice,
+                entity_id,
+            )
+        )
+    ).scalar() or 0
+
+    ids_q = (
+        apply_entity_scope(
+            select(Invoice.id).where(*_queue_base_where(paid_ids), not_(_queue_blocking_exists())),
+            Invoice,
+            entity_id,
+        )
+        .order_by(*_QUEUE_ORDER)
+        .limit(MAX_SELECT_ALL_IDS)
+    )
+    ids = [str(row) for row in (await db.execute(ids_q)).scalars().all()]
+
+    rollup = await _payment_queue_rollup(
+        db,
+        entity_id=entity_id,
+        reporting_currency=resolve_reporting_currency(org.settings),
+        today=today,
+        selectable_only=True,
+    )
+    return {
+        "ids": ids,
+        "total": int(total),
+        "truncated": int(total) > len(ids),
+        "currency": rollup["currency"],
+        "by_currency": rollup["by_currency"],
     }
 
 

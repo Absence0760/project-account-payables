@@ -211,6 +211,18 @@ export const messages = {
 	'payments.queue.blocked.generic': 'Ungeklärte Ausnahme blockiert die Zahlung',
 	'payments.queue.discountSave': '{amount} sparen',
 	'payments.queue.discountBy': '{percent}% bis {date}',
+	'payments.queue.loadMore': 'Mehr laden ({shown} von {total})',
+	'payments.queue.showingAll':
+		'{total, plural, one {Alle # Rechnung angezeigt} other {Alle # Rechnungen angezeigt}}',
+	'payments.queue.selectAllMatching': 'Alle {total} passenden auswählen',
+	'payments.queue.allMatchingSelected': 'Alle passenden ausgewählt',
+	'payments.queue.selectedAllMatching':
+		'{n, plural, one {Alle # passende Rechnung ausgewählt} other {Alle # passenden Rechnungen ausgewählt}}',
+	'payments.queue.selectAllTruncated':
+		'Die ersten {shown} von {total} passenden ausgewählt — entfernen Sie einige Zeilen, um die übrigen auszuwählen.',
+	'payments.queue.selectAllFailed': 'Auswahl aller passenden fehlgeschlagen',
+	'payments.queue.reviewPartial':
+		'{shown} von {n} ausgewählten Rechnungen hier angezeigt — der Lauf umfasst alle {n}.',
 	'payments.col.invoiceNumber': 'Rechnungs-Nr.',
 	'payments.col.vendor': 'Lieferant',
 	'payments.col.amount': 'Betrag',

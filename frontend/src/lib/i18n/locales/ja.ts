@@ -215,6 +215,16 @@ export const messages = {
 	'payments.queue.blocked.generic': '未解決の例外により支払いがブロックされています',
 	'payments.queue.discountSave': '{amount} 節約',
 	'payments.queue.discountBy': '{date}までに{percent}%',
+	'payments.queue.loadMore': 'さらに読み込む（{total} 件中 {shown} 件）',
+	'payments.queue.showingAll': '{total, plural, other {# 件すべてを表示中}}',
+	'payments.queue.selectAllMatching': '一致する {total} 件すべてを選択',
+	'payments.queue.allMatchingSelected': '一致するものをすべて選択しました',
+	'payments.queue.selectedAllMatching': '{n, plural, other {一致する請求書 # 件すべてを選択しました}}',
+	'payments.queue.selectAllTruncated':
+		'一致する {total} 件のうち最初の {shown} 件を選択しました — 残りを選択するには行をいくつか外してください。',
+	'payments.queue.selectAllFailed': '一致するものすべての選択に失敗しました',
+	'payments.queue.reviewPartial':
+		'選択した {n} 件のうち {shown} 件を表示中 — 実行には {n} 件すべてが含まれます。',
 	'payments.col.invoiceNumber': '請求書番号',
 	'payments.col.vendor': '取引先',
 	'payments.col.amount': '金額',
