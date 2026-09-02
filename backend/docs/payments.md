@@ -1094,6 +1094,47 @@ treasurer looks for "what is still committed".
 **Tests:** `tests/test_payment_summary_currency.py` (DB-backed),
 `tests/test_payment_summary.py` (shape).
 
+### The payment queue is paginated
+
+`GET /api/payments/queue` used to return the tenant's **whole** approved-unpaid
+invoice set on every view. It now takes `page` / `page_size` (via
+`app/api/pagination.py::pagination_params`, default 20 / max 100) and returns
+
+```
+{items, total, page, page_size, selectable_total, blocked_total,
+ total_amount, total_savings, currency, unconverted_count, by_currency}
+```
+
+`items` is one ordered page (`Invoice.due_date ASC NULLS LAST, Invoice.id ASC`
+— the `id` tie-breaker is what stops a row hopping between pages). Every other
+field describes the **whole** queue, computed in SQL by
+`_payment_queue_rollup` (grouped by currency, mirroring the dashboard's
+reporting-amount `CASE`) so a KPI or banner can't contradict the list:
+
+- `total` — every payable row; `selectable_total` / `blocked_total` split it by
+  whether the financial-integrity gate would refuse the row.
+- `by_currency` — `[{currency, count, total_amount, total_savings}]`, exact
+  decimal strings, so the frontend renders honest per-currency pay-bar
+  subtotals without holding every row. Never a cross-currency sum.
+- `total_savings` / per-currency `total_savings` come off the same rate-locked
+  figure as the outflow (INNER-joined discount aggregate restricted to rows
+  with a live `discount_date` / `discount_percent`).
+
+**`GET /api/payments/queue/ids`** is the "select all N matching" resolver
+(mirrors `GET /api/invoices/ids`): `{ids, total, truncated, currency,
+by_currency}` for the whole **selectable** (unblocked) set, ordered the same
+way and capped at `MAX_SELECT_ALL_IDS` (5000). Same RBAC as `/queue`
+(`admin` / `ap_manager` / `cfo`). The frontend `/payments` Queue tab has a
+Load-More footer and a pay-bar "Select all N matching" button whose count +
+per-currency totals + mixed-currency guard read this response, not the loaded
+page.
+
+**Tests:** `tests/test_payment_queue_pagination.py` (DB-backed — page 1 caps,
+`total` is the whole set, page 2 appends the tail with no dup/drop, `/queue/ids`
+whole set + per-currency breakdown, a blocked row stays blocked on its page and
+is excluded from `/queue/ids`, `ap_clerk` 403 on both);
+`frontend/tests-e2e/payments/queue-pagination.spec.ts`.
+
 ### `PaymentRun.status` is derived from its payments on read
 
 `_dispatch_run_payments`' final rollup is the only writer of the persisted
@@ -1338,7 +1379,8 @@ Matching payments against bank statement entries:
 | `POST` | `/api/payments/runs/{id}/retry-failed` | Re-attempt the safely-retryable FAILED payments of a `partial`/`failed` run by booking a NEW attempt row (the failed row is never mutated). Never re-dispatches a payment that already succeeded, nor one whose fate at the processor is unknown (`needs_reconciliation`); also skips an invoice that is unpayable, carries an unresolved payment-blocking exception (any member of `PAYMENT_BLOCKING_EXCEPTION_TYPES`), has since been credited, or already has another live payment. Same `payment.execute` gate, segregation check and CFO threshold as `/execute`. See § Why a payment failed, and retrying it. |
 | `POST` | `/api/payments/runs/{id}/sync-erp` | Re-run the ERP sync-back for a run whose settled payments didn't land — the exit for an invoice stranded at `payment_scheduled` after a failed sync leg. Awaits the pass and returns its `synced`/`transitioned`/`skipped`/`held`/`failed` counts (read `transitioned` for "did this recover anything"); idempotent by construction; moves no money. `payment.execute`-gated, entity-scoped, audited `payment_run.erp_sync_retried`. 409 when the run has no settled payment. See § ERP Payment Sync → A failed leg is a strand, and it is visible. |
 | `POST` | `/api/payments/runs/{id}/cancel` | Cancel a draft run — deletes its child payment rows so the invoices return to the queue, and flips the run to `cancelled`. |
-| `GET` | `/api/payments/queue` | List invoices ready for payment. Each row carries `blocked` / `blocked_reason` — see § Financial-integrity exception gate → The queue says which rows the gate would refuse. |
+| `GET` | `/api/payments/queue` | List invoices ready for payment — paginated (`page` / `page_size`, default 20). Response carries the whole-set `total` / `selectable_total` / `blocked_total` / `by_currency` + per-row `blocked` / `blocked_reason`. See § The payment queue is paginated and § Financial-integrity exception gate → The queue says which rows the gate would refuse. |
+| `GET` | `/api/payments/queue/ids` | "Select all N matching" resolver — `{ids, total, truncated, currency, by_currency}` for the whole selectable set, capped at 5000. Same RBAC as `/queue`. |
 | `GET` | `/api/payments/summary` | KPIs: total paid, pending, queue count, rebates. Requires a `control_db` dependency because `CardRebate` is a control-plane model; the rebate query includes a try/except fallback returning `0.0` if the `card_rebates` table doesn't exist yet. |
 | `POST` | `/api/payments/{id}/void` | Void a pending/completed payment. Reverses a `virtual_card` payment's card at the provider too — see § Voiding a card payment cancels the card. |
 | `POST` | `/api/payments/{id}/compliance/release` | Re-run compliance-then-adapter for a payment stuck `pending_compliance`. `payment.execute`-gated, 409 outside that status. See § Sanctions / compliance hold resolution. |
