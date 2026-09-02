@@ -1090,7 +1090,9 @@ deferred-with-reason finding awaiting a product/architecture call.
 | `/payments/queue` has no pagination | **done** — `?page=` on `GET /queue`, a `GET /queue/ids` select-all resolver, Load-More + whole-set select-all on the Queue tab |
 | GBP→GB domestic payment falls through to `international_wire` | **done** — `bacs`/`faster_payments`/`chaps` rails + a GBP/GB branch in `pick_corridor` (Faster Payments, no SWIFT/FX/IBAN) |
 | [Low] Org Settings has no first-time-admin prioritization | **done** — a "Getting started" wayfinding strip at the top of `/organization` |
-| _remainders_ | portal date-range filter, "why is it *stuck*" signal, constrained re-extract on resubmit — entries below |
+| Portal lists have no date-range filter | **done** — `date_from`/`date_to` on both portal list endpoints + a From/To pair in `PortalListFilters` |
+| Vendor can't see why an invoice is *stuck* | **done** — `waiting_on` bucket (`review`/`processing`/`erp`) + `waiting_on_days` on the portal invoice API, rendered under the status pill |
+| _remainders_ | constrained re-extract on resubmit (scoped, deferred — its own slice) — entry below |
 
 **Frontend gaps — built on the backend, unreachable in the product:**
 
@@ -1131,19 +1133,17 @@ deferred-with-reason finding awaiting a product/architecture call.
 
 **Supplier portal — the loop-closing steps are missing:**
 
-- [ ] **A vendor still can't see why an invoice is *stuck* (only why it was
-      rejected).** The **rejected** half is done (**PR #343**) — `GET /portal/invoices[/{id}]`
-      now carries `rejection_reason` (latest `review_rejected` exception's
-      description, gated on the live status, PII-free — no rejecting-employee
-      name), rendered under the status pill on the list. What's left is the
-      "stuck" case: an invoice sitting in `ready_for_review` / `pending` /
-      `sending_to_erp` for a long time has no vendor-visible "waiting on the AP
-      team for X" signal beyond the phase label.
-      **Durable fix:** derive a friendly "what's it waiting on" line from the
-      workflow instance's current step + age, PII-free, and surface it beside
-      the phase label.
-      **Trigger:** the next slice touching the supplier portal, or the first
-      vendor asking "why has this been in review for two weeks".
+- [x] **A vendor can see why an invoice is *stuck* — DONE (PR #343).** The
+      *rejected* half (`rejection_reason`) shipped earlier in the PR;
+      `GET /portal/invoices[/{id}]` now also carries `waiting_on` — a PII-free
+      bucket (`review` / `processing` / `erp`) plus `waiting_on_days`, set
+      **only** while the invoice is in a processing phase, NULL for
+      `new`/`approved`/`paid`/`rejected`/`done`. Never an internal status
+      string or a user name. Rendered as a localized line under the status
+      pill ("Awaiting your customer's review · 5 days"). Guard:
+      `tests/test_portal_waiting_on.py`. (A finer step-level detail off the
+      workflow instance was scoped down to the phase-bucket + age — enough to
+      add information beyond the chip without touching workflow internals.)
 
 - [ ] **A resubmitted portal invoice isn't re-extracted from the corrected
       document.** The resubmit path is **shipped** (**PR #343**) —
@@ -1155,22 +1155,17 @@ deferred-with-reason finding awaiting a product/architecture call.
       the invoice out of the `vendor_id ==`-scoped portal list, i.e. the
       vendor loses sight of their own resubmission. So the AP reviewer has to
       manually reconcile the new PDF against the (stale) extracted fields.
-      **Durable fix:** an extraction mode that refreshes the money/number
-      fields from the new document but is **pinned** to the invoice's existing
-      vendor link (skip `match_and_link_vendor`, or constrain it to the known
-      `vu.vendor_id`).
-      **Trigger:** the next slice touching portal resubmit or `vendor_matching`.
-
-- [ ] **The portal invoice + payment lists have no date-range filter.**
-      Both `GET /api/portal/invoices` and `.../payments` **now take** repeatable
-      `status=` (vendor-facing phase chips) + `search=` (invoice-number
-      substring) via the shared `PortalListFilters.svelte` — shipped (**PR #343**). What's
-      left is an optional `date_from`/`date_to` on both (submitted / paid
-      date), which the chips + `PortalListFilters` have no slot for yet.
-      **Durable fix:** add the two date params to both endpoints and a date
-      pair to `PortalListFilters` (emitted alongside `{phase, search}`).
-      **Trigger:** the next slice touching either portal list, or the first
-      vendor asking to see "just last quarter".
+      **Durable fix (scoped, not started):** thread a `skip_vendor_match: bool`
+      through `services/extraction_dispatch.dispatch_extraction` → the queue
+      tuple / lambda payload → `services/extraction.run_extraction`, guarding
+      the `match_and_link_vendor` call (`extraction.py` ~L590) so the resubmit
+      path can re-extract money/number fields while keeping the existing vendor
+      link. **Left deferred deliberately:** it changes the extraction dispatch
+      path in both local and lambda modes — a shared, money-adjacent surface
+      that warrants its own focused slice + tests, not a tail-end add to this
+      PR.
+      **Trigger:** the next slice touching portal resubmit or the extraction
+      dispatch path.
 
 **Volume surfaces:**
 

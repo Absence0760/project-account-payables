@@ -219,11 +219,12 @@ The visual styling for all of the above lives **globally in `src/app.css`** (cla
 
 **`portal/` — supplier-portal-only components:**
 - `PortalListFilters.svelte` — the filter bar for the portal invoice + payment
-  lists: a debounced number `<input type="search">` + a single-select row of
-  vendor-facing "phase" chips. Owns the phase selection, the search text AND
-  the 300ms debounce, and hands the parent a resolved `{ phase, search }` via
-  `onchange` (phase clicks fire immediately, search after typing stops). Because
-  the debounce lives here, the parent's `load()` is never reached from a
+  lists: a debounced number `<input type="search">`, a From/To `<input
+  type="date">` pair, and a single-select row of vendor-facing "phase" chips.
+  Owns the phase selection, the search text, the dates AND the 300ms debounce,
+  and hands the parent a resolved `{ phase, search, dateFrom, dateTo }` via
+  `onchange` (phase + date changes fire immediately, search after typing stops).
+  Because the debounce lives here, the parent's `load()` is never reached from a
   reactive `$effect` and needs no `untrack` (issue #168). Strings are passed in
   already-localized; `bind:this` exposes `reset()` for a "Clear filters" empty
   state. The phase→raw-status maps are `PORTAL_INVOICE_PHASES` /
