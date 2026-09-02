@@ -31,9 +31,11 @@ from app.models.user import User
 from app.schemas.budget import (
     BudgetCheckResponse,
     BudgetCreate,
+    BudgetCurrencyTotal,
     BudgetListResponse,
     BudgetResponse,
     BudgetSpendResponse,
+    BudgetSummaryResponse,
     BudgetUpdate,
 )
 from app.services.audit_dispatch import dispatch_audit
@@ -95,6 +97,30 @@ async def _get_budget_or_404(db: AsyncSession, budget_id: uuid.UUID) -> Budget:
 # ---------------------------------------------------------------------------
 
 
+def _budget_list_filters(
+    query,
+    *,
+    dimension: str | None,
+    period: str | None,
+    search: str | None,
+):
+    """Apply the budget-list ``dimension`` / ``period`` / free-text filters.
+
+    Shared by ``GET /api/budgets`` and ``GET /api/budgets/summary`` so the KPI
+    rollup can never describe a different set than the rows it sits above — the
+    page-scoped-KPI drift the summary endpoint closes. Entity scope is applied
+    by the caller, because the two build their ``select()`` differently.
+    """
+    if dimension:
+        query = query.where(Budget.dimension == dimension)
+    if period:
+        query = query.where(Budget.period == period)
+    if search and search.strip():
+        like = f"%{search.strip()}%"
+        query = query.where(or_(Budget.name.ilike(like), Budget.dimension_value.ilike(like)))
+    return query
+
+
 @router.get("", response_model=BudgetListResponse)
 async def list_budgets(
     db: AsyncSession = Depends(get_tenant_db),
@@ -105,14 +131,12 @@ async def list_budgets(
     pagination: PaginationParams = Depends(pagination_params),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    base = apply_entity_scope(select(Budget), Budget, entity_id)
-    if dimension:
-        base = base.where(Budget.dimension == dimension)
-    if period:
-        base = base.where(Budget.period == period)
-    if search:
-        like = f"%{search}%"
-        base = base.where(or_(Budget.name.ilike(like), Budget.dimension_value.ilike(like)))
+    base = _budget_list_filters(
+        apply_entity_scope(select(Budget), Budget, entity_id),
+        dimension=dimension,
+        period=period,
+        search=search,
+    )
 
     total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0)
     paged = (
@@ -168,6 +192,68 @@ async def create_budget(
     await db.commit()
     fresh = await _get_budget_or_404(db, budget.id)
     return _to_response(fresh)
+
+
+# ---------------------------------------------------------------------------
+# Whole-set KPI rollup — literal `summary` segment declared BEFORE /{budget_id}
+# so it isn't captured as a {budget_id} UUID (same ordering as `/check` below).
+# ---------------------------------------------------------------------------
+
+
+@router.get("/summary", response_model=BudgetSummaryResponse)
+async def budget_summary(
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    dimension: str | None = Query(None),
+    period: str | None = Query(None),
+    search: str | None = Query(None),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Whole-set count + per-currency allocation totals for the budgets KPI row.
+
+    Takes the SAME filters as ``GET /api/budgets`` and runs them through the
+    same ``_budget_list_filters``, so the KPI and the table always describe one
+    set. The page's ``totalAllocated`` used to reduce over the LOADED page and
+    add across currencies into the org default — so it contradicted the
+    whole-set ``total`` count beside it and rendered EUR + USD as one figure.
+
+    Totals are grouped BY CURRENCY and serialised as exact decimal strings —
+    never added across currencies, never FX-converted on a read.
+    """
+    currency_key = func.upper(Budget.currency)
+    rows = (
+        await db.execute(
+            _budget_list_filters(
+                apply_entity_scope(
+                    select(
+                        currency_key,
+                        func.coalesce(func.sum(Budget.amount), 0),
+                        func.count(),
+                    ).select_from(Budget),
+                    Budget,
+                    entity_id,
+                ),
+                dimension=dimension,
+                period=period,
+                search=search,
+            )
+            .group_by(currency_key)
+            .order_by(currency_key)
+        )
+    ).all()
+
+    by_currency = [
+        BudgetCurrencyTotal(
+            currency=str(currency or "").upper() or "USD",
+            total=str(Decimal(total_amount)),
+            count=int(n),
+        )
+        for currency, total_amount, n in rows
+    ]
+    return BudgetSummaryResponse(
+        total=sum(c.count for c in by_currency),
+        by_currency=by_currency,
+    )
 
 
 # ---------------------------------------------------------------------------
