@@ -1085,7 +1085,8 @@ deferred-with-reason finding awaiting a product/architecture call.
 | Vendor can't see why an invoice was rejected | **done** — `rejection_reason` on the portal API + rendered under the status pill |
 | No resubmit path for a rejected portal invoice | **done** — `POST /portal/invoices/{id}/resubmit` + "Revise & resubmit" row control |
 | URL filter/search persistence partial on `/invoices` `/payments` `/vendors` | **done** — `search` + status chip + (payments) tab now in the query string |
-| _remainders_ | portal date-range filter, "why is it *stuck*" signal, constrained re-extract on resubmit — entries below |
+| No onboarding empty-state / CTA for a zero-data tenant | **done** — shared `ui/EmptyState.svelte`, adopted on the dashboard, `/invoices`, and `/portal/invoices` |
+| _remainders_ | portal date-range filter, "why is it *stuck*" signal, constrained re-extract on resubmit, `/vendors` + Org-Settings empty states — entries below |
 
 **Frontend gaps — built on the backend, unreachable in the product:**
 
@@ -1098,13 +1099,18 @@ deferred-with-reason finding awaiting a product/architecture call.
       invite email's `portal_url` was fixed in #330; this is the UI half.
       **Trigger:** the next slice touching `/vendors`.
 
-- [ ] **No onboarding empty-state / CTA anywhere for a brand-new zero-data
-      tenant.** Dashboard, `/invoices` and `/vendors` all render a bare "no
-      results" with no next step, and no shared `EmptyState` component exists.
-      **Durable fix:** an `EmptyState` component in `lib/components/`, adopted on
-      the primary list routes with a route-appropriate primary action.
-      **Trigger:** the next slice touching first-run UX, or the create-vendor UI
-      above (same surfaces).
+- [x] **No onboarding empty-state / CTA for a zero-data tenant — DONE
+      (PR #343).** `ui/EmptyState.svelte` (icon + heading + description +
+      optional button/link action, i18n-agnostic) is adopted on the dashboard
+      (zero invoices → `/invoices`), `/invoices` (zero rows + no filter → the
+      upload action, role-gated), and `/portal/invoices` (vendor submitted
+      nothing → the submit action). Each page keeps its `DataTable` +
+      loading/errored/filtered-empty copy for every other state.
+      **Still open:** `/vendors` and the Organization/Settings first-run
+      surfaces (the create-vendor UI below is the natural pairing for
+      `/vendors`).
+      **Trigger:** the create-vendor UI, or the next `/vendors` / `/organization`
+      slice.
 
 - [ ] **[Low] Organization/Settings is ~15 undifferentiated advanced sections
       with no first-time-admin prioritization.** No ordering, grouping, or

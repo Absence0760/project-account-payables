@@ -20,6 +20,7 @@
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
+	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { workflowStore } from '$lib/stores/workflows.svelte';
@@ -373,12 +374,25 @@
 	// and a genuinely fresh tenant (no invoices, no active search/status
 	// filter) gets a CTA toward the two ways to add the first one instead of
 	// a bare "nothing here".
+	// The genuinely-empty-and-unfiltered case renders <EmptyState> instead of
+	// the table (see the template); this string covers the other three states
+	// the table can be empty in — loading, errored, and "a filter matched
+	// nothing" (frontend/CLAUDE.md § Data tables).
+	let noActiveFilters = $derived(!search.trim() && activeStatuses.length === 0 && !hasAdvancedFilters);
+	let showOnboarding = $derived(
+		invoiceStore.all.length === 0 &&
+			!invoiceStore.loading &&
+			!invoiceStore.errored &&
+			noActiveFilters
+	);
 	let emptyMessage = $derived(
-		invoiceStore.errored
-			? m('invoices.empty.errored')
-			: invoiceStore.all.length === 0 && !search.trim() && activeStatuses.length === 0
-				? m('invoices.empty.fresh')
-				: m('invoices.empty')
+		invoiceStore.loading
+			? m('common.loading')
+			: invoiceStore.errored
+				? m('invoices.empty.errored')
+				: noActiveFilters
+					? m('invoices.empty.fresh')
+					: m('invoices.empty')
 	);
 
 	function statusCount(status: InvoiceStatus): number {
@@ -788,6 +802,18 @@
 		</div>
 	{/if}
 
+	{#if showOnboarding}
+		<EmptyState
+			icon="📄"
+			heading={m('emptyState.invoices.heading')}
+			description={m('emptyState.invoices.description')}
+			actionLabel={auth.hasAnyRole('admin', 'ap_manager', 'cfo')
+				? m('emptyState.invoices.action')
+				: undefined}
+			onaction={() => fileInput.click()}
+			testId="invoices-empty-state"
+		/>
+	{:else}
 	<DataTable isEmpty={invoiceStore.all.length === 0} empty={emptyMessage} colspan={10} fixed stickyHeader>
 		{#snippet header()}
 			<tr>
@@ -877,6 +903,7 @@
 			{/each}
 		{/snippet}
 	</DataTable>
+	{/if}
 
 	{#if invoiceStore.hasMore}
 		<div class="load-more-row">
@@ -929,7 +956,7 @@
 		onimport={(file: File): Promise<ImportResult> => api.upload<ImportResult>('/api/invoices/import-csv', file)}
 		onclose={() => (showImportCsv = false)}
 		onimported={() => {
-			invoiceStore.fetch(buildParams()).catch(() => {});
+			invoiceStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
 			invoiceStore.fetchCounts().catch(() => {});
 		}}
 	>

@@ -123,6 +123,14 @@ export const messages = {
 	'dashboard.overdue': 'Vencida',
 	'dashboard.error.loadFailed': 'No se pudo cargar el panel.',
 	'dashboard.error.retry': 'Reintentar',
+	'emptyState.dashboard.heading': 'Bienvenido: registremos tu primera factura',
+	'emptyState.dashboard.description':
+		'Cuando subas o importes facturas, aquí aparecerán tus métricas de gasto, antigüedad y flujo de caja.',
+	'emptyState.dashboard.action': 'Ir a facturas',
+	'emptyState.invoices.heading': 'Aún no hay facturas',
+	'emptyState.invoices.description':
+		'Sube un PDF, crea una manualmente o importa un CSV para cargar tus cuentas por pagar.',
+	'emptyState.invoices.action': 'Subir facturas',
 
 	// Invoices list
 	'invoices.title': 'Facturas',

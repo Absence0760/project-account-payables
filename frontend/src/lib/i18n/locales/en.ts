@@ -143,6 +143,16 @@ export const en = {
 	'dashboard.error.loadFailed': 'Couldn’t load the dashboard.',
 	'dashboard.error.retry': 'Retry',
 
+	// Onboarding empty states (ui/EmptyState.svelte)
+	'emptyState.dashboard.heading': 'Welcome — let’s get your first invoice in',
+	'emptyState.dashboard.description':
+		'Once you upload or import invoices, your spend, aging, and cash-flow metrics appear here.',
+	'emptyState.dashboard.action': 'Go to invoices',
+	'emptyState.invoices.heading': 'No invoices yet',
+	'emptyState.invoices.description':
+		'Upload a PDF, create one manually, or import a CSV to load your open AP.',
+	'emptyState.invoices.action': 'Upload invoices',
+
 	// Invoices list (routes/invoices/+page.svelte)
 	'invoices.title': 'Invoices',
 	'invoices.action.bulkRecode': 'Bulk Re-code GL',
