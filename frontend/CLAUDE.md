@@ -276,7 +276,7 @@ a definition as JSON). All wrap the shared `ui/Modal.svelte` and call the
 ### Types (`src/lib/types/`)
 
 - `invoice.ts` — `Invoice`, `InvoiceStatus` (12 statuses), `VALID_TRANSITIONS`, `AdvancedSearchFilters`
-- `payment.ts` — `Payment`, `PaymentRun`, `PaymentStatus`, `PaymentMethod` (ach, wire, check, virtual_card)
+- `payment.ts` — `Payment`, `PaymentRun`, `PaymentStatus`, `PaymentMethod` (ach, wire, check, virtual_card + the UK domestic rails bacs / faster_payments / chaps — issue #328). `PAYMENT_METHODS` / `PAYMENT_METHOD_LABELS` drift-guarded against the backend rails by `paymentMethod.test.ts`
 - `workflow.ts` — `WorkflowDefinition`, `WorkflowStep`, step configs (extraction, approval, erp_export)
 - `admin.ts` — `AdminUser`, `Role` (admin, ap_manager, ap_clerk, cfo)
 - `tax.ts` — `Report1099`, `Vendor1099Row` (1099 reporting dashboard)

@@ -104,6 +104,15 @@ _FEE_SEPA = Decimal("0.0005")  # ~free in practice
 _FEE_INTL_WIRE = Decimal("0.0250")  # SWIFT correspondent banks add up
 _FEE_RTP = Decimal("0.0020")
 _FEE_INTL_ACH = Decimal("0.0080")  # NACHA Global ACH — between SEPA and wire
+_FEE_FASTER_PAYMENTS = Decimal("0")  # UK Faster Payments — free on a business account
+_FEE_BACS = Decimal("0")  # UK BACS — pennies per item, effectively free
+_FEE_CHAPS = Decimal("0.0010")  # UK CHAPS — a flat ~£15-30; ~0.1% on a typical invoice
+
+# UK domestic rails. A same-currency GBP payment to a GB vendor stays entirely
+# inside the UK banking system (sort code + account number — no IBAN, no SWIFT,
+# no FX). `pick_corridor` auto-selects `faster_payments`; `bacs` / `chaps` are
+# honoured only when a caller explicitly asks for them.
+_UK_DOMESTIC_METHODS: frozenset[str] = frozenset({"bacs", "faster_payments", "chaps"})
 
 # Every `Payment.method` value an explicit caller override can select, mapped
 # to its fee anchor. Public because it is the authoritative list of rails this
@@ -119,6 +128,9 @@ CORRIDOR_OVERRIDE_FEES: dict[str, Decimal] = {
     "sepa": _FEE_SEPA,
     "international_ach": _FEE_INTL_ACH,
     "international_wire": _FEE_INTL_WIRE,
+    "bacs": _FEE_BACS,
+    "faster_payments": _FEE_FASTER_PAYMENTS,
+    "chaps": _FEE_CHAPS,
     "check": Decimal("0"),
     "virtual_card": Decimal("0"),
 }
@@ -145,15 +157,27 @@ def pick_corridor(
          international routing is `create_payment_run`'s blanket default,
          not a real choice, and falls through to auto-selection instead.
       2. Same currency, US destination → ACH.
-      3. Same currency, SEPA destination → SEPA Credit Transfer.
-      4. Same currency, anywhere else → international wire (SWIFT).
-      5. Different currency → international wire with FX leg.
+      3. Same currency, EUR + SEPA destination → SEPA Credit Transfer.
+      4. Same currency, GBP + GB destination → Faster Payments (UK domestic).
+      5. Same-currency USD to a Global-ACH country → international ACH (IAT).
+      6. Same currency, anywhere else → international wire (SWIFT).
+      7. Different currency → international wire with FX leg.
+
+    Note (1): a UK domestic rail (`bacs` / `faster_payments` / `chaps`) counts
+    as a "trustworthy choice" only on a genuinely GBP/GB destination — a plain
+    `ach` default there is `create_payment_run`'s blanket value, not a choice,
+    and falls through to Faster Payments.
     """
     src = source_currency.upper()
     tgt = target_currency.upper()
     country = (target_country or "").upper() or None
     requires_fx = src != tgt
     is_domestic_us = not requires_fx and tgt == "USD" and (country is None or country == "US")
+    # Same-currency GBP to a GB vendor (or no country given — a GBP invoice paid
+    # by a GBP-home org is overwhelmingly domestic). Used to fall through to the
+    # foreign-same-currency `international_wire` return below, forcing SWIFT +
+    # the 2.5% anchor + IBAN demands on a payment that never leaves the UK.
+    is_domestic_uk = not requires_fx and tgt == "GBP" and (country is None or country == "GB")
 
     # Only honor `requested_method` as a real override when it's either an
     # EXPLICIT international method (nothing defaults to those) or the
@@ -166,7 +190,14 @@ def pick_corridor(
     # there instead of routing correctly. Fall through to auto-selection
     # below exactly as if no method had been requested.
     honor_override = bool(requested_method) and (
-        is_international_payment_method(requested_method) or is_domestic_us
+        is_international_payment_method(requested_method)
+        or is_domestic_us
+        # A UK domestic rail asked for explicitly on a genuinely UK-domestic
+        # destination — `bacs` / `chaps` never arrive as a default, so seeing
+        # one really is a choice. A plain `ach`/`wire` default for a GBP/GB
+        # payment is NOT (there is no UK ACH), so it falls through to
+        # auto-selection → Faster Payments.
+        or (is_domestic_uk and normalize_payment_method(requested_method) in _UK_DOMESTIC_METHODS)
     )
 
     if honor_override:
@@ -186,17 +217,25 @@ def pick_corridor(
         fee = CORRIDOR_OVERRIDE_FEES.get(method, _FEE_INTL_WIRE)
         if method == "wire" and requires_fx:
             fee = _FEE_INTL_WIRE
+        # UK domestic rails use a 6-digit sort code + 8-digit account number —
+        # never an IBAN or a SWIFT/BIC — so a `bacs`/`faster_payments`/`chaps`
+        # override must NOT pick up `requires_iban` from `is_sepa_country("GB")`
+        # (GB is in the SEPA scheme for EUR, irrelevant to a GBP payment).
+        is_uk_domestic_method = method in _UK_DOMESTIC_METHODS
         return CorridorChoice(
             method=method,
             expected_fee_pct=fee,
             requires_fx=requires_fx,
-            requires_swift=method in {"wire", "international_wire"} or requires_fx,
+            requires_swift=(
+                not is_uk_domestic_method
+                and (method in {"wire", "international_wire"} or requires_fx)
+            ),
             # international_ach uses local account formats, not IBAN,
             # but Canadian / European destinations may still carry one
             # — we leave it to the orchestrator to enforce on the
             # SEPA-country case if the caller forces it.
-            requires_iban=method == "sepa"
-            or (method != "international_ach" and is_sepa_country(country)),
+            requires_iban=not is_uk_domestic_method
+            and (method == "sepa" or (method != "international_ach" and is_sepa_country(country))),
             notes="explicit method override",
         )
 
@@ -230,6 +269,23 @@ def pick_corridor(
             notes="SEPA Credit Transfer (EU same-currency)",
         )
 
+    # GBP → GB (or GBP with no country) → UK domestic. Faster Payments is the
+    # default: near-instant, effectively free, covers the overwhelming majority
+    # of AP payments. A very-high-value payment above the Faster Payments limit
+    # should be sent with `requested_method="chaps"`; a batched low-priority run
+    # with `requested_method="bacs"`. NONE of these touch SWIFT / IBAN / FX —
+    # UK domestic uses a sort code + account number.
+    if is_domestic_uk:
+        return CorridorChoice(
+            method="faster_payments",
+            expected_fee_pct=_FEE_FASTER_PAYMENTS,
+            processor_hint="modern_treasury",
+            requires_fx=False,
+            requires_swift=False,
+            requires_iban=False,
+            notes="UK domestic (Faster Payments)",
+        )
+
     # USD outbound to a Global-ACH destination → IAT (international
     # ACH). Cheaper than SWIFT for low-value payments to CA/MX/UK +
     # selected LATAM corridors. The funding leg is USD; the receiving
@@ -248,9 +304,8 @@ def pick_corridor(
             notes=f"NACHA Global ACH (IAT) to {country}",
         )
 
-    # Same currency, foreign country, not SEPA, not a Global-ACH
-    # destination → SWIFT wire. This is the GBP→GBP-to-UK path and
-    # the JPY→Japan path.
+    # Same currency, foreign country, not SEPA, not UK-domestic, not a
+    # Global-ACH destination → SWIFT wire. This is the JPY→Japan path.
     return CorridorChoice(
         method="international_wire",
         expected_fee_pct=_FEE_INTL_WIRE,

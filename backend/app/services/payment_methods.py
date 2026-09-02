@@ -39,6 +39,9 @@ Rail-by-rail:
 ``sepa``              reportable   SEPA Credit Transfer — a bank rail.
 ``international_ach`` reportable   NACHA Global ACH / IAT — a bank rail.
 ``international_wire``reportable   SWIFT wire.
+``bacs``              reportable   UK BACS — a batched domestic bank credit.
+``faster_payments``  reportable   UK Faster Payments — instant domestic bank credit.
+``chaps``             reportable   UK CHAPS — same-day high-value domestic bank credit.
 ``virtual_card``      EXCLUDED     Payment card. The card network / issuer is the
                                    settlement entity and files the 1099-K.
 ===================== ============ ===============================================
@@ -76,6 +79,10 @@ IRS_1099_REPORTABLE_METHODS: frozenset[str] = frozenset(
         "sepa",
         "international_ach",
         "international_wire",
+        # UK domestic bank rails — a direct payment by the payer, same as ACH.
+        "bacs",
+        "faster_payments",
+        "chaps",
     }
 )
 
@@ -120,6 +127,12 @@ DOMESTIC_PAYMENT_METHODS: frozenset[str] = frozenset(
         "wire",
         "rtp",
         "virtual_card",
+        # UK domestic rails — money stays inside the UK banking system, no FX,
+        # no KYC-corridor risk. `pick_corridor` routes a same-currency GBP/GB
+        # payment onto `faster_payments`; `bacs` / `chaps` are override-only.
+        "bacs",
+        "faster_payments",
+        "chaps",
     }
 )
 

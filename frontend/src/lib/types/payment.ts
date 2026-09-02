@@ -36,15 +36,38 @@ export const PAYMENT_STATUS_LABELS: Record<PaymentStatus, string> = {
 	voided: 'Voided'
 };
 
-export type PaymentMethod = 'ach' | 'wire' | 'check' | 'virtual_card';
+// UK domestic bank rails (bacs / faster_payments / chaps). A same-currency
+// GBP payment to a GB vendor stays inside the UK banking system (sort code +
+// account number — no IBAN, no SWIFT, no FX); the backend corridor selector
+// (`payment_corridor.pick_corridor`) auto-selects `faster_payments` and honours
+// an explicit `bacs` / `chaps` override. See issue #328.
+export type PaymentMethod =
+	| 'ach'
+	| 'wire'
+	| 'check'
+	| 'virtual_card'
+	| 'bacs'
+	| 'faster_payments'
+	| 'chaps';
 
-export const PAYMENT_METHODS: PaymentMethod[] = ['ach', 'wire', 'check', 'virtual_card'];
+export const PAYMENT_METHODS: PaymentMethod[] = [
+	'ach',
+	'wire',
+	'check',
+	'virtual_card',
+	'bacs',
+	'faster_payments',
+	'chaps'
+];
 
 export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
 	ach: 'ACH',
 	wire: 'Wire',
 	check: 'Check',
-	virtual_card: 'Virtual Card'
+	virtual_card: 'Virtual Card',
+	bacs: 'BACS',
+	faster_payments: 'Faster Payments',
+	chaps: 'CHAPS'
 };
 
 export interface Payment {
