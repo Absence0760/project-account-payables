@@ -40,6 +40,9 @@ class MockPaymentAdapter(PaymentAdapter):
         "sepa",
         "international_wire",
         "international_ach",
+        "bacs",
+        "faster_payments",
+        "chaps",
     )
 
     # Default fee schedule baked in so the quote optimizer has
@@ -54,6 +57,9 @@ class MockPaymentAdapter(PaymentAdapter):
         "international_ach": Decimal("0.0080"),
         "international_wire": Decimal("0.0250"),
         "virtual_card": Decimal("0"),
+        "faster_payments": Decimal("0"),
+        "bacs": Decimal("0"),
+        "chaps": Decimal("0.0010"),
     }
     _DEFAULT_ETA_DAYS: dict[str, int] = {
         "ach": 2,
@@ -64,6 +70,9 @@ class MockPaymentAdapter(PaymentAdapter):
         "international_ach": 3,
         "international_wire": 1,
         "virtual_card": 0,
+        "faster_payments": 0,
+        "bacs": 3,
+        "chaps": 0,
     }
 
     async def quote_payment(self, payload: PaymentPayload) -> CorridorQuote:

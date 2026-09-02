@@ -19,6 +19,16 @@ class PaymentMethod(StrEnum):
     wire = "wire"
     check = "check"
     virtual_card = "virtual_card"
+    # UK domestic rails. A GBP→GB domestic payment used to fall through to
+    # `international_wire` (SWIFT + a 2.5% fee anchor) because the corridor
+    # selector had no domestic-GB branch and none of these rails existed;
+    # `payment_corridor.pick_corridor` now routes a same-currency GBP/GB
+    # payment onto Faster Payments, with BACS / CHAPS available as explicit
+    # `requested_method` overrides (issue #328). All three are domestic bank
+    # rails — 1099-reportable, not card, no FX leg.
+    bacs = "bacs"
+    faster_payments = "faster_payments"
+    chaps = "chaps"
 
 
 class PaymentRunStatus(StrEnum):
