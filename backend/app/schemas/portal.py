@@ -184,6 +184,12 @@ class PortalInvoiceListItem(BaseModel):
     # resubmitting. Same text the rejection email already carries; never the
     # rejecting employee's name.
     rejection_reason: str | None = None
+    # A vendor-facing "what is this waiting on" category — set ONLY while the
+    # invoice is in a processing phase (review / processing / erp), NULL
+    # otherwise. PII-free: a bucket, not an internal status or a user name. The
+    # portal renders it (localized) beside the phase chip, with `waiting_on_days`.
+    waiting_on: str | None = None
+    waiting_on_days: int | None = None
 
 
 class PortalInvoiceListResponse(PageMeta):

@@ -176,6 +176,11 @@ export interface PortalInvoiceListItem {
 	/** AP's reason, present only while `status === 'rejected'` — what to fix
 	 *  before resubmitting. Plain text; render escaped, never as HTML. */
 	rejection_reason: string | null;
+	/** Vendor-facing "what is this waiting on" bucket — `'review' | 'processing'
+	 *  | 'erp'` while the invoice is in a processing phase, else null. Rendered
+	 *  via `portal.invoices.waitingOn.<bucket>` + `waiting_on_days`. */
+	waiting_on: 'review' | 'processing' | 'erp' | null;
+	waiting_on_days: number | null;
 }
 
 export interface PortalPaymentListItem {

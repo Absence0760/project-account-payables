@@ -182,8 +182,26 @@ _PORTAL_PAYMENT_STATUSES = (
 )
 
 
+# Processing phase → a vendor-facing "waiting on" bucket. Anything NOT here
+# (new / approved / paid / rejected / done) gets no `waiting_on` — the phase
+# chip alone is enough. Buckets, never internal status strings.
+_WAITING_ON_CATEGORY = {
+    "pending": "processing",
+    "failed": "processing",
+    "ready_for_review": "review",
+    "sending_to_erp": "erp",
+    "sent_to_erp": "erp",
+    "posted_in_erp": "erp",
+}
+
+
 def _portal_invoice_item(inv: Invoice, *, rejection_reason: str | None = None):
     status = inv.status.value if hasattr(inv.status, "value") else str(inv.status)
+    waiting_on = _WAITING_ON_CATEGORY.get(status)
+    waiting_on_days = None
+    if waiting_on is not None:
+        since = (inv.updated_at or inv.created_at).date()
+        waiting_on_days = max(0, (utc_today() - since).days)
     return PortalInvoiceListItem(
         id=str(inv.id),
         invoice_number=inv.invoice_number or "",
@@ -197,6 +215,8 @@ def _portal_invoice_item(inv: Invoice, *, rejection_reason: str | None = None):
         # Only meaningful while the invoice IS rejected — a reworked invoice that
         # moved on keeps its old exception row, so gate on the live status.
         rejection_reason=rejection_reason if status == InvoiceStatus.rejected.value else None,
+        waiting_on=waiting_on,
+        waiting_on_days=waiting_on_days,
     )
 
 

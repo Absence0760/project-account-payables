@@ -30,6 +30,14 @@
 
 	type PortalInvoice = PortalInvoiceListItem;
 
+	// `waiting_on` bucket → localized "what is this waiting on" line. Typed so
+	// `m()` stays checked (frontend/CLAUDE.md — dynamic keys go through a map).
+	const WAITING_ON_KEY = {
+		review: 'portal.invoices.waitingOn.review',
+		processing: 'portal.invoices.waitingOn.processing',
+		erp: 'portal.invoices.waitingOn.erp',
+	} as const;
+
 	let items = $state<PortalInvoice[]>([]);
 	// `total` is the server's count of ALL the vendor's invoices, not just the
 	// loaded page — the list is paged, so the footer can only claim "showing
@@ -351,6 +359,12 @@
 						<td class="num">{fmtAmount(inv.amount, inv.currency)}</td>
 						<td>
 							<span class="status s-{inv.status}">{portalInvoiceStatusLabel(inv.status)}</span>
+							{#if inv.waiting_on}
+								<div class="waiting-on">
+									{m(WAITING_ON_KEY[inv.waiting_on])}{#if (inv.waiting_on_days ?? 0) > 0}
+										&nbsp;· {m('portal.invoices.waitingOnDays', { days: inv.waiting_on_days ?? 0 })}{/if}
+								</div>
+							{/if}
 							{#if inv.status === 'rejected'}
 								{#if inv.rejection_reason}
 									<div class="reject-reason">
@@ -557,6 +571,11 @@
 		font-size: 0.78rem;
 		color: var(--text-muted);
 		line-height: 1.35;
+	}
+	.waiting-on {
+		margin-top: 4px;
+		font-size: 0.76rem;
+		color: var(--text-muted);
 	}
 	.reject-label {
 		display: block;
