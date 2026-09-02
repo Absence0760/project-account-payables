@@ -1058,7 +1058,19 @@
 <PageHeader title={m('org.title')}>
 	{#if org}
 		<div class="sections">
-			<section class="card">
+			<section class="getting-started card">
+				<h2>{m('org.gettingStarted.title')}</h2>
+				<p class="card-hint">{m('org.gettingStarted.intro')}</p>
+				<nav class="gs-links" aria-label={m('org.gettingStarted.title')}>
+					<a href="#org-company">{m('org.gettingStarted.company')}</a>
+					<a href="#org-defaults">{m('org.gettingStarted.defaults')}</a>
+					<a href="/admin">{m('org.gettingStarted.users')}</a>
+					<a href="#org-payments">{m('org.gettingStarted.approvals')}</a>
+					<a href="#org-branding">{m('org.gettingStarted.branding')}</a>
+				</nav>
+			</section>
+
+			<section class="card" id="org-company">
 				<h2>{m('org.section.company')}</h2>
 				<div class="form-grid">
 					<label>
@@ -1097,7 +1109,7 @@
 				</div>
 			</section>
 
-			<section class="card">
+			<section class="card" id="org-defaults">
 				<h2>{m('org.section.defaults')}</h2>
 				<p class="card-hint">{m('org.defaults.hint')}</p>
 				<div class="form-grid">
@@ -1145,7 +1157,7 @@
 				</div>
 			</section>
 
-			<section class="card">
+			<section class="card" id="org-branding">
 				<h2>{m('org.section.branding')}</h2>
 				<p class="card-hint">
 					{m('org.branding.hint')}
@@ -1664,7 +1676,7 @@
 				</div>
 			</section>
 
-			<section class="card">
+			<section class="card" id="org-payments">
 				<h2>{m('org.section.payments')}</h2>
 				<p class="card-hint">
 					{m('org.payments.hint')}
@@ -2132,6 +2144,29 @@
 		font-size: 0.82rem;
 		color: var(--text-muted);
 		margin: 0 0 14px;
+	}
+
+	/* First-time-admin wayfinding — links jump to the sections a new tenant
+	   configures first. Purely a shortcut; nothing is hidden. */
+	.getting-started {
+		border-color: var(--accent);
+	}
+
+	.gs-links {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px 18px;
+		margin-top: 4px;
+	}
+
+	.gs-links a {
+		font-size: 0.85rem;
+		color: var(--accent);
+		text-decoration: none;
+	}
+
+	.gs-links a:hover {
+		text-decoration: underline;
 	}
 
 	.form-grid {
