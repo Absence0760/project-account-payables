@@ -4,6 +4,7 @@
 	import type { InvoiceStatus } from '$lib/types/invoice';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import KpiCard from '$lib/components/ui/KpiCard.svelte';
+	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 	import { formatMoney } from '$lib/utils/money';
 	import { formatDate } from '$lib/utils/time';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
@@ -169,6 +170,15 @@
 			<p>{m('dashboard.error.loadFailed')}</p>
 			<button class="btn-primary" onclick={load}>{m('dashboard.error.retry')}</button>
 		</div>
+	{:else if data && data.total_invoices === 0}
+		<EmptyState
+			icon="📄"
+			heading={m('emptyState.dashboard.heading')}
+			description={m('emptyState.dashboard.description')}
+			actionLabel={m('emptyState.dashboard.action')}
+			actionHref="/invoices"
+			testId="dashboard-empty-state"
+		/>
 	{:else if data}
 		<!-- KPI Cards -->
 		<div class="kpi-row">

@@ -19,6 +19,7 @@
 		type PortalInvoicePhase,
 	} from '$lib/types/portalStatus';
 	import PortalListFilters from '$lib/components/portal/PortalListFilters.svelte';
+	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 	import SupplierChatThread from '$lib/components/chat/SupplierChatThread.svelte';
 	import type { PortalChatThread } from '$lib/types/supplierChat';
 	import {
@@ -42,6 +43,9 @@
 	let message = $state('');
 	let downloadingFileId = $state<string | null>(null);
 	let resubmittingId = $state<string | null>(null);
+	// Ref to the header's hidden file input, so the onboarding EmptyState's
+	// action can open the same file picker.
+	let uploadInput: HTMLInputElement | undefined = $state();
 
 	const hasMore = $derived(items.length < total);
 
@@ -239,7 +243,13 @@
 	<header>
 		<h1>{m('portal.invoices.title')}</h1>
 		<label class="upload-btn" class:uploading>
-			<input type="file" accept="application/pdf,image/*" onchange={handleUpload} disabled={uploading} />
+			<input
+				type="file"
+				accept="application/pdf,image/*"
+				bind:this={uploadInput}
+				onchange={handleUpload}
+				disabled={uploading}
+			/>
 			{uploading ? m('portal.invoices.submitting') : m('portal.invoices.submit')}
 		</label>
 	</header>
@@ -260,17 +270,23 @@
 	{#if loading && !items.length}
 		<div class="loading">{m('portal.common.loading')}</div>
 	{:else if !items.length}
-		<div class="empty">
-			{#if filtered}
+		{#if filtered}
+			<div class="empty">
 				<p>{m('portal.invoices.emptyFiltered')}</p>
 				<button type="button" class="link-btn" onclick={() => filtersEl?.reset()}
 					>{m('portal.invoices.clearFilters')}</button
 				>
-			{:else}
-				<p>{m('portal.invoices.empty')}</p>
-				<p class="hint">{m('portal.invoices.emptyHint')}</p>
-			{/if}
-		</div>
+			</div>
+		{:else}
+			<EmptyState
+				icon="📄"
+				heading={m('portal.invoices.empty')}
+				description={m('portal.invoices.emptyHint')}
+				actionLabel={m('portal.invoices.submit')}
+				onaction={() => uploadInput?.click()}
+				testId="portal-invoices-empty-state"
+			/>
+		{/if}
 	{:else}
 		<table>
 			<thead>

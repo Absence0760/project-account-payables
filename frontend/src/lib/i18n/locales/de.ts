@@ -123,6 +123,14 @@ export const messages = {
 	'dashboard.overdue': 'Überfällig',
 	'dashboard.error.loadFailed': 'Dashboard konnte nicht geladen werden.',
 	'dashboard.error.retry': 'Erneut versuchen',
+	'emptyState.dashboard.heading': 'Willkommen – erfassen wir Ihre erste Rechnung',
+	'emptyState.dashboard.description':
+		'Sobald Sie Rechnungen hochladen oder importieren, erscheinen hier Ihre Ausgaben-, Fälligkeits- und Cashflow-Kennzahlen.',
+	'emptyState.dashboard.action': 'Zu den Rechnungen',
+	'emptyState.invoices.heading': 'Noch keine Rechnungen',
+	'emptyState.invoices.description':
+		'Laden Sie ein PDF hoch, erstellen Sie eine manuell oder importieren Sie eine CSV-Datei, um Ihre offenen Verbindlichkeiten zu laden.',
+	'emptyState.invoices.action': 'Rechnungen hochladen',
 
 	// Invoices list
 	'invoices.title': 'Rechnungen',

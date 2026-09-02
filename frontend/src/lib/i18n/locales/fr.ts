@@ -123,6 +123,14 @@ export const messages = {
 	'dashboard.overdue': 'En retard',
 	'dashboard.error.loadFailed': 'Impossible de charger le tableau de bord.',
 	'dashboard.error.retry': 'Réessayer',
+	'emptyState.dashboard.heading': 'Bienvenue – ajoutons votre première facture',
+	'emptyState.dashboard.description':
+		'Une fois vos factures téléversées ou importées, vos indicateurs de dépenses, d’ancienneté et de trésorerie apparaîtront ici.',
+	'emptyState.dashboard.action': 'Aller aux factures',
+	'emptyState.invoices.heading': 'Aucune facture pour l’instant',
+	'emptyState.invoices.description':
+		'Téléversez un PDF, créez-en une manuellement ou importez un CSV pour charger vos comptes fournisseurs.',
+	'emptyState.invoices.action': 'Téléverser des factures',
 
 	// Invoices list
 	'invoices.title': 'Factures',

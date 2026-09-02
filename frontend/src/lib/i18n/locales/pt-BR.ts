@@ -124,6 +124,14 @@ export const messages = {
 	'dashboard.overdue': 'Vencida',
 	'dashboard.error.loadFailed': 'Não foi possível carregar o painel.',
 	'dashboard.error.retry': 'Tentar novamente',
+	'emptyState.dashboard.heading': 'Boas-vindas — vamos registrar sua primeira nota fiscal',
+	'emptyState.dashboard.description':
+		'Depois que você enviar ou importar notas fiscais, suas métricas de gastos, prazos e fluxo de caixa aparecerão aqui.',
+	'emptyState.dashboard.action': 'Ir para notas fiscais',
+	'emptyState.invoices.heading': 'Nenhuma nota fiscal ainda',
+	'emptyState.invoices.description':
+		'Envie um PDF, crie uma manualmente ou importe um CSV para carregar suas contas a pagar.',
+	'emptyState.invoices.action': 'Enviar notas fiscais',
 
 	// Invoices list
 	'invoices.title': 'Faturas',

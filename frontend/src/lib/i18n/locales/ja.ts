@@ -127,6 +127,14 @@ export const messages = {
 	'dashboard.overdue': '期限超過',
 	'dashboard.error.loadFailed': 'ダッシュボードを読み込めませんでした。',
 	'dashboard.error.retry': '再試行',
+	'emptyState.dashboard.heading': 'ようこそ — 最初の請求書を取り込みましょう',
+	'emptyState.dashboard.description':
+		'請求書をアップロードまたはインポートすると、支出・エイジング・キャッシュフローの指標がここに表示されます。',
+	'emptyState.dashboard.action': '請求書へ移動',
+	'emptyState.invoices.heading': '請求書がまだありません',
+	'emptyState.invoices.description':
+		'PDF をアップロードするか、手動で作成するか、CSV をインポートして未払金を取り込んでください。',
+	'emptyState.invoices.action': '請求書をアップロード',
 
 	// Invoices list
 	'invoices.title': '請求書',
