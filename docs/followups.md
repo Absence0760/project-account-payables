@@ -1110,18 +1110,18 @@ deferred-with-reason finding awaiting a product/architecture call.
       upload action, role-gated), and `/portal/invoices` (vendor submitted
       nothing → the submit action). Each page keeps its `DataTable` +
       loading/errored/filtered-empty copy for every other state.
-      **Still open:** `/vendors` and the Organization/Settings first-run
-      surfaces (the create-vendor UI below is the natural pairing for
-      `/vendors`).
-      **Trigger:** the create-vendor UI, or the next `/vendors` / `/organization`
-      slice.
+      **Still open:** the `/vendors` list's empty state (the create-vendor UI
+      shipped in this PR is the natural home for it, but the EmptyState wasn't
+      wired there) — a small follow-through.
+      **Trigger:** the next `/vendors` slice.
 
-- [ ] **[Low] Organization/Settings is ~15 undifferentiated advanced sections
-      with no first-time-admin prioritization.** No ordering, grouping, or
-      "start here" affordance.
-      **Durable fix:** group the sections and surface the handful a new admin
-      needs first (users, entities, branding, approval thresholds).
-      **Trigger:** the next redesign pass on `/organization`.
+- [x] **[Low] Organization/Settings first-time-admin prioritization — DONE
+      (PR #343).** A "Getting started" wayfinding strip at the top of
+      `/organization` links a new admin to the five sections they configure
+      first (Company Profile, Invoice Defaults, Users & Roles, approval
+      thresholds, Branding). Sections are neither reordered nor hidden — it's a
+      shortcut strip with anchor `id=`s. Guard:
+      `tests-e2e/organization/getting-started.spec.ts`.
 
 - [ ] **[Low] The marketing pricing page (`Pricing.svelte`) is USD-only.**
       Hardcoded `$` figures; no currency awareness.
@@ -1174,12 +1174,15 @@ deferred-with-reason finding awaiting a product/architecture call.
 
 **Volume surfaces:**
 
-- [ ] **`GET /api/payments/queue` has no pagination.** It loads the tenant's
-      entire approved-unpaid invoice set on every page view.
-      **Durable fix:** keyset pagination with an `id` tie-breaker, matching the
-      invoice list; the frontend `/payments` Queue tab consumes "Load more".
-      **Trigger:** the next slice touching the payments queue, or the first
-      tenant that reports the page hanging.
+- [x] **`GET /api/payments/queue` pagination — DONE (PR #343).** `?page=` /
+      `?page_size=` on `GET /queue` (order `due_date ASC NULLS LAST, id ASC` —
+      the `id` tie-breaker the invoice list has), plus a `GET /queue/ids`
+      resolver for the whole selectable set (capped, currency-bucketed). The
+      Queue tab renders Load-More; "select all N matching" resolves via
+      `/queue/ids` (not the loaded rows) and the pay-bar count / per-currency
+      subtotals / mixed-currency guard derive from the whole-set rollup.
+      Guards: `tests/test_payment_queue_pagination.py`,
+      `tests-e2e/payments/queue-pagination.spec.ts`.
 
 - [x] **URL filter/search persistence on `/invoices`, `/payments`, `/vendors`
       — DONE (PR #343).** Each page now initialises `search` + the status chip
@@ -1210,14 +1213,19 @@ deferred-with-reason finding awaiting a product/architecture call.
       **Trigger:** a decision to support UK/EU VAT properly (a prerequisite for
       the UK-business go-to-market).
 
-- [ ] **A GBP→GB domestic payment falls through to `international_wire`.**
-      `payment_corridor.pick_corridor` has no domestic-GB branch, forcing SWIFT
-      and a 2.5% fee anchor; BACS / Faster Payments / CHAPS don't exist in the
-      codebase or the payment-method dropdowns.
-      **Durable fix:** add the UK domestic rails to the `PaymentMethod` enum and
-      `DOMESTIC_PAYMENT_METHODS`, and a GBP-domestic corridor branch.
-      **Trigger:** the UK-business go-to-market, or the next slice touching
-      `payment_corridor`.
+- [x] **GBP→GB domestic payment rails — DONE (PR #343).** `bacs`,
+      `faster_payments`, `chaps` added to the `PaymentMethod` enum, classified
+      on both `payment_methods.py` axes (IRS-reportable + `DOMESTIC`), with fee
+      anchors as `Decimal`. `pick_corridor` gets a GBP/GB branch:
+      `not requires_fx and target_currency == "GBP" and country in (None, "GB")`
+      → Faster Payments (no SWIFT, no FX lock, no IBAN — UK domestic uses sort
+      code + account number even though `is_sepa_country("GB")` is true).
+      Cross-currency into GBP still routes `international_wire`. No migration
+      (`Payment.method` is a `String`); only the `mock` adapter gained the
+      rails. Guards: `tests/test_payment_corridor_uk_domestic.py`, extended
+      `test_payment_methods.py`.
+      **Still open (separate finding, above):** the per-line VAT tax model —
+      that's the architecture item, unrelated to the payment rail.
 
 **Investigated, deliberately not changed (recorded so it isn't re-litigated):**
 
