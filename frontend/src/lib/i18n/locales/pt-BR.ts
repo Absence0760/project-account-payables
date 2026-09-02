@@ -212,6 +212,18 @@ export const messages = {
 	'payments.queue.blocked.generic': 'Uma exceção não resolvida bloqueia o pagamento',
 	'payments.queue.discountSave': 'Economize {amount}',
 	'payments.queue.discountBy': '{percent}% até {date}',
+	'payments.queue.loadMore': 'Carregar mais ({shown} de {total})',
+	'payments.queue.showingAll':
+		'{total, plural, one {Mostrando # fatura} other {Mostrando todas as # faturas}}',
+	'payments.queue.selectAllMatching': 'Selecionar todas as {total} correspondentes',
+	'payments.queue.allMatchingSelected': 'Todas as correspondentes selecionadas',
+	'payments.queue.selectedAllMatching':
+		'{n, plural, one {# fatura correspondente selecionada} other {# faturas correspondentes selecionadas}}',
+	'payments.queue.selectAllTruncated':
+		'Selecionadas as primeiras {shown} de {total} correspondentes — remova algumas linhas para selecionar o restante.',
+	'payments.queue.selectAllFailed': 'Falha ao selecionar todas as correspondentes',
+	'payments.queue.reviewPartial':
+		'{shown} de {n} faturas selecionadas exibidas aqui — a execução incluirá todas as {n}.',
 	'payments.col.invoiceNumber': 'N.º da fatura',
 	'payments.col.vendor': 'Fornecedor',
 	'payments.col.amount': 'Valor',

@@ -230,6 +230,18 @@ export const en = {
 	'payments.queue.blocked.generic': 'Unresolved exception blocks payment',
 	'payments.queue.discountSave': 'Save {amount}',
 	'payments.queue.discountBy': '{percent}% by {date}',
+	'payments.queue.loadMore': 'Load more ({shown} of {total})',
+	'payments.queue.showingAll':
+		'{total, plural, one {Showing all # invoice} other {Showing all # invoices}}',
+	'payments.queue.selectAllMatching': 'Select all {total} matching',
+	'payments.queue.allMatchingSelected': 'All matching selected',
+	'payments.queue.selectedAllMatching':
+		'{n, plural, one {Selected all # matching invoice} other {Selected all # matching invoices}}',
+	'payments.queue.selectAllTruncated':
+		'Selected the first {shown} of {total} matching — clear some rows to select the rest.',
+	'payments.queue.selectAllFailed': 'Failed to select all matching',
+	'payments.queue.reviewPartial':
+		'{shown} of {n} selected invoices shown here — the run will include all {n}.',
 	'payments.col.invoiceNumber': 'Invoice #',
 	'payments.col.vendor': 'Vendor',
 	'payments.col.amount': 'Amount',

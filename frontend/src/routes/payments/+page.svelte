@@ -17,7 +17,7 @@
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
-	import { formatMoney } from '$lib/utils/money';
+	import { formatMoney, type MoneyAmount } from '$lib/utils/money';
 	import {
 		formatCurrencyTotals,
 		groupAmountsByCurrency,
@@ -202,7 +202,48 @@
 		blocked?: boolean;
 		blocked_reason?: string | null;
 	}
+
+	// Per-currency slice of the WHOLE queue (or of the whole selectable set, on
+	// `/queue/ids`). Money is exact decimal STRING — the backend sums it in SQL
+	// so the frontend never reduces a paginated page into a total that would
+	// then contradict the "N of M" footer. `total_amount` on `/queue` covers
+	// every payable row; on `/queue/ids` only the selectable (unblocked) ones.
+	interface QueueCurrencySlice {
+		currency: string;
+		count: number;
+		total_amount: string;
+		total_savings: string;
+	}
+	interface QueueResponse {
+		items: QueueItem[];
+		total: number;
+		page: number;
+		page_size: number;
+		selectable_total: number;
+		blocked_total: number;
+		currency?: string;
+		unconverted_count?: number;
+		by_currency?: QueueCurrencySlice[];
+	}
+	interface QueueIdsResponse {
+		ids: string[];
+		total: number;
+		truncated: boolean;
+		currency?: string;
+		by_currency?: QueueCurrencySlice[];
+	}
+
+	const QUEUE_PAGE_SIZE = 20;
 	let queue = $state<QueueItem[]>([]);
+	let queuePage = $state(1);
+	let queueTotal = $state(0);
+	let queueLoadingMore = $state(false);
+	// Whole-queue counts + per-currency money, straight off the response — a
+	// KPI/banner derived from the loaded page would undercount past page 1.
+	let queueBlockedTotal = $state(0);
+	let queueSelectableTotal = $state(0);
+	let queueByCurrency = $state<QueueCurrencySlice[]>([]);
+	let hasMoreQueue = $derived(queue.length < queueTotal);
 	// Loading / errored are tracked separately from `queue.length === 0` because
 	// the empty copy here is a claim about MONEY — "no invoices are ready for
 	// payment". Rendered while the fetch is in flight, or left standing forever
@@ -217,6 +258,17 @@
 
 	// Queue selection and payment run creation
 	let selectedQueue = $state<Set<string>>(new Set());
+	// True once "Select all N matching" resolved the WHOLE selectable queue —
+	// not just the loaded page — into `selectedQueue` via `GET
+	// /api/payments/queue/ids`. While true the prune effect must NOT narrow the
+	// selection down to the loaded rows (that would drop every id past the
+	// page), and the pay-bar money totals come from the backend's own
+	// per-currency breakdown of that set rather than the loaded rows. Mirrors
+	// `/invoices`' `selectedAllMatching`. Reset by clear / deselect-all / a
+	// fresh queue load.
+	let selectedAllQueueMatching = $state(false);
+	let selectingAllQueue = $state(false);
+	let selectAllQueueGroups = $state<QueueCurrencySlice[]>([]);
 	let paymentMethods = $state<Record<string, string>>({});
 	let creatingRun = $state(false);
 	let showReview = $state(false);
@@ -262,17 +314,23 @@
 	// The rows a payment run could actually be built from. Everything that
 	// counts, sums, selects-all or prunes reads THIS, never `queue` — a blocked
 	// row that slipped into the selection would take the whole draft down with
-	// a 409.
+	// a 409. Page-scoped: it covers the LOADED rows, which is why the blocked
+	// BANNER below reads `queueBlockedTotal` (whole set) instead.
 	let selectableQueue = $derived(queue.filter((q) => !isBlocked(q)));
-	let blockedQueueCount = $derived(queue.length - selectableQueue.length);
 
-	// Prune the queue selection to ids still SELECTABLE whenever the queue
-	// reloads (after an execute/void via onRunChanged/commitVoid drops the
+	// Prune the queue selection to ids still SELECTABLE whenever the loaded rows
+	// change (after an execute/void via onRunChanged/commitVoid drops the
 	// just-handled invoice — or after a refresh reveals that a selected row has
 	// since picked up a blocking exception). Otherwise the pay-bar count
 	// (`selectedQueue.size`) outruns the rows the money totals actually sum
 	// over. No-op (same Set) when clean.
+	//
+	// SKIPPED in "select all N matching" mode: that selection deliberately
+	// holds ids past the loaded page (resolved via `/queue/ids`), and pruning
+	// to the loaded rows would silently discard them — same rule as
+	// `/invoices`' `selectedAllMatching`.
 	$effect(() => {
+		if (selectedAllQueueMatching) return;
 		const pruned = pruneSelection(
 			selectedQueue,
 			selectableQueue.map((q) => q.id)
@@ -286,6 +344,18 @@
 
 	let selectedRows = $derived(queue.filter((q) => selectedQueue.has(q.id)));
 
+	/** One currency's subtotal, ready for {@link formatGroups} — `total` is an
+	 *  exact decimal STRING when it comes from the backend, a BigInt-scaled
+	 *  number when `groupAmountsByCurrency` summed the loaded rows. Never a
+	 *  cross-currency sum either way. */
+	type DisplayGroup = { currency: string; total: MoneyAmount };
+
+	function sliceToGroups(slices: QueueCurrencySlice[], key: 'total_amount' | 'total_savings'): DisplayGroup[] {
+		return slices
+			.filter((s) => Number(s[key]) > 0)
+			.map((s) => ({ currency: s.currency, total: s[key] }));
+	}
+
 	// Money arrives as string-Decimal, and each row carries its OWN currency.
 	// Reducing them into one figure was doubly wrong: it coerced exact decimals
 	// through binary floats, and — worse — it added EUR to USD and rendered the
@@ -294,31 +364,37 @@
 	// currency (BigInt-scaled, never a float reduce) and never across them; the
 	// UI shows each currency's subtotal side by side. No FX conversion happens
 	// on a read — see `backend/docs/multi-currency.md`.
-	let selectedGroups = $derived(
-		groupAmountsByCurrency(selectedRows, orgCurrency.currency)
+	//
+	// In "select all N matching" mode the selection reaches past the loaded
+	// page, so the per-currency totals come from the backend's own breakdown of
+	// the whole selectable set (`selectAllQueueGroups`) rather than the loaded
+	// rows — otherwise the pay-bar would understate a 50-invoice selection to
+	// whatever 20 rows happen to be on screen.
+	let selectedGroups = $derived<DisplayGroup[]>(
+		selectedAllQueueMatching
+			? sliceToGroups(selectAllQueueGroups, 'total_amount')
+			: groupAmountsByCurrency(selectedRows, orgCurrency.currency)
 	);
 
 	// `.filter(total > 0)` preserves the old `selectedSavings > 0` guard: a
 	// currency whose discounts sum to nothing must not add a "· save $0.00".
 	// A comparison against zero is a predicate, not money arithmetic.
-	let selectedSavingsGroups = $derived(
-		groupAmountsByCurrency(
-			selectedRows.filter((q) => q.discount_eligible && q.discount_amount)
-				.map((q) => ({ amount: q.discount_amount, currency: q.currency })),
-			orgCurrency.currency
-		).filter((g) => g.total > 0)
+	let selectedSavingsGroups = $derived<DisplayGroup[]>(
+		selectedAllQueueMatching
+			? sliceToGroups(selectAllQueueGroups, 'total_savings')
+			: groupAmountsByCurrency(
+					selectedRows.filter((q) => q.discount_eligible && q.discount_amount)
+						.map((q) => ({ amount: q.discount_amount, currency: q.currency })),
+					orgCurrency.currency
+				).filter((g) => g.total > 0)
 	);
 
-	// The whole queue's early-pay savings, grouped the same way. Derived from
-	// the rows rather than read off the response's `total_savings`, which is a
-	// naive cross-currency `SUM` on the backend (same defect, one level up).
-	// `/api/payments/queue` is unpaginated, so the rows we hold ARE the queue.
-	let queueSavingsGroups = $derived(
-		groupAmountsByCurrency(
-			queue.filter((q) => q.discount_eligible && q.discount_amount)
-				.map((q) => ({ amount: q.discount_amount, currency: q.currency })),
-			orgCurrency.currency
-		).filter((g) => g.total > 0)
+	// The whole queue's early-pay savings. Read off the response's own
+	// per-currency breakdown (`queueByCurrency`) — the queue is paginated now,
+	// so the loaded rows are no longer the whole queue. Still never a
+	// cross-currency sum: the backend groups by currency in SQL.
+	let queueSavingsGroups = $derived<DisplayGroup[]>(
+		sliceToGroups(queueByCurrency, 'total_savings')
 	);
 
 	// `create_payment_run_for_invoices` 422s a run spanning more than one
@@ -326,7 +402,7 @@
 	// because `PaymentRun.total_amount` is one bare Numeric with no currency of
 	// its own. So a mixed selection isn't just unreadable — it can't be
 	// submitted. Say so up front instead of letting the draft fail.
-	let mixedCurrencySelection = $derived(spansMultipleCurrencies(selectedGroups));
+	let mixedCurrencySelection = $derived(spansMultipleCurrencies(selectedGroups as CurrencyGroup[]));
 
 	/** Render a set of per-currency subtotals as one honest label.
 	 *
@@ -334,7 +410,7 @@
 	 *  row's OWN currency rather than the org default. Several → each subtotal
 	 *  side by side, separated (never added). Empty → a zero in the org
 	 *  currency, which is what "nothing selected" costs. */
-	function formatGroups(groups: CurrencyGroup[]): string {
+	function formatGroups(groups: DisplayGroup[]): string {
 		if (groups.length === 0) return formatCurrency(0);
 		// The per-currency rendering itself lives in `currencyGroups` now, so
 		// /expenses' KPI rollup and this pay bar can't drift on it; only the
@@ -367,6 +443,7 @@
 		createRunError = '';
 		if (allQueueSelected) {
 			selectedQueue = new Set();
+			selectedAllQueueMatching = false;
 		} else {
 			selectedQueue = new Set(selectableQueue.map(q => q.id));
 			for (const q of selectableQueue) {
@@ -375,8 +452,42 @@
 		}
 	}
 
+	// Resolve and select EVERY selectable (unblocked) invoice in the queue —
+	// not just the loaded page — via `GET /api/payments/queue/ids`. The header
+	// checkbox only ever covers the loaded rows; without this, "create draft
+	// run" silently acted on the loaded page and skipped the rest. The response
+	// carries the whole set's per-currency money breakdown, so the pay-bar
+	// stays honest without holding every row. Mirrors `/invoices`'
+	// `selectAllMatching()`.
+	async function selectAllQueueMatching() {
+		selectingAllQueue = true;
+		try {
+			const res = await api.get<QueueIdsResponse>('/api/payments/queue/ids');
+			selectedQueue = new Set(res.ids);
+			for (const id of res.ids) {
+				if (!paymentMethods[id]) paymentMethods[id] = 'ach';
+			}
+			selectAllQueueGroups = res.by_currency ?? [];
+			selectedAllQueueMatching = true;
+			createRunError = '';
+			if (res.truncated) {
+				toast(
+					m('payments.queue.selectAllTruncated', { shown: res.ids.length, total: res.total }),
+					'error'
+				);
+			} else {
+				toast(m('payments.queue.selectedAllMatching', { n: res.ids.length }), 'success');
+			}
+		} catch (err) {
+			toast(err instanceof Error ? err.message : m('payments.queue.selectAllFailed'), 'error');
+		} finally {
+			selectingAllQueue = false;
+		}
+	}
+
 	function clearQueueSelection() {
 		selectedQueue = new Set();
+		selectedAllQueueMatching = false;
 		showReview = false;
 		createRunError = '';
 	}
@@ -729,12 +840,22 @@
 	async function loadQueue() {
 		const token = queueSequence.start();
 		queueLoading = true;
+		// A fresh load re-bases the queue: any "select all N matching" set
+		// resolved against the previous contents no longer describes it (an
+		// execute/void via onRunChanged drops rows). Drop matching mode so the
+		// prune effect resumes narrowing the selection to what's on screen.
+		selectedAllQueueMatching = false;
 		try {
-			const data = await api.get<{ items: QueueItem[]; unconverted_count?: number }>(
-				'/api/payments/queue'
+			const data = await api.get<QueueResponse>(
+				`/api/payments/queue?page=1&page_size=${QUEUE_PAGE_SIZE}`
 			);
 			if (!queueSequence.canCommit(token)) return; // superseded by a newer load
 			queue = data.items;
+			queuePage = 1;
+			queueTotal = data.total;
+			queueByCurrency = data.by_currency ?? [];
+			queueBlockedTotal = data.blocked_total ?? 0;
+			queueSelectableTotal = data.selectable_total ?? 0;
 			queueUnconvertedCount = data.unconverted_count ?? 0;
 			queueErrored = false;
 		} catch (err) {
@@ -745,8 +866,46 @@
 		} finally {
 			// `isCurrentRequest`, not `canCommit`: a local edit that supersedes
 			// this request must still clear the spinner, or the table sits on
-			// "Loading…" forever with no request left to clear it.
-			if (queueSequence.isCurrentRequest(token)) queueLoading = false;
+			// "Loading…" forever with no request left to clear it. Clear BOTH
+			// flags — loadQueue and loadMoreQueue share `queueSequence`, so a
+			// Load-More that superseded this reload owns clearing whichever
+			// spinner is showing (mirrors `loadCards`).
+			if (queueSequence.isCurrentRequest(token)) {
+				queueLoading = false;
+				queueLoadingMore = false;
+			}
+		}
+	}
+
+	// Append the next page. `appendUnique` (never a raw spread) drops a row that
+	// re-surfaces when the underlying set shifts between fetches — a duplicated
+	// id crashes the keyed `{#each}`. Shares `queueSequence` with `loadQueue`,
+	// so a full reload landing mid-append retires this response.
+	async function loadMoreQueue() {
+		if (queueLoadingMore || !hasMoreQueue) return;
+		const token = queueSequence.start();
+		queueLoadingMore = true;
+		try {
+			const next = queuePage + 1;
+			const data = await api.get<QueueResponse>(
+				`/api/payments/queue?page=${next}&page_size=${QUEUE_PAGE_SIZE}`
+			);
+			if (!queueSequence.canCommit(token)) return;
+			queue = appendUnique(queue, data.items);
+			queuePage = next;
+			queueTotal = data.total;
+			queueByCurrency = data.by_currency ?? queueByCurrency;
+			queueBlockedTotal = data.blocked_total ?? queueBlockedTotal;
+			queueSelectableTotal = data.selectable_total ?? queueSelectableTotal;
+		} catch (err) {
+			if (queueSequence.isCurrentRequest(token)) {
+				toast(err instanceof Error ? err.message : 'Failed to load more of the payment queue', 'error');
+			}
+		} finally {
+			if (queueSequence.isCurrentRequest(token)) {
+				queueLoading = false;
+				queueLoadingMore = false;
+			}
 		}
 	}
 
@@ -1058,6 +1217,22 @@
 							<span class="pay-bar-savings">{m('payments.queue.save', { amount: formatGroups(selectedSavingsGroups) })}</span>
 						{/if}
 					</span>
+					{#if allQueueSelected && !selectedAllQueueMatching && queueSelectableTotal > selectableQueue.length}
+						<button
+							class="btn-select-all-matching"
+							data-testid="queue-select-all-matching"
+							disabled={selectingAllQueue}
+							onclick={selectAllQueueMatching}
+						>
+							{selectingAllQueue
+								? m('common.loading')
+								: m('payments.queue.selectAllMatching', { total: queueSelectableTotal })}
+						</button>
+					{:else if selectedAllQueueMatching}
+						<span class="pay-bar-all-matching" data-testid="queue-all-matching-note"
+							>{m('payments.queue.allMatchingSelected')}</span
+						>
+					{/if}
 					{#if !showReview}
 						<button
 							class="btn-pay"
@@ -1103,6 +1278,18 @@
 						{/each}
 					</tbody>
 				</table>
+				{#if selectedAllQueueMatching && selectedQueue.size > queue.filter((q) => selectedQueue.has(q.id)).length}
+					<!-- "Select all N matching" reaches past the loaded page, so the
+					     table above lists only the rows on screen. The run still
+					     covers all {selectedQueue.size}; the footer total is the
+					     backend's figure for the whole set. -->
+					<p class="review-partial" data-testid="review-partial-note">
+						{m('payments.queue.reviewPartial', {
+							shown: queue.filter((q) => selectedQueue.has(q.id)).length,
+							n: selectedQueue.size
+						})}
+					</p>
+				{/if}
 				{#if createRunError}
 					<!-- The server's own refusal, kept on screen. On the
 					     financial-integrity 409 this NAMES the invoice numbers
@@ -1128,9 +1315,9 @@
 			</div>
 		{/if}
 
-		{#if blockedQueueCount > 0}
+		{#if queueBlockedTotal > 0}
 			<p class="blocked-banner" role="status" data-testid="queue-blocked-banner">
-				{m('payments.queue.blockedCount', { n: blockedQueueCount })}
+				{m('payments.queue.blockedCount', { n: queueBlockedTotal })}
 			</p>
 		{/if}
 
@@ -1231,6 +1418,20 @@
 				{/each}
 			{/snippet}
 		</DataTable>
+
+		{#if hasMoreQueue}
+			<div class="load-more-row">
+				<button class="btn-load-more" onclick={loadMoreQueue} disabled={queueLoadingMore}>
+					{queueLoadingMore
+						? m('common.loading')
+						: m('payments.queue.loadMore', { shown: queue.length, total: queueTotal })}
+				</button>
+			</div>
+		{:else if queueTotal > 0}
+			<div class="load-more-row">
+				<span class="load-more-end">{m('payments.queue.showingAll', { total: queueTotal })}</span>
+			</div>
+		{/if}
 
 	{:else if activeTab === 'history'}
 		<DataTable
@@ -1799,6 +2000,41 @@
 	.pay-bar-savings {
 		color: #1fa86a;
 		font-weight: 600;
+	}
+
+	.btn-select-all-matching {
+		padding: 4px 10px;
+		border-radius: 4px;
+		border: 1px solid var(--accent);
+		background: transparent;
+		color: var(--accent);
+		font-size: 0.8rem;
+		font-weight: 600;
+		cursor: pointer;
+		font-family: inherit;
+		white-space: nowrap;
+	}
+
+	.btn-select-all-matching:disabled {
+		opacity: 0.6;
+		cursor: default;
+	}
+
+	.btn-select-all-matching:not(:disabled):hover {
+		background: var(--accent-strong);
+		color: #fff;
+	}
+
+	.pay-bar-all-matching {
+		font-size: 0.8rem;
+		color: var(--text-muted);
+		white-space: nowrap;
+	}
+
+	.review-partial {
+		margin: 8px 0 0;
+		font-size: 0.8rem;
+		color: var(--text-muted);
 	}
 
 	.savings-banner {
