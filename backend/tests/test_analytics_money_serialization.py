@@ -147,15 +147,19 @@ async def _seed(realdb, key: str = "a") -> None:
         )
         s.add(inv)
         await s.flush()
+        # "Yesterday", but clamped into the current calendar month — the
+        # forecast-variance test buckets this payment by `_TODAY`'s month, so a
+        # bare `_TODAY - 1 day` drops it into the prior month's bucket on the
+        # 1st (→ `actual` reads 0.00). Still 0-1 days old, so the trailing-window
+        # assertions in the sibling tests are unaffected.
+        paid_on = max(_TODAY - timedelta(days=1), _TODAY.replace(day=1))
         s.add(
             Payment(
                 invoice_id=inv.id,
                 amount=Decimal("500.25"),
                 method="ach",
                 status="completed",
-                completed_at=datetime.combine(
-                    _TODAY - timedelta(days=1), datetime.min.time()
-                ).replace(tzinfo=UTC),
+                completed_at=datetime.combine(paid_on, datetime.min.time()).replace(tzinfo=UTC),
             )
         )
         await s.commit()
