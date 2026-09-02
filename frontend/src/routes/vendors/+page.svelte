@@ -24,12 +24,15 @@
 	import VendorModal from '$lib/components/modals/VendorModal.svelte';
 	import VendorConsolidationModal from '$lib/components/modals/VendorConsolidationModal.svelte';
 	import ImportCsvModal from '$lib/components/modals/ImportCsvModal.svelte';
+	import CreateVendorModal from '$lib/components/modals/CreateVendorModal.svelte';
+	import InviteVendorPortalUserModal from '$lib/components/modals/InviteVendorPortalUserModal.svelte';
+	import SecretReveal from '$lib/components/ui/SecretReveal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { PERM_VENDOR_MANAGE } from '$lib/types/admin';
 	import { m } from '$lib/i18n/store.svelte';
-	import { importVendorsCsv } from '$lib/api/vendors';
+	import { importVendorsCsv, type PortalInviteResult } from '$lib/api/vendors';
 	import type { Vendor, VendorBankDetails } from '$lib/types/vendor';
 	import type { ImportResult } from '$lib/types/csvImport';
 	import { getVendorIds, bulkVendorStatus, bulkScreenVendors, exportVendorsCsv } from '$lib/api/vendors';
@@ -49,6 +52,15 @@
 	// custom role split).
 	let showImportCsv = $state(false);
 	const canManageVendors = $derived(auth.can(PERM_VENDOR_MANAGE));
+	// "+ New Vendor" — `POST /api/vendors` is `require_permission(vendor.manage)`,
+	// so it surfaces on the same granular gate as verify/reject/bank.
+	let showCreateVendor = $state(false);
+	// Supplier-portal invite — `POST /api/vendors/{id}/portal-users` is
+	// `require_roles(ADMIN, AP_MANAGER)`, the plain-role gate (like ERP sync /
+	// CSV import), hence `auth.isManager` not the granular permission.
+	let inviteVendor = $state<Vendor | null>(null);
+	// The one-time temp password from an invite, shown once via SecretReveal.
+	let inviteResult = $state<PortalInviteResult | null>(null);
 	let bankEditing = $state<Vendor | null>(null);
 	let bankForm = $state<BankDetails>({
 		counterparty_id: '',
@@ -508,6 +520,11 @@
 
 <PageHeader title={m('vendors.title')}>
 	{#snippet actions()}
+		{#if canManageVendors}
+			<button class="btn-primary" onclick={() => (showCreateVendor = true)}>
+				{m('vendors.action.newVendor')}
+			</button>
+		{/if}
 		{#if auth.isManager}
 			<!-- The dual-control queue a staged bank/tax change waits in. Role-gated
 			     to match `GET /api/vendors/change-requests` (admin | ap_manager). -->
@@ -632,6 +649,9 @@
 								{v.bank_details?.counterparty_id ? m('vendors.row.bankSet') : m('vendors.row.bank')}
 							</RowAction>
 						{/if}
+						{#if auth.isManager}
+							<RowAction onclick={() => (inviteVendor = v)}>{m('vendors.row.invite')}</RowAction>
+						{/if}
 					</td>
 				</tr>
 			{/each}
@@ -684,6 +704,46 @@
 		onmerged={() => fetchVendors()}
 	/>
 {/if}
+
+{#if showCreateVendor}
+	<CreateVendorModal
+		onclose={() => (showCreateVendor = false)}
+		onsaved={() => fetchVendors()}
+	/>
+{/if}
+
+{#if inviteVendor}
+	<InviteVendorPortalUserModal
+		vendorId={inviteVendor.id}
+		vendorName={inviteVendor.name}
+		onclose={() => (inviteVendor = null)}
+		oninvited={(result) => (inviteResult = result)}
+	/>
+{/if}
+
+<SecretReveal
+	open={inviteResult !== null}
+	ariaLabel={m('vendors.invite.reveal.aria')}
+	heading={m('vendors.invite.reveal.heading')}
+	warningStrong={m('vendors.invite.reveal.warningStrong')}
+	warning={m('vendors.invite.reveal.warning')}
+	secret={inviteResult?.temp_password ?? ''}
+	testId="vendor-invite-temp-password"
+	copyLabel={m('vendors.invite.reveal.copy')}
+	copiedLabel={m('vendors.invite.reveal.copied')}
+	copiedToast={m('vendors.invite.reveal.copiedToast')}
+	copyFailedToast={m('vendors.invite.reveal.copyFailedToast')}
+	doneLabel={m('vendors.invite.reveal.done')}
+	meta={inviteResult
+		? [
+				{ label: m('vendors.invite.reveal.email'), value: inviteResult.user.email },
+				...(inviteResult.portal_url
+					? [{ label: m('vendors.invite.reveal.url'), value: inviteResult.portal_url, mono: true }]
+					: [])
+			]
+		: []}
+	onclose={() => (inviteResult = null)}
+/>
 
 {#if showImportCsv}
 	<ImportCsvModal

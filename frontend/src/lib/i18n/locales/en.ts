@@ -363,6 +363,47 @@ export const en = {
 		'Bank-detail change submitted — it’s waiting in Bank change approvals',
 	'vendors.bank.toast.submitFailed': 'Submit failed',
 	'vendors.action.changeApprovals': 'Bank change approvals',
+	'vendors.action.newVendor': '+ New Vendor',
+	'vendors.row.invite': 'Invite',
+
+	// Create-vendor modal (routes/vendors — CreateVendorModal)
+	'vendors.createModal.aria': 'Create vendor',
+	'vendors.createModal.title': 'New vendor',
+	'vendors.createModal.field.name': 'Name',
+	'vendors.createModal.field.code': 'Code',
+	'vendors.createModal.field.taxId': 'Tax ID',
+	'vendors.createModal.field.email': 'Email',
+	'vendors.createModal.field.phone': 'Phone',
+	'vendors.createModal.field.address': 'Address',
+	'vendors.createModal.bankHint':
+		'Bank details are added separately — they need a second approver (dual control).',
+	'vendors.createModal.create': 'Create vendor',
+	'vendors.createModal.saving': 'Creating…',
+	'vendors.createModal.toast.created': 'Vendor “{name}” created',
+	'vendors.createModal.toast.createFailed': 'Could not create vendor',
+
+	// Invite a vendor to the supplier portal (InviteVendorPortalUserModal)
+	'vendors.invite.aria': 'Invite vendor to the supplier portal',
+	'vendors.invite.title': 'Invite {vendor} to the portal',
+	'vendors.invite.hint':
+		'Creates a supplier-portal login and emails them a temporary password.',
+	'vendors.invite.field.fullName': 'Contact name',
+	'vendors.invite.field.email': 'Email',
+	'vendors.invite.send': 'Send invite',
+	'vendors.invite.sending': 'Sending…',
+	'vendors.invite.toast.failed': 'Could not send the invite',
+	'vendors.invite.reveal.aria': 'Supplier portal invite sent',
+	'vendors.invite.reveal.heading': 'Portal invite sent',
+	'vendors.invite.reveal.warningStrong': 'Shown once.',
+	'vendors.invite.reveal.warning':
+		'Copy the temporary password now — it is not stored and cannot be shown again. It was also emailed to the contact.',
+	'vendors.invite.reveal.copy': 'Copy',
+	'vendors.invite.reveal.copied': 'Copied',
+	'vendors.invite.reveal.copiedToast': 'Temporary password copied',
+	'vendors.invite.reveal.copyFailedToast': 'Copy failed — select the value manually',
+	'vendors.invite.reveal.done': 'Done',
+	'vendors.invite.reveal.email': 'Email',
+	'vendors.invite.reveal.url': 'Portal URL',
 
 	// Vendor bank / tax change-approval queue (routes/vendors/change-requests)
 	'vendors.changeRequests.navLabel': 'Bank Changes',
