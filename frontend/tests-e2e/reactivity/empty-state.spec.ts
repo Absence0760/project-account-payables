@@ -50,3 +50,38 @@ test('/invoices: onboarding CTA when truly empty, plain copy when a filter match
 	await expect(page.getByTestId('invoices-empty-state')).toHaveCount(0);
 	await expect(page.getByTestId('table-empty')).toHaveText(/no invoices match your filters/i);
 });
+
+test('/vendors: onboarding CTA when truly empty, plain copy when a filter matched nothing', async ({
+	page
+}) => {
+	await page.route('**/api/vendors**', async (route) => {
+		const url = new URL(route.request().url());
+		if (url.pathname === '/api/vendors') {
+			return route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({ items: [], total: 0 })
+			});
+		}
+		if (url.pathname === '/api/vendors/counts') {
+			return route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({ counts: {}, total: 0 })
+			});
+		}
+		return route.continue();
+	});
+
+	await page.goto('/vendors');
+
+	const onboarding = page.getByTestId('vendors-empty-state');
+	await expect(onboarding).toBeVisible();
+	await expect(onboarding.getByRole('button', { name: /new vendor/i })).toBeVisible();
+	await expect(page.getByTestId('table-empty')).toHaveCount(0);
+
+	// A status filter → "nothing matched", plain copy, no onboarding block.
+	await page.locator('.filter-chip', { hasText: /^Unverified/ }).first().click();
+	await expect(page.getByTestId('vendors-empty-state')).toHaveCount(0);
+	await expect(page.getByTestId('table-empty')).toBeVisible();
+});

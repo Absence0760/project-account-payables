@@ -343,6 +343,8 @@ export const en = {
 	'vendors.col.erp': 'ERP',
 	'vendors.empty': 'No vendors found.',
 	'vendors.empty.fresh': 'No vendors yet. Add one or import a CSV to load your vendor list.',
+	'vendors.onboarding.heading': 'No vendors yet',
+	'vendors.onboarding.description': 'Add a supplier to start receiving and matching their invoices — or sync from your ERP / import a CSV.',
 	'vendors.selectAllAria': 'Select all vendors on this page',
 	'vendors.row.verify': 'Verify',
 	'vendors.row.reject': 'Reject',

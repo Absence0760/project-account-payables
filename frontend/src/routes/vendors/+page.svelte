@@ -25,6 +25,7 @@
 	import VendorConsolidationModal from '$lib/components/modals/VendorConsolidationModal.svelte';
 	import ImportCsvModal from '$lib/components/modals/ImportCsvModal.svelte';
 	import CreateVendorModal from '$lib/components/modals/CreateVendorModal.svelte';
+	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 	import InviteVendorPortalUserModal from '$lib/components/modals/InviteVendorPortalUserModal.svelte';
 	import SecretReveal from '$lib/components/ui/SecretReveal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
@@ -152,6 +153,10 @@
 	let total = $state(0);
 	let page = $state(1);
 	let loadingMore = $state(false);
+	// First fetch landed (success or error) — gates the onboarding empty state
+	// so "Add your first vendor" doesn't flash during the initial load.
+	let loaded = $state(false);
+	let loadErrored = $state(false);
 	let hasMore = $derived(vendors.length < total);
 
 	// Column sort — URL-backed (`?sort=&order=`) so it survives a reload/share,
@@ -290,12 +295,18 @@
 			vendors = opts.append ? appendUnique(vendors, data.items) : data.items;
 			total = data.total;
 			page = nextPage;
+			loadErrored = false;
 			if (!opts.append) fetchCounts();
 		} catch {
 			// `isCurrentRequest`, not `canCommit`: a request superseded by a
 			// local edit still failed, and no newer request is coming to report
 			// it — only a newer *fetch* makes this one's outcome irrelevant.
-			if (fetchSequence.isCurrentRequest(token)) toast('Failed to load vendors', 'error');
+			if (fetchSequence.isCurrentRequest(token)) {
+				toast('Failed to load vendors', 'error');
+				loadErrored = true;
+			}
+		} finally {
+			if (fetchSequence.isCurrentRequest(token)) loaded = true;
 		}
 	}
 
@@ -516,6 +527,17 @@
 			? m('vendors.empty.fresh')
 			: m('vendors.empty')
 	);
+	// A brand-new tenant with zero vendors and no active filter gets the rich
+	// onboarding CTA (mirrors the dashboard / `/invoices` EmptyState) instead of
+	// the bare "no vendors" cell — gated on `loaded` (not mid-load) and no error.
+	let showOnboarding = $derived(
+		loaded &&
+			!loadErrored &&
+			vendors.length === 0 &&
+			total === 0 &&
+			!search.trim() &&
+			statusFilter === 'all'
+	);
 </script>
 
 <PageHeader title={m('vendors.title')}>
@@ -559,6 +581,16 @@
 		<FilterChips chips={statusChips} bind:active={statusFilter} />
 	</div>
 
+	{#if showOnboarding}
+		<EmptyState
+			icon="🏢"
+			testId="vendors-empty-state"
+			heading={m('vendors.onboarding.heading')}
+			description={m('vendors.onboarding.description')}
+			actionLabel={canManageVendors ? m('vendors.action.newVendor') : undefined}
+			onaction={canManageVendors ? () => (showCreateVendor = true) : undefined}
+		/>
+	{:else}
 	<DataTable isEmpty={vendors.length === 0} empty={emptyMessage} colspan={10} fixed>
 		{#snippet header()}
 			<tr>
@@ -668,6 +700,7 @@
 		<div class="load-more-row">
 			<span class="load-more-end">{m('vendors.showingAll', { total })}</span>
 		</div>
+	{/if}
 	{/if}
 
 	{#if canManageVendors}

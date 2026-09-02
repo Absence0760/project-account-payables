@@ -322,6 +322,8 @@ export const messages = {
 	'vendors.col.erp': 'ERP',
 	'vendors.empty': 'Aucun fournisseur trouvé.',
 	'vendors.empty.fresh': 'Aucun fournisseur pour le moment. Ajoutez-en un ou importez un CSV pour charger votre liste de fournisseurs.',
+	'vendors.onboarding.heading': 'Aucun fournisseur pour le moment',
+	'vendors.onboarding.description': 'Ajoutez un fournisseur pour commencer à recevoir et rapprocher ses factures — ou synchronisez depuis votre ERP / importez un CSV.',
 	'vendors.selectAllAria': 'Sélectionner tous les fournisseurs de cette page',
 	'vendors.row.verify': 'Vérifier',
 	'vendors.row.reject': 'Rejeter',

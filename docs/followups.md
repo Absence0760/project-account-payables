@@ -1109,13 +1109,13 @@ deferred-with-reason finding awaiting a product/architecture call.
       (PR #343).** `ui/EmptyState.svelte` (icon + heading + description +
       optional button/link action, i18n-agnostic) is adopted on the dashboard
       (zero invoices → `/invoices`), `/invoices` (zero rows + no filter → the
-      upload action, role-gated), and `/portal/invoices` (vendor submitted
-      nothing → the submit action). Each page keeps its `DataTable` +
-      loading/errored/filtered-empty copy for every other state.
-      **Still open:** the `/vendors` list's empty state (the create-vendor UI
-      shipped in this PR is the natural home for it, but the EmptyState wasn't
-      wired there) — a small follow-through.
-      **Trigger:** the next `/vendors` slice.
+      upload action, role-gated), `/portal/invoices` (vendor submitted nothing
+      → the submit action), and `/vendors` (zero vendors + no filter → the
+      `+ New Vendor` action, `vendor.manage`-gated — gated on a first-fetch
+      `loaded` flag so it doesn't flash during load, and on `!loadErrored`).
+      Each page keeps its `DataTable` + loading/errored/filtered-empty copy
+      for every other state. Guards:
+      `tests-e2e/reactivity/empty-state.spec.ts` (`/invoices` + `/vendors`).
 
 - [x] **[Low] Organization/Settings first-time-admin prioritization — DONE
       (PR #343).** A "Getting started" wayfinding strip at the top of

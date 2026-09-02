@@ -324,6 +324,8 @@ export const messages = {
 	'vendors.col.erp': 'ERP',
 	'vendors.empty': '取引先が見つかりません。',
 	'vendors.empty.fresh': 'まだベンダーがありません。追加するか、CSVをインポートしてベンダーリストを読み込んでください。',
+	'vendors.onboarding.heading': '仕入先はまだありません',
+	'vendors.onboarding.description': '仕入先を追加すると、その請求書の受信と照合を開始できます。ERP からの同期や CSV インポートも可能です。',
 	'vendors.selectAllAria': 'このページのすべての取引先を選択',
 	'vendors.row.verify': '確認',
 	'vendors.row.reject': '却下',
