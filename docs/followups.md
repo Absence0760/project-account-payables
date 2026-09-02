@@ -1086,18 +1086,22 @@ deferred-with-reason finding awaiting a product/architecture call.
 | No resubmit path for a rejected portal invoice | **done** — `POST /portal/invoices/{id}/resubmit` + "Revise & resubmit" row control |
 | URL filter/search persistence partial on `/invoices` `/payments` `/vendors` | **done** — `search` + status chip + (payments) tab now in the query string |
 | No onboarding empty-state / CTA for a zero-data tenant | **done** — shared `ui/EmptyState.svelte`, adopted on the dashboard, `/invoices`, and `/portal/invoices` |
-| _remainders_ | portal date-range filter, "why is it *stuck*" signal, constrained re-extract on resubmit, `/vendors` + Org-Settings empty states — entries below |
+| No UI to create a vendor / invite one to the supplier portal | **done** — `+ New Vendor` header action (`CreateVendorModal`) + `Invite` row action (`InviteVendorPortalUserModal` → `SecretReveal`) |
+| `/payments/queue` has no pagination | **done** — `?page=` on `GET /queue`, a `GET /queue/ids` select-all resolver, Load-More + whole-set select-all on the Queue tab |
+| GBP→GB domestic payment falls through to `international_wire` | **done** — `bacs`/`faster_payments`/`chaps` rails + a GBP/GB branch in `pick_corridor` (Faster Payments, no SWIFT/FX/IBAN) |
+| [Low] Org Settings has no first-time-admin prioritization | **done** — a "Getting started" wayfinding strip at the top of `/organization` |
+| _remainders_ | portal date-range filter, "why is it *stuck*" signal, constrained re-extract on resubmit — entries below |
 
 **Frontend gaps — built on the backend, unreachable in the product:**
 
-- [ ] **No UI to create a vendor or invite one to the supplier portal.**
-      `POST /api/vendors` and `POST /api/vendors/{id}/portal-users` both exist;
-      `frontend/src/routes/vendors/+page.svelte` has neither action. A new tenant
-      cannot onboard a supplier by clicking anything.
-      **Durable fix:** a create-vendor modal (mirror `CreateInvoiceModal`) and a
-      row-action "Invite to portal" calling the portal-users endpoint. The
-      invite email's `portal_url` was fixed in #330; this is the UI half.
-      **Trigger:** the next slice touching `/vendors`.
+- [x] **UI to create a vendor + invite one to the supplier portal — DONE
+      (PR #343).** `+ New Vendor` header action (`vendor.manage`-gated) opens
+      `CreateVendorModal` (`POST /api/vendors`; no bank field — the backend
+      dual-control-stages that on create); an `Invite` row action
+      (`auth.isManager`) opens `InviteVendorPortalUserModal`
+      (`POST /api/vendors/{id}/portal-users`) whose one-time temp password is
+      shown via the shared `SecretReveal`. Guard:
+      `tests-e2e/vendors/create-invite.spec.ts`.
 
 - [x] **No onboarding empty-state / CTA for a zero-data tenant — DONE
       (PR #343).** `ui/EmptyState.svelte` (icon + heading + description +
