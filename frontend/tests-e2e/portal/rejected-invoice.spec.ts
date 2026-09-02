@@ -11,6 +11,8 @@ import { currentTenantSlug, expect, test, tenantPsql } from '../fixtures/helpers
  * 2. A "Revise & resubmit" file control on the rejected row swaps the document
  *    on the SAME invoice (`POST /portal/invoices/{id}/resubmit`) and sends it
  *    back into the pipeline.
+ * 3. A processing-phase invoice shows a `waiting_on` line ("Awaiting your
+ *    customer's review …") beyond the phase chip.
  *
  * Auth + seed shape mirror pagination.spec.ts. Rows are seeded from SQL and
  * removed in a `finally`.
@@ -147,6 +149,30 @@ test('the vendor can revise & resubmit a rejected invoice', async ({ page }) => 
 				`SELECT status FROM exceptions WHERE invoice_id='${invId}' AND exception_type='review_rejected'`
 			).trim()
 		).toEqual('resolved');
+	} finally {
+		cleanup();
+	}
+});
+
+test('a processing-phase invoice shows a "waiting on" line', async ({ page }) => {
+	const { vendorId, orgId } = portalVendor();
+	cleanup();
+	const num = `E2E-REJ-WAIT-${Date.now()}`;
+	try {
+		tenantPsql(
+			`INSERT INTO invoices
+			   (id, correlation_id, invoice_number, vendor_name, amount, currency, status,
+			    organization_id, vendor_id, created_at, updated_at)
+			 VALUES (gen_random_uuid(), gen_random_uuid(), '${num}', 'E2E Wait Vendor',
+			         100, 'USD', 'ready_for_review', '${orgId}', '${vendorId}',
+			         now() - interval '4 days', now() - interval '4 days')`
+		);
+		await portalSignIn(page);
+		const row = page.locator('tr.clickable', { hasText: num });
+		await expect(row).toHaveCount(1, { timeout: 10_000 });
+		await expect(row.getByText("Awaiting your customer's review")).toBeVisible();
+		// The age is shown alongside.
+		await expect(row.locator('.waiting-on')).toContainText(/\d+ day/);
 	} finally {
 		cleanup();
 	}

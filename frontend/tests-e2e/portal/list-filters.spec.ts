@@ -119,6 +119,45 @@ test.describe('/portal/invoices — filters', () => {
 			cleanup();
 		}
 	});
+
+	test('date-range filter narrows by submitted date', async ({ page }) => {
+		const { vendorId, orgId } = portalVendor();
+		tenantPsql(`DELETE FROM invoices WHERE invoice_number LIKE '${PREFIX}-%'`);
+		try {
+			// Two invoices submitted on known past dates.
+			tenantPsql(
+				`INSERT INTO invoices
+				   (id, correlation_id, invoice_number, vendor_name, amount, currency, status,
+				    organization_id, vendor_id, created_at, updated_at)
+				 VALUES
+				   (gen_random_uuid(), gen_random_uuid(), '${PREFIX}-OLD', 'E2E Date Vendor',
+				    100, 'USD', 'new', '${orgId}', '${vendorId}', '2026-05-10 12:00+00', now()),
+				   (gen_random_uuid(), gen_random_uuid(), '${PREFIX}-NEWER', 'E2E Date Vendor',
+				    100, 'USD', 'new', '${orgId}', '${vendorId}', '2026-05-25 12:00+00', now())`
+			);
+			await portalSignIn(page);
+
+			const oldRow = page.locator('tr.clickable', { hasText: `${PREFIX}-OLD` });
+			const newerRow = page.locator('tr.clickable', { hasText: `${PREFIX}-NEWER` });
+			await expect(oldRow).toHaveCount(1, { timeout: 10_000 });
+			await expect(newerRow).toHaveCount(1);
+
+			// From 2026-05-20 → only the 25th falls in range.
+			await page.getByLabel('From date').fill('2026-05-20');
+			await expect(newerRow).toHaveCount(1);
+			await expect(oldRow).toHaveCount(0);
+
+			// Add a To bound that excludes both → filtered-empty.
+			await page.getByLabel('To date').fill('2026-05-21');
+			await expect(page.getByText('No invoices match your filters.')).toBeVisible();
+
+			await page.getByRole('button', { name: 'Clear filters' }).click();
+			await expect(oldRow).toHaveCount(1);
+			await expect(newerRow).toHaveCount(1);
+		} finally {
+			cleanup();
+		}
+	});
 });
 
 test.describe('/portal/payments — filters', () => {
