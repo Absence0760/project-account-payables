@@ -51,12 +51,24 @@ def test_virtual_card_is_the_card_rail():
 
 @pytest.mark.parametrize(
     "method",
-    ["ach", "check", "wire", "rtp", "sepa", "international_ach", "international_wire"],
+    [
+        "ach",
+        "check",
+        "wire",
+        "rtp",
+        "sepa",
+        "international_ach",
+        "international_wire",
+        "bacs",
+        "faster_payments",
+        "chaps",
+    ],
 )
 def test_bank_rails_are_1099_reportable(method):
-    """ACH / cheque / wire / RTP / SEPA / IAT are all direct payments by the
-    payer out of a bank account — squarely 1099-NEC/MISC reportable. Excluding
-    any of them would UNDER-report, which is as wrong as over-reporting."""
+    """ACH / cheque / wire / RTP / SEPA / IAT + the UK domestic rails
+    (BACS / Faster Payments / CHAPS) are all direct payments by the payer out
+    of a bank account — squarely 1099-NEC/MISC reportable. Excluding any of
+    them would UNDER-report, which is as wrong as over-reporting."""
     assert is_card_payment_method(method) is False
     assert is_1099_reportable_method(method) is True
 
@@ -94,7 +106,10 @@ def test_international_rails(method):
     assert is_international_payment_method(method) is True
 
 
-@pytest.mark.parametrize("method", ["ach", "check", "wire", "rtp", "virtual_card"])
+@pytest.mark.parametrize(
+    "method",
+    ["ach", "check", "wire", "rtp", "virtual_card", "bacs", "faster_payments", "chaps"],
+)
 def test_domestic_rails(method):
     assert is_international_payment_method(method) is False
 
