@@ -33,17 +33,28 @@
 	// values behind it, sent as repeated `?status=`.
 	let activePhase = $state<string | null>(null);
 	let activeSearch = $state('');
+	let activeDateFrom = $state('');
+	let activeDateTo = $state('');
 	let filtersEl = $state<{ reset: () => void } | undefined>();
-	const filtered = $derived(activePhase !== null || activeSearch.trim() !== '');
+	const filtered = $derived(
+		activePhase !== null || activeSearch.trim() !== '' || activeDateFrom !== '' || activeDateTo !== ''
+	);
 
 	function phaseStatuses(p: string | null): string[] | undefined {
 		if (p === null) return undefined;
 		return PORTAL_PAYMENT_PHASES.find((c) => c.phase === p)?.statuses;
 	}
 
-	function applyFilters(f: { phase: string | null; search: string }) {
+	function applyFilters(f: {
+		phase: string | null;
+		search: string;
+		dateFrom: string;
+		dateTo: string;
+	}) {
 		activePhase = f.phase;
 		activeSearch = f.search;
+		activeDateFrom = f.dateFrom;
+		activeDateTo = f.dateTo;
 		load();
 	}
 
@@ -65,6 +76,8 @@
 				page_size: PORTAL_PAGE_SIZE,
 				status: phaseStatuses(activePhase),
 				search: activeSearch.trim() || undefined,
+				date_from: activeDateFrom || undefined,
+				date_to: activeDateTo || undefined,
 			});
 			if (!fetchSequence.canCommit(token)) return;
 			items = opts.append ? appendUnique(items, res.items) : res.items;
@@ -124,6 +137,8 @@
 		groupLabel={m('portal.payments.col.status')}
 		searchLabel={m('portal.payments.searchLabel')}
 		searchPlaceholder={m('portal.payments.searchPlaceholder')}
+		dateFromLabel={m('portal.payments.dateFromLabel')}
+		dateToLabel={m('portal.payments.dateToLabel')}
 		onchange={applyFilters}
 	/>
 

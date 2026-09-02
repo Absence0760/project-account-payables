@@ -165,3 +165,63 @@ async def test_filters_never_widen_past_the_callers_vendor(realdb):
         )
     assert resp.status_code == 200, resp.text
     assert resp.json()["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_date_range_filter_narrows_by_submitted_date(realdb):
+    from datetime import UTC, datetime
+
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+
+    async def _dated(number: str, day: int):
+        inv_id = uuid.uuid4()
+        ts = datetime(2026, 6, day, 12, 0, tzinfo=UTC)
+        async with mk() as s:
+            s.add(
+                Invoice(
+                    id=inv_id,
+                    invoice_number=number,
+                    vendor_name="Filterable Supply Co",
+                    vendor_id=vendor_id,
+                    amount=Decimal("10.00"),
+                    currency="USD",
+                    status=InvoiceStatus.new,
+                    organization_id=org_id,
+                    created_at=ts,
+                )
+            )
+            await s.commit()
+
+    await _dated("D-01", 1)
+    await _dated("D-10", 10)
+    await _dated("D-20", 20)
+
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        # Inclusive both ends; day 10 and day 20 fall in [2026-06-10, 2026-06-20].
+        resp = await client.get(
+            "/api/portal/invoices",
+            params={"date_from": "2026-06-10", "date_to": "2026-06-20"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert sorted(i["invoice_number"] for i in resp.json()["items"]) == ["D-10", "D-20"]
+
+        # Single-day range works (date_to is through end-of-day).
+        resp = await client.get(
+            "/api/portal/invoices", params={"date_from": "2026-06-10", "date_to": "2026-06-10"}
+        )
+        assert [i["invoice_number"] for i in resp.json()["items"]] == ["D-10"]
+
+        # Inverted range → empty, not 422.
+        resp = await client.get(
+            "/api/portal/invoices", params={"date_from": "2026-06-20", "date_to": "2026-06-10"}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 0
+
+        # Composes with status/search and never widens past the vendor.
+        resp = await client.get(
+            "/api/portal/invoices", params={"date_from": "2026-06-01", "search": "D-20"}
+        )
+        assert [i["invoice_number"] for i in resp.json()["items"]] == ["D-20"]

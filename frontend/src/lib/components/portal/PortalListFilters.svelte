@@ -18,12 +18,21 @@
 		label: string;
 	}
 
+	export interface PortalListFilterState {
+		phase: string | null;
+		search: string;
+		dateFrom: string;
+		dateTo: string;
+	}
+
 	let {
 		chips,
 		allLabel,
 		groupLabel,
 		searchLabel,
 		searchPlaceholder,
+		dateFromLabel,
+		dateToLabel,
 		onchange,
 	}: {
 		chips: Chip[];
@@ -31,30 +40,44 @@
 		groupLabel: string;
 		searchLabel: string;
 		searchPlaceholder: string;
-		onchange: (f: { phase: string | null; search: string }) => void;
+		dateFromLabel: string;
+		dateToLabel: string;
+		onchange: (f: PortalListFilterState) => void;
 	} = $props();
 
 	let phase = $state<string | null>(null);
 	let search = $state('');
+	let dateFrom = $state('');
+	let dateTo = $state('');
 	// The search term the newest `onchange` carried — so the debounce effect
 	// schedules nothing when a phase click already emitted with this term.
 	let lastEmitted = $state('');
 
+	const current = (): PortalListFilterState => ({ phase, search, dateFrom, dateTo });
+
 	/** Caller-invokable (`bind:this`) — used by a "Clear filters" affordance in
 	 *  the empty state. No-ops when nothing is set. */
 	export function reset() {
-		if (phase === null && search === '') return;
+		if (phase === null && search === '' && dateFrom === '' && dateTo === '') return;
 		phase = null;
 		search = '';
+		dateFrom = '';
+		dateTo = '';
 		lastEmitted = '';
-		onchange({ phase: null, search: '' });
+		onchange(current());
 	}
 
 	function pick(key: string | null) {
 		if (phase === key) return;
 		phase = key;
 		lastEmitted = search;
-		onchange({ phase, search });
+		onchange(current());
+	}
+
+	// Date changes are discrete (not keystroke-y) — emit immediately, no debounce.
+	function onDateChange() {
+		lastEmitted = search;
+		onchange(current());
 	}
 
 	let timer: ReturnType<typeof setTimeout>;
@@ -69,7 +92,7 @@
 		clearTimeout(timer);
 		timer = setTimeout(() => {
 			lastEmitted = search;
-			onchange({ phase, search });
+			onchange(current());
 		}, 300);
 		return () => clearTimeout(timer);
 	});
@@ -82,6 +105,22 @@
 		bind:value={search}
 		placeholder={searchPlaceholder}
 		aria-label={searchLabel}
+	/>
+	<input
+		type="date"
+		class="date"
+		bind:value={dateFrom}
+		aria-label={dateFromLabel}
+		max={dateTo || undefined}
+		onchange={onDateChange}
+	/>
+	<input
+		type="date"
+		class="date"
+		bind:value={dateTo}
+		aria-label={dateToLabel}
+		min={dateFrom || undefined}
+		onchange={onDateChange}
 	/>
 	<div class="phases" role="group" aria-label={groupLabel}>
 		<button
@@ -119,6 +158,14 @@
 		flex: 0 1 260px;
 		padding: 7px 10px;
 		font-size: 0.85rem;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		background: var(--surface);
+		color: var(--text);
+	}
+	.date {
+		padding: 6px 8px;
+		font-size: 0.82rem;
 		border: 1px solid var(--border);
 		border-radius: 4px;
 		background: var(--surface);

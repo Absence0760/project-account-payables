@@ -8,7 +8,7 @@ A vendor user cannot reference another vendor's invoices even by guessing IDs.
 import asyncio
 import logging
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from fastapi import (
@@ -244,6 +244,21 @@ def _invoice_number_ilike(term: str):
     return Invoice.invoice_number.ilike(f"%{escaped}%", escape="\\")
 
 
+def _date_range_clauses(column, date_from: date | None, date_to: date | None) -> list:
+    """Inclusive `date_from`/`date_to` bounds on a timestamp `column`. An
+    inverted range (`from > to`) yields a clause that matches nothing rather
+    than a 422 — a stale portal build shouldn't be able to error the list.
+    `date_to` is treated as through-the-end-of-that-day so a single-day range
+    works."""
+    clauses: list = []
+    if date_from is not None:
+        clauses.append(column >= datetime.combine(date_from, datetime.min.time(), tzinfo=UTC))
+    if date_to is not None:
+        end = datetime.combine(date_to, datetime.min.time(), tzinfo=UTC) + timedelta(days=1)
+        clauses.append(column < end)
+    return clauses
+
+
 @router.get("/invoices", response_model=PortalInvoiceListResponse)
 async def list_my_invoices(
     pagination: PaginationParams = Depends(pagination_params),
@@ -262,6 +277,12 @@ async def list_my_invoices(
         max_length=100,
         description="Case-insensitive substring match on the invoice number.",
     ),
+    date_from: date | None = Query(
+        default=None, description="Only invoices submitted on/after this date (inclusive)."
+    ),
+    date_to: date | None = Query(
+        default=None, description="Only invoices submitted on/before this date (inclusive)."
+    ),
     db: AsyncSession = Depends(get_tenant_db),
     vu: VendorUser = Depends(get_current_vendor_user),
 ):
@@ -275,6 +296,10 @@ async def list_my_invoices(
     number_match = _invoice_number_ilike(search or "")
     if number_match is not None:
         query = query.where(number_match)
+
+    # Range is on `created_at` — the "Submitted" date the list column shows.
+    for clause in _date_range_clauses(Invoice.created_at, date_from, date_to):
+        query = query.where(clause)
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
 
@@ -680,6 +705,12 @@ async def list_my_payments(
         max_length=100,
         description="Case-insensitive substring match on the paid invoice's number.",
     ),
+    date_from: date | None = Query(
+        default=None, description="Only payments created on/after this date (inclusive)."
+    ),
+    date_to: date | None = Query(
+        default=None, description="Only payments created on/before this date (inclusive)."
+    ),
     db: AsyncSession = Depends(get_tenant_db),
     vu: VendorUser = Depends(get_current_vendor_user),
 ):
@@ -696,6 +727,9 @@ async def list_my_payments(
     number_match = _invoice_number_ilike(search or "")
     if number_match is not None:
         filters.append(number_match)
+    # Range is on `Payment.created_at` — always set (unlike `completed_at`,
+    # which is NULL until the payment lands), and it's the ordering column.
+    filters.extend(_date_range_clauses(Payment.created_at, date_from, date_to))
 
     query = (
         select(Payment, Invoice.invoice_number, Invoice.currency)

@@ -208,6 +208,9 @@ export interface PortalPOListItem {
 export interface PortalInvoiceListParams extends PortalListParams {
 	status?: string[];
 	search?: string;
+	/** `YYYY-MM-DD` inclusive bounds on the submitted date. */
+	date_from?: string;
+	date_to?: string;
 }
 
 /** Revise & resubmit a REJECTED invoice with a corrected file — reuses the
@@ -225,6 +228,8 @@ export function listPortalInvoices(params: PortalInvoiceListParams = {}) {
 		...pageParams(params),
 		status: params.status,
 		search: params.search,
+		date_from: params.date_from,
+		date_to: params.date_to,
 	});
 }
 
@@ -235,6 +240,9 @@ export function listPortalInvoices(params: PortalInvoiceListParams = {}) {
 export interface PortalPaymentListParams extends PortalListParams {
 	status?: string[];
 	search?: string;
+	/** `YYYY-MM-DD` inclusive bounds on the payment-created date. */
+	date_from?: string;
+	date_to?: string;
 }
 
 /** Payments on the signed-in vendor's invoices (newest first). */
@@ -243,6 +251,8 @@ export function listPortalPayments(params: PortalPaymentListParams = {}) {
 		...pageParams(params),
 		status: params.status,
 		search: params.search,
+		date_from: params.date_from,
+		date_to: params.date_to,
 	});
 }
 
