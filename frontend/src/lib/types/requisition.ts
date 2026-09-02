@@ -121,6 +121,29 @@ export interface RequisitionListResponse {
 	page_size: number;
 }
 
+/** One currency's slice of `GET /api/requisitions/summary`. */
+export interface RequisitionCurrencyTotal {
+	currency: string;
+	/** Exact decimal string — never parse into a float for arithmetic. */
+	total: string;
+	count: number;
+}
+
+/**
+ * Whole-set KPI rollup from `GET /api/requisitions/summary`, over the SAME
+ * status/search filters the list ran with.
+ *
+ * The page's `pendingCount` filtered the LOADED page for `pending_approval`
+ * and `periodTotal` reduced over it — so both contradicted the whole-set row
+ * count beside them, and `periodTotal` added values across currencies.
+ * `by_currency` is grouped, never summed (see `$lib/utils/currencyGroups`).
+ */
+export interface RequisitionSummary {
+	total: number;
+	by_status: Record<string, number>;
+	by_currency: RequisitionCurrencyTotal[];
+}
+
 // `POST /api/requisitions/{id}/convert-to-po`. `created` is false on the
 // idempotent replay path (requisition already converted).
 export interface ConvertToPoResult {
