@@ -1235,33 +1235,53 @@ deferred-with-reason finding awaiting a product/architecture call.
   CFO-approval-threshold control (a real regression caught by CI). The inline
   comment in `backend/app/api/payments.py` is the durable record.
 
-### Persona-panel acknowledged gaps — keep-or-drop call outstanding (issue #328)
+### Persona-panel acknowledged gaps — ⚠️ PRODUCT REVIEW NEEDED (issue #328)
 
 Eight capabilities the personas confirmed absent and classified as *product-fit
-gaps* (the app never claimed them), not defects. Each needs a keep (→ roadmap) or
-drop (→ documented non-goal) decision. Listed so the decision isn't lost when
-#328 closes.
+gaps* (the app never claimed them), not defects. **None is a bug — each is a
+deliberate scope decision waiting to be made.** For each: **keep** it (→ add to
+`docs/roadmap.md`, size it) or **drop** it (→ record as a documented non-goal in
+`docs/competitive-analysis.md` / the relevant doc so it isn't re-filed every
+persona round). The `[ ]` is checked when the keep/drop call is recorded, not
+when the feature ships.
+
+A suggested lean is given per gap — **`lean: keep`** / **`lean: drop`** /
+**`lean: ?`** (genuine toss-up) — to make the review a yes/no rather than an
+open discussion. Owner: a product/founder call; nothing here is Claude's to
+decide.
 
 - [ ] **No US sales/use-tax self-assessment** — no self-assessed use tax on
       out-of-state purchases, no nexus tracking, no resale/exemption
       certificates. `Invoice.tax_rate` only records what the vendor charged. US
-      AP table stakes above a certain company size.
+      AP table stakes above a certain company size. **`lean: keep`** (real US
+      mid-market requirement; large, own epic).
 - [ ] **Positive Pay has no frontend** — `/api/positive-pay` is API-only (already
       noted as known state in the root `CLAUDE.md` architecture table).
+      **`lean: keep`** (backend is done; a thin UI is a bounded slice, not an
+      epic — cheapest of the eight to close).
 - [ ] **`bank_details` has one generic `routing_number`** — no way to record a
       separate wire vs ACH routing number, common at larger US banks.
+      **`lean: keep`** (small schema/UI change; blocks real payments at larger
+      banks).
 - [ ] **1099-MISC per-box allocation is not split** — the whole total goes to the
       requested box (documented simplification in `tax_1099_forms.py`).
+      **`lean: keep`** (correctness for a shipped feature; medium).
 - [ ] **No consolidated org-wide budget-vs-actual rollup on the CFO dashboard** —
       only the standalone `/budgets` page and per-budget `GET /budgets/{id}/spend`.
+      **`lean: ?`** (nice-to-have; depends on whether budgets is a headline
+      feature or a checkbox).
 - [ ] **No saved views / per-list default view, and no keyboard shortcuts or
-      command palette** anywhere in the app.
+      command palette** anywhere in the app. **`lean: ?`** (power-user polish;
+      high effort, diffuse payoff — defer unless a design partner asks).
 - [ ] **No supplier-portal dashboard/home** — `/portal` redirects straight to
       `/portal/invoices`; a vendor gets no at-a-glance "N need nothing from you,
-      M await your action".
+      M await your action". **`lean: keep`** (small; pairs naturally with the
+      portal work already in PR #343).
 - [ ] **Leading-zero / numeric invoice-number normalization** (`INV-001` vs
       `INV-1`) is not handled by the rule-based duplicate check; the
       semantic-similarity path is the intended backstop only when RAG is enabled.
+      **`lean: keep`** (small, real duplicate-detection hole; RAG-off is the
+      common config).
 
 _Two further gaps were considered and explicitly declined (recorded so they
 aren't re-raised): IR35 / contractor status (payroll/HR tooling, not AP), and a
