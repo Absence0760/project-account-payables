@@ -185,6 +185,16 @@ Grouped into subfolders by role. Import with the full path, e.g.
   the server rejected). First use: the brand strong-accent contrast advisory on
   `/organization` + `/admin/partner`.
 - `Money.svelte` — locale-aware currency display. `<Money amount={row.amount} currency={row.currency} />`. Opt-in `whole` (no decimals), `accounting` (parenthesised negatives), `mono` (tabular-nums). Over `utils/money.ts::formatMoney`; see *Money formatting* above. Use this (or `formatMoney` in script) for every currency value — don't write `Intl.NumberFormat` inline.
+- `EmptyState.svelte` — the first-run / zero-data affordance: an optional emoji
+  `icon`, a `heading`, a `description`, and an optional primary action rendered
+  as a `<button>` (`onaction`) or `<a>` (`actionHref`). i18n-agnostic (strings
+  passed in already-localized, like `FieldWarning`). **Render it ONLY for the
+  genuinely-empty-and-unfiltered case** — `loading`, `errored`, and "a filter
+  matched nothing" keep their own copy (§ Data tables, "empty must distinguish
+  loading / errored / genuinely-empty"). Adopted on the dashboard (zero
+  invoices → link to `/invoices`), `/invoices` (zero rows, no filter → the
+  upload action, role-gated), and `/portal/invoices` (vendor submitted nothing
+  → the submit action). The page keeps its `DataTable` for every other state.
 
 The visual styling for all of the above lives **globally in `src/app.css`** (class-scoped: `.workspace`, `.grid-container td`, `.filter-chip`, `.modal`, `.kpi`, …) so route pages carry no duplicated `<style>`. Feature components below keep their own scoped CSS (Svelte's `.svelte-<hash>` outranks the bare-class globals).
 
@@ -878,6 +888,7 @@ the `ui/` primitive in the Source column.
 | Tinted badge (any tone) | `<Badge tone=…>` | `ui/Badge.svelte` |
 | Money / currency | `<Money>` / `formatMoney` | `ui/Money.svelte` / `utils/money.ts` |
 | Field-level advisory | `.field-warning` (`role="status"`) | `ui/FieldWarning.svelte` |
+| Zero-data onboarding block | `.empty-state` (+ `data-testid`) | `ui/EmptyState.svelte` |
 | Checkbox / radio / file | `input[type='checkbox'\|'radio'\|'file']` (global base) | `src/app.css` |
 
 **Native form controls** are dark-themed globally in `src/app.css` so a
