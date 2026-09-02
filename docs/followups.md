@@ -1085,18 +1085,19 @@ deferred-with-reason finding awaiting a product/architecture call.
 | Vendor can't see why an invoice was rejected | **done** — `rejection_reason` on the portal API + rendered under the status pill |
 | No resubmit path for a rejected portal invoice | **done** — `POST /portal/invoices/{id}/resubmit` + "Revise & resubmit" row control |
 | URL filter/search persistence partial on `/invoices` `/payments` `/vendors` | **done** — `search` + status chip + (payments) tab now in the query string |
+| No UI to create a vendor / invite one to the supplier portal | **done** — `+ New Vendor` header action (`CreateVendorModal`) + `Invite` row action (`InviteVendorPortalUserModal` → `SecretReveal`) |
 | _remainders_ | portal date-range filter, "why is it *stuck*" signal, constrained re-extract on resubmit — entries below |
 
 **Frontend gaps — built on the backend, unreachable in the product:**
 
-- [ ] **No UI to create a vendor or invite one to the supplier portal.**
-      `POST /api/vendors` and `POST /api/vendors/{id}/portal-users` both exist;
-      `frontend/src/routes/vendors/+page.svelte` has neither action. A new tenant
-      cannot onboard a supplier by clicking anything.
-      **Durable fix:** a create-vendor modal (mirror `CreateInvoiceModal`) and a
-      row-action "Invite to portal" calling the portal-users endpoint. The
-      invite email's `portal_url` was fixed in #330; this is the UI half.
-      **Trigger:** the next slice touching `/vendors`.
+- [x] **UI to create a vendor + invite one to the supplier portal — DONE
+      (PR #343).** `+ New Vendor` header action (`vendor.manage`-gated) opens
+      `CreateVendorModal` (`POST /api/vendors`; no bank field — the backend
+      dual-control-stages that on create); an `Invite` row action
+      (`auth.isManager`) opens `InviteVendorPortalUserModal`
+      (`POST /api/vendors/{id}/portal-users`) whose one-time temp password is
+      shown via the shared `SecretReveal`. Guard:
+      `tests-e2e/vendors/create-invite.spec.ts`.
 
 - [ ] **No onboarding empty-state / CTA anywhere for a brand-new zero-data
       tenant.** Dashboard, `/invoices` and `/vendors` all render a bare "no
