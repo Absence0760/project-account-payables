@@ -11,9 +11,11 @@
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import {
 		listPositivePayFiles,
+		getPositivePaySummary,
 		getPositivePayFile,
 		deletePositivePayFile
 	} from '$lib/api/positivePay';
+	import type { PositivePaySummary } from '$lib/types/positivePay';
 	import Badge from '$lib/components/ui/Badge.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
@@ -127,6 +129,8 @@
 	async function load(opts: { append?: boolean } = {}) {
 		const nextPage = opts.append ? pageNum + 1 : 1;
 		const token = fetchSequence.start();
+		// KPI rollup tracks the same filter state — refresh it on a fresh load.
+		if (!opts.append) void loadSummary();
 		if (opts.append) loadingMore = true;
 		else loading = true;
 		try {
@@ -221,6 +225,9 @@
 	function onSaved(f: PositivePayFile) {
 		upsert(f);
 		if (detail && detail.id === f.id) detail = f;
+		// A generate / process-return changed an item or return count — the KPI
+		// rollup is a server figure, so re-fetch it.
+		void loadSummary();
 	}
 
 	// --- Delete (armed two-click confirm) ---
@@ -239,6 +246,7 @@
 			fetchSequence.supersedeInFlight();
 			files = files.filter((x) => x.id !== f.id);
 			total = Math.max(0, total - 1);
+			void loadSummary();
 			toast(m('positivePay.toast.deleted'), 'success');
 		} catch (e) {
 			toast(e instanceof Error ? e.message : m('positivePay.toast.deleteFailed'), 'error');
@@ -247,18 +255,27 @@
 		}
 	}
 
-	// --- KPI math (derived from the loaded rows) ---
+	// --- KPI rollup: `GET /api/positive-pay/summary` — the WHOLE filtered set,
+	// over the SAME file_type / status filters. `itemsExported` / `returnsFlagged`
+	// reduced over the loaded page while "Files" showed the server's whole-set
+	// total. ---
+	let ppSummary = $state<PositivePaySummary | null>(null);
+	const summarySequence = createRequestSequencer();
+
+	async function loadSummary() {
+		const token = summarySequence.start();
+		try {
+			const res = await getPositivePaySummary(buildParams());
+			if (!summarySequence.canCommit(token)) return;
+			ppSummary = res;
+		} catch {
+			if (summarySequence.isCurrentRequest(token)) ppSummary = null;
+		}
+	}
+
 	const totalFiles = $derived(total);
-	const itemsExported = $derived(files.reduce((sum, f) => sum + f.item_count, 0));
-	const returnsFlagged = $derived(
-		files.reduce(
-			(sum, f) =>
-				sum +
-				((f.meta?.return_summary?.amount_mismatches ?? 0) +
-					(f.meta?.return_summary?.not_on_file ?? 0)),
-			0
-		)
-	);
+	const itemsExported = $derived(ppSummary?.items_exported ?? 0);
+	const returnsFlagged = $derived(ppSummary?.returns_flagged ?? 0);
 </script>
 
 <svelte:window

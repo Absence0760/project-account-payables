@@ -8,6 +8,7 @@ import type {
 	BudgetCreate,
 	BudgetListResponse,
 	BudgetSpend,
+	BudgetSummary,
 	BudgetUpdate
 } from '$lib/types/budget';
 
@@ -27,6 +28,20 @@ export function listBudgets(params: BudgetListParams = {}): Promise<BudgetListRe
 	qs.set('page', String(params.page ?? 1));
 	qs.set('page_size', String(params.page_size ?? 20));
 	return api.get<BudgetListResponse>(`/api/budgets?${qs}`);
+}
+
+// Whole-set KPI rollup — count + per-currency allocation totals over the SAME
+// dimension/period/search filters as `listBudgets`, so the KPI row can't
+// contradict the table beneath it.
+export function getBudgetSummary(
+	params: Pick<BudgetListParams, 'dimension' | 'period' | 'search'> = {}
+): Promise<BudgetSummary> {
+	const qs = new URLSearchParams();
+	if (params.dimension) qs.set('dimension', params.dimension);
+	if (params.period) qs.set('period', params.period);
+	if (params.search) qs.set('search', params.search);
+	const suffix = qs.toString() ? `?${qs}` : '';
+	return api.get<BudgetSummary>(`/api/budgets/summary${suffix}`);
 }
 
 export function getBudget(id: string): Promise<Budget> {

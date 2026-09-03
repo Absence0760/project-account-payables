@@ -58,6 +58,28 @@ export interface BudgetSpend {
 	utilization_pct: number;
 }
 
+/** One currency's slice of `GET /api/budgets/summary`. */
+export interface BudgetCurrencyTotal {
+	currency: string;
+	/** Exact decimal string — never parse into a float for arithmetic. */
+	total: string;
+	count: number;
+}
+
+/**
+ * Whole-set KPI rollup from `GET /api/budgets/summary`, over the SAME
+ * dimension/period/search filters the list ran with.
+ *
+ * The page's `totalAllocated` used to reduce over the LOADED page and add
+ * across currencies into the org default — so it contradicted the whole-set
+ * row count beside it and rendered EUR + USD as one figure. `by_currency` is
+ * grouped, never summed (see `$lib/utils/currencyGroups`).
+ */
+export interface BudgetSummary {
+	total: number;
+	by_currency: BudgetCurrencyTotal[];
+}
+
 // `GET /api/budgets/check?budget_id=&amount=` — overspend pre-check for the
 // requisition flow.
 export interface BudgetCheck {

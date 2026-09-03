@@ -84,6 +84,7 @@ Every list/read is entity-scoped (`X-Entity-ID`) and tenant-isolated
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/budgets` | Paginated, entity-scoped list. Filters: `dimension`, `period`; `search` (ILIKE on name + dimension_value). |
+| GET | `/budgets/summary` | Whole-set KPI rollup — count + per-currency allocation totals (exact decimal strings, never a cross-currency SUM, never FX-converted). Shares `_budget_list_filters` with the list so the `/budgets` "Total allocated" card can't describe a different set than the table. Groups are ordered by currency code, and each page headlines the first one with the rest on a sub-line — so which currency headlines is alphabetical, never largest-total. |
 | POST | `/budgets` | Create. Audited `budget.created`. |
 | GET | `/budgets/check` | Overspend pre-check (query `budget_id` + `amount`). |
 | GET | `/budgets/{id}` | Detail. |

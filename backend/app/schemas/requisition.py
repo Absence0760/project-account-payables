@@ -126,6 +126,32 @@ class RequisitionListResponse(PageMeta):
     total: int
 
 
+class RequisitionCurrencyTotal(BaseModel):
+    """One currency's slice of the whole-set requisition-value rollup.
+
+    ``total`` is an **exact decimal string** (never ``float``) — the KPI row
+    renders it through ``utils/currencyGroups.formatCurrencyTotals``. Requisition
+    values are never added across currencies and never FX-converted on a read.
+    """
+
+    currency: str
+    total: str
+    count: int
+
+
+class RequisitionSummaryResponse(BaseModel):
+    """Whole-set KPI rollup for the requisitions list — counterpart of
+    ``GET /api/expenses/summary``. Takes the SAME ``status`` / ``search``
+    filters as ``GET /api/requisitions`` (via the shared
+    ``_requisition_list_filters``) so the KPIs can't contradict the table
+    beneath them: ``periodTotal`` / ``pendingCount`` used to reduce over the
+    LOADED page only."""
+
+    total: int
+    by_status: dict[str, int]
+    by_currency: list[RequisitionCurrencyTotal]
+
+
 # ---------------------------------------------------------------------------
 # Transition bodies
 # ---------------------------------------------------------------------------

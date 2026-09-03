@@ -71,6 +71,23 @@ class PositivePayListResponse(BaseModel):
     page_size: int
 
 
+class PositivePaySummaryResponse(BaseModel):
+    """Whole-set KPI rollup for the positive-pay file list — counterpart of
+    ``GET /api/expenses/summary``. Takes the SAME ``file_type`` / ``status``
+    filters as the list. The page's ``itemsExported`` / ``returnsFlagged``
+    reduced over the LOADED page while "Files" showed the server's whole-set
+    ``total``.
+
+    ``items_exported`` = SUM of ``item_count``; ``returns_flagged`` = SUM of
+    each file's ``meta.return_summary.amount_mismatches + .not_on_file`` — the
+    exact figures the page's reduces produced, whole-set."""
+
+    total: int
+    by_status: dict[str, int]
+    items_exported: int
+    returns_flagged: int
+
+
 class ProcessReturnResponse(BaseModel):
     presented_count: int
     matched_ok: int

@@ -5,6 +5,7 @@ import { api } from '$lib/api';
 import type {
 	Requisition,
 	RequisitionListResponse,
+	RequisitionSummary,
 	RequisitionCreate,
 	RequisitionUpdate,
 	ConvertToPoResult
@@ -26,6 +27,19 @@ export function listRequisitions(
 	qs.set('page', String(params.page ?? 1));
 	qs.set('page_size', String(params.page_size ?? 20));
 	return api.get<RequisitionListResponse>(`/api/requisitions?${qs}`);
+}
+
+// Whole-set KPI rollup — status counts + per-currency value totals over the
+// SAME status/search filters as `listRequisitions`, so the `pendingCount` /
+// `periodTotal` KPIs can't describe only the loaded page.
+export function getRequisitionSummary(
+	params: Pick<RequisitionListParams, 'status' | 'search'> = {}
+): Promise<RequisitionSummary> {
+	const qs = new URLSearchParams();
+	if (params.status) qs.set('status', params.status);
+	if (params.search) qs.set('search', params.search);
+	const suffix = qs.toString() ? `?${qs}` : '';
+	return api.get<RequisitionSummary>(`/api/requisitions/summary${suffix}`);
 }
 
 export function getRequisition(id: string): Promise<Requisition> {

@@ -38,6 +38,7 @@ from app.schemas.intake import (
     IntakeRequestCreate,
     IntakeRequestListResponse,
     IntakeRequestResponse,
+    IntakeRequestSummaryResponse,
     IntakeRequestUpdate,
 )
 from app.services.audit_dispatch import dispatch_audit
@@ -119,6 +120,35 @@ async def _get_intake_or_404(
 # ---------------------------------------------------------------------------
 
 
+def _intake_list_filters(
+    query,
+    *,
+    status_filter: str | None,
+    request_type: str | None,
+    search: str | None,
+):
+    """Apply the intake-list ``status`` / ``type`` / free-text filters.
+
+    Shared by ``GET /api/intake`` and ``GET /api/intake/summary`` so the KPI
+    rollup can never describe a different set than the rows it sits above.
+    Entity scope is applied by the caller.
+    """
+    if status_filter:
+        query = query.where(IntakeRequest.status == status_filter)
+    if request_type:
+        query = query.where(IntakeRequest.request_type == request_type)
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        query = query.where(
+            or_(
+                IntakeRequest.request_number.ilike(term),
+                IntakeRequest.title.ilike(term),
+                IntakeRequest.vendor_name.ilike(term),
+            )
+        )
+    return query
+
+
 @router.get("", response_model=IntakeRequestListResponse)
 async def list_intake(
     db: AsyncSession = Depends(get_tenant_db),
@@ -129,20 +159,12 @@ async def list_intake(
     pagination: PaginationParams = Depends(pagination_params),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    base = apply_entity_scope(select(IntakeRequest), IntakeRequest, entity_id)
-    if status_filter:
-        base = base.where(IntakeRequest.status == status_filter)
-    if request_type:
-        base = base.where(IntakeRequest.request_type == request_type)
-    if search:
-        term = f"%{search}%"
-        base = base.where(
-            or_(
-                IntakeRequest.request_number.ilike(term),
-                IntakeRequest.title.ilike(term),
-                IntakeRequest.vendor_name.ilike(term),
-            )
-        )
+    base = _intake_list_filters(
+        apply_entity_scope(select(IntakeRequest), IntakeRequest, entity_id),
+        status_filter=status_filter,
+        request_type=request_type,
+        search=search,
+    )
 
     total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0)
     paged = (
@@ -157,6 +179,42 @@ async def list_intake(
         page=pagination.page,
         page_size=pagination.page_size,
     )
+
+
+# Literal `/summary` declared BEFORE `/{intake_id}` so it isn't captured as a
+# {intake_id} UUID.
+@router.get("/summary", response_model=IntakeRequestSummaryResponse)
+async def intake_summary(
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK, ROLE_CFO)),
+    status_filter: str | None = Query(None, alias="status"),
+    request_type: str | None = Query(None, alias="type"),
+    search: str | None = Query(None),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Whole-set status counts for the intake KPI row.
+
+    Takes the SAME filters as ``GET /api/intake`` through the shared
+    ``_intake_list_filters``. The page's ``openCount`` / ``reviewCount``
+    filtered the LOADED page for ``open`` / ``in_review`` while the "Requests"
+    card beside them showed the server's whole-set ``total``.
+    """
+    status_rows = (
+        await db.execute(
+            _intake_list_filters(
+                apply_entity_scope(
+                    select(IntakeRequest.status, func.count()).select_from(IntakeRequest),
+                    IntakeRequest,
+                    entity_id,
+                ),
+                status_filter=status_filter,
+                request_type=request_type,
+                search=search,
+            ).group_by(IntakeRequest.status)
+        )
+    ).all()
+    by_status = {str(s): int(n) for s, n in status_rows}
+    return IntakeRequestSummaryResponse(total=sum(by_status.values()), by_status=by_status)
 
 
 @router.post("", response_model=IntakeRequestResponse, status_code=status.HTTP_201_CREATED)

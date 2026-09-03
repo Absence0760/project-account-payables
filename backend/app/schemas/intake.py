@@ -93,6 +93,18 @@ class IntakeRequestListResponse(PageMeta):
     total: int
 
 
+class IntakeRequestSummaryResponse(BaseModel):
+    """Whole-set KPI rollup for the intake list — counterpart of
+    ``GET /api/expenses/summary``. Takes the SAME ``status`` / ``type`` /
+    ``search`` filters as ``GET /api/intake`` (via the shared
+    ``_intake_list_filters``). The page's ``openCount`` / ``reviewCount``
+    filtered the LOADED page by status, so both contradicted the whole-set
+    ``total`` count beside them."""
+
+    total: int
+    by_status: dict[str, int]
+
+
 class IntakeDecision(BaseModel):
     """Optional body for an intake approve/reject/cancel — carries a reason.
 

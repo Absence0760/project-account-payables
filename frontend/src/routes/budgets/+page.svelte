@@ -7,7 +7,13 @@
 	} from '$lib/types/budget';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
-	import { listBudgets, deleteBudget as apiDeleteBudget } from '$lib/api/budgets';
+	import {
+		listBudgets,
+		getBudgetSummary,
+		deleteBudget as apiDeleteBudget
+	} from '$lib/api/budgets';
+	import type { BudgetSummary } from '$lib/types/budget';
+	import { formatCurrencyTotals } from '$lib/utils/currencyGroups';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
@@ -77,9 +83,44 @@
 		);
 	});
 
-	// KPI: total allocation across the loaded budgets (org default currency, since
-	// per-budget currencies may differ).
-	const totalAllocated = $derived(budgets.reduce((sum, b) => sum + (Number.isFinite(b.amount) ? b.amount : 0), 0));
+	// KPI: whole-set allocation from `GET /api/budgets/summary`, over the SAME
+	// dimension/period/search filters the list ran with — NOT a reduce over the
+	// loaded page. The old `budgets.reduce(...)` was wrong twice: it summed one
+	// page while the "Budgets" count beside it was the server's whole-set
+	// `total`, and it added every row's bare `amount` across currencies into the
+	// org default, so EUR 400 + USD 3 500 read as one meaningless figure. The
+	// rollup groups by currency and never adds across them (`$lib/utils/currencyGroups`).
+	let budgetSummary = $state<BudgetSummary | null>(null);
+
+	// Independent sequencer: this request can be in flight alongside the list's,
+	// and one shared counter would let either blank the other.
+	const summarySequence = createRequestSequencer();
+
+	async function loadBudgetSummary() {
+		const token = summarySequence.start();
+		try {
+			const res = await getBudgetSummary(buildParams());
+			if (!summarySequence.canCommit(token)) return;
+			budgetSummary = res;
+		} catch {
+			// Non-fatal — the KPI card falls back to a zero placeholder rather
+			// than taking the page down. The table has its own error state.
+			if (summarySequence.isCurrentRequest(token)) budgetSummary = null;
+		}
+	}
+
+	// One subtotal per currency, side by side — never added together.
+	const allocatedGroups = $derived(
+		formatCurrencyTotals(budgetSummary?.by_currency ?? [], orgCurrency.currency)
+	);
+	const allocatedTotal = $derived(
+		allocatedGroups[0] ?? formatMoney(0, { currency: orgCurrency.currency })
+	);
+	// Currencies past the first ride the card's muted sub-line, so the headline
+	// stays one readable figure while nothing is silently dropped.
+	const allocatedRest = $derived(
+		allocatedGroups.length > 1 ? allocatedGroups.slice(1).join(' · ') : null
+	);
 
 	// `untrack` on the `search` read: buildParams() is called from `load()`,
 	// which the filter `$effect` below calls directly — and Svelte tracks reads
@@ -178,6 +219,7 @@
 		searchTimer = setTimeout(() => {
 			syncUrl();
 			load();
+			loadBudgetSummary();
 		}, 300);
 		// Cancel a pending debounce on teardown: without it the timer fires
 		// after the page is gone, running syncUrl()/a list fetch against a route
@@ -189,6 +231,7 @@
 		dimensionFilter;
 		syncUrl();
 		load();
+		loadBudgetSummary();
 	});
 
 	$effect(() => {
@@ -204,6 +247,9 @@
 			total += 1;
 		}
 		if (editing && editing.id === b.id) editing = b;
+		// The allocation KPI is a server rollup, not a reduce over `budgets` —
+		// re-fetch it so a create / amount edit is reflected.
+		loadBudgetSummary();
 	}
 
 	async function deleteBudget(id: string) {
@@ -212,6 +258,7 @@
 			fetchSequence.supersedeInFlight();
 			budgets = budgets.filter((b) => b.id !== id);
 			total = Math.max(0, total - 1);
+			loadBudgetSummary();
 			toast(m('budgets.toast.deleted'), 'success');
 		} catch (err) {
 			toast(err instanceof Error ? err.message : m('budgets.toast.deleteFailed'), 'error');
@@ -241,7 +288,8 @@
 
 	<div class="kpi-row">
 		<KpiCard
-			value={formatMoney(totalAllocated, { currency: orgCurrency.currency })}
+			value={allocatedTotal}
+			sub={allocatedRest}
 			label={m('budgets.kpi.totalAllocated')}
 		/>
 		<KpiCard value={total} label={m('budgets.kpi.budgets')} />

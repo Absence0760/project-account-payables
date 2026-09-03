@@ -11,6 +11,7 @@
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import {
 		listIntake,
+		getIntakeSummary,
 		deleteIntake as apiDelete,
 		submitIntake,
 		approveIntake,
@@ -18,6 +19,7 @@
 		cancelIntake,
 		convertIntakeToRequisition
 	} from '$lib/api/intake';
+	import type { IntakeSummary } from '$lib/types/intake';
 	import Badge from '$lib/components/ui/Badge.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
@@ -83,9 +85,26 @@
 		{ label: '', class: 'actions-col' }
 	]);
 
-	// KPIs over the loaded page.
-	const openCount = $derived(items.filter((i) => i.status === 'open').length);
-	const reviewCount = $derived(items.filter((i) => i.status === 'in_review').length);
+	// KPIs from `GET /api/intake/summary` — the WHOLE filtered set, over the
+	// SAME status/type/search filters. They used to filter `items` (one page),
+	// so `openCount` / `reviewCount` described that page while the "Requests"
+	// card beside them showed the server's whole-set `total`.
+	let intakeSummary = $state<IntakeSummary | null>(null);
+	const summarySequence = createRequestSequencer();
+
+	async function loadSummary() {
+		const token = summarySequence.start();
+		try {
+			const res = await getIntakeSummary(buildParams());
+			if (!summarySequence.canCommit(token)) return;
+			intakeSummary = res;
+		} catch {
+			if (summarySequence.isCurrentRequest(token)) intakeSummary = null;
+		}
+	}
+
+	const openCount = $derived(intakeSummary?.by_status.open ?? 0);
+	const reviewCount = $derived(intakeSummary?.by_status.in_review ?? 0);
 
 	// `untrack` on the `search` read: buildParams() is called from `load()`,
 	// which the filter `$effect` below calls directly — and Svelte tracks reads
@@ -137,6 +156,8 @@
 	async function load(opts: { append?: boolean } = {}) {
 		const nextPage = opts.append ? pageNum + 1 : 1;
 		const token = fetchSequence.start();
+		// KPI rollup tracks the same filter state — refresh it on a fresh load.
+		if (!opts.append) void loadSummary();
 		if (opts.append) loadingMore = true;
 		else loading = true;
 		try {
@@ -210,6 +231,8 @@
 		if (idx >= 0) items = items.map((x) => (x.id === i.id ? i : x));
 		else items = [i, ...items];
 		if (editing && editing.id === i.id) editing = i;
+		// A create / edit / status transition moved a count — refresh the rollup.
+		void loadSummary();
 	}
 
 	async function onDelete(id: string) {
@@ -218,6 +241,7 @@
 			fetchSequence.supersedeInFlight();
 			items = items.filter((x) => x.id !== id);
 			total = Math.max(0, total - 1);
+			void loadSummary();
 			toast(m('intake.toast.deleted'), 'success');
 		} catch (err) {
 			toast(err instanceof Error ? err.message : m('intake.toast.deleteFailed'), 'error');

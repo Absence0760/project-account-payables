@@ -160,6 +160,69 @@ async def test_search_department_composes_with_the_status_filter(realdb):
         assert body["items"][0]["requisition_number"] == submitted
 
 
+async def test_summary_is_whole_set_grouped_by_currency_and_status(realdb):
+    """`GET /api/requisitions/summary` counts the whole matching set, groups the
+    value BY CURRENCY (never a cross-currency sum), and breaks out `by_status`
+    — so the page's `pendingCount` / `periodTotal` KPIs stop describing only the
+    loaded page. Shares the list's status/search filters."""
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        tag = uuid.uuid4().hex[:6].upper()
+        # 2 USD drafts (1000 + 2000), 1 EUR draft (400), 1 USD submitted→pending.
+        await c.post(
+            "/api/requisitions",
+            json=_payload(
+                _num(f"SUM{tag}A"),
+                title=f"sum-{tag}",
+                line_items=[{"description": "x", "quantity": "1", "unit_price": "1000.00"}],
+            ),
+        )
+        await c.post(
+            "/api/requisitions",
+            json=_payload(
+                _num(f"SUM{tag}B"),
+                title=f"sum-{tag}",
+                line_items=[{"description": "x", "quantity": "1", "unit_price": "2000.00"}],
+            ),
+        )
+        await c.post(
+            "/api/requisitions",
+            json=_payload(
+                _num(f"SUM{tag}C"),
+                title=f"sum-{tag}",
+                currency="EUR",
+                line_items=[{"description": "x", "quantity": "1", "unit_price": "400.00"}],
+            ),
+        )
+        pend = await c.post(
+            "/api/requisitions",
+            json=_payload(
+                _num(f"SUM{tag}D"),
+                title=f"sum-{tag}",
+                line_items=[{"description": "x", "quantity": "1", "unit_price": "500.00"}],
+            ),
+        )
+        await c.post(f"/api/requisitions/{pend.json()['id']}/submit")
+
+        body = (await c.get("/api/requisitions/summary", params={"search": f"sum-{tag}"})).json()
+        assert body["total"] == 4
+        assert body["by_status"]["draft"] == 3
+        assert body["by_status"]["pending_approval"] == 1
+        by_ccy = {r["currency"]: r for r in body["by_currency"]}
+        assert by_ccy["USD"]["total"] == "3500.00"
+        assert by_ccy["USD"]["count"] == 3
+        assert by_ccy["EUR"]["total"] == "400.00"
+
+        # the status filter narrows the rollup exactly like the list
+        pending = (
+            await c.get(
+                "/api/requisitions/summary",
+                params={"search": f"sum-{tag}", "status": "pending_approval"},
+            )
+        ).json()
+        assert pending["total"] == 1
+        assert pending["by_currency"][0]["total"] == "500.00"
+
+
 async def test_update_draft_recomputes_total(realdb):
     mk = realdb.sessionmaker("a")
     async with realdb.client(key="a", role="ap_clerk") as c:

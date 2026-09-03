@@ -91,6 +91,31 @@ class BudgetSpendResponse(BaseModel):
     utilization_pct: float
 
 
+class BudgetCurrencyTotal(BaseModel):
+    """One currency's slice of the whole-set budget-allocation rollup.
+
+    ``total`` is an **exact decimal string** (never ``float``) — the KPI row
+    this feeds renders it through ``utils/currencyGroups.formatCurrencyTotals``,
+    the same display primitive ``/expenses`` uses. Allocations are never added
+    across currencies and never FX-converted on a read.
+    """
+
+    currency: str
+    total: str
+    count: int
+
+
+class BudgetSummaryResponse(BaseModel):
+    """Whole-set KPI rollup for the budgets list — the counterpart of
+    ``GET /api/expenses/summary``. Takes the SAME ``dimension`` / ``period`` /
+    ``search`` filters as ``GET /api/budgets`` (via the shared
+    ``_budget_list_filters``) so the KPI can never describe a different set than
+    the table beneath it — the page-scoped-KPI drift this endpoint closes."""
+
+    total: int
+    by_currency: list[BudgetCurrencyTotal]
+
+
 class BudgetCheckResponse(BaseModel):
     """Result of ``GET /budgets/check`` — would a proposed ``amount`` overspend
     this budget? Called by the requisition flow before submit. ``remaining`` is
@@ -116,5 +141,7 @@ __all__ = [
     "BudgetResponse",
     "BudgetListResponse",
     "BudgetSpendResponse",
+    "BudgetCurrencyTotal",
+    "BudgetSummaryResponse",
     "BudgetCheckResponse",
 ]

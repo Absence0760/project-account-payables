@@ -6,6 +6,7 @@ import type {
 	Reconciliation,
 	ReconciliationCreate,
 	ReconciliationListResponse,
+	ReconciliationSummary,
 	LineResolveRequest,
 	CloseReadinessResponse
 } from '$lib/types/vendorStatementRecon';
@@ -26,6 +27,19 @@ export function listReconciliations(
 	qs.set('page', String(params.page ?? 1));
 	qs.set('page_size', String(params.page_size ?? 20));
 	return api.get<ReconciliationListResponse>(`/api/vendor-statements?${qs}`);
+}
+
+// Whole-set KPI rollup — status counts + total open discrepancies over the
+// SAME vendor_id / status filters as `listReconciliations`, so `openCount` /
+// `totalDiscrepancies` stop describing only the loaded page.
+export function getReconciliationSummary(
+	params: Pick<ReconListParams, 'vendor_id' | 'status'> = {}
+): Promise<ReconciliationSummary> {
+	const qs = new URLSearchParams();
+	if (params.vendor_id) qs.set('vendor_id', params.vendor_id);
+	if (params.status) qs.set('status', params.status);
+	const suffix = qs.toString() ? `?${qs}` : '';
+	return api.get<ReconciliationSummary>(`/api/vendor-statements/summary${suffix}`);
 }
 
 export function getReconciliation(id: string): Promise<Reconciliation> {

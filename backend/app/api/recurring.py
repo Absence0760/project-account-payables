@@ -16,9 +16,10 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import date
+from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -41,9 +42,11 @@ from app.models.vendor import Vendor
 from app.schemas.recurring_invoice import (
     GeneratedHistoryResponse,
     GeneratedInvoiceItem,
+    RecurringCurrencyTotal,
     RecurringTemplateCreate,
     RecurringTemplateListResponse,
     RecurringTemplateResponse,
+    RecurringTemplateSummaryResponse,
     RecurringTemplateUpdate,
     ScheduleOccurrence,
     UpcomingScheduleResponse,
@@ -110,6 +113,35 @@ def _seed_next_run_on(template: RecurringInvoiceTemplate, *, after: date) -> Non
 # --------------------------------------------------------------------------- #
 
 
+def _recurring_list_filters(
+    query,
+    *,
+    status_filter: str | None,
+    vendor_id: uuid.UUID | None,
+    search: str | None,
+):
+    """Apply the recurring-template ``status`` / ``vendor_id`` / free-text
+    filters to ``query``.
+
+    Shared by ``GET /api/recurring`` and ``GET /api/recurring/summary`` so the
+    KPI rollup can never describe a different set than the rows it sits above.
+    Entity scope is applied by the caller.
+    """
+    if status_filter:
+        query = query.where(RecurringInvoiceTemplate.status == status_filter)
+    if vendor_id:
+        query = query.where(RecurringInvoiceTemplate.vendor_id == vendor_id)
+    if search and search.strip():
+        like = f"%{search.strip()}%"
+        query = query.where(
+            or_(
+                RecurringInvoiceTemplate.name.ilike(like),
+                RecurringInvoiceTemplate.vendor_name.ilike(like),
+            )
+        )
+    return query
+
+
 @router.get("", response_model=RecurringTemplateListResponse)
 async def list_templates(
     status_filter: str | None = Query(None, alias="status"),
@@ -121,21 +153,12 @@ async def list_templates(
     user: User = Depends(require_roles(*_READ_ROLES)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    query = apply_entity_scope(
-        select(RecurringInvoiceTemplate), RecurringInvoiceTemplate, entity_id
+    query = _recurring_list_filters(
+        apply_entity_scope(select(RecurringInvoiceTemplate), RecurringInvoiceTemplate, entity_id),
+        status_filter=status_filter,
+        vendor_id=vendor_id,
+        search=search,
     )
-    if status_filter:
-        query = query.where(RecurringInvoiceTemplate.status == status_filter)
-    if vendor_id:
-        query = query.where(RecurringInvoiceTemplate.vendor_id == vendor_id)
-    if search:
-        like = f"%{search.strip()}%"
-        query = query.where(
-            or_(
-                RecurringInvoiceTemplate.name.ilike(like),
-                RecurringInvoiceTemplate.vendor_name.ilike(like),
-            )
-        )
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
     query = (
@@ -149,6 +172,107 @@ async def list_templates(
         total=total,
         page=page,
         page_size=page_size,
+    )
+
+
+# Literal `/summary` declared BEFORE `/{template_id}` so it isn't captured as a
+# {template_id} UUID.
+@router.get("/summary", response_model=RecurringTemplateSummaryResponse)
+async def template_summary(
+    status_filter: str | None = Query(None, alias="status"),
+    vendor_id: uuid.UUID | None = None,
+    search: str | None = None,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(*_READ_ROLES)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Whole-set status counts + per-currency monthly-equivalent recurring spend
+    + the soonest upcoming run.
+
+    Takes the SAME filters as ``GET /api/recurring`` through the shared
+    ``_recurring_list_filters``. The page derived ``activeCount`` /
+    ``soonestNextRun`` / ``monthlyRecurringTotal`` from the LOADED page and did
+    the cadence-normalisation division in float. Here the monthly figure is an
+    exact Postgres numeric (``amount`` / {1, 3, 12}), quantised to 2dp per
+    template, summed per currency — never across currencies.
+    """
+    tmpl = RecurringInvoiceTemplate
+
+    status_rows = (
+        await db.execute(
+            _recurring_list_filters(
+                apply_entity_scope(
+                    select(tmpl.status, func.count()).select_from(tmpl), tmpl, entity_id
+                ),
+                status_filter=status_filter,
+                vendor_id=vendor_id,
+                search=search,
+            ).group_by(tmpl.status)
+        )
+    ).all()
+    by_status = {str(s): int(n) for s, n in status_rows}
+
+    # Monthly-equivalent spend, ACTIVE templates with a set amount only. Divisor
+    # per cadence; the division stays in Postgres numeric (exact), quantised in
+    # Python.
+    divisor = case(
+        (tmpl.cadence == "quarterly", 3),
+        (tmpl.cadence == "annual", 12),
+        else_=1,
+    )
+    currency_key = func.upper(tmpl.currency)
+    monthly_rows = (
+        await db.execute(
+            _recurring_list_filters(
+                apply_entity_scope(
+                    select(
+                        currency_key,
+                        func.coalesce(func.sum(tmpl.amount / divisor), 0),
+                        func.count(),
+                    )
+                    .select_from(tmpl)
+                    .where(tmpl.status == STATUS_ACTIVE, tmpl.amount.is_not(None)),
+                    tmpl,
+                    entity_id,
+                ),
+                status_filter=status_filter,
+                vendor_id=vendor_id,
+                search=search,
+            )
+            .group_by(currency_key)
+            .order_by(currency_key)
+        )
+    ).all()
+
+    soonest = (
+        await db.execute(
+            _recurring_list_filters(
+                apply_entity_scope(
+                    select(func.min(tmpl.next_run_on))
+                    .select_from(tmpl)
+                    .where(tmpl.status == STATUS_ACTIVE, tmpl.next_run_on.is_not(None)),
+                    tmpl,
+                    entity_id,
+                ),
+                status_filter=status_filter,
+                vendor_id=vendor_id,
+                search=search,
+            )
+        )
+    ).scalar()
+
+    return RecurringTemplateSummaryResponse(
+        total=sum(by_status.values()),
+        by_status=by_status,
+        monthly_equivalent=[
+            RecurringCurrencyTotal(
+                currency=str(currency or "").upper() or "USD",
+                total=str(Decimal(monthly).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+                count=int(n),
+            )
+            for currency, monthly, n in monthly_rows
+        ],
+        soonest_next_run=soonest.isoformat() if soonest else None,
     )
 
 

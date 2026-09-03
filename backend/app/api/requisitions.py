@@ -45,10 +45,12 @@ from app.models.vendor import Vendor
 from app.schemas.requisition import (
     ConvertToPoResponse,
     RequisitionCreate,
+    RequisitionCurrencyTotal,
     RequisitionDecision,
     RequisitionLineItemResponse,
     RequisitionListResponse,
     RequisitionResponse,
+    RequisitionSummaryResponse,
     RequisitionUpdate,
 )
 from app.services.approval_chain import check_segregation
@@ -158,6 +160,32 @@ async def _get_or_404(
 # ---------------------------------------------------------------------------
 
 
+def _requisition_list_filters(query, *, status_filter: str | None, search: str | None):
+    """Apply the requisition-list ``status`` / free-text filters to ``query``.
+
+    Shared by ``GET /api/requisitions`` and ``GET /api/requisitions/summary`` so
+    the KPI rollup can never describe a different set than the rows it sits
+    above. Entity scope is applied by the caller.
+
+    `department` is searched for the same reason number + title are: it is a
+    column the list RENDERS, and the page's own search box matched it
+    client-side — covering fewer columns than the page used to would be a
+    straight regression.
+    """
+    if status_filter:
+        query = query.where(PurchaseRequisition.status == status_filter)
+    if search and search.strip():
+        pattern = f"%{search.strip()}%"
+        query = query.where(
+            or_(
+                PurchaseRequisition.requisition_number.ilike(pattern),
+                PurchaseRequisition.title.ilike(pattern),
+                PurchaseRequisition.department.ilike(pattern),
+            )
+        )
+    return query
+
+
 @router.get("", response_model=RequisitionListResponse)
 async def list_requisitions(
     db: AsyncSession = Depends(get_tenant_db),
@@ -167,23 +195,11 @@ async def list_requisitions(
     pagination: PaginationParams = Depends(pagination_params),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    base = apply_entity_scope(select(PurchaseRequisition), PurchaseRequisition, entity_id)
-    if status_filter:
-        base = base.where(PurchaseRequisition.status == status_filter)
-    if search:
-        pattern = f"%{search.strip()}%"
-        # `department` belongs here for the same reason number + title do: it is
-        # a column the list RENDERS, and the requisitions page's own search box
-        # matched it client-side. Server-side search that covers fewer columns
-        # than the page used to is a straight regression — a buyer searching
-        # "Facilities" would get nothing back.
-        base = base.where(
-            or_(
-                PurchaseRequisition.requisition_number.ilike(pattern),
-                PurchaseRequisition.title.ilike(pattern),
-                PurchaseRequisition.department.ilike(pattern),
-            )
-        )
+    base = _requisition_list_filters(
+        apply_entity_scope(select(PurchaseRequisition), PurchaseRequisition, entity_id),
+        status_filter=status_filter,
+        search=search,
+    )
 
     total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0)
     paged = (
@@ -198,6 +214,77 @@ async def list_requisitions(
         total=total,
         page=pagination.page,
         page_size=pagination.page_size,
+    )
+
+
+# Literal `/summary` declared BEFORE `/{req_id}` so it isn't captured as a
+# {req_id} UUID (same ordering constraint as `/budgets/summary`).
+@router.get("/summary", response_model=RequisitionSummaryResponse)
+async def requisition_summary(
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK, ROLE_CFO)),
+    status_filter: str | None = Query(None, alias="status"),
+    search: str | None = Query(None),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Whole-set status counts + per-currency value totals for the requisitions
+    KPI row.
+
+    Takes the SAME filters as ``GET /api/requisitions`` through the same
+    ``_requisition_list_filters``. The page's ``pendingCount`` filtered the
+    LOADED page for ``pending_approval`` and ``periodTotal`` reduced over it —
+    so both contradicted the whole-set ``total`` count beside them, and
+    ``periodTotal`` added values across currencies. Totals are grouped BY
+    CURRENCY as exact decimal strings, never summed across currencies.
+    """
+    Req = PurchaseRequisition
+    status_rows = (
+        await db.execute(
+            _requisition_list_filters(
+                apply_entity_scope(
+                    select(Req.status, func.count()).select_from(Req),
+                    Req,
+                    entity_id,
+                ),
+                status_filter=status_filter,
+                search=search,
+            ).group_by(Req.status)
+        )
+    ).all()
+    by_status = {str(s): int(n) for s, n in status_rows}
+
+    currency_key = func.upper(Req.currency)
+    currency_rows = (
+        await db.execute(
+            _requisition_list_filters(
+                apply_entity_scope(
+                    select(
+                        currency_key,
+                        func.coalesce(func.sum(Req.total), 0),
+                        func.count(),
+                    ).select_from(Req),
+                    Req,
+                    entity_id,
+                ),
+                status_filter=status_filter,
+                search=search,
+            )
+            .group_by(currency_key)
+            .order_by(currency_key)
+        )
+    ).all()
+
+    return RequisitionSummaryResponse(
+        total=sum(by_status.values()),
+        by_status=by_status,
+        by_currency=[
+            RequisitionCurrencyTotal(
+                currency=str(currency or "").upper() or "USD",
+                total=str(Decimal(total_amount)),
+                count=int(n),
+            )
+            for currency, total_amount, n in currency_rows
+        ],
     )
 
 

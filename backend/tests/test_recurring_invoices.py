@@ -280,6 +280,49 @@ async def test_ap_clerk_can_read_cannot_create(realdb):
         assert denied.status_code == 403
 
 
+async def test_summary_monthly_equivalent_is_exact_and_whole_set(realdb):
+    """`GET /api/recurring/summary` normalises each ACTIVE template to a monthly
+    figure with EXACT decimal math (monthly = amount, quarterly = amount / 3,
+    annual = amount / 12), groups it by currency (never a cross-currency sum),
+    breaks out `by_status`, and reports the soonest upcoming run — the KPI trio
+    the page derived from the loaded page (and divided in float)."""
+    async with realdb.client(key="a", role="ap_manager") as c:
+        tag = uuid.uuid4().hex[:6]
+        await c.post(
+            "/api/recurring",
+            json=_create_body(name=f"{tag} monthly", amount=1200.0, cadence="monthly"),
+        )
+        await c.post(
+            "/api/recurring",
+            json=_create_body(name=f"{tag} quarterly", amount=300.0, cadence="quarterly"),
+        )
+        await c.post(
+            "/api/recurring",
+            json=_create_body(
+                name=f"{tag} annual", amount=1200.0, currency="EUR", cadence="annual"
+            ),
+        )
+        paused = (
+            await c.post(
+                "/api/recurring",
+                json=_create_body(name=f"{tag} paused", amount=999.0, cadence="monthly"),
+            )
+        ).json()["id"]
+        await c.post(f"/api/recurring/{paused}/pause")
+
+        body = (await c.get("/api/recurring/summary", params={"search": tag})).json()
+        assert body["total"] == 4
+        assert body["by_status"]["active"] == 3
+        assert body["by_status"]["paused"] == 1
+        by_ccy = {r["currency"]: r for r in body["monthly_equivalent"]}
+        # 1200 (monthly) + 300/3 (quarterly) = 1300.00 — the paused 999 excluded.
+        assert by_ccy["USD"]["total"] == "1300.00"
+        assert by_ccy["USD"]["count"] == 2
+        # 1200 / 12 = 100.00
+        assert by_ccy["EUR"]["total"] == "100.00"
+        assert body["soonest_next_run"] is not None
+
+
 async def test_patch_recomputes_next_run_on_and_audits_changed(realdb):
     mk = realdb.sessionmaker("a")
 

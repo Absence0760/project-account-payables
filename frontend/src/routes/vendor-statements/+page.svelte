@@ -11,10 +11,12 @@
 	import { api } from '$lib/api';
 	import {
 		listReconciliations,
+		getReconciliationSummary,
 		getReconciliation,
 		getCloseReadiness,
 		deleteReconciliation
 	} from '$lib/api/vendorStatementRecon';
+	import type { ReconciliationSummary } from '$lib/types/vendorStatementRecon';
 	import Badge from '$lib/components/ui/Badge.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
@@ -128,6 +130,8 @@
 	async function load(opts: { append?: boolean } = {}) {
 		const nextPage = opts.append ? pageNum + 1 : 1;
 		const token = fetchSequence.start();
+		// KPI rollup tracks the same filter state — refresh it on a fresh load.
+		if (!opts.append) void loadSummary();
 		if (opts.append) loadingMore = true;
 		else loading = true;
 		try {
@@ -238,6 +242,7 @@
 			recons = recons.map((x) => (x.id === r.id ? r : x));
 		}
 		loadCloseReadiness();
+		void loadSummary();
 	}
 
 	function onSaved(r: Reconciliation) {
@@ -263,6 +268,7 @@
 			total = Math.max(0, total - 1);
 			toast(m('vendorStatements.toast.deleted'), 'success');
 			loadCloseReadiness();
+			void loadSummary();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : m('vendorStatements.toast.deleteFailed'), 'error');
 		} finally {
@@ -279,9 +285,27 @@
 	}
 
 
-	// --- KPI math (derived from the loaded rows) ---
-	const openCount = $derived(recons.filter((r) => r.status === 'open').length);
-	const totalDiscrepancies = $derived(recons.reduce((sum, r) => sum + discrepancyCount(r), 0));
+	// --- KPI rollup: `GET /api/vendor-statements/summary` — the WHOLE filtered
+	// set, over the SAME vendor/status filters. `openCount` filtered the loaded
+	// page and `totalDiscrepancies` reduced the per-run discrepancy counts over
+	// it — so both contradicted the "showing all N" footer. `discrepancyCount`
+	// stays for the per-row cell. ---
+	let reconSummary = $state<ReconciliationSummary | null>(null);
+	const summarySequence = createRequestSequencer();
+
+	async function loadSummary() {
+		const token = summarySequence.start();
+		try {
+			const res = await getReconciliationSummary(buildParams());
+			if (!summarySequence.canCommit(token)) return;
+			reconSummary = res;
+		} catch {
+			if (summarySequence.isCurrentRequest(token)) reconSummary = null;
+		}
+	}
+
+	const openCount = $derived(reconSummary?.by_status.open ?? 0);
+	const totalDiscrepancies = $derived(reconSummary?.open_discrepancies ?? 0);
 </script>
 
 <svelte:window

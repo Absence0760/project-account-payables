@@ -99,6 +99,21 @@ export interface PositivePayListResponse {
 	page_size: number;
 }
 
+/**
+ * Whole-set KPI rollup from `GET /api/positive-pay/summary`, over the SAME
+ * file_type / status filters the list ran with.
+ *
+ * `itemsExported` and `returnsFlagged` used to reduce over the LOADED page
+ * while "Files" showed the server's whole-set `total`. `items_exported` /
+ * `returns_flagged` are those reduces, whole-set.
+ */
+export interface PositivePaySummary {
+	total: number;
+	by_status: Record<string, number>;
+	items_exported: number;
+	returns_flagged: number;
+}
+
 // --- Process-return payload + response ------------------------------------
 
 export interface PresentedItemInput {

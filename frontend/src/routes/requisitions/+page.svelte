@@ -8,6 +8,7 @@
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import {
 		listRequisitions,
+		getRequisitionSummary,
 		getRequisition,
 		deleteRequisition as apiDelete,
 		submitRequisition,
@@ -17,6 +18,8 @@
 		convertRequisitionToPo,
 		type RequisitionListParams
 	} from '$lib/api/requisitions';
+	import type { RequisitionSummary } from '$lib/types/requisition';
+	import { formatCurrencyTotals } from '$lib/utils/currencyGroups';
 	import { listGlAccounts, type GlAccountOption } from '$lib/api/expenses';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
@@ -114,10 +117,41 @@
 	// Load more describe the MATCHES rather than the unfiltered list.
 	const emptyMessage = $derived(loading ? m('common.loading') : m('requisitions.empty'));
 
-	const pendingCount = $derived(
-		requisitions.filter((r) => r.status === 'pending_approval').length
+	// KPIs from `GET /api/requisitions/summary` — the WHOLE filtered set, over
+	// the SAME status/search filters. They used to reduce over `requisitions`,
+	// which holds one page: `pendingCount` counted pending rows on that page
+	// while the "Requisitions" card beside it showed the server's whole-set
+	// `total`, and `periodTotal` summed one page AND added values across
+	// currencies into the org default. The rollup groups by currency and never
+	// adds across them (`$lib/utils/currencyGroups`).
+	let reqSummary = $state<RequisitionSummary | null>(null);
+	const summarySequence = createRequestSequencer();
+
+	async function loadSummary() {
+		const token = summarySequence.start();
+		try {
+			const params: Pick<RequisitionListParams, 'status' | 'search'> = {};
+			if (statusFilter !== 'all') params.status = statusFilter;
+			const term = untrack(() => search).trim();
+			if (term) params.search = term;
+			const res = await getRequisitionSummary(params);
+			if (!summarySequence.canCommit(token)) return;
+			reqSummary = res;
+		} catch {
+			if (summarySequence.isCurrentRequest(token)) reqSummary = null;
+		}
+	}
+
+	const pendingCount = $derived(reqSummary?.by_status.pending_approval ?? 0);
+	const periodTotalGroups = $derived(
+		formatCurrencyTotals(reqSummary?.by_currency ?? [], orgCurrency.currency)
 	);
-	const periodTotal = $derived(requisitions.reduce((sum, r) => sum + (r.total || 0), 0));
+	const periodTotal = $derived(
+		periodTotalGroups[0] ?? formatMoney(0, { currency: orgCurrency.currency })
+	);
+	const periodTotalRest = $derived(
+		periodTotalGroups.length > 1 ? periodTotalGroups.slice(1).join(' · ') : null
+	);
 
 	// Reflect the live filter state into the URL. EVERY read in here is
 	// untracked, `$page.url` included, because syncUrl() is a WRITER called
@@ -158,6 +192,10 @@
 	async function load(opts: { append?: boolean } = {}) {
 		const nextPage = opts.append ? pageNum + 1 : 1;
 		const token = fetchSequence.start();
+		// The KPI rollup tracks the same filter state — refresh it alongside a
+		// fresh (non-append) list load. Its own sequencer keeps a slow response
+		// from landing over a newer one.
+		if (!opts.append) void loadSummary();
 		if (opts.append) loadingMore = true;
 		else loading = true;
 		try {
@@ -266,12 +304,16 @@
 			total += 1;
 		}
 		if (editing && editing.id === r.id) editing = r;
+		void loadSummary();
 	}
 
 	function replaceRow(r: Requisition) {
 		fetchSequence.supersedeInFlight();
 		requisitions = requisitions.map((x) => (x.id === r.id ? r : x));
 		if (editing && editing.id === r.id) editing = r;
+		// A lifecycle transition (submit / approve / reject / cancel) moved a
+		// status — refresh the by-status KPI counts.
+		void loadSummary();
 	}
 
 	async function runAction(
@@ -328,6 +370,7 @@
 			fetchSequence.supersedeInFlight();
 			requisitions = requisitions.filter((r) => r.id !== id);
 			total = Math.max(0, total - 1);
+			void loadSummary();
 			toast(m('requisitions.toast.deleted'), 'success');
 		} catch (err) {
 			toast(err instanceof Error ? err.message : m('requisitions.toast.deleteFailed'), 'error');
@@ -362,7 +405,7 @@
 	{/snippet}
 
 	<div class="kpi-row">
-		<KpiCard value={formatMoney(periodTotal, { currency: orgCurrency.currency })} label={m('requisitions.kpi.openTotal')} />
+		<KpiCard value={periodTotal} sub={periodTotalRest} label={m('requisitions.kpi.openTotal')} />
 		<KpiCard value={total} label={m('requisitions.kpi.requisitions')} />
 		<KpiCard value={pendingCount} label={m('requisitions.kpi.pendingApproval')} highlight={pendingCount ? 'red' : null} />
 	</div>

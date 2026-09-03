@@ -76,6 +76,7 @@ If the linked requisition was deleted, the dangling link is rebuilt.
 | Method + path | Roles | Notes |
 |---|---|---|
 | `GET /intake` | admin / ap_manager / ap_clerk / cfo | paginated, entity-scoped; filter `?status=`, `?type=`, search `?search=` (number/title/vendor_name) |
+| `GET /intake/summary` | admin / ap_manager / ap_clerk / cfo | whole-set `by_status` counts, sharing `_intake_list_filters` with the list so the page's `openCount` / `reviewCount` KPIs can't describe only the loaded page |
 | `POST /intake` | admin / ap_manager / ap_clerk / cfo | `request_number` auto-generated (`INTK-<year>-<seq>`) when omitted. `requester_user_id` is **always the authenticated caller** — see below |
 | `GET /intake/{id}` | admin / ap_manager / ap_clerk / cfo | |
 | `PATCH /intake/{id}` | admin / ap_manager / ap_clerk / cfo | open-only (`422` otherwise) |

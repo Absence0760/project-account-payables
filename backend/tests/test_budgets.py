@@ -285,6 +285,40 @@ async def test_list_filter_search_and_get(realdb):
         assert one.json()["amount"] == 2000.0
 
 
+async def test_summary_groups_by_currency_and_honours_filters(realdb):
+    """`GET /api/budgets/summary` is the whole-set KPI rollup: it counts every
+    matching row (not just the loaded page), groups the allocation BY CURRENCY
+    (never a cross-currency sum), and shares the list's dimension/period/search
+    filters so the KPI can't contradict the table."""
+    await _mk_budget_row(realdb, dimension="department", amount="1000.00", currency="USD")
+    await _mk_budget_row(realdb, dimension="department", amount="2500.00", currency="USD")
+    await _mk_budget_row(realdb, dimension="project", amount="400.00", currency="EUR")
+
+    async with realdb.client(key="a", role="cfo") as c:
+        res = await c.get("/api/budgets/summary")
+        assert res.status_code == 200
+        body = res.json()
+        assert body["total"] == 3
+        by_ccy = {row["currency"]: row for row in body["by_currency"]}
+        assert by_ccy["USD"]["total"] == "3500.00"
+        assert by_ccy["USD"]["count"] == 2
+        assert by_ccy["EUR"]["total"] == "400.00"
+        # never a single blended figure
+        assert set(by_ccy) == {"USD", "EUR"}
+
+        # the dimension filter narrows the rollup exactly like the list
+        filtered = (await c.get("/api/budgets/summary", params={"dimension": "project"})).json()
+        assert filtered["total"] == 1
+        assert [r["currency"] for r in filtered["by_currency"]] == ["EUR"]
+
+
+async def test_summary_read_gate_matches_list(realdb):
+    async with realdb.client(key="a", role="ap_manager") as c:
+        assert (await c.get("/api/budgets/summary")).status_code == 200
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        assert (await c.get("/api/budgets/summary")).status_code == 403
+
+
 async def test_update_budget(realdb):
     mk = realdb.sessionmaker("a")
     bid = await _mk_budget_row(realdb, amount="100.00")

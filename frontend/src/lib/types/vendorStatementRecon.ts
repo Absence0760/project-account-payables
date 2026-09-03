@@ -146,6 +146,20 @@ export interface ReconciliationListResponse {
 	page_size: number;
 }
 
+/**
+ * Whole-set KPI rollup from `GET /api/vendor-statements/summary`, over the SAME
+ * vendor_id / status filters the list ran with.
+ *
+ * The page's `openCount` filtered the LOADED page and `totalDiscrepancies`
+ * reduced the per-run discrepancy counts over it — both contradicting the
+ * whole-set `total`. `open_discrepancies` is that reduce, whole-set.
+ */
+export interface ReconciliationSummary {
+	total: number;
+	by_status: Record<string, number>;
+	open_discrepancies: number;
+}
+
 // --- Create payloads ------------------------------------------------------
 
 // One supplier-statement line for the manual / pasted-lines intake path.
