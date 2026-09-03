@@ -409,15 +409,16 @@ invisible, which is exactly what both Positive Pay modules used; either could ha
 sat on the "converged" allowlist while still reading local time
 ([decisions.md](decisions.md) §51). What is left is cosmetic:
 
-- [ ] **Six `datetime.now(UTC).date()` sites are correct but unguarded.**
-      `api/api_keys.py`, `api/bank_reconciliation.py`,
-      `services/discount_auto_trigger.py`, `services/contract_renewal.py`,
-      `services/recurring_invoices.py` and
-      `services/financing_adapters/mock_adapter.py` still inline the expression
-      instead of importing `utc_today`, so they cannot join `UTC_TODAY_MODULES`
-      and sit one careless edit from regressing silently.
-      **Durable fix:** swap the expression, add each to the allowlist.
-      **Trigger:** the next change to any of them.
+The last of it is **closed** too. The six modules that inlined
+`datetime.now(UTC).date()` — `api/api_keys`, `api/bank_reconciliation`, the
+recurring / contract-renewal / discount-auto-capture sweeps and the mock
+financing adapter, plus `api/cash_flow` and the four copilot tools that
+predated the helper — now import `utc_today`, and the guard stopped being an
+opt-in allowlist: it AST-scans **the whole of `app/`** for a local-timezone
+"today", and separately fails on an inlined `datetime.now(UTC).date()` outside
+`utils/dates.py`. The allowlist was the right shape while the tree was mixed
+and the wrong one once it wasn't — a list cannot see a module nobody added to
+it, and a new module is where the next `date.today()` arrives.
 
 ### Tinted badges — the shared primitive exists, half the call sites still hand-roll
 

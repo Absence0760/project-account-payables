@@ -112,6 +112,7 @@ from app.tenant import (
     get_tenant_db,
     resolve_default_entity_id,
 )
+from app.utils.dates import utc_today
 
 router = APIRouter(prefix="/cash-flow", tags=["cash-flow"])
 
@@ -390,7 +391,7 @@ async def draft_run_from_plan(
     reasoned about.
     """
     _require_enabled()
-    today = datetime.now(UTC).date()
+    today = utc_today()
 
     resolved = await _resolve_and_verify_plan(
         body=body,
@@ -536,7 +537,7 @@ async def capture_discounts_from_plan(
     meantime) is skipped, not re-raised: a second call is a clean no-op.
     """
     _require_enabled()
-    today = datetime.now(UTC).date()
+    today = utc_today()
 
     resolved = await _resolve_and_verify_plan(
         body=body,
@@ -724,7 +725,7 @@ async def save_plan(
     to hold still.
     """
     _require_enabled()
-    today = datetime.now(UTC).date()
+    today = utc_today()
 
     resolved = await _resolve_and_verify_plan(
         body=body,
@@ -1015,7 +1016,7 @@ async def saved_plan_variance(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
 
     planned = thaw_periods(row.periods)
-    as_of = datetime.now(UTC).date()
+    as_of = utc_today()
 
     by_period: dict[str, Decimal] = {}
     undated = 0

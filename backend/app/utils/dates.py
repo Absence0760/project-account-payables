@@ -45,11 +45,18 @@ site under ``app/`` reads the local date any more; ``scripts/seed*.py`` still
 does, deliberately — demo fixtures on a dev laptop have nothing to reconcile
 against.
 
-Guard: ``tests/test_utc_today.py`` holds the allowlist of converged modules and
-AST-scans each, failing on ``date.today()``, ``datetime.today()``,
-``datetime.date.today()`` and ``datetime.now().date()`` — that last one is naive
-``now()``, so a local date under a name that reads as deliberate, and a scan
-shaped only around the word ``today`` would never see it.
+Guard: ``tests/test_utc_today.py`` AST-scans **the whole of** ``app/``, failing
+on ``date.today()``, ``datetime.today()``, ``datetime.date.today()`` and
+``datetime.now().date()`` — that last one is naive ``now()``, so a local date
+under a name that reads as deliberate, and a scan shaped only around the word
+``today`` would never see it. It also fails on an inlined
+``datetime.now(UTC).date()`` anywhere but here: that spelling is *correct*, so
+the first scan can never flag it, yet it is one dropped argument away from
+being wrong on a line that still reads as deliberate.
+
+The scan used to be an opt-in allowlist of converged modules, which was right
+while the tree was mixed and wrong once it wasn't — a list cannot see a module
+nobody added to it, and a new module is where the next ``date.today()`` lands.
 """
 
 from __future__ import annotations

@@ -2269,6 +2269,6 @@ the `M/D/Y`-vs-`D/M/Y` slash/dash shape); ISO, `YYYY/MM/DD` and dotted
 are unambiguous and stay in each caller's own format list.
 
 **Guard:** `tests/test_ambiguous_dates.py` unit-tests both functions and
-AST-scans the four call sites (mirroring `UTC_TODAY_MODULES` in
+AST-scans the four call sites (mirroring the UTC-today convergence guard in
 `tests/test_utc_today.py`) so none of them can quietly regrow a hardcoded
 `"%m/%d/%Y"` / `"%d/%m/%Y"` pair outside the shared helper.

@@ -67,6 +67,7 @@ from app.services.discount_offers import (
 )
 from app.services.discount_roi import compute_roi, days_between
 from app.services.sweep_health import SWEEP_DISCOUNT_AUTO_TRIGGER, run_sweep_loop
+from app.utils.dates import utc_today
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +158,7 @@ async def _resolve_cost_of_capital(organization_id: uuid.UUID) -> Decimal:
 async def run_auto_trigger_once(*, today: date | None = None) -> AutoTriggerResult:
     """One auto-capture sweep across every tenant. Safe to call directly."""
     result = AutoTriggerResult()
-    ref_today = today or datetime.now(UTC).date()
+    ref_today = today or utc_today()
 
     async with control_session_factory() as ctrl:
         rows = await ctrl.execute(select(Organization.id, Organization.db_name))

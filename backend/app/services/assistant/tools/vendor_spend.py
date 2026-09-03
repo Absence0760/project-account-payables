@@ -16,7 +16,7 @@ currency code.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -33,6 +33,7 @@ from app.services.assistant.tools.schemas import (
 )
 from app.services.currency_conversion import reporting_amount_for_row
 from app.tenant import apply_entity_scope
+from app.utils.dates import utc_today
 
 _PERIOD_LABELS = {
     "mtd": "month-to-date",
@@ -70,7 +71,7 @@ async def get_vendor_spend(
     params: VendorSpendParams,
     control_db: AsyncSession | None = None,
 ) -> VendorSpendResult:
-    today = datetime.now(UTC).date()
+    today = utc_today()
     start = _period_start(params.period, today)
     currency = await resolve_org_currency(org_id, control_db)
 

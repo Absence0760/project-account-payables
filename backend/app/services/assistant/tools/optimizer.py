@@ -10,7 +10,6 @@ diverge from the discounts dashboard. Money is ``Decimal`` end to end.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -28,6 +27,7 @@ from app.services.assistant.tools.schemas import (
 )
 from app.services.discount_optimizer import optimize
 from app.tenant import apply_entity_scope
+from app.utils.dates import utc_today
 
 
 async def _cost_of_capital(
@@ -145,7 +145,7 @@ async def optimize_discount_capture(
     params: OptimizeDiscountsParams,
     control_db: AsyncSession | None = None,
 ) -> OptimizeDiscountsResult:
-    today = datetime.now(UTC).date()
+    today = utc_today()
 
     result, offers = await run_discount_optimization(
         db,

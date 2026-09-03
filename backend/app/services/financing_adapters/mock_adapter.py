@@ -35,11 +35,12 @@ accelerate). A test can force ineligibility for a vendor name via
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, date, datetime
+from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
 from app.services.financing_adapters.base import FinancingFundingResult, FinancingQuote
 from app.services.financing_adapters.dispatcher import register_financing_adapter
+from app.utils.dates import utc_today
 
 _CENTS = Decimal("0.01")
 _PCT = Decimal("0.0001")  # 4dp on the percent so the math is exact
@@ -63,7 +64,7 @@ class MockFinancingAdapter:
         self._ineligible_vendors = {v.strip().lower() for v in ineligible}
 
     def _funding_date(self) -> date:
-        return self._funding_date_override or datetime.now(UTC).date()
+        return self._funding_date_override or utc_today()
 
     async def quote(
         self,

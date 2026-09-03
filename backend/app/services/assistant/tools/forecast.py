@@ -9,7 +9,7 @@ end to end.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -25,6 +25,7 @@ from app.services.assistant.tools.schemas import (
     ForecastResult,
 )
 from app.tenant import apply_entity_scope
+from app.utils.dates import utc_today
 
 _HORIZON_DAYS = {"7d": 7, "14d": 14, "30d": 30, "60d": 60, "90d": 90}
 _HORIZON_LABELS = {
@@ -45,7 +46,7 @@ async def get_payment_forecast(
     params: ForecastParams,
     control_db: AsyncSession | None = None,
 ) -> ForecastResult:
-    today = datetime.now(UTC).date()
+    today = utc_today()
     horizon_days = _HORIZON_DAYS[params.horizon]
     horizon_end = today + timedelta(days=horizon_days)
     committed_set = set(_COMMITTED_STATUSES)

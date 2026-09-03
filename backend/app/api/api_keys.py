@@ -25,6 +25,7 @@ from app.models.user import User
 from app.services.api_keys import generate_api_key
 from app.services.audit_dispatch import dispatch_auth_audit
 from app.tenant import get_tenant
+from app.utils.dates import utc_today
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +206,7 @@ async def get_api_key_usage(
     )
 
     total = sum(r.request_count for r in rows)
-    window_start = datetime.now(UTC).date() - timedelta(days=window_days - 1)
+    window_start = utc_today() - timedelta(days=window_days - 1)
     window_total = sum(r.request_count for r in rows if r.usage_date >= window_start)
 
     return ApiKeyUsageResponse(
