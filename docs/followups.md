@@ -712,23 +712,21 @@ Six items the round-14 frontend agent traced to a file and line but did not fold
 into its own tranche. Each is confirmed against the backend it disagrees with —
 none is a hypothesis.
 
-- [ ] **The same page-scoped-KPI bug this round fixed on `/expenses` is still
-      live on six sibling pages.** A KPI reduces or filters over the LOADED page
-      and is labelled as a whole-set figure, usually sitting beside a card that
-      *is* whole-set: `/requisitions` (`periodTotal` `:112`, `pendingCount`
-      `:110`, next to the server's `total`), `/budgets` (`totalAllocated` `:82`),
-      `/recurring` (the monthly-run-rate reduce `:347-355` — which also divides
-      floats), `/intake` (`openCount`/`reviewCount` `:87-88`), `/vendor-statements`
-      (`openCount`/`totalDiscrepancies` `:283-284`) and `/positive-pay`
-      (`itemsExported`/`returnsFlagged` `:252-259`). The money ones add across
-      currencies too, then render the sum in `orgCurrency`.
-      **Durable fix:** the shape `/expenses` now uses — a `GET …/summary` beside
-      each list that shares the list's own filter builder, returns `by_status`
-      counts plus per-currency exact-decimal totals, and renders through
-      `utils/currencyGroups.formatCurrencyTotals`. Six small endpoints, one
-      pattern; `backend/app/api/expenses.py::expense_summary` is the reference.
-      **Trigger:** the next slice touching any of those pages — or one pass doing
-      all six, since the sixth is the same edit as the first.
+- [x] **DONE (PR #349).** The same page-scoped-KPI bug `/expenses` fixed was
+      live on six sibling pages — a KPI reducing or filtering over the LOADED
+      page while labelled whole-set, usually beside a card that *is* whole-set:
+      `/requisitions` (`periodTotal`, `pendingCount`), `/budgets`
+      (`totalAllocated`), `/recurring` (the monthly-run-rate reduce, which also
+      divided floats), `/intake` (`openCount`/`reviewCount`),
+      `/vendor-statements` (`openCount`/`totalDiscrepancies`) and `/positive-pay`
+      (`itemsExported`/`returnsFlagged`); the money ones added across currencies.
+      Each now has a `GET …/summary` endpoint sharing the list's own filter
+      builder (`_<x>_list_filters`), returning whole-set `by_status` counts +
+      per-currency exact-decimal totals (grouped, never a cross-currency SUM,
+      never FX-converted on a read), rendered through
+      `utils/currencyGroups.formatCurrencyTotals`. `/recurring`'s monthly
+      normalisation moved to exact Postgres numeric + `ROUND_HALF_UP`.
+      `backend/app/api/expenses.py::expense_summary` was the reference.
 
 - [ ] **`GET /api/invoices/counts` ignores the list's filters, so the chips
       contradict the table.** The counts endpoint (`backend/app/api/invoices.py`

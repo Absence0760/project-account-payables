@@ -239,6 +239,7 @@ Mounted at `/api/recurring`.
 | Method + path | Purpose | RBAC |
 |---------------|---------|------|
 | `GET /recurring` | List (filters: `status`, `vendor_id`, `search`; paginated `page`) | read |
+| `GET /recurring/summary` | Whole-set KPI rollup — `by_status` counts, per-currency **monthly-equivalent** spend (cadence normalised in exact Postgres numeric `amount`/{1,3,12} then `ROUND_HALF_UP` 2dp per template — the frontend used to divide floats), and the soonest upcoming `next_run_on` across active templates. Shares `_recurring_list_filters` with the list. | read |
 | `POST /recurring` | Create a template | mutate |
 | `GET /recurring/{id}` | Detail | read |
 | `PATCH /recurring/{id}` | Update (status excluded — the lifecycle endpoints own it) | mutate |
