@@ -34,14 +34,30 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#321](https://github.com/Absence0760/project-account-payables/issues/321)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-08-20 against round 14 — a five-agent parallel bug
+**Last reconciled:** 2026-09-03 — a coverage pass over the work issue
+[#321](https://github.com/Absence0760/project-account-payables/issues/321) said
+was complete, which closed three entries and opened none. `GET
+/api/expenses/export` now shares the list's filter builder (it had no `search`
+leg); the six correct-but-unguarded `datetime.now(UTC).date()` sites converged
+on `utc_today`, and that guard became a whole-`app/` scan instead of an opt-in
+allowlist; the badge conversion gained a ratchet (`badgeAudit.test.ts`) so its
+remaining count lives in a test rather than in prose that goes stale, and the
+duplicate `.overdue-badge` closed with it. Writing the call-site tests for the
+round-13 email hoist surfaced one new defect, fixed in the same pass rather than
+parked: `identity_provisioning.extract_and_check_email` stored an IdP-supplied
+address containing a control character as `User.email` — a login and a mail
+destination ([decisions.md](decisions.md) §60). **The GitHub mirror (#321) was
+four rounds stale and has been re-synced** — it read 21 items against this
+file's ~74.
+
+**Previously reconciled:** 2026-08-20 against round 14 — a five-agent parallel bug
 hunt across the money path, auth/tenant isolation, the SvelteKit frontend, the
 background sweeps and adapter registries, and procurement/analytics. Twenty-nine
 defects were fixed and committed with regression tests. The findings each agent
 verified in the source but correctly did not fold in are recorded below, one
 subsection per area, immediately above § (a).
 
-**Previously reconciled:** 2026-08-19 against round 13 — a four-agent sweep of the
+**Before that:** 2026-08-19 against round 13 — a four-agent sweep of the
 **codeable** half of this file (the `(a)` credential-blocked and `(b)` operator
 items have no code to write, and four `(c)` items are gated on a product call or
 a third-party artifact). It closed both consistency-debt items, both transitional
@@ -1036,32 +1052,21 @@ rather than patched. None is a diagnosed defect (those go to
 
 ### Surfaced by the persona-panel round-2 parallel fix batch (issue #328)
 
-- **`pnpm i` silently drops the frontend's security-pin overrides on pnpm 11.**
-  `frontend/package.json`'s `"pnpm": { "overrides": {...} }` pins
-  `cookie@<0.7.0 → >=0.7.0 <0.8.0` and `undici@<7.28.0 → >=7.28.0` (both CVE
-  fixes). The installed toolchain is pnpm 11.9.0, which no longer reads
-  overrides from that legacy `package.json` location — pnpm 11 moved override
-  config to a `pnpm-workspace.yaml` `overrides:` block, and `frontend/` has no
-  such file. Running a plain `pnpm i` regenerates `pnpm-lock.yaml` with the pins
-  silently gone, downgrading `cookie` back to 0.6.0 — the exact CVE the override
-  exists to block. Caught incidentally by a parallel worker doing unrelated
-  frontend edits in this round (each `pnpm i` it ran reverted the lockfile via
-  `git checkout --` before committing, so no landed commit carries the
-  downgrade), not by any dependency-audit tooling — `frontend/CLAUDE.md` /
-  `docs/environment.md` don't currently call out pnpm-version pinning the way
-  `backend/CLAUDE.md`'s dependency-lock section does for Python.
-  **Durable fix:** add `frontend/pnpm-workspace.yaml` with the two overrides
-  moved into its `overrides:` block (pnpm 11's documented location), confirm a
-  clean `pnpm i` keeps `cookie` at `>=0.7.0 <0.8.0` and `undici` at `>=7.28.0` in
-  the regenerated lockfile, and consider pinning `packageManager` in
-  `frontend/package.json` (or root `package.json`) so a contributor on an older
-  pnpm doesn't hit the inverse problem. **Trigger:** the next time
-  `frontend/pnpm-lock.yaml` is regenerated for any reason (a dependency bump, a
-  Dependabot PR) — verify the overrides survived before committing the lock.
-
-  _(The MFA-enforcement-inactive UI bullet that stood here is **closed** — PR
-  #341 wired the `settings.mfa.enforcement_active` signal into the Security
-  card's inline warning.)_
+- **`pnpm i` dropping the frontend's security-pin overrides — SUPERSEDED.**
+  This entry described pnpm 11 no longer reading `pnpm.overrides` from
+  `frontend/package.json` (where `cookie@<0.7.0` and `undici@<7.28.0` are
+  pinned), so a plain `pnpm i` regenerated the lockfile with the CVE pins
+  silently gone. Its proposed fix was a `frontend/pnpm-workspace.yaml`.
+  **A different fix landed** in #353: both `package.json` files now pin
+  `packageManager: pnpm@10.12.4` and every `pnpm/action-setup` site reads it
+  instead of passing `version:`, so one pnpm — a 10.x that does read that
+  location — writes the lockfile everywhere. The pin is the thing to preserve;
+  moving the overrides is only needed if the project later moves to pnpm 11+.
+  What remains open is the *verification*, tracked below as
+  § Surfaced while clearing the open-PR backlog → "Confirm the `packageManager`
+  pin stopped Dependabot dropping the pnpm overrides", which is where the recipe
+  and the recurrence instructions live. Kept as a pointer rather than deleted:
+  the diagnosis (which pnpm versions read which location) is the expensive half.
 
 ### Surfaced by the issue #328 checklist reconciliation (2026-08-27)
 
