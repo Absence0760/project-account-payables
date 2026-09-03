@@ -2,6 +2,7 @@
 	"$schema": "https://json.schemastore.org/package.json",
 	"name": "feohledger-frontend",
 	"version": "0.0.1",
+	"packageManager": "pnpm@10.12.4",
 	"private": true,
 	"scripts": {
 		"//": "`prepare` runs automatically after `pnpm install`. svelte-kit sync generates .svelte-kit/tsconfig.json, which the checked-in tsconfig.json extends — so ANY TypeScript transform needs it, vitest included. It used to appear only as a prefix on `check`, leaving `test:unit` with an undeclared dependency on some other script having run first: a fresh clone (or a CI job that runs the tests before the typecheck) failed with 21 files at TSCONFIG_ERROR and zero tests executed. Declaring it here makes the ordering irrelevant.",
@@ -27,7 +28,7 @@
 		"axe-core": "^4.13.0",
 		"mdsvex": "^0.12.8",
 		"normalize.css": "8.0.1",
-		"svelte": "5.56.10",
+		"svelte": "5.57.0",
 		"svelte-check": "4.7.6",
 		"typescript": "6.0.3",
 		"unplugin-icons": "23.0.1",
