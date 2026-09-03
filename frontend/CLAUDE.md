@@ -1105,16 +1105,22 @@ Two guards enforce it, and neither subsumes the other:
 
 What is left is **consistency, not contrast**. 202 rules used to spell a tinted
 badge as a hand-rolled `rgba()` plus a literal hex — 44 spellings of what the
-five pairs above name. `ui/Badge.svelte` now owns the recipe and roughly half
-the badge-shaped rules have moved onto it; **~62 remain**, concentrated in
-`/expenses`, `/requisitions`, `/payments`, `InvoiceModal`, `RequisitionModal`,
-`ExpenseModal` and `/admin/webhooks`. Every one of them passes the guard, so
-this is design-system debt rather than a defect — but the tokens standardise on
-alpha `.15`, so converting a `.1` or `.12` rule *visibly strengthens* that
+five pairs above name. `ui/Badge.svelte` now owns the recipe and most of the
+call sites have moved onto it. Every remaining one passes the contrast guard,
+so this is design-system debt rather than a defect — but the tokens standardise
+on alpha `.15`, so converting a `.1` or `.12` rule *visibly strengthens* that
 badge's tint. That is why it moves in tranches you can attribute rather than
 one sweep: check the rendered result, and check what a distinction was carrying
-before collapsing it. Reach for `<Badge>` in new code and whenever you are
-already editing one of these rules. Tracked in `docs/followups.md`.
+before collapsing it.
+
+**`src/lib/a11y/badgeAudit.test.ts` is the ratchet, and the count.** It scans
+every stylesheet for a badge-shaped selector (`badge` / `chip` / `pill` / `tag`)
+setting both a tinted background and a colour, holds each file to a recorded
+baseline, and holds the converted files at zero. A new hand-roll fails on the
+file it landed in; landing a tranche means editing its number down in the same
+commit. Don't restate the remaining count in prose — it goes stale, and the
+baseline map is the live figure. Reach for `<Badge>` in new code and whenever
+you are already editing one of these rules.
 
 **A failure means changing the colour, never relaxing the rule** — there is no
 suppression mechanism, because the `-strong` companions mean a correct answer

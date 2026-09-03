@@ -431,31 +431,36 @@ hook only** (the e2e suite reads `.badge.approved`), never as colour. Rationale,
 including why sizing is fixed rather than a prop and why `neutral` / `erp` stay
 non-tinted: [decisions.md](decisions.md) §47.
 
-- [ ] **30 badge-shaped CSS rules still hand-roll the recipe.** Down from 62.
-      This tranche converted `/payments` (14 → 2), `/admin/webhooks` (5 → 0),
-      `RequisitionModal` (8 → 0) and `ExpenseModal` (6 → 0) in four attributable
-      commits; the remainder is `/expenses` (13), `/requisitions` (8) and
-      `InvoiceModal` (7).
-      **No distinction was lost.** `pending_compliance`'s ring — the thing that
-      says "a human must clear this", where the tone alone says only "waiting" —
-      was preserved as a caller-owned wrapper rather than flattened or turned into
-      a one-caller prop ([decisions.md](decisions.md) §52). Every other
-      consolidation (`cancelled`/`voided`, runs `submitted`/`executing`, six of
-      eight card statuses) merged partners that had **no rule at all** and rendered
-      untinted — the conversion's real payoff on `/payments` was the exhaustiveness
-      check, not fewer lines. Two chips stay off the primitive by design
+- [ ] **The badge conversion has a ratchet now; the remainder is the tranches.**
+      `frontend/src/lib/a11y/badgeAudit.test.ts` scans every stylesheet for a
+      badge-shaped selector (`badge` / `chip` / `pill` / `tag`) that sets both a
+      tinted background and a colour, holds each file to a recorded baseline and
+      holds the converted files (`/payments`, `/admin/webhooks`,
+      `RequisitionModal`, `ExpenseModal`, and now the dashboard) at zero. **The
+      baseline map is the live count** — no number is restated here or in
+      `frontend/CLAUDE.md`, both of which went stale within one round last time.
+      The audit deliberately counts more than the seven files this entry used to
+      name: `chip` / `pill` / `tag` are the same capsule under other names, and
+      the recipe is respelled in components (`RunDetailModal`, `ScreeningBadge`,
+      `SupplierChatThread`) as readily as in routes.
+      **Why still staged:** the tokens standardise on alpha `.15`, so converting
+      a `.1` or `.12` rule *visibly* strengthens that badge. Landing them all at
+      once would make any visual complaint unattributable.
+      **No distinction was lost** in the tranches so far. `pending_compliance`'s
+      ring — the thing that says "a human must clear this", where the tone alone
+      says only "waiting" — was preserved as a caller-owned wrapper rather than
+      flattened or turned into a one-caller prop ([decisions.md](decisions.md)
+      §52). Every other consolidation merged partners that had **no rule at all**
+      and rendered untinted. Two chips stay off the primitive by design
       (`.discount-chip` is two stacked lines; `.blocked-chip` wraps a localised
       sentence where `nowrap` would break 320px reflow); both took the tokens.
-      **The count is scoped to the seven files this entry names, and that
-      undercounts:** `RunDetailModal.svelte` hand-rolls 7 more, and
-      `routes/+page.svelte` carries a second spelling of the `.overdue-badge` this
-      tranche retired — so that flag now renders at two sizes on two pages until it
-      converts. Both should join the next tranche.
+      The dashboard's duplicate `.overdue-badge` — the same flag rendering at two
+      sizes on two pages — is **closed**.
       **Durable fix:** convert the rest in attributable tranches, checking
-      collapsed distinctions as you go, and hoist the two tone maps out of the
-      modals into `types/{requisition,expense}.ts` in the same change.
-      **Trigger:** the next slice touching `/expenses`, `/requisitions` or
-      `InvoiceModal`.
+      collapsed distinctions as you go, editing the baseline down in the same
+      commit, and hoisting the two tone maps out of the modals into
+      `types/{requisition,expense}.ts` when their files convert.
+      **Trigger:** the next slice touching any file the baseline names.
 
 ### Surfaced by the round-13 sweep
 
