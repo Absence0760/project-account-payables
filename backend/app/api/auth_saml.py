@@ -53,6 +53,7 @@ from app.services.audit_dispatch import dispatch_auth_audit
 from app.services.identity_provisioning import (
     DeactivatedAccount,
     EmailDomainNotAllowed,
+    UnsafeEmailAddress,
     extract_and_check_email,
     jit_provision,
 )
@@ -405,6 +406,10 @@ async def saml_acs(request: Request, db: AsyncSession = Depends(get_control_db))
         # NOTE: unlike the OIDC path, the SAML failure audit deliberately omits
         # the email (PII-out-of-logs — tighter than the OIDC precedent).
         email = extract_and_check_email(email_raw, config.allowed_email_domains)
+    except UnsafeEmailAddress as exc:
+        # A control character in an asserted address — never legitimate, and
+        # the value would become a login and a mail destination.
+        raise await _fail("unsafe_email") from exc
     except EmailDomainNotAllowed as exc:
         raise await _fail("domain_blocked") from exc
 

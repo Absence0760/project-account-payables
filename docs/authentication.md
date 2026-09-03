@@ -741,6 +741,19 @@ The raise happens *before* the email-link branch rebinds `sso_provider_id`, so a
 login attempt against a disabled account can't silently repoint its SSO identity
 either.
 
+The asserted address is normalised (lower-cased, stripped) and then checked for
+**control characters** before anything is stored — `utils/emails.is_header_safe`,
+raising `UnsafeEmailAddress`, which both callbacks turn into their existing
+generic refusal (SAML `unsafe_email`, OIDC a 403 + a PII-free audit reason).
+`strip()` already removed a trailing newline, but an interior one survived it,
+and `User.email` is both a login and the destination of every notification the
+app sends that person — a newline reaching an SMTP header is the
+header-injection primitive. The check is deliberately NARROWER than the shape
+rule the signup / partner / scheduled-report surfaces apply: a corporate IdP can
+legitimately assert an internal-only `user@intranet`, and refusing that would
+lock a tenant out of its workspace over a cosmetic rule. See
+[decisions §60](decisions.md).
+
 ### A deactivated account cannot sign in, on any path
 
 `users.is_active = false` is how offboarding is expressed — an admin flips it via

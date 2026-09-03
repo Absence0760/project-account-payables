@@ -2272,3 +2272,48 @@ are unambiguous and stay in each caller's own format list.
 AST-scans the four call sites (mirroring the UTC-today convergence guard in
 `tests/test_utc_today.py`) so none of them can quietly regrow a hardcoded
 `"%m/%d/%Y"` / `"%d/%m/%Y"` pair outside the shared helper.
+
+## 60. An IdP-supplied email is refused for a control character, not held to the full shape rule
+
+`services/identity_provisioning.extract_and_check_email` is where both SSO
+protocols normalise the address an IdP asserted. It lower-cased, stripped and
+domain-allowlisted it, and said nothing about its shape. `.strip()` removes a
+*trailing* newline, so the obvious case was incidentally safe; an **interior**
+one survived untouched and was stored as `User.email` — a login, and the
+destination of every notification the app sends that person. A newline in a
+value that reaches an SMTP header is the header-injection primitive, and the
+attacker-chosen continuation writes itself: a `Bcc:` on mail carrying that
+tenant's AP data.
+
+The obvious fix — run `looks_like_email`, the rule §50 gave one owner — is the
+wrong one **here**, and this is the decision. That rule requires a dotted
+domain. A corporate IdP can legitimately assert `user@intranet`, and refusing it
+would lock a whole tenant out of its own workspace over a cosmetic rule that
+has nothing to do with the exposure. Trading a header-injection risk for a
+guaranteed lockout is not a trade.
+
+So the guard is narrower than the shape rule and exactly as wide as the danger:
+`utils/emails.is_header_safe` refuses C0 controls and DEL, nothing else. No IdP
+has a legitimate reason to emit one, so there is no lockout to weigh against it.
+
+Two smaller calls inside that:
+
+- **Refused, not sanitised.** Stripping the character out would provision a
+  *different* identity than the one that signed in, silently. `UnsafeEmailAddress`
+  propagates and both callbacks turn it into their existing generic refusal
+  (SAML `_fail("unsafe_email")`, OIDC a 403 + a PII-free audit reason) — the
+  address itself is never echoed into a second log line, which is the whole
+  point of the value being unsafe.
+- **The check runs before the allowlist**, so an unsafe address whose domain
+  happens to be allowed is still refused.
+
+Both callbacks are public routes, so an unhandled raise would be a 500 — a
+worse failure than the one being fixed. `tests/test_sso_email_safety.py`
+AST-scans each for the `except` rather than trusting the two edits to stay.
+
+Found by the `test_email_shape_call_sites.py` drift guard, which asks which
+modules decide "is this an email" without the shared rule. Its other two hits
+are exempt with reasons: `api/enrichment.py` extracts a host, and
+`api/auth_saml.py` decides whether a NameID *is* an email before falling back to
+the attribute statement — where the shape rule would send exactly the internal
+domains above down the fallback path.
