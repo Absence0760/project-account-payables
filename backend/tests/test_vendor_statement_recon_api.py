@@ -407,6 +407,57 @@ async def test_list_filters_by_vendor_and_status(realdb):
         assert resolved["total"] == 0
 
 
+async def test_summary_is_whole_set_status_counts_and_open_discrepancies(realdb):
+    """`GET /api/vendor-statements/summary` counts the whole matching set by
+    status and sums the per-run discrepancy counts across it — the figures the
+    page derived from the loaded page (`openCount`, `totalDiscrepancies`). It
+    honours the same vendor_id / status filters as the list."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    v1 = await _add_vendor(mk, org_id, name="Recon KPI One")
+    v2 = await _add_vendor(mk, org_id, name="Recon KPI Two")
+    await _add_invoice(mk, org_id, vendor_id=v1, invoice_number="RK-1", amount="1000.00")
+    await _add_invoice(mk, org_id, vendor_id=v2, invoice_number="RK-2", amount="500.00")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        # v1: supplier claims 1100 vs our 1000 → amount_mismatch, run stays open.
+        await c.post(
+            "/api/vendor-statements",
+            json={
+                "vendor_id": v1,
+                "statement_date": _TODAY.isoformat(),
+                "lines": [_line("RK-1", "1100.00")],
+            },
+        )
+        # v2: clean match → run resolves immediately, no discrepancies.
+        await c.post(
+            "/api/vendor-statements",
+            json={
+                "vendor_id": v2,
+                "statement_date": _TODAY.isoformat(),
+                "lines": [_line("RK-2", "500.00")],
+            },
+        )
+
+        allsum = (await c.get("/api/vendor-statements/summary")).json()
+        assert allsum["total"] >= 2
+        assert allsum["by_status"].get("open", 0) >= 1
+        assert allsum["by_status"].get("resolved", 0) >= 1
+        assert allsum["open_discrepancies"] >= 1
+
+        # vendor filter narrows the rollup exactly like the list
+        v1sum = (await c.get(f"/api/vendor-statements/summary?vendor_id={v1}")).json()
+        assert v1sum["total"] == 1
+        assert v1sum["by_status"] == {"open": 1}
+        assert v1sum["open_discrepancies"] == 1
+
+        v2sum = (await c.get(f"/api/vendor-statements/summary?vendor_id={v2}")).json()
+        assert v2sum["open_discrepancies"] == 0
+
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        assert (await c.get("/api/vendor-statements/summary")).status_code == 200
+
+
 # ---------------------------------------------------------------------------
 # detail
 # ---------------------------------------------------------------------------

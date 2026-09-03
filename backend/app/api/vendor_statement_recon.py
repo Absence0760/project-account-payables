@@ -72,6 +72,7 @@ from app.schemas.vendor_statement_recon import (
     ReconciliationListResponse,
     ReconciliationResponse,
     ReconciliationSummary,
+    ReconciliationSummaryResponse,
     ReconLineResponse,
     StatementExtractionMeta,
     StatementLineInput,
@@ -570,6 +571,20 @@ async def upload_reconciliation(
 # --------------------------------------------------------------------------- #
 
 
+def _recon_list_filters(query, *, vendor_id: uuid.UUID | None, status_filter: str | None):
+    """Apply the reconciliation-list ``vendor_id`` / ``status`` filters.
+
+    Shared by ``GET /api/vendor-statements`` and its ``/summary`` so the KPI
+    rollup can never describe a different set than the rows it sits above.
+    Entity scope is applied by the caller.
+    """
+    if vendor_id:
+        query = query.where(VendorStatementReconciliation.vendor_id == vendor_id)
+    if status_filter:
+        query = query.where(VendorStatementReconciliation.status == status_filter)
+    return query
+
+
 @router.get("", response_model=ReconciliationListResponse)
 async def list_reconciliations(
     vendor_id: uuid.UUID | None = None,
@@ -580,15 +595,15 @@ async def list_reconciliations(
     user: User = Depends(require_roles(*_READ_ROLES)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    query = apply_entity_scope(
-        select(VendorStatementReconciliation),
-        VendorStatementReconciliation,
-        entity_id,
+    query = _recon_list_filters(
+        apply_entity_scope(
+            select(VendorStatementReconciliation),
+            VendorStatementReconciliation,
+            entity_id,
+        ),
+        vendor_id=vendor_id,
+        status_filter=status_filter,
     )
-    if vendor_id:
-        query = query.where(VendorStatementReconciliation.vendor_id == vendor_id)
-    if status_filter:
-        query = query.where(VendorStatementReconciliation.status == status_filter)
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
     query = (
@@ -602,6 +617,56 @@ async def list_reconciliations(
         total=total,
         page=page,
         page_size=page_size,
+    )
+
+
+# Literal `/summary` — MUST precede /{recon_id} so the literal path wins.
+@router.get("/summary", response_model=ReconciliationSummaryResponse)
+async def reconciliation_summary(
+    vendor_id: uuid.UUID | None = None,
+    status_filter: str | None = Query(None, alias="status"),
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(*_READ_ROLES)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Whole-set status counts + total open discrepancies for the KPI row.
+
+    Takes the SAME ``vendor_id`` / ``status`` filters as the list. The page's
+    ``openCount`` filtered the LOADED page and ``totalDiscrepancies`` reduced
+    the per-run discrepancy counts over it — both contradicting the whole-set
+    ``total``.
+    """
+    run = VendorStatementReconciliation
+    base = _recon_list_filters(
+        apply_entity_scope(select(run), run, entity_id),
+        vendor_id=vendor_id,
+        status_filter=status_filter,
+    ).subquery()
+
+    status_rows = (
+        await db.execute(select(base.c.status, func.count()).group_by(base.c.status))
+    ).all()
+    by_status = {str(s): int(n) for s, n in status_rows}
+
+    discrepancies = (
+        await db.execute(
+            select(
+                func.coalesce(
+                    func.sum(
+                        base.c.amount_mismatch_count
+                        + base.c.missing_our_side_count
+                        + base.c.missing_their_side_count
+                    ),
+                    0,
+                )
+            )
+        )
+    ).scalar() or 0
+
+    return ReconciliationSummaryResponse(
+        total=sum(by_status.values()),
+        by_status=by_status,
+        open_discrepancies=int(discrepancies),
     )
 
 

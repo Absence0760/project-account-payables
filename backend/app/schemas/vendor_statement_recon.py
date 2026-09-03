@@ -121,6 +121,22 @@ class ReconciliationListResponse(BaseModel):
     page_size: int
 
 
+class ReconciliationSummaryResponse(BaseModel):
+    """Whole-set KPI rollup for the reconciliation list — counterpart of
+    ``GET /api/expenses/summary``. Takes the SAME ``vendor_id`` / ``status``
+    filters as the list (via ``_recon_list_filters``). The page's ``openCount``
+    filtered the LOADED page and ``totalDiscrepancies`` reduced the per-run
+    discrepancy counts over it — both contradicting the whole-set ``total``.
+
+    ``open_discrepancies`` sums ``amount_mismatch + missing_our_side +
+    missing_their_side`` across the filtered set — the exact figure the page's
+    ``discrepancyCount`` reduce produced, just whole-set."""
+
+    total: int
+    by_status: dict[str, int]
+    open_discrepancies: int
+
+
 class LineResolveRequest(BaseModel):
     """Resolve or ignore one reconciliation line. ``resolved`` = the difference
     has been actioned (e.g. the missing invoice was created); ``ignored`` = a
