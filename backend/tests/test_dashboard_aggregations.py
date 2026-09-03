@@ -12,7 +12,7 @@ must include rejected invoices, or the number lies.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
@@ -20,6 +20,7 @@ import pytest
 
 from app.api.dashboard import get_dashboard
 from app.models.invoice import InvoiceStatus
+from app.utils.dates import utc_today
 
 
 def _r(scalar=None, one=None, all_=None, sub=False):
@@ -228,7 +229,13 @@ async def test_upcoming_payments_flag_overdue_only_when_due_date_before_today():
     nag the AP team for paying on time."""
     import uuid
 
-    today = date.today()
+    # `utc_today()`, not `date.today()`: every value this test compares
+    # against is derived by the app from the UTC date (app/utils/dates.py —
+    # no call site under app/ reads the local date). Anchoring the fixtures
+    # on the LOCAL date puts them a day off for the window each day where
+    # the two disagree, which lands exactly on the boundaries this test
+    # exists to pin. CI runs UTC and never saw it.
+    today = utc_today()
     upcoming_rows = [
         (
             uuid.uuid4(),
@@ -271,7 +278,7 @@ async def test_upcoming_total_amount_sums_in_decimal_not_accumulated_float():
     `DashboardResponse`'s `MoneyAmount` fields, not inside this function."""
     import uuid
 
-    today = date.today()
+    today = utc_today()
     upcoming_rows = [
         (uuid.uuid4(), "INV-1", "Acme", Decimal("10.10"), today, "USD", None, None),
         (uuid.uuid4(), "INV-2", "Bravo", Decimal("20.20"), today, "USD", None, None),

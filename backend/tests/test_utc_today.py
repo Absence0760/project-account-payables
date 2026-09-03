@@ -45,6 +45,7 @@ import pytest
 from app.utils.dates import utc_today
 
 APP_DIR = pathlib.Path(__file__).resolve().parents[1] / "app"
+TESTS_DIR = pathlib.Path(__file__).resolve().parent
 
 #: Modules that resolve "today" in UTC and must keep doing so. Add to this list
 #: when you convert a module; never remove from it.
@@ -86,6 +87,40 @@ UTC_TODAY_MODULES = (
     "services/report_export.py",
     "services/tax_1099.py",
     "services/tax_1099_forms.py",
+)
+
+#: Test modules that anchor their fixtures on the UTC date and must keep doing
+#: so. A test is not exempt from this: when the module under test resolves
+#: "today" in UTC and the test builds its expectations from the LOCAL date, the
+#: two disagree for the whole window each day where the local calendar date
+#: differs from UTC's — several hours daily anywhere west of UTC, and the
+#: entire working day in Asia-Pacific. CI runners are UTC, so the suite reads
+#: green there no matter how wrong the test is; the failure only ever surfaces
+#: on a contributor's laptop, as an unreproducible date assertion.
+#:
+#: Found by running the suite under `TZ=Pacific/Kiritimati` (UTC+14, so the
+#: local date is a day AHEAD of UTC), which turns the whole class of bug from a
+#: clock-watching flake into a deterministic failure:
+#:
+#:     TZ=Pacific/Kiritimati pytest -q
+#:
+#: That is the way to check a new date-sensitive test, and the way this list was
+#: derived: 36 test modules read the local date, but only these five compared it
+#: against an app-computed UTC value. The other 31 use it self-consistently
+#: (fixture and assertion from the same sample), so they are deliberately NOT
+#: listed — converting them would be churn, and this allowlist is opt-in by
+#: design, exactly like the app-module list above.
+UTC_TODAY_TEST_MODULES = (
+    # `services/invoice_warnings` past-due + future-invoice-date fraud flags.
+    "test_exception_flow.py",
+    # `api/tax` / `services/tax_1099` W-9 received-date stamp.
+    "test_tax.py",
+    # `api/portal` W-9 self-service stamp — the same column, other surface.
+    "test_portal_tax_forms.py",
+    # `services/analytics` aging-band boundaries.
+    "test_analytics_aging_reconciliation.py",
+    # `api/dashboard` upcoming-payment overdue inequality.
+    "test_dashboard_aggregations.py",
 )
 
 
@@ -208,4 +243,31 @@ def test_module_never_reads_the_servers_local_today(relative):
         "discount cutoff, the recurring-template period key and the regulated "
         "approval_date, all of which must agree with each other on a non-UTC "
         "host."
+    )
+
+
+@pytest.mark.parametrize("relative", UTC_TODAY_TEST_MODULES)
+def test_test_module_never_anchors_on_the_servers_local_today(relative):
+    """Fails on any local-timezone "today" read in a converted TEST module.
+
+    If this fires, import `utc_today` from `app/utils/dates.py` in the test
+    too. The assertion is only as correct as the clock it samples: the code
+    under test reads the UTC date, so a fixture anchored on the local date is a
+    day off for part of every day on a non-UTC host — and lands precisely on
+    the boundaries these tests exist to pin.
+
+    Reproduce the whole class deterministically with
+    `TZ=Pacific/Kiritimati pytest -q` rather than waiting for a clock.
+    """
+    path = TESTS_DIR / relative
+    assert path.exists(), f"{relative} moved — update UTC_TODAY_TEST_MODULES"
+
+    offenders = local_today_call_lines(path.read_text(encoding="utf-8"), filename=str(path))
+
+    assert not offenders, (
+        f"{relative} anchors on the server's local 'today' at line(s) "
+        f"{offenders}. Use app.utils.dates.utc_today() — the module under test "
+        "resolves today in UTC, so a local-date fixture disagrees with it for "
+        "hours every day off a UTC host, and CI (which runs UTC) will not tell "
+        "you."
     )

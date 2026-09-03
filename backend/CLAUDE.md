@@ -310,6 +310,38 @@ local instance).
 
 `tests/test_realdb_harness.py` guards both properties.
 
+## Date-sensitive tests — run them under a skewed timezone
+
+The backend resolves "today" as `app/utils/dates.utc_today()`, never the
+server's local date, and `tests/test_utc_today.py` AST-scans the converged
+modules to keep it that way. **A test is not exempt from that rule.** When a
+test anchors its fixtures on `date.today()` (local) and the code under test
+compares against the UTC date, the two disagree for the whole window each day
+where the local calendar date differs from UTC's — several hours daily anywhere
+west of UTC, and the entire working day in Asia-Pacific.
+
+CI runners are UTC, so the suite reads green there no matter how wrong the test
+is. The failure surfaces only on a contributor's laptop, as an
+unreproducible-looking date assertion. Don't wait for a clock — force it:
+
+```bash
+# UTC+14, so the LOCAL date is a day AHEAD of UTC. Deterministic, any hour.
+TZ=Pacific/Kiritimati pytest -q
+```
+
+Run that whenever you add or touch a test that compares a date against
+something the app computed. It turns the entire class of bug from an
+intermittent flake into a hard failure. Five test modules were wrong this way
+(past-due + future-date fraud flags, the W-9 received-date stamp on both the
+`/tax` and `/portal` surfaces, aging-band boundaries, and the upcoming-payment
+overdue inequality); `UTC_TODAY_TEST_MODULES` in `tests/test_utc_today.py` is
+the allowlist that stops them regressing.
+
+Reading the local date in a test is not automatically a bug: 31 other test
+modules do it self-consistently — fixture and assertion from the same sample —
+and are deliberately not on that allowlist. What matters is whether the value
+gets compared against one the app derived.
+
 ## Project structure
 
 ```

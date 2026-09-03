@@ -34,6 +34,7 @@ from app.api.portal import (
     upload_my_tax_form,
 )
 from app.services.storage import tax_form_type_from_key
+from app.utils.dates import utc_today
 
 
 def _vendor(**overrides) -> SimpleNamespace:
@@ -176,7 +177,12 @@ async def test_upload_tax_form_happy_path():
     # Wrote onto the caller's OWN vendor row only.
     assert captured["args"] == (org, vendor.id, "w9")
     assert vendor.w9_file_key.endswith("w9.pdf")
-    assert vendor.w9_received_date == date.today()
+    # `utc_today()`, not `date.today()`: the route stamps the UTC date (see
+    # app/utils/dates.py — no call site under app/ reads the local date), so
+    # asserting the LOCAL date fails for the whole window each day where the
+    # two disagree. CI runs UTC and never saw it; a dev machine west of UTC
+    # fails this every evening.
+    assert vendor.w9_received_date == utc_today()
     assert resp.on_file is True
     assert resp.form_type == "w9"
     db.commit.assert_awaited_once()

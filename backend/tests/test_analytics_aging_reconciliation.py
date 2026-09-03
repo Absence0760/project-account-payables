@@ -25,6 +25,7 @@ import pytest
 from sqlalchemy import select
 
 from app.models.invoice import Invoice, InvoiceStatus
+from app.utils.dates import utc_today
 
 TENANT = "a"
 
@@ -44,7 +45,13 @@ async def _seed(realdb) -> Decimal:
     pending/paid/rejected rows must NOT count toward aging or the AP balance."""
     org_id = realdb.info(TENANT).org_id
     mk = realdb.sessionmaker(TENANT)
-    today = date.today()
+    # `utc_today()`, not `date.today()`: every value this test compares
+    # against is derived by the app from the UTC date (app/utils/dates.py —
+    # no call site under app/ reads the local date). Anchoring the fixtures
+    # on the LOCAL date puts them a day off for the window each day where
+    # the two disagree, which lands exactly on the boundaries this test
+    # exists to pin. CI runs UTC and never saw it.
+    today = utc_today()
 
     def inv(num, amt, status, due_offset, ent):
         return Invoice(
@@ -169,7 +176,7 @@ async def _seed_with_null_due_date(realdb) -> Decimal:
     so the bands still sum to the balance."""
     org_id = realdb.info(TENANT).org_id
     mk = realdb.sessionmaker(TENANT)
-    today = date.today()
+    today = utc_today()
 
     async with mk() as s:
         ent = await _default_entity_id(s)
@@ -307,7 +314,7 @@ async def test_aging_boundary_bands_realdb(realdb):
     plus a future due date counted as `current`."""
     org_id = realdb.info(TENANT).org_id
     mk = realdb.sessionmaker(TENANT)
-    today = date.today()
+    today = utc_today()
 
     # (due_offset_days_past, amount, expected_band). Negative offset = future.
     cases = [
@@ -366,7 +373,7 @@ async def test_monthly_trend_buckets_by_month_realdb(realdb):
     collapsing same-month rows and summing their amounts — all in SQL."""
     org_id = realdb.info(TENANT).org_id
     mk = realdb.sessionmaker(TENANT)
-    today = date.today()
+    today = utc_today()
 
     # Three recent months, jumbled, two rows sharing a month. Anchor to the
     # 15th of the 1st/2nd/3rd prior CALENDAR month — day-offsets (`today - 30d`
