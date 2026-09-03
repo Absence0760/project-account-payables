@@ -99,6 +99,18 @@ export interface IntakeListResponse {
 	page_size: number;
 }
 
+/**
+ * Whole-set KPI rollup from `GET /api/intake/summary`, over the SAME
+ * status/type/search filters the list ran with.
+ *
+ * `openCount` / `reviewCount` used to filter the LOADED page by status, so both
+ * contradicted the whole-set `total` count beside them.
+ */
+export interface IntakeSummary {
+	total: number;
+	by_status: Record<string, number>;
+}
+
 // Request side. Money goes out as a number — the backend coerces to Decimal.
 export interface IntakeCreate {
 	request_number?: string | null;

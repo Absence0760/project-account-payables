@@ -153,6 +153,39 @@ async def test_list_filter_and_search(realdb):
         assert any(i["id"] == sw["id"] for i in opened.json()["items"])
 
 
+async def test_summary_is_whole_set_status_counts_sharing_the_filters(realdb):
+    """`GET /api/intake/summary` counts the whole matching set by status — so
+    the page's `openCount` / `reviewCount` KPIs stop describing only the loaded
+    page — and honours the same status/type/search filters as the list."""
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        tag = uuid.uuid4().hex[:6]
+        ids = []
+        for _ in range(3):
+            r = await c.post("/api/intake", json=_payload(title=f"kpi {tag}"))
+            ids.append(r.json()["id"])
+        # push two into review
+        await c.post(f"/api/intake/{ids[0]}/submit")
+        await c.post(f"/api/intake/{ids[1]}/submit")
+
+        body = (await c.get("/api/intake/summary", params={"search": f"kpi {tag}"})).json()
+        assert body["total"] == 3
+        assert body["by_status"]["open"] == 1
+        assert body["by_status"]["in_review"] == 2
+
+        # the status filter narrows the rollup exactly like the list
+        review = (
+            await c.get(
+                "/api/intake/summary",
+                params={"search": f"kpi {tag}", "status": "in_review"},
+            )
+        ).json()
+        assert review["total"] == 2
+        assert list(review["by_status"]) == ["in_review"]
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        assert (await c.get("/api/intake/summary")).status_code == 200
+
+
 async def test_update_open_intake(realdb):
     mk = realdb.sessionmaker("a")
     async with realdb.client(key="a", role="ap_clerk") as c:
