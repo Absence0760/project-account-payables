@@ -29,6 +29,7 @@ from app.services.invoice_warnings import (
     _status_str,
     refresh_warnings,
 )
+from app.utils.dates import utc_today
 
 
 def _invoice(**overrides):
@@ -252,7 +253,7 @@ async def test_round_amount_disabled_suppresses_warning():
 @pytest.mark.asyncio
 async def test_future_invoice_date_warns():
     """A future-dated invoice is a forgery red flag."""
-    inv = _invoice(invoice_date=date.today() + timedelta(days=10))
+    inv = _invoice(invoice_date=utc_today() + timedelta(days=10))
     db = _mk_db()
     warnings = await refresh_warnings(db, inv)
     assert any(w["type"] == "fraud_future_date" for w in warnings)
@@ -267,7 +268,7 @@ async def test_future_invoice_date_warns():
 async def test_rush_payment_fires_when_due_date_inside_window():
     """Due within 3 days of invoice_date → fraud_rush_payment.
     Standard social-engineering signal."""
-    today = date.today()
+    today = utc_today()
     inv = _invoice(invoice_date=today, due_date=today + timedelta(days=2))
     db = _mk_db()
     warnings = await refresh_warnings(db, inv)
@@ -277,7 +278,7 @@ async def test_rush_payment_fires_when_due_date_inside_window():
 @pytest.mark.asyncio
 async def test_rush_payment_does_not_fire_for_long_terms():
     """Net-30 invoice with a 30-day gap doesn't match the rule."""
-    today = date.today()
+    today = utc_today()
     inv = _invoice(invoice_date=today, due_date=today + timedelta(days=30))
     db = _mk_db()
     warnings = await refresh_warnings(db, inv)
@@ -289,7 +290,7 @@ async def test_rush_payment_does_not_fire_for_negative_window():
     """Already-past-due invoices have due_date BEFORE invoice_date
     (mis-extracted dates). The `>= 0` guard keeps these out of the
     rush-payment bucket; they'd show up as `past_due` instead."""
-    today = date.today()
+    today = utc_today()
     inv = _invoice(invoice_date=today, due_date=today - timedelta(days=10))
     db = _mk_db()
     warnings = await refresh_warnings(db, inv)
@@ -305,7 +306,7 @@ async def test_rush_payment_does_not_fire_for_negative_window():
 async def test_past_due_fires_for_open_statuses():
     """`new`/`pending`/`ready_for_review` invoices past their due
     date raise the past_due warning. Closed invoices don't."""
-    today = date.today()
+    today = utc_today()
     yesterday = today - timedelta(days=1)
     for status in (InvoiceStatus.new, InvoiceStatus.pending, InvoiceStatus.ready_for_review):
         inv = _invoice(due_date=yesterday, status=status)
@@ -318,7 +319,7 @@ async def test_past_due_fires_for_open_statuses():
 async def test_past_due_does_not_fire_after_payment_scheduled():
     """Once payment is scheduled, the past-due nag is moot — the
     money is on its way. Pin that the warning is gated by status."""
-    today = date.today()
+    today = utc_today()
     yesterday = today - timedelta(days=1)
     inv = _invoice(due_date=yesterday, status=InvoiceStatus.payment_scheduled)
     db = _mk_db()
@@ -348,7 +349,7 @@ async def test_no_warnings_persists_none_not_empty_list():
     """No warnings → `invoice.warnings` is None, not `[]`. The JSONB
     column is queried with `IS NULL` semantics in dashboards, so the
     distinction matters."""
-    today = date.today()
+    today = utc_today()
     inv = _invoice(
         amount=Decimal("123.45"),
         invoice_date=today - timedelta(days=2),

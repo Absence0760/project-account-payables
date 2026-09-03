@@ -49,3 +49,15 @@ e528965cee45f3b60a1d922de2db051ada7245e3:backend/tests/test_admin_user_managemen
 0a8c049d7087e68583ff51d5c1e0bfbc8db23721:backend/tests/test_admin_user_management.py:generic-api-key:544
 0a8c049d7087e68583ff51d5c1e0bfbc8db23721:backend/tests/test_portal_logout.py:generic-api-key:161
 0a8c049d7087e68583ff51d5c1e0bfbc8db23721:backend/tests/test_portal_logout.py:generic-api-key:194
+
+# Synthetic intake token in the test that proves the token never reaches the
+# log. `test_unresolved_recipient_is_logged_without_the_intake_token` asserts
+# the opposite of a leak: the per-tenant intake address IS a bearer credential,
+# so the test feeds a fake one in and asserts it is absent from the emitted
+# WARNING. generic-api-key fires on the literal's entropy alone.
+#
+# A fingerprint rather than a .gitleaks.toml regex: the literal is a one-off
+# with no reusable shape to match, and per this file's header it is reachable
+# only at the commit that introduced it. Deliberately not quoted here — see the
+# NB above; naming it in this file re-trips the same rule against this file.
+d9dc86a970108d5a9ad1238e542c0e36438f9465:backend/tests/test_email_intake_processing.py:generic-api-key:160

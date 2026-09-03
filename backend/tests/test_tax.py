@@ -17,7 +17,7 @@ and the year-Query validation bounds.
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
+from datetime import datetime
 from decimal import Decimal
 
 from app.models.invoice import Invoice, InvoiceStatus
@@ -25,6 +25,8 @@ from app.models.payment import Payment
 from app.models.vendor import Vendor
 
 # ---------------------------------------------------------------------------
+from app.utils.dates import utc_today
+
 # Arrange helpers
 # ---------------------------------------------------------------------------
 
@@ -426,7 +428,7 @@ async def test_upload_w9_happy_path(realdb, monkeypatch):
     assert body["w9_on_file"] is True
     assert body["is_1099_eligible"] is True
     assert body["tax_classification"] == "individual"
-    assert body["w9_received_date"] == date.today().isoformat()
+    assert body["w9_received_date"] == utc_today().isoformat()
 
     # The S3 key is org-prefixed and vendor-scoped.
     org_id = realdb.info("a").org_id
@@ -438,7 +440,7 @@ async def test_upload_w9_happy_path(realdb, monkeypatch):
     async with mk() as s:
         v = await s.get(Vendor, vendor_id)
         assert v.w9_file_key is not None
-        assert v.w9_received_date == date.today()
+        assert v.w9_received_date == utc_today()
 
 
 async def test_upload_w9_rejects_disallowed_content_type(realdb, monkeypatch):
