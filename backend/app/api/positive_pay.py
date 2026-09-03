@@ -52,6 +52,7 @@ from app.schemas.positive_pay import (
     GenerateCheckIssueRequest,
     PositivePayFileResponse,
     PositivePayListResponse,
+    PositivePaySummaryResponse,
     ProcessReturnRequest,
     ProcessReturnResponse,
 )
@@ -424,6 +425,20 @@ async def generate_ach_authorization(
 # --------------------------------------------------------------------------- #
 
 
+def _positive_pay_list_filters(query, *, file_type: str | None, status_filter: str | None):
+    """Apply the positive-pay list ``file_type`` / ``status`` filters.
+
+    Shared by ``GET /api/positive-pay`` and its ``/summary`` so the KPI rollup
+    can never describe a different set than the rows it sits above. Entity scope
+    is applied by the caller.
+    """
+    if file_type:
+        query = query.where(PositivePayFile.file_type == file_type)
+    if status_filter:
+        query = query.where(PositivePayFile.status == status_filter)
+    return query
+
+
 @router.get("", response_model=PositivePayListResponse)
 async def list_files(
     file_type: str | None = Query(None),
@@ -434,11 +449,11 @@ async def list_files(
     user: User = Depends(require_roles(*_READ_ROLES)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    query = apply_entity_scope(select(PositivePayFile), PositivePayFile, entity_id)
-    if file_type:
-        query = query.where(PositivePayFile.file_type == file_type)
-    if status_filter:
-        query = query.where(PositivePayFile.status == status_filter)
+    query = _positive_pay_list_filters(
+        apply_entity_scope(select(PositivePayFile), PositivePayFile, entity_id),
+        file_type=file_type,
+        status_filter=status_filter,
+    )
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
     query = (
@@ -452,6 +467,56 @@ async def list_files(
         total=total,
         page=page,
         page_size=page_size,
+    )
+
+
+# Literal `/summary` declared BEFORE `/{file_id}` so it isn't captured as a
+# {file_id} UUID.
+@router.get("/summary", response_model=PositivePaySummaryResponse)
+async def positive_pay_summary(
+    file_type: str | None = Query(None),
+    status_filter: str | None = Query(None, alias="status"),
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(*_READ_ROLES)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Whole-set status counts + total exported items + total flagged returns.
+
+    Takes the SAME ``file_type`` / ``status`` filters as the list. The page's
+    ``itemsExported`` / ``returnsFlagged`` reduced over the LOADED page while
+    the "Files" card showed the server's whole-set ``total``. The return-summary
+    figures live in a per-file ``meta`` JSONB block; the positive-pay file set
+    is one row per payment run, so they are summed in Python rather than with
+    fragile nested-JSONB SQL.
+    """
+    rows = list(
+        (
+            await db.execute(
+                _positive_pay_list_filters(
+                    apply_entity_scope(select(PositivePayFile), PositivePayFile, entity_id),
+                    file_type=file_type,
+                    status_filter=status_filter,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    by_status: dict[str, int] = {}
+    items_exported = 0
+    returns_flagged = 0
+    for row in rows:
+        by_status[row.status] = by_status.get(row.status, 0) + 1
+        items_exported += int(row.item_count or 0)
+        rs = (row.meta or {}).get("return_summary") or {}
+        returns_flagged += int(rs.get("amount_mismatches") or 0) + int(rs.get("not_on_file") or 0)
+
+    return PositivePaySummaryResponse(
+        total=len(rows),
+        by_status=by_status,
+        items_exported=items_exported,
+        returns_flagged=returns_flagged,
     )
 
 

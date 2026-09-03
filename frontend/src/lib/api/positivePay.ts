@@ -5,6 +5,7 @@ import { api } from '$lib/api';
 import type {
 	PositivePayFile,
 	PositivePayListResponse,
+	PositivePaySummary,
 	PresentedItemInput,
 	ProcessReturnResponse
 } from '$lib/types/positivePay';
@@ -25,6 +26,19 @@ export function listPositivePayFiles(
 	qs.set('page', String(params.page ?? 1));
 	qs.set('page_size', String(params.page_size ?? 20));
 	return api.get<PositivePayListResponse>(`/api/positive-pay?${qs}`);
+}
+
+// Whole-set KPI rollup — status counts + total exported items + total flagged
+// returns, over the SAME file_type / status filters as `listPositivePayFiles`,
+// so `itemsExported` / `returnsFlagged` stop describing only the loaded page.
+export function getPositivePaySummary(
+	params: Pick<PositivePayListParams, 'file_type' | 'status'> = {}
+): Promise<PositivePaySummary> {
+	const qs = new URLSearchParams();
+	if (params.file_type) qs.set('file_type', params.file_type);
+	if (params.status) qs.set('status', params.status);
+	const suffix = qs.toString() ? `?${qs}` : '';
+	return api.get<PositivePaySummary>(`/api/positive-pay/summary${suffix}`);
 }
 
 export function getPositivePayFile(id: string): Promise<PositivePayFile> {

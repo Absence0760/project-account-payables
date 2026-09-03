@@ -399,6 +399,55 @@ async def test_list_detail_and_download(realdb):
         await _clear_settings(realdb, org_id)
 
 
+async def test_summary_is_whole_set_counts_items_and_returns(realdb):
+    """`GET /api/positive-pay/summary` counts the whole matching set by status,
+    sums `item_count` across it (`itemsExported`) and sums each file's
+    `meta.return_summary.{amount_mismatches,not_on_file}` (`returnsFlagged`) —
+    the figures the page reduced over the loaded page. Honours the list's
+    file_type / status filters."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _set_check_account(realdb, org_id)
+    try:
+        vendor_id = await _add_vendor(mk, org_id)
+        inv_a = await _add_invoice(mk, org_id, vendor_id=vendor_id, invoice_number="PPS-A")
+        inv_b = await _add_invoice(mk, org_id, vendor_id=vendor_id, invoice_number="PPS-B")
+        run_a = await _add_check_run(mk, org_id, invoice_id=inv_a, check_number="PPSA001")
+        run_b = await _add_check_run(mk, org_id, invoice_id=inv_b, check_number="PPSB001")
+
+        async with realdb.client(key="a", role="ap_manager") as c:
+            fa = (
+                await c.post(f"/api/positive-pay/payment-runs/{run_a}/check-issue", json={})
+            ).json()["id"]
+            await c.post(f"/api/positive-pay/payment-runs/{run_b}/check-issue", json={})
+            # Flag returns on file A: one altered, one never-issued.
+            await c.post(
+                f"/api/positive-pay/{fa}/process-return",
+                json={
+                    "presented_items": [
+                        {"check_number": "PPSA001", "amount": "9500.00"},
+                        {"check_number": "PPSX999", "amount": "1.00"},
+                    ]
+                },
+            )
+
+            body = (await c.get("/api/positive-pay/summary?file_type=check_issue")).json()
+            assert body["total"] == 2
+            assert body["items_exported"] == 2  # one check per file
+            assert body["returns_flagged"] == 2  # 1 amount_mismatch + 1 not_on_file
+            assert sum(body["by_status"].values()) == 2
+
+            # ACH-authorization filter → none of the check-issue files.
+            ach = (await c.get("/api/positive-pay/summary?file_type=ach_authorization")).json()
+            assert ach["total"] == 0
+            assert ach["items_exported"] == 0
+
+        async with realdb.client(key="a", role="cfo") as c:
+            assert (await c.get("/api/positive-pay/summary")).status_code == 200
+    finally:
+        await _clear_settings(realdb, org_id)
+
+
 async def test_download_cross_tenant_404(realdb):
     mk = realdb.sessionmaker("a")
     org_id = realdb.info("a").org_id
