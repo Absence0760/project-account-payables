@@ -244,8 +244,6 @@ jobs:
 
       - name: Install pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.2
-        with:
-          version: 9
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6.0.0
@@ -448,8 +446,6 @@ jobs:
       # Frontend toolchain set up alongside Python so the next two
       # install steps can run in parallel.
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.2
-        with:
-          version: 9
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6.0.0
         with:
@@ -687,8 +683,6 @@ jobs:
           cache-dependency-path: backend/requirements-dev.lock
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.2
-        with:
-          version: 9
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6.0.0
         with:
@@ -913,8 +907,6 @@ jobs:
           cache-dependency-path: backend/requirements-dev.lock
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.2
-        with:
-          version: 9
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6.0.0
         with:
