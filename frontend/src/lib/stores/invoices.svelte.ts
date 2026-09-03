@@ -32,6 +32,10 @@ function createInvoiceStore() {
 	// results. `update`/`patchLocal` mark in-flight fetches stale the same way,
 	// so a response issued before a local edit can't overwrite it either.
 	const fetchSequence = createRequestSequencer();
+	// `fetchCounts` runs on its own sequencer: it fires alongside every list
+	// fetch (same filter change), so without one a slow counts response for an
+	// old filter could land over a fresh one and leave the chips lying.
+	const countsSequence = createRequestSequencer();
 
 	async function fetch(params?: Record<string, string>) { // noqa: raw-fetch-in-component — store method name; routes through api.get
 		const token = fetchSequence.start();
@@ -76,13 +80,21 @@ function createInvoiceStore() {
 		}
 	}
 
-	async function fetchCounts() {
+	async function fetchCounts(params?: Record<string, string>) {
+		const token = countsSequence.start();
 		try {
 			// Server-side GROUP BY so the chips stay accurate past the first
 			// page of results (a client-side tally over page 1 undercounted).
+			// `params` carries the list's population filters (search + advanced
+			// + assignee) so the chips describe the same rows the table shows —
+			// `status`/`sort`/`order`/`page` are along for the ride and ignored
+			// by the endpoint (it must NOT filter by status — that's the
+			// dimension it tallies).
+			const query = params ? '?' + new URLSearchParams(params).toString() : '';
 			const res = await api.get<{ counts: Record<string, number>; total: number }>(
-				'/api/invoices/counts'
+				`/api/invoices/counts${query}`
 			);
+			if (!countsSequence.canCommit(token)) return;
 			statusCounts = res.counts;
 		} catch {
 			// ignore — counts are non-critical

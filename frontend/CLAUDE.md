@@ -151,7 +151,7 @@ drops in by extending the four `locale.ts` tables + a catalogue + a loader.
 | Store | File | State | Key methods |
 |-------|------|-------|-------------|
 | `auth` | `auth.svelte.ts` | `user` (incl. `mfa_enabled`, `mfa_required_by_org`), `loggedIn`, role checks (`isAdmin`, `isManager`, `isCfo`, `isClerkOnly`) | `login()` (returns `{kind:'ok'} \| {kind:'mfa', challenge}` — MFA branch routes to `/login/mfa`), `completeMfa(token, code, method)`, `requestEmailMfa(token)`, `completePasskey(token)`, `listPasskeys()`, `passkeyStepUp(operation)` (mint + sign a factor-change step-up assertion), `registerPasskey(name, stepUp)`, `deletePasskey(id, stepUp)`, `listSessions()` / `revokeSession(id)` / `revokeOtherSessions()` (the caller's own live sessions — see the `/profile` row), `logout()`, `fetchUser()`, `hasRole()`, `hasAnyRole()` |
-| `invoiceStore` | `invoices.svelte.ts` | `all`, `loading`, `errored`, `total`, `statusCounts` | `fetch(params)`, `fetchCounts()`, `update(id, changes)` |
+| `invoiceStore` | `invoices.svelte.ts` | `all`, `loading`, `errored`, `total`, `statusCounts` | `fetch(params)`, `fetchCounts(params)` (pass the list's `buildParams()` — the chip tallies are population-filtered too; own `countsSequence`), `update(id, changes)` |
 | `paymentStore` | `payments.svelte.ts` | `all`, `loading`, `errored`, `total`, `hasMore` | `fetch(params)`, `loadMore()` (history-tab Load-More; remembers filter params) |
 | `workflowStore` | `workflows.svelte.ts` | `all`, `loading`, `total`, `hasMore`, `activeSteps` | `fetch()`, `loadMore()`, `fetchActiveSteps()`, `getById()`, `create()`, `update()` |
 | `adminStore` | `admin.svelte.ts` | `users`, `roles`, `loading` | `fetchUsers()`, `fetchRoles()`, `createUser()`, `updateUser()`, `deleteUser()` |

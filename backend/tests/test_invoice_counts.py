@@ -17,14 +17,22 @@ import pytest
 from app.models.invoice import Invoice, InvoiceStatus
 
 
-async def _add_invoices(mk, org_id, status: InvoiceStatus, n: int) -> None:
+async def _add_invoices(
+    mk,
+    org_id,
+    status: InvoiceStatus,
+    n: int,
+    *,
+    vendor_name: str = "Acme",
+    number_prefix: str | None = None,
+) -> None:
     async with mk() as s:
         for i in range(n):
             s.add(
                 Invoice(
                     organization_id=org_id,
-                    invoice_number=f"INV-{status.value}-{i}",
-                    vendor_name="Acme",
+                    invoice_number=f"{number_prefix or 'INV'}-{status.value}-{i}",
+                    vendor_name=vendor_name,
                     amount=Decimal("100.00"),
                     status=status,
                 )
@@ -57,6 +65,49 @@ async def test_counts_group_by_status_full_tenant(realdb):
     body = resp.json()
     assert body["counts"] == {"new": 30, "approved": 4, "paid": 2}
     assert body["total"] == 36
+
+
+@pytest.mark.asyncio
+async def test_counts_honour_the_list_population_filters(realdb):
+    """The chips must describe the SAME rows the table shows. `search` (and the
+    advanced filters) run through the same `_invoice_list_filters` builder as
+    `GET /api/invoices`, so searching a vendor no longer leaves the chips
+    reading the whole tenant over a filtered table."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _add_invoices(mk, org_id, InvoiceStatus.new, 5, vendor_name="Globex Corp")
+    await _add_invoices(mk, org_id, InvoiceStatus.approved, 3, vendor_name="Globex Corp")
+    await _add_invoices(mk, org_id, InvoiceStatus.new, 7, vendor_name="Initech LLC")
+
+    async with realdb.client(key="a") as c:
+        unfiltered = (await c.get("/api/invoices/counts")).json()
+        assert unfiltered["counts"] == {"new": 12, "approved": 3}
+        assert unfiltered["total"] == 15
+
+        # `search=globex` → only that vendor's rows, tallied per status.
+        searched = (await c.get("/api/invoices/counts", params={"search": "globex"})).json()
+        assert searched["counts"] == {"new": 5, "approved": 3}
+        assert searched["total"] == 8
+
+        # `vendor=` advanced filter, same result.
+        by_vendor = (await c.get("/api/invoices/counts", params={"vendor": "Initech"})).json()
+        assert by_vendor["counts"] == {"new": 7}
+        assert by_vendor["total"] == 7
+
+
+@pytest.mark.asyncio
+async def test_counts_ignore_a_status_param(realdb):
+    """`status` is the dimension being tallied — passing it (an inline-chip
+    toggle re-uses the same param builder) must NOT zero the other chips."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _add_invoices(mk, org_id, InvoiceStatus.new, 4)
+    await _add_invoices(mk, org_id, InvoiceStatus.approved, 2)
+
+    async with realdb.client(key="a") as c:
+        resp = await c.get("/api/invoices/counts", params={"status": "approved"})
+
+    assert resp.json()["counts"] == {"new": 4, "approved": 2}
 
 
 @pytest.mark.asyncio

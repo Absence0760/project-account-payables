@@ -65,7 +65,7 @@
 
 	async function handleInvoiceCreated() {
 		await invoiceStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
-		await invoiceStore.fetchCounts();
+		await invoiceStore.fetchCounts(buildParams());
 	}
 
 	async function handleUpload(e: Event) {
@@ -103,7 +103,7 @@
 		// value was never cleared). Only a page reload recovered.
 		try {
 			await invoiceStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
-			await invoiceStore.fetchCounts();
+			await invoiceStore.fetchCounts(buildParams());
 
 			if (total === 1 && succeeded === 1) {
 				toast('Invoice uploaded successfully', 'success');
@@ -234,14 +234,18 @@
 		searchTimer = setTimeout(() => {
 			syncUrl();
 			invoiceStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
+			// The chips are population-filtered too, so a changed search term
+			// re-tallies them (debounced, on its own store sequencer).
+			invoiceStore.fetchCounts(buildParams()).catch(() => {});
 		}, 300);
 	}
 
-	// Fetch status counts and active workflow on mount
+	// Fetch active workflow steps + supporting data on mount. The status-count
+	// chips are re-tallied by the filter effect below (which also fires once on
+	// mount), not here — folding `fetchCounts(buildParams())` in would make this
+	// effect depend on the filters and re-run the workflow/reviewer fetches on
+	// every filter change.
 	$effect(() => {
-		// Fire-and-forget: see the note in debouncedFetch — the stores' own
-		// `errored` flags are what the UI reads.
-		invoiceStore.fetchCounts().catch(() => {});
 		workflowStore.fetchActiveSteps().catch(() => {});
 		// So CreateInvoiceModal's currency default is ready by the time the
 		// toolbar button is clicked, not still resolving on first open.
@@ -270,6 +274,12 @@
 		// selected forever.
 		selectedAllMatching = false;
 		invoiceStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
+		// The filter chips are tallied over the SAME population filters, so
+		// re-fire the counts whenever the advanced filters / assignee change.
+		// (Also the initial load — this effect fires once on mount.) The counts
+		// endpoint ignores `status`, so an inline-chip toggle re-tallies to the
+		// same numbers rather than zeroing the other chips.
+		invoiceStore.fetchCounts(buildParams()).catch(() => {});
 	});
 
 	// Re-fetch on search input (debounced)
@@ -311,7 +321,7 @@
 	 */
 	async function refreshInvoiceList() {
 		await invoiceStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
-		await invoiceStore.fetchCounts();
+		await invoiceStore.fetchCounts(buildParams());
 	}
 
 	function closeInvoiceModal() {
@@ -512,7 +522,7 @@
 		try {
 			const res = await api.post('/api/invoices/bulk/delete', { ids: [...selected] }) as { deleted: number; skipped: string[] };
 			await invoiceStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
-			await invoiceStore.fetchCounts();
+			await invoiceStore.fetchCounts(buildParams());
 			selected = new Set();
 			selectedAllMatching = false;
 			const msg = res.skipped?.length
@@ -534,7 +544,7 @@
 				status: bulkStatusValue,
 			})) as { updated: number; skipped: { id: string; reason: string }[] };
 			await invoiceStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
-			await invoiceStore.fetchCounts();
+			await invoiceStore.fetchCounts(buildParams());
 			selected = new Set();
 			selectedAllMatching = false;
 			showBulkStatusSelect = false;
@@ -611,7 +621,7 @@
 		try {
 			await api.delete(`/api/invoices/${id}`);
 			await invoiceStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
-			await invoiceStore.fetchCounts();
+			await invoiceStore.fetchCounts(buildParams());
 			toast('Invoice deleted', 'success');
 		} catch (err) {
 			toast(err instanceof Error ? err.message : 'Delete failed', 'error');
@@ -940,7 +950,7 @@
 		onclose={() => (showBulkRecode = false)}
 		onapplied={() => {
 			invoiceStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
-			invoiceStore.fetchCounts().catch(() => {});
+			invoiceStore.fetchCounts(buildParams()).catch(() => {});
 		}}
 	/>
 {/if}
@@ -957,7 +967,7 @@
 		onclose={() => (showImportCsv = false)}
 		onimported={() => {
 			invoiceStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
-			invoiceStore.fetchCounts().catch(() => {});
+			invoiceStore.fetchCounts(buildParams()).catch(() => {});
 		}}
 	>
 		{#snippet columnsHint()}
