@@ -1322,6 +1322,27 @@ filed W-8 finding, fixed in #330)._
       **Trigger:** next Monday's Dependabot run — apply the candidate and see
       whether the following week's pip bumps arrive as one PR.
 
+- [ ] **Confirm the `packageManager` pin stopped Dependabot dropping the pnpm
+      overrides.** Two npm PRs in one day (#344, #351) arrived with the whole
+      `overrides:` block deleted from `frontend/pnpm-lock.yaml` while
+      `package.json` still declared `pnpm.overrides` for `cookie@<0.7.0` and
+      `undici@<7.28.0`, red on every job that installs. Root cause was that
+      nothing declared which pnpm writes that lockfile, so four wrote it (CI on
+      9, `audit.yml` on 10, contributors on whatever, Dependabot on its own
+      default). Both package.json files now pin `pnpm@10.12.4` and every
+      `pnpm/action-setup` site reads it instead of passing `version:`.
+      The divergence is fixed and verified. Whether it also fixes Dependabot is
+      a **hypothesis** — it cannot be tested without waiting for the next npm
+      PR.
+      **If it recurs:** regenerate by hand (`pnpm install --lockfile-only`, then
+      confirm the block survived), exactly as § (b) describes for the pip locks.
+      Do NOT reach for `--no-frozen-lockfile`: those are conditional floor
+      guards against a future transitive downgrade, inert today
+      (`cookie@0.7.2`, `undici@8.10.0` both already clear them), which is
+      precisely what makes losing one easy to miss.
+      **Trigger:** the next Dependabot npm PR. Recipe in
+      [frontend/CLAUDE.md](../frontend/CLAUDE.md) § The lockfile.
+
 ## (a) Blocked on external credentials, accounts, or hardware
 
 None of these are startable from the editor. They are listed so they don't read

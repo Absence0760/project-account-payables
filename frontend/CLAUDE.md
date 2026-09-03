@@ -22,6 +22,48 @@ pnpm test:unit        # vitest unit tests (i18n parity, pure helpers, the
                       # stylesheet colour-token/contrast guard)
 ```
 
+## The lockfile: pnpm is pinned, and `pnpm.overrides` is fragile
+
+`package.json` declares `"packageManager": "pnpm@10.12.4"` — in **both** the
+repo root and here — and no `pnpm/action-setup` step in `.github/workflows/`
+passes a `version:` input any more. The action reads the manifest, so one edit
+moves CI, `sso-e2e`, `web-bundle-budget`, `aws-deploy`, `audit` and every
+contributor together. Before this, four different pnpm versions wrote one
+lockfile (CI on 9, `audit.yml` on 10, laptops on whatever, Dependabot on its
+own default), which shows up as unrelated `libc:` lines churning in and out of
+`pnpm-lock.yaml` depending on who ran the install. **Bump pnpm by editing
+`packageManager`, never by adding a `version:` back to a workflow.**
+
+`package.json` also declares `pnpm.overrides` for `cookie@<0.7.0` and
+`undici@<7.28.0`. These are **conditional** floor guards: the tree currently
+resolves `cookie@0.7.2` and `undici@8.10.0`, so neither override matches
+anything today. They exist to block a *future* transitive downgrade onto a
+vulnerable version — which is exactly why losing one is easy to miss.
+
+Two Dependabot npm PRs (#344, #351) arrived with the lockfile's whole
+`overrides:` block deleted, red on every job that installs:
+
+```
+ERR_PNPM_LOCKFILE_CONFIG_MISMATCH  The current "overrides" configuration
+doesn't match the value found in the lockfile
+```
+
+That failure is the guard working — `--frozen-lockfile` is the only thing
+standing between a dropped override and a merge that silently stops applying
+it. If you see it, **do not** reach for `--no-frozen-lockfile`: regenerate
+properly and confirm the block survived.
+
+```bash
+pnpm install --lockfile-only          # then check the overrides are still there
+sed -n '1,12p' pnpm-lock.yaml
+pnpm install --frozen-lockfile        # the check CI runs
+```
+
+The `packageManager` pin is expected to stop Dependabot dropping the block,
+since it will now resolve the same pnpm as everything else — but that is
+unconfirmed until the next npm PR. If it still happens, regenerate by hand, the
+same way `backend/CLAUDE.md` § Dependency lock describes for the pip locks.
+
 ## Routes → API mappings
 
 | Route | File | API calls |
