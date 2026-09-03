@@ -177,3 +177,54 @@ export function mergeVendorConsolidation(
 export function importVendorsCsv(file: File): Promise<ImportResult> {
 	return api.upload<ImportResult>('/api/vendors/import-csv', file);
 }
+
+// --- Create + supplier-portal invite ---
+
+/** Fields the create-vendor modal collects. `bank_details` is deliberately
+ *  absent — the backend dual-control-stages it as a `VendorChangeRequest` on
+ *  create (fake-new-payee BEC gate), so the create form must not offer it. */
+export interface VendorCreatePayload {
+	name: string;
+	code?: string | null;
+	email?: string | null;
+	phone?: string | null;
+	address?: string | null;
+	tax_id?: string | null;
+}
+
+/** `POST /api/vendors` — `vendor.manage`. The row lands `active` / `source=manual`. */
+export function createVendor(payload: VendorCreatePayload): Promise<Vendor> {
+	return api.post<Vendor>('/api/vendors', payload);
+}
+
+export interface PortalInvitePayload {
+	email: string;
+	full_name: string;
+}
+
+/** Mirrors `backend/app/schemas/portal.PortalInviteResponse`. `temp_password`
+ *  is shown once via `ui/SecretReveal` then dropped; `portal_url` is `null`
+ *  when `FEOH_TENANT_URL_TEMPLATE` isn't configured. */
+export interface PortalInviteResult {
+	user: {
+		id: string;
+		vendor_id: string;
+		email: string;
+		full_name: string;
+		is_active: boolean;
+		must_change_password: boolean;
+		last_login_at: string | null;
+		created_at: string;
+	};
+	temp_password: string;
+	portal_url: string | null;
+}
+
+/** `POST /api/vendors/{id}/portal-users` — admin / ap_manager. 409 if a portal
+ *  user with that email already exists. */
+export function inviteVendorPortalUser(
+	vendorId: string,
+	payload: PortalInvitePayload
+): Promise<PortalInviteResult> {
+	return api.post<PortalInviteResult>(`/api/vendors/${vendorId}/portal-users`, payload);
+}

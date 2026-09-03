@@ -20,6 +20,7 @@
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
+	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { workflowStore } from '$lib/stores/workflows.svelte';
@@ -31,8 +32,17 @@
 	import SortableHeader from '$lib/components/ui/SortableHeader.svelte';
 	import { toggleSort, type SortOrder } from '$lib/utils/sort';
 
-	let search = $state('');
-	let activeStatuses = $state<InvoiceStatus[]>([]);
+	// Search + the quick status chips are URL-backed (`?search=&status=`)
+	// alongside `assigned_to_id` and sort, so a reload / back / shared link
+	// reproduces the view — mirrors `/contracts` + `/expenses`. The Advanced
+	// Search modal's richer filters stay out of the URL (a separate, larger
+	// surface). See `syncUrl()`.
+	let search = $state($page.url.searchParams.get('search') ?? '');
+	let activeStatuses = $state<InvoiceStatus[]>(
+		($page.url.searchParams.get('status') ?? '')
+			.split(',')
+			.filter((s): s is InvoiceStatus => (INVOICE_STATUSES as readonly string[]).includes(s))
+	);
 	let editing = $state<Invoice | null>(null);
 	let showAdvancedSearch = $state(false);
 	let advancedFilters = $state<AdvancedSearchFilters>({ ...EMPTY_ADVANCED_FILTERS });
@@ -195,15 +205,21 @@
 	 * `/contracts` and `/expenses`: every read here is untracked, `$page.url`
 	 * included, because this is a WRITER called from the filter `$effect`
 	 * below — a tracked `$page.url` read would self-trigger the very effect
-	 * that calls `replaceState`. Scoped to only the param this page owns —
-	 * `search`/`status`/the advanced filters predate this and aren't
-	 * URL-synced yet (a separate, pre-existing gap; see `docs/followups.md`).
+	 * that calls `replaceState`, and a tracked `search` read would make every
+	 * filter effect re-fire on each keystroke (issue #168). Covers the search
+	 * term + the quick status chips + `assigned_to_id`; the Advanced Search
+	 * modal's richer filters and column sort (`syncSortUrl`) are handled apart.
 	 */
 	function syncUrl() {
 		untrack(() => {
 			const url = new URL($page.url);
 			if (assignedToId) url.searchParams.set('assigned_to_id', assignedToId);
 			else url.searchParams.delete('assigned_to_id');
+			const s = search.trim();
+			if (s) url.searchParams.set('search', s);
+			else url.searchParams.delete('search');
+			if (activeStatuses.length > 0) url.searchParams.set('status', activeStatuses.join(','));
+			else url.searchParams.delete('status');
 			replaceState(`${url.pathname}${url.search}`, {});
 		});
 	}
@@ -215,7 +231,10 @@
 		// `.catch` because nothing awaits this: the store re-throws so an
 		// awaiting caller keeps its own handling (the post-upload toast relies
 		// on it), and `invoiceStore.errored` is what the table renders.
-		searchTimer = setTimeout(() => invoiceStore.fetch(buildParams()).catch(() => {}), 300); // noqa: raw-fetch-in-component — store method, routes through api client
+		searchTimer = setTimeout(() => {
+			syncUrl();
+			invoiceStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
+		}, 300);
 	}
 
 	// Fetch status counts and active workflow on mount
@@ -355,12 +374,25 @@
 	// and a genuinely fresh tenant (no invoices, no active search/status
 	// filter) gets a CTA toward the two ways to add the first one instead of
 	// a bare "nothing here".
+	// The genuinely-empty-and-unfiltered case renders <EmptyState> instead of
+	// the table (see the template); this string covers the other three states
+	// the table can be empty in — loading, errored, and "a filter matched
+	// nothing" (frontend/CLAUDE.md § Data tables).
+	let noActiveFilters = $derived(!search.trim() && activeStatuses.length === 0 && !hasAdvancedFilters);
+	let showOnboarding = $derived(
+		invoiceStore.all.length === 0 &&
+			!invoiceStore.loading &&
+			!invoiceStore.errored &&
+			noActiveFilters
+	);
 	let emptyMessage = $derived(
-		invoiceStore.errored
-			? m('invoices.empty.errored')
-			: invoiceStore.all.length === 0 && !search.trim() && activeStatuses.length === 0
-				? m('invoices.empty.fresh')
-				: m('invoices.empty')
+		invoiceStore.loading
+			? m('common.loading')
+			: invoiceStore.errored
+				? m('invoices.empty.errored')
+				: noActiveFilters
+					? m('invoices.empty.fresh')
+					: m('invoices.empty')
 	);
 
 	function statusCount(status: InvoiceStatus): number {
@@ -770,6 +802,18 @@
 		</div>
 	{/if}
 
+	{#if showOnboarding}
+		<EmptyState
+			icon="📄"
+			heading={m('emptyState.invoices.heading')}
+			description={m('emptyState.invoices.description')}
+			actionLabel={auth.hasAnyRole('admin', 'ap_manager', 'cfo')
+				? m('emptyState.invoices.action')
+				: undefined}
+			onaction={() => fileInput.click()}
+			testId="invoices-empty-state"
+		/>
+	{:else}
 	<DataTable isEmpty={invoiceStore.all.length === 0} empty={emptyMessage} colspan={10} fixed stickyHeader>
 		{#snippet header()}
 			<tr>
@@ -859,6 +903,7 @@
 			{/each}
 		{/snippet}
 	</DataTable>
+	{/if}
 
 	{#if invoiceStore.hasMore}
 		<div class="load-more-row">
@@ -911,7 +956,7 @@
 		onimport={(file: File): Promise<ImportResult> => api.upload<ImportResult>('/api/invoices/import-csv', file)}
 		onclose={() => (showImportCsv = false)}
 		onimported={() => {
-			invoiceStore.fetch(buildParams()).catch(() => {});
+			invoiceStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
 			invoiceStore.fetchCounts().catch(() => {});
 		}}
 	>

@@ -1076,31 +1076,54 @@ issue #328 can close — the checklist itself is not a destination (guard rail 6
 Every one is category **(c)**: a sized-but-unstarted piece of work, or a
 deferred-with-reason finding awaiting a product/architecture call.
 
+**Progress — PR #343** (`feat/portal-invoice-search-filter`):
+
+| #328 finding | Status in #343 |
+|---|---|
+| Portal invoice list — no status/number filter | **done** — repeatable `status=` + `search=`, vendor-facing phase chips |
+| Portal payment list — no status/number filter | **done** — same, via shared `PortalListFilters.svelte` |
+| Vendor can't see why an invoice was rejected | **done** — `rejection_reason` on the portal API + rendered under the status pill |
+| No resubmit path for a rejected portal invoice | **done** — `POST /portal/invoices/{id}/resubmit` + "Revise & resubmit" row control |
+| URL filter/search persistence partial on `/invoices` `/payments` `/vendors` | **done** — `search` + status chip + (payments) tab now in the query string |
+| No onboarding empty-state / CTA for a zero-data tenant | **done** — shared `ui/EmptyState.svelte`, adopted on the dashboard, `/invoices`, and `/portal/invoices` |
+| No UI to create a vendor / invite one to the supplier portal | **done** — `+ New Vendor` header action (`CreateVendorModal`) + `Invite` row action (`InviteVendorPortalUserModal` → `SecretReveal`) |
+| `/payments/queue` has no pagination | **done** — `?page=` on `GET /queue`, a `GET /queue/ids` select-all resolver, Load-More + whole-set select-all on the Queue tab |
+| GBP→GB domestic payment falls through to `international_wire` | **done** — `bacs`/`faster_payments`/`chaps` rails + a GBP/GB branch in `pick_corridor` (Faster Payments, no SWIFT/FX/IBAN) |
+| [Low] Org Settings has no first-time-admin prioritization | **done** — a "Getting started" wayfinding strip at the top of `/organization` |
+| Portal lists have no date-range filter | **done** — `date_from`/`date_to` on both portal list endpoints + a From/To pair in `PortalListFilters` |
+| Vendor can't see why an invoice is *stuck* | **done** — `waiting_on` bucket (`review`/`processing`/`erp`) + `waiting_on_days` on the portal invoice API, rendered under the status pill |
+| _remainders_ | constrained re-extract on resubmit (scoped, deferred — its own slice) — entry below |
+
 **Frontend gaps — built on the backend, unreachable in the product:**
 
-- [ ] **No UI to create a vendor or invite one to the supplier portal.**
-      `POST /api/vendors` and `POST /api/vendors/{id}/portal-users` both exist;
-      `frontend/src/routes/vendors/+page.svelte` has neither action. A new tenant
-      cannot onboard a supplier by clicking anything.
-      **Durable fix:** a create-vendor modal (mirror `CreateInvoiceModal`) and a
-      row-action "Invite to portal" calling the portal-users endpoint. The
-      invite email's `portal_url` was fixed in #330; this is the UI half.
-      **Trigger:** the next slice touching `/vendors`.
+- [x] **UI to create a vendor + invite one to the supplier portal — DONE
+      (PR #343).** `+ New Vendor` header action (`vendor.manage`-gated) opens
+      `CreateVendorModal` (`POST /api/vendors`; no bank field — the backend
+      dual-control-stages that on create); an `Invite` row action
+      (`auth.isManager`) opens `InviteVendorPortalUserModal`
+      (`POST /api/vendors/{id}/portal-users`) whose one-time temp password is
+      shown via the shared `SecretReveal`. Guard:
+      `tests-e2e/vendors/create-invite.spec.ts`.
 
-- [ ] **No onboarding empty-state / CTA anywhere for a brand-new zero-data
-      tenant.** Dashboard, `/invoices` and `/vendors` all render a bare "no
-      results" with no next step, and no shared `EmptyState` component exists.
-      **Durable fix:** an `EmptyState` component in `lib/components/`, adopted on
-      the primary list routes with a route-appropriate primary action.
-      **Trigger:** the next slice touching first-run UX, or the create-vendor UI
-      above (same surfaces).
+- [x] **No onboarding empty-state / CTA for a zero-data tenant — DONE
+      (PR #343).** `ui/EmptyState.svelte` (icon + heading + description +
+      optional button/link action, i18n-agnostic) is adopted on the dashboard
+      (zero invoices → `/invoices`), `/invoices` (zero rows + no filter → the
+      upload action, role-gated), `/portal/invoices` (vendor submitted nothing
+      → the submit action), and `/vendors` (zero vendors + no filter → the
+      `+ New Vendor` action, `vendor.manage`-gated — gated on a first-fetch
+      `loaded` flag so it doesn't flash during load, and on `!loadErrored`).
+      Each page keeps its `DataTable` + loading/errored/filtered-empty copy
+      for every other state. Guards:
+      `tests-e2e/reactivity/empty-state.spec.ts` (`/invoices` + `/vendors`).
 
-- [ ] **[Low] Organization/Settings is ~15 undifferentiated advanced sections
-      with no first-time-admin prioritization.** No ordering, grouping, or
-      "start here" affordance.
-      **Durable fix:** group the sections and surface the handful a new admin
-      needs first (users, entities, branding, approval thresholds).
-      **Trigger:** the next redesign pass on `/organization`.
+- [x] **[Low] Organization/Settings first-time-admin prioritization — DONE
+      (PR #343).** A "Getting started" wayfinding strip at the top of
+      `/organization` links a new admin to the five sections they configure
+      first (Company Profile, Invoice Defaults, Users & Roles, approval
+      thresholds, Branding). Sections are neither reordered nor hidden — it's a
+      shortcut strip with anchor `id=`s. Guard:
+      `tests-e2e/organization/getting-started.spec.ts`.
 
 - [ ] **[Low] The marketing pricing page (`Pricing.svelte`) is USD-only.**
       Hardcoded `$` figures; no currency awareness.
@@ -1110,47 +1133,59 @@ deferred-with-reason finding awaiting a product/architecture call.
 
 **Supplier portal — the loop-closing steps are missing:**
 
-- [ ] **A vendor has no in-portal way to learn why an invoice is rejected or
-      stuck.** The reason exists (audit log, `review_rejected` exception,
-      rejection email) but never reaches the portal API or UI.
-      **Durable fix:** surface the latest rejection reason + a friendly current
-      status on `GET /portal/invoices/{id}` (PII-free, AP-author-masked like
-      supplier chat already is) and render it on the portal invoice detail.
-      **Trigger:** the next slice touching the supplier portal.
+- [x] **A vendor can see why an invoice is *stuck* — DONE (PR #343).** The
+      *rejected* half (`rejection_reason`) shipped earlier in the PR;
+      `GET /portal/invoices[/{id}]` now also carries `waiting_on` — a PII-free
+      bucket (`review` / `processing` / `erp`) plus `waiting_on_days`, set
+      **only** while the invoice is in a processing phase, NULL for
+      `new`/`approved`/`paid`/`rejected`/`done`. Never an internal status
+      string or a user name. Rendered as a localized line under the status
+      pill ("Awaiting your customer's review · 5 days"). Guard:
+      `tests/test_portal_waiting_on.py`. (A finer step-level detail off the
+      workflow instance was scoped down to the phase-bucket + age — enough to
+      add information beyond the chip without touching workflow internals.)
 
-- [ ] **No resubmission path for a rejected portal invoice.** The only option is
-      uploading a whole new file, which risks a false-positive duplicate flag
-      with no link back to the original.
-      **Durable fix:** a "revise & resubmit" action on a `rejected` portal
-      invoice that reuses the invoice id and clears the duplicate suppression
-      against its own prior version.
-      **Trigger:** paired with the why-rejected finding above.
-
-- [ ] **No search or filter on the vendor's own invoice / payment lists in the
-      portal.** `GET /api/portal/invoices` and `.../payments` are "Load more"
-      only — no status, invoice-number, or date-range filter.
-      **Durable fix:** add the same status/search/date params the internal list
-      endpoints take, vendor-scoped, and a `SearchBox` + status chips on the
-      portal pages.
-      **Trigger:** the next slice touching the supplier portal.
+- [ ] **A resubmitted portal invoice isn't re-extracted from the corrected
+      document.** The resubmit path is **shipped** (**PR #343**) —
+      `POST /portal/invoices/{id}/resubmit` swaps the file on the same row (no
+      duplicate flag), resolves the `review_rejected` exception, and sends it
+      back to `ready_for_review`. It deliberately does **not** re-run
+      extraction, because a fresh pass calls `match_and_link_vendor` and can
+      re-link `Invoice.vendor_id` to a different supplier — which would drop
+      the invoice out of the `vendor_id ==`-scoped portal list, i.e. the
+      vendor loses sight of their own resubmission. So the AP reviewer has to
+      manually reconcile the new PDF against the (stale) extracted fields.
+      **Durable fix (scoped, not started):** thread a `skip_vendor_match: bool`
+      through `services/extraction_dispatch.dispatch_extraction` → the queue
+      tuple / lambda payload → `services/extraction.run_extraction`, guarding
+      the `match_and_link_vendor` call (`extraction.py` ~L590) so the resubmit
+      path can re-extract money/number fields while keeping the existing vendor
+      link. **Left deferred deliberately:** it changes the extraction dispatch
+      path in both local and lambda modes — a shared, money-adjacent surface
+      that warrants its own focused slice + tests, not a tail-end add to this
+      PR.
+      **Trigger:** the next slice touching portal resubmit or the extraction
+      dispatch path.
 
 **Volume surfaces:**
 
-- [ ] **`GET /api/payments/queue` has no pagination.** It loads the tenant's
-      entire approved-unpaid invoice set on every page view.
-      **Durable fix:** keyset pagination with an `id` tie-breaker, matching the
-      invoice list; the frontend `/payments` Queue tab consumes "Load more".
-      **Trigger:** the next slice touching the payments queue, or the first
-      tenant that reports the page hanging.
+- [x] **`GET /api/payments/queue` pagination — DONE (PR #343).** `?page=` /
+      `?page_size=` on `GET /queue` (order `due_date ASC NULLS LAST, id ASC` —
+      the `id` tie-breaker the invoice list has), plus a `GET /queue/ids`
+      resolver for the whole selectable set (capped, currency-bucketed). The
+      Queue tab renders Load-More; "select all N matching" resolves via
+      `/queue/ids` (not the loaded rows) and the pay-bar count / per-currency
+      subtotals / mixed-currency guard derive from the whole-set rollup.
+      Guards: `tests/test_payment_queue_pagination.py`,
+      `tests-e2e/payments/queue-pagination.spec.ts`.
 
-- [ ] **URL filter/search persistence is partial on `/invoices`, `/payments`
-      and `/vendors`.** They now persist `sort`/`order` (and `/invoices` also
-      `assigned_to_id`), but the search term and status filter still never reach
-      the URL — refresh / back / share loses them, while `/contracts` and
-      `/expenses` do this correctly via `syncUrl()`.
-      **Durable fix:** extend `syncUrl()` on the three pages to cover `search`
-      and the status filter, untracked like the sibling routes.
-      **Trigger:** the next slice touching any of the three list pages.
+- [x] **URL filter/search persistence on `/invoices`, `/payments`, `/vendors`
+      — DONE (PR #343).** Each page now initialises `search` + the status chip
+      from the query string and folds them into its `syncUrl()` writer
+      (untracked, called from the filter effect + the debounce timer);
+      `/payments` also persists the active tab. Guard:
+      `tests-e2e/reactivity/filter-url-persistence.spec.ts`; the debounce it
+      sits next to stays covered by `search-debounce-race.spec.ts`.
 
 - [ ] **Budgets "Total Allocated" KPI** — already tracked in
       _§ Surfaced by the round-14 frontend hunt_ ("the same page-scoped-KPI bug …
@@ -1173,14 +1208,19 @@ deferred-with-reason finding awaiting a product/architecture call.
       **Trigger:** a decision to support UK/EU VAT properly (a prerequisite for
       the UK-business go-to-market).
 
-- [ ] **A GBP→GB domestic payment falls through to `international_wire`.**
-      `payment_corridor.pick_corridor` has no domestic-GB branch, forcing SWIFT
-      and a 2.5% fee anchor; BACS / Faster Payments / CHAPS don't exist in the
-      codebase or the payment-method dropdowns.
-      **Durable fix:** add the UK domestic rails to the `PaymentMethod` enum and
-      `DOMESTIC_PAYMENT_METHODS`, and a GBP-domestic corridor branch.
-      **Trigger:** the UK-business go-to-market, or the next slice touching
-      `payment_corridor`.
+- [x] **GBP→GB domestic payment rails — DONE (PR #343).** `bacs`,
+      `faster_payments`, `chaps` added to the `PaymentMethod` enum, classified
+      on both `payment_methods.py` axes (IRS-reportable + `DOMESTIC`), with fee
+      anchors as `Decimal`. `pick_corridor` gets a GBP/GB branch:
+      `not requires_fx and target_currency == "GBP" and country in (None, "GB")`
+      → Faster Payments (no SWIFT, no FX lock, no IBAN — UK domestic uses sort
+      code + account number even though `is_sepa_country("GB")` is true).
+      Cross-currency into GBP still routes `international_wire`. No migration
+      (`Payment.method` is a `String`); only the `mock` adapter gained the
+      rails. Guards: `tests/test_payment_corridor_uk_domestic.py`, extended
+      `test_payment_methods.py`.
+      **Still open (separate finding, above):** the per-line VAT tax model —
+      that's the architecture item, unrelated to the payment rail.
 
 **Investigated, deliberately not changed (recorded so it isn't re-litigated):**
 
@@ -1190,33 +1230,53 @@ deferred-with-reason finding awaiting a product/architecture call.
   CFO-approval-threshold control (a real regression caught by CI). The inline
   comment in `backend/app/api/payments.py` is the durable record.
 
-### Persona-panel acknowledged gaps — keep-or-drop call outstanding (issue #328)
+### Persona-panel acknowledged gaps — ⚠️ PRODUCT REVIEW NEEDED (issue #328)
 
 Eight capabilities the personas confirmed absent and classified as *product-fit
-gaps* (the app never claimed them), not defects. Each needs a keep (→ roadmap) or
-drop (→ documented non-goal) decision. Listed so the decision isn't lost when
-#328 closes.
+gaps* (the app never claimed them), not defects. **None is a bug — each is a
+deliberate scope decision waiting to be made.** For each: **keep** it (→ add to
+`docs/roadmap.md`, size it) or **drop** it (→ record as a documented non-goal in
+`docs/competitive-analysis.md` / the relevant doc so it isn't re-filed every
+persona round). The `[ ]` is checked when the keep/drop call is recorded, not
+when the feature ships.
+
+A suggested lean is given per gap — **`lean: keep`** / **`lean: drop`** /
+**`lean: ?`** (genuine toss-up) — to make the review a yes/no rather than an
+open discussion. Owner: a product/founder call; nothing here is Claude's to
+decide.
 
 - [ ] **No US sales/use-tax self-assessment** — no self-assessed use tax on
       out-of-state purchases, no nexus tracking, no resale/exemption
       certificates. `Invoice.tax_rate` only records what the vendor charged. US
-      AP table stakes above a certain company size.
+      AP table stakes above a certain company size. **`lean: keep`** (real US
+      mid-market requirement; large, own epic).
 - [ ] **Positive Pay has no frontend** — `/api/positive-pay` is API-only (already
       noted as known state in the root `CLAUDE.md` architecture table).
+      **`lean: keep`** (backend is done; a thin UI is a bounded slice, not an
+      epic — cheapest of the eight to close).
 - [ ] **`bank_details` has one generic `routing_number`** — no way to record a
       separate wire vs ACH routing number, common at larger US banks.
+      **`lean: keep`** (small schema/UI change; blocks real payments at larger
+      banks).
 - [ ] **1099-MISC per-box allocation is not split** — the whole total goes to the
       requested box (documented simplification in `tax_1099_forms.py`).
+      **`lean: keep`** (correctness for a shipped feature; medium).
 - [ ] **No consolidated org-wide budget-vs-actual rollup on the CFO dashboard** —
       only the standalone `/budgets` page and per-budget `GET /budgets/{id}/spend`.
+      **`lean: ?`** (nice-to-have; depends on whether budgets is a headline
+      feature or a checkbox).
 - [ ] **No saved views / per-list default view, and no keyboard shortcuts or
-      command palette** anywhere in the app.
+      command palette** anywhere in the app. **`lean: ?`** (power-user polish;
+      high effort, diffuse payoff — defer unless a design partner asks).
 - [ ] **No supplier-portal dashboard/home** — `/portal` redirects straight to
       `/portal/invoices`; a vendor gets no at-a-glance "N need nothing from you,
-      M await your action".
+      M await your action". **`lean: keep`** (small; pairs naturally with the
+      portal work already in PR #343).
 - [ ] **Leading-zero / numeric invoice-number normalization** (`INV-001` vs
       `INV-1`) is not handled by the rule-based duplicate check; the
       semantic-similarity path is the intended backstop only when RAG is enabled.
+      **`lean: keep`** (small, real duplicate-detection hole; RAG-off is the
+      common config).
 
 _Two further gaps were considered and explicitly declined (recorded so they
 aren't re-raised): IR35 / contractor status (payroll/HR tooling, not AP), and a

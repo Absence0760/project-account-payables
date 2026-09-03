@@ -30,8 +30,10 @@ returns a frozen `CorridorChoice`. Resolution order:
 1. Explicit `requested_method` from the caller (UI override / vendor
    preference) — but ONLY when it's trustworthy as a real choice: an
    explicit international method (`sepa` / `international_wire` /
-   `international_ach`, nothing defaults to those) or ANY method for a
-   genuinely domestic (same-currency, US) destination. `create_payment_run`
+   `international_ach`, nothing defaults to those), an explicit UK domestic
+   rail (`bacs` / `faster_payments` / `chaps`) on a genuinely GBP/GB
+   destination, or ANY method for a genuinely domestic (same-currency, US)
+   destination. `create_payment_run`
    defaults every line item's method to `"ach"` regardless of the invoice's
    actual currency/country, and the frontend does the same — a plain
    domestic-looking method (`ach`/`wire`/`rtp`/`check`) for a destination
@@ -50,14 +52,27 @@ returns a frozen `CorridorChoice`. Resolution order:
 3. Same-currency USD to the US → `ach`.
 4. Same-currency EUR to a SEPA country → `sepa`, IBAN required, no
    SWIFT, no FX. `processor_hint = "wise"`.
-5. Same-currency USD to a NACHA Global ACH destination (CA, MX, GB,
+5. Same-currency GBP to GB (or GBP with no country given) → `faster_payments`
+   (UK domestic). No FX, no SWIFT, no IBAN — UK domestic uses a 6-digit sort
+   code + 8-digit account number. Faster Payments is the auto-selected default
+   because it is near-instant and effectively free on a business account; a
+   very-high-value payment above the Faster Payments limit is sent with
+   `requested_method="chaps"` (same-day, ~£15–30 flat) and a batched
+   low-priority run with `requested_method="bacs"` (3-day, pennies). Before
+   this branch existed a GBP→GB payment fell through to step 6 and was forced
+   onto SWIFT + the 2.5 % international-wire fee anchor + an IBAN demand on
+   money that never leaves the UK (issue #328). GB is in `SEPA_COUNTRIES` for
+   the EUR scheme, which is irrelevant here — the SEPA branch is guarded on
+   `target_currency == "EUR"`, and the three UK rails carry `requires_iban =
+   False` unconditionally.
+6. Same-currency USD to a NACHA Global ACH destination (CA, MX, GB,
    BR, and a handful of LATAM corridors — see
    `_GLOBAL_ACH_DESTINATIONS` in `payment_corridor.py`) →
    `international_ach`. Cheaper than SWIFT for low-value recurring
    payments. No FX leg, no SWIFT, no IBAN — IAT uses local account
    formats.
-6. Same-currency, foreign, non-SEPA, non-Global-ACH → `international_wire`,
-   SWIFT required, no IBAN, no FX.
+7. Same-currency, foreign, non-SEPA, non-UK-domestic, non-Global-ACH →
+   `international_wire`, SWIFT required, no IBAN, no FX.
 
 SEPA membership lives in `SEPA_COUNTRIES` (`app/utils/banking.py`).
 Global-ACH destinations live in `_GLOBAL_ACH_DESTINATIONS`
@@ -354,6 +369,7 @@ nullable / defaulted KYC columns and creates the append-only
 | `tests/test_banking_validation.py` | IBAN mod-97 (10 valid examples + 11 negatives), SWIFT/BIC format, SEPA membership |
 | `tests/test_fx_adapters.py` | Mock adapter (rates + overrides + unknown currency), dispatcher fallback, OpenExchangeRates HTTP wiring, FXRate immutability |
 | `tests/test_payment_corridor.py` | 13 cases covering cross-currency, US/SEPA/foreign rails, explicit override, frozen dataclass |
+| `tests/test_payment_corridor_uk_domestic.py` | The GBP/GB branch (issue #328): auto-select `faster_payments` (no FX/SWIFT/IBAN), explicit `chaps`/`bacs` override honoured, a plain `ach`/`wire` default falls through to Faster Payments, a UK rail is not honoured for a foreign GBP destination, cross-currency into GBP still routes `international_wire` + FX |
 | `tests/test_cross_border_ach.py` | NACHA Global ACH (IAT) routing: CA/MX/GB/BR pick `international_ach`; JP falls through to SWIFT; explicit override; `is_international_payment` recognizes the new rail |
 | `tests/test_corridor_quotes.py` | Cheapest + fastest ranking, unavailable provider can't win, adapter exception sanitised (no PII in `unavailable_reason`), `NoEligibleCorridorError` when zero providers quote, legacy single-provider shape, dedupe |
 | `tests/test_compliance.py` | Mock sanctions adapter (clear / match / review_required / beneficial-owner hit), `check_payment_compliance` verdict resolution (refuse on match + KYC gap; hold on review + AML), audit-row persistence, dispatcher fallback, **end-to-end** sanctions refusal through `execute_payment_run` (adapter NEVER called) |

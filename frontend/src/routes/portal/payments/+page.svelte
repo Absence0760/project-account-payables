@@ -11,7 +11,8 @@
 	import { appendUnique } from '$lib/utils/pagination';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { m } from '$lib/i18n/store.svelte';
-	import { portalPaymentStatusLabel } from '$lib/types/portalStatus';
+	import { portalPaymentStatusLabel, PORTAL_PAYMENT_PHASES } from '$lib/types/portalStatus';
+	import PortalListFilters from '$lib/components/portal/PortalListFilters.svelte';
 
 	type PortalPayment = PortalPaymentListItem;
 
@@ -27,6 +28,36 @@
 
 	const hasMore = $derived(items.length < total);
 
+	// --- Filters. PortalListFilters owns the phase chips + debounced search
+	// (see the invoice list); a phase expands to the raw `payments.status`
+	// values behind it, sent as repeated `?status=`.
+	let activePhase = $state<string | null>(null);
+	let activeSearch = $state('');
+	let activeDateFrom = $state('');
+	let activeDateTo = $state('');
+	let filtersEl = $state<{ reset: () => void } | undefined>();
+	const filtered = $derived(
+		activePhase !== null || activeSearch.trim() !== '' || activeDateFrom !== '' || activeDateTo !== ''
+	);
+
+	function phaseStatuses(p: string | null): string[] | undefined {
+		if (p === null) return undefined;
+		return PORTAL_PAYMENT_PHASES.find((c) => c.phase === p)?.statuses;
+	}
+
+	function applyFilters(f: {
+		phase: string | null;
+		search: string;
+		dateFrom: string;
+		dateTo: string;
+	}) {
+		activePhase = f.phase;
+		activeSearch = f.search;
+		activeDateFrom = f.dateFrom;
+		activeDateTo = f.dateTo;
+		load();
+	}
+
 	// Sequences `load` so a slow first page can't land after a Load-more and
 	// drop the appended rows. Nothing edits the list in place (the remittance
 	// download is read-only), so there is no `supersedeInFlight()` call.
@@ -40,7 +71,14 @@
 		else loading = true;
 		error = '';
 		try {
-			const res = await listPortalPayments({ page: nextPage, page_size: PORTAL_PAGE_SIZE });
+			const res = await listPortalPayments({
+				page: nextPage,
+				page_size: PORTAL_PAGE_SIZE,
+				status: phaseStatuses(activePhase),
+				search: activeSearch.trim() || undefined,
+				date_from: activeDateFrom || undefined,
+				date_to: activeDateTo || undefined,
+			});
 			if (!fetchSequence.canCommit(token)) return;
 			items = opts.append ? appendUnique(items, res.items) : res.items;
 			total = res.total;
@@ -92,12 +130,31 @@
 
 	{#if error}<div class="error" role="alert">{error}</div>{/if}
 
+	<PortalListFilters
+		bind:this={filtersEl}
+		chips={PORTAL_PAYMENT_PHASES.map((c) => ({ key: c.phase, label: c.phase }))}
+		allLabel={m('portal.payments.filterAll')}
+		groupLabel={m('portal.payments.col.status')}
+		searchLabel={m('portal.payments.searchLabel')}
+		searchPlaceholder={m('portal.payments.searchPlaceholder')}
+		dateFromLabel={m('portal.payments.dateFromLabel')}
+		dateToLabel={m('portal.payments.dateToLabel')}
+		onchange={applyFilters}
+	/>
+
 	{#if loading && !items.length}
 		<div class="loading">{m('portal.common.loading')}</div>
 	{:else if !items.length}
 		<div class="empty">
-			<p>{m('portal.payments.empty')}</p>
-			<p class="hint">{m('portal.payments.emptyHint')}</p>
+			{#if filtered}
+				<p>{m('portal.payments.emptyFiltered')}</p>
+				<button type="button" class="link-btn" onclick={() => filtersEl?.reset()}
+					>{m('portal.payments.clearFilters')}</button
+				>
+			{:else}
+				<p>{m('portal.payments.empty')}</p>
+				<p class="hint">{m('portal.payments.emptyHint')}</p>
+			{/if}
 		</div>
 	{:else}
 		<table>
@@ -252,6 +309,17 @@
 	}
 	.empty .hint {
 		font-size: 0.82rem;
+	}
+	.link-btn {
+		background: none;
+		border: none;
+		padding: 0;
+		margin-top: 6px;
+		font: inherit;
+		font-size: 0.82rem;
+		color: var(--accent);
+		cursor: pointer;
+		text-decoration: underline;
 	}
 	.error {
 		background: rgba(224, 64, 64, 0.1);

@@ -8,7 +8,7 @@ A vendor user cannot reference another vendor's invoices even by guessing IDs.
 import asyncio
 import logging
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from fastapi import (
@@ -31,6 +31,7 @@ from app.api.pagination import PaginationParams, pagination_params
 from app.api.portal_deps import get_current_vendor_user
 from app.database import get_control_db
 from app.models.discount import OFFER_STATUS_OFFERED, DiscountOffer
+from app.models.exception import Exception as APException
 from app.models.invoice import Invoice, InvoiceLineItem, InvoiceStatus
 from app.models.organization import Organization
 from app.models.payment import Payment
@@ -71,9 +72,11 @@ from app.schemas.portal import (
 )
 from app.services import discount_offers as offers_svc
 from app.services.audit_dispatch import dispatch_audit
+from app.services.exception_lifecycle import record_decision
 from app.services.extraction_dispatch import dispatch_extraction
 from app.services.invoice_warnings import refresh_warnings
 from app.services.storage import (
+    delete_file,
     get_file,
     tax_form_type_from_key,
     upload_chat_file,
@@ -90,6 +93,7 @@ from app.services.supplier_chat import (
 from app.services.workflow_engine import (
     create_workflow_instance,
     create_workflow_step,
+    get_workflow_instance,
     is_step_enabled,
     transition_invoice,
 )
@@ -162,13 +166,161 @@ def _portal_invoice_file_url(inv: Invoice) -> str | None:
     return f"/api/portal/invoices/{inv.id}/file"
 
 
+# The `payments.status` values a supplier may filter on. `payments.status` is a
+# free String column (no DB enum), so this local tuple is the allow-list — an
+# unrecognised value is dropped, mirroring the invoice endpoint, rather than
+# turning into `status IN ('bogus')` which would silently return nothing.
+_PORTAL_PAYMENT_STATUSES = (
+    "pending",
+    "pending_compliance",
+    "submitted",
+    "processing",
+    "completed",
+    "failed",
+    "cancelled",
+    "voided",
+)
+
+
+# Processing phase → a vendor-facing "waiting on" bucket. Anything NOT here
+# (new / approved / paid / rejected / done) gets no `waiting_on` — the phase
+# chip alone is enough. Buckets, never internal status strings.
+_WAITING_ON_CATEGORY = {
+    "pending": "processing",
+    "failed": "processing",
+    "ready_for_review": "review",
+    "sending_to_erp": "erp",
+    "sent_to_erp": "erp",
+    "posted_in_erp": "erp",
+}
+
+
+def _portal_invoice_item(inv: Invoice, *, rejection_reason: str | None = None):
+    status = inv.status.value if hasattr(inv.status, "value") else str(inv.status)
+    waiting_on = _WAITING_ON_CATEGORY.get(status)
+    waiting_on_days = None
+    if waiting_on is not None:
+        since = (inv.updated_at or inv.created_at).date()
+        waiting_on_days = max(0, (utc_today() - since).days)
+    return PortalInvoiceListItem(
+        id=str(inv.id),
+        invoice_number=inv.invoice_number or "",
+        amount=inv.amount,
+        currency=inv.currency,
+        status=status,
+        invoice_date=inv.invoice_date,
+        due_date=inv.due_date,
+        submitted_at=inv.created_at,
+        file_url=_portal_invoice_file_url(inv),
+        # Only meaningful while the invoice IS rejected — a reworked invoice that
+        # moved on keeps its old exception row, so gate on the live status.
+        rejection_reason=rejection_reason if status == InvoiceStatus.rejected.value else None,
+        waiting_on=waiting_on,
+        waiting_on_days=waiting_on_days,
+    )
+
+
+async def _latest_rejection_reasons(
+    db: AsyncSession, invoice_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, str]:
+    """The AP-authored reason from the most recent `review_rejected` exception
+    for each of `invoice_ids`. One batch query for the whole page — the portal
+    shows this so a supplier knows what to fix before resubmitting a rejected
+    invoice, which no portal surface exposed before (issue #328).
+
+    The rejecting employee's name (`Exception.resolved_by` / `Invoice.rejected_by`)
+    is deliberately NOT read here — the vendor sees the reason, never the actor.
+    """
+    if not invoice_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(APException.invoice_id, APException.description)
+            .where(
+                APException.invoice_id.in_(invoice_ids),
+                APException.exception_type == "review_rejected",
+                APException.description.isnot(None),
+            )
+            .order_by(APException.invoice_id, APException.created_at.desc())
+        )
+    ).all()
+    reasons: dict[uuid.UUID, str] = {}
+    for inv_id, desc in rows:
+        # rows are ordered newest-first per invoice; keep the first seen.
+        if inv_id not in reasons and desc:
+            reasons[inv_id] = desc
+    return reasons
+
+
+def _invoice_number_ilike(term: str):
+    """A case-insensitive `Invoice.invoice_number` substring filter that treats
+    the vendor's search term as a literal — LIKE metacharacters (`% _ \\`) are
+    escaped so a number that contains one still matches. Returns `None` for an
+    empty term so the caller can skip the clause."""
+    cleaned = (term or "").strip()
+    if not cleaned:
+        return None
+    escaped = cleaned.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return Invoice.invoice_number.ilike(f"%{escaped}%", escape="\\")
+
+
+def _date_range_clauses(column, date_from: date | None, date_to: date | None) -> list:
+    """Inclusive `date_from`/`date_to` bounds on a timestamp `column`. An
+    inverted range (`from > to`) yields a clause that matches nothing rather
+    than a 422 — a stale portal build shouldn't be able to error the list.
+    `date_to` is treated as through-the-end-of-that-day so a single-day range
+    works."""
+    clauses: list = []
+    if date_from is not None:
+        clauses.append(column >= datetime.combine(date_from, datetime.min.time(), tzinfo=UTC))
+    if date_to is not None:
+        end = datetime.combine(date_to, datetime.min.time(), tzinfo=UTC) + timedelta(days=1)
+        clauses.append(column < end)
+    return clauses
+
+
 @router.get("/invoices", response_model=PortalInvoiceListResponse)
 async def list_my_invoices(
     pagination: PaginationParams = Depends(pagination_params),
+    status_filter: list[str] | None = Query(
+        default=None,
+        alias="status",
+        description=(
+            "Filter to these internal invoice statuses (repeatable). The portal "
+            "sends the raw InvoiceStatus values behind each vendor-facing phase "
+            "chip; an unknown value is ignored rather than 422'd so a stale "
+            "portal build can't break the list."
+        ),
+    ),
+    search: str | None = Query(
+        default=None,
+        max_length=100,
+        description="Case-insensitive substring match on the invoice number.",
+    ),
+    date_from: date | None = Query(
+        default=None, description="Only invoices submitted on/after this date (inclusive)."
+    ),
+    date_to: date | None = Query(
+        default=None, description="Only invoices submitted on/before this date (inclusive)."
+    ),
     db: AsyncSession = Depends(get_tenant_db),
     vu: VendorUser = Depends(get_current_vendor_user),
 ):
     query = select(Invoice).where(Invoice.vendor_id == vu.vendor_id)
+
+    valid_statuses = {s.value for s in InvoiceStatus}
+    wanted = [s for s in (status_filter or []) if s in valid_statuses]
+    if wanted:
+        query = query.where(Invoice.status.in_(wanted))
+
+    number_match = _invoice_number_ilike(search or "")
+    if number_match is not None:
+        query = query.where(number_match)
+
+    # Range is on `created_at` — the "Submitted" date the list column shows.
+    for clause in _date_range_clauses(Invoice.created_at, date_from, date_to):
+        query = query.where(clause)
+
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
 
     query = (
@@ -176,21 +328,16 @@ async def list_my_invoices(
     )
     rows = (await db.execute(query)).scalars().all()
 
+    rejected_ids = [
+        inv.id
+        for inv in rows
+        if (inv.status.value if hasattr(inv.status, "value") else str(inv.status))
+        == InvoiceStatus.rejected.value
+    ]
+    reasons = await _latest_rejection_reasons(db, rejected_ids)
+
     return PortalInvoiceListResponse(
-        items=[
-            PortalInvoiceListItem(
-                id=str(inv.id),
-                invoice_number=inv.invoice_number or "",
-                amount=inv.amount,
-                currency=inv.currency,
-                status=inv.status.value if hasattr(inv.status, "value") else str(inv.status),
-                invoice_date=inv.invoice_date,
-                due_date=inv.due_date,
-                submitted_at=inv.created_at,
-                file_url=_portal_invoice_file_url(inv),
-            )
-            for inv in rows
-        ],
+        items=[_portal_invoice_item(inv, rejection_reason=reasons.get(inv.id)) for inv in rows],
         total=total,
         page=pagination.page,
         page_size=pagination.page_size,
@@ -212,17 +359,11 @@ async def get_my_invoice(
     inv = result.scalar_one_or_none()
     if not inv:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    return PortalInvoiceListItem(
-        id=str(inv.id),
-        invoice_number=inv.invoice_number or "",
-        amount=inv.amount,
-        currency=inv.currency,
-        status=inv.status.value if hasattr(inv.status, "value") else str(inv.status),
-        invoice_date=inv.invoice_date,
-        due_date=inv.due_date,
-        submitted_at=inv.created_at,
-        file_url=_portal_invoice_file_url(inv),
-    )
+    status = inv.status.value if hasattr(inv.status, "value") else str(inv.status)
+    reason = None
+    if status == InvoiceStatus.rejected.value:
+        reason = (await _latest_rejection_reasons(db, [inv.id])).get(inv.id)
+    return _portal_invoice_item(inv, rejection_reason=reason)
 
 
 @router.get("/invoices/{invoice_id}/einvoice")
@@ -455,28 +596,171 @@ async def submit_invoice(
     }
 
 
+@router.post("/invoices/{invoice_id}/resubmit", status_code=status.HTTP_202_ACCEPTED)
+async def resubmit_invoice(
+    invoice_id: uuid.UUID,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    """Revise & resubmit a REJECTED invoice with a corrected document.
+
+    Reuses the same invoice row — so it never trips the duplicate check against
+    its own prior version, the AP reviewer keeps the whole history, and the
+    invoice stays THIS vendor's (a fresh extraction pass could re-link
+    `vendor_id` to a different supplier and drop the invoice out of the portal
+    list). It swaps the source file, resolves the open `review_rejected`
+    exception, and puts the invoice straight back in front of a reviewer at
+    `ready_for_review` — the reviewer checks the new document and re-approves
+    or corrects. 409 for any status other than `rejected` (a vendor can't
+    recall an invoice AP is still working, or one already paid).
+
+    Auto re-extracting the corrected document is deferred (docs/followups.md) —
+    it needs to be constrained not to move the vendor link.
+    """
+    inv = await _portal_invoice_or_404(db, invoice_id, vu)
+    if inv.status != InvoiceStatus.rejected:
+        raise HTTPException(
+            status_code=409,
+            detail="Only a rejected invoice can be resubmitted.",
+        )
+
+    vendor = (
+        await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))
+    ).scalar_one_or_none()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    old_file_key = inv.file_key
+    try:
+        file_key, file_url = await upload_invoice_file(vendor.organization_id, inv.id, file)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    inv.file_key = file_key
+    inv.file_url = file_url
+
+    source_details = {
+        "actor_type": "vendor_user",
+        "vendor_user_id": str(vu.id),
+        "vendor_id": str(vendor.id),
+        "source": "supplier_portal",
+        "filename": file.filename,
+        "content_type": file.content_type,
+    }
+
+    # Resolve the open rejection exception(s) — the vendor has responded.
+    rejection_excs = (
+        (
+            await db.execute(
+                select(APException).where(
+                    APException.invoice_id == inv.id,
+                    APException.exception_type == "review_rejected",
+                    APException.status.in_(("open", "escalated")),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for exc in rejection_excs:
+        await record_decision(
+            db,
+            exception=exc,
+            action="resolve",
+            resolution="Superseded by supplier resubmission",
+            actor_id=None,
+            actor_name="Supplier portal",
+            invoice=inv,
+        )
+
+    await transition_invoice(
+        db,
+        inv,
+        InvoiceStatus.ready_for_review,
+        actor_id=None,
+        action_name="invoice.resubmitted_by_vendor",
+        details=source_details,
+    )
+
+    instance = await get_workflow_instance(db, inv.id)
+    if instance is None:
+        instance = await create_workflow_instance(db, inv)
+    await create_workflow_step(db, instance, "review")
+    await refresh_warnings(db, inv)
+    await db.commit()
+    await db.refresh(inv)
+
+    # Best-effort: drop the superseded file object if the new one has a
+    # different key (same filename overwrites in place).
+    if old_file_key and old_file_key != file_key:
+        try:
+            await delete_file(old_file_key)
+        except Exception:
+            logger.warning("could not delete superseded invoice file on resubmit")
+
+    return {
+        "id": str(inv.id),
+        "status": inv.status.value,
+        "message": "Invoice resubmitted. Awaiting AP review.",
+    }
+
+
 # ---------- Payments ----------
 
 
 @router.get("/payments", response_model=PortalPaymentListResponse)
 async def list_my_payments(
     pagination: PaginationParams = Depends(pagination_params),
+    status_filter: list[str] | None = Query(
+        default=None,
+        alias="status",
+        description=(
+            "Filter to these payment statuses (repeatable). The portal sends the "
+            "raw `payments.status` values behind each vendor-facing phase chip; "
+            "an unknown value is ignored rather than 422'd."
+        ),
+    ),
+    search: str | None = Query(
+        default=None,
+        max_length=100,
+        description="Case-insensitive substring match on the paid invoice's number.",
+    ),
+    date_from: date | None = Query(
+        default=None, description="Only payments created on/after this date (inclusive)."
+    ),
+    date_to: date | None = Query(
+        default=None, description="Only payments created on/before this date (inclusive)."
+    ),
     db: AsyncSession = Depends(get_tenant_db),
     vu: VendorUser = Depends(get_current_vendor_user),
 ):
     """Payments on invoices belonging to the caller's vendor. Joined to
     `invoices` to (a) filter on `vendor_id` and (b) surface the invoice number
     so the vendor can reconcile without an extra round trip."""
+    # `payments.status` is a free String column (no DB enum); the frontend's
+    # PORTAL_PAYMENT_PHASES is the source of truth for what a vendor may filter
+    # on, so an unrecognised value here is simply dropped — never 422.
+    filters = [Invoice.vendor_id == vu.vendor_id]
+    wanted = [s for s in (status_filter or []) if s in _PORTAL_PAYMENT_STATUSES]
+    if wanted:
+        filters.append(Payment.status.in_(wanted))
+    number_match = _invoice_number_ilike(search or "")
+    if number_match is not None:
+        filters.append(number_match)
+    # Range is on `Payment.created_at` — always set (unlike `completed_at`,
+    # which is NULL until the payment lands), and it's the ordering column.
+    filters.extend(_date_range_clauses(Payment.created_at, date_from, date_to))
+
     query = (
         select(Payment, Invoice.invoice_number, Invoice.currency)
         .join(Invoice, Payment.invoice_id == Invoice.id)
-        .where(Invoice.vendor_id == vu.vendor_id)
+        .where(*filters)
     )
     total_query = (
         select(func.count())
         .select_from(Payment)
         .join(Invoice, Payment.invoice_id == Invoice.id)
-        .where(Invoice.vendor_id == vu.vendor_id)
+        .where(*filters)
     )
     total = (await db.execute(total_query)).scalar() or 0
 

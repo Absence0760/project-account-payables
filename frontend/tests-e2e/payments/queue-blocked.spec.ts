@@ -102,13 +102,23 @@ async function injectBlockedFlag(
 		const response = await route.fetch();
 		const body = (await response.json()) as {
 			items?: { invoice_number: string; blocked?: boolean; blocked_reason?: string }[];
+			blocked_total?: number;
+			selectable_total?: number;
 		};
+		let newlyBlocked = 0;
 		for (const item of body.items ?? []) {
-			if (item.invoice_number === invoiceNumber) {
+			if (item.invoice_number === invoiceNumber && !item.blocked) {
 				item.blocked = true;
 				item.blocked_reason = reason;
+				newlyBlocked++;
 			}
 		}
+		// The queue payload now carries whole-set `blocked_total` /
+		// `selectable_total` (the count banner + select-all rollup read them, not
+		// the loaded rows) — keep them consistent with the rows we just flipped.
+		if (typeof body.blocked_total === 'number') body.blocked_total += newlyBlocked;
+		if (typeof body.selectable_total === 'number')
+			body.selectable_total = Math.max(0, body.selectable_total - newlyBlocked);
 		await route.fulfill({ response, json: body });
 	});
 }

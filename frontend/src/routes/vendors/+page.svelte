@@ -24,12 +24,16 @@
 	import VendorModal from '$lib/components/modals/VendorModal.svelte';
 	import VendorConsolidationModal from '$lib/components/modals/VendorConsolidationModal.svelte';
 	import ImportCsvModal from '$lib/components/modals/ImportCsvModal.svelte';
+	import CreateVendorModal from '$lib/components/modals/CreateVendorModal.svelte';
+	import EmptyState from '$lib/components/ui/EmptyState.svelte';
+	import InviteVendorPortalUserModal from '$lib/components/modals/InviteVendorPortalUserModal.svelte';
+	import SecretReveal from '$lib/components/ui/SecretReveal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { PERM_VENDOR_MANAGE } from '$lib/types/admin';
 	import { m } from '$lib/i18n/store.svelte';
-	import { importVendorsCsv } from '$lib/api/vendors';
+	import { importVendorsCsv, type PortalInviteResult } from '$lib/api/vendors';
 	import type { Vendor, VendorBankDetails } from '$lib/types/vendor';
 	import type { ImportResult } from '$lib/types/csvImport';
 	import { getVendorIds, bulkVendorStatus, bulkScreenVendors, exportVendorsCsv } from '$lib/api/vendors';
@@ -49,6 +53,15 @@
 	// custom role split).
 	let showImportCsv = $state(false);
 	const canManageVendors = $derived(auth.can(PERM_VENDOR_MANAGE));
+	// "+ New Vendor" — `POST /api/vendors` is `require_permission(vendor.manage)`,
+	// so it surfaces on the same granular gate as verify/reject/bank.
+	let showCreateVendor = $state(false);
+	// Supplier-portal invite — `POST /api/vendors/{id}/portal-users` is
+	// `require_roles(ADMIN, AP_MANAGER)`, the plain-role gate (like ERP sync /
+	// CSV import), hence `auth.isManager` not the granular permission.
+	let inviteVendor = $state<Vendor | null>(null);
+	// The one-time temp password from an invite, shown once via SecretReveal.
+	let inviteResult = $state<PortalInviteResult | null>(null);
 	let bankEditing = $state<Vendor | null>(null);
 	let bankForm = $state<BankDetails>({
 		counterparty_id: '',
@@ -124,14 +137,26 @@
 		vendors = vendors.map((v) => (v.id === updated.id ? updated : v));
 		if (detailVendor && detailVendor.id === updated.id) detailVendor = updated;
 	}
-	let search = $state('');
-	let statusFilter = $state('all');
+	// Search + status filter are URL-backed (`?search=&status=`) alongside sort
+	// (below) so a reload / back-button / shared link reproduces the same view —
+	// mirrors `/contracts` + `/expenses`. See `syncUrl()`.
+	const VENDOR_STATUSES = ['active', 'unverified', 'inactive', 'rejected'];
+	let search = $state($urlStore.url.searchParams.get('search') ?? '');
+	let statusFilter = $state(
+		VENDOR_STATUSES.includes($urlStore.url.searchParams.get('status') ?? '')
+			? ($urlStore.url.searchParams.get('status') as string)
+			: 'all'
+	);
 	let syncing = $state(false);
 
 	const PAGE_SIZE = 20;
 	let total = $state(0);
 	let page = $state(1);
 	let loadingMore = $state(false);
+	// First fetch landed (success or error) — gates the onboarding empty state
+	// so "Add your first vendor" doesn't flash during the initial load.
+	let loaded = $state(false);
+	let loadErrored = $state(false);
 	let hasMore = $derived(vendors.length < total);
 
 	// Column sort — URL-backed (`?sort=&order=`) so it survives a reload/share,
@@ -203,7 +228,10 @@
 	let searchTimer: ReturnType<typeof setTimeout>;
 	function debouncedFetch() {
 		clearTimeout(searchTimer);
-		searchTimer = setTimeout(() => fetchVendors(), 300);
+		searchTimer = setTimeout(() => {
+			syncUrl();
+			fetchVendors();
+		}, 300);
 	}
 
 	// Fetch on mount and whenever the status filter chip changes (a chip click
@@ -212,6 +240,7 @@
 	// effect doing the same on mount used to double-fetch on load.
 	$effect(() => {
 		statusFilter;
+		syncUrl();
 		fetchVendors();
 	});
 
@@ -266,12 +295,18 @@
 			vendors = opts.append ? appendUnique(vendors, data.items) : data.items;
 			total = data.total;
 			page = nextPage;
+			loadErrored = false;
 			if (!opts.append) fetchCounts();
 		} catch {
 			// `isCurrentRequest`, not `canCommit`: a request superseded by a
 			// local edit still failed, and no newer request is coming to report
 			// it — only a newer *fetch* makes this one's outcome irrelevant.
-			if (fetchSequence.isCurrentRequest(token)) toast('Failed to load vendors', 'error');
+			if (fetchSequence.isCurrentRequest(token)) {
+				toast('Failed to load vendors', 'error');
+				loadErrored = true;
+			}
+		} finally {
+			if (fetchSequence.isCurrentRequest(token)) loaded = true;
 		}
 	}
 
@@ -284,12 +319,21 @@
 		}
 	}
 
-	// Reflect the live sort state into the URL (mirrors /expenses' syncUrl()).
-	// `untrack` on the `$urlStore` read: this is a WRITER, not a dependency
-	// source — a tracked read here would self-trigger on its own replaceState.
-	function syncSortUrl() {
+	// Reflect the live filter state (search + status + sort) into the URL —
+	// mirrors `/contracts` + `/expenses`. EVERY read here is untracked,
+	// `$urlStore.url` included: this is a WRITER called from the filter
+	// `$effect`s and the debounce timer, never a dependency source — a tracked
+	// `$urlStore` read would self-trigger the effect that calls `replaceState`,
+	// and a tracked `search` read would make every filter effect re-fire on
+	// each keystroke (issue #168).
+	function syncUrl() {
 		untrack(() => {
 			const url = new URL($urlStore.url);
+			const s = search.trim();
+			if (s) url.searchParams.set('search', s);
+			else url.searchParams.delete('search');
+			if (statusFilter !== 'all') url.searchParams.set('status', statusFilter);
+			else url.searchParams.delete('status');
 			if (sortField) {
 				url.searchParams.set('sort', sortField);
 				url.searchParams.set('order', sortOrder);
@@ -305,7 +349,7 @@
 		const next = toggleSort({ field: sortField, order: sortOrder }, field);
 		sortField = next.field;
 		sortOrder = next.order;
-		syncSortUrl();
+		syncUrl();
 		fetchVendors();
 	}
 
@@ -483,10 +527,26 @@
 			? m('vendors.empty.fresh')
 			: m('vendors.empty')
 	);
+	// A brand-new tenant with zero vendors and no active filter gets the rich
+	// onboarding CTA (mirrors the dashboard / `/invoices` EmptyState) instead of
+	// the bare "no vendors" cell — gated on `loaded` (not mid-load) and no error.
+	let showOnboarding = $derived(
+		loaded &&
+			!loadErrored &&
+			vendors.length === 0 &&
+			total === 0 &&
+			!search.trim() &&
+			statusFilter === 'all'
+	);
 </script>
 
 <PageHeader title={m('vendors.title')}>
 	{#snippet actions()}
+		{#if canManageVendors}
+			<button class="btn-primary" onclick={() => (showCreateVendor = true)}>
+				{m('vendors.action.newVendor')}
+			</button>
+		{/if}
 		{#if auth.isManager}
 			<!-- The dual-control queue a staged bank/tax change waits in. Role-gated
 			     to match `GET /api/vendors/change-requests` (admin | ap_manager). -->
@@ -521,6 +581,16 @@
 		<FilterChips chips={statusChips} bind:active={statusFilter} />
 	</div>
 
+	{#if showOnboarding}
+		<EmptyState
+			icon="🏢"
+			testId="vendors-empty-state"
+			heading={m('vendors.onboarding.heading')}
+			description={m('vendors.onboarding.description')}
+			actionLabel={canManageVendors ? m('vendors.action.newVendor') : undefined}
+			onaction={canManageVendors ? () => (showCreateVendor = true) : undefined}
+		/>
+	{:else}
 	<DataTable isEmpty={vendors.length === 0} empty={emptyMessage} colspan={10} fixed>
 		{#snippet header()}
 			<tr>
@@ -611,6 +681,9 @@
 								{v.bank_details?.counterparty_id ? m('vendors.row.bankSet') : m('vendors.row.bank')}
 							</RowAction>
 						{/if}
+						{#if auth.isManager}
+							<RowAction onclick={() => (inviteVendor = v)}>{m('vendors.row.invite')}</RowAction>
+						{/if}
 					</td>
 				</tr>
 			{/each}
@@ -627,6 +700,7 @@
 		<div class="load-more-row">
 			<span class="load-more-end">{m('vendors.showingAll', { total })}</span>
 		</div>
+	{/if}
 	{/if}
 
 	{#if canManageVendors}
@@ -663,6 +737,46 @@
 		onmerged={() => fetchVendors()}
 	/>
 {/if}
+
+{#if showCreateVendor}
+	<CreateVendorModal
+		onclose={() => (showCreateVendor = false)}
+		onsaved={() => fetchVendors()}
+	/>
+{/if}
+
+{#if inviteVendor}
+	<InviteVendorPortalUserModal
+		vendorId={inviteVendor.id}
+		vendorName={inviteVendor.name}
+		onclose={() => (inviteVendor = null)}
+		oninvited={(result) => (inviteResult = result)}
+	/>
+{/if}
+
+<SecretReveal
+	open={inviteResult !== null}
+	ariaLabel={m('vendors.invite.reveal.aria')}
+	heading={m('vendors.invite.reveal.heading')}
+	warningStrong={m('vendors.invite.reveal.warningStrong')}
+	warning={m('vendors.invite.reveal.warning')}
+	secret={inviteResult?.temp_password ?? ''}
+	testId="vendor-invite-temp-password"
+	copyLabel={m('vendors.invite.reveal.copy')}
+	copiedLabel={m('vendors.invite.reveal.copied')}
+	copiedToast={m('vendors.invite.reveal.copiedToast')}
+	copyFailedToast={m('vendors.invite.reveal.copyFailedToast')}
+	doneLabel={m('vendors.invite.reveal.done')}
+	meta={inviteResult
+		? [
+				{ label: m('vendors.invite.reveal.email'), value: inviteResult.user.email },
+				...(inviteResult.portal_url
+					? [{ label: m('vendors.invite.reveal.url'), value: inviteResult.portal_url, mono: true }]
+					: [])
+			]
+		: []}
+	onclose={() => (inviteResult = null)}
+/>
 
 {#if showImportCsv}
 	<ImportCsvModal

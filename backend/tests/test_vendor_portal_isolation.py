@@ -70,14 +70,22 @@ def test_submit_invoice_uses_vendor_id_for_ownership():
 def test_list_my_payments_filters_by_invoice_vendor_id():
     """Payments are joined through Invoice, so the scoping clause
     appears on the Invoice side. Without it, a portal user sees every
-    payment in the tenant."""
+    payment in the tenant.
+
+    The handler builds ONE `filters` list (`Invoice.vendor_id ==` first,
+    optional status/search appended) and spreads it into BOTH the list query
+    and the count query — so the guarantee is "the same filters feed both
+    `.where(*filters)` calls", not "the literal string appears twice".
+    Behavioural proof that a filter can't widen past the vendor is
+    `test_portal_payment_filters.py::test_payment_filters_stay_within_the_callers_vendor`.
+    """
     from app.api import portal
 
     src = inspect.getsource(portal.list_my_payments)
     assert "Invoice.vendor_id == vu.vendor_id" in src
-    # And the count query for pagination must scope too.
-    occurrences = src.count("Invoice.vendor_id == vu.vendor_id")
-    assert occurrences >= 2, "both the list query and the count query must filter on vendor_id"
+    assert src.count(".where(*filters)") >= 2, (
+        "both the list query and the count query must apply the shared vendor-scoped filters"
+    )
 
 
 # ---------------------------------------------------------------------------

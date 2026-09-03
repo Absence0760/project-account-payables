@@ -4,6 +4,10 @@ import { PAYMENT_STATUSES } from './payment';
 import {
 	PORTAL_INVOICE_STATUS_LABELS,
 	PORTAL_PAYMENT_STATUS_LABELS,
+	PORTAL_INVOICE_PHASE_ORDER,
+	PORTAL_INVOICE_PHASES,
+	PORTAL_PAYMENT_PHASE_ORDER,
+	PORTAL_PAYMENT_PHASES,
 	portalInvoiceStatusLabel,
 	portalPaymentStatusLabel
 } from './portalStatus';
@@ -93,5 +97,58 @@ describe('PORTAL_PAYMENT_STATUS_LABELS', () => {
 		expect(portalPaymentStatusLabel('some_future_internal_status')).not.toBe(
 			'some_future_internal_status'
 		);
+	});
+});
+
+describe('PORTAL_INVOICE_PHASES (invoice-filter chips)', () => {
+	it('the phase order lists every distinct vendor-facing label', () => {
+		const labels = new Set(Object.values(PORTAL_INVOICE_STATUS_LABELS));
+		for (const label of labels) {
+			expect(
+				PORTAL_INVOICE_PHASE_ORDER as readonly string[],
+				`"${label}" is a vendor-facing status label with no filter chip`
+			).toContain(label);
+		}
+	});
+
+	it('every InvoiceStatus is reachable through exactly one phase chip', () => {
+		for (const status of INVOICE_STATUSES) {
+			const owning = PORTAL_INVOICE_PHASES.filter((c) => c.statuses.includes(status));
+			expect(owning.length, `${status} is in ${owning.length} phase chips, expected 1`).toBe(1);
+		}
+	});
+
+	it('each chip groups only statuses that share its label', () => {
+		for (const chip of PORTAL_INVOICE_PHASES) {
+			for (const status of chip.statuses) {
+				expect(PORTAL_INVOICE_STATUS_LABELS[status]).toBe(chip.phase);
+			}
+		}
+	});
+});
+
+describe('PORTAL_PAYMENT_PHASES (payment-filter chips)', () => {
+	it('the phase order lists every distinct vendor-facing payment label', () => {
+		for (const label of new Set(Object.values(PORTAL_PAYMENT_STATUS_LABELS))) {
+			expect(
+				PORTAL_PAYMENT_PHASE_ORDER as readonly string[],
+				`"${label}" is a vendor-facing payment label with no filter chip`
+			).toContain(label);
+		}
+	});
+
+	it('every PaymentStatus is reachable through exactly one phase chip', () => {
+		for (const status of PAYMENT_STATUSES) {
+			const owning = PORTAL_PAYMENT_PHASES.filter((c) => c.statuses.includes(status));
+			expect(owning.length, `${status} is in ${owning.length} phase chips, expected 1`).toBe(1);
+		}
+	});
+
+	it('each chip groups only statuses that share its label', () => {
+		for (const chip of PORTAL_PAYMENT_PHASES) {
+			for (const status of chip.statuses) {
+				expect(PORTAL_PAYMENT_STATUS_LABELS[status]).toBe(chip.phase);
+			}
+		}
 	});
 });

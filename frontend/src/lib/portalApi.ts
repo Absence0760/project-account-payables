@@ -137,15 +137,20 @@ export interface PortalListParams {
 }
 
 /** GET a paged portal list, threading `?page=&page_size=` (plus any extra
- *  per-list filter) onto the path. Empty / undefined params are dropped. */
+ *  per-list filter) onto the path. Empty / undefined params are dropped; an
+ *  array value is appended once per element (e.g. `?status=a&status=b`). */
 function portalList<T>(
 	path: string,
-	params: Record<string, string | number | undefined> = {},
+	params: Record<string, string | number | string[] | undefined> = {},
 ): Promise<PortalPage<T>> {
 	const qs = new URLSearchParams();
 	for (const [key, value] of Object.entries(params)) {
 		if (value === undefined || value === '') continue;
-		qs.set(key, String(value));
+		if (Array.isArray(value)) {
+			for (const v of value) if (v !== '') qs.append(key, String(v));
+		} else {
+			qs.set(key, String(value));
+		}
 	}
 	const query = qs.toString();
 	return portalApi.get<PortalPage<T>>(query ? `${path}?${query}` : path);
@@ -168,6 +173,14 @@ export interface PortalInvoiceListItem {
 	due_date: string | null;
 	submitted_at: string;
 	file_url: string | null;
+	/** AP's reason, present only while `status === 'rejected'` — what to fix
+	 *  before resubmitting. Plain text; render escaped, never as HTML. */
+	rejection_reason: string | null;
+	/** Vendor-facing "what is this waiting on" bucket — `'review' | 'processing'
+	 *  | 'erp'` while the invoice is in a processing phase, else null. Rendered
+	 *  via `portal.invoices.waitingOn.<bucket>` + `waiting_on_days`. */
+	waiting_on: 'review' | 'processing' | 'erp' | null;
+	waiting_on_days: number | null;
 }
 
 export interface PortalPaymentListItem {
@@ -193,14 +206,59 @@ export interface PortalPOListItem {
 	created_at: string;
 }
 
+/** Filter params for the signed-in vendor's own invoice list. `status` carries
+ *  the raw internal `InvoiceStatus` values behind a vendor-facing phase chip
+ *  (see `$lib/types/portalStatus.PORTAL_INVOICE_PHASES`); `search` is a
+ *  substring match on the invoice number. */
+export interface PortalInvoiceListParams extends PortalListParams {
+	status?: string[];
+	search?: string;
+	/** `YYYY-MM-DD` inclusive bounds on the submitted date. */
+	date_from?: string;
+	date_to?: string;
+}
+
+/** Revise & resubmit a REJECTED invoice with a corrected file — reuses the
+ *  same invoice row (no duplicate flag) and sends it back to AP review. */
+export function resubmitPortalInvoice(invoiceId: string, file: File) {
+	return portalApi.upload<{ id: string; status: string; message: string }>(
+		`/api/portal/invoices/${invoiceId}/resubmit`,
+		file
+	);
+}
+
 /** The signed-in vendor's own invoices (newest first). */
-export function listPortalInvoices(params: PortalListParams = {}) {
-	return portalList<PortalInvoiceListItem>('/api/portal/invoices', pageParams(params));
+export function listPortalInvoices(params: PortalInvoiceListParams = {}) {
+	return portalList<PortalInvoiceListItem>('/api/portal/invoices', {
+		...pageParams(params),
+		status: params.status,
+		search: params.search,
+		date_from: params.date_from,
+		date_to: params.date_to,
+	});
+}
+
+/** Filter params for the signed-in vendor's payment history. `status` carries
+ *  the raw `payments.status` values behind a vendor-facing phase chip (see
+ *  `$lib/types/portalStatus.PORTAL_PAYMENT_PHASES`); `search` matches the paid
+ *  invoice's number. */
+export interface PortalPaymentListParams extends PortalListParams {
+	status?: string[];
+	search?: string;
+	/** `YYYY-MM-DD` inclusive bounds on the payment-created date. */
+	date_from?: string;
+	date_to?: string;
 }
 
 /** Payments on the signed-in vendor's invoices (newest first). */
-export function listPortalPayments(params: PortalListParams = {}) {
-	return portalList<PortalPaymentListItem>('/api/portal/payments', pageParams(params));
+export function listPortalPayments(params: PortalPaymentListParams = {}) {
+	return portalList<PortalPaymentListItem>('/api/portal/payments', {
+		...pageParams(params),
+		status: params.status,
+		search: params.search,
+		date_from: params.date_from,
+		date_to: params.date_to,
+	});
 }
 
 /** Purchase orders owned by the signed-in vendor (newest first). */

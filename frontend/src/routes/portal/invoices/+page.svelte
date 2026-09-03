@@ -2,6 +2,7 @@
 	import {
 		portalApi,
 		listPortalInvoices,
+		resubmitPortalInvoice,
 		PORTAL_PAGE_SIZE,
 		type PortalInvoiceListItem,
 	} from '$lib/portalApi';
@@ -12,7 +13,13 @@
 	import { appendUnique } from '$lib/utils/pagination';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { m } from '$lib/i18n/store.svelte';
-	import { portalInvoiceStatusLabel } from '$lib/types/portalStatus';
+	import {
+		portalInvoiceStatusLabel,
+		PORTAL_INVOICE_PHASES,
+		type PortalInvoicePhase,
+	} from '$lib/types/portalStatus';
+	import PortalListFilters from '$lib/components/portal/PortalListFilters.svelte';
+	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 	import SupplierChatThread from '$lib/components/chat/SupplierChatThread.svelte';
 	import type { PortalChatThread } from '$lib/types/supplierChat';
 	import {
@@ -22,6 +29,14 @@
 	} from '$lib/portalChat';
 
 	type PortalInvoice = PortalInvoiceListItem;
+
+	// `waiting_on` bucket → localized "what is this waiting on" line. Typed so
+	// `m()` stays checked (frontend/CLAUDE.md — dynamic keys go through a map).
+	const WAITING_ON_KEY = {
+		review: 'portal.invoices.waitingOn.review',
+		processing: 'portal.invoices.waitingOn.processing',
+		erp: 'portal.invoices.waitingOn.erp',
+	} as const;
 
 	let items = $state<PortalInvoice[]>([]);
 	// `total` is the server's count of ALL the vendor's invoices, not just the
@@ -35,8 +50,44 @@
 	let error = $state('');
 	let message = $state('');
 	let downloadingFileId = $state<string | null>(null);
+	let resubmittingId = $state<string | null>(null);
+	// Ref to the header's hidden file input, so the onboarding EmptyState's
+	// action can open the same file picker.
+	let uploadInput: HTMLInputElement | undefined = $state();
 
 	const hasMore = $derived(items.length < total);
+
+	// --- Filters (PortalListFilters owns the phase chips + debounced search and
+	// hands back a resolved {phase, search}; the child's debounce means load()
+	// is never reached from a reactive effect here). `phase` is a vendor-facing
+	// bucket that expands to the InvoiceStatus values behind it, sent as
+	// repeated `?status=`.
+	let activePhase = $state<PortalInvoicePhase | null>(null);
+	let activeSearch = $state('');
+	let activeDateFrom = $state('');
+	let activeDateTo = $state('');
+	let filtersEl = $state<{ reset: () => void } | undefined>();
+	const filtered = $derived(
+		activePhase !== null || activeSearch.trim() !== '' || activeDateFrom !== '' || activeDateTo !== ''
+	);
+
+	function phaseStatuses(p: PortalInvoicePhase | null): string[] | undefined {
+		if (p === null) return undefined;
+		return PORTAL_INVOICE_PHASES.find((c) => c.phase === p)?.statuses;
+	}
+
+	function applyFilters(f: {
+		phase: string | null;
+		search: string;
+		dateFrom: string;
+		dateTo: string;
+	}) {
+		activePhase = f.phase as PortalInvoicePhase | null;
+		activeSearch = f.search;
+		activeDateFrom = f.dateFrom;
+		activeDateTo = f.dateTo;
+		load();
+	}
 
 	// Sequences `load` so a slow first page can't land after a Load-more (or
 	// after the post-upload refresh) and drop rows. Nothing here edits the list
@@ -52,7 +103,14 @@
 		else loading = true;
 		error = '';
 		try {
-			const res = await listPortalInvoices({ page: nextPage, page_size: PORTAL_PAGE_SIZE });
+			const res = await listPortalInvoices({
+				page: nextPage,
+				page_size: PORTAL_PAGE_SIZE,
+				status: phaseStatuses(activePhase),
+				search: activeSearch.trim() || undefined,
+				date_from: activeDateFrom || undefined,
+				date_to: activeDateTo || undefined,
+			});
 			if (!fetchSequence.canCommit(token)) return;
 			items = opts.append ? appendUnique(items, res.items) : res.items;
 			total = res.total;
@@ -91,6 +149,25 @@
 			error = err instanceof Error ? err.message : m('portal.invoices.uploadFailed');
 		} finally {
 			uploading = false;
+		}
+	}
+
+	async function handleResubmit(invoiceId: string, e: Event) {
+		const input = e.target as HTMLInputElement;
+		const file = input.files?.[0];
+		if (!file) return;
+		resubmittingId = invoiceId;
+		error = '';
+		message = '';
+		try {
+			await resubmitPortalInvoice(invoiceId, file);
+			message = m('portal.invoices.resubmitted');
+			input.value = '';
+			await refresh();
+		} catch (err) {
+			error = err instanceof Error ? err.message : m('portal.invoices.resubmitFailed');
+		} finally {
+			resubmittingId = null;
 		}
 	}
 
@@ -187,7 +264,13 @@
 	<header>
 		<h1>{m('portal.invoices.title')}</h1>
 		<label class="upload-btn" class:uploading>
-			<input type="file" accept="application/pdf,image/*" onchange={handleUpload} disabled={uploading} />
+			<input
+				type="file"
+				accept="application/pdf,image/*"
+				bind:this={uploadInput}
+				onchange={handleUpload}
+				disabled={uploading}
+			/>
 			{uploading ? m('portal.invoices.submitting') : m('portal.invoices.submit')}
 		</label>
 	</header>
@@ -195,13 +278,38 @@
 	{#if error}<div class="error" role="alert">{error}</div>{/if}
 	{#if message}<div class="msg" role="status" aria-live="polite">{message}</div>{/if}
 
+	<PortalListFilters
+		bind:this={filtersEl}
+		chips={PORTAL_INVOICE_PHASES.map((c) => ({ key: c.phase, label: c.phase }))}
+		allLabel={m('portal.invoices.filterAll')}
+		groupLabel={m('portal.invoices.col.status')}
+		searchLabel={m('portal.invoices.searchLabel')}
+		searchPlaceholder={m('portal.invoices.searchPlaceholder')}
+		dateFromLabel={m('portal.invoices.dateFromLabel')}
+		dateToLabel={m('portal.invoices.dateToLabel')}
+		onchange={applyFilters}
+	/>
+
 	{#if loading && !items.length}
 		<div class="loading">{m('portal.common.loading')}</div>
 	{:else if !items.length}
-		<div class="empty">
-			<p>{m('portal.invoices.empty')}</p>
-			<p class="hint">{m('portal.invoices.emptyHint')}</p>
-		</div>
+		{#if filtered}
+			<div class="empty">
+				<p>{m('portal.invoices.emptyFiltered')}</p>
+				<button type="button" class="link-btn" onclick={() => filtersEl?.reset()}
+					>{m('portal.invoices.clearFilters')}</button
+				>
+			</div>
+		{:else}
+			<EmptyState
+				icon="📄"
+				heading={m('portal.invoices.empty')}
+				description={m('portal.invoices.emptyHint')}
+				actionLabel={m('portal.invoices.submit')}
+				onaction={() => uploadInput?.click()}
+				testId="portal-invoices-empty-state"
+			/>
+		{/if}
 	{:else}
 		<table>
 			<thead>
@@ -223,8 +331,12 @@
 						onclick={(e) => {
 							// Pointer enhancement: clicking anywhere on the row toggles the
 							// chat disclosure, except when the click lands on the in-cell
-							// toggle button (which handles it itself, incl. via keyboard).
-							if ((e.target as HTMLElement).closest('.row-toggle')) return;
+							// toggle button, or on one of the file / resubmit controls
+							// (each handles its own click).
+							if (
+								(e.target as HTMLElement).closest('.row-toggle, .resubmit-btn, .file-btn')
+							)
+								return;
 							toggleChat(inv.id);
 						}}
 					>
@@ -245,7 +357,34 @@
 						<td>{formatDate(inv.invoice_date, m('portal.common.dash'))}</td>
 						<td>{formatDate(inv.due_date, m('portal.common.dash'))}</td>
 						<td class="num">{fmtAmount(inv.amount, inv.currency)}</td>
-						<td><span class="status s-{inv.status}">{portalInvoiceStatusLabel(inv.status)}</span></td>
+						<td>
+							<span class="status s-{inv.status}">{portalInvoiceStatusLabel(inv.status)}</span>
+							{#if inv.waiting_on}
+								<div class="waiting-on">
+									{m(WAITING_ON_KEY[inv.waiting_on])}{#if (inv.waiting_on_days ?? 0) > 0}
+										&nbsp;· {m('portal.invoices.waitingOnDays', { days: inv.waiting_on_days ?? 0 })}{/if}
+								</div>
+							{/if}
+							{#if inv.status === 'rejected'}
+								{#if inv.rejection_reason}
+									<div class="reject-reason">
+										<span class="reject-label">{m('portal.invoices.rejectionReasonLabel')}</span>
+										{inv.rejection_reason}
+									</div>
+								{/if}
+								<label class="resubmit-btn" class:busy={resubmittingId === inv.id}>
+									<input
+										type="file"
+										accept="application/pdf,image/*"
+										disabled={resubmittingId === inv.id}
+										onchange={(e) => handleResubmit(inv.id, e)}
+									/>
+									{resubmittingId === inv.id
+										? m('portal.invoices.resubmitting')
+										: m('portal.invoices.resubmit')}
+								</label>
+							{/if}
+						</td>
 						<td class="actions">
 							{#if inv.file_url}
 								<button
@@ -337,6 +476,17 @@
 	.upload-btn input {
 		display: none;
 	}
+	.link-btn {
+		background: none;
+		border: none;
+		padding: 0;
+		margin-top: 6px;
+		font: inherit;
+		font-size: 0.82rem;
+		color: var(--accent);
+		cursor: pointer;
+		text-decoration: underline;
+	}
 	table {
 		width: 100%;
 		border-collapse: collapse;
@@ -414,6 +564,49 @@
 	.s-rejected {
 		background: rgba(224, 64, 64, 0.12);
 		border-color: rgba(224, 64, 64, 0.35);
+	}
+	.reject-reason {
+		margin-top: 6px;
+		max-width: 22rem;
+		font-size: 0.78rem;
+		color: var(--text-muted);
+		line-height: 1.35;
+	}
+	.waiting-on {
+		margin-top: 4px;
+		font-size: 0.76rem;
+		color: var(--text-muted);
+	}
+	.reject-label {
+		display: block;
+		font-weight: 600;
+		color: var(--danger);
+		text-transform: uppercase;
+		font-size: 0.68rem;
+		letter-spacing: 0.03em;
+	}
+	.resubmit-btn {
+		display: inline-block;
+		margin-top: 8px;
+		padding: 4px 10px;
+		font-size: 0.78rem;
+		border: 1px solid var(--accent);
+		border-radius: 4px;
+		color: var(--accent);
+		background: transparent;
+		cursor: pointer;
+	}
+	.resubmit-btn:hover {
+		background: var(--accent-strong);
+		border-color: var(--accent-strong);
+		color: #fff;
+	}
+	.resubmit-btn.busy {
+		opacity: 0.6;
+		cursor: default;
+	}
+	.resubmit-btn input {
+		display: none;
 	}
 	.actions-col {
 		width: 1%;
