@@ -32,33 +32,32 @@ import type {
  * endpoints do NOT accept the same params, and FastAPI silently drops the ones
  * it doesn't declare:
  *
- *   - `GET /api/expenses`        — `status`, `report_id`, `search`, `page`,
- *                                  `page_size`.
- *   - `GET /api/expenses/export` — `status`, `report_id`, `category`,
+ *   - `GET /api/expenses`        — `status`, `report_id`, `search`, `sort`,
+ *                                  `order`, `page`, `page_size`.
+ *   - `GET /api/expenses/export` — `status`, `report_id`, `search`, `category`,
  *                                  `date_from`, `date_to` (no pagination).
  *
- * So `category` / `date_from` / `date_to` are **list-ignored**, and `search` is
- * **export-ignored**: the export has no `search` leg, so passing the term there
- * would read as a narrowed CSV while the file still covered the whole
- * status-filtered set. `/expenses` therefore builds two param objects (see
- * `buildParams` / `buildExportParams` on the page). Sending a param to the
- * endpoint that doesn't declare it is a silent no-op, not a filter — wire the
- * backend leg first (tracked in docs/followups.md).
+ * The three filters a user can set from the list surface — `status`,
+ * `report_id`, `search` — are on BOTH, and the export runs them through the
+ * same `_expense_list_filters` builder the list and the KPI rollup use, so
+ * "export what I'm looking at" means the rows on screen. `category` /
+ * `date_from` / `date_to` remain **list-ignored** (export-only period
+ * slicing), and `sort` / `order` remain ignored by `/export`, `/summary` and
+ * `/ids`. Sending a param to an endpoint that doesn't declare it is a silent
+ * no-op, not a filter — wire the backend leg first.
  */
 export interface ExpenseListParams {
 	status?: string;
 	/** Export only — ignored by `GET /api/expenses`. */
 	category?: string;
-	/** List only — ignored by `GET /api/expenses/export`. */
 	search?: string;
 	/** Export only — ignored by `GET /api/expenses`. */
 	date_from?: string;
 	/** Export only — ignored by `GET /api/expenses`. */
 	date_to?: string;
 	report_id?: string;
-	/** List only — ignored by `/export`, `/summary`, and `/ids` (none of the
-	 *  three declare a `sort` leg, so it's a silent no-op on them, same as
-	 *  `search` is on `/export`). */
+	/** List only — ignored by `/export`, `/summary`, and `/ids`: none of the
+	 *  three declares a `sort` leg, so it's a silent no-op on them. */
 	sort?: string;
 	order?: 'asc' | 'desc';
 	page?: number;

@@ -753,6 +753,7 @@ async def export_expenses(
     date_from: date | None = Query(None),
     date_to: date | None = Query(None),
     report_id: uuid.UUID | None = Query(None),
+    search: str | None = Query(None),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Stream the filtered expense register as ``text/csv``.
@@ -760,26 +761,36 @@ async def export_expenses(
     Joins ``GLAccount`` (for the GL code) and ``ExpenseReport`` (for the report
     number) with outer joins so an uncoded / unattached expense still emits a
     row. Entity-scoped; no pagination (dumps the full filtered set, mirroring
-    the analytics export)."""
+    the analytics export).
+
+    `status` / `report_id` / `search` run through the SAME
+    `_expense_list_filters` the list and the KPI rollup use, so "export what I
+    am looking at" means the rows on screen. The export used to restate the
+    status and report clauses inline and declare no `search` leg at all — and
+    FastAPI drops an undeclared query param silently, so a CSV taken mid-search
+    covered the whole status-filtered set with nothing to say it had. The
+    export-only filters (`category`, the date range) stay here: they are not on
+    the list surface, and the CSV is the place a period is sliced."""
     from app.services.report_export import EXPORTERS
 
-    base = apply_entity_scope(
-        select(Expense, ExpenseReport.report_number, GLAccount.code)
-        .outerjoin(GLAccount, GLAccount.id == Expense.gl_account_id)
-        .outerjoin(ExpenseReport, ExpenseReport.id == Expense.report_id),
-        Expense,
-        entity_id,
+    base = _expense_list_filters(
+        apply_entity_scope(
+            select(Expense, ExpenseReport.report_number, GLAccount.code)
+            .outerjoin(GLAccount, GLAccount.id == Expense.gl_account_id)
+            .outerjoin(ExpenseReport, ExpenseReport.id == Expense.report_id),
+            Expense,
+            entity_id,
+        ),
+        status_filter=status_filter,
+        report_id=report_id,
+        search=search,
     )
-    if status_filter:
-        base = base.where(Expense.status == status_filter)
     if category:
         base = base.where(Expense.category == category)
     if date_from:
         base = base.where(Expense.expense_date >= date_from)
     if date_to:
         base = base.where(Expense.expense_date <= date_to)
-    if report_id:
-        base = base.where(Expense.report_id == report_id)
     base = base.order_by(Expense.expense_date.desc())
 
     rows = (await db.execute(base)).all()

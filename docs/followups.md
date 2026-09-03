@@ -458,8 +458,11 @@ non-tinted: [decisions.md](decisions.md) §47.
 
 ### Surfaced by the round-13 sweep
 
-Four items the round-13 agents confirmed but correctly did not fold into their
-own tranches.
+Three items the round-13 agents confirmed but correctly did not fold into their
+own tranches. (The fourth — `GET /api/expenses/export` having no `search` leg —
+is **closed**: the export now runs `status` / `report_id` / `search` through the
+same `_expense_list_filters` as the list and the KPI rollup, and the CSV button
+sends the term it is filtered by.)
 
 - [ ] **`opacity` used to de-emphasise text drops it below 4.5:1.**
       `tr.inactive td:not(.actions) { opacity: 0.6 }` on `/admin/webhooks` renders
@@ -476,17 +479,6 @@ own tranches.
       make the badge conversion unattributable, which is the entire reason that
       work is tranched.
       **Trigger:** the next a11y sweep, or any change to that row treatment.
-
-- [ ] **`GET /api/expenses/export` has no `search` leg.** The list searches
-      merchant / description / category; the export does not, so a CSV taken
-      during a search covers the whole status-filtered set. Nothing is misleading
-      today — the frontend refuses to pretend, keeping a separate
-      `buildExportParams()` pinned by an e2e — but the two surfaces disagree about
-      what "filtered" means.
-      **Durable fix:** add `search` to `export_expenses`, reusing `list_expenses`'
-      own `or_(...)` predicate rather than restating it, then point the button back
-      at `buildParams()`.
-      **Trigger:** the next slice touching the expense export.
 
 - [ ] **`InvoiceModal`'s supplier-chat @mention autocomplete has no member source
       on `/invoices`.** It reads `adminStore.users`, which only `/admin` or
