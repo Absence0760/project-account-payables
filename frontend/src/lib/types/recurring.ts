@@ -138,6 +138,31 @@ export interface RecurringListResponse {
 	page_size: number;
 }
 
+/** One currency's monthly-equivalent recurring spend — `GET /api/recurring/summary`. */
+export interface RecurringCurrencyTotal {
+	currency: string;
+	/** Exact decimal string. Cadence-normalised (÷1, ÷3, ÷12) server-side. */
+	total: string;
+	count: number;
+}
+
+/**
+ * Whole-set KPI rollup from `GET /api/recurring/summary`, over the SAME
+ * status/vendor/search filters the list ran with.
+ *
+ * The page's `activeCount`, `soonestNextRun` and `monthlyRecurringTotal` were
+ * all derived from the LOADED page, and the monthly total divided floats
+ * (`amount / 3`, `amount / 12`). `monthly_equivalent` is grouped by currency,
+ * never summed across them (see `$lib/utils/currencyGroups`).
+ */
+export interface RecurringTemplateSummary {
+	total: number;
+	by_status: Record<string, number>;
+	monthly_equivalent: RecurringCurrencyTotal[];
+	/** Earliest `next_run_on` across active templates in the set (ISO date), or null. */
+	soonest_next_run: string | null;
+}
+
 // GET /api/recurring/{id}/upcoming-schedule
 export interface RecurringOccurrence {
 	period_key: string;

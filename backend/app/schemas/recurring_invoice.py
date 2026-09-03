@@ -198,6 +198,37 @@ class RecurringTemplateListResponse(BaseModel):
     page_size: int
 
 
+class RecurringCurrencyTotal(BaseModel):
+    """One currency's monthly-equivalent recurring spend across ACTIVE templates.
+
+    ``total`` is an **exact decimal string**: each template's amount is
+    normalised to a monthly figure (monthly = amount, quarterly = amount / 3,
+    annual = amount / 12) and quantised to 2dp with ``ROUND_HALF_UP`` before
+    summing — the frontend used to do this division in float. Never added
+    across currencies.
+    """
+
+    currency: str
+    total: str
+    count: int
+
+
+class RecurringTemplateSummaryResponse(BaseModel):
+    """Whole-set KPI rollup for the recurring-templates list — counterpart of
+    ``GET /api/expenses/summary``. Takes the SAME ``status`` / ``vendor_id`` /
+    ``search`` filters as ``GET /api/recurring`` (via the shared
+    ``_recurring_list_filters``). The page's ``activeCount`` / ``soonestNextRun``
+    / ``monthlyRecurringTotal`` all reduced over the LOADED page only, and the
+    monthly total divided floats."""
+
+    total: int
+    by_status: dict[str, int]
+    monthly_equivalent: list[RecurringCurrencyTotal]
+    # Earliest `next_run_on` across ACTIVE templates in the filtered set (ISO
+    # date), or null when none is scheduled.
+    soonest_next_run: str | None = None
+
+
 class ScheduleOccurrence(BaseModel):
     """One projected upcoming generation (no invoice created yet)."""
 

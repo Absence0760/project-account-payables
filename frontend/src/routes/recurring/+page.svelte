@@ -11,10 +11,10 @@
 	import { auth } from '$lib/stores/auth.svelte';
 	import { appendUnique } from '$lib/utils/pagination';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
-	import { formatMoney } from '$lib/utils/money';
 	import { api } from '$lib/api';
 	import {
 		listRecurring,
+		getRecurringSummary,
 		getRecurring,
 		deleteRecurring,
 		pauseRecurring,
@@ -22,6 +22,8 @@
 		endRecurring,
 		generateRecurringNow
 	} from '$lib/api/recurring';
+	import type { RecurringTemplateSummary } from '$lib/types/recurring';
+	import { formatCurrencyTotals } from '$lib/utils/currencyGroups';
 	import Badge from '$lib/components/ui/Badge.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
@@ -131,6 +133,9 @@
 	async function load(opts: { append?: boolean } = {}) {
 		const nextPage = opts.append ? pageNum + 1 : 1;
 		const token = fetchSequence.start();
+		// The KPI rollup tracks the same filter state — refresh it alongside a
+		// fresh (non-append) list load; its own sequencer guards ordering.
+		if (!opts.append) void loadSummary();
 		if (opts.append) loadingMore = true;
 		else loading = true;
 		try {
@@ -248,6 +253,9 @@
 		upsert(t);
 		// Keep the open detail modal in sync after a lifecycle action.
 		if (editing && editing.id === t.id) editing = t;
+		// A create / edit / pause / resume / end moved a status or an amount —
+		// the KPI rollup is a server figure, so re-fetch it.
+		void loadSummary();
 	}
 
 	// --- Row lifecycle actions ---
@@ -324,36 +332,35 @@
 		return m('recurring.rel.daysAgo', { n: -days });
 	}
 
-	function aggMoney(n: number): string {
-		return formatMoney(n, { currency: orgCurrency.currency, whole: true });
+	// --- KPI rollup: `GET /api/recurring/summary` — the WHOLE filtered set, over
+	// the SAME filters. `activeCount` / `soonestNextRun` / `monthlyRecurringTotal`
+	// all used to derive from the loaded page, and the monthly total divided
+	// floats (`amount / 3`, `amount / 12`). The server does the cadence
+	// normalisation in exact decimal and groups the result by currency —
+	// `formatCurrencyTotals` renders one subtotal per currency, never added. ---
+	let recurringSummary = $state<RecurringTemplateSummary | null>(null);
+	const summarySequence = createRequestSequencer();
+
+	async function loadSummary() {
+		const token = summarySequence.start();
+		try {
+			const res = await getRecurringSummary(buildParams());
+			if (!summarySequence.canCommit(token)) return;
+			recurringSummary = res;
+		} catch {
+			if (summarySequence.isCurrentRequest(token)) recurringSummary = null;
+		}
 	}
 
-	// --- KPI math (client-side, honest: derived from the loaded active rows) ---
-	const activeTemplates = $derived(templates.filter((t) => t.status === 'active'));
-	const activeCount = $derived(activeTemplates.length);
-
-	const soonestNextRun = $derived.by(() => {
-		const dates = activeTemplates
-			.map((t) => t.next_run_on)
-			.filter((d): d is string => !!d)
-			.map((d) => new Date(d))
-			.filter((d) => !Number.isNaN(d.getTime()))
-			.sort((a, b) => a.getTime() - b.getTime());
-		return dates[0] ?? null;
-	});
-
-	// Monthly-equivalent recurring total: monthly = amount, quarterly = amount/3,
-	// annual = amount/12. Only counts active templates with a known amount.
-	const monthlyRecurringTotal = $derived.by(() => {
-		let sum = 0;
-		for (const t of activeTemplates) {
-			if (t.amount === null) continue;
-			if (t.cadence === 'monthly') sum += t.amount;
-			else if (t.cadence === 'quarterly') sum += t.amount / 3;
-			else if (t.cadence === 'annual') sum += t.amount / 12;
-		}
-		return sum;
-	});
+	const activeCount = $derived(recurringSummary?.by_status.active ?? 0);
+	const soonestNextRun = $derived(recurringSummary?.soonest_next_run ?? null);
+	const monthlyGroups = $derived(
+		formatCurrencyTotals(recurringSummary?.monthly_equivalent ?? [], orgCurrency.currency)
+	);
+	const monthlyRecurringValue = $derived(monthlyGroups[0] ?? null);
+	const monthlyRecurringRest = $derived(
+		monthlyGroups.length > 1 ? monthlyGroups.slice(1).join(' · ') : null
+	);
 </script>
 
 <svelte:window
@@ -376,11 +383,12 @@
 	<div class="kpi-row">
 		<KpiCard value={activeCount} label={m('recurring.kpi.activeTemplates')} />
 		<KpiCard
-			value={soonestNextRun ? formatDate(soonestNextRun.toISOString()) : '—'}
+			value={soonestNextRun ? formatDate(soonestNextRun) : '—'}
 			label={m('recurring.kpi.nextRun')}
 		/>
 		<KpiCard
-			value={monthlyRecurringTotal > 0 ? aggMoney(monthlyRecurringTotal) : '—'}
+			value={monthlyRecurringValue ?? '—'}
+			sub={monthlyRecurringRest}
 			label={m('recurring.kpi.monthlyRecurring')}
 			highlight="green"
 		/>

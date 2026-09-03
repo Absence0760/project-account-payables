@@ -6,6 +6,7 @@ import type {
 	RecurringTemplate,
 	RecurringTemplateCreate,
 	RecurringListResponse,
+	RecurringTemplateSummary,
 	UpcomingSchedule,
 	RecurringHistory
 } from '$lib/types/recurring';
@@ -26,6 +27,21 @@ export function listRecurring(params: RecurringListParams = {}): Promise<Recurri
 	qs.set('page', String(params.page ?? 1));
 	qs.set('page_size', String(params.page_size ?? 20));
 	return api.get<RecurringListResponse>(`/api/recurring?${qs}`);
+}
+
+// Whole-set KPI rollup — status counts + per-currency monthly-equivalent
+// recurring spend + the soonest upcoming run, over the SAME filters as
+// `listRecurring`. The page's `activeCount` / `soonestNextRun` /
+// `monthlyRecurringTotal` all derived from the loaded page (and divided floats).
+export function getRecurringSummary(
+	params: Pick<RecurringListParams, 'status' | 'vendor_id' | 'search'> = {}
+): Promise<RecurringTemplateSummary> {
+	const qs = new URLSearchParams();
+	if (params.status) qs.set('status', params.status);
+	if (params.vendor_id) qs.set('vendor_id', params.vendor_id);
+	if (params.search) qs.set('search', params.search);
+	const suffix = qs.toString() ? `?${qs}` : '';
+	return api.get<RecurringTemplateSummary>(`/api/recurring/summary${suffix}`);
 }
 
 export function getRecurring(id: string): Promise<RecurringTemplate> {
