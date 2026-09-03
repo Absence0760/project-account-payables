@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
 import logging
 from dataclasses import dataclass
 from datetime import timedelta
@@ -582,6 +583,36 @@ async def test_sweep_report_returns_every_sweep_for_an_admin(health_client, monk
     assert row["consecutive_failures"] == 1
 
 
+#: Payload fields written from the clock. They cannot carry tenant cardinality,
+#: and they are the reason the leak check below cannot simply substring-match
+#: the serialized body: an ISO timestamp carries six digits of microseconds, so
+#: any short sentinel eventually turns up inside one by coincidence. That is not
+#: hypothetical — this test failed on main with
+#: `assert '137' not in ...` against `"last_run_started_at":"…T15:41:12.137324Z"`,
+#: and passed on the PR one commit earlier purely on the luck of the clock.
+_CLOCK_FIELDS = frozenset({"started_at", "last_run_started_at", "last_run_finished_at"})
+
+
+def _strip_clock_fields(node):
+    """The payload with every clock-written field removed, recursively."""
+    if isinstance(node, dict):
+        return {k: _strip_clock_fields(v) for k, v in node.items() if k not in _CLOCK_FIELDS}
+    if isinstance(node, list):
+        return [_strip_clock_fields(v) for v in node]
+    return node
+
+
+def _all_keys(node):
+    """Every key name anywhere in a parsed JSON tree."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield key
+            yield from _all_keys(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _all_keys(value)
+
+
 async def test_sweep_report_never_leaks_cross_tenant_cardinality(health_client, monkeypatch):
     """An ordinary tenant admin holds ROLE_ADMIN, so the payload must not carry
     the raw per-sweep counters — `tenants_scanned` would tell them how many
@@ -594,8 +625,16 @@ async def test_sweep_report_never_leaks_cross_tenant_cardinality(health_client, 
     async with health_client("admin") as client:
         resp = await client.get("/api/health/sweeps")
 
-    assert "137" not in resp.text
-    assert "tenants_scanned" not in resp.text
+    body = resp.json()
+
+    # The counter FIELD must not exist at any depth. Checked on parsed keys
+    # rather than in the raw text, so this can't be satisfied by luck either.
+    assert "tenants_scanned" not in set(_all_keys(body))
+
+    # …and the VALUE must not have been smuggled in under some other name.
+    # Serialized minus the clock fields, so a timestamp's microseconds can't
+    # masquerade as the sentinel.
+    assert "137" not in json.dumps(_strip_clock_fields(body))
     assert "acme-corp" not in resp.text  # the non-int field on _FakeResult
 
 
