@@ -13,6 +13,12 @@ import type {
 export interface PositivePayListParams {
 	file_type?: string;
 	status?: string;
+	/** Free-text over bank format, file type and both ids as text. A SERVER
+	 *  filter: the page used to narrow the loaded rows in the browser, so a file
+	 *  on page 2 read as "nothing matched". The rendered row LABEL is not
+	 *  searchable server-side by design — it is localised, so matching it in SQL
+	 *  would make the result set depend on the browser's language. */
+	search?: string;
 	page?: number;
 	page_size?: number;
 }
@@ -23,20 +29,23 @@ export function listPositivePayFiles(
 	const qs = new URLSearchParams();
 	if (params.file_type) qs.set('file_type', params.file_type);
 	if (params.status) qs.set('status', params.status);
+	if (params.search) qs.set('search', params.search);
 	qs.set('page', String(params.page ?? 1));
 	qs.set('page_size', String(params.page_size ?? 20));
 	return api.get<PositivePayListResponse>(`/api/positive-pay?${qs}`);
 }
 
 // Whole-set KPI rollup — status counts + total exported items + total flagged
-// returns, over the SAME file_type / status filters as `listPositivePayFiles`,
-// so `itemsExported` / `returnsFlagged` stop describing only the loaded page.
+// returns, over the SAME file_type / status / search filters as
+// `listPositivePayFiles`, so `itemsExported` / `returnsFlagged` stop describing
+// only the loaded page.
 export function getPositivePaySummary(
-	params: Pick<PositivePayListParams, 'file_type' | 'status'> = {}
+	params: Pick<PositivePayListParams, 'file_type' | 'status' | 'search'> = {}
 ): Promise<PositivePaySummary> {
 	const qs = new URLSearchParams();
 	if (params.file_type) qs.set('file_type', params.file_type);
 	if (params.status) qs.set('status', params.status);
+	if (params.search) qs.set('search', params.search);
 	const suffix = qs.toString() ? `?${qs}` : '';
 	return api.get<PositivePaySummary>(`/api/positive-pay/summary${suffix}`);
 }

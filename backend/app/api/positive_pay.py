@@ -26,7 +26,7 @@ import uuid
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import func, select
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -83,6 +83,7 @@ from app.tenant import (
     get_write_entity_id,
 )
 from app.utils.dates import utc_today
+from app.utils.search import ilike_contains
 
 router = APIRouter(prefix="/positive-pay", tags=["positive-pay"])
 
@@ -425,17 +426,46 @@ async def generate_ach_authorization(
 # --------------------------------------------------------------------------- #
 
 
-def _positive_pay_list_filters(query, *, file_type: str | None, status_filter: str | None):
-    """Apply the positive-pay list ``file_type`` / ``status`` filters.
+def _positive_pay_list_filters(
+    query,
+    *,
+    file_type: str | None,
+    status_filter: str | None,
+    search: str | None = None,
+):
+    """Apply the positive-pay list ``file_type`` / ``status`` / free-text filters.
 
     Shared by ``GET /api/positive-pay`` and its ``/summary`` so the KPI rollup
     can never describe a different set than the rows it sits above. Entity scope
     is applied by the caller.
+
+    ``search`` matches the bank format, the file type, and the two ids as text —
+    the row's label renders an 8-character prefix of the file id (or of the
+    payment run id), so pasting what is on screen finds the row. The page
+    filtered in the browser over the rows it had already loaded, so a file on
+    page 2 read as "nothing matched" while the footer's "Showing all N" (the
+    server's whole-set total) sat under a client-narrowed table.
+
+    The one thing that deliberately does NOT move to the server is the rendered
+    label itself: it is built from a LOCALISED string, so matching it in SQL
+    would make the result set depend on the caller's browser language. Matching
+    `file_type` covers the same intent ("ach" still finds the ACH-authorization
+    files) without that.
     """
     if file_type:
         query = query.where(PositivePayFile.file_type == file_type)
     if status_filter:
         query = query.where(PositivePayFile.status == status_filter)
+    if search and search.strip():
+        term = search.strip()
+        query = query.where(
+            or_(
+                ilike_contains(PositivePayFile.bank_format, term),
+                ilike_contains(PositivePayFile.file_type, term),
+                ilike_contains(cast(PositivePayFile.id, String), term),
+                ilike_contains(cast(PositivePayFile.payment_run_id, String), term),
+            )
+        )
     return query
 
 
@@ -443,6 +473,7 @@ def _positive_pay_list_filters(query, *, file_type: str | None, status_filter: s
 async def list_files(
     file_type: str | None = Query(None),
     status_filter: str | None = Query(None, alias="status"),
+    search: str | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_tenant_db),
@@ -453,6 +484,7 @@ async def list_files(
         apply_entity_scope(select(PositivePayFile), PositivePayFile, entity_id),
         file_type=file_type,
         status_filter=status_filter,
+        search=search,
     )
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
@@ -476,13 +508,14 @@ async def list_files(
 async def positive_pay_summary(
     file_type: str | None = Query(None),
     status_filter: str | None = Query(None, alias="status"),
+    search: str | None = Query(None),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(*_READ_ROLES)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Whole-set status counts + total exported items + total flagged returns.
 
-    Takes the SAME ``file_type`` / ``status`` filters as the list. The page's
+    Takes the SAME ``file_type`` / ``status`` / ``search`` filters as the list. The page's
     ``itemsExported`` / ``returnsFlagged`` reduced over the LOADED page while
     the "Files" card showed the server's whole-set ``total``. The return-summary
     figures live in a per-file ``meta`` JSONB block; the positive-pay file set
@@ -496,6 +529,7 @@ async def positive_pay_summary(
                     apply_entity_scope(select(PositivePayFile), PositivePayFile, entity_id),
                     file_type=file_type,
                     status_filter=status_filter,
+                    search=search,
                 )
             )
         )

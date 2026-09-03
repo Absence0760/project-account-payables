@@ -81,20 +81,23 @@
 	let showCreate = $state(false);
 	let detail = $state<Reconciliation | null>(null);
 
-	// Client-side search filter (the list endpoint filters by vendor_id/status).
-	const visibleRecons = $derived.by(() => {
-		const q = search.trim().toLowerCase();
-		if (!q) return recons;
-		return recons.filter(
-			(r) =>
-				(r.vendor_name ?? '').toLowerCase().includes(q) ||
-				(r.statement_reference ?? '').toLowerCase().includes(q)
-		);
-	});
 
+	// `search` is a SERVER filter — `GET /api/vendor-statements` ILIKEs supplier
+	// + statement reference, the two free-text columns this table renders, and
+	// `/summary` shares the same backend filter builder. It used to narrow the
+	// LOADED rows in the browser, so a statement matching on page 2 read as
+	// "nothing matched" and the footer's "Showing all N" (the server's whole-set
+	// total) sat above a client-narrowed table.
+	//
+	// `untrack` on the read: buildParams() is called synchronously from load(),
+	// which the status `$effect` calls — and Svelte tracks reads transitively —
+	// so a plain read would make that effect depend on `search` and fire an
+	// immediate, un-debounced request per keystroke (issue #168).
 	function buildParams() {
-		const params: { status?: string } = {};
+		const params: { status?: string; search?: string } = {};
 		if (statusFilter !== 'all') params.status = statusFilter;
+		const term = untrack(() => search).trim();
+		if (term) params.search = term;
 		return params;
 	}
 
@@ -127,9 +130,20 @@
 	// even the first load. See `frontend/CLAUDE.md` § Sequencing list fetches.
 	const fetchSequence = createRequestSequencer();
 
+	// The term the newest issued list request carried — see the debounce effect.
+	// Seeded from the URL the same way `search` is (rather than from `search`
+	// itself, which reads as capturing a reactive value at init), so a
+	// bookmarked `?search=` doesn't fire a second load behind the first.
+	let appliedSearch = $state(($page.url.searchParams.get('search') ?? '').trim());
+
 	async function load(opts: { append?: boolean } = {}) {
 		const nextPage = opts.append ? pageNum + 1 : 1;
 		const token = fetchSequence.start();
+		// Record the term this request carries, so the debounce below can tell a
+		// term already on screen from one that still needs a fetch — which is
+		// what stops its first run (mount, including a bookmarked ?search=)
+		// firing a duplicate load behind the status effect's.
+		if (!opts.append) appliedSearch = untrack(() => search).trim();
 		// KPI rollup tracks the same filter state — refresh it on a fresh load.
 		if (!opts.append) void loadSummary();
 		if (opts.append) loadingMore = true;
@@ -161,9 +175,13 @@
 
 	let searchTimer: ReturnType<typeof setTimeout>;
 	$effect(() => {
-		search;
+		const term = search.trim();
 		clearTimeout(searchTimer);
-		searchTimer = setTimeout(syncUrl, 300);
+		if (term === appliedSearch) return;
+		searchTimer = setTimeout(() => {
+			syncUrl();
+			void load();
+		}, 300);
 		// Cancel a pending debounce on teardown: without it the timer fires
 		// after the page is gone, running syncUrl()/a list fetch against a route
 		// the user already left.
@@ -341,12 +359,12 @@
 
 	<DataTable
 		columns={COLUMNS}
-		isEmpty={!loading && visibleRecons.length === 0}
+		isEmpty={!loading && recons.length === 0}
 		empty={loading ? m('common.loading') : m('vendorStatements.empty')}
 		colspan={8}
 	>
 		{#snippet body()}
-			{#each visibleRecons as recon (recon.id)}
+			{#each recons as recon (recon.id)}
 				<tr
 					class="clickable"
 					onclick={(e) => {

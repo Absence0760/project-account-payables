@@ -31,7 +31,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -88,6 +88,7 @@ from app.tenant import (
     get_write_entity_id,
 )
 from app.utils.dates import resolve_day_first_preference
+from app.utils.search import ilike_contains
 
 logger = logging.getLogger(__name__)
 
@@ -571,17 +572,39 @@ async def upload_reconciliation(
 # --------------------------------------------------------------------------- #
 
 
-def _recon_list_filters(query, *, vendor_id: uuid.UUID | None, status_filter: str | None):
-    """Apply the reconciliation-list ``vendor_id`` / ``status`` filters.
+def _recon_list_filters(
+    query,
+    *,
+    vendor_id: uuid.UUID | None,
+    status_filter: str | None,
+    search: str | None = None,
+):
+    """Apply the reconciliation-list ``vendor_id`` / ``status`` / free-text filters.
 
     Shared by ``GET /api/vendor-statements`` and its ``/summary`` so the KPI
     rollup can never describe a different set than the rows it sits above.
     Entity scope is applied by the caller.
+
+    ``search`` matches the two free-text columns the row RENDERS — the supplier
+    and the statement reference. The page filtered those in the browser over the
+    rows it had already loaded, so a statement matching on page 2 read as
+    "nothing matched" until the user paged to it, and the footer's "Showing all
+    N" (the server's whole-set total) sat under a client-narrowed table. Same
+    defect the `/requisitions` and `/expenses` lists carried before their own
+    ``search`` legs landed.
     """
     if vendor_id:
         query = query.where(VendorStatementReconciliation.vendor_id == vendor_id)
     if status_filter:
         query = query.where(VendorStatementReconciliation.status == status_filter)
+    if search and search.strip():
+        term = search.strip()
+        query = query.where(
+            or_(
+                ilike_contains(VendorStatementReconciliation.vendor_name, term),
+                ilike_contains(VendorStatementReconciliation.statement_reference, term),
+            )
+        )
     return query
 
 
@@ -589,6 +612,7 @@ def _recon_list_filters(query, *, vendor_id: uuid.UUID | None, status_filter: st
 async def list_reconciliations(
     vendor_id: uuid.UUID | None = None,
     status_filter: str | None = Query(None, alias="status"),
+    search: str | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_tenant_db),
@@ -603,6 +627,7 @@ async def list_reconciliations(
         ),
         vendor_id=vendor_id,
         status_filter=status_filter,
+        search=search,
     )
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
@@ -625,13 +650,14 @@ async def list_reconciliations(
 async def reconciliation_summary(
     vendor_id: uuid.UUID | None = None,
     status_filter: str | None = Query(None, alias="status"),
+    search: str | None = Query(None),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(*_READ_ROLES)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Whole-set status counts + total open discrepancies for the KPI row.
 
-    Takes the SAME ``vendor_id`` / ``status`` filters as the list. The page's
+    Takes the SAME ``vendor_id`` / ``status`` / ``search`` filters as the list. The page's
     ``openCount`` filtered the LOADED page and ``totalDiscrepancies`` reduced
     the per-run discrepancy counts over it — both contradicting the whole-set
     ``total``.
@@ -641,6 +667,7 @@ async def reconciliation_summary(
         apply_entity_scope(select(run), run, entity_id),
         vendor_id=vendor_id,
         status_filter=status_filter,
+        search=search,
     ).subquery()
 
     status_rows = (
