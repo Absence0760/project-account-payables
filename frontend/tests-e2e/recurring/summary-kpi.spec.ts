@@ -87,10 +87,16 @@ test('the recurring KPIs are the whole-set rollup with exact monthly-equivalent'
 	const active = kpiRow.locator('.kpi').filter({ hasText: /Active templates/i });
 	await expect(active.locator('.kpi-value')).toHaveText('14');
 
-	// "Monthly recurring" headline is the first currency's exact monthly-
-	// equivalent (5 300, computed server-side), rest on the sub-line — never one
-	// blended figure and never a float divide.
+	// "Monthly recurring" headlines the FIRST currency the endpoint returns and
+	// puts the rest on the sub-line — never one blended figure and never a float
+	// divide. `GET /api/recurring/summary` orders the groups by currency code
+	// (`.order_by(currency_key)`), so EUR headlines here even though USD is the
+	// larger total; the stub is ordered the way the API actually returns it, and
+	// /budgets asserts the same alphabetical-first rule. Assert the symbol too,
+	// so the headline can't silently start rendering the wrong currency's money
+	// in the right shape.
 	const monthly = kpiRow.locator('.kpi').filter({ hasText: /Monthly recurring/i });
-	await expect(monthly.locator('.kpi-value')).toContainText('5,300');
-	await expect(monthly.locator('.kpi-sub')).toContainText('100');
+	await expect(monthly.locator('.kpi-value')).toHaveText(/€|EUR/);
+	await expect(monthly.locator('.kpi-value')).toContainText('100');
+	await expect(monthly.locator('.kpi-sub')).toContainText('5,300');
 });

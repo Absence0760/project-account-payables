@@ -85,7 +85,7 @@ via `X-Entity-ID`; tenant scope via `X-Tenant-Slug` (the per-tenant DB session).
 | Method + path | Purpose | Roles |
 |---|---|---|
 | `GET /requisitions` | List (paginated, entity-scoped, `?status=`, `?search=` on requisition number / title / **department** — all three are columns the list renders, and covering fewer than the page's own search box did would be a regression) | admin, ap_manager, ap_clerk, cfo |
-| `GET /requisitions/summary` | Whole-set KPI rollup — `by_status` counts + per-currency value totals (exact decimal strings, never a cross-currency SUM). Shares `_requisition_list_filters` with the list so the page's `periodTotal` / `pendingCount` can't describe only the loaded page. | admin, ap_manager, ap_clerk, cfo |
+| `GET /requisitions/summary` | Whole-set KPI rollup — `by_status` counts + per-currency value totals (exact decimal strings, never a cross-currency SUM). Shares `_requisition_list_filters` with the list so the page's `periodTotal` / `pendingCount` can't describe only the loaded page. Groups are ordered by currency code, and each page headlines the first one with the rest on a sub-line — so which currency headlines is alphabetical, never largest-total. | admin, ap_manager, ap_clerk, cfo |
 | `POST /requisitions` | Create with line items (computes `total`) | admin, ap_manager, ap_clerk |
 | `GET /requisitions/{id}` | Detail + line items | admin, ap_manager, ap_clerk, cfo |
 | `PATCH /requisitions/{id}` | Edit (**draft only**; `line_items` fully replaces lines, recomputes total) | admin, ap_manager, ap_clerk |
