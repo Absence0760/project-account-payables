@@ -46,6 +46,7 @@ from app.tenant import (
     get_tenant_db,
     get_write_entity_id,
 )
+from app.utils.search import ilike_contains
 
 router = APIRouter(prefix="/budgets", tags=["budgets"])
 
@@ -116,8 +117,10 @@ def _budget_list_filters(
     if period:
         query = query.where(Budget.period == period)
     if search and search.strip():
-        like = f"%{search.strip()}%"
-        query = query.where(or_(Budget.name.ilike(like), Budget.dimension_value.ilike(like)))
+        term = search.strip()
+        query = query.where(
+            or_(ilike_contains(Budget.name, term), ilike_contains(Budget.dimension_value, term))
+        )
     return query
 
 

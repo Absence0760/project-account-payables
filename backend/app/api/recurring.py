@@ -60,6 +60,7 @@ from app.tenant import (
     get_write_entity_id,
 )
 from app.utils.dates import utc_today
+from app.utils.search import ilike_contains
 
 router = APIRouter(prefix="/recurring", tags=["recurring"])
 
@@ -132,11 +133,11 @@ def _recurring_list_filters(
     if vendor_id:
         query = query.where(RecurringInvoiceTemplate.vendor_id == vendor_id)
     if search and search.strip():
-        like = f"%{search.strip()}%"
+        term = search.strip()
         query = query.where(
             or_(
-                RecurringInvoiceTemplate.name.ilike(like),
-                RecurringInvoiceTemplate.vendor_name.ilike(like),
+                ilike_contains(RecurringInvoiceTemplate.name, term),
+                ilike_contains(RecurringInvoiceTemplate.vendor_name, term),
             )
         )
     return query

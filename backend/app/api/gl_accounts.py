@@ -19,6 +19,7 @@ from app.models.user import User
 from app.schemas.gl_account import GLAccountCreate
 from app.services.audit_dispatch import dispatch_audit
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
+from app.utils.search import ilike_contains
 
 router = APIRouter(prefix="/gl-accounts", tags=["gl-accounts"])
 
@@ -38,8 +39,9 @@ async def list_gl_accounts(
     if active_only:
         query = query.where(GLAccount.is_active)
     if search:
-        pattern = f"%{search}%"
-        query = query.where(GLAccount.code.ilike(pattern) | GLAccount.name.ilike(pattern))
+        query = query.where(
+            ilike_contains(GLAccount.code, search) | ilike_contains(GLAccount.name, search)
+        )
     if account_type:
         query = query.where(GLAccount.account_type == account_type)
 

@@ -104,6 +104,7 @@ from app.tenant import (
 )
 from app.utils.dates import utc_today
 from app.utils.http import content_disposition_attachment
+from app.utils.search import ilike_contains
 
 logger = logging.getLogger(__name__)
 
@@ -335,11 +336,10 @@ async def list_payments(
     if amount_max is not None:
         query = query.where(Payment.amount <= Decimal(str(amount_max)))
     if search:
-        pattern = f"%{search}%"
         query = query.where(
-            Invoice.vendor_name.ilike(pattern)
-            | Invoice.invoice_number.ilike(pattern)
-            | Payment.reference.ilike(pattern)
+            ilike_contains(Invoice.vendor_name, search)
+            | ilike_contains(Invoice.invoice_number, search)
+            | ilike_contains(Payment.reference, search)
         )
 
     # Count — rebuild the filter set against a plain Payment select (the list
@@ -357,11 +357,10 @@ async def list_payments(
     if amount_max is not None:
         count_base = count_base.where(Payment.amount <= Decimal(str(amount_max)))
     if search:
-        pattern = f"%{search}%"
         count_base = count_base.outerjoin(Invoice, Payment.invoice_id == Invoice.id).where(
-            Invoice.vendor_name.ilike(pattern)
-            | Invoice.invoice_number.ilike(pattern)
-            | Payment.reference.ilike(pattern)
+            ilike_contains(Invoice.vendor_name, search)
+            | ilike_contains(Invoice.invoice_number, search)
+            | ilike_contains(Payment.reference, search)
         )
 
     total_q = select(func.count()).select_from(count_base.subquery())

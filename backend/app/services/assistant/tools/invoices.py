@@ -22,6 +22,7 @@ from app.services.assistant.tools.schemas import (
     ListInvoicesParams,
 )
 from app.tenant import apply_entity_scope
+from app.utils.search import ilike_contains
 
 
 async def list_invoices(
@@ -44,12 +45,13 @@ async def list_invoices(
     if params.vendor_name:
         # Resolve the name to vendor ids in-tool (never raw SQL); also match the
         # denormalised Invoice.vendor_name so manually-keyed invoices are found.
-        pattern = f"%{params.vendor_name}%"
         vendor_ids = (
             (
                 await db.execute(
                     apply_entity_scope(
-                        select(Vendor.id).where(Vendor.name.ilike(pattern)), Vendor, entity_id
+                        select(Vendor.id).where(ilike_contains(Vendor.name, params.vendor_name)),
+                        Vendor,
+                        entity_id,
                     )
                 )
             )
@@ -58,10 +60,11 @@ async def list_invoices(
         )
         if vendor_ids:
             stmt = stmt.where(
-                (Invoice.vendor_id.in_(vendor_ids)) | (Invoice.vendor_name.ilike(pattern))
+                (Invoice.vendor_id.in_(vendor_ids))
+                | ilike_contains(Invoice.vendor_name, params.vendor_name)
             )
         else:
-            stmt = stmt.where(Invoice.vendor_name.ilike(pattern))
+            stmt = stmt.where(ilike_contains(Invoice.vendor_name, params.vendor_name))
         applied["vendor_name"] = params.vendor_name
 
     if params.date_from is not None:

@@ -96,6 +96,7 @@ from app.tenant import (
     get_write_entity_id,
 )
 from app.utils.dates import utc_today
+from app.utils.search import ilike_contains
 
 logger = logging.getLogger(__name__)
 
@@ -499,12 +500,12 @@ def _expense_list_filters(
     if report_id:
         query = query.where(Expense.report_id == report_id)
     if search and search.strip():
-        pattern = f"%{search.strip()}%"
+        term = search.strip()
         query = query.where(
             or_(
-                Expense.merchant.ilike(pattern),
-                Expense.description.ilike(pattern),
-                Expense.category.ilike(pattern),
+                ilike_contains(Expense.merchant, term),
+                ilike_contains(Expense.description, term),
+                ilike_contains(Expense.category, term),
             )
         )
     return query

@@ -94,6 +94,7 @@ from app.tenant import (
     get_write_entity_id,
 )
 from app.utils.passwords import generate_temp_password, hash_password
+from app.utils.search import ilike_contains
 
 logger = logging.getLogger(__name__)
 
@@ -354,9 +355,10 @@ def _vendor_list_filters(
     as ``api/expenses.py::_expense_list_filters``).
     """
     if search:
-        pattern = f"%{search}%"
         query = query.where(
-            Vendor.name.ilike(pattern) | Vendor.code.ilike(pattern) | Vendor.email.ilike(pattern)
+            ilike_contains(Vendor.name, search)
+            | ilike_contains(Vendor.code, search)
+            | ilike_contains(Vendor.email, search)
         )
     if status_filter:
         statuses = [s.strip() for s in status_filter.split(",")]
@@ -639,9 +641,10 @@ async def vendor_status_counts(
         select(Vendor.status, func.count()).select_from(Vendor), Vendor, entity_id
     )
     if search:
-        pattern = f"%{search}%"
         query = query.where(
-            Vendor.name.ilike(pattern) | Vendor.code.ilike(pattern) | Vendor.email.ilike(pattern)
+            ilike_contains(Vendor.name, search)
+            | ilike_contains(Vendor.code, search)
+            | ilike_contains(Vendor.email, search)
         )
     query = query.group_by(Vendor.status)
     rows = (await db.execute(query)).all()

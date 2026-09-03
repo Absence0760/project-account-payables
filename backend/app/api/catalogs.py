@@ -80,6 +80,7 @@ from app.tenant import (
     get_tenant_db,
     get_write_entity_id,
 )
+from app.utils.search import ilike_contains
 
 logger = logging.getLogger(__name__)
 
@@ -236,7 +237,7 @@ async def list_catalogs(
     if is_preferred is not None:
         base = base.where(Catalog.is_preferred.is_(is_preferred))
     if search:
-        base = base.where(Catalog.name.ilike(f"%{search.strip()}%"))
+        base = base.where(ilike_contains(Catalog.name, search.strip()))
 
     total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0)
     paged = (
