@@ -5,10 +5,10 @@ names the root cause, the evidence, blast radius, and a recommended fix
 approach — this is a staging area for real problems, not a place to let them
 go stale. See root `CLAUDE.md` guard rail 6 (no dangling deferred findings).
 
-**One entry is open.** Everything below it is a `~~struck-through~~` resolved
-stub, kept because the *diagnosis* is the expensive part and is worth not
-re-deriving. Add a new entry at the top when a defect is diagnosed but can't be
-fixed in the same session.
+**No entries are currently open.** Everything below is a `~~struck-through~~`
+resolved stub, kept because the *diagnosis* is the expensive part and is worth
+not re-deriving. Add a new entry at the top when a defect is diagnosed but
+can't be fixed in the same session.
 
 **Scope:** *diagnosed defects* only. A deferral that isn't a defect — blocked on
 a credential, an operator step on merged code, or sized-but-unstarted work —
@@ -16,45 +16,6 @@ goes to [followups.md](followups.md). Reasoning behind a deliberate design call
 goes to [decisions.md](decisions.md).
 
 ---
-
-## Three tests fail if a suite run crosses local midnight
-
-**Diagnosed 2026-09-03. Open.**
-
-Three tests sample `date.today()` in the test body and compare it against a
-date the application computed from its own `date.today()`. If the clock rolls
-over between the two samples, the comparison fails:
-
-- `tests/test_portal_tax_forms.py::test_upload_tax_form_happy_path` —
-  `assert vendor.w9_received_date == date.today()` (line 179), against the
-  date the portal route stamped.
-- `tests/test_dashboard_aggregations.py::test_upcoming_payments_flag_overdue_only_when_due_date_before_today`
-  — builds due dates relative to `today` and asserts the API's own
-  today-relative `is_overdue`.
-- `tests/test_analytics_aging_reconciliation.py::test_aging_boundary_bands_realdb`
-  — seeds invoices at exact aging-band boundaries off `today`, then asserts
-  which band each landed in.
-
-**Evidence.** A full serial local run (`pytest -q`, 26m51s) started at ~23:40
-and finished ~00:07 local, and reported exactly these three failing out of
-7 249. All three pass when re-run inside a single day, and the suite is
-otherwise green. Not caused by the dependency bumps in the same session — the
-run was purely to validate those, and re-running the three under the bumped
-versions passes.
-
-**Blast radius.** Low but real, and it grows with run duration. CI shards the
-backend suite four ways (~7 min each), so the window a shard can straddle is
-one instant per run — but a scheduled or retried run near midnight UTC will
-eventually hit it, and it presents as an unreproducible date assertion, which
-is the most time-wasting shape a flake can have.
-
-**Recommended fix.** Freeze the clock rather than widen the assertion — guard
-rail 4 forbids absorbing the variance, and the variance here *is* the bug.
-Patch the date source the code under test reads (the route module's / service's
-`date.today`) to a fixed date for the duration of each test, so both sides
-sample the same value by construction. Do NOT accept "today or yesterday": that
-is precisely the loosened assertion the rail names, and it would also stop the
-`is_overdue` and aging-band tests from testing the boundary they exist for.
 
 ## ~~A named-but-unregistered CARD provider still falls back to `mock`~~ — FIXED 2026-08-21
 
